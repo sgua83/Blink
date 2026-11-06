@@ -19,7 +19,13 @@ pub struct Application {
 pub(crate) struct Resources {
     pub types: Vec<Ty>,
     pub programs: Vec<(Target, Program)>,
-    pub completions: Vec<Vec<crate::ir::ElementFact>>,
+    pub completions: Vec<Vec<ElementCompletion>>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ElementCompletion {
+    pub offset: u32,
+    pub intervals: Vec<(u64, u64)>,
+    pub limits: Vec<(usize, u32)>,
 }
 impl Application {
     pub fn name(&self) -> &str {

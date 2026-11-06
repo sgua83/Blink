@@ -1297,18 +1297,18 @@ impl Builder<'_> {
             reason: GenerationReason::DatasetResizeFill,
             trigger: self.source_at(args[2].span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
         });
-        for (slot, reg) in slots.into_iter().zip(fill.regs) {
+        for (slot, reg) in slots.into_iter().zip(fill.regs.iter().copied()) {
             self.code.push(Inst::generated(InstKind::StoreLocal(slot, reg), origin.clone()));
         }
-        let fill = CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: fill.ty, access: Access::Read, address: CallReference {
+        let argument = CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: fill.ty.clone(), access: Access::Read, address: CallReference {
             storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
         } };
-        let result=self.resize_application_storage(data.root,data.ty,length,elements,fill,span)?;
+        let result=self.resize_application_storage(data.root,data.ty,length,elements,argument,&[&fill],span)?;
         if let Some(pending)=pending{self.env.remove(&pending);}
         self.env.remove(&input);
         Ok(Some(result))
     }
-    fn resize_application_storage(&mut self,root:Value,ty:Ty,mut length:Value,elements:Box<returns::Returned>,fill:CallArgument,span:Span)->Result<Data> {
+    fn resize_application_storage(&mut self,root:Value,ty:Ty,mut length:Value,elements:Box<returns::Returned>,fill:CallArgument,snapshots:&[&Value],span:Span)->Result<Data> {
         let frame = self.application_frame(span)?;
         let reg = self.reg(Scalar::U32);
         let call_origin = Arc::new(GeneratedOrigin {
@@ -1331,7 +1331,7 @@ impl Builder<'_> {
             root: handle, place: None, initialization: None, ty, length,
             ownership: Ownership::Owned, access: Access::InOut, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
         });
-        self.complete_application_elements(&data, &data.elements, span, Arc::new(GeneratedOrigin {
+        self.complete_application_elements(&data, &data.elements, snapshots, span, Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetResizeComplete,
             trigger: self.source_at(span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
         }))?;
@@ -1373,7 +1373,7 @@ impl Builder<'_> {
         }
         // A shrinking Frame never reads fill; the moved tail has no second owner there.
         let fill=argument(self.constant(Scalar::U64,0));
-        self.resize_application_storage(data.root,data.ty,last,data.elements,fill,span).map(Some)
+        self.resize_application_storage(data.root,data.ty,last,data.elements,fill,&[],span).map(Some)
     }
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
         if !(1..=2).contains(&explicit.len())||!(1..=2).contains(&arguments) {
@@ -1561,34 +1561,75 @@ impl Builder<'_> {
         let advance=origin(GenerationReason::DatasetInitializeAdvance);
         let one=self.constant_with_origin(Scalar::U32,1,Some(advance.clone())).regs[0];let next=self.reg(Scalar::U32);self.code.push(Inst::generated(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one},advance.clone()));self.code.push(Inst::generated(InstKind::StoreLocal(slot,next),advance));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetInitializeLoop)));
-        self.complete_application_elements(data, &elements, span, origin(GenerationReason::DatasetInitializeComplete))?;
+        self.complete_application_elements(data, &elements, &[], span, origin(GenerationReason::DatasetInitializeComplete))?;
         self.env.remove(&owner);
         Ok(elements)
     }
     fn complete_application_elements(
-        &mut self, data: &Data, elements: &returns::Returned, span: Span,
+        &mut self, data: &Data, elements: &returns::Returned, snapshots: &[&Value], span: Span,
         origin: Arc<GeneratedOrigin>,
     ) -> Result<()> {
         let model = self.returned_storage(elements);
-        let mut facts = model.proof.element_ranges(0, &data.ty).into_iter()
-            .map(ir::ElementFact::Range).collect::<Vec<_>>();
-        let mut length = false;
-        for (component, &(scalar, offset)) in data.ty.components.iter().enumerate() {
-            if scalar == Scalar::U32 && model.proof.domains(component).contains(&IndexDomain::ApplicationData(data.root.identity())) {
-                facts.push(ir::ElementFact::Index { binding: 0, offset, target: 0 });
-                length = true;
+        let mut ranges = model.proof.element_ranges(0, &data.ty).into_iter()
+            .map(|range| (range.offset, range.intervals)).collect::<BTreeMap<_, _>>();
+        let mut candidates = vec![data.length.clone()];
+        for binding in self.env.values() {
+            if let Binding::Value(value) = binding {
+                for (component, &(scalar, _)) in value.ty.components.iter().enumerate() {
+                    if scalar == Scalar::U32 { candidates.push(self.value_component(value, component)); }
+                }
+            }
+            candidates.extend(binding.application_resources().into_iter().map(|resource| resource.length.clone()));
+        }
+        for value in snapshots {
+            for (component, &(scalar, _)) in value.ty.components.iter().enumerate() {
+                if scalar == Scalar::U32 { candidates.push(self.value_component(value, component)); }
             }
         }
-        if facts.is_empty() { return Ok(()); }
+        let mut parameters: Vec<Value> = Vec::new();
+        let mut fields = Vec::new();
+        for (component, &(scalar, offset)) in data.ty.components.iter().enumerate() {
+            let mut limits = BTreeSet::new();
+            if scalar == Scalar::U32 {
+                let proof = model.proof.project(&[component], model.regs.len());
+                let domains = proof.domains(0);
+                let origins = model.component_origins(component);
+                for length in &candidates {
+                    let sources = length.component_origins(0).into_iter().filter(|id| !matches!(id,
+                        ValueIdentity::ElementComponent(_) | ValueIdentity::ElementParent(..)
+                            | ValueIdentity::ElementIndex(_) | ValueIdentity::DatasetContent(..))).collect::<Vec<_>>();
+                    let strict = proof.below_length(&origins, &length.proof, 0, true)
+                        || domains.contains(&IndexDomain::ApplicationData(data.root.identity()))
+                            && length.regs == data.length.regs;
+                    let same = sources.iter().any(|source| origins.contains(source));
+                    let distance = domains.iter().filter_map(|domain| match domain {
+                        IndexDomain::Upper(limit, distance) if sources.contains(limit) => Some(*distance),
+                        _ => None,
+                    }).chain(strict.then_some(1)).chain(same.then_some(0)).max();
+                    if let Some(distance) = distance {
+                        let parameter = parameters.iter().position(|value| value.regs == length.regs).unwrap_or_else(|| {
+                            let index = parameters.len(); parameters.push(length.clone()); index
+                        });
+                        limits.insert((parameter, distance));
+                    }
+                }
+            }
+            let intervals = ranges.remove(&offset);
+            if intervals.is_some() || !limits.is_empty() {
+                fields.push(crate::application::ElementCompletion {
+                    offset, intervals: intervals.unwrap_or_else(|| vec![(0, scalar.bit_mask())]),
+                    limits: limits.into_iter().collect(),
+                });
+            }
+        }
+        if fields.is_empty() { return Ok(()); }
         let completions = &mut self.functions.resources.completions;
-        let index = completions.iter().position(|item| *item == facts).unwrap_or_else(|| {
-            let index = completions.len();
-            completions.push(facts);
-            index
+        let index = completions.iter().position(|item| *item == fields).unwrap_or_else(|| {
+            let index = completions.len(); completions.push(fields); index
         });
         let frame = self.application_frame(span)?;
         let mut arguments = vec![argument(frame), argument(data.root.clone())];
-        if length { arguments.push(argument(data.length.clone())); }
+        arguments.extend(parameters.into_iter().map(argument));
         self.code.push(Inst::generated(runtime_call(&format!("complete_{index}"), arguments,
             None, Vec::new(), None, None).kind, origin));
         Ok(())
@@ -3295,26 +3336,54 @@ pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::applicat
             }else if let Some(index)=symbol.as_ref().and_then(|name|name.strip_prefix("blink_complete_")).and_then(|index|index.parse::<usize>().ok()){
                 let mut inputs=Vec::new();
                 if let InstKind::Call(call)=&inst.kind{call.all_operands(&mut |reg|{inputs.push(reg);true});}
-                let mut fields=BTreeMap::<u32,(Vec<(u64,u64)>,Vec<usize>)>::new();
-                for fact in &resources.completions[index]{
-                    match fact{
-                        ElementFact::Range(range)=>{fields.entry(range.offset).or_default().0=range.intervals.clone();},
-                        ElementFact::Index{offset,target,..}=>{fields.entry(*offset).or_insert_with(||(vec![(0,u32::MAX as u64)],Vec::new())).1.push(*target);},
-                    }
-                }
-                for(offset,(intervals,limits))in fields{
+                for field in &resources.completions[index]{
                     let mut values=Vec::new();
-                    for(lower,upper)in &intervals{
+                    for(lower,upper)in &field.intervals{
                         let lower=constant(registers,&mut out,&inst,Scalar::U64,*lower);let upper=constant(registers,&mut out,&inst,Scalar::U64,*upper);
                         values.extend([lower,upper]);
                     }
                     let interval=record("@blink.ElementInterval",16,8,&[("lower",Scalar::U64,0),("upper",Scalar::U64,8)]);
-                    let ranges=packet(locals,&mut out,&inst,interval,intervals.len(),&values);
-                    let values:Vec<_>=limits.iter().map(|target|inputs[3+target]).collect();
-                    let bounds=packet(locals,&mut out,&inst,Ty::scalar(Scalar::U32),limits.len(),&values);
-                    let field=constant(registers,&mut out,&inst,Scalar::U32,offset as u64);
-                    let range_count=constant(registers,&mut out,&inst,Scalar::U64,intervals.len()as u64);
-                    let limit_count=constant(registers,&mut out,&inst,Scalar::U64,limits.len()as u64);
+                    let ranges=packet(locals,&mut out,&inst,interval,field.intervals.len(),&values);
+                    let base=locals.last_key_value().map_or(0,|(end,_)|*end);
+                    let bounds=packet(locals,&mut out,&inst,Ty::scalar(Scalar::U32),field.limits.len(),&[]);
+                    let mut count=constant(registers,&mut out,&inst,Scalar::U32,0);
+                    let one=constant(registers,&mut out,&inst,Scalar::U32,1);
+                    let stride=constant(registers,&mut out,&inst,Scalar::U32,4);
+                    for(parameter,distance)in &field.limits{
+                        let source=inputs[3+parameter];
+                        let(limit,increment)=match *distance{
+                            0=>{
+                                let maximum=constant(registers,&mut out,&inst,Scalar::U32,u32::MAX as u64);
+                                let valid=registers.len();registers.push(Scalar::Bool);
+                                emit(&mut out,&inst,InstKind::Binary{dst:valid,op:ir::BinaryOp::Compare(Comparison::NotEqual),a:source,b:maximum});
+                                let increment=registers.len();registers.push(Scalar::U32);
+                                emit(&mut out,&inst,InstKind::Cast{dst:increment,src:valid});
+                                let limit=registers.len();registers.push(Scalar::U32);
+                                emit(&mut out,&inst,InstKind::Binary{dst:limit,op:ir::BinaryOp::IAdd,a:source,b:one});
+                                (limit,increment)
+                            },
+                            1=>(source,one),
+                            distance=>{
+                                let distance=constant(registers,&mut out,&inst,Scalar::U32,(distance-1)as u64);
+                                let smaller=registers.len();registers.push(Scalar::Bool);
+                                emit(&mut out,&inst,InstKind::Binary{dst:smaller,op:ir::BinaryOp::Compare(Comparison::Less),a:source,b:distance});
+                                let removed=registers.len();registers.push(Scalar::U32);
+                                emit(&mut out,&inst,InstKind::Select{dst:removed,condition:smaller,a:source,b:distance});
+                                let limit=registers.len();registers.push(Scalar::U32);
+                                emit(&mut out,&inst,InstKind::Binary{dst:limit,op:ir::BinaryOp::ISub,a:source,b:removed});
+                                (limit,one)
+                            },
+                        };
+                        let offset=registers.len();registers.push(Scalar::U32);
+                        emit(&mut out,&inst,InstKind::Binary{dst:offset,op:ir::BinaryOp::IMul,a:count,b:stride});
+                        emit(&mut out,&inst,InstKind::StoreLocalIndexed{base,len:field.limits.len(),index:offset,word:0,value:limit});
+                        let next=registers.len();registers.push(Scalar::U32);
+                        emit(&mut out,&inst,InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:count,b:increment});count=next;
+                    }
+                    let field=constant(registers,&mut out,&inst,Scalar::U32,field.offset as u64);
+                    let range_count=constant(registers,&mut out,&inst,Scalar::U64,values.len()as u64/2);
+                    let limit_count=registers.len();registers.push(Scalar::U64);
+                    emit(&mut out,&inst,InstKind::Cast{dst:limit_count,src:count});
                     if let InstKind::Call(mut call)=inst.kind.clone(){
                         call.arguments=vec![call.arguments[0].clone(),call.arguments[1].clone(),value(field,Scalar::U32),ranges,value(range_count,Scalar::U64),bounds,value(limit_count,Scalar::U64)];
                         call.target=CallTarget::External(ExternalName{library:crate::resource::RUNTIME_LIBRARY.into(),symbol:"blink_complete_field".into()});

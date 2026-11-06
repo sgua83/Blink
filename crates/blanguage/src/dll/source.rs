@@ -160,30 +160,20 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
             words.join(",")
         )?;
     }
-    for (index, facts) in resources.completions.iter().enumerate() {
-        use crate::ir::ElementFact;
-        let mut fields = std::collections::BTreeMap::<u32, (Option<Vec<(u64, u64)>>, Vec<usize>)>::new();
-        let mut counts = 0;
-        for fact in facts {
-            match fact {
-                ElementFact::Range(range) => {
-                    let field = fields.entry(range.offset).or_default();
-                    field.0 = Some(range.intervals.clone());
-                }
-                ElementFact::Index { offset, target, .. } => {
-                    fields.entry(*offset).or_default().1.push(*target);
-                    counts = counts.max(*target + 1);
-                }
-            }
-        }
+    for (index, fields) in resources.completions.iter().enumerate() {
+        let counts = fields.iter().flat_map(|field| &field.limits).map(|(parameter, _)| parameter + 1).max().unwrap_or(0);
         let params = (0..counts).map(|i| format!(",count_{i}:u32")).collect::<String>();
         writeln!(functions, "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_complete_{index}(frame:*mut c_void,data:u32{params}) {{")?;
-        for (offset, (intervals, limits)) in fields {
-            let intervals = intervals.unwrap_or_else(|| vec![(0, Scalar::U32.bit_mask())]);
-            let values = intervals.iter().map(|(lower, upper)| format!("ElementInterval{{lower:{lower},upper:{upper}}}")).collect::<Vec<_>>().join(",");
-            let limit_count = limits.len();
-            let limits = limits.iter().map(|i| format!("count_{i}")).collect::<Vec<_>>().join(",");
-            writeln!(functions, "{{ static INTERVALS:[ElementInterval;{}]=[{values}];let limits:[u32;{limit_count}]=[{limits}];unsafe {{ blink_complete_field(frame,data,{offset},INTERVALS.as_ptr(),INTERVALS.len(),limits.as_ptr(),limits.len()) }} }}", intervals.len())?;
+        for field in fields {
+            let offset = field.offset;
+            let values = field.intervals.iter().map(|(lower, upper)| format!("ElementInterval{{lower:{lower},upper:{upper}}}")).collect::<Vec<_>>().join(",");
+            let limit_count = field.limits.len();
+            let limits = field.limits.iter().map(|(parameter, distance)| match *distance {
+                0 => format!("count_{parameter}.checked_add(1)"),
+                1 => format!("Some(count_{parameter})"),
+                distance => format!("Some(count_{parameter}.saturating_sub({}))", distance - 1),
+            }).collect::<Vec<_>>().join(",");
+            writeln!(functions, "{{ static INTERVALS:[ElementInterval;{}]=[{values}];let bounds:[Option<u32>;{limit_count}]=[{limits}];let mut limits=[0u32;{limit_count}];let mut count=0;for limit in bounds.into_iter().flatten(){{limits[count]=limit;count+=1;}}unsafe {{ blink_complete_field(frame,data,{offset},INTERVALS.as_ptr(),INTERVALS.len(),limits.as_ptr(),count) }} }}", field.intervals.len())?;
         }
         writeln!(functions, "}}")?;
     }
