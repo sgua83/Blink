@@ -286,7 +286,11 @@ impl Function {
                 Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id))=>Borrow::default(),
                 Origin::Element{parent,fields,index}=>Borrow::element(inputs(&parent,function),fields,index),
                 Origin::Projection{parent,fields}=>Borrow::projection(inputs(&parent,function),fields),
-                Origin::Position(origin)=>origin.map_borrows(|borrow|inputs(borrow,function)).normalize(),
+                Origin::Position(origin)=>{
+                    let mut origin=origin.map_borrows(|borrow|inputs(borrow,function));
+                    if let address::Root::Resource(borrow)=origin.root {origin.root=address::Root::Derived(borrow);}
+                    origin.normalize()
+                },
                 source=>Borrow::source(source),
             })
         }

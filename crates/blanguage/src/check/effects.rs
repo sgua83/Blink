@@ -422,7 +422,6 @@ impl Builder<'_> {
                     if self.functions.read_only(&instance.name) {
                         normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if std::ptr::eq(*origin,call)));
                     }
-                    if Scope::current(self).writes_covered(&instance)?{continue;}
                     // Closed memory effects own writes; owned arguments still consume their places.
                     let mut owned=Vec::new();
                     for(parameter,arg)in instance.definition.function.params.iter().zip(syntax){
@@ -604,9 +603,9 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             if parameter.ty.dataset {
                 let descriptor=Builder::borrowed_dataset_parameter_type(parameter.access,definition.execution);
                 if let Some(name)=assigned_root(arg) &&!self.bindings.iter().any(|(bound,_)|*bound==name) {
-                    let data=match builder.env.get(name) {Some(Binding::ApplicationData(data))=>Some(data),Some(Binding::DataReference(data))=>Some(&data.data),_=>None};
-                    if let Some(data)=data {
-                        inputs.insert(ValueIdentity::Register(offset),view::resource_proof(data));
+                    if let Some((data,field,ty))=builder.written_application_data(arg) {
+                        let origin=application::dataset_origin(data,field,ty,false);
+                        inputs.insert(ValueIdentity::Register(offset),data.root.proof.clone().with_view_borrow(0,origin.normalize()));
                         inputs.insert(ValueIdentity::Register(offset+1),bounds::Proof::capture(&data.length));
                     }
                 }
@@ -645,15 +644,6 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         }).collect::<Vec<_>>();
         generics::specialize(self.world,&key,&actuals,explicit,
             (&self.definition.source,&self.definition.module,&self.definition.imports),call.span).map(Some)
-    }
-    fn writes_covered(&self,instance:&crate::generics::Instance)->Result<bool> {
-        let Some(builder)=self.builder else{return Ok(false);};
-        let definition=&instance.definition;
-        let owns=if matches!(definition.function.result.name.as_str(),"void"|"never"){false}
-            else{self.world.ty(&definition.function.result,&definition.source,definition.function.span,&definition.module,&definition.imports)?.owns_resources()};
-        let dataset_inputs= !definition.function.params.iter().any(|p|p.access==Access::Atomic)
-            &&builder.functions.writes_covered_by_dataset_inputs(&instance.name,&Builder::borrowed_dataset_parameter_type(Access::InOut,definition.execution));
-        Ok(!owns&&(builder.functions.read_only(&instance.name)||dataset_inputs))
     }
     fn factory_instance(&self,factory:&Expr)->Result<Option<crate::generics::Instance>> {
         let(name,explicit)=match &factory.kind {
@@ -713,9 +703,8 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some();
                     if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
                         let instance=if self.builder.is_some(){self.call_instance(expr)?}else{None};
-                        let covered=match instance.as_ref(){Some(instance)=>self.writes_covered(instance)?,None=>false}
-                            || (self.world.functions[&key].function.external.is_some()
-                                && !outputs::Contract::from(self.world.functions[&key].as_ref()).external_memory().is_some_and(|access|access.writes()));
+                        let covered=self.world.functions[&key].function.external.is_some()
+                            && !outputs::Contract::from(self.world.functions[&key].as_ref()).external_memory().is_some_and(|access|access.writes());
                         let read_only=instance.as_ref().is_some_and(|instance|self.builder.is_some_and(|builder|builder.functions.read_only(&instance.name)));
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {

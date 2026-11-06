@@ -1383,7 +1383,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:933`。
+源码节选：`crates/blanguage/src/check/application.rs:941`。
 
 ```rust
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1417,7 +1417,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:991`。
+源码节选：`crates/blanguage/src/check/application.rs:999`。
 
 ```rust
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1433,7 +1433,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:906`。
+源码节选：`crates/blanguage/src/check/native_function.rs:881`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1512,7 +1512,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
 
-源码节选：`crates/blanguage/src/check/application.rs:109`。
+源码节选：`crates/blanguage/src/check/application.rs:117`。
 
 ```rust
     fn code(&self)->impl DoubleEndedIterator<Item=&Inst> {
@@ -1522,7 +1522,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1369`。
+源码节选：`crates/blanguage/src/check/application.rs:1377`。
 
 ```rust
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
@@ -1571,7 +1571,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 原loop_writes收集正文和条件的写输入，LoopWrites只交给原LoopContext及未来读取缓存。共同模型逐项消费真实写。下标实参的原Scope::input_snapshot复用loop_write_projection，written_application_data只交回原Data、字段字节偏移与逻辑Ty；借用dataset、字段列、固定数组和拥有记录的dataset沿同一投影交接。原投影消费调用者给出的下标事实：写分析沿完整写集判断是否可用，输入快照不把可变入口值当作不变量。不再次求值或产生IR，也不重建另一资源／效果表。
 
-原address_write_positions是内存位置投影的唯一入口。具体Origin内的资源即使含LoopInput，仍可按真实布局与word投影；顶层未形成位置的输入／调用、Unresolved或其他未知来源不被静默当作空写。原write_address_values与循环消费者直接消费同一结果，不能用递归pending标志代替实际写位置。初始化在该快照中保持未知。进入原闭合Memory归一分支的非拥有write／inout参数，权限Position不再重复定义整值写区；实际写字节由原Memory合同交接，typed written数值输出与initialization仍分别由原调用消费者处理，拥有参数的原位置消费保持。命名元素继续使用已经求值的句柄、布局、索引和步长，其资源来源在Place生产处通过原data_borrow引用当前循环映射，与下标访问保持同一来源，不保存进入前的过期来源。dataset覆盖分支对未写标量引用的精度仍见Issues C-021.1.4.5.4.3.2.3.4，未来缓存、同字段读前范围和独立数值缺口继续各原编号。下面的代码只形成编译期位置，不增加运行时表、资源镜像或释放链。
+原address_write_positions是内存位置投影的唯一入口。具体Origin内的资源即使含LoopInput，仍可按真实布局与word投影；顶层未形成位置的输入／调用、Unresolved或其他未知来源不被静默当作空写。原write_address_values与循环消费者直接消费同一结果，不能用递归pending标志代替实际写位置。初始化在该快照中保持未知。闭合普通B调用的实际写区统一由原Memory合同交接，非拥有write／inout权限不重复定义整值写区，typed written数值输出、初始化与拥有参数消费仍各归原调用合同。dataset指针在预分析和实际调用中交接同一原Origin：实际Data、逻辑元素布局和字段字节由application统一构造，不改变机器句柄、长度、步长或ABI参数。预分析初始化保持未知；真实读输入只消费原初始化检查已经取得的事实，write输入继续原输出初始化分支。模块dataset出口先沿原输入关系过滤私有Data，再将输入资源位置归一为原Derived符号指针，嵌套调用及obj／lib保留真实写区；未知仍如实未知，不增加资源镜像、效果图、状态或运行时校验。命名元素继续使用已经求值的句柄、布局、索引和步长，其资源来源在Place生产处通过原data_borrow引用当前循环映射，与下标访问保持同一来源，不保存进入前的过期来源。未来读取缓存、同字段读前范围和独立数值缺口继续各原编号。下面的代码只形成编译期位置，不增加运行时表、资源镜像或释放链。
 
 源码节选：`crates/blanguage/src/check.rs:3710`。
 
@@ -1647,7 +1647,6 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
                     if self.functions.read_only(&instance.name) {
                         normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if std::ptr::eq(*origin,call)));
                     }
-                    if Scope::current(self).writes_covered(&instance)?{continue;}
                     // Closed memory effects own writes; owned arguments still consume their places.
                     let mut owned=Vec::new();
                     for(parameter,arg)in instance.definition.function.params.iter().zip(syntax){
@@ -1661,38 +1660,46 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
                 },
 ```
 
-原Module只读查询同时消费Resource、Position、Dataset和Memory的闭合Access，不维护第二份副作用状态。确认没有实际写或拥有消费时，Scope不再按write／inout参数权限生产标量、记录或dataset伪写；首次声明／导入仍使用原已选实例，完成后也只删除该call自己的参数权限Position。真实Scalar Reference写、资源拥有及未知／外部／间接调用继续由原合同与Position消费者交接；实参表达式的独立写与write初始化责任保持，没有另一调用记录、状态或词法实例推导。Resource项交接借用前提与所有权消费，Position、Dataset和Memory交接实际或未知写，只读结论同时消费这些项；调用方还分别处理结果拥有关系及实际调用输入。writes_covered_by_dataset_inputs只消费同一Unit闭合合同，沿实际编码参数宽度和inputs取得原borrowed_dataset_parameter_type或元素无拥有资源的按值dataset真实根；只接受这些根的Dataset写，不把Element中的指针值或其他Position写归成父dataset写。Scope的writes_covered区分只读与已经由原参数位置覆盖的写，Scalar Reference及当前未覆盖的Atomic保持原实际效果。源调试ParameterOrigin和frame标志都不作为此公开关系的权威，源与无提供者源码对象／归档共用同一已有ABI，不另建映射表、调用图、缓存或运行状态。
+原Module只读查询消费同一Unit的Resource、Position、Dataset和Memory闭合Access，不维护第二份副作用状态。Scope与实际调用都以原Memory交接写区，非拥有write／inout许可不重复定义整值写；原C声明继续按实际外部内存合同与类型位置交接。dataset指针的原布局构造归application::dataset_origin，Scope::call_inputs只提供实际Data／字段／逻辑Ty，native_call的BorrowedData分支沿同一构造交接原ABI值；没有额外IR、查询图或运行时状态。预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
 
-源码节选：`crates/blanguage/src/check/native_function.rs:42`。
+Function::dataset_access在原inputs投影中只保留真实输入Data，随后把资源位置归一为原Derived符号指针，沿原地址出口与canonical发布。私有资源过滤后不产生外部写区，未知保持未知；原输入编号、逻辑布局与字节范围交给dataset_write_regions和lower_dataset_borrows，嵌套调用及源码缺席的对象／归档保持同一实际写。只读结论、原written值输出、拥有消费和最后释放继续原职责，不把Source调试名称、frame标志或参数权限当作另一写范围权威。
+
+源码节选：`crates/blanguage/src/check/application.rs:104`。
 
 ```rust
-    pub(super) fn writes_covered_by_dataset_inputs(&self,name:&str,descriptor:&Ty)->bool {
-        fn covered(borrow:&view::Borrow,roots:&BTreeSet<Reg>)->bool {
-            borrow.inputs.is_empty()&&borrow.calls.is_empty()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|match source {
-                view::Source::Data(ValueIdentity::Register(root))=>roots.contains(root),
-                view::Source::Position(origin)=>match &origin.root {address::Root::Derived(borrow)=>covered(borrow,roots),_=>false},
-                _=>false,
+pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->address::Origin {
+    address::Origin {
+        root:address::Root::Resource(view::resource_borrow(data)),base:address::Layout::of(&data.ty),layout:address::Layout::of(ty),
+        words:ty.components.iter().map(|(_,word)|field+word).collect(),positions:Arc::from([]),
+        writable:data.access.writes(),initialized:vec![initialized;ty.components.len()].into(),
+    }
+}
+```
+
+源码节选：`crates/blanguage/src/check/native_function.rs:626`。
+
+```rust
+                    let mut value=self.application_reference_value(&reference,descriptor,span)?;
+                    let(field,ty)=reference.element_layout();
+                    value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&reference.data,field,ty,p.access.reads()).normalize());
+```
+
+源码节选：`crates/blanguage/src/check/view_contracts.rs:284`。
+
+```rust
+        fn inputs(borrow:&Borrow,function:&Function)->Borrow {
+            borrow.map_sources(|source|match source {
+                Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id))=>Borrow::default(),
+                Origin::Element{parent,fields,index}=>Borrow::element(inputs(&parent,function),fields,index),
+                Origin::Projection{parent,fields}=>Borrow::projection(inputs(&parent,function),fields),
+                Origin::Position(origin)=>{
+                    let mut origin=origin.map_borrows(|borrow|inputs(borrow,function));
+                    if let address::Root::Resource(borrow)=origin.root {origin.root=address::Root::Derived(borrow);}
+                    origin.normalize()
+                },
+                source=>Borrow::source(source),
             })
         }
-        let Some(unit)=self.units.get(name).and_then(Option::as_ref) else{return false;};
-        let Some(access)=unit.contract.view_access.as_ref() else{return false;};
-        let mut offset=0;let mut roots=BTreeSet::new();
-        for parameter in &unit.contract.parameters {
-            let(width,dataset)=match &parameter.kind {
-                CallParameterKind::Value(ty)=>(ty.components.len(),ty==descriptor||ty.dataset.as_ref().is_some_and(|element|!element.owns_resources())),
-                CallParameterKind::Reference{..}=>(2,false),
-            };
-            if dataset{roots.insert(unit.contract.inputs[offset]);}
-            offset+=width;
-        }
-        access.iter().all(|access|match access {
-            view_contracts::Access::Resource{ownership,..}=>!*ownership,
-            view_contracts::Access::Memory{access,..}=>!access.writes(),
-            view_contracts::Access::Position{position,..}=>!position.writes,
-            view_contracts::Access::Dataset{borrows,access,..}=>!access.writes()||covered(borrows,&roots),
-            view_contracts::Access::Initialized{..}=>true,
-        })
-    }
 ```
 
 源码节选：`crates/blanguage/src/check/native_function.rs:32`。
@@ -1721,11 +1728,11 @@ pub(super) struct LoopWrites {
 }
 ```
 
-有写普通调用实际参数位置的循环精度仍沿C-005.13.2.2.5.2推进；可变动态下标经短路前置C调用后的范围事实另归C-005.14，静态不可达正文仍按C-005.12处理。这些当前分析缺口不构成永久语言限制。拥有填充值只交给已证明不回绕的唯一新增位置。resize_application_dataset在后续实参求值前沿原hold_binding持有输入Data，原view_uses查询以已有OwnedData Transfer保留真实外部借用，成功的原存储调用交回新Data后移出该持有关系；失败Scope消费仍未采用的原输入及实际元素。它复用原Returned求值、初始化与资源树，实际拥有fill在capture_element_model之前沿同一hold_binding保持到存储采用；失败Scope消费本次实际F与子资源，成功移出后只交给原返回Data，填充值只求值并交接一次；capture_element_model把新值投影到原共同元素身份，非空旧序列沿原join保留旧新共同事实，已知空序列直接接收新模型。它不会把最后一项的nonzero或index当作全部旧项的保证。填充值及其静态释放函数持有的真实地址／借用在原Frame调整前交接，外部来源保持到最后实际释放函数完成；Frame仍只复制声明分量和保留共同前缀，不另建包装、拥有表或第二释放链。普通填充仍可广播，未增长时也求值一次。动态集合混合CPU与GPU元素的位置区分、含view元素的resize增长及批量增长保持各自未完成范围；完整存储与最后清理不替代通用容器。
+有写普通调用实际参数位置的循环精度仍沿C-021.1.4.5.4.3.2.2推进；可变动态下标经短路前置C调用后的范围事实另归C-005.14，静态不可达正文仍按C-005.12处理。这些当前分析缺口不构成永久语言限制。拥有填充值只交给已证明不回绕的唯一新增位置。resize_application_dataset在后续实参求值前沿原hold_binding持有输入Data，原view_uses查询以已有OwnedData Transfer保留真实外部借用，成功的原存储调用交回新Data后移出该持有关系；失败Scope消费仍未采用的原输入及实际元素。它复用原Returned求值、初始化与资源树，实际拥有fill在capture_element_model之前沿同一hold_binding保持到存储采用；失败Scope消费本次实际F与子资源，成功移出后只交给原返回Data，填充值只求值并交接一次；capture_element_model把新值投影到原共同元素身份，非空旧序列沿原join保留旧新共同事实，已知空序列直接接收新模型。它不会把最后一项的nonzero或index当作全部旧项的保证。填充值及其静态释放函数持有的真实地址／借用在原Frame调整前交接，外部来源保持到最后实际释放函数完成；Frame仍只复制声明分量和保留共同前缀，不另建包装、拥有表或第二释放链。普通填充仍可广播，未增长时也求值一次。动态集合混合CPU与GPU元素的位置区分、含view元素的resize增长及批量增长保持各自未完成范围；完整存储与最后清理不替代通用容器。
 
 take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。存活性消费时点由实际调用者选择；assign_application_element保持after(rhs.span)，普通assign_owned_storage及take_last各选择自身原after(span)。共用函数只消费已求值载荷及当前ViewUses，不把Frame元素旧内容的清理切换到新内容的后续读取；check_returned_type只借用Builder，不重选存活性。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
 
-源码节选：`crates/blanguage/src/check/application.rs:1331`。
+源码节选：`crates/blanguage/src/check/application.rs:1339`。
 
 ```rust
     pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
@@ -2038,7 +2045,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:3090`。
+源码节选：`crates/blanguage/src/check/application.rs:3098`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -2050,7 +2057,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 全局目标本身可以是借用输入，其真实根与长度和拥有资源进入同一element_owner_bindings。嵌套遍历中的循环输入是同一资源根的原分析表示，application_element_scopes沿活动LoopContext已有映射查询各层作用域，不另造别名状态：
 
-源码节选：`crates/blanguage/src/check/application.rs:2804`。
+源码节选：`crates/blanguage/src/check/application.rs:2812`。
 
 ```rust
         let owner=view::resource_borrow(data);
@@ -2674,7 +2681,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1652`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1627`。
 
 ```rust
             if !frame.contains(&name) {

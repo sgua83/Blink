@@ -101,6 +101,14 @@ impl DataReference {
     }
 }
 
+pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->address::Origin {
+    address::Origin {
+        root:address::Root::Resource(view::resource_borrow(data)),base:address::Layout::of(&data.ty),layout:address::Layout::of(ty),
+        words:ty.components.iter().map(|(_,word)|field+word).collect(),positions:Arc::from([]),
+        writable:data.access.writes(),initialized:vec![initialized;ty.components.len()].into(),
+    }
+}
+
 // Numeric snapshots query the original emitted operations, including the outer
 // IR owned by active loop contexts. Loop write inputs describe future backedges;
 // no loaded-value or memory-version state is retained beside IR and Proof.

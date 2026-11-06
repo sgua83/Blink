@@ -39,33 +39,6 @@ impl Module {
                 view_contracts::Access::Initialized{..}=>true,
             }))
     }
-    pub(super) fn writes_covered_by_dataset_inputs(&self,name:&str,descriptor:&Ty)->bool {
-        fn covered(borrow:&view::Borrow,roots:&BTreeSet<Reg>)->bool {
-            borrow.inputs.is_empty()&&borrow.calls.is_empty()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|match source {
-                view::Source::Data(ValueIdentity::Register(root))=>roots.contains(root),
-                view::Source::Position(origin)=>match &origin.root {address::Root::Derived(borrow)=>covered(borrow,roots),_=>false},
-                _=>false,
-            })
-        }
-        let Some(unit)=self.units.get(name).and_then(Option::as_ref) else{return false;};
-        let Some(access)=unit.contract.view_access.as_ref() else{return false;};
-        let mut offset=0;let mut roots=BTreeSet::new();
-        for parameter in &unit.contract.parameters {
-            let(width,dataset)=match &parameter.kind {
-                CallParameterKind::Value(ty)=>(ty.components.len(),ty==descriptor||ty.dataset.as_ref().is_some_and(|element|!element.owns_resources())),
-                CallParameterKind::Reference{..}=>(2,false),
-            };
-            if dataset{roots.insert(unit.contract.inputs[offset]);}
-            offset+=width;
-        }
-        access.iter().all(|access|match access {
-            view_contracts::Access::Resource{ownership,..}=>!*ownership,
-            view_contracts::Access::Memory{access,..}=>!access.writes(),
-            view_contracts::Access::Position{position,..}=>!position.writes,
-            view_contracts::Access::Dataset{borrows,access,..}=>!access.writes()||covered(borrows,&roots),
-            view_contracts::Access::Initialized{..}=>true,
-        })
-    }
     pub(super) fn writes_only_references(&self,name:&str)->bool {
         fn references(borrow:&view::Borrow)->bool {
             borrow.inputs.is_empty()&&borrow.calls.is_empty()&&borrow.sources.iter().all(|source|match source {
@@ -651,6 +624,8 @@ impl Builder<'_> {
                         Some(Box::new(ir::DatasetBorrow{frame:[frame.regs[0],frame.regs[1]],handle:reference.root.regs[0],input:actual.len(),call:self.view_model.calls.len()}))
                     }else{None};
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
+                    let(field,ty)=reference.element_layout();
+                    value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&reference.data,field,ty,p.access.reads()).normalize());
                     if p.access==Access::Write&&d.execution==crate::execution::Requirement::Invocation {
                         let borrow=if reference.root.ty.components[0].0==Scalar::U64&&reference.projection.is_empty() {
                             view::Borrow::source(view::Source::Parameter(reference.root.identity(),Vec::new()))
