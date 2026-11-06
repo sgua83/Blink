@@ -95,6 +95,7 @@ pub enum AbiRangeKind {
     IndirectResult { stack_offset: u32 },
     FloatResult,
     IntegerResult,
+    FunctionReturn,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

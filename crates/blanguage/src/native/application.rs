@@ -241,7 +241,9 @@ fn emit_value(
         e.bytes(&[0x41, 0x5f]);
         abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::ScratchRestore });
     }
+    let start = e.code.len();
     e.bytes(&[0xc3]);
+    abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::FunctionReturn });
     let mut code = e.finish(frame + u32::from(scratch) * 8);
     code.function_abi = Some(abi);
     Ok(code)

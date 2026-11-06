@@ -276,7 +276,7 @@
     },
     {
       "path": "crates/blanguage/src/native/application.rs",
-      "sha256": "e201517ea0b102967ac32ffe8393d1e7b3dd90e5bd44a8f7b8cd6b1272a7e85a"
+      "sha256": "c347e2affba26b3bde10f832046e5b849581b02fba3c915b1c63642de14c2a3e"
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
@@ -288,7 +288,7 @@
     },
     {
       "path": "crates/blanguage/src/native/image.rs",
-      "sha256": "b2fbd7e78ebdf101d0480450076f6d0f148eb3508d4e78d96004ad604f667c74"
+      "sha256": "c5b1fc13f04b4f1b94d55cdc1d62555a7b8f457cb76b663647c07a61f756b5d1"
     },
     {
       "path": "crates/blanguage/src/native/texture.rs",

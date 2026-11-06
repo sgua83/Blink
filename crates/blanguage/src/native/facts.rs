@@ -48,6 +48,7 @@ fn function_abi(value: &super::FunctionAbi) -> String {
                 super::AbiRangeKind::IndirectResult { stack_offset } => { fields.push(("stack_offset_bytes", stack_offset.to_string())); "indirect_result" }
                 super::AbiRangeKind::FloatResult => "float_result",
                 super::AbiRangeKind::IntegerResult => "integer_result",
+                super::AbiRangeKind::FunctionReturn => "function_return",
             };
             fields.insert(0, ("kind", text(kind)));
             object(&fields)

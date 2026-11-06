@@ -305,7 +305,9 @@ code_json的function_abi未保留时为null；已采集但没有当前已交接A
 
 结果交接分别为result_address_save、indirect_result、float_result及integer_result，由原实际结果分支直接选择。前两类携带stack_offset_bytes，表示该生成点相对已分配帧RSP的隐藏结果地址保存槽，不是参数home槽、源字段或资源地址；保存与间接输出分别记录各自真实范围。float_result沿原浮点返回，integer_result覆盖原整数及打包聚合结果；没有结果则没有输出记录。原结果类型、分量布局和输出寄存器继续查询FunctionBody，不保存结果运行值或伪造return语句来源。
 
-当前已交接参数home、输入搬移、栈维护、帧内结果地址保存及结果输出；函数退出来源仍按独立台账推进，不能把未命中ABI范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；现有BLCR／BLCF不恢复此材料，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
+共同末尾机器返回由AbiRangeKind::FunctionReturn交接，JSON kind为function_return，只记录原emit_value在结果与栈恢复后实际发射RET的范围；function_end继续来自同一原主函数末端，不含尾部辅助或字面量。职责只说明这条真实机器返回，不伪造源码return、不解释为成功、失败或最后资源消费者完成；源内提前return形成的原Scope／Exit仍随operation_ranges交接，不创建另一退出目标、图或清理链。
+
+当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出及共同机器返回；失败结果／转移生成来源仍依赖原失败ABI的正式实现及实际消费者，按独立叶推进，不能把未命中ABI范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；现有BLCR／BLCF不恢复此材料，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
 
 ### IR操作的语法来源
 
