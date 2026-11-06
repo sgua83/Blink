@@ -1565,6 +1565,28 @@ impl Builder<'_> {
         self.env.remove(&owner);
         Ok(elements)
     }
+    pub(super) fn complete_application_loop(&mut self, writes: &effects::LoopWrites, span: Span) -> Result<()> {
+        let data = self.env.values().flat_map(Binding::application_resources).filter(|data| {
+            data.root.ty == Ty::scalar(Scalar::U32)
+                && self.resolve_ownership(&data.ownership, None).available()
+                && self.resolve_owned_residency(&data.residency, None) == residency::Residency::cpu()
+                && (writes.storage.iter().any(|(root, _)| *root == data.root.regs[0])
+                    || data.place.as_ref().is_some_and(|place| matches!(place.storage(),
+                        Place::Local(_, slots, _) if slots.iter().any(|slot| writes.locals.contains(slot)))))
+        }).cloned().collect::<Vec<_>>();
+        let origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetLoopComplete,
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
+        let mut completed = BTreeSet::new();
+        for data in data {
+            if completed.insert(data.root.identity()) {
+                let data = self.refresh_application_data(data, span)?;
+                self.complete_application_elements(&data, &data.elements, &[], span, origin.clone())?;
+            }
+        }
+        Ok(())
+    }
     fn complete_application_elements(
         &mut self, data: &Data, elements: &returns::Returned, snapshots: &[&Value], span: Span,
         origin: Arc<GeneratedOrigin>,

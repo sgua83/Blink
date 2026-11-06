@@ -3536,7 +3536,7 @@ impl<'a> Builder<'a> {
         }
         let body = code;
         let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
-        let next = self.leave_loop(natural, &c, &body, span, false)?;
+        let (next, _) = self.leave_loop(natural, &c, &body, span, false)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -3638,7 +3638,7 @@ impl<'a> Builder<'a> {
         let slot = self.local_slots(&Ty::scalar(Scalar::U32)).0[0];
         self.emit(InstKind::StoreLocal(slot, begin.regs[0]));
         let initialization = self.application_iteration_outputs(&begin, &limit, match &data {Some(CursorSource::ApplicationData(data))=>Some(&data.data),_=>None});
-        self.for_loop(
+        let writes = self.for_loop(
             ForLoop {
                 name: name.clone(),
                 begin: begin.clone(),
@@ -3653,7 +3653,9 @@ impl<'a> Builder<'a> {
             initial,
             nonempty,
             &begin,
-        )
+        )?;
+        if self.flow.continues() { self.complete_application_loop(&writes, span)?; }
+        Ok(())
     }
     fn for_loop(
         &mut self,
@@ -3663,7 +3665,7 @@ impl<'a> Builder<'a> {
         initial: bool,
         nonempty: bool,
         original_begin: &Value,
-    ) -> Result<()> {
+    ) -> Result<effects::LoopWrites> {
         self.flow = Flow::NEXT;
         let ForLoop {
             name,
@@ -3678,7 +3680,7 @@ impl<'a> Builder<'a> {
             for (data, words) in initialization {
                 self.initialize_application_words(&data, &words);
             }
-            return Ok(());
+            return Ok(effects::LoopWrites::default());
         }
         if bounds::seeks(body) {
             initialization.clear();
@@ -3830,14 +3832,14 @@ impl<'a> Builder<'a> {
                     cursor.begin = next.unwrap();
                     let initial=builder.next_initial_loop(body)?;
                     let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
-                    builder.for_loop(cursor, body, span, initial, nonempty, original_begin)
+                    builder.for_loop(cursor, body, span, initial, nonempty, original_begin).map(|_| ())
                 })?;
             code = expanded;
             body_flow = body_flow.union(flow);
         }
         let body = code;
         let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
-        let next = self.leave_loop(natural, &test, &body, span, nonempty)?;
+        let (next, writes) = self.leave_loop(natural, &test, &body, span, nonempty)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -3847,7 +3849,7 @@ impl<'a> Builder<'a> {
             body,
         });
 
-        Ok(())
+        Ok(writes)
     }
     #[inline(never)]
     fn let_statement(
