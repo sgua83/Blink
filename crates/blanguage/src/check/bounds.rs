@@ -418,7 +418,7 @@ impl Proof {
             self.domains[component] = fresh.domains(source);
         }
     }
-    fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
+    pub(super) fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
         self.domains.resize_with(width, Domains::new);
         for component in 0..width { self.domains[component].extend(other.domains(component)); }
         self.ranges.resize_with(width, ScalarRanges::default);
@@ -3984,6 +3984,19 @@ impl Builder<'_> {
             }
         }
     }
+    pub(super) fn common_element_proof(&self, binding: usize, words: &[u32]) -> Option<Proof> {
+        let common = self.element_facts?.get(&binding)?;
+        let ty = &self.program.buffers[binding].ty;
+        let components = words.iter().map(|word| ty.components.iter().position(|(_, at)| at == word).unwrap()).collect::<Vec<_>>();
+        let mut common = common.project(&components, ty.components.len());
+        let changed = components.iter().enumerate().filter_map(|(component, &source)| {
+            let (scalar, offset) = ty.components[source];
+            self.memory_regions.get(&binding).is_some_and(|(_, writes)| writes.iter().any(|&(start, end)|
+                u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset)+u64::from(scalar.size()))).then_some(component)
+        }).collect::<Vec<_>>();
+        common.forget_value(&changed, words.len());
+        Some(common)
+    }
     pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg]) -> (Proof, bool) {
         let (snapshots,common)=match place {
             Place::ApplicationElement{..}=>{
@@ -4034,16 +4047,7 @@ impl Builder<'_> {
                     Some(stored) => stored,
                     None => (self.projected_owned_proof(place, Some(regs)).unwrap_or_default(), false),
                 };
-                if let Some(common) = self.element_facts.and_then(|facts| facts.get(binding)) {
-                    let ty = &self.program.buffers[*binding].ty;
-                    let components = words.iter().map(|word| ty.components.iter().position(|(_, at)| at == word).unwrap()).collect::<Vec<_>>();
-                    let mut common = common.project(&components, ty.components.len());
-                    let changed = components.iter().enumerate().filter_map(|(component, &source)| {
-                        let (scalar, offset) = ty.components[source];
-                        self.memory_regions.get(binding).is_some_and(|(_, writes)| writes.iter().any(|&(start, end)|
-                            u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset)+u64::from(scalar.size()))).then_some(component)
-                    }).collect::<Vec<_>>();
-                    common.forget_value(&changed, regs.len());
+                if let Some(common) = self.common_element_proof(*binding, words) {
                     proof.constrain_common_ranges(&common, regs.len());
                 }
                 (proof, uniform)

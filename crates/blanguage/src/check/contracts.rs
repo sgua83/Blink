@@ -50,7 +50,7 @@ struct Selection {
     components: Vec<usize>,
     value: Value,
     element_paths: Vec<Vec<usize>>,
-    empty: bool,
+    scope: Option<bounds::Condition>,
 }
 enum Resource {
     Application {
@@ -95,7 +95,7 @@ impl Resource {
         }
     }
     fn empty(&self)->bool {
-        match self {Self::Value(value)=>value.empty,_=>false}
+        match self {Self::Value(value)=>value.empty(),_=>false}
     }
     fn assume_nonempty(&self, name: &str, binding: &mut Binding) {
         match (self, binding) {
@@ -132,9 +132,9 @@ pub(super) struct Requirement {
 }
 
 fn select(
-    definition: &Definition, env: &BTreeMap<String, Binding>, path: &str, span: Span,
+    builder: &Builder<'_>, definition: &Definition, env: &BTreeMap<String, Binding>, path: &str, span: Span,
 ) -> Result<Selection> {
-    if path.contains("[*]"){return select_elements(definition,env,path,span);}
+    if path.contains("[*]"){return select_elements(builder,definition,env,path,span);}
     let root = path.split('.').next().unwrap();
     let value = match env.get(root) {
         Some(Binding::Value(value)) => value,
@@ -172,7 +172,7 @@ fn select_value(value: &Value, path: &str, source: &Source, span: Span) -> Resul
         };
     }
     Ok(Selection {
-        root: root.into(),components,value,element_paths:Vec::new(),empty:false,
+        root: root.into(),components,value,element_paths:Vec::new(),scope:None,
     })
 }
 
@@ -199,15 +199,8 @@ fn selected_data_mut<'a>(binding:&'a mut Binding,paths:&[Vec<usize>])->Option<&'
     Some(data)
 }
 impl Selection {
-    fn scope_nonempty(&self, env: &BTreeMap<String, Binding>) -> bounds::Condition {
-        let (first, rest) = self.element_paths.split_first().unwrap();
-        let mut data = selected_data(&env[&self.root], std::slice::from_ref(first)).unwrap();
-        let mut condition = bounds::Condition::nonzero_value(&data.length);
-        for fields in rest {
-            data = application::model_data(&data.elements, fields).unwrap();
-            condition = condition.logical(bounds::Condition::nonzero_value(&data.length), false);
-        }
-        condition
+    fn empty(&self) -> bool {
+        self.scope.as_ref().is_some_and(|scope| scope.boolean_constant() == Some(false))
     }
 
     fn assume_empty_scope(&self,binding:&mut Binding) {
@@ -284,7 +277,8 @@ fn field_path(mut ty:&Ty,path:&str,source:&Source,span:Span)->Result<Vec<usize>>
     }
     Ok(result)
 }
-fn select_elements(definition:&Definition,env:&BTreeMap<String,Binding>,path:&str,span:Span)->Result<Selection> {
+fn select_elements(builder:&Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,path:&str,span:Span)->Result<Selection> {
+    use std::borrow::Cow;
     let parts=path.split("[*]").collect::<Vec<_>>();let first=parts[0];
     let(root,fields)=first.split_once('.').unwrap_or((first,""));
     let source=&definition.source;
@@ -292,27 +286,43 @@ fn select_elements(definition:&Definition,env:&BTreeMap<String,Binding>,path:&st
         return source.fail(span,"B225","共同元素约束需要读取实际普通CPU dataset输入");
     }
     let Some(binding)=env.get(root)else{return source.fail(span,"B225","共同元素约束需要实际dataset参数");};
-    let first_path=match binding {
-        Binding::OwnedValue(value)=>field_path(&value.value.ty,fields,source,span)?,
-        Binding::ApplicationData(_)|Binding::DataReference(_) if fields.is_empty()=>Vec::new(),
-        _=>return source.fail(span,"B225","[*]需要实际CPU dataset存储及其共同元素模型"),
+    let(elements,mut ty,mut paths,mut scope,projection)=match binding {
+        Binding::Data(view) if fields.is_empty()=>{
+            let ty=&builder.program.buffers[view.binding].ty;
+            let mut model=builder.unknown_element_model(ty);
+            let words=ty.components.iter().map(|(_,at)|*at).collect::<Vec<_>>();
+            if let Some(common)=builder.common_element_proof(view.binding,&words)
+                && let Some(value)=model.view_value_mut() {
+                value.proof.constrain_common_ranges(&common,ty.components.len());
+            }
+            let scope=if view.length.unsigned_maximum(0)==0 {bounds::Condition::constant(false)}
+                else if view.length.unsigned_minimum(0)!=0 {bounds::Condition::constant(true)}
+                else {bounds::Condition::nonzero_proof(&view.length,0)};
+            (Cow::Owned(*model),ty,vec![Vec::new()],scope,view.projection.as_slice())
+        },
+        _=>{
+            let first_path=match binding {
+                Binding::OwnedValue(value)=>field_path(&value.value.ty,fields,source,span)?,
+                Binding::ApplicationData(_)|Binding::DataReference(_) if fields.is_empty()=>Vec::new(),
+                _=>return source.fail(span,"B225","[*]需要实际CPU dataset存储及其共同元素模型"),
+            };
+            let paths=vec![first_path];
+            let Some(data)=selected_data(binding,&paths)else{return source.fail(span,"B225","[*]需要实际dataset字段");};
+            let projection=match binding {Binding::DataReference(reference)=>reference.projection.as_slice(),_=>&[]};
+            (Cow::Borrowed(data.elements.as_ref()),&data.ty,paths,bounds::Condition::nonzero_value(&data.length),projection)
+        },
     };
-    let mut paths=vec![first_path];
-    let Some(mut data)=selected_data(binding,&paths)else{return source.fail(span,"B225","[*]需要实际dataset字段");};
-    let mut projection=String::new();
-    if let Binding::DataReference(reference)=binding {
-        let mut ty=&reference.data.ty;
-        for field in &reference.projection {let(name,_,child)=&ty.fields[*field];projection.push('.');projection.push_str(name);ty=child;}
-    }
-    let mut empty=data.length.maximum()==0;
+    let mut model=elements.as_ref();let mut projection_name=String::new();let mut field_ty=ty;
+    for field in projection {let(name,_,child)=&field_ty.fields[*field];projection_name.push('.');projection_name.push_str(name);field_ty=child;}
     for part in &parts[1..parts.len()-1] {
-        let selected=field_path(&data.ty,&(projection.clone()+part),source,span)?;
-        let Some(next)=application::model_data(&data.elements,&selected)else{return source.fail(span,"B225","[*]需要所选共同元素中的实际dataset字段");};
-        paths.push(selected);data=next;empty|=data.length.maximum()==0;projection.clear();
+        let selected=field_path(ty,&(projection_name.clone()+part),source,span)?;
+        let Some(next)=application::model_data(model,&selected)else{return source.fail(span,"B225","[*]需要所选共同元素中的实际dataset字段");};
+        paths.push(selected);scope=scope.logical(bounds::Condition::nonzero_value(&next.length),false);
+        model=&next.elements;ty=&next.ty;projection_name.clear();
     }
-    let Some(value)=data.elements.view_value()else{return source.fail(span,"B225","约束需要选择共同元素的实际值／字段");};
-    let mut selection=select_value(value,&(root.to_owned()+&projection+parts.last().unwrap()),source,span)?;
-    selection.element_paths=paths;selection.empty=empty;Ok(selection)
+    let Some(value)=model.view_value()else{return source.fail(span,"B225","约束需要选择共同元素的实际值／字段");};
+    let mut selection=select_value(value,&(root.to_owned()+&projection_name+parts.last().unwrap()),source,span)?;
+    selection.element_paths=paths;selection.scope=Some(scope);Ok(selection)
 }
 
 fn validate_nonzero_type(ty: &Ty, source: &Source, span: Span) -> Result<()> {
@@ -409,7 +419,7 @@ fn resource(
             return Ok(Resource::Array(ty.values[0]));
         }
     }
-    let selection = select(definition, env, path, span)?;
+    let selection = select(builder, definition, env, path, span)?;
     if selection.value.ty.array.is_some() && selection.element_paths.is_empty() {
         return Ok(Resource::Array(selection.value.ty.values[0]));
     }
@@ -461,7 +471,7 @@ pub(super) fn resolve(
                 (Predicate::Cleanup{when:bounds::Condition::of(&when),required},format!("cleanup({value})"))
             },
             ContractPredicate::Nonzero(path) => {
-                let selection = select(definition, env, path, contract.span)?;
+                let selection = select(builder, definition, env, path, contract.span)?;
                 validate_nonzero_type(&selection.value.ty, &definition.source, contract.span)?;
                 (Predicate::Nonzero(selection), format!("nonzero({path})"))
             }
@@ -473,7 +483,7 @@ pub(super) fn resolve(
                 value,
                 resource: path,
             } => {
-                let selection = select(definition, env, value, contract.span)?;
+                let selection = select(builder, definition, env, value, contract.span)?;
                 if !selection.value.ty.is_numeric()
                     || !matches!(
                         selection.value.ty.components.first(),
@@ -495,7 +505,7 @@ pub(super) fn resolve(
                 }
                 let scope = if !selection.element_paths.is_empty()
                     && target.is_none_or(|value| value.element_paths.is_empty()) {
-                    Some((selection.scope_nonempty(env), nonempty_condition(builder, definition, env, &resource, contract.span)?))
+                    Some((selection.scope.as_ref().unwrap().clone(), nonempty_condition(builder, definition, env, &resource, contract.span)?))
                 } else { None };
                 (
                     Predicate::Index(selection, resource, scope),
@@ -524,7 +534,7 @@ fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
             Predicate::Cleanup{when,required}=>builder.condition_truth(&when.clone().negate().logical(required.clone(),true),None)==Some(true),
             Predicate::SameLength(left, right) => builder.length_proofs_equal(&left.proof, &right.proof),
             Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
-            Predicate::Nonzero(selection) => selection.empty || selection.value.is_nonzero(),
+            Predicate::Nonzero(selection) => selection.empty() || selection.value.is_nonzero(),
             Predicate::Nonempty(resource) => {
                 resource.empty() || builder.resource_minimum(resource.domain(), resource.minimum()) != 0
             }
@@ -535,7 +545,7 @@ fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
                     Resource::Value(target) if target.value.ty.view.is_some() => Some(target.value.projected_proof(&[2])),
                     _ => None,
                 };
-                selection.empty || (0..value.regs.len()).all(|i| {
+                selection.empty() || (0..value.regs.len()).all(|i| {
                     builder.index_in(
                         &Value {
                             proof: value.projected_proof(&[i]),
