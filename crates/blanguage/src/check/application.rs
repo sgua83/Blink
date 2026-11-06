@@ -234,8 +234,8 @@ impl ApplicationLoads<'_, '_> {
     }
     fn disjoint_roots(&self,a:Reg,b:Reg)->bool {a!=b&&self.allocated(a)&&self.allocated(b)}
     fn byte_overlap(a:&std::ops::Range<u128>,b:&std::ops::Range<u128>)->bool {a.start<b.end&&b.start<a.end}
-    fn store_overlaps(&self,load:&Inst,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
-        let InstKind::ViewLoad{dst,address,index,stride,word:read_word}=&load.kind else{return false;};
+    fn store_overlaps(&self,read:&IndexedSource,read_word:u32,read_scalar:Scalar,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
+        let IndexedSource::View{address,index,stride}=read else{return true;};
         let position = |parts:[Reg;2]| -> Option<&ir::CallReference> {
             let InstKind::Cast{src:low,..}=&self.definition(parts[0])?.1.kind else{return None;};
             let InstKind::Cast{src:high,..}=&self.definition(parts[1])?.1.kind else{return None;};
@@ -266,10 +266,10 @@ impl ApplicationLoads<'_, '_> {
             return true;
         }
         let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>value,None=>return true}};
-        let size=u128::from(self.0.registers[*dst].size());let other_size=u128::from(scalar.size());
+        let size=u128::from(read_scalar.size());let other_size=u128::from(scalar.size());
         let (a,b)=if let(Some(a),Some(b),Some(stride),Some(other_stride))=(self.constant(*index),self.constant(*other_index),self.stride(*stride),other_stride) {
-            (u128::from(a)*u128::from(stride)+u128::from(*read_word),u128::from(b)*u128::from(other_stride)+u128::from(offset)+written_word)
-        }else if same_stride&&self.same(*index,*other_index){(u128::from(*read_word),u128::from(offset)+written_word)}else{return true;};
+            (u128::from(a)*u128::from(stride)+u128::from(read_word),u128::from(b)*u128::from(other_stride)+u128::from(offset)+written_word)
+        }else if same_stride&&self.same(*index,*other_index){(u128::from(read_word),u128::from(offset)+written_word)}else{return true;};
         Self::byte_overlap(&(a..a+size),&(b..b+other_size))
     }
     fn call_memory_writes(&self,call:&Call,mut writes:impl FnMut(&view::Borrow)->bool)->bool {
@@ -303,17 +303,21 @@ impl ApplicationLoads<'_, '_> {
         }
     }
     fn writes(&self,inst:&Inst,load:&Inst)->bool {
+        let InstKind::ViewLoad{dst,address,index,stride,word}=&load.kind else{return false;};
+        self.writes_indexed(inst,&IndexedSource::View{address:*address,index:*index,stride:*stride},*word,self.0.registers[*dst])
+    }
+    fn writes_indexed(&self,inst:&Inst,read:&IndexedSource,word:u32,scalar:Scalar)->bool {
         match &inst.kind {
-            InstKind::StoreIndexed{source,offset,word,value}=>self.store_overlaps(load,source,Some(*offset),*word,self.0.registers[*value]),
+            InstKind::StoreIndexed{source,offset,word:at_word,value}=>self.store_overlaps(read,word,scalar,source,Some(*offset),*at_word,self.0.registers[*value]),
             InstKind::Call(call)=>{
                 if call.arguments.iter().any(|argument|match argument {
                     CallArgument::Reference{ty,access,address,..}if access.writes()=>match &address.storage {
-                        ir::CallStorage::Indexed(source)=>ty.components.iter().any(|(scalar,word)|self.store_overlaps(load,source,address.offset,address.word+word,*scalar)),
+                        ir::CallStorage::Indexed(source)=>ty.components.iter().any(|(written_scalar,written_word)|self.store_overlaps(read,word,scalar,source,address.offset,address.word+written_word,*written_scalar)),
                         ir::CallStorage::Local{..}=>false,
                     },
                     _=>false,
                 }){return true;}
-                let allocated=matches!(&load.kind,InstKind::ViewLoad{address,..}if self.frame_root(*address).is_some_and(|root|self.allocated(root)));
+                let allocated=matches!(read,IndexedSource::View{address,..}if self.frame_root(*address).is_some_and(|root|self.allocated(root)));
                 self.call_memory_writes(call,|borrow|{
                     if borrow.pending()||address::external_memory(borrow){return true;}
                     if let CallTarget::Defined(name)=&call.target
@@ -326,13 +330,110 @@ impl ApplicationLoads<'_, '_> {
                     })
                 })
             },
-            InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes(inst,load)),
-            InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes(inst,load)),
-            InstKind::Scope(body)=>body.iter().any(|inst|self.writes(inst,load)),
+            InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes_indexed(inst,read,word,scalar)),
+            InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes_indexed(inst,read,word,scalar)),
+            InstKind::Scope(body)=>body.iter().any(|inst|self.writes_indexed(inst,read,word,scalar)),
             InstKind::Store{..}|InstKind::Atomic(_)|InstKind::Append(_)=>true,
             _=>false,
         }
     }
+    // Query the original loop IR and scoped facts; no store-value history is retained.
+    fn same_frame(&self, root: Reg, data: &Data, writes: &effects::LoopWrites) -> bool {
+        if let Some(place) = &data.place {
+            let Place::Local(_, slots, _) = place.storage() else { return false; };
+            if writes.external || writes.unknown_storage || slots.iter().any(|slot| writes.locals.contains(slot)) { return false; }
+            if matches!(self.definition(root), Some((_, Inst { kind: InstKind::LoadLocal(_, slot), .. })) if *slot == slots[0]) { return true; }
+        }
+        self.same(root, data.root.regs[0])
+    }
+    fn index_equal(&self, reg: Reg, index: &Value, path: &bounds::Clause, env: &BTreeMap<String, Binding>) -> bool {
+        if self.same(reg, index.regs[0]) { return true; }
+        let ty = Ty::scalar(Scalar::U32);
+        let proof = bounds::scoped_proof(&ty, bounds::Proof::default().with_identity(ValueIdentity::Register(reg)), path, env);
+        let value = Value { ty, regs: vec![reg], proof, literal: false, uniform: false, constant: self.constant(reg).map(|value| vec![value]) };
+        bounds::Condition::comparison(Comparison::Equal, &value, index).truth_in(path) == Some(true)
+    }
+    fn stored_position<'a>(&self, code: &'a [Inst], data: &Data, index: &Value, word: u32, scalar: Scalar, state: &flow::LoopState, writes: &effects::LoopWrites) -> Option<&'a IndexedSource> {
+        for inst in code {
+            match &inst.kind {
+                InstKind::StoreIndexed { source: source @ IndexedSource::View { address, index: at, stride }, offset, word: at_word, value }
+                    if *at_word == word && self.0.registers[*value] == scalar && self.constant(*offset) == Some(0)
+                        && self.stride(*stride) == Some(u64::from(ir::align_up(data.ty.size, data.ty.align)))
+                        && self.frame_root(*address).is_some_and(|root| self.same_frame(root, data, writes))
+                        && self.index_equal(*at, index, &state.path, &state.env) => return Some(source),
+                InstKind::If { yes, no, .. } => if let Some(source) = self.stored_position(yes, data, index, word, scalar, state, writes).or_else(|| self.stored_position(no, data, index, word, scalar, state, writes)) { return Some(source); },
+                InstKind::Scope(body) => if let Some(source) = self.stored_position(body, data, index, word, scalar, state, writes) { return Some(source); },
+                _ => {},
+            }
+        }
+        None
+    }
+    fn field_store(&self, source: &IndexedSource, word: u32, scalar: Scalar, inst: &Inst, exact_index: bool) -> Option<Reg> {
+        let InstKind::StoreIndexed { source: written, offset, word: at_word, value } = &inst.kind else { return None; };
+        (self.constant(*offset) == Some(0) && *at_word == word && self.0.registers[*value] == scalar && matches!((source, written),
+            (IndexedSource::View { address: a, index: ai, stride: astride }, IndexedSource::View { address: b, index: bi, stride: bstride })
+                if self.same_address(*a, *b) && self.same_stride(*astride, *bstride) && (!exact_index || self.same(*ai, *bi)))).then_some(*value)
+    }
+    fn iteration_interference(&self, code: &[Inst], source: &IndexedSource, word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState, controls: &BTreeMap<Reg, Value>) -> Option<bounds::Proof> {
+        let mut result: Option<bounds::Proof> = None;
+        for inst in code {
+            let proof = match &inst.kind {
+                InstKind::If { condition, yes, no } => {
+                    let raw = Value { ty: Ty::scalar(Scalar::Bool), regs: vec![*condition], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
+                    let condition = bounds::Condition::of(controls.get(condition).unwrap_or(&raw));
+                    let truth = condition.truth_in(path);
+                    let a = (truth != Some(false)).then(||self.iteration_interference(yes,source,word,scalar,&condition.assume(path,true),state,controls)).flatten();
+                    let b = (truth != Some(true)).then(||self.iteration_interference(no,source,word,scalar,&condition.assume(path,false),state,controls)).flatten();
+                    match (a,b) { (Some(mut a),Some(b))=>{a.join_condition(&b,1,None);Some(a)}, (a,None)|(None,a)=>a }
+                },
+                InstKind::Scope(body) => self.iteration_interference(body,source,word,scalar,path,state,controls),
+                _ if self.field_store(source,word,scalar,inst,true).is_some() => None,
+                InstKind::StoreIndexed { value, .. } if self.writes_indexed(inst,source,word,scalar) => {
+                    // An overlapping store to another index can affect an earlier iteration.
+                    // Its actual scalar value is another possible final value, regardless of order.
+                    Some(if self.field_store(source,word,scalar,inst,false).is_some() {
+                        bounds::scoped_proof(&Ty::scalar(scalar), bounds::Proof::default().with_identity(ValueIdentity::Register(*value)), path, &state.env)
+                    } else { bounds::Proof::default() })
+                },
+                _ if self.writes_indexed(inst,source,word,scalar) => Some(bounds::Proof::default()),
+                _ => None,
+            };
+            if let Some(proof) = proof { if let Some(common)=&mut result { common.join_condition(&proof,1,None); } else { result=Some(proof); } }
+        }
+        result
+    }
+    fn stored_paths(&self, code: &[Inst], mut next: Option<bounds::Proof>, source: &IndexedSource, word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState, controls: &BTreeMap<Reg, Value>) -> (Option<bounds::Proof>, Option<bounds::Proof>, Option<bounds::Proof>) {
+        fn join(a: Option<bounds::Proof>, b: Option<bounds::Proof>) -> Option<bounds::Proof> {
+            match (a, b) { (Some(mut a), Some(b)) => { a.join_condition(&b, 1, None); Some(a) }, (a, None) | (None, a) => a }
+        }
+        let mut continues = None;
+        let mut exits = None;
+        for inst in code {
+            let Some(current) = next.take() else { break; };
+            match &inst.kind {
+                InstKind::Continue => continues = join(continues, Some(current)),
+                InstKind::Break => {},
+                InstKind::Exit => exits = join(exits, Some(current)),
+                InstKind::If { condition, yes, no } => {
+                    let raw = Value { ty: Ty::scalar(Scalar::Bool), regs: vec![*condition], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
+                    let condition = bounds::Condition::of(controls.get(condition).unwrap_or(&raw));
+                    let truth = condition.truth_in(path);
+                    let a = if truth == Some(false) { (None, None, None) } else { self.stored_paths(yes, Some(current.clone()), source, word, scalar, &condition.assume(path, true), state, controls) };
+                    let b = if truth == Some(true) { (None, None, None) } else { self.stored_paths(no, Some(current), source, word, scalar, &condition.assume(path, false), state, controls) };
+                    next = join(a.0, b.0); continues = join(continues, join(a.1, b.1)); exits = join(exits, join(a.2, b.2));
+                },
+                InstKind::Scope(body) => {
+                    let (normal, continued, exited) = self.stored_paths(body, Some(current), source, word, scalar, path, state, controls);
+                    next = join(normal, exited); continues = join(continues, continued);
+                },
+                _ => next = Some(if let Some(value) = self.field_store(source, word, scalar, inst, true) {
+                    bounds::scoped_proof(&Ty::scalar(scalar), bounds::Proof::default().with_identity(ValueIdentity::Register(value)), path, &state.env)
+                } else if self.writes_indexed(inst, source, word, scalar) { bounds::Proof::default() } else { current }),
+            }
+        }
+        (next, continues, exits)
+    }
+
     fn prior_snapshot<'a>(&'a self,code:impl Iterator<Item=&'a Inst>,mut load:&'a Inst)->Option<Reg> {
         let mut result=None;
         for inst in code {
@@ -366,6 +467,24 @@ impl ApplicationLoads<'_, '_> {
     }
 }
 impl Builder<'_> {
+    pub(super) fn application_indexed_proof(&self, data: &Data, index: &Value, states: &[flow::LoopState], controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) -> bounds::Proof {
+        let loads = ApplicationLoads(self);
+        let mut output = bounds::Proof::default();
+        for (component, &(scalar, word)) in data.ty.components.iter().enumerate() {
+            let mut common: Option<bounds::Proof> = None;
+            for state in states {
+                let mut proof = bounds::Proof::default();
+                if let Some(source) = loads.stored_position(&self.code, data, index, word, scalar, state, writes) {
+                    let (normal, continued, _) = loads.stored_paths(&self.code, Some(bounds::Proof::default()), source, word, scalar, &state.path, state, controls);
+                    proof = match (normal, continued) { (Some(mut a), Some(b)) => { a.join_condition(&b, 1, None); a }, (Some(a), None) | (None, Some(a)) => a, _ => bounds::Proof::default() };
+                    if let Some(other) = loads.iteration_interference(&self.code, source, word, scalar, &state.path, state, controls) { proof.join_condition(&other, 1, None); }
+                }
+                if let Some(value) = &mut common { value.join_condition(&proof, 1, None); } else { common = Some(proof); }
+            }
+            if let Some(proof) = common { output.assign(&[component], data.ty.components.len(), proof); }
+        }
+        output
+    }
     pub(super) fn application_read_snapshot(&self,reg:Reg)->Reg {ApplicationLoads(self).snapshot(reg)}
 }
 

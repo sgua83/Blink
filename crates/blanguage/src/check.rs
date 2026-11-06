@@ -2510,6 +2510,9 @@ impl<'a> Builder<'a> {
                 self.writable_storage(p, span, true)?;
                 self.dataset_effect(p,Access::Write,false,span)?;
                 let proof = bounds::Proof::capture(&value);
+                if self.iterators.last().and_then(|iterator|iterator.as_ref()).is_some_and(|(name,_)|matches!(self.env.get(name),Some(Binding::Value(_)))) {
+                    self.path = bounds::Clause::both(&self.path, &proof.output_aliases(&value.regs, &self.registers, &BTreeMap::new()));
+                }
                 self.write_application_place(
                     *handle, *identity, *index, *stride, words, value, span, None,
                 )?;
@@ -3810,12 +3813,14 @@ impl<'a> Builder<'a> {
         }
         self.iterators.pop();
         self.loop_depth -= 1;
-        let mut code = std::mem::take(&mut self.code);
         if !initial && begin.minimum() == 0 && begin.maximum() == 0 && !bounds::seeks(body) {
             if let Some(CursorSource::ApplicationData(data)) = &cursor_specification.data {
                 self.application_iteration_elements(&mut natural, data);
+            } else if cursor_specification.data.is_none() {
+                self.application_indexed_elements(&mut natural, &cursor, &limit);
             }
         }
+        let mut code = std::mem::take(&mut self.code);
         self.initialize_iteration_exit(&mut natural, &initialization, iteration, initial);
         self.initialize_array_iteration_exit(
             &mut natural,

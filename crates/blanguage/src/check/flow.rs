@@ -227,6 +227,24 @@ impl Builder<'_> {
             else { common = Some(owner.proof.clone()); }
         }
         let Some(proof) = common else { return; };
+        self.publish_iteration_elements(exit, data, proof);
+    }
+    pub(super) fn application_indexed_elements(&mut self, exit: &mut LoopState, index: &Value, limit: &Value) {
+        let context = self.loop_contexts.last().unwrap();
+        let mut results = Vec::new();
+        for binding in context.entry.env.values() {
+            for data in binding.application_resources() {
+                if data.root.ty == Ty::scalar(Scalar::U32)
+                    && bounds::Condition::comparison(Comparison::Equal, &data.length, limit).truth_in(&context.entry.path) == Some(true) {
+                    let proof = self.application_indexed_proof(data, index, &context.continues, &context.controls, &context.writes);
+                    results.push((application::DataReference::direct(data.clone()), proof));
+                }
+            }
+        }
+        for (data, proof) in results { self.publish_iteration_elements(exit, &data, proof); }
+    }
+    fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, proof: bounds::Proof) {
+        let ty = data.element_layout().1;
         std::mem::swap(&mut self.env, &mut exit.env);
         std::mem::swap(&mut self.path, &mut exit.path);
         let mut proof = proof.at_call(&self.element_owner_bindings(&data.data));
