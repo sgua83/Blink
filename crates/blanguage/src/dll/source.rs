@@ -1,23 +1,65 @@
 //! 算法包装交接同次编译的执行布局及已链接CPU入口；GPU交接原完整映像。
 use crate::{ExecutableProgram, ast::Target, ir::Scalar};
 
-pub(super) fn constructor(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, Vec<(String, crate::native::NativeCode)>), Box<dyn std::error::Error>> {
+fn code_declarations(names: &[String]) -> String {
+    names.iter().enumerate().map(|(index, name)|
+        format!("#[link_name={name:?}] fn range_{index}();")).collect::<Vec<_>>().join("\n")
+}
+fn module_factory(prefix: &str, image: &[u8], names: &[String]) -> String {
+    let declarations = code_declarations(names);
+    let entries = (0..names.len()).map(|index| format!("range_{index}")).collect::<Vec<_>>().join(",");
+    let count = names.len();
+    let abi = include_str!("../resource/module_image.rs");
+    format!(r#"{abi}
+static IMAGE: &[u8] = &{image:?};
+unsafe extern "C" {{ {declarations} }}
+static CODE: [unsafe extern "C" fn(); {count}] = [{entries}];
+#[unsafe(no_mangle)]
+pub extern "C" fn {prefix}_resources() -> ModuleImage {{
+    ModuleImage {{ data: IMAGE.as_ptr(), bytes: IMAGE.len(), code: CODE.as_ptr().cast(), codes: CODE.len() }}
+}}
+"#)
+}
+pub(super) fn constructor(
+    p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker,
+) -> Result<(String, Vec<(String, crate::native::NativeCode)>, String, Option<crate::object::ResourceBinding>), Box<dyn std::error::Error>> {
     let mut functions = Vec::new();
-    let mut declarations = String::new();
+    let mut factory = String::new();
+    let mut resources = None;
     let cpu = if p.target() == Target::Gpu {
         "return Err(std::io::Error::other(\"GPU 专属程序不能提交给 CPU\").into())".into()
     } else {
-        let image=crate::native::program::compile_in(worker,p.clone()).map_err(std::io::Error::other)?;
-        let mut index=0;
-        let image=image.map_code_with(&mut |name,code|{
-            let current=index;index+=1;
-            let name=name.map(str::to_owned).unwrap_or_else(||format!("__blink_range_{prefix}_{current}"));
-            declarations.push_str(&format!("#[link_name={name:?}] fn range_{current}();\n"));
-            functions.push((name,code));current
+        let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
+        let mut index = 0;
+        let mut image = image.map_code_with(&mut |name, code| {
+            let current = index; index += 1;
+            let name = name.map(str::to_owned).unwrap_or_else(|| format!("__blink_range_{prefix}_{current}"));
+            functions.push((name, code)); current
         });
-        let bytes=crate::resource::linked_native_output(&image);
-        let addresses=(0..index).map(|index|format!("range_{index} as *const u8")).collect::<Vec<_>>().join(",");
-        format!("{{ let code=[{addresses}];let image=unsafe {{NativeProgramImage::<ExecutableProgram,*const u8>::from_linked_compiler_output_bytes(&{bytes:?},&code)}}?; LibraryProgram::Cpu(unsafe {{CpuProgram::from_linked(image)}}?) }}")
+        let module = image.resources.take();
+        let bytes = crate::resource::linked_output(&image);
+        let names = functions.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+        if let Some(module) = module {
+            let resource_prefix = crate::application::resource_prefix(p.name());
+            factory = module_factory(&resource_prefix, &crate::resource::linked_output(&module), &names);
+            resources = Some(crate::object::ResourceBinding {
+                prefix: resource_prefix, types: u32::try_from(module.types.len())?,
+                programs: u32::try_from(module.images.len())?,
+                abi: crate::resource::ABI.to_vec(), code: names,
+            });
+            format!(r#"{{
+                use blanguage::resource::ModuleFactory;
+                unsafe extern "C" {{ static __blink_module_count: usize; static __blink_module_factories: ModuleFactory; }}
+                let code = unsafe {{ std::slice::from_raw_parts(CODE.as_ptr().cast::<*const u8>(), CODE.len()) }};
+                let image = unsafe {{ NativeProgramImage::<ExecutableProgram,*const u8>::from_linked_compiler_output_bytes(&{bytes:?}, code) }}?;
+                let factories = unsafe {{ std::slice::from_raw_parts(std::ptr::addr_of!(__blink_module_factories), __blink_module_count) }};
+                LibraryProgram::Cpu(unsafe {{ CpuProgram::from_linked_modules(image, factories) }}?)
+            }}"#)
+        } else {
+            let declarations = code_declarations(&names);
+            let addresses = (0..index).map(|index| format!("range_{index} as *const u8")).collect::<Vec<_>>().join(",");
+            format!("{{ unsafe extern \"C\" {{ {declarations} }} let code=[{addresses}];let image=unsafe {{NativeProgramImage::<ExecutableProgram,*const u8>::from_linked_compiler_output_bytes(&{bytes:?},&code)}}?; LibraryProgram::Cpu(unsafe {{CpuProgram::from_linked(image)}}?) }}")
+        }
     };
     let gpu = if p.target() == Target::Cpu {
         "return Err(std::io::Error::other(\"CPU 专属程序不能提交给 GPU\").into())".into()
@@ -25,8 +67,7 @@ pub(super) fn constructor(p: &ExecutableProgram, prefix: &str, worker: &crate::c
         let image = crate::spirv::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
         format!("{{ let image = unsafe {{ ShaderProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?; let device = Device::for_program(image.program())?; let program = device.load(image)?; LibraryProgram::Gpu {{ device, program }} }}", image.compiler_output_bytes())
     };
-    let declarations = format!("unsafe extern \"C\" {{\n{declarations}}}\n");
-    Ok((format!("{{ {declarations} match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}} }}"), functions))
+    Ok((format!("{{ match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}} }}"), functions, factory, resources))
 }
 
 pub(crate) fn application_source(
@@ -50,9 +91,8 @@ unsafe extern "C" {
 "#);
     if root {
         functions.push_str(r#"
-use blcompute::application::{Frame, ProgramImage};
-type Factory = unsafe extern "C" fn() -> ModuleImage;
-unsafe extern "C" { static __blink_module_count: usize; static __blink_module_factories: Factory; }
+use blcompute::application::Frame;
+unsafe extern "C" { static __blink_module_count: usize; static __blink_module_factories: blanguage::resource::ModuleFactory; }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn blink_application_error(_context: *mut c_void, data: *const u8, bytes: usize) {
     let message = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, bytes)) };
@@ -70,27 +110,7 @@ pub unsafe extern "C" fn blink_application_failed(frame: *mut c_void, error: *mu
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize), context: *mut c_void) -> *mut c_void {
     let factories = unsafe { std::slice::from_raw_parts(std::ptr::addr_of!(__blink_module_factories), __blink_module_count) };
-    let mut types = Vec::new();
-    let mut programs = Vec::new();
-    for factory in factories {
-        let image = unsafe { factory() };
-        let bytes = unsafe { std::slice::from_raw_parts(image.data, image.bytes) };
-        let code = unsafe { std::slice::from_raw_parts(image.code, image.codes) };
-        let module = match unsafe { blanguage::resource::from_linked_compiler_output(bytes, code) } {
-            Ok(module) => module,
-            Err(error) => {
-                let message = error.to_string();
-                unsafe { on_error(context, message.as_ptr(), message.len()) };
-                return std::ptr::null_mut();
-            }
-        };
-        types.extend(module.types);
-        programs.extend(module.images.into_iter().map(|image| match image {
-            blanguage::resource::Image::Cpu(image) => ProgramImage::CpuLinked(image),
-            blanguage::resource::Image::Gpu(image) => ProgramImage::Gpu(image),
-        }));
-    }
-    match Frame::new(types, programs) {
+    match unsafe { Frame::from_linked_modules(factories) } {
         Ok(frame) => Box::into_raw(Box::new(frame)).cast(),
         Err(error) => {
             let message = error.to_string();
@@ -177,12 +197,8 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
         }
         writeln!(functions, "}}")?;
     }
+    let names = code.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
     Ok(include_str!("../application/runtime.rs.in")
-        .replace("@PREFIX@", prefix)
-        .replace("@IMAGE@", &format!("{image:?}"))
-        .replace("@CODE_COUNT@", &code.len().to_string())
-        .replace("@CODE_DECLARATIONS@", &code.iter().enumerate().map(|(index, (name, _))|
-            format!("#[link_name={name:?}] fn range_{index}();")).collect::<Vec<_>>().join("\n"))
-        .replace("@CODE_ENTRIES@", &(0..code.len()).map(|index| format!("range_{index}")).collect::<Vec<_>>().join(","))
+        .replace("@FACTORY@", &module_factory(prefix, image, &names))
         .replace("@FUNCTIONS@", &functions))
 }

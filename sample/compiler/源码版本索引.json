@@ -224,11 +224,11 @@
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",
-      "sha256": "88d6eb0e94a00367f456c0b2e5bff64ab08835efbf083e246adecfdcd086c631"
+      "sha256": "49a36fd36974f30866803bcbd08e7a6c11ec5e781312c98fd42a5f7314fd8571"
     },
     {
       "path": "crates/blanguage/src/dll/source.rs",
-      "sha256": "11f602dbe5d8e10c94eb8527eb6dfc3082817a44cb2f64783e7281471d3620ba"
+      "sha256": "52fae9ee6d609dcdf4876a65fef99b018a44cb6b0e636e6edfae1ef103ab97a2"
     },
     {
       "path": "crates/blanguage/src/execution.rs",
@@ -336,7 +336,11 @@
     },
     {
       "path": "crates/blanguage/src/resource.rs",
-      "sha256": "5507ed8c820e020ebf86e597c22c22febbf37439e153c47be75344ba1e8f9ddb"
+      "sha256": "8a22ae359782cb377e9d629dda25568a1149aa7f31e3d086d83a09f1233d8072"
+    },
+    {
+      "path": "crates/blanguage/src/resource/module_image.rs",
+      "sha256": "603de66802116105960a9d00c7555343601d0105715396b457886d2719507a52"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",
@@ -364,7 +368,7 @@
     },
     {
       "path": "crates/blcompute/src/application.rs",
-      "sha256": "2db431e04e164a0f0b0ff0721c38f9b3a496bff3eac36ee9148ae58042c8afc7"
+      "sha256": "801f86cd823d57468a1965db66fdde99f31316e7276bd2aeb2f3de51b993a986"
     },
     {
       "path": "crates/blcompute/src/application/abi.rs",
@@ -376,7 +380,7 @@
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
-      "sha256": "c551ba13e2f82262de7f19bf945a0d9b69adfb4bfffc91b622d02a47e4ff7199"
+      "sha256": "664ab8b877c25d18da08019e857bd33d894a16ba5646e3eb1dfb4c51d72dbabf"
     },
     {
       "path": "crates/blcompute/src/lib.rs",
@@ -522,15 +526,15 @@
     },
     {
       "path": "crates/blanguage/src/resource.rs",
-      "start_line": 122,
-      "end_line": 130,
+      "start_line": 124,
+      "end_line": 132,
       "sha256": "4eb26fcc8e9ce39a08cddd8f31a2a3075237232d3066a56ae898534b3be379ec"
     },
     {
       "path": "crates/blanguage/src/dll/source.rs",
       "start_line": 4,
-      "end_line": 20,
-      "sha256": "0530297724647c3881d0aae35e8c2bf26fb2dcd5f6f46019d593f3faad31e0f7"
+      "end_line": 62,
+      "sha256": "8fa6fa3de272e6b8aa6da1ce1f8a567b6f0af13df235e8b04f36976f150c8eef"
     },
     {
       "path": "crates/blanguage/src/check/operators.rs",
@@ -570,8 +574,8 @@
     },
     {
       "path": "crates/blcompute/src/application.rs",
-      "start_line": 110,
-      "end_line": 112,
+      "start_line": 141,
+      "end_line": 143,
       "sha256": "b54d186cd9a5877aa71e8275035bbdd3c17e214c186ebc3996d4beb3d8af6415"
     },
     {
@@ -588,8 +592,8 @@
     },
     {
       "path": "crates/blcompute/src/application.rs",
-      "start_line": 114,
-      "end_line": 116,
+      "start_line": 145,
+      "end_line": 147,
       "sha256": "d1259d6bc389aaa04bafbd511321aa9c5853e689e986108c3aaf54d3131ed75c"
     },
     {
@@ -1104,8 +1108,8 @@
     },
     {
       "path": "crates/blcompute/src/application.rs",
-      "start_line": 122,
-      "end_line": 124,
+      "start_line": 153,
+      "end_line": 155,
       "sha256": "9663d6925e9e44008a4ddaa299ff557a2760e04b1abc1a940a74d109154fec82"
     },
     {
@@ -1224,9 +1228,9 @@
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",
-      "start_line": 268,
-      "end_line": 293,
-      "sha256": "70d098f00d51bfa3b469383fab8bd0c968d3a1888c3990a9366563d055532995"
+      "start_line": 269,
+      "end_line": 296,
+      "sha256": "e928610945d20ba54875417db08760c64fb9b3ed43556970025e4a9e47ac7fbf"
     },
     {
       "path": "crates/blanguage/src/bootstrap/bindings.h",

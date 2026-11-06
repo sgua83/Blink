@@ -4,6 +4,7 @@ use blcompute::{cpu::CpuProgram, vulkan::Device};
 use blcompute::ffi::{LibraryProgram, Buffer as FfiBuffer, status};
 use std::ffi::{c_void, c_char};
 @TYPES@
+@RESOURCES@
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn @PREFIX@_create(
     backend: u32, out: *mut *mut LibraryProgram, error: *mut c_char, capacity: usize,

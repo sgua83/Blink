@@ -50,6 +50,35 @@ pub(crate) struct Definitions {
     pub(crate) types: Vec<Ty>,
     pub(crate) programs: Vec<ProgramSlot>,
 }
+impl Definitions {
+    fn new(types: Vec<Ty>, images: Vec<ProgramImage>) -> Result<Self> {
+        let programs = images.into_iter().map(|image| match image {
+            ProgramImage::Cpu(image) => CpuTemplate::from_image(image)
+                .map(ProgramSlot::Cpu).map_err(|(error, _)| error),
+            ProgramImage::CpuLinked(image) => unsafe { CpuTemplate::from_linked(image) }
+                .map(ProgramSlot::Cpu).map_err(|(error, _)| error),
+            ProgramImage::Gpu(image) => Ok(ProgramSlot::Gpu(Arc::new(image))),
+        }).collect::<Result<Vec<_>>>()?;
+        Ok(Self { types, programs })
+    }
+    pub(crate) unsafe fn linked(factories: &[blanguage::resource::ModuleFactory]) -> Result<Self> {
+        let mut types = Vec::new();
+        let mut programs = Vec::new();
+        for factory in factories {
+            let image = unsafe { factory() };
+            let bytes = unsafe { std::slice::from_raw_parts(image.data, image.bytes) };
+            let code = unsafe { std::slice::from_raw_parts(image.code, image.codes) };
+            let module = unsafe { blanguage::resource::from_linked_compiler_output(bytes, code) }
+                .map_err(|e| error(e.to_string()))?;
+            types.extend(module.types);
+            programs.extend(module.images.into_iter().map(|image| match image {
+                blanguage::resource::Image::Cpu(image) => ProgramImage::CpuLinked(image),
+                blanguage::resource::Image::Gpu(image) => ProgramImage::Gpu(image),
+            }));
+        }
+        Self::new(types, programs)
+    }
+}
 /// 当前实际驻留存储；Frame观察只借用该原值，不转移所有权。
 /// 范围输入的真实非拥有CPU借用；载荷及view资源仍由原执行输入保持。
 pub struct CpuBorrow {
@@ -83,14 +112,16 @@ pub struct Frame {
 impl Frame {
     /// 消费本模块定义并绑定CPU代码；失败时未创建Frame，局部资源按原所有者释放。
     pub fn new(types: Vec<Ty>, images: Vec<ProgramImage>) -> Result<Self> {
-        let programs = images.into_iter().map(|image| match image {
-            ProgramImage::Cpu(image) => CpuTemplate::from_image(image)
-                .map(ProgramSlot::Cpu).map_err(|(error, _)| error),
-            ProgramImage::CpuLinked(image) => unsafe { CpuTemplate::from_linked(image) }
-                .map(ProgramSlot::Cpu).map_err(|(error, _)| error),
-            ProgramImage::Gpu(image) => Ok(ProgramSlot::Gpu(Arc::new(image))),
-        }).collect::<Result<Vec<_>>>()?;
-        Ok(unsafe {Self::from_definitions(Arc::new(Definitions { types, programs }),&[])})
+        Ok(unsafe { Self::from_definitions(Arc::new(Definitions::new(types, images)?), &[]) })
+    }
+    /// 从同次静态链接的真实模块工厂创建应用Frame。
+    ///
+    /// # Safety
+    /// 工厂、字节与代码属于同次可信链接，顺序对应原模块基址；
+    /// 原模块及依赖保持到最后真实代码、存储及设备消费者结束。
+    pub unsafe fn from_linked_modules(factories: &[blanguage::resource::ModuleFactory]) -> Result<Self> {
+        let definitions = unsafe { Definitions::linked(factories) }?;
+        Ok(unsafe { Self::from_definitions(Arc::new(definitions), &[]) })
     }
     /// 本次范围独占局部存储，只借用原模块已绑定的同一不可变定义。
     /// # Safety

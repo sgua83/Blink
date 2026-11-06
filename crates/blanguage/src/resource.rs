@@ -7,6 +7,8 @@ use crate::ast::Target;
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
 pub const ABI: &[u8; 8] = b"BLRI\x27\0\0\0";
 pub const RUNTIME_LIBRARY: &str = "@blink.application@";
+mod module_image;
+pub use module_image::{ModuleImage, ModuleFactory};
 /// 字段共同保证的闭区间，按原Scalar有序位编码；仅同步借用，不拥有存储。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -373,9 +375,9 @@ record!(spirv::StageCode {
     sort
 });
 
-/// 同一CPU原生映像的已链接代码索引；由原静态链接持有代码。
+/// 同一原生执行映像或资源目录的已链接代码索引；由原静态链接持有代码。
 #[cfg(feature="compiler")]
-pub(crate) fn linked_native_output<P>(image:&native::ProgramImage<P,usize>)->Vec<u8>{
+pub(crate) fn linked_output<T: Encode>(image:&T)->Vec<u8>{
     compiler_output(image)
 }
 impl<P> native::ProgramImage<P,*const u8>{

@@ -514,6 +514,26 @@ impl CpuProgram {
     pub unsafe fn from_linked(image: blanguage::native::ProgramImage<ExecutableProgram, *const u8>) -> Result<Self> {
         Ok(Self { code: CpuCode::linked(image).map_err(|(error, _)| error)? })
     }
+    /// 绑定同次静态链接的范围代码与唯一模块工厂目录，不创建中间Frame或代码VM。
+    ///
+    /// # Safety
+    /// image的目录已交给factories而不再嵌入映像；工厂顺序对应静态基址，
+    /// 所有代码与资源合同来自同次可信产物，模块及依赖保持到最后消费者结束。
+    #[doc(hidden)]
+    pub unsafe fn from_linked_modules(
+        image: blanguage::native::ProgramImage<ExecutableProgram, *const u8>,
+        factories: &[blanguage::resource::ModuleFactory],
+    ) -> Result<Self> {
+        let workers = std::thread::available_parallelism()?.get();
+        let stages = CpuCode::load_stages(image.stages(), &|address| Executable {
+            address: address.cast_mut().cast(), _allocation: None,
+        });
+        let (program, _, _, _) = image.into_parts();
+        let definitions = unsafe { crate::application::Definitions::linked(factories) }?;
+        Ok(Self { code: CpuCode {
+            program, stages, workers, definitions: Some(std::sync::Arc::new(definitions)),
+        } })
+    }
     pub fn run(&self, datasets: &mut [Dataset], values: &[Value]) -> Result<()> {
         self.code.run(datasets, &[], values)
     }
