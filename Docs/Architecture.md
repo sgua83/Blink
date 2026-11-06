@@ -1599,7 +1599,7 @@ BLEngine 的 viewer、editor、资产和执行准备在实际可独立的工作�
 |---|---|---|
 | C-021.1.4.5.2.3.1，现有统一实现已核对，记录归FixedIssues | 原ExecutionPlan的element_guarantees／write_regions、真实参数数量及字段offset→原GpuCode提交→同一DomainBindings字段数值。DomainBindings::completed／produced是既有唯一数值化与撤回接点，GpuCode只交接实际映射。 | 成功提交后的输出伴随原last_use／Execution，下一独立GPU消费保持实际依赖；纯区间及Index都用原ElementRange，Index取本次真实目标数量而非长期绑定目标身份。缺少前提或容量不满足不靠读取载荷补造；未写字段保持。 |
 | C-021.1.4.5.2.3.2，现有统一实现已核对，记录归FixedIssues | 原Submission的绑定及Execution，经detach／into_bindings、InputOwner::after和DomainBindings的join／rebind／partition／freeze，交给实际后续提交。 | 字段仅按原物理存储与字段字节映射移动；冻结共享仍是同一存储，最后消费者保持。未显式CPU wait不表示硬件必然未完成，不能建立另一pending状态、隐式等待或重放。into_datasets放弃原关系。 |
-| C-021.1.4.5.2.3.3，待核对 | 原CPU／GPU DomainBindings→Device::upload_domains／download_domains及原传输图→目标平台绑定与同一字段关系。 | 传输只移动原事实和真实字节，不扫描或重新验证数值；上传保留原Transfer依赖，下载按原存储完成读回。纯区间是数值，旧生产目标之后变化或释放不改变已生产数字。共享与错误按原实际存储所有者结束。 |
+| C-021.1.4.5.2.3.3，现有统一实现已核对，记录归FixedIssues | 原CPU／GPU DomainBindings→Device::upload_domains／download_domains及原传输图→目标平台绑定与同一字段关系。 | 传输只移动原事实和真实字节，不扫描或重新验证数值；上传保留原Transfer依赖，下载按原存储完成读回。纯区间是数值，旧生产目标之后变化或释放不改变已生产数字。共享与错误按原实际存储所有者结束。 |
 | C-021.1.4.5.2.3.4，待核对 | 普通B发起的原Frame句柄／字段offset→GpuTemplate::submit_projected→实际GPU完成及同一Frame关系→后续GPU或显式download后的CPU消费者。 | Frame仅选择并交回实际参数，不复制资源；前提拒绝保留未开始输入，已开始的真实写撤回旧字段，失败不发布新完成。相交写、兄弟字段与部分投影按原字段字节解释，API局部结果不代替完整B应用执行。 |
 
 #### 普通CPU遍历的静态共同字段模型
