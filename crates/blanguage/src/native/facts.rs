@@ -135,6 +135,28 @@ impl<P> ProgramImage<P> {
             ("functions", array(self.functions().iter().map(|(name, code)| {
                 Ok(object(&[("name", text(name)), ("code", code.code_json(0)?)]))
             }).collect::<Result<Vec<_>>>()?)),
+            ("module_code", self.module_code.as_ref().map_or_else(|| "null".into(), |module| object(&[
+                ("address_basis", text("section_relative")),
+                ("sections", array(module.sections.iter().enumerate().map(|(index, section)| object(&[
+                    ("section_index", index.to_string()), ("name", text(&section.name)),
+                    ("flags", section.flags.to_string()), ("byte_length", section.bytes.len().to_string()),
+                    ("bytes", bytes(&section.bytes)),
+                    ("relocations", array(section.relocations.iter().map(|relocation| object(&[
+                        ("offset_bytes", relocation.offset.to_string()), ("type", relocation.kind.to_string()),
+                        ("target", match &relocation.target {
+                            super::ModuleTarget::Section { section, value } => object(&[
+                                ("kind", text("section")), ("section_index", section.to_string()), ("offset_bytes", value.to_string()),
+                            ]),
+                            super::ModuleTarget::Import(name) => object(&[
+                                ("kind", text("import")), ("library", text(&name.library)), ("symbol", text(&name.symbol)),
+                            ]),
+                        }),
+                    ])))),
+                ])))),
+                ("symbols", array(module.symbols.iter().map(|(name, (section, offset))| object(&[
+                    ("name", text(name)), ("section_index", section.to_string()), ("offset_bytes", offset.to_string()),
+                ])))),
+            ]))),
             ("resource_images", array(self.resources.iter().flat_map(|module| &module.images).enumerate().map(|(index, image)| {
                 let (target, code) = match image {
                     crate::resource::Image::Cpu(image) => ("cpu", image.code_json()?),

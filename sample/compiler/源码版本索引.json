@@ -363,6 +363,10 @@
       "sha256": "02c7fbac88ced4e16ddec962fc5dd5a7b42ed47a3632a7dbd7a2c5698ffcd52c"
     },
     {
+      "path": "crates/blanguage/src/native/facts.rs",
+      "sha256": "e89ada9a333918cfb0617a1807f2855d58b2db1fc7eed83c6cb3e12e23c1c222"
+    },
+    {
       "path": "crates/blanguage/src/native/image.rs",
       "sha256": "bcd8b681ad9a9917c7922c6f6c64527241235e83db0043adfda4df6c243bf9f6"
     },
