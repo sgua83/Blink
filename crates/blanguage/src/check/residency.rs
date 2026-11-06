@@ -162,7 +162,7 @@ impl Residency {
         if origins.is_empty(){return Some(Self::default());}
         let mut result=Self::Absent;
         for origin in origins{match origin{
-            Origin::Input(input)=>{if let Some(value)=argument_value(arguments,input){result.join(&value);}},
+            Origin::Input(input)=>{if let Some(value)=argument_value(arguments,input,&input.selection()){result.join(&value);}},
             Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().filter_map(|(input,value)|value.bind(arguments).map(|value|(input.clone(),value))).collect();result.join(&Self::Origins(BTreeSet::from([Origin::Output(output)])));},
             origin=>result.join(&Self::Origins(BTreeSet::from([origin.clone()]))),
         }}
@@ -172,7 +172,7 @@ impl Residency {
 pub(super) type Requirements=BTreeMap<(Input,Target),BTreeSet<bounds::Condition>>;
 
 pub(super) type Arguments=BTreeMap<Input,Residency>;
-fn argument_value(arguments:&Arguments,input:&Input)->Option<Residency>{arguments.get(&input.family()).map(|value|value.element_indices(&input.selection()))}
+fn argument_value(arguments:&Arguments,input:&Input,selection:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<Residency>{arguments.get(&input.family()).map(|value|value.element_indices(selection))}
 
 pub(super) struct Call{
     pub function:String,
@@ -256,7 +256,8 @@ pub(super) fn infer(inputs:&Inputs,known:&BTreeMap<String,Requirements>,outputs:
         for((input,target),guards)in &known[&call.function]{
             for guard in guards{
                 let path=guard.guard_at_call(&call.bindings).assume(&call.path,true);
-                let Some(value)=argument_value(&call.arguments,&input.at_call(&call.bindings))else{continue};let value=evaluate(&value,outputs);
+                let selection=input.selection().into_iter().map(|(index,proof)|(index,proof.at_call(&call.bindings))).collect();
+                let Some(value)=argument_value(&call.arguments,input,&selection)else{continue};let value=evaluate(&value,outputs);
                 if value.absent(){continue;}
                 if !consume(&mut required,&value,*target,&path){return call.source.fail(call.span,"B266",format!("函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
             }

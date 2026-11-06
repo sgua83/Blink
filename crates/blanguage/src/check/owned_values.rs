@@ -375,7 +375,7 @@ impl Builder<'_> {
                 ty: element.clone(),
                 count,
                 layout: application::DataLayout::Declared,
-                residency: residency::Residency::cpu(),
+                residency: residency::Residency::default(),
                 ownership: if available {
                     Ownership::Owned
                 } else {

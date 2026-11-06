@@ -974,7 +974,7 @@ impl Builder<'_> {
             })
             .chain(resources.iter().copied())
             .filter(|d| d.root.proof.known_identity(0) == Some(identity)
-                || self.owned_resource_borrow(d).restricted(path).sources.contains(&view::Source::Data(identity)))
+                || self.owned_resource_borrow(d).restricted(path).resources().sources.contains(&view::Source::Data(identity)))
             .peekable();
         if matching.peek().is_some() && matching.all(|data|match &data.ownership {Ownership::Conditional(when)=>self.condition_truth(&when.condition(),Some(&bounds::Condition::guard(path.clone())))!=Some(true),ownership=>!ownership.available()}) {
             return self.fail(
