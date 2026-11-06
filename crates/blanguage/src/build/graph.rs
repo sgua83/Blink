@@ -47,9 +47,6 @@ fn expand<'a>(
     let unit = units.get(index).ok_or_else(|| std::io::Error::other(format!("构建单元引用越界：{index}")))?;
     if let Some(value) = &expanded[index] { return Ok(value.clone()); }
     if !active.insert(index) { return Err(format!("构建依赖形成循环：单元{index} {}", unit.path.display()).into()); }
-    if !unit.dependencies.is_empty() && matches!(unit.kind, UnitKind::Entry { .. }) {
-        return Err(format!("单元{index}的入口映像尚不消费独立COFF模块导入").into());
-    }
     let mut providers = Vec::new();
     let mut seen = BTreeSet::new();
     for dependency in unit.dependencies {
@@ -181,7 +178,7 @@ impl Compiler {
                     providers.iter().map(Provider::object), kind, &unit.output, Some(&inputs))
                     .map(|value| Output::Object(Arc::new(value))),
                 UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
-                    entry, target, &unit.output, Vec::new(), Some(&inputs)).map(Output::Entry),
+                    entry, target, &unit.output, Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(), Some(&inputs)).map(Output::Entry),
             }).map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,

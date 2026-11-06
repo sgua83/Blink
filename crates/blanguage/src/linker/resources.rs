@@ -2,7 +2,7 @@
 use super::Result;
 use crate::object::{Archive, Kind, Object, Relocation, Section, Symbol, Target};
 pub(super) fn import_symbol(dll: &str, name: &str) -> String { format!("__blink_import${}${dll}{name}", dll.len()) }
-pub(super) fn resources(archives: &[Archive], mut types: u32, mut programs: u32, runtime: &[String], local_imports: &std::collections::BTreeMap<String, String>, root_abi: Option<&[u8]>) -> Result<Option<Object>> {
+pub(super) fn resources(archives: &[&Archive], mut types: u32, mut programs: u32, runtime: &[String], local_imports: &std::collections::BTreeMap<String, String>, root_abi: Option<&[u8]>) -> Result<Option<Object>> {
     let modules = archives
         .iter()
         .filter_map(|archive| archive.resources.as_ref())

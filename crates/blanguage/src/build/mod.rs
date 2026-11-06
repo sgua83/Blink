@@ -63,7 +63,7 @@ impl crate::Compiler {
         &self, path: &Path, root: &Path, entry: &str, target: Target, output: &Path,
         dependencies: Vec<crate::object::Input>,
     ) -> Result<Compilation> {
-        self.execute(|worker| compile_in(worker, path, root, entry, target, output, dependencies, None))
+        self.execute(|worker| compile_in(worker, path, root, entry, target, output, dependencies, &[], None))
             .map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
@@ -72,15 +72,16 @@ impl crate::Compiler {
 }
 fn compile_in(
     worker: &crate::compiler::Worker, path: &Path, root: &Path, entry: &str,
-    target: Target, output: &Path, dependencies: Vec<crate::object::Input>, inputs: Option<&Inputs>,
+    target: Target, output: &Path, dependencies: Vec<crate::object::Input>, borrowed: &[&crate::object::Object], inputs: Option<&Inputs>,
 ) -> Result<Compilation> {
     if target == Target::Compute {
         return Err("构建映像必须选择实际CPU或GPU后端".into());
     }
     let path = if inputs.is_some() { path.into() } else { path.canonicalize()? };
     let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
-    let imports = crate::module::Imports::inputs(&dependencies).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let imported = if dependencies.is_empty() { None } else { Some(&imports) };
+    let mut imports = crate::module::Imports::inputs(&dependencies).map_err(|e| std::io::Error::other(e.to_string()))?;
+    for object in borrowed { imports.object(object).map_err(|e| std::io::Error::other(e.to_string()))?; }
+    let imported = if dependencies.is_empty() && borrowed.is_empty() { None } else { Some(&imports) };
     let (world, module) = crate::read_world(&path, &root, imported, &[], worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let mut request = Vec::new();
@@ -111,7 +112,7 @@ fn compile_in(
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 if inputs.imports == references(&world.declarations, imported, &image, &inputs.declarations) {
                     if imported.is_some() {
-                        link_inputs(&mut image, dependencies, &imports)?;
+                        link_inputs(&mut image, dependencies, borrowed, &imports)?;
                         let encoded = encode_image(&image);
                         if stored.image != encoded {
                             stored.image = encoded;
@@ -147,7 +148,7 @@ fn compile_in(
     };
     let declarations = world.build_declarations.as_ref().unwrap().borrow().iter().cloned().collect::<Vec<_>>();
     let imports_identity = references(&world.declarations, imported, &image, &declarations);
-    if imported.is_some() { link_inputs(&mut image, dependencies, &imports)?; }
+    if imported.is_some() { link_inputs(&mut image, dependencies, borrowed, &imports)?; }
     let stored = Artifact {
         identity: identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode(),
         image: encode_image(&image),
@@ -166,14 +167,14 @@ fn references(
     identity::references(declarations, imported, symbols, used)
 }
 fn link_inputs(
-    image: &mut resource::Module, mut inputs: Vec<crate::object::Input>, imports: &crate::module::Imports,
+    image: &mut resource::Module, mut inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object], imports: &crate::module::Imports,
 ) -> Result<()> {
     let contracts = imports.modules.values().flat_map(|module| module.definitions.iter())
         .map(|(name, contract)| (name.as_str(), contract)).collect();
     // A selected entry produces one CPU or GPU image; its nested resources stay owned by it.
     for image in &mut image.images {
         if let resource::Image::Cpu(image) = image {
-            crate::native::program::link_inputs(image, std::mem::take(&mut inputs), &contracts)
+            crate::native::program::link_inputs(image, std::mem::take(&mut inputs), borrowed, &contracts)
                 .map_err(std::io::Error::other)?;
         }
     }

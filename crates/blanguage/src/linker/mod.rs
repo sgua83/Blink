@@ -20,26 +20,90 @@ pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
     let (objects, libraries) = read_inputs(inputs)?;
     link_objects(objects, libraries, output)
 }
-fn read_inputs(inputs: &[impl AsRef<Path>]) -> Result<(Vec<Object>, Vec<crate::object::Library>)> {
+fn read_inputs(inputs: &[impl AsRef<Path>]) -> Result<(Vec<Source<'static>>, Vec<crate::object::Library>)> {
     Ok(partition(inputs.iter().map(|input| Input::read(input.as_ref())).collect::<Result<Vec<_>>>()?))
 }
-fn partition(inputs: Vec<Input>) -> (Vec<Object>, Vec<crate::object::Library>) {
+fn partition<'a>(inputs: Vec<Input>) -> (Vec<Source<'a>>, Vec<crate::object::Library>) {
     let mut objects = Vec::new();
     let mut libraries = Vec::new();
     for input in inputs {
         match input {
-            Input::Object(object) => objects.push(object),
+            Input::Object(object) => objects.push(Source::Owned(object)),
             Input::Library(library) => libraries.push(library),
         }
     }
     (objects, libraries)
+}
+/// One original object owner; graph consumers borrow the same compiled value.
+enum Source<'a> {
+    Owned(Object),
+    Borrowed(&'a Object),
+}
+impl std::ops::Deref for Source<'_> {
+    type Target = Object;
+    fn deref(&self) -> &Object {
+        match self { Self::Owned(object) => object, Self::Borrowed(object) => object }
+    }
+}
+struct Selected {
+    live: Vec<bool>,
+    resources: bool,
+}
+fn materialize(source: Source<'_>, live: &[bool], native: bool) -> Object {
+    let rewrite = |section: &mut crate::object::Section, archive: Option<&crate::object::Archive>| {
+        if native {
+            for relocation in &mut section.relocations {
+                if let Target::Import(import) = &relocation.target && import.dll == RUNTIME_LIBRARY
+                    && archive.is_some_and(|archive| archive.exports.contains(&import.name)) {
+                    relocation.target = Target::Symbol(resources::import_symbol(&import.dll, &import.name));
+                }
+            }
+        }
+    };
+    match source {
+        Source::Owned(mut object) => {
+            object.sections = object.sections.into_iter().zip(live).filter_map(|(mut section, &keep)| {
+                if !keep { return None; }
+                rewrite(&mut section, object.archive.as_ref());
+                Some(section)
+            }).collect();
+            if native { object.archive = None; }
+            object
+        }
+        Source::Borrowed(object) => Object {
+            name: object.name.clone(), kind: object.kind.clone(),
+            sections: object.sections.iter().zip(live).filter_map(|(section, &keep)| {
+                if !keep { return None; }
+                let mut section = crate::object::Section {
+                    name: section.name.clone(), bytes: section.bytes.clone(), flags: section.flags,
+                    associated: section.associated.clone(), layout: None,
+                    relocations: section.relocations.iter().map(|relocation| crate::object::Relocation {
+                        offset: relocation.offset, kind: relocation.kind, target: match &relocation.target {
+                            Target::Symbol(name) => Target::Symbol(name.clone()),
+                            Target::Section(section, value) => Target::Section(*section, *value),
+                            Target::Import(import) => Target::Import(import.clone()),
+                        },
+                    }).collect(),
+                };
+                rewrite(&mut section, object.archive.as_ref());
+                Some(section)
+            }).collect(),
+            symbols: object.symbols.iter().filter(|symbol| live[symbol.section]).map(|symbol| crate::object::Symbol {
+                name: symbol.name.clone(), section: symbol.section, value: symbol.value,
+                contract: symbol.contract.clone(), function: symbol.function,
+            }).collect(),
+            imports: object.imports.clone(),
+            // The final native image owns selected code and unwind sections, not the original archive or compiler reports.
+            archive: None, stack: Vec::new(),
+        },
+    }
 }
 enum Roots<'a> {
     Entry,
     Symbols(&'a BTreeMap<String, Vec<u8>>, u32, u32),
 }
 fn resolve_symbol(
-    name: &str, contract: &[u8], objects: &mut Vec<Object>,
+    name: &str, contract: &[u8], objects: &mut Vec<Source<'_>>,
     libraries: &mut [crate::object::Library], defined: &mut BTreeMap<String, (usize, usize)>,
 ) -> Result<(usize, usize)> {
     let target = if let Some(&target) = defined.get(name) { target } else {
@@ -51,7 +115,7 @@ fn resolve_symbol(
         let next = objects.len();
         define(&provider, next, defined)?;
         let target = defined[name];
-        objects.push(provider);
+        objects.push(Source::Owned(provider));
         target
     };
     let actual = &objects[target.0].symbols[target.1];
@@ -69,7 +133,7 @@ fn define(object: &Object, index: usize, defined: &mut BTreeMap<String, (usize, 
     }
     Ok(())
 }
-fn include(objects: &[Object], selected: &mut [Option<Vec<bool>>], pending: &mut VecDeque<(usize, usize)>, object: usize, section: usize) {
+fn include(objects: &[Source<'_>], selected: &mut [Option<Selected>], pending: &mut VecDeque<(usize, usize)>, object: usize, section: usize) {
     if selected[object].is_none() {
         let mut live = vec![false; objects[object].sections.len()];
         for (index, section) in objects[object].sections.iter().enumerate() {
@@ -78,15 +142,15 @@ fn include(objects: &[Object], selected: &mut [Option<Vec<bool>>], pending: &mut
                 pending.push_back((object, index));
             }
         }
-        selected[object] = Some(live);
+        selected[object] = Some(Selected { live, resources: false });
     }
-    let live = selected[object].as_mut().unwrap();
+    let live = &mut selected[object].as_mut().unwrap().live;
     if !live[section] {
         live[section] = true;
         pending.push_back((object, section));
     }
 }
-fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, roots: Roots<'_>) -> Result<Vec<Object>> {
+fn select(mut objects: Vec<Source<'_>>, mut libraries: Vec<crate::object::Library>, roots: Roots<'_>) -> Result<Vec<Object>> {
     let mut resource_base = match roots { Roots::Symbols(_, types, programs) => Some((types, programs)), Roots::Entry => None };
     let native = resource_base.is_some();
     let mut local_imports = BTreeMap::new();
@@ -97,7 +161,7 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, 
     match roots {
         Roots::Entry if matches!(objects[0].kind, Kind::Library { .. }) => {
             let count = objects[0].sections.len();
-            selected[0] = Some(vec![true; count]);
+            selected[0] = Some(Selected { live: vec![true; count], resources: false });
             pending.extend((0..count).map(|section| (0, section)));
         }
         Roots::Entry => include(&objects, &mut selected, &mut pending, 0, 0),
@@ -130,17 +194,17 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, 
                         }
                     }
                     if native {
-                        let archive = objects[object].archive.as_mut().unwrap();
-                        if !archive.bytes.is_empty() {
-                            libraries.push(crate::object::Library::native(&std::mem::take(&mut archive.bytes))?);
+                        let selected_object = selected[object].as_mut().unwrap();
+                        if !selected_object.resources {
+                            libraries.push(crate::object::Library::native(&archive.bytes)?);
+                            selected_object.resources = true;
                         }
                         let (target, section_index) = resolve_symbol(&name, &[], &mut objects, &mut libraries, &mut defined)?;
                         selected.resize_with(objects.len(), || None);
                         include(&objects, &mut selected, &mut pending, target, section_index);
                         let slot = resources::import_symbol(RUNTIME_LIBRARY, &name);
                         local_imports.insert(slot.clone(), name);
-                        objects[object].imports.insert(slot.clone(), Vec::new());
-                        objects[object].sections[section].relocations[index].target = Target::Symbol(slot);
+
                     }
                 }
                 let target = match &objects[object].sections[section].relocations[index].target {
@@ -167,7 +231,7 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, 
         let mut runtime = std::collections::BTreeSet::new();
         for (object, live) in objects.iter().zip(&selected) {
             if let Some(live) = live {
-                for (section, &keep) in object.sections.iter().zip(live) {
+                for (section, &keep) in object.sections.iter().zip(&live.live) {
                     if keep {
                         for relocation in &section.relocations {
                             if let Target::Symbol(name) = &relocation.target
@@ -179,31 +243,31 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, 
                 }
             }
         }
-        let archives = objects.iter_mut().filter_map(|object| {
-            if object.archive.as_ref().is_some_and(|archive| archive.bytes.is_empty()) { object.archive.take() } else { None }
+        let archives = objects.iter().zip(&selected).filter_map(|(object, selected)| {
+            selected.as_ref().filter(|selected| selected.resources).and_then(|_| object.archive.as_ref())
         }).collect::<Vec<_>>();
         if let Some(binding) = resources::resources(&archives, types, programs, &runtime.into_iter().collect::<Vec<_>>(), &local_imports, Some(crate::resource::ABI))? {
             let index = objects.len();
             define(&binding, index, &mut defined)?;
             let count = binding.sections.len();
-            objects.push(binding);
-            selected.push(Some(vec![true; count]));
+            objects.push(Source::Owned(binding));
+            selected.push(Some(Selected { live: vec![true; count], resources: false }));
             pending.extend((0..count).map(|section| (index, section)));
         }
     }
     let mut output = Vec::new();
-    for (mut object, live) in objects.into_iter().zip(selected) {
-        let Some(live) = live else { continue; };
+    for (source, selection) in objects.into_iter().zip(selected) {
+        let Some(selection) = selection else { continue; };
+        let live = selection.live;
+        let mut object = materialize(source, &live, native);
         let mut count = 0;
         let mapping = live.iter().map(|&keep| if keep { let index = count; count += 1; Some(index) } else { None }).collect::<Vec<_>>();
-        object.sections = object.sections.into_iter().enumerate().filter_map(|(index, mut section)| {
-            if !live[index] { return None; }
+        for section in &mut object.sections {
             for relocation in &mut section.relocations {
                 if let Target::Section(index, _) = &mut relocation.target { *index = mapping[*index].unwrap(); }
             }
             for associated in &mut section.associated { *associated = mapping[*associated].unwrap(); }
-            Some(section)
-        }).collect();
+        }
         object.symbols.retain(|symbol| live[symbol.section]);
         for symbol in &mut object.symbols { symbol.section = mapping[symbol.section].unwrap(); }
         if matches!(object.kind, Kind::Module { .. }) {
@@ -230,9 +294,9 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, 
     Ok(output)
 }
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
-    link_objects(vec![object], Vec::new(), path)
+    link_objects(vec![Source::Owned(object)], Vec::new(), path)
 }
-fn prepare(mut objects: Vec<Object>, libraries: Vec<crate::object::Library>) -> Result<(Vec<Object>, Vec<crate::object::Archive>)> {
+fn prepare(mut objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>) -> Result<(Vec<Object>, Vec<crate::object::Archive>)> {
     let entries = objects.iter().enumerate()
         .filter(|(_, object)| matches!(object.kind, Kind::Application { .. } | Kind::Library { .. }))
         .map(|(index, _)| index).collect::<Vec<_>>();
@@ -251,7 +315,7 @@ pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> 
     let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects)?.0 };
     Ok(crate::object::stack::report(&object, budget, reserve))
 }
-fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
+fn link_objects(objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
     let (objects, archives) = prepare(objects, libraries)?;
     let object = &objects[0];
     if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {

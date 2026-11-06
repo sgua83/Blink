@@ -40,7 +40,7 @@ impl crate::Compiler {
             let imports = source.imports.iter().chain(source.resources.iter()
                 .flat_map(|resources| &resources.programs).flat_map(|(_, program)| &program.imports))
                 .map(|(name, contract)| (name.as_str(), contract)).collect();
-            link_inputs(&mut image, inputs, &imports)?;
+            link_inputs(&mut image, inputs, &[], &imports)?;
             Ok::<_, String>(image)
         }).map_err(|error| error.to_string()).map(|mut image| {
             let modules = image.module_code.take();
@@ -67,7 +67,7 @@ pub(crate) fn module_symbols<P>(image: &ProgramImage<P>) -> (std::collections::B
     (local, external)
 }
 pub(crate) fn link_inputs<P>(
-    image: &mut ProgramImage<P>, inputs: Vec<crate::object::Input>,
+    image: &mut ProgramImage<P>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],
     imports: &std::collections::BTreeMap<&str, &Vec<u8>>,
 ) -> Result<(), String> {
     let (local, external) = module_symbols(image);
@@ -80,7 +80,7 @@ pub(crate) fn link_inputs<P>(
             u32::try_from(module.images.len()).map_err(|e| e.to_string())?),
         None => (0, 0),
     };
-    image.module_code = crate::linker::native::modules(inputs, &roots, &local, types, programs)
+    image.module_code = crate::linker::native::modules(inputs, borrowed, &roots, &local, types, programs)
         .map_err(|error| error.to_string())?;
     Ok(())
 }

@@ -57,6 +57,7 @@ pub(crate) struct Archive {
     pub exports: Vec<String>,
     pub resources: Option<ResourceBinding>,
 }
+#[derive(Clone)]
 pub(crate) enum Kind {
     Module {
         interface: String,

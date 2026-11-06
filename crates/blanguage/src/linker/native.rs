@@ -2,8 +2,9 @@
 use super::{Result, Roots, combine, partition, select};
 use crate::{native::{ModuleCode, ModuleSection, ModuleRelocation, ModuleTarget}, object::{Input, Target}};
 use std::collections::BTreeMap;
-pub(crate) fn modules(inputs: Vec<Input>, roots: &BTreeMap<String, Vec<u8>>, local: &std::collections::BTreeSet<&str>, types: u32, programs: u32) -> Result<Option<ModuleCode>> {
-    let (objects, libraries) = partition(inputs);
+pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], roots: &BTreeMap<String, Vec<u8>>, local: &std::collections::BTreeSet<&str>, types: u32, programs: u32) -> Result<Option<ModuleCode>> {
+    let (mut objects, libraries) = partition(inputs);
+    objects.extend(borrowed.iter().copied().map(super::Source::Borrowed));
     let objects = select(objects, libraries, Roots::Symbols(roots, types, programs))?;
     if objects.is_empty() { return Ok(None); }
     let (object, _, symbols) = combine::objects(objects)?;
