@@ -1258,6 +1258,11 @@ impl Builder<'_> {
                 return self.fail(args[1].span, "B224", "拥有填充值只能移动到已证明不回绕且恰好新增的一项，不能广播复制或截短拥有元素");
             }
         }
+        let pending=match &returned {
+            returns::Returned::OwnedValue(value)=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),
+            returns::Returned::Dataset(data)=>Some(self.hold_binding(Binding::ApplicationData(data.clone()))),
+            _=>None,
+        };
         let incoming = self.capture_element_model(&data, &[], returned);
         let elements = if data.length.maximum() == 0 { incoming } else {
             let mut previous = data.elements;
@@ -1280,6 +1285,7 @@ impl Builder<'_> {
             storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
         } };
         let result=self.resize_application_storage(data.root,data.ty,length,elements,fill,span)?;
+        if let Some(pending)=pending{self.env.remove(&pending);}
         self.env.remove(&input);
         Ok(Some(result))
     }
