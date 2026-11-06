@@ -64,7 +64,7 @@ pub(super) struct LoopContext {
     initial: bool,
     initialization: bool,
     continues: Vec<LoopState>,
-    iterator: Option<String>,
+    iterator: Option<(String, Value)>,
     pub(super) control_source: view_contracts::LoopControl,
     controls: BTreeMap<Reg,Value>,
     pub(super) view_inputs: Vec<view::InputSlot>,
@@ -326,7 +326,7 @@ impl Builder<'_> {
         let context = self.loop_contexts.last_mut().unwrap();
         context.initialization = initialization;
         context.initial = initial;
-        context.iterator = iterator;
+        context.iterator = iterator.zip(cursor.clone());
         context.entry.cursor=cursor.clone();
         context.control_source.cursor=cursor;
     }
@@ -336,12 +336,9 @@ impl Builder<'_> {
             .and_then(|context| context.control_source.cursor.clone())
     }
     pub(super) fn capture_loop_cursor(&mut self, value: Value) {
-        if let Some(name) = self
-            .loop_contexts
-            .last()
-            .and_then(|context| context.iterator.clone())
-        {
-            self.env.insert(name, Binding::Value(value));
+        if let Some((name,cursor))=self.loop_contexts.last_mut().and_then(|context|context.iterator.as_mut()) {
+            *cursor=value.clone();
+            if let Some(Binding::Value(source))=self.env.get_mut(name){*source=value;}
         }
     }
     pub(super) fn check_application_loop(&mut self, span: Span) -> Result<()> {
@@ -450,32 +447,25 @@ impl Builder<'_> {
         });
     }
     pub(super) fn loop_state(&self) -> LoopState {
-        let names = &self.loop_contexts.last().unwrap().names;
+        let context=self.loop_contexts.last().unwrap();
+        let names=&context.names;
+        let iterator=context.iterator.as_ref().map(|(name,_)|name);
         LoopState {
             path: self.path.clone(),
             env: self
                 .env
                 .iter()
-                .filter(|(n, _)| names.contains(*n))
+                .filter(|(n, _)| names.contains(*n)||iterator==Some(*n))
                 .map(|(n, b)| (n.clone(), b.clone()))
                 .collect(),
             initialized: self.application_initialization_state(),
             control: self.control_uniform,
-            cursor: self
-                .loop_contexts
-                .last()
-                .unwrap()
-                .iterator
-                .as_ref()
-                .and_then(|name| match self.env.get(name) {
-                    Some(Binding::Value(value)) => Some(value.clone()),
-                    _ => None,
-                }),
+            cursor: context.iterator.as_ref().map(|(_,cursor)|cursor.clone()),
         }
     }
     fn restore_initial_edge(&mut self, state: LoopState) {
         self.env = state.env;
-        if let(Some(name),Some(cursor))=(&self.loop_contexts.last().unwrap().iterator,state.cursor){self.env.insert(name.clone(),Binding::Value(cursor));}
+        if let(Some((_,current)),Some(cursor))=(self.loop_contexts.last_mut().unwrap().iterator.as_mut(),state.cursor){*current=cursor;}
         self.path = state.path;
         self.initialized = state.initialized;
         self.control_uniform = state.control;
@@ -568,6 +558,7 @@ impl Builder<'_> {
         let mut guards=guards.into_iter();let mut exits=context.exits.into_iter();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok(false)};
         let _first=guards.next().unwrap();self.env=first.env;self.path=first.path;
         for exit in exits{let when=guards.next().unwrap();let mut previous=std::mem::replace(&mut self.env,exit.env);self.path=bounds::Clause::either(&self.path,&exit.path);self.join_environment_selected(&mut previous,&when);}
+        self.env.retain(|name,_|context.names.contains(name));
         self.initialized=common.unwrap();self.initialized.extend(initialized);self.view_uses.after(span);Ok(true)
     }
 }

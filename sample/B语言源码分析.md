@@ -1301,7 +1301,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:4160`。
+源码节选：`crates/blanguage/src/check.rs:4161`。
 
 ```rust
         let binding = view.binding;
@@ -2734,6 +2734,19 @@ IR 用结构化的 If 和 Loop 保存这些关系：
 ### 12.2 源变量反复赋值与结果编号不冲突
 
 `x=x+1` 中的新值与旧值不是同一个结果。IR 的虚拟结果可以各有编号，同时使用局部槽表达可变位置。当前实现包含 LoadLocal/StoreLocal 与结构化控制流，不能直接称为已经完成完整 SSA。
+
+循环的数值下标与源元素别名也有各自的身份。LoopContext.iterator持有原名称和当前下标进度，LoopControl只保留原控制条件模板；推进时更新原进度，源范围变量是Value才更新其数值，元素位置继续保持原类型。LoopState在原环境中快照初始续边还需要的元素别名，真正leave_loop再按原入口names结束局部绑定。字段转借、分支退出、continue与seek沿这些原消费者交接，不复制元素、重建类型或增加运行期状态。
+
+源码节选：`crates/blanguage/src/check/flow.rs:338`。
+
+```rust
+    pub(super) fn capture_loop_cursor(&mut self, value: Value) {
+        if let Some((name,cursor))=self.loop_contexts.last_mut().and_then(|context|context.iterator.as_mut()) {
+            *cursor=value.clone();
+            if let Some(Binding::Value(source))=self.env.get_mut(name){*source=value;}
+        }
+    }
+```
 
 SSA 的基本思想是每个结果只定义一次，合流时明确来自哪条路径。理解它有助于读 SPIR-V 和值传播，但不能把课本上一套标准 SSA 算法当成本仓库已经全部实现的事实。
 

@@ -3748,7 +3748,8 @@ impl<'a> Builder<'a> {
         let mut writes=self.loop_writes(None,body,borrowed,initial)?;
         writes.locals.insert(slot);
         self.loop_contexts.last_mut().unwrap().writes=writes;
-        self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(&test,&self.env,Some(body_cursor));
+        self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(&test,&self.env,Some(body_cursor.clone()));
+        self.capture_loop_cursor(body_cursor);
         let iteration = match self.env.get(&name) {
             Some(Binding::Value(value)) => ownership::ApplicationIndex::of(value),
             _ => ownership::ApplicationIndex::of(&cursor),
