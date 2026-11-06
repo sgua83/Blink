@@ -105,6 +105,7 @@ impl Builder<'_> {
         &mut self,
         place: &Place,
         access: Access,
+        expose_writes: bool,
         span: Span,
     ) -> Result<CallReference> {
         if self.atomic_storage(place) && access != Access::Atomic {
@@ -161,7 +162,7 @@ impl Builder<'_> {
                 ..
             } => {
                 let components: Vec<_> = place.ty().components.iter().zip(words).map(|(&(scalar, _), &word)| (scalar, word)).collect();
-                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,access.writes(),None,&components,span)?;
+                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,None,&components,span)?;
                 (CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}),None,words.clone())
             },
             Place::ViewElement {
@@ -219,7 +220,7 @@ impl Builder<'_> {
                     } => {
                         let words = reference_words(place, &self.locals).unwrap();
                         let components: Vec<_> = place.ty().components.iter().zip(words).map(|(&(scalar, _), word)| (scalar, word)).collect();
-                        let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,access.writes(),Some(*offset),&components,span)?;
+                        let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,Some(*offset),&components,span)?;
                         CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))})
                     },
                     Place::ViewElement {
@@ -253,12 +254,13 @@ impl Builder<'_> {
         &mut self,
         place: &Place,
         access: Access,
+        expose_writes: bool,
         span: Span,
     ) -> Result<CallReference> {
         if !self.reference_is_contiguous(place, span)? {
             return self.fail(span,"B264","C ABI 借用需要按参数布局连续、顺序匹配且对齐的真实存储；符号位置需由 requires contiguous 指明这一前提");
         }
-        self.call_reference(place, access, span)
+        self.call_reference(place, access, expose_writes, span)
     }
     #[inline(never)]
     pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
@@ -331,7 +333,7 @@ impl Builder<'_> {
                     self.require_same(ty, place.ty(), span)?;
                     let origin=self.position_origin(&place,span)?;
                     memory.push((view::Borrow::source(view::Source::Position(Arc::new(origin))),Some(*access)));
-                    let address = self.external_reference(&place, *access, span)?;
+                    let address = self.external_reference(&place, *access, access.writes(), span)?;
                     if access.writes() { written.push((index, place)); }
                     CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: ty.clone(), access: *access, address }
                 }
@@ -400,16 +402,18 @@ impl Builder<'_> {
         &mut self,
         place: &Place,
         access: Access,
+        expose_writes: bool,
         span: Span,
         c_abi: bool,
     ) -> Result<Vec<(Ty, CallReference)>> {
-        if c_abi { return Ok(vec![(place.ty().clone(), self.external_reference(place, access, span)?)]); }
+        let expose_writes = access.writes() && expose_writes;
+        if c_abi { return Ok(vec![(place.ty().clone(), self.external_reference(place, access, expose_writes, span)?)]); }
         let parameters = native_function::reference_parameters(place.ty());
         if parameters.is_empty() { return Ok(Vec::new()); }
         if parameters.len() == 1 {
             return Ok(vec![(
                 parameters[0].clone(),
-                self.call_reference(place, access, span)?,
+                self.call_reference(place, access, expose_writes, span)?,
             )]);
         }
         let Some(words) = reference_words(place, &self.locals) else {
@@ -418,10 +422,10 @@ impl Builder<'_> {
         if let Place::Reference { address: ReferenceAddress::Components(_), .. } = place {
             return parameters.into_iter().enumerate().map(|(component, ty)| {
                 let part = place.clone().project(ty.clone(), &[component]);
-                Ok((ty, self.call_reference(&part, access, span)?))
+                Ok((ty, self.call_reference(&part, access, expose_writes, span)?))
             }).collect();
         }
-        let base = self.call_reference(place, access, span)?;
+        let base = self.call_reference(place, access, expose_writes, span)?;
         Ok(parameters
             .into_iter()
             .zip(words)

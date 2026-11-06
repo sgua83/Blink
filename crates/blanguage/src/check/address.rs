@@ -850,7 +850,7 @@ impl Builder<'_> {
         }
         let origin=self.position_origin(&place,span)?;
         let access=if origin.writable{Access::InOut}else{Access::Read};
-        let address=self.external_reference(&place,access,span)?;
+        let address=self.external_reference(&place,access,access.writes(),span)?;
         let dst=self.reg(Scalar::U64);
         let ty=Ty::builtin("address").unwrap();
 

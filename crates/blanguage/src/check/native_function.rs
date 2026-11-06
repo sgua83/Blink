@@ -39,6 +39,29 @@ impl Module {
                 view_contracts::Access::Initialized{..}=>true,
             }))
     }
+    fn reference_read_only(&self,name:&str)->bool {
+        fn read_only(borrow:&view::Borrow)->bool {
+            !borrow.empty()&&borrow.inputs.is_empty()&&borrow.calls.is_empty()&&borrow.sources.iter().all(|source|match source {
+                view::Source::Position(origin)=>!origin.writable,
+                view::Source::Inactive=>true,
+                _=>false,
+            })
+        }
+        fn returned_read_only(model:&Returned)->bool {
+            model.view_value().is_none_or(|value|value.proof.addresses.iter().flatten().all(|identity|match identity {
+                address::Identity::Storage(borrow)=>read_only(borrow),
+                _=>true,
+            })&&value.ty.borrow_fields().into_iter().filter(|(_,ty)|ty.is_address()).all(|(word,_)| {
+                let component=value.ty.components.iter().position(|(_,at)|*at==word).unwrap();
+                read_only(&value.proof.view_borrow(component))
+            }))&&match model {
+                Returned::Dataset(data)=>returned_read_only(&data.elements),
+                Returned::OwnedValue(value)=>value.payloads.iter().flatten().all(|payload|returned_read_only(payload)),
+                _=>true,
+            }
+        }
+        self.read_only(name)&&self.units[name].as_ref().unwrap().contract.returned.as_ref().is_none_or(returned_read_only)
+    }
     pub(super) fn writes_only_references(&self,name:&str)->bool {
         fn references(borrow:&view::Borrow)->bool {
             borrow.inputs.is_empty()&&borrow.calls.is_empty()&&borrow.sources.iter().all(|source|match source {
@@ -406,6 +429,7 @@ impl Builder<'_> {
         syntax: Option<&[Expr]>,
     ) -> Result<Option<Returned>> {
         let d = &instance.definition;
+        let reference_writes = !self.functions.reference_read_only(&instance.name);
         let implicit = self.functions.units[&instance.name].as_ref()
             .is_none_or(|unit| unit.function.is_some() || unit.contract.frame);
         let mut arguments = Vec::new();
@@ -507,7 +531,7 @@ impl Builder<'_> {
                 Argument::OwnedReference{mut value,place,owner} if matches!(p.access,Access::Write|Access::InOut)=>{
                     self.require_same(&ty,&value.value.ty,span)?;
                     if let Some(owner)=owner{held.push(owner);}
-                    for(part,address)in self.native_references(&place,p.access,span,d.function.c_abi)?{arguments.push(CallArgument::Reference{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),ty:part,access:p.access,address});actual.extend([None,None]);}
+                    for(part,address)in self.native_references(&place,p.access,reference_writes,span,d.function.c_abi)?{arguments.push(CallArgument::Reference{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),ty:part,access:p.access,address});actual.extend([None,None]);}
                     if p.access==Access::InOut {
                         for data in value.resources(){self.require_application_initialized(data,span)?;}
                         self.load_owned_value(&mut value,span)?;
@@ -524,7 +548,7 @@ impl Builder<'_> {
                     let place=owner.place.clone();
                     self.require_same(&ty, place.ty(), span)?;
                     if p.access.reads(){owner.proof=self.current_address_proof(&ty,&owner.proof);memory_borrow.union(&self.address_contents(&ty,&owner.proof));}
-                    for (part, address) in self.native_references(&place, p.access, span, d.function.c_abi)? {
+                    for (part, address) in self.native_references(&place, p.access, reference_writes, span, d.function.c_abi)? {
                         arguments.push(CallArgument::Reference { #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),
                             ty: part,
                             access: p.access,
@@ -547,7 +571,7 @@ impl Builder<'_> {
                 }
                 Argument::Atomic(place) if p.access == Access::Atomic => {
                     self.require_same(&ty, place.ty(), span)?;
-                    for (part, address) in self.native_references(&place, Access::Atomic, span, d.function.c_abi)? {
+                    for (part, address) in self.native_references(&place, Access::Atomic, reference_writes, span, d.function.c_abi)? {
                         arguments.push(CallArgument::Reference { #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()), ty: part, access: Access::Atomic, address });
                         actual.extend([None, None]);
                     }

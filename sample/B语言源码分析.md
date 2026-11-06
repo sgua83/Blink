@@ -394,7 +394,7 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
 
 函数值调用复用直接C调用的实参求值、read／write／inout借用、连续布局及返回投影。外部声明与函数值只提供各自真实目标和签名，共用c_call，不造一个不存在的DLL或Definition来转接。
 
-源码节选：`crates/blanguage/src/check/external.rs:264`。
+源码节选：`crates/blanguage/src/check/external.rs:266`。
 
 ```rust
     pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
@@ -1485,7 +1485,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:891`。
+源码节选：`crates/blanguage/src/check/native_function.rs:915`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1740,7 +1740,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
 
-源码节选：`crates/blanguage/src/check/native_function.rs:658`。
+源码节选：`crates/blanguage/src/check/native_function.rs:682`。
 
 ```rust
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
@@ -1770,7 +1770,7 @@ pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->addr
 }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:628`。
+源码节选：`crates/blanguage/src/check/native_function.rs:652`。
 
 ```rust
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
@@ -2105,9 +2105,11 @@ pub(crate) struct Interface {
 
 普通B的dataset<T>(N,F)复用原initialize_application_elements的真实工厂调用、字节写及游标，完整Loop之后才交接共同字段保证；失败沿原前缀拥有者退出，不进入完成点。游标保留本次实际长度的Upper数值关系，静态空构造不执行F。application::Resources.completions拥有编译期ElementCompletion字段常量，包含字节位置、静态数值区间和实际数值参数的序号／界距，declarations与object::emit按原模块调用保留／重编号及绑定前缀；dll::application_source只把同一静态描述和真实长度实例化为标准C借用数组，不建立新Frame目录、运行注册或空执行。blink_complete_field按原存储Ty解释实际字段，DomainBindings::produced_element继续唯一求交及存活管理，后续CpuTemplate沿原require消费。BLRI42对应该真实C入口，Module序列化与链接器资源基址未增加字段。resize_application_storage在原存储Call成功之后构造新DataPayload，沿同一complete_application_elements交接当前模型已有的数值范围；take_last的剩余前缀也经过此接点，原尾值转移、错误及拥有前缀清理不变。真实失败不会进入DatasetResizeComplete。没有新C ABI、包装、目录、存储状态或字段求交算法；BLRI42及BLCO68保持。resize_application_dataset沿原长度Condition及Clause选择结果：确定没有新增位置保留旧模型，确定增长才合入fill，未定增长沿原Returned::join_locations保存条件关系。没有新增位置时fill表达式仍完整求值与承担原副作用／失败，模型不混入其未写数值。Frame::resize成功后从原count取回实际旧数量；同长度／缩小只保留未写Element数值，增长撤回旧保证，Prefix引用仍失效，申请失败不改变原事实。没有新模型容器、状态表或运行校验；沿现行BLRI42与原完成接收。动态旧／新上界、普通遍历、GPU及外部提供者仍见Issues C-021.1.4.5.2，Proof::join_condition只合流候选自身已有的共同域，不能按两候选区间大小把一个候选的索引资格借给另一个候选。Builder::bound_value在普通表达式及拥有值实际求值出口，消费同一路径中已有数值和当前迭代索引；结果分量最大值不大于真实见证最小值时沿原Upper／indices_below交接数值界，不从Data.elements全称模型创造见证。Proof::facts将Upper同步解释为Below，使原Clause可消费条件返回分支中的严格上界；无新增运行检查、状态或合同编码。complete_application_elements直接从共同Proof及原真实长度／数值身份形成字段描述，已求值fill沿原resize_application_storage临时借用到同一成功点，引用参数不重读。普通模块包装及lower_sdk_resources原生完成分支都直接消费该字段描述，删除原通用ElementFact再分组；严格距界、非严格上界及u32最大端点具有同一数值集合语义，局部C数组只借用到本次调用结束。Frame／DomainBindings仍只保存同一份字段数值集合，旧资源版本或其他目标变化不改写这些数字；没有新ABI、扫描、检查、状态表或Rust中转。静态见证与动态数值交接分别见FixedIssues原.2.3.2.3.1／.2；尚未形成共同界的静态证明精度、完整普通遍历的其他生产者、GPU和外部载荷继续原Issues。
 
-for_statement接收for_loop经leave_loop消费后移交的原LoopWrites；真实Loop之后由complete_application_loop消费原storage／locals与unknown_storage，选择仍可用的实际U32 Frame绑定；CPU位置沿原Inputs::known_at查询原明确位置及当前路径已覆盖的Use::At，保留参数的真实位置合同，不把参数来源直接当CPU。按真实拥有位置取得句柄并复用complete_application_elements；原始U64地址不取得Frame。查询不新增要求或改变资源位置，未确定参数及GPU输入不作为CPU。闭合只读inout引用的地址暴露仍有独立运行缺口，见C-005.78，不由实际写的完成代替。DatasetLoopComplete指向原for语句；initial递归展开不重复发射，return及失败不会经过该完成点。该交接只发布Data.elements已有共同数值，既不扫描元素，也不把break当作全覆盖。没有第二份写集合、Frame、资源表或运行完成标记。
+for_statement接收for_loop经leave_loop消费后移交的原LoopWrites；真实Loop之后由complete_application_loop消费原storage／locals与unknown_storage，选择仍可用的实际U32 Frame绑定；CPU位置沿原Inputs::known_at查询原明确位置及当前路径已覆盖的Use::At，保留参数的真实位置合同，不把参数来源直接当CPU。按真实拥有位置取得句柄并复用complete_application_elements；原始U64地址不取得Frame。查询不新增要求或改变资源位置，未确定参数及GPU输入不作为CPU。闭合无写引用按原合同及返回来源形成只读地址，不引入额外完成。DatasetLoopComplete指向原for语句；initial递归展开不重复发射，return及失败不会经过该完成点。该交接只发布Data.elements已有共同数值，既不扫描元素，也不把break当作全覆盖。没有第二份写集合、Frame、资源表或运行完成标记。
 
-完整普通数据游标的静态数值在for_loop的原自然出口处交接。application_iteration_elements消费LoopContext.continues中各LoopState.env的原游标Binding::Owned.proof，直接合流原数值区间与域；自然出口env沿原element_owner_bindings翻译仍有效的外部来源，迭代内局部身份不再保留。已成立的u32同一数值沿原Upper(来源,0)成为非严格上界，原完成代码继续处理其实际数值。只有本次原游标从零完整覆盖且无本层seek时才采用，initial首轮不冒充全体覆盖；break仍消费各自退出状态，return与失败没有自然完成。application_iteration_interference在发布之前，沿同一ApplicationLoads与实际继续状态查询其他下标写对此前元素的影响，与当前游标末值合流。ApplicationElement写把实际SSA右值的已有事实交给原Clause，直接游标与数值游标消费同一事实源。原始借用地址按实际split／offset指令恢复根、下标、步长和字段偏移；只读查询原指令，不重新求值或生成地址。真实CallReference可提供原当前写位置，闭合普通B的写效果只有局限于实际引用extent时才作为当前位置写，dataset或未知／越界字节写不作此推定；仍共用原Module::writes_only_references，原读取快照也消费该准确含义。原update_application_contents按真实字段字节位置更新同一Data.elements，兄弟字段不重写。没有额外AST解释、IR循环、运行状态、扫描或第二份模型。标量引用函数在完整遍历内写后的Frame完成遗漏另见Issues .3.3.1.1，不能以本处静态成功代替它。显式数值下标的完整遍历由application_indexed_elements消费原LoopContext入口同长资源与各继续状态。实际ApplicationElement写将已求值右值的事实交到原Clause；ApplicationLoads按原地址、步长、字段字节和当前游标查询实际StoreIndexed，沿原If／Scope／Continue解释各继续边最后覆盖的值。非当前下标的重叠写会影响此前各轮元素，须同时并入最终可能值；字节不对齐、调用或其他未知写不能用当前字段右值代替。这里共用原写别名分析，bounds::scoped_proof只把同一个path_proof的查询作用域显式传入；临时Proof随本次查询结束，不保留存储值历史。publish_iteration_elements统一把数据游标与下标生产者结果交回自然出口的原Data.elements，真实完成继续原Frame入口，无新IR、寄存器或运行表。普通write／inout dataset形参的完整共同模型由finish_return沿原ReturnExit／written保存，native_call原DataReference模型消费不再以元素拥有资源为条件；written_data继续只负责初始化。returned_storage按实际root／length的Scalar、宽度及对齐投影，U64借用地址不缩成U32 Frame句柄，不增加机器输出参数。apply_application_dataset_model在原参数环境仍可查询时，沿普通记录分量及原拥有载荷投影／替换同一Data.elements；部分覆盖仍做旧新合流。publish_iteration_elements交接仍有效来源的CommonRange，Proof::at_call在原Clause和输出Proof中只继承同Scalar纯索引不等式与共同数值，不把Sum／Offset／Computed或Length精确身份当作共同范围。原Proof::assign_elements同时保留已由原出口绑定关闭的真实共同输入origins，范围和来源各表达自己的事实；同一普通输入的真实身份可在原调用映射中代入实际算术Proof，逐元素局部来源仍被原绑定关闭。源码缺席的obj／lib、转发调用与源码SDK消费同一输出，公开格式及运行ABI保持。嵌套CPU循环对仍存活外层游标字段的纯覆盖，沿原条件IR、entry、真实继续边与自然出口交接；零次分支按入口事实求值，循环头读取的新值和回边值保持各自时点。完整遍历消费路径约束后的原Proof，原存储／干扰查询递归嵌套Loop，其他下标的真实写仍影响全体结果。私有字段完成调用只更新Frame元数据，不作为载荷写。条件通过地址写兄弟字段的数值精度及普通引用写的Frame完成仍见原Issues对应叶项，不以本项覆盖它们。native_call在真实普通调用之后，把同一written模型和原已求值实参快照交给complete_application_elements，再更新调用者模型；原read_only效果确认无实际写时省去该重复完成。完成输入为实际DataReference，U32根是原Frame身份，U64原始地址不发布Frame事实；原application_reference_offset交接声明字段列或Host借用的动态前缀。字段描述保留相对偏移，私有complete函数增加实际offset参数；dll/source.rs包装在本次同步借用内组合两段偏移，lower_sdk_resources按相同frame／root／offset／数值输入次序直接生成原生blink_complete_field参数。原factory／resize／loop完成共用该字段映射；公共C入口、BLCO68／BLRI42、Frame定义和唯一关系集合保持。原Call失败展开阻止后续完成，DatasetCallComplete仅交出对应真实生成原因，不保存第二份状态。complete_application_elements从原闭合model.proof.origins直接消费已有Register，原Builder.registers确定其真实u32类型，并交给原字段完成候选；read临时实参因此使用原已求值SSA，不重读存储或另存环境快照，逻辑元素槽不作为机器值。原字段参数合并及完成ABI不变。循环头读前事实继续C-021.1.4.5.4.2；静态推导与运行完成分别成立。
+完整普通数据游标的静态数值在for_loop的原自然出口处交接。application_iteration_elements消费LoopContext.continues中各LoopState.env的原游标Binding::Owned.proof，直接合流原数值区间与域；自然出口env沿原element_owner_bindings翻译仍有效的外部来源，迭代内局部身份不再保留。已成立的u32同一数值沿原Upper(来源,0)成为非严格上界，原完成代码继续处理其实际数值。只有本次原游标从零完整覆盖且无本层seek时才采用，initial首轮不冒充全体覆盖；break仍消费各自退出状态，return与失败没有自然完成。application_iteration_interference在发布之前，沿同一ApplicationLoads与实际继续状态查询其他下标写对此前元素的影响，与当前游标末值合流。ApplicationElement写把实际SSA右值的已有事实交给原Clause，直接游标与数值游标消费同一事实源。原始借用地址按实际split／offset指令恢复根、下标、步长和字段偏移；只读查询原指令，不重新求值或生成地址。真实CallReference可提供原当前写位置，闭合普通B的写效果只有局限于实际引用extent时才作为当前位置写，dataset或未知／越界字节写不作此推定；仍共用原Module::writes_only_references，原读取快照也消费该准确含义。原update_application_contents按真实字段字节位置更新同一Data.elements，兄弟字段不重写。没有额外AST解释、IR循环、运行状态、扫描或第二份模型。标量引用函数的真实完整遍历写沿原LoopWrites及CPU驻留要求完成Frame字段交接；静态模型与运行完成分别成立。显式数值下标的完整遍历由application_indexed_elements消费原LoopContext入口同长资源与各继续状态。实际ApplicationElement写将已求值右值的事实交到原Clause；ApplicationLoads按原地址、步长、字段字节和当前游标查询实际StoreIndexed，沿原If／Scope／Continue解释各继续边最后覆盖的值。非当前下标的重叠写会影响此前各轮元素，须同时并入最终可能值；字节不对齐、调用或其他未知写不能用当前字段右值代替。这里共用原写别名分析，bounds::scoped_proof只把同一个path_proof的查询作用域显式传入；临时Proof随本次查询结束，不保留存储值历史。publish_iteration_elements统一把数据游标与下标生产者结果交回自然出口的原Data.elements，真实完成继续原Frame入口，无新IR、寄存器或运行表。普通write／inout dataset形参的完整共同模型由finish_return沿原ReturnExit／written保存，native_call原DataReference模型消费不再以元素拥有资源为条件；written_data继续只负责初始化。returned_storage按实际root／length的Scalar、宽度及对齐投影，U64借用地址不缩成U32 Frame句柄，不增加机器输出参数。apply_application_dataset_model在原参数环境仍可查询时，沿普通记录分量及原拥有载荷投影／替换同一Data.elements；部分覆盖仍做旧新合流。publish_iteration_elements交接仍有效来源的CommonRange，Proof::at_call在原Clause和输出Proof中只继承同Scalar纯索引不等式与共同数值，不把Sum／Offset／Computed或Length精确身份当作共同范围。原Proof::assign_elements同时保留已由原出口绑定关闭的真实共同输入origins，范围和来源各表达自己的事实；同一普通输入的真实身份可在原调用映射中代入实际算术Proof，逐元素局部来源仍被原绑定关闭。源码缺席的obj／lib、转发调用与源码SDK消费同一输出，公开格式及运行ABI保持。嵌套CPU循环对仍存活外层游标字段的纯覆盖，沿原条件IR、entry、真实继续边与自然出口交接；零次分支按入口事实求值，循环头读取的新值和回边值保持各自时点。完整遍历消费路径约束后的原Proof，原存储／干扰查询递归嵌套Loop，其他下标的真实写仍影响全体结果。私有字段完成调用只更新Frame元数据，不作为载荷写。条件通过地址写兄弟字段的数值精度仍见原Issues对应叶项。普通引用写在实际完整循环结束后，沿原LoopWrites及已成立的CPU驻留要求交给同一Frame；部分路径不制造全体完成。native_call在真实普通调用之后，把同一written模型和原已求值实参快照交给complete_application_elements，再更新调用者模型；原read_only效果确认无实际写时省去该重复完成。完成输入为实际DataReference，U32根是原Frame身份，U64原始地址不发布Frame事实；原application_reference_offset交接声明字段列或Host借用的动态前缀。字段描述保留相对偏移，私有complete函数增加实际offset参数；dll/source.rs包装在本次同步借用内组合两段偏移，lower_sdk_resources按相同frame／root／offset／数值输入次序直接生成原生blink_complete_field参数。原factory／resize／loop完成共用该字段映射；公共C入口、BLCO68／BLRI42、Frame定义和唯一关系集合保持。原Call失败展开阻止后续完成，DatasetCallComplete仅交出对应真实生成原因，不保存第二份状态。complete_application_elements从原闭合model.proof.origins直接消费已有Register，原Builder.registers确定其真实u32类型，并交给原字段完成候选；read临时实参因此使用原已求值SSA，不重读存储或另存环境快照，逻辑元素槽不作为机器值。原字段参数合并及完成ABI不变。循环头读前事实继续C-021.1.4.5.4.2；静态推导与运行完成分别成立。
+
+普通B引用的声明权限与Frame可写暴露分别交接：原函数合同已闭合为无实际写，且返回地址及保留原数值存储关系的地址位模式均无可写来源外泄时，引用沿原地址入口只形成读区，不撤回已有字段保证。判定直接查询原Contract.view_access与Returned.proof的views／addresses，包括聚合字段及原返回拥有树中的dataset元素载荷；不建立另一份效果、来源或运行状态。声明Access、原子权限、初始化／借用规则及机器Reference ABI不变。真实写、可写地址或位模式返回、尚未闭合及外部未知调用保留原可写暴露和Frame撤回；普通写后的真实完成继续沿原完成入口，不为只读调用追加完成。
 
 该编码为BLCO68；资源ABI保持BLRI42。普通值resize也复用原填充值捕获与保留前缀合流，实际拥有值不能广播的规则保持。prefix／where的部分覆盖与原子改写不产生全容量新值域；持久外部输入合同、同字段循环读前范围及普通引用调用精度分别见Issues C-021.1.4.5.2／.5.4.2／.5.4.3。
 
@@ -2783,7 +2785,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1660`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1684`。
 
 ```rust
             if !frame.contains(&name) {
