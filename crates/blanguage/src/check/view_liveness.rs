@@ -141,16 +141,18 @@ impl State {
     }
     pub(super) fn borrow(&self,builder:&Builder<'_>,name:&str,binding:&Binding,transferred:&[Transfer<'_>])->view::Borrow {
         let mut omitted=BTreeMap::<usize,owned_presence::Presence>::new();
-        if let Some(root)=binding.stored_place(){for transfer in transferred{if let Transfer::Owned{place:Some(place),..}=transfer{
-            let components=match place{
-                Place::Indexed{initialization,..}=>root.owned_positions().into_iter().flatten().enumerate().map(|(component,position)|{
+        for transfer in transferred{if let Transfer::Owned{value,place}=transfer{
+            let components=match (binding.stored_place(),*place){
+                (Some(root),Some(Place::Indexed{initialization,..}))=>root.owned_positions().into_iter().flatten().enumerate().map(|(component,position)|{
                     let when=initialization.iter().fold(owned_presence::Presence::None,|when,selected|when.or(owned_presence::Presence::selected(selected,&position)));
                     (component,when)
                 }).collect::<Vec<_>>(),
-                _=>place.components_in(&root).into_iter().flatten().map(|component|(component,owned_presence::Presence::All)).collect(),
+                (Some(root),Some(place))=>place.components_in(&root).into_iter().flatten().map(|component|(component,owned_presence::Presence::All)).collect(),
+                (_,None)if matches!(binding,Binding::OwnedValue(stored)if stored.value.ty==value.value.ty&&stored.value.regs==value.value.regs)=>(0..value.value.regs.len()).map(|component|(component,owned_presence::Presence::All)).collect(),
+                _=>Vec::new(),
             };
             for(component,when)in components{if when!=owned_presence::Presence::None{omitted.entry(component).and_modify(|old|*old=old.clone().or(when.clone())).or_insert(when);}}
-        }}}
+        }}
 
         if name.starts_with('\0') {
             if matches!(binding,Binding::DataReference(_)|Binding::ViewElement{..})||matches!(binding,Binding::OwnedValue(value)if value.ownership==application::Ownership::Borrowed){return binding.view_borrow();}
