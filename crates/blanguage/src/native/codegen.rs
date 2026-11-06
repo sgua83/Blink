@@ -163,8 +163,10 @@ impl Emitter<'_> {
         ]);
     }
     fn leave(&mut self, frame: u32) {
+        self.bytes(&[0x31, 0xc0]);
+        let exit=self.code.len();
+        for at in std::mem::take(&mut self.exits[0]){self.patch(at,exit);}
         self.preserve_registers(true);
-        self.bytes(&[0xb8, 1, 0, 0, 0]);
         if frame > 0 {
             self.bytes(&[0x48, 0x81, 0xc4]);
             self.u32(frame);
@@ -763,7 +765,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         stage,
         program,
         breaks: Vec::new(),
-        exits: Vec::new(),
+        exits: vec![Vec::new()],
         continues: Vec::new(),
         allocation,
         frame: frame_layout,

@@ -7,7 +7,21 @@ mod native {
     use std::ffi::c_void;
 
     // 表示只由本运行库解释；跨模块交接不透明指针，不交接Rust容器。
+    #[derive(Debug)]
     struct NativeError { message: String }
+    impl std::fmt::Display for NativeError {
+        fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str(&self.message)}
+    }
+    impl std::error::Error for NativeError {}
+    /// 只在所有原生消费者完成后，消费同一运行库交回的原拥有错误。
+    pub(crate) unsafe fn take_errors(errors:impl IntoIterator<Item=*mut c_void>)->crate::Result<()> {
+        let mut owned: *mut c_void=std::ptr::null_mut();
+        for error in errors {
+            if error.is_null(){continue;}
+            owned=if owned.is_null(){error}else{unsafe {blink_error_join(owned,error)}};
+        }
+        if owned.is_null(){Ok(())}else{Err(unsafe {Box::from_raw(owned.cast::<NativeError>())})}
+    }
     fn finish<T>(result: crate::Result<T>, output: impl FnOnce(T)) -> *mut c_void {
         match result {
             Ok(value) => { output(value); std::ptr::null_mut() }
@@ -135,3 +149,6 @@ mod native {
         unsafe { (&mut *frame).storage_address(handle) }
     }
 }
+
+#[cfg(windows)]
+pub(crate) use native::take_errors;

@@ -40,6 +40,7 @@ pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[BufferAddress], count
         BufferAddress { address: a.as_mut_ptr(), stride: 8 },
     ];
     let mut work = RangeWork {
+        frame: None,
         entry: code.initialize[0].address,
         buffers: buffers.as_ptr(),
         range_parameter_slot: buffers.len(),
@@ -49,7 +50,7 @@ pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[BufferAddress], count
         next: AtomicUsize::new(0),
         result: RangeResult::None,
         partials: std::ptr::null_mut(),
-        statuses: std::ptr::null_mut(),
+        errors: std::ptr::null_mut(),
         range_parameters: std::ptr::null(),
         range_parameter_words: 17,
     };

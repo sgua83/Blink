@@ -435,6 +435,7 @@ pub(crate) fn compile_application(
         textures: Vec::new(),
         uniforms: Vec::new(),
         uniform_bytes: 0,
+        native_frame: None,
         source_stages: 0,
         stages: Vec::new(),
         functions: std::sync::Arc::from([]),

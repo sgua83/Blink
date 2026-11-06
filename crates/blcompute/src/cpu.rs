@@ -33,7 +33,8 @@ unsafe extern "system" {
     fn WaitForThreadpoolWorkCallbacks(work: *mut c_void, cancel: i32);
     fn CloseThreadpoolWork(work: *mut c_void);
 }
-struct RangeWork {
+struct RangeWork<'a> {
+    frame: Option<(&'a std::sync::Arc<crate::application::Definitions>,usize,usize,&'a [CpuBuffer<'a>])>,
     entry: *mut c_void,
     buffers: *const BufferAddress,
     // 范围摘要替换数据集后的私有槽；普通 map 的完整表在其后还可包含纹理。
@@ -44,9 +45,28 @@ struct RangeWork {
     next: AtomicUsize,
     result: RangeResult,
     partials: *mut u32,
-    statuses: *mut u32,
+    errors: *mut *mut c_void,
     range_parameters: *const u32,
     range_parameter_words: usize,
+}
+impl RangeWork<'_> {
+    unsafe fn invoke(&self,address:*mut c_void,buffers:*const BufferAddress,end:u32,begin:u32,output:*mut u32)->*mut c_void {
+        let mut local=self.frame.map(|(definitions,offset,words,inputs)|{
+            let frame=unsafe {crate::application::Frame::from_definitions(definitions.clone(),inputs)};
+            let values=unsafe {std::slice::from_raw_parts(self.uniforms,words)}.to_vec();
+            (frame,values,offset)
+        });
+        let uniforms=match &mut local {
+            Some((frame,values,offset))=>{
+                let pointer=frame as *mut crate::application::Frame as usize as u64;
+                values[*offset]=pointer as u32;values[*offset+1]=(pointer>>32)as u32;
+                values.as_ptr()
+            },
+            None=>self.uniforms,
+        };
+        let entry:RangeEntry=unsafe {std::mem::transmute(address)};
+        unsafe {entry(buffers,uniforms,end,begin,output)}
+    }
 }
 unsafe extern "system" fn execute_ranges(
     _instance: *mut c_void,
@@ -78,15 +98,14 @@ unsafe extern "system" fn execute_ranges(
                     .cast_mut();
                 private_buffers.as_ptr()
             };
-            let entry: RangeEntry = std::mem::transmute(work.entry);
             let words = work.result.words();
             let output = if words == 0 {
                 std::ptr::null_mut()
             } else {
                 work.partials.add(begin / work.grain * words)
             };
-            *work.statuses.add(begin / work.grain) =
-                entry(buffers, work.uniforms, end as u32, begin as u32, output);
+            *work.errors.add(begin / work.grain) =
+                work.invoke(work.entry,buffers,end as u32,begin as u32,output);
         }
     }
 }
@@ -538,21 +557,23 @@ impl CpuTemplate {
     }
     pub(crate) fn run_projected(
         &self,
-        bindings: &mut DomainBindings<CpuDataset>,
+        bindings: &mut DomainBindings<crate::application::ResidentData>,
         order: &[(usize, u32)],
         values: &[Value],
+        definitions: &std::sync::Arc<crate::application::Definitions>,
         writing: impl FnOnce(),
     ) -> Result<()> {
         self.code
-            .run_mapped(bindings, &[], values, order.len(), |i| order[i], writing)
+            .run_mapped(bindings, &[], values, order.len(), |i| order[i], writing,Some(definitions))
     }
 }
 #[derive(Clone, Copy)]
-struct CpuBuffer<'a> {
-    ty: &'a Ty,
-    stride: u32,
-    count: u32,
-    pointer: *mut u32,
+pub(crate) struct CpuBuffer<'a> {
+    pub(crate) ty: &'a Ty,
+    pub(crate) stride: u32,
+    pub(crate) count: u32,
+    pub(crate) pointer: *mut u32,
+    pub(crate) writable: bool,
 }
 impl<'a> CpuBuffer<'a> {
     fn require_storage(data: &Dataset) -> Result<()> {
@@ -567,6 +588,7 @@ impl<'a> CpuBuffer<'a> {
         Ok(Self {
             ty,
             pointer: self.pointer.cast::<u8>().wrapping_add(offset as usize).cast(),
+            writable:self.writable&&expected.access!=blanguage::ast::Access::Read,
             ..self
         })
     }
@@ -577,6 +599,7 @@ impl<'a> CpuBuffer<'a> {
             stride: data.stride,
             count: data.count,
             pointer: data.words.as_mut_ptr(),
+            writable:true,
         })
     }
     fn read(data: &'a Dataset) -> Result<Self> {
@@ -586,8 +609,29 @@ impl<'a> CpuBuffer<'a> {
             stride: data.stride,
             count: data.count,
             pointer: data.words.as_ptr().cast_mut(),
+            writable:false,
         })
     }
+}
+trait CpuStorage:crate::DomainStorage {
+    fn cpu_metadata(&self)->(&Ty,u32,bool);
+    fn cpu_buffer(&mut self)->Result<CpuBuffer<'_>>;
+}
+impl CpuStorage for CpuDataset {
+    fn cpu_metadata(&self)->(&Ty,u32,bool){(&self.ty,self.count,!matches!(self,CpuDataset::Read(_)))}
+    fn cpu_buffer(&mut self)->Result<CpuBuffer<'_>>{match self {Self::Owned(data)=>CpuBuffer::owned(data),Self::Read(data)=>CpuBuffer::read(data)}}
+}
+impl CpuStorage for crate::application::ResidentData {
+    fn cpu_metadata(&self)->(&Ty,u32,bool){match self {
+        Self::Cpu(data)=>data.cpu_metadata(),
+        Self::CpuBorrow(data)=>(&data.ty,data.count,data.writable),
+        Self::Gpu(data)=>(data.layout(),data.count(),false),
+    }}
+    fn cpu_buffer(&mut self)->Result<CpuBuffer<'_>>{match self {
+        Self::Cpu(data)=>data.cpu_buffer(),
+        Self::CpuBorrow(data)=>Ok(CpuBuffer{ty:&data.ty,stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable}),
+        Self::Gpu(_)=>Err(error("CPU 访问需要先显式 download 数据")),
+    }}
 }
 impl CpuCode {
     fn code_memory(&self) -> Result<Vec<CpuCodeMemory>> {
@@ -699,31 +743,32 @@ impl CpuCode {
         values: &[Value],
     ) -> OwnedRunResult {
         let count = bindings.datasets.datasets.len();
-        match self.run_mapped(&mut bindings.datasets, &bindings.textures, values, count, |i| (i, 0), || {}) {
+        match self.run_mapped(&mut bindings.datasets, &bindings.textures, values, count, |i| (i, 0), || {},None) {
             Ok(()) => Ok(bindings.datasets),
             Err(error) => Err((error, bindings)),
         }
     }
-    fn run_mapped(
+    fn run_mapped<D:CpuStorage>(
         &self,
-        bindings: &mut DomainBindings<CpuDataset>,
+        bindings: &mut DomainBindings<D>,
         textures: &[TextureInput],
         values: &[Value],
         count: usize,
         physical: impl Fn(usize) -> (usize, u32) + Copy,
         writing: impl FnOnce(),
+        definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
     ) -> Result<()> {
         let uniforms = arguments(&self.program, (0..count).map(|i| {
             let (binding, offset) = physical(i);
-            let data = &bindings.datasets[binding];
-            (&data.ty, data.count, Some(offset))
+            let(ty,count,_)=bindings.datasets[binding].cpu_metadata();
+            (ty,count,Some(offset))
         }), values)?;
         crate::bindings::require(&bindings.datasets, &bindings.domains, &self.program, physical)?;
         for (data, binding) in (0..count)
             .map(|i| &bindings.datasets[physical(i).0])
             .zip(self.program.buffers())
         {
-            if matches!(data, CpuDataset::Read(_)) && binding.access != blanguage::ast::Access::Read
+            if !data.cpu_metadata().2 && binding.access != blanguage::ast::Access::Read
             {
                 return Err(error("冻结的 CPU 存储只能绑定 read dataset"));
             }
@@ -731,10 +776,7 @@ impl CpuCode {
         let buffers = bindings
             .datasets
             .iter_mut()
-            .map(|data| match data {
-                CpuDataset::Owned(data) => CpuBuffer::owned(data),
-                CpuDataset::Read(data) => CpuBuffer::read(data),
-            })
+            .map(CpuStorage::cpu_buffer)
             .collect::<Result<Vec<_>>>()?;
         // 只复制原指针描述符，不重复借用或复制实际数据。
         let arguments = (0..count).map(|i| {
@@ -746,7 +788,7 @@ impl CpuCode {
         self.run_buffers(&arguments, textures, uniforms, || {
             crate::bindings::invalidate(&mut bindings.domains, &self.program, physical);
             writing();
-        })?;
+        },definitions)?;
         bindings.produced(&self.program, physical);
         Ok(())
     }
@@ -761,7 +803,7 @@ impl CpuCode {
             .iter_mut()
             .map(CpuBuffer::owned)
             .collect::<Result<Vec<_>>>()?;
-        self.run_buffers(&buffers, textures, uniforms, || {})
+        self.run_buffers(&buffers, textures, uniforms, || {},None)
     }
     fn run_buffers(
         &self,
@@ -769,6 +811,7 @@ impl CpuCode {
         textures: &[TextureInput],
         mut uniforms: Vec<u32>,
         writing: impl FnOnce(),
+        definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
     ) -> Result<()> {
         if textures.len() != self.program.texture_count()
             || textures.iter().zip(self.program.textures().iter().flat_map(|binding|
@@ -777,6 +820,9 @@ impl CpuCode {
                     || binding.format.is_some_and(|format| texture.format() != format)) {
             return Err(error("纹理绑定数量、维度或格式与程序接口不一致"));
         }
+        let frame=self.program.native_frame().map(|offset|
+            definitions.map(|definitions|(definitions,offset as usize/4,uniforms.len(),buffers))
+                .ok_or_else(||error("CPU范围映像缺少实际资源定义目录"))).transpose()?;
         let texture_descriptors = crate::texture::CpuTextures::new(textures);
         let pointers: Vec<_> = buffers
             .iter()
@@ -821,6 +867,7 @@ impl CpuCode {
                 vec![0u32; (count as usize).div_ceil(grain) * result.words()]
             };
             let mut ranges = RangeWork {
+                frame,
                 entry: executable.address,
                 buffers: pointers.as_ptr(),
                 range_parameter_slot: self.program.buffers().len(),
@@ -830,7 +877,7 @@ impl CpuCode {
                 next: AtomicUsize::new(0),
                 result,
                 partials: partials.as_mut_ptr(),
-                statuses: std::ptr::null_mut(),
+                errors: std::ptr::null_mut(),
                 range_parameters: std::ptr::null(),
                 range_parameter_words: result.words().max(1),
             };
@@ -861,19 +908,15 @@ impl CpuCode {
                         let mut inputs = pointers.clone();
                         inputs[*source] = BufferAddress { address: partials.as_mut_ptr(), stride: result.words() * 4 };
                         inputs[*target] = inputs[*source];
-                        let entry: RangeEntry = unsafe { std::mem::transmute(prefix.address) };
-                        let status = unsafe {
-                            entry(
+                        let failure = unsafe {
+                            ranges.invoke(prefix.address,
                                 inputs.as_ptr(),
-                                uniforms.as_ptr(),
                                 (partials.len() / result.words()) as u32,
                                 0,
                                 std::ptr::null_mut(),
                             )
                         };
-                        if status == 0 {
-                            return Err(error("CPU原生范围执行失败"));
-                        }
+                        unsafe {crate::application::take_errors([failure])}?;
                         apply
                     }
                     Continuation::Apply(next) => {
@@ -882,19 +925,15 @@ impl CpuCode {
                             let mut inputs = pointers.clone();
                             inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr(), stride: k * 4 };
                             let mut output = vec![0; k];
-                            let entry: RangeEntry = unsafe { std::mem::transmute(next.address) };
-                            let status = unsafe {
-                                entry(
+                            let failure = unsafe {
+                                ranges.invoke(next.address,
                                     inputs.as_ptr(),
-                                    uniforms.as_ptr(),
                                     (partials.len() / k) as u32,
                                     0,
                                     output.as_mut_ptr(),
                                 )
                             };
-                            if status == 0 {
-                                return Err(error("CPU原生范围执行失败"));
-                            }
+                            unsafe {crate::application::take_errors([failure])}?;
                             for (scalar, offset) in &r.ty.components {
                                 unsafe {
                                     std::ptr::copy_nonoverlapping(
@@ -983,9 +1022,9 @@ impl CpuCode {
         }
         Ok(())
     }
-    fn execute(&self, ranges: &mut RangeWork) -> Result<()> {
-        let mut statuses = vec![0u32; ranges.count.div_ceil(ranges.grain)];
-        ranges.statuses = statuses.as_mut_ptr();
+    fn execute(&self, ranges: &mut RangeWork<'_>) -> Result<()> {
+        let mut errors = vec![std::ptr::null_mut(); ranges.count.div_ceil(ranges.grain)];
+        ranges.errors = errors.as_mut_ptr();
         let work = unsafe {
             CreateThreadpoolWork(
                 execute_ranges,
@@ -1003,9 +1042,6 @@ impl CpuCode {
             }
         }
         drop(handle);
-        if statuses.into_iter().any(|status| status == 0) {
-            return Err(error("CPU原生范围执行失败"));
-        }
-        Ok(())
+        unsafe {crate::application::take_errors(errors)}
     }
 }

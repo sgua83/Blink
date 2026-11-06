@@ -1726,6 +1726,7 @@ pub struct Program {
     pub(crate) textures: Vec<TextureBinding>,
     pub(crate) uniforms: Vec<Uniform>,
     pub(crate) uniform_bytes: u32,
+    pub(crate) native_frame: Option<u32>,
     pub(crate) source_stages: usize,
     pub(crate) stages: Vec<Stage>,
     pub(crate) imports: BTreeMap<String, Vec<u8>>,

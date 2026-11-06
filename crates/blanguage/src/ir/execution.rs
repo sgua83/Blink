@@ -250,6 +250,7 @@ pub struct ExecutionPlan {
     pub stages: Vec<ExecutionStage>,
     pub indirect_buffer: usize,
     pub auxiliary_buffers: usize,
+    pub(crate) native_frame: Option<u32>,
 }
 impl Deref for ExecutionPlan {
     type Target = ProgramLayout;
@@ -258,6 +259,8 @@ impl Deref for ExecutionPlan {
     }
 }
 impl ExecutionPlan {
+    /// 本次CPU范围私有Frame在原参数块中的真实字节位置；不属于用户uniform。
+    pub fn native_frame(&self) -> Option<u32> { self.native_frame }
     pub fn stages(&self) -> &[ExecutionStage] {
         &self.stages
     }
@@ -349,6 +352,7 @@ impl ExecutionPlan {
             stages,
             indirect_buffer: program.indirect_buffer(),
             auxiliary_buffers: program.auxiliary_buffers(),
+            native_frame: program.native_frame,
         }
     }
 }

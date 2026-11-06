@@ -599,19 +599,28 @@ impl Builder<'_> {
                     }
                     let borrow=self.position_origin(&place,span)?.normalize();
                     memory_borrow.union(&borrow);
-                    let address=self.reg(Scalar::U64);
-                    self.code.push(Inst::generated(InstKind::PositionAddress{dst:address,address:CallReference{
-                        storage:CallStorage::Indexed(IndexedSource::Data{binding,index:zero.regs[0]}),offset:None,word:0,
-                    }},origin.clone()));
-                    let pointer=Value{ty:Ty::scalar(Scalar::U64),regs:vec![address],proof:bounds::Proof::default().with_view_borrow(0,borrow),literal:false,uniform:true,constant:None};
+                    let pointer=if d.execution==crate::execution::Requirement::Invocation {
+                        let address=self.reg(Scalar::U64);
+                        self.code.push(Inst::generated(InstKind::PositionAddress{dst:address,address:CallReference{
+                            storage:CallStorage::Indexed(IndexedSource::Data{binding,index:zero.regs[0]}),offset:None,word:0,
+                        }},origin.clone()));
+                        Value{ty:Ty::scalar(Scalar::U64),regs:vec![address],proof:bounds::Proof::default().with_view_borrow(0,borrow),literal:false,uniform:true,constant:None}
+                    }else{
+                        let mut handle=self.constant_with_origin(Scalar::U32,binding as u64,Some(origin.clone()));
+                        handle.proof=handle.proof.with_view_borrow(0,borrow);handle
+                    };
                     let length=self.data_length(&view);
                     let step=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::BufferStride(step,binding),origin.clone()));
                     let stride=Value{ty:Ty::scalar(Scalar::U64),regs:vec![step],proof:bounds::Proof::default(),literal:false,uniform:true,constant:None};
-                    let offset=self.constant_with_origin(Scalar::U32,Bits::from(field),Some(origin));
+                    let offset=self.constant_with_origin(Scalar::U32,Bits::from(field),Some(origin.clone()));
                     let descriptor=Self::borrowed_dataset_parameter_type(p.access,d.execution);
+                    let stride=if d.execution==crate::execution::Requirement::Invocation{stride}else{
+                        let reg=self.reg(Scalar::U32);self.emit(InstKind::Cast{dst:reg,src:stride.regs[0]});
+                        Value{ty:Ty::scalar(Scalar::U32),regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:true,constant:None}
+                    };
                     let mut proof=bounds::Proof::default();
                     for value in [&pointer,&length,&stride,&offset]{proof.append(value);}
-                    let value=Value{ty:descriptor,regs:vec![address,length.regs[0],step,offset.regs[0]],proof,literal:false,uniform:true,constant:None};
+                    let value=Value{ty:descriptor,regs:vec![pointer.regs[0],length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:true,constant:None};
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow:None, ty:value.ty,values:value.regs});
                     locations.insert(residency::Input::new(index),residency::Residency::cpu());
@@ -1471,6 +1480,54 @@ fn lower_module_failures(world:&World,module:&mut Module)->Result<()> {
     }
     Ok(())
 }
+fn bind_range_body(
+    world:&World,body:&mut ValueCode,framed:&BTreeSet<String>,fallible:&BTreeSet<String>,offset:Option<u32>,
+)->Result<()> {
+    let mut uses=false;
+    calls(&mut body.code,&mut |call|uses|=matches!(&call.target,CallTarget::Defined(name)if framed.contains(name)));
+    if uses {
+        let first=body.registers.len();body.registers.extend([Scalar::U32,Scalar::U32]);
+        let frame=vec![first,first+1];let offset=offset.unwrap();
+        calls(&mut body.code,&mut |call|{
+            if matches!(&call.target,CallTarget::Defined(name)if framed.contains(name)) {
+                call.arguments.insert(0,CallArgument::Value{origin:Some(Arc::new(ArgumentOrigin::Frame)),dataset_borrow:None,ty:application::pointer_type(),values:frame.clone()});
+            }
+        });
+        let code=std::mem::take(&mut body.code);
+        body.code=vec![Inst::new(InstKind::Uniform(first,offset)),Inst::new(InstKind::Uniform(first+1,offset+4))];
+        body.code.extend(code);
+    }
+    lower_failure_calls(world,body,None,fallible,None)?;
+    calls(&mut body.code,&mut |call|call.failure=None);
+    Ok(())
+}
+fn bind_range_program(world:&World,program:&mut Program,framed:&BTreeSet<String>,fallible:&BTreeSet<String>,needs_frame:bool)->Result<()> {
+    if needs_frame {
+        let offset=ir::align_up(program.uniform_bytes,8);
+        program.native_frame=Some(offset);program.uniform_bytes=offset+8;
+    }
+    for stage in &mut program.stages {
+        let mut body=ValueCode{
+            entry_origin:None,generated_origin:None,
+            registers:std::mem::take(&mut stage.registers),locals:std::mem::take(&mut stage.locals),
+            code:std::mem::take(&mut stage.code),inputs:Vec::new(),outputs:Vec::new(),
+        };
+        bind_range_body(world,&mut body,framed,fallible,program.native_frame)?;
+        stage.registers=body.registers;stage.locals=body.locals;stage.code=body.code;
+        let values=match &mut stage.operation{
+            Operation::CustomReduce(value)=>Some(value),
+            Operation::CustomScan(value)=>Some(&mut value.values),
+            Operation::CustomSegmentedReduce(value)=>Some(&mut value.values),
+            _=>None,
+        };
+        if let Some(values)=values {
+            for body in values.project.iter_mut().chain([&mut values.identity,&mut values.combine]){
+                bind_range_body(world,body,framed,fallible,program.native_frame)?;
+            }
+        }
+    }
+    Ok(())
+}
 fn finalize(
     world:&World,
     mut module: Module,
@@ -1554,11 +1611,13 @@ fn finalize(
     for program in &mut programs {
         let names = program_dependencies(program);
         for name in &names {
-            if frame.contains(name) {
+            if frame.contains(name) && (program.target()!=Target::Cpu || root.is_none() && owner.is_none()) {
                 let unit = &units[name];
-                return unit.source.fail(unit.span, "B263", "CPU范围没有Frame；被调函数的实际调用闭包需要Frame");
+                return unit.source.fail(unit.span, "B263", "该范围产物尚未交接真实Frame及同源资源定义");
             }
         }
+        let needs_frame=names.iter().any(|name|frame.contains(name));
+        bind_range_program(world,program,&frame,&fallible,needs_frame)?;
         program.imports = names.into_iter().filter_map(|name|
             imports.get(&name).map(|contract| (name, contract.clone()))).collect();
     }

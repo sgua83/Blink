@@ -473,6 +473,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
         textures,
         uniforms,
         uniform_bytes: offset,
+        native_frame: None,
         source_stages: 0,
         stages: Vec::new(),
         functions: Arc::from([]),
@@ -1515,6 +1516,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
             })
             .collect::<Result<Vec<_>>>()?,
         uniforms: Vec::new(),
+        native_frame: None,
         source_stages: 0,
         stages: Vec::new(),
         functions: Arc::from([]),

@@ -521,7 +521,7 @@ pub(super) fn emit(
         stage: &stage,
         program: &program,
         breaks: Vec::new(),
-        exits: Vec::new(),
+        exits: vec![Vec::new()],
         continues: Vec::new(),
         allocation,
         frame: layout,

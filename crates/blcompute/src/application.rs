@@ -11,6 +11,8 @@ use blanguage::{
 };
 
 mod abi;
+#[cfg(windows)]
+pub(crate) use abi::take_errors;
 pub use blanguage::resource::DatasetBinding;
 
 pub enum ProgramImage {
@@ -44,13 +46,22 @@ impl ProgramSlot {
         }
     }
 }
-struct Definitions {
+pub(crate) struct Definitions {
     types: Vec<Ty>,
     programs: Vec<ProgramSlot>,
 }
 /// 当前实际驻留存储；Frame观察只借用该原值，不转移所有权。
+/// 范围输入的真实非拥有CPU借用；载荷及view资源仍由原执行输入保持。
+pub struct CpuBorrow {
+    pub(crate) ty: Ty,
+    pub(crate) stride: u32,
+    pub(crate) count: u32,
+    pub(crate) pointer: *mut u32,
+    pub(crate) writable: bool,
+}
 pub enum ResidentData {
     Cpu(CpuDataset),
+    CpuBorrow(CpuBorrow),
     Gpu(vulkan::GpuDataset),
 }
 
@@ -79,12 +90,21 @@ impl Frame {
                 .map(ProgramSlot::Cpu).map_err(|(error, _)| error),
             ProgramImage::Gpu(image) => Ok(ProgramSlot::Gpu(Arc::new(image))),
         }).collect::<Result<Vec<_>>>()?;
-        Ok(Self {
-            data: Vec::new().into(),
-            gpu_programs: (0..programs.len()).map(|_| None).collect(),
-            definitions: Arc::new(Definitions { types, programs }),
+        Ok(unsafe {Self::from_definitions(Arc::new(Definitions { types, programs }),&[])})
+    }
+    /// 本次范围独占局部存储，只借用原模块已绑定的同一不可变定义。
+    /// # Safety
+    /// inputs的实际存储、布局、权限和借用资源保持到本Frame最后消费者完成；本值不取得其释放权。
+    pub(crate) unsafe fn from_definitions(definitions: Arc<Definitions>, inputs:&[crate::cpu::CpuBuffer<'_>]) -> Self {
+        let datasets=inputs.iter().map(|data|Some(ResidentData::CpuBorrow(CpuBorrow{
+            ty:data.ty.clone(),stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable,
+        }))).collect();
+        Self {
+            data: DomainBindings {datasets,domains:Vec::new()},
+            gpu_programs: (0..definitions.programs.len()).map(|_| None).collect(),
+            definitions,
             device: None,
-        })
+        }
     }
     /// 借用当前原数据根；槽索引为本Frame实际句柄，None保留已释放空槽。
     pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
@@ -102,7 +122,7 @@ impl Frame {
     pub fn types(&self) -> &Vec<Ty> {
         &self.definitions.types
     }
-    /// 查询本Frame当前可见的CPU数据字存储；不等待或下载GPU数据。
+    /// 查询本Frame拥有／冻结的CPU数据字存储；范围输入只借用，不重复计为本Frame分配。
     /// 结果只保存本次元数据，不保活资源；释放后的旧结果不代表当前存活状态。
     /// 不包含代码VM、view来源图、类型／句柄容器或OS堆管理开销。
     pub fn cpu_data_memory(&self) -> Vec<FrameCpuDataMemory> {
@@ -144,8 +164,10 @@ impl Frame {
         if self.device.is_none() {
             self.create_device()?;
         }
-        let ResidentData::Cpu(data) = self.data.datasets[handle as usize].as_ref().unwrap() else {
-            return Err(error("CPU 访问需要先显式 download 数据"));
+        let data=match self.data.datasets[handle as usize].as_ref().unwrap() {
+            ResidentData::Cpu(data)=>data,
+            ResidentData::CpuBorrow(_)=>return Err(error("借用的CPU输入不拥有驻留转移权")),
+            ResidentData::Gpu(_)=>return Err(error("CPU 访问需要先显式 download 数据")),
         };
         let data = self.device.as_ref().unwrap().upload_cpu(data, &mut std::collections::BTreeMap::new())?;
         self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
@@ -187,6 +209,7 @@ impl Frame {
             ResidentData::Cpu(CpuDataset::Read(_)) => {
                 return Err(error("冻结的 CPU 存储不能调整长度"));
             }
+            ResidentData::CpuBorrow(_) => return Err(error("借用的CPU输入不拥有调整长度权")),
             ResidentData::Gpu(_) => return Err(error("CPU 访问需要先显式 download 数据")),
         };
         let stride = data.stride as usize;
@@ -220,6 +243,7 @@ impl Frame {
         intervals: &[blanguage::resource::ElementInterval], limits: &[u32]) {
         let ty = match self.data.datasets[handle as usize].as_ref().unwrap() {
             ResidentData::Cpu(data) => &data.ty,
+            ResidentData::CpuBorrow(data) => &data.ty,
             ResidentData::Gpu(data) => data.layout(),
         };
         let scalar = ty.components.iter().find(|(_, at)| *at == offset).unwrap().0;
@@ -246,6 +270,7 @@ impl Frame {
         if bytes != 0 && count != 0 {
             let (record_stride, records) = match self.data.datasets[index].as_ref().unwrap() {
                 ResidentData::Cpu(data) => (data.stride(), data.count()),
+                ResidentData::CpuBorrow(data) => (data.stride,data.count),
                 ResidentData::Gpu(data) => (data.stride(), data.count()),
             };
             self.data.domains.retain(|r| !r.address_written(index, offset, bytes, stride, count, record_stride, records));
@@ -258,6 +283,7 @@ impl Frame {
         match self.data.datasets[handle as usize].as_mut().unwrap() {
             ResidentData::Cpu(CpuDataset::Owned(data))=>data.words.as_mut_ptr() as usize as u64,
             ResidentData::Cpu(CpuDataset::Read(data))=>data.words().as_ptr() as usize as u64,
+            ResidentData::CpuBorrow(data)=>data.pointer as usize as u64,
             ResidentData::Gpu(data)=>data.storage_address(),
         }
     }
@@ -313,37 +339,29 @@ impl Frame {
                 let mut datasets = Vec::new();
                 for &handle in &selected {
                     match self.data.datasets[handle as usize].take().unwrap() {
-                        ResidentData::Cpu(data) => datasets.push(data),
+                        data @ (ResidentData::Cpu(_)|ResidentData::CpuBorrow(_)) => datasets.push(data),
                         data @ ResidentData::Gpu(_) => {
                             self.data.datasets[handle as usize] = Some(data);
                             for (&handle, data) in selected.iter().zip(datasets) {
-                                self.data.datasets[handle as usize] = Some(ResidentData::Cpu(data));
+                                self.data.datasets[handle as usize] = Some(data);
                             }
                             return Err(error("CPU 访问需要先显式 download 数据"));
                         }
                     }
                 }
                 let mut inputs = DomainBindings { datasets, domains };
-                let result = program.run_projected(&mut inputs, &order, values, || {
+                let result = program.run_projected(&mut inputs, &order, values, &definitions, || {
                     crate::bindings::invalidate(&mut self.data.domains, layout,
                         |i| (bindings[i].handle as usize, bindings[i].offset));
                 });
-                (
-                    inputs
-                        .datasets
-                        .into_iter()
-                        .map(ResidentData::Cpu)
-                        .collect::<Vec<_>>(),
-                    inputs.domains,
-                    result,
-                )
+                (inputs.datasets,inputs.domains,result)
             }
             Program::Gpu(gpu_program) => {
                 let mut datasets = Vec::with_capacity(selected.len());
                 for &handle in &selected {
                     match self.data.datasets[handle as usize].take().unwrap() {
                         ResidentData::Gpu(data) => datasets.push(data),
-                        data @ ResidentData::Cpu(_) => {
+                        data @ (ResidentData::Cpu(_)|ResidentData::CpuBorrow(_)) => {
                             self.data.datasets[handle as usize] = Some(data);
                             for (&handle, data) in selected.iter().zip(datasets) {
                                 self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
@@ -394,4 +412,22 @@ impl Frame {
         self.data.domains.dedup();
         result
     }
+}
+
+impl crate::DomainStorage for ResidentData {
+    fn element_count(&self)->u32 {match self {
+        Self::Cpu(data)=>crate::DomainStorage::element_count(data),
+        Self::CpuBorrow(data)=>data.count,
+        Self::Gpu(data)=>crate::DomainStorage::element_count(data),
+    }}
+    fn read_identity(&self)->Option<usize> {match self {
+        Self::Cpu(data)=>crate::DomainStorage::read_identity(data),
+        Self::CpuBorrow(_)=>None,
+        Self::Gpu(data)=>crate::DomainStorage::read_identity(data),
+    }}
+    fn read_binding(&self)->Option<Self> {match self {
+        Self::Cpu(data)=>crate::DomainStorage::read_binding(data).map(Self::Cpu),
+        Self::CpuBorrow(_)=>None,
+        Self::Gpu(data)=>crate::DomainStorage::read_binding(data).map(Self::Gpu),
+    }}
 }

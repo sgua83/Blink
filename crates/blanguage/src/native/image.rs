@@ -8,11 +8,11 @@ pub struct BufferAddress {
     pub address: *mut u32,
     pub stride: usize,
 }
-/// 同一CPU范围入口：非零为执行成功，零为失败；算法结果仅写入output。
+/// 同一CPU范围入口：空指针成功，非空是调用者唯一拥有的原资源错误；算法结果仅写入output。
 /// buffers、uniforms及output由本次调用保持到入口完成；无算法结果时output不解引用。
 pub type RangeEntry = unsafe extern "C" fn(
     *const BufferAddress, *const u32, u32, u32, *mut u32,
-) -> u32;
+) -> *mut std::ffi::c_void;
 #[derive(Clone, Debug)]
 pub struct Relocation {
     pub offset: usize,

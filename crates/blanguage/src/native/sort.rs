@@ -77,7 +77,7 @@ pub(super) fn initialize(program: &Program, s: &Sorting, key: usize, first: bool
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
-    e.bytes(&[0xb8, 1, 0, 0, 0, 0x41, 0x5c, 0xc3]);
+    e.bytes(&[0x31, 0xc0, 0x41, 0x5c, 0xc3]);
     e.finish(8)
 }
 pub fn emit_sort_histogram(program: &Program) -> NativeCode {
@@ -94,7 +94,7 @@ pub fn emit_sort_histogram(program: &Program) -> NativeCode {
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
-    e.bytes(&[0xb8, 1, 0, 0, 0, 0xc3]);
+    e.bytes(&[0x31, 0xc0, 0xc3]);
     e.finish(0)
 }
 pub fn emit_sort_scatter(program: &Program) -> NativeCode {
@@ -113,7 +113,7 @@ pub fn emit_sort_scatter(program: &Program) -> NativeCode {
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
-    e.bytes(&[0xb8, 1, 0, 0, 0, 0x5b, 0xc3]);
+    e.bytes(&[0x31, 0xc0, 0x5b, 0xc3]);
     e.finish(8)
 }
 pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
@@ -157,6 +157,6 @@ pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
-    e.bytes(&[0xb8, 1, 0, 0, 0, 0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5b, 0xc3]);
+    e.bytes(&[0x31, 0xc0, 0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5b, 0xc3]);
     e.finish(40)
 }
