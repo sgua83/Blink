@@ -1102,9 +1102,9 @@ impl Proof {
             } else { floating::cast(value, i, target) };
             proof.nonzero[i] = integers && !proof.ranges[i].contains(target.order_bias());
             let domains=proof.domains(i).into_iter().filter_map(|domain|match domain{
+                domain if same_value=>Some(domain),
                 IndexDomain::CommonRange(id,base,middle)if integers&&(base==middle||target.size()<=middle.size())=>Some(IndexDomain::CommonRange(id,base,target)),
-                IndexDomain::CommonRange(..)=>None,
-                domain if same_value=>Some(domain),_=>None,
+                _=>None,
             }).chain(proof.origins[i].iter().copied().filter(|_|integers&&!same_value).map(|id|IndexDomain::CommonRange(id,source,target))).collect::<Domains>();
             if let Some(current)=proof.domains.get_mut(i){current.clear();}
             for domain in domains{proof.mark_domain(i,domain);}
