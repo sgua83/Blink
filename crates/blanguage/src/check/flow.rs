@@ -537,16 +537,23 @@ impl Builder<'_> {
                 let width=place.ty().components.len();
                 for component in 0..width {
                     if !proof.known_identity(component).zip(entry.known_identity(component)).is_some_and(|(a,b)|a==b){continue;}
-                    let mut repeated:Option<bounds::Proof>=None;
+                    let mut repeated:Option<(bounds::Proof,bounds::Clause,Reg)>=None;
                     for edge in &mut context.continues {
                         if let Some((next,next_uniform,_))=edge.env.get_mut(name).and_then(Binding::proof_storage) {
                             let next=next.project(&[component],width);*uniform &= *next_uniform;
-                            if let Some(common)=repeated.as_mut(){common.join(&next,1,None);}else{repeated=Some(next);}
+                            if let Some((common,aliases,reg))=repeated.as_mut(){
+                                *aliases=bounds::Clause::either(aliases,&next.output_aliases(&[*reg],&self.registers,&BTreeMap::new()));
+                                common.join(&next,1,None);
+                            }else{
+                                let reg=self.reg(place.ty().components[component].0);
+                                let aliases=next.output_aliases(&[reg],&self.registers,&BTreeMap::new());
+                                repeated=Some((next,aliases,reg));
+                            }
                         }
                     }
-                    if let Some(repeated)=repeated {
-                        let mut common=proof.project(&[component],width);let reg=self.reg(place.ty().components[component].0);
-                        let aliases=[common.output_aliases(&[reg],&self.registers,&BTreeMap::new()),repeated.output_aliases(&[reg],&self.registers,&BTreeMap::new())];
+                    if let Some((repeated,alias,reg))=repeated {
+                        let mut common=proof.project(&[component],width);
+                        let aliases=[common.output_aliases(&[reg],&self.registers,&BTreeMap::new()),alias];
                         exit.path=bounds::Clause::both(&exit.path,&bounds::Clause::either(&empty.assume(&aliases[0],true),&empty.assume(&aliases[1],false)));
                         common.join_condition(&repeated,1,Some(&empty));common=common.with_identity(ValueIdentity::Register(reg)).with_view_borrow(0,proof.view_borrow(component));
                         proof.assign(&[component],width,common);
