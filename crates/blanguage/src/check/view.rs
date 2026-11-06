@@ -205,7 +205,7 @@ pub(super) fn resource_borrow(data:&application::Data)->Borrow{
 pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.root.proof.clone().with_view_borrow(0,resource_borrow(data))}
 
 pub(super) enum InputSlot {
-    Value {name:String,contents:Option<Vec<usize>>,component:usize},
+    Value {name:String,contents:Option<Vec<usize>>,component:usize,identity:Option<(ValueIdentity,Scalar)>},
     Data {name:String,path:Vec<usize>,independent:bool},
 }
 impl InputSlot {
@@ -213,14 +213,22 @@ impl InputSlot {
     pub fn value_proof<'a>(&self,env:&'a BTreeMap<String,Binding>)->Option<&'a bounds::Proof>{
         match self {
             Self::Value{name,contents:Some(path),..}=>data_at(env.get(name)?,path)?.elements.view_value().map(|value|&value.proof),
-            Self::Value{name,contents:None,..}=>env.get(name)?.view_parts().map(|(_,proof)|proof),
+            Self::Value{name,contents:None,..}=>match env.get(name)? {
+                Binding::Value(value)=>Some(&value.proof),
+                Binding::Owned(value)|Binding::ViewElement{element:value,..}=>Some(&value.proof),
+                Binding::OwnedValue(value)=>Some(&value.value.proof),_=>None,
+            },
             Self::Data{..}=>None,
         }
     }
     pub fn value_proof_mut<'a>(&self,env:&'a mut BTreeMap<String,Binding>)->Option<&'a mut bounds::Proof>{
         match self {
             Self::Value{name,contents:Some(path),..}=>data_at_mut(env.get_mut(name)?,path)?.elements.view_value_mut().map(|value|&mut value.proof),
-            Self::Value{name,contents:None,..}=>env.get_mut(name)?.view_proof_mut(),
+            Self::Value{name,contents:None,..}=>match env.get_mut(name)? {
+                Binding::Value(value)=>Some(&mut value.proof),
+                Binding::Owned(value)|Binding::ViewElement{element:value,..}=>Some(&mut value.proof),
+                Binding::OwnedValue(value)=>Some(&mut value.value.proof),_=>None,
+            },
             Self::Data{..}=>None,
         }
     }

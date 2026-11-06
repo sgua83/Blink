@@ -370,6 +370,17 @@ pub(crate) struct Proof {
     // Address bits describe storage numerically; they grant no borrow or lifetime.
     pub(super) addresses: Vec<Option<address::Identity>>,
 }
+impl PartialEq for Proof {
+    fn eq(&self,other:&Self)->bool {
+        use crate::module::codec::Encode;
+        // Compare the existing canonical conditions, not equivalent DAG shapes.
+        self.origins==other.origins && self.conditions.bytes()==other.conditions.bytes()
+            && self.ranges.iter().map(|range|&range.0).eq(other.ranges.iter().map(|range|&range.0))
+            && self.nonzero==other.nonzero && self.domains==other.domains
+            && self.views==other.views && self.addresses==other.addresses
+    }
+}
+impl Eq for Proof {}
 impl Proof {
     // 阶段完成只交接共同数值和逻辑数据目标；值身份、路径及借用不跨阶段。
     pub(super) fn element_facts(&self, target: impl Fn(usize) -> Self) -> Self {

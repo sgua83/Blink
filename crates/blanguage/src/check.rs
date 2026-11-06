@@ -2818,7 +2818,7 @@ impl<'a> Builder<'a> {
             let path=self.residency_path();
             match bounds::integer_divisors(&b,&path) {
                 Some(divisors)=>Some(divisors),
-                None if self.view_model.pending_values()=>{
+                None if self.view_model.pending_values()||self.loop_contexts.iter().any(|context|context.view_inputs.iter().any(|slot|matches!(slot,view::InputSlot::Value{identity:Some(_),..})))=>{
                     self.check_view_requirement(view::Requirement::Nonzero{value:Box::new(b.clone()),path,span})?;
                     Some(b.regs.iter().copied().map(IntegerDivisor::Value).collect())
                 },
@@ -3474,11 +3474,11 @@ impl<'a> Builder<'a> {
     fn while_loop(&mut self, condition: &Expr, body: &[Stmt], initial: bool, span: Span) -> Result<()> {
         self.flow = Flow::NEXT;
         let environment = self.env.clone();
-        let writes=self.loop_writes(Some(condition),body,None,initial)?;
         self.enter_loop(&environment);
-        self.loop_contexts.last_mut().unwrap().writes=writes;
         self.configure_initial_loop(initial,None,None);
         self.prepare_view_loop();
+        let writes=self.loop_writes(Some(condition),body,None,initial)?;
+        self.loop_contexts.last_mut().unwrap().writes=writes;
         self.loop_contexts.last_mut().unwrap().outer=std::mem::take(&mut self.code);
         let Some(c) = self.temporary_scope(condition.span, |builder| Ok((builder.expr(condition)?, view::Borrow::default())))? else {
             let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);

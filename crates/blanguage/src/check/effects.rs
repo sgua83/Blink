@@ -142,25 +142,10 @@ impl Builder<'_> {
             }
             ExprKind::Specialize(name,explicit,args) if name=="unsafe_position"=>{
                 let Some(owner)=owner else{return Ok(None);};
-                let ([GenericArgument::Type(syntax)],[arg])=(explicit.as_slice(),args.as_slice()) else{return Ok(None);};
+                let ([GenericArgument::Type(syntax)],[_])=(explicit.as_slice(),args.as_slice()) else{return Ok(None);};
                 let ty=self.world.ty(syntax,&self.definition.source,expr.span,&self.definition.module,&self.definition.imports)?;
-                let known=if let ExprKind::Name(name)=&arg.kind {
-                    self.env.get(name).and_then(Binding::view_parts).and_then(|(address,proof)|{
-                        if !address.is_address(){return None;}
-                        let borrow=address::borrow_in_path(&self.current_address_borrow(&proof.view_borrow(0)),&self.path);
-                        (!borrow.pending()&&!address::external_memory(&borrow)&&borrow.sources.iter().all(|source|matches!(source,view::Source::Position(_)))).then(||{
-                            address::borrowed_positions(&borrow,&address::Layout::of(&ty),&ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>())
-                        })
-                    })
-                }else{None};
-                let components=match known {
-                    Some(positions)=>{
-                        let actual=self.positions(owner);
-                        positions.iter().map(|written|actual.iter().enumerate().filter_map(|(i,position)|
-                            (owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()).collect()
-                    }
-                    None=>vec![(0..owner.ty().components.len()).collect();ty.components.len()],
-                };
+                // Syntax has not read the address; actual Memory and loop producers resolve its writes.
+                let components=vec![(0..owner.ty().components.len()).collect();ty.components.len()];
                 Ok(Some((ty,components)))
             }
             _ => Ok(None),
@@ -265,6 +250,7 @@ impl Builder<'_> {
         &mut self,
         writes: &[Write<'_>],
         borrowed_data: Option<ValueIdentity>,
+        effect: &LoopWrites,
     ) -> Result<()> {
         for write in writes {
             let changed=match write {
@@ -356,6 +342,19 @@ impl Builder<'_> {
                     Binding::Owned(owner) => {
                         owner.uniform = false;
                         owner.proof.forget_value(&components,owner.place.ty().components.len());
+                        // Direct writes retain their numeric analysis; indirect changes use this loop's original inputs.
+                        let context=self.loop_contexts.last_mut().unwrap();
+                        if context.view_scope.is_some() && context.entry.env.contains_key(name)
+                            && let Place::Local(_,slots,..)=owner.place.storage() {
+                            for component in components.into_iter().filter(|component|!effect.locals.contains(&slots[*component])) {
+                                let scalar=owner.place.ty().components[component].0;
+                                let id=ValueIdentity::Register(self.registers.len());self.registers.push(scalar);
+                                let input=view::InputSlot::Value{name:name.clone(),contents:None,component,identity:Some((id,scalar))};
+                                if let Some(slot)=context.view_inputs.iter_mut().find(|slot|matches!(slot,view::InputSlot::Value{name:target,contents:None,component:part,..}if target==name&&*part==component)) {*slot=input;}
+                                else{context.view_inputs.push(input);}
+                                owner.proof=std::mem::take(&mut owner.proof).with_component_identity(component,id);
+                            }
+                        }
                     }
                     Binding::OwnedValue(owner) => {
                         owner.invalidate_components(&components, borrowed_data)
@@ -521,7 +520,7 @@ impl Builder<'_> {
             effect=self.project_loop_writes(&writes)?;
             writes
         }else{writes};
-        if !initial {self.invalidate_writes(&writes,borrowed_data)?;}
+        if !initial {self.invalidate_writes(&writes,borrowed_data,&effect)?;}
         Ok(effect)
     }
 }

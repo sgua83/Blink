@@ -461,7 +461,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1636`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1647`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -486,7 +486,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2736`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2747`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -505,7 +505,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1626`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1637`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1665,7 +1665,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-源码节选：`crates/blanguage/src/check/effects.rs:269`。
+源码节选：`crates/blanguage/src/check/effects.rs:255`。
 
 ```rust
         for write in writes {
@@ -1691,7 +1691,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 显式可写dataset实参的contents输入沿原written_application_data取得无拥有资源的真实根，给原LoopWrites.storage交接该根未知字节区间；不再将这份已知存储写扩大为全部存储未知。iterator来源、未知位置及拥有内容仍按实际未知范围处理，原Call整体效果独立保留，不凭签名取消实际写。无拥有资源的元素／字段写由loop_write_projection沿written_application_data、member_type及固定数组分量映射取得实际根与Scalar投影。constant_index只使用未被全部可能写输入改变的原下标事实；声明布局给出步长和分量word／宽度，LoopWrites交接真实字节区间。ApplicationLoads既复用原allocate结果区分不同实际分配，也把同根已知读取与未来区间交给和StoreIndexed共用的byte_overlap；多个写区间分别保留，不把中间未写字节也当作覆盖。未知下标／布局仍是未知范围，未解析子dataset或拥有内容结束不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通静态CPU值调用在原Scope仍持有正文let等词法实参Ty／count时，以原generics选定实例；Write::External携带这个实际实例，循环归一在原入口条件及正文读取之前，通过native_declaration形成／导入同一Unit，再查询同一Module闭合view_access；原Module::declare保持实例只构造一次。原写输入按所有权传入、消费者按借用读取，不复制实例或离开作用域后用入口环境重新推导正文局部；没有另一实例表、调用图、IR求值或数值失效跳过路径。无拥有结果且合同实际只读时保留元素读取与局部数值。闭合写仅指向原ABI借用dataset输入、且原显式contents Position已经交接这些实参时，也不重复添加全局External；真实写仍由原Position和LoopWrites处理。元素无拥有内容／清理F的按值dataset输入也由同一typed根覆盖：原arguments先检查调用者保留view／地址与别名，原move_application_dataset交付唯一拥有并使旧绑定Moved，callee沿原最后消费者完成与释放链结束该存储。这份已转移存储的闭合写不再扩大为所有旧存储未知；没有正文未来AST根表、资源复制或第二释放链。普通已闭合B调用复用native_call_memory的Access、实际输入Proof和when，向同一LoopWrites交接真正写位置，不因存在隐藏地址或Memory条款而扩大为整次外部写。该投影只替代其覆盖的dataset内容写，显式Reference与实际拥有位置继续交给原消费者；不能因存在Memory而先删除未覆盖的标量写。component_projection同时投影已有类型和实际位置，Scope只读取已形成的值快照，不重新解释或求值实参、下标，也不复制IR或再造调用图。未生成的动态来源保留原未知，不能据不完整输入推定无写；资源拥有继续由原Position和唯一拥有者消费。原address_write_components由普通写入与循环共同查询，只撤回真实相交的局部、记录及数组分量；源码与已编译对象／归档消费相同合同。address按值形参没有inout标记不能证明无写；真正只读address函数和普通记录结果按实际合同保持组合能力。dataset的实际静态factory调用也参与同一交接。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。
 
-源码节选：`crates/blanguage/src/check/effects.rs:420`。
+源码节选：`crates/blanguage/src/check/effects.rs:419`。
 
 ```rust
                 Write::External{call,instance:Some(instance),arguments,syntax}=>{
@@ -1712,7 +1712,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
                 },
 ```
 
-原Module只读查询消费同一Unit的Resource、Position、Dataset和Memory闭合Access，不维护第二份副作用状态。Scope与实际调用都以原Memory交接写区，非拥有write／inout许可不重复定义整值写；原C声明继续按实际外部内存合同与类型位置交接。dataset指针的原布局构造归application::dataset_origin，Scope::call_inputs只提供实际Data／字段／逻辑Ty，native_call的BorrowedData分支沿同一构造交接原ABI值，按值ApplicationData分支在原require_application_initialized完成后，也把同一实际Data及完整元素布局交给该调用的原输入Proof；没有额外IR、查询图或运行时状态。Frame句柄和长度仍是原机器值，Origin只表达合同所需的实际存储位置。循环内部尚未形成外层绑定的新拥有输入仍见Issues C-021.1.4.5.4.3.2.5.2，不能由实际调用的修正代替。同上下文的地址身份替换保留Local／Buffer的原固定位置；真正重绑的参数、资源、派生、外部及dataset根继续消费原实参映射并撤去旧形参位置。写区和初始化复用真实存储所有者，不跨模块发布局部槽，不改变机器参数、ABI或释放职责。dataset及拥有字段中的实际元素地址沿原InputSlot::Value引用Data.elements的对应分量，与普通值共享原LoopInput；资源句柄仍由Data槽交接，不把元素内容当作句柄。首次真实游标读取在原数值身份初始化接点同时取得已有共同来源，后续游标赋值保持本次精确来源，不合并已被覆盖的旧地址。循环出口可直接消费已闭合的Value来源；仍待求解的来源和资源存储版本继续原循环图。循环传地址后的真实写入会撤回相交位置的旧数值，写零后不能继续取得非零许可；原循环出口先将每条回边的原值别名交给同一出口值，再合流数值范围与原零次／重复分支；实际改变的值不成为相等身份，延后MemoryValue沿原Clause求解。普通for及其continue保持未写兄弟字段的事实；条件合流只为两侧均存在且不同的值身份建立输出名；缺少既有身份时不提前命名，实际读取沿原位置取得当前共同事实与借用来源，赋值继续交接其真实新值。复合continue保留实际指针写的原存储别名和后续真实读取。循环入口的间接地址写投影仍可能提前丢失事实，见Issues C-005.71.7.1；数据游标跨迭代地址写还存在未撤回旧除数事实的已证实缺陷，见C-005.71.7.1.4，当前尚不具备完整的借用与内存安全保证。这些是当前实现缺口，不构成语言禁止。
+原Module只读查询消费同一Unit的Resource、Position、Dataset和Memory闭合Access，不维护第二份副作用状态。Scope与实际调用都以原Memory交接写区，非拥有write／inout许可不重复定义整值写；原C声明继续按实际外部内存合同与类型位置交接。dataset指针的原布局构造归application::dataset_origin，Scope::call_inputs只提供实际Data／字段／逻辑Ty，native_call的BorrowedData分支沿同一构造交接原ABI值，按值ApplicationData分支在原require_application_initialized完成后，也把同一实际Data及完整元素布局交给该调用的原输入Proof；没有额外IR、查询图或运行时状态。Frame句柄和长度仍是原机器值，Origin只表达合同所需的实际存储位置。循环内部尚未形成外层绑定的新拥有输入仍见Issues C-021.1.4.5.4.3.2.5.2，不能由实际调用的修正代替。同上下文的地址身份替换保留Local／Buffer的原固定位置；真正重绑的参数、资源、派生、外部及dataset根继续消费原实参映射并撤去旧形参位置。写区和初始化复用真实存储所有者，不跨模块发布局部槽，不改变机器参数、ABI或释放职责。dataset及拥有字段中的实际元素地址沿原InputSlot::Value引用Data.elements的对应分量，与普通值共享原LoopInput；资源句柄仍由Data槽交接，不把元素内容当作句柄。首次真实游标读取在原数值身份初始化接点同时取得已有共同来源，后续游标赋值保持本次精确来源，不合并已被覆盖的旧地址。循环出口可直接消费已闭合的Value来源；仍待求解的来源和资源存储版本继续原循环图。循环传地址后的真实写入会撤回相交位置的旧数值，写零后不能继续取得非零许可；原循环出口先将每条回边的原值别名交给同一出口值，再合流数值范围与原零次／重复分支；实际改变的值不成为相等身份，延后MemoryValue沿原Clause求解。普通for及其continue保持未写兄弟字段的事实；条件合流只为两侧均存在且不同的值身份建立输出名；缺少既有身份时不提前命名，实际读取沿原位置取得当前共同事实与借用来源，赋值继续交接其真实新值。复合continue保留实际指针写的原存储别名和后续真实读取。循环入口仍由原LoopWrites交接可能写的位置，尚未读取的地址不能由语法名称推断为不相交。间接影响的本地数值由原循环输入槽命名，入口与真实回边仍由同一LoopState持有，沿原Memory与这些生产者求解当前事实；普通直接槽位写继续原数值分析。非零使用消费闭合后的实际事实，写零撤回旧非零，未写分量保留当前不变量；break退出不作为下一轮生产者。条件沿现有规范编码比较，不因等价DAG的形状制造数值变更。完整借用与内存安全目标及剩余缺口仍见Issues C-036.5，不将局部能力视作完整保证。
 
 源码节选：`crates/blanguage/src/check/address.rs:206`。
 
@@ -1778,7 +1778,7 @@ pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->addr
                     value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&reference.data,field,ty,p.access.reads()).normalize());
 ```
 
-源码节选：`crates/blanguage/src/check/view_contracts.rs:286`。
+源码节选：`crates/blanguage/src/check/view_contracts.rs:291`。
 
 ```rust
         fn inputs(borrow:&Borrow,function:&Function)->Borrow {
@@ -2044,7 +2044,7 @@ enum Fact {
 
 完整parallel的输出属于原资源，而不是前一游标的寄存器身份。prefix::Facts沿原阶段效果保存每个元素共同成立的数值范围和逻辑Data目标；下一Builder消费同一共同事实。抽取只保留ranges和经过实际调用绑定重映射的目标索引事实，旧寄存器、路径和借用不跨阶段：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:374`。
+源码节选：`crates/blanguage/src/check/bounds.rs:385`。
 
 ```rust
     // 阶段完成只交接共同数值和逻辑数据目标；值身份、路径及借用不跨阶段。
@@ -2089,7 +2089,7 @@ pub(crate) struct Interface {
 
 普通B应用沿同一合同更新Data.elements，原未知写与单元素值更新入口共同处理完整数值结果，不新建范围表。应用游标局部事实与共同字段范围同时成立；读取点消费两者交集，原局部值不进入共同资源查询。范围交集直接复用同一ScalarRanges，共同索引域并入原局部Proof；它们同时约束本次读取，不表示两个元素拥有相同数值：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:408`。
+源码节选：`crates/blanguage/src/check/bounds.rs:419`。
 
 ```rust
     fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
@@ -2124,7 +2124,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 原loop_write_projection从该ApplicationElement取得实际根、字段字节与已知下标，后续仍由同一写效果撤回Data.elements。别名按真实相交位置交接，未写字段及独立资源保持；不新增元素表、运行状态或第二效果图：
 
-源码节选：`crates/blanguage/src/check/effects.rs:373`。
+源码节选：`crates/blanguage/src/check/effects.rs:372`。
 
 ```rust
             ExprKind::Name(name)=>{
@@ -2169,7 +2169,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1015`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1026`。
 
 ```rust
         self.nonzero = (0..width)
@@ -2182,7 +2182,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1170`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1181`。
 
 ```rust
     pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
@@ -2265,7 +2265,7 @@ F32除法只在原规范的分母范围内交接包含设备误差的结果，�
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1758`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1769`。
 
 ```rust
 impl Drop for Clause {
@@ -2942,7 +2942,7 @@ IR 用结构化的 If 和 Loop 保存这些关系：
 
 循环的数值下标与源元素别名也有各自的身份。LoopContext.iterator持有原名称和当前下标进度，LoopControl只保留原控制条件模板；推进时更新原进度，源范围变量是Value才更新其数值，元素位置继续保持原类型。LoopState在原环境中快照初始续边还需要的元素别名，真正leave_loop再按原入口names结束局部绑定。字段转借、分支退出、continue与seek沿这些原消费者交接，不复制元素、重建类型或增加运行期状态。
 
-源码节选：`crates/blanguage/src/check/flow.rs:393`。
+源码节选：`crates/blanguage/src/check/flow.rs:399`。
 
 ```rust
     pub(super) fn capture_loop_cursor(&mut self, value: Value) {

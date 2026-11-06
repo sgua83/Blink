@@ -102,10 +102,15 @@ impl LoopControl {
 pub(super) struct LoopResource {
     pub name:String,
     pub path:Vec<usize>,
+}
+pub(super) struct LoopDefinition {
+    pub borrow:Borrow,
+    pub resource:Option<LoopResource>,
+    pub value:Option<(ValueIdentity,Scalar)>,
+    // Every input refers to the same actual entry and continued producers.
     pub states:Arc<[flow::LoopState]>,
     pub control:Arc<LoopControl>,
 }
-pub(super) struct LoopDefinition {pub borrow:Borrow,pub resource:Option<LoopResource>}
 #[derive(Default)]
 pub(super) struct Function {
     next_scope:usize,
@@ -189,7 +194,7 @@ fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSe
     fresh(a,b)||fresh(b,a)
 }
 impl Function {
-    pub fn pending_values(&self)->bool {self.uses.iter().any(|usage|matches!(&usage.requirement,Requirement::Memory{snapshots:Some(snapshots),..}if !snapshots.is_empty()))}
+    pub fn pending_values(&self)->bool {self.loops.values().any(|definition|definition.value.is_some())||self.uses.iter().any(|usage|matches!(&usage.requirement,Requirement::Memory{snapshots:Some(snapshots),..}if !snapshots.is_empty()))}
     fn value_context(&self,values:Option<&BTreeMap<ValueIdentity,bounds::Proof>>)->bounds::Clause {
         match values {
             Some(values)=>bounds::Clause::values(self.uses.iter().enumerate().flat_map(|(memory,usage)|{
@@ -197,7 +202,7 @@ impl Function {
                 snapshots.iter().enumerate().map(move |(component,snapshot)|{
                     let id=ValueIdentity::MemoryValue(memory,component);(snapshot.scalar,id,&values[&id])
                 })
-            })),
+            }).chain(self.loops.values().filter_map(|definition|definition.value).map(|(id,scalar)|(scalar,id,&values[&id])))),
             None=>bounds::Clause::default(),
         }
     }
@@ -461,23 +466,23 @@ fn resolved_application_position(input:LoopInput,index:Option<ownership::Applica
     // An unchanged cycle supplies no counterexample; every actual entry and
     // continued producer is still checked below in the same source graph.
     if !visiting.insert(position.clone()){return Position::Initialized;}
-    let resource=function.loops[&input].resource.as_ref().unwrap();
+    let definition=&function.loops[&input];let resource=definition.resource.as_ref().unwrap();
     let mut result=Position::Initialized;
     let mut invariant=function.parameters.keys().map(|id|(*id,bounds::Proof::default().with_identity(*id))).collect::<BTreeMap<_,_>>();
-    for(name,binding)in &resource.states[0].env {
+    for(name,binding)in &definition.states[0].env {
         if let Some((ty,proof))=binding_value(binding) {
             for component in 0..ty.components.len() {
-                if let Some(id)=proof.known_identity(component) && resource.states.iter().skip(1).all(|producer|
+                if let Some(id)=proof.known_identity(component) && definition.states.iter().skip(1).all(|producer|
                     producer.env.get(name).and_then(binding_value).is_some_and(|(_,proof)|proof.known_identity(component)==Some(id))) {
                     invariant.insert(id,bounds::Proof::default().with_identity(id));
                 }
             }
         }
     }
-    for producer in resource.states.iter() {
-        let mut bindings=invariant.clone();bindings.extend(resource.control.bindings(producer));
+    for producer in definition.states.iter() {
+        let mut bindings=invariant.clone();bindings.extend(definition.control.bindings(producer));
         let mut source_path=producer.path.clone();
-        if let Some(test)=&resource.control.test {
+        if let Some(test)=&definition.control.test {
             source_path=test.at_call(&bindings).assume(&source_path,true);
         }
         let read_path=bounds::Condition::guard(path.clone()).guard_at_call(&bindings).assume(&bounds::Clause::default(),true);
@@ -772,7 +777,11 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
     let mut memory=BTreeMap::new();let mut scalar_values=BTreeMap::new();
     for(name,function)in functions {
         let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();
-        let mut resolved=BTreeMap::new();let mut calls=function.calls.iter().peekable();let mut usages=function.uses.iter().enumerate().peekable();
+        let mut resolved=BTreeMap::new();
+        loop {
+        // Only scalar loop inputs feed back; ordinary Memory uses keep their original one-pass order.
+        let previous=function.loops.values().any(|definition|definition.value.is_some()).then(||resolved.clone());values.clear();
+        let mut calls=function.calls.iter().peekable();let mut usages=function.uses.iter().enumerate().peekable();
         while let Some((memory,usage))=usages.next(){
             let Requirement::Memory{target,snapshots,..}=&usage.requirement else{continue;};
             let mut effect=address::MemoryEffect::default();
@@ -807,6 +816,19 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                 resolved.insert(ValueIdentity::MemoryValue(memory,component),proof);
             }}
             values.entry(*target).or_default().union(effect);
+        }
+        for definition in function.loops.values() {
+            let Some((id,_))=definition.value else{continue;};
+            let entry=definition.control.bindings(&definition.states[0]);
+            let mut proof=entry[&id].substitute_values(&resolved);
+            if resolved.contains_key(&id) {for state in &definition.states[1..] {
+                let values=definition.control.bindings(state);
+                let incoming=values[&id].substitute_values(&resolved);
+                proof.join(&incoming,1,None);
+            }}
+            resolved.insert(id,proof);
+        }
+        if previous.is_none_or(|previous|resolved==previous){break;}
         }
         memory.insert(name.clone(),values);
         if function.pending_values(){scalar_values.insert(name.clone(),resolved);}

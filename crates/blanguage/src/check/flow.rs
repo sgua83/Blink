@@ -59,7 +59,7 @@ pub(super) struct LoopContext {
     pub outer: Vec<Inst>,
     pub writes: effects::LoopWrites,
     names: BTreeSet<String>,
-    entry: LoopState,
+    pub(super) entry: LoopState,
     exits: Vec<LoopState>,
     initial: bool,
     initialization: bool,
@@ -82,12 +82,12 @@ impl Builder<'_> {
             for (path,data,independent) in data_paths(binding){
                 slots.push(InputSlot::Data{name:name.clone(),path:path.clone(),independent});
                 if let Some(value)=data.elements.view_value(){for component in view_contracts::components(&value.ty){
-                    slots.push(InputSlot::Value{name:name.clone(),contents:Some(path.clone()),component});
+                    slots.push(InputSlot::Value{name:name.clone(),contents:Some(path.clone()),component,identity:None});
                 }}
             }
             if let Some((ty,_))=binding.view_parts() {
                 for component in view_contracts::components(ty) {
-                    slots.push(InputSlot::Value{name:name.clone(),contents:None,component});
+                    slots.push(InputSlot::Value{name:name.clone(),contents:None,component,identity:None});
                 }
             }
         }
@@ -169,6 +169,11 @@ impl Builder<'_> {
             }
             borrow
         };
+        for slot in &context.view_inputs {
+            if let InputSlot::Value{name,component,identity:Some((id,_)),..}=slot {
+                context.control_source.inputs.insert(*id,view_contracts::ControlInput::Value{name:name.clone(),component:*component});
+            }
+        }
         let control=Arc::new(std::mem::take(&mut context.control_source));
         let mut producers=std::mem::take(&mut context.continues);
         producers.insert(0,std::mem::take(&mut context.entry));
@@ -178,10 +183,11 @@ impl Builder<'_> {
             direct[index]=definition==sources[index];
             if matches!(context.view_inputs[index],InputSlot::Value{..})&&!definition.pending(){sources[index]=definition.clone();direct[index]=true;}
             let resource=match &context.view_inputs[index] {
-                InputSlot::Data{name,path,..}=>Some(view_contracts::LoopResource{name:name.clone(),path:path.clone(),states:producers.clone(),control:control.clone()}),
+                InputSlot::Data{name,path,..}=>Some(view_contracts::LoopResource{name:name.clone(),path:path.clone()}),
                 _=>None,
             };
-            self.view_model.loops.insert(input,view_contracts::LoopDefinition{borrow:definition,resource});
+            let value=match &context.view_inputs[index]{InputSlot::Value{identity,..}=>*identity,_=>None};
+            self.view_model.loops.insert(input,view_contracts::LoopDefinition{borrow:definition,resource,value,states:producers.clone(),control:control.clone()});
         }
         // 来源定义未改变的槽交回原入口；实际来源及存储版本变化保留原循环关系。
         let resolve_env=|environment:&mut BTreeMap<String,Binding>| {
