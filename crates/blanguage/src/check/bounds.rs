@@ -1141,7 +1141,7 @@ impl Proof {
             if let Some(current)=proof.domains.get_mut(i){current.clear();}
             for domain in domains{proof.mark_domain(i,domain);}
             if !same_value{proof.origins[i].clear();}
-            proof.conditions[i] = None;
+            if !integers || target.size() < source.size() { proof.conditions[i] = None; }
         }
         proof
     }
