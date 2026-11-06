@@ -1,7 +1,7 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
 use crate::{Result, error};
 use blanguage::ir::{ElementRange, ElementFact, ExecutionPlan, PrefixCount, ProgramInterface, Scalar};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// 只读身份与绑定由存储所有者提供；原生执行入口仍只接受各自具体存储类型。
 pub trait DomainStorage: Sized {
@@ -245,7 +245,7 @@ impl<D> DomainBindings<D> {
         program: &ExecutionPlan,
         binding: impl Fn(usize) -> (usize, u32),
     ) where D: DomainStorage {
-        invalidate(&mut self.domains, program, &binding);
+        invalidate(&mut self.domains, &program.write_regions, &binding);
         self.produced(program, binding);
     }
     pub(crate) fn produced(
@@ -345,10 +345,10 @@ pub(crate) fn require<D: DomainStorage>(
 }
 pub(crate) fn invalidate(
     domains: &mut Vec<DomainRelation>,
-    program: &ExecutionPlan,
+    write_regions: &BTreeMap<usize, BTreeSet<(u32,u32)>>,
     binding: impl Fn(usize) -> (usize, u32),
 ) {
-    domains.retain(|r| !program.write_regions.iter().any(|(&logical, written)| {
+    domains.retain(|r| !write_regions.iter().any(|(&logical, written)| {
         let (physical, offset) = binding(logical);
         written.iter().any(|&(start, end)| r.written(physical, u64::from(offset) + u64::from(start), u64::from(offset) + u64::from(end)))
     }));

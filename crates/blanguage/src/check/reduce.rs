@@ -72,6 +72,7 @@ pub(super) fn compile(
         reads: reads.clone(),
         writes: vec![target],
         write_regions,
+        prefix_guarantees: Vec::new(),
         cross_access: reads,
         tiles: Vec::new(),
     });

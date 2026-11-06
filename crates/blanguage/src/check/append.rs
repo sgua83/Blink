@@ -29,13 +29,14 @@ pub(super) fn clear(
         );
     }
     facts.written(program, count, word, word + 4, None);
-    facts.grant(PrefixRelation {
+    let prefix_guarantees = vec![PrefixRelation {
         domain: target,
         count: PrefixCount {
             binding: count,
             word,
         },
-    });
+    }];
+    for &relation in &prefix_guarantees { facts.grant(relation); }
     let generated_origin = Arc::new(GeneratedOrigin { reason: GenerationReason::ClearPrefix, trigger: trigger.map(GenerationAnchor::Syntax) });
     program.stages.push(Stage {
         operation_source: None,
@@ -59,6 +60,7 @@ pub(super) fn clear(
         reads: Vec::new(),
         writes: vec![count],
         write_regions: BTreeMap::from([(count, BTreeSet::from([(word, word + 4)]))]),
+        prefix_guarantees,
         cross_access: Vec::new(),
         tiles: Vec::new(),
     });

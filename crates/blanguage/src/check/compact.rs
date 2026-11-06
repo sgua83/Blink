@@ -87,13 +87,14 @@ pub(super) fn compile(
     }
     write_regions.entry(count).or_insert_with(BTreeSet::new).insert((count_word, count_word + 4));
     facts.written(program, count, count_word, count_word + 4, None);
-    facts.grant(PrefixRelation {
+    let prefix_guarantees = vec![PrefixRelation {
         domain: target,
         count: PrefixCount {
             binding: count,
             word: count_word,
         },
-    });
+    }];
+    for &relation in &prefix_guarantees { facts.grant(relation); }
     let reads: Vec<_> = [source, flags]
         .into_iter()
         .chain(prefix.map(|p| p.binding))
@@ -122,6 +123,7 @@ pub(super) fn compile(
         reads: reads.clone(),
         writes: vec![target, count],
         write_regions,
+        prefix_guarantees,
         cross_access: reads,
     });
     Ok(())

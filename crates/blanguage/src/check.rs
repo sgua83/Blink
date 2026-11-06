@@ -846,13 +846,14 @@ fn expand_stages(
                     reads: b.reads.into_iter().collect(),
                     writes: b.writes.into_iter().collect(),
                     write_regions,
+                    prefix_guarantees: appended,
                     cross_access: b.cross_access.into_iter().collect(),
                 };
                 for (&binding, written) in &stage.write_regions {
                     let output = if binding == *domain { element_ranges.as_ref() } else { None };
                     for &(start, end) in written { facts.written(program, binding, start, end, output); }
                 }
-                for relation in appended {
+                for &relation in &stage.prefix_guarantees {
                     facts.grant(relation);
                 }
                 program.stages.push(stage);

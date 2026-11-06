@@ -389,7 +389,7 @@ impl Frame {
                 }
                 let mut inputs = DomainBindings { datasets, domains };
                 let result = program.run_projected(&mut inputs, &order, values, &definitions, || {
-                    crate::bindings::invalidate(&mut self.data.domains, layout,
+                    crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
                         |i| (bindings[i].handle as usize, bindings[i].offset));
                 });
                 (inputs.datasets,inputs.domains,result)
@@ -419,7 +419,7 @@ impl Frame {
                         return Err(error);
                     }
                 };
-                crate::bindings::invalidate(&mut self.data.domains, layout,
+                crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
                     |i| (bindings[i].handle as usize, bindings[i].offset));
                 let (inputs, result) = match submission.wait() {
                     Ok(completed) => (completed.into_bindings(), Ok(())),

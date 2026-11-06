@@ -875,7 +875,7 @@ impl CpuCode {
             buffers[physical].projected(expected, offset)
         }).collect::<Result<Vec<_>>>()?;
         self.run_buffers(&arguments, textures, uniforms, || {
-            crate::bindings::invalidate(&mut bindings.domains, &self.program, physical);
+            crate::bindings::invalidate(&mut bindings.domains, &self.program.write_regions, physical);
             writing();
         },definitions)?;
         bindings.produced(&self.program, physical);
@@ -921,13 +921,12 @@ impl CpuCode {
         // 原参数及投影已接受；取得可写访问时撤回旧计数关系。
         // 后续失败可能已有写入，不将未完成调用发布为完整保证。
         writing();
-        // Only the actual accepted input capabilities enter the private scope.
-        // Write acquisition uses the original DomainBindings invalidation owner.
+        // Accepted root requirements seed the same scope advanced by completed stages.
         let mut input_domains = frame.iter().flat_map(|_| self.program.prefix_requirements()).map(|relation|
             crate::DomainRelation::Prefix { domain:relation.domain,offset:0,
                 bytes:buffers[relation.domain].ty.size,count:relation.count }).collect();
-        crate::bindings::invalidate(&mut input_domains,&self.program,|binding|(binding,0));
         for (stage, code) in self.program.stages().iter().zip(&self.stages) {
+            crate::bindings::invalidate(&mut input_domains,&stage.write_regions,|binding|(binding,0));
             let count = if let Some(prefix) = &stage.prefix {
                 unsafe {
                     buffers[prefix.binding]
@@ -938,181 +937,185 @@ impl CpuCode {
             } else {
                 buffers[stage.domain].count
             };
-            let (executable, continuation, result) = match code {
-                StageCode::Sort(code) => {
-                    sort::run(self, code, &pointers, count)?;
-                    continue;
-                }
-                StageCode::Element {
-                    main,
-                    continuation,
-                    result,
-                } => (main, continuation, *result),
-            };
-            uniforms[0] = count;
-            let grain = (count as usize).div_ceil(self.workers * 4).max(1);
-            let grain = if stage.has_tile_scope() {
-                grain.div_ceil(stage.workgroup_width() as usize) * stage.workgroup_width() as usize
-            } else {
-                grain
-            };
-            let mut partials = if matches!(result, RangeResult::None) {
-                Vec::new()
-            } else {
-                vec![0u32; (count as usize).div_ceil(grain) * result.words()]
-            };
-            let mut ranges = RangeWork {
-                frame: frame.map(|(definitions,offset,words,inputs)| (definitions,offset,words,inputs,input_domains.as_slice())),
-                entry: executable.address,
-                buffers: pointers.as_ptr(),
-                range_parameter_slot: self.program.buffers().len(),
-                uniforms: uniforms.as_ptr(),
-                count: count as usize,
-                grain,
-                next: AtomicUsize::new(0),
-                result,
-                partials: partials.as_mut_ptr(),
-                errors: std::ptr::null_mut(),
-                range_parameters: std::ptr::null(),
-                range_parameter_words: result.words().max(1),
-            };
-            self.execute(&mut ranges)?;
-            if let blanguage::ir::Operation::Reduce(reduction) = &stage.operation {
-                for (scalar, offset) in &reduction.ty.components {
-                    let total = partials
-                        .chunks_exact(result.words())
-                        .map(|p| collective_bits(*scalar, p, *offset as usize))
-                        .fold(reduction.operator.identity(*scalar), |a, b| {
-                            collective_pair(*scalar, reduction.operator, a, b)
-                        });
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(total.to_ne_bytes().as_ptr(),
-                            buffers[reduction.fields.target].pointer.cast::<u8>().add((reduction.fields.target_word + offset) as usize),
-                            scalar.size() as usize);
+            match code {
+                StageCode::Sort(code) => sort::run(self, code, &pointers, count)?,
+                StageCode::Element { main: executable, continuation, result } => {
+                    let result = *result;
+                    uniforms[0] = count;
+                    let grain = (count as usize).div_ceil(self.workers * 4).max(1);
+                    let grain = if stage.has_tile_scope() {
+                        grain.div_ceil(stage.workgroup_width() as usize) * stage.workgroup_width() as usize
+                    } else {
+                        grain
+                    };
+                    let mut partials = if matches!(result, RangeResult::None) {
+                        Vec::new()
+                    } else {
+                        vec![0u32; (count as usize).div_ceil(grain) * result.words()]
+                    };
+                    let mut ranges = RangeWork {
+                        frame: frame.map(|(definitions,offset,words,inputs)| (definitions,offset,words,inputs,input_domains.as_slice())),
+                        entry: executable.address,
+                        buffers: pointers.as_ptr(),
+                        range_parameter_slot: self.program.buffers().len(),
+                        uniforms: uniforms.as_ptr(),
+                        count: count as usize,
+                        grain,
+                        next: AtomicUsize::new(0),
+                        result,
+                        partials: partials.as_mut_ptr(),
+                        errors: std::ptr::null_mut(),
+                        range_parameters: std::ptr::null(),
+                        range_parameter_words: result.words().max(1),
+                    };
+                    self.execute(&mut ranges)?;
+                    if let blanguage::ir::Operation::Reduce(reduction) = &stage.operation {
+                        for (scalar, offset) in &reduction.ty.components {
+                            let total = partials
+                                .chunks_exact(result.words())
+                                .map(|p| collective_bits(*scalar, p, *offset as usize))
+                                .fold(reduction.operator.identity(*scalar), |a, b| {
+                                    collective_pair(*scalar, reduction.operator, a, b)
+                                });
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(total.to_ne_bytes().as_ptr(),
+                                    buffers[reduction.fields.target].pointer.cast::<u8>().add((reduction.fields.target_word + offset) as usize),
+                                    scalar.size() as usize);
+                            }
+                        }
+                    }
+                    if let Some(continuation) = continuation {
+                        let next = match continuation {
+                            Continuation::Scan {
+                                prefix,
+                                apply,
+                                source,
+                                target,
+                            } => {
+                                let mut inputs = pointers.clone();
+                                inputs[*source] = BufferAddress { address: partials.as_mut_ptr(), stride: result.words() * 4 };
+                                inputs[*target] = inputs[*source];
+                                let failure = unsafe {
+                                    ranges.invoke(prefix.address,
+                                        inputs.as_ptr(),
+                                        (partials.len() / result.words()) as u32,
+                                        0,
+                                        std::ptr::null_mut(),
+                                    )
+                                };
+                                unsafe {crate::application::take_errors([failure])}?;
+                                Some(apply)
+                            }
+                            Continuation::Apply(next) => {
+                                if let blanguage::ir::Operation::CustomReduce(r) = &stage.operation {
+                                    let k = r.ty.size.div_ceil(4) as usize;
+                                    let mut inputs = pointers.clone();
+                                    inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr(), stride: k * 4 };
+                                    let mut output = vec![0; k];
+                                    let failure = unsafe {
+                                        ranges.invoke(next.address,
+                                            inputs.as_ptr(),
+                                            (partials.len() / k) as u32,
+                                            0,
+                                            output.as_mut_ptr(),
+                                        )
+                                    };
+                                    unsafe {crate::application::take_errors([failure])}?;
+                                    for (scalar, offset) in &r.ty.components {
+                                        unsafe {
+                                            std::ptr::copy_nonoverlapping(
+                                                output.as_ptr().cast::<u8>().add(*offset as usize),
+                                                buffers[r.fields.target].pointer.cast::<u8>().add((r.fields.target_word + offset) as usize),
+                                                scalar.size() as usize,
+                                            );
+                                        }
+                                    }
+                                    None
+                                } else {
+                                    if let blanguage::ir::Operation::SegmentedReduce(reduction) =
+                                        &stage.operation
+                                    {
+                                        let values = &reduction.values;
+                                        let k = values.ty.size.div_ceil(4) as usize;
+                                        let mut prefix: Vec<_> = values.ty.components.iter().map(|(scalar,_)| values.operator.identity(*scalar)).collect();
+                                        let mut segments = 0u32;
+                                        for total in partials.chunks_mut(reduction.summary_words()) {
+                                            let reset = total[k] != 0;
+                                            let next_segments = segments + total[k + 1];
+                                            for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&values.ty.components) {
+                                                let word = *offset as usize;
+                                                let bits = collective_bits(*scalar, total, word);
+                                                let next = if reset {
+                                                    bits
+                                                } else {
+                                                    collective_pair(*scalar, values.operator, *prefix, bits)
+                                                };
+                                                store_collective_bits(*scalar, total, word, *prefix);
+                                                *prefix = next;
+                                            }
+                                            total[k] = count;
+                                            total[k + 1] = segments;
+                                            segments = next_segments;
+                                        }
+                                        unsafe {
+                                            buffers[reduction.count.binding]
+                                                .pointer.cast::<u8>()
+                                                .add(reduction.count.word as usize).cast::<u32>()
+                                                .write(segments);
+                                        }
+                                    } else if let blanguage::ir::Operation::ScanExclusive(scan) =
+                                        &stage.operation
+                                    {
+                                        let mut prefix: Vec<_> = scan.ty.components.iter().map(|(scalar,_)| scan.operator.identity(*scalar)).collect();
+                                        let k = scan.ty.size.div_ceil(4) as usize;
+                                        for total in partials.chunks_mut(scan.summary_words()) {
+                                            let reset = scan.head_word.is_some() && total[k] != 0;
+                                            for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&scan.ty.components) {
+                                                let word = *offset as usize;
+                                                let bits = collective_bits(*scalar, total, word);
+                                                let next = if reset {
+                                                    bits
+                                                } else {
+                                                    collective_pair(*scalar, scan.operator, *prefix, bits)
+                                                };
+                                                store_collective_bits(*scalar, total, word, *prefix);
+                                                *prefix = next;
+                                            }
+                                        }
+                                    } else {
+                                        let mut prefix = 0u32;
+                                        for total in partials.chunks_mut(result.words()) {
+                                            let next = prefix.wrapping_add(total[0]);
+                                            total[0] = prefix;
+                                            prefix = next;
+                                        }
+                                        if let blanguage::ir::Operation::Compact(c) = &stage.operation {
+                                            unsafe {
+                                                buffers[c.count]
+                                                    .pointer.cast::<u8>()
+                                                    .add(c.count_word as usize).cast::<u32>()
+                                                    .write(prefix);
+                                            }
+                                        }
+                                    }
+                                    Some(next)
+                                }
+                            }
+                        };
+                        if let Some(next) = next {
+                            ranges.entry = next.address;
+                            ranges.result = RangeResult::None;
+                            ranges.next = AtomicUsize::new(0);
+                            ranges.range_parameters = partials.as_ptr();
+                            self.execute(&mut ranges)?;
+                        }
                     }
                 }
             }
-            if let Some(continuation) = continuation {
-                let next = match continuation {
-                    Continuation::Scan {
-                        prefix,
-                        apply,
-                        source,
-                        target,
-                    } => {
-                        let mut inputs = pointers.clone();
-                        inputs[*source] = BufferAddress { address: partials.as_mut_ptr(), stride: result.words() * 4 };
-                        inputs[*target] = inputs[*source];
-                        let failure = unsafe {
-                            ranges.invoke(prefix.address,
-                                inputs.as_ptr(),
-                                (partials.len() / result.words()) as u32,
-                                0,
-                                std::ptr::null_mut(),
-                            )
-                        };
-                        unsafe {crate::application::take_errors([failure])}?;
-                        apply
-                    }
-                    Continuation::Apply(next) => {
-                        if let blanguage::ir::Operation::CustomReduce(r) = &stage.operation {
-                            let k = r.ty.size.div_ceil(4) as usize;
-                            let mut inputs = pointers.clone();
-                            inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr(), stride: k * 4 };
-                            let mut output = vec![0; k];
-                            let failure = unsafe {
-                                ranges.invoke(next.address,
-                                    inputs.as_ptr(),
-                                    (partials.len() / k) as u32,
-                                    0,
-                                    output.as_mut_ptr(),
-                                )
-                            };
-                            unsafe {crate::application::take_errors([failure])}?;
-                            for (scalar, offset) in &r.ty.components {
-                                unsafe {
-                                    std::ptr::copy_nonoverlapping(
-                                        output.as_ptr().cast::<u8>().add(*offset as usize),
-                                        buffers[r.fields.target].pointer.cast::<u8>().add((r.fields.target_word + offset) as usize),
-                                        scalar.size() as usize,
-                                    );
-                                }
-                            }
-                            continue;
-                        } else if let blanguage::ir::Operation::SegmentedReduce(reduction) =
-                            &stage.operation
-                        {
-                            let values = &reduction.values;
-                            let k = values.ty.size.div_ceil(4) as usize;
-                            let mut prefix: Vec<_> = values.ty.components.iter().map(|(scalar,_)| values.operator.identity(*scalar)).collect();
-                            let mut segments = 0u32;
-                            for total in partials.chunks_mut(reduction.summary_words()) {
-                                let reset = total[k] != 0;
-                                let next_segments = segments + total[k + 1];
-                                for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&values.ty.components) {
-                                    let word = *offset as usize;
-                                    let bits = collective_bits(*scalar, total, word);
-                                    let next = if reset {
-                                        bits
-                                    } else {
-                                        collective_pair(*scalar, values.operator, *prefix, bits)
-                                    };
-                                    store_collective_bits(*scalar, total, word, *prefix);
-                                    *prefix = next;
-                                }
-                                total[k] = count;
-                                total[k + 1] = segments;
-                                segments = next_segments;
-                            }
-                            unsafe {
-                                buffers[reduction.count.binding]
-                                    .pointer.cast::<u8>()
-                                    .add(reduction.count.word as usize).cast::<u32>()
-                                    .write(segments);
-                            }
-                        } else if let blanguage::ir::Operation::ScanExclusive(scan) =
-                            &stage.operation
-                        {
-                            let mut prefix: Vec<_> = scan.ty.components.iter().map(|(scalar,_)| scan.operator.identity(*scalar)).collect();
-                            let k = scan.ty.size.div_ceil(4) as usize;
-                            for total in partials.chunks_mut(scan.summary_words()) {
-                                let reset = scan.head_word.is_some() && total[k] != 0;
-                                for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&scan.ty.components) {
-                                    let word = *offset as usize;
-                                    let bits = collective_bits(*scalar, total, word);
-                                    let next = if reset {
-                                        bits
-                                    } else {
-                                        collective_pair(*scalar, scan.operator, *prefix, bits)
-                                    };
-                                    store_collective_bits(*scalar, total, word, *prefix);
-                                    *prefix = next;
-                                }
-                            }
-                        } else {
-                            let mut prefix = 0u32;
-                            for total in partials.chunks_mut(result.words()) {
-                                let next = prefix.wrapping_add(total[0]);
-                                total[0] = prefix;
-                                prefix = next;
-                            }
-                            if let blanguage::ir::Operation::Compact(c) = &stage.operation {
-                                unsafe {
-                                    buffers[c.count]
-                                        .pointer.cast::<u8>()
-                                        .add(c.count_word as usize).cast::<u32>()
-                                        .write(prefix);
-                                }
-                            }
-                        }
-                        next
-                    }
-                };
-                ranges.entry = next.address;
-                ranges.result = RangeResult::None;
-                ranges.next = AtomicUsize::new(0);
-                ranges.range_parameters = partials.as_ptr();
-                self.execute(&mut ranges)?;
+            if frame.is_some() {
+                input_domains.extend(stage.prefix_guarantees.iter().map(|relation|
+                    crate::DomainRelation::Prefix { domain:relation.domain,offset:0,
+                        bytes:buffers[relation.domain].ty.size,count:relation.count }));
             }
         }
         Ok(())

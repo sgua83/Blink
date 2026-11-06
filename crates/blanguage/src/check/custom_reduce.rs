@@ -295,12 +295,8 @@ pub(super) fn compile(
         write_regions.entry(count.binding).or_insert_with(BTreeSet::new).insert((count.word, count.word + 4));
         facts.written(program, count.binding, count.word, count.word + 4, None);
     }
-    if let Some(count) = count.or(prefix.filter(|_| scan)) {
-        facts.grant(PrefixRelation {
-            domain: target,
-            count,
-        });
-    }
+    let prefix_guarantees: Vec<_> = count.or(prefix.filter(|_| scan)).map(|count| PrefixRelation { domain: target, count }).into_iter().collect();
+    for &relation in &prefix_guarantees { facts.grant(relation); }
     let reads: Vec<_> = std::iter::once(source)
         .chain(prefix.map(|p| p.binding))
         .collect::<BTreeSet<_>>()
@@ -343,6 +339,7 @@ pub(super) fn compile(
         reads: reads.clone(),
         writes,
         write_regions,
+        prefix_guarantees,
         cross_access: reads,
         tiles: Vec::new(),
     });

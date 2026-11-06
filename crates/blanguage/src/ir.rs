@@ -1220,6 +1220,7 @@ pub struct Stage {
     pub reads: Vec<usize>,
     pub writes: Vec<usize>,
     pub write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
+    pub prefix_guarantees: Vec<PrefixRelation>,
     pub cross_access: Vec<usize>,
     pub tiles: Vec<Tile>,
 }
