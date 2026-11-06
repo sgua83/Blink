@@ -742,7 +742,7 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
         let mut next=known.clone();
         for(name,function)in functions{
             let state=&known[name];let result=next.get_mut(name).unwrap();
-            for input in state.loops.keys(){result.loops.insert(*input,evaluate(&function.loops[input].borrow,function,state,known,true));}
+            for input in state.loops.keys(){let value=evaluate(&function.loops[input].borrow,function,state,known,true);result.loops.insert(*input,if function.independent.contains(input){value.resources()}else{value});}
             let physical=function.outputs.iter().map(|(output,definition)|{
                 let value=evaluate(definition,function,state,known,true);
                 let value=if function.resource_names.contains_key(output){value.resources()}else{value};

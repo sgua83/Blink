@@ -291,7 +291,7 @@ impl Builder<'_> {
             .collect();
         for name in resources {
             if let Some(Binding::ApplicationData(data)) = self.env.get_mut(&name) {
-                data.root.proof = bounds::Proof::default();
+                data.root.proof.forget_value(&[0],data.root.ty.components.len());
                 data.length.proof = data
                     .count
                     .map(|count| bounds::Proof::unsigned(count, count))

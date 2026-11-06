@@ -597,9 +597,12 @@ impl Builder<'_> {
                         let next=returns::Returned::Dataset(data_at(&edge.env[name],&[]).unwrap().clone());
                         if let Some(common)=repeated.as_mut(){common.join(next,true);}else{repeated=Some(next);}
                     }
-                    if let Some(repeated)=repeated {
-                        let mut value=returns::Returned::Dataset(data.clone());value.join_locations(repeated,&empty,true);
-                        let returns::Returned::Dataset(value)=value else{unreachable!()};*data=value;
+                    if let Some(returns::Returned::Dataset(repeated))=repeated {
+                        if data.ownership!=repeated.ownership{data.ownership=application::Ownership::Moved;}
+                        data.length.proof.join_condition(&repeated.length.proof,data.length.regs.len(),Some(&empty));
+                        data.length.uniform&=repeated.length.uniform;if data.length.constant!=repeated.length.constant{data.length.constant=None;}
+                        data.residency=residency::Residency::conditional(empty.clone(),data.residency.clone(),repeated.residency);
+                        data.elements.join_locations(*repeated.elements,&empty,true);
                     }
                     continue;
                 }

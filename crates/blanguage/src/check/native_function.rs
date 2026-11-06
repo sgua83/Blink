@@ -1481,7 +1481,7 @@ fn lower_module_failures(world:&World,module:&mut Module)->Result<()> {
             let own=&unit.contract;
             lower_dataset_borrows(&mut function.body,&unit.view_model,&|callee|
                 if callee==name{own}else{&module.units[callee].as_ref().unwrap().contract});
-            calls(&mut function.body.code,&mut |call|call.failure=None);
+            calls(&mut function.body.code,&mut |call|{call.failure=None;call.memory_use=None;});
         }
         unit.context=None;
         *module.units.get_mut(&name).unwrap()=Some(unit);

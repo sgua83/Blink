@@ -356,7 +356,7 @@ pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,Memory
     for instruction in code {
         match &mut (instruction).kind {
             InstKind::Call(call)=>{
-                call.memory=call.memory_use.take().and_then(|usage|memory.get(&MemoryTarget::Call(usage))).map(|effect|effect.local_effects(locals)).unwrap_or_default();
+                call.memory=call.memory_use.and_then(|usage|memory.get(&MemoryTarget::Call(usage))).map(|effect|effect.local_effects(locals)).unwrap_or_default();
                 for argument in &mut call.arguments {
                     match argument {
                         CallArgument::Value{..}=>{}
