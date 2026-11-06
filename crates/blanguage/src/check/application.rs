@@ -1469,17 +1469,17 @@ impl Builder<'_> {
             let depth=input.fields.iter().filter(|part|matches!(part,residency::Part::Elements)).count();
             resource.residency=resource.residency.output_bound(&BTreeMap::from([(ordinal,ValueIdentity::ElementIndex(depth))]));
         });
-        fn bind_views(returned:&mut returns::Returned,ordinal:ValueIdentity,depth:usize){
+        fn bind_indices(returned:&mut returns::Returned,ordinal:ValueIdentity,depth:usize){
             let bindings=BTreeMap::from([(ordinal,ValueIdentity::ElementIndex(depth))]);
-            let value=match returned{returns::Returned::Value(value)=>Some(value.as_mut()),returns::Returned::OwnedValue(value)=>Some(&mut value.value),returns::Returned::Dataset(data)=>Some(&mut data.root),returns::Returned::Unit=>None};
-            if let Some(value)=value{for component in 0..value.regs.len(){value.proof=value.proof.clone().with_view_borrow(component,value.proof.view_borrow(component).output_bound(&bindings));}}
+            let value=match returned{returns::Returned::Value(value)=>Some(value.as_mut()),returns::Returned::OwnedValue(value)=>Some(&mut value.value),returns::Returned::Dataset(data)=>{data.length.proof=bounds::Proof::capture(&data.length).output_bound(&bindings);Some(&mut data.root)},returns::Returned::Unit=>None};
+            if let Some(value)=value{value.proof=bounds::Proof::capture(value).output_bound(&bindings);}
             match returned{
-                returns::Returned::OwnedValue(value)=>for child in value.payloads.iter_mut().flatten(){bind_views(child,ordinal,depth);},
-                returns::Returned::Dataset(data)=>bind_views(&mut data.elements,ordinal,depth+1),
+                returns::Returned::OwnedValue(value)=>for child in value.payloads.iter_mut().flatten(){bind_indices(child,ordinal,depth);},
+                returns::Returned::Dataset(data)=>bind_indices(&mut data.elements,ordinal,depth+1),
                 _=>{},
             }
         }
-        bind_views(&mut returned,ordinal,0);
+        bind_indices(&mut returned,ordinal,0);
         let elements=self.capture_element_model(data,&[],returned.clone());let value=self.returned_storage(&returned);
         let stride=DataStride::Declared(ir::align_up(data.ty.size,data.ty.align));let words=data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>();
         self.write_application_place(data.root.regs[0],data.root.identity(),index_reg,stride,&words,value,span,Some(origin(GenerationReason::DatasetInitializeWrite)))?;
@@ -2892,14 +2892,11 @@ impl Builder<'_> {
                             bindings.insert(source,proof.clone().with_view_borrow(0,value.proof.view_borrow(*component)));
                         }
                     }
-                    let mut selected=bindings.clone();
-                    selected.insert(ValueIdentity::ElementIndex(0),bounds::Proof::element_operand(*index_value,*index_range));
-                    self.bind_element_resource_borrows(data,&parent,&mut selected);
+                    bindings.insert(ValueIdentity::ElementIndex(0),bounds::Proof::element_operand(*index_value,*index_range));
                     self.bind_element_resource_borrows(data,&parent,&mut bindings);
                     // Stored model slots are not registers in the caller function.
                     let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings);
                     for (target,component) in components.iter().enumerate() {
-                        proof=proof.with_view_borrow(target,value.proof.view_borrow(*component).at_call(&selected));
                         if data.ty.components[*component].0.is_integer() {
                             for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))) {
                                 proof.mark_domain(target,IndexDomain::CommonRange(source));
