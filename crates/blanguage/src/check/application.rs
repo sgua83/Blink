@@ -2929,7 +2929,7 @@ impl Builder<'_> {
                     let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings);
                     for (target,component) in components.iter().enumerate() {
                         for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..))) {
-                            proof.mark_domain(target,IndexDomain::CommonRange(source));
+                            let scalar=value.ty.components[*component].0;proof.mark_domain(target,IndexDomain::CommonRange(source,scalar,scalar));
                         }
                     }
                     if let Some(previous)=&mut result{bounds::Proof::join(previous,&proof,regs.len(),None);}else{result=Some(proof);}
