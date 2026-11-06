@@ -593,6 +593,14 @@ GenerationAnchor::MinmaxKnownValue及JSON kind minmax_known_value提供expressio
 
 这些材料只解释本次实际结果和有效局部前提，不保留Proof／条件图或完整输入谱系。单源查询只借用已有expression，未知为null；原literal、Proof、类型／精度、source_site、布局及运行语义保持。材料沿原compiler Inst、CSE／DCE／空Map根、模块／阶段实际结果及查询快照到最后IR消费者，不保留旧IR、AST／World或运行资源，不增加求值器、状态表、必要执行编码、运行指令或保活。见[整数已知结果架构](Architecture.md#tool-7-3-1-9-5)。
 
+#### 比较命题已知值的来源
+
+原binary在常量运算未取得完整结果且comparison成立时，才查询原Proof的Bool结果；普通known_value与本接点共用原Bool分量求值，同一次返回结果与false／true分支可达性。只有该原路径成功物化整份Constant才附加GenerationReason::ComparisonKnownValue，不能仅按操作数constant是否存在判断，也不误标原BinaryConstantFold或仍需执行的比较。
+
+GenerationAnchor::ComparisonKnownValue及JSON kind comparison_known_value提供expression（原Constant的SourceSite或null）、operation、scalar、result_bits、false_possible／true_possible、left_ranges／right_ranges、left_constant_present／right_constant_present、same_value、两侧与结果的component_index／component_count，以及retained原生成材料。result_bits为原Bool位模式；可达性来自同次原条件查询。component_index_base为0，constant_present只报告整个原Value.constant是否存在。区间端点包含且以原始Scalar位模式表示，interval_order为整数scalar_numeric、浮点float_bit_order，Bool区间及其次序为null。浮点位序不是NaN数值次序，不能用其端点重写原谓词或把!(a<b)改成a>=b。
+
+这些材料是本次局部前提快照，不是完整输入谱系或证明图；单源查询只解释原expression，原生成职责从retained读取。写入／生命周期变化后的原Proof范围、literal、类型、转换、source_site、布局与运行语义保持。材料沿原compiler Inst、CSE／DCE／空Map根、模块／阶段实际结果与查询快照到最后IR消费者，不保留旧IR、AST／World、Proof／Clause图或运行资源，不增加重复求解、状态表、必要编码、运行指令或保活。见[比较命题架构](Architecture.md#tool-7-3-1-9-6)。
+
 #### 阶段常量结果到实际值IR的来源
 
 原Root::Literal只在编译器的阶段展开中存在，同一结果持有Ty、Bits与可选generated_origin，不增加运行参数或对象编码。stage_root读取具名模块const时，以原空calls接收evaluate已有材料；env中已有Root仍克隆同一原值和材料，实际Literal的Name读取再由下述StageConstantReference交接本次绑定。直接Number／StaticU32及计数器初始值不伪造读取或折叠；无折叠Name的retained可以为空，本次真实reference仍保留。

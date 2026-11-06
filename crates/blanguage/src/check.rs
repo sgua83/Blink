@@ -2723,13 +2723,8 @@ impl<'a> Builder<'a> {
         } else {
             bounds::arithmetic(op, &a, &b)
         };
-        let constant = constant.or_else(|| {
-            if comparison {
-                proof.known_value(&ty)
-            } else {
-                None
-            }
-        });
+        let known_comparison = if !constant_fold && comparison { proof.known_boolean_value(n) } else { None };
+        let constant = constant.or_else(|| known_comparison.as_ref().map(|known| known.iter().map(|(bits, _)| *bits).collect()));
         if let Some(bits) = constant {
             let first = self.code.len();
             let mut value = self.constant_value(ty, bits,generated_origin);
@@ -2749,6 +2744,25 @@ impl<'a> Builder<'a> {
                             left_component_index: component_index % left.len(), left_component_count: left.len(),
                             right_component_index: component_index % right.len(), right_component_count: right.len(),
                             component_index, component_count: value.regs.len(), retained: inst.generated_origin.clone(),
+                        }),
+                    }));
+                }
+            }
+            if let Some(known) = known_comparison {
+                let operation: Arc<str> = op.into();
+                for (component_index, (inst, (result_bits, [false_possible, true_possible]))) in self.code[first..].iter_mut().zip(known).enumerate() {
+                    let ai = component_index % a.regs.len();
+                    let bi = component_index % b.regs.len();
+                    let numeric = scalar.is_integer() || scalar.is_float();
+                    inst.generated_origin = Some(Arc::new(GeneratedOrigin {
+                        reason: GenerationReason::ComparisonKnownValue,
+                        trigger: Some(GenerationAnchor::ComparisonKnownValue {
+                            expression: inst.source_site.clone(), operation: operation.clone(), scalar,
+                            left_ranges: numeric.then(|| a.component_range_intervals(ai)), right_ranges: numeric.then(|| b.component_range_intervals(bi)),
+                            left_constant_present: a.constant.is_some(), right_constant_present: b.constant.is_some(), same_value: a.same_component(ai, &b, bi),
+                            result_bits, false_possible, true_possible,
+                            left_component_index: ai, left_component_count: a.regs.len(), right_component_index: bi, right_component_count: b.regs.len(),
+                            component_index, component_count: n, retained: inst.generated_origin.clone(),
                         }),
                     }));
                 }

@@ -817,7 +817,11 @@ GenerationAnchor::BitcastConstantFold的expression借用该Constant原source_sit
 
 <a id="tool-7-3-1-9-6"></a>
 
-**比较命题已知值折叠的来源。** 输入：原比较操作、原Proof和实际known_value，无操作数constant时的本分支。唯一生产／消费接点：check.rs#158::binary2637至2649，事实归原Builder／ValueCode／Stage及真实bool结果；输出为本项真实变换的来源关系或明确缺失。交接真实使用的命题与成立范围；写入／生命周期使旧前提失效后不得继承，区别于纯常量求值。 原Source及生成材料沿原拥有者不可变共享，查询只借用原结果，最后IR消费者后释放，不拥有运行资源，不保留AST／World或复制旧IR；compiler之外及必要运行编码不带材料，实际求值、数值、借用与完成不变，不加参数／状态表、图、调度、同步或释放链。当前证据：当前Proof折叠已实现，解释事实待实现。 详细状态见[独立台账](Issues.md#c-021-7-9-7-3-1-9-6)。
+**比较命题已知值折叠的来源。** 原binary先尝试已许可的常量运算，只有未取得完整结果且comparison成立时，才消费原Proof的Bool已知值。普通known_value与本接点共用原Bool分量求值，同一次取得结果和原false／true分支可达性，不重新查询条件。不能把这个接点缩写成两侧都没有constant，亦不把它混同BinaryConstantFold；未取得完整结果保持原比较。
+
+同一结果Constant交接ComparisonKnownValue：expression借用原source_site，operation、有效输入scalar、result_bits及false_possible／true_possible记录本次实际命题与求值结果；左右原完整常量载荷是否存在、同值关系、广播下标／数量及结果下标／数量说明实际输入。数值输入的left_ranges／right_ranges按原有效区间保存端点位模式；整数按实际Scalar数值次序，浮点按原浮点位序还原原始端点，包含NaN／负零等可能值时不能把这些端点当普通数值不等式。Bool不伪造数值区间，以null表示。端点包含，下标从零开始；原生成材料保留在retained。
+
+材料只解释该次实际折叠及局部前提，不是完整输入谱系、条件证明图、运行次数或实测收益；浮点命题不得把!(a<b)等同a>=b。写入与生命周期改变后的前提继续由原Proof所有者处理，不通过来源材料继承旧事实。原类型、转换、literal、Proof、source_site、布局、寄存器及运行行为保持；材料仅compiler，沿原Inst、CSE／DCE／空Map根、模块／阶段实际结果和查询快照到最后IR消费者，不保留旧IR、AST／World、Proof／Clause图或运行资源，不增加求值器、来源表、必要编码、运行指令或保活。已交接的具体范围与验证见[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-9-6)。
 
 <a id="tool-7-3-2"></a>
 

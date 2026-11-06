@@ -816,20 +816,19 @@ impl Proof {
             .enumerate()
             .map(|(component, (scalar, _))| {
                 if *scalar == Scalar::Bool {
-                    return match self
-                        .component_condition(component)?
-                        .cases
-                        .each_ref()
-                        .map(Clause::possible)
-                    {
-                        [false, true] => Some(1),
-                        [true, false] => Some(0),
-                        _ => None,
-                    };
+                    return self.known_boolean_component(component).map(|(bits, _)| bits);
                 }
                 self.known_integer_component(*scalar, component).map(|(bits, _)| bits)
             })
             .collect()
+    }
+    fn known_boolean_component(&self, component: usize) -> Option<(Bits, [bool; 2])> {
+        let cases = self.component_condition(component)?.cases.each_ref().map(Clause::possible);
+        let bits = match cases { [false, true] => 1, [true, false] => 0, _ => return None };
+        Some((bits, cases))
+    }
+    pub(super) fn known_boolean_value(&self, width: usize) -> Option<Vec<(Bits, [bool; 2])>> {
+        (0..width).map(|component| self.known_boolean_component(component)).collect()
     }
     fn known_integer_component(&self, scalar: Scalar, component: usize) -> Option<(Bits, IntegerKnownValueBasis)> {
         if !scalar.is_integer() { return None; }
@@ -1599,8 +1598,9 @@ impl Value {
         self.component_ranges(component).hull()
     }
     pub(super) fn component_range_intervals(&self, component: usize) -> Vec<(Bits, Bits)> {
-        let bias = self.ty.components[component].0.order_bias();
-        self.component_ranges(component).0.into_iter().map(|(lower, upper)| (lower ^ bias, upper ^ bias)).collect()
+        let scalar = self.ty.components[component].0;
+        let bits = |ordered| if scalar.is_float() { floating::bits(scalar, ordered) } else { ordered ^ scalar.order_bias() };
+        self.component_ranges(component).0.into_iter().map(|(lower, upper)| (bits(lower), bits(upper))).collect()
     }
     fn component_ranges(&self, component: usize) -> ScalarRanges {
         let scalar = self.ty.components[component].0;
