@@ -1433,7 +1433,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:881`。
+源码节选：`crates/blanguage/src/check/native_function.rs:882`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1660,7 +1660,23 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
                 },
 ```
 
-原Module只读查询消费同一Unit的Resource、Position、Dataset和Memory闭合Access，不维护第二份副作用状态。Scope与实际调用都以原Memory交接写区，非拥有write／inout许可不重复定义整值写；原C声明继续按实际外部内存合同与类型位置交接。dataset指针的原布局构造归application::dataset_origin，Scope::call_inputs只提供实际Data／字段／逻辑Ty，native_call的BorrowedData分支沿同一构造交接原ABI值；没有额外IR、查询图或运行时状态。预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
+原Module只读查询消费同一Unit的Resource、Position、Dataset和Memory闭合Access，不维护第二份副作用状态。Scope与实际调用都以原Memory交接写区，非拥有write／inout许可不重复定义整值写；原C声明继续按实际外部内存合同与类型位置交接。dataset指针的原布局构造归application::dataset_origin，Scope::call_inputs只提供实际Data／字段／逻辑Ty，native_call的BorrowedData分支沿同一构造交接原ABI值，按值ApplicationData分支在原require_application_initialized完成后，也把同一实际Data及完整元素布局交给该调用的原输入Proof；没有额外IR、查询图或运行时状态。Frame句柄和长度仍是原机器值，Origin只表达合同所需的实际存储位置。循环内部尚未形成外层绑定的新拥有输入仍见Issues C-021.1.4.5.4.3.2.5.2，不能由实际调用的修正代替。dataset<address>载荷经元素读取后的间接写与后续数值事实交接仍有已证实正确性缺陷，见Issues C-005.71.1／C-005.71.2；实际原生读取错误与写零后的非零误许可均未修复，不能据普通dataset输入位置已交接而忽略此范围。预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
+
+源码节选：`crates/blanguage/src/check/native_function.rs:656`。
+
+```rust
+                Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
+                    residency::argument(&mut locations,index,&mut data);
+                    self.require_same(&ty,&data.ty,span)?;
+                    self.require_application_initialized(&data,span)?;
+                    self.native_dataset_shape(p,d,data.count,span)?;
+                    let mut value=self.returned_storage(&Returned::Dataset(data.clone()));
+                    value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&data,0,&data.ty,true).normalize());
+                    append_actual(&mut actual,&value);
+                    arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow:None, ty:value.ty,values:value.regs});
+                    env.insert(p.name.clone(),Binding::ApplicationData(data));
+                }
+```
 
 Function::dataset_access在原inputs投影中只保留真实输入Data，随后把资源位置归一为原Derived符号指针，沿原地址出口与canonical发布。私有资源过滤后不产生外部写区，未知保持未知；原输入编号、逻辑布局与字节范围交给dataset_write_regions和lower_dataset_borrows，嵌套调用及源码缺席的对象／归档保持同一实际写。只读结论、原written值输出、拥有消费和最后释放继续原职责，不把Source调试名称、frame标志或参数权限当作另一写范围权威。
 
@@ -2681,7 +2697,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1627`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1628`。
 
 ```rust
             if !frame.contains(&name) {

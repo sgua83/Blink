@@ -658,7 +658,8 @@ impl Builder<'_> {
                     self.require_same(&ty,&data.ty,span)?;
                     self.require_application_initialized(&data,span)?;
                     self.native_dataset_shape(p,d,data.count,span)?;
-                    let value=self.returned_storage(&Returned::Dataset(data.clone()));
+                    let mut value=self.returned_storage(&Returned::Dataset(data.clone()));
+                    value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&data,0,&data.ty,true).normalize());
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow:None, ty:value.ty,values:value.regs});
                     env.insert(p.name.clone(),Binding::ApplicationData(data));
