@@ -1566,29 +1566,29 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
         }
 ```
 
-原loop_writes收集正文和条件的既有写输入，把局部槽位、实际写存储根及未知内存效果交给同一LoopContext。原invalidate_writes同时结束可能被写的Data.elements旧共同数值：contents或原loop_write_projection给出实际words，沿原资源／借用来源交给既有update_application_elements(None,None)；未知存储效果处理原真实资源范围。原更新职责继续保留借用／拥有关系，已知写只撤回实际分量，未写字段不因共享同一dataset而失去数值。没有第二模型、运行状态或除法特例，本轮条件与已捕获旧值仍沿各自原事实。update_application_elements只在index_range=(0,0)可能完整覆盖时形成原长度一比较，其余更新移除恒假覆盖路径的无用constant IR，不为循环失效发射代码。
+原loop_writes收集正文和条件的写输入，LoopWrites只交给原LoopContext及未来读取缓存。共同元素模型由invalidate_writes逐项消费实际写：闭合Memory保留原完整Borrow，沿既有write_address_values把真实资源／字段交给原模型；显式contents和Position继续按实际words投影。External／未解析调用仍撤回可能受影响内容，不把读取缓存的unknown_storage反向当作所有共同元素都被写。原标量Reference权限Position、typed written输出、初始化和拥有消费保持；整份记录Reference精化、下标实参来源及未来缓存投影仍待Issues C-021.1.4.5.4.3.2。没有另一模型、状态表、除法特例或运行时代码。update_application_elements只在index_range=(0,0)可能完整覆盖时形成原长度一比较，其余更新不为失效发射无意义代码。
 
 源码节选：`crates/blanguage/src/check/effects.rs:266`。
 
 ```rust
-        if effect.unknown_storage {
-            let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
-                data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
-            )).collect::<Vec<_>>();
-            for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
-        }else{
-            for write in writes {
-                let changed=match write {
-                    Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|data|(
+        for write in writes {
+            let changed=match write {
+                Write::Memory{borrow,..}if !borrow.pending()&&!borrow.unresolved()=>{self.write_address_values(borrow);continue;},
+                Write::External{..}|Write::Generator(_)|Write::Memory{..}=>{
+                    let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
                         data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
-                    )),
-                    Write::Position{place,contents:false,..}=>self.loop_write_projection(place,writes)?.map(|(data,_,(_,components))|(
-                        data.root.identity(),view::resource_borrow(data),components.into_iter().flatten().map(|i|data.ty.components[i].1).collect::<Vec<_>>()
-                    )),
-                    _=>None,
-                };
-                if let Some((source,resource,words))=changed{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
-            }
+                    )).collect::<Vec<_>>();
+                    for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
+                    continue;
+                },
+                Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|data|(
+                    data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
+                )),
+                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,writes)?.map(|(data,_,(_,components))|(
+                    data.root.identity(),view::resource_borrow(data),components.into_iter().flatten().map(|i|data.ty.components[i].1).collect::<Vec<_>>()
+                )),
+            };
+            if let Some((source,resource,words))=changed{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
         }
 ```
 
