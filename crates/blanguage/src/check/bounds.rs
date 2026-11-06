@@ -1066,6 +1066,14 @@ impl Proof {
             ..Self::default()
         }
     }
+    pub(super) fn unsigned_reflected(&self, amount: u32) -> Self {
+        let amount = Bits::from(amount);
+        Self {
+            ranges: vec![arithmetic_ranges("-", Scalar::U32,
+                ScalarRanges::interval(amount, amount), self.range_set(0))],
+            ..Self::default()
+        }
+    }
     pub(super) fn with_domains(mut self, mut domains: Domains) -> Self {
         // 存储版本更换资源域，数值仍是实际同一份长度快照。
         domains.extend(self.domains(0).into_iter().filter(numeric_domain));

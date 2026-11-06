@@ -904,11 +904,12 @@ pub(super) fn modified_owners(
 }
 
 
-// 同一位置写效果的位移与独立赋值。Unknown仍是未知，不改变实际整数回绕语义。
+// 同一位置写效果：位移、独立赋值，以及由同一c-x和恒等组成的有限反向关系。
 #[derive(Clone)]
 enum NumericEffect {
     Unknown,
     Assign(bounds::Proof),
+    Reflect(u32),
     Shift { low: i128, high: i128, least: i128, most: i128 },
 }
 impl NumericEffect {
@@ -916,7 +917,9 @@ impl NumericEffect {
     fn then(self, next: Self) -> Self {
         match (&self,&next) {
             (_,Self::Assign(_))=>return next,
-            (Self::Assign(_),Self::Shift{low:0,high:0,least:0,most:0})=>return self,
+            (Self::Assign(_)|Self::Reflect(_),Self::Shift{low:0,high:0,least:0,most:0})=>return self,
+            (Self::Shift{low:0,high:0,least:0,most:0},Self::Reflect(_))=>return next,
+            (Self::Reflect(a),Self::Reflect(b)) if a==b=>return self,
             _=>{},
         }
         let (Self::Shift {low:a,high:b,least:c,most:d}, Self::Shift {low:e,high:f,least:g,most:h}) = (self,next) else { return Self::Unknown; };
@@ -926,6 +929,9 @@ impl NumericEffect {
     fn join(self, other: Self) -> Self {
         match (self,other) {
             (Self::Assign(mut a),Self::Assign(b))=>{a.join(&b,1,None);Self::Assign(a)},
+            (Self::Reflect(a),Self::Reflect(b)) if a==b=>Self::Reflect(a),
+            (a@Self::Reflect(_),Self::Shift{low:0,high:0,least:0,most:0})
+            |(Self::Shift{low:0,high:0,least:0,most:0},a@Self::Reflect(_))=>a,
             (a@Self::Assign(_),Self::Shift{low:0,high:0,least:0,most:0})
             |(Self::Shift{low:0,high:0,least:0,most:0},a@Self::Assign(_))=>a,
             (Self::Shift{low:a,high:b,least:c,most:d},Self::Shift{low:e,high:f,least:g,most:h})=>
@@ -968,6 +974,8 @@ impl Builder<'_> {
             "=" => match &rhs.kind {
                 ExprKind::Binary(operation,base,amount) if matches!(operation.as_str(),"+"|"-")&&relative(base)? => (if operation=="+"{1}else{-1},self.constant_index(amount,writes)?),
                 ExprKind::Binary(operation,amount,base) if operation=="+"&&relative(base)? => (1,self.constant_index(amount,writes)?),
+                ExprKind::Binary(operation,amount,base) if operation=="-"&&relative(base)? =>
+                    return Ok(self.constant_index(amount,writes)?.map(NumericEffect::Reflect).unwrap_or(NumericEffect::Unknown)),
                 _ if relative(rhs)? => (1,Some(0)),
                 _ => {
                     let value=if let Some(value)=self.constant_index(rhs,writes)? {bounds::Proof::unsigned(value,value)}
@@ -1062,6 +1070,12 @@ impl Builder<'_> {
                 let (lower,upper,least,most)=match join_numeric_paths(next,continues) {
                     None=>(true,true,0,0),
                     Some(NumericEffect::Shift{low,high,least,most})=>(low>=0,high<=0,least,most),
+                    Some(NumericEffect::Reflect(amount))=>{
+                        let reflected=input.unsigned_reflected(amount);
+                        let mut invariant=input;invariant.join(&reflected,1,None);
+                        retained.push((name.clone(),component,invariant,true,true));
+                        continue;
+                    },
                     Some(NumericEffect::Assign(repeated))=>{
                         let mut invariant=input;invariant.join(&repeated,1,None);
                         retained.push((name.clone(),component,invariant,true,true));

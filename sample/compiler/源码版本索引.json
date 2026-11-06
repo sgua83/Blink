@@ -108,7 +108,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "1902d24e50cb4350476089327e1d278cc6fd5a13be5791dec63f5be0e090b4f0"
+      "sha256": "5877987284ede136979015a06ddb8c63309dc3d79bfa1513e84098e07ed17ff3"
     },
     {
       "path": "crates/blanguage/src/check/bounds/floating.rs",
@@ -136,7 +136,7 @@
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "sha256": "967a55aea4e189a596ac195acd29b7fdc810c2d7baae1bd2e58ce3f8bef81d66"
+      "sha256": "da97891ffc7f18eebdcfd3838d4c1c20732feeb522f6964e8b177dde081382d1"
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
@@ -538,20 +538,20 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1647,
-      "end_line": 1664,
+      "start_line": 1655,
+      "end_line": 1672,
       "sha256": "a9f28171a24b1d4791d7e67600aa964e6c31712f4d8be18bc3c5b06a923f4fd3"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 2747,
-      "end_line": 2758,
+      "start_line": 2755,
+      "end_line": 2766,
       "sha256": "38baaaf1d661aea2654eb95357005783b4d70a537ee5c599dfc16f19a6b57ade"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1637,
-      "end_line": 1646,
+      "start_line": 1645,
+      "end_line": 1654,
       "sha256": "1e4dc4c774edbd0efc786caec403171c361b6055aa5a215cb6794fb15222fa40"
     },
     {
@@ -946,8 +946,8 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1181,
-      "end_line": 1198,
+      "start_line": 1189,
+      "end_line": 1206,
       "sha256": "8623749ec07abe897159a735a12fb306a2ed1be7f9fff3f2c12bbf7b4dd82624"
     },
     {
@@ -964,8 +964,8 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1769,
-      "end_line": 1791,
+      "start_line": 1777,
+      "end_line": 1799,
       "sha256": "e3f4220275ff7e5907a7b8766432e82e6abfd3cbcd8c0637901cf23036429901"
     },
     {
