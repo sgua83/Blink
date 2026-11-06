@@ -20,6 +20,7 @@ pub enum ElementFact {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DeviceRequirements {
     pub ray_query: bool, pub float64: bool,
+    pub float32_preserve: bool, pub float64_preserve: bool,
     pub integer8: bool, pub integer16: bool,
     pub atomic64: bool, pub shared_atomic64: bool,
     pub sorting: bool,
@@ -85,6 +86,8 @@ impl ProgramInterface for Program {
             .fold((false, false), |a, b| (a.0 || b.0, a.1 || b.1));
         let mut requirements = DeviceRequirements {
             ray_query: !self.accelerations.is_empty(),
+            float32_preserve: self.stages.iter().any(|stage| stage.requires_float_preserve(Scalar::F32)),
+            float64_preserve: self.stages.iter().any(|stage| stage.requires_float_preserve(Scalar::F64)),
             sorting: self.requires_sort(),
             maximal_reconvergence: self.requires_maximal_reconvergence(),
             texture_indexing: self.requires_texture_indexing(),
@@ -227,7 +230,6 @@ pub struct ExecutionStage {
     pub width: u32,
     /// GPU各入口静态Workgroup声明总字节的峰值，由发射者交出；CPU映像不分配Workgroup。
     pub shared_bytes: u64,
-    pub float32_preserve: bool, pub float64_preserve: bool,
 }
 impl ExecutionStage {
     pub fn has_tile_scope(&self) -> bool {
@@ -238,9 +240,6 @@ impl ExecutionStage {
     }
     pub fn shared_bytes(&self) -> u64 {
         self.shared_bytes
-    }
-    pub fn requires_float32_preserve(&self) -> bool {
-        self.float32_preserve
     }
     pub fn input_words(&self) -> BTreeSet<(usize, u32)> {
         self.inputs.clone()
@@ -332,7 +331,6 @@ impl ExecutionPlan {
                     tile_scope: stage.has_tile_scope(),
                     width: stage.workgroup_width(),
                     shared_bytes: 0,
-                    float32_preserve: stage.requires_float_preserve(Scalar::F32), float64_preserve: stage.requires_float_preserve(Scalar::F64),
                 }
             })
             .collect();

@@ -400,7 +400,7 @@ impl Device {
     }
     fn create(selected: PhysicalDevice, requirements: DeviceRequirements) -> Result<Self> {
         let DeviceRequirements { ray_query, sorting, maximal_reconvergence, texture_indexing,
-            position_fetch, float64, integer8, integer16, atomic64, shared_atomic64, subgroup } = requirements;
+            position_fetch, float64, integer8, integer16, atomic64, shared_atomic64, subgroup, .. } = requirements;
         let subgroup_extended_types = subgroup.extended_types;
         unsafe {
             let PhysicalDevice {
@@ -1829,19 +1829,14 @@ impl GpuProgram {
             if program.requirements().shared_atomic64 && !inner.shared_atomic64 {
                 return Err(error("64位tile原子须以Device::for_program声明shared设备能力"));
             }
-            if program.stages().iter().any(|s| s.float64_preserve) && !inner.float64_preserve {
+            if program.requirements().float64_preserve && !inner.float64_preserve {
                 return Err(error("f64 运算需要设备支持64位 DenormPreserve 与 SignedZeroInfNanPreserve"));
             }
             let caps = program.subgroup_capabilities();
             if caps.extended_types && !inner.subgroup_extended_types {
                 return Err(error("64位subgroup程序必须以Device::for_program声明扩展类型能力"));
             }
-            if program
-                .stages()
-                .iter()
-                .any(blanguage::ir::ExecutionStage::requires_float32_preserve)
-                && !inner.float32_preserve
-            {
+            if program.requirements().float32_preserve && !inner.float32_preserve {
                 return Err(error(
                     "f32 运算需要设备支持 DenormPreserve 与 SignedZeroInfNanPreserve",
                 ));

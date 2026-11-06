@@ -284,7 +284,7 @@
     },
     {
       "path": "crates/blanguage/src/ir/execution.rs",
-      "sha256": "09da433f32e14d2395337bce7fea81a1934cb03627634d389843d9124fd9786c"
+      "sha256": "fdbf7d79c40a7136726393e5aa13ca7b79d7718ac1b6b105620687a2e7f0cac5"
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
@@ -408,7 +408,7 @@
     },
     {
       "path": "crates/blanguage/src/resource.rs",
-      "sha256": "ed3f866c9c572af8f409fe122fccb59f86221c98bc079179f2fec266a4778788"
+      "sha256": "5a6c8dc4c754e173cc01158238e4f8a963a6fbd4e80dd26ee1b7afe1d0b2bc9b"
     },
     {
       "path": "crates/blanguage/src/resource/module_image.rs",
@@ -480,7 +480,7 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "sha256": "1720d10febd07ba40fc34ebb5a9da7be5217f1b3c89036b63e0cd061c715a2bd"
+      "sha256": "6c069a308eb4479446c89a8965ce5eb6b28887df8e4265f94473910b3ba89e7b"
     },
     {
       "path": "crates/blcompute/src/vulkan/texture.rs",
@@ -1202,8 +1202,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2020,
-      "end_line": 2026,
+      "start_line": 2015,
+      "end_line": 2021,
       "sha256": "b56642a96ce73a2b95d466461b6d2457bc87cec51838ffeff6bb36b7ca3dad11"
     },
     {
@@ -1238,8 +1238,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2050,
-      "end_line": 2059,
+      "start_line": 2045,
+      "end_line": 2054,
       "sha256": "b9d24207f3c4216ba86e6d6f6cc43de5d4bbbc5cd4aead6871ce7b0c3015da3d"
     },
     {
@@ -1268,8 +1268,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2910,
-      "end_line": 2923,
+      "start_line": 2905,
+      "end_line": 2918,
       "sha256": "fbd171fb65519f0e30386a01494d59684c3de02e6364396b83d6f44504cc574c"
     },
     {
@@ -1280,8 +1280,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2628,
-      "end_line": 2634,
+      "start_line": 2623,
+      "end_line": 2629,
       "sha256": "7d7b294d818dbc009723ed7be968c7e38e66da930cfd35e57877bcf46e5d2bc5"
     },
     {
