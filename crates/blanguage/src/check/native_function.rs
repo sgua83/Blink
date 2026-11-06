@@ -910,6 +910,11 @@ impl Builder<'_> {
                 if actual.empty()||actual.pending()||actual.unresolved(){value.proof=value.proof.clone().with_view_borrow(component,resolved);}
             }
         }
+        let pending=match &returned {
+            Returned::OwnedValue(value)=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),
+            Returned::Dataset(data)=>Some(self.hold_binding(Binding::ApplicationData(data.clone()))),
+            _=>None,
+        };
         let borrow=returned.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
         for name in held {
             let resources=self.env.get(&name).into_iter().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Owned).map(|data|data.root.identity()).collect::<Vec<_>>();
@@ -923,6 +928,7 @@ impl Builder<'_> {
             let resources=match &returned{Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
             self.require_view_available(value,&resources,span)?;
         }
+        if let Some(pending)=pending {self.env.remove(&pending);}
         Ok(Some(returned))
     }
 }

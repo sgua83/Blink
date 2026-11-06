@@ -2560,7 +2560,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1606`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1612`。
 
 ```rust
             if !frame.contains(&name) {
@@ -4038,7 +4038,9 @@ DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有�
 
 原Builder的env／path／initialized、实际位置及当前定义保持到同一Call／编译期Cleanup的最后消费者，原function_program以同一只读对象延长寿命，不复制调用图。原Module闭合真实可失败关系后生成普通If／Scope／Raise，最后统一优化和压缩编号；Cleanup及未使用的NoFail事实随后删除，不进入对象合同或执行映像。根导出集合由crates/blanguage/src/application.rs::compile_resources交接，错误文本与合并的唯一实现位于crates/blcompute/src/application/abi.rs。无失败调用不生成提前释放或额外F前提检查；正常释放组的可空错误与真实失败出口的拥有错误分别表达，不用正常清理取得借用参数的销毁权。
 
-逐元素构造尚未完成的初始化前缀、实参采用前及晚期地址准备失败、待交付返回拥有值和resize未采用输入／fill仍分别沿Issues C-020.5.2.4.2.2.1.2.4／.5／.7／.8推进，不把已闭合范围称为完整拥有退出。错误最后交回唯一应用根报告和结束Frame，源码业务Result不混入这一内部错误。
+尚未交付的拥有结果在实际交接前仍归原作用域：本函数的返回准备值保持到同一次正常清理完成，普通调用已经产生的结果保持到原临时实参清理完成。二者沿原hold_binding进入同一env；正常清理只保留它，成功后才移出并交给原ReturnExit或调用表达式，清理F失败则由同一原失败Scope结束。return表达式不再单独重复结束临时拥有者，原finish_return统一消费该次完整退出。没有额外返回镜像、运行拥有表或完成标志；NoFail清理不增加失败出口或返回F的额外前提，真实失败清理仍满足实际F合同。实际接点为check/returns.rs::return_statement／finish_return及check/native_function.rs::native_call；原代码、合同、来源及编号保持到原最后消费者后才优化。
+
+逐元素构造尚未完成的初始化前缀、实参采用前及晚期地址准备失败、resize未采用输入／fill仍分别沿Issues C-020.5.2.4.2.2.1.2.4／.5／.8推进，不把已闭合范围称为完整拥有退出。错误最后交回唯一应用根报告和结束Frame，源码业务Result不混入这一内部错误。
 
 ### 26.4 反向调用与独立应用是另两项能力
 

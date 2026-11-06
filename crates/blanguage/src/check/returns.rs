@@ -330,11 +330,7 @@ impl Builder<'_> {
         let expected = context.expected.clone();
         let value = match (expected.as_deref(), expr) {
             (Some(Expected::Value(ty)), Some(expr)) => {
-                let result = self.temporary_scope(expr.span, |builder| {
-                    let value=builder.evaluate_returned(expr,Some(ty))?;
-                    let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
-                    Ok((value,retained))
-                })?;
+                let result = self.evaluate_returned(expr,Some(ty))?;
                 if !self.flow.continues() {
                     return Ok(());
                 }
@@ -348,11 +344,7 @@ impl Builder<'_> {
                 Some(value)
             }
             (Some(Expected::Dataset { ty, count }), Some(expr)) => {
-                let returned=self.temporary_scope(expr.span, |builder| {
-                    let value=builder.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone(),*count)))?;
-                    let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
-                    Ok((value,retained))
-                })?;
+                let returned=self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone(),*count)))?;
                 if !self.flow.continues(){return Ok(());}
                 let Some(Returned::Dataset(mut data))=returned else{return self.fail(span,"B224","返回需要实际拥有的dataset")};
                 self.application_data_type(&mut data, ty, *count, span)?;
@@ -474,7 +466,15 @@ impl Builder<'_> {
             _=>false,
         });
         self.view_uses.returning();
-        self.release_application_data(None,retained)?;
+        // 实际返回拥有者保持到同一次清理结束；只有正常完成才交给原ReturnExit。
+        let pending=match &value {
+            Some(Returned::OwnedValue(value))=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),
+            Some(Returned::Dataset(data))=>Some(self.hold_binding(Binding::ApplicationData(data.clone()))),
+            _=>None,
+        };
+        let keep=pending.iter().cloned().collect();
+        self.release_application_data(Some(&keep),retained)?;
+        if let Some(pending)=pending {self.env.remove(&pending);}
         let mut initialized=self.initialized.clone();
         if self.definition.execution==crate::execution::Requirement::Invocation {
             for parameter in &self.definition.function.params {
