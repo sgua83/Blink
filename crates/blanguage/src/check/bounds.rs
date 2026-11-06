@@ -585,7 +585,7 @@ impl Proof {
                 _ => return None,
             })
         }
-        fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
+        fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>, context:&Facts) -> Clause {
             let translated = match value {
                 Fact::Boolean(id, _) | Fact::Zero(id) | Fact::NonZero(id) => {
                     let truth=match value {Fact::Boolean(_,truth)=>truth,Fact::NonZero(_)=>true,_=>false};
@@ -671,10 +671,11 @@ impl Proof {
                 },
                 Fact::Index(id, IndexDomain::CommonRange(source)) => {
                     let mut facts=Facts::new();
-                    if let Some(id)=identity(id,bindings) && let Some(input)=bindings.get(&source){
-                        if input.nonzero.first()==Some(&true){facts.insert(Fact::NonZero(id));}
-                        facts.extend(input.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(_))).map(|domain|Fact::Index(id,domain)));
-                        facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(id,IndexDomain::CommonRange(*source))));
+                    if let Some(target)=identity(id,bindings) && let Some(input)=bindings.get(&source){
+                        if (context.contains(&Fact::Boolean(id,false))||context.contains(&Fact::Boolean(id,true))) && let Some(truth)=input.component_condition(0).and_then(Condition::boolean_constant){facts.insert(Fact::Boolean(target,truth));}
+                        if input.nonzero.first()==Some(&true){facts.insert(Fact::NonZero(target));}
+                        facts.extend(input.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(_))).map(|domain|Fact::Index(target,domain)));
+                        facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source))));
                     }
                     return Clause::facts(facts);
                 },
@@ -783,7 +784,7 @@ impl Proof {
                     ClauseNode::Facts(facts) => facts
                         .iter()
                         .fold(Clause::facts(Facts::new()), |current, value| {
-                            Clause::both(&current, &fact(*value, bindings))
+                            Clause::both(&current, &fact(*value, bindings, facts))
                         }),
                     ClauseNode::Both(a, b) => Clause::both(&clauses[&a.key()], &clauses[&b.key()]),
                     ClauseNode::Branch(parent, condition, truth) => Clause::both(
@@ -2642,6 +2643,7 @@ impl Condition {
                 if truth != 0 { Fact::NonZero(identity) } else { Fact::Zero(identity) }
             } else { continue; };
             let mut facts = Facts::from([fact]);
+            if scalar==Scalar::Bool{facts.extend(value.proof.domains(component).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(_))).map(|domain|Fact::Index(identity,domain)));}
             if scalar.is_integer() {
                 let (minimum, maximum) = value.component_range(component);
                 if minimum != 0 { facts.insert(Fact::Minimum(identity, scalar, minimum)); }

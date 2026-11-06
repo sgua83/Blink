@@ -2918,7 +2918,7 @@ impl Builder<'_> {
                     for(component,reg)in components.iter().zip(regs){
                         let proof=bounds::Proof::default().with_identity(ValueIdentity::Register(*reg));
                         bindings.insert(ValueIdentity::ElementComponent(*component),proof.clone());
-                        for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
+                        for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..))){
                             bindings.insert(source,proof.clone().with_view_borrow(0,value.proof.view_borrow(*component)));
                         }
                     }
@@ -2927,10 +2927,8 @@ impl Builder<'_> {
                     // Stored model slots are not registers in the caller function.
                     let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings);
                     for (target,component) in components.iter().enumerate() {
-                        if data.ty.components[*component].0.is_integer() {
-                            for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))) {
-                                proof.mark_domain(target,IndexDomain::CommonRange(source));
-                            }
+                        for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..))) {
+                            proof.mark_domain(target,IndexDomain::CommonRange(source));
                         }
                     }
                     if let Some(previous)=&mut result{bounds::Proof::join(previous,&proof,regs.len(),None);}else{result=Some(proof);}
