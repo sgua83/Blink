@@ -995,6 +995,25 @@ fn view_outputs(contract:&Contract)->view_contracts::Interface {
     for(parameter,value)in contract.written.iter().enumerate(){if let Some(value)=value{for(resource,borrow)in view_contracts::resource_outputs(value){outputs.insert(view_contracts::Output::WrittenResource(parameter,resource),borrow);}}}
     view_contracts::Interface{outputs,access:contract.view_access.as_ref().unwrap().clone(),initialization:contract.initialization.clone().unwrap()}
 }
+// An unchanged owned input version carries the same descriptor length. A new
+// resize result has its own resource identity even when its Frame slot is reused.
+fn input_dataset_length(parameters:&[CallParameter],borrow:&view::Borrow)->Option<ValueIdentity>{
+    let mut sources=borrow.sources.entries().filter(|(_,when)|when.possible()).map(|(source,_)|source);
+    let view::Source::Data(ValueIdentity::Register(root))=sources.next()? else{return None;};
+    if sources.next().is_some(){return None;}
+    let mut start=0;
+    for parameter in parameters {
+        let width=match &parameter.kind {
+            CallParameterKind::Value(ty)=>{
+                if start==*root && ty.dataset.is_some(){return Some(ValueIdentity::Register(start+1));}
+                ty.components.len()
+            },
+            CallParameterKind::Reference{..}=>2,
+        };
+        start+=width;
+    }
+    None
+}
 fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
     fn scalar_values(value:&mut Value,bindings:&BTreeMap<ValueIdentity,bounds::Proof>){
         value.proof=value.proof.substitute_values(bindings);
@@ -1044,7 +1063,12 @@ fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
             match output {
                 view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(*component,borrow.clone());},
                 view_contracts::Output::Written(parameter,component)=>if let Some(value)=contract.written[*parameter].as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(*component,borrow.clone());},
-                view_contracts::Output::ReturnedResource(resource)=>if let Some(value)=contract.returned.as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());},
+                view_contracts::Output::ReturnedResource(resource)=>if let Some(value)=contract.returned.as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){
+                    value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());
+                    if value.ownership==application::Ownership::Owned && let Some(length)=input_dataset_length(&contract.parameters,borrow){
+                        value.length.proof.assume_same_length(&bounds::Proof::default().with_identity(length));
+                    }
+                },
                 view_contracts::Output::WrittenResource(parameter,resource)=>if let Some(value)=contract.written[*parameter].as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());},
             }
         }
