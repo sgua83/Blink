@@ -22,6 +22,24 @@ mod native {
         }
         if owned.is_null(){Ok(())}else{Err(unsafe {Box::from_raw(owned.cast::<NativeError>())})}
     }
+    pub(crate) fn resource_symbol(name:&str)->Option<*const ()>{
+        Some(match name{
+            "blink_allocate"=>blink_allocate as *const (),
+            "blink_resize"=>blink_resize as *const (),
+            "blink_run"=>blink_run as *const (),
+            "blink_complete_field"=>blink_complete_field as *const (),
+            "blink_destroy"=>blink_destroy as *const (),
+            "blink_release"=>blink_release as *const (),
+            "blink_upload"=>blink_upload as *const (),
+            "blink_download"=>blink_download as *const (),
+            "blink_address"=>blink_address as *const (),
+            "blink_storage_address"=>blink_storage_address as *const (),
+            "blink_error_message"=>blink_error_message as *const (),
+            "blink_error_destroy"=>blink_error_destroy as *const (),
+            "blink_error_join"=>blink_error_join as *const (),
+            _=>return None,
+        })
+    }
     fn finish<T>(result: crate::Result<T>, output: impl FnOnce(T)) -> *mut c_void {
         match result {
             Ok(value) => { output(value); std::ptr::null_mut() }
@@ -152,3 +170,5 @@ mod native {
 
 #[cfg(windows)]
 pub(crate) use native::take_errors;
+#[cfg(windows)]
+pub(crate) use native::resource_symbol;

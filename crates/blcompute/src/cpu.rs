@@ -310,6 +310,9 @@ impl Allocation {
                 let ptr = match &relocation.target {
                     NativeSymbol::Function(name) => *functions.get(name.as_str())
                         .ok_or_else(|| error(format!("范围映像缺少所属模块函数 {name}")))? as *const (),
+                    NativeSymbol::External(name) if name.library==blanguage::resource::RUNTIME_LIBRARY =>
+                        crate::application::resource_symbol(&name.symbol)
+                            .ok_or_else(||error(format!("未知的Blink资源C符号 {}",name.symbol)))?,
                     NativeSymbol::External(name) => {
                         if !libraries.contains_key(&name.library) {
                             libraries.insert(name.library.clone(), Library::load(&name.library)
@@ -421,6 +424,7 @@ pub struct CpuTemplate {
 }
 struct CpuCode {
     program: Program,
+    definitions: Option<std::sync::Arc<crate::application::Definitions>>,
     stages: Vec<StageCode>,
     workers: usize,
 }
@@ -663,79 +667,47 @@ impl CpuCode {
         Ok(result)
     }
     fn raw<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
+        let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
         let (allocation, addresses) = match Allocation::new(&image) {
             Ok(code) => code,
             Err(error) => return Err((error, image)),
         };
-        Self::from_image(image, &|code| Ok(Executable {
-            address: addresses[&(code as *const _ as usize)], _allocation: allocation.clone(),
+        Ok(Self::from_image(image,workers,&|code|Executable{
+            address:addresses[&(code as *const _ as usize)],_allocation:allocation.clone(),
         }))
     }
     fn linked<P>(image: blanguage::native::ProgramImage<P, *const u8>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P, *const u8>)> {
-        Self::from_image(image, &|address| Ok(Executable {
-            address: address.cast_mut().cast(), _allocation: None,
-        }))
+        let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
+        Ok(Self::from_image(image,workers,&|address|Executable{address:address.cast_mut().cast(),_allocation:None}))
     }
-    fn from_image<P, C>(image: blanguage::native::ProgramImage<P, C>, load: &impl Fn(&C) -> Result<Executable>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P, C>)> {
-        let workers = match std::thread::available_parallelism() {
-            Ok(workers) => workers.get(),
-            Err(error) => return Err((error.into(), image)),
-        };
-        let stages = match Self::load_stages(image.stages(), load) {
-            Ok(stages) => stages,
-            Err(error) => return Err((error, image)),
-        };
-        let (program, _, _) = image.into_parts();
-        Ok(Self {
-            program,
-            stages,
-            workers,
-        })
+    fn from_image<P,C>(image:blanguage::native::ProgramImage<P,C>,workers:usize,load:&impl Fn(&C)->Executable)->Self{
+        let stages=Self::load_stages(image.stages(),load);
+        let(program,_,_,resources)=image.into_parts();
+        let definitions=resources.map(|module|{
+            let programs=module.images.into_iter().map(|image|match image{
+                blanguage::resource::Image::Cpu(image)=>crate::application::ProgramSlot::Cpu(CpuTemplate{code:Self::from_image(image,workers,load)}),
+                blanguage::resource::Image::Gpu(image)=>crate::application::ProgramSlot::Gpu(std::sync::Arc::new(image)),
+            }).collect();
+            std::sync::Arc::new(crate::application::Definitions{types:module.types,programs})
+        });
+        Self{program,stages,workers,definitions}
     }
-    fn load_stages<C>(
-        stages: &[blanguage::native::StageCode<C>],
-        load: &impl Fn(&C) -> Result<Executable>,
-    ) -> Result<Vec<StageCode>> {
-        use blanguage::native::{ContinuationCode, StageCode as ImageStage};
-        stages
-            .iter()
-            .map(|image| {
-                Ok(match image {
-                    ImageStage::Sort(code) => StageCode::Sort(sort::Code::load(code, load)?),
-                    ImageStage::Element {
-                        main,
-                        continuation,
-                        result,
-                    } => StageCode::Element {
-                        main: load(main)?,
-                        continuation: continuation.as_ref()
-                            .map(|continuation| -> Result<Continuation> {
-                                Ok(match continuation {
-                                    ContinuationCode::ReductionTail(code)
-                                    | ContinuationCode::ScanAdd(code)
-                                    | ContinuationCode::CompactScatter(code)
-                                    | ContinuationCode::SegmentedFinish(code) => {
-                                        Continuation::Apply(load(code)?)
-                                    }
-                                    ContinuationCode::Scan {
-                                        prefix,
-                                        apply,
-                                        source,
-                                        target,
-                                    } => Continuation::Scan {
-                                        prefix: load(prefix)?,
-                                        apply: load(apply)?,
-                                        source: *source,
-                                        target: *target,
-                                    },
-                                })
-                            })
-                            .transpose()?,
-                        result: *result,
+    fn load_stages<C>(stages:&[blanguage::native::StageCode<C>],load:&impl Fn(&C)->Executable)->Vec<StageCode>{
+        use blanguage::native::{ContinuationCode,StageCode as ImageStage};
+        stages.iter().map(|image|match image{
+            ImageStage::Sort(code)=>StageCode::Sort(sort::Code::load(code,load)),
+            ImageStage::Element{main,continuation,result}=>StageCode::Element{
+                main:load(main),
+                continuation:continuation.as_ref().map(|continuation|match continuation{
+                    ContinuationCode::ReductionTail(code)|ContinuationCode::ScanAdd(code)
+                    |ContinuationCode::CompactScatter(code)|ContinuationCode::SegmentedFinish(code)=>Continuation::Apply(load(code)),
+                    ContinuationCode::Scan{prefix,apply,source,target}=>Continuation::Scan{
+                        prefix:load(prefix),apply:load(apply),source:*source,target:*target,
                     },
-                })
-            })
-            .collect::<Result<Vec<_>>>()
+                }),
+                result:*result,
+            },
+        }).collect()
     }
     fn run_owned(
         &self,
@@ -743,7 +715,7 @@ impl CpuCode {
         values: &[Value],
     ) -> OwnedRunResult {
         let count = bindings.datasets.datasets.len();
-        match self.run_mapped(&mut bindings.datasets, &bindings.textures, values, count, |i| (i, 0), || {},None) {
+        match self.run_mapped(&mut bindings.datasets, &bindings.textures, values, count, |i| (i, 0), || {},self.definitions.as_ref()) {
             Ok(()) => Ok(bindings.datasets),
             Err(error) => Err((error, bindings)),
         }
@@ -803,7 +775,7 @@ impl CpuCode {
             .iter_mut()
             .map(CpuBuffer::owned)
             .collect::<Result<Vec<_>>>()?;
-        self.run_buffers(&buffers, textures, uniforms, || {},None)
+        self.run_buffers(&buffers, textures, uniforms, || {},self.definitions.as_ref())
     }
     fn run_buffers(
         &self,

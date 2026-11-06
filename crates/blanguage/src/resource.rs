@@ -5,7 +5,8 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x26\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x27\0\0\0";
+pub const RUNTIME_LIBRARY: &str = "@blink.application@";
 /// 字段共同保证的闭区间，按原Scalar有序位编码；仅同步借用，不拥有存储。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -64,6 +65,7 @@ impl<P, C> Image<P, C> {
         match self { Self::Gpu(image) => Ok(image), Self::Cpu(_) => Err("CPU映像不能作为SPIR-V装入") }
     }
 }
+#[derive(Clone, Debug)]
 pub struct Module<C = native::NativeCode> {
     pub types: Vec<Ty>,
     pub images: Vec<Image<TemplateProgram, C>>,
@@ -74,7 +76,7 @@ variants!(Image { 0=>Cpu(image), 1=>Gpu(image) });
 variants!(Image<TemplateProgram, usize> { 2=>Cpu(image), 1=>Gpu(image) });
 
 #[cfg(feature = "compiler")]
-pub(crate) fn compile( resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<(Vec<u8>, Vec<native::NativeCode>, std::collections::BTreeMap<String, Vec<u8>>)> {
+pub(crate) fn compile_image( resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<Module> {
     let jobs = |cpu| resources.programs.iter().enumerate()
         .filter(|(_, (target, _))| (*target == Target::Cpu) == cpu)
         .flat_map(|(program, (_, code))| (0..code.stages().len()).map(move |stage| (program, stage)))
@@ -87,13 +89,12 @@ pub(crate) fn compile( resources: &crate::application::Resources, worker: &crate
     }).map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut cpu = cpu.into_iter();
     let mut gpu = gpu.into_iter();
-    let mut code = Vec::new();
     let images = resources.programs.iter().map(|(target, program)| {
         let mut plan = ExecutionPlan::from_program(program);
         if *target == Target::Cpu {
             let stages: Vec<_> = program.stages().iter().map(|_| cpu.next().unwrap()).collect();
-            let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages, Vec::new()) };
-            Image::Cpu(image.map_code(|entry| { let index = code.len(); code.push(entry); index }))
+            let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages, Vec::new(),None) };
+            Image::Cpu(image)
         } else {
             let stages = plan.stages.iter_mut().map(|stage| {
                 let (code, bytes) = gpu.next().unwrap();
@@ -103,10 +104,21 @@ pub(crate) fn compile( resources: &crate::application::Resources, worker: &crate
             Image::Gpu(unsafe { spirv::ProgramImage::from_compiler_output(plan, stages) })
         }
     }).collect();
-    let bytes = compiler_output(&Module { types: resources.types.clone(), images });
-    let imports = resources.programs.iter().flat_map(|(_, program)| program.imports.clone()).collect();
-    Ok((bytes, code, imports))
+    Ok(Module { types: resources.types.clone(), images })
 }
+#[cfg(feature = "compiler")]
+pub(crate) fn compile(resources: &crate::application::Resources,worker:&crate::compiler::Worker)
+    -> codec::Result<(Vec<u8>, Vec<native::NativeCode>, std::collections::BTreeMap<String, Vec<u8>>)> {
+    let mut code=Vec::new();let module=compile_image(resources,worker)?;
+    let images=module.images.into_iter().map(|image|match image{
+        Image::Cpu(image)=>Image::Cpu(image.map_code(|entry|{let index=code.len();code.push(entry);index})),
+        Image::Gpu(image)=>Image::Gpu(image),
+    }).collect();
+    let bytes=compiler_output(&Module{types:module.types,images});
+    let imports=resources.programs.iter().flat_map(|(_,program)|program.imports.clone()).collect();
+    Ok((bytes,code,imports))
+}
+
 fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
     let mut bytes = ABI.to_vec();
     bytes.extend(value.bytes());
@@ -169,21 +181,27 @@ macro_rules! image_output {
 }
 image_output!(native);
 image_output!(spirv);
-impl<P, C: Encode> Encode for native::ProgramImage<P, C> {
-    fn encode(&self, writer: &mut Writer) {
-        self.program().encode(writer);
-        self.stages().encode(writer);
-        self.functions().encode(writer);
-    }
+macro_rules! native_image_codec {
+    ($code:ty)=>{
+        impl<P> Encode for native::ProgramImage<P,$code>{
+            fn encode(&self,writer:&mut Writer){
+                self.program().encode(writer);self.stages().encode(writer);
+                self.functions().encode(writer);self.resources.encode(writer);
+            }
+        }
+        impl<P> Decode for native::ProgramImage<P,$code>{
+            fn decode(reader:&mut Reader<'_>)->codec::Result<Self>{
+                let program=ExecutionPlan::decode(reader)?;
+                let stages=Vec::<native::StageCode<$code>>::decode(reader)?;
+                let functions=Vec::<(String,$code)>::decode(reader)?;
+                let resources=Option::<Module<$code>>::decode(reader)?;
+                Ok(unsafe{Self::from_compiler_output(program,stages,functions,resources)})
+            }
+        }
+    };
 }
-impl<P, C: Decode> Decode for native::ProgramImage<P, C> {
-    fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
-        let program = ExecutionPlan::decode(reader)?;
-        let stages = Vec::<native::StageCode<C>>::decode(reader)?;
-        let functions = Vec::<(String, C)>::decode(reader)?;
-        Ok(unsafe { Self::from_compiler_output(program, stages, functions) })
-    }
-}
+native_image_codec!(native::NativeCode);
+native_image_codec!(usize);
 impl<P> Encode for spirv::ProgramImage<P> {
     fn encode(&self, writer: &mut Writer) {
         self.program().encode(writer);
@@ -354,3 +372,19 @@ record!(spirv::StageCode {
     selector,
     sort
 });
+
+/// 同一CPU原生映像的已链接代码索引；由原静态链接持有代码。
+#[cfg(feature="compiler")]
+pub(crate) fn linked_native_output<P>(image:&native::ProgramImage<P,usize>)->Vec<u8>{
+    compiler_output(image)
+}
+impl<P> native::ProgramImage<P,*const u8>{
+    /// # Safety
+    /// bytes与code来自同一次原生编译及链接，索引、入口类别和完整资源目录一致；
+    /// 原模块与依赖保持到最后真实代码及资源消费者完成。
+    pub unsafe fn from_linked_compiler_output_bytes(bytes:&[u8],code:&[*const u8])->std::io::Result<Self>{
+        let image:native::ProgramImage<P,usize>=decode_compiler_output(bytes).map_err(|error|
+            std::io::Error::new(std::io::ErrorKind::InvalidData,error.to_string()))?;
+        Ok(image.map_code(|index|code[index]))
+    }
+}

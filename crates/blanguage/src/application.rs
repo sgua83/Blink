@@ -1,5 +1,5 @@
 //! Windows x64 应用编译为 COFF 目标文件；PE 链接由独立 linker 模块负责。
-pub(crate) const RUNTIME_LIBRARY: &str = "@blink.application@";
+pub(crate) use crate::resource::RUNTIME_LIBRARY;
 use crate::{
     ast::Target,
     ir::{Program, Ty, ValueCode},
@@ -15,7 +15,7 @@ pub struct Application {
     pub(crate) imports: std::collections::BTreeMap<String, Vec<u8>>,
     pub(crate) resources: Option<Resources>,
 }
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Resources {
     pub types: Vec<Ty>,
     pub programs: Vec<(Target, Program)>,

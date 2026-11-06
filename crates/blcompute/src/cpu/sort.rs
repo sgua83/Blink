@@ -12,19 +12,19 @@ impl Code {
     pub(super) fn executables(&self) -> impl Iterator<Item = &Executable> {
         self.initialize.iter().chain([&self.histogram, &self.scatter, &self.gather])
     }
-    pub fn load<C>(code: &blanguage::native::SortCode<C>, load: &impl Fn(&C) -> Result<Executable>) -> Result<Self> {
-        Ok(Self {
+    pub fn load<C>(code: &blanguage::native::SortCode<C>, load: &impl Fn(&C) -> Executable) -> Self {
+        Self {
             source: code.source,
             target: code.target,
             initialize: code
                 .initialize
                 .iter()
                 .map(load)
-                .collect::<Result<_>>()?,
-            histogram: load(&code.histogram)?,
-            scatter: load(&code.scatter)?,
-            gather: load(&code.gather)?,
-        })
+                .collect(),
+            histogram: load(&code.histogram),
+            scatter: load(&code.scatter),
+            gather: load(&code.gather),
+        }
     }
 }
 pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[BufferAddress], count: u32) -> Result<()> {

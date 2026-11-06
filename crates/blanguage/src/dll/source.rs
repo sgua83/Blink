@@ -2,51 +2,22 @@
 use crate::{ExecutableProgram, ast::Target, ir::Scalar};
 
 pub(super) fn constructor(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, Vec<(String, crate::native::NativeCode)>), Box<dyn std::error::Error>> {
-    use crate::native::{ContinuationCode, RangeResult, StageCode};
     let mut functions = Vec::new();
     let mut declarations = String::new();
     let cpu = if p.target() == Target::Gpu {
         "return Err(std::io::Error::other(\"GPU 专属程序不能提交给 CPU\").into())".into()
     } else {
-        let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
-        let layout = image.program().compiler_output_bytes();
-        let (_, stages, callees) = image.into_parts();
-        let mut entry = |code: crate::native::NativeCode| {
-            let index = functions.len();
-            let name = format!("__blink_range_{prefix}_{index}");
-            declarations.push_str(&format!("#[link_name={name:?}] static range_{index}: u8;\n"));
-            functions.push((name, code));
-            format!("std::ptr::addr_of!(range_{index})")
-        };
-        let result = |result| match result {
-            RangeResult::None => "RangeResult::None".to_owned(),
-            RangeResult::Values(words) => format!("RangeResult::Values({words})"),
-        };
-        let stages = stages.into_iter().map(|stage| match stage {
-            StageCode::Element { main, continuation, result: returns } => {
-                let main = entry(main);
-                let continuation = match continuation {
-                    None => "None".to_owned(),
-                    Some(continuation) => {
-                        let value = match continuation {
-                            ContinuationCode::ReductionTail(code) => format!("ContinuationCode::ReductionTail({})", entry(code)),
-                            ContinuationCode::ScanAdd(code) => format!("ContinuationCode::ScanAdd({})", entry(code)),
-                            ContinuationCode::CompactScatter(code) => format!("ContinuationCode::CompactScatter({})", entry(code)),
-                            ContinuationCode::SegmentedFinish(code) => format!("ContinuationCode::SegmentedFinish({})", entry(code)),
-                            ContinuationCode::Scan { prefix, apply, source, target } => format!("ContinuationCode::Scan{{prefix:{},apply:{},source:{source},target:{target}}}", entry(prefix), entry(apply)),
-                        };
-                        format!("Some({value})")
-                    }
-                };
-                format!("StageCode::Element{{main:{main},continuation:{continuation},result:{}}}", result(returns))
-            }
-            StageCode::Sort(code) => {
-                let initialize = code.initialize.into_iter().map(&mut entry).collect::<Vec<_>>().join(",");
-                format!("StageCode::Sort(SortCode{{source:{},target:{},initialize:vec![{initialize}],histogram:{},scatter:{},gather:{}}})", code.source, code.target, entry(code.histogram), entry(code.scatter), entry(code.gather))
-            }
-        }).collect::<Vec<_>>().join(",");
-        functions.extend(callees);
-        format!("{{ use blanguage::native::{{StageCode,ContinuationCode,SortCode,RangeResult}}; LibraryProgram::Cpu(unsafe {{ CpuProgram::from_linked(NativeProgramImage::<ExecutableProgram,*const u8>::from_compiler_output(blanguage::ir::ExecutionPlan::from_compiler_output_bytes(&{layout:?})?,vec![{stages}],Vec::new())) }}?) }}")
+        let image=crate::native::program::compile_in(worker,p.clone()).map_err(std::io::Error::other)?;
+        let mut index=0;
+        let image=image.map_code_with(&mut |name,code|{
+            let current=index;index+=1;
+            let name=name.map(str::to_owned).unwrap_or_else(||format!("__blink_range_{prefix}_{current}"));
+            declarations.push_str(&format!("#[link_name={name:?}] fn range_{current}();\n"));
+            functions.push((name,code));current
+        });
+        let bytes=crate::resource::linked_native_output(&image);
+        let addresses=(0..index).map(|index|format!("range_{index} as *const u8")).collect::<Vec<_>>().join(",");
+        format!("{{ let code=[{addresses}];let image=unsafe {{NativeProgramImage::<ExecutableProgram,*const u8>::from_linked_compiler_output_bytes(&{bytes:?},&code)}}?; LibraryProgram::Cpu(unsafe {{CpuProgram::from_linked(image)}}?) }}")
     };
     let gpu = if p.target() == Target::Cpu {
         "return Err(std::io::Error::other(\"CPU 专属程序不能提交给 GPU\").into())".into()

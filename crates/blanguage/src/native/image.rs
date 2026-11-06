@@ -156,6 +156,7 @@ pub struct ProgramImage<P, C = NativeCode> {
     marker: std::marker::PhantomData<fn() -> P>,
     stages: Vec<StageCode<C>>,
     functions: Vec<(String, C)>,
+    pub(crate) resources: Option<crate::resource::Module<C>>,
 }
 impl<P, C> ProgramImage<P, C> {
     /// 恢复本版本编译器输出的原生代码与执行布局。
@@ -164,11 +165,12 @@ impl<P, C> ProgramImage<P, C> {
     /// 必须来自本版本编译器的同一个P入口，携带完整机器码／重定位或同源原生代码绑定、
     /// 入口 ABI、调度及前缀关系；不得由宿主输入构造或伪造条件模板的证明。
     #[doc(hidden)]
-    pub unsafe fn from_compiler_output(program: ExecutionPlan, stages: Vec<StageCode<C>>, functions: Vec<(String, C)>) -> Self {
+    pub unsafe fn from_compiler_output(program: ExecutionPlan, stages: Vec<StageCode<C>>, functions: Vec<(String, C)>, resources: Option<crate::resource::Module<C>>) -> Self {
         Self {
             program,
             stages,
             functions,
+            resources,
             marker: std::marker::PhantomData,
         }
     }
@@ -179,7 +181,7 @@ impl<P, C> ProgramImage<P, C> {
         &self.stages
     }
     pub fn functions(&self) -> &[(String, C)] { &self.functions }
-    pub fn code(&self) -> impl Iterator<Item = &C> {
+    fn own_code(&self) -> impl Iterator<Item = &C> {
         self.stages.iter().flat_map(|stage| {
             let (initialize, entries): (&[C], [Option<&C>; 3]) = match stage {
                 StageCode::Sort(code) => (&code.initialize, [Some(&code.histogram), Some(&code.scatter), Some(&code.gather)]),
@@ -196,33 +198,48 @@ impl<P, C> ProgramImage<P, C> {
             initialize.iter().chain(entries.into_iter().flatten())
         }).chain(self.functions.iter().map(|(_, code)| code))
     }
-    pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode<C>>, Vec<(String, C)>) {
-        (self.program, self.stages, self.functions)
+    pub fn code(&self) -> impl Iterator<Item = &C> {
+        self.own_code().chain(self.resources.iter().flat_map(|module| &module.images)
+            .filter_map(|image| match image { crate::resource::Image::Cpu(image) => Some(image), _ => None })
+            .flat_map(|image| image.own_code()))
+    }
+    pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode<C>>, Vec<(String, C)>, Option<crate::resource::Module<C>>) {
+        (self.program, self.stages, self.functions, self.resources)
     }
 
     /// 同一编译映像只改变代码引用的表示；执行布局及入口类别保持。
     pub(crate) fn map_code<D>(self, mut code: impl FnMut(C) -> D) -> ProgramImage<P, D> {
+        self.map_code_with(&mut |_, value| code(value))
+    }
+    pub(crate) fn map_code_with<D, F: FnMut(Option<&str>, C) -> D>(self, code: &mut F) -> ProgramImage<P, D> {
         let stages = self.stages.into_iter().map(|stage| match stage {
             StageCode::Element { main, continuation, result } => {
-                let main = code(main);
+                let main = code(None,main);
                 let continuation = continuation.map(|continuation| match continuation {
-                    ContinuationCode::ReductionTail(c) => ContinuationCode::ReductionTail(code(c)),
-                    ContinuationCode::ScanAdd(c) => ContinuationCode::ScanAdd(code(c)),
-                    ContinuationCode::CompactScatter(c) => ContinuationCode::CompactScatter(code(c)),
-                    ContinuationCode::SegmentedFinish(c) => ContinuationCode::SegmentedFinish(code(c)),
+                    ContinuationCode::ReductionTail(c) => ContinuationCode::ReductionTail(code(None,c)),
+                    ContinuationCode::ScanAdd(c) => ContinuationCode::ScanAdd(code(None,c)),
+                    ContinuationCode::CompactScatter(c) => ContinuationCode::CompactScatter(code(None,c)),
+                    ContinuationCode::SegmentedFinish(c) => ContinuationCode::SegmentedFinish(code(None,c)),
                     ContinuationCode::Scan { prefix, apply, source, target } =>
-                        ContinuationCode::Scan { prefix: code(prefix), apply: code(apply), source, target },
+                        ContinuationCode::Scan { prefix: code(None,prefix), apply: code(None,apply), source, target },
                 });
                 StageCode::Element { main, continuation, result }
             }
             StageCode::Sort(c) => StageCode::Sort(SortCode {
                 source: c.source, target: c.target,
-                initialize: c.initialize.into_iter().map(&mut code).collect(),
-                histogram: code(c.histogram), scatter: code(c.scatter), gather: code(c.gather),
+                initialize: c.initialize.into_iter().map(|value| code(None,value)).collect(),
+                histogram: code(None,c.histogram), scatter: code(None,c.scatter), gather: code(None,c.gather),
             }),
         }).collect();
-        let functions = self.functions.into_iter().map(|(name, function)| (name, code(function))).collect();
-        ProgramImage { program: self.program, marker: std::marker::PhantomData, stages, functions }
+        let functions = self.functions.into_iter().map(|(name, function)| {let value=code(Some(&name),function);(name,value)}).collect();
+        let resources=self.resources.map(|module|crate::resource::Module{
+            types:module.types,
+            images:module.images.into_iter().map(|image|match image{
+                crate::resource::Image::Cpu(image)=>crate::resource::Image::Cpu(image.map_code_with(code)),
+                crate::resource::Image::Gpu(image)=>crate::resource::Image::Gpu(image),
+            }).collect(),
+        });
+        ProgramImage { program: self.program, marker: std::marker::PhantomData, stages, functions, resources }
     }
 
 }
@@ -244,8 +261,8 @@ pub enum RegionKind {
 
 #[cfg(feature = "compiler")]
 impl<P> ProgramImage<P> {
-    pub(crate) fn code_mut(&mut self) -> impl Iterator<Item = &mut NativeCode> {
-        self.stages.iter_mut().flat_map(|stage| {
+    fn own_code_mut<'a>(stages: &'a mut [StageCode], functions: &'a mut [(String, NativeCode)]) -> impl Iterator<Item = &'a mut NativeCode> {
+        stages.iter_mut().flat_map(|stage| {
             let (initialize, entries): (&mut [NativeCode], [Option<&mut NativeCode>; 3]) = match stage {
                 StageCode::Sort(code) => (&mut code.initialize, [Some(&mut code.histogram), Some(&mut code.scatter), Some(&mut code.gather)]),
                 StageCode::Element { main, continuation, .. } => {
@@ -259,6 +276,12 @@ impl<P> ProgramImage<P> {
                 }
             };
             initialize.iter_mut().chain(entries.into_iter().flatten())
-        }).chain(self.functions.iter_mut().map(|(_, code)| code))
+        }).chain(functions.iter_mut().map(|(_, code)| code))
+    }
+    pub(crate) fn code_mut(&mut self) -> impl Iterator<Item = &mut NativeCode> {
+        Self::own_code_mut(&mut self.stages, &mut self.functions).chain(self.resources.iter_mut()
+            .flat_map(|module| &mut module.images)
+            .filter_map(|image| match image { crate::resource::Image::Cpu(image) => Some(image), _ => None })
+            .flat_map(|image| Self::own_code_mut(&mut image.stages, &mut image.functions)))
     }
 }

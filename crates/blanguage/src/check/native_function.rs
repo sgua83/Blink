@@ -1587,7 +1587,7 @@ fn finalize(
     for program in &mut programs {
         let names = program_dependencies(program);
         for name in &names {
-            if frame.contains(name) && (program.target()!=Target::Cpu || root.is_none() && owner.is_none()) {
+            if frame.contains(name) && program.target()!=Target::Cpu {
                 let unit = &units[name];
                 return unit.source.fail(unit.span, "B263", "该范围产物尚未交接真实Frame及同源资源定义");
             }
@@ -1644,8 +1644,14 @@ pub(super) fn finish(world:&World, module: Module, root: &mut ValueCode, model:&
     finalize(world, module, roots, Some((root,model)), None, &mut [])
 }
 pub(super) fn finish_program(world:&World, module: Module, mut program: Program) -> Result<Program> {
-    let finalized = finalize(world, module, BTreeSet::new(), None, None, &mut [&mut program])?;
+    let mut finalized = finalize(world, module, BTreeSet::new(), None, None, &mut [&mut program])?;
+    for function in &mut finalized.functions {
+        application::lower_sdk_resources(&mut function.body,&finalized.resources);
+    }
     program.functions = finalized.functions.into();
+    if program.native_frame.is_some() || !finalized.resources.types.is_empty() || !finalized.resources.programs.is_empty(){
+        program.resources=Some(Box::new(finalized.resources));
+    }
     Ok(program)
 }
 

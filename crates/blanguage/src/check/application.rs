@@ -444,6 +444,7 @@ pub(crate) fn compile_application(
         uniforms: Vec::new(),
         uniform_bytes: 0,
         native_frame: None,
+        resources: None,
         source_stages: 0,
         stages: Vec::new(),
         functions: std::sync::Arc::from([]),
@@ -3210,4 +3211,121 @@ pub(super) fn element_parameter_sources(model:&returns::Returned)->BTreeSet<Valu
         }
     }
     let mut out=BTreeSet::new();visit(model,&mut out);out
+}
+
+
+// 已闭合源码包直接消费本目录的类型／program编号；实际C ABI数组只借用到本次同步调用结束。
+pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::application::Resources){
+    fn value(reg:Reg,scalar:Scalar)->CallArgument{
+        CallArgument::Value{origin:None,dataset_borrow:None,ty:Ty::scalar(scalar),values:vec![reg]}
+    }
+    fn emit(code:&mut Vec<Inst>,original:&Inst,kind:InstKind){
+        code.push(Inst{kind,source_site:original.source_site.clone(),generated_origin:original.generated_origin.clone()});
+    }
+    fn constant(registers:&mut Vec<Scalar>,code:&mut Vec<Inst>,original:&Inst,scalar:Scalar,bits:Bits)->Reg{
+        let reg=registers.len();registers.push(scalar);emit(code,original,InstKind::Constant(reg,scalar,bits));reg
+    }
+    fn record(name:&str,size:u32,align:u32,fields:&[(&str,Scalar,u32)])->Ty{
+        let mut ty=Ty::unit();ty.name=name.into();ty.size=size;ty.align=align;
+        ty.components=fields.iter().map(|(_,scalar,offset)|(*scalar,*offset)).collect();
+        ty.fields=fields.iter().map(|(name,scalar,offset)|(name.to_string(),*offset,Box::new(Ty::scalar(*scalar)))).collect();ty
+    }
+    fn packet(locals:&mut BTreeMap<usize,Ty>,code:&mut Vec<Inst>,original:&Inst,element:Ty,count:usize,fields:&[Reg])->CallArgument{
+        let mut ty=Ty::unit();ty.name=format!("array<{},{}>",element.name,count);ty.size=element.size*count as u32;ty.align=element.align;
+        ty.values=vec![count as u32];ty.arguments=vec![element.clone()];
+        ty.components=(0..count).flat_map(|i|element.components.iter().map(move |(scalar,offset)|(*scalar,element.size*i as u32+offset))).collect();
+        ty.array=Some(Box::new(element));
+        let base=locals.last_key_value().map_or(0,|(end,_)|*end);
+        let len=ty.components.len();
+        // IR局部位置是分量槽；物理字节、填充与对齐仍只由原Ty交给后端。
+        if len!=0{locals.insert(base+len,ty.clone());}
+        for(slot,&reg)in fields.iter().enumerate(){emit(code,original,InstKind::StoreLocal(base+slot,reg));}
+        CallArgument::Reference{origin:None,ty:ty.clone(),access:Access::Read,address:CallReference{
+            storage:CallStorage::Local{base,len},offset:None,word:0,
+        }}
+    }
+    fn unsigned_bits(registers:&mut Vec<Scalar>,code:&mut Vec<Inst>,original:&Inst,scalar:Scalar,reg:Reg)->Reg{
+        let word=if matches!(scalar,Scalar::F32|Scalar::F64){
+            let bits=if scalar==Scalar::F32{Scalar::U32}else{Scalar::U64};
+            let result=registers.len();registers.push(bits);emit(code,original,InstKind::Unary{dst:result,op:UnaryOp::Bitcast,a:reg});result
+        }else{reg};
+        if registers[word]==Scalar::U64{word}else{
+            let result=registers.len();registers.push(Scalar::U64);emit(code,original,InstKind::Cast{dst:result,src:word});result
+        }
+    }
+    fn block(registers:&mut Vec<Scalar>,locals:&mut BTreeMap<usize,Ty>,code:&mut Vec<Inst>,resources:&crate::application::Resources){
+        let mut out=Vec::new();
+        for mut inst in std::mem::take(code){
+            match &mut inst.kind{
+                InstKind::Scope(body)=>block(registers,locals,body,resources),
+                InstKind::If{yes,no,..}=>{block(registers,locals,yes,resources);block(registers,locals,no,resources);},
+                InstKind::Loop{condition,body,..}=>{block(registers,locals,condition,resources);block(registers,locals,body,resources);},
+                _=>{},
+            }
+            let symbol=match &inst.kind{
+                InstKind::Call(Call{target:CallTarget::External(name),..})if name.library==crate::resource::RUNTIME_LIBRARY=>Some(name.symbol.clone()),
+                _=>None,
+            };
+            if let Some(index)=symbol.as_ref().and_then(|name|name.strip_prefix("blink_allocate_")).and_then(|index|index.parse::<usize>().ok()){
+                let ty=constant(registers,&mut out,&inst,Scalar::U32,index as u64);
+                if let InstKind::Call(call)=&mut inst.kind{
+                    call.arguments.insert(1,value(ty,Scalar::U32));
+                    call.target=CallTarget::External(ExternalName{library:crate::resource::RUNTIME_LIBRARY.into(),symbol:"blink_allocate".into()});
+                }
+            }else if let Some(index)=symbol.as_ref().and_then(|name|name.strip_prefix("blink_run_")).and_then(|index|index.parse::<usize>().ok()){
+                let mut inputs=Vec::new();
+                if let InstKind::Call(call)=&inst.kind{call.all_operands(&mut |reg|{inputs.push(reg);true});}
+                let program=&resources.programs[index].1;
+                let fields:Vec<_>=(0..program.buffers.len()*2).map(|i|inputs[2+i]).collect();
+                let binding=record("@blink.DatasetBinding",8,4,&[("handle",Scalar::U32,0),("offset",Scalar::U32,4)]);
+                let data=packet(locals,&mut out,&inst,binding,program.buffers.len(),&fields);
+                let mut fields=Vec::new();let mut at=2+program.buffers.len()*2;
+                for scalar in program.uniforms.iter().flat_map(|uniform|uniform.ty.components.iter().map(|(scalar,_)|*scalar)){
+                    let kind=constant(registers,&mut out,&inst,Scalar::U32,crate::resource::scalar_tag(scalar)as u64);
+                    let bits=unsigned_bits(registers,&mut out,&inst,scalar,inputs[at]);at+=1;
+                    fields.extend([kind,bits]);
+                }
+                let uniform=record("@blink.UniformValue",16,8,&[("kind",Scalar::U32,0),("bits",Scalar::U64,8)]);
+                let words=packet(locals,&mut out,&inst,uniform,fields.len()/2,&fields);
+                let program=constant(registers,&mut out,&inst,Scalar::U32,index as u64);
+                if let InstKind::Call(call)=&mut inst.kind{
+                    call.arguments=vec![call.arguments[0].clone(),value(program,Scalar::U32),data,words];
+                    call.target=CallTarget::External(ExternalName{library:crate::resource::RUNTIME_LIBRARY.into(),symbol:"blink_run".into()});
+                }
+            }else if let Some(index)=symbol.as_ref().and_then(|name|name.strip_prefix("blink_complete_")).and_then(|index|index.parse::<usize>().ok()){
+                let mut inputs=Vec::new();
+                if let InstKind::Call(call)=&inst.kind{call.all_operands(&mut |reg|{inputs.push(reg);true});}
+                let mut fields=BTreeMap::<u32,(Vec<(u64,u64)>,Vec<usize>)>::new();
+                for fact in &resources.completions[index]{
+                    match fact{
+                        ElementFact::Range(range)=>{fields.entry(range.offset).or_default().0=range.intervals.clone();},
+                        ElementFact::Index{offset,target,..}=>{fields.entry(*offset).or_insert_with(||(vec![(0,u32::MAX as u64)],Vec::new())).1.push(*target);},
+                    }
+                }
+                for(offset,(intervals,limits))in fields{
+                    let mut values=Vec::new();
+                    for(lower,upper)in &intervals{
+                        let lower=constant(registers,&mut out,&inst,Scalar::U64,*lower);let upper=constant(registers,&mut out,&inst,Scalar::U64,*upper);
+                        values.extend([lower,upper]);
+                    }
+                    let interval=record("@blink.ElementInterval",16,8,&[("lower",Scalar::U64,0),("upper",Scalar::U64,8)]);
+                    let ranges=packet(locals,&mut out,&inst,interval,intervals.len(),&values);
+                    let values:Vec<_>=limits.iter().map(|target|inputs[3+target]).collect();
+                    let bounds=packet(locals,&mut out,&inst,Ty::scalar(Scalar::U32),limits.len(),&values);
+                    let field=constant(registers,&mut out,&inst,Scalar::U32,offset as u64);
+                    let range_count=constant(registers,&mut out,&inst,Scalar::U64,intervals.len()as u64);
+                    let limit_count=constant(registers,&mut out,&inst,Scalar::U64,limits.len()as u64);
+                    if let InstKind::Call(mut call)=inst.kind.clone(){
+                        call.arguments=vec![call.arguments[0].clone(),call.arguments[1].clone(),value(field,Scalar::U32),ranges,value(range_count,Scalar::U64),bounds,value(limit_count,Scalar::U64)];
+                        call.target=CallTarget::External(ExternalName{library:crate::resource::RUNTIME_LIBRARY.into(),symbol:"blink_complete_field".into()});
+                        emit(&mut out,&inst,InstKind::Call(call));
+                    }
+                }
+                continue;
+            }
+            out.push(inst);
+        }
+        *code=out;
+    }
+    block(&mut body.registers,&mut body.locals,&mut body.code,resources);
 }

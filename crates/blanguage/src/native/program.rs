@@ -22,17 +22,16 @@ pub(crate) fn compile_in<P: Deref<Target = Program>>(
 ) -> Result<ProgramImage<P>, String> {
     let stages = compile_stages(worker, &program)?;
     let functions = compile_functions(worker, &program)?;
-    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program), stages, functions) })
+    let resources=program.resources.as_ref().map(|resources|
+        crate::resource::compile_image(resources,worker).map_err(|error|error.to_string())).transpose()?;
+    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program), stages, functions,resources) })
 }
 impl crate::Compiler {
     pub fn native<P: Deref<Target = Program>>(&self, program: P) -> Result<ProgramImage<P>, String> {
-        let source = &*program;
-        let (plan, stages, functions) = self.execute(|worker| {
-            let stages = compile_stages(worker, source)?;
-            let functions = compile_functions(worker, source)?;
-            Ok::<_, String>((ExecutionPlan::from_program(source), stages, functions))
-        }).map_err(|error| error.to_string())?;
-        Ok(unsafe { ProgramImage::from_compiler_output(plan, stages, functions) })
+        let source=&*program;
+        self.execute(|worker|compile_in(worker,source)).map_err(|error|error.to_string())
+            .map(|image|{let(plan,stages,functions,resources)=image.into_parts();
+                unsafe{ProgramImage::from_compiler_output(plan,stages,functions,resources)}})
     }
 }
 

@@ -12,7 +12,7 @@ use blanguage::{
 
 mod abi;
 #[cfg(windows)]
-pub(crate) use abi::take_errors;
+pub(crate) use abi::{take_errors,resource_symbol};
 pub use blanguage::resource::DatasetBinding;
 
 pub enum ProgramImage {
@@ -47,8 +47,8 @@ impl ProgramSlot {
     }
 }
 pub(crate) struct Definitions {
-    types: Vec<Ty>,
-    programs: Vec<ProgramSlot>,
+    pub(crate) types: Vec<Ty>,
+    pub(crate) programs: Vec<ProgramSlot>,
 }
 /// 当前实际驻留存储；Frame观察只借用该原值，不转移所有权。
 /// 范围输入的真实非拥有CPU借用；载荷及view资源仍由原执行输入保持。
