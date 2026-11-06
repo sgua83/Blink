@@ -330,7 +330,7 @@ impl MemoryEffect {
         if self.external.is_some_and(|access|access.writes()){return true;}
         match position{
             Position::Initialized=>false,
-            Position::Local(slot)=>self.known.iter().any(|(origin,_,access)|access.writes()&&origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Local{base,len}if(*base..*base+*len).contains(slot)))),
+            Position::Local(_)=>self.known.iter().any(|(origin,when,access)|access.writes()&&origin.memory_positions(when).is_none_or(|positions|positions.iter().any(|written|owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None))),
             Position::Element(binding,_)=>self.known.iter().any(|(origin,_,access)|access.writes()&&origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Data(actual)if actual==binding))),
             Position::Borrowed(borrow,_,word) if !borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>self.known.iter().any(|(origin,when,access)|access.writes()&&origin.memory_positions(when).is_none_or(|positions|positions.iter().any(|position|match position {
                 Position::Borrowed(other,_,actual) if actual==word=>borrow.sources.entries().any(|(source,when)|other.overlaps_source(source,&when)),
