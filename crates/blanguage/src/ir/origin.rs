@@ -263,6 +263,7 @@ pub enum GenerationReason {
     DeclarationReference,
     ContractCondition,
     DatasetInitializeComplete,
+    DatasetResizeComplete,
 }
 /// Only the immutable origin facts of a consumed operation, never its IR or values.
 #[derive(Clone, Debug)]
@@ -691,6 +692,7 @@ impl GeneratedOrigin {
             GenerationReason::DatasetInitializeAdvance => "dataset_initialize_advance",
             GenerationReason::DatasetInitializeLoop => "dataset_initialize_loop",
             GenerationReason::DatasetInitializeComplete => "dataset_initialize_complete",
+            GenerationReason::DatasetResizeComplete => "dataset_resize_complete",
             GenerationReason::DatasetBindSlots => "dataset_bind_slots",
             GenerationReason::DatasetAssignSlots => "dataset_assign_slots",
             GenerationReason::DatasetRelease => "dataset_release",

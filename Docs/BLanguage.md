@@ -1683,7 +1683,7 @@ Rust SDK的Frame操作通过原Result交回错误。直接CpuTemplate::from_imag
 
 已有Frame的共同C ABI中，blink_allocate、blink_resize、blink_run、blink_upload与blink_download直接返回不透明的拥有错误指针：NULL表示成功，非空为调用者唯一拥有的错误。有业务结果时output是第一参数，仅成功初始化；失败不读取或伪造输出。blink_error_message借出原错误的UTF-8文本与长度，调用者结束文本借用后用blink_error_destroy恰好消费一次；blink_error_join消费两个独立错误并交回一个，由原primary分配承载合并文本。错误不借用Frame、不跨C ABI展开；实际指针、类型／程序身份、参数数组及借用范围由可信原生调用者履行。共同入口交回原结果，destroy／release由实际拥有者明确调用；已发生写入和设备故障后的数据可用性沿原执行合同解释。
 
-生成B应用直接消费同一拥有错误：普通B调用的真实失败沿原作用域结束实际拥有者及已接管释放组，再沿普通调用交回唯一错误；只有应用根报告、销毁同一Frame并退出1。非根模块借用原不透明Frame，错误表示、文本及销毁只归原运行库。创建Frame仍在同次创建调用借用错误回调，创建失败不执行正文；普通B的源码Result与这些内部资源错误分别表达。普通实参求值及ABI准备沿同一原env保持已求值拥有者，callee进入前交付；resize未采用fill及其他未完成范围见Issues，完整C声明见[NativeInterop](NativeInterop.md#共同frame-c-abi的错误与所有权)。
+生成B应用直接消费同一拥有错误：普通B调用的真实失败沿原作用域结束实际拥有者及已接管释放组，再沿普通调用交回唯一错误；只有应用根报告、销毁同一Frame并退出1。非根模块借用原不透明Frame，错误表示、文本及销毁只归原运行库。创建Frame仍在同次创建调用借用错误回调，创建失败不执行正文；普通B的源码Result与这些内部资源错误分别表达。普通实参求值及ABI准备沿同一原env保持已求值拥有者，callee进入前交付；resize实参采用前的拥有交接沿原作用域处理；resize结果模型／动态快照及其他未完成范围见Issues，完整C声明见[NativeInterop](NativeInterop.md#共同frame-c-abi的错误与所有权)。
 
 共同载荷地址入口为`u32* blink_address(Frame*,u32 handle,u64 byte_offset,u32 write_bytes,u64 stride,u32 count)`，直接返回同一存储根地址。该受信任入口消费编译阶段已交接的存活身份、目标位置、访问权限和借用；CPU解引用必须是CPU位置，冻结存储只读，原生unsafe调用者承担相同前提。地址取得不分配、传输或等待，不形成可失败B调用；真实运行绑定继续在原CpuTemplate／Frame::run入口交接外部输入。write_bytes或count为零表示没有写入元素；其余写区为[byte_offset+i*stride,byte_offset+i*stride+write_bytes)，0<=i<count。单位置stride=0／count=1，跨元素同字段保持原记录间隙，行号、字段与动态数组偏移由原调用位置合成；分散分量分别交接实际宽度。Frame沿原address_written撤回真实相交的Count及共同元素数值／索引关系，未写字段及记录间隙保持，指针仍保持到最后真实消费者结束；存活地址期间原存储不得移动或释放。原Frame::storage_address唯一取得实际CPU／GPU位置，Owned CPU存储从原Vec取得可写原始指针，冻结存储只交出只读来源，GPU位置不授予CPU解引用。
 
@@ -2907,7 +2907,9 @@ void seed_dynamic(write dataset<Cell> data,read dataset<u32> table) on compute
 
 普通B的dataset<T>(N,F)在原真实初始化循环全部完成后，交接共同字段区间及已证明的自身长度上界。F为静态普通B函数；原游标小于本次数量的关系同时保留真实长度数值快照，后续同容量／更大目标按原index前提消费，不把后来同槽数量当成旧上界。完成描述是原模块常量，独立obj／lib沿原静态包装交接，不读取提供者实现源码；不生成空程序、注册目录或第二事实表。静态空构造不调用F、不制造元素事实，动态零长度的上界对应空区间；工厂失败沿原已初始化前缀结束并退出，未进入完成交接。原字段写即时撤回相交关系，未写兄弟字段和两个独立CPU消费者继续复用原关系。
 
-CPU原生整域纯区间、动态目标关系及普通B工厂完成已实现；resize／普通整域遍历完成、GPU完成／传输和显式外部提供者仍分别见Issues C-021.1.4.5.2.2.3.2至.3、.5.2.3及.5.2.4。静态Data.elements与运行Frame已接收分别表达，不能用工厂单项声称其他生产者已经完成。BLRI37交接Range／Index必要执行合同及标准C字段完成入口；这些是Release必须保持的资源语义，不属于可剥离调试材料，旧资源映像须重编。
+resize在原存储调整真实成功后，把当前结果共同模型已有的数值区间交给原Frame关系集合；take_last的剩余前缀经同一成功接点交接。增长／缩小与空长度按实际返回数量消费，真实失败不进入完成入口，两个独立CPU消费者、兄弟字段保留和相交写撤回继续原规则；源码缺席的独立obj／标准lib也沿原模块静态完成常量消费。该能力不把旧存储的逻辑Index重命名到新版本，不假称未建立的动态界已经交接。
+
+CPU原生整域纯区间、动态目标关系、普通B工厂及resize已有数值的完成交接已实现；resize结果模型／动态快照、普通整域遍历完成、GPU完成／传输和显式外部提供者仍分别见Issues C-021.1.4.5.2.2.3.2.2／.2.3、.3.3、.5.2.3及.5.2.4。同长度／缩小未采用fill的模型误拒绝仍属前述.2.2，不将其改成语言限制或以完成接收成功关闭；动态空旧前缀与实际新元素分别证明。静态Data.elements与运行Frame已接收分别表达，不能用工厂单项声称其他生产者已经完成。BLRI37交接Range／Index必要执行合同及标准C字段完成入口；这些是Release必须保持的资源语义，不属于可剥离调试材料，旧资源映像须重编。
 
 ## 有界并行接纳与输出前缀
 

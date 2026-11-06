@@ -1308,11 +1308,16 @@ impl Builder<'_> {
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
-        Ok(Box::new(DataPayload {
+        let data = Box::new(DataPayload {
             elements,
             root: handle, place: None, initialization: None, ty, length,
             ownership: Ownership::Owned, access: Access::InOut, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
-        }))
+        });
+        self.complete_application_elements(&data, &data.elements, span, Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetResizeComplete,
+            trigger: self.source_at(span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
+        }))?;
+        Ok(data)
     }
     pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
         let [source,output]=args else{return self.fail(span,"B266","take_last(data,output)消费非空CPU dataset并交出唯一尾值");};
