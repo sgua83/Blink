@@ -1784,11 +1784,12 @@ impl Builder<'_> {
         Ok(elements)
     }
     pub(super) fn complete_application_loop(&mut self, writes: &effects::LoopWrites, span: Span) -> Result<()> {
+        let path=self.residency_path();
         let data = self.env.values().flat_map(Binding::application_resources).filter(|data| {
             data.root.ty == Ty::scalar(Scalar::U32)
                 && self.resolve_ownership(&data.ownership, None).available()
-                && self.resolve_owned_residency(&data.residency, None) == residency::Residency::cpu()
-                && (writes.storage.iter().any(|(root, _)| *root == data.root.regs[0])
+                && self.residency.known_at(&data.residency,Target::Cpu,&path)
+                && (writes.unknown_storage || writes.storage.iter().any(|(root, _)| *root == data.root.regs[0])
                     || data.place.as_ref().is_some_and(|place| matches!(place.storage(),
                         Place::Local(_, slots, _) if slots.iter().any(|slot| writes.locals.contains(slot)))))
         }).cloned().collect::<Vec<_>>();

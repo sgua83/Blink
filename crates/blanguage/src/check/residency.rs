@@ -189,6 +189,14 @@ pub(super) struct Inputs{
 }
 // 原使用点是局部检查与公共要求的共同来源，不维护另一份无条件输入状态。
 impl Inputs{
+    pub(super) fn known_at(&self,value:&Residency,target:Target,path:&bounds::Clause)->bool {
+        let location=match target{Target::Cpu=>Residency::cpu(),Target::Gpu=>Residency::gpu(),Target::Compute=>return false};
+        equal_under(value,&location,path)||self.uses.iter().any(|usage|matches!(usage,
+            Use::At{value:used,target:actual,path:when,..}if *actual==target
+                &&bounds::Condition::guard(when.clone()).truth_in(path)==Some(true)
+                &&equal_under(value,used,path)))
+    }
+
     pub fn require(&mut self,value:&Residency,target:Target,source:&Source,span:Span,path:&bounds::Clause)->bool{
         if target==Target::Compute||!known(value,target,path){return false;}
         self.uses.push(Use::At{value:value.clone(),target,path:path.clone(),source:source.clone(),span});true
