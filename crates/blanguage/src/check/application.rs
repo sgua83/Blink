@@ -1266,13 +1266,21 @@ impl Builder<'_> {
             _=>None,
         };
         let incoming = self.capture_element_model(&data, &[], returned);
-        let elements = if data.length.maximum() == 0 { incoming } else {
+        let growth = bounds::Condition::comparison(Comparison::Greater, &length, &data.length);
+        let grows = growth.truth_in(&self.path);
+        let elements = if grows == Some(false) { data.elements } else if data.length.maximum() == 0 { incoming } else {
             let mut previous = data.elements;
             if let Some(value)=previous.view_value_mut(){
                 let present=bounds::Condition::selected(ownership::ApplicationIndex::of(&data.length),0).negate();
                 value.proof.under_path(&value.ty,&present.assume(&bounds::Clause::default(),true));
             }
-            previous.join(*incoming,true);
+            if grows == Some(true) {
+                previous.join(*incoming,true);
+            } else {
+                let mut combined = previous.clone();
+                combined.join(*incoming,true);
+                previous.join_locations(*combined, &growth.negate(), true);
+            }
             previous
         };
         let (slots, storage) = self.local_slots(&fill.ty);

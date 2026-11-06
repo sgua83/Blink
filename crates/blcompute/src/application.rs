@@ -227,8 +227,9 @@ impl Frame {
                 }
             }
         }
-        data.count = count;
-        self.data.domains.retain(|relation| !relation.references(index));
+        let previous = std::mem::replace(&mut data.count, count);
+        self.data.domains.retain(|relation| !relation.references(index)
+            || count <= previous && matches!(relation, crate::DomainRelation::Element(_)));
         Ok(handle)
     }
     pub fn release(&mut self, handle: u32) {

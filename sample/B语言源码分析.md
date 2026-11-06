@@ -1522,7 +1522,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1361`。
+源码节选：`crates/blanguage/src/check/application.rs:1369`。
 
 ```rust
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
@@ -1725,7 +1725,7 @@ pub(super) struct LoopWrites {
 
 take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。存活性消费时点由实际调用者选择；assign_application_element保持after(rhs.span)，普通assign_owned_storage及take_last各选择自身原after(span)。共用函数只消费已求值载荷及当前ViewUses，不把Frame元素旧内容的清理切换到新内容的后续读取；check_returned_type只借用Builder，不重选存活性。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
 
-源码节选：`crates/blanguage/src/check/application.rs:1323`。
+源码节选：`crates/blanguage/src/check/application.rs:1331`。
 
 ```rust
     pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
@@ -2002,7 +2002,7 @@ pub(crate) struct Interface {
     }
 ```
 
-普通B的dataset<T>(N,F)复用原initialize_application_elements的真实工厂调用、字节写及游标，完整Loop之后才交接共同字段保证；失败沿原前缀拥有者退出，不进入完成点。游标保留本次实际长度的Upper数值关系，静态空构造不执行F。application::Resources.completions拥有编译期ElementFact常量，declarations与object::emit按原模块调用保留／重编号及绑定前缀；dll::application_source只把同一静态描述和真实长度实例化为标准C借用数组，不建立新Frame目录、运行注册或空执行。blink_complete_field按原存储Ty解释实际字段，DomainBindings::produced_element继续唯一求交及存活管理，后续CpuTemplate沿原require消费。BLRI38对应该真实C入口，Module序列化与链接器资源基址未增加字段。resize_application_storage在原存储Call成功之后构造新DataPayload，沿同一complete_application_elements交接当前模型已有的数值范围；take_last的剩余前缀也经过此接点，原尾值转移、错误及拥有前缀清理不变。真实失败不会进入DatasetResizeComplete。没有新C ABI、包装、目录、存储状态或字段求交算法；BLRI38及BLCO67保持。已有数值完成不代表resize结果模型／动态长度快照、普通整域遍历、GPU或外部提供者全部交接，剩余见Issues C-021.1.4.5.2；未采用fill混入模型的已证实误拒绝继续.2.3.2.2。
+普通B的dataset<T>(N,F)复用原initialize_application_elements的真实工厂调用、字节写及游标，完整Loop之后才交接共同字段保证；失败沿原前缀拥有者退出，不进入完成点。游标保留本次实际长度的Upper数值关系，静态空构造不执行F。application::Resources.completions拥有编译期ElementFact常量，declarations与object::emit按原模块调用保留／重编号及绑定前缀；dll::application_source只把同一静态描述和真实长度实例化为标准C借用数组，不建立新Frame目录、运行注册或空执行。blink_complete_field按原存储Ty解释实际字段，DomainBindings::produced_element继续唯一求交及存活管理，后续CpuTemplate沿原require消费。BLRI38对应该真实C入口，Module序列化与链接器资源基址未增加字段。resize_application_storage在原存储Call成功之后构造新DataPayload，沿同一complete_application_elements交接当前模型已有的数值范围；take_last的剩余前缀也经过此接点，原尾值转移、错误及拥有前缀清理不变。真实失败不会进入DatasetResizeComplete。没有新C ABI、包装、目录、存储状态或字段求交算法；BLRI38及BLCO67保持。resize_application_dataset沿原长度Condition及Clause选择结果：确定没有新增位置保留旧模型，确定增长才合入fill，未定增长沿原Returned::join_locations保存条件关系。没有新增位置时fill表达式仍完整求值与承担原副作用／失败，模型不混入其未写数值。Frame::resize成功后从原count取回实际旧数量；同长度／缩小只保留未写Element数值，增长撤回旧保证，Prefix引用仍失效，申请失败不改变原事实。没有新模型容器、状态表或运行校验；沿现行BLRI38与原完成接收。动态旧／新上界、普通遍历、GPU及外部提供者仍见Issues C-021.1.4.5.2，空旧前缀新增元素的非法动态索引仍按.2.3.2.3修复。
 
 该编码为BLCO67；资源ABI保持BLRI38。普通值resize也复用原填充值捕获与保留前缀合流，实际拥有值不能广播的规则保持。prefix／where的部分覆盖与原子改写不产生全容量新值域；持久外部输入合同、同字段循环读前范围及普通引用调用精度分别见Issues C-021.1.4.5.2／.5.4.2／.5.4.3。
 
@@ -2038,7 +2038,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:3082`。
+源码节选：`crates/blanguage/src/check/application.rs:3090`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -2050,7 +2050,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 全局目标本身可以是借用输入，其真实根与长度和拥有资源进入同一element_owner_bindings。嵌套遍历中的循环输入是同一资源根的原分析表示，application_element_scopes沿活动LoopContext已有映射查询各层作用域，不另造别名状态：
 
-源码节选：`crates/blanguage/src/check/application.rs:2796`。
+源码节选：`crates/blanguage/src/check/application.rs:2804`。
 
 ```rust
         let owner=view::resource_borrow(data);
