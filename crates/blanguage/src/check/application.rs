@@ -1070,9 +1070,6 @@ impl Builder<'_> {
             for(future,value)in &bindings{
                 if future.starts_with('\0'){remaining.union(&user_owned::cleanup_borrow(value,&BTreeSet::new()));}
             }
-            if !name.starts_with('\0')&&matches!(&binding,Binding::OwnedValue(value)if value.value.ty.contains_cleanup()) {
-                if let Some(Binding::OwnedValue(value))=builder.env.get_mut(&name){value.mark_moved();}
-            }
             builder.drop_binding(binding,&remaining,builder.definition.function.span)?;
             if name.starts_with('\0'){builder.env.remove(&name);}else{
                 match builder.env.get_mut(&name){
