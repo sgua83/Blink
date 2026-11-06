@@ -283,7 +283,7 @@ compiler功能中的`NativeCode::code_json(ip)`只读取同一原发射结果，
 
 `bc build`显式导出原`.x64`时同时写同名`.x64.json`，包含同一映像的分区、指令及原重定位；这次查询不改变发射字节、CPU／GPU执行路径或正常`bc -c`部署内容。普通`.reloc`导出仍沿原入口，JSON查询保留每个映像原本已有的全部重定位。
 
-这些范围是compiler结果中的观察材料，不属于必要执行字段；无compiler的NativeCode不含tail_regions／operation_ranges／function_abi或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有尾部分区材料时，code_json明确报告缺失，不从源码、旧模板或可解码性重建。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
+这些范围是compiler结果中的观察材料，不属于必要执行字段；无compiler的NativeCode不含tail_regions／tail_references／operation_ranges／function_abi或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有尾部分区材料时，code_json明确报告缺失，不从源码、旧模板或可解码性重建。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
 
 ### 普通CPU函数操作的实际发射范围
 
@@ -307,7 +307,17 @@ code_json的function_abi未保留时为null；已采集但没有当前已交接A
 
 共同末尾机器返回由AbiRangeKind::FunctionReturn交接，JSON kind为function_return，只记录原emit_value在结果与栈恢复后实际发射RET的范围；function_end继续来自同一原主函数末端，不含尾部辅助或字面量。职责只说明这条真实机器返回，不伪造源码return、不解释为成功、失败或最后资源消费者完成；源内提前return形成的原Scope／Exit仍随operation_ranges交接，不创建另一退出目标、图或清理链。
 
-当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出及共同机器返回；失败结果／转移生成来源仍依赖原失败ABI的正式实现及实际消费者，按独立叶推进，不能把未命中ABI范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；现有BLCR／BLCF不恢复此材料，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
+当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出及共同机器返回；普通B错误结果ABI已有实现，失败结果／转移生成来源仍按独立叶沿其真实生成点推进，不能把未命中ABI范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；现有BLCR／BLCF不恢复此材料，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
+
+### 原生尾部目标及真实rel32字段
+
+compiler角色的NativeCode可选持有tail_references，元素TailReference只含target与rel32_fields。原finish在同一次探栈辅助发射时取得原probe字段位置和真实辅助起点；在同一次字面量发射及patch之后直接移动原references Vec，原位模式／宽度去重、数据排序和字节不改变。不复制字面量表、IR或来源图，不重放发射、重新扫描位模式或把最终汇编猜成原发射引用。原tail_regions继续拥有目标种类与区间，不在新记录保存第二份分类。
+
+code_json的tail_references未保留时为null，已采集但没有相应引用时为[]。每条仅输出target_offset_bytes及rel32_field_offsets_bytes：都相对同一代码映像字节零，目标是原辅助／字面量起点，每个字段是原四字节、有符号、小端PC相对位移的位置；原目标等于该字段末端加所编码的位移。字段位置不是指令地址或断点位置，也不是源操作编号、地址空间中的任意指针或动态访问次数。共享目标可以有多个真实字段，对齐区间不被伪造为目标或指令。
+
+普通函数的使用来源由字段所属的原operation_ranges及function_abi范围说明；多个父子范围如实保留，不强选唯一语句。字面量数据只说明实际存储，原值来自源字面量还是编译期生成仍由原IR说明；仅凭池中位模式不能猜源数值类型或最初声明，确切值与合同继续由原IR查询。探栈调用可沿原FrameAllocate范围理解生成职责；辅助代码和调用代码分别说明。其他CPU并行／SIMD／集合入口复用同一finish交接物理引用，并不因此已有其完整源码关系，原未交接来源保持未知。
+
+材料从原finish局部容器移动至同一NativeCode，原字面量references Vec直接转移；不持有Emitter、Frame、字面量拥有表或运行资源，随最后代码事实消费者结束释放。必要执行编码不保存tail_references，compiler角色执行解码后为None；现有BLCR／BLCF只恢复原尾部分区，不恢复这些引用，不自动重编或从指令补造。其余字段、保存格式、执行ABI与实际字节不变，职责见[架构](Architecture.md#tool-7-4-1-3)。
 
 ### IR操作的语法来源
 

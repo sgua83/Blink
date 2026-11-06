@@ -424,7 +424,7 @@ pub enum CallTarget {
 }
 ```
 
-源码节选：`crates/blanguage/src/ir/external.rs:192`。
+源码节选：`crates/blanguage/src/ir/external.rs:196`。
 
 ```rust
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
@@ -1301,7 +1301,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:4060`。
+源码节选：`crates/blanguage/src/check.rs:4061`。
 
 ```rust
         let binding = view.binding;
@@ -1378,7 +1378,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:908`。
+源码节选：`crates/blanguage/src/check/application.rs:933`。
 
 ```rust
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1407,7 +1407,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:966`。
+源码节选：`crates/blanguage/src/check/application.rs:991`。
 
 ```rust
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1423,7 +1423,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:876`。
+源码节选：`crates/blanguage/src/check/native_function.rs:879`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1512,7 +1512,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1322`。
+源码节选：`crates/blanguage/src/check/application.rs:1348`。
 
 ```rust
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
@@ -1659,7 +1659,7 @@ pub(super) struct LoopWrites {
 
 take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。存活性消费时点由实际调用者选择；assign_application_element保持after(rhs.span)，普通assign_owned_storage及take_last各选择自身原after(span)。共用函数只消费已求值载荷及当前ViewUses，不把Frame元素旧内容的清理切换到新内容的后续读取；check_returned_type只借用Builder，不重选存活性。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
 
-源码节选：`crates/blanguage/src/check/application.rs:1284`。
+源码节选：`crates/blanguage/src/check/application.rs:1310`。
 
 ```rust
     pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
@@ -1922,7 +1922,7 @@ pub(crate) struct Interface {
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:2961`。
+源码节选：`crates/blanguage/src/check/application.rs:2991`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -2135,7 +2135,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1200`。
+源码节选：`crates/blanguage/src/ir.rs:1202`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -2294,7 +2294,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 商与余数也可以共享一次除法。`Values::block`在原src和除数相同、原直线块允许配对时，按quotient／remainder角色保留两个输入的来源；先写余数再写商也不会颠倒身份。合并指令的generated_origin说明integer_division_pair，单一source_site为空，AI从多输入锚点分别读取两条真实来源。
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:167`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:168`。
 
 ```rust
                         let old = OperationOrigin::from_instruction(&out[position]);
@@ -2314,7 +2314,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 同一个表达式的结果还可以被其他位置复用。整数商／余数和普通纯表达式分别在原键真正命中时交接删除来源；value、quotient和remainder标明被复用哪个结果，input_results说明该输入当时实际产生哪些结果。它不从旧配对来源或最终Both形态倒推过程：部分复用后仍可能重新配对。
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:201`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:202`。
 
 ```rust
                     self.aliases.insert(dst, *old);
@@ -2326,7 +2326,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
                     continue;
 ```
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:243`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:245`。
 
 ```rust
                         continue;
@@ -2513,7 +2513,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 
 局部读取也可能直接被已有值替代。命中原locals后，原别名算法继续消除LoadLocal，来源分别交给真实指令定义或ValueCode实际输入。普通定义可能是多结果Call或Both，因此材料包含本次交接时的结果序号／数量及商／余数角色，不能只保存一组没有目标分量的读取。
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:237`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:239`。
 
 ```rust
                         let value = self.root(value);
@@ -2525,7 +2525,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1357`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1408`。
 
 ```rust
             if !frame.contains(&name) {
@@ -2565,7 +2565,7 @@ SourceDeclaration只保存真实声明的原Source、函数范围、模块、名
 
 
 
-源码节选：`crates/blanguage/src/ir/inspect.rs:275`。
+源码节选：`crates/blanguage/src/ir/inspect.rs:277`。
 
 ```rust
 impl ReductionKernel {
@@ -2728,7 +2728,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:161`。
+源码节选：`crates/blanguage/src/native/codegen.rs:165`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -2805,7 +2805,7 @@ pub(super) enum Location {
 
 native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，关闭compiler的执行SDK不编入Compiler、编译预算、优化器及自定义归约lowering；运行摘要与共有布局仍由原定义交接。Ty::syntax与CFunctionType::syntax只在compiler角色把共有类型重建为源码TypeName，供原World、泛型与检查消费；运行角色保留实际布局、Access及签名／合同身份，不包含这两个源码转换入口。应用根与算法DLL的原archive::compile为执行框架生成独立Cargo单元，对blanguage／blcompute依赖明确关闭默认特性；根包装只消费共同资源ABI、原类型／执行布局与已编译映像。发行包交接工具及源码SDK，不将workspace编译器特性统一后的静态库当作无compiler运行库采用。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:176`。
+源码节选：`crates/blanguage/src/native/codegen.rs:180`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -2848,6 +2848,9 @@ pub struct NativeCode {
     /// 仅compiler持有的尾部分区；执行编码不保留，主函数仍沿function_end。
     #[cfg(feature = "compiler")]
     pub tail_regions: Option<Vec<Region>>,
+    /// 原尾部目标与实际rel32字段；执行编码不保留。
+    #[cfg(feature = "compiler")]
+    pub tail_references: Option<Vec<TailReference>>,
     /// 原IR操作的实际发射区间；仅compiler观察，执行编码不保留。
     #[cfg(feature = "compiler")]
     pub operation_ranges: Option<Vec<OperationRange>>,
@@ -2861,11 +2864,13 @@ pub struct NativeCode {
 
 普通CPU函数还在同一次原标量发射中取得OperationRange：对每个实际Inst读取原code的起止游标，保存原OperationOrigin及是否包含已记录的嵌套操作。材料从原Emitter移动到同一NativeCode的compiler专用operation_ranges，SDK code_json只借用这些事实；SourceSite／GeneratedOrigin不可变共享，不保留Inst、ValueCode、Stage或AST／World。范围按发射完成顺序平铺，控制父项可以包含子范围，不能求和当作指令数或运行次数；零长度表示没有新增字节，游标不是可断点地址。None表示未保留材料，Some空序列表示已采集而没有操作，真实范围的空来源仍保持未知。普通application发射启用，其余并行／SIMD与集合辅助暂为None；ABI参数／结果／退出、尾部来源及纹理降低分别沿独立叶推进，不把操作body材料写成完整映射。原私有读排布移动完整Inst，来源随实际次序交接，不建另一来源表或图。
 
-同一普通函数映像的compiler专用function_abi直接记录参数home与输入搬移的实际字节范围。原emit_function只交接原定义和真实实例，emit_value在实际home／读取前后读取code游标，ParameterOrigin仍由原参数不可变共享；ABI槽序号与CallParameter逻辑序号分别表达，隐藏结果地址home单独标识，不伪造源参数。FunctionAbi材料完成时移入同一NativeCode，不保留函数体、类型合同、分配器或运行资源。None表示未保留，Some空ranges表示已采集但没有当前已交接步骤；零长度不能当作断点地址。原栈维护也直接交接scratch保存／恢复、帧分配／释放及非易失寄存器保存／恢复范围；frame_bytes来自原分配／释放值，未新增字节的原调用保持零长度，不虚构指令或保存清单。原结果地址保存与间接输出交接真实stack_offset_bytes（相对已分配帧RSP），浮点、整数及打包聚合输出由实际结果分支说明；没有结果不产生输出记录。不保留结果运行值或复制合同，共同末尾RET还在原发射点交接FunctionReturn范围（JSON function_return），function_end继续是原主函数末端，不包含尾部数据。该记录不等同于源码return、执行成功／失败或资源完成，原Scope／Exit仍随IR操作来源交接；失败生成段依赖原失败ABI另行推进，不能按未匹配字节反推职责。
+同一普通函数映像的compiler专用function_abi直接记录参数home与输入搬移的实际字节范围。原emit_function只交接原定义和真实实例，emit_value在实际home／读取前后读取code游标，ParameterOrigin仍由原参数不可变共享；ABI槽序号与CallParameter逻辑序号分别表达，隐藏结果地址home单独标识，不伪造源参数。FunctionAbi材料完成时移入同一NativeCode，不保留函数体、类型合同、分配器或运行资源。None表示未保留，Some空ranges表示已采集但没有当前已交接步骤；零长度不能当作断点地址。原栈维护也直接交接scratch保存／恢复、帧分配／释放及非易失寄存器保存／恢复范围；frame_bytes来自原分配／释放值，未新增字节的原调用保持零长度，不虚构指令或保存清单。原结果地址保存与间接输出交接真实stack_offset_bytes（相对已分配帧RSP），浮点、整数及打包聚合输出由实际结果分支说明；没有结果不产生输出记录。不保留结果运行值或复制合同，共同末尾RET还在原发射点交接FunctionReturn范围（JSON function_return），function_end继续是原主函数末端，不包含尾部数据。该记录不等同于源码return、执行成功／失败或资源完成，原Scope／Exit仍随IR操作来源交接；普通B错误结果ABI已有实现，失败生成段来源仍另行推进，不能按未匹配字节反推职责。
 
 编译器角色还在同一NativeCode的tail_regions记录探栈辅助、对齐与每个字面量的实际末端，主函数继续复用function_end。code_json(ip)只解码主／辅助代码，数据和对齐保留原字节；StageCode及ProgramImage按原容器返回全部入口，bc build同时导出.x64.json。
 
-这些观察事实不进入必要执行编码；无compiler的运行库不含tail_regions／operation_ranges／function_abi。从执行映像恢复后若未保留尾部分区，查询明确报告缺失；现有BLCR／BLCF只恢复原布局，操作来源与function_abi仍为None，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
+尾部与使用点之间还由同一NativeCode的compiler专用tail_references交接：探栈记录原probe字段和实际辅助起点，字面量记录实际目标并直接移动原references Vec。TailReference只持有target及原rel32_fields，目标种类仍归tail_regions，不复制字面量表、IR或来源图。code_json输出target_offset_bytes及rel32_field_offsets_bytes；字段是同一代码中的四字节有符号PC相对位移位置，目标等于字段末端加原位移，不能把它当作指令或断点地址。共享数据保留每个真实使用字段，源关系借原操作／ABI范围；不能仅凭位模式推为唯一源字面量，未知来源仍未知。所有材料随同一代码事实消费者释放，不保留Emitter／Frame或运行资源。
+
+这些观察事实不进入必要执行编码；无compiler的运行库不含tail_regions／tail_references／operation_ranges／function_abi。从执行映像恢复后若未保留尾部分区，查询明确报告缺失；现有BLCR／BLCF只恢复原布局，tail_references、操作来源与function_abi仍为None，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 
@@ -2896,7 +2901,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:715`。
+源码节选：`crates/blanguage/src/native/codegen.rs:724`。
 
 ```rust
     let stage = &lowered;

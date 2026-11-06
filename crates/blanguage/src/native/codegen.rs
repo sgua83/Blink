@@ -81,10 +81,12 @@ impl Emitter<'_> {
     fn finish(mut self, stack_bytes: u32) -> NativeCode {
         let function_end = self.code.len();
         let mut tail_regions = Vec::new();
+        let mut tail_references = Vec::new();
         let unwind = unwind::encode(self.prolog, std::mem::take(&mut self.unwind));
         if let Some(at) = self.probe {
             let start = self.code.len();
             self.patch(at, start);
+            tail_references.push(super::TailReference { target: start, rel32_fields: vec![at] });
             self.bytes(&[0x4c, 0x8b, 0xd4, 0x49, 0x83, 0xc2, 0x08, 0x49, 0x89, 0xc3]);
             let begin = self.code.len();
             self.bytes(&[0x49, 0x81, 0xfb]);
@@ -109,9 +111,10 @@ impl Emitter<'_> {
             let target = self.code.len();
             if wide { self.bytes(&bits.to_le_bytes()); } else { self.u32(bits as u32); }
             tail_regions.push(super::Region { end: self.code.len(), kind: super::RegionKind::Literal });
-            for at in references {
+            for &at in &references {
                 self.patch(at, target);
             }
+            tail_references.push(super::TailReference { target, rel32_fields: references });
         }
         NativeCode {
             bytes: self.code,
@@ -121,6 +124,7 @@ impl Emitter<'_> {
             function_end,
             unwind,
             tail_regions: Some(tail_regions),
+            tail_references: Some(tail_references),
             operation_ranges: self.operation_ranges,
             function_abi: None,
         }

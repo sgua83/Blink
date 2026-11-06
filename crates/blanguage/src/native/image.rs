@@ -50,12 +50,21 @@ pub struct NativeCode {
     /// 仅compiler持有的尾部分区；执行编码不保留，主函数仍沿function_end。
     #[cfg(feature = "compiler")]
     pub tail_regions: Option<Vec<Region>>,
+    /// 原尾部目标与实际rel32字段；执行编码不保留。
+    #[cfg(feature = "compiler")]
+    pub tail_references: Option<Vec<TailReference>>,
     /// 原IR操作的实际发射区间；仅compiler观察，执行编码不保留。
     #[cfg(feature = "compiler")]
     pub operation_ranges: Option<Vec<OperationRange>>,
     /// 同一次普通函数发射的ABI生成事实；执行编码不保留。
     #[cfg(feature = "compiler")]
     pub function_abi: Option<FunctionAbi>,
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Debug)]
+pub struct TailReference {
+    pub target: usize,
+    pub rel32_fields: Vec<usize>,
 }
 #[cfg(feature = "compiler")]
 #[derive(Clone, Debug)]

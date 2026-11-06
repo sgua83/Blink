@@ -84,7 +84,11 @@ impl NativeCode {
                 ("byte_length", (range.end - range.start).to_string()),
                 ("includes_nested_operations", range.includes_nested_operations.to_string()), ("origin", range.origin.ir_json()),
             ]))))),
-            ("function_abi", self.function_abi.as_ref().map_or_else(|| "null".into(), function_abi))]))
+            ("function_abi", self.function_abi.as_ref().map_or_else(|| "null".into(), function_abi)),
+            ("tail_references", self.tail_references.as_ref().map_or_else(|| "null".into(), |references| array(references.iter().map(|reference| object(&[
+                ("target_offset_bytes", reference.target.to_string()),
+                ("rel32_field_offsets_bytes", array(reference.rel32_fields.iter().map(usize::to_string))),
+            ])))))]))
     }
 }
 impl StageCode {
