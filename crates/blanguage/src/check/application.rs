@@ -2658,7 +2658,8 @@ impl Builder<'_> {
                 let part=proof.project(&[component],proof.width());
                 for &id in &proof.origins[component]{out.entry(id).or_insert_with(||part.clone());}
             }}
-            for(_,source,_)in view::data_paths(binding){
+            let borrowed = match binding { Binding::DataReference(reference) => Some(&reference.data), _ => None };
+            for source in view::data_paths(binding).into_iter().map(|(_,source,_)|source).chain(borrowed) {
                 for value in [&source.root,&source.length]{
                     let proof=bounds::Proof::capture(value);
                     for id in value.component_origins(0){out.entry(id).or_insert_with(||proof.clone());}
@@ -2703,7 +2704,9 @@ impl Builder<'_> {
         }
         let mut paths=BTreeMap::new();
         if sources.contains(&data.root.identity()){paths.insert(Vec::new(),true);}
-        for(path,complete)in collect(resource,&view::resource_borrow(data),&self.path){paths.entry(path).and_modify(|old|*old|=complete).or_insert(complete);}
+        let owner=view::resource_borrow(data);
+        let owners=std::iter::once(&owner).chain(self.loop_contexts.iter().filter_map(|context|context.view_resources.get(&data.root.identity())));
+        for owner in owners{for(path,complete)in collect(resource,owner,&self.path){paths.entry(path).and_modify(|old|*old|=complete).or_insert(complete);}}
         paths.into_iter().collect()
     }
     pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[&Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {

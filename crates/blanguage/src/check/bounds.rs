@@ -371,7 +371,9 @@ impl Proof {
             self.ranges[component] = fresh.range_set(source);
         }
     }
-    fn constrain_ranges(&mut self, other: &Self, width: usize) {
+    fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
+        self.domains.resize_with(width, Domains::new);
+        for component in 0..width { self.domains[component].extend(other.domains(component)); }
         self.ranges.resize_with(width, ScalarRanges::default);
         for component in 0..width {
             self.ranges[component] = self.range_set(component).combine(&other.range_set(component),
@@ -3908,7 +3910,7 @@ impl Builder<'_> {
                 let common = self.application_element_proof(place, &snapshots);
                 let mut proof = match (stored, common) {
                     (Some((mut proof, _)), Some(common)) => {
-                        proof.constrain_ranges(&common, regs.len());
+                        proof.constrain_common_ranges(&common, regs.len());
                         proof
                     }
                     (Some((proof, _)), None) | (None, Some(proof)) => proof,

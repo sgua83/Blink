@@ -123,7 +123,7 @@ enum Predicate {
     Contiguous(Place),
     Nonzero(Selection),
     Nonempty(Resource),
-    Index(Selection, Resource),
+    Index(Selection, Resource, Option<(bounds::Condition, bounds::Condition)>),
     Cleanup { when: bounds::Condition, required: bounds::Condition },
 }
 pub(super) struct Requirement {
@@ -199,6 +199,16 @@ fn selected_data_mut<'a>(binding:&'a mut Binding,paths:&[Vec<usize>])->Option<&'
     Some(data)
 }
 impl Selection {
+    fn scope_nonempty(&self, env: &BTreeMap<String, Binding>) -> bounds::Condition {
+        let (first, rest) = self.element_paths.split_first().unwrap();
+        let mut data = selected_data(&env[&self.root], std::slice::from_ref(first)).unwrap();
+        let mut condition = bounds::Condition::nonzero_value(&data.length);
+        for fields in rest {
+            data = application::model_data(&data.elements, fields).unwrap();
+            condition = condition.logical(bounds::Condition::nonzero_value(&data.length), false);
+        }
+        condition
+    }
 
     fn assume_empty_scope(&self,binding:&mut Binding) {
         fn empty(data:&mut application::Data)->bounds::Proof {
@@ -478,13 +488,17 @@ pub(super) fn resolve(
                 }
                 let resource = resource(builder, definition, env, path, contract.span)?;
                 let target = match &resource { Resource::Value(value) => Some(value), _ => None };
-                if (!selection.element_paths.is_empty() || target.is_some_and(|value| !value.element_paths.is_empty()))
+                if target.is_some_and(|value| !value.element_paths.is_empty())
                     && !target.is_some_and(|value| selection.root == value.root && selection.element_paths == value.element_paths)
                 {
                     return definition.source.fail(contract.span, "B225", "共同元素index的值与资源需要同一dataset元素作用域");
                 }
+                let scope = if !selection.element_paths.is_empty()
+                    && target.is_none_or(|value| value.element_paths.is_empty()) {
+                    Some((selection.scope_nonempty(env), nonempty_condition(builder, definition, env, &resource, contract.span)?))
+                } else { None };
                 (
-                    Predicate::Index(selection, resource),
+                    Predicate::Index(selection, resource, scope),
                     format!("index({value},{path})"),
                 )
             }
@@ -514,7 +528,7 @@ fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
             Predicate::Nonempty(resource) => {
                 resource.empty() || builder.resource_minimum(resource.domain(), resource.minimum()) != 0
             }
-            Predicate::Index(selection, resource) => {
+            Predicate::Index(selection, resource, _) => {
                 let value = &selection.value;
                 let length = match resource {
                     Resource::Value(target) if target.value.ty.dataset.is_some() => Some(target.value.projected_proof(&[1])),
@@ -556,6 +570,9 @@ pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: S
 pub(super) fn assume(env: &mut BTreeMap<String, Binding>, path:&mut bounds::Clause, requirements: &[Requirement]) {
     for requirement in requirements {
         if let Predicate::Cleanup{when,required}=&requirement.predicate{*path=when.clone().negate().logical(required.clone(),true).assume(path,true);continue;}
+        if let Predicate::Index(_, _, Some((scope, nonempty))) = &requirement.predicate {
+            *path = scope.clone().negate().logical(nonempty.clone(), true).assume(path, true);
+        }
         for (name, binding) in env.iter_mut() {
             match &requirement.predicate {
                 Predicate::SameLength(left, right) => {
@@ -569,13 +586,13 @@ pub(super) fn assume(env: &mut BTreeMap<String, Binding>, path:&mut bounds::Clau
                     }
                 }
                 Predicate::Nonempty(resource) => resource.assume_nonempty(name, binding),
-                Predicate::Index(selection, resource) => {
+                Predicate::Index(selection, resource, scope) => {
                     if selection.root == *name && let Some(value) = selection.assumed_value(binding) {
                         for component in &selection.components {
                             value.proof.mark_domain(*component, resource.domain());
                         }
                     }
-                    resource.assume_nonempty(name, binding);
+                    if scope.is_none() { resource.assume_nonempty(name, binding); }
                 }
             }
         }
@@ -725,7 +742,11 @@ fn requirement_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BT
     Ok(match &requirement.predicate {
         Predicate::Nonzero(selection)=>bounds::Condition::nonzero_value(&selection.value),
         Predicate::Nonempty(resource)=>nonempty_condition(builder,definition,env,resource,span)?,
-        Predicate::Index(selection,resource)=>bounds::Condition::index_value(&selection.value,resource.domain()).logical(nonempty_condition(builder,definition,env,resource,span)?,false),
+        Predicate::Index(selection,resource,scope)=>{
+            let nonempty = match scope { Some((_,condition)) => condition.clone(), None => nonempty_condition(builder,definition,env,resource,span)? };
+            let condition = bounds::Condition::index_value(&selection.value,resource.domain()).logical(nonempty,false);
+            match scope { Some((exists,_)) => exists.clone().negate().logical(condition,true), None => condition }
+        },
         Predicate::SameLength(left,right)=>bounds::Condition::same_length_proofs(&left.proof,&right.proof),
         Predicate::Contiguous(_)=>bounds::Condition::default(),
         Predicate::Cleanup{when,required}=>when.clone().negate().logical(required.clone(),true),
