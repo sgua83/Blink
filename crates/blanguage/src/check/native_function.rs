@@ -1816,6 +1816,7 @@ fn domain_at(
     instance: &crate::generics::Instance,
     functions: &mut Module,
     target: Target,
+    element_inputs: &[ElementFact],
 ) -> Result<crate::module::domain::Interface> {
     let name = crate::module::domain::symbol(&instance.name, target);
     if !functions.units.contains_key(&name) {
@@ -1824,7 +1825,7 @@ fn domain_at(
             reference.name = name.clone();
             *functions = declaration(world, &reference, std::mem::take(functions))?;
         } else {
-            build_domain(world, instance, functions, target)?;
+            build_domain(world, instance, functions, target, element_inputs)?;
         }
     }
     functions.units[&name]
@@ -1845,8 +1846,9 @@ impl Builder<'_> {
         &mut self,
         instance: &crate::generics::Instance,
         target: Target,
+        element_inputs: &[ElementFact],
     ) -> Result<crate::module::domain::Interface> {
-        domain_at(self.world, instance, &mut self.functions, target)
+        domain_at(self.world, instance, &mut self.functions, target, element_inputs)
     }
     pub(super) fn call_domain(
         &mut self,
@@ -1887,7 +1889,7 @@ fn domain_declaration(
     };
     let mut roots = BTreeSet::new();
     for &target in targets {
-        domain_at(world, instance, functions, target)?;
+        domain_at(world, instance, functions, target, &[])?;
         if instance.definition.public {
             roots.insert(crate::module::domain::symbol(&instance.name, target));
         }
@@ -1899,9 +1901,10 @@ fn build_domain(
     instance: &crate::generics::Instance,
     functions: &mut Module,
     target: Target,
+    element_inputs: &[ElementFact],
 ) -> Result<()> {
     let d = &instance.definition;
-    let expanded = expand_domain(world, instance, functions)?;
+    let expanded = expand_domain(world, instance, functions, element_inputs)?;
     let mut signature = expanded.program;
     if !signature.accelerations.is_empty() || !signature.textures.is_empty() {
         return d.source.fail(
@@ -1958,6 +1961,7 @@ fn build_domain(
         buffers: signature.buffers.clone(), uniforms: signature.uniforms.clone(),
         write_regions,
         length_requirements: signature.length_requirements.clone(),
+        element_requirements: signature.element_requirements.clone(),
         outputs: expanded.outputs,
         elements: expanded.elements,
     };
@@ -1990,7 +1994,7 @@ fn build_domain(
             &mut registers,
             &mut code,
         )?;
-        domain_at(world, &call.instance, functions, target)?;
+        domain_at(world, &call.instance, functions, target, &[])?;
         let mut arguments = vec![frame.clone()];
         for root in &call.arguments {
             arguments.push(match root {

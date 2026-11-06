@@ -367,7 +367,7 @@ impl<'a> Builder<'a> {
                 {
                     return self.native_function(instance, args, span, generated_origin, syntax);
                 }
-                return self.application_execute(instance, args, Target::Cpu, span);
+                return self.application_execute(instance, args, Target::Cpu, span, &[]);
             }
             return self.fail(
                 span,

@@ -206,9 +206,15 @@ pub(super) fn element_requirements(buffers: &[Buffer], env: &BTreeMap<String, Ro
 impl Facts {
     pub fn assume_elements(&mut self, program: &Program) {
         for requirement in &program.element_requirements {
-            if let ElementFact::Index { binding, offset, target } = requirement {
-                let component = program.buffers[*binding].ty.components.iter().position(|(_, word)| word == offset).unwrap();
-                self.elements.entry(*binding).or_default().mark_domain(component, IndexDomain::Data(*target));
+            let (binding, offset) = match requirement {
+                ElementFact::Range(range) => (range.binding, range.offset),
+                ElementFact::Index { binding, offset, .. } => (*binding, *offset),
+            };
+            let component = program.buffers[binding].ty.components.iter().position(|(_, word)| *word == offset).unwrap();
+            let proof = self.elements.entry(binding).or_default();
+            match requirement {
+                ElementFact::Range(range) => proof.constrain_element_range(component, range),
+                ElementFact::Index { target, .. } => proof.mark_domain(component, IndexDomain::Data(*target)),
             }
         }
     }
@@ -231,13 +237,17 @@ impl Facts {
     }
     pub fn prove_elements(&self, program: &Program, required: &[ElementFact], d: &Definition, span: Span) -> Result<()> {
         for requirement in required {
-            let ElementFact::Index { binding, offset, target } = requirement else { continue; };
-            if program.buffers[*binding].count == Some(0) { continue; }
-            let component = program.buffers[*binding].ty.components.iter().position(|(_, word)| word == offset).unwrap();
-            let proven = self.elements.get(binding).is_some_and(|proof| {
-                proof.domains(component).into_iter().any(|domain| matches!(domain, IndexDomain::Data(other) if program.same_length(other, *target)))
-                    || proof.element_ranges(*binding, &program.buffers[*binding].ty).iter().any(|range| range.offset == *offset
-                        && range.intervals.iter().all(|&(_, upper)| upper < u64::from(program.buffers[*target].count.unwrap_or(0))))
+            let (binding, offset) = match requirement {
+                ElementFact::Range(range) => (range.binding, range.offset),
+                ElementFact::Index { binding, offset, .. } => (*binding, *offset),
+            };
+            if program.buffers[binding].count == Some(0) { continue; }
+            let component = program.buffers[binding].ty.components.iter().position(|(_, word)| *word == offset).unwrap();
+            let proven = self.elements.get(&binding).is_some_and(|proof| match requirement {
+                ElementFact::Range(range) => proof.holds_element_range(component, range),
+                ElementFact::Index { target, .. } => proof.domains(component).into_iter().any(|domain| matches!(domain, IndexDomain::Data(other) if program.same_length(other, *target)))
+                    || proof.element_ranges(binding, &program.buffers[binding].ty).iter().any(|range| range.offset == offset
+                        && range.intervals.iter().all(|&(_, upper)| upper < u64::from(program.buffers[*target].count.unwrap_or(0)))),
             });
             if !proven { return d.source.fail(span, "B226", "整域调用前尚未证明共同字段的目标索引前提"); }
         }

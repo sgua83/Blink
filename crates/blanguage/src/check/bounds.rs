@@ -402,11 +402,26 @@ impl Proof {
         }
         facts
     }
+    fn element_range(&self, component: usize, scalar: Scalar) -> ScalarRanges {
+        let ranges = self.range_set(component).restrict(0, scalar.bit_mask());
+        if scalar.is_integer() && self.nonzero.get(component) == Some(&true) {
+            ranges.without(scalar.order_bias())
+        } else { ranges }
+    }
     pub(super) fn element_ranges(&self, binding: usize, ty: &Ty) -> Vec<ElementRange> {
         ty.components.iter().enumerate().filter_map(|(component, &(scalar, offset))| {
-            let intervals = self.range_set(component).restrict(0, scalar.bit_mask()).0;
+            let intervals = self.element_range(component, scalar).0;
             (intervals != [(0, scalar.bit_mask())]).then_some(ElementRange { binding, offset, scalar, intervals })
         }).collect()
+    }
+    pub(super) fn constrain_element_range(&mut self, component: usize, range: &ElementRange) {
+        self.ranges.resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
+        self.ranges[component] = self.range_set(component).combine(&ScalarRanges::from_intervals(range.intervals.iter().copied()),
+            |(a,b),(c,d)| ScalarRanges::interval(a.max(c), b.min(d)));
+    }
+    pub(super) fn holds_element_range(&self, component: usize, range: &ElementRange) -> bool {
+        self.element_range(component, range.scalar).0.iter().all(|&(a,b)|
+            range.intervals.iter().any(|&(c,d)| c <= a && b <= d))
     }
     pub(super) fn assign_elements(&mut self, components: &[usize], width: usize, fresh: &Self) {
         self.origins.resize_with(width, Vec::new);
@@ -3679,20 +3694,20 @@ impl Builder<'_> {
                 .saturating_sub(1),
         )
     }
+    pub(super) fn index_known(&self, value: &Value, domain: IndexDomain, limit: u32, lengths: &[(&Proof, usize)]) -> bool {
+        value.proof.domains(0).iter().any(|source| {
+            *source == domain || matches!((domain, source),
+                (IndexDomain::Data(target), IndexDomain::Data(other)) if self.program.same_length(target, *other))
+        })
+            || value.component_ranges(0).0.iter().all(|&(_, upper)| upper < Bits::from(limit))
+            || lengths.iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, *component, true))
+    }
     pub(super) fn index_in(&self, value: &Value, domain: IndexDomain, minimum: u32, selected_length: Option<&Proof>) -> bool {
         let mut lengths = self.resource_length_proofs(domain);
         lengths.extend(selected_length.map(|proof| (proof, 0)));
         let minimum = if let IndexDomain::Fixed(count) = domain { count } else { minimum };
         let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
-        let valid = |value: &Value| {
-            value.proof.domains(0).iter().any(|source| {
-                *source == domain || matches!((domain, source),
-                    (IndexDomain::Data(target), IndexDomain::Data(other)) if self.program.same_length(target, *other))
-            })
-                || value.component_ranges(0).0.iter().all(|&(_, upper)| upper < Bits::from(limit))
-                || lengths.iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, *component, true))
-        };
-        if valid(value) { return true; }
+        if self.index_known(value, domain, limit, &lengths) { return true; }
         // 非固定范围消费同一条原路径；运算仍只求值一次，不新增运行时检查。
         let mut value = value.clone();
         value.proof = Proof::capture(&value);

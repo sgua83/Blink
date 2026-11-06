@@ -348,7 +348,7 @@ pub(crate) fn compile_program(
     instance: &crate::generics::Instance,
 ) -> Result<Program> {
     let mut functions = native_function::Module::default();
-    let expanded = expand_domain(world, instance, &mut functions)?;
+    let expanded = expand_domain(world, instance, &mut functions, &[])?;
     if !expanded.calls.is_empty() {
         return instance.definition.source.fail(
             instance.definition.function.span,
@@ -358,7 +358,7 @@ pub(crate) fn compile_program(
     }
     native_function::finish_program(world, functions, expanded.program)
 }
-fn expand_domain(world: &World, instance: &crate::generics::Instance, functions: &mut native_function::Module) -> Result<ExpandedDomain> {
+fn expand_domain(world: &World, instance: &crate::generics::Instance, functions: &mut native_function::Module, element_inputs: &[ElementFact]) -> Result<ExpandedDomain> {
     let name = &instance.name;
     let d = &instance.definition;
     if !kernel_interface(world, d)? {
@@ -486,6 +486,9 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
     program.prefix_guarantees = prefix::relations(&program, &env, d, ContractKind::Ensures)?;
     program.element_requirements = prefix::element_requirements(&program.buffers, &env, d)?;
+    program.element_requirements.extend_from_slice(element_inputs);
+    program.element_requirements.sort();
+    program.element_requirements.dedup();
     let mut facts = prefix::Facts::new(&program.prefix_requirements);
     facts.assume_elements(&program);
     let mut calls = Vec::new();

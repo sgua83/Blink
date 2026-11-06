@@ -2340,7 +2340,7 @@ impl Builder<'_> {
             return Ok(None);
         };
         let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
-        self.application_execute(instance, arguments, target, span)
+        self.application_execute(instance, arguments, target, span, &[])
     }
     pub(super) fn application_execute(
         &mut self,
@@ -2348,6 +2348,7 @@ impl Builder<'_> {
         prepared: Vec<Argument>,
         target: Target,
         span: Span,
+        element_inputs: &[ElementFact],
     ) -> Result<Option<returns::Returned>> {
         self.application_frame(span)?;
         let callee = &instance.definition;
@@ -2398,7 +2399,7 @@ impl Builder<'_> {
         for value in &data {
             self.application_handle_available(value.root.identity(), span, &[],&self.path)?;
         }
-        let interface = self.prepare_domain(&instance, target)?;
+        let interface = self.prepare_domain(&instance, target, element_inputs)?;
         for &(left, right) in &interface.length_requirements {
             if !self.lengths_equal(&data[left].length, &data[right].length) {
                 return self.fail(span, "B226", "整域调用前未证明same_length数据集长度关系");
@@ -2413,20 +2414,25 @@ impl Builder<'_> {
         for (value, uniform) in uniforms.iter().zip(&interface.uniforms) {
             self.require_same(&uniform.ty, &value.ty, span)?;
         }
-        let roots = interface.buffers.iter().enumerate().map(|(binding, buffer)|
-            (buffer.name.clone(), Root::Data(binding, buffer.access))).collect();
-        for requirement in prefix::element_requirements(&interface.buffers, &roots, callee)? {
-            let ElementFact::Index { binding, offset, target } = requirement else { continue; };
+        for requirement in &interface.element_requirements {
+            let (binding, offset) = match requirement {
+                ElementFact::Range(range) => (range.binding, range.offset),
+                ElementFact::Index { binding, offset, .. } => (*binding, *offset),
+            };
             let source = &data[binding];
             if source.length.maximum() == 0 { continue; }
             let model = self.returned_storage(&source.elements);
             let word = source.element_layout().0 + offset;
             let component = source.data.ty.components.iter().position(|(_, at)| *at == word).unwrap();
             let value = self.value_component(&model, component);
-            let target = &data[target];
-            if !self.index_in(&value, IndexDomain::ApplicationData(target.root.identity()), target.length.minimum(), None) {
-                return self.fail(span, "B226", "整域调用前尚未证明共同字段的目标索引前提");
-            }
+            let proven = match requirement {
+                ElementFact::Range(range) => value.proof.holds_element_range(0, range),
+                ElementFact::Index { target, .. } => {
+                    let target = &data[*target];
+                    self.index_in(&value, IndexDomain::ApplicationData(target.root.identity()), target.length.minimum(), None)
+                },
+            };
+            if !proven { return self.fail(span, "B226", "整域调用前尚未证明共同字段输入前提"); }
         }
         for (&binding, written) in &interface.write_regions {
             let reference = &data[binding];
@@ -2543,6 +2549,32 @@ impl Builder<'_> {
                 groups.push(index);
             }
         }
+        let captured = args.iter().zip(&params).filter_map(|(argument, parameter)| {
+            match argument { Argument::BorrowedData(data) => Some((parameter.access, data)), _ => None }
+        }).collect::<Vec<_>>();
+        let mut element_inputs = Vec::new();
+        for (binding, (access, source)) in captured.iter().enumerate() {
+            if !access.reads() || *access == Access::Atomic { continue; }
+            let model = self.returned_storage(&source.elements);
+            let (offset, ty) = source.element_layout();
+            let components = ty.components.iter().map(|(scalar, word)|
+                source.data.ty.components.iter().position(|item| item == &(*scalar, offset + word)).unwrap()).collect::<Vec<_>>();
+            let common = model.projected_proof(&components);
+            element_inputs.extend(common.element_ranges(binding, ty).into_iter().map(ElementFact::Range));
+            for (component, (scalar, word)) in ty.components.iter().enumerate() {
+                if *scalar != Scalar::U32 { continue; }
+                let value = self.value_component(&model, components[component]);
+                for (target, (_, data)) in captured.iter().enumerate() {
+                    let length = bounds::Proof::capture(&data.length);
+                    if self.index_known(&value, IndexDomain::ApplicationData(data.root.identity()),
+                        data.length.minimum(), &[(&length, 0)]) {
+                        element_inputs.push(ElementFact::Index { binding, offset: *word, target });
+                    }
+                }
+            }
+        }
+        element_inputs.sort();
+        element_inputs.dedup();
         let name = format!(
             "{}@parallel{}:{:?}",
             self.calls.last().unwrap(),
@@ -2578,6 +2610,7 @@ impl Builder<'_> {
             args,
             Target::Cpu,
             statement.span,
+            &element_inputs,
         )?;
         Ok(())
     }
