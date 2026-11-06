@@ -5,7 +5,9 @@ result<T,SequenceIndexError> get<T>(read dataset<T> data,u32 index) on cpu {
     return Err(SequenceIndexError(index,data.length));
 }
 
-result<void,SequenceIndexError> set<T>(inout dataset<T> data,u32 index,T value) on cpu {
+result<void,SequenceIndexError> set<T>(inout dataset<T> data,u32 index,T value) on cpu
+    requires cleanup(data[*], index < data.length)
+    requires cleanup(value, index >= data.length) {
     if (index < data.length) { data[index]=value; return Ok(); }
     return Err(SequenceIndexError(index,data.length));
 }

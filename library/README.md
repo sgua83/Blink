@@ -4,12 +4,12 @@
 
 ## blink.sequence
 
-导入`blink.sequence`后，序列直接使用`dataset<T>`，空序列直接构造`dataset<T>(0)`，清空直接调用`truncate(data,0)`。空拥有序列同样不需要生成器；正长度或未知长度的拥有元素仍由真实静态函数逐项产生。本节完整操作集的采用范围为可复制且不含拥有资源或view的普通存储值，包括标量、向量、矩阵、记录、固定数组和带载荷变体。核心resize已支持可证明的单项拥有末尾增长，普通函数交接拥有元素时保留子资源的实际CPU／GPU位置；pop直接用take_last交出唯一拥有尾值，保留原剩余前缀，支持普通值与拥有元素；空输入仍交回原数据及Empty。库push的拥有元素实例与独立对象／归档组合仍独立采用，get／set／insert／remove／extend／truncate的完整拥有元素操作也分别建设。原dataset长度表示逻辑项数，底层Vec容量仍由Frame／blcompute拥有；截断允许后续复用容量，最终释放沿原资源生命周期。
+导入`blink.sequence`后，序列直接使用`dataset<T>`，空序列直接构造`dataset<T>(0)`，清空直接调用`truncate(data,0)`。空拥有序列同样不需要生成器；正长度或未知长度的拥有元素仍由真实静态函数逐项产生。本节完整操作集的采用范围为可复制且不含拥有资源或view的普通存储值，包括标量、向量、矩阵、记录、固定数组和带载荷变体。核心resize已支持可证明的单项拥有末尾增长，普通函数交接拥有元素时保留子资源的实际CPU／GPU位置；pop直接用take_last交出唯一拥有尾值，保留原剩余前缀，支持普通值与拥有元素；空输入仍交回原数据及Empty。库push的拥有元素实例与独立对象／归档组合仍独立采用。set已按共同元素cleanup合同交接入界旧值及越界未采用值的静态F前提，支持源码及独立对象／归档泛型实例；这不等同于精确所选元素或一般多元素覆盖分析全部完成。get／insert／remove／extend／truncate的完整拥有元素操作分别建设。原dataset长度表示逻辑项数，底层Vec容量仍由Frame／blcompute拥有；截断允许后续复用容量，最终释放沿原资源生命周期。
 
 | 函数 | 输入与结果 |
 |---|---|
 | `get(read data,index)` | `Result<T,SequenceIndexError>`；错误含实际index和length |
-| `set(inout data,index,value)` | `Result<void,SequenceIndexError>`；错误时内容不变 |
+| `set(inout data,index,value)` | `Result<void,SequenceIndexError>`；入界释放被覆盖旧值，越界释放未采用value且内容不变；静态F前提见下文 |
 | `push(data,value)` | 返回新增末项的拥有dataset，长度溢出时返回原输入 |
 | `pop(data)` | 返回`SequenceRemoved<T>{data,value}`，拥有尾值只移动一次；空输入返回原数据及Empty |
 | `insert(data,index,value)` | 允许`index <= length`；返回新序列或原数据及错误 |
@@ -45,7 +45,7 @@ target/release/blink.exe target/main.obj -o target/main.exe
 target/main.exe
 ```
 
-序列push的公开合同为requires cleanup(value, data.length == 4294967295)：只有真实溢出分支清理未采用value时，调用者才须交接其实际静态F前提；正常移交不要求提前释放，也不隐式假定所有owned载荷始终满足F前提。普通无F分量没有额外义务。
+序列push的公开合同为requires cleanup(value, data.length == 4294967295)，交接真实溢出分支对未采用value的静态F前提。set的公开合同为requires cleanup(data[*], index < data.length)及requires cleanup(value, index >= data.length)，分别交接入界覆盖旧值和越界未采用值的静态F前提；data[*]使用当前共同元素范围，不表示已有精确所选元素的独立前提分析。成功移入的新值可暂不满足F前提，由实际拥有者在后续真实释放前修复；正常移交不要求提前释放，不隐式假定所有owned载荷始终满足F前提。普通无F分量没有额外义务。独立模块用原--instance生成set的实际类型实例，调用者沿原--import消费对象或归档，无需提供方源码。
 
 也可用`blink.sequence::push`等限定名。开放泛型按装入的B源码实例化；独立对象／归档只导出明确请求的实例，例如：
 

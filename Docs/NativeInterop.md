@@ -326,7 +326,7 @@ read借用不转移拥有权；B模块的整份拥有聚合write／inout和view�
 
 活动view期间仍拒绝来源写入、移动或传输；普通CPU返回条件可在真实分支中精化可能来源，不按来源候选集合猜测独立。
 
-CPU自包含拥有view聚合、整份拥有聚合write／inout及固定数组动态位置均按规范支持。持久dataset图的B构造、应用内GPU图、动态拥有元素容器、完整资源阶段、异步／远端与版本迁移仍待实现；普通extern C和算法DLL保持各自边界。
+CPU自包含拥有view聚合、整份拥有聚合write／inout及固定数组动态位置均按规范支持。B动态拥有元素的构造、整份移动／返回、末尾增长、尾取出及序列set按各自已实现合同交接；set的共同元素cleanup及泛型实例支持源码、独立对象和归档消费。一般多元素覆盖的完整分析、持久dataset图的B构造、应用内GPU图、完整资源阶段、异步／远端与版本迁移继续按Issues记录；普通extern C和算法DLL保持各自边界。
 
 ### 宿主持久变体view图
 原生Rust的Dataset::for_view、with_views／freeze及Device::upload／upload_with_views／download现可交接enum／Result及记录／固定数组中的实际活动view和间接子图。字段路径包含声明的分支名称，例如item.Some、entries[0].Some.rows及answer.Ok；声明路径只确定类型，实际绑定同时消费记录中的真实判别字。无view分支不要求子资源，未激活载荷不绑定，重叠的数值载荷不被地址覆盖。
@@ -401,7 +401,7 @@ blink_storage_address是原Frame当前有效槽的纯共享查询，直接返回
 
 源语言语义以[语言规范同名章节](BLanguage.md#cpu拥有dataset的显式变长)为准。资源C入口为`BlinkError *blink_resize(uint32_t *output,Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill)`；成功返回NULL并写入同一Frame的实际句柄，错误返回唯一拥有错误且不写output。文本借用与销毁见[共同Frame C ABI](#共同frame-c-abi的错误与所有权)。fill在本次同步调用内按Ty实际声明布局借用完整普通值，不含拥有资源或view；运行库只读取声明分量，不读取填充。调用者拥有可调整的CPU存储，先结束真实地址／view／位置消费者；原生可信入口不替调用者验证任意外部指针。
 
-非根模块通过同一不透明Frame调用共同入口，不移动Rust私有容器或解释Frame。普通C值接口不因此接收B拥有dataset；address值不代替指向位置访问；动态拥有元素、异步和完整版本迁移仍待实现。
+非根模块通过同一不透明Frame调用共同入口，不移动Rust私有容器或解释Frame。B模块的动态拥有元素及set实例沿已编译合同、实际资源和共同Frame入口交接；普通C值接口不因此接收B拥有dataset，address值不代替指向位置访问。一般多元素分析、异步和完整版本迁移的剩余范围继续按Issues记录。
 
 ## 普通值序列库与独立实例
 

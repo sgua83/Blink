@@ -11,7 +11,9 @@ struct SequenceFailure<T> { dataset<T> data; SequenceError reason; };
 struct SequenceRemoved<T> { dataset<T> data; T value; };
 
 result<T,SequenceIndexError> get<T>(read dataset<T> data,u32 index) on cpu;
-result<void,SequenceIndexError> set<T>(inout dataset<T> data,u32 index,T value) on cpu;
+result<void,SequenceIndexError> set<T>(inout dataset<T> data,u32 index,T value) on cpu
+    requires cleanup(data[*], index < data.length)
+    requires cleanup(value, index >= data.length);
 result<dataset<T>,SequenceFailure<T>> push<T>(dataset<T> data,T value) on cpu requires cleanup(value, data.length == 4294967295);
 result<SequenceRemoved<T>,SequenceFailure<T>> pop<T>(dataset<T> data) on cpu;
 result<dataset<T>,SequenceFailure<T>> insert<T>(dataset<T> data,u32 index,T value) on cpu;

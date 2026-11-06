@@ -2493,10 +2493,19 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Defini
         }
         builder.bind_element_resource_borrows(data,&parent,&mut bindings);
         let mut proof=bounds::Proof::capture(&value);
+        let model_values=proof.scalar_identities().into_iter().filter(|id|matches!(id,ValueIdentity::ElementComponent(_)))
+            .map(|id|(id,bounds::Proof::default())).collect();
+        let mut references=view_contracts::components(&value.ty);
+        for fields in view::resource_paths(&value.ty){if let Some(data)=model_data(model,&fields){
+            references.insert(value.regs.iter().position(|reg|*reg==data.root.regs[0]).unwrap());
+        }}
         for component in 0..width{
             let borrow=proof.view_borrow(component).at_call(&bindings);
-            proof=proof.with_view_borrow(component,borrow);
-            out.insert(ValueIdentity::DatasetContent(parameter,resource,*next+component),proof.project(&[component],width));
+            proof=proof.with_view_borrow(component,borrow.clone());
+            let mut input=proof.project(&[component],width);
+            if !references.contains(&component){input=input.substitute_values(&model_values);}
+            let input=input.with_view_borrow(0,borrow);
+            out.insert(ValueIdentity::DatasetContent(parameter,resource,*next+component),input);
         }
         if reads{memory.union(&builder.address_contents(&value.ty,&proof));}
         *next+=width;
@@ -2843,7 +2852,12 @@ impl Builder<'_> {
             selected=parent.as_deref();depth+=1;
         }
         for(component,index)in components.into_iter().zip(0..value.regs.len()){
-            let proof=self.path_proof(&Ty::scalar(value.ty.components[index].0),bounds::Proof::default().with_identity(value.component_origins(index)[0]));
+            let mut proof=bounds::Proof::default();
+            proof.origins=vec![storage.proof.origins.get(index).cloned().unwrap_or_default()];
+            let proof=self.path_proof(&Ty::scalar(value.ty.components[index].0),proof);
+            let loaded=bounds::Proof::default().with_identity(value.component_origins(index)[0]);
+            let renamed=proof.origins[0].iter().map(|source|(*source,loaded.clone())).collect();
+            let proof=proof.substitute_values(&renamed);
             bindings.insert(ValueIdentity::ElementComponent(component),proof.clone());
             for source in storage.component_origins(index).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
                 bindings.insert(source,proof.clone().with_view_borrow(0,storage.proof.view_borrow(index)));
