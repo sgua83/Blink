@@ -106,19 +106,18 @@ mod native {
         finish(result, |()| {})
     }
     /// # Safety
-    /// 对应存储、访问、范围与指针期限由真实调用者遵守；output可写一个原生指针，
-    /// 只在成功时初始化。返回空指针表示成功；非空错误由调用者消费。
+    /// frame／handle是存活的原资源，调用者保证真实目标位置、只读／可写权限、
+    /// 写入范围及最后消费者前的存活；直接交回原存储指针，不创建错误结果。
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_address(
-        output: *mut *mut u32, frame: *mut Frame, handle: u32,
+        frame: *mut Frame, handle: u32,
         offset: u64, bytes: u32, stride: u64, count: u32,
-    ) -> *mut c_void {
-        let result = unsafe { (&mut *frame).address(handle, offset, bytes, stride, count) };
-        finish(result, |value| unsafe { output.write(value) })
+    ) -> *mut u32 {
+        unsafe { (&mut *frame).address(handle, offset, bytes, stride, count) }
     }
     /// 借用原存储地址；不授予CPU访问权或延长存储寿命。
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn blink_storage_address(frame: *const Frame, handle: u32) -> u64 {
-        unsafe { (&*frame).storage_address(handle) }
+    pub unsafe extern "C" fn blink_storage_address(frame: *mut Frame, handle: u32) -> u64 {
+        unsafe { (&mut *frame).storage_address(handle) }
     }
 }

@@ -146,8 +146,7 @@ impl ApplicationLoads<'_, '_> {
         let CallTarget::External(name)=&call.target else{return None;};
         if name.library!=crate::application::RUNTIME_LIBRARY{return None;}
         match name.symbol.as_str() {
-            "blink_address" if call.error.is_some()=>{},
-            "blink_storage_address" if call.error.is_none()=>{},
+            "blink_address" | "blink_storage_address" if call.error.is_none()=>{},
             _=>return None,
         }
         match call.arguments.get(1) {Some(CallArgument::Value{values,..})=>values.first().copied(),_=>None}
@@ -1682,10 +1681,12 @@ impl Builder<'_> {
             trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
         });
         let bytes = self.constant_with_origin(Scalar::U32, Bits::from(bytes), Some(origin.clone()));
-        let value = self
-            .application_call("address", vec![handle, offset, bytes, stride, count], Some(pointer_type()), span, Some(origin))?
-            .unwrap();
-        Ok([value.regs[0], value.regs[1]])
+        let frame=self.application_frame(span)?;
+        let address=[self.reg(Scalar::U32),self.reg(Scalar::U32)];
+        self.code.push(Inst::generated(runtime_call("address",
+            vec![frame,handle,offset,bytes,stride,count].into_iter().map(argument).collect(),
+            Some(pointer_type()),address.to_vec(),None,None).kind,origin));
+        Ok(address)
     }
     pub(super) fn require_application_reference_initialized(&mut self,data:&DataReference,span:Span)->Result<()>{
         let(offset,ty)=data.element_layout();

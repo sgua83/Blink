@@ -215,39 +215,30 @@ impl Frame {
             .domains
             .retain(|r| !r.references(index));
     }
-    /// 借用当前 CPU 存储，不复制记录或隐式下载 GPU 存储。
-    /// 直接借用 Frame 中的原位置；驻留或写权限拒绝时仍保留原存储。
+    /// 取得同一存储位置并撤回真实写区相交的Count；不分配、搬移或等待。
     ///
     /// # Safety
-    /// 指针只在下一次可能移动该存储的执行／释放前有效。调用者必须遵守 B 的
-    /// 类型、索引域与独占访问语义；写区为offset+i*stride开始的bytes字节，
-    /// i<count；bytes或count为零无写入。只撤回真实相交Count，返回原根地址。
-    pub unsafe fn address(&mut self, handle: u32, offset: u64, bytes: u32, stride: u64, count: u32) -> Result<*mut u32> {
+    /// handle属于本Frame的存活资源。CPU解引用必须已取得CPU位置及相应访问权，
+    /// 冻结存储只读；指针保持到最后消费者结束，期间不得移动或释放原存储。
+    /// 写区为offset+i*stride开始的bytes字节，i<count；零bytes或count无写入。
+    pub unsafe fn address(&mut self, handle: u32, offset: u64, bytes: u32, stride: u64, count: u32) -> *mut u32 {
         let index = handle as usize;
-        let data = match self.data.datasets[index].as_mut().unwrap() {
-            ResidentData::Cpu(data) => data,
-            ResidentData::Gpu(_) => return Err(error("CPU 访问需要先显式 download 数据")),
-        };
-        let address = match data {
-            CpuDataset::Owned(data) => data.words.as_mut_ptr(),
-            CpuDataset::Read(data) => {
-                if bytes != 0 && count != 0 {
-                    return Err(error("冻结的 CPU 存储不能取得写借用"));
-                }
-                data.words().as_ptr().cast_mut()
-            }
-        };
+        let address = self.storage_address(handle) as usize as *mut u32;
         if bytes != 0 && count != 0 {
-            let (record_stride, records) = (data.stride(), data.count());
+            let (record_stride, records) = match self.data.datasets[index].as_ref().unwrap() {
+                ResidentData::Cpu(data) => (data.stride(), data.count()),
+                ResidentData::Gpu(data) => (data.stride(), data.count()),
+            };
             self.data.domains.retain(|r| !r.address_written(index, offset, bytes, stride, count, record_stride, records));
         }
-        Ok(address)
+        address
     }
     /// 原存储的位置地址；GPU返回原绑定头的设备地址，不等待或下载。
     /// 地址不保活存储；CPU解引用仍要求真实CPU位置及原借用权限。
-    pub fn storage_address(&self,handle:u32)->u64 {
-        match self.data.datasets[handle as usize].as_ref().unwrap() {
-            ResidentData::Cpu(data)=>data.words().as_ptr() as usize as u64,
+    pub fn storage_address(&mut self,handle:u32)->u64 {
+        match self.data.datasets[handle as usize].as_mut().unwrap() {
+            ResidentData::Cpu(CpuDataset::Owned(data))=>data.words.as_mut_ptr() as usize as u64,
+            ResidentData::Cpu(CpuDataset::Read(data))=>data.words().as_ptr() as usize as u64,
             ResidentData::Gpu(data)=>data.storage_address(),
         }
     }

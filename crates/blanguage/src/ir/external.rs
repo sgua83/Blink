@@ -35,8 +35,6 @@ pub struct CallReference {
 }
 #[derive(Clone, Debug)]
 pub struct DatasetBorrow {
-    #[cfg(feature = "compiler")]
-    pub error_slot: Option<usize>,
     pub frame: [Reg; 2],
     pub handle: Reg,
     pub input: usize,

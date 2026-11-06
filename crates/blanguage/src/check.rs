@@ -1841,7 +1841,6 @@ pub(crate) enum FailureContinuation {
     Return,
     Scope(Box<FailureScope>),
     Cleanup(usize),
-    CleanupScope(usize),
 }
 #[derive(Clone)]
 pub struct FailureScope {
@@ -1868,7 +1867,6 @@ impl std::fmt::Debug for FailureContinuation {
             Self::Return=>f.write_str("Return"),
             Self::Scope(_)=>f.write_str("Scope"),
             Self::Cleanup(slot)=>f.debug_tuple("Cleanup").field(slot).finish(),
-            Self::CleanupScope(slot)=>f.debug_tuple("CleanupScope").field(slot).finish(),
         }
     }
 }

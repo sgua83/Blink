@@ -638,7 +638,7 @@ impl Builder<'_> {
                     let descriptor=Self::borrowed_dataset_parameter_type(p.access,d.execution);
                     let dataset_borrow=if descriptor.components[0].0==Scalar::U64 && reference.root.ty.components[0].0==Scalar::U32 {
                         let frame=self.application_frame(span)?;
-                        Some(Box::new(ir::DatasetBorrow{error_slot:self.pending_error.map(PendingError::slot),frame:[frame.regs[0],frame.regs[1]],handle:reference.root.regs[0],input:actual.len(),call:self.view_model.calls.len()}))
+                        Some(Box::new(ir::DatasetBorrow{frame:[frame.regs[0],frame.regs[1]],handle:reference.root.regs[0],input:actual.len(),call:self.view_model.calls.len()}))
                     }else{None};
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
                     if p.access==Access::Write&&d.execution==crate::execution::Requirement::Invocation {
@@ -1235,10 +1235,8 @@ fn lower_dataset_borrows<'a>(
                             let bytes=constant(&mut before,registers,Scalar::U32,Bits::from(bytes));
                             let result=application::pointer_type();
                             let outputs=result.components.iter().map(|(scalar,_)|register(registers,*scalar)).collect();
-                            let error=register(registers,Scalar::U64);
                             before.push(InstKind::Call(Call{
-                                failure:Some(match borrow.error_slot {Some(slot)=>FailureContinuation::CleanupScope(slot),None=>FailureContinuation::Return}),
-                                error:Some(error),
+                                failure:None,error:None,
                                 target:CallTarget::External(ExternalName{library:crate::application::RUNTIME_LIBRARY.into(),symbol:"blink_address".into()}),
                                 arguments:vec![
                                     value(application::pointer_type(),borrow.frame.to_vec()),
@@ -1278,13 +1276,6 @@ fn failure_effects(module:&mut Module) {
                 crate::optimize::visit(&function.body.code,&mut |inst|if let InstKind::Call(call)=&inst.kind {
                     if call.error.is_some() || matches!(&call.target,CallTarget::Defined(name)if known.contains(name)) {
                         required.insert(name.clone());
-                    }
-                    for argument in &call.arguments {
-                        if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {
-                            let context=&unit.view_model.calls[borrow.call];
-                            let target=&module.units[&context.function].as_ref().unwrap().contract;
-                            if !dataset_write_regions(borrow,context,target).is_empty(){required.insert(name.clone());}
-                        }
                     }
                 });
             }
@@ -1352,17 +1343,8 @@ fn lower_failure_calls(
         for mut inst in std::mem::take(code) {
             if let InstKind::Cleanup{slot,body,failure}=&mut inst.kind {
                 let slot=*slot;let mut can_fail=false;
-                let owner=unit.as_deref().unwrap();
                 crate::optimize::visit(body,&mut |inst|if let InstKind::Call(call)=&inst.kind {
                     can_fail|=call.error.is_some()||matches!(&call.target,CallTarget::Defined(name)if known.contains(name));
-                    for argument in &call.arguments {
-                        if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {
-                            let context=&owner.view_model.calls[borrow.call];
-                            let target=if context.function==owner.context.as_ref().unwrap().program.name{&owner.contract}
-                                else{&module.as_deref().unwrap().units[&context.function].as_ref().unwrap().contract};
-                            can_fail|=!dataset_write_regions(borrow,context,target).is_empty();
-                        }
-                    }
                 });
                 let body=std::mem::take(body);let failure=failure.take();
                 if !can_fail {
@@ -1420,8 +1402,7 @@ fn lower_failure_calls(
                         scoped=true;
                         failure_scope(world,*scope,error,registers,locals,unit.as_deref_mut().unwrap(),module.as_deref_mut().unwrap(),None)?
                     }
-                    FailureContinuation::Cleanup(slot)|FailureContinuation::CleanupScope(slot)=>{
-                        let leave=matches!(continuation,FailureContinuation::CleanupScope(_));
+                    FailureContinuation::Cleanup(slot)=>{
                         let previous=registers.len();registers.push(Scalar::U64);
                         let joined=registers.len();registers.push(Scalar::U64);
                         let ty=Ty::scalar(Scalar::U64);
@@ -1432,14 +1413,12 @@ fn lower_failure_calls(
                             generated(application::runtime_call("error_join",vec![argument(previous),argument(error)],Some(ty),vec![joined],None,None).kind),
                             generated(InstKind::StoreLocal(slot,joined)),
                         ];
-                        let mut code=vec![
+                        vec![
                             generated(InstKind::LoadLocal(previous,slot)),
                             generated(InstKind::Constant(zero,Scalar::U64,0)),
                             generated(InstKind::Binary{dst:present,op:BinaryOp::Compare(Comparison::NotEqual),a:previous,b:zero}),
                             generated(InstKind::If{condition:present,yes:joined,no:vec![generated(InstKind::StoreLocal(slot,error))]}),
-                        ];
-                        if leave{code.push(generated(InstKind::Exit));}
-                        code
+                        ]
                     }
                 };
                 let zero=registers.len();registers.push(Scalar::U64);
@@ -1476,7 +1455,7 @@ fn lower_module_failures(world:&World,module:&mut Module)->Result<()> {
         }
         if !changed{break;}
     }
-    // The Dataset contract is now complete. Generate each real address once.
+    // The Dataset contract is complete; address preparation cannot fail.
     let names=module.units.keys().cloned().collect::<Vec<_>>();
     for name in names {
         let mut unit=module.units.get_mut(&name).unwrap().take().unwrap();
@@ -1484,17 +1463,7 @@ fn lower_module_failures(world:&World,module:&mut Module)->Result<()> {
             let own=&unit.contract;
             lower_dataset_borrows(&mut function.body,&unit.view_model,&|callee|
                 if callee==name{own}else{&module.units[callee].as_ref().unwrap().contract});
-        }
-        *module.units.get_mut(&name).unwrap()=Some(unit);
-    }
-    let known=module.units.iter().filter_map(|(name,unit)|unit.as_ref().unwrap().contract.fallible.then(||name.clone())).collect::<BTreeSet<_>>();
-    let names=module.units.keys().cloned().collect::<Vec<_>>();
-    for name in names {
-        let mut unit=module.units.get_mut(&name).unwrap().take().unwrap();
-        if let Some(mut function)=unit.function.take() {
-            lower_failure_calls(world,&mut function.body,Some(&mut unit),&known,Some(&mut *module))?;
             calls(&mut function.body.code,&mut |call|call.failure=None);
-            unit.function=Some(function);
         }
         unit.context=None;
         *module.units.get_mut(&name).unwrap()=Some(unit);
