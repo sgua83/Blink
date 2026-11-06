@@ -841,6 +841,14 @@ impl Builder<'_> {
                 if let Some(Some(model))=writes.get(index){translate_returned(&mut updated,model,&bindings,false);}
                 residency::output(&mut updated,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);
                 let Returned::Dataset(updated)=updated else{unreachable!()};
+                if !self.functions.read_only(&instance.name) {
+                    let origin=Arc::new(GeneratedOrigin {
+                        reason:GenerationReason::DatasetCallComplete,
+                        trigger:self.source_site.clone().map(GenerationAnchor::Syntax),
+                    });
+                    let snapshots=env.values().filter_map(|binding|match binding { Binding::Value(value)=>Some(value),Binding::OwnedValue(value)=>Some(&value.value),_=>None }).collect::<Vec<_>>();
+                    self.complete_application_elements(reference,&updated.elements,&snapshots,span,origin)?;
+                }
                 self.apply_application_dataset_model(reference,*updated.elements);
             }
         }

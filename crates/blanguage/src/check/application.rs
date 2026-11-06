@@ -1522,7 +1522,7 @@ impl Builder<'_> {
             root: handle, place: None, initialization: None, ty, length,
             ownership: Ownership::Owned, access: Access::InOut, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
         });
-        self.complete_application_elements(&data, &data.elements, snapshots, span, Arc::new(GeneratedOrigin {
+        self.complete_application_elements(&DataReference::direct(data.clone()), &data.elements, snapshots, span, Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetResizeComplete,
             trigger: self.source_at(span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
         }))?;
@@ -1752,7 +1752,7 @@ impl Builder<'_> {
         let advance=origin(GenerationReason::DatasetInitializeAdvance);
         let one=self.constant_with_origin(Scalar::U32,1,Some(advance.clone())).regs[0];let next=self.reg(Scalar::U32);self.code.push(Inst::generated(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one},advance.clone()));self.code.push(Inst::generated(InstKind::StoreLocal(slot,next),advance));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetInitializeLoop)));
-        self.complete_application_elements(data, &elements, &[], span, origin(GenerationReason::DatasetInitializeComplete))?;
+        self.complete_application_elements(&DataReference::direct(data.clone()), &elements, &[], span, origin(GenerationReason::DatasetInitializeComplete))?;
         self.env.remove(&owner);
         Ok(elements)
     }
@@ -1773,17 +1773,19 @@ impl Builder<'_> {
         for data in data {
             if completed.insert(data.root.identity()) {
                 let data = self.refresh_application_data(data, span)?;
-                self.complete_application_elements(&data, &data.elements, &[], span, origin.clone())?;
+                self.complete_application_elements(&DataReference::direct(data.clone()), &data.elements, &[], span, origin.clone())?;
             }
         }
         Ok(())
     }
-    fn complete_application_elements(
-        &mut self, data: &Data, elements: &returns::Returned, snapshots: &[&Value], span: Span,
+    pub(super) fn complete_application_elements(
+        &mut self, data: &DataReference, elements: &returns::Returned, snapshots: &[&Value], span: Span,
         origin: Arc<GeneratedOrigin>,
     ) -> Result<()> {
+        if data.root.ty.components[0].0 != Scalar::U32 { return Ok(()); }
+        let ty = data.element_layout().1;
         let model = self.returned_storage(elements);
-        let mut ranges = model.proof.element_ranges(0, &data.ty).into_iter()
+        let mut ranges = model.proof.element_ranges(0, ty).into_iter()
             .map(|range| (range.offset, range.intervals)).collect::<BTreeMap<_, _>>();
         let mut candidates = vec![data.length.clone()];
         for binding in self.env.values() {
@@ -1801,7 +1803,7 @@ impl Builder<'_> {
         }
         let mut parameters: Vec<Value> = Vec::new();
         let mut fields = Vec::new();
-        for (component, &(scalar, offset)) in data.ty.components.iter().enumerate() {
+        for (component, &(scalar, offset)) in ty.components.iter().enumerate() {
             let mut limits = BTreeSet::new();
             if scalar == Scalar::U32 {
                 let proof = model.proof.project(&[component], model.regs.len());
@@ -1841,7 +1843,8 @@ impl Builder<'_> {
             let index = completions.len(); completions.push(fields); index
         });
         let frame = self.application_frame(span)?;
-        let mut arguments = vec![argument(frame), argument(data.root.clone())];
+        let offset = self.application_reference_offset(data);
+        let mut arguments = vec![argument(frame), argument(data.root.clone()), argument(offset)];
         arguments.extend(parameters.into_iter().map(argument));
         self.code.push(Inst::generated(runtime_call(&format!("complete_{index}"), arguments,
             None, Vec::new(), None, None).kind, origin));
@@ -3581,7 +3584,7 @@ pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::applicat
                     let one=constant(registers,&mut out,&inst,Scalar::U32,1);
                     let stride=constant(registers,&mut out,&inst,Scalar::U32,4);
                     for(parameter,distance)in &field.limits{
-                        let source=inputs[3+parameter];
+                        let source=inputs[4+parameter];
                         let(limit,increment)=match *distance{
                             0=>{
                                 let maximum=constant(registers,&mut out,&inst,Scalar::U32,u32::MAX as u64);
@@ -3612,11 +3615,13 @@ pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::applicat
                         emit(&mut out,&inst,InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:count,b:increment});count=next;
                     }
                     let field=constant(registers,&mut out,&inst,Scalar::U32,field.offset as u64);
+                    let offset=registers.len();registers.push(Scalar::U32);
+                    emit(&mut out,&inst,InstKind::Binary{dst:offset,op:ir::BinaryOp::IAdd,a:inputs[3],b:field});
                     let range_count=constant(registers,&mut out,&inst,Scalar::U64,values.len()as u64/2);
                     let limit_count=registers.len();registers.push(Scalar::U64);
                     emit(&mut out,&inst,InstKind::Cast{dst:limit_count,src:count});
                     if let InstKind::Call(mut call)=inst.kind.clone(){
-                        call.arguments=vec![call.arguments[0].clone(),call.arguments[1].clone(),value(field,Scalar::U32),ranges,value(range_count,Scalar::U64),bounds,value(limit_count,Scalar::U64)];
+                        call.arguments=vec![call.arguments[0].clone(),call.arguments[1].clone(),value(offset,Scalar::U32),ranges,value(range_count,Scalar::U64),bounds,value(limit_count,Scalar::U64)];
                         call.target=CallTarget::External(ExternalName{library:crate::resource::RUNTIME_LIBRARY.into(),symbol:"blink_complete_field".into()});
                         emit(&mut out,&inst,InstKind::Call(call));
                     }
