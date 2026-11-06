@@ -280,6 +280,38 @@ impl<D> DomainBindings<D> {
         self.domains.sort();
         self.domains.dedup();
     }
+    /// Borrow only facts contained in the actual logical argument fields.
+    pub(crate) fn projected_relations(&self, program:&ExecutionPlan, physical:impl Fn(usize)->(usize,u32))->Vec<DomainRelation>
+    where D:DomainStorage {
+        let mut result=Vec::new();
+        for (logical,buffer) in program.buffers().iter().enumerate() {
+            let (source,start)=physical(logical);
+            let end=u64::from(start)+u64::from(buffer.ty.size);
+            for relation in &self.domains {
+                if !same_storage(&self.datasets,source,relation.domain()) { continue; }
+                match relation {
+                    DomainRelation::Prefix{offset,bytes,count,..}
+                        if *offset>=start && u64::from(*offset)+u64::from(*bytes)<=end => {
+                        let offset=*offset-start;
+                        for (target,buffer) in program.buffers().iter().enumerate() {
+                            let (source,start)=physical(target);
+                            if same_storage(&self.datasets,source,count.binding) && count.word>=start
+                                && u64::from(count.word)+4<=u64::from(start)+u64::from(buffer.ty.size) {
+                                result.push(DomainRelation::Prefix{domain:logical,offset,bytes:*bytes,
+                                    count:PrefixCount{binding:target,word:count.word-start}});
+                            }
+                        }
+                    },
+                    DomainRelation::Element(range)
+                        if range.offset>=start && u64::from(range.offset)+u64::from(range.scalar.size())<=end => {
+                        result.push(DomainRelation::Element(ElementRange{binding:logical,offset:range.offset-start,..range.clone()}));
+                    },
+                    _=>{},
+                }
+            }
+        }
+        result.sort();result.dedup();result
+    }
     pub(crate) fn produced_element(&mut self, range: ElementRange) {
         if let Some(known) = self.domains.iter_mut().find_map(|relation| match relation {
             DomainRelation::Element(known) if known.binding == range.binding && known.offset == range.offset
@@ -295,18 +327,17 @@ impl<D> DomainBindings<D> {
     }
 }
 
+fn same_storage<D:DomainStorage>(datasets:&[D],a:usize,b:usize)->bool {
+    a==b || datasets[a].read_identity().is_some_and(|identity|
+        datasets.get(b).and_then(D::read_identity)==Some(identity))
+}
 pub(crate) fn require<D: DomainStorage>(
     datasets: &[D],
     domains: &[DomainRelation],
     program: &dyn ProgramInterface,
     binding: impl Fn(usize) -> (usize, u32),
 ) -> Result<()> {
-    let same = |a: usize, b: usize| {
-        a == b
-            || datasets[a].read_identity().is_some_and(|identity| {
-                datasets.get(b).and_then(D::read_identity) == Some(identity)
-            })
-    };
+    let same = |a: usize, b: usize| same_storage(datasets,a,b);
     for relation in program.prefix_requirements() {
         if !domains.iter().any(|known| {
             matches!(known, DomainRelation::Prefix { domain, offset, bytes, count }

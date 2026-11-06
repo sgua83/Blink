@@ -862,6 +862,9 @@ impl CpuCode {
                 return Err(error("冻结的 CPU 存储只能绑定 read dataset"));
             }
         }
+        let input_domains=if self.program.native_frame().is_some(){
+            bindings.projected_relations(&self.program,physical)
+        }else{Vec::new()};
         let buffers = bindings
             .datasets
             .iter_mut()
@@ -877,7 +880,7 @@ impl CpuCode {
         self.run_buffers(&arguments, textures, uniforms, || {
             crate::bindings::invalidate(&mut bindings.domains, &self.program.write_regions, physical);
             writing();
-        },definitions)?;
+        },definitions,input_domains)?;
         bindings.produced(&self.program, physical);
         Ok(())
     }
@@ -892,7 +895,7 @@ impl CpuCode {
             .iter_mut()
             .map(CpuBuffer::owned)
             .collect::<Result<Vec<_>>>()?;
-        self.run_buffers(&buffers, textures, uniforms, || {},self.definitions.as_ref())
+        self.run_buffers(&buffers, textures, uniforms, || {},self.definitions.as_ref(),Vec::new())
     }
     fn run_buffers(
         &self,
@@ -901,6 +904,7 @@ impl CpuCode {
         mut uniforms: Vec<u32>,
         writing: impl FnOnce(),
         definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
+        mut input_domains:Vec<crate::DomainRelation>,
     ) -> Result<()> {
         if textures.len() != self.program.texture_count()
             || textures.iter().zip(self.program.textures().iter().flat_map(|binding|
@@ -921,10 +925,7 @@ impl CpuCode {
         // 原参数及投影已接受；取得可写访问时撤回旧计数关系。
         // 后续失败可能已有写入，不将未完成调用发布为完整保证。
         writing();
-        // Accepted root requirements seed the same scope advanced by completed stages.
-        let mut input_domains = frame.iter().flat_map(|_| self.program.prefix_requirements()).map(|relation|
-            crate::DomainRelation::Prefix { domain:relation.domain,offset:0,
-                bytes:buffers[relation.domain].ty.size,count:relation.count }).collect();
+        // Actual input facts move into this scope; declarations never create facts.
         for (stage, code) in self.program.stages().iter().zip(&self.stages) {
             crate::bindings::invalidate(&mut input_domains,&stage.write_regions,|binding|(binding,0));
             let count = if let Some(prefix) = &stage.prefix {
