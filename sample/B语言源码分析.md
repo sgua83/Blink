@@ -463,7 +463,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1627`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1636`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -488,7 +488,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2727`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2736`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -507,7 +507,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1617`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1626`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1316,7 +1316,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:4187`。
+源码节选：`crates/blanguage/src/check.rs:4188`。
 
 ```rust
         let binding = view.binding;
@@ -1479,7 +1479,7 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 调用者证明输入条件蕴含实际F前提；独立函数入口把同一关系交给原Condition／Proof，具体F调用仍消费原contracts::prove。function_parameters暂借原env形成合同，随后归还同一环境并沿原path假定已声明前提，不增加另一份合同状态。实际写入及移动继续改变原身份，旧快照不成为当前值的新许可；未证明的contiguous仍为未知。
 
-源码节选：`crates/blanguage/src/check.rs:1733`。
+源码节选：`crates/blanguage/src/check.rs:1734`。
 
 ```rust
     let environment=std::mem::take(&mut b.env);
@@ -1585,7 +1585,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 原address_write_positions是内存位置投影的唯一入口。具体Origin内的资源即使含LoopInput，仍可按真实布局与word投影；顶层未形成位置的输入／调用、Unresolved或其他未知来源不被静默当作空写。原write_address_values与循环消费者直接消费同一结果，不能用递归pending标志代替实际写位置。初始化在该快照中保持未知。闭合普通B调用的实际写区统一由原Memory合同交接，非拥有write／inout权限不重复定义整值写区，typed written数值输出、初始化与拥有参数消费仍各归原调用合同。dataset指针在预分析和实际调用中交接同一原Origin：实际Data、逻辑元素布局和字段字节由application统一构造，不改变机器句柄、长度、步长或ABI参数。预分析初始化保持未知；真实读输入只消费原初始化检查已经取得的事实，write输入继续原输出初始化分支。模块dataset出口先沿原输入关系过滤私有Data，再将输入资源位置归一为原Derived符号指针，嵌套调用及obj／lib保留真实写区；未知仍如实未知，不增加资源镜像、效果图、状态或运行时校验。命名元素继续使用已经求值的句柄、布局、索引和步长，其资源来源在Place生产处通过原data_borrow引用当前循环映射，与下标访问保持同一来源，不保存进入前的过期来源。未来读取缓存、同字段读前范围和独立数值缺口继续各原编号。下面的代码只形成编译期位置，不增加运行时表、资源镜像或释放链。
 
-源码节选：`crates/blanguage/src/check.rs:3714`。
+源码节选：`crates/blanguage/src/check.rs:3715`。
 
 ```rust
                 CursorSource::ApplicationData(mut data) => {
@@ -2004,7 +2004,7 @@ enum Fact {
 
 完整parallel的输出属于原资源，而不是前一游标的寄存器身份。prefix::Facts沿原阶段效果保存每个元素共同成立的数值范围和逻辑Data目标；下一Builder消费同一共同事实。抽取只保留ranges和经过实际调用绑定重映射的目标索引事实，旧寄存器、路径和借用不跨阶段：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:373`。
+源码节选：`crates/blanguage/src/check/bounds.rs:374`。
 
 ```rust
     // 阶段完成只交接共同数值和逻辑数据目标；值身份、路径及借用不跨阶段。
@@ -2049,7 +2049,7 @@ pub(crate) struct Interface {
 
 普通B应用沿同一合同更新Data.elements，原未知写与单元素值更新入口共同处理完整数值结果，不新建范围表。应用游标局部事实与共同字段范围同时成立；读取点消费两者交集，原局部值不进入共同资源查询。范围交集直接复用同一ScalarRanges，共同索引域并入原局部Proof；它们同时约束本次读取，不表示两个元素拥有相同数值：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:407`。
+源码节选：`crates/blanguage/src/check/bounds.rs:408`。
 
 ```rust
     fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
@@ -2069,7 +2069,7 @@ pub(crate) struct Interface {
 
 CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文使用的同一个游标绑定，再运行原loop_writes；循环IR、真实入口、条件与退出仍由原LoopContext交接。没有先造一份影子游标或把正文未知写扩成全存储写：
 
-源码节选：`crates/blanguage/src/check.rs:3773`。
+源码节选：`crates/blanguage/src/check.rs:3774`。
 
 ```rust
         self.env.insert(name.clone(), binding);
@@ -2125,7 +2125,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1008`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1015`。
 
 ```rust
         self.nonzero = (0..width)
@@ -2138,7 +2138,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1161`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1170`。
 
 ```rust
     pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
@@ -2166,7 +2166,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 数值构造可能接收普通记录，其多个分量不一定同型。Builder::cast沿原Ty逐分量选择常量转换，Proof::cast在同一原入口逐分量保持同型事实或按真实转换更新范围、非零、来源及条件；运行期原InstKind::Cast继续消费实际寄存器类型。只有实际类型改变才折叠整份常量，不为记录另建值包装或转换状态。浮点范围与整数范围复用原Proof.ranges的ScalarRanges集合，以各自数值次序解释；浮点有序位是可逆的编译期编码，谓词代入恢复真实存储位，不能把它当运行整数。截断到零的宽整数也不能继续作为非零除数。
 
-普通值与数值回边复用原合流。u32游标的无回绕单调递增把入口精确Offset放宽为Lower，仅保留相对下界。同宽无符号值的end>begin产生Upper，end-begin至少为一；减法按实际分量与来源快照消费正距离，并以该标量bit_mask限制结果，不受u32资源索引ABI限制，正差可作为非零除数。无符号零扩展到更宽无符号类型先沿原same_value保留输入数值来源及全部已有域，两个扩宽端点继续消费同一Upper；此前截断或符号转换形成的CommonRange也保持原源／目标Scalar，不改写成从最初源到最终类型的直接转换。目标改为有符号时，原模块范围使用不同顺序编码，转换仍交接正确范围；同宽或扩宽保留原整数零／非零条件，不把旧来源直接当作同编码输入。 同位宽符号往返保留原位模式关系；类型化共同范围经过实际转换后继续交接，缩窄或实际改写不沿用旧数值身份与算术域，有符号运算不套用无符号正差结论。固定形状与当前u32长度ABI的动态资源索引前提也交接数值上界，供初次加一的无回绕推导；这不规定永久长度上限。循环只继承入口与实际继续边共同的数值界，不恢复旧身份；seek结束当前路径并沿原继续边交接。普通循环沿原LoopState保留实际继续边，仍引用入口值的自然出口分量与这些回边交接共有数值。原LoopControl用入口的真实输入重绑定首个条件，分别保留零次与已经执行路径；当前变量被改写不冒充原输入快照。改变的数值身份沿原output_aliases和Clause合流，实际B写入后不继续使用入口常量或非零许可，已取出的SSA快照仍独立。view借用、Position初始化与资源所有权继续由原消费者处理，没有运行时出口标记、第二张图或另一份拥有状态。flow::check_application_loop和leave_loop消费同一回边；LoopControl::bindings交接原入口值，数值合流只使用既有Proof与条件别名，不改静态借用或确定初始化。返回出口与选择表达式把同一实际条件交给原Proof::common，完整Ty及各分量事实只捕获并合流一次；Returned::join_locations沿原dataset长度、Data.elements与拥有载荷递归交接该条件。选中可证明的外空继续按全称空集合满足共同前提，不制造元素或索引许可。uniform取两侧共有值，constant只保留相同常量；dataset与拥有载荷仍沿各自原模型交接。
+普通值与数值回边复用原合流。u32游标的无回绕单调递增把入口精确Offset放宽为Lower，仅保留相对下界。同宽无符号值的end>begin产生Upper，end-begin至少为一；减法按实际分量与来源快照消费正距离，并以该标量bit_mask限制结果，不受u32资源索引ABI限制，正差可作为非零除数。无符号零扩展到更宽无符号类型先沿原same_value保留输入数值来源及全部已有域，两个扩宽端点继续消费同一Upper；此前截断或符号转换形成的CommonRange也保持原源／目标Scalar，不改写成从最初源到最终类型的直接转换。目标改为有符号时，原模块范围使用不同顺序编码，转换仍交接正确范围；同宽或扩宽保留原整数零／非零条件，不把旧来源直接当作同编码输入。不能精确复合的零保持整数链沿原CommonNonzero仅交接共同非零依赖；at_call由真实输入非零消费，缩窄与非整数转换不继承，实际写入沿原写效果撤回数值事实。此依赖不是具体范围或相等身份，不保留私有中间寄存器或另一转换图。 同位宽符号往返保留原位模式关系；类型化共同范围经过实际转换后继续交接，缩窄或实际改写不沿用旧数值身份与算术域，有符号运算不套用无符号正差结论。固定形状与当前u32长度ABI的动态资源索引前提也交接数值上界，供初次加一的无回绕推导；这不规定永久长度上限。循环只继承入口与实际继续边共同的数值界，不恢复旧身份；seek结束当前路径并沿原继续边交接。普通循环沿原LoopState保留实际继续边，仍引用入口值的自然出口分量与这些回边交接共有数值。原LoopControl用入口的真实输入重绑定首个条件，分别保留零次与已经执行路径；当前变量被改写不冒充原输入快照。改变的数值身份沿原output_aliases和Clause合流，实际B写入后不继续使用入口常量或非零许可，已取出的SSA快照仍独立。view借用、Position初始化与资源所有权继续由原消费者处理，没有运行时出口标记、第二张图或另一份拥有状态。flow::check_application_loop和leave_loop消费同一回边；LoopControl::bindings交接原入口值，数值合流只使用既有Proof与条件别名，不改静态借用或确定初始化。返回出口与选择表达式把同一实际条件交给原Proof::common，完整Ty及各分量事实只捕获并合流一次；Returned::join_locations沿原dataset长度、Data.elements与拥有载荷递归交接该条件。选中可证明的外空继续按全称空集合满足共同前提，不制造元素或索引许可。uniform取两侧共有值，constant只保留相同常量；dataset与拥有载荷仍沿各自原模型交接。
 
 ![条件与事实的合流](figures/compiler-facts.svg)
 
@@ -2221,7 +2221,7 @@ F32除法只在原规范的分母范围内交接包含设备误差的结果，�
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1749`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1758`。
 
 ```rust
 impl Drop for Clause {
@@ -2376,7 +2376,7 @@ pub enum ElementFact {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:485`。
+源码节选：`crates/blanguage/src/check.rs:486`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
@@ -4379,7 +4379,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
 
 普通函数的实际输入在原声明入口形成：
 
-源码节选：`crates/blanguage/src/check.rs:1569`。
+源码节选：`crates/blanguage/src/check.rs:1570`。
 
 ```rust
         if p.ty.is_texture_resource() {
