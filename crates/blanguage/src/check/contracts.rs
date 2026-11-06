@@ -534,7 +534,7 @@ fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
             Predicate::Cleanup{when,required}=>builder.condition_truth(&when.clone().negate().logical(required.clone(),true),None)==Some(true),
             Predicate::SameLength(left, right) => builder.length_proofs_equal(&left.proof, &right.proof),
             Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
-            Predicate::Nonzero(selection) => selection.empty() || selection.value.is_nonzero(),
+            Predicate::Nonzero(selection) => selection.empty() || builder.condition_truth(&bounds::Condition::nonzero_value(&selection.value),None)==Some(true),
             Predicate::Nonempty(resource) => {
                 resource.empty() || builder.resource_minimum(resource.domain(), resource.minimum()) != 0
             }
