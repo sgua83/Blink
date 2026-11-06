@@ -41,7 +41,6 @@ pub(super) struct ValueSnapshot { pub position:Position, pub scalar:Scalar, pub 
 pub(super) struct Call {
     pub(super) function:String,
     pub(super) memory:usize,
-    pub(super) snapshots:Vec<ValueSnapshot>,
     pub(super) arguments:BTreeMap<ValueIdentity,bounds::Proof>,
     initialization:Vec<address::InitializationEffect>,
     outputs:BTreeSet<Output>,
@@ -190,12 +189,15 @@ fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSe
     fresh(a,b)||fresh(b,a)
 }
 impl Function {
-    pub fn pending_values(&self)->bool {self.calls.iter().any(|call|!call.snapshots.is_empty())}
+    pub fn pending_values(&self)->bool {self.uses.iter().any(|usage|matches!(&usage.requirement,Requirement::Memory{snapshots:Some(snapshots),..}if !snapshots.is_empty()))}
     fn value_context(&self,values:Option<&BTreeMap<ValueIdentity,bounds::Proof>>)->bounds::Clause {
         match values {
-            Some(values)=>bounds::Clause::values(self.calls.iter().flat_map(|call|call.snapshots.iter().enumerate().map(move |(component,snapshot)|{
-                let id=ValueIdentity::MemoryValue(call.memory,component);(snapshot.scalar,id,&values[&id])
-            }))),
+            Some(values)=>bounds::Clause::values(self.uses.iter().enumerate().flat_map(|(memory,usage)|{
+                let snapshots=match &usage.requirement{Requirement::Memory{snapshots:Some(snapshots),..}=>snapshots.as_ref(),_=>&[]};
+                snapshots.iter().enumerate().map(move |(component,snapshot)|{
+                    let id=ValueIdentity::MemoryValue(memory,component);(snapshot.scalar,id,&values[&id])
+                })
+            })),
             None=>bounds::Clause::default(),
         }
     }
@@ -204,8 +206,8 @@ impl Function {
         normal.negate().logical(when,true)
     }
     pub fn scope(&mut self)->usize {let scope=self.next_scope;self.next_scope+=1;scope}
-    pub fn call(&mut self,function:&str,memory:usize,snapshots:Vec<ValueSnapshot>,arguments:BTreeMap<ValueIdentity,bounds::Proof>,initialization:Vec<address::InitializationEffect>,path:bounds::Clause,source:crate::Source,span:Span)->usize {
-        let call=self.calls.len();self.calls.push(Call{function:function.into(),memory,snapshots,arguments,initialization,outputs:BTreeSet::new(),path,source,span});call
+    pub fn call(&mut self,function:&str,memory:usize,arguments:BTreeMap<ValueIdentity,bounds::Proof>,initialization:Vec<address::InitializationEffect>,path:bounds::Clause,source:crate::Source,span:Span)->usize {
+        let call=self.calls.len();self.calls.push(Call{function:function.into(),memory,arguments,initialization,outputs:BTreeSet::new(),path,source,span});call
     }
     pub fn result(&mut self,call:usize,output:Output)->Borrow {
         self.calls[call].outputs.insert(output.clone());
@@ -343,11 +345,11 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
                     for position in &read.positions{position_roots(position,&mut roots);}
                     for position in &read.initialized{position_roots(position,&mut roots);}
                 }
+                Requirement::Memory{snapshots:Some(snapshots),..}=>for snapshot in snapshots.iter(){position_roots(&snapshot.position,&mut roots);},
                 Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}|Requirement::Nonzero{..}=>{},
             }
         }
         for call in &function.calls{if contracts.contains(&call.function){roots.extend(call.arguments.values().map(bounds::Proof::borrowed_view));}}
-        for call in &function.calls{for snapshot in &call.snapshots{position_roots(&snapshot.position,&mut roots);}}
         let mut loops=BTreeSet::new();let mut calls=BTreeSet::new();
         while let Some(borrow)=roots.pop() {
             for source in &borrow.sources {
@@ -766,35 +768,41 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
     let mut memory=BTreeMap::new();let mut scalar_values=BTreeMap::new();
     for(name,function)in functions {
         let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();
-        for usage in &function.uses {
-            if let Requirement::Memory{target,borrow,access,..}=&usage.requirement
-                && !matches!(target,address::MemoryTarget::Call(memory)if function.calls.iter().any(|call|call.memory==*memory)) {
-                let borrow=evaluate(borrow,function,&known[name],&known,true).restricted(&usage.path);
-                let effect=match access{Some(access)=>address::MemoryEffect::of(&borrow,*access),None=>address::MemoryEffect::default()};
-                match values.entry(*target) {
-                    std::collections::btree_map::Entry::Vacant(entry)=>{entry.insert(effect);}
-                    std::collections::btree_map::Entry::Occupied(mut entry)=>entry.get_mut().union(effect),
+        let mut resolved=BTreeMap::new();let mut calls=function.calls.iter().peekable();let mut usages=function.uses.iter().enumerate().peekable();
+        while let Some((memory,usage))=usages.next(){
+            let Requirement::Memory{target,snapshots,..}=&usage.requirement else{continue;};
+            let mut effect=address::MemoryEffect::default();
+            if calls.peek().is_some_and(|call|call.memory==memory){
+                let call=calls.next().unwrap();
+                for access in &known[&call.function].interface.access {
+                    let (borrows,when,access)=match access_at_call(access,call,&call.path,function,&known[name],&known).substitute_values(&resolved) {
+                        Access::Memory{borrows,when,access}=> (borrows,when,access),
+                        Access::Dataset{borrows,when,access,..}=> (borrows,when,access),
+                        Access::Position{borrows,when,position} if position.writes||position.initialized=> (borrows,when,match(position.writes,position.initialized){(true,true)=>super::Access::InOut,(true,false)=>super::Access::Write,_=>super::Access::Read}),
+                        _=>continue,
+                    };
+                    let borrow=borrows.restricted(&when.assume(&bounds::Clause::default(),true));
+                    effect.union(address::MemoryEffect::of(&borrow,access));
+                }
+            }else{
+                let rest=std::iter::from_fn(||{
+                    if matches!(target,address::MemoryTarget::Call(_))&&usages.peek().is_some_and(|(_,usage)|matches!(&usage.requirement,Requirement::Memory{target:other,..}if other==target)){
+                        usages.next().map(|(_,usage)|usage)
+                    }else{None}
+                });
+                for usage in std::iter::once(usage).chain(rest){
+                    if let Requirement::Memory{borrow,access,..}=&usage.requirement {
+                        let borrow=evaluate(borrow,function,&known[name],&known,true).substitute_values(&resolved).restricted(&usage.path.substitute_values(&resolved));
+                        if let Some(access)=access{effect.union(address::MemoryEffect::of(&borrow,*access));}
+                    }
                 }
             }
-        }
-        let mut resolved=BTreeMap::new();
-        for call in &function.calls {
-            for access in &known[&call.function].interface.access {
-                let (borrows,when,access)=match access_at_call(access,call,&call.path,function,&known[name],&known).substitute_values(&resolved) {
-                    Access::Memory{borrows,when,access}=> (borrows,when,access),
-                    Access::Dataset{borrows,when,access,..}=> (borrows,when,access),
-                    Access::Position{borrows,when,position} if position.writes||position.initialized=> (borrows,when,match(position.writes,position.initialized){(true,true)=>super::Access::InOut,(true,false)=>super::Access::Write,_=>super::Access::Read}),
-                    _=>continue,
-                };
-                let borrow=borrows.restricted(&when.assume(&bounds::Clause::default(),true));
-                values.entry(address::MemoryTarget::Call(call.memory)).or_insert_with(||address::MemoryEffect::default()).union(address::MemoryEffect::of(&borrow,access));
-            }
-            for(component,snapshot)in call.snapshots.iter().enumerate(){
+            if let Some(snapshots)=snapshots{for(component,snapshot)in snapshots.iter().enumerate(){
                 let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluate(borrow,function,&known[name],&known,true)),layout.clone(),*word),position=>position.clone()};
-                let changed=values.get(&address::MemoryTarget::Call(call.memory)).is_some_and(|effect|effect.writes_position(&position));
-                let proof=if changed{bounds::Proof::default()}else{snapshot.proof.substitute_values(&resolved)};
-                resolved.insert(ValueIdentity::MemoryValue(call.memory,component),proof);
-            }
+                let proof=if effect.writes_position(&position){bounds::Proof::default()}else{snapshot.proof.substitute_values(&resolved)};
+                resolved.insert(ValueIdentity::MemoryValue(memory,component),proof);
+            }}
+            values.entry(*target).or_default().union(effect);
         }
         memory.insert(name.clone(),values);
         if function.pending_values(){scalar_values.insert(name.clone(),resolved);}

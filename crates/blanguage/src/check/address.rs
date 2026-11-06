@@ -738,9 +738,9 @@ impl Builder<'_> {
         }else{vec![self.is_initialized(place);layout.parts.len()]};
         Ok(Origin{root,layout,base,words:words.into(),positions:positions.into(),writable,initialized:initialized.into()})
     }
-    pub(super) fn reference_position_borrow(&self,place:&Place,span:Span)->Result<Option<view::Borrow>> {
-        if matches!(place,Place::Reference{address:ReferenceAddress::Borrowed{..}|ReferenceAddress::External{..},..}){
-            return Ok(Some(self.position_origin(place,span)?.normalize()));
+    pub(super) fn reference_memory(&self,place:&Place,span:Span)->Result<Option<(MemoryTarget,view::Borrow)>> {
+        if let Place::Reference{address:ReferenceAddress::Borrowed{address,..}|ReferenceAddress::External{address,..},..}=place{
+            return Ok(Some((MemoryTarget::Value(address[0]),self.position_origin(place,span)?.normalize())));
         }
         Ok(None)
     }
@@ -825,11 +825,15 @@ impl Builder<'_> {
         snapshots
     }
     pub(super) fn call_address_memory(&mut self,memory:impl IntoIterator<Item=(view::Borrow,Option<Access>)>,span:Span)->Result<usize> {
-        let usage=self.view_model.uses.len();
+        let usage=self.view_model.uses.len();let mut written=view::Borrow::default();
         for(borrow,access)in memory{
-            if access.is_some_and(|access|access.writes()){self.write_address_values(&borrow);}
-            self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,access,span})?;
+            if access.is_some_and(|access|access.writes()){written.union(&borrow);}
+            self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,access,snapshots:None,span})?;
         }
+        if written.pending()&&self.address_write_positions(&written).is_none(){
+            let snapshots=self.defer_address_values(usage);
+            if let view::Requirement::Memory{snapshots:target,..}=&mut self.view_model.uses[usage].requirement{*target=Some(snapshots.into());}
+        }else{self.write_address_values(&written);}
         Ok(usage)
     }
     pub(super) fn position_address(&mut self,args:&[Expr],span:Span)->Result<Option<Value>> {
@@ -902,8 +906,6 @@ impl Builder<'_> {
             scope: None,
             access: Access::InOut,
         };
-        let memory=if external{self.position_origin(&place,span)?.normalize()}else{borrow};
-        self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Value(low),borrow:memory,access:Some(Access::InOut),span})?;
         Ok(Some(place))
     }
 }

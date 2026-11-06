@@ -2287,8 +2287,9 @@ impl<'a> Builder<'a> {
             Place::Reference {
                 ty, address, words, ..
             } => {
-                if let Some(borrow)=self.reference_position_borrow(p,span)? {
-                    self.check_view_requirement(view::Requirement::Address{borrow,layout:address::Layout::of(ty),writes:false,writable:false,initialized:true,span})?;
+                if let Some((target,borrow))=self.reference_memory(p,span)? {
+                    self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:address::Layout::of(ty),writes:false,writable:false,initialized:true,span})?;
+                    self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Read),snapshots:None,span})?;
                 }else{self.require_initialized(p, span)?;}
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 let mut regs = Vec::new();
@@ -2472,7 +2473,11 @@ impl<'a> Builder<'a> {
         self.require_view_available(&value, &[], span)?;
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
-        if let Some(borrow)=self.reference_position_borrow(p,span)? {self.write_address_values(&borrow);}
+        if let Some((target,borrow))=self.reference_memory(p,span)? {
+            let memory=self.view_model.uses.len();
+            let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory).into())}else{self.write_address_values(&borrow);None};
+            self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Write),snapshots,span})?;
+        }
         match p {
             Place::AtomicParameter(_)
             | Place::Reference { access: Access::Atomic, .. }

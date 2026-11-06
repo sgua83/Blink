@@ -284,11 +284,10 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){*proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target,Vec::new())]));}}
     if let Some(value)=&returned{builder.view_model.capture_resources(value,view_contracts::Output::ReturnedResource);}
     for(parameter,value)in written.iter().enumerate(){if let Some(value)=value{builder.view_model.capture_resources(value,|resource|view_contracts::Output::WrittenResource(parameter,resource));}}
-    for call in &builder.view_model.calls {
-        for component in 0..call.snapshots.len(){
-            let id=ValueIdentity::MemoryValue(call.memory,component);
-            bindings.insert(id,bounds::Proof::default().with_identity(id));
-        }
+    for(memory,usage)in builder.view_model.uses.iter().enumerate(){
+        if let view::Requirement::Memory{snapshots:Some(snapshots),..}=&usage.requirement{for component in 0..snapshots.len(){
+            let id=ValueIdentity::MemoryValue(memory,component);bindings.insert(id,bounds::Proof::default().with_identity(id));
+        }}
     }
     let mut next=inputs.len();
     let models=std::iter::once(returned).chain(written).enumerate().map(|(model_index,model)|model.map(|model|{
@@ -744,12 +743,12 @@ impl Builder<'_> {
             let access=self.functions.units[&instance.name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();
             self.native_dataset_access(&access,&view_arguments,span)?
         }else{Vec::new()};
-        let (memory_use,memory_values)=if views_closed {
-            (self.call_address_memory([(memory_borrow,Some(Access::InOut))],span)?,Vec::new())
+        let memory_use=if views_closed {
+            self.call_address_memory([(memory_borrow,Some(Access::InOut))],span)?
         }else{
-            let usage=self.view_model.uses.len();
-            self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(usage),borrow:memory_borrow,access:Some(Access::InOut),span})?;
-            (usage,self.defer_address_values(usage))
+            let usage=self.view_model.uses.len();let snapshots=self.defer_address_values(usage);
+            self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(usage),borrow:memory_borrow,access:Some(Access::InOut),snapshots:Some(snapshots.into()),span})?;
+            usage
         };
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
         for argument in &mut arguments {
@@ -814,7 +813,7 @@ impl Builder<'_> {
             semantic+=regs.len();written_registers.insert(*index,regs);
         }
         view_arguments.extend(bindings.clone());
-        let view_call=Some(self.view_model.call(&instance.name,memory_use,memory_values,view_arguments.clone(),address::initialization_effects(&self.initialized,&bounds::Clause::default()),self.path.clone(),self.definition.source.clone(),span));
+        let view_call=Some(self.view_model.call(&instance.name,memory_use,view_arguments.clone(),address::initialization_effects(&self.initialized,&bounds::Clause::default()),self.path.clone(),self.definition.source.clone(),span));
         if d.function.result.is_never() {
             self.flow = Flow::STOP;
             return Ok(None);
@@ -1306,11 +1305,10 @@ fn failure_scope(
     b.emit(InstKind::Raise(result));
     // These writes happen on a failed execution, never promise normal outputs.
     b.view_model.initialization.truncate(initialization);
-    for call in &b.view_model.calls {
-        for component in 0..call.snapshots.len() {
-            let id=ValueIdentity::MemoryValue(call.memory,component);
-            b.view_model.parameters.insert(id,id);
-        }
+    for(memory,usage)in b.view_model.uses.iter().enumerate(){
+        if let view::Requirement::Memory{snapshots:Some(snapshots),..}=&usage.requirement{for component in 0..snapshots.len(){
+            let id=ValueIdentity::MemoryValue(memory,component);b.view_model.parameters.insert(id,id);
+        }}
     }
     unit.context.as_mut().unwrap().output_scopes=b.output_scopes;
     unit.view_model=b.view_model;unit.residency=b.residency;

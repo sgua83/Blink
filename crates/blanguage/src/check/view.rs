@@ -205,11 +205,25 @@ pub(super) fn resource_borrow(data:&application::Data)->Borrow{
 pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.root.proof.clone().with_view_borrow(0,resource_borrow(data))}
 
 pub(super) enum InputSlot {
-    Value {name:String,component:usize},
+    Value {name:String,contents:Option<Vec<usize>>,component:usize},
     Data {name:String,path:Vec<usize>,independent:bool},
 }
 impl InputSlot {
     pub fn independent(&self)->bool {matches!(self,Self::Data{independent:true,..})}
+    pub fn value_proof<'a>(&self,env:&'a BTreeMap<String,Binding>)->Option<&'a bounds::Proof>{
+        match self {
+            Self::Value{name,contents:Some(path),..}=>data_at(env.get(name)?,path)?.elements.view_value().map(|value|&value.proof),
+            Self::Value{name,contents:None,..}=>env.get(name)?.view_parts().map(|(_,proof)|proof),
+            Self::Data{..}=>None,
+        }
+    }
+    pub fn value_proof_mut<'a>(&self,env:&'a mut BTreeMap<String,Binding>)->Option<&'a mut bounds::Proof>{
+        match self {
+            Self::Value{name,contents:Some(path),..}=>data_at_mut(env.get_mut(name)?,path)?.elements.view_value_mut().map(|value|&mut value.proof),
+            Self::Value{name,contents:None,..}=>env.get_mut(name)?.view_proof_mut(),
+            Self::Data{..}=>None,
+        }
+    }
 }
 pub(super) fn data_paths(binding:&Binding)->Vec<(Vec<usize>,&application::Data,bool)> {
     fn visit<'a>(value:&'a owned_values::OwnedValue,path:&mut Vec<usize>,independent:bool,result:&mut Vec<(Vec<usize>,&'a application::Data,bool)>) {
@@ -251,7 +265,7 @@ pub(super) enum Requirement {
     Unborrowed {resource:Borrow,borrow:Borrow,ownership:bool,span:Span},
     Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,owned:Borrow,span:Span},
     Address {borrow:Borrow,layout:address::Layout,writes:bool,writable:bool,initialized:bool,span:Span},
-    Memory {target:address::MemoryTarget,borrow:Borrow,access:Option<Access>,span:Span},
+    Memory {target:address::MemoryTarget,borrow:Borrow,access:Option<Access>,snapshots:Option<Arc<[view_contracts::ValueSnapshot]>>,span:Span},
     Dataset {borrow:Borrow,index:Option<bounds::Operand>,access:Access,atomic:bool,span:Span},
     Initialized {borrow:Borrow,read:address::InitializationRead,code:&'static str,span:Span},
     Nonzero {value:Box<Value>,path:bounds::Clause,span:Span},
@@ -269,7 +283,7 @@ impl Requirement {
             Self::Unborrowed{resource,borrow,ownership,span}=>Self::Unborrowed{resource:map(resource),borrow:map(borrow),ownership:*ownership,span:*span},
             Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),owned:map(owned),span:*span},
             Self::Address{borrow,layout,writes,writable,initialized,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),writes:*writes,writable:*writable,initialized:*initialized,span:*span},
-            Self::Memory{target,borrow,access,span}=>Self::Memory{target:*target,borrow:map(borrow),access:*access,span:*span},
+            Self::Memory{target,borrow,access,snapshots,span}=>Self::Memory{target:*target,borrow:map(borrow),access:*access,snapshots:snapshots.clone(),span:*span},
             Self::Dataset{borrow,index,access,atomic,span}=>Self::Dataset{borrow:map(borrow),index:*index,access:*access,atomic:*atomic,span:*span},
             Self::Initialized{borrow,read,code,span}=>Self::Initialized{borrow:map(borrow),read:read.clone(),code,span:*span},
             Self::Nonzero{..}=>self.clone(),

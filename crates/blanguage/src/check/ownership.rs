@@ -499,7 +499,7 @@ impl Builder<'_> {
     pub(super) fn require_initialized(&mut self, place: &Place, span: Span) -> Result<()> {
         if !self.is_initialized(place) {
             if self.defer_initialization(place,"B142",span)?{return Ok(());}
-            if let Some(borrow)=self.reference_position_borrow(place,span)? {
+            if let Some((_,borrow))=self.reference_memory(place,span)? {
                 return self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),writes:false,writable:false,initialized:true,span});
             }
             return self.fail(

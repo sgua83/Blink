@@ -3976,6 +3976,13 @@ impl Builder<'_> {
         }
     }
     pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg]) -> (Proof, bool) {
+        let (snapshots,common)=match place {
+            Place::ApplicationElement{..}=>{
+                let snapshots=regs.iter().map(|reg|self.application_read_snapshot(*reg)).collect::<Vec<_>>();
+                let common=self.application_element_proof(place,&snapshots);(snapshots,common)
+            },
+            _=>(Vec::new(),None),
+        };
         let mut stored = None;
         for binding in self.env.values_mut() {
             let Some((proof, uniform, owner)) = binding.proof_storage() else {
@@ -3986,9 +3993,10 @@ impl Builder<'_> {
             };
             let width = owner.ty().components.len();
             proof.origins.resize_with(width, Vec::new);
-            for (component, reg) in components.iter().zip(regs) {
+            for (target,(component,reg)) in components.iter().zip(regs).enumerate() {
                 if proof.origins[*component].is_empty() {
                     proof.origins[*component].push(ValueIdentity::Register(*reg));
+                    if let Some(common)=&common{*proof=std::mem::take(proof).with_view_borrow(*component,common.view_borrow(target));}
                 }
             }
             stored = Some((proof.project(&components, width), *uniform));
@@ -3996,8 +4004,6 @@ impl Builder<'_> {
         }
         match place {
             Place::ApplicationElement { .. } => {
-                let snapshots = regs.iter().map(|reg| self.application_read_snapshot(*reg)).collect::<Vec<_>>();
-                let common = self.application_element_proof(place, &snapshots);
                 let mut proof = match (stored, common) {
                     (Some((mut proof, _)), Some(common)) => {
                         proof.constrain_common_ranges(&common, regs.len());

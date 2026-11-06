@@ -79,10 +79,15 @@ impl Builder<'_> {
         self.loop_contexts[level].view_scope=Some(scope);
         let mut slots=Vec::new();
         for (name,binding) in &self.loop_contexts[level].entry.env {
-            for (path,_,independent) in data_paths(binding){slots.push(InputSlot::Data{name:name.clone(),path,independent});}
+            for (path,data,independent) in data_paths(binding){
+                slots.push(InputSlot::Data{name:name.clone(),path:path.clone(),independent});
+                if let Some(value)=data.elements.view_value(){for component in view_contracts::components(&value.ty){
+                    slots.push(InputSlot::Value{name:name.clone(),contents:Some(path.clone()),component});
+                }}
+            }
             if let Some((ty,_))=binding.view_parts() {
                 for component in view_contracts::components(ty) {
-                    slots.push(InputSlot::Value{name:name.clone(),component});
+                    slots.push(InputSlot::Value{name:name.clone(),contents:None,component});
                 }
             }
         }
@@ -109,8 +114,8 @@ impl Builder<'_> {
             }
         }
         for (index,slot) in slots.iter().enumerate() {
-            if let InputSlot::Value{name,component}=slot {
-                let proof=self.env.get_mut(name).unwrap().view_proof_mut().unwrap();
+            if let InputSlot::Value{component,..}=slot {
+                let proof=slot.value_proof_mut(&mut self.env).unwrap();
                 *proof=proof.clone().with_view_borrow(*component,Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()});
             }
         }
@@ -118,20 +123,20 @@ impl Builder<'_> {
     }
     pub(super) fn close_view_context(&mut self,context:&mut LoopContext,natural:Option<usize>,nonempty:bool)->Result<()> {
         let Some(scope)=context.view_scope else{return Ok(());};
-        let mut initial=Vec::new();
+        let mut sources=Vec::new();
         for slot in &context.view_inputs {
-            initial.push(match slot {
-                InputSlot::Value{name,component}=>context.entry.env[name].view_parts().unwrap().1.view_borrow(*component),
+            sources.push(match slot {
+                InputSlot::Value{component,..}=>slot.value_proof(&context.entry.env).unwrap().view_borrow(*component),
                 InputSlot::Data{name,path,..}=>self.data_value_borrow(data_at(&context.entry.env[name],path).unwrap()),
             });
         }
         let data_value=view::resource_borrow;
-        let mut definitions=initial.clone();
+        let mut definitions=sources.clone();
         let mut continued=vec![Borrow::default();definitions.len()];
         for state in &context.continues {
             for (index,slot) in context.view_inputs.iter().enumerate() {
                 let value=match slot {
-                    InputSlot::Value{name,component}=>state.env.get(name).and_then(Binding::view_parts).map(|(_,proof)|proof.view_borrow(*component)).unwrap_or_default(),
+                    InputSlot::Value{component,..}=>slot.value_proof(&state.env).map(|proof|proof.view_borrow(*component)).unwrap_or_default(),
                     InputSlot::Data{name,path,..}=>state.env.get(name).and_then(|b|data_at(b,path)).map(&data_value).unwrap_or_default(),
                 };
                 definitions[index].union(&value);continued[index].union(&value);
@@ -140,8 +145,8 @@ impl Builder<'_> {
         if nonempty {
             if let Some(natural)=natural {
                 for slot in &context.view_inputs {
-                    if let InputSlot::Value{name,component}=slot {
-                        let proof=context.exits[natural].env.get_mut(name).unwrap().view_proof_mut().unwrap();
+                    if let InputSlot::Value{component,..}=slot {
+                        let proof=slot.value_proof_mut(&mut context.exits[natural].env).unwrap();
                         let mut borrow=proof.view_borrow(*component);
                         let inputs=std::mem::take(&mut borrow.inputs);
                         for(input,when)in inputs.into_entries(){if input.level==scope{borrow.union(&continued[input.index].restricted(&when));}else{borrow.inputs.insert_when(input,when);}}
@@ -151,15 +156,15 @@ impl Builder<'_> {
             }
         }
         // 直接自身边不向循环来源的最小不动点贡献新来源。
-        let mut unchanged=vec![false;initial.len()];
+        let mut direct=vec![false;sources.len()];
         for (index,definition)in definitions.iter_mut().enumerate(){
             definition.inputs.remove(&LoopInput{level:scope,index});
-            unchanged[index]=*definition==initial[index];
+            direct[index]=*definition==sources[index];
         }
-        let resolve=|mut borrow:Borrow,unchanged:&[bool]| {
+        let resolve=|mut borrow:Borrow,direct:&[bool],sources:&[Borrow]| {
             let inputs=std::mem::take(&mut borrow.inputs);
             for(input,when)in inputs.into_entries(){
-                if input.level==scope&&unchanged[input.index]{borrow.union(&initial[input.index].restricted(&when));}
+                if input.level==scope&&direct[input.index]{borrow.union(&sources[input.index].restricted(&when));}
                 else{borrow.inputs.insert_when(input,when);}
             }
             borrow
@@ -169,8 +174,9 @@ impl Builder<'_> {
         producers.insert(0,std::mem::take(&mut context.entry));
         let producers:Arc<[LoopState]>=producers.into();
         for (index,definition)in definitions.into_iter().enumerate(){
-            let input=LoopInput{level:scope,index};let definition=resolve(definition,&unchanged);
-            unchanged[index]=definition==initial[index];
+            let input=LoopInput{level:scope,index};let definition=resolve(definition,&direct,&sources);
+            direct[index]=definition==sources[index];
+            if matches!(context.view_inputs[index],InputSlot::Value{..})&&!definition.pending(){sources[index]=definition.clone();direct[index]=true;}
             let resource=match &context.view_inputs[index] {
                 InputSlot::Data{name,path,..}=>Some(view_contracts::LoopResource{name:name.clone(),path:path.clone(),states:producers.clone(),control:control.clone()}),
                 _=>None,
@@ -179,14 +185,14 @@ impl Builder<'_> {
         }
         // 来源定义未改变的槽交回原入口；实际来源及存储版本变化保留原循环关系。
         let resolve_env=|environment:&mut BTreeMap<String,Binding>| {
-            for binding in environment.values_mut() {
-                if let Some(components)=binding.view_parts().map(|(ty,_)|view_contracts::components(ty)){
-                    let proof=binding.view_proof_mut().unwrap();
-                    let mut value=std::mem::take(proof);
-                    for component in components{let borrow=resolve(value.view_borrow(component),&unchanged);value=value.with_view_borrow(component,borrow);}
-                    *proof=value;
+            for slot in &context.view_inputs {
+                if let InputSlot::Value{component,..}=slot && let Some(proof)=slot.value_proof_mut(environment){
+                    let borrow=resolve(proof.view_borrow(*component),&direct,&sources);
+                    *proof=std::mem::take(proof).with_view_borrow(*component,borrow);
                 }
-                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,resolve(data_value(data),&unchanged))).collect::<BTreeMap<_,_>>();
+            }
+            for binding in environment.values_mut() {
+                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,resolve(data_value(data),&direct,&sources))).collect::<BTreeMap<_,_>>();
                 match binding {
                     Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.root.proof=data.root.proof.clone().with_view_borrow(0,value);}}
                     Binding::OwnedValue(value)=>{
