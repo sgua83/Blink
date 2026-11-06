@@ -2950,6 +2950,8 @@ GPU 几何的原生入口为 `bottom_level_device(vertices,triangles)`、`bottom
 光线查询不要求窗口：`Device::for_program` 不启用 surface／swapchain。需要原生窗口呈现的程序明确使用 `Device::with_presentation`，计算资源和执行语义保持相同。`Device::swapchain(instance,window,width,height)` 接收实际输出尺寸；呈现消费同设备、等像素数和 4 字节 stride 的 BGRA8 dataset，并逐实际物理页复制，页边界可位于像素行中间。真实表面尺寸和设备能力属于原平台入口，框架不写入某个应用的最低分辨率。
 
 ## 原生只读二维与三维纹理
+`texture2d`／`texture3d` 可用一个格式实参声明实际资源要求，例如 `read texture2d<rgba8_unorm> noise`。支持当前真实texel编码 `rgba32_float`、`rgba8_unorm`、`rgba8_srgb`、`r8_unorm`、`rg16_unorm`、`rgb10a2_unorm`；名称区分大小写，它们是纹理格式标记，不是普通数值／记录类型。相应数组写为 `read array<texture2d<rgba8_unorm>,N>`。未写格式保持原任意格式接口，指定格式调用只接受具有同一明确格式的原资源参数；可向未指定格式的形参借用，不能从未知格式反向取得明确要求。接口与实现必须声明同一格式，维度、数组形状及只读寿命保持原义。原CPU／GPU绑定入口在执行前消费实际资源格式元数据，数量／维度／设备归属仍在原入口检查；不检查每个texel，也不改变机器采样算法。独立普通CPU调用在公开接口中保留要求，原生外部调用者必须交付符合要求的原纹理描述。该格式声明本身尚不向采样结果加入有限值域，值域交接及Stella散射其余前提见C-021.1.4.4.2至.4。
+
 `texture2d`／`texture3d` 是不可变资源参数，分别匹配二维／三维坐标，供 CPU／compute／GPU 计算入口、源内展开与普通CPU原生函数只读借用；它们不属于普通值类型，不能放进普通记录、内联 array、dataset、view、tile、统一值或函数返回值。接口分别写 `read texture2d`／`read texture3d`，组合时传递实际资源身份，不复制像素、不暴露地址，也不能将普通值冒充纹理。多个只读参数可以引用同一资源；固定资源数组见下一节。Windows x64普通CPU函数在源码、独立obj及标准lib中交接同一只读纹理借用，支持单张、固定资源数组、选中元素转传与递归。公开声明继续保留维度、形状与索引前提；机器输入和寿命见[普通纹理参数ABI](NativeInterop.md#普通b纹理只读参数的机器交接)。当前编译模块的普通调用为CPU调用，调用方须具有合法CPU执行目标；GPU独立普通调用仍见C-021.3.1，含纹理整域Frame入口仍见C-003.2.3.1.2，不能把普通函数与完整计算模块交付混为一项。
 
 ```c
