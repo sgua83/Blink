@@ -65,7 +65,8 @@ impl std::ops::Deref for TemplateProgram {
 #[cfg(feature = "compiler")]
 mod frontend;
 #[cfg(feature = "compiler")]
-pub use frontend::{Compilation, compile, compile_entry, compile_application, compile_application_with_modules, check};
+pub use frontend::{Compilation, compile, compile_with_modules, compile_entry, compile_entry_with_modules,
+    compile_application, compile_application_with_modules, check};
 #[cfg(feature = "compiler")]
 pub(crate) use frontend::*;
 mod codec;

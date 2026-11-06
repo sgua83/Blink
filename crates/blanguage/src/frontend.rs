@@ -133,7 +133,7 @@ pub(crate) fn same_signature(a: &Function, b: &Function) -> bool {
             .all(|(a, b)| a.name == b.name && a.access == b.access)
 }
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
-    compile_module(path, module_root, true, None, None)
+    compile_module(path, module_root, true, None, &[])
 }
 /// 选择公开 program 的具体静态入口，例如 shade<13> 或 run<float3,17>。
 pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Compilation> {
@@ -142,8 +142,20 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
         module_root,
         true,
         Some((EntryKind::Domain, entry)),
-        None,
+        &[],
     )
+}
+/// 使用实际已编译模块的公开接口和合同编译；代码绑定仍由对应链接／装入消费者完成。
+pub fn compile_with_modules(
+    path: &Path, module_root: &Path, dependencies: &[object::Object],
+) -> Result<Compilation> {
+    compile_module(path, module_root, true, None, dependencies)
+}
+/// 指定域入口消费已编译模块接口，不读取提供者的实现源码。
+pub fn compile_entry_with_modules(
+    path: &Path, module_root: &Path, entry: &str, dependencies: &[object::Object],
+) -> Result<Compilation> {
+    compile_module(path, module_root, true, Some((EntryKind::Domain, entry)), dependencies)
 }
 /// 编译独立 CPU 应用的普通值入口；启动与平台链接由 application 模块拥有。
 pub fn compile_application(
@@ -156,7 +168,7 @@ pub fn compile_application(
         module_root,
         false,
         Some((EntryKind::Application, entry)),
-        None,
+        &[],
     )?
     .applications
     .remove(0))
@@ -173,7 +185,7 @@ pub fn compile_application_with_modules(
 }
 /// 库接口与完整导入闭包同样检查；无需为函数库伪造可执行 program。
 pub fn check(path: &Path, module_root: &Path) -> Result<Compilation> {
-    compile_module(path, module_root, false, None, None)
+    compile_module(path, module_root, false, None, &[])
 }
 #[derive(Clone, Copy)]
 pub(crate) enum EntryKind {
@@ -185,16 +197,21 @@ pub(crate) fn compile_module(
     module_root: &Path,
     require_program: bool,
     requested: Option<(EntryKind, &str)>,
-    imported: Option<&module::Imports>,
+    dependencies: &[object::Object],
 ) -> Result<Compilation> {
     let compiler = Compiler::available().map_err(|error| compiler::diagnostic(path, error))?;
-    compile_module_on(&compiler, path, module_root, require_program, requested, imported)
+    compile_module_on(&compiler, path, module_root, require_program, requested, dependencies)
 }
 pub(crate) fn compile_module_on(
     compiler: &Compiler, path: &Path, module_root: &Path, require_program: bool,
-    requested: Option<(EntryKind, &str)>, imported: Option<&module::Imports>,
+    requested: Option<(EntryKind, &str)>, dependencies: &[object::Object],
 ) -> Result<Compilation> {
     compiler.ast(path, |worker| {
+        let imports = module::Imports::new(dependencies).map_err(|error| Diagnostic {
+            source: Source { path: path.into(), text: "".into() },
+            span: Span::default(), code: "B270", message: error.to_string(),
+        })?;
+        let imported = if dependencies.is_empty() { None } else { Some(&imports) };
         let (world, entry) = read_world(path, module_root, imported, &[], worker, None, None)?;
         compile_world(&world, entry, require_program, requested)
     })
@@ -216,29 +233,32 @@ impl Compiler {
         })
     }
     pub fn compile(&self, path: &Path, root: &Path) -> Result<Compilation> {
-        compile_module_on(self, path, root, true, None, None)
+        compile_module_on(self, path, root, true, None, &[])
     }
     pub fn check(&self, path: &Path, root: &Path) -> Result<Compilation> {
-        compile_module_on(self, path, root, false, None, None)
+        compile_module_on(self, path, root, false, None, &[])
     }
     pub fn compile_entry(&self, path: &Path, root: &Path, entry: &str) -> Result<Compilation> {
-        compile_module_on(self, path, root, true, Some((EntryKind::Domain, entry)), None)
+        compile_module_on(self, path, root, true, Some((EntryKind::Domain, entry)), &[])
+    }
+    pub fn compile_with_modules(
+        &self, path: &Path, root: &Path, dependencies: &[object::Object],
+    ) -> Result<Compilation> {
+        compile_module_on(self, path, root, true, None, dependencies)
+    }
+    pub fn compile_entry_with_modules(
+        &self, path: &Path, root: &Path, entry: &str, dependencies: &[object::Object],
+    ) -> Result<Compilation> {
+        compile_module_on(self, path, root, true, Some((EntryKind::Domain, entry)), dependencies)
     }
     pub fn compile_application(&self, path: &Path, root: &Path, entry: &str) -> Result<application::Application> {
-        Ok(compile_module_on(self, path, root, false, Some((EntryKind::Application, entry)), None)?.applications.remove(0))
+        Ok(compile_module_on(self, path, root, false, Some((EntryKind::Application, entry)), &[])?.applications.remove(0))
     }
     pub fn compile_application_with_modules(
         &self, path: &Path, root: &Path, entry: &str, dependencies: &[object::Object],
     ) -> Result<application::Application> {
-        self.ast(path, |worker| {
-            let imports = module::Imports::new(dependencies).map_err(|error| Diagnostic {
-                source: Source { path: path.into(), text: "".into() },
-                span: Span::default(), code: "B270", message: error.to_string(),
-            })?;
-            let (world, module) = read_world(path, root, Some(&imports), &[], worker, None, None)?;
-            Ok(compile_world(&world, module, false, Some((EntryKind::Application, entry)))?
-                .applications.remove(0))
-        })
+        Ok(compile_module_on(self, path, root, false,
+            Some((EntryKind::Application, entry)), dependencies)?.applications.remove(0))
     }
 }
 pub(crate) fn compile_world(

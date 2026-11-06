@@ -931,7 +931,7 @@ pub fn parse(source: Source) -> Result<Module> {
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
-    compile_module(path, module_root, true, None, None)
+    compile_module(path, module_root, true, None, &[])
 }
 /// 选择公开 program 的具体静态入口，例如 shade<13> 或 run<float3,17>。
 pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Compilation> {
@@ -940,8 +940,20 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
         module_root,
         true,
         Some((EntryKind::Domain, entry)),
-        None,
+        &[],
     )
+}
+/// 使用实际已编译模块的公开接口和合同编译；代码绑定仍由对应链接／装入消费者完成。
+pub fn compile_with_modules(
+    path: &Path, module_root: &Path, dependencies: &[object::Object],
+) -> Result<Compilation> {
+    compile_module(path, module_root, true, None, dependencies)
+}
+/// 指定域入口消费已编译模块接口，不读取提供者的实现源码。
+pub fn compile_entry_with_modules(
+    path: &Path, module_root: &Path, entry: &str, dependencies: &[object::Object],
+) -> Result<Compilation> {
+    compile_module(path, module_root, true, Some((EntryKind::Domain, entry)), dependencies)
 }
 ```
 
@@ -951,7 +963,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:522`。
+源码节选：`crates/blanguage/src/frontend.rs:542`。
 
 ```rust
     if let Some(name) = import
@@ -1913,7 +1925,7 @@ pub(super) enum Access {
 }
 ```
 
-参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，撤回与实际Count四字节或已生产数值字段重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。Invocation read／write／inout／atomic通过同一32字节实际地址、长度、物理步长和字段偏移交接；CPU算法DLL范围的atomic实参必须来自原atomic来源，同根原子别名保持共享，inout借用仅授予实际当前元素的修改权，CPU write dataset的完成义务按本次真实借用位置交接：独立函数保留写前读限制，正常返回把必需输出位置、实际写入及成立条件交给原初始化合同；CPU范围只要求当前实例获准的元素与字段，普通Host调用仍须完成实际借出的整份范围，空集合没有元素义务。调用处不以旧初始化值补足本次write输出，源码与无提供者实现的对象／归档消费同一合同。普通B应用的实际Frame借用输入只附带在原CallArgument::Value，原Module合同闭合后在同一finalize消费实际可能写字段和条件，沿原Frame地址入口交接逐元素字节、stride和count；编译引用消费后清除，不进入普通函数的机器参数。Frame撤回与这些写区重叠的Count及已生产数值字段关系，字段之间的记录间隙保持。B应用和普通模块的CPU范围直接交给所属COFF对象，实际Program.imports与同一普通Object合并，原静态链接完成普通函数及外部入口的重定位。模块工厂只交接类型、执行布局、CPU代码表索引及SPIR-V，另借用同次静态链接的入口地址表；原ResourceBinding的代码根只引用同一对象的实际入口符号，真实资源包装被消费时进入原节选择。Frame创建时在原目录绑定CPU入口，run只借用同一代码执行原阶段，不再复制本路径CPU机器码或运行时查找普通函数。带运行库的应用把同次B代码、原静态运行库和资源绑定一次链接到同一EXE，标准CRT入口调用原B正文main并初始化平台设施；不再拆支持DLL。没有运行库依赖的独立应用继续原自研PE输出，算法DLL保持原静态链接。所属PE／DLL和依赖保持到最后真实CPU消费者结束。CPU索引标签2与独立SDK机器码标签0分开，GPU标签1保持；静态路径不创建运行库代码VM。CPU范围中明确on cpu的普通源函数沿原native_declaration／native_call和实际参数生成原生Call；Compute共享函数保留原源码内联选择，其CPU递归回边沿同一普通函数编译器交接；同一具体实例由本次原Module持有，不按调用点或阶段复制函数闭包。应用／模块的范围代码和普通callee由所属COFF统一交出，私有实现不成为资源映像的另一权威。独立CPU入口映像持有自己实际消费的命名callee，与范围／集合入口共同装入同一VM，重定位在本映像内绑定；原展开表和外部库在最后真实CPU消费者结束后共同释放。已链接B应用与模块的CPU范围按原调用闭包接入实际Frame。Program／ExecutionPlan只交接原uniform块中隐藏Frame地址的明确偏移，不增加用户业务参数。每次实际范围入口由原RangeWork沿同一Arc<Definitions>引用已绑定代码和类型／program定义，只创建本次私有Frame存储；原执行输入保持实际存储和view资源直到全部消费者结束；子Frame只在原data槽中保存带真实布局、长度及权限的非拥有CpuBorrow，局部分配仍由该Frame拥有。父Frame本身不被并发可变借用，输入载荷不复制、不伪造拥有Dataset，也不增加释放链。范围入口与同步集合入口共用同一原调用者，进入后由普通callee沿原静态拥有退出结束F及局部资源，最后真实入口完成后才结束子Frame；不重解码工厂、复制定义或重建代码VM。原RangeEntry交回空指针成功或唯一拥有的实际错误，算法输出仍写原output；全部线程池工作真正结束后，原execute消费所有错误并沿原error_join及Result交回，原输入及部分效果仍归原Frame。Host dataset沿现行16字节描述交接本次私有Frame中的真实借用槽、长度、u32步长及偏移，Invocation仍沿原32字节实际地址描述；字段投影保持物理stride和访问权限。原Frame域关系仍消费实际操作生产的本地事实；普通Host接口的prefix输入合同尚未实现，沿Issues C-027.35.4.2.2.3.2.2.2.1.2，不为该缺口预埋输入域镜像或运行时扫描。源码闭合SDK将同一次Finalized.resources移交Program，再由CPU ProgramImage共同交接本目录类型、实际子program和命名普通代码；原Allocation一次装入根／子入口与callee，内部标准资源C名绑定同一运行库的真实入口，局部分配、整域执行和字段完成直接形成原C ABI参数与同步栈借用，不新增Rust转发或运行时编译。IR局部位置按分量槽编号，C数组的字节、对齐及填充只由原Ty交给后端。独立CpuCode持有本映像的只读Arc<Definitions>，子program复用同一代码拥有者并由原Frame交接目录，不反向持有根目录；原不可变目录与VM、展开及真实DLL依赖保持到最后消费者结束。ProgramImage的代码捕获和恢复按根阶段、命名callee及同一资源目录中的CPU子映像顺序遍历，GPU不占CPU材料条目；code_json的resource_images按原目录索引查询实际CPU／GPU子映像，不另存代码目录或装入执行资源。缓存执行映像与算法DLL构造交接同一完整包；后者只恢复已链接地址索引，不复制机器码。源码原生映像与算法DLL交付同一资源包；独立SDK的已编译obj／lib输入仍未实现，见Issues C-027.35.4.2.2.3.2.2.2.2.2。源码闭合SDK沿原OwnedRunResult交回实际资源错误、原输入与部分效果，所有范围及F真实结束后宿主可继续持有原输入并调用同一程序；已编译提供者的对应消费仍未实现，见C-020.5.2.4.2.2.2.2.2；普通拥有结果与完整内部子域仍分别沿C-027.35.4.2.2.3.3／.4，不把已链接范围交付等同完整SDK及语言能力；GPU递归、完整设备普通调用与选择性内联仍按各自未完成能力记录；on compute／on gpu普通write／inout dataset函数沿原源码展开直接使用GPU或CPU元素存储；write入口不提供旧内容，每条正常退出按原初始化合同完成本次真正借出的当前位置及字段，inout入口保留已初始化的借用。独立检查、源码展开与Stage直接消费同一位置／输出条件；返回点在实际条件成立的路径上复用原初始化位置查询，不以原始集合判定丢失条件关系。实际并行调用只授予本实例当前位置与真实字段的写权限，不支持任意非原子散写；完整设备普通调用与递归仍按各自未完成能力记录。对象编码为现行BLCO67，执行资源编码为BLRI39。
+参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，撤回与实际Count四字节或已生产数值字段重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。Invocation read／write／inout／atomic通过同一32字节实际地址、长度、物理步长和字段偏移交接；CPU算法DLL范围的atomic实参必须来自原atomic来源，同根原子别名保持共享，inout借用仅授予实际当前元素的修改权，CPU write dataset的完成义务按本次真实借用位置交接：独立函数保留写前读限制，正常返回把必需输出位置、实际写入及成立条件交给原初始化合同；CPU范围只要求当前实例获准的元素与字段，普通Host调用仍须完成实际借出的整份范围，空集合没有元素义务。调用处不以旧初始化值补足本次write输出，源码与无提供者实现的对象／归档消费同一合同。普通B应用的实际Frame借用输入只附带在原CallArgument::Value，原Module合同闭合后在同一finalize消费实际可能写字段和条件，沿原Frame地址入口交接逐元素字节、stride和count；编译引用消费后清除，不进入普通函数的机器参数。Frame撤回与这些写区重叠的Count及已生产数值字段关系，字段之间的记录间隙保持。B应用和普通模块的CPU范围直接交给所属COFF对象，实际Program.imports与同一普通Object合并，原静态链接完成普通函数及外部入口的重定位。模块工厂只交接类型、执行布局、CPU代码表索引及SPIR-V，另借用同次静态链接的入口地址表；原ResourceBinding的代码根只引用同一对象的实际入口符号，真实资源包装被消费时进入原节选择。Frame创建时在原目录绑定CPU入口，run只借用同一代码执行原阶段，不再复制本路径CPU机器码或运行时查找普通函数。带运行库的应用把同次B代码、原静态运行库和资源绑定一次链接到同一EXE，标准CRT入口调用原B正文main并初始化平台设施；不再拆支持DLL。没有运行库依赖的独立应用继续原自研PE输出，算法DLL保持原静态链接。所属PE／DLL和依赖保持到最后真实CPU消费者结束。CPU索引标签2与独立SDK机器码标签0分开，GPU标签1保持；静态路径不创建运行库代码VM。CPU范围中明确on cpu的普通源函数沿原native_declaration／native_call和实际参数生成原生Call；Compute共享函数保留原源码内联选择，其CPU递归回边沿同一普通函数编译器交接；同一具体实例由本次原Module持有，不按调用点或阶段复制函数闭包。应用／模块的范围代码和普通callee由所属COFF统一交出，私有实现不成为资源映像的另一权威。独立CPU入口映像持有自己实际消费的命名callee，与范围／集合入口共同装入同一VM，重定位在本映像内绑定；原展开表和外部库在最后真实CPU消费者结束后共同释放。已链接B应用与模块的CPU范围按原调用闭包接入实际Frame。Program／ExecutionPlan只交接原uniform块中隐藏Frame地址的明确偏移，不增加用户业务参数。每次实际范围入口由原RangeWork沿同一Arc<Definitions>引用已绑定代码和类型／program定义，只创建本次私有Frame存储；原执行输入保持实际存储和view资源直到全部消费者结束；子Frame只在原data槽中保存带真实布局、长度及权限的非拥有CpuBorrow，局部分配仍由该Frame拥有。父Frame本身不被并发可变借用，输入载荷不复制、不伪造拥有Dataset，也不增加释放链。范围入口与同步集合入口共用同一原调用者，进入后由普通callee沿原静态拥有退出结束F及局部资源，最后真实入口完成后才结束子Frame；不重解码工厂、复制定义或重建代码VM。原RangeEntry交回空指针成功或唯一拥有的实际错误，算法输出仍写原output；全部线程池工作真正结束后，原execute消费所有错误并沿原error_join及Result交回，原输入及部分效果仍归原Frame。Host dataset沿现行16字节描述交接本次私有Frame中的真实借用槽、长度、u32步长及偏移，Invocation仍沿原32字节实际地址描述；字段投影保持物理stride和访问权限。原Frame域关系仍消费实际操作生产的本地事实；普通Host接口的prefix输入合同尚未实现，沿Issues C-027.35.4.2.2.3.2.2.2.1.2，不为该缺口预埋输入域镜像或运行时扫描。源码闭合SDK将同一次Finalized.resources移交Program，再由CPU ProgramImage共同交接本目录类型、实际子program和命名普通代码；原Allocation一次装入根／子入口与callee，内部标准资源C名绑定同一运行库的真实入口，局部分配、整域执行和字段完成直接形成原C ABI参数与同步栈借用，不新增Rust转发或运行时编译。IR局部位置按分量槽编号，C数组的字节、对齐及填充只由原Ty交给后端。独立CpuCode持有本映像的只读Arc<Definitions>，子program复用同一代码拥有者并由原Frame交接目录，不反向持有根目录；原不可变目录与VM、展开及真实DLL依赖保持到最后消费者结束。ProgramImage的代码捕获和恢复按根阶段、命名callee及同一资源目录中的CPU子映像顺序遍历，GPU不占CPU材料条目；code_json的resource_images按原目录索引查询实际CPU／GPU子映像，不另存代码目录或装入执行资源。缓存执行映像与算法DLL构造交接同一完整包；后者只恢复已链接地址索引，不复制机器码。源码原生映像与算法DLL交付同一资源包；SDK的compile_with_modules／compile_entry_with_modules由原唯一前端消费obj或lib解出的公开接口、闭合合同及Requirement；object::Input::objects拥有实际读入的模块，编译产物只持本次所需的导入合同，不读取提供者h／b或重建其私有实现。普通应用带模块入口复用同一read_world／compile_world。无需Frame的普通CPU函数由原compile_dll／link_inputs消费原obj或lib，并在所属算法DLL绑定实际代码及依赖；这不等于原始映像已装入COFF。算法DLL的已编译资源工厂目录、原始SDK代码／资源装入及其入口缓存仍未完成，分别见Issues C-027.35.4.2.2.3.2.2.2.2.2.2／.3.1／.3.2／.4。源码闭合SDK沿原OwnedRunResult交回实际资源错误、原输入与部分效果，所有范围及F真实结束后宿主可继续持有原输入并调用同一程序；已编译提供者的对应消费仍未实现，见C-020.5.2.4.2.2.2.2.2；普通拥有结果与完整内部子域仍分别沿C-027.35.4.2.2.3.3／.4，不把已链接范围交付等同完整SDK及语言能力；GPU递归、完整设备普通调用与选择性内联仍按各自未完成能力记录；on compute／on gpu普通write／inout dataset函数沿原源码展开直接使用GPU或CPU元素存储；write入口不提供旧内容，每条正常退出按原初始化合同完成本次真正借出的当前位置及字段，inout入口保留已初始化的借用。独立检查、源码展开与Stage直接消费同一位置／输出条件；返回点在实际条件成立的路径上复用原初始化位置查询，不以原始集合判定丢失条件关系。实际并行调用只授予本实例当前位置与真实字段的写权限，不支持任意非原子散写；完整设备普通调用与递归仍按各自未完成能力记录。对象编码为现行BLCO67，执行资源编码为BLRI39。
 
 ### 8.4 跨函数也不能丢掉位置身份
 
@@ -2931,7 +2943,7 @@ pub type RangeEntry = unsafe extern "C" fn(
 ) -> *mut std::ffi::c_void;
 ```
 
-这是编译器与执行器共同使用的唯一C范围函数类型。原始指针由实际数据／工作区所有者组织并保持；没有算法输出的入口不解引用output。返回空指针表示成功，非空为同一运行库交回的原拥有错误。线程池在全部回调真正结束后消费并合并错误；失败不采用部分摘要或进入下一阶段，已有写入保留。同步集合入口沿同一调用者消费错误。需要资源的已链接范围通过原uniform块中的明确偏移取得本次私有Frame；原输入只借用，局部存储在原普通函数退出后释放。源码闭合SDK映像同时持有原类型／子program与代码包，原装入器一次绑定，算法DLL恢复同一已链接索引；源码闭合SDK沿原拥有错误归还输入并允许宿主继续调用；独立obj／lib输入及其错误消费仍各沿Issues原编号，不能以源码结果代替。
+这是编译器与执行器共同使用的唯一C范围函数类型。原始指针由实际数据／工作区所有者组织并保持；没有算法输出的入口不解引用output。返回空指针表示成功，非空为同一运行库交回的原拥有错误。线程池在全部回调真正结束后消费并合并错误；失败不采用部分摘要或进入下一阶段，已有写入保留。同步集合入口沿同一调用者消费错误。需要资源的已链接范围通过原uniform块中的明确偏移取得本次私有Frame；原输入只借用，局部存储在原普通函数退出后释放。源码闭合SDK映像同时持有原类型／子program与代码包，原装入器一次绑定，算法DLL恢复同一已链接索引；源码闭合SDK沿原拥有错误归还输入并允许宿主继续调用；已编译公开接口输入和无Frame模块的算法DLL调用沿原前端及静态链接；已编译资源目录、原始SDK装入及实际错误消费仍各沿Issues原编号，不能以接口编译或无Frame结果代替。
 
 Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170) 说明参数寄存器、栈与保存规则。这里解释的是 Windows x64，不能据此宣称相同字节序列也符合 Linux x64 的调用约定。
 
