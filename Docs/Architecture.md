@@ -1562,7 +1562,7 @@ compile_application 将无参数 u32／i32 main 编译为普通 x64 入口，退
 
 普通 CPU 函数拥有独立 FunctionBody 和原生符号，自递归／互递归通过真实调用帧衔接。native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，同时唯一持有本次编译的类型／program资源目录；原finalize统一处理函数与目录中的program，再经Finalized把同一目录移交应用／模块产物。application::Context只持有本函数的Frame参数寄存器，每个普通函数独立形成，调用者Context始终归原Builder；声明、整域构建和CheckedFunction返回不再搬运Context。真实运行期Frame、设备、存储及完成不进入编译目录。目录保留不等于CPU范围已有真实Frame输入，实例分配与释放继续沿C-027.35.4.2.2.3.2.2。
 
-普通值参数／返回采用原 Ty 布局、GPR／XMM、栈槽及隐藏结果缓冲。普通 B 位置借用传真实地址：记录／数组保留声明布局，合法重排向量按逻辑分量交接原地址。同一类型／const 具体函数不按调用者物理映射或 CPU／GPU 驻留复制原生实现。外部 C 连续指针需求通过 requires contiguous 沿既有合同表达，不创建连续副本或末尾写回。整型运算关系由其实际结果Value／Proof持有，原path消费同一Computed事实，函数返回及位置输出沿既有Contract编码交接。调用仅绑定已求值输入，精确点由原常量语义、已知区间由同一arithmetic区间所有者按实际Scalar形成输出事实，并与原输出范围相交；不增加数值图、第二求值器、运行时索引保护或提供者源码消费。
+普通值参数／返回采用原 Ty 布局、GPR／XMM、栈槽及隐藏结果缓冲。普通 B 位置借用传真实地址：记录／数组保留声明布局，合法重排向量按逻辑分量交接原地址。同一类型／const 具体函数不按调用者物理映射或 CPU／GPU 驻留复制原生实现。外部 C 连续指针需求通过 requires contiguous 沿既有合同表达，不创建连续副本或末尾写回。整型运算关系由其实际结果Value／Proof持有，原path消费同一Computed事实，函数返回及位置输出沿既有Contract编码交接。dataset长度在分配、传输或普通返回更换资源域时，只替换旧存储身份；同一长度的既有Computed表达式继续交接实际输入与原位宽运算，真实覆盖后只消费新长度事实，零与回绕不取得非零许可。调用仅绑定已求值输入，精确点由原常量语义、已知区间由同一arithmetic区间所有者按实际Scalar形成输出事实，并与原输出范围相交；不增加数值图、第二求值器、运行时索引保护或提供者源码消费。
 
 需要动态存储或 CPU／GPU 域时，编译阶段通过正式 Rust SDK 产物生成必要静态本机库，随 COFF 的 `.blrt` 保存；`.blmeta` 保存接口、合同和资源绑定。根包装的Cargo清单声明原SDK中实际需要的blanguage／blcompute路径依赖，关闭默认compiler功能；installed来源保持原选择。一次Cargo依赖图共同生产运行库与包装，复用原target/dll，不另起SDK --lib构建或用顶层同名rlib手工交接。暂存源码和私有Cargo package归本编译单元，名称由本次生成时刻、进程号及进程内序号区分；这些值只隔离暂存实例，不作为实现或缓存身份。归档后只清除该单元，共享运行库依赖缓存继续保留。
 
