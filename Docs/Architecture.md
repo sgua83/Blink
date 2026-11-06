@@ -1834,7 +1834,7 @@ Submission／GpuCompletion 观察同一真实提交，结果可在观察者退�
 
 程序需要的f32／f64 DenormPreserve与SignedZeroInfNanPreserve由原Stage::requires_float_preserve按实际运算判断，合并到原DeviceRequirements.float32_preserve／float64_preserve；ProgramLayout持有这一程序设备合同并沿BLRI42交接。GPU装入消费同一合同，运行阶段保留实际域、操作和执行布局；SPIR-V逐入口的数值模式由原Stage发射，不建立另一份模式表。旧BLRI41执行映像及含其资源目录的产物须按原入口重编，现行Frame C签名和标量布局保持。
 
-物理 GPU 选择、逻辑 Device 和队列所有权分别定义。同一物理 GPU 上的两个逻辑 Device 不共享资源句柄；不同设备间目前通过显式 CPU 下载／上传交接。默认入口当前固定首块离散GPU，尚未按本次程序实际能力选择，缺口见Issues C-022.5.4；不把该类别策略写成语言或Vulkan的永久硬规格。直接设备间传输、多队列、多 GPU 自动调度和域内运行仍待实现。
+物理 GPU 选择、逻辑 Device 和队列所有权分别定义。同一物理 GPU 上的两个逻辑 Device 不共享资源句柄；不同设备间目前通过显式 CPU 下载／上传交接。默认入口保留独显优先次序，同类沿驱动枚举顺序，选择首个满足本次DeviceRequirements特性、计算队列及必要设备扩展的物理设备；全部候选保留，设备类别不作为排他限制。显式PhysicalDevice只交出调用者已经选择的真实句柄。所有入口由原Device::create合并程序需求并消费同一次原生查询，确定后创建一个逻辑Device；创建、装入和执行错误直接返回，已有数据与消费者保持原设备。通用扩展枚举归该创建入口，原预算查询只消费其支持事实。实际工作组、共享内存及其他执行资源上限仍在装入时核对，完整资源限额参与默认物理选择的缺口见Issues C-022.5.4.3。直接设备间传输、多队列、多 GPU 自动调度和域内运行仍待实现。
 
 ## 当前缺口与演进职责
 

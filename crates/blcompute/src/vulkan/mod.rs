@@ -192,6 +192,11 @@ impl Instance {
         }
     }
 }
+#[repr(C)]
+struct ExtensionProperties {
+    name: [c_char; 256],
+    version: u32,
+}
 /// 从实际实例枚举取得的选择句柄；名称仅供显示，不用于重建或重选资源。
 #[derive(Clone)]
 pub struct PhysicalDevice {
@@ -213,7 +218,7 @@ impl PhysicalDevice {
         self.properties.deviceType == 2
     }
     pub fn device(&self) -> Result<Device> {
-        Device::create(self.clone(), DeviceRequirements::default())
+        Device::create(std::iter::once(self.clone()), std::iter::empty::<&dyn ProgramInterface>())
     }
     pub fn for_program(&self, program: &dyn ProgramInterface) -> Result<Device> {
         self.for_programs(std::iter::once(program))
@@ -223,29 +228,7 @@ impl PhysicalDevice {
         &self,
         programs: impl IntoIterator<Item = &'a P>,
     ) -> Result<Device> {
-        let mut requirements = DeviceRequirements::default();
-        for program in programs {
-            let required = program.requirements();
-            requirements.float64 |= required.float64;
-            requirements.integer8 |= required.integer8;
-            requirements.integer16 |= required.integer16;
-            requirements.atomic64 |= required.atomic64;
-            requirements.shared_atomic64 |= required.shared_atomic64;
-            requirements.ray_query |= required.ray_query;
-            requirements.sorting |= required.sorting;
-            requirements.maximal_reconvergence |= required.maximal_reconvergence;
-            requirements.texture_indexing |= required.texture_indexing;
-            requirements.position_fetch |= required.position_fetch;
-            requirements.subgroup.extended_types |= required.subgroup.extended_types;
-        }
-        Device::create(self.clone(), requirements)
-    }
-    fn default(presentation: bool) -> Result<Self> {
-        Instance::create(presentation)?
-            .physical_devices()?
-            .into_iter()
-            .find(Self::is_discrete)
-            .ok_or_else(|| error("目标平台需要离散 GPU"))
+        Device::create(std::iter::once(self.clone()), programs)
     }
 }
 struct DeviceOwner {
@@ -379,7 +362,7 @@ impl Device {
         Rc::ptr_eq(&self.inner, &other.inner)
     }
     pub fn new() -> Result<Self> {
-        PhysicalDevice::default(false)?.device()
+        Self::create(Instance::new()?.physical_devices()?, std::iter::empty::<&dyn ProgramInterface>())
     }
     pub fn for_program(program: &dyn ProgramInterface) -> Result<Self> {
         Self::for_programs(std::iter::once(program))
@@ -388,7 +371,7 @@ impl Device {
     pub fn for_programs<'a, P: ProgramInterface + ?Sized + 'a>(
         programs: impl IntoIterator<Item = &'a P>,
     ) -> Result<Self> {
-        PhysicalDevice::default(false)?.for_programs(programs)
+        Self::create(Instance::new()?.physical_devices()?, programs)
     }
     pub fn with_presentation(program: &dyn ProgramInterface) -> Result<Self> {
         Self::with_presentation_programs(std::iter::once(program))
@@ -396,432 +379,501 @@ impl Device {
     pub fn with_presentation_programs<'a, P: ProgramInterface + ?Sized + 'a>(
         programs: impl IntoIterator<Item = &'a P>,
     ) -> Result<Self> {
-        PhysicalDevice::default(true)?.for_programs(programs)
+        Self::create(Instance::with_presentation()?.physical_devices()?, programs)
     }
-    fn create(selected: PhysicalDevice, requirements: DeviceRequirements) -> Result<Self> {
+    fn create<'a, P: ProgramInterface + ?Sized + 'a>(
+        candidates: impl IntoIterator<Item = PhysicalDevice>,
+        programs: impl IntoIterator<Item = &'a P>,
+    ) -> Result<Self> {
+        let mut requirements = DeviceRequirements::default();
+        for program in programs {
+            let required = program.requirements();
+            requirements.float64 |= required.float64;
+            requirements.float32_preserve |= required.float32_preserve;
+            requirements.float64_preserve |= required.float64_preserve;
+            requirements.integer8 |= required.integer8;
+            requirements.integer16 |= required.integer16;
+            requirements.atomic64 |= required.atomic64;
+            requirements.shared_atomic64 |= required.shared_atomic64;
+            requirements.ray_query |= required.ray_query;
+            requirements.sorting |= required.sorting;
+            requirements.maximal_reconvergence |= required.maximal_reconvergence;
+            requirements.texture_indexing |= required.texture_indexing;
+            requirements.position_fetch |= required.position_fetch;
+            requirements.subgroup.basic |= required.subgroup.basic;
+            requirements.subgroup.vote |= required.subgroup.vote;
+            requirements.subgroup.arithmetic |= required.subgroup.arithmetic;
+            requirements.subgroup.ballot |= required.subgroup.ballot;
+            requirements.subgroup.shuffle |= required.subgroup.shuffle;
+            requirements.subgroup.shuffle_relative |= required.subgroup.shuffle_relative;
+            requirements.subgroup.extended_types |= required.subgroup.extended_types;
+        }
         let DeviceRequirements { ray_query, sorting, maximal_reconvergence, texture_indexing,
-            position_fetch, float64, integer8, integer16, atomic64, shared_atomic64, subgroup, .. } = requirements;
+            position_fetch, float64, float32_preserve, float64_preserve, integer8, integer16,
+            atomic64, shared_atomic64, subgroup } = requirements;
         let subgroup_extended_types = subgroup.extended_types;
-        unsafe {
-            let PhysicalDevice {
-                owner,
-                physical,
-                properties,
-            } = selected;
-            let instance = owner.instance;
-            let presentation = owner.presentation;
-            let families_fn: unsafe extern "system" fn(
-                VkPhysicalDevice,
-                *mut u32,
-                *mut VkQueueFamilyProperties,
-            ) = owner
-                .library
-                .get(instance, c"vkGetPhysicalDeviceQueueFamilyProperties")?;
-            let memory_fn: unsafe extern "system" fn(
-                VkPhysicalDevice,
-                *mut VkPhysicalDeviceMemoryProperties,
-            ) = owner
-                .library
-                .get(instance, c"vkGetPhysicalDeviceMemoryProperties")?;
-            let create_device: unsafe extern "system" fn(
-                VkPhysicalDevice,
-                *const VkDeviceCreateInfo,
-                *const c_void,
-                *mut VkDevice,
-            ) -> i32 = owner.library.get(instance, c"vkCreateDevice")?;
-            let destroy_device: DestroyDevice = owner.library.get(instance, c"vkDestroyDevice")?;
-            let get_device: Gdpa = owner.library.get(instance, c"vkGetDeviceProcAddr")?;
-            if properties.apiVersion < ((1 << 22) | (2 << 12)) {
-                return Err(error("目标 GPU 需要 Vulkan 1.2"));
-            }
-            let max_buffer_size = memory::max_buffer_size(&owner, physical, properties.apiVersion)?;
-            let features_fn: unsafe extern "system" fn(
-                VkPhysicalDevice,
-                *mut VkPhysicalDeviceFeatures2,
-            ) = owner
-                .library
-                .get(instance, c"vkGetPhysicalDeviceFeatures2")?;
-            let mut address: VkPhysicalDeviceBufferDeviceAddressFeatures = zero();
-            address.sType = 1000257000;
-            let mut position_features = ray::PositionFetchFeatures {
-                kind: 1000481000,
-                next: null_mut(),
-                position_fetch: 0,
-            };
-            let mut query_features = ray::QueryFeatures {
-                kind: 1000348013,
-                next: if position_fetch {
-                    (&mut position_features as *mut ray::PositionFetchFeatures).cast()
-                } else {
-                    null_mut()
-                },
-                ray_query: 0,
-            };
-            let mut acceleration_features: ray::AccelerationFeatures = zero();
-            acceleration_features.kind = 1000150013;
-            acceleration_features.next = (&mut query_features as *mut ray::QueryFeatures).cast();
-            if ray_query {
-                address.pNext =
-                    (&mut acceleration_features as *mut ray::AccelerationFeatures).cast();
-            }
-            let mut features: VkPhysicalDeviceFeatures2 = zero();
-            features.sType = 1000059000;
-            features.pNext =
-                (&mut address as *mut VkPhysicalDeviceBufferDeviceAddressFeatures).cast();
-            let mut atomics: VkPhysicalDeviceShaderAtomicInt64Features = zero();
-            atomics.sType = 1000180000;
-            if atomic64 || shared_atomic64 {
-                atomics.pNext = features.pNext;
-                features.pNext = (&mut atomics as *mut VkPhysicalDeviceShaderAtomicInt64Features).cast();
-            }
-            let mut storage8: VkPhysicalDevice8BitStorageFeatures = zero();
-            storage8.sType = 1000177000;
-            let mut arithmetic8: VkPhysicalDeviceShaderFloat16Int8Features = zero();
-            arithmetic8.sType = 1000082000;
-            if integer8 {
-                storage8.pNext = features.pNext;
-                arithmetic8.pNext = (&mut storage8 as *mut VkPhysicalDevice8BitStorageFeatures).cast();
-                features.pNext = (&mut arithmetic8 as *mut VkPhysicalDeviceShaderFloat16Int8Features).cast();
-            }
-            let mut storage16: VkPhysicalDevice16BitStorageFeatures = zero();
-            storage16.sType = 1000083000;
-            if integer16 {
-                storage16.pNext = features.pNext;
-                features.pNext = (&mut storage16 as *mut VkPhysicalDevice16BitStorageFeatures).cast();
-            }
-            let mut subgroup_features = sort::Features {
-                kind: 1000225002,
-                next: features.pNext,
-                size_control: 0,
-                full: 0,
-            };
-            if sorting {
-                features.pNext = (&mut subgroup_features as *mut sort::Features).cast();
-            }
-            let mut extended_types: VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures = zero();
-            extended_types.sType = 1000175000;
-            if subgroup_extended_types {
-                extended_types.pNext = features.pNext;
-                features.pNext = (&mut extended_types as *mut VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures).cast();
-            }
-            let mut reconvergence: VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR = zero();
-            reconvergence.sType = 1000434000;
-            if maximal_reconvergence {
-                reconvergence.pNext = features.pNext;
-                features.pNext = (&mut reconvergence
-                    as *mut VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR)
-                    .cast();
-            }
-            let mut indexing: texture::IndexingFeatures = zero();
-            indexing.kind = 1000161001;
-            if texture_indexing {
-                indexing.next = features.pNext;
-                features.pNext = (&mut indexing as *mut texture::IndexingFeatures).cast();
-            }
-            features_fn(physical, &mut features);
-            if atomic64 && atomics.shaderBufferInt64Atomics == 0 {
-                return Err(error("64位dataset原子需要shaderBufferInt64Atomics，目标GPU不支持"));
-            }
-            if shared_atomic64 && atomics.shaderSharedInt64Atomics == 0 {
-                return Err(error("64位tile原子需要shaderSharedInt64Atomics，目标GPU不支持"));
-            }
-            if integer8 && (arithmetic8.shaderInt8 == 0 || storage8.storageBuffer8BitAccess == 0) {
-                return Err(error("程序需要shaderInt8与storageBuffer8BitAccess，目标GPU不支持"));
-            }
-            if integer16 && (features.features[41] == 0 || storage16.storageBuffer16BitAccess == 0) {
-                return Err(error("程序需要shaderInt16与storageBuffer16BitAccess，目标GPU不支持"));
-            }
-            if subgroup_extended_types && extended_types.shaderSubgroupExtendedTypes == 0 {
-                return Err(error("64位subgroup运算需要设备支持shaderSubgroupExtendedTypes"));
-            }
-            // VkPhysicalDeviceDescriptorIndexingFeatures::shaderSampledImageArrayNonUniformIndexing。
-            if texture_indexing && indexing.capabilities[4] == 0 {
-                return Err(error("纹理资源数组需要 sampled-image 非一致下标能力"));
-            }
-            if maximal_reconvergence && reconvergence.shaderMaximalReconvergence == 0 {
-                return Err(error(
-                    "append 需要 shaderMaximalReconvergence，以保证分歧路径的活动集合合并预留",
-                ));
-            }
-            let get: unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties2) =
-                owner
+        let required_subgroup = u32::from(subgroup.basic) | (u32::from(subgroup.vote) << 1)
+            | (u32::from(subgroup.arithmetic) << 2) | (u32::from(subgroup.ballot) << 3)
+            | (u32::from(subgroup.shuffle) << 4) | (u32::from(subgroup.shuffle_relative) << 5);
+        let mut candidates: Vec<_> = candidates.into_iter().collect();
+        candidates.sort_by_key(|candidate| !candidate.is_discrete());
+        let mut unavailable = Vec::new();
+        'physical: for selected in candidates {
+            unsafe {
+                let PhysicalDevice {
+                    owner,
+                    physical,
+                    properties,
+                } = selected;
+                let instance = owner.instance;
+                let presentation = owner.presentation;
+                let device_name = CStr::from_ptr(properties.deviceName.as_ptr()).to_string_lossy();
+                let families_fn: unsafe extern "system" fn(
+                    VkPhysicalDevice,
+                    *mut u32,
+                    *mut VkQueueFamilyProperties,
+                ) = owner
                     .library
-                    .get(instance, c"vkGetPhysicalDeviceProperties2")?;
-            let mut control: sort::ControlProperties = zero();
-            control.kind = 1000225000;
-            let mut float_controls: VkPhysicalDeviceFloatControlsProperties = zero();
-            float_controls.sType = 1000197000;
-            if sorting {
-                float_controls.pNext = (&mut control as *mut sort::ControlProperties).cast();
-            }
-            let mut subgroup: VkPhysicalDeviceSubgroupProperties = zero();
-            subgroup.sType = 1000094000;
-            subgroup.pNext =
-                (&mut float_controls as *mut VkPhysicalDeviceFloatControlsProperties).cast();
-            let mut properties2: VkPhysicalDeviceProperties2 = zero();
-            properties2.kind = 1000059001;
-            properties2.next = (&mut subgroup as *mut VkPhysicalDeviceSubgroupProperties).cast();
-            get(physical, &mut properties2);
-            if sorting {
-                if subgroup_features.size_control == 0
-                    || subgroup_features.full == 0
-                    || control.minimum > 32
-                    || control.maximum < 32
-                    || control.max_groups < 2
-                    || control.stages & 0x20 == 0
-                    || subgroup.stages & 0x20 == 0
-                    || subgroup.operations & 9 != 9
-                {
-                    return Err(error(
-                        "稳定键排序需要 compute ballot、32 lane subgroup 与 full subgroup 能力",
-                    ));
+                    .get(instance, c"vkGetPhysicalDeviceQueueFamilyProperties")?;
+                let memory_fn: unsafe extern "system" fn(
+                    VkPhysicalDevice,
+                    *mut VkPhysicalDeviceMemoryProperties,
+                ) = owner
+                    .library
+                    .get(instance, c"vkGetPhysicalDeviceMemoryProperties")?;
+                let create_device: unsafe extern "system" fn(
+                    VkPhysicalDevice,
+                    *const VkDeviceCreateInfo,
+                    *const c_void,
+                    *mut VkDevice,
+                ) -> i32 = owner.library.get(instance, c"vkCreateDevice")?;
+                let destroy_device: DestroyDevice = owner.library.get(instance, c"vkDestroyDevice")?;
+                let get_device: Gdpa = owner.library.get(instance, c"vkGetDeviceProcAddr")?;
+                if properties.apiVersion < ((1 << 22) | (2 << 12)) {
+                    unavailable.push(format!("{device_name}: {}", "目标 GPU 需要 Vulkan 1.2"));
+                    continue 'physical;
                 }
-            }
-            if address.bufferDeviceAddress == 0 || features.features[40] == 0 {
-                return Err(error("目标 GPU 需要 bufferDeviceAddress 和 shaderInt64"));
-            }
-            if ray_query
-                && (query_features.ray_query == 0 || acceleration_features.acceleration == 0)
-            {
-                return Err(error(
-                    "程序需要 accelerationStructure 与 rayQuery，目标设备不支持",
-                ));
-            }
-            if position_fetch && position_features.position_fetch == 0 {
-                return Err(error("程序读取命中顶点，需要 rayTracingPositionFetch"));
-            }
-            if float64 && features.features[39] == 0 {
-                return Err(error("程序需要 shaderFloat64，目标 GPU 不支持"));
-            }
-            features.features.fill(0);
-            features.features[39] = u32::from(float64); // VkPhysicalDeviceFeatures::shaderFloat64.
-            features.features[40] = 1; // VkPhysicalDeviceFeatures::shaderInt64。
-            features.features[41] = u32::from(integer16); // VkPhysicalDeviceFeatures::shaderInt16。
-            let position_enabled = ray::PositionFetchFeatures {
-                kind: 1000481000,
-                next: null_mut(),
-                position_fetch: 1,
-            };
-            let query_enabled = ray::QueryFeatures {
-                kind: 1000348013,
-                next: if position_fetch {
-                    (&position_enabled as *const ray::PositionFetchFeatures)
-                        .cast_mut()
-                        .cast()
-                } else {
-                    null_mut()
-                },
-                ray_query: 1,
-            };
-            let acceleration_enabled = ray::AccelerationFeatures {
-                kind: 1000150013,
-                next: (&query_enabled as *const ray::QueryFeatures)
-                    .cast_mut()
-                    .cast(),
-                acceleration: 1,
-                capture: 0,
-                indirect: 0,
-                host: 0,
-                update_after_bind: 0,
-            };
-            let address_enabled = VkPhysicalDeviceBufferDeviceAddressFeatures {
-                sType: 1000257000,
-                pNext: if ray_query {
-                    (&acceleration_enabled as *const ray::AccelerationFeatures)
-                        .cast_mut()
-                        .cast()
-                } else {
-                    null_mut()
-                },
-                bufferDeviceAddress: 1,
-                bufferDeviceAddressCaptureReplay: 0,
-                bufferDeviceAddressMultiDevice: 0,
-            };
-            features.pNext = (&address_enabled
-                as *const VkPhysicalDeviceBufferDeviceAddressFeatures)
-                .cast_mut()
-                .cast();
-            if atomic64 || shared_atomic64 {
-                atomics.pNext = features.pNext;
-                atomics.shaderBufferInt64Atomics = u32::from(atomic64);
-                atomics.shaderSharedInt64Atomics = u32::from(shared_atomic64);
-                features.pNext = (&mut atomics as *mut VkPhysicalDeviceShaderAtomicInt64Features).cast();
-            }
-            if integer8 {
-                storage8.pNext = features.pNext;
-                storage8.storageBuffer8BitAccess = 1;
-                storage8.uniformAndStorageBuffer8BitAccess = 0;
-                storage8.storagePushConstant8 = 0;
-                arithmetic8.pNext = (&mut storage8 as *mut VkPhysicalDevice8BitStorageFeatures).cast();
-                arithmetic8.shaderFloat16 = 0;
-                arithmetic8.shaderInt8 = 1;
-                features.pNext = (&mut arithmetic8 as *mut VkPhysicalDeviceShaderFloat16Int8Features).cast();
-            }
-            if integer16 {
-                storage16.pNext = features.pNext;
-                storage16.storageBuffer16BitAccess = 1;
-                storage16.uniformAndStorageBuffer16BitAccess = 0;
-                storage16.storagePushConstant16 = 0;
-                storage16.storageInputOutput16 = 0;
-                features.pNext = (&mut storage16 as *mut VkPhysicalDevice16BitStorageFeatures).cast();
-            }
-            let subgroup_enabled = sort::Features {
-                kind: 1000225002,
-                next: features.pNext,
-                size_control: 1,
-                full: 1,
-            };
-            if sorting {
-                features.pNext = (&subgroup_enabled as *const sort::Features)
-                    .cast_mut()
-                    .cast();
-            }
-            let extended_types_enabled = VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures {
-                sType: 1000175000,
-                pNext: features.pNext,
-                shaderSubgroupExtendedTypes: 1,
-            };
-            if subgroup_extended_types {
-                features.pNext = (&extended_types_enabled as *const VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures).cast_mut().cast();
-            }
-            let reconvergence_enabled = VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR {
-                sType: 1000434000,
-                pNext: features.pNext,
-                shaderMaximalReconvergence: 1,
-            };
-            if maximal_reconvergence {
-                features.pNext = (&reconvergence_enabled
-                    as *const VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR)
-                    .cast_mut()
-                    .cast();
-            }
-            let mut indexing_enabled: texture::IndexingFeatures = zero();
-            indexing_enabled.kind = 1000161001;
-            indexing_enabled.capabilities[4] = 1;
-            if texture_indexing {
-                indexing_enabled.next = features.pNext;
-                features.pNext = (&indexing_enabled as *const texture::IndexingFeatures)
-                    .cast_mut()
-                    .cast();
-            }
-            let mut count = 0;
-            families_fn(physical, &mut count, null_mut());
-            let mut families = vec![zero::<VkQueueFamilyProperties>(); count as usize];
-            families_fn(physical, &mut count, families.as_mut_ptr());
-            let (family, queue_properties) = families
-                .iter()
-                .enumerate()
-                .find(|(_, q)| {
-                    q.queueFlags & 2 != 0 && q.queueCount > 0
-                })
-                .ok_or_else(|| error("缺少计算队列"))?;
-            let priority = 1.0;
-            let mut q: VkDeviceQueueCreateInfo = zero();
-            q.sType = 2;
-            q.queueFamilyIndex = family as u32;
-            q.queueCount = 1;
-            q.pQueuePriorities = &priority;
-            let mut device_extensions = Vec::new();
-            let memory_budget = memory::BudgetQuery::load(&owner, physical)?;
-            if memory_budget.is_some() {
-                device_extensions.push(c"VK_EXT_memory_budget".as_ptr());
-            }
-            if maximal_reconvergence {
-                device_extensions.push(c"VK_KHR_shader_maximal_reconvergence".as_ptr());
-            }
-            if sorting {
-                device_extensions.push(c"VK_EXT_subgroup_size_control".as_ptr());
-            }
-            if presentation {
-                device_extensions.push(c"VK_KHR_swapchain".as_ptr());
-            }
-            if ray_query {
-                device_extensions.extend([
-                    c"VK_KHR_acceleration_structure".as_ptr(),
-                    c"VK_KHR_ray_query".as_ptr(),
-                    c"VK_KHR_deferred_host_operations".as_ptr(),
-                ]);
-            }
-            if position_fetch {
-                device_extensions.push(c"VK_KHR_ray_tracing_position_fetch".as_ptr());
-            }
-            let mut ci: VkDeviceCreateInfo = zero();
-            ci.sType = 3;
-            ci.pNext = (&features as *const VkPhysicalDeviceFeatures2).cast();
-            ci.queueCreateInfoCount = 1;
-            ci.pQueueCreateInfos = &q;
-            ci.enabledExtensionCount = device_extensions.len() as u32;
-            ci.ppEnabledExtensionNames = device_extensions.as_ptr();
-            let mut device = null_mut();
-            check(
-                create_device(physical, &ci, null(), &mut device),
-                "vkCreateDevice",
-            )?;
-            let device_owner = Rc::new(DeviceOwner {
-                device,
-                destroy: destroy_device,
-                _instance: owner,
-            });
-            let functions = Functions::load(device, get_device)?;
-            let ray = if ray_query {
-                let mut ray_properties: ray::Properties = zero();
-                ray_properties.kind = 1000150014;
+                let features_fn: unsafe extern "system" fn(
+                    VkPhysicalDevice,
+                    *mut VkPhysicalDeviceFeatures2,
+                ) = owner
+                    .library
+                    .get(instance, c"vkGetPhysicalDeviceFeatures2")?;
+                let mut address: VkPhysicalDeviceBufferDeviceAddressFeatures = zero();
+                address.sType = 1000257000;
+                let mut position_features = ray::PositionFetchFeatures {
+                    kind: 1000481000,
+                    next: null_mut(),
+                    position_fetch: 0,
+                };
+                let mut query_features = ray::QueryFeatures {
+                    kind: 1000348013,
+                    next: if position_fetch {
+                        (&mut position_features as *mut ray::PositionFetchFeatures).cast()
+                    } else {
+                        null_mut()
+                    },
+                    ray_query: 0,
+                };
+                let mut acceleration_features: ray::AccelerationFeatures = zero();
+                acceleration_features.kind = 1000150013;
+                acceleration_features.next = (&mut query_features as *mut ray::QueryFeatures).cast();
+                if ray_query {
+                    address.pNext =
+                        (&mut acceleration_features as *mut ray::AccelerationFeatures).cast();
+                }
+                let mut features: VkPhysicalDeviceFeatures2 = zero();
+                features.sType = 1000059000;
+                features.pNext =
+                    (&mut address as *mut VkPhysicalDeviceBufferDeviceAddressFeatures).cast();
+                let mut atomics: VkPhysicalDeviceShaderAtomicInt64Features = zero();
+                atomics.sType = 1000180000;
+                if atomic64 || shared_atomic64 {
+                    atomics.pNext = features.pNext;
+                    features.pNext = (&mut atomics as *mut VkPhysicalDeviceShaderAtomicInt64Features).cast();
+                }
+                let mut storage8: VkPhysicalDevice8BitStorageFeatures = zero();
+                storage8.sType = 1000177000;
+                let mut arithmetic8: VkPhysicalDeviceShaderFloat16Int8Features = zero();
+                arithmetic8.sType = 1000082000;
+                if integer8 {
+                    storage8.pNext = features.pNext;
+                    arithmetic8.pNext = (&mut storage8 as *mut VkPhysicalDevice8BitStorageFeatures).cast();
+                    features.pNext = (&mut arithmetic8 as *mut VkPhysicalDeviceShaderFloat16Int8Features).cast();
+                }
+                let mut storage16: VkPhysicalDevice16BitStorageFeatures = zero();
+                storage16.sType = 1000083000;
+                if integer16 {
+                    storage16.pNext = features.pNext;
+                    features.pNext = (&mut storage16 as *mut VkPhysicalDevice16BitStorageFeatures).cast();
+                }
+                let mut subgroup_features = sort::Features {
+                    kind: 1000225002,
+                    next: features.pNext,
+                    size_control: 0,
+                    full: 0,
+                };
+                if sorting {
+                    features.pNext = (&mut subgroup_features as *mut sort::Features).cast();
+                }
+                let mut extended_types: VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures = zero();
+                extended_types.sType = 1000175000;
+                if subgroup_extended_types {
+                    extended_types.pNext = features.pNext;
+                    features.pNext = (&mut extended_types as *mut VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures).cast();
+                }
+                let mut reconvergence: VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR = zero();
+                reconvergence.sType = 1000434000;
+                if maximal_reconvergence {
+                    reconvergence.pNext = features.pNext;
+                    features.pNext = (&mut reconvergence
+                        as *mut VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR)
+                        .cast();
+                }
+                let mut indexing: texture::IndexingFeatures = zero();
+                indexing.kind = 1000161001;
+                if texture_indexing {
+                    indexing.next = features.pNext;
+                    features.pNext = (&mut indexing as *mut texture::IndexingFeatures).cast();
+                }
+                features_fn(physical, &mut features);
+                if atomic64 && atomics.shaderBufferInt64Atomics == 0 {
+                    unavailable.push(format!("{device_name}: {}", "64位dataset原子需要shaderBufferInt64Atomics，目标GPU不支持"));
+                    continue 'physical;
+                }
+                if shared_atomic64 && atomics.shaderSharedInt64Atomics == 0 {
+                    unavailable.push(format!("{device_name}: {}", "64位tile原子需要shaderSharedInt64Atomics，目标GPU不支持"));
+                    continue 'physical;
+                }
+                if integer8 && (arithmetic8.shaderInt8 == 0 || storage8.storageBuffer8BitAccess == 0) {
+                    unavailable.push(format!("{device_name}: {}", "程序需要shaderInt8与storageBuffer8BitAccess，目标GPU不支持"));
+                    continue 'physical;
+                }
+                if integer16 && (features.features[41] == 0 || storage16.storageBuffer16BitAccess == 0) {
+                    unavailable.push(format!("{device_name}: {}", "程序需要shaderInt16与storageBuffer16BitAccess，目标GPU不支持"));
+                    continue 'physical;
+                }
+                if subgroup_extended_types && extended_types.shaderSubgroupExtendedTypes == 0 {
+                    unavailable.push(format!("{device_name}: {}", "64位subgroup运算需要设备支持shaderSubgroupExtendedTypes"));
+                    continue 'physical;
+                }
+                // VkPhysicalDeviceDescriptorIndexingFeatures::shaderSampledImageArrayNonUniformIndexing。
+                if texture_indexing && indexing.capabilities[4] == 0 {
+                    unavailable.push(format!("{device_name}: {}", "纹理资源数组需要 sampled-image 非一致下标能力"));
+                    continue 'physical;
+                }
+                if maximal_reconvergence && reconvergence.shaderMaximalReconvergence == 0 {
+                    unavailable.push(format!("{device_name}: {}", "append 需要 shaderMaximalReconvergence，以保证分歧路径的活动集合合并预留"));
+                    continue 'physical;
+                }
+                let get: unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties2) =
+                    owner
+                        .library
+                        .get(instance, c"vkGetPhysicalDeviceProperties2")?;
+                let mut control: sort::ControlProperties = zero();
+                control.kind = 1000225000;
+                let mut float_controls: VkPhysicalDeviceFloatControlsProperties = zero();
+                float_controls.sType = 1000197000;
+                if sorting {
+                    float_controls.pNext = (&mut control as *mut sort::ControlProperties).cast();
+                }
+                let mut subgroup: VkPhysicalDeviceSubgroupProperties = zero();
+                subgroup.sType = 1000094000;
+                subgroup.pNext =
+                    (&mut float_controls as *mut VkPhysicalDeviceFloatControlsProperties).cast();
                 let mut properties2: VkPhysicalDeviceProperties2 = zero();
                 properties2.kind = 1000059001;
-                properties2.next = (&mut ray_properties as *mut ray::Properties).cast();
-                let get: unsafe extern "system" fn(
-                    VkPhysicalDevice,
-                    *mut VkPhysicalDeviceProperties2,
-                ) = device_owner
-                    ._instance
-                    .library
-                    .get(instance, c"vkGetPhysicalDeviceProperties2")?;
+                properties2.next = (&mut subgroup as *mut VkPhysicalDeviceSubgroupProperties).cast();
                 get(physical, &mut properties2);
-                Some(ray::RayDevice::load(device, get_device, ray_properties)?)
-            } else {
-                None
-            };
-            let mut queue = null_mut();
-            (functions.vkGetDeviceQueue)(device, family as u32, 0, &mut queue);
-            let mut memory = zero();
-            memory_fn(physical, &mut memory);
-            Ok(Self {
-                inner: Rc::new(Inner {
-                    owner: device_owner,
-                    functions,
-                    physical,
-                    queue,
-                    family: family as u32,
-                    memory,
-                    memory_budget,
-                    buffer_memory: RefCell::default(),
-                    max_buffer_size,
-                    properties,
-                    timestamp_bits: queue_properties.timestampValidBits,
-                    ray,
-                    sorting,
-                    maximal_reconvergence,
-                    texture_indexing,
-                    position_fetch,
-                    subgroup_extended_types,
-                    subgroup_operations: if subgroup.stages & 0x20 != 0 {
-                        subgroup.operations
+                let float32_supported = float_controls.shaderDenormPreserveFloat32 != 0
+                    && float_controls.shaderSignedZeroInfNanPreserveFloat32 != 0;
+                let float64_supported = float_controls.shaderDenormPreserveFloat64 != 0
+                    && float_controls.shaderSignedZeroInfNanPreserveFloat64 != 0;
+                let subgroup_operations = if subgroup.stages & 0x20 != 0 { subgroup.operations } else { 0 };
+                if float32_preserve && !float32_supported {
+                    unavailable.push(format!("{device_name}: f32运算需要DenormPreserve与SignedZeroInfNanPreserve"));
+                    continue 'physical;
+                }
+                if float64_preserve && !float64_supported {
+                    unavailable.push(format!("{device_name}: f64运算需要DenormPreserve与SignedZeroInfNanPreserve"));
+                    continue 'physical;
+                }
+                if subgroup_operations & required_subgroup != required_subgroup {
+                    unavailable.push(format!("{device_name}: compute subgroup操作需要{required_subgroup:#x}，实际{subgroup_operations:#x}"));
+                    continue 'physical;
+                }
+                if sorting {
+                    if subgroup_features.size_control == 0
+                        || subgroup_features.full == 0
+                        || control.minimum > 32
+                        || control.maximum < 32
+                        || control.max_groups < 2
+                        || control.stages & 0x20 == 0
+                        || subgroup.stages & 0x20 == 0
+                        || subgroup.operations & 9 != 9
+                    {
+                        unavailable.push(format!("{device_name}: {}", "稳定键排序需要 compute ballot、32 lane subgroup 与 full subgroup 能力"));
+                        continue 'physical;
+                    }
+                }
+                if address.bufferDeviceAddress == 0 || features.features[40] == 0 {
+                    unavailable.push(format!("{device_name}: {}", "目标 GPU 需要 bufferDeviceAddress 和 shaderInt64"));
+                    continue 'physical;
+                }
+                if ray_query
+                    && (query_features.ray_query == 0 || acceleration_features.acceleration == 0)
+                {
+                    unavailable.push(format!("{device_name}: {}", "程序需要 accelerationStructure 与 rayQuery，目标设备不支持"));
+                    continue 'physical;
+                }
+                if position_fetch && position_features.position_fetch == 0 {
+                    unavailable.push(format!("{device_name}: {}", "程序读取命中顶点，需要 rayTracingPositionFetch"));
+                    continue 'physical;
+                }
+                if float64 && features.features[39] == 0 {
+                    unavailable.push(format!("{device_name}: {}", "程序需要 shaderFloat64，目标 GPU 不支持"));
+                    continue 'physical;
+                }
+                features.features.fill(0);
+                features.features[39] = u32::from(float64); // VkPhysicalDeviceFeatures::shaderFloat64.
+                features.features[40] = 1; // VkPhysicalDeviceFeatures::shaderInt64。
+                features.features[41] = u32::from(integer16); // VkPhysicalDeviceFeatures::shaderInt16。
+                let position_enabled = ray::PositionFetchFeatures {
+                    kind: 1000481000,
+                    next: null_mut(),
+                    position_fetch: 1,
+                };
+                let query_enabled = ray::QueryFeatures {
+                    kind: 1000348013,
+                    next: if position_fetch {
+                        (&position_enabled as *const ray::PositionFetchFeatures)
+                            .cast_mut()
+                            .cast()
                     } else {
-                        0
+                        null_mut()
                     },
-                    next_submission: Cell::new(0),
-                    float64,
-                    integer8,
-                    integer16,
-                    atomic64,
-                    shared_atomic64,
-                    float64_preserve: float_controls.shaderDenormPreserveFloat64 != 0
-                        && float_controls.shaderSignedZeroInfNanPreserveFloat64 != 0,
-                    float32_preserve: float_controls.shaderDenormPreserveFloat32 != 0
-                        && float_controls.shaderSignedZeroInfNanPreserveFloat32 != 0,
-                }),
-            })
+                    ray_query: 1,
+                };
+                let acceleration_enabled = ray::AccelerationFeatures {
+                    kind: 1000150013,
+                    next: (&query_enabled as *const ray::QueryFeatures)
+                        .cast_mut()
+                        .cast(),
+                    acceleration: 1,
+                    capture: 0,
+                    indirect: 0,
+                    host: 0,
+                    update_after_bind: 0,
+                };
+                let address_enabled = VkPhysicalDeviceBufferDeviceAddressFeatures {
+                    sType: 1000257000,
+                    pNext: if ray_query {
+                        (&acceleration_enabled as *const ray::AccelerationFeatures)
+                            .cast_mut()
+                            .cast()
+                    } else {
+                        null_mut()
+                    },
+                    bufferDeviceAddress: 1,
+                    bufferDeviceAddressCaptureReplay: 0,
+                    bufferDeviceAddressMultiDevice: 0,
+                };
+                features.pNext = (&address_enabled
+                    as *const VkPhysicalDeviceBufferDeviceAddressFeatures)
+                    .cast_mut()
+                    .cast();
+                if atomic64 || shared_atomic64 {
+                    atomics.pNext = features.pNext;
+                    atomics.shaderBufferInt64Atomics = u32::from(atomic64);
+                    atomics.shaderSharedInt64Atomics = u32::from(shared_atomic64);
+                    features.pNext = (&mut atomics as *mut VkPhysicalDeviceShaderAtomicInt64Features).cast();
+                }
+                if integer8 {
+                    storage8.pNext = features.pNext;
+                    storage8.storageBuffer8BitAccess = 1;
+                    storage8.uniformAndStorageBuffer8BitAccess = 0;
+                    storage8.storagePushConstant8 = 0;
+                    arithmetic8.pNext = (&mut storage8 as *mut VkPhysicalDevice8BitStorageFeatures).cast();
+                    arithmetic8.shaderFloat16 = 0;
+                    arithmetic8.shaderInt8 = 1;
+                    features.pNext = (&mut arithmetic8 as *mut VkPhysicalDeviceShaderFloat16Int8Features).cast();
+                }
+                if integer16 {
+                    storage16.pNext = features.pNext;
+                    storage16.storageBuffer16BitAccess = 1;
+                    storage16.uniformAndStorageBuffer16BitAccess = 0;
+                    storage16.storagePushConstant16 = 0;
+                    storage16.storageInputOutput16 = 0;
+                    features.pNext = (&mut storage16 as *mut VkPhysicalDevice16BitStorageFeatures).cast();
+                }
+                let subgroup_enabled = sort::Features {
+                    kind: 1000225002,
+                    next: features.pNext,
+                    size_control: 1,
+                    full: 1,
+                };
+                if sorting {
+                    features.pNext = (&subgroup_enabled as *const sort::Features)
+                        .cast_mut()
+                        .cast();
+                }
+                let extended_types_enabled = VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures {
+                    sType: 1000175000,
+                    pNext: features.pNext,
+                    shaderSubgroupExtendedTypes: 1,
+                };
+                if subgroup_extended_types {
+                    features.pNext = (&extended_types_enabled as *const VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures).cast_mut().cast();
+                }
+                let reconvergence_enabled = VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR {
+                    sType: 1000434000,
+                    pNext: features.pNext,
+                    shaderMaximalReconvergence: 1,
+                };
+                if maximal_reconvergence {
+                    features.pNext = (&reconvergence_enabled
+                        as *const VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR)
+                        .cast_mut()
+                        .cast();
+                }
+                let mut indexing_enabled: texture::IndexingFeatures = zero();
+                indexing_enabled.kind = 1000161001;
+                indexing_enabled.capabilities[4] = 1;
+                if texture_indexing {
+                    indexing_enabled.next = features.pNext;
+                    features.pNext = (&indexing_enabled as *const texture::IndexingFeatures)
+                        .cast_mut()
+                        .cast();
+                }
+                let mut count = 0;
+                families_fn(physical, &mut count, null_mut());
+                let mut families = vec![zero::<VkQueueFamilyProperties>(); count as usize];
+                families_fn(physical, &mut count, families.as_mut_ptr());
+                let Some((family, queue_properties)) = families.iter().enumerate()
+                    .find(|(_, q)| q.queueFlags & 2 != 0 && q.queueCount > 0)
+                else {
+                    unavailable.push(format!("{device_name}: 缺少计算队列"));
+                    continue 'physical;
+                };
+                let priority = 1.0;
+                let mut q: VkDeviceQueueCreateInfo = zero();
+                q.sType = 2;
+                q.queueFamilyIndex = family as u32;
+                q.queueCount = 1;
+                q.pQueuePriorities = &priority;
+                let mut device_extensions = Vec::new();
+                if maximal_reconvergence {
+                    device_extensions.push(c"VK_KHR_shader_maximal_reconvergence".as_ptr());
+                }
+                if sorting {
+                    device_extensions.push(c"VK_EXT_subgroup_size_control".as_ptr());
+                }
+                if presentation {
+                    device_extensions.push(c"VK_KHR_swapchain".as_ptr());
+                }
+                if ray_query {
+                    device_extensions.extend([
+                        c"VK_KHR_acceleration_structure".as_ptr(),
+                        c"VK_KHR_ray_query".as_ptr(),
+                        c"VK_KHR_deferred_host_operations".as_ptr(),
+                    ]);
+                }
+                if position_fetch {
+                    device_extensions.push(c"VK_KHR_ray_tracing_position_fetch".as_ptr());
+                }
+                let enumerate: unsafe extern "system" fn(
+                    VkPhysicalDevice, *const c_char, *mut u32, *mut ExtensionProperties,
+                ) -> i32 = owner.library.get(instance, c"vkEnumerateDeviceExtensionProperties")?;
+                let mut count = 0;
+                check(enumerate(physical, null(), &mut count, null_mut()), "vkEnumerateDeviceExtensionProperties(count)")?;
+                let mut extensions: Vec<ExtensionProperties> = (0..count).map(|_| zero()).collect();
+                check(enumerate(physical, null(), &mut count, extensions.as_mut_ptr()), "vkEnumerateDeviceExtensionProperties")?;
+                let extensions = &extensions[..count as usize];
+                for extension in &device_extensions {
+                    let required = CStr::from_ptr(*extension);
+                    if !extensions.iter().any(|e| CStr::from_ptr(e.name.as_ptr()) == required) {
+                        unavailable.push(format!("{device_name}: 需要设备扩展{}", required.to_string_lossy()));
+                        continue 'physical;
+                    }
+                }
+                let memory_budget = if extensions.iter().any(|e| CStr::from_ptr(e.name.as_ptr()) == c"VK_EXT_memory_budget") {
+                    device_extensions.push(c"VK_EXT_memory_budget".as_ptr());
+                    Some(memory::BudgetQuery::load(&owner)?)
+                } else { None };
+                let max_buffer_size = memory::max_buffer_size(&owner, physical, properties.apiVersion)?;
+                let mut ci: VkDeviceCreateInfo = zero();
+                ci.sType = 3;
+                ci.pNext = (&features as *const VkPhysicalDeviceFeatures2).cast();
+                ci.queueCreateInfoCount = 1;
+                ci.pQueueCreateInfos = &q;
+                ci.enabledExtensionCount = device_extensions.len() as u32;
+                ci.ppEnabledExtensionNames = device_extensions.as_ptr();
+                let mut device = null_mut();
+                check(
+                    create_device(physical, &ci, null(), &mut device),
+                    "vkCreateDevice",
+                )?;
+                let device_owner = Rc::new(DeviceOwner {
+                    device,
+                    destroy: destroy_device,
+                    _instance: owner,
+                });
+                let functions = Functions::load(device, get_device)?;
+                let ray = if ray_query {
+                    let mut ray_properties: ray::Properties = zero();
+                    ray_properties.kind = 1000150014;
+                    let mut properties2: VkPhysicalDeviceProperties2 = zero();
+                    properties2.kind = 1000059001;
+                    properties2.next = (&mut ray_properties as *mut ray::Properties).cast();
+                    let get: unsafe extern "system" fn(
+                        VkPhysicalDevice,
+                        *mut VkPhysicalDeviceProperties2,
+                    ) = device_owner
+                        ._instance
+                        .library
+                        .get(instance, c"vkGetPhysicalDeviceProperties2")?;
+                    get(physical, &mut properties2);
+                    Some(ray::RayDevice::load(device, get_device, ray_properties)?)
+                } else {
+                    None
+                };
+                let mut queue = null_mut();
+                (functions.vkGetDeviceQueue)(device, family as u32, 0, &mut queue);
+                let mut memory = zero();
+                memory_fn(physical, &mut memory);
+                return Ok(Self {
+                    inner: Rc::new(Inner {
+                        owner: device_owner,
+                        functions,
+                        physical,
+                        queue,
+                        family: family as u32,
+                        memory,
+                        memory_budget,
+                        buffer_memory: RefCell::default(),
+                        max_buffer_size,
+                        properties,
+                        timestamp_bits: queue_properties.timestampValidBits,
+                        ray,
+                        sorting,
+                        maximal_reconvergence,
+                        texture_indexing,
+                        position_fetch,
+                        subgroup_extended_types,
+                        subgroup_operations,
+                        next_submission: Cell::new(0),
+                        float64,
+                        integer8,
+                        integer16,
+                        atomic64,
+                        shared_atomic64,
+                        float64_preserve: float64_supported,
+                        float32_preserve: float32_supported,
+                    }),
+                });
+            }
         }
+        Err(error(format!("没有满足本次程序需求的Vulkan计算设备：{unavailable:?}")))
     }
     pub fn name(&self) -> String {
         unsafe { CStr::from_ptr(self.inner.properties.deviceName.as_ptr()) }

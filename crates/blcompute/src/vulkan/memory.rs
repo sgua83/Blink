@@ -49,11 +49,6 @@ pub(super) fn max_buffer_size(
 }
 
 #[repr(C)]
-struct ExtensionProperties {
-    name: [c_char; 256],
-    version: u32,
-}
-#[repr(C)]
 struct MemoryProperties2 {
     kind: u32,
     next: *mut c_void,
@@ -69,37 +64,8 @@ struct BudgetProperties {
 type GetMemoryProperties = unsafe extern "system" fn(VkPhysicalDevice, *mut MemoryProperties2);
 pub(super) struct BudgetQuery(GetMemoryProperties);
 impl BudgetQuery {
-    pub(super) fn load(owner: &InstanceOwner, physical: VkPhysicalDevice) -> Result<Option<Self>> {
-        unsafe {
-            let enumerate: unsafe extern "system" fn(
-                VkPhysicalDevice,
-                *const c_char,
-                *mut u32,
-                *mut ExtensionProperties,
-            ) -> i32 = owner
-                .library
-                .get(owner.instance, c"vkEnumerateDeviceExtensionProperties")?;
-            let mut count = 0;
-            check(
-                enumerate(physical, null(), &mut count, null_mut()),
-                "vkEnumerateDeviceExtensionProperties(count)",
-            )?;
-            let mut extensions: Vec<ExtensionProperties> = (0..count).map(|_| zero()).collect();
-            check(
-                enumerate(physical, null(), &mut count, extensions.as_mut_ptr()),
-                "vkEnumerateDeviceExtensionProperties",
-            )?;
-            if !extensions[..count as usize]
-                .iter()
-                .any(|e| CStr::from_ptr(e.name.as_ptr()) == c"VK_EXT_memory_budget")
-            {
-                return Ok(None);
-            }
-            Ok(Some(Self(owner.library.get(
-                owner.instance,
-                c"vkGetPhysicalDeviceMemoryProperties2",
-            )?)))
-        }
+    pub(super) fn load(owner: &InstanceOwner) -> Result<Self> {
+        unsafe { Ok(Self(owner.library.get(owner.instance, c"vkGetPhysicalDeviceMemoryProperties2")?)) }
     }
     fn read(&self, physical: VkPhysicalDevice) -> MemoryBudget {
         let mut budget = BudgetProperties {

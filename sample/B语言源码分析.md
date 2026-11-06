@@ -3503,7 +3503,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 同一份GPU程序复用管线，临时空间、描述符和命令属于每次执行。装入借用原计划与SPIR-V，由原`Compiled`持有部分设备资源；全部成功才取得计划，失败沿原`Drop`释放资源。`Device::load_template`以`Err((error,image))`交回同一未改输入，`Frame`接回原槽。调用方显式再装入，终端消费者释放输入并传播原错误，不自动重试；借用与拥有只是装入期类型区别，没有第二计划、状态表或新包装。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2015`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2067`。
 
 ```rust
     pub fn submit(
@@ -3527,7 +3527,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 普通计算、subgroup、硬件求交和窗口呈现有不同能力需求。框架按程序需要申请能力；没有窗口的计算任务不应被迫拥有交换链。读 `Device::for_programs`、能力收集与设备创建时，要看申请来自哪个实际消费者。
 
-原Stage::requires_float_preserve将各实际运算对f32／f64的模式需求合并到DeviceRequirements，ProgramLayout作为程序设备合同保存并沿BLRI42编码；GpuProgram装入直接消费这两个字段。ExecutionStage只承载实际域、操作与执行布局，Shader逐入口模式仍在原SPIR-V发射处形成。默认物理设备的能力选择仍见Issues C-022.5.4.2，设备合同交接不等同于该选择已实现。
+原Stage::requires_float_preserve将各实际运算对f32／f64的模式需求合并到DeviceRequirements，ProgramLayout作为程序设备合同保存并沿BLRI42编码；GpuProgram装入直接消费这两个字段。ExecutionStage只承载实际域、操作与执行布局，Shader逐入口模式仍在原SPIR-V发射处形成。原Device::create合并实际程序需求，消费原特性查询、计算队列和必要扩展。默认入口交出全部物理候选，保留独显优先次序、同类沿驱动顺序，显式入口只交出调用者选定项；满足需求后才创建逻辑Device。通用扩展枚举归同一创建入口，memory::BudgetQuery只加载其已获支持的只读查询；创建和执行资源继续沿原唯一所有者释放。完整资源限额参与默认选卡仍见Issues C-022.5.4.3。
 
 **自己走一遍。** 把同一份 SPIR-V 用在另一设备上，为什么仍可能失败？设备必须支持程序要求的能力、布局和资源限制，标准代码格式不等于所有硬件功能相同。
 
@@ -3580,7 +3580,7 @@ Block是原Vulkan内存对象的唯一实际所有者。成功分配后，它保
 
 GpuDataset::memory()与ReadDataset::memory()按需返回同一存储的元数据。数据页标出原索引及逻辑覆盖，绑定表与实际实例地址数组分别标明角色；每个buffer继续沿原Allocation／Range取得绑定偏移、需求区间、整块大小与内存类型。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1207`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1259`。
 
 ```rust
     pub fn memory(&self) -> GpuDatasetMemory {
@@ -3621,7 +3621,7 @@ CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。�
 
 前端知道字段类型与访问权限，传输框架遍历真实来源关系，为目标侧构造相应地址信息，并让来源存储继续活着。嵌套 view 的传输因此是闭合资源图的处理，不只是一段裸字节复制。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1746`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1798`。
 
 ```rust
 #[derive(Clone)]
@@ -3645,7 +3645,7 @@ pub struct Bindings<D = Vec<GpuDataset>> {
 
 GpuDataset::layout与stride借用原GpuStorage布局；view_bindings同样沿原Views交回记录号、记录内字节偏移和Rc中原GpuDataset的共享借用。多个字段引用同一来源时得到同一个对象，嵌套来源可以继续遍历。查询不解析设备地址，也不先下载一份记录。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1184`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1236`。
 
 ```rust
     pub fn view_bindings(&self) -> impl ExactSizeIterator<Item = GpuDatasetView<'_>> {
@@ -3690,7 +3690,7 @@ IR 的 reads/writes 是这类关系的重要来源，执行框架再结合传输
 
 若所有中间结果都先读回 CPU 再上传，设备流水会不断断开。`submit_after` 与 `submit_join` 接续实际所有权和前序提交，使后续工作继续消费设备结果。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2045`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2097`。
 
 ```rust
     /// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
@@ -3722,7 +3722,7 @@ GPU：     A 仍在执行 → B 才开始读取
 
 ### 21.2 物理存储和最后使用点一起保存
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1072`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1124`。
 
 ```rust
 pub struct GpuDataset {
@@ -3750,7 +3750,7 @@ pub struct GpuStorage {
 
 `GpuDataset` 保存实际 GpuStorage 和可选 last_use。GpuStorage 持有页表、数据页、类型、容量、只读来源及相关实例资源。它们不是多份数组副本，而是同一物理存储的组成。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1102`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1154`。
 
 ```rust
 impl Drop for GpuDataset {
@@ -3786,7 +3786,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 GpuDataset::last_use把这个原点直接交给观察者：device限定原逻辑设备，sequence是原队列从零开始的序号，complete沿原Execution查询。它只复制本次元数据，不持有另一个Execution，也不清除last_use或制造新的完成状态。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1197`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1249`。
 
 ```rust
     pub fn last_use(&self) -> Result<Option<GpuDatasetUse>> {
@@ -3804,7 +3804,7 @@ GpuDataset::last_use把这个原点直接交给观察者：device限定原逻辑
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2905`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2957`。
 
 ```rust
         let timings = match result {
@@ -3876,7 +3876,7 @@ wait先等待真实执行；只有显式开启采集且存在实际阶段时才�
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2623`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2675`。
 
 ```rust
                                 let mut length = count;
