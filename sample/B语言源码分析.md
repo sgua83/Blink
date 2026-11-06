@@ -1660,7 +1660,33 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
                 },
 ```
 
-原Module只读查询消费同一Unit的Resource、Position、Dataset和Memory闭合Access，不维护第二份副作用状态。Scope与实际调用都以原Memory交接写区，非拥有write／inout许可不重复定义整值写；原C声明继续按实际外部内存合同与类型位置交接。dataset指针的原布局构造归application::dataset_origin，Scope::call_inputs只提供实际Data／字段／逻辑Ty，native_call的BorrowedData分支沿同一构造交接原ABI值，按值ApplicationData分支在原require_application_initialized完成后，也把同一实际Data及完整元素布局交给该调用的原输入Proof；没有额外IR、查询图或运行时状态。Frame句柄和长度仍是原机器值，Origin只表达合同所需的实际存储位置。循环内部尚未形成外层绑定的新拥有输入仍见Issues C-021.1.4.5.4.3.2.5.2，不能由实际调用的修正代替。dataset<address>载荷经元素读取后的间接写与后续数值事实交接仍有已证实正确性缺陷，见Issues C-005.71.1／C-005.71.2；实际原生读取错误与写零后的非零误许可均未修复，不能据普通dataset输入位置已交接而忽略此范围。预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
+原Module只读查询消费同一Unit的Resource、Position、Dataset和Memory闭合Access，不维护第二份副作用状态。Scope与实际调用都以原Memory交接写区，非拥有write／inout许可不重复定义整值写；原C声明继续按实际外部内存合同与类型位置交接。dataset指针的原布局构造归application::dataset_origin，Scope::call_inputs只提供实际Data／字段／逻辑Ty，native_call的BorrowedData分支沿同一构造交接原ABI值，按值ApplicationData分支在原require_application_initialized完成后，也把同一实际Data及完整元素布局交给该调用的原输入Proof；没有额外IR、查询图或运行时状态。Frame句柄和长度仍是原机器值，Origin只表达合同所需的实际存储位置。循环内部尚未形成外层绑定的新拥有输入仍见Issues C-021.1.4.5.4.3.2.5.2，不能由实际调用的修正代替。同上下文的地址身份替换保留Local／Buffer的原固定位置；真正重绑的参数、资源、派生、外部及dataset根继续消费原实参映射并撤去旧形参位置。写区和初始化复用真实存储所有者，不跨模块发布局部槽，不改变机器参数、ABI或释放职责。dataset<address>经循环与游标读取后的地址来源交接仍有已证实正确性缺陷，见Issues C-005.71.1／C-005.71.2；实际原生读取错误与写零后的非零误许可尚未整体修复，不能由固定位置已保持或普通dataset输入位置已交接代替。
+
+源码节选：`crates/blanguage/src/check/address.rs:206`。
+
+```rust
+    pub fn bound_at_call(&self, bindings: &BTreeMap<ValueIdentity,bounds::Proof>) -> Self {
+        let mut value=self.clone();
+        match &mut value.root {
+            Root::Parameter(parameter) => {
+                let borrow=bindings.get(&ValueIdentity::ParameterStorage(*parameter))
+                    .map(|proof|proof.view_borrow(0))
+                    .unwrap_or_else(||view::Borrow::source(view::Source::Unresolved));
+                value.root=Root::Derived(borrow);
+            }
+            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.at_call(bindings),
+            Root::External(identity)=>*identity=identity.at_call(bindings),
+            _ => return value,
+        }
+        value.positions=Arc::from([]);
+        if let Root::Dataset{borrow,index:Some(index)}=&mut value.root {
+            match index.at_call(bindings) {Some(bound)=>*index=bound,None=>*borrow=view::Borrow::source(view::Source::Unresolved)}
+        }
+        value
+    }
+```
+
+预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
 
 源码节选：`crates/blanguage/src/check/native_function.rs:656`。
 

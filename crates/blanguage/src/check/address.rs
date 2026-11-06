@@ -205,7 +205,6 @@ impl Origin {
     }
     pub fn bound_at_call(&self, bindings: &BTreeMap<ValueIdentity,bounds::Proof>) -> Self {
         let mut value=self.clone();
-        value.positions=Arc::from([]);
         match &mut value.root {
             Root::Parameter(parameter) => {
                 let borrow=bindings.get(&ValueIdentity::ParameterStorage(*parameter))
@@ -215,8 +214,9 @@ impl Origin {
             }
             Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.at_call(bindings),
             Root::External(identity)=>*identity=identity.at_call(bindings),
-            _ => {}
+            _ => return value,
         }
+        value.positions=Arc::from([]);
         if let Root::Dataset{borrow,index:Some(index)}=&mut value.root {
             match index.at_call(bindings) {Some(bound)=>*index=bound,None=>*borrow=view::Borrow::source(view::Source::Unresolved)}
         }
