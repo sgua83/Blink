@@ -1092,13 +1092,11 @@ impl Proof {
                 ScalarRanges::interval(target.order_bias(), target.order_bias() + 1)
             } else { floating::cast(value, i, target) };
             proof.nonzero[i] &= integers && target.size() >= source.size();
-            if !same_value { proof.origins[i].clear(); }
-            proof.conditions[i] = None;
-            // 同宽整数保持位模式；无损零扩展还保持原数值身份与关系。
-            if (!integers || target.size() != source.size() && !same_value)
-                && let Some(domains) = proof.domains.get_mut(i) {
-                domains.clear();
+            if !same_value {
+                proof.origins[i].clear();
+                if let Some(domains) = proof.domains.get_mut(i) { domains.clear(); }
             }
+            proof.conditions[i] = None;
         }
         proof
     }
