@@ -414,11 +414,11 @@ impl Builder<'_> {
                 view_contracts::Access::Dataset{borrows,when,access,..}if access.writes()=>(borrows,when),
                 _=>continue,
             };
-            let path=when.guard_at_call(arguments).assume(&self.path,true);
+            let path=when.guard_at_call(arguments).assume(&bounds::Clause::default(),true);
             let borrow=self.current_address_borrow(&borrows.at_call(arguments));
             written.union(&borrow.restricted(&path));
         }
-        Some(written)
+        Some(written.restricted(&self.path))
     }
     fn native_call(
         &mut self,

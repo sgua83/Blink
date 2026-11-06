@@ -3100,6 +3100,7 @@ impl Builder<'_> {
             }
             paths
         }
+        if sources==[data.root.identity()]{return vec![(Vec::new(),true)];}
         let mut paths=BTreeMap::new();
         if sources.contains(&data.root.identity()){paths.insert(Vec::new(),true);}
         let owner=view::resource_borrow(data);
@@ -3474,13 +3475,12 @@ impl Builder<'_> {
         }
         fn check(builder:&mut Builder<'_>,data:&Data,owned:&view::Borrow,parents:&[usize],span:Span)->Result<()> {
             if !data.ownership.may_own()||data.length.maximum()==0{return Ok(());}
-            let mut scoped=owned.clone();scoped.union(&view::resource_borrow(data));
             let mut shifts=BTreeMap::new();
             for(depth,width)in parents.iter().enumerate(){for component in 0..*width {
                 let id=if depth==0{ValueIdentity::ElementComponent(component)}else{ValueIdentity::ElementParent(depth-1,component)};
                 shifts.insert(id,ValueIdentity::ElementParent(depth,component));
             }}
-            scoped=scoped.output_bound(&shifts);
+            let mut scoped=owned.output_bound(&shifts);
             for resource in view_contracts::resource_borrows(&data.elements){scoped.union(&resource);}
             if let Some(value)=data.elements.view_value() && value.ty.contains_borrows(){
                 let mut proof=value.proof.borrow_state();proof.retain_view_borrows(&value.ty);
