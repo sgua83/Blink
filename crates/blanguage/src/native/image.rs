@@ -50,6 +50,17 @@ pub struct NativeCode {
     /// 仅compiler持有的尾部分区；执行编码不保留，主函数仍沿function_end。
     #[cfg(feature = "compiler")]
     pub tail_regions: Option<Vec<Region>>,
+    /// 原IR操作的实际发射区间；仅compiler观察，执行编码不保留。
+    #[cfg(feature = "compiler")]
+    pub operation_ranges: Option<Vec<OperationRange>>,
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Debug)]
+pub struct OperationRange {
+    pub start: usize,
+    pub end: usize,
+    pub includes_nested_operations: bool,
+    pub origin: crate::ir::OperationOrigin,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

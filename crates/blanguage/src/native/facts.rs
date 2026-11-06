@@ -44,7 +44,12 @@ impl NativeCode {
             ("unwind_bytes", bytes(&self.unwind)),
             ("relocations", array(self.relocations.iter().map(|value| object(&[
                 ("offset_bytes", value.offset.to_string()), ("target", symbol(&value.target)),
-            ])))), ("regions", array(regions))]))
+            ])))), ("regions", array(regions)),
+            ("operation_ranges", self.operation_ranges.as_ref().map_or_else(|| "null".into(), |ranges| array(ranges.iter().map(|range| object(&[
+                ("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
+                ("byte_length", (range.end - range.start).to_string()),
+                ("includes_nested_operations", range.includes_nested_operations.to_string()), ("origin", range.origin.ir_json()),
+            ])))))]))
     }
 }
 impl StageCode {

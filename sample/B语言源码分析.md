@@ -2684,7 +2684,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:158`。
+源码节选：`crates/blanguage/src/native/codegen.rs:160`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -2761,7 +2761,7 @@ pub(super) enum Location {
 
 native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，关闭compiler的执行SDK不编入Compiler、编译预算、优化器及自定义归约lowering；运行摘要与共有布局仍由原定义交接。Ty::syntax与CFunctionType::syntax只在compiler角色把共有类型重建为源码TypeName，供原World、泛型与检查消费；运行角色保留实际布局、Access及签名／合同身份，不包含这两个源码转换入口。应用根与算法DLL的原archive::compile为执行框架生成独立Cargo单元，对blanguage／blcompute依赖明确关闭默认特性；根包装只消费共同资源ABI、原类型／执行布局与已编译映像。发行包交接工具及源码SDK，不将workspace编译器特性统一后的静态库当作无compiler运行库采用。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:173`。
+源码节选：`crates/blanguage/src/native/codegen.rs:175`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -2804,14 +2804,19 @@ pub struct NativeCode {
     /// 仅compiler持有的尾部分区；执行编码不保留，主函数仍沿function_end。
     #[cfg(feature = "compiler")]
     pub tail_regions: Option<Vec<Region>>,
+    /// 原IR操作的实际发射区间；仅compiler观察，执行编码不保留。
+    #[cfg(feature = "compiler")]
+    pub operation_ranges: Option<Vec<OperationRange>>,
 }
 ```
 
 同一 NativeCode 还交付主函数末端 function_end 与 Windows x64 展开字节 unwind。末端不包含映像尾部的无帧探栈叶辅助和常量；展开信息只描述真实主函数序言中的压栈、帧分配和非易失寄存器保存。普通应用、范围和集合辅助入口复用 native/unwind.rs 的同一编码，按实际指令完成位置写入展开操作。
 
+普通CPU函数还在同一次原标量发射中取得OperationRange：对每个实际Inst读取原code的起止游标，保存原OperationOrigin及是否包含已记录的嵌套操作。材料从原Emitter移动到同一NativeCode的compiler专用operation_ranges，SDK code_json只借用这些事实；SourceSite／GeneratedOrigin不可变共享，不保留Inst、ValueCode、Stage或AST／World。范围按发射完成顺序平铺，控制父项可以包含子范围，不能求和当作指令数或运行次数；零长度表示没有新增字节，游标不是可断点地址。None表示未保留材料，Some空序列表示已采集而没有操作，真实范围的空来源仍保持未知。普通application发射启用，其余并行／SIMD与集合辅助暂为None；ABI参数／结果／退出、尾部来源及纹理降低分别沿独立叶推进，不把操作body材料写成完整映射。原私有读排布移动完整Inst，来源随实际次序交接，不建另一来源表或图。
+
 编译器角色还在同一NativeCode的tail_regions记录探栈辅助、对齐与每个字面量的实际末端，主函数继续复用function_end。code_json(ip)只解码主／辅助代码，数据和对齐保留原字节；StageCode及ProgramImage按原容器返回全部入口，bc build同时导出.x64.json。
 
-这些观察事实不进入BLRI31执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
+这些观察事实不进入必要执行编码；无compiler的运行库不含tail_regions／operation_ranges。从执行映像恢复后若未保留尾部分区，查询明确报告缺失；现有BLCR／BLCF只恢复原布局，操作来源仍为None，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 
@@ -2842,7 +2847,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:704`。
+源码节选：`crates/blanguage/src/native/codegen.rs:714`。
 
 ```rust
     let stage = &lowered;

@@ -65,6 +65,7 @@ struct Emitter<'a> {
     probe: Option<usize>,
     relocations: Vec<Relocation>,
     calls: Vec<Option<usize>>,
+    operation_ranges: Option<Vec<super::OperationRange>>,
     literals: std::collections::BTreeMap<(Bits, bool), Vec<usize>>,
     stage: &'a Stage,
     program: &'a Program,
@@ -120,6 +121,7 @@ impl Emitter<'_> {
             function_end,
             unwind,
             tail_regions: Some(tail_regions),
+            operation_ranges: self.operation_ranges,
         }
     }
     fn push_registers(&mut self, registers: &[u8]) {
@@ -339,6 +341,8 @@ impl Emitter<'_> {
     }
     fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
         for inst in code {
+            let start = self.code.len();
+            let first = self.operation_ranges.as_ref().map(Vec::len);
             match &(inst).kind {
                 InstKind::Call(call) => self.native_call(call)?,
                 InstKind::Print { dst, value } => {
@@ -589,22 +593,24 @@ impl Emitter<'_> {
                 InstKind::Cast { dst, src } => self.cast(*dst, *src),
                 InstKind::Math { dst, op, args } => {
                     let name = match op {
-                        MathOp::Sqrt => { self.float_sqrt(*dst, args[0]); continue; }
-                        MathOp::Min => { self.float_binary(*dst, args[0], args[1], 0x5d); continue; }
-                        MathOp::Max => { self.float_binary(*dst, args[0], args[1], 0x5f); continue; }
-                        MathOp::Abs => { self.float_sign(*dst, args[0], false); continue; }
-                        MathOp::Sin => "sin", MathOp::Cos => "cos", MathOp::Floor => "floor",
-                        MathOp::Exp => "exp", MathOp::Exp2 => "exp2", MathOp::Log => "log",
-                        MathOp::Log2 => "log2", MathOp::Pow => "pow",
+                        MathOp::Sqrt => { self.float_sqrt(*dst, args[0]); None }
+                        MathOp::Min => { self.float_binary(*dst, args[0], args[1], 0x5d); None }
+                        MathOp::Max => { self.float_binary(*dst, args[0], args[1], 0x5f); None }
+                        MathOp::Abs => { self.float_sign(*dst, args[0], false); None }
+                        MathOp::Sin => Some("sin"), MathOp::Cos => Some("cos"), MathOp::Floor => Some("floor"),
+                        MathOp::Exp => Some("exp"), MathOp::Exp2 => Some("exp2"), MathOp::Log => Some("log"),
+                        MathOp::Log2 => Some("log2"), MathOp::Pow => Some("pow"),
                     };
-                    if args.len() == 2 { self.float(args[1], 1); }
-                    self.float(args[0], 0);
-                    let reference = self.native_code_address(NativeSymbol::External(crate::ast::ExternalName {
-                        library: "ucrtbase.dll".into(),
-                        symbol: if self.stage.registers[*dst] == Scalar::F32 { format!("{name}f") } else { name.into() },
-                    }));
-                    self.invoke(Some(reference));
-                    self.store_float(*dst);
+                    if let Some(name) = name {
+                        if args.len() == 2 { self.float(args[1], 1); }
+                        self.float(args[0], 0);
+                        let reference = self.native_code_address(NativeSymbol::External(crate::ast::ExternalName {
+                            library: "ucrtbase.dll".into(),
+                            symbol: if self.stage.registers[*dst] == Scalar::F32 { format!("{name}f") } else { name.into() },
+                        }));
+                        self.invoke(Some(reference));
+                        self.store_float(*dst);
+                    }
                 },
                 InstKind::Select {
                     dst,
@@ -654,6 +660,10 @@ impl Emitter<'_> {
                     let at = self.jump(None);
                     self.patch(at, *self.continues.last().unwrap());
                 }
+            }
+            if let (Some(first), Some(ranges)) = (first, &mut self.operation_ranges) {
+                ranges.push(super::OperationRange { start, end: self.code.len(),
+                    includes_nested_operations: ranges.len() != first, origin: OperationOrigin::from_instruction(inst) });
             }
         }
         Ok(())
@@ -738,6 +748,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
+        operation_ranges: None,
         literals: std::collections::BTreeMap::new(),
         stage,
         program,

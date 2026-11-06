@@ -311,6 +311,8 @@ impl Decode for native::NativeCode {
             unwind: Vec::decode(reader)?,
             #[cfg(feature = "compiler")]
             tail_regions: None,
+            #[cfg(feature = "compiler")]
+            operation_ranges: None,
         })
     }
 }

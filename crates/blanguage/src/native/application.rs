@@ -110,6 +110,7 @@ fn emit_value(
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
+        operation_ranges: Some(Vec::new()),
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
         program: &program,

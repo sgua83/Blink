@@ -80,6 +80,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
+        operation_ranges: None,
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,
