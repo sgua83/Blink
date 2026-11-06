@@ -738,7 +738,11 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
         for(name,function)in functions{
             let state=&known[name];let result=next.get_mut(name).unwrap();
             for input in state.loops.keys(){result.loops.insert(*input,evaluate(&function.loops[input].borrow,function,state,known,true));}
-            let physical=function.outputs.iter().map(|(output,definition)|(output.clone(),evaluate(definition,function,state,known,true))).collect::<Outputs>();
+            let physical=function.outputs.iter().map(|(output,definition)|{
+                let value=evaluate(definition,function,state,known,true);
+                let value=if function.resource_names.contains_key(output){value.resources()}else{value};
+                (output.clone(),value)
+            }).collect::<Outputs>();
             // 每个真实资源输出命名自己的交付存储；view保留所有可能的实际输出所有者。
             let mut exposed:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
             for(output,name)in &function.resource_names{for(source,when)in physical[output].sources.entries(){if let Origin::Data(id)=source{if !matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){exposed.entry(*id).or_default().union(&name.restricted(&when));}}}}
