@@ -20,38 +20,31 @@ pub(crate) struct Imports {
 impl Imports {
     pub fn new<'a>(objects: impl IntoIterator<Item = &'a Object>) -> codec::Result<Self> {
         let mut imports = Self::default();
-        for object in objects {
-            let Kind::Module {
-                interface,
-                requirements,
-                ..
-            } = &object.kind
-            else {
-                return Err(format!("{} 不是独立模块产物", object.name).into());
-            };
-            let definitions = object
-                .symbols
-                .iter()
-                .map(|symbol| (symbol.name.clone(), symbol.contract.clone()))
-                .collect();
-            if imports
-                .modules
-                .insert(
-                    object.name.clone(),
-                    Imported {
-                        header: interface.clone(),
-                        requirements: requirements.clone(),
-                        definitions: Arc::new(definitions),
-                    },
-                )
-                .is_some()
-            {
-                return Err(format!("模块有多个提供者 {}", object.name).into());
-            }
-        }
+        for object in objects { imports.object(object)?; }
         Ok(imports)
     }
+    pub(crate) fn inputs(inputs: &[object::Input]) -> codec::Result<Self> {
+        let mut imports = Self::default();
+        for input in inputs { input.imports(&mut imports)?; }
+        Ok(imports)
+    }
+    pub(crate) fn object(&mut self, object: &Object) -> codec::Result<()> {
+        self.insert(&object.name, &object.kind, object.symbols.iter()
+            .map(|symbol| (symbol.name.clone(), symbol.contract.clone())).collect())
+    }
+    pub(crate) fn insert(&mut self, name: &str, kind: &Kind, definitions: BTreeMap<String, Vec<u8>>) -> codec::Result<()> {
+        let Kind::Module { interface, requirements, .. } = kind else {
+            return Err(format!("{name} 不是独立模块产物").into());
+        };
+        if self.modules.insert(name.into(), Imported {
+            header: interface.clone(), requirements: requirements.clone(), definitions: Arc::new(definitions),
+        }).is_some() {
+            return Err(format!("模块有多个提供者 {name}").into());
+        }
+        Ok(())
+    }
 }
+
 pub struct Module {
     pub(crate) compiler: crate::Compiler,
     pub(crate) name: String,

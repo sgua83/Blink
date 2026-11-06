@@ -1,4 +1,4 @@
-//! 正式入口构建：由实际源码闭包产生原生映像，执行端装入最终代码。
+//! 正式入口构建：复用实际源码与公开合同编译，原链接器消费当前模块代码。
 pub(crate) mod hash;
 mod object;
 mod identity;
@@ -26,6 +26,7 @@ pub struct Compilation {
     pub programs: Vec<Program>,
     pub templates: Vec<Template>,
     pub artifact: PathBuf,
+    /// 根代码是否复用；当前模块代码仍由原链接器消费。
     pub reused: bool,
 }
 const MAGIC: &[u8; 8] = b"BLBI\x01\0\0\0";
@@ -45,11 +46,24 @@ pub fn compile_entry(
 ) -> Result<Compilation> {
     crate::Compiler::available()?.build_entry(path, root, entry, target, output)
 }
+/// 编译后模块由本次调用拥有；借用公开接口后将原代码交给链接器。
+pub fn compile_entry_with_inputs(
+    path: &Path, root: &Path, entry: &str, target: Target, output: &Path,
+    inputs: Vec<crate::object::Input>,
+) -> Result<Compilation> {
+    crate::Compiler::available()?.build_entry_with_inputs(path, root, entry, target, output, inputs)
+}
 impl crate::Compiler {
     pub fn build_entry(
         &self, path: &Path, root: &Path, entry: &str, target: Target, output: &Path,
     ) -> Result<Compilation> {
-        self.execute(|worker| compile_in(worker, path, root, entry, target, output, None))
+        self.build_entry_with_inputs(path, root, entry, target, output, Vec::new())
+    }
+    pub fn build_entry_with_inputs(
+        &self, path: &Path, root: &Path, entry: &str, target: Target, output: &Path,
+        dependencies: Vec<crate::object::Input>,
+    ) -> Result<Compilation> {
+        self.execute(|worker| compile_in(worker, path, root, entry, target, output, dependencies, None))
             .map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
@@ -58,14 +72,16 @@ impl crate::Compiler {
 }
 fn compile_in(
     worker: &crate::compiler::Worker, path: &Path, root: &Path, entry: &str,
-    target: Target, output: &Path, inputs: Option<&Inputs>,
+    target: Target, output: &Path, dependencies: Vec<crate::object::Input>, inputs: Option<&Inputs>,
 ) -> Result<Compilation> {
     if target == Target::Compute {
         return Err("构建映像必须选择实际CPU或GPU后端".into());
     }
     let path = if inputs.is_some() { path.into() } else { path.canonicalize()? };
     let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
-    let (world, module) = crate::read_world(&path, &root, None, &[], worker, inputs,
+    let imports = crate::module::Imports::inputs(&dependencies).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let imported = if dependencies.is_empty() { None } else { Some(&imports) };
+    let (world, module) = crate::read_world(&path, &root, imported, &[], worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let mut request = Vec::new();
     for value in [
@@ -89,12 +105,21 @@ fn compile_in(
         worker.compiler().max_parameter_bytes(), &world, &module, false)?;
     match fs::read(&artifact) {
         Ok(bytes) => {
-            let stored = decode(&bytes)?;
-            if let Some(inputs) = identity::decode(&stored.identity)?
-                && inputs.source == source
-                && inputs.imports == identity::references(&world.declarations, None, std::iter::empty(), &inputs.declarations)
-            {
-                return stored.compilation(artifact, true);
+            let mut stored = decode(&bytes)?;
+            if let Some(inputs) = identity::decode(&stored.identity)? && inputs.source == source {
+                let mut image = unsafe { resource::from_compiler_output(&stored.image) }
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                if inputs.imports == references(&world.declarations, imported, &image, &inputs.declarations) {
+                    if imported.is_some() {
+                        link_inputs(&mut image, dependencies, &imports)?;
+                        let encoded = encode_image(&image);
+                        if stored.image != encoded {
+                            stored.image = encoded;
+                            write_artifact(&artifact, &stored)?;
+                        }
+                    }
+                    return Ok(images(image, artifact, true));
+                }
             }
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -116,23 +141,53 @@ fn compile_in(
             .map_err(std::io::Error::other)
         })
         .collect::<std::io::Result<Vec<_>>>()?;
-    let image = resource::Module {
+    let mut image = resource::Module {
         types: Vec::new(),
         images: compiled_images,
     };
-    let mut encoded = resource::ABI.to_vec();
-    encoded.extend(image.bytes());
     let declarations = world.build_declarations.as_ref().unwrap().borrow().iter().cloned().collect::<Vec<_>>();
-    let imports = identity::references(&world.declarations, None, std::iter::empty(), &declarations);
+    let imports_identity = references(&world.declarations, imported, &image, &declarations);
+    if imported.is_some() { link_inputs(&mut image, dependencies, &imports)?; }
     let stored = Artifact {
-        identity: identity::Inputs { source, imports, native: None, declarations }.encode(),
-        image: encoded,
+        identity: identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode(),
+        image: encode_image(&image),
     };
     fs::create_dir_all(output)?;
+    write_artifact(&artifact, &stored)?;
+    Ok(images(image, artifact, false))
+}
+fn references(
+    declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
+    image: &resource::Module, used: &[Declaration],
+) -> [u8; 32] {
+    let symbols = image.images.iter().filter_map(|image| match image {
+        resource::Image::Cpu(image) => Some(image), _ => None,
+    }).flat_map(|image| crate::native::program::module_symbols(image).1);
+    identity::references(declarations, imported, symbols, used)
+}
+fn link_inputs(
+    image: &mut resource::Module, mut inputs: Vec<crate::object::Input>, imports: &crate::module::Imports,
+) -> Result<()> {
+    let contracts = imports.modules.values().flat_map(|module| module.definitions.iter())
+        .map(|(name, contract)| (name.as_str(), contract)).collect();
+    // A selected entry produces one CPU or GPU image; its nested resources stay owned by it.
+    for image in &mut image.images {
+        if let resource::Image::Cpu(image) = image {
+            crate::native::program::link_inputs(image, std::mem::take(&mut inputs), &contracts)
+                .map_err(std::io::Error::other)?;
+        }
+    }
+    Ok(())
+}
+fn encode_image(image: &resource::Module) -> Vec<u8> {
+    let mut encoded = resource::ABI.to_vec();
+    encoded.extend(image.bytes());
+    encoded
+}
+fn write_artifact(path: &Path, stored: &Artifact) -> Result<()> {
     let mut bytes = MAGIC.to_vec();
     bytes.extend(stored.bytes());
-    publish(&artifact, &bytes)?;
-    Ok(images(image, artifact, false))
+    publish(path, &bytes)
 }
 fn decode(bytes: &[u8]) -> Result<Artifact> {
     let bytes = bytes.strip_prefix(MAGIC).ok_or("不支持的入口构建映像")?;

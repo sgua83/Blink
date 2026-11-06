@@ -534,13 +534,47 @@ impl<'a> Reader<'a> {
         input.error.check()?;
         Ok(if input.present == 0 { None } else { Some(unsafe { input.bytes.borrowed() }) })
     }
+    fn sections(&self) -> Result<Vec<ObjectSection>> {
+        let input = ReadBytes::new(self.bytes);
+        let headers = ReadBytes::new(self.headers);
+        let mut raw = Vec::new();
+        let mut mapped = 0u64;
+        for index in 0..self.headers.len() / 40 {
+            let row = unsafe { object_logical_section(input, headers, index, &mut mapped) };
+            row.error.check()?;
+            // Preserve the original per-section UTF-8 check before reading the following section.
+            std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
+            raw.push(row.value);
+        }
+        Ok(raw)
+    }
+    /// 只恢复B公开接口与实际定义；不复制代码、资源归档或恢复重定位。
+    pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
+        let (name, kind, mut bindings, _, _) = read_metadata(&self.sections()?, false)?;
+        let input = ReadBytes::new(self.bytes);
+        let table = unsafe { read_symbols(input) };
+        table.error.check()?;
+        let mut definitions = BTreeMap::new();
+        let mut i = 0;
+        while i < table.count {
+            let row = unsafe { read_symbol(input, table, i) };
+            row.error.check()?;
+            if row.storage == 2 && row.section > 0 {
+                let symbol = read_text(row.name)?;
+                let contract = bindings.remove(&symbol).ok_or("导出符号缺少模块接口合同")?;
+                definitions.insert(symbol, contract);
+            }
+            i = row.next;
+        }
+        Ok((name, kind, definitions))
+    }
     /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
     pub(crate) fn native(&self, name: &str) -> Result<Object> { decode_object(self, Some(name)) }
     pub(crate) fn object(&self) -> Result<Object> {
         decode_object(self, None)
     }
 }
-fn read_metadata(raw: &[ObjectSection]) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, Vec<stack::Frame>, Option<Archive>)> {
+fn read_metadata(raw: &[ObjectSection], archive_bytes: bool) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, Vec<stack::Frame>, Option<Archive>)> {
     let meta = raw.iter().find(|row| unsafe { row.name.borrowed() } == META.as_bytes())
         .ok_or("缺少 Blink 目标文件元数据")?;
     let meta = unsafe { meta.bytes.borrowed() };
@@ -609,7 +643,7 @@ fn read_metadata(raw: &[ObjectSection]) -> Result<(String, Kind, BTreeMap<String
         }
         stack.push(stack::Frame { name, coff, local: value.local as u32, calls });
     }
-    let archive = raw.iter().find(|row| unsafe { row.name.borrowed() } == ARCHIVE.as_bytes()).map(|row| Archive {
+    let archive = raw.iter().filter(|_| archive_bytes).find(|row| unsafe { row.name.borrowed() } == ARCHIVE.as_bytes()).map(|row| Archive {
         bytes: unsafe { row.bytes.borrowed() }.to_vec(),
         libraries,
         exports,
@@ -635,19 +669,10 @@ fn decode_object(reader: &Reader<'_>, native: Option<&str>) -> Result<Object> {
         symbols[i] = Some((name, row.section as i16, row.value as u32, row.storage as u8, row.function != 0));
         i = row.next;
     }
-    let headers = ReadBytes::new(reader.headers);
-    let mut raw = Vec::new();
-    let mut mapped = 0u64;
-    for index in 0..reader.headers.len() / 40 {
-        let row = unsafe { object_logical_section(input, headers, index, &mut mapped) };
-        row.error.check()?;
-        // Preserve the original per-section UTF-8 check before reading the following section.
-        std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
-        raw.push(row.value);
-    }
+    let raw = reader.sections()?;
     let (name, kind, mut bindings, mut stack, archive) = match native {
         Some(name) => (name.to_owned(), Kind::Module { interface: String::new(), requirements: BTreeMap::new(), stack_bytes: 0 }, BTreeMap::new(), Vec::new(), None),
-        None => read_metadata(&raw)?,
+        None => read_metadata(&raw, true)?,
     };
     let mut sections = Vec::new();
     for row in &raw {

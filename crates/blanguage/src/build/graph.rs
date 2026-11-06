@@ -181,7 +181,7 @@ impl Compiler {
                     providers.iter().map(Provider::object), kind, &unit.output, Some(&inputs))
                     .map(|value| Output::Object(Arc::new(value))),
                 UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
-                    entry, target, &unit.output, Some(&inputs)).map(Output::Entry),
+                    entry, target, &unit.output, Vec::new(), Some(&inputs)).map(Output::Entry),
             }).map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,

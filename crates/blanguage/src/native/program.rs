@@ -36,35 +36,53 @@ impl crate::Compiler {
     ) -> Result<ProgramImage<P>, String> {
         let source = &*program;
         self.execute(|worker| {
-            let image = compile_in(worker, source)?;
-            let local = image.functions().iter().chain(image.resources.iter()
-                .flat_map(|module| &module.images).filter_map(|image| match image {
-                    crate::resource::Image::Cpu(image) => Some(image), _ => None,
-                }).flat_map(|image| image.functions().iter()))
-                .map(|(name, _)| name.as_str()).collect::<std::collections::BTreeSet<_>>();
+            let mut image = compile_in(worker, source)?;
             let imports = source.imports.iter().chain(source.resources.iter()
                 .flat_map(|resources| &resources.programs).flat_map(|(_, program)| &program.imports))
-                .collect::<std::collections::BTreeMap<_, _>>();
-            let mut roots = std::collections::BTreeMap::new();
-            for relocation in image.code().flat_map(|code| &code.relocations) {
-                if let super::NativeSymbol::Function(name) = &relocation.target && !local.contains(name.as_str()) {
-                    let contract = imports.get(name).ok_or_else(|| format!("缺少模块函数接口 {name}"))?;
-                    roots.insert(name.clone(), (*contract).clone());
-                }
-            }
-            let (types, programs) = match &image.resources {
-                Some(module) => (u32::try_from(module.types.len()).map_err(|e| e.to_string())?, u32::try_from(module.images.len()).map_err(|e| e.to_string())?),
-                None => (0, 0),
-            };
-            let modules = crate::linker::native::modules(inputs, &roots, &local, types, programs).map_err(|error| error.to_string())?;
-            Ok::<_, String>((image, modules))
-        }).map_err(|error| error.to_string()).map(|(image, modules)| {
+                .map(|(name, contract)| (name.as_str(), contract)).collect();
+            link_inputs(&mut image, inputs, &imports)?;
+            Ok::<_, String>(image)
+        }).map_err(|error| error.to_string()).map(|mut image| {
+            let modules = image.module_code.take();
             let (plan, stages, functions, resources) = image.into_parts();
             let mut image = unsafe { ProgramImage::from_compiler_output(plan, stages, functions, resources) };
             image.module_code = modules;
             image
         })
     }
+}
+
+/// Local definitions and actual external calls belong to the already generated root image.
+pub(crate) fn module_symbols<P>(image: &ProgramImage<P>) -> (std::collections::BTreeSet<&str>, std::collections::BTreeSet<&str>) {
+    let local = image.functions().iter().chain(image.resources.iter()
+        .flat_map(|module| &module.images).filter_map(|image| match image {
+            crate::resource::Image::Cpu(image) => Some(image), _ => None,
+        }).flat_map(|image| image.functions().iter()))
+        .map(|(name, _)| name.as_str()).collect::<std::collections::BTreeSet<_>>();
+    let external = image.code().flat_map(|code| &code.relocations).filter_map(|relocation| {
+        if let super::NativeSymbol::Function(name) = &relocation.target && !local.contains(name.as_str()) {
+            Some(name.as_str())
+        } else { None }
+    }).collect();
+    (local, external)
+}
+pub(crate) fn link_inputs<P>(
+    image: &mut ProgramImage<P>, inputs: Vec<crate::object::Input>,
+    imports: &std::collections::BTreeMap<&str, &Vec<u8>>,
+) -> Result<(), String> {
+    let (local, external) = module_symbols(image);
+    let roots = external.into_iter().map(|name| {
+        let contract = imports.get(name).ok_or_else(|| format!("缺少模块函数接口 {name}"))?;
+        Ok((name.to_owned(), (*contract).clone()))
+    }).collect::<Result<std::collections::BTreeMap<_, _>, String>>()?;
+    let (types, programs) = match &image.resources {
+        Some(module) => (u32::try_from(module.types.len()).map_err(|e| e.to_string())?,
+            u32::try_from(module.images.len()).map_err(|e| e.to_string())?),
+        None => (0, 0),
+    };
+    image.module_code = crate::linker::native::modules(inputs, &roots, &local, types, programs)
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<StageCode, &'static str> {

@@ -16,6 +16,19 @@ impl Input {
             Ok(Self::Object(coff::decode(&bytes)?))
         }
     }
+    pub(crate) fn imports(&self, imports: &mut crate::module::Imports) -> Result<()> {
+        match self {
+            Self::Object(object) => imports.object(object)?,
+            Self::Library(library) => {
+                for member in library.members.values().flatten() {
+                    let (name, kind, definitions) = coff::Reader::new(&member.bytes)?.interface()
+                        .map_err(|error| format!("静态库成员 {}：{error}", member.name))?;
+                    imports.insert(&name, &kind, definitions)?;
+                }
+            }
+        }
+        Ok(())
+    }
     /// 编译导入已有模块接口；不重编库成员。
     pub fn objects(self) -> Result<Vec<Object>> {
         match self {
