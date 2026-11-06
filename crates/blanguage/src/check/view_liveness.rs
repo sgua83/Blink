@@ -580,7 +580,7 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
         out
     }
     fn data(builder:&Builder<'_>,data:&application::Data,path:&[Step],excluded:&BTreeSet<Path>,parent:view::Borrow,mut bindings:BTreeMap<ValueIdentity,bounds::Proof>,transferred:&[Transfer<'_>],cleanup:bool)->view::Borrow{
-        if data.ownership==application::Ownership::Moved||data.length.maximum()==0||cleanup&&!data.ownership.may_own(){return view::Borrow::default();}
+        if data.ownership==application::Ownership::Moved||data.length.maximum()==0||cleanup&&(!data.ownership.may_own()||matches!(*data.elements,returns::Returned::Value(_))){return view::Borrow::default();}
 
         let mut passed=Vec::new();let mut omitted=BTreeMap::new();
         for transfer in transferred{match transfer{
