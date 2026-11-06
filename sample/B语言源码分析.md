@@ -1434,7 +1434,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:885`。
+源码节选：`crates/blanguage/src/check/native_function.rs:896`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -2601,7 +2601,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1612`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1623`。
 
 ```rust
             if !frame.contains(&name) {
@@ -4094,7 +4094,7 @@ DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有�
 
 尚未交付的拥有结果在实际交接前仍归原作用域：本函数的返回准备值保持到同一次正常清理完成，普通调用已经产生的结果保持到原临时实参清理完成。二者沿原hold_binding进入同一env；正常清理只保留它，成功后才移出并交给原ReturnExit或调用表达式，清理F失败则由同一原失败Scope结束。return表达式不再单独重复结束临时拥有者，原finish_return统一消费该次完整退出。没有额外返回镜像、运行拥有表或完成标志；NoFail清理不增加失败出口或返回F的额外前提，真实失败清理仍满足实际F合同。实际接点为check/returns.rs::return_statement／finish_return及check/native_function.rs::native_call；原代码、合同、来源及编号保持到原最后消费者后才优化。
 
-dataset(length,factory)逐元素构造期间，同一原作用域持有已分配存储，原写入完成后才推进的游标直接表示可结束的初始化前缀。factory或元素写入失败时，原失败Scope结束尚未写入的实际返回拥有元素，并逆序结束已完成前缀的静态F及子资源，再由Frame的原入口释放该分配；未构造后缀不读取、不执行F。完整成功才交付原完整Data。共同元素模型消费factory原合同，实际待写值保留本次来源到写入完成；逻辑前缀不改变物理分配，不复制游标、拥有表或释放链。F再次失败沿原清理组保留实际错误并继续结束其他真实拥有者。resize取得的原输入在length与fill求值前沿原hold_binding进入同一env，原存储调用成功产生新Data后才移出并交付；后续实参或原调用失败时，原Scope结束该未采用输入。原存储采用检查以已有OwnedData Transfer表达本次真实输入，继续保留fill及其他未来消费者的实际借用，不复制拥有状态或释放链。普通调用实参采用前及晚期地址准备失败仍沿Issues C-020.5.2.4.2.2.1.2.5，resize实际fill尚未被存储调用采用时的失败交接仍沿.8.2独立调查，不把已闭合范围称为完整拥有退出。实现只在check/application.rs::initialize_application_elements沿原hold_binding持有逻辑前缀及待写元素，复用check/native_function.rs::calls将原factory共同模型交给同一Call已捕获的Scope；drop_application_elements及Frame的原拥有／释放职责保持。错误最后交回唯一应用根报告和结束Frame，源码业务Result不混入这一内部错误。
+dataset(length,factory)逐元素构造期间，同一原作用域持有已分配存储，原写入完成后才推进的游标直接表示可结束的初始化前缀。factory或元素写入失败时，原失败Scope结束尚未写入的实际返回拥有元素，并逆序结束已完成前缀的静态F及子资源，再由Frame的原入口释放该分配；未构造后缀不读取、不执行F。完整成功才交付原完整Data。共同元素模型消费factory原合同，实际待写值保留本次来源到写入完成；逻辑前缀不改变物理分配，不复制游标、拥有表或释放链。F再次失败沿原清理组保留实际错误并继续结束其他真实拥有者。resize取得的原输入在length与fill求值前沿原hold_binding进入同一env，原存储调用成功产生新Data后才移出并交付；后续实参或原调用失败时，原Scope结束该未采用输入。原存储采用检查以已有OwnedData Transfer表达本次真实输入，继续保留fill及其他未来消费者的实际借用，不复制拥有状态或释放链。普通实参求值期间沿既有hold_argument保持已求值拥有者；表达式完成后，native_call在引用／write旧值F等ABI准备期间仍以原hold_binding持有全部实际按值OwnedValue与ApplicationData。准备真实失败时原Scope结束尚未被callee采用的输入；准备完成后移出这些同一env关系，再生成callee Call的原失败Scope，callee进入后的错误不由caller重复结束按值参数。原Scoped read／inout临时拥有者及callee已产生的结果继续各按真实最后消费者交接，不新增采用标志、拥有表或释放链。闭合合同后插入的dataset写地址及其真实失败／NoFail归属仍沿Issues C-020.5.2.4.2.2.1.2.5.2.2，resize实际fill尚未被存储调用采用时的失败交接仍沿.8.2独立调查，不把已闭合范围称为完整拥有退出。实现只在check/application.rs::initialize_application_elements沿原hold_binding持有逻辑前缀及待写元素，复用check/native_function.rs::calls将原factory共同模型交给同一Call已捕获的Scope；drop_application_elements及Frame的原拥有／释放职责保持。错误最后交回唯一应用根报告和结束Frame，源码业务Result不混入这一内部错误。
 
 ### 26.4 反向调用与独立应用是另两项能力
 

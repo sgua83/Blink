@@ -443,6 +443,16 @@ impl Builder<'_> {
                 .collect();
             arguments.push(CallArgument::Value { #[cfg(feature = "compiler")] origin: Some(Arc::new(ArgumentOrigin::Frame)), dataset_borrow:None, ty: frame.ty, values: frame.regs });
         }
+        let mut preparing=Vec::new();
+        for (parameter,argument) in d.function.params.iter().zip(&args) {
+            if parameter.access!=Access::Value {continue;}
+            let binding=match argument {
+                Argument::OwnedValue(value) if value.ownership.may_own()=>Some(Binding::OwnedValue(value.clone())),
+                Argument::ApplicationData(data) if data.ownership.may_own()=>Some(Binding::ApplicationData(data.clone())),
+                _=>None,
+            };
+            if let Some(binding)=binding {preparing.push(self.hold_binding(binding));}
+        }
         let mut env = BTreeMap::new();
         let mut locations = residency::Arguments::new();
         let mut written = Vec::new();
@@ -759,6 +769,7 @@ impl Builder<'_> {
         for argument in &mut arguments {
             if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {borrow.call=self.view_model.calls.len();}
         }
+        for owner in preparing {self.env.remove(&owner);}
         let failure=self.failure_continuation(written.iter().filter(|(_,place)|place.ty().owns_resources()).map(|(_,place)|place.clone()).collect());
         self.code.push(Inst { kind: InstKind::Call(Call {
             failure,
