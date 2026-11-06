@@ -387,8 +387,10 @@ impl Device {
     ) -> Result<Self> {
         let mut requirements = DeviceRequirements::default();
         let mut uniform_bytes = 0;
+        let mut texture_count = 0;
         for program in programs {
             uniform_bytes = uniform_bytes.max(program.uniform_bytes());
+            texture_count = texture_count.max(program.textures().iter().map(|texture| texture.elements() as usize).sum::<usize>());
             let required = program.requirements();
             requirements.float64 |= required.float64;
             requirements.float32_preserve |= required.float32_preserve;
@@ -457,6 +459,14 @@ impl Device {
                 }
                 if uniform_bytes > properties.limits.maxPushConstantsSize {
                     unavailable.push(format!("{device_name}: 程序推送常量需要{uniform_bytes}字节，maxPushConstantsSize为{}", properties.limits.maxPushConstantsSize));
+                    continue 'physical;
+                }
+                if texture_count > properties.limits.maxPerStageDescriptorSamplers as usize
+                    || texture_count > properties.limits.maxPerStageDescriptorSampledImages as usize
+                    || texture_count > properties.limits.maxDescriptorSetSamplers as usize
+                    || texture_count > properties.limits.maxDescriptorSetSampledImages as usize
+                {
+                    unavailable.push(format!("{device_name}: 纹理描述符需要{texture_count}项，maxPerStageDescriptorSamplers={}，maxPerStageDescriptorSampledImages={}，maxDescriptorSetSamplers={}，maxDescriptorSetSampledImages={}", properties.limits.maxPerStageDescriptorSamplers, properties.limits.maxPerStageDescriptorSampledImages, properties.limits.maxDescriptorSetSamplers, properties.limits.maxDescriptorSetSampledImages));
                     continue 'physical;
                 }
                 let features_fn: unsafe extern "system" fn(
@@ -1929,10 +1939,11 @@ impl GpuProgram {
             if program.requires_texture_indexing() && !inner.texture_indexing {
                 return Err(error("纹理数组程序必须以 Device::for_program 声明设备能力"));
             }
-            if program.texture_count() > limits.maxPerStageDescriptorSampledImages as usize
-                || program.texture_count() > limits.maxPerStageDescriptorSamplers as usize
-                || program.texture_count() > limits.maxDescriptorSetSampledImages as usize
-                || program.texture_count() > limits.maxDescriptorSetSamplers as usize
+            let texture_count = program.texture_count();
+            if texture_count > limits.maxPerStageDescriptorSampledImages as usize
+                || texture_count > limits.maxPerStageDescriptorSamplers as usize
+                || texture_count > limits.maxDescriptorSetSampledImages as usize
+                || texture_count > limits.maxDescriptorSetSamplers as usize
             {
                 return Err(error("纹理绑定数量超出设备能力"));
             }
@@ -1940,7 +1951,7 @@ impl GpuProgram {
             if program.uniform_bytes() > limits.maxPushConstantsSize
                 || program.buffers().len() + auxiliary
                     > limits.maxPerStageDescriptorStorageBuffers as usize
-                || program.buffers().len() + auxiliary + program.texture_count()
+                || program.buffers().len() + auxiliary + texture_count
                     > limits.maxPerStageResources as usize
                 || program.stages().iter().any(|s| {
                     s.workgroup_width() > limits.maxComputeWorkGroupInvocations

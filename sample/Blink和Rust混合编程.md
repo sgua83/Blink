@@ -505,7 +505,7 @@ let bodies = device.download(
 
 这一段增加了四项操作：选设备、上传数据、提交并等到完成、下载所需结果。Device 来自 blcompute::vulkan，Result 来自 blcompute，普通应用的完整实现见 src/bin/particle-gpu.rs；计时驱动另见 src/particles.rs。
 
-Rust可从原ProgramInterface::requirements()取得程序对f32／f64保留模式的实际需求；它随ProgramLayout和BLRI42执行映像交接，提供方源码不作为装入前提。所选设备缺少真实能力时，GPU装入返回原错误。默认入口保留独显优先次序，同类沿驱动顺序，在创建前匹配程序所声明的特性、计算队列及必要扩展；所有候选保留，显式入口仍只使用调用者选定项。逻辑设备创建后不因装入或执行失败改变物理身份；推送常量容量在创建前消费各程序已有uniform_bytes的最大值，与候选已查询的maxPushConstantsSize匹配；已创建设备的装入检查继续负责后续程序。其他资源限额选卡的剩余工作见Issues C-022.5.4.3。
+Rust可从原ProgramInterface::requirements()取得程序对f32／f64保留模式的实际需求；它随ProgramLayout和BLRI42执行映像交接，提供方源码不作为装入前提。所选设备缺少真实能力时，GPU装入返回原错误。默认入口保留独显优先次序，同类沿驱动顺序，在创建前匹配程序所声明的特性、计算队列及必要扩展；所有候选保留，显式入口仍只使用调用者选定项。逻辑设备创建后不因装入或执行失败改变物理身份；推送常量容量在创建前消费各程序已有uniform_bytes的最大值，与候选已查询的maxPushConstantsSize匹配；已创建设备的装入检查继续负责后续程序。同一原遍历还按各布局的实际纹理数组元素合计描述符数，多程序取最大值，匹配候选已有stage／set的sampler及sampled image容量；装入在同次调用内共用一个纹理总数。其余资源限额选卡的剩余工作见Issues C-022.5.4.3。
 
 into_iter 依次取出 data 中的两个数据集，map 对每项调用 upload，collect 把上传结果组成新的动态数组。任何一项上传失败，? 就返回错误。新 data 中保存的是 GPU 上的数据对象。
 
