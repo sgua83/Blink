@@ -1961,7 +1961,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:2990`。
+源码节选：`crates/blanguage/src/check/application.rs:3009`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -1973,7 +1973,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 全局目标本身可以是借用输入，其真实根与长度和拥有资源进入同一element_owner_bindings。嵌套遍历中的循环输入是同一资源根的原分析表示，application_element_scopes沿活动LoopContext已有映射查询各层作用域，不另造别名状态：
 
-源码节选：`crates/blanguage/src/check/application.rs:2704`。
+源码节选：`crates/blanguage/src/check/application.rs:2723`。
 
 ```rust
         let owner=view::resource_borrow(data);
@@ -4069,7 +4069,7 @@ DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有�
 
 尚未交付的拥有结果在实际交接前仍归原作用域：本函数的返回准备值保持到同一次正常清理完成，普通调用已经产生的结果保持到原临时实参清理完成。二者沿原hold_binding进入同一env；正常清理只保留它，成功后才移出并交给原ReturnExit或调用表达式，清理F失败则由同一原失败Scope结束。return表达式不再单独重复结束临时拥有者，原finish_return统一消费该次完整退出。没有额外返回镜像、运行拥有表或完成标志；NoFail清理不增加失败出口或返回F的额外前提，真实失败清理仍满足实际F合同。实际接点为check/returns.rs::return_statement／finish_return及check/native_function.rs::native_call；原代码、合同、来源及编号保持到原最后消费者后才优化。
 
-逐元素构造尚未完成的初始化前缀、实参采用前及晚期地址准备失败、resize未采用输入／fill仍分别沿Issues C-020.5.2.4.2.2.1.2.4／.5／.8推进，不把已闭合范围称为完整拥有退出。错误最后交回唯一应用根报告和结束Frame，源码业务Result不混入这一内部错误。
+dataset(length,factory)逐元素构造期间，同一原作用域持有已分配存储，原写入完成后才推进的游标直接表示可结束的初始化前缀。factory或元素写入失败时，原失败Scope结束尚未写入的实际返回拥有元素，并逆序结束已完成前缀的静态F及子资源，再由Frame的原入口释放该分配；未构造后缀不读取、不执行F。完整成功才交付原完整Data。共同元素模型消费factory原合同，实际待写值保留本次来源到写入完成；逻辑前缀不改变物理分配，不复制游标、拥有表或释放链。F再次失败沿原清理组保留实际错误并继续结束其他真实拥有者。实参采用前及晚期地址准备失败、resize未采用输入／fill仍分别沿Issues C-020.5.2.4.2.2.1.2.5／.8推进，不把本项称为完整拥有退出。实现只在check/application.rs::initialize_application_elements沿原hold_binding持有逻辑前缀及待写元素，复用check/native_function.rs::calls将原factory共同模型交给同一Call已捕获的Scope；drop_application_elements及Frame的原拥有／释放职责保持。错误最后交回唯一应用根报告和结束Frame，源码业务Result不混入这一内部错误。
 
 ### 26.4 反向调用与独立应用是另两项能力
 

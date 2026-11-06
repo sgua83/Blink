@@ -1086,7 +1086,7 @@ fn resolve_residencies(module: &mut Module) -> Result<()> {
     }
     Ok(())
 }
-fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
+pub(super) fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
     for inst in code {
         match &mut (inst).kind {
             InstKind::Call(call) => visit(call),

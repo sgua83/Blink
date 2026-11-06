@@ -1486,10 +1486,14 @@ impl Builder<'_> {
         let outer=std::mem::take(&mut self.code);self.code.push(Inst::generated(InstKind::LoadLocal(index_reg,slot),condition_origin.clone()));
         let test=self.reg(Scalar::Bool);self.code.push(Inst::generated(InstKind::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Less),a:index_reg,b:data.length.regs[0]},condition_origin));
         let condition=std::mem::take(&mut self.code);
+        // 构造拥有者的可结束范围就是原游标之前的初始化前缀；Frame仍持有完整分配。
+        let mut prefix=data.clone();prefix.length=index.clone();prefix.count=None;prefix.initialization=None;
+        let owner=self.hold_binding(Binding::ApplicationData(prefix));
         let Some(mut returned)=self.invoke_returned(instance,arguments,span,Some(origin(GenerationReason::DatasetInitializeCall)),None)? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
         self.check_returned_type(&mut returned,&data.ty,span)?;self.require_returned_initialized(&mut returned,span)?;
         let ordinal=index.identity();
-        residency::visit(&mut returned,&mut residency::Input::new(0),&mut|resource,input|{
+        let mut model=returned.clone();
+        residency::visit(&mut model,&mut residency::Input::new(0),&mut|resource,input|{
             let depth=input.fields.iter().filter(|part|matches!(part,residency::Part::Elements)).count();
             resource.residency=resource.residency.output_bound(&BTreeMap::from([(ordinal,ValueIdentity::ElementIndex(depth))]));
         });
@@ -1503,13 +1507,28 @@ impl Builder<'_> {
                 _=>{},
             }
         }
-        bind_indices(&mut returned,ordinal,0);
-        let elements=self.capture_element_model(data,&[],returned.clone());let value=self.returned_storage(&returned);
+        bind_indices(&mut model,ordinal,0);
+        let elements=self.capture_element_model(data,&[],model);let value=self.returned_storage(&returned);
+        if let Some(Binding::ApplicationData(prefix))=self.env.get_mut(&owner){prefix.elements=elements.clone();}
+        // 原factory合同形成的模型交给此前捕获的同一前缀事实，不重建代码或调用图。
+        native_function::calls(&mut self.code,&mut |call|{
+            if let Some(FailureContinuation::Scope(scope))=&mut call.failure {
+                if let Some(Binding::ApplicationData(prefix))=scope.env.get_mut(&owner){prefix.elements=elements.clone();}
+            }
+        });
+        let pending=match &returned {
+            returns::Returned::OwnedValue(value)=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),
+            returns::Returned::Dataset(data)=>Some(self.hold_binding(Binding::ApplicationData(data.clone()))),
+            _=>None,
+        };
         let stride=DataStride::Declared(ir::align_up(data.ty.size,data.ty.align));let words=data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>();
         self.write_application_place(data.root.regs[0],data.root.identity(),index_reg,stride,&words,value,span,Some(origin(GenerationReason::DatasetInitializeWrite)))?;
+        if let Some(pending)=pending{self.env.remove(&pending);}
         let advance=origin(GenerationReason::DatasetInitializeAdvance);
         let one=self.constant_with_origin(Scalar::U32,1,Some(advance.clone())).regs[0];let next=self.reg(Scalar::U32);self.code.push(Inst::generated(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one},advance.clone()));self.code.push(Inst::generated(InstKind::StoreLocal(slot,next),advance));
-        let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetInitializeLoop)));Ok(elements)
+        let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetInitializeLoop)));
+        self.env.remove(&owner);
+        Ok(elements)
     }
     fn drop_application_elements(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
         if data.length.maximum()==0 {return Ok(());}
