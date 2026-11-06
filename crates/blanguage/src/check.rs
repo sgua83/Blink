@@ -3811,6 +3811,11 @@ impl<'a> Builder<'a> {
         self.iterators.pop();
         self.loop_depth -= 1;
         let mut code = std::mem::take(&mut self.code);
+        if !initial && begin.minimum() == 0 && begin.maximum() == 0 && !bounds::seeks(body) {
+            if let Some(CursorSource::ApplicationData(data)) = &cursor_specification.data {
+                self.application_iteration_elements(&mut natural, data);
+            }
+        }
         self.initialize_iteration_exit(&mut natural, &initialization, iteration, initial);
         self.initialize_array_iteration_exit(
             &mut natural,

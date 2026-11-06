@@ -1356,7 +1356,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:4195`。
+源码节选：`crates/blanguage/src/check.rs:4200`。
 
 ```rust
         let binding = view.binding;
@@ -2103,9 +2103,11 @@ pub(crate) struct Interface {
     }
 ```
 
-普通B的dataset<T>(N,F)复用原initialize_application_elements的真实工厂调用、字节写及游标，完整Loop之后才交接共同字段保证；失败沿原前缀拥有者退出，不进入完成点。游标保留本次实际长度的Upper数值关系，静态空构造不执行F。application::Resources.completions拥有编译期ElementCompletion字段常量，包含字节位置、静态数值区间和实际数值参数的序号／界距，declarations与object::emit按原模块调用保留／重编号及绑定前缀；dll::application_source只把同一静态描述和真实长度实例化为标准C借用数组，不建立新Frame目录、运行注册或空执行。blink_complete_field按原存储Ty解释实际字段，DomainBindings::produced_element继续唯一求交及存活管理，后续CpuTemplate沿原require消费。BLRI39对应该真实C入口，Module序列化与链接器资源基址未增加字段。resize_application_storage在原存储Call成功之后构造新DataPayload，沿同一complete_application_elements交接当前模型已有的数值范围；take_last的剩余前缀也经过此接点，原尾值转移、错误及拥有前缀清理不变。真实失败不会进入DatasetResizeComplete。没有新C ABI、包装、目录、存储状态或字段求交算法；BLRI39及BLCO68保持。resize_application_dataset沿原长度Condition及Clause选择结果：确定没有新增位置保留旧模型，确定增长才合入fill，未定增长沿原Returned::join_locations保存条件关系。没有新增位置时fill表达式仍完整求值与承担原副作用／失败，模型不混入其未写数值。Frame::resize成功后从原count取回实际旧数量；同长度／缩小只保留未写Element数值，增长撤回旧保证，Prefix引用仍失效，申请失败不改变原事实。没有新模型容器、状态表或运行校验；沿现行BLRI39与原完成接收。动态旧／新上界、普通遍历、GPU及外部提供者仍见Issues C-021.1.4.5.2，Proof::join_condition只合流候选自身已有的共同域，不能按两候选区间大小把一个候选的索引资格借给另一个候选。Builder::bound_value在普通表达式及拥有值实际求值出口，消费同一路径中已有数值和当前迭代索引；结果分量最大值不大于真实见证最小值时沿原Upper／indices_below交接数值界，不从Data.elements全称模型创造见证。Proof::facts将Upper同步解释为Below，使原Clause可消费条件返回分支中的严格上界；无新增运行检查、状态或合同编码。complete_application_elements直接从共同Proof及原真实长度／数值身份形成字段描述，已求值fill沿原resize_application_storage临时借用到同一成功点，引用参数不重读。普通模块包装及lower_sdk_resources原生完成分支都直接消费该字段描述，删除原通用ElementFact再分组；严格距界、非严格上界及u32最大端点具有同一数值集合语义，局部C数组只借用到本次调用结束。Frame／DomainBindings仍只保存同一份字段数值集合，旧资源版本或其他目标变化不改写这些数字；没有新ABI、扫描、检查、状态表或Rust中转。静态见证与动态数值交接分别见FixedIssues原.2.3.2.3.1／.2；尚未形成共同界的静态证明精度、完整普通遍历的新共同模型、GPU和外部载荷继续原Issues。
+普通B的dataset<T>(N,F)复用原initialize_application_elements的真实工厂调用、字节写及游标，完整Loop之后才交接共同字段保证；失败沿原前缀拥有者退出，不进入完成点。游标保留本次实际长度的Upper数值关系，静态空构造不执行F。application::Resources.completions拥有编译期ElementCompletion字段常量，包含字节位置、静态数值区间和实际数值参数的序号／界距，declarations与object::emit按原模块调用保留／重编号及绑定前缀；dll::application_source只把同一静态描述和真实长度实例化为标准C借用数组，不建立新Frame目录、运行注册或空执行。blink_complete_field按原存储Ty解释实际字段，DomainBindings::produced_element继续唯一求交及存活管理，后续CpuTemplate沿原require消费。BLRI39对应该真实C入口，Module序列化与链接器资源基址未增加字段。resize_application_storage在原存储Call成功之后构造新DataPayload，沿同一complete_application_elements交接当前模型已有的数值范围；take_last的剩余前缀也经过此接点，原尾值转移、错误及拥有前缀清理不变。真实失败不会进入DatasetResizeComplete。没有新C ABI、包装、目录、存储状态或字段求交算法；BLRI39及BLCO68保持。resize_application_dataset沿原长度Condition及Clause选择结果：确定没有新增位置保留旧模型，确定增长才合入fill，未定增长沿原Returned::join_locations保存条件关系。没有新增位置时fill表达式仍完整求值与承担原副作用／失败，模型不混入其未写数值。Frame::resize成功后从原count取回实际旧数量；同长度／缩小只保留未写Element数值，增长撤回旧保证，Prefix引用仍失效，申请失败不改变原事实。没有新模型容器、状态表或运行校验；沿现行BLRI39与原完成接收。动态旧／新上界、普通遍历、GPU及外部提供者仍见Issues C-021.1.4.5.2，Proof::join_condition只合流候选自身已有的共同域，不能按两候选区间大小把一个候选的索引资格借给另一个候选。Builder::bound_value在普通表达式及拥有值实际求值出口，消费同一路径中已有数值和当前迭代索引；结果分量最大值不大于真实见证最小值时沿原Upper／indices_below交接数值界，不从Data.elements全称模型创造见证。Proof::facts将Upper同步解释为Below，使原Clause可消费条件返回分支中的严格上界；无新增运行检查、状态或合同编码。complete_application_elements直接从共同Proof及原真实长度／数值身份形成字段描述，已求值fill沿原resize_application_storage临时借用到同一成功点，引用参数不重读。普通模块包装及lower_sdk_resources原生完成分支都直接消费该字段描述，删除原通用ElementFact再分组；严格距界、非严格上界及u32最大端点具有同一数值集合语义，局部C数组只借用到本次调用结束。Frame／DomainBindings仍只保存同一份字段数值集合，旧资源版本或其他目标变化不改写这些数字；没有新ABI、扫描、检查、状态表或Rust中转。静态见证与动态数值交接分别见FixedIssues原.2.3.2.3.1／.2；尚未形成共同界的静态证明精度、完整普通遍历的其他生产者、GPU和外部载荷继续原Issues。
 
 for_statement接收for_loop经leave_loop消费后移交的原LoopWrites；真实Loop之后由complete_application_loop选择写集合涉及的可用Frame CPU资源，按真实拥有位置取得句柄并复用complete_application_elements。DatasetLoopComplete指向原for语句；initial递归展开不重复发射，return及失败不会经过该完成点。该交接只发布Data.elements已有共同数值，既不扫描元素，也不把break当作全覆盖。没有第二份写集合、Frame、资源表或运行完成标记。
+
+完整普通数据游标的静态数值在for_loop的原自然出口处交接。application_iteration_elements消费LoopContext.continues中各LoopState.env的原游标Binding::Owned.proof，直接合流原数值区间与域；自然出口env沿原element_owner_bindings翻译仍有效的外部来源，迭代内局部身份不再保留。已成立的u32同一数值沿原Upper(来源,0)成为非严格上界，原完成代码继续处理其实际数值。只有本次原游标从零完整覆盖且无本层seek时才采用，initial首轮不冒充全体覆盖；break仍消费各自退出状态，return与失败没有自然完成。原update_application_contents按真实字段字节位置更新同一Data.elements，兄弟字段不重写。没有额外AST解释、IR循环、运行状态、扫描或第二份模型。显式下标及普通dataset形参输出仍见原Issues .3.3.2.2／.3，循环头读前事实继续原C-021.1.4.5.4.2。
 
 该编码为BLCO68；资源ABI保持BLRI39。普通值resize也复用原填充值捕获与保留前缀合流，实际拥有值不能广播的规则保持。prefix／where的部分覆盖与原子改写不产生全容量新值域；持久外部输入合同、同字段循环读前范围及普通引用调用精度分别见Issues C-021.1.4.5.2／.5.4.2／.5.4.3。
 
@@ -2940,7 +2942,7 @@ IR 用结构化的 If 和 Loop 保存这些关系：
 
 循环的数值下标与源元素别名也有各自的身份。LoopContext.iterator持有原名称和当前下标进度，LoopControl只保留原控制条件模板；推进时更新原进度，源范围变量是Value才更新其数值，元素位置继续保持原类型。LoopState在原环境中快照初始续边还需要的元素别名，真正leave_loop再按原入口names结束局部绑定。字段转借、分支退出、continue与seek沿这些原消费者交接，不复制元素、重建类型或增加运行期状态。
 
-源码节选：`crates/blanguage/src/check/flow.rs:344`。
+源码节选：`crates/blanguage/src/check/flow.rs:375`。
 
 ```rust
     pub(super) fn capture_loop_cursor(&mut self, value: Value) {

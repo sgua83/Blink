@@ -216,6 +216,37 @@ impl Builder<'_> {
         let mut context=self.loop_contexts.pop().unwrap();self.close_view_context(&mut context,None,false)
     }
 
+    pub(super) fn application_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference) {
+        let context = self.loop_contexts.last().unwrap();
+        let (name, _) = context.iterator.as_ref().unwrap();
+        let ty = data.element_layout().1;
+        let mut common: Option<bounds::Proof> = None;
+        for state in &context.continues {
+            let Some(Binding::Owned(owner)) = state.env.get(name) else { return; };
+            if let Some(proof) = &mut common { proof.join_condition(&owner.proof, ty.components.len(), None); }
+            else { common = Some(owner.proof.clone()); }
+        }
+        let Some(proof) = common else { return; };
+        std::mem::swap(&mut self.env, &mut exit.env);
+        std::mem::swap(&mut self.path, &mut exit.path);
+        let mut proof = proof.at_call(&self.element_owner_bindings(&data.data));
+        for (component, (scalar, _)) in ty.components.iter().enumerate() {
+            if *scalar == Scalar::U32 && let Some(identity) = proof.known_identity(component) {
+                proof.mark_domain(component, IndexDomain::Upper(identity, 0));
+            }
+        }
+        let ranges = proof.element_ranges(0, ty);
+        let components = ty.components.iter().enumerate().filter_map(|(component, (_, word))| {
+            (ranges.iter().any(|range| range.offset == *word) || !proof.domains(component).is_empty()).then_some(component)
+        }).collect::<Vec<_>>();
+        if !components.is_empty() {
+            let words = data.words();
+            let words = components.iter().map(|component| words[*component]).collect::<Vec<_>>();
+            self.update_application_contents(data, &words, application::ElementUpdate::WholeFacts(&proof.project(&components, ty.components.len())));
+        }
+        std::mem::swap(&mut self.env, &mut exit.env);
+        std::mem::swap(&mut self.path, &mut exit.path);
+    }
     pub(super) fn initialize_iteration_exit(
         &self,
         exit: &mut LoopState,
