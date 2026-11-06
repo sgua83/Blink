@@ -11,7 +11,7 @@ impl Input {
     pub fn read(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path)?;
         if bytes.starts_with(SIGNATURE) {
-            Ok(Self::Library(Library::decode(&bytes)?))
+            Ok(Self::Library(Library::decode(&bytes, false)?))
         } else {
             Ok(Self::Object(coff::decode(&bytes)?))
         }
@@ -24,7 +24,7 @@ impl Input {
                 .members
                 .into_values()
                 .flatten()
-                .map(|member| member.object())
+                .map(|member| member.object(library.native))
                 .collect(),
         }
     }
@@ -34,14 +34,15 @@ struct Member {
     bytes: Vec<u8>,
 }
 impl Member {
-    fn object(&self) -> Result<Object> {
-        coff::decode(&self.bytes)
+    fn object(&self, native: bool) -> Result<Object> {
+        (if native { coff::Reader::new(&self.bytes)?.native(&self.name) } else { coff::decode(&self.bytes) })
             .map_err(|error| format!("静态库成员 {}：{error}", self.name).into())
     }
 }
 pub struct Library {
     members: BTreeMap<u32, Option<Member>>,
     symbols: BTreeMap<String, u32>,
+    native: bool,
 }
 fn take<'a>(bytes: &'a [u8], at: &mut usize, size: usize) -> Result<&'a [u8]> {
     let end = at.checked_add(size).ok_or("静态库偏移溢出")?;
@@ -63,7 +64,8 @@ fn text<'a>(bytes: &'a [u8], at: &mut usize) -> Result<&'a str> {
     Ok(value)
 }
 impl Library {
-    fn decode(bytes: &[u8]) -> Result<Self> {
+    pub(crate) fn native(bytes: &[u8]) -> Result<Self> { Self::decode(bytes, true) }
+    fn decode(bytes: &[u8], native: bool) -> Result<Self> {
         let mut at = SIGNATURE.len();
         let mut directory = Vec::new();
         let mut longnames = &[][..];
@@ -125,7 +127,7 @@ impl Library {
                 ))
             })
             .collect::<Result<_>>()?;
-        Ok(Self { members, symbols })
+        Ok(Self { members, symbols, native })
     }
     pub(crate) fn extract(&mut self, symbol: &str) -> Result<Option<Object>> {
         let Some(offset) = self.symbols.get(symbol) else {
@@ -138,7 +140,7 @@ impl Library {
         let Some(member) = member.take() else {
             return Ok(None);
         };
-        let object = member.object()?;
+        let object = member.object(self.native)?;
         if !matches!(object.kind, Kind::Module { .. }) {
             return Err(format!("静态库成员 {} 不是独立模块", member.name).into());
         }
@@ -197,7 +199,7 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
         let input = input.as_ref();
         let bytes = std::fs::read(input)?;
         if bytes.starts_with(SIGNATURE) {
-            members.extend(Library::decode(&bytes)?.members.into_values().flatten());
+            members.extend(Library::decode(&bytes, false)?.members.into_values().flatten());
         } else {
             members.push(Member {
                 name: input
@@ -211,7 +213,7 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     }
     let mut symbols = Vec::new();
     for (index, member) in members.iter().enumerate() {
-        let object = member.object()?;
+        let object = member.object(false)?;
         if !matches!(object.kind, Kind::Module { .. }) {
             return Err(format!("{} 不是独立模块产物", member.name).into());
         }

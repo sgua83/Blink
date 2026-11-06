@@ -534,38 +534,13 @@ impl<'a> Reader<'a> {
         input.error.check()?;
         Ok(if input.present == 0 { None } else { Some(unsafe { input.bytes.borrowed() }) })
     }
+    /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
+    pub(crate) fn native(&self, name: &str) -> Result<Object> { decode_object(self, Some(name)) }
     pub(crate) fn object(&self) -> Result<Object> {
-        decode_object(self)
+        decode_object(self, None)
     }
 }
-fn decode_object(reader: &Reader<'_>) -> Result<Object> {
-    let b = reader.bytes;
-    let input = ReadBytes::new(b);
-    let table = unsafe { read_symbols(input) };
-    table.error.check()?;
-    let mut symbols = vec![None; table.count];
-    let mut definitions = BTreeMap::new();
-    let mut i = 0;
-    while i < table.count {
-        let row = unsafe { read_symbol(input, table, i) };
-        row.error.check()?;
-        let name = read_text(row.name)?;
-        if row.storage == 3 && row.section > 0 && row.auxiliary > 0 {
-            definitions.insert(row.section as usize - 1, (row.selection as u8, row.owner as u16));
-        }
-        symbols[i] = Some((name, row.section as i16, row.value as u32, row.storage as u8, row.function != 0));
-        i = row.next;
-    }
-    let headers = ReadBytes::new(reader.headers);
-    let mut raw = Vec::new();
-    let mut mapped = 0u64;
-    for index in 0..reader.headers.len() / 40 {
-        let row = unsafe { object_logical_section(input, headers, index, &mut mapped) };
-        row.error.check()?;
-        // Preserve the original per-section UTF-8 check before reading the following section.
-        std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
-        raw.push(row.value);
-    }
+fn read_metadata(raw: &[ObjectSection]) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, Vec<stack::Frame>, Option<Archive>)> {
     let meta = raw.iter().find(|row| unsafe { row.name.borrowed() } == META.as_bytes())
         .ok_or("缺少 Blink 目标文件元数据")?;
     let meta = unsafe { meta.bytes.borrowed() };
@@ -640,6 +615,40 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         exports,
         resources,
     });
+    Ok((name, kind, bindings, stack, archive))
+}
+fn decode_object(reader: &Reader<'_>, native: Option<&str>) -> Result<Object> {
+    let b = reader.bytes;
+    let input = ReadBytes::new(b);
+    let table = unsafe { read_symbols(input) };
+    table.error.check()?;
+    let mut symbols = vec![None; table.count];
+    let mut definitions = BTreeMap::new();
+    let mut i = 0;
+    while i < table.count {
+        let row = unsafe { read_symbol(input, table, i) };
+        row.error.check()?;
+        let name = read_text(row.name)?;
+        if row.storage == 3 && row.section > 0 && row.auxiliary > 0 {
+            definitions.insert(row.section as usize - 1, (row.selection as u8, row.owner as u16));
+        }
+        symbols[i] = Some((name, row.section as i16, row.value as u32, row.storage as u8, row.function != 0));
+        i = row.next;
+    }
+    let headers = ReadBytes::new(reader.headers);
+    let mut raw = Vec::new();
+    let mut mapped = 0u64;
+    for index in 0..reader.headers.len() / 40 {
+        let row = unsafe { object_logical_section(input, headers, index, &mut mapped) };
+        row.error.check()?;
+        // Preserve the original per-section UTF-8 check before reading the following section.
+        std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
+        raw.push(row.value);
+    }
+    let (name, kind, mut bindings, mut stack, archive) = match native {
+        Some(name) => (name.to_owned(), Kind::Module { interface: String::new(), requirements: BTreeMap::new(), stack_bytes: 0 }, BTreeMap::new(), Vec::new(), None),
+        None => read_metadata(&raw)?,
+    };
     let mut sections = Vec::new();
     for row in &raw {
         if row.mapped != 0 {
@@ -676,7 +685,8 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
                 ObjectTargetKind::Section => Target::Section(value.section, value.value as u32),
                 ObjectTargetKind::Import => Target::Import(Import { dll: read_text(value.dll)?, name: read_text(value.name)? }),
                 ObjectTargetKind::Symbol => {
-                    bindings.get(&s.0).ok_or("未定义符号缺少模块接口合同")?;
+                    if native.is_some() { bindings.entry(s.0.clone()).or_default(); }
+                    else { bindings.get(&s.0).ok_or("未定义符号缺少模块接口合同")?; }
                     Target::Symbol(s.0.clone())
                 }
             };
@@ -693,9 +703,9 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
             .map(|(name, section, value, _, function)| {
                 Ok(super::Symbol {
                     function,
-                    contract: bindings
-                        .remove(&name)
-                        .ok_or("导出符号缺少模块接口合同")?,
+                    contract: if native.is_some() { Vec::new() } else {
+                        bindings.remove(&name).ok_or("导出符号缺少模块接口合同")?
+                    },
                     name,
                     section: object_index(&raw, section as usize - 1)
                         .ok_or("导出符号引用不可装载的节")?,

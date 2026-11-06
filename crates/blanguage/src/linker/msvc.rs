@@ -111,7 +111,7 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     ))
 }
 pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {
-    let binding = super::resources::resources(archives)?;
+    let binding = super::resources::resources(archives, 0, 0, &[], &std::collections::BTreeMap::new(), None)?;
     let (linker, libraries) = tools()?;
     let id = format!(
         "{}-{}",
@@ -159,7 +159,7 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
                     let value = u32::try_from(sections[5].bytes.len())?;
                     sections[5].bytes.extend([0; 8]);
                     symbols.push(Symbol {
-                        name: format!("__blink_import${}${dll}{name}", dll.len()),
+                        name: super::resources::import_symbol(&dll, &name),
                         section: 5, value, contract: Vec::new(), function: false,
                     });
                     sections[5].relocations.push(Relocation {
@@ -191,7 +191,7 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
                 sections[4].bytes.extend(name.as_bytes());
                 sections[4].bytes.push(0);
                 symbols.push(Symbol {
-                    name: format!("__blink_import${}${dll}{name}", dll.len()),
+                    name: super::resources::import_symbol(&dll, &name),
                     section: 3, value: u32::try_from(sections[3].bytes.len())?,
                     contract: Vec::new(), function: false,
                 });

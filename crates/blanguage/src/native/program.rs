@@ -52,7 +52,11 @@ impl crate::Compiler {
                     roots.insert(name.clone(), (*contract).clone());
                 }
             }
-            let modules = crate::linker::native::modules(inputs, &roots, &local).map_err(|error| error.to_string())?;
+            let (types, programs) = match &image.resources {
+                Some(module) => (u32::try_from(module.types.len()).map_err(|e| e.to_string())?, u32::try_from(module.images.len()).map_err(|e| e.to_string())?),
+                None => (0, 0),
+            };
+            let modules = crate::linker::native::modules(inputs, &roots, &local, types, programs).map_err(|error| error.to_string())?;
             Ok::<_, String>((image, modules))
         }).map_err(|error| error.to_string()).map(|(image, modules)| {
             let (plan, stages, functions, resources) = image.into_parts();

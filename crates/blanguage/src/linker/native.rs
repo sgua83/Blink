@@ -2,14 +2,11 @@
 use super::{Result, Roots, combine, partition, select};
 use crate::{native::{ModuleCode, ModuleSection, ModuleRelocation, ModuleTarget}, object::{Input, Target}};
 use std::collections::BTreeMap;
-pub(crate) fn modules(inputs: Vec<Input>, roots: &BTreeMap<String, Vec<u8>>, local: &std::collections::BTreeSet<&str>) -> Result<Option<ModuleCode>> {
+pub(crate) fn modules(inputs: Vec<Input>, roots: &BTreeMap<String, Vec<u8>>, local: &std::collections::BTreeSet<&str>, types: u32, programs: u32) -> Result<Option<ModuleCode>> {
     let (objects, libraries) = partition(inputs);
-    let objects = select(objects, libraries, Roots::Symbols(roots))?;
+    let objects = select(objects, libraries, Roots::Symbols(roots, types, programs))?;
     if objects.is_empty() { return Ok(None); }
-    let (object, archives, symbols) = combine::objects(objects)?;
-    if !archives.is_empty() {
-        return Err("原始SDK的已编译模块资源目录尚未实现；见C-027.35.4.2.2.3.2.2.2.2.2.3.2".into());
-    }
+    let (object, _, symbols) = combine::objects(objects)?;
     for name in symbols.keys() {
         if local.contains(name.as_str()) { return Err(format!("重复定义模块符号 {name}").into()); }
     }

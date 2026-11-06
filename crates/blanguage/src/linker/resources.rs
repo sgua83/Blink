@@ -1,7 +1,8 @@
 //! 链接期资源基址和工厂地址；只有静态数据与标准重定位，没有运行期注册表。
 use super::Result;
 use crate::object::{Archive, Kind, Object, Relocation, Section, Symbol, Target};
-pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
+pub(super) fn import_symbol(dll: &str, name: &str) -> String { format!("__blink_import${}${dll}{name}", dll.len()) }
+pub(super) fn resources(archives: &[Archive], mut types: u32, mut programs: u32, runtime: &[String], local_imports: &std::collections::BTreeMap<String, String>, root_abi: Option<&[u8]>) -> Result<Option<Object>> {
     let modules = archives
         .iter()
         .filter_map(|archive| archive.resources.as_ref())
@@ -9,10 +10,11 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
     if modules.is_empty() {
         return Ok(None);
     }
-    let abi = &modules[0].abi;
+    // 静态成品的ABI来自根工厂；原始VM的ABI来自实际宿主运行库。
+    let abi = match root_abi { Some(abi) => abi, None => modules[0].abi.as_slice() };
     let mut prefixes = std::collections::BTreeSet::new();
     for module in &modules {
-        if &module.abi != abi {
+        if module.abi.as_slice() != abi {
             return Err(
                 "模块资源 C ABI 不一致，须重编为同一实际资源 ABI".into(),
             );
@@ -41,8 +43,6 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
     ];
     let mut relocations = Vec::new();
     let mut imports = std::collections::BTreeMap::new();
-    let mut types = 0u32;
-    let mut programs = 0u32;
     for (index, module) in modules.into_iter().enumerate() {
         let resource = format!("{}_resources", module.prefix);
         imports.insert(resource.clone(), Vec::new());
@@ -68,6 +68,34 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
             .checked_add(module.programs)
             .ok_or("模块程序索引超出原生 ABI")?;
     }
+    for (slot, name) in local_imports {
+        imports.insert(name.clone(), Vec::new());
+        let value = u32::try_from(bytes.len())?;
+        symbols.push(Symbol { name: slot.clone(), section: 0, value, contract: Vec::new(), function: false });
+        bytes.extend([0; 8]);
+        relocations.push(Relocation { offset: value as usize, kind: 1, target: Target::Symbol(name.clone()) });
+    }
+    let mut sections = vec![Section {
+            associated: Vec::new(), layout: None,
+            name: ".rdata".into(),
+            bytes,
+            flags: 0x40400040,
+            relocations,
+        }];
+    if !runtime.is_empty() {
+        let mut bytes = Vec::new();
+        let mut relocations = Vec::new();
+        for name in runtime {
+            let value = u32::try_from(bytes.len())?;
+            symbols.push(Symbol { name: name.clone(), section: sections.len(), value, contract: Vec::new(), function: true });
+            bytes.extend([0xff, 0x25, 0, 0, 0, 0]);
+            relocations.push(Relocation { offset: value as usize + 2, kind: 4,
+                target: Target::Import(crate::object::Import { dll: crate::resource::RUNTIME_LIBRARY.into(), name: name.clone() }),
+            });
+        }
+        sections.push(Section { associated: Vec::new(), layout: None, name: ".text".into(),
+            bytes, flags: 0x60500020, relocations });
+    }
     Ok(Some(Object {
         stack: Vec::new(),
         name: "@blink.resources@".into(),
@@ -76,13 +104,7 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
             requirements: std::collections::BTreeMap::new(),
             stack_bytes: 0,
         },
-        sections: vec![Section {
-            associated: Vec::new(), layout: None,
-            name: ".rdata".into(),
-            bytes,
-            flags: 0x40400040,
-            relocations,
-        }],
+        sections,
         symbols,
         imports,
         archive: None,

@@ -288,10 +288,10 @@ impl Executable {
     }
 }
 impl Allocation {
-    fn new<P>(image: &blanguage::native::ProgramImage<P>) -> Result<(Option<std::sync::Arc<Self>>, std::collections::BTreeMap<usize, *mut c_void>)> {
+    fn new<P>(image: &blanguage::native::ProgramImage<P>) -> Result<(Option<std::sync::Arc<Self>>, std::collections::BTreeMap<usize, *mut c_void>, Vec<blanguage::resource::ModuleFactory>)> {
         let codes = image.code().collect::<Vec<_>>();
         let module = image.module_code();
-        if codes.is_empty() && module.is_none() { return Ok((None, std::collections::BTreeMap::new())); }
+        if codes.is_empty() && module.is_none() { return Ok((None, std::collections::BTreeMap::new(), Vec::new())); }
         let mut size = 0usize;
         let mut layout = Vec::with_capacity(codes.len());
         for code in &codes {
@@ -421,7 +421,15 @@ impl Allocation {
             }
             allocation.functions.push(unsafe { std::ptr::NonNull::new_unchecked(table) });
         }
-        Ok((Some(std::sync::Arc::new(allocation)), addresses))
+        let factories = match functions.get("__blink_module_count") {
+            Some(&count) => unsafe {
+                let count = *count.cast::<usize>();
+                let table = functions["__blink_module_factories"].cast::<blanguage::resource::ModuleFactory>();
+                std::slice::from_raw_parts(table, count).to_vec()
+            },
+            None => Vec::new(),
+        };
+        Ok((Some(std::sync::Arc::new(allocation)), addresses, factories))
     }
 }
 impl Drop for Allocation {
@@ -602,7 +610,7 @@ impl CpuProgram {
             address: address.cast_mut().cast(), _allocation: None,
         });
         let (program, _, _, _) = image.into_parts();
-        let definitions = unsafe { crate::application::Definitions::linked(factories) }?;
+        let definitions = unsafe { crate::application::Definitions::linked(factories, |image| CpuTemplate::from_linked(image).map_err(|(error, _)| error)) }?;
         Ok(Self { code: CpuCode {
             program, stages, workers, definitions: Some(std::sync::Arc::new(definitions)),
         } })
@@ -761,28 +769,44 @@ impl CpuCode {
     }
     fn raw<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
-        let (allocation, addresses) = match Allocation::new(&image) {
+        let (allocation, addresses, factories) = match Allocation::new(&image) {
             Ok(code) => code,
             Err(error) => return Err((error, image)),
         };
+        let definitions = if factories.is_empty() { None } else {
+            match unsafe { crate::application::Definitions::linked(&factories, |image| {
+                Ok(CpuTemplate { code: Self::from_image(image, workers, &|address| Executable {
+                    address: address.cast_mut().cast(), _allocation: allocation.clone(),
+                }, None) })
+            }) } {
+                Ok(definitions) => Some(definitions),
+                Err(error) => return Err((error, image)),
+            }
+        };
         Ok(Self::from_image(image,workers,&|code|Executable{
             address:addresses[&(code as *const _ as usize)],_allocation:allocation.clone(),
-        }))
+        }, definitions))
     }
     fn linked<P>(image: blanguage::native::ProgramImage<P, *const u8>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P, *const u8>)> {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
-        Ok(Self::from_image(image,workers,&|address|Executable{address:address.cast_mut().cast(),_allocation:None}))
+        Ok(Self::from_image(image,workers,&|address|Executable{address:address.cast_mut().cast(),_allocation:None},None))
     }
-    fn from_image<P,C>(image:blanguage::native::ProgramImage<P,C>,workers:usize,load:&impl Fn(&C)->Executable)->Self{
+    fn from_image<P,C>(image:blanguage::native::ProgramImage<P,C>,workers:usize,load:&impl Fn(&C)->Executable,linked:Option<crate::application::Definitions>)->Self{
         let stages=Self::load_stages(image.stages(),load);
         let(program,_,_,resources)=image.into_parts();
         let definitions=resources.map(|module|{
             let programs=module.images.into_iter().map(|image|match image{
-                blanguage::resource::Image::Cpu(image)=>crate::application::ProgramSlot::Cpu(CpuTemplate{code:Self::from_image(image,workers,load)}),
+                blanguage::resource::Image::Cpu(image)=>crate::application::ProgramSlot::Cpu(CpuTemplate{code:Self::from_image(image,workers,load,None)}),
                 blanguage::resource::Image::Gpu(image)=>crate::application::ProgramSlot::Gpu(std::sync::Arc::new(image)),
             }).collect();
-            std::sync::Arc::new(crate::application::Definitions{types:module.types,programs})
+            crate::application::Definitions{types:module.types,programs}
         });
+        let definitions=match (definitions,linked) {
+            (Some(mut source),Some(imported))=>{
+                source.types.extend(imported.types);source.programs.extend(imported.programs);Some(source)
+            },
+            (source,None)=>source,(None,imported)=>imported,
+        }.map(std::sync::Arc::new);
         Self{program,stages,workers,definitions}
     }
     fn load_stages<C>(stages:&[blanguage::native::StageCode<C>],load:&impl Fn(&C)->Executable)->Vec<StageCode>{

@@ -36,7 +36,7 @@ fn partition(inputs: Vec<Input>) -> (Vec<Object>, Vec<crate::object::Library>) {
 }
 enum Roots<'a> {
     Entry,
-    Symbols(&'a BTreeMap<String, Vec<u8>>),
+    Symbols(&'a BTreeMap<String, Vec<u8>>, u32, u32),
 }
 fn resolve_symbol(
     name: &str, contract: &[u8], objects: &mut Vec<Object>,
@@ -87,6 +87,9 @@ fn include(objects: &[Object], selected: &mut [Option<Vec<bool>>], pending: &mut
     }
 }
 fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, roots: Roots<'_>) -> Result<Vec<Object>> {
+    let mut resource_base = match roots { Roots::Symbols(_, types, programs) => Some((types, programs)), Roots::Entry => None };
+    let native = resource_base.is_some();
+    let mut local_imports = BTreeMap::new();
     let mut defined = BTreeMap::new();
     for (index, object) in objects.iter().enumerate() { define(object, index, &mut defined)?; }
     let mut selected = objects.iter().map(|_| None).collect::<Vec<_>>();
@@ -98,7 +101,7 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, 
             pending.extend((0..count).map(|section| (0, section)));
         }
         Roots::Entry => include(&objects, &mut selected, &mut pending, 0, 0),
-        Roots::Symbols(roots) => {
+        Roots::Symbols(roots, _, _) => {
             for (name, contract) in roots {
                 let (object, section) = resolve_symbol(name, contract, &mut objects, &mut libraries, &mut defined)?;
                 selected.resize_with(objects.len(), || None);
@@ -106,39 +109,86 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, 
             }
         }
     }
-    while let Some((object, section)) = pending.pop_front() {
-        for index in 0..objects[object].sections[section].associated.len() {
-            let associated = objects[object].sections[section].associated[index];
-            include(&objects, &mut selected, &mut pending, object, associated);
+    loop {
+        while let Some((object, section)) = pending.pop_front() {
+            for index in 0..objects[object].sections[section].associated.len() {
+                let associated = objects[object].sections[section].associated[index];
+                include(&objects, &mut selected, &mut pending, object, associated);
+            }
+            for index in 0..objects[object].sections[section].relocations.len() {
+                let resource = match &objects[object].sections[section].relocations[index].target {
+                    Target::Import(import) if import.dll == RUNTIME_LIBRARY => Some(import.name.clone()),
+                    _ => None,
+                };
+                if let Some(name) = resource && let Some(archive) = &objects[object].archive
+                    && archive.exports.contains(&name) {
+                    if let Some(resource) = &archive.resources {
+                        for name in &resource.code {
+                            let symbol = objects[object].symbols.iter().find(|symbol| &symbol.name == name)
+                                .ok_or_else(|| format!("模块资源缺少所属CPU入口 {name}"))?;
+                            include(&objects, &mut selected, &mut pending, object, symbol.section);
+                        }
+                    }
+                    if native {
+                        let archive = objects[object].archive.as_mut().unwrap();
+                        if !archive.bytes.is_empty() {
+                            libraries.push(crate::object::Library::native(&std::mem::take(&mut archive.bytes))?);
+                        }
+                        let (target, section_index) = resolve_symbol(&name, &[], &mut objects, &mut libraries, &mut defined)?;
+                        selected.resize_with(objects.len(), || None);
+                        include(&objects, &mut selected, &mut pending, target, section_index);
+                        let slot = resources::import_symbol(RUNTIME_LIBRARY, &name);
+                        local_imports.insert(slot.clone(), name);
+                        objects[object].imports.insert(slot.clone(), Vec::new());
+                        objects[object].sections[section].relocations[index].target = Target::Symbol(slot);
+                    }
+                }
+                let target = match &objects[object].sections[section].relocations[index].target {
+                    Target::Section(section, _) => (object, *section),
+                    Target::Import(_) => continue,
+                    Target::Symbol(name) => {
+                        // 基址的数据定义由本次已选模块共同形成；其余符号照常立即解析。
+                        if native && !defined.contains_key(name) && (local_imports.contains_key(name) || crate::resource::MODULE_RUNTIME_SYMBOLS.contains(&name.as_str()) || objects.iter().any(|object|
+                            object.archive.as_ref().and_then(|archive| archive.resources.as_ref()).is_some_and(|resource|
+                                name == &format!("{}_type_base", resource.prefix) || name == &format!("{}_program_base", resource.prefix)))) {
+                            continue;
+                        }
+                        let name = name.clone();
+                        let contract = objects[object].imports[&name].clone();
+                        let target = resolve_symbol(&name, &contract, &mut objects, &mut libraries, &mut defined)?;
+                        selected.resize_with(objects.len(), || None);
+                        target
+                    }
+                };
+                include(&objects, &mut selected, &mut pending, target.0, target.1);
+            }
         }
-        for index in 0..objects[object].sections[section].relocations.len() {
-            let target = match &objects[object].sections[section].relocations[index].target {
-                Target::Section(section, _) => (object, *section),
-                Target::Import(import) => {
-                    if import.dll == RUNTIME_LIBRARY {
-                        if let Some(archive) = &objects[object].archive {
-                            if archive.exports.contains(&import.name) {
-                                if let Some(resource) = &archive.resources {
-                                    for name in &resource.code {
-                                        let symbol = objects[object].symbols.iter().find(|symbol| &symbol.name == name)
-                                            .ok_or_else(|| format!("模块资源缺少所属CPU入口 {name}"))?;
-                                        include(&objects, &mut selected, &mut pending, object, symbol.section);
-                                    }
-                                }
+        let Some((types, programs)) = resource_base.take() else { break; };
+        let mut runtime = std::collections::BTreeSet::new();
+        for (object, live) in objects.iter().zip(&selected) {
+            if let Some(live) = live {
+                for (section, &keep) in object.sections.iter().zip(live) {
+                    if keep {
+                        for relocation in &section.relocations {
+                            if let Target::Symbol(name) = &relocation.target
+                                && crate::resource::MODULE_RUNTIME_SYMBOLS.contains(&name.as_str()) {
+                                runtime.insert(name.clone());
                             }
                         }
                     }
-                    continue;
                 }
-                Target::Symbol(name) => {
-                    let name = name.clone();
-                    let contract = objects[object].imports[&name].clone();
-                    let target = resolve_symbol(&name, &contract, &mut objects, &mut libraries, &mut defined)?;
-                    selected.resize_with(objects.len(), || None);
-                    target
-                }
-            };
-            include(&objects, &mut selected, &mut pending, target.0, target.1);
+            }
+        }
+        let archives = objects.iter_mut().filter_map(|object| {
+            if object.archive.as_ref().is_some_and(|archive| archive.bytes.is_empty()) { object.archive.take() } else { None }
+        }).collect::<Vec<_>>();
+        if let Some(binding) = resources::resources(&archives, types, programs, &runtime.into_iter().collect::<Vec<_>>(), &local_imports, Some(crate::resource::ABI))? {
+            let index = objects.len();
+            define(&binding, index, &mut defined)?;
+            let count = binding.sections.len();
+            objects.push(binding);
+            selected.push(Some(vec![true; count]));
+            pending.extend((0..count).map(|section| (index, section)));
         }
     }
     let mut output = Vec::new();

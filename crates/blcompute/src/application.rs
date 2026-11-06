@@ -61,7 +61,10 @@ impl Definitions {
         }).collect::<Result<Vec<_>>>()?;
         Ok(Self { types, programs })
     }
-    pub(crate) unsafe fn linked(factories: &[blanguage::resource::ModuleFactory]) -> Result<Self> {
+    pub(crate) unsafe fn linked(
+        factories: &[blanguage::resource::ModuleFactory],
+        mut cpu: impl FnMut(blanguage::native::ProgramImage<TemplateProgram, *const u8>) -> Result<CpuTemplate>,
+    ) -> Result<Self> {
         let mut types = Vec::new();
         let mut programs = Vec::new();
         for factory in factories {
@@ -71,12 +74,14 @@ impl Definitions {
             let module = unsafe { blanguage::resource::from_linked_compiler_output(bytes, code) }
                 .map_err(|e| error(e.to_string()))?;
             types.extend(module.types);
-            programs.extend(module.images.into_iter().map(|image| match image {
-                blanguage::resource::Image::Cpu(image) => ProgramImage::CpuLinked(image),
-                blanguage::resource::Image::Gpu(image) => ProgramImage::Gpu(image),
-            }));
+            for image in module.images {
+                programs.push(match image {
+                    blanguage::resource::Image::Cpu(image) => ProgramSlot::Cpu(cpu(image)?),
+                    blanguage::resource::Image::Gpu(image) => ProgramSlot::Gpu(Arc::new(image)),
+                });
+            }
         }
-        Self::new(types, programs)
+        Ok(Self { types, programs })
     }
 }
 /// 当前实际驻留存储；Frame观察只借用该原值，不转移所有权。
@@ -120,7 +125,7 @@ impl Frame {
     /// 工厂、字节与代码属于同次可信链接，顺序对应原模块基址；
     /// 原模块及依赖保持到最后真实代码、存储及设备消费者结束。
     pub unsafe fn from_linked_modules(factories: &[blanguage::resource::ModuleFactory]) -> Result<Self> {
-        let definitions = unsafe { Definitions::linked(factories) }?;
+        let definitions = unsafe { Definitions::linked(factories, |image| CpuTemplate::from_linked(image).map_err(|(error, _)| error)) }?;
         Ok(unsafe { Self::from_definitions(Arc::new(definitions), &[]) })
     }
     /// 本次范围独占局部存储，只借用原模块已绑定的同一不可变定义。
