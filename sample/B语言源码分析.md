@@ -284,7 +284,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 实际写入位置及条件沿原函数正常出口交接。递归和完整for的待闭合事实保存在原Position／Function.uses中，来源与确定结果沿原调用关系统一收敛；读取、条件输出与转借都保留实际时点，不由后续写入补足。公开合同只含闭合位置与完整条件，不携带被调私有槽或循环表达。资源及指向该资源的地址可以共同返回；拥有字段或值移动仍使用原存储，缺少拥有者的地址不能逃逸。own静态F的真实后续读取参与原view_liveness，最后消费前不允许存储resize／迁移／释放，Frame／blcompute仍是唯一物理资源所有者。
 
-源码节选：`crates/blanguage/src/check/address.rs:862`。
+源码节选：`crates/blanguage/src/check/address.rs:868`。
 
 ```rust
     pub(super) fn external_position(&mut self, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Place>> {
@@ -1569,14 +1569,33 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
         }
 ```
 
-原loop_writes收集正文和条件的写输入，LoopWrites只交给原LoopContext及未来读取缓存。共同元素模型由invalidate_writes逐项消费实际写：闭合Memory保留原完整Borrow，沿既有write_address_values把真实资源／字段交给原模型；显式contents和Position继续按实际words投影。External／未解析调用仍撤回可能受影响内容，不把读取缓存的unknown_storage反向当作所有共同元素都被写。原标量Reference权限Position、typed written输出、初始化和拥有消费保持；整份记录Reference精化、下标实参来源及未来缓存投影仍待Issues C-021.1.4.5.4.3.2。没有另一模型、状态表、除法特例或运行时代码。update_application_elements只在index_range=(0,0)可能完整覆盖时形成原长度一比较，其余更新不为失效发射无意义代码。
+原loop_writes收集正文和条件的写输入，LoopWrites只交给原LoopContext及未来读取缓存。共同模型逐项消费真实写。下标实参的原Scope::input_snapshot复用loop_write_projection，written_application_data只交回原Data、字段字节偏移与逻辑Ty；借用dataset、字段列、固定数组和拥有记录的dataset沿同一投影交接。原投影消费调用者给出的下标事实：写分析沿完整写集判断是否可用，输入快照不把可变入口值当作不变量。不再次求值或产生IR，也不重建另一资源／效果表。
 
-源码节选：`crates/blanguage/src/check/effects.rs:266`。
+原address_write_positions是内存位置投影的唯一入口。具体Origin内的资源即使含LoopInput，仍可按真实布局与word投影；顶层未形成位置的输入／调用、Unresolved或其他未知来源不被静默当作空写。原write_address_values与循环消费者直接消费同一结果，不能用递归pending标志代替实际写位置。初始化在该快照中保持未知，真实权限、typed written输出及拥有消费继续原合同；整份记录Reference、未来缓存和独立数值范围缺口继续各原台账。下面的代码只形成编译期位置，不增加运行时表、资源镜像或释放链。
+
+源码节选：`crates/blanguage/src/check/address.rs:643`。
+
+```rust
+    pub(super) fn address_write_positions(&self,borrow:&view::Borrow)->Option<Vec<Position>> {
+        if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||borrow.unresolved(){return None;}
+        let mut positions=Vec::new();
+        for(source,when)in borrow.sources.entries().filter(|(_,when)|when.possible()) {
+            match source {
+                view::Source::Position(origin)if origin.writable=>positions.extend(origin.memory_positions(&when)?),
+                view::Source::Position(_)|view::Source::Inactive=>{},
+                _=>return None,
+            }
+        }
+        Some(positions)
+    }
+```
+
+源码节选：`crates/blanguage/src/check/effects.rs:269`。
 
 ```rust
         for write in writes {
             let changed=match write {
-                Write::Memory{borrow,..}if !borrow.pending()&&!borrow.unresolved()=>{self.write_address_values(borrow);continue;},
+                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{self.write_address_values(borrow);continue;},
                 Write::External{..}|Write::Generator(_)|Write::Memory{..}=>{
                     let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
                         data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
@@ -1584,10 +1603,10 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
                     for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
                     continue;
                 },
-                Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|data|(
-                    data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
+                Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|(data,offset,ty)|(
+                    data.root.identity(),view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>()
                 )),
-                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,writes)?.map(|(data,_,(_,components))|(
+                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,&|index|self.constant_index(index,writes))?.map(|(data,_,(_,components))|(
                     data.root.identity(),view::resource_borrow(data),components.into_iter().flatten().map(|i|data.ty.components[i].1).collect::<Vec<_>>()
                 )),
             };
@@ -1597,7 +1616,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 显式可写dataset实参的contents输入沿原written_application_data取得无拥有资源的真实根，给原LoopWrites.storage交接该根未知字节区间；不再将这份已知存储写扩大为全部存储未知。iterator来源、未知位置及拥有内容仍按实际未知范围处理，原Call整体效果独立保留，不凭签名取消实际写。无拥有资源的元素／字段写由loop_write_projection沿written_application_data、member_type及固定数组分量映射取得实际根与Scalar投影。constant_index只使用未被全部可能写输入改变的原下标事实；声明布局给出步长和分量word／宽度，LoopWrites交接真实字节区间。ApplicationLoads既复用原allocate结果区分不同实际分配，也把同根已知读取与未来区间交给和StoreIndexed共用的byte_overlap；多个写区间分别保留，不把中间未写字节也当作覆盖。未知下标／布局仍是未知范围，未解析子dataset或拥有内容结束不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通静态CPU值调用在原Scope仍持有正文let等词法实参Ty／count时，以原generics选定实例；Write::External携带这个实际实例，循环归一在原入口条件及正文读取之前，通过native_declaration形成／导入同一Unit，再查询同一Module闭合view_access；原Module::declare保持实例只构造一次。原写输入按所有权传入、消费者按借用读取，不复制实例或离开作用域后用入口环境重新推导正文局部；没有另一实例表、调用图、IR求值或数值失效跳过路径。无拥有结果且合同实际只读时保留元素读取与局部数值。闭合写仅指向原ABI借用dataset输入、且原显式contents Position已经交接这些实参时，也不重复添加全局External；真实写仍由原Position和LoopWrites处理。元素无拥有内容／清理F的按值dataset输入也由同一typed根覆盖：原arguments先检查调用者保留view／地址与别名，原move_application_dataset交付唯一拥有并使旧绑定Moved，callee沿原最后消费者完成与释放链结束该存储。这份已转移存储的闭合写不再扩大为所有旧存储未知；没有正文未来AST根表、资源复制或第二释放链。普通已闭合B调用复用native_call_memory的Access、实际输入Proof和when，向同一LoopWrites交接真正写位置，不因存在隐藏地址或Memory条款而扩大为整次外部写。该投影只替代其覆盖的dataset内容写，显式Reference与实际拥有位置继续交给原消费者；不能因存在Memory而先删除未覆盖的标量写。component_projection同时投影已有类型和实际位置，Scope只读取已形成的值快照，不重新解释或求值实参、下标，也不复制IR或再造调用图。未生成的动态来源保留原未知，不能据不完整输入推定无写；资源拥有继续由原Position和唯一拥有者消费。原address_write_components由普通写入与循环共同查询，只撤回真实相交的局部、记录及数组分量；源码与已编译对象／归档消费相同合同。address按值形参没有inout标记不能证明无写；真正只读address函数和普通记录结果按实际合同保持组合能力。dataset的实际静态factory调用也参与同一交接。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。
 
-源码节选：`crates/blanguage/src/check/effects.rs:420`。
+源码节选：`crates/blanguage/src/check/effects.rs:422`。
 
 ```rust
                     if self.functions.read_only(&instance.name) {
@@ -1945,7 +1964,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 原loop_write_projection从该ApplicationElement取得实际根、字段字节与已知下标，后续仍由同一写效果撤回Data.elements。别名按真实相交位置交接，未写字段及独立资源保持；不新增元素表、运行状态或第二效果图：
 
-源码节选：`crates/blanguage/src/check/effects.rs:370`。
+源码节选：`crates/blanguage/src/check/effects.rs:373`。
 
 ```rust
             ExprKind::Name(name)=>{

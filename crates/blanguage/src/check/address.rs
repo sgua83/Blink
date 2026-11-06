@@ -640,11 +640,17 @@ impl ReferenceAddress {
     }
 }
 impl Builder<'_> {
-    pub(super) fn address_write_positions(&self,borrow:&view::Borrow)->Vec<Position> {
-        borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,when)|match source {
-            view::Source::Position(origin)if origin.writable=>origin.memory_positions(&when).unwrap_or_default(),
-            _=>Vec::new(),
-        }).collect()
+    pub(super) fn address_write_positions(&self,borrow:&view::Borrow)->Option<Vec<Position>> {
+        if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||borrow.unresolved(){return None;}
+        let mut positions=Vec::new();
+        for(source,when)in borrow.sources.entries().filter(|(_,when)|when.possible()) {
+            match source {
+                view::Source::Position(origin)if origin.writable=>positions.extend(origin.memory_positions(&when)?),
+                view::Source::Position(_)|view::Source::Inactive=>{},
+                _=>return None,
+            }
+        }
+        Some(positions)
     }
     pub(super) fn address_write_components(&self,positions:&[Position],place:&Place)->Vec<usize> {
         self.positions(place).iter().enumerate().filter_map(|(i,position)|positions.iter().any(|written|
@@ -652,7 +658,7 @@ impl Builder<'_> {
     }
     pub(super) fn write_address_values(&mut self,borrow:&view::Borrow) {
         let borrow=self.current_address_borrow(borrow);
-        if external_memory(&borrow) {
+        match self.address_write_positions(&borrow) {None=>{
         let data=self.env.values().flat_map(Binding::application_resources)
             .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
         for data in data {self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown);}
@@ -664,7 +670,7 @@ impl Builder<'_> {
                 if let Binding::OwnedValue(owner)=binding {owner.value.constant=None;}
             }
         }
-        } else if !borrow.empty() {
+        },Some(positions)=>{
         let data=borrow.sources.entries().filter(|(_,when)|when.possible()).filter_map(|(source,when)|{
             let view::Source::Position(origin)=source else{return None;};
             if !origin.writable{return None;}
@@ -675,7 +681,6 @@ impl Builder<'_> {
             }
         }).collect::<Vec<_>>();
         for(resource,words)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Unknown);}
-        let positions=self.address_write_positions(&borrow);
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
             let components=self.address_write_components(&positions,&place);
@@ -687,6 +692,7 @@ impl Builder<'_> {
                 Binding::OwnedValue(owner)=>owner.invalidate_components(&components,None),
                 _=>{},
             }
+        }
         }
         }
     }

@@ -167,8 +167,7 @@ impl Builder<'_> {
         }
     }
     fn loop_memory_components(&self,borrow:&view::Borrow,owner:&Place)->Vec<usize> {
-        if borrow.pending()||borrow.unresolved()||address::external_memory(borrow){(0..owner.ty().components.len()).collect()}
-        else{self.address_write_components(&self.address_write_positions(borrow),owner)}
+        match self.address_write_positions(borrow){Some(positions)=>self.address_write_components(&positions,owner),None=>(0..owner.ty().components.len()).collect()}
     }
     fn constant_index(&self, index: &Expr, writes: &[Write<'_>]) -> Result<Option<u32>> {
         Ok(match &index.kind {
@@ -203,11 +202,16 @@ impl Builder<'_> {
             _ => None,
         })
     }
-    fn written_application_data(&self, expr: &Expr) -> Option<&application::Data> {
-        if let ExprKind::Name(name) = &expr.kind
-            && let Some(Binding::ApplicationData(data)) = self.env.get(name)
-        {
-            return Some(data);
+    fn written_application_data(&self, expr: &Expr) -> Option<(&application::Data,u32,&Ty)> {
+        if let ExprKind::Name(name) = &expr.kind {
+            match self.env.get(name) {
+                Some(Binding::ApplicationData(data))=>return Some((data,0,&data.ty)),
+                Some(Binding::DataReference(data))=>{let(offset,ty)=data.element_layout();return Some((&data.data,offset,ty));},
+                _=>{},
+            }
+        }
+        if let ExprKind::Member(base,field)=&expr.kind && let Some((data,offset,ty))=self.written_application_data(base) {
+            let(word,ty)=ty.field(field)?;return Some((data,offset+word,ty));
         }
         let projection = self.owned_projection(expr)?;
         let Binding::OwnedValue(owner) = self.env.get(&projection.root)? else {
@@ -216,7 +220,7 @@ impl Builder<'_> {
         let mut owner = owner;
         for index in projection.path {
             match owner.payloads[index].as_deref()? {
-                returns::Returned::Dataset(data) => return Some(data),
+                returns::Returned::Dataset(data) => return Some((data,0,&data.ty)),
                 returns::Returned::OwnedValue(child) => owner = child,
                 _ => return None,
             }
@@ -228,7 +232,7 @@ impl Builder<'_> {
         expr: &Expr,
         owner: &Place,
     ) -> Option<ComponentProjection> {
-        let data = self.written_application_data(expr)?;
+        let (data,offset,ty) = self.written_application_data(expr)?;
         let Place::ApplicationElement {
             identity, words, ..
         } = owner.storage()
@@ -238,25 +242,24 @@ impl Builder<'_> {
         if *identity != data.root.identity() {
             return None;
         }
-        let components = data
-            .ty
+        let components = ty
             .components
             .iter()
-            .map(|(_, offset)| {
+            .map(|(_, at)| {
                 if matches!(owner, Place::ApplicationElement { .. }) {
                     words
                         .iter()
                         .enumerate()
-                        .filter_map(|(i, word)| (*word == *offset).then_some(i))
+                        .filter_map(|(i, word)| (*word == offset+*at).then_some(i))
                         .collect()
-                } else if words.contains(&(*offset)) {
+                } else if words.contains(&(offset+*at)) {
                     (0..owner.ty().components.len()).collect()
                 } else {
                     Vec::new()
                 }
             })
             .collect();
-        Some((data.ty.clone(), components))
+        Some((ty.clone(), components))
     }
     fn invalidate_writes(
         &mut self,
@@ -265,7 +268,7 @@ impl Builder<'_> {
     ) -> Result<()> {
         for write in writes {
             let changed=match write {
-                Write::Memory{borrow,..}if !borrow.pending()&&!borrow.unresolved()=>{self.write_address_values(borrow);continue;},
+                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{self.write_address_values(borrow);continue;},
                 Write::External{..}|Write::Generator(_)|Write::Memory{..}=>{
                     let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
                         data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
@@ -273,10 +276,10 @@ impl Builder<'_> {
                     for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
                     continue;
                 },
-                Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|data|(
-                    data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
+                Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|(data,offset,ty)|(
+                    data.root.identity(),view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>()
                 )),
-                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,writes)?.map(|(data,_,(_,components))|(
+                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,&|index|self.constant_index(index,writes))?.map(|(data,_,(_,components))|(
                     data.root.identity(),view::resource_borrow(data),components.into_iter().flatten().map(|i|data.ty.components[i].1).collect::<Vec<_>>()
                 )),
             };
@@ -364,7 +367,7 @@ impl Builder<'_> {
         Ok(())
     }
     fn loop_write_projection<'a>(
-        &'a self,expr:&Expr,writes:&[Write<'_>],
+        &'a self,expr:&Expr,known_index:&impl Fn(&Expr)->Result<Option<u32>>,
     )->Result<Option<(&'a application::Data,Option<u32>,ComponentProjection)>> {
         match &expr.kind {
             ExprKind::Name(name)=>{
@@ -378,20 +381,19 @@ impl Builder<'_> {
                 Ok(Some((data,index,(owner.place.ty().clone(),components))))
             },
             ExprKind::Index(base,index)=>{
-                if let Some(data)=self.written_application_data(base) {
-                    if data.ty.owns_resources(){return Ok(None);}
-                    let components=(0..data.ty.components.len()).map(|i|vec![i]).collect();
-                    return Ok(Some((data,self.constant_index(index,writes)?,(data.ty.clone(),components))));
+                if let Some((data,offset,ty))=self.written_application_data(base) {
+                    let components=ty.components.iter().map(|(scalar,word)|vec![data.ty.components.iter().position(|part|part==&(*scalar,offset+word)).unwrap()]).collect();
+                    return Ok(Some((data,known_index(index)?,(ty.clone(),components))));
                 }
-                let Some((data,at,(ty,components)))=self.loop_write_projection(base,writes)? else{return Ok(None);};
+                let Some((data,at,(ty,components)))=self.loop_write_projection(base,known_index)? else{return Ok(None);};
                 let Some(element)=&ty.array else{return Ok(None);};
-                let constant=self.constant_index(index,writes)?;let width=element.components.len();
+                let constant=known_index(index)?;let width=element.components.len();
                 let elements=(0..ty.values[0] as usize).filter(|i|constant.is_none_or(|value|*i==value as usize)).collect::<Vec<_>>();
                 let selected=(0..width).map(|component|elements.iter().flat_map(|i|components[*i*width+component].iter().copied()).collect()).collect();
                 Ok(Some((data,at,((**element).clone(),selected))))
             },
             ExprKind::Member(base,field)=>{
-                let Some((data,at,(ty,components)))=self.loop_write_projection(base,writes)? else{return Ok(None);};
+                let Some((data,at,(ty,components)))=self.loop_write_projection(base,known_index)? else{return Ok(None);};
                 let(ty,selected)=member_type(&ty,field,&self.definition.source,expr.span)?;
                 Ok(Some((data,at,(ty,selected.iter().map(|i|components[*i].clone()).collect()))))
             },
@@ -444,11 +446,11 @@ impl Builder<'_> {
             match write {
                 Write::External{..}|Write::Generator(_)=>{effect.unknown_storage=true;effect.external=true;},
                 Write::Memory{borrow,..}=>{
-                    if borrow.pending()||borrow.unresolved()||address::external_memory(borrow){effect.unknown_storage=true;effect.external=true;continue;}
+                    let Some(positions)=self.address_write_positions(borrow)else{effect.unknown_storage=true;effect.external=true;continue;};
                     if borrow.resources().active(){effect.unknown_storage=true;}
                     for binding in self.env.values(){
                         let Some(owner)=binding.stored_place()else{continue;};
-                        let components=self.loop_memory_components(borrow,&owner);
+                        let components=self.address_write_components(&positions,&owner);
                         if components.is_empty(){continue;}
                         match owner.storage(){
                             Place::Local(_,slots,..)=>effect.locals.extend(components.into_iter().map(|component|slots[component])),
@@ -461,12 +463,12 @@ impl Builder<'_> {
                     if address_write(place) {effect.unknown_storage=true;effect.external=true;continue;}
                     if iterator.is_some() {effect.unknown_storage=true;continue;}
                     if *contents {
-                        if let Some(data)=self.written_application_data(place) && !data.ty.owns_resources() {
+                        if let Some((data,_,ty))=self.written_application_data(place) && !ty.owns_resources() {
                             effect.storage.push((data.root.regs[0],None));
                         }else{effect.unknown_storage=true;}
                         continue;
                     }
-                    if let Some((data,index,(_,components)))=self.loop_write_projection(place,writes)? {
+                    if let Some((data,index,(_,components)))=self.loop_write_projection(place,&|index|self.constant_index(index,writes))? {
                         let root=data.root.regs[0];
                         if let (Some(index),application::DataLayout::Declared)=(index,&data.layout) {
                             let base=u128::from(index)*u128::from(ir::align_up(data.ty.size,data.ty.align));
@@ -553,6 +555,25 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         };
         if self.bindings[..limit].iter().any(|(bound,_)|*bound==name){return Ok(None);}
         let Some(binding)=builder.env.get(name)else{return Ok(None);};
+        let known_index=|index:&Expr| {
+            if let ExprKind::Name(name)=&index.kind
+                &&(self.bindings[..limit].iter().any(|(bound,_)|*bound==name)||!matches!(builder.env.get(name),Some(Binding::Value(_)))) {return Ok(None);}
+            builder.constant_index(index,&[])
+        };
+        if matches!(binding,Binding::ApplicationData(_)|Binding::DataReference(_)|Binding::OwnedValue(_))
+            && let Some((data,_,(ty,parts)))=builder.loop_write_projection(expr,&known_index)? {
+            let mut borrow=view::Borrow::default();
+            for choice in 0..parts.first().map_or(0,Vec::len) {
+                let origin=address::Origin {
+                    root:address::Root::Resource(view::resource_borrow(data)),base:address::Layout::of(&data.ty),layout:address::Layout::of(&ty),
+                    words:parts.iter().map(|part|data.ty.components[part[choice]].1).collect(),positions:Arc::from([]),
+                    writable:matches!(data.access,Access::Write|Access::InOut),initialized:vec![false;ty.components.len()].into(),
+                };
+                borrow.union(&origin.normalize());
+            }
+            let proof=bounds::Proof::default().with_external_borrows(&ty);
+            return Ok(Some((ty,proof,borrow)));
+        }
         let (ty,proof,owner)=match binding {
             Binding::Value(value)=>(value.ty.clone(),bounds::Proof::capture(value),None),
             Binding::Owned(owner)=>{
@@ -565,11 +586,6 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             },
             Binding::OwnedValue(owner)=>(owner.value.ty.clone(),bounds::Proof::default().with_external_borrows(&owner.value.ty),owner.place()),
             _=>return Ok(None),
-        };
-        let known_index=|index:&Expr| {
-            if let ExprKind::Name(name)=&index.kind
-                &&(self.bindings[..limit].iter().any(|(bound,_)|*bound==name)||!matches!(builder.env.get(name),Some(Binding::Value(_)))) {return Ok(None);}
-            builder.constant_index(index,&[])
         };
         let Some((selected,parts))=builder.component_projection(expr,name,&ty,owner.as_ref(),None,&known_index)?else{return Ok(None);};
         let mut value=None::<bounds::Proof>;let mut borrow=view::Borrow::default();
