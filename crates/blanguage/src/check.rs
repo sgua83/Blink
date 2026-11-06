@@ -2570,7 +2570,9 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn expr(&mut self, e: &Expr) -> Result<Option<Value>> {
-        self.at_source(e.span, SourceSyntax::Expression, |b| b.expr_syntax(e))
+        let mut value = self.at_source(e.span, SourceSyntax::Expression, |b| b.expr_syntax(e))?;
+        if let Some(value) = &mut value { self.bound_value(value); }
+        Ok(value)
     }
     fn expr_syntax(&mut self, e: &Expr) -> Result<Option<Value>> {
         self.view_uses.before(e.span);

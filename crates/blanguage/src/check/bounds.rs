@@ -982,10 +982,7 @@ impl Proof {
             .collect();
         self.views=(0..width).map(|i|if let Some(choice)=branch{view::Borrow::selected(choice,&self.view_borrow(i),&other.view_borrow(i))}else{self.view_borrow(i).joined(other.view_borrow(i))}).collect();
         self.domains = (0..width).map(|i| {
-            let mut a=self.domains(i);let mut b=other.domains(i);
-            let ar=self.range_set(i).hull();let br=other.range_set(i).hull();
-            if ar.1<=br.0 {a.extend(indices_below(&b,false));}
-            if br.1<=ar.0 {b.extend(indices_below(&a,false));}
+            let a=self.domains(i);let b=other.domains(i);
             let mut common=a.intersection(&b).copied().collect::<Domains>();
             for domain in a.union(&b) {
                 let IndexDomain::Upper(limit,_) = domain else {continue;};
@@ -1253,8 +1250,14 @@ impl Proof {
                     if !scalar.is_signed() {
                         for domain in self.domains(component) {
                             facts.insert(Fact::Index(identity, domain));
-                            if let IndexDomain::Offset(base, amount) = domain {
-                                facts.insert(Fact::Below(base, identity, amount != 0, *scalar));
+                            match domain {
+                                IndexDomain::Offset(base, amount) => {
+                                    facts.insert(Fact::Below(base, identity, amount != 0, *scalar));
+                                }
+                                IndexDomain::Upper(limit, distance) => {
+                                    facts.insert(Fact::Below(identity, limit, distance != 0, *scalar));
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -3604,6 +3607,36 @@ impl Builder<'_> {
             regs: vec![r],
             uniform: true,
             constant: None,
+        }
+    }
+    pub(super) fn bound_value(&self, value: &mut Value) {
+        for (component, &(scalar, _)) in value.ty.components.iter().enumerate() {
+            if scalar != Scalar::U32 { continue; }
+            let maximum = value.component_range(component).1;
+            let mut below = |source: &Proof, at: usize, minimum: Bits, identity| {
+                if maximum <= minimum {
+                    let distance = (minimum - maximum) as u32;
+                    value.proof.mark_domain(component, IndexDomain::Upper(identity, distance));
+                    for domain in indices_below(&source.domains(at), distance != 0) {
+                        value.proof.mark_domain(component, domain);
+                    }
+                }
+            };
+            for binding in self.env.values() {
+                if let Binding::Value(source) = binding {
+                    for (at, &(word, _)) in source.ty.components.iter().enumerate() {
+                        if word == Scalar::U32 {
+                            below(&source.proof, at, source.component_range(at).0, source.component_identity(at));
+                        }
+                    }
+                }
+            }
+            if !self.in_function && self.global_index != usize::MAX {
+                let index = self.path_proof(&Ty::scalar(Scalar::U32), self.data_index_proof(self.domain)
+                    .with_domains(Domains::from([IndexDomain::Data(self.domain)]))
+                    .with_identity(ValueIdentity::Register(self.global_index)));
+                below(&index, 0, Bits::from(index.unsigned_minimum(0)), ValueIdentity::Register(self.global_index));
+            }
         }
     }
     pub(super) fn path_proof(&self, ty: &Ty, mut proof: Proof) -> Proof {

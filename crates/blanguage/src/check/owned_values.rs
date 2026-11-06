@@ -736,7 +736,13 @@ impl Builder<'_> {
         expr: &Expr,
         expected: Option<&Ty>,
     ) -> Result<Option<Returned>> {
-        self.at_source(expr.span, SourceSyntax::Expression, |b| b.evaluate_returned_syntax(expr, expected))
+        let mut returned = self.at_source(expr.span, SourceSyntax::Expression, |b| b.evaluate_returned_syntax(expr, expected))?;
+        match &mut returned {
+            Some(Returned::Value(value)) => self.bound_value(value),
+            Some(Returned::OwnedValue(value)) => self.bound_value(&mut value.value),
+            _ => {}
+        }
+        Ok(returned)
     }
     fn evaluate_returned_syntax(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
         self.view_uses.before(expr.span);
