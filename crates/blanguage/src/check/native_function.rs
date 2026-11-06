@@ -835,8 +835,7 @@ impl Builder<'_> {
             proof:model.as_ref().map(|model|bounds::Proof::capture(&self.returned_storage(model)).at_call(&bindings)).unwrap_or_default(),
             uniform:false,literal:false,constant:None});
         for(index,p)in d.function.params.iter().enumerate(){
-            if p.ty.dataset && p.access==Access::InOut && let Some(Binding::DataReference(reference))=env.get(&p.name)
-                && reference.element_layout().1.owns_resources(){
+            if p.ty.dataset && matches!(p.access,Access::Write|Access::InOut) && let Some(Binding::DataReference(reference))=env.get(&p.name){
                 let mut data=reference.data.clone();data.ty=reference.element_layout().1.clone();data.elements=self.unknown_element_model(&data.ty);
                 let mut updated=Returned::Dataset(data);
                 if let Some(Some(model))=writes.get(index){translate_returned(&mut updated,model,&bindings,false);}

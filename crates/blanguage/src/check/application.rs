@@ -3377,10 +3377,30 @@ impl Builder<'_> {
             self.env.insert(name,binding);
         }
     }
+    fn projected_element_model(&mut self, model: &returns::Returned, projection: &[usize]) -> returns::Returned {
+        projection.iter().fold(model.clone(), |model, field| match model {
+            returns::Returned::OwnedValue(parent) => self.unpack_record(&parent, *field),
+            model => returns::Returned::value(self.record_component(&self.returned_storage(&model), *field)),
+        })
+    }
+    fn replace_element_model(&self, stored: &mut returns::Returned, projection: &[usize], fresh: returns::Returned) {
+        let Some((field, rest)) = projection.split_first() else { *stored = fresh; return; };
+        let incoming = self.returned_storage(&fresh);
+        let value = stored.view_value_mut().unwrap();
+        let components = incoming.regs.iter().map(|reg| value.regs.iter().position(|parent| parent == reg).unwrap()).collect::<Vec<_>>();
+        value.proof = bounds::Proof::capture(value);
+        value.proof.assign(&components, value.regs.len(), bounds::Proof::capture(&incoming));
+        value.constant = value.proof.known_value(&value.ty);
+        value.uniform &= incoming.uniform;
+        if let returns::Returned::OwnedValue(parent) = stored
+            && parent.value.ty.aggregate_part(*field).1.owns_resources() {
+            self.replace_element_model(parent.payloads[*field].as_deref_mut().unwrap(), rest, fresh);
+        }
+    }
     pub(super) fn apply_application_dataset_model(&mut self,reference:&DataReference,model:returns::Returned){
         let resource=view::resource_borrow(&reference.data);let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names{
-            let mut binding=self.env.remove(&name).unwrap();
+            let mut binding=self.env[&name].clone();
             each_binding_data(&mut binding,&mut |_,_,data|{
                 let scopes=self.application_element_scopes(&reference.sources,&resource,data);let unique=scopes.len()==1;
                 for(scope,mut complete)in scopes{
@@ -3390,14 +3410,12 @@ impl Builder<'_> {
                     let mut data=&mut *data;
                     for fields in scope{complete&=data.length.minimum()==1&&data.length.maximum()==1;data=model_data_mut(&mut data.elements,&fields).unwrap();}
                     let mut fresh=self.capture_element_model(data,&reference.projection,model.clone());
-                    let mut stored=data.elements.as_mut();
-                    for field in &reference.projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
                     if !unique||!complete{
-                        let incoming=fresh.clone();let previous=stored.clone();
-                        fresh.join(stored.clone(),true);
+                        let incoming=fresh.clone();let previous=self.projected_element_model(&data.elements,&reference.projection);
+                        fresh.join(previous.clone(),true);
                         residency::select_elements(&mut fresh,&incoming,&previous,&selected,count);
                     }
-                    *stored=*fresh;
+                    self.replace_element_model(&mut data.elements,&reference.projection,*fresh);
                 }
             });
             self.env.insert(name,binding);

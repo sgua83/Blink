@@ -252,8 +252,12 @@ impl Builder<'_> {
                 let mut proof = bounds::Proof::default();
                 proof.append(&data.root);
                 proof.append(&data.length);
+                let mut ty=Ty::owned_dataset(data.ty.clone(), data.count);
+                ty.components=vec![(data.root.ty.components[0].0,0),(Scalar::U32,data.root.ty.size)];
+                ty.align=data.root.ty.align.max(data.length.ty.align);
+                ty.size=ir::align_up(data.root.ty.size+data.length.ty.size,ty.align);
                 Value {
-                    ty: Ty::owned_dataset(data.ty.clone(), data.count),
+                    ty,
                     regs: vec![data.root.regs[0], data.length.regs[0]],
                     proof,
                     uniform: data.root.uniform && data.length.uniform,

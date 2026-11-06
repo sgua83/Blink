@@ -725,7 +725,7 @@ impl Proof {
                         let nonzero=if to.is_integer(){!range.contains(to.order_bias())}else{input.nonzero.first()==Some(&true)};
                         if nonzero{facts.insert(Fact::NonZero(target));}
                         if to.is_integer()||to.is_float(){let(minimum,maximum)=range.hull();if minimum!=0{facts.insert(Fact::Minimum(target,to,minimum));}if maximum!=to.bit_mask(){facts.insert(Fact::Maximum(target,to,maximum));}}
-                        facts.extend(input.domains(0).into_iter().filter_map(|domain|match domain{IndexDomain::CommonRange(source,base,middle)if base==middle||to.size()<=middle.size()=>Some(IndexDomain::CommonRange(source,base,to)),IndexDomain::CommonRange(source,base,middle)if base.is_integer()&&middle.is_integer()&&middle.size()>=base.size()&&from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source)),IndexDomain::CommonNonzero(source)if from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source)),_=>None}).map(|domain|Fact::Index(target,domain)));
+                        facts.extend(input.domains(0).into_iter().filter_map(|domain|match domain{domain if from==to && common_range_domain(domain)=>Some(domain),IndexDomain::CommonRange(source,base,middle)if base==middle||to.size()<=middle.size()=>Some(IndexDomain::CommonRange(source,base,to)),IndexDomain::CommonRange(source,base,middle)if base.is_integer()&&middle.is_integer()&&middle.size()>=base.size()&&from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source)),IndexDomain::CommonNonzero(source)if from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source)),_=>None}).map(|domain|Fact::Index(target,domain)));
                         facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source,from,to))));
                     }
                     return Clause::facts(facts);
@@ -815,7 +815,7 @@ impl Proof {
                         translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
                         translated.nonzero[component] |= if to.is_integer(){!range.contains(to.order_bias())}else{incoming.nonzero.first()==Some(&true)};
                         translated.domains.resize_with(translated.domains.len().max(component + 1), Domains::new);
-                        translated.domains[component].extend(incoming.domains(0).into_iter().filter_map(|domain|match domain{IndexDomain::CommonRange(source,base,middle)if base==middle||to.size()<=middle.size()=>Some(IndexDomain::CommonRange(source,base,*to)),IndexDomain::CommonRange(source,base,middle)if base.is_integer()&&middle.is_integer()&&middle.size()>=base.size()&&from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source)),IndexDomain::CommonNonzero(source)if from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source)),_=>None}));
+                        translated.domains[component].extend(incoming.domains(0).into_iter().filter_map(|domain|match domain{domain if from==to && common_range_domain(domain)=>Some(domain),IndexDomain::CommonRange(source,base,middle)if base==middle||to.size()<=middle.size()=>Some(IndexDomain::CommonRange(source,base,*to)),IndexDomain::CommonRange(source,base,middle)if base.is_integer()&&middle.is_integer()&&middle.size()>=base.size()&&from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source)),IndexDomain::CommonNonzero(source)if from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source)),_=>None}));
                         translated.domains[component].extend(incoming.origins.first().into_iter().flatten()
                             .filter(|id|!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_)))
                             .map(|id|IndexDomain::CommonRange(*id,*from,*to)));
@@ -4276,4 +4276,16 @@ pub(super) fn scoped_proof(ty: &Ty, mut proof: Proof, path: &Clause, env: &BTree
         }
     }
     proof
+}
+
+fn common_range_domain(domain: IndexDomain) -> bool {
+    match domain {
+        IndexDomain::Data(_) | IndexDomain::Fixed(_) | IndexDomain::Tile
+        | IndexDomain::View(_) | IndexDomain::ApplicationData(_)
+        | IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(_)
+        | IndexDomain::Shifted(..) | IndexDomain::CommonRange(..) | IndexDomain::CommonNonzero(_) => true,
+        IndexDomain::DataLength(_) | IndexDomain::TileLength | IndexDomain::ViewLength(_)
+        | IndexDomain::ApplicationLength(_) | IndexDomain::Sum(..) | IndexDomain::Offset(..)
+        | IndexDomain::Computed(_) => false,
+    }
 }

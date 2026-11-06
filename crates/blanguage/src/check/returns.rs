@@ -420,7 +420,7 @@ impl Builder<'_> {
                         && !self.defer_dataset_output(&data,data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),span)? {
                         return self.fail(span,"B229",format!("返回前没有完整初始化独占 dataset 参数 {}",param.name));
                     }
-                    if data.ty.owns_resources(){borrowed.insert(param.name.clone(),Returned::Dataset(data));}
+                    borrowed.insert(param.name.clone(),Returned::Dataset(data));
                 }
                 if param.ty.dataset&&param.access==Access::Write&&let Some(Binding::Data(view))=self.env.get(&param.name).cloned() {
                     let place=self.dataset_element(&view,self.global_index,false);

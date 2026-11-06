@@ -1450,7 +1450,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 
 命名的match拥有载荷由owned_arm保留在原env绑定中，正常分支退出先调用既有drop_binding，待静态F、元素元数据读取和资源释放完成后才移出绑定。清理消费原拥有树及已求值位置，不让调用前已移动的旧来源代替正在清理的实际拥有者；实际已移出的字段与提前返回继续沿原出口处理，没有第二拥有表或释放路径。
 
-源码节选：`crates/blanguage/src/check/owned_values.rs:1047`。
+源码节选：`crates/blanguage/src/check/owned_values.rs:1051`。
 
 ```rust
     pub(super) fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
@@ -1485,7 +1485,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:884`。
+源码节选：`crates/blanguage/src/check/native_function.rs:883`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1538,7 +1538,7 @@ CPU借用描述符的原步长表示也由application_reference_value交接：�
 
 直接写`rows[i].values.length`、在原范围成立时索引、构造view或取得只读地址，同样进入原只读模型。application_reference从声明可见的字段取得实际Place，view_place则接收临时生产者已经求出的dataset字段位置；二者共用owned_records::application_place_reference。该入口按实际存储所有者恢复原资源：普通拥有槽使用原候选树，Frame字段使用application_owned_argument读取实际Data.elements及所选元数据，不先读取整个父记录，不复制、移动或重新拥有子dataset。类型查询只识别声明可见的位置，实际资源恢复统一消费这个Place。for的拥有记录元素游标由Binding::Owned持有原ApplicationElement位置。read_expression_type直接查询这个位置的Ty，read_aggregate的Name分派复用application_owned_argument，按实际资源来源与布局经materialize_element装载一次元数据；原OwnedValue::borrow／unpack_record交接共享子资源，直接子遍历与read dataset形参消费同一来源。它不建立新拥有绑定，不改变普通复制、移动和释放。原下标只求值一次。子元数据是实际位置的一次装载，不是env中的独立拥有资源；view、原生调用与地址转换直接消费原Data.root.proof的借用来源。
 
-源码节选：`crates/blanguage/src/check/owned_values.rs:461`。
+源码节选：`crates/blanguage/src/check/owned_values.rs:465`。
 
 ```rust
         if let ExprKind::Name(name)=&expr.kind
@@ -2107,7 +2107,7 @@ pub(crate) struct Interface {
 
 for_statement接收for_loop经leave_loop消费后移交的原LoopWrites；真实Loop之后由complete_application_loop选择写集合涉及的可用Frame CPU资源，按真实拥有位置取得句柄并复用complete_application_elements。DatasetLoopComplete指向原for语句；initial递归展开不重复发射，return及失败不会经过该完成点。该交接只发布Data.elements已有共同数值，既不扫描元素，也不把break当作全覆盖。没有第二份写集合、Frame、资源表或运行完成标记。
 
-完整普通数据游标的静态数值在for_loop的原自然出口处交接。application_iteration_elements消费LoopContext.continues中各LoopState.env的原游标Binding::Owned.proof，直接合流原数值区间与域；自然出口env沿原element_owner_bindings翻译仍有效的外部来源，迭代内局部身份不再保留。已成立的u32同一数值沿原Upper(来源,0)成为非严格上界，原完成代码继续处理其实际数值。只有本次原游标从零完整覆盖且无本层seek时才采用，initial首轮不冒充全体覆盖；break仍消费各自退出状态，return与失败没有自然完成。application_iteration_interference在发布之前，沿同一ApplicationLoads与实际继续状态查询其他下标写对此前元素的影响，与当前游标末值合流。ApplicationElement写把实际SSA右值的已有事实交给原Clause，直接游标与数值游标消费同一事实源。原始借用地址按实际split／offset指令恢复根、下标、步长和字段偏移；只读查询原指令，不重新求值或生成地址。真实CallReference可提供原当前写位置，闭合普通B的写效果只有局限于实际引用extent时才作为当前位置写，dataset或未知／越界字节写不作此推定；仍共用原Module::writes_only_references，原读取快照也消费该准确含义。原update_application_contents按真实字段字节位置更新同一Data.elements，兄弟字段不重写。没有额外AST解释、IR循环、运行状态、扫描或第二份模型。标量引用函数在完整遍历内写后的Frame完成遗漏另见Issues .3.3.1.1，不能以本处静态成功代替它。显式数值下标的完整遍历由application_indexed_elements消费原LoopContext入口同长资源与各继续状态。实际ApplicationElement写将已求值右值的事实交到原Clause；ApplicationLoads按原地址、步长、字段字节和当前游标查询实际StoreIndexed，沿原If／Scope／Continue解释各继续边最后覆盖的值。非当前下标的重叠写会影响此前各轮元素，须同时并入最终可能值；字节不对齐、调用或其他未知写不能用当前字段右值代替。这里共用原写别名分析，bounds::scoped_proof只把同一个path_proof的查询作用域显式传入；临时Proof随本次查询结束，不保留存储值历史。publish_iteration_elements统一把数据游标与下标生产者结果交回自然出口的原Data.elements，真实完成继续原Frame入口，无新IR、寄存器或运行表。普通dataset形参输出仍见原Issues .3.3.2.3，循环头读前事实继续原C-021.1.4.5.4.2。
+完整普通数据游标的静态数值在for_loop的原自然出口处交接。application_iteration_elements消费LoopContext.continues中各LoopState.env的原游标Binding::Owned.proof，直接合流原数值区间与域；自然出口env沿原element_owner_bindings翻译仍有效的外部来源，迭代内局部身份不再保留。已成立的u32同一数值沿原Upper(来源,0)成为非严格上界，原完成代码继续处理其实际数值。只有本次原游标从零完整覆盖且无本层seek时才采用，initial首轮不冒充全体覆盖；break仍消费各自退出状态，return与失败没有自然完成。application_iteration_interference在发布之前，沿同一ApplicationLoads与实际继续状态查询其他下标写对此前元素的影响，与当前游标末值合流。ApplicationElement写把实际SSA右值的已有事实交给原Clause，直接游标与数值游标消费同一事实源。原始借用地址按实际split／offset指令恢复根、下标、步长和字段偏移；只读查询原指令，不重新求值或生成地址。真实CallReference可提供原当前写位置，闭合普通B的写效果只有局限于实际引用extent时才作为当前位置写，dataset或未知／越界字节写不作此推定；仍共用原Module::writes_only_references，原读取快照也消费该准确含义。原update_application_contents按真实字段字节位置更新同一Data.elements，兄弟字段不重写。没有额外AST解释、IR循环、运行状态、扫描或第二份模型。标量引用函数在完整遍历内写后的Frame完成遗漏另见Issues .3.3.1.1，不能以本处静态成功代替它。显式数值下标的完整遍历由application_indexed_elements消费原LoopContext入口同长资源与各继续状态。实际ApplicationElement写将已求值右值的事实交到原Clause；ApplicationLoads按原地址、步长、字段字节和当前游标查询实际StoreIndexed，沿原If／Scope／Continue解释各继续边最后覆盖的值。非当前下标的重叠写会影响此前各轮元素，须同时并入最终可能值；字节不对齐、调用或其他未知写不能用当前字段右值代替。这里共用原写别名分析，bounds::scoped_proof只把同一个path_proof的查询作用域显式传入；临时Proof随本次查询结束，不保留存储值历史。publish_iteration_elements统一把数据游标与下标生产者结果交回自然出口的原Data.elements，真实完成继续原Frame入口，无新IR、寄存器或运行表。普通write／inout dataset形参的完整共同模型由finish_return沿原ReturnExit／written保存，native_call原DataReference模型消费不再以元素拥有资源为条件；written_data继续只负责初始化。returned_storage按实际root／length的Scalar、宽度及对齐投影，U64借用地址不缩成U32 Frame句柄，不增加机器输出参数。apply_application_dataset_model在原参数环境仍可查询时，沿普通记录分量及原拥有载荷投影／替换同一Data.elements；部分覆盖仍做旧新合流。publish_iteration_elements交接仍有效来源的CommonRange，Proof::at_call在原Clause和输出Proof中只继承同Scalar纯索引不等式与共同数值，不把Sum／Offset／Computed或Length精确身份当作共同范围。源码缺席的obj／lib、转发调用与源码SDK消费同一输出，公开格式及运行ABI保持。普通调用完成后的Frame交接仍见原Issues .3.3.2.3.2，循环头读前事实继续C-021.1.4.5.4.2，不能以普通直接读取成功关闭它们。
 
 该编码为BLCO68；资源ABI保持BLRI40。普通值resize也复用原填充值捕获与保留前缀合流，实际拥有值不能广播的规则保持。prefix／where的部分覆盖与原子改写不产生全容量新值域；持久外部输入合同、同字段循环读前范围及普通引用调用精度分别见Issues C-021.1.4.5.2／.5.4.2／.5.4.3。
 
@@ -2779,7 +2779,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1653`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1652`。
 
 ```rust
             if !frame.contains(&name) {
@@ -2942,7 +2942,7 @@ IR 用结构化的 If 和 Loop 保存这些关系：
 
 循环的数值下标与源元素别名也有各自的身份。LoopContext.iterator持有原名称和当前下标进度，LoopControl只保留原控制条件模板；推进时更新原进度，源范围变量是Value才更新其数值，元素位置继续保持原类型。LoopState在原环境中快照初始续边还需要的元素别名，真正leave_loop再按原入口names结束局部绑定。字段转借、分支退出、continue与seek沿这些原消费者交接，不复制元素、重建类型或增加运行期状态。
 
-源码节选：`crates/blanguage/src/check/flow.rs:400`。
+源码节选：`crates/blanguage/src/check/flow.rs:401`。
 
 ```rust
     pub(super) fn capture_loop_cursor(&mut self, value: Value) {

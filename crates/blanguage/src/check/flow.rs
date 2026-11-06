@@ -256,8 +256,9 @@ impl Builder<'_> {
         std::mem::swap(&mut self.path, &mut exit.path);
         let mut proof = proof.at_call(&self.element_owner_bindings(&data.data));
         for (component, (scalar, _)) in ty.components.iter().enumerate() {
-            if *scalar == Scalar::U32 && let Some(identity) = proof.known_identity(component) {
-                proof.mark_domain(component, IndexDomain::Upper(identity, 0));
+            if let Some(identity) = proof.known_identity(component) {
+                proof.mark_domain(component, IndexDomain::CommonRange(identity, *scalar, *scalar));
+                if *scalar == Scalar::U32 { proof.mark_domain(component, IndexDomain::Upper(identity, 0)); }
             }
         }
         let ranges = proof.element_ranges(0, ty);
