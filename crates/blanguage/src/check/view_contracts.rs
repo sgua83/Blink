@@ -1,9 +1,12 @@
 //! view借用与拥有资源沿原输入、循环和调用图交接；访问条件属于函数静态合同。
 use super::*;
 use view::{Borrow, LoopInput, Requirement, Source as Origin};
-#[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
-pub(super) enum Output { Returned(usize), Written(usize,usize), ReturnedResource(usize), WrittenResource(usize,usize) }
-#[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
+// Resource identity is the original root plus its typed element-field path.
+// Model discovery order and the amount of known descendant facts do not name an output.
+pub(super) type ResourcePath=(usize,Vec<Vec<usize>>);
+#[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
+pub(super) enum Output { Returned(usize), Written(usize,usize), ReturnedResource(ResourcePath), WrittenResource(usize,ResourcePath) }
+#[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) struct CallResult { pub call:usize, pub output:Output }
 pub(super) type Outputs=BTreeMap<Output,Borrow>;
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
@@ -132,7 +135,7 @@ pub(super) fn resource_value_mut(value:&mut returns::Returned,index:usize)->Opti
     returns::Returned::Dataset(value)if index==0=>Some(value),
     returns::Returned::OwnedValue(value)=>{let path=view::resource_paths(&value.value.ty).get(index)?.clone();view::owned_data_at_mut(value,&path)},_=>None,
 }}
-pub(super) fn resource_output_paths(value:&returns::Returned)->Vec<(usize,Vec<Vec<usize>>)> {
+pub(super) fn resource_output_paths(value:&returns::Returned)->Vec<ResourcePath> {
     fn visit(ty:&Ty,root:usize,parents:&[Vec<usize>],out:&mut Vec<(usize,Vec<Vec<usize>>)>) {
         for(fields,element)in view::resource_paths(ty).into_iter().zip(application::element_types(ty)){
             let mut path=parents.to_vec();path.push(fields);out.push((root,path.clone()));visit(element,root,&path,out);
@@ -146,31 +149,34 @@ fn root_resource(value:&returns::Returned,index:usize)->Option<&application::Dat
     returns::Returned::Dataset(data)if index==0=>Some(data),
     returns::Returned::OwnedValue(value)=>view::resource_paths(&value.value.ty).get(index).and_then(|path|view::owned_data_at(value,path)),_=>None,
 }}
-pub(super) fn resource_outputs(value:&returns::Returned)->Vec<Borrow>{
-    resource_output_paths(value).into_iter().enumerate().map(|(index,(root,path))|{
-        let Some(mut data)=root_resource(value,root)else{return Borrow::source(Origin::Inactive);};
-        for fields in path{
-            if data.length.maximum()==0{return Borrow::source(Origin::Inactive);}
-            let Some(child)=application::model_data(&data.elements,&fields)else{return Borrow::source(Origin::Inactive);};data=child;
-        }
-        let name=resource_output_name(value,index).unwrap();
-        view::resource_borrow(data).map_sources(|source|match source{
-            Origin::Data(ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))=>name.clone(),
-            source=>Borrow::source(source),
-        })
+pub(super) fn resource_outputs(value:&returns::Returned)->Vec<(ResourcePath,Borrow)>{
+    resource_output_paths(value).into_iter().map(|resource|{
+        let (root,path)=&resource;
+        let data=path.iter().fold(root_resource(value,*root),|data,fields|{
+            let data=data?;
+            if data.length.maximum()==0{None}else{application::model_data(&data.elements,fields)}
+        });
+        let borrow=if let Some(data)=data {
+            let name=resource_output_name(value,&resource).unwrap();
+            view::resource_borrow(data).map_sources(|source|match source{
+                Origin::Data(ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))=>name.clone(),
+                source=>Borrow::source(source),
+            })
+        }else{Borrow::source(Origin::Inactive)};
+        (resource,borrow)
     }).collect()
 }
-pub(super) fn resource_output_mut(value:&mut returns::Returned,index:usize)->Option<&mut application::Data>{
-    let(root,path)=resource_output_paths(value).get(index)?.clone();let mut data=resource_value_mut(value,root)?;
-    for fields in path{data=application::model_data_mut(&mut data.elements,&fields)?;}Some(data)
+pub(super) fn resource_output_mut<'a>(value:&'a mut returns::Returned,resource:&ResourcePath)->Option<&'a mut application::Data>{
+    let(root,path)=resource;let mut data=resource_value_mut(value,*root)?;
+    for fields in path{data=application::model_data_mut(&mut data.elements,fields)?;}Some(data)
 }
-pub(super) fn resource_output_name(value:&returns::Returned,index:usize)->Option<Borrow>{
-    let(root,path)=resource_output_paths(value).get(index)?.clone();let data=root_resource(value,root)?;
+pub(super) fn resource_output_name(value:&returns::Returned,resource:&ResourcePath)->Option<Borrow>{
+    let(root,path)=resource;let data=root_resource(value,*root)?;
     let mut name=view::resource_borrow(data);
-    let depth=path.len();for(at,fields)in path.into_iter().enumerate(){name=Borrow::element(name,fields,Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth-1-at))));}Some(name)
+    let depth=path.len();for(at,fields)in path.iter().enumerate(){name=Borrow::element(name,fields.clone(),Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth-1-at))));}Some(name)
 }
-pub(super) fn set_resource_outputs(value:&mut returns::Returned,mut borrow:impl FnMut(usize)->Borrow){
-    let count=resource_output_paths(value).len();for index in 0..count{if let Some(data)=resource_output_mut(value,index){data.root.proof=data.root.proof.clone().with_view_borrow(0,borrow(index));}}
+pub(super) fn set_resource_outputs(value:&mut returns::Returned,mut borrow:impl FnMut(ResourcePath)->Borrow){
+    for resource in resource_output_paths(value){if let Some(data)=resource_output_mut(value,&resource){data.root.proof=data.root.proof.clone().with_view_borrow(0,borrow(resource));}}
 }
 fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSet<usize>)->bool {
     if !a.calls.is_empty()||!b.calls.is_empty(){return false;}
@@ -202,11 +208,11 @@ impl Function {
         let call=self.calls.len();self.calls.push(Call{function:function.into(),memory,snapshots,arguments,initialization,outputs:BTreeSet::new(),path,source,span});call
     }
     pub fn result(&mut self,call:usize,output:Output)->Borrow {
-        self.calls[call].outputs.insert(output);
+        self.calls[call].outputs.insert(output.clone());
         Borrow{calls:view::Edges::from([CallResult{call,output}]),..Borrow::default()}
     }
-    pub fn capture_resources(&mut self,value:&returns::Returned,output:impl Fn(usize)->Output){
-        for(index,borrow)in resource_outputs(value).into_iter().enumerate(){self.outputs.insert(output(index),borrow);}
+    pub fn capture_resources(&mut self,value:&returns::Returned,output:impl Fn(ResourcePath)->Output){
+        for(resource,borrow)in resource_outputs(value){self.outputs.insert(output(resource),borrow);}
     }
     pub fn capture(&mut self,proof:&bounds::Proof,ty:&Ty,output:impl Fn(usize)->Output) {
         for component in components(ty) {self.outputs.insert(output(component),proof.view_borrow(component));}
@@ -726,14 +732,14 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
         for(name,function)in functions{
             let state=&known[name];let result=next.get_mut(name).unwrap();
             for input in state.loops.keys(){result.loops.insert(*input,evaluate(&function.loops[input].borrow,function,state,known,true));}
-            let physical=function.outputs.iter().map(|(output,definition)|(*output,evaluate(definition,function,state,known,true))).collect::<Outputs>();
+            let physical=function.outputs.iter().map(|(output,definition)|(output.clone(),evaluate(definition,function,state,known,true))).collect::<Outputs>();
             // 每个真实资源输出命名自己的交付存储；view保留所有可能的实际输出所有者。
             let mut exposed:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
             for(output,name)in &function.resource_names{for(source,when)in physical[output].sources.entries(){if let Origin::Data(id)=source{if !matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){exposed.entry(*id).or_default().union(&name.restricted(&when));}}}}
             for(output,definition)in &physical{
                 let mut value=canonical(definition.clone(),function,function.resource_names.get(output),&exposed);
-                if unknown.contains(&(name.clone(),*output)){value.sources.insert(Origin::Unresolved);}
-                result.interface.outputs.insert(*output,value);
+                if unknown.contains(&(name.clone(),output.clone())){value.sources.insert(Origin::Unresolved);}
+                result.interface.outputs.insert(output.clone(),value);
             }
 
         }
@@ -746,10 +752,10 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
     let mut known=closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect::<States>();
     for(name,function)in functions{known.insert(name.clone(),State{
         loops:loops[name].iter().map(|input|(*input,Borrow::default())).collect(),
-        interface:Interface{outputs:function.outputs.keys().map(|output|(*output,Borrow::default())).collect(),access:BTreeSet::new(),initialization:Vec::new()},
+        interface:Interface{outputs:function.outputs.keys().map(|output|(output.clone(),Borrow::default())).collect(),access:BTreeSet::new(),initialization:Vec::new()},
     });}
     converge(functions,&mut known,&BTreeSet::new());
-    let unknown=functions.iter().flat_map(|(name,function)|function.outputs.keys().filter_map(|output|known[name].interface.outputs[output].empty().then_some((name.clone(),*output)))).collect::<BTreeSet<_>>();
+    let unknown=functions.iter().flat_map(|(name,function)|function.outputs.keys().filter_map(|output|known[name].interface.outputs[output].empty().then_some((name.clone(),output.clone())))).collect::<BTreeSet<_>>();
     if !unknown.is_empty(){converge(functions,&mut known,&unknown);}
     converge_initializations(functions,&mut known);
     converge_access(functions,&mut known);

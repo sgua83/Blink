@@ -802,14 +802,15 @@ impl Builder<'_> {
         }
         for binding in self.env.values_mut(){application::each_binding_data(binding,&mut|_,_,data|{
             let source=view::resource_borrow(data);let fields=view::resource_paths(&data.ty);
-            let paths=std::iter::once(None).chain(view_contracts::resource_output_paths(&data.elements).into_iter().enumerate().map(Some)).collect::<Vec<_>>();
+            let paths=std::iter::once(None).chain(view_contracts::resource_output_paths(&data.elements).into_iter().map(Some)).collect::<Vec<_>>();
             for path in paths {
                 let(borrow,selected)=match path {
                     None=>(source.clone(),&mut *data),
-                    Some((index,(root,path)))=>{
-                        let mut borrow=view::Borrow::element(source.clone(),fields[root].clone(),None);
-                        for fields in path{borrow=view::Borrow::element(borrow,fields,None);}
-                        let Some(selected)=view_contracts::resource_output_mut(&mut data.elements,index)else{continue;};(borrow,selected)
+                    Some(resource)=>{
+                        let(root,path)=&resource;
+                        let mut borrow=view::Borrow::element(source.clone(),fields[*root].clone(),None);
+                        for fields in path{borrow=view::Borrow::element(borrow,fields.clone(),None);}
+                        let Some(selected)=view_contracts::resource_output_mut(&mut data.elements,&resource)else{continue;};(borrow,selected)
                     },
                 };
                 if selected.ownership==application::Ownership::Moved{continue;}

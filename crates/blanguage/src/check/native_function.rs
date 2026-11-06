@@ -329,9 +329,10 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
         // 拥有叶的存储身份与其输出分量共同命名；不把私有位置身份丢成未知。
         let mut original=model.clone();
         let paths=view_contracts::resource_output_paths(&model);
-        for(resource,(root,scope))in paths.iter().enumerate(){
-            let output=if model_index==0{view_contracts::Output::ReturnedResource(resource)}else{view_contracts::Output::WrittenResource(model_index-1,resource)};
-            if let(Some(source),Some(target))=(view_contracts::resource_output_mut(&mut original,*root),view_contracts::resource_output_mut(&mut value,*root)){
+        for resource in &paths{
+            let(root,scope)=resource;
+            let output=if model_index==0{view_contracts::Output::ReturnedResource(resource.clone())}else{view_contracts::Output::WrittenResource(model_index-1,resource.clone())};
+            if let(Some(source),Some(target))=(view_contracts::resource_value_mut(&mut original,*root),view_contracts::resource_value_mut(&mut value,*root)){
                 let name=if source.ownership==application::Ownership::Borrowed{
                     let identity=source.root.identity();
                     let bound=bindings[&identity].clone();
@@ -339,7 +340,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
                     view::Borrow::source(view::Source::Data(identity)).at_call(&bindings)
                 }else{view::Borrow::source(view::Source::Data(ValueIdentity::Register(target.root.regs[0])))};
                 let name=scope.iter().enumerate().fold(name,|parent,(at,fields)|view::Borrow::element(parent,fields.clone(),Some(bounds::Operand::Value(ValueIdentity::ElementIndex(scope.len()-1-at)))));
-                builder.view_model.resource_names.insert(output,name);
+                builder.view_model.resource_names.insert(output.clone(),name);
             }
             if !scope.is_empty(){if let Some(source)=view_contracts::resource_output_mut(&mut original,resource){
                 let name=builder.view_model.resource_names[&output].clone();
@@ -1006,8 +1007,8 @@ fn view_outputs(contract:&Contract)->view_contracts::Interface {
     for (parameter,model)in contract.written.iter().enumerate() {
         if let Some(value)=model.as_ref().and_then(Returned::view_value){for component in view_contracts::components(&value.ty){outputs.insert(view_contracts::Output::Written(parameter,component),value.proof.view_borrow(component));}}
     }
-    if let Some(value)=&contract.returned{for(resource,borrow)in view_contracts::resource_outputs(value).into_iter().enumerate(){outputs.insert(view_contracts::Output::ReturnedResource(resource),borrow);}}
-    for(parameter,value)in contract.written.iter().enumerate(){if let Some(value)=value{for(resource,borrow)in view_contracts::resource_outputs(value).into_iter().enumerate(){outputs.insert(view_contracts::Output::WrittenResource(parameter,resource),borrow);}}}
+    if let Some(value)=&contract.returned{for(resource,borrow)in view_contracts::resource_outputs(value){outputs.insert(view_contracts::Output::ReturnedResource(resource),borrow);}}
+    for(parameter,value)in contract.written.iter().enumerate(){if let Some(value)=value{for(resource,borrow)in view_contracts::resource_outputs(value){outputs.insert(view_contracts::Output::WrittenResource(parameter,resource),borrow);}}}
     view_contracts::Interface{outputs,access:contract.view_access.as_ref().unwrap().clone(),initialization:contract.initialization.clone().unwrap()}
 }
 fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
@@ -1056,11 +1057,11 @@ fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
         }
 
         for (output,borrow)in &interface.outputs {
-            match *output {
-                view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
-                view_contracts::Output::Written(parameter,component)=>if let Some(value)=contract.written[parameter].as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
+            match output {
+                view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(*component,borrow.clone());},
+                view_contracts::Output::Written(parameter,component)=>if let Some(value)=contract.written[*parameter].as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(*component,borrow.clone());},
                 view_contracts::Output::ReturnedResource(resource)=>if let Some(value)=contract.returned.as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());},
-                view_contracts::Output::WrittenResource(parameter,resource)=>if let Some(value)=contract.written[parameter].as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());},
+                view_contracts::Output::WrittenResource(parameter,resource)=>if let Some(value)=contract.written[*parameter].as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());},
             }
         }
         if let Some(function)=&mut unit.function {

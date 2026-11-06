@@ -284,7 +284,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 实际写入位置及条件沿原函数正常出口交接。递归和完整for的待闭合事实保存在原Position／Function.uses中，来源与确定结果沿原调用关系统一收敛；读取、条件输出与转借都保留实际时点，不由后续写入补足。公开合同只含闭合位置与完整条件，不携带被调私有槽或循环表达。资源及指向该资源的地址可以共同返回；拥有字段或值移动仍使用原存储，缺少拥有者的地址不能逃逸。own静态F的真实后续读取参与原view_liveness，最后消费前不允许存储resize／迁移／释放，Frame／blcompute仍是唯一物理资源所有者。
 
-源码节选：`crates/blanguage/src/check/address.rs:868`。
+源码节选：`crates/blanguage/src/check/address.rs:869`。
 
 ```rust
     pub(super) fn external_position(&mut self, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Place>> {
@@ -1433,7 +1433,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:896`。
+源码节选：`crates/blanguage/src/check/native_function.rs:897`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1852,7 +1852,7 @@ GPU数据集绑定以同一个16字节头交接：原页数组的64位设备地�
 
 普通函数的实现编译成对象后，调用处仍须知道它实际读写了哪里。`Access::Dataset`沿原访问合同保存真实字段、元素下标、路径条件、Read／Write／InOut方向及atomic操作属性；普通赋值、动态数组与嵌套调用沿同一Place来源闭合交接。调用方把形参来源投影到自己的物理字段，再交给原地址副作用及并行读写区消费者，没有另一份读写表。Access::Initialized在同一合同内保留本次输出必需位置和被调自身的实际初始化事实；它不表示载荷读取，也不允许调用者用借用前的旧值充当write完成。
 
-源码节选：`crates/blanguage/src/check/view_contracts.rs:13`。
+源码节选：`crates/blanguage/src/check/view_contracts.rs:16`。
 
 ```rust
 pub(super) enum Access {
@@ -1895,7 +1895,7 @@ pub(super) enum Position {
 
 不可变view游标保留原view的活动借用，并以同一OwnedBinding保存该行内容的事实。view地址与长度的三分量语义身份、行寄存器、实际步长与字段字节偏移共同标识位置；固定字段和静态数组分量的重复读取取得同一内容来源。每次建立游标时，各字段具有自己的未知值身份，短路条件中尚未读取的一侧也沿这份身份合流。实际CPU／GPU装载仍读取原地址，字段值、资源借用和最后消费者的生命周期分别保持。一般动态数组分量的重复选择关系仍是独立能力缺口。
 
-循环与普通调用都保持这份原来源。循环出口先去掉直接自身边，识别直接不变输入，再用原resolve把这些输入代入其他来源定义。完整Borrow与入口相同的地址／view或资源槽按实际成立条件交回入口；改变的来源、条件和存储版本继续引用原循环关系。每个返回出口先在本出口的路径、值与初始化关系内改名，再参加原返回合流。函数合同只据真实输入和最终合流输出命名，不把私有出口别名汇成全函数表。普通write／inout调用先消费被调用方原写回合同，再代入本次实参。原合同已经闭合时，即使实参仍带有调用方自己的待求解关系，也不再生产一个新的未知调用结果；真正缺失或未闭合的合同仍由原调用图收敛。这样保留真实依赖，同时避免把已知来源丢掉后反复重建。
+循环与普通调用都保持这份原来源。循环出口先去掉直接自身边，识别直接不变输入，再用原resolve把这些输入代入其他来源定义。完整Borrow与入口相同的地址／view或资源槽按实际成立条件交回入口；改变的来源、条件和存储版本继续引用原循环关系。每个返回出口先在本出口的路径、值与初始化关系内改名，再参加原返回合流。函数合同只据真实输入和最终合流输出命名，不把私有出口别名汇成全函数表。资源输出以原根资源槽及逐层元素字段路径命名；原CallResult、来源命名、回写与地址快照直接消费这条路径，不再先压成遍历序号再重复枚举完整类型。根槽仍由原实际返回类型确定，空集合、未活动变体、真实借用、位置和最后释放继续由原合同交接；该编译期身份不成为运行时资源或另一张登记表。普通write／inout调用先消费被调用方原写回合同，再代入本次实参。原合同已经闭合时，即使实参仍带有调用方自己的待求解关系，也不再生产一个新的未知调用结果；真正缺失或未闭合的合同仍由原调用图收敛。这样保留真实依赖，同时避免把已知来源丢掉后反复重建。
 
 模块合同编码保留Inactive占位键，用它区别某个变体载荷已知没有view与来源尚未知。没有实际所有者的占位条件写为true，不授予任何资源、地址或初始化权限；真实来源的条件仍由原Condition编码规整。旧对象经同一解码／编码交接，链接器继续精确比较合同，不增加推导或忽略字段。
 
@@ -2672,7 +2672,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1592`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1593`。
 
 ```rust
             if !frame.contains(&name) {
