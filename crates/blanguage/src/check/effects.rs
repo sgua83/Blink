@@ -50,10 +50,25 @@ impl Builder<'_> {
                 if root == name {
                     let ty = root_ty.clone();
                     let components = (0..ty.components.len()).map(|i| vec![i]).collect();
-                    Ok(Some((ty, components)))
-                } else {
-                    Ok(None)
+                    return Ok(Some((ty, components)));
                 }
+                if let Some(Binding::Owned(source)) = self.env.get(root)
+                    && let Place::ApplicationElement { identity: source_id, words: source_words, index_range: source_range, .. } = &source.place
+                    && let Some(owner) = owner
+                    && let Place::ApplicationElement { identity, words, index_range, .. } = owner.storage()
+                    && source_id == identity
+                {
+                    let overlaps = source_range.0 <= index_range.1 && index_range.0 <= source_range.1;
+                    let components = source_words.iter().map(|word| {
+                        if !overlaps { Vec::new() }
+                        else if matches!(owner, Place::ApplicationElement { .. }) {
+                            words.iter().enumerate().filter_map(|(i, target)| (target == word).then_some(i)).collect()
+                        } else if words.contains(word) { (0..owner.ty().components.len()).collect() }
+                        else { Vec::new() }
+                    }).collect();
+                    return Ok(Some((source.place.ty().clone(), components)));
+                }
+                Ok(None)
             }
             ExprKind::Member(base, field) => {
                 let Some((ty, components)) =
@@ -352,6 +367,16 @@ impl Builder<'_> {
         &'a self,expr:&Expr,writes:&[Write<'_>],
     )->Result<Option<(&'a application::Data,Option<u32>,ComponentProjection)>> {
         match &expr.kind {
+            ExprKind::Name(name)=>{
+                let Some(Binding::Owned(owner))=self.env.get(name)else{return Ok(None);};
+                let Place::ApplicationElement{identity,words,index_range,..}=&owner.place else{return Ok(None);};
+                let Some(data)=self.env.values().flat_map(Binding::application_resources)
+                    .find(|data|data.root.identity()==*identity)else{return Ok(None);};
+                let components=words.iter().map(|word|data.ty.components.iter().enumerate()
+                    .filter_map(|(i,(_,offset))|(word==offset).then_some(i)).collect()).collect();
+                let index=(index_range.0==index_range.1).then_some(index_range.0);
+                Ok(Some((data,index,(owner.place.ty().clone(),components))))
+            },
             ExprKind::Index(base,index)=>{
                 if let Some(data)=self.written_application_data(base) {
                     if data.ty.owns_resources(){return Ok(None);}

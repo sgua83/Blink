@@ -3560,10 +3560,7 @@ impl<'a> Builder<'a> {
             initialization.clear();
         }
         let environment = self.env.clone();
-        let mut writes=self.loop_writes(None,body,borrowed,initial)?;
-        writes.locals.insert(slot);
         self.enter_loop(&environment);
-        self.loop_contexts.last_mut().unwrap().writes=writes;
         self.configure_initial_loop(initial, Some(name.clone()), Some(begin.clone()));
         self.prepare_view_loop();
         self.loop_contexts.last_mut().unwrap().outer=std::mem::take(&mut self.code);
@@ -3652,6 +3649,9 @@ impl<'a> Builder<'a> {
             Binding::Value(body_cursor.clone())
         };
         self.env.insert(name.clone(), binding);
+        let mut writes=self.loop_writes(None,body,borrowed,initial)?;
+        writes.locals.insert(slot);
+        self.loop_contexts.last_mut().unwrap().writes=writes;
         self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(&test,&self.env,Some(body_cursor));
         let iteration = match self.env.get(&name) {
             Some(Binding::Value(value)) => ownership::ApplicationIndex::of(value),
