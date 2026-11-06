@@ -3049,7 +3049,9 @@ impl Builder<'_> {
     }
     pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],update:ElementUpdate<'_>){
         let names=self.env.keys().cloned().collect::<Vec<_>>();
-        let one=matches!(&update,ElementUpdate::Element{range:Some((0,0)),..}).then(||self.constant(Scalar::U32,1));
+        let range=match &update{ElementUpdate::Element{range,..}=>*range,_=>None};
+        let one=(range==Some((0,0))).then(||self.constant(Scalar::U32,1));
+        let selected=range.map(|(a,b)|bounds::Condition::paths(bounds::Clause::values([(Scalar::U32,ValueIdentity::ElementIndex(0),&bounds::Proof::unsigned(a,b))]),bounds::Clause::default()));
         for name in names{
             let mut binding=self.env[&name].clone();
             each_binding_data(&mut binding,&mut |_,_,data|{
@@ -3088,12 +3090,11 @@ impl Builder<'_> {
                 };
                 let truth=complete.truth_in(&self.path);
                 if truth!=Some(true){
-                    let mut common=updated.clone();
-                    for component in &components{
-                        let proof=bounds::Proof::common(&self.value_component(&updated,*component),&self.value_component(&old,*component),None,None);
-                        common.proof.assign(&[*component],old.regs.len(),proof);
-                    }
-                    if truth==Some(false){updated=common;}else{updated.proof.join_condition(&common.proof,old.regs.len(),Some(&complete));}
+                    let mut common=updated.proof.clone();
+                    let mut proof=updated.proof.project(&components,old.regs.len());
+                    proof.join_condition(&old.proof.project(&components,old.regs.len()),components.len(),selected.as_ref());
+                    common.assign(&components,old.regs.len(),proof);
+                    if truth==Some(false){updated.proof=common;}else{updated.proof.join_condition(&common,old.regs.len(),Some(&complete));}
                 }
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
                 for(component,origins)in updated.proof.origins.iter_mut().enumerate(){
