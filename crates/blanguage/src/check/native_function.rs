@@ -618,7 +618,7 @@ impl Builder<'_> {
                     if p.access==Access::Write||p.access==Access::InOut&&outputs::declared(d,index){
                         written_data.push((index,reference.clone()));
                     }
-                    if p.access.writes(){self.invalidate_application_contents(&reference);}
+                    if p.access.writes(){self.update_application_contents(&reference,&reference.words(),application::ElementUpdate::Unknown);}
                     let descriptor=Self::borrowed_dataset_parameter_type(p.access,d.execution);
                     let dataset_borrow=if descriptor.components[0].0==Scalar::U64 && reference.root.ty.components[0].0==Scalar::U32 {
                         let frame=self.application_frame(span)?;
@@ -1623,6 +1623,7 @@ fn build_domain(
         write_regions,
         length_requirements: signature.length_requirements.clone(),
         outputs: expanded.outputs,
+        elements: expanded.elements,
     };
     let mut start = 0;
     let mut required = signature.prefix_requirements.clone();

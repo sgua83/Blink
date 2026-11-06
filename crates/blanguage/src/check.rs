@@ -8,6 +8,7 @@ mod address;
 mod array;
 mod atomic;
 mod bounds;
+pub(crate) use bounds::Proof;
 mod compact;
 mod callback;
 mod constant;
@@ -337,6 +338,7 @@ struct ExpandedDomain {
     program: Program,
     calls: Vec<DomainCall>,
     outputs: Vec<crate::module::domain::Output>,
+    elements: BTreeMap<usize, bounds::Proof>,
 }
 pub(crate) fn compile_program(
     world: &World,
@@ -492,7 +494,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
         functions,
     )?;
     program.source_stages = program.stages.len();
-    Ok(ExpandedDomain { program, calls, outputs: facts.outputs })
+    Ok(ExpandedDomain { program, calls, outputs: facts.outputs, elements: facts.elements })
 }
 fn expand_program(
     world: &World,
@@ -836,10 +838,8 @@ fn expand_stages(
                     cross_access: b.cross_access.into_iter().collect(),
                 };
                 for (&binding, written) in &stage.write_regions {
-                    for &(start, end) in written { facts.written(program, binding, start, end); }
-                }
-                if let Some(proof) = element_ranges {
-                    facts.elements.insert(*domain, proof);
+                    let output = if binding == *domain { element_ranges.as_ref() } else { None };
+                    for &(start, end) in written { facts.written(program, binding, start, end, output); }
                 }
                 for relation in appended {
                     facts.grant(relation);
@@ -1166,10 +1166,11 @@ fn expand_stages(
                     let before = facts.relations();
                     let mut write_regions = BTreeMap::new();
                     for (logical, written) in contract.write_regions {
-                        write_regions.entry(bindings[logical]).or_insert_with(BTreeSet::new).extend(written);
-                    }
-                    for (&binding, written) in &write_regions {
-                        for &(start, end) in written { facts.written(program, binding, start, end); }
+                        let binding = bindings[logical];
+                        for &(start, end) in &written {
+                            facts.written(program, binding, start, end, contract.elements.get(&logical));
+                        }
+                        write_regions.entry(binding).or_insert_with(BTreeSet::new).extend(written);
                     }
                     facts.outputs.extend(contract.outputs.into_iter().map(|mut output| {
                         output.binding = bindings[output.binding];

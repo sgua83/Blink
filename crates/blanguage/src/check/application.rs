@@ -44,6 +44,12 @@ impl Binding {
         match self {Self::ApplicationData(data)=>vec![data],Self::DataReference(data)=>vec![&data.data],Self::OwnedValue(value)=>value.resources(),_=>Vec::new()}
     }
 }
+// 更新描述只属于原共同元素模型，不成为运行期状态。
+pub(super) enum ElementUpdate<'a> {
+    Unknown,
+    Element { proof: &'a bounds::Proof, range: Option<(u32, u32)> },
+    WholeRanges(&'a bounds::Proof),
+}
 // 动态数组借用携带实际可能的资源叶；这些来源只用于编译期别名和存活期。
 #[derive(Clone)]
 pub(super) struct DataReference {
@@ -1218,7 +1224,7 @@ impl Builder<'_> {
         self.view_uses.invocation(span);
         retained.union(&self.view_uses.all(self,&[]));
         self.application_movable(&data, &retained, span)?;
-        let elements = if fill.ty.owns_resources() {
+        if fill.ty.owns_resources() {
             let exact = data.length.minimum() == data.length.maximum()
                 && length.minimum() == length.maximum()
                 && data.length.maximum().checked_add(1) == Some(length.minimum());
@@ -1228,17 +1234,17 @@ impl Builder<'_> {
             if !exact && !offset {
                 return self.fail(args[1].span, "B224", "拥有填充值只能移动到已证明不回绕且恰好新增的一项，不能广播复制或截短拥有元素");
             }
-            let incoming = self.capture_element_model(&data, &[], returned);
-            if data.length.maximum() == 0 { incoming } else {
-                let mut previous = data.elements;
-                if let Some(value)=previous.view_value_mut(){
-                    let present=bounds::Condition::selected(ownership::ApplicationIndex::of(&data.length),0).negate();
-                    value.proof.under_path(&value.ty,&present.assume(&bounds::Clause::default(),true));
-                }
-                previous.join(*incoming,true);
-                previous
+        }
+        let incoming = self.capture_element_model(&data, &[], returned);
+        let elements = if data.length.maximum() == 0 { incoming } else {
+            let mut previous = data.elements;
+            if let Some(value)=previous.view_value_mut(){
+                let present=bounds::Condition::selected(ownership::ApplicationIndex::of(&data.length),0).negate();
+                value.proof.under_path(&value.ty,&present.assume(&bounds::Clause::default(),true));
             }
-        } else { self.unknown_element_model(&data.ty) };
+            previous.join(*incoming,true);
+            previous
+        };
         let (slots, storage) = self.local_slots(&fill.ty);
         let origin = Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetResizeFill,
@@ -1999,12 +2005,25 @@ impl Builder<'_> {
             if buffer.count.is_some() && buffer.count != value.count {
                 return self.fail(span, "B167", "调用方没有交付函数需要的数据形状");
             }
-            if buffer.access.writes() {
-                self.invalidate_application_contents(value);
-            }
         }
         for (value, uniform) in uniforms.iter().zip(&interface.uniforms) {
             self.require_same(&uniform.ty, &value.ty, span)?;
+        }
+        for (&binding, written) in &interface.write_regions {
+            let reference = &data[binding];
+            let ty = &interface.buffers[binding].ty;
+            let components = ty.components.iter().enumerate().filter_map(|(i, (scalar, word))|
+                written.iter().any(|&(start, end)| u64::from(*word) < u64::from(end)
+                    && u64::from(start) < u64::from(*word) + u64::from(scalar.size())).then_some(i)
+            ).collect::<Vec<_>>();
+            let offset = reference.element_layout().0;
+            let words = components.iter().map(|&i| offset + ty.components[i].1).collect::<Vec<_>>();
+            let output = interface.elements.get(&binding).map(|proof| proof.project(&components, ty.components.len()));
+            let update = match &output {
+                Some(proof) => ElementUpdate::WholeRanges(proof),
+                None => ElementUpdate::Unknown,
+            };
+            self.update_application_contents(reference, &words, update);
         }
         self.initialize_application_domain(&interface, &data);
         let frame = self.application_frame(span)?;
@@ -2880,8 +2899,9 @@ impl Builder<'_> {
         }
         result
     }
-    pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],fresh:Option<&bounds::Proof>,index_range:Option<(u32,u32)>){
-        let names=self.env.keys().cloned().collect::<Vec<_>>();let one=(index_range==Some((0,0))).then(||self.constant(Scalar::U32,1));
+    pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],update:ElementUpdate<'_>){
+        let names=self.env.keys().cloned().collect::<Vec<_>>();
+        let one=matches!(&update,ElementUpdate::Element{range:Some((0,0)),..}).then(||self.constant(Scalar::U32,1));
         for name in names{
             let mut binding=self.env[&name].clone();
             each_binding_data(&mut binding,&mut |_,_,data|{
@@ -2899,7 +2919,7 @@ impl Builder<'_> {
                     }
                 }}}
                 updated.proof=bounds::Proof::capture(&old).at_call(&bindings);
-                let written=if let Some(fresh)=fresh{
+                let written=if let ElementUpdate::Element{proof:fresh,..}=&update{
                     let mut bindings=self.element_owner_bindings(data);
                     for(index,component)in components.iter().enumerate(){
                         let proof=fresh.project(&[index],components.len());
@@ -2911,7 +2931,13 @@ impl Builder<'_> {
                     fresh.at_call(&bindings)
                 }else{bounds::Proof::default()};
                 updated.proof.assign(&components,old.regs.len(),written);
-                let complete=match &one{Some(one)=>bounds::Condition::constant(unique).logical(complete_scope,false).logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false),None=>bounds::Condition::constant(false)};
+                if let ElementUpdate::WholeRanges(proof)=&update {
+                    updated.proof.assign_ranges(&components,old.regs.len(),proof);
+                }
+                let complete=match &update {
+                    ElementUpdate::WholeRanges(_)=>bounds::Condition::constant(unique).logical(complete_scope,false),
+                    _=>match &one{Some(one)=>bounds::Condition::constant(unique).logical(complete_scope,false).logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false),None=>bounds::Condition::constant(false)},
+                };
                 let truth=complete.truth_in(&self.path);
                 if truth!=Some(true){
                     let mut common=updated.clone();
@@ -2920,6 +2946,11 @@ impl Builder<'_> {
                         common.proof.assign(&[*component],old.regs.len(),proof);
                     }
                     if truth==Some(false){updated=common;}else{updated.proof.join_condition(&common.proof,old.regs.len(),Some(&complete));}
+                }
+                updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
+                for(component,origins)in updated.proof.origins.iter_mut().enumerate(){
+                    let identity=ValueIdentity::ElementComponent(updated.regs[component]);
+                    if !origins.contains(&identity){origins.push(identity);}
                 }
                 updated.proof.retain_view_borrows(&updated.ty);
                 match data.elements.as_mut(){

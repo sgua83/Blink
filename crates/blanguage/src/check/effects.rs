@@ -252,7 +252,7 @@ impl Builder<'_> {
             let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
                 data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
             )).collect::<Vec<_>>();
-            for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,None,None);}
+            for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
         }else{
             for write in writes {
                 let changed=match write {
@@ -264,7 +264,7 @@ impl Builder<'_> {
                     )),
                     _=>None,
                 };
-                if let Some((source,resource,words))=changed{self.update_application_elements(&[source],&resource,&words,None,None);}
+                if let Some((source,resource,words))=changed{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
             }
         }
         let resources: Vec<_> = self

@@ -16,6 +16,7 @@ pub(crate) struct Interface {
     pub uniforms: Vec<Uniform>,
     pub length_requirements: Vec<(usize, usize)>,
     pub outputs: Vec<Output>,
+    pub elements: std::collections::BTreeMap<usize, crate::check::Proof>,
 }
 pub(crate) fn symbol(name: &str, target: Target) -> String {
     format!(
@@ -35,5 +36,6 @@ super::codec::record!(Interface {
     write_regions,
     uniforms,
     length_requirements,
-    outputs
+    outputs,
+    elements
 });

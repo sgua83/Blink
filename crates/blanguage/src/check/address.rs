@@ -655,7 +655,7 @@ impl Builder<'_> {
         if external_memory(&borrow) {
         let data=self.env.values().flat_map(Binding::application_resources)
             .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
-        for data in data {self.invalidate_application_contents(&data);}
+        for data in data {self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown);}
         for binding in self.env.values_mut() {
             if let Some((proof,uniform,owner))=binding.proof_storage() {
                 proof.forget_value(&(0..owner.ty().components.len()).collect::<Vec<_>>(),owner.ty().components.len());
@@ -674,7 +674,7 @@ impl Builder<'_> {
                 _=>None,
             }
         }).collect::<Vec<_>>();
-        for(resource,words)in data {self.update_application_elements(&[],&resource,&words,None,None);}
+        for(resource,words)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Unknown);}
         let positions=self.address_write_positions(&borrow);
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;

@@ -347,7 +347,7 @@ impl ScalarRanges {
     }
 }
 #[derive(Clone, Default)]
-pub(super) struct Proof {
+pub(crate) struct Proof {
     // 首项是实际来源，其余是当前路径已经证明相等的快照。
     pub(super) origins: Vec<Vec<ValueIdentity>>,
     conditions: Vec<Option<Box<Condition>>>,
@@ -364,6 +364,19 @@ impl Proof {
     // 阶段完成只交接所有元素共有的数值范围，旧寄存器、路径及借用不跨阶段。
     pub(super) fn scalar_ranges(&self) -> Self {
         Self { ranges: self.ranges.clone(), ..Self::default() }
+    }
+    pub(super) fn assign_ranges(&mut self, components: &[usize], width: usize, fresh: &Self) {
+        self.ranges.resize_with(width, ScalarRanges::default);
+        for (source, &component) in components.iter().enumerate() {
+            self.ranges[component] = fresh.range_set(source);
+        }
+    }
+    fn constrain_ranges(&mut self, other: &Self, width: usize) {
+        self.ranges.resize_with(width, ScalarRanges::default);
+        for component in 0..width {
+            self.ranges[component] = self.range_set(component).combine(&other.range_set(component),
+                |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
+        }
     }
     pub(super) fn assume_same_length(&mut self, other: &Self) {
         self.origins.resize_with(self.origins.len().max(1), Vec::new);
@@ -979,7 +992,7 @@ impl Proof {
             domains: components.iter().map(|&i| self.domains(i)).collect(),
         }
     }
-    pub fn condition(condition: Condition) -> Self {
+    pub(super) fn condition(condition: Condition) -> Self {
         Self {
             conditions: vec![Some(Box::new(condition))],
             ..Self::default()
@@ -991,7 +1004,7 @@ impl Proof {
             ..Self::default()
         }
     }
-    pub fn with_domains(mut self, mut domains: Domains) -> Self {
+    pub(super) fn with_domains(mut self, mut domains: Domains) -> Self {
         // 存储版本更换资源域，数值仍是实际同一份长度快照。
         domains.extend(self.domains(0).into_iter().filter(numeric_domain));
         self.domains = vec![domains];
@@ -1026,7 +1039,7 @@ impl Proof {
         self.origins.resize_with(self.origins.len().max(component+1),Vec::new);
         self.origins[component]=vec![identity];self
     }
-    pub fn with_identity(mut self, identity: ValueIdentity) -> Self {
+    pub(super) fn with_identity(mut self, identity: ValueIdentity) -> Self {
         let mut origins = self.origins.first().cloned().unwrap_or_default();
         origins.retain(|origin| *origin != identity);
         origins.insert(0, identity);
@@ -1060,7 +1073,7 @@ impl Proof {
     fn range_set(&self, component: usize) -> ScalarRanges {
         self.ranges.get(component).cloned().unwrap_or_default()
     }
-    pub fn cast(value: &Value, target: Scalar) -> Self {
+    pub(super) fn cast(value: &Value, target: Scalar) -> Self {
         let mut proof = Self::capture(value);
         for (i, &(source, _)) in value.ty.components.iter().enumerate() {
             if source == target { continue; }
@@ -1088,7 +1101,7 @@ impl Proof {
         }
         proof
     }
-    pub fn capture(value: &Value) -> Self {
+    pub(super) fn capture(value: &Value) -> Self {
         let mut proof = value.proof.clone();
         proof.ranges = (0..value.regs.len()).map(|i| {
             value.component_ranges(i)
@@ -1104,7 +1117,7 @@ impl Proof {
             .collect();
         proof
     }
-    pub fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
+    pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
         let mut proof=Self::capture(a);let mut other=Self::capture(b);
         let aliases=[Clause::facts(proof.facts(&a.ty)),Clause::facts(other.facts(&b.ty))];
         for(component,(scalar,_))in a.ty.components.iter().enumerate(){
@@ -1122,7 +1135,7 @@ impl Proof {
         proof.join_condition(&other,a.regs.len(),choice);
         proof
     }
-    pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
+    pub(super) fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
         let width = a.regs.len().max(b.regs.len());
         if width == 1 {
             return Self::condition(Condition::comparison(op, a, b));
@@ -1247,7 +1260,7 @@ impl Proof {
             }
         }
     }
-    pub fn append(&mut self, value: &Value) {
+    pub(super) fn append(&mut self, value: &Value) {
         if !self.addresses.is_empty()||!value.proof.addresses.is_empty(){self.addresses.resize_with(self.origins.len(),||None);self.addresses.extend((0..value.regs.len()).map(|i|value.proof.addresses.get(i).cloned().flatten()));}
         self.views.extend((0..value.regs.len()).map(|i| value.proof.view_borrow(i)));
         self.conditions
@@ -3871,6 +3884,7 @@ impl Builder<'_> {
         }
     }
     pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg]) -> (Proof, bool) {
+        let mut stored = None;
         for binding in self.env.values_mut() {
             let Some((proof, uniform, owner)) = binding.proof_storage() else {
                 continue;
@@ -3885,27 +3899,37 @@ impl Builder<'_> {
                     proof.origins[*component].push(ValueIdentity::Register(*reg));
                 }
             }
-            return (proof.project(&components, width), *uniform);
+            stored = Some((proof.project(&components, width), *uniform));
+            break;
         }
-        let snapshots=regs.iter().map(|reg|self.application_read_snapshot(*reg)).collect::<Vec<_>>();
-        let mut proof=match self.application_element_proof(place,&snapshots){
-            Some(proof)=>proof,
-            None=>self.projected_owned_proof(place,Some(regs)).unwrap_or_default(),
-        };
-        if matches!(place,Place::ApplicationElement{..}){
-            proof.origins.resize_with(regs.len(),Vec::new);
-            for(origins,snapshot)in proof.origins.iter_mut().zip(snapshots){
-                let identity=ValueIdentity::Register(snapshot);
-                origins.retain(|origin|*origin!=identity);
-                origins.insert(0,identity);
+        match place {
+            Place::ApplicationElement { .. } => {
+                let snapshots = regs.iter().map(|reg| self.application_read_snapshot(*reg)).collect::<Vec<_>>();
+                let common = self.application_element_proof(place, &snapshots);
+                let mut proof = match (stored, common) {
+                    (Some((mut proof, _)), Some(common)) => {
+                        proof.constrain_ranges(&common, regs.len());
+                        proof
+                    }
+                    (Some((proof, _)), None) | (None, Some(proof)) => proof,
+                    (None, None) => self.projected_owned_proof(place, Some(regs)).unwrap_or_default(),
+                };
+                proof.origins.resize_with(regs.len(), Vec::new);
+                for (origins, snapshot) in proof.origins.iter_mut().zip(snapshots) {
+                    let identity = ValueIdentity::Register(snapshot);
+                    origins.retain(|origin| *origin != identity);
+                    origins.insert(0, identity);
+                }
+                (self.path_proof(place.ty(), proof), false)
             }
-            return (self.path_proof(place.ty(),proof),false);
+            _ => match stored {
+                Some(stored) => stored,
+                None => (self.projected_owned_proof(place, Some(regs)).unwrap_or_default(), false),
+            },
         }
-        (proof,false)
     }
-    pub(super) fn invalidate_application_contents(&mut self, data: &application::DataReference) {
-        let changed = data.words();
-        self.update_application_elements(&data.sources,&view::resource_borrow(&data.data),&changed,None,None);
+    pub(super) fn update_application_contents(&mut self, data: &application::DataReference, changed: &[u32], update: application::ElementUpdate<'_>) {
+        self.update_application_elements(&data.sources,&view::resource_borrow(&data.data),changed,update);
         for binding in self.env.values_mut() {
             let Some((proof, uniform, owner)) = binding.proof_storage() else {
                 continue;
@@ -3925,12 +3949,12 @@ impl Builder<'_> {
         }
     }
     pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
-        if let Place::ApplicationElement{sources,resource,words,index_range,..}=place {self.update_application_elements(sources,resource,words,Some(&fresh),Some(*index_range));}
+        if let Place::ApplicationElement{sources,resource,words,index_range,..}=place {self.update_application_elements(sources,resource,words,application::ElementUpdate::Element{proof:&fresh,range:Some(*index_range)});}
         if let Place::Indexed{locations,..}=place && let Place::ApplicationElement{sources,resource,..}=place.storage() {
             for(component,position)in locations.iter().enumerate(){
                 let mut selected=BTreeSet::new();owned_borrows::positions(position,&mut selected);
                 let proof=fresh.project(&[component],place.ty().components.len());
-                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,resource,&[word],Some(&proof),None);}
+                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,resource,&[word],application::ElementUpdate::Element{proof:&proof,range:None});}
             }
         }
         let positions=if place.ty().contains_borrows(){self.positions(place)}else{Vec::new()};

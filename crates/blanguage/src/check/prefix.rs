@@ -13,14 +13,22 @@ impl Facts {
             elements: BTreeMap::new(),
         }
     }
-    pub fn written(&mut self, program: &Program, binding: usize, start: u32, end: u32) {
-        if let Some(proof) = self.elements.get_mut(&binding) {
+    pub fn written(&mut self, program: &Program, binding: usize, start: u32, end: u32, output: Option<&bounds::Proof>) {
+        let proof = match output {
+            Some(_) => Some(self.elements.entry(binding).or_default()),
+            None => self.elements.get_mut(&binding),
+        };
+        if let Some(proof) = proof {
             let ty = &program.buffers[binding].ty;
             let components = ty.components.iter().enumerate()
                 .filter_map(|(i, (scalar, offset))| (u64::from(*offset) < u64::from(end)
                     && u64::from(start) < u64::from(*offset) + u64::from(scalar.size())).then_some(i))
                 .collect::<Vec<_>>();
-            proof.forget_value(&components, ty.components.len());
+            if let Some(output) = output {
+                proof.assign_ranges(&components, ty.components.len(), &output.project(&components, ty.components.len()));
+            } else {
+                proof.forget_value(&components, ty.components.len());
+            }
         }
         for (scope, _) in &mut self.scopes {
             scope.retain(|r| r.count.binding != binding
