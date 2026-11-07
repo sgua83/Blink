@@ -170,8 +170,8 @@ impl ApplicationLoads<'_, '_> {
         match call.arguments.get(1) {Some(CallArgument::Value{values,..})=>values.first().copied(),_=>None}
     }
     fn local_source(&self,at:usize,read:&Inst)->Option<Reg> {
-        let InstKind::LoadLocal(reg,slot)=&read.kind else{return None;};
-        if !self.code().nth(at)?.results().any(|result|result==*reg){return None;}
+        let InstKind::LoadLocal(_,slot)=&read.kind else{return None;};
+        if self.writes_local(self.code().nth(at)?,*slot){return None;}
         let(distance,write)=self.code().rev().skip(self.len()-at).enumerate().find(|(_,inst)|self.writes_local(inst,*slot))?;
         if self.loop_writes(at-distance-1,at,read){return None;}
         match &write.kind {InstKind::StoreLocal(_,value)=>Some(*value),_=>None}

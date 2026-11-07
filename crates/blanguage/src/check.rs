@@ -3893,10 +3893,10 @@ impl<'a> Builder<'a> {
         self.iterators.pop();
         self.loop_depth -= 1;
         if !initial && !bounds::seeks(body) {
-            if let Some(CursorSource::ApplicationData(data)) = &cursor_specification.data {
-                self.application_iteration_elements(&mut natural, data);
-            } else if cursor_specification.data.is_none() && begin.minimum() == 0 && begin.maximum() == 0 {
-                self.application_indexed_elements(&mut natural, &cursor, &limit);
+            match &cursor_specification.data {
+                Some(CursorSource::ApplicationData(data)) => self.application_iteration_elements(&mut natural, Some(data), &cursor, &limit),
+                None => self.application_iteration_elements(&mut natural, None, &cursor, &limit),
+                _ => {},
             }
         }
         let mut code = std::mem::take(&mut self.code);
