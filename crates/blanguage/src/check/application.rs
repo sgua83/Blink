@@ -241,17 +241,10 @@ impl ApplicationLoads<'_, '_> {
     fn byte_overlap(a:&std::ops::Range<u128>,b:&std::ops::Range<u128>)->bool {a.start<b.end&&b.start<a.end}
     fn store_overlaps(&self,read:&IndexedSource,read_word:u32,read_scalar:Scalar,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
         let IndexedSource::View{address,index,stride}=read else{return true;};
-        let position = |parts:[Reg;2]| -> Option<&ir::CallReference> {
-            let InstKind::Cast{src:low,..}=&self.definition(parts[0])?.1.kind else{return None;};
-            let InstKind::Cast{src:high,..}=&self.definition(parts[1])?.1.kind else{return None;};
-            let InstKind::Binary{op:ir::BinaryOp::ShiftRightLogical,a,b,..}=&self.definition(*high)?.1.kind else{return None;};
-            if self.constant(*b)!=Some(32)||!self.same(*low,*a){return None;}
-            let InstKind::PositionAddress{address,..}=&self.definition(*low)?.1.kind else{return None;};
-            Some(address)
-        };
         let mut selected=source;let mut written_word=u128::from(word);
         while let IndexedSource::Pointer{address,index,stride,..}=selected {
-            let Some(reference)=position(*address)else{break;};
+            let Some(pointer)=self.split_address(*address)else{break;};
+            let Some((_,Inst{kind:InstKind::PositionAddress{address:reference,..},..}))=self.definition(pointer)else{break;};
             let ir::CallStorage::Indexed(storage)=&reference.storage else{break;};
             let pointer_offset=if *stride==0{0}else{
                 let Some(index)=self.constant(*index)else{return true;};u128::from(index)*u128::from(*stride)
@@ -266,11 +259,13 @@ impl ApplicationLoads<'_, '_> {
             _=>return true,
         };
         if !self.same_address(*address,*other) {
-            // Stored Frame handles are owned children: dataset elements cannot
-            // contain views. Query their original loads, without extending this
-            // relation to the arbitrary native addresses used by loop effects.
-            if let(Some(a),Some(b))=(self.frame_root(*address),self.frame_root(*other))
-                &&(self.disjoint_roots(a,b)||self.frame_descendant(a,b)||self.frame_descendant(b,a)){return false;}
+            // A new allocation cannot alias a live input Frame. Other roots
+            // retain the strict owned-child relation; source offsets stay intact.
+            let roots=[*address,*other].map(|parts|self.frame_root(parts)
+                .or_else(||self.offset_position(parts).and_then(|(base,..)|self.frame_root(base))));
+            if let [Some(a),Some(b)]=roots && (self.disjoint_roots(a,b)
+                ||self.allocated(a)&&self.definition(b).is_none()||self.allocated(b)&&self.definition(a).is_none()
+                ||self.frame_descendant(a,b)||self.frame_descendant(b,a)){return false;}
             return true;
         }
         let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>value,None=>return true}};

@@ -108,7 +108,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "240f9f241c438c16b64f931ee56389fbeacb7cc493d44f5ee892f4606939b080"
+      "sha256": "b70848823e5466a6e949952b6a687ba23f434b00364fb0beb450f48b0350bbca"
     },
     {
       "path": "crates/blanguage/src/check/array.rs",
@@ -784,8 +784,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1168,
-      "end_line": 1175,
+      "start_line": 1163,
+      "end_line": 1170,
       "sha256": "8a7b8f27fb419ada395676d976de4acf83da085494b2022a32b38c04798b1b60"
     },
     {
@@ -796,8 +796,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1226,
-      "end_line": 1236,
+      "start_line": 1221,
+      "end_line": 1231,
       "sha256": "3cb75a1c70eb9812440ff1227b1b16e06857306422336a546f8119a04d12289f"
     },
     {
@@ -832,8 +832,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1604,
-      "end_line": 1637,
+      "start_line": 1599,
+      "end_line": 1632,
       "sha256": "c97c1a253937200545c15cc55eeba2a833b571b6860ee7370b04ed9e315a7345"
     },
     {
@@ -910,8 +910,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1566,
-      "end_line": 1603,
+      "start_line": 1561,
+      "end_line": 1598,
       "sha256": "879cedfbfbb92c1f910ad1188a84076645589b7537511842b97fcbc9d042c152"
     },
     {
@@ -976,14 +976,14 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 3432,
-      "end_line": 3436,
+      "start_line": 3427,
+      "end_line": 3431,
       "sha256": "193861ab4c55cede9471f1e79757d0a04cfefac9da2a73c8c1eb9adc909b54b2"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 3145,
-      "end_line": 3147,
+      "start_line": 3140,
+      "end_line": 3142,
       "sha256": "07712f649c25f9cf4a0c1892fd90ed60440191a512674923179380217891c624"
     },
     {
