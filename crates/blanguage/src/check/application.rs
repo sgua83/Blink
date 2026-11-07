@@ -297,8 +297,8 @@ impl ApplicationLoads<'_, '_> {
             };
         }
         if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,..}if access.writes()))||call.memory.iter().any(|effect|effect.access.writes()){return true;}
-        // Private completion updates Frame metadata; it does not write payload bytes.
-        if Self::pointer_call(call).is_some()||Self::allocation(call)||matches!(&call.target,CallTarget::External(name)if name.library==crate::application::RUNTIME_LIBRARY&&name.symbol.starts_with("blink_complete_")){return false;}
+        // Private completion and explicit transfers preserve payload values; storage and address lifetimes remain owned by Frame and the transfer checker.
+        if Self::pointer_call(call).is_some()||Self::allocation(call)||matches!(&call.target,CallTarget::External(name)if name.library==crate::application::RUNTIME_LIBRARY&&(name.symbol.starts_with("blink_complete_")||matches!(name.symbol.as_str(),"blink_upload"|"blink_download"))){return false;}
         match &call.target {
             CallTarget::Defined(name)=>!self.0.functions.writes_only_references(name),
             _=>true,
