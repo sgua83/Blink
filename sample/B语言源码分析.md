@@ -1415,7 +1415,7 @@ impl Access {
 
 CPU应用还可以用`dataset<T>(length,F)`逐项接收拥有元素。静态F在每个实际下标产生一份完整元素，元素的子dataset仍由原Frame持有；生成只保存元素载荷和子资源元数据，子资源实际位于CPU或GPU与此分别处理。长度已证明为零时没有元素消费者，`dataset<T>(0)`无需生成器；显式提供生成器仍检查真实签名但不调用，正长度或未知长度仍要求逐项产生拥有值。空序列沿原初始化与Frame关系交接，不建立假元素或第二拥有状态。退出时，检查器沿逆序元素读取调用原静态释放F，再释放外层存储，整份移动或返回不会复制拥有者。
 
-普通函数接收dataset时，元素的子资源位置必须来自实际输入，不能沿用类型模板的CPU初值。原位置合同用Field与Elements区分字段和共同元素，沿同一Data.elements遍历参数、实参和返回闭包；Elements不是元素零。记录、固定数组和活动变体中的子资源分别交接，空集合及非活动载荷不产生虚构来源，未知也不能当作CPU。原静态F、显式传输及真正的内容读取消费相应位置，Frame仍是唯一物理资源所有者；对象／归档保存的是同一编译合同，没有新增机器参数或运行时拥有表。普通只读借用的内部机器参数为32字节、对齐8：root:u64在偏移0、length:u32在8、stride:u64在16、offset:u32在24。原DataPayload.root的Scalar区分真实地址和Frame句柄；元数据与真实载荷消费相同来源。应用通过Frame::storage_address纯查询当前地址，CPU范围直接消费原绑定；GPU驻留数据只取length不等待或下载，读取载荷仍需原CPU位置合同。GPU设备地址不能被CPU解引用，借用和派生view仍保持到最后真实消费者。CPU范围消费已闭合被调函数的CPU／GPU位置合同；明确on cpu的同源普通函数在CPU范围沿原native_declaration／native_call编译和调用，Compute共享函数保持原内联选择；CPU范围中的已有view可按原长度关系复制或切片，非零起点使用真实64位步长；不要求额外application上下文，存储与最后消费者仍由原拥有者持有。view构造从原借用描述符取得真实步长，切片和装载消费同一表示，不再由域接口推断元素连续性。普通位置的requires contiguous仍由原合同负责；完整Frame资源操作仍沿原独立缺口推进。
+普通函数接收dataset时，元素的子资源位置来自实际输入。DataPayload::loop_compatible沿同一Data的ownership、Residency及elements递归交接实际生命周期，OwnedValue、ApplicationData和DataReference复用这一资源树查询。Use::At与已知一侧CPU／GPU的Use::Same沿原infer生产输入要求；equal_under的同一条件比较同时服务原输入要求生产与最终位置查询。canonical、local及调用采用复用scoped_indices按原资源深度绑定ElementIndex，保存真实选择；数值／借用失效继续重建其值模型，资源位置沿原拥有树交接，实际拥有赋值仍交接新位置。原位置合同用Field与Elements区分字段和共同元素，沿同一Data.elements遍历参数、实参和返回闭包；Elements不是元素零。记录、固定数组和活动变体中的子资源分别交接，空集合及非活动载荷不产生虚构来源，未知也不能当作CPU。原静态F、显式传输及真正的内容读取消费相应位置，Frame仍是唯一物理资源所有者；对象／归档保存的是同一编译合同，没有新增机器参数或运行时拥有表。普通只读借用的内部机器参数为32字节、对齐8：root:u64在偏移0、length:u32在8、stride:u64在16、offset:u32在24。原DataPayload.root的Scalar区分真实地址和Frame句柄；元数据与真实载荷消费相同来源。应用通过Frame::storage_address纯查询当前地址，CPU范围直接消费原绑定；GPU驻留数据只取length不等待或下载，读取载荷仍需原CPU位置合同。GPU设备地址不能被CPU解引用，借用和派生view仍保持到最后真实消费者。CPU范围消费已闭合被调函数的CPU／GPU位置合同；明确on cpu的同源普通函数在CPU范围沿原native_declaration／native_call编译和调用，Compute共享函数保持原内联选择；CPU范围中的已有view可按原长度关系复制或切片，非零起点使用真实64位步长；不要求额外application上下文，存储与最后消费者仍由原拥有者持有。view构造从原借用描述符取得真实步长，切片和装载消费同一表示，不再由域接口推断元素连续性。普通位置的requires contiguous仍由原合同负责；完整Frame资源操作仍沿原独立缺口推进。
 
 原B实参到ABI实参的关系直接归同一CallArgument。原native_call的源码调用完成点只属于传入真实实参AST的原调用：实际IR调用与写回输出完成后，先推进该源码点，再结束参数临时拥有者。生成的静态F、dataset初始化及归约调用没有原调用AST，不因共用诊断span推进外层源码状态；各自实际调用、来源及资源释放继续原职责。源码完成点不由生成调用代替，函数退出及资源完成继续归原所有者。拥有值进入释放时，原入口沿实际拥有子树／位置及完整dataset拥有者取得该点仍留在caller的view借用；原递归只消费这份借用与本树尚未执行F的关系，资源叶不再重复查询caller的view借用，真实游标／位置借用仍沿原入口检查。借出dataset内容和结束整个dataset拥有者分别交接；整树F随实际拥有者进入原释放树，内容投影仍保留真实外部消费者。拥有值的原Transfer沿真实存储位置交接分量；尚未落存储的整份OwnedValue以原完整类型及全部SSA寄存器对应同一实际值，再交给已有omitted与retained_component结束自身借用。其他绑定、未交付字段及真实后续F仍保持原借用。旧内容的F和资源仍由原释放路径结束，新输出写回同一位置，共同Data.elements不承载调用期间的局部未初始化状态；未交付字段F、跨元素F及已保存外部地址继续参与借用检查。运行时下标的固定拥有数组沿原Position::Indexed与Presence选择条件交接实际分量；调用者借用的原来源边只在未交付该分量的条件下保留，所选旧树继续原F与资源释放。不能将所有候选元素同时视为已交付，也不能省略未交付字段、跨元素F或已保存的外部地址。普通值元素的cleanup在原model只产生空借用，data入口直接交回，不先查询转移归属；非清理读取、静态F及嵌套拥有资源继续沿真实消费者交接。资源叶只消费已交付的实际释放树；原位置写回和作用域出口在原拥有者处结束对应状态，不按合流Data.root身份横向改写其他绑定，未选中元素保持原拥有与最后释放。ArgumentOrigin区分隐式Frame和被调B参数的零基序号／名称；原调用的Expr切片仅沿现有路由临时借用，在原native_call生产处取得真实Expression位置及上下文，向量引用分量共享材料，零分量保留参数关系。生成调用没有原实参语法时位置为空，其他C／运行库／域包装默认没有本叶材料，不从调用位置或寄存器猜补。Frame裁剪、克隆和原重映射处理同一记录；不重求值、不保留AST、不改变必要编码或实际资源完成。详见[实参与CallArgument](../Docs/BLanguage.md#普通调用b实参与实际callargument的来源)。
 
@@ -1445,7 +1445,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1189`。
+源码节选：`crates/blanguage/src/check/application.rs:1198`。
 
 ```rust
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1460,7 +1460,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 
 命名的match拥有载荷由owned_arm保留在原env绑定中，正常分支退出先调用既有drop_binding，待静态F、元素元数据读取和资源释放完成后才移出绑定。清理消费原拥有树及已求值位置，不让调用前已移动的旧来源代替正在清理的实际拥有者；实际已移出的字段与提前返回继续沿原出口处理，没有第二拥有表或释放路径。
 
-源码节选：`crates/blanguage/src/check/owned_values.rs:1052`。
+源码节选：`crates/blanguage/src/check/owned_values.rs:1050`。
 
 ```rust
     pub(super) fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
@@ -1479,7 +1479,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1247`。
+源码节选：`crates/blanguage/src/check/application.rs:1256`。
 
 ```rust
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1551,7 +1551,7 @@ CPU借用描述符的原步长表示也由application_reference_value交接：�
 
 直接写`rows[i].values.length`、在原范围成立时索引、构造view或取得只读地址，同样进入原只读模型。application_reference从声明可见的字段取得实际Place，view_place则接收临时生产者已经求出的dataset字段位置；二者共用owned_records::application_place_reference。该入口按实际存储所有者恢复原资源：普通拥有槽使用原候选树，Frame字段使用application_owned_argument读取实际Data.elements及所选元数据，不先读取整个父记录，不复制、移动或重新拥有子dataset。类型查询只识别声明可见的位置，实际资源恢复统一消费这个Place。for的拥有记录元素游标由Binding::Owned持有原ApplicationElement位置。read_expression_type直接查询这个位置的Ty，read_aggregate的Name分派复用application_owned_argument，按实际资源来源与布局经materialize_element装载一次元数据；原OwnedValue::borrow／unpack_record交接共享子资源，直接子遍历与read dataset形参消费同一来源。它不建立新拥有绑定，不改变普通复制、移动和释放。原下标只求值一次。子元数据是实际位置的一次装载，不是env中的独立拥有资源；view、原生调用与地址转换直接消费原Data.root.proof的借用来源。
 
-源码节选：`crates/blanguage/src/check/owned_values.rs:466`。
+源码节选：`crates/blanguage/src/check/owned_values.rs:464`。
 
 ```rust
         if let ExprKind::Name(name)=&expr.kind
@@ -1577,7 +1577,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
 
-源码节选：`crates/blanguage/src/check/application.rs:118`。
+源码节选：`crates/blanguage/src/check/application.rs:127`。
 
 ```rust
     fn code(&self)->impl DoubleEndedIterator<Item=&Inst> {
@@ -1587,7 +1587,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1627`。
+源码节选：`crates/blanguage/src/check/application.rs:1636`。
 
 ```rust
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
@@ -1772,7 +1772,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 Function::dataset_access在原inputs投影中只保留真实输入Data，随后把资源位置归一为原Derived符号指针，沿原地址出口与canonical发布。私有资源过滤后不产生外部写区，未知保持未知；原输入编号、逻辑布局与字节范围交给dataset_write_regions和lower_dataset_borrows，嵌套调用及源码缺席的对象／归档保持同一实际写。只读结论、原written值输出、拥有消费和最后释放继续原职责，不把Source调试名称、frame标志或参数权限当作另一写范围权威。
 
-源码节选：`crates/blanguage/src/check/application.rs:105`。
+源码节选：`crates/blanguage/src/check/application.rs:114`。
 
 ```rust
 pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->address::Origin {
@@ -1840,7 +1840,7 @@ pub(super) struct LoopWrites {
 
 take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。存活性消费时点由实际调用者选择；assign_application_element保持after(rhs.span)，普通assign_owned_storage及take_last各选择自身原after(span)。共用函数只消费已求值载荷及当前ViewUses，不把Frame元素旧内容的清理切换到新内容的后续读取；check_returned_type只借用Builder，不重选存活性。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
 
-源码节选：`crates/blanguage/src/check/application.rs:1589`。
+源码节选：`crates/blanguage/src/check/application.rs:1598`。
 
 ```rust
     pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
@@ -2177,7 +2177,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:3466`。
+源码节选：`crates/blanguage/src/check/application.rs:3475`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -2189,7 +2189,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 全局目标本身可以是借用输入，其真实根与长度和拥有资源进入同一element_owner_bindings。元素归属先使用原DataReference已经确定的唯一当前根；其余来源及真实嵌套关系，沿活动LoopContext已有映射查询各层作用域，不另造别名状态：
 
-源码节选：`crates/blanguage/src/check/application.rs:3208`。
+源码节选：`crates/blanguage/src/check/application.rs:3217`。
 
 ```rust
         let owner=view::resource_borrow(data);

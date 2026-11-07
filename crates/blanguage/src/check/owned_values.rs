@@ -84,9 +84,7 @@ impl OwnedValuePayload {
             && self.payloads.iter().zip(&other.payloads).all(|(a, b)| {
                 match (a.as_deref(), b.as_deref()) {
                     (Some(Returned::Dataset(a)), Some(Returned::Dataset(b))) => {
-                        a.ownership == b.ownership
-                            && (a.ownership == Ownership::Moved
-                                || inputs.same(&a.residency, &b.residency, source, span,path))
+                        a.loop_compatible(b,inputs,source,span,path)
                     }
                     (Some(Returned::OwnedValue(a)), Some(Returned::OwnedValue(b))) => {
                         a.loop_compatible(b, inputs, source, span,path)

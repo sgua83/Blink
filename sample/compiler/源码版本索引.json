@@ -108,7 +108,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "356c019015f48b770b173a06eea5e9eef0929a8dca3275a8e5a4e1faaa5470d2"
+      "sha256": "8fe2179e877ef2d95299f7265439b522b5efb2e5b6c0a750cb934fa75e848fea"
     },
     {
       "path": "crates/blanguage/src/check/array.rs",
@@ -160,7 +160,7 @@
     },
     {
       "path": "crates/blanguage/src/check/flow.rs",
-      "sha256": "2b73f51aa2c7d4b1b168143d2528d93c2a8b0506a0957ccf2685c18890e9bae0"
+      "sha256": "5fac0eb4328537581d55ddd5a81f8dc4377d3c9b071a2cfae1150f1adfba7181"
     },
     {
       "path": "crates/blanguage/src/check/generics.rs",
@@ -192,7 +192,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_values.rs",
-      "sha256": "30d7c581254df926cf70f3018ab42a653d7a611e96f6c8f3fd43b3ab92e8cba1"
+      "sha256": "87d5b25aa6323e2fb053a60759c2561049dbfad539ad9d6001396844558df019"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
@@ -212,7 +212,7 @@
     },
     {
       "path": "crates/blanguage/src/check/residency.rs",
-      "sha256": "44630b9f8a5a471185f5745327a0a2cfe5eca0fb66d96852ca91437cc760710f"
+      "sha256": "2606d8c26c2a9fdb3d5d8cf8e217b6957f17dddd53ce02ae073e860eda4e4387"
     },
     {
       "path": "crates/blanguage/src/check/results.rs",
@@ -784,20 +784,20 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1189,
-      "end_line": 1196,
+      "start_line": 1198,
+      "end_line": 1205,
       "sha256": "8a7b8f27fb419ada395676d976de4acf83da085494b2022a32b38c04798b1b60"
     },
     {
       "path": "crates/blanguage/src/check/owned_values.rs",
-      "start_line": 1052,
-      "end_line": 1065,
+      "start_line": 1050,
+      "end_line": 1063,
       "sha256": "8afb741a73fc558fdaed2808fb15a0cf5eb51257ad5c6c802afaf13538e4057f"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1247,
-      "end_line": 1257,
+      "start_line": 1256,
+      "end_line": 1266,
       "sha256": "3cb75a1c70eb9812440ff1227b1b16e06857306422336a546f8119a04d12289f"
     },
     {
@@ -820,20 +820,20 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_values.rs",
-      "start_line": 466,
-      "end_line": 474,
+      "start_line": 464,
+      "end_line": 472,
       "sha256": "3340ca22f49c50faf950060f08356847ad1e76476e611285ba7ed2417b1cd61f"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 118,
-      "end_line": 120,
+      "start_line": 127,
+      "end_line": 129,
       "sha256": "3086442727a4985b5702204bd585443816609b14fe837340bab8a3b72e8fa6a8"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1627,
-      "end_line": 1660,
+      "start_line": 1636,
+      "end_line": 1669,
       "sha256": "c97c1a253937200545c15cc55eeba2a833b571b6860ee7370b04ed9e315a7345"
     },
     {
@@ -880,8 +880,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 105,
-      "end_line": 111,
+      "start_line": 114,
+      "end_line": 120,
       "sha256": "800e6bbce8271725ef9696b992ada09fc9edbeb354389edc4f1e58f9127d2c23"
     },
     {
@@ -910,8 +910,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1589,
-      "end_line": 1626,
+      "start_line": 1598,
+      "end_line": 1635,
       "sha256": "879cedfbfbb92c1f910ad1188a84076645589b7537511842b97fcbc9d042c152"
     },
     {
@@ -976,14 +976,14 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 3466,
-      "end_line": 3470,
+      "start_line": 3475,
+      "end_line": 3479,
       "sha256": "193861ab4c55cede9471f1e79757d0a04cfefac9da2a73c8c1eb9adc909b54b2"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 3208,
-      "end_line": 3210,
+      "start_line": 3217,
+      "end_line": 3219,
       "sha256": "07712f649c25f9cf4a0c1892fd90ed60440191a512674923179380217891c624"
     },
     {

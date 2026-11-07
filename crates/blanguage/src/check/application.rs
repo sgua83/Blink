@@ -31,6 +31,15 @@ pub(super) struct DataPayload {
     pub prefixes: prefix::Fields,
 }
 impl DataPayload {
+    pub(super) fn loop_compatible(&self,other:&Self,inputs:&mut residency::Inputs,source:&Source,span:Span,path:&bounds::Clause)->bool {
+        self.ownership==other.ownership && (self.ownership==Ownership::Moved
+            || inputs.same(&self.residency,&other.residency,source,span,path)
+                && match(self.elements.as_ref(),other.elements.as_ref()){
+                    (returns::Returned::OwnedValue(a),returns::Returned::OwnedValue(b))=>a.loop_compatible(b,inputs,source,span,path),
+                    (returns::Returned::Dataset(a),returns::Returned::Dataset(b))=>a.loop_compatible(b,inputs,source,span,path),
+                    _=>true,
+                })
+    }
     pub(super) fn permits(&self, access: Access) -> bool {
         match self.access {
             Access::Atomic => access == Access::Atomic,
@@ -3481,7 +3490,14 @@ impl Builder<'_> {
                         let borrow=inner.root.proof.view_borrow(0);
                         inner.root=self.value_component(&updated,handle);inner.length=self.value_component(&updated,length);
                         inner.root.proof=std::mem::take(&mut inner.root.proof).with_identity(ValueIdentity::ElementComponent(handle)).with_view_borrow(0,borrow);
-                        if components.contains(&handle)||components.contains(&length){inner.elements=self.unknown_element_model(&inner.ty);}
+                        if components.contains(&handle)||components.contains(&length){
+                            // 数值失效不改变原资源位置；实际拥有赋值交接新位置。
+                            let mut elements=self.unknown_element_model(&inner.ty);
+                            residency::visit(&mut elements,&mut residency::Input::new(0),&mut|data,input|{
+                                if let Some(source)=residency::model_location(&inner.elements,&input.fields){data.residency=source.residency.clone();}
+                            });
+                            inner.elements=elements;
+                        }
                     }
                 }
                 }

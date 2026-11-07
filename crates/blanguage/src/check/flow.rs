@@ -457,9 +457,9 @@ impl Builder<'_> {
                     return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
                 }
             }
-            if let Binding::ApplicationData(data) = binding
-                && let Some(Binding::ApplicationData(before)) = entry.get(name)
-            {
+            let data=match binding{Binding::ApplicationData(data)=>Some(data),Binding::DataReference(data)=>Some(&data.data),_=>None};
+            let before=match entry.get(name){Some(Binding::ApplicationData(data))=>Some(data),Some(Binding::DataReference(data))=>Some(&data.data),_=>None};
+            if let(Some(data),Some(before))=(data,before) {
                 if before.ownership != data.ownership {
                     return self.fail(
                         span,
@@ -468,18 +468,12 @@ impl Builder<'_> {
                     );
                 }
                 if before.ownership != application::Ownership::Moved
-                    && !self.residency.same(
-                        &before.residency,
-                        &data.residency,
-                        &self.definition.source,
-                        span,
-                        &path,
-                    )
+                    && !before.loop_compatible(data,&mut self.residency,&self.definition.source,span,&path)
                 {
                     return self.fail(
                         span,
                         "B266",
-                        "循环继续前须归还入口相同的 CPU／GPU 存储位置；在循环内完成配对的显式传输",
+                        "循环继续前须归还入口及其拥有子资源相同的 CPU／GPU 存储位置；在循环内完成配对的显式传输",
                     );
                 }
             }
