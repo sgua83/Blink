@@ -589,13 +589,20 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 let(ty,value)=super::number(&self.definition.source,expr.span,number)?;
                 return Ok((ty==Ty::scalar(Scalar::U32)).then(||(ty,bounds::Proof::unsigned(value as u32,value as u32),view::Borrow::default())));
             },
-            ExprKind::Binary(op,a,b)if matches!(op.as_str(),"=="|"!=")=>{
+            ExprKind::Binary(op,a,b)if matches!(op.as_str(),"=="|"!="|"<"|"<="|">"|">=")=>{
                 if [a,b].into_iter().any(|expr|assigned_root(expr).is_some_and(|name|builder.mutable_names.contains(name))){return Ok(None);}
                 let(Some((left,a,_)),Some((right,b,_)))=(self.input_snapshot(a,limit,Access::Value)?,self.input_snapshot(b,limit,Access::Value)?)else{return Ok(None);};
                 if left!=Ty::scalar(Scalar::U32)||right!=left{return Ok(None);}
                 let operand=|proof:&bounds::Proof|proof.known_value(&left).map(|bits|bounds::Operand::Constant(Scalar::U32,bits[0])).or_else(||proof.known_identity(0).map(bounds::Operand::Value));
-                let(Some(a),Some(b))=(operand(&a),operand(&b))else{return Ok(None);};
-                let condition=bounds::Condition::index_equal(a,b);let condition=if op=="!="{condition.negate()}else{condition};
+                let(Some(left),Some(right))=(operand(&a),operand(&b))else{return Ok(None);};
+                let condition=match op.as_str(){
+                    "<"=>bounds::Condition::index_below((left,&a),(right,&b),true),
+                    "<="=>bounds::Condition::index_below((left,&a),(right,&b),false),
+                    ">"=>bounds::Condition::index_below((right,&b),(left,&a),true),
+                    ">="=>bounds::Condition::index_below((right,&b),(left,&a),false),
+                    "!="=>bounds::Condition::index_equal(left,right).negate(),
+                    _=>bounds::Condition::index_equal(left,right),
+                };
                 return Ok(Some((Ty::scalar(Scalar::Bool),bounds::Proof::condition(condition),view::Borrow::default())));
             },
             _=>{},
@@ -810,7 +817,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         let condition=left.unwrap_or_default().logical(right.unwrap_or_default(),op=="||");
                         (!condition.unconstrained()).then_some(condition)
                     },
-                    "=="|"!=" if self.builder.is_some()=>self.input_snapshot(expr,self.bindings.len(),Access::Value)?.and_then(|(ty,proof,_)|(ty==Ty::scalar(Scalar::Bool)).then(||proof.component_condition(0).cloned()).flatten()),
+                    "=="|"!="|"<"|"<="|">"|">=" if self.builder.is_some()=>self.input_snapshot(expr,self.bindings.len(),Access::Value)?.and_then(|(ty,proof,_)|(ty==Ty::scalar(Scalar::Bool)).then(||proof.component_condition(0).cloned()).flatten()),
                     _=>None,
                 };
             }
