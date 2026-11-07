@@ -1650,7 +1650,7 @@ fn function_parameters(
                         data.layout=application::DataLayout::Parameter{parameter:parameter_index,stride:value(stride,stride_scalar),offset:value(offset,Scalar::U32)};
                         Binding::ApplicationData(data)
                     }else{
-                        parameters.push(CallParameter::value(Ty::owned_dataset(data.ty.clone(),data.count)).with_origin(origin.clone()));
+                        parameters.push(CallParameter::value(Ty::owned_dataset((data.ty.clone()).syntax(),data.count)).with_origin(origin.clone()));
                         inputs.extend([data.root.regs[0],data.length.regs[0]]);
                         let data=b.application_bind(data,application::rebound(d.function.body.as_ref().unwrap(),&p.name));
                         Binding::ApplicationData(data)
@@ -1685,7 +1685,7 @@ fn function_parameters(
                 let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect::<Vec<_>>();
                 inputs.extend(&regs);parameters.push(CallParameter::value(ty.clone()).with_origin(origin.clone()));
                 let proof=bounds::Proof::default().view_parameters(&ty,&[],|i|ValueIdentity::Register(regs[i]));
-                let mut value=b.incoming_owned_value(Value{ty,regs,proof,literal:false,uniform:false,constant:None});
+                let mut value=b.incoming_owned_value(Value{ty,regs,proof,literal:false,uniform:false,constant:None})?;
                 value.borrow();residency::parameter(&mut value,parameter_index);
                 b.bind_owned_value(&p.name,value,p.span)?;continue;
             }
@@ -1735,7 +1735,7 @@ fn function_parameters(
                 let ty=place.ty().clone();let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect();
                 let proof=if p.access==Access::InOut{bounds::Proof::parameter_content(parameter_index,ty.components.len()).view_parameters(&ty,&[],|i|ValueIdentity::ParameterContent(parameter_index,i))}else{bounds::Proof::default()};
                 let value=Value{ty,regs,proof,uniform:false,literal:false,constant:None};
-                let returns::Returned::OwnedValue(mut value)=b.template_returned(value,p.access==Access::InOut)else{unreachable!()};
+                let returns::Returned::OwnedValue(mut value)=b.template_returned(value,p.access==Access::InOut)? else{unreachable!()};
                 if p.access==Access::InOut{residency::parameter(&mut value,parameter_index);}
                 value.place=Some(place);b.env.insert(p.name.clone(),Binding::OwnedValue(value));continue;
             }
@@ -1771,7 +1771,7 @@ fn function_parameters(
                 literal: false,
                 uniform: false,
                 constant: None,
-            });
+            })?;
             residency::parameter(&mut result, parameter_index);
             b.bind_owned_value(&p.name, result, p.span)?;
             continue;
@@ -1788,14 +1788,18 @@ fn function_parameters(
             }),
         );
     }
-    application::bind_parameter_elements(b,d);
+    let mut environment=std::mem::take(&mut b.env);
+    let element_paths=contracts::element_input_paths(b,d,&mut environment)?;
+    b.env=environment;
+    application::bind_parameter_elements(b,d,&element_paths);
     let resources=d.function.params.iter().enumerate().filter_map(|(index,p)|match b.env.get(&p.name){
         Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))),_=>None,
     }).collect();
     let environment=std::mem::take(&mut b.env);
     let requirements=contracts::resolve(b,d,&environment,&resources);b.env=environment;
     let requirements=requirements?;
-    contracts::assume(&mut b.env, &mut b.path, &requirements);
+    let mut environment=std::mem::take(&mut b.env);
+    contracts::assume(b,d,&mut environment,&requirements)?;b.env=environment;
     b.materialize_array_bindings();
     let output_contracts=outputs::contract_predicates(b,d)?;
     Ok((parameters, inputs, output_contracts))
@@ -1809,11 +1813,12 @@ fn finish_checked_function(
     parameters: Vec<CallParameter>,
     inputs: Vec<Reg>,
     output_contracts: BTreeSet<(ContractKind, ContractPredicate)>,
-    returned: Option<returns::Returned>,
-    written: Vec<Option<returns::Returned>>,
+    mut returned: Option<returns::Returned>,
+    mut written: Vec<Option<returns::Returned>>,
 ) -> Result<Box<CheckedFunction>> {
     let definition = b.definition.clone();
     let d = &definition;
+    for value in returned.iter_mut().chain(written.iter_mut().flatten()){b.normalize_element_facts(value,d.function.span)?;}
     let output = returned.as_ref().map(|value| b.returned_storage(value));
     let result = if d.function.result.name == "void" || d.function.result.is_never() {
         None
@@ -2374,7 +2379,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (mut proof, uniform) = self.read_owned_proof(p, &regs);
+                let (mut proof, uniform) = self.read_owned_proof(p, &regs)?;
                 if matches!(address, ReferenceAddress::External { .. }) {
                     proof = proof.with_external_borrows(ty);
                 }
@@ -2400,7 +2405,7 @@ impl<'a> Builder<'a> {
                 self.dataset_effect(p,Access::Read,false,span)?;
                 let mut value = self
                     .read_application_place(ty, *handle, *identity, *index, *stride, words, span, element_read_origin)?;
-                let (proof, uniform) = self.read_owned_proof(p, &value.regs);
+                let (proof, uniform) = self.read_owned_proof(p, &value.regs)?;
                 value.constant = proof.known_value(ty);
                 value.proof = proof;
                 value.uniform = uniform;
@@ -2427,7 +2432,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs);
+                let (proof, uniform) = self.read_owned_proof(p, &regs)?;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2463,7 +2468,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs);
+                let (proof, uniform) = self.read_owned_proof(p, &regs)?;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2483,7 +2488,7 @@ impl<'a> Builder<'a> {
                     self.emit(InstKind::LoadLocal(r, *slot));
                     regs.push(r);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs);
+                let (proof, uniform) = self.read_owned_proof(p, &regs)?;
                 let constant = proof.known_value(ty);
                 Ok(Value {
                     proof,
@@ -2523,7 +2528,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let proof = self.read_owned_proof(p, &regs).0;
+                let proof = self.read_owned_proof(p, &regs)?.0;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2545,7 +2550,7 @@ impl<'a> Builder<'a> {
         self.require_same(ty, &value.ty, span)?;
         if let Some((target,borrow))=self.reference_memory(p,span)? {
             let memory=self.view_model.uses.len();
-            let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory).into())}else{self.write_address_values(&borrow);None};
+            let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory).into())}else{self.write_address_values(&borrow)?;None};
             self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Write),snapshots,span})?;
         }
         match p {
@@ -2556,7 +2561,7 @@ impl<'a> Builder<'a> {
             }
             Place::Reference { address, words, .. } => {
                 self.writable_storage(p, span, true)?;
-                self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
+                self.assign_owned_proof(p, bounds::Proof::capture(&value), false)?;
                 self.initialize(p);
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 for (word, value) in words.iter().zip(value.regs) {
@@ -2588,7 +2593,7 @@ impl<'a> Builder<'a> {
                     *handle, *identity, *index, *stride, words, value, span, None,
                 )?;
                 self.initialize(p);
-                self.assign_owned_proof(p, proof, false);
+                self.assign_owned_proof(p, proof, false)?;
                 if self.loop_contexts.is_empty() {
                     self.complete_application_writes(|data| sources.contains(&data.root.identity()), span)?;
                 }
@@ -2609,7 +2614,7 @@ impl<'a> Builder<'a> {
                 if slots.iter().copied().collect::<BTreeSet<_>>().len() != slots.len() {
                     return self.fail(span, "B143", "赋值位置包含重复分量");
                 }
-                self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
+                self.assign_owned_proof(p, bounds::Proof::capture(&value), false)?;
                 self.initialize(p);
                 for (slot, value) in slots.iter().zip(value.regs) {
                     let kind=InstKind::StoreLocal(*slot,value);
@@ -2640,7 +2645,7 @@ impl<'a> Builder<'a> {
                 }
                 self.data_access(p, Access::Write, None);
                 self.writes.insert(*binding);
-                self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
+                self.assign_owned_proof(p, bounds::Proof::capture(&value), false)?;
                 for (word, value) in words.iter().zip(value.regs) {
                     self.emit(InstKind::Store {
                         binding: *binding,
@@ -3894,8 +3899,8 @@ impl<'a> Builder<'a> {
         self.loop_depth -= 1;
         if !initial && !bounds::seeks(body) {
             match &cursor_specification.data {
-                Some(CursorSource::ApplicationData(data)) => self.application_iteration_elements(&mut natural, Some(data), &cursor, &limit),
-                None => self.application_iteration_elements(&mut natural, None, &cursor, &limit),
+                Some(CursorSource::ApplicationData(data)) => self.application_iteration_elements(&mut natural, Some(data), &cursor, &limit)?,
+                None => self.application_iteration_elements(&mut natural, None, &cursor, &limit)?,
                 _ => {},
             }
         }
@@ -4376,10 +4381,10 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn assign_statement(&mut self, lhs: &Expr, op: &String, rhs: &Expr, span: Span) -> Result<()> {
-        if self.read_expression_type(lhs).is_some_and(|ty|ty.owns_resources()) {
+        if self.read_expression_type(lhs)?.is_some_and(|ty|ty.owns_resources()) {
             let mut element=lhs;let mut projection=Vec::new();
             loop {match &element.kind {
-                ExprKind::Index(base,index) if self.read_expression_type(base).is_some_and(|ty|ty.dataset.as_ref().is_some_and(|element|element.owns_resources()))=>{
+                ExprKind::Index(base,index) if self.read_expression_type(base)?.and_then(|ty|ty.dataset).map(|reference|self.expected_storage(&reference,base.span)).transpose()?.is_some_and(|element|element.owns_resources())=>{
                     let Some(data)=self.application_reference(base)?else{return Ok(())};
                     projection.reverse();return self.assign_application_element(data,index,&projection,op,rhs,span);
                 },

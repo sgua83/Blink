@@ -60,14 +60,15 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         if access==Access::InOut{if !value.all_available(){return self.fail(expr.span,"B227","inout聚合需要全部活动拥有资源");}self.load_owned_value(&mut value,expr.span)?;}
         Ok(Some(cooperative::Argument::OwnedReference{value,place,owner}))
     }
-    pub(super) fn assign_owned_place(&mut self,place:&Place,value:Returned){
-        if matches!(place.storage(),Place::ApplicationElement{..}){self.assign_application_owned_argument(place,&value);return;}
+    pub(super) fn assign_owned_place(&mut self,place:&Place,value:Returned)->Result<()>{
+        if matches!(place.storage(),Place::ApplicationElement{..}){self.assign_application_owned_argument(place,&value)?;return Ok(());}
         for(name,path,old)in self.owned_place_candidates(place){
             let mut value=value.clone();
             if let(Returned::OwnedValue(value),Returned::OwnedValue(old))=(&mut value,&old){value.declaration=old.declaration;}
             let actual=storage(&old).unwrap();let when=Presence::selected(&place.owned_positions().unwrap()[0],&actual.owned_positions().unwrap()[0]);value.join_presence(old,&when);set_storage(&mut value,actual);
             self.store_owned_candidate(name,&path,value);
         }
+        Ok(())
     }
     fn store_owned_candidate(&mut self,name:String,path:&[usize],value:Returned){
         fn replace(owner:&mut owned_values::OwnedValue,path:&[usize],value:Returned){let target=owner.payloads[path[0]].as_deref_mut().unwrap();if path.len()==1{*target=value;}else{let Returned::OwnedValue(child)=target else{unreachable!()};replace(child,&path[1..],value);}}
@@ -101,13 +102,13 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         let element=matches!(place.storage(),Place::ApplicationElement{..});
         let packed=self.returned_storage(&value);
         let held=match &value{Returned::OwnedValue(value)if (element||value.value.ty.contains_cleanup())&&value.value.ty.contains_borrows()=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),_=>None};
-        if !element&&place.ty().contains_cleanup(){let mut inactive=old.clone();inactive.restrict_owned(&Presence::None);self.assign_owned_place(&place,inactive);}
-        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
-        if !element{self.assign_owned_place(&place,value.clone());}
+        if !element&&place.ty().contains_cleanup(){let mut inactive=old.clone();inactive.restrict_owned(&Presence::None);self.assign_owned_place(&place,inactive)?;}
+        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform)?;
+        if !element{self.assign_owned_place(&place,value.clone())?;}
         self.drop_returned(old,&view::Borrow::default(),span)?;
         self.write_storage_value(&place,&packed,span,None)?;
-        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);
-        if element{self.assign_owned_place(&place,value);}
+        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform)?;self.initialize(&place);
+        if element{self.assign_owned_place(&place,value)?;}
         if let Some(name)=held{self.env.remove(&name);}
         Ok(())
     }

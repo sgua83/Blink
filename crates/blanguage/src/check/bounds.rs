@@ -30,7 +30,7 @@ enum Fact {
     Outside(ValueIdentity,IndexDomain),
     Zero(ValueIdentity),
     NotEqual(ValueIdentity, ValueIdentity),
-    Predicate(FloatPredicate, bool),
+    Predicate(ScalarPredicate, bool),
 }
 // 运算关系只引用已求值的快照；常量使用实际类型与位模式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -65,16 +65,16 @@ impl Operand {
         })
     }
 }
-// A floating predicate records its actual result, not an integer range or
-// an ordered complement: NaN makes !(a < b) different from a >= b.
+// Predicates retain the scalar type through substitution. Floating results
+// retain unordered semantics: NaN makes !(a < b) different from a >= b.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct FloatPredicate {
+struct ScalarPredicate {
     op: Comparison,
     scalar: Scalar,
     a: Operand,
     b: Operand,
 }
-impl FloatPredicate {
+impl ScalarPredicate {
     fn new(mut op: Comparison, scalar: Scalar, mut a: Operand, mut b: Operand) -> Self {
         match op {
             Comparison::Greater => { op = Comparison::Less; std::mem::swap(&mut a, &mut b); }
@@ -98,7 +98,7 @@ impl FloatPredicate {
                 // This is identity substitution, never floating range inference.
                 let bits = proof.range_set(0);
                 match bits.0.as_slice() {
-                    [(a, b)] if a == b => Operand::Constant(self.scalar, floating::bits(self.scalar, *a)),
+                    [(a, b)] if a == b => Operand::Constant(self.scalar, if self.scalar.is_float(){floating::bits(self.scalar,*a)}else{*a^self.scalar.order_bias()}),
                     _ => Operand::Value(proof.known_identity(0)?),
                 }
             }
@@ -108,7 +108,7 @@ impl FloatPredicate {
     }
 }
 crate::module::codec::variants!(Comparison{0=>Equal,1=>NotEqual,2=>Less,3=>Greater,4=>LessEqual,5=>GreaterEqual});
-crate::module::codec::record!(FloatPredicate { op, scalar, a, b });
+crate::module::codec::record!(ScalarPredicate { op, scalar, a, b });
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IntegerOperation { Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor, ShiftLeft, ShiftRight }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -493,6 +493,9 @@ impl Proof {
         self.domains[0].extend(other.domains(0));
     }
     pub(super) fn borrow_state(&self)->Self {Self{views:self.views.clone(),..Self::default()}}
+    pub(super) fn numeric_facts(&self)->Self {
+        Self{origins:self.origins.clone(),conditions:self.conditions.clone(),ranges:self.ranges.clone(),nonzero:self.nonzero.clone(),domains:self.domains.clone(),..Self::default()}
+    }
     pub(super) fn typed_view_borrow(&self,ty:&Ty)->view::Borrow {view_contracts::components(ty).into_iter().fold(view::Borrow::default(),|mut all,component|{all.union(&self.view_borrow(component));all})}
     pub(super) fn select_view_borrows(&mut self,values:&[(Condition,Self)]){
         let width=values.iter().map(|(_,proof)|proof.views.len()).max().unwrap_or(0);
@@ -2409,7 +2412,7 @@ fn contradictory(facts: &Facts) -> bool {
         Fact::Predicate(predicate, truth) => contains(Fact::Predicate(predicate, !truth)) || {
             let [a,b]=[predicate.a,predicate.b].map(|operand|match operand {
                 Operand::Constant(_,bits)=>Some(bits),
-                Operand::Value(id)=>{let(a,b)=bounds(id,predicate.scalar);(a==b).then(||floating::bits(predicate.scalar,a))},
+                Operand::Value(id)=>{let(a,b)=bounds(id,predicate.scalar);(a==b).then(||if predicate.scalar.is_float(){floating::bits(predicate.scalar,a)}else{a^predicate.scalar.order_bias()})},
             });
             a.zip(b).and_then(|(a,b)|constant::binary(BinaryOp::Compare(predicate.op),predicate.scalar,a,b)).is_some_and(|value|value!=Bits::from(truth))
         },
@@ -2637,6 +2640,12 @@ impl Proof{
     }
 }
 impl Condition {
+    pub(super) fn scope_element_indices(&self,depth:usize)->Self {
+        let names=Proof::condition(self.clone()).scalar_identities().into_iter().filter_map(|id|match id{
+            ValueIdentity::ElementIndex(index)=>Some((id,ValueIdentity::ElementIndex(index+depth))),_=>None,
+        }).collect();
+        self.output_bound(&names)
+    }
     pub(super) fn nonzero_value(value:&Value)->Self {
         if value.is_nonzero(){return Self::constant(true);}
         if (0..value.regs.len()).any(|i|value.component_ranges(i).0.as_slice()==[(value.ty.components[i].0.order_bias(),value.ty.components[i].0.order_bias())]){return Self::constant(false);}
@@ -2666,7 +2675,13 @@ impl Condition {
     pub(super) fn index_equal(a:Operand,b:Operand)->Self {
         let facts=match(a,b){
             (Operand::Constant(_,a),Operand::Constant(_,b))=>return Self::constant(a==b),
-            (Operand::Value(a),Operand::Value(b))=>[Fact::equal(a,b)].into(),
+            (Operand::Value(a),Operand::Value(b))=>{
+                let predicate=ScalarPredicate::new(Comparison::Equal,Scalar::U32,Operand::Value(a),Operand::Value(b));
+                return Self{cases:[
+                    Clause::facts([Fact::NotEqual(a.min(b),a.max(b)),Fact::Predicate(predicate,false)].into()),
+                    Clause::facts([Fact::equal(a,b),Fact::Predicate(predicate,true)].into()),
+                ]};
+            },
             (Operand::Value(id),Operand::Constant(_,bits))|(Operand::Constant(_,bits),Operand::Value(id))=>[Fact::Minimum(id,Scalar::U32,bits),Fact::Maximum(id,Scalar::U32,bits)].into(),
         };
         Self::guard(Clause::facts(facts))
@@ -2783,7 +2798,7 @@ impl Condition {
         self.cases.swap(0, 1);
         self
     }
-    fn branch(c: Self, a: Self, b: Self) -> Self {
+    pub(super) fn branch(c: Self, a: Self, b: Self) -> Self {
         let condition=Arc::new(c);
         Self {
             cases: std::array::from_fn(|truth| {
@@ -2831,7 +2846,7 @@ impl Condition {
         let scalar = a.ty.components[0].0;
         if a.ty.components.len() != 1 || b.ty != a.ty { return Self::default(); }
         if scalar.is_float() {
-            let predicate = FloatPredicate::new(if op == Comparison::NotEqual { Comparison::Equal } else { op },
+            let predicate = ScalarPredicate::new(if op == Comparison::NotEqual { Comparison::Equal } else { op },
                 scalar, Operand::of(a, 0), Operand::of(b, 0));
             let condition = Self { cases: std::array::from_fn(|truth|
                 Clause::facts(std::iter::once(Fact::Predicate(predicate, truth != 0)).chain([a,b].into_iter().flat_map(|value|value.proof.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(value.component_identity(0),domain)))).collect())) };
@@ -4037,11 +4052,11 @@ impl Builder<'_> {
         Some(common.element_facts(|target| self.data_index_proof(target)
             .with_domains(Domains::from([IndexDomain::Data(target)]))))
     }
-    pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg]) -> (Proof, bool) {
+    pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg]) -> Result<(Proof, bool)> {
         let (snapshots,common)=match place {
             Place::ApplicationElement{..}=>{
                 let snapshots=regs.iter().map(|reg|self.application_read_snapshot(*reg)).collect::<Vec<_>>();
-                let common=self.application_element_proof(place,&snapshots);(snapshots,common)
+                let common=self.application_element_proof(place,&snapshots)?;(snapshots,common)
             },
             _=>(Vec::new(),None),
         };
@@ -4064,7 +4079,7 @@ impl Builder<'_> {
             stored = Some((proof.project(&components, width), *uniform));
             break;
         }
-        match place {
+        Ok(match place {
             Place::ApplicationElement { .. } => {
                 let mut proof = match (stored, common) {
                     (Some((mut proof, _)), Some(common)) => {
@@ -4096,10 +4111,10 @@ impl Builder<'_> {
                 Some(stored) => stored,
                 None => (self.projected_owned_proof(place, Some(regs)).unwrap_or_default(), false),
             },
-        }
+        })
     }
-    pub(super) fn update_application_contents(&mut self, data: &application::DataReference, changed: &[u32], update: application::ElementUpdate<'_>) {
-        self.update_application_elements(&data.sources,&view::resource_borrow(&data.data),changed,update);
+    pub(super) fn update_application_contents(&mut self, data: &application::DataReference, changed: &[u32], update: application::ElementUpdate<'_>)->Result<()> {
+        self.update_application_elements(&data.sources,&view::resource_borrow(&data.data),changed,update)?;
         for binding in self.env.values_mut() {
             let Some((proof, uniform, owner)) = binding.proof_storage() else {
                 continue;
@@ -4117,14 +4132,15 @@ impl Builder<'_> {
                 }
             }
         }
+        Ok(())
     }
-    pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
-        if let Place::ApplicationElement{sources,resource,words,index_range,..}=place {self.update_application_elements(sources,resource,words,application::ElementUpdate::Element{proof:&fresh,range:Some(*index_range)});}
+    pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool)->Result<()> {
+        if let Place::ApplicationElement{sources,resource,words,index_value,index_range,..}=place {self.update_application_elements(sources,resource,words,application::ElementUpdate::Element{proof:&fresh,index:Some((*index_value,*index_range))})?;}
         if let Place::Indexed{locations,..}=place && let Place::ApplicationElement{sources,resource,..}=place.storage() {
             for(component,position)in locations.iter().enumerate(){
                 let mut selected=BTreeSet::new();owned_borrows::positions(position,&mut selected);
                 let proof=fresh.project(&[component],place.ty().components.len());
-                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,resource,&[word],application::ElementUpdate::Element{proof:&proof,range:None});}
+                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,resource,&[word],application::ElementUpdate::Element{proof:&proof,index:None})?;}
             }
         }
         let positions=if place.ty().contains_borrows(){self.positions(place)}else{Vec::new()};
@@ -4172,6 +4188,7 @@ impl Builder<'_> {
                 owner.value.constant = None;
             }
         }
+        Ok(())
     }
 }
 

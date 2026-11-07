@@ -55,7 +55,7 @@ impl Module {
                 let component=value.ty.components.iter().position(|(_,at)|*at==word).unwrap();
                 read_only(&value.proof.view_borrow(component))
             }))&&match model {
-                Returned::Dataset(data)=>returned_read_only(&data.elements),
+                Returned::Dataset(data)=>data.elements.known().is_some_and(returned_read_only),
                 Returned::OwnedValue(value)=>value.payloads.iter().flatten().all(|payload|returned_read_only(payload)),
                 _=>true,
             }
@@ -85,6 +85,13 @@ impl Module {
                 view_contracts::Access::Position{position,borrows,..}=>!position.writes||references(borrows),
             }))
     }
+    fn owns_input(&self, function: &str, id: ValueIdentity) -> bool {
+        let unit = self.units[function].as_ref().unwrap();
+        match id {
+            ValueIdentity::ResourceParameter(parameter, _) => unit.definition.function.params[parameter].access == Access::Value,
+            _ => false,
+        }
+    }
     #[inline(never)]
     fn declare(&mut self, name: &str) -> bool {
         if self.units.contains_key(name) {
@@ -106,22 +113,16 @@ pub(crate) struct Contract {
     frame: bool,
     fallible: bool,
     pub(super) domain: Option<crate::module::domain::Interface>,
-    residency: residency::Requirements,
+    residency: residency::Contract,
     view_access:Option<BTreeSet<view_contracts::Access>>,
     initialization:Option<Vec<address::Initialization>>,
 }
-// The wire still stores a vector of guards. Its meaning is one requirement
-// whenever any use is active, independent of the number of source use sites.
 impl crate::module::codec::Encode for Contract {
     fn encode(&self,w:&mut crate::module::codec::Writer){
         self.parameters.encode(w);self.result.encode(w);self.inputs.encode(w);
         self.returned.encode(w);self.written.encode(w);self.requires.encode(w);
         self.target.encode(w);self.frame.encode(w);self.fallible.encode(w);self.domain.encode(w);
-        self.residency.len().encode(w);
-        for(key,guards)in &self.residency{
-            key.encode(w);1usize.encode(w);
-            guards.iter().cloned().fold(bounds::Condition::constant(false),|a,b|a.logical(b,true)).encode(w);
-        }
+        self.residency.encode(w);
         self.view_access.as_ref().unwrap().encode(w);self.initialization.as_ref().unwrap().encode(w);
     }
 }
@@ -219,7 +220,7 @@ fn finish_declaration(
         target: instance.definition.function.target,
         frame: false,
         domain: None,
-        residency: BTreeMap::new(),
+        residency: residency::Contract::default(),
         view_access:None,
         initialization:checked.initialization,
     };
@@ -375,7 +376,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
         match value {
             Returned::Dataset(data)=>{
                 for fact in data.prefixes.values_mut(){*fact=fact.substitute_values(resources);}
-                prefix_inputs(&mut data.elements,resources);
+                data.elements=std::mem::take(&mut data.elements).map(&mut|mut model|{prefix_inputs(&mut model,resources);model},&mut|condition|condition);
             },
             Returned::OwnedValue(value)=>for value in value.payloads.iter_mut().flatten(){prefix_inputs(value,resources);},
             _=>{},
@@ -389,7 +390,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let mut functions = declaration(world, instance, Module::default())?;
     lower_module_failures(world,&mut functions)?;
-    resolve_residencies(world,&mut functions)
+    resolve_residencies(world,&mut functions).map(|_|())
 }
 impl Builder<'_> {
     pub(super) fn native_declaration(&mut self, instance: &crate::generics::Instance) -> Result<()> {
@@ -416,6 +417,31 @@ impl Builder<'_> {
         }
         self.native_declaration(&instance)?;
         self.native_call(instance, args, span, generated_origin, syntax)
+    }
+    pub(super) fn native_element_drop(&mut self, value: Returned, retained: &view::Borrow, span: Span, origin: Arc<GeneratedOrigin>) -> Result<()> {
+        let ty = self.returned_storage(&value).ty;
+        let resources = match &value {
+            Returned::Dataset(data) => vec![data],
+            Returned::OwnedValue(value) => value.resources(),
+            _ => Vec::new(),
+        };
+        for data in resources { self.application_movable(data, retained, span)?; }
+        let name = crate::generics::key(&format!("{}::@dataset_element_drop", self.definition.module), std::slice::from_ref(&ty.name));
+        let function = Function {
+            name: name.clone(), types: Vec::new(), values: Vec::new(),
+            params: vec![Param { name: "value".into(), ty: ty.syntax(), access: Access::Value, span }],
+            result: TypeName::named("void"), kind: FunctionKind::Value, target: Target::Cpu,
+            contracts: vec![FunctionContract { kind: ContractKind::Requires, predicate: ContractPredicate::Cleanup { value: "value".into(), condition: OutputCondition::Bool(true) }, span }], body: Some(Vec::new()), c_abi: false, external: None, span,
+        };
+        let definition = Arc::new(Definition {
+            function, syntax_origin: crate::frontend::DefinitionSyntax::Generated(None),
+            execution: crate::execution::Requirement::Invocation,
+            source: self.definition.source.clone(), module: self.definition.module.clone(),
+            imports: self.definition.imports.clone(), public: false, compiled: None,
+        });
+        self.native_function(crate::generics::Instance { name, definition },
+            vec![Argument::resource(value)], span, Some(origin), None)?;
+        Ok(())
     }
     fn native_dataset_shape(&self,param:&Param,definition:&Definition,count:Option<u32>,span:Span)->Result<()>{
         if param.ty.count.is_some()&&self.world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)?!=count{
@@ -681,7 +707,7 @@ impl Builder<'_> {
                             let words=reference.words();
                             let raw=reference.root.ty.components[0].0==Scalar::U64;
                             let root=if raw {address::Root::Derived(view::Borrow::source(view::Source::Parameter(reference.root.identity(),Vec::new())))}
-                                else{address::Root::Resource(view::resource_borrow(&reference.data))};
+                                else{address::Root::Resource{borrow:view::resource_borrow(&reference.data),index:None}};
                             let positions=if raw{Arc::from([])}else{
                                 let scope=reference.initialization.as_ref().unwrap();
                                 words.iter().map(|word|match(reference.length.minimum(),reference.length.maximum()){
@@ -740,7 +766,8 @@ impl Builder<'_> {
                 }
             }
         }
-        let (element_inputs,element_memory)=application::element_input_bindings(self,d,&env);
+        let element_paths=contracts::element_input_paths(self,d,&mut env)?;
+        let (element_inputs,element_memory)=application::element_input_bindings(self,d,&env,&element_paths);
         memory_borrow.union(&element_memory);
         let requirements = contracts::resolve(self, d, &env,&resource_inputs)?;
         contracts::prove(self, &requirements, span)?;
@@ -751,19 +778,17 @@ impl Builder<'_> {
             let call = residency::Call {
                 function: instance.name.clone(),
                 arguments: locations.clone(),
-                bindings: view_arguments.clone(),
+                bindings: view_arguments.iter().map(|(id,proof)|(*id,proof.numeric_facts())).collect(),
                 path: self.residency_path(),
-                source: self.definition.source.clone(),
+                source: Some(self.definition.source.clone()),
                 span,
             };
             if self.application.is_none() {
                 // This range has no application caller whose later closure could consume the call.
                 // Consume the already closed imported contract with its actual CPU inputs now.
-                let contract=&self.functions.units[&instance.name].as_ref().unwrap().contract;
-                let known=BTreeMap::from([(instance.name.clone(),contract.residency.clone())]);
+                let (known,outputs,_)=residency_contracts(self.world,&self.functions)?;
                 let inputs=residency::Inputs{calls:vec![call],..Default::default()};
-                let remaining=residency::infer(&inputs,&known,&Default::default())?;
-                if !remaining.is_empty() {
+                if residency::check_calls(&inputs,&known,&outputs)? {
                     return self.fail(span,"B270","CPU范围尚不能交接该已编译函数所需的条件存储位置");
                 }
             } else {
@@ -881,7 +906,7 @@ impl Builder<'_> {
             uniform:false,literal:false,constant:None});
         for(index,p)in d.function.params.iter().enumerate(){
             if p.ty.dataset && matches!(p.access,Access::Write|Access::InOut) && let Some(Binding::DataReference(reference))=env.get(&p.name){
-                let mut data=reference.data.clone();data.ty=reference.element_layout().1.clone();data.elements=self.unknown_element_model(&data.ty);data.prefixes.clear();
+                let mut data=reference.data.clone();data.ty=reference.element_layout().1.clone();data.elements=application::ElementFacts::Unknown;data.prefixes.clear();
                 let mut updated=Returned::Dataset(data);
                 if let Some(Some(model))=writes.get(index){translate_returned(&mut updated,model,&bindings,false);}
                 residency::output(&mut updated,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);
@@ -892,12 +917,12 @@ impl Builder<'_> {
                         trigger:self.source_site.clone().map(GenerationAnchor::Syntax),
                     });
                     let snapshots=env.values().filter_map(|binding|match binding { Binding::Value(value)=>Some(value),Binding::OwnedValue(value)=>Some(&value.value),_=>None }).collect::<Vec<_>>();
-                    self.complete_application_elements(reference,&updated.elements,&snapshots,span,origin)?;
+                    self.complete_application_elements(reference,updated.elements.known(),&snapshots,span,origin)?;
                 }
-                self.apply_application_dataset_model(reference,*updated.elements);
+                self.apply_application_dataset_model(reference,updated.elements)?;
                 let offset=reference.element_layout().0;
                 let facts=updated.prefixes.into_iter().map(|(word,fact)|(offset+word,fact)).collect();
-                self.apply_application_prefixes(reference,&facts);
+                self.apply_application_prefixes(reference,&facts)?;
             }
         }
         for (index, place) in written {
@@ -918,14 +943,15 @@ impl Builder<'_> {
             let mut owned_output=None;
             if place.ty().owns_resources(){
                 let regs=written_registers[&index].clone();
-                let mut result=self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true);
-                if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings,false);residency::returned(&mut result,&locations);}else{residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);}
+                let mut result=self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true)?;
+                if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings,false);residency::returned(&mut result,&locations);}
+                residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);
                 if !views_closed && let Some(call)=view_call{view_contracts::set_resource_outputs(&mut result,|resource|self.view_model.result(call,view_contracts::Output::WrittenResource(index,resource)));}
                 if outputs::declared(d,index){outputs::apply_ownership(&mut result,place.ty(),0,&guards);}
                 let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();owned_output=Some(Returned::OwnedValue(value));
             }
-            self.assign_owned_proof(&place, proof, false);
-            if let Some(value)=owned_output{self.assign_owned_place(&place,value);}
+            self.assign_owned_proof(&place, proof, false)?;
+            if let Some(value)=owned_output{self.assign_owned_place(&place,value)?;}
             self.initialize_output(&place,&guards);
         }
         for (index,place) in written_stage {
@@ -949,13 +975,12 @@ impl Builder<'_> {
             uniform: false,
             constant: None,
         };
-        let mut returned = self.template_returned(value, true);
+        let mut returned = self.template_returned(value, true)?;
         if let Some(model) = model {
             translate_returned(&mut returned, &model, &bindings,false);
             residency::returned(&mut returned, &locations);
-        } else {
-            residency::output(&mut returned, &instance.name,residency::OutputKind::Returned, &locations,&view_arguments);
         }
+        residency::output(&mut returned, &instance.name,residency::OutputKind::Returned, &locations,&view_arguments);
         if !views_closed && let Some(call)=view_call{view_contracts::set_resource_outputs(&mut returned,|resource|self.view_model.result(call,view_contracts::Output::ReturnedResource(resource)));}
         if let (Some(call),Some(value))=(view_call,returned.view_value_mut()) {
             for component in view_contracts::components(&value.ty){
@@ -1024,8 +1049,10 @@ pub(super) fn translate_returned(
             value.residency = model.residency.at_call(bindings);
             value.prefixes=model.prefixes.iter().map(|(word,fact)|(*word,fact.at_call(bindings))).collect();
             value.count = model.count;
-            let element_bindings=application::element_scope_bindings(bindings,model.elements.registers().len(),stored);
-            translate_returned(&mut value.elements,&model.elements,&element_bindings,true);
+            value.elements=model.elements.clone().map(&mut |model|{
+                let element_bindings=application::element_scope_bindings(bindings,model.registers().len(),stored);
+                let mut value=model.clone();translate_returned(&mut value,&model,&element_bindings,true);value
+            },&mut |when|when.at_call(bindings));
         }
         (Returned::OwnedValue(value), Returned::OwnedValue(model)) => {
             translate_value(&mut value.value, &model.value, bindings);
@@ -1093,7 +1120,7 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             Returned::Dataset(value)=>{
                 scalar_values(&mut value.root,bindings);scalar_values(&mut value.length,bindings);
                 for fact in value.prefixes.values_mut(){*fact=fact.substitute_values(bindings);}
-                returned_values(&mut value.elements,bindings);
+                if let Some(elements)=value.elements.known_mut(){returned_values(elements,bindings);}
             },
             Returned::OwnedValue(value)=>{
                 scalar_values(&mut value.value,bindings);
@@ -1113,7 +1140,7 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             functions.insert(name,&unit.view_model);
         }
     }
-    let outputs=view_contracts::solve(&functions,closed)?;
+    let outputs=view_contracts::solve(&functions,closed,|function,id|module.owns_input(function,id))?;
     for (name,memory)in &outputs.memory {
         let unit=module.units.get_mut(name).unwrap().as_mut().unwrap();
         let contract=&mut unit.contract;
@@ -1146,33 +1173,42 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
     }
     Ok(())
 }
-// 函数合同沿真实资源调用关系收敛，递归参数置换也消费同一输入条件。
-fn resolve_residencies(world:&World,module: &mut Module) -> Result<()> {
-    resolve_views(world,module,None)?;
-    let outputs = residency::solve_outputs(module.units.iter().map(|(name, unit)| {
-        (
-            name.as_str(),
-            unit.as_ref().unwrap().contract.returned.as_ref(),
-            unit.as_ref().unwrap().contract.written.as_slice(),
-        )
-    }));
-    loop{
-        let known=module.units.iter().map(|(name,unit)|(name.clone(),unit.as_ref().unwrap().contract.residency.clone())).collect::<BTreeMap<_,_>>();let mut changed=false;
-        for unit in module.units.values_mut(){let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
-            let required=residency::infer(&unit.residency,&known,&outputs)?;
-            let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
-            let required=residency::canonical(&required,&parameters,&unit.definition.source,unit.definition.function.span)?;
-            changed|=required!=unit.contract.residency;unit.contract.residency=required;
+// 查询沿原已编译定义取得实际callee合同；不为私有符号重建源码定义。
+fn residency_contracts(world:&World,module:&Module)->Result<(BTreeMap<String,residency::Contract>,residency::Outputs,BTreeMap<String,Vec<u8>>)> {
+    use crate::module::codec::Decode;
+    let mut contracts=module.units.iter().filter_map(|(name,unit)|unit.as_ref().map(|unit|(name.clone(),unit.contract.clone()))).collect::<BTreeMap<_,_>>();
+    let mut imports=BTreeMap::new();let mut pending=contracts.keys().cloned().collect::<Vec<_>>();
+    while let Some(name)=pending.pop(){
+        let contract=&contracts[&name];
+        let calls=residency::dependencies(&contract.residency,contract.returned.iter().chain(contract.written.iter().flatten()));
+        for callee in calls{
+            if contracts.contains_key(&callee){continue;}
+            let (definition,bytes)=world.functions.values().find_map(|definition|definition.compiled.as_ref().and_then(|definitions|definitions.get(&callee)).map(|bytes|(definition,bytes)))
+                .ok_or_else(||Diagnostic{source:module.units.values().find_map(|unit|unit.as_ref()).unwrap().definition.source.clone(),span:Span::default(),code:"B270",message:format!("已编译模块没有位置合同定义 {callee}")})?;
+            let contract=Contract::from_bytes(bytes).map_err(|error|Diagnostic{source:definition.source.clone(),span:definition.function.span,code:"B270",message:format!("模块函数接口错误：{error}")})?;
+            contracts.insert(callee.clone(),contract);imports.insert(callee.clone(),bytes.clone());pending.push(callee);
         }
-        if !changed{break;}
     }
-    for unit in module.units.values_mut(){let unit=unit.as_mut().unwrap();
+    let outputs=residency::output_sources(contracts.iter().map(|(name,contract)|(name.as_str(),contract.returned.as_ref(),contract.written.as_slice())));
+    Ok((contracts.into_iter().map(|(name,contract)|(name,contract.residency)).collect(),outputs,imports))
+}
+// 每个原函数持有自身Uses／Calls；调用者消费实际实参，不穷举递归后代。
+fn resolve_residencies(world:&World,module: &mut Module) -> Result<BTreeMap<String,Vec<u8>>> {
+    resolve_views(world,module,None)?;
+    let (mut known,outputs,imports)=residency_contracts(world,module)?;
+    for(name,unit)in &mut module.units{let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
         let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
-        residency::check_loops(&unit.residency,&unit.contract.residency,&parameters,&outputs)?;
+        unit.contract.residency=residency::infer(&unit.residency,&parameters,&outputs,&unit.definition.source,unit.definition.function.span)?;
+        known.insert(name.clone(),unit.contract.residency.clone());
+    }
+    for(name,unit)in &mut module.units{let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
+        residency::check_calls(&unit.residency,&known,&outputs)?;
+        let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
+        residency::check_loops(name,&unit.residency,&unit.contract.residency,&parameters,&outputs,&known,unit.definition.function.params.len())?;
         for written in &mut unit.contract.written{if let Some(value)=written{if !residency::resolve_returned(value,&outputs){*written=None;}}}
         if let Some(returned)=&mut unit.contract.returned{if !residency::resolve_returned(returned,&outputs){unit.contract.returned=None;}}
     }
-    Ok(())
+    Ok(imports)
 }
 pub(super) fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
     for inst in code {
@@ -1604,7 +1640,7 @@ fn finalize(
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
     lower_module_failures(world,&mut module)?;
-    resolve_residencies(world,&mut module)?;
+    let residency_imports=resolve_residencies(world,&mut module)?;
     let mut resources = std::mem::take(&mut module.resources);
     let mut programs = programs.iter_mut().map(|program| &mut **program)
         .chain(resources.programs.iter_mut().map(|(_, program)| program)).collect::<Vec<_>>();
@@ -1664,7 +1700,7 @@ fn finalize(
         }
         frame = next;
     }
-    let mut imports = BTreeMap::new();
+    let mut imports = residency_imports;
     for (name, unit) in &mut units {
         unit.contract.frame = frame.contains(name);
         if unit.c_abi && unit.contract.frame {
@@ -1722,7 +1758,7 @@ fn finalize(
             }
             crate::optimize::value_code(&mut function.body);
             result.functions.push(function);
-            if owner.is_some() && unit.definition.public {
+            if owner.is_some() {
                 result.exports.insert(name, unit.contract.bytes());
             }
         }
@@ -2149,7 +2185,7 @@ fn build_domain(
         target: Target::Cpu,
         frame: false,
         domain: Some(interface),
-        residency: BTreeMap::new(),
+        residency: residency::Contract::default(),
         view_access:Some(BTreeSet::new()),
         initialization:Some(Vec::new()),
     };
@@ -2162,7 +2198,7 @@ fn build_domain(
             contract,
             c_abi: false,
             residency: residency::Inputs::default(),
-                view_model: view_contracts::Function::default(),
+            view_model: view_contracts::Function::default(),
         }),
     );
     Ok(())

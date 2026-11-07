@@ -234,7 +234,7 @@ impl<'a> Builder<'a> {
             {
                 self.prepare_data_output(&mut data.data,arg.span)?;
             }
-            if let Some(name) = self.hold_argument(arguments.last_mut().unwrap(), param.access) {
+            if let Some(name) = self.hold_argument(arguments.last_mut().unwrap(), param.access)? {
                 held.push((arguments.len() - 1, name));
             }
         }
@@ -251,7 +251,7 @@ impl<'a> Builder<'a> {
             }
         }).collect::<Vec<_>>();
         let mut retained=view::Borrow::default();
-        for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(self,name,binding,&transferred));}}
+        for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(self,name,binding,&transferred)?);}}
         for argument in &arguments{if let Argument::Reference(owner)=argument{retained.union(&owner.proof.typed_view_borrow(owner.place.ty()));}}
         for(param,argument)in parameters.iter().zip(&arguments){if param.access==Access::Value{
             let resources=match argument{Argument::ApplicationData(data)=>vec![data],Argument::OwnedValue(value)=>value.resources(),_=>Vec::new()};
@@ -573,7 +573,7 @@ impl<'a> Builder<'a> {
         }
         let requirements = contracts::resolve(self, callee, &env,&BTreeMap::new())?;
         contracts::prove(self, &requirements, span)?;
-        contracts::assume(&mut env, &mut self.path, &requirements);
+        contracts::assume(self,callee,&mut env,&requirements)?;
         let old_env = std::mem::replace(&mut self.env, env);
         let old_mutable_names = std::mem::take(&mut self.mutable_names);
         assigned_names(
@@ -667,7 +667,7 @@ impl<'a> Builder<'a> {
                 self.initialize_output(place,guards);
             }
             for (owner,_) in updates {
-                self.assign_owned_proof(&owner.place, owner.proof, owner.uniform);
+                self.assign_owned_proof(&owner.place, owner.proof, owner.uniform)?;
             }
         } else {
             self.env = old_env;

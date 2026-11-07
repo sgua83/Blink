@@ -277,7 +277,7 @@ impl Builder<'_> {
             .filter(|p| p.ty.dataset.is_some())
         else {
             if !self.owned_element_type(expr).is_some_and(|ty|ty.dataset.is_some())
-                && !self.read_expression_type(expr).is_some_and(|ty|ty.dataset.is_some()) {
+                && !self.read_expression_type(expr)?.is_some_and(|ty|ty.dataset.is_some()) {
                 return Ok(None);
             }
             let Some(place) = self.place(expr)? else {
@@ -417,28 +417,29 @@ impl Builder<'_> {
             _ => None,
         }
     }
-    pub(super) fn read_expression_type(&self, expr: &Expr) -> Option<Ty> {
-        match &expr.kind {
-            ExprKind::Name(name) => match self.env.get(name)? {
-                Binding::OwnedValue(value) => Some(value.value.ty.clone()),
-                Binding::Owned(owner) if matches!(owner.place.storage(),Place::ApplicationElement{..}) => Some(owner.place.ty().clone()),
-                Binding::ApplicationData(data) => Some(Ty::owned_dataset(data.ty.clone(),data.count)),
-                Binding::DataReference(data) => Some(Ty::owned_dataset(data.element_layout().1.clone(),data.count)),
-                _ => None,
+    pub(super) fn read_expression_type(&self,expr:&Expr)->Result<Option<Ty>> {
+        Ok(match &expr.kind {
+            ExprKind::Name(name)=>match self.env.get(name) {
+                Some(Binding::OwnedValue(value))=>Some(value.value.ty.clone()),
+                Some(Binding::Owned(owner))if matches!(owner.place.storage(),Place::ApplicationElement{..})=>Some(owner.place.ty().clone()),
+                Some(Binding::ApplicationData(data))=>Some(Ty::owned_dataset(data.ty.syntax(),data.count)),
+                Some(Binding::DataReference(data))=>Some(Ty::owned_dataset(data.element_layout().1.syntax(),data.count)),
+                _=>None,
             },
-            ExprKind::Member(base,field) => {
-                let ty=self.read_expression_type(base)?;
-                if let Some(element)=&ty.dataset {
-                    let(_,field)=element.field(field)?;
-                    Some(Ty::owned_dataset(field.clone(),ty.values.first().copied()))
+            ExprKind::Member(base,field)=>{
+                let Some(ty)=self.read_expression_type(base)? else{return Ok(None);};
+                if let Some(reference)=&ty.dataset {
+                    let element=self.expected_storage(reference,expr.span)?;
+                    element.field(field).map(|(_,field)|Ty::owned_dataset(field.syntax(),ty.values.first().copied()))
                 }else{ty.field(field).map(|(_,ty)|ty.clone())}
             },
-            ExprKind::Index(base,_) => {
-                let ty=self.read_expression_type(base)?;
-                if let Some(element)=ty.dataset {Some(*element)}else{ty.array.map(|element|*element)}
+            ExprKind::Index(base,_)=>{
+                let Some(ty)=self.read_expression_type(base)? else{return Ok(None);};
+                if let Some(reference)=ty.dataset {Some(self.expected_storage(&reference,expr.span)?)}
+                else{ty.array.map(|element|*element)}
             },
-            _ => None,
-        }
+            _=>None,
+        })
     }
     pub(super) fn owned_element_type(&self, expr: &Expr) -> Option<Ty> {
         self.owned_expression_type(expr)

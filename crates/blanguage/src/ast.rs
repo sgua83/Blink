@@ -489,3 +489,72 @@ pub enum StmtKind {
     Phase,
     Seek(String, Expr),
 }
+
+pub(crate) fn type_name(ty: &TypeName) -> String {
+    let shape = |value: &Shape| match value { Shape::Literal(value) => value.to_string(), Shape::Constant(name) => name.clone(), Shape::Expression(expression)=>expression_name(expression) };
+    let mut name = ty.name.clone();
+    if !ty.arguments.is_empty() {
+        name.push('<');
+        name.push_str(&ty.arguments.iter().map(|argument| match argument {
+            GenericArgument::Type(ty) => type_name(ty),
+            GenericArgument::Value(value) => shape(value),
+        }).collect::<Vec<_>>().join(","));
+        name.push('>');
+    }
+    for (present, prefix) in [(ty.dataset, "dataset"), (ty.view, "view"), (ty.tile, "tile")] {
+        if present {
+            name = if let Some(count) = &ty.count { format!("{prefix}<{name},{}>", shape(count)) }
+                else { format!("{prefix}<{name}>") };
+        }
+    }
+    if let Some(outputs) = &ty.contracts {
+        for output in outputs.iter() {
+            if let ContractPredicate::Nonzero(value) = output {
+                name.push_str(&format!(" requires nonzero({value})"));
+            } else if let ContractPredicate::Memory(access)=output {
+                let mode=match access{None=>"none",Some(Access::Read)=>"read",Some(Access::Write)=>"write",Some(Access::InOut)=>"inout",Some(Access::Value)=>"value",Some(Access::Atomic)=>"atomic"};
+                name.push_str(&format!(" ensures memory({mode})"));
+            } else if let ContractPredicate::Initialized { value, condition } = output {
+                name.push_str(&format!(" ensures initialized({value},{})", condition_name(condition)));
+            }
+        }
+    }
+    name
+}
+pub(crate) fn expression_name(expression:&Expr)->String {
+    let arguments=|values:&[Expr]|values.iter().map(expression_name).collect::<Vec<_>>().join(",");
+    let generic=|values:&[GenericArgument]|values.iter().map(|value|match value {
+        GenericArgument::Type(ty)=>type_name(ty),
+        GenericArgument::Value(Shape::Literal(value))=>value.to_string(),
+        GenericArgument::Value(Shape::Constant(name))=>name.clone(),
+        GenericArgument::Value(Shape::Expression(value))=>expression_name(value),
+    }).collect::<Vec<_>>().join(",");
+    match &expression.kind {
+        ExprKind::Number(value)|ExprKind::Name(value)=>value.clone(),
+        ExprKind::StaticU32(value)=>value.to_string(),ExprKind::Bool(value)=>value.to_string(),
+        ExprKind::Member(base,field)=>format!("{}.{}",expression_name(base),field),
+        ExprKind::Index(base,index)=>format!("{}[{}]",expression_name(base),expression_name(index)),
+        ExprKind::Unary(op,value)=>format!("({op}{})",expression_name(value)),
+        ExprKind::Binary(op,a,b)=>format!("({}{op}{})",expression_name(a),expression_name(b)),
+        ExprKind::Select(a,b,c)=>format!("({}?{}:{})",expression_name(a),expression_name(b),expression_name(c)),
+        ExprKind::Call(name,args)=>format!("{name}({})",arguments(args)),
+        ExprKind::Invoke(callee,args)=>format!("{}({})",expression_name(callee),arguments(args)),
+        ExprKind::Construct(ty,args)=>format!("{}({})",type_name(ty),arguments(args)),
+        ExprKind::Specialize(name,types,args)=>format!("{name}<{}>({})",generic(types),arguments(args)),
+        ExprKind::FunctionRef(name,types)=>format!("{name}<{}>",generic(types)),
+        ExprKind::Cooperate(name,types,args)=>format!("cooperate {name}{}({})",types.as_ref().map(|types|format!("<{}>",generic(types))).unwrap_or_default(),arguments(args)),
+        ExprKind::Target(target,value)=>format!("target({},{})",match target {Target::Cpu=>"cpu",Target::Gpu=>"gpu",Target::Compute=>"compute"},expression_name(value)),
+    }
+}
+fn condition_name(condition: &OutputCondition) -> String {
+    match condition {
+        OutputCondition::Name(name) | OutputCondition::Number(name) => name.clone(),
+        OutputCondition::Bool(value) => value.to_string(),
+        OutputCondition::StaticU32(value) => value.to_string(),
+        OutputCondition::Member(base, field) => format!("{}.{}", condition_name(base), field),
+        OutputCondition::Unary(op, value) => format!("({op}{})", condition_name(value)),
+        OutputCondition::Binary(op, a, b) => format!("({}{op}{})", condition_name(a), condition_name(b)),
+        OutputCondition::Constant(value) => format!("{}[{}]", value.ty.name,
+            value.bits.iter().map(|bits| format!("{bits:016x}")).collect::<Vec<_>>().join(",")),
+    }
+}

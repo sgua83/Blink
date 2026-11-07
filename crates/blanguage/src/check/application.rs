@@ -12,6 +12,46 @@ pub(super) enum Ownership {
     Moved,
     Conditional(Box<owned_presence::Presence>),
 }
+// Current element facts belong to this Data, including conditional cleanup
+// premises supplied by a real input declaration. They are not type invariants.
+#[derive(Clone,Default)]
+pub(super) enum ElementFacts {
+    #[default]
+    Unknown,
+    Known(Box<returns::Returned>),
+    Cleanup(bounds::Condition),
+    Common(Box<ElementFacts>,Box<ElementFacts>),
+    Selected(Box<bounds::Condition>,Box<ElementFacts>,Box<ElementFacts>),
+}
+impl ElementFacts {
+    pub(super) fn known(&self)->Option<&returns::Returned>{match self{Self::Known(value)=>Some(value),Self::Unknown|Self::Cleanup(_)|Self::Common(..)|Self::Selected(..)=>None}}
+    pub(super) fn known_mut(&mut self)->Option<&mut returns::Returned>{match self{Self::Known(value)=>Some(value),Self::Unknown|Self::Cleanup(_)|Self::Common(..)|Self::Selected(..)=>None}}
+    pub(super) fn common(self,other:Self)->Self {match(self,other){
+        (Self::Unknown,_)|(_,Self::Unknown)=>Self::Unknown,
+        (Self::Known(mut a),Self::Known(b))=>{a.join(*b,true);Self::Known(a)},
+        (Self::Cleanup(a),Self::Cleanup(b))=>Self::Cleanup(a.logical(b,false)),
+        (a,b)=>Self::Common(Box::new(a),Box::new(b)),
+    }}
+    pub(super) fn selected(self,other:Self,when:&bounds::Condition)->Self {
+        if let Some(truth)=when.boolean_constant(){return if truth{self}else{other};}
+        match(self,other){
+            (Self::Unknown,Self::Unknown)=>Self::Unknown,
+            (Self::Known(mut a),Self::Known(b))=>{a.join_locations(*b,when,true);Self::Known(a)},
+            (Self::Cleanup(a),Self::Cleanup(b))=>Self::Cleanup(bounds::Condition::branch(when.clone(),a,b)),
+            (Self::Cleanup(a),Self::Unknown)=>Self::Cleanup(when.clone().logical(a,false)),
+            (Self::Unknown,Self::Cleanup(b))=>Self::Cleanup(when.clone().negate().logical(b,false)),
+            (a,b)=>Self::Selected(Box::new(when.clone()),Box::new(a),Box::new(b)),
+        }
+    }
+    pub(super) fn map(self,values:&mut impl FnMut(Box<returns::Returned>)->Box<returns::Returned>,conditions:&mut impl FnMut(bounds::Condition)->bounds::Condition)->Self {match self{
+        Self::Unknown=>Self::Unknown,
+        Self::Known(value)=>Self::Known(values(value)),
+        Self::Cleanup(when)=>Self::Cleanup(conditions(when)),
+        Self::Common(a,b)=>a.map(values,conditions).common(b.map(values,conditions)),
+        Self::Selected(when,a,b)=>{let when=conditions(*when);a.map(values,conditions).selected(b.map(values,conditions),&when)},
+    }}
+}
+crate::module::codec::variants!(ElementFacts {0=>Unknown,1=>Known(value),2=>Cleanup(when),3=>Common(a,b),4=>Selected(when,a,b)});
 // CPU 应用的私有资源描述由原绑定持有，不铺进每层设备表达式的按值载荷。
 pub(super) type Data = Box<DataPayload>;
 #[derive(Clone)]
@@ -27,18 +67,26 @@ pub(super) struct DataPayload {
     pub count: Option<u32>,
     pub residency: residency::Residency,
     pub layout: DataLayout,
-    pub elements: Box<returns::Returned>,
+    // Element facts do not own storage, initialization, resource access or lifetime.
+    pub elements: ElementFacts,
     pub prefixes: prefix::Fields,
 }
 impl DataPayload {
-    pub(super) fn loop_compatible(&self,other:&Self,inputs:&mut residency::Inputs,source:&Source,span:Span,path:&bounds::Clause)->bool {
-        self.ownership==other.ownership && (self.ownership==Ownership::Moved
-            || inputs.same(&self.residency,&other.residency,source,span,path)
-                && match(self.elements.as_ref(),other.elements.as_ref()){
-                    (returns::Returned::OwnedValue(a),returns::Returned::OwnedValue(b))=>a.loop_compatible(b,inputs,source,span,path),
-                    (returns::Returned::Dataset(a),returns::Returned::Dataset(b))=>a.loop_compatible(b,inputs,source,span,path),
-                    _=>true,
-                })
+    pub(super) fn loop_compatible(&self,other:&Self,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause)->Result<bool> {
+        if self.ownership!=other.ownership{return Ok(false);}
+        if self.ownership==Ownership::Moved{return Ok(true);}
+        if !builder.residency.same(&self.residency,&other.residency,&builder.definition.source,span,path){return Ok(false);}
+        // Only an existing element model introduces child resources to compare.
+        // An unknown counterpart is projected by the same finite model owner.
+        if matches!((&self.elements,&other.elements),
+            (ElementFacts::Unknown|ElementFacts::Cleanup(_),ElementFacts::Unknown|ElementFacts::Cleanup(_))){return Ok(true);}
+        let before=builder.element_model(&self.ty,&self.elements,(&self.residency,&[]),span)?;
+        let after=builder.element_model(&other.ty,&other.elements,(&other.residency,&[]),span)?;
+        match(before.as_ref(),after.as_ref()){
+            (returns::Returned::OwnedValue(a),returns::Returned::OwnedValue(b))=>a.loop_compatible(b,builder,span,path),
+            (returns::Returned::Dataset(a),returns::Returned::Dataset(b))=>a.loop_compatible(b,builder,span,path),
+            _=>Ok(true),
+        }
     }
     pub(super) fn permits(&self, access: Access) -> bool {
         match self.access {
@@ -57,7 +105,7 @@ impl Binding {
 // 更新描述只属于原共同元素模型，不成为运行期状态。
 pub(super) enum ElementUpdate<'a> {
     Unknown,
-    Element { proof: &'a bounds::Proof, range: Option<(u32, u32)> },
+    Element { proof: &'a bounds::Proof, index: Option<(bounds::Operand,(u32,u32))> },
     WholeFacts(&'a bounds::Proof),
 }
 // 动态数组借用携带实际可能的资源叶；这些来源只用于编译期别名和存活期。
@@ -113,7 +161,7 @@ impl DataReference {
 
 pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->address::Origin {
     address::Origin {
-        root:address::Root::Resource(view::resource_borrow(data)),base:address::Layout::of(&data.ty),layout:address::Layout::of(ty),
+        root:address::Root::Resource{borrow:view::resource_borrow(data),index:None},base:address::Layout::of(&data.ty),layout:address::Layout::of(ty),
         words:ty.components.iter().map(|(_,word)|field+word).collect(),positions:Arc::from([]),
         writable:data.access.writes(),initialized:vec![initialized;ty.components.len()].into(),
     }
@@ -310,7 +358,7 @@ impl ApplicationLoads<'_, '_> {
     fn writes_local(&self,inst:&Inst,slot:usize)->bool {
         if inst.local_writes().contains(&slot){return true;}
         if let InstKind::Call(call)=&inst.kind {
-            return self.call_memory_writes(call,|borrow|borrow.pending()||address::MemoryEffect::of(borrow,Access::InOut).writes_position(&Position::Local(slot)));
+            return self.call_memory_writes(call,|borrow|self.0.address_write_positions(borrow).is_none_or(|positions|positions.iter().any(|written|owned_presence::Presence::selected(written,&Position::Local(slot))!=owned_presence::Presence::None)));
         }
         match &inst.kind {
             InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes_local(inst,slot)),
@@ -336,11 +384,11 @@ impl ApplicationLoads<'_, '_> {
                 }){return true;}
                 let allocated=matches!(read,IndexedSource::View{address,..}if self.frame_root(*address).is_some_and(|root|self.allocated(root)));
                 self.call_memory_writes(call,|borrow|{
-                    if borrow.pending()||address::external_memory(borrow){return true;}
                     if let CallTarget::Defined(name)=&call.target
                         && self.0.functions.writes_only_references(name) {
                         return call.memory.iter().any(|effect|effect.access.writes());
                     }
+                    if borrow.pending()||address::external_memory(borrow){return true;}
                     borrow.sources.entries().any(|(source,when)|when.possible()&&match source{
                         view::Source::Position(origin)if allocated&&matches!(origin.root,address::Root::Local{..})=>false,
                         _=>true,
@@ -515,7 +563,7 @@ impl ApplicationLoads<'_, '_> {
                             let ValueIdentity::ParameterStorage(index)=identity else{continue};
                             for source in &storage.view_borrow(0).sources {
                                 let view::Source::Position(origin)=source else{continue};
-                                if !matches!(&origin.root,address::Root::Resource(root)if self.0.application_element_scopes(&[],root,data).into_iter().any(|(scope,complete)|scope.is_empty()&&complete)){continue;}
+                                if !matches!(&origin.root,address::Root::Resource{borrow:root,..}if self.0.application_element_scopes(&[],root,data,(path,&state.env)).into_iter().any(|(scope,complete,_)|scope.is_empty()&&complete)){continue;}
                                 for (component,_) in origin.words.iter().enumerate().filter(|(component,at)|**at==word&&origin.layout.parts[*component].0==scalar){
                                     let proof=contract.written.get(*index).and_then(Option::as_ref).map(|written|{
                                         let value=self.0.returned_storage(written);
@@ -604,10 +652,10 @@ impl Builder<'_> {
             proof.assign(&[component], ty.components.len(), current);
         }
     }
-    pub(super) fn application_indexed_proof<'s>(&self, data: &Data, index: &Value, states: impl Iterator<Item=&'s flow::LoopState>+Clone, controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) -> (bounds::Proof,bounds::Proof) {
+    pub(super) fn application_indexed_proof<'s>(&self, data: &Data, index: &Value, initial:&Value, states: impl Iterator<Item=&'s flow::LoopState>+Clone, controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) -> (bounds::Proof,bounds::Proof) {
         let loads = ApplicationLoads(self);
         let mut output = [bounds::Proof::default(),bounds::Proof::default()];
-        let initial=bounds::Proof::capture(&self.returned_storage(&data.elements));
+        let initial=bounds::Proof::capture(initial);
         for (component, &(scalar, word)) in data.ty.components.iter().enumerate() {
             let mut common: [Option<bounds::Proof>;2] = [None,None];
             for state in states.clone() {
@@ -949,7 +997,7 @@ impl Builder<'_> {
             None
         };
         let element_ty=self.program.buffers[binding].ty.clone();
-        let elements=self.unknown_element_model(&element_ty);
+        let elements=ElementFacts::Known(self.unknown_element_model(&element_ty,(&residency::Residency::parameter(parameter),&[]))?);
         Ok(Box::new(DataPayload {
             prefixes: BTreeMap::new(),
             elements,
@@ -1244,7 +1292,7 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn application_borrowed(&self,identity:ValueIdentity)->bool{self.application_view_borrowed(identity)||self.application_position_borrowed(identity)}
+    pub(super) fn application_borrowed(&self,identity:ValueIdentity)->Result<bool>{Ok(self.application_view_borrowed(identity)?||self.application_position_borrowed(identity))}
     pub(super) fn application_position_borrowed(&self, identity: ValueIdentity) -> bool {
         self.env.iter().filter(|(name,_)|self.view_uses.used(name)).any(|(_,binding)| {
             let place = match binding {
@@ -1308,7 +1356,7 @@ impl Builder<'_> {
         data.root.proof = bounds::Proof::capture(&data.root);
         data.length.proof = bounds::Proof::capture(&data.length);
         if mutable {
-            let ty=Ty::owned_dataset(data.ty.clone(),data.count);let(slots,storage)=self.local_slots(&ty);
+            let ty=Ty::owned_dataset((data.ty.clone()).syntax(),data.count);let(slots,storage)=self.local_slots(&ty);
             let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetBindSlots,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
             self.code.push(Inst::generated(InstKind::StoreLocal(slots[0],data.root.regs[0]),origin.clone()));
             self.code.push(Inst::generated(InstKind::StoreLocal(slots[1],data.length.regs[0]),origin));
@@ -1389,7 +1437,7 @@ impl Builder<'_> {
             &definition.module,
             &definition.imports,
         )?;
-        let slots = self.local_slots(&Ty::owned_dataset(ty.clone(), count)).0;
+        let slots = self.local_slots(&Ty::owned_dataset((ty.clone()).syntax(), count)).0;
         let handle = self.reg(Scalar::U32);
         let length = self.reg(Scalar::U32);
         // These are absent compile-time values. No native initialization or placeholder allocation is emitted.
@@ -1401,7 +1449,7 @@ impl Builder<'_> {
             uniform: false,
             constant: None,
         };
-        let elements=self.unknown_element_model(&ty);
+        let elements=ElementFacts::Unknown;
         self.env.insert(
             name.into(),
             Binding::ApplicationData(Box::new(DataPayload {
@@ -1409,7 +1457,7 @@ impl Builder<'_> {
                 elements,
                 root: value(handle),
                 length: value(length),
-                place: Some(Place::Local(Ty::owned_dataset(ty.clone(),count),slots.to_vec(),slots[0]..slots[1]+1)),
+                place: Some(Place::Local(Ty::owned_dataset((ty.clone()).syntax(),count),slots.to_vec(),slots[0]..slots[1]+1)),
                 initialization: None,
                 ty,
                 count,
@@ -1516,7 +1564,7 @@ impl Builder<'_> {
         let mut retained = fill.proof.typed_view_borrow(&fill.ty);
         for borrow in view_contracts::resource_borrows(&returned) { retained.union(&borrow); }
         self.view_uses.invocation(span);
-        retained.union(&self.view_uses.all(self,&[view_liveness::Transfer::OwnedData(&data)]));
+        retained.union(&self.view_uses.all(self,&[view_liveness::Transfer::OwnedData(&data)])?);
         self.application_movable(&data, &retained, span)?;
         if fill.ty.owns_resources() {
             let exact = data.length.minimum() == data.length.maximum()
@@ -1537,8 +1585,7 @@ impl Builder<'_> {
         let incoming = self.capture_element_model(&data, &[], returned);
         let growth = bounds::Condition::comparison(Comparison::Greater, &length, &data.length);
         let grows = growth.truth_in(&self.path);
-        let elements = if grows == Some(false) { data.elements } else if data.length.maximum() == 0 { incoming } else {
-            let mut previous = data.elements;
+        let elements = if grows == Some(false) { data.elements } else if data.length.maximum() == 0 { ElementFacts::Known(incoming) } else if let ElementFacts::Known(mut previous)=data.elements {
             if let Some(value)=previous.view_value_mut(){
                 let present=bounds::Condition::selected(ownership::ApplicationIndex::of(&data.length),0).negate();
                 value.proof.under_path(&value.ty,&present.assume(&bounds::Clause::default(),true));
@@ -1550,8 +1597,8 @@ impl Builder<'_> {
                 combined.join(*incoming,true);
                 previous.join_locations(*combined, &growth.negate(), true);
             }
-            previous
-        };
+            ElementFacts::Known(previous)
+        }else{data.elements.common(ElementFacts::Known(incoming))};
         let (slots, storage) = self.local_slots(&fill.ty);
         let origin = Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetResizeFill,
@@ -1568,7 +1615,7 @@ impl Builder<'_> {
         self.env.remove(&input);
         Ok(Some(result))
     }
-    fn resize_application_storage(&mut self,root:Value,ty:Ty,mut length:Value,elements:Box<returns::Returned>,fill:CallArgument,snapshots:&[&Value],span:Span)->Result<Data> {
+    fn resize_application_storage(&mut self,root:Value,ty:Ty,mut length:Value,elements:ElementFacts,fill:CallArgument,snapshots:&[&Value],span:Span)->Result<Data> {
         let frame = self.application_frame(span)?;
         let reg = self.reg(Scalar::U32);
         let call_origin = Arc::new(GeneratedOrigin {
@@ -1592,7 +1639,7 @@ impl Builder<'_> {
             root: handle, place: None, initialization: None, ty, length,
             ownership: Ownership::Owned, access: Access::InOut, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
         });
-        self.complete_application_elements(&DataReference::direct(data.clone()), &data.elements, snapshots, span, Arc::new(GeneratedOrigin {
+        self.complete_application_elements(&DataReference::direct(data.clone()), data.elements.known(), snapshots, span, Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetResizeComplete,
             trigger: self.source_at(span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
         }))?;
@@ -1618,10 +1665,10 @@ impl Builder<'_> {
         self.require_same(&data.ty,destination.ty(),output.span)?;
         let place=Self::application_element(&data,&last,(last.minimum(),last.maximum()));
         let packed=self.read_storage_value(&place,span,None)?;
-        let mut value=if data.ty.owns_resources(){self.materialize_element(&DataReference::direct(data.clone()),packed,&place)}else{returns::Returned::value(packed)};
+        let mut value=if data.ty.owns_resources(){self.materialize_element(&DataReference::direct(data.clone()),packed,&place)?}else{returns::Returned::value(packed)};
         self.require_returned_initialized(&mut value,span)?;
         self.env.remove(&held);
-        self.view_uses.invocation(span);let retained=self.view_uses.all(self,&[]);
+        self.view_uses.invocation(span);let retained=self.view_uses.all(self,&[])?;
         self.application_movable(&data,&retained,span)?;
         if data.ty.owns_resources(){
             let old=if matches!(destination.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&destination,span)?}else{self.owned_place_model(&destination)};
@@ -1630,7 +1677,7 @@ impl Builder<'_> {
         }
         else {
             let packed=self.returned_storage(&value);self.write_storage_value(&destination,&packed,span,None)?;
-            self.assign_owned_proof(&destination,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&destination);
+            self.assign_owned_proof(&destination,bounds::Proof::capture(&packed),packed.uniform)?;self.initialize(&destination);
         }
         // A shrinking Frame never reads fill; the moved tail has no second owner there.
         let fill=argument(self.constant(Scalar::U64,0));
@@ -1726,7 +1773,7 @@ impl Builder<'_> {
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
-        let elements=self.unknown_element_model(&ty);
+        let elements=ElementFacts::Unknown;
         let mut data=Box::new(DataPayload {
             prefixes: BTreeMap::new(),
             elements,
@@ -1742,13 +1789,20 @@ impl Builder<'_> {
             layout: DataLayout::Declared,
         });
         if let Some(factory)=args.get(1) {
-            data.elements=self.initialize_application_elements(&data,factory,span)?;
+            data.elements=match self.initialize_application_elements(&data,factory,span)?{Some(model)=>ElementFacts::Known(model),None=>ElementFacts::Unknown};
             data.initialization=None;
+        } else {
+            let mut elements=self.unknown_element_model(&data.ty,(&data.residency,&[]))?;
+            let value=elements.view_value_mut().unwrap();
+            for component in view_contracts::components(&value.ty) {
+                value.proof=std::mem::take(&mut value.proof).with_view_borrow(component,view::Borrow::source(view::Source::Inactive));
+            }
+            data.elements=application::ElementFacts::Known(elements);
         }
         Ok(Some(data))
     }
     // Generate actual element storage with the original resource owner.
-    fn initialize_application_elements(&mut self,data:&Data,factory:&Expr,span:Span)->Result<Box<returns::Returned>> {
+    fn initialize_application_elements(&mut self,data:&Data,factory:&Expr,span:Span)->Result<Option<Box<returns::Returned>>> {
         let (name,explicit)=match &factory.kind {
             ExprKind::Name(name)=>(name.as_str(),None),
             ExprKind::FunctionRef(name,args)=>(name.as_str(),Some(args.as_slice())),
@@ -1775,7 +1829,7 @@ impl Builder<'_> {
             self.require_same(&scalar,&input,factory.span)?;
             let output=self.world.ty(&function.result,&definition.source,function.span,&definition.module,&definition.imports)?;
             self.require_same(&data.ty,&output,factory.span)?;
-            return Ok(self.unknown_element_model(&data.ty));
+            return Ok(None);
         }
         let slot=self.local_slots(&scalar).0[0];self.code.push(Inst::generated(InstKind::StoreLocal(slot,zero.regs[0]),cursor));
         let condition_origin=origin(GenerationReason::DatasetInitializeCondition);
@@ -1799,17 +1853,17 @@ impl Builder<'_> {
             if let Some(value)=value{value.proof=bounds::Proof::capture(value).output_bound(&bindings);}
             match returned{
                 returns::Returned::OwnedValue(value)=>for child in value.payloads.iter_mut().flatten(){bind_indices(child,ordinal,depth);},
-                returns::Returned::Dataset(data)=>bind_indices(&mut data.elements,ordinal,depth+1),
+                returns::Returned::Dataset(data)=>if let Some(elements)=data.elements.known_mut(){bind_indices(elements,ordinal,depth+1);},
                 _=>{},
             }
         }
         bind_indices(&mut model,ordinal,0);
         let elements=self.capture_element_model(data,&[],model);let value=self.returned_storage(&returned);
-        if let Some(Binding::ApplicationData(prefix))=self.env.get_mut(&owner){prefix.elements=elements.clone();}
+        if let Some(Binding::ApplicationData(prefix))=self.env.get_mut(&owner){prefix.elements=application::ElementFacts::Known(elements.clone());}
         // 原factory合同形成的模型交给此前捕获的同一前缀事实，不重建代码或调用图。
         native_function::calls(&mut self.code,&mut |call|{
             if let Some(FailureContinuation::Scope(scope))=&mut call.failure {
-                if let Some(Binding::ApplicationData(prefix))=scope.env.get_mut(&owner){prefix.elements=elements.clone();}
+                if let Some(Binding::ApplicationData(prefix))=scope.env.get_mut(&owner){prefix.elements=application::ElementFacts::Known(elements.clone());}
             }
         });
         let pending=match &returned {
@@ -1823,9 +1877,9 @@ impl Builder<'_> {
         let advance=origin(GenerationReason::DatasetInitializeAdvance);
         let one=self.constant_with_origin(Scalar::U32,1,Some(advance.clone())).regs[0];let next=self.reg(Scalar::U32);self.code.push(Inst::generated(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one},advance.clone()));self.code.push(Inst::generated(InstKind::StoreLocal(slot,next),advance));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetInitializeLoop)));
-        self.complete_application_elements(&DataReference::direct(data.clone()), &elements, &[], span, origin(GenerationReason::DatasetInitializeComplete))?;
+        self.complete_application_elements(&DataReference::direct(data.clone()), Some(elements.as_ref()), &[], span, origin(GenerationReason::DatasetInitializeComplete))?;
         self.env.remove(&owner);
-        Ok(elements)
+        Ok(Some(elements))
     }
     pub(super) fn complete_application_writes(&mut self, written: impl Fn(&Data) -> bool, span: Span) -> Result<()> {
         let path=self.residency_path();
@@ -1843,15 +1897,16 @@ impl Builder<'_> {
         for data in data {
             if completed.insert(data.root.identity()) {
                 let data = self.refresh_application_data(data, span)?;
-                self.complete_application_elements(&DataReference::direct(data.clone()), &data.elements, &[], span, origin.clone())?;
+                self.complete_application_elements(&DataReference::direct(data.clone()), data.elements.known(), &[], span, origin.clone())?;
             }
         }
         Ok(())
     }
     pub(super) fn complete_application_elements(
-        &mut self, data: &DataReference, elements: &returns::Returned, snapshots: &[&Value], span: Span,
+        &mut self, data: &DataReference, elements: Option<&returns::Returned>, snapshots: &[&Value], span: Span,
         origin: Arc<GeneratedOrigin>,
     ) -> Result<()> {
+        let Some(elements)=elements else{return Ok(());};
         if data.root.ty.components[0].0 != Scalar::U32 { return Ok(()); }
         let ty = data.element_layout().1;
         let model = self.returned_storage(elements);
@@ -1947,7 +2002,8 @@ impl Builder<'_> {
         let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,data.length.maximum().saturating_sub(1)),uniform:false,literal:false,constant:None};
         let place=Self::application_element(&data,&value_index,(value_index.minimum(),value_index.maximum()));
         let value=self.read_storage_value(&place,span,Some(origin(GenerationReason::DatasetDropElementRead)))?;
-        let element=self.materialize_element(&DataReference::direct(data.clone()),value,&place);self.drop_owned_tree(element,retained,span)?;
+        let element=self.materialize_element(&DataReference::direct(data.clone()),value,&place)?;
+        self.native_element_drop(element,retained,span,origin(GenerationReason::DatasetElementDrop))?;
         self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
@@ -2463,7 +2519,9 @@ impl Builder<'_> {
             };
             let source = &data[binding];
             if source.length.maximum() == 0 { continue; }
-            let model = self.returned_storage(&source.elements);
+            let shallow;
+            let elements=match source.elements.known(){Some(elements)=>elements,None=>{shallow=self.unknown_element_model(&source.ty,(&source.residency,&[]))?;&shallow}};
+            let model = self.returned_storage(elements);
             let word = source.element_layout().0 + offset;
             let component = source.data.ty.components.iter().position(|(_, at)| *at == word).unwrap();
             let value = self.value_component(&model, component);
@@ -2500,7 +2558,7 @@ impl Builder<'_> {
                 Some(proof) => ElementUpdate::WholeFacts(proof),
                 None => ElementUpdate::Unknown,
             };
-            self.update_application_contents(reference, &words, update);
+            self.update_application_contents(reference, &words, update)?;
         }
         self.initialize_application_domain(&interface, &data);
         let frame = self.application_frame(span)?;
@@ -2520,7 +2578,7 @@ impl Builder<'_> {
             let count=&data[relation.count.binding];
             let word=count.element_layout().0+relation.count.word;
             let facts=BTreeMap::from([(word,prefix::domain(&data[relation.domain]))]);
-            self.apply_application_prefixes(count,&facts);
+            self.apply_application_prefixes(count,&facts)?;
         }
         for name in held {
             self.finish_scoped_argument(&name, span)?;
@@ -2636,7 +2694,8 @@ impl Builder<'_> {
         let mut element_inputs = Vec::new();
         for (binding, (access, source)) in captured.iter().enumerate() {
             if !access.reads() || *access == Access::Atomic { continue; }
-            let model = self.returned_storage(&source.elements);
+            let elements=self.element_model(&source.ty,&source.elements,(&source.residency,&[]),statement.span)?;
+            let model = self.returned_storage(&elements);
             let (offset, ty) = source.element_layout();
             let components = ty.components.iter().map(|(scalar, word)|
                 source.data.ty.components.iter().position(|item| item == &(*scalar, offset + word)).unwrap()).collect::<Vec<_>>();
@@ -2730,7 +2789,7 @@ impl Builder<'_> {
             );
         }
         self.view_uses.invocation(span);
-        let borrow=self.view_uses.all(self,&[]);self.application_movable(&data,&borrow,span)?;
+        let borrow=self.view_uses.all(self,&[])?;self.application_movable(&data,&borrow,span)?;
         let (source, target) = if name == "upload" {
             (Target::Cpu, residency::Residency::gpu())
         } else {
@@ -2933,43 +2992,34 @@ impl crate::module::codec::Encode for DataPayload {
 }
 impl crate::module::codec::Decode for DataPayload {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self> {
-        Ok(Self{root:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,access:Access::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,layout:DataLayout::decode(r)?,elements:Box::<returns::Returned>::decode(r)?,prefixes:BTreeMap::decode(r)?,place:None,initialization:None})
+        Ok(Self{root:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,access:Access::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,layout:DataLayout::decode(r)?,elements:ElementFacts::decode(r)?,prefixes:BTreeMap::decode(r)?,place:None,initialization:None})
     }
 }
 
 // Common element metadata belongs to the original logical Data.
 type ElementBindings = BTreeMap<ValueIdentity,bounds::Proof>;
-pub(super) fn element_types(ty:&Ty)->Vec<&Ty> {
-    fn visit<'a>(ty:&'a Ty, out:&mut Vec<&'a Ty>) {
-        if let Some(element)=ty.dataset.as_deref(){out.push(element);return;}
-        if ty.has_variants(){for variant in &ty.variants{visit(&variant.ty,out);}}
-        else{for index in 0..ty.aggregate_len(){visit(ty.aggregate_part(index).1,out);}}
-    }
-    let mut out=Vec::new();visit(ty,&mut out);out
-}
-fn element_width(ty:&Ty)->usize {
-    ty.components.len()+element_types(ty).into_iter().map(element_width).sum::<usize>()
-}
-pub(super) fn model_data<'a>(model:&'a returns::Returned,path:&[usize])->Option<&'a Data> {
-    match model {
+
+
+
+pub(super) fn model_data<'a>(model:Option<&'a returns::Returned>,path:&[usize])->Option<&'a Data> {
+    match model? {
         returns::Returned::Dataset(data) if path.is_empty()=>Some(data),
         returns::Returned::OwnedValue(value)=>view::owned_data_at(value,path),
         _=>None,
     }
 }
-pub(super) fn model_data_mut<'a>(model:&'a mut returns::Returned,path:&[usize])->Option<&'a mut Data> {
-    match model {
+pub(super) fn model_data_mut<'a>(model:Option<&'a mut returns::Returned>,path:&[usize])->Option<&'a mut Data> {
+    match model? {
         returns::Returned::Dataset(data) if path.is_empty()=>Some(data),
         returns::Returned::OwnedValue(value)=>view::owned_data_at_mut(value,path),
         _=>None,
     }
 }
-fn binding_element_types(binding:&Binding)->Vec<&Ty> {
+pub(super) fn binding_element_count(binding:&Binding)->usize {
     match binding {
-        Binding::ApplicationData(data)=>vec![&data.ty],
-        Binding::DataReference(data)=>vec![&data.ty],
-        Binding::OwnedValue(value)=>element_types(&value.value.ty),
-        _=>Vec::new(),
+        Binding::ApplicationData(_)|Binding::DataReference(_)=>1,
+        Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty).len(),
+        _=>0,
     }
 }
 fn binding_element_data<'a>(binding:&'a Binding,resource:usize)->Option<&'a Data> {
@@ -2978,6 +3028,14 @@ fn binding_element_data<'a>(binding:&'a Binding,resource:usize)->Option<&'a Data
         Binding::DataReference(data) if resource==0=>Some(&data.data),
         Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty).get(resource)
             .and_then(|path|view::owned_data_at(value,path)),
+        _=>None,
+    }
+}
+pub(super) fn binding_element_data_mut(binding:&mut Binding,resource:usize)->Option<&mut Data>{
+    match binding{
+        Binding::ApplicationData(data)if resource==0=>Some(data),
+        Binding::DataReference(data)if resource==0=>Some(&mut data.data),
+        Binding::OwnedValue(value)=>{let path=view::resource_paths(&value.value.ty).get(resource)?.clone();view::owned_data_at_mut(value,&path)},
         _=>None,
     }
 }
@@ -3016,20 +3074,16 @@ pub(super) fn element_scope_bindings(bindings:&ElementBindings,width:usize,paren
     out
 }
 pub(super) fn canonical_element_inputs(builder:&Builder<'_>,bindings:&mut ElementBindings) {
-    for(parameter,p)in builder.definition.function.params.iter().enumerate(){
-        if let Some(binding)=builder.env.get(&p.name){
-            for(resource,ty)in binding_element_types(binding).into_iter().enumerate(){
-                for component in 0..element_width(ty){
-                    let id=ValueIdentity::DatasetContent(parameter,resource,component);
-                    bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_sources(0,BTreeSet::from([view::Source::Parameter(id,Vec::new())])));
-                }
-            }
+    for(&source,&target)in &builder.view_model.parameters{
+        if matches!(source,ValueIdentity::DatasetContent(..)){
+            bindings.insert(source,bounds::Proof::default().with_identity(target).with_view_sources(0,BTreeSet::from([view::Source::Parameter(target,Vec::new())])));
         }
     }
 }
-pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>)->(ElementBindings,view::Borrow) {
-    fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,parameter:usize,resource:usize,next:&mut usize,out:&mut ElementBindings,memory:&mut view::Borrow,reads:bool){
-        let model=&data.elements;let value=builder.returned_storage(model);let width=value.regs.len();
+pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,paths:&BTreeSet<residency::Input>)->(ElementBindings,view::Borrow) {
+    fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,parameter:usize,resource:usize,next:&mut usize,out:&mut ElementBindings,memory:&mut view::Borrow,reads:bool,input:&residency::Input,paths:&BTreeSet<residency::Input>){
+        let model=data.elements.known().unwrap();
+        let value=builder.returned_storage(model);let width=value.regs.len();
         for component in 0..width{
             let id=ValueIdentity::ElementComponent(component);
             bindings.insert(id,bounds::Proof::default().with_identity(id));
@@ -3039,7 +3093,7 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Defini
         let model_values=proof.scalar_identities().into_iter().filter(|id|matches!(id,ValueIdentity::ElementComponent(_)))
             .map(|id|(id,bounds::Proof::default())).collect();
         let mut references=view_contracts::components(&value.ty);
-        for fields in view::resource_paths(&value.ty){if let Some(data)=model_data(model,&fields){
+        for fields in view::resource_paths(&value.ty){if let Some(data)=model_data(Some(model),&fields){
             references.insert(value.regs.iter().position(|reg|*reg==data.root.regs[0]).unwrap());
         }}
         for component in 0..width{
@@ -3052,42 +3106,49 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Defini
         }
         if reads{memory.union(&builder.address_contents(&value.ty,&proof));}
         *next+=width;
-        for(path,ty)in view::resource_paths(&value.ty).into_iter().zip(element_types(&value.ty)){
-            if let Some(child)=model_data(model,&path){
-                let nested=element_scope_bindings(&bindings,child.elements.registers().len(),true);
-                collect(builder,child,view::Borrow::element(parent.clone(),path,Some(bounds::Operand::Value(ValueIdentity::ElementIndex(0)))),nested,parameter,resource,next,out,memory,reads&&child.length.maximum()!=0);
-            }else{*next+=element_width(ty);}
+        for fields in view::resource_paths(&value.ty){
+            let mut selected=input.clone();selected.fields.extend(fields.iter().copied().map(residency::Part::Field));selected.fields.push(residency::Part::Elements);
+            if paths.contains(&selected){
+                let child=model_data(Some(model),&fields).unwrap();
+                let nested=element_scope_bindings(&bindings,child.ty.components.len(),true);
+                collect(builder,child,view::Borrow::element(parent.clone(),fields,Some(bounds::Operand::Value(ValueIdentity::ElementIndex(0)))),nested,parameter,resource,next,out,memory,reads&&child.length.maximum()!=0,&selected,paths);
+            }
         }
     }
     let mut out=ElementBindings::new();let mut memory=view::Borrow::default();
     for(parameter,p)in definition.function.params.iter().enumerate(){
         if let Some(binding)=env.get(&p.name){
-            for resource in 0..binding_element_types(binding).len(){
+            for resource in 0..binding_element_count(binding){
                 if let Some(data)=binding_element_data(binding,resource){
                     let mut projected;
                     let data=if let Binding::DataReference(reference)=binding {
                         projected=data.clone();
                         projected.root.proof=projected.root.proof.clone().with_view_borrow(0,view::Borrow::projection(builder.data_value_borrow(data),reference.projection.clone()));
                         projected.ty=reference.element_layout().1.clone();
-                        let mut model=*projected.elements;
-                        for field in &reference.projection{model=match model{returns::Returned::OwnedValue(parent)=>builder.unpack_record(&parent,*field),returns::Returned::Value(value)=>returns::Returned::value(builder.record_component(&value,*field)),_=>unreachable!()};}
-                        projected.elements=Box::new(model);
+                        projected.elements=projected.elements.map(&mut |model|{
+                            let mut model=*model;
+                            for field in &reference.projection{model=match model{returns::Returned::OwnedValue(parent)=>builder.unpack_record(&parent,*field),returns::Returned::Value(value)=>returns::Returned::value(builder.record_component(&value,*field)),_=>unreachable!()};}
+                            Box::new(model)
+                        },&mut |when|when);
                         &projected
                     }else{data};
-                    collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access!=Access::Write&&data.length.maximum()!=0);
+                    let fields=match binding{Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty)[resource].clone(),_=>Vec::new()};
+                    let input=residency::Input{parameter,fields:fields.into_iter().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
+                    collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access!=Access::Write&&data.length.maximum()!=0,&input,paths);
                 }
             }
         }
     }
     (out,memory)
 }
-pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Definition){
-    fn bind(builder:&Builder<'_>,model:&mut returns::Returned,parameter:usize,resource:usize,next:&mut usize,inputs:&ElementBindings,depth:usize){
+pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Definition,paths:&BTreeSet<residency::Input>){
+    fn bind(builder:&Builder<'_>,model:&mut returns::Returned,parameter:usize,resource:usize,next:&mut usize,inputs:&mut ElementBindings,depth:usize,input:&residency::Input,paths:&BTreeSet<residency::Input>){
         let value=builder.returned_storage(model);let width=value.regs.len();let mut bindings=inputs.clone();
         for component in 0..width{
+            let id=ValueIdentity::DatasetContent(parameter,resource,*next+component);
+            inputs.insert(id,bounds::Proof::default().with_identity(id));
             bindings.insert(ValueIdentity::ElementComponent(component),bounds::Proof::default()
-                .with_identity(ValueIdentity::ElementComponent(component))
-                .with_identity(ValueIdentity::DatasetContent(parameter,resource,*next+component)));
+                .with_identity(ValueIdentity::ElementComponent(component)).with_identity(id));
         }
         let original=model.clone();native_function::translate_returned(model,&original,&bindings,true);
         let start=*next;
@@ -3096,43 +3157,54 @@ pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Defin
             value.proof=value.proof.clone().view_parameters(&value.ty,&indices,|component|ValueIdentity::DatasetContent(parameter,resource,start+component));
         }
         *next+=width;
-        let children=view::resource_paths(&value.ty).into_iter().zip(element_types(&value.ty).into_iter().cloned()).collect::<Vec<_>>();
-        for(path,ty)in children{
-            if let Some(data)=model_data_mut(model,&path){bind(builder,&mut data.elements,parameter,resource,next,inputs,depth+1);}
-            else{*next+=element_width(&ty);}
+        for fields in view::resource_paths(&value.ty){
+            let mut selected=input.clone();selected.fields.extend(fields.iter().copied().map(residency::Part::Field));selected.fields.push(residency::Part::Elements);
+            if paths.contains(&selected){
+                let data=model_data_mut(Some(model),&fields).unwrap();
+                bind(builder,data.elements.known_mut().unwrap(),parameter,resource,next,inputs,depth+1,&selected,paths);
+            }
         }
     }
     for(parameter,p)in definition.function.params.iter().enumerate(){
         if let Some(mut binding)=builder.env.remove(&p.name){
             each_binding_data(&mut binding,&mut |resource,path,data|{
-                let inputs=(0..element_width(&data.ty)).map(|component|{
-                    let id=ValueIdentity::DatasetContent(parameter,resource,component);(id,bounds::Proof::default().with_identity(id))
-                }).collect();
-                bind(builder,&mut data.elements,parameter,resource,&mut 0,&inputs,1);
+                let Some(elements)=data.elements.known_mut()else{return;};
+                let mut inputs=ElementBindings::new();
+                let input=residency::Input{parameter,fields:path.iter().copied().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
+                bind(builder,elements,parameter,resource,&mut 0,&mut inputs,1,&input,paths);
+                builder.view_model.parameters.extend(inputs.keys().map(|id|(*id,*id)));
                 if p.access!=Access::Write && data.length.maximum()!=0 {
                     let mut input=residency::Input{parameter,fields:path.iter().copied().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
-                    residency::visit(&mut data.elements,&mut input,&mut |data,input|data.residency=residency::Residency::input(input.model()));
+                    residency::visit(elements,&mut input,&mut |data,input|data.residency=residency::Residency::input(input.model()));
                 }
+            
             });
             builder.env.insert(p.name.clone(),binding);
         }
     }
-}
+
+    }
 impl Builder<'_> {
-    pub(super) fn unknown_element_model(&self,ty:&Ty)->Box<returns::Returned>{
+    pub(super) fn unknown_element_model(&self,ty:&Ty,location:(&residency::Residency,&[usize]))->Result<Box<returns::Returned>>{
         let mut proof=bounds::Proof::default();
         for(component,(scalar,_))in ty.components.iter().enumerate(){
             proof.append(&Value{ty:Ty::scalar(*scalar),regs:vec![component],proof:bounds::Proof::default().with_identity(ValueIdentity::ElementComponent(component)),uniform:false,literal:false,constant:None});
         }
-        Box::new(self.template_returned(Value{ty:ty.clone(),regs:(0..ty.components.len()).collect(),proof,uniform:false,literal:false,constant:None},true))
+        for component in view_contracts::components(ty){proof=proof.with_view_borrow(component,view::Borrow::source(view::Source::Unresolved));}
+        let mut model=self.template_returned(Value{ty:ty.clone(),regs:(0..ty.components.len()).collect(),proof,uniform:false,literal:false,constant:None},true)?;
+        let parent=location.0.scope_indices(1,0);
+        let index=ValueIdentity::ElementIndex(0);let selection=BTreeMap::from([(index,bounds::Proof::default().with_identity(index))]);
+        let mut input=residency::Input{parameter:0,fields:std::iter::once(residency::Part::Selected(Some(bounds::Operand::Value(index)))).chain(location.1.iter().copied().map(residency::Part::Field)).collect()};
+        residency::visit(&mut model,&mut input,&mut|data,input|data.residency=parent.project(&input.fields,&selection));
+        Ok(Box::new(model))
     }
     pub(super) fn owned_resource_borrow(&self,data:&Data)->view::Borrow {
         fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,out:&mut view::Borrow){
             out.union(&parent);if data.length.maximum()==0{return;}
             builder.bind_element_resource_borrows(data,&parent,&mut bindings);
-            for fields in view::resource_paths(&data.ty){if let Some(child)=model_data(&data.elements,&fields){
+            for fields in view::resource_paths(&data.ty){if let Some(child)=model_data(data.elements.known(),&fields){
                 let borrow=view::resource_borrow(child).at_call(&bindings);
-                let nested=element_scope_bindings(&bindings,child.elements.registers().len(),true);
+                let nested=element_scope_bindings(&bindings,child.ty.components.len(),true);
                 collect(builder,child,borrow,nested,out);
             }}
         }
@@ -3149,8 +3221,8 @@ impl Builder<'_> {
         }
         fn owned(data:&Data,out:&mut ElementBindings){
             aliases(&data.root.proof.view_borrow(0),out);
-            if let Some(value)=data.elements.view_value(){aliases(&value.proof.typed_view_borrow(&value.ty),out);for id in value.proof.scalar_identities(){if matches!(id,ValueIdentity::MemoryValue(..)){out.entry(id).or_insert_with(||bounds::Proof::default().with_identity(id));}}}
-            for fields in view::resource_paths(&data.ty){if let Some(child)=model_data(&data.elements,&fields){owned(child,out);}}
+            if let Some(value)=data.elements.known().and_then(returns::Returned::view_value){aliases(&value.proof.typed_view_borrow(&value.ty),out);for id in value.proof.scalar_identities(){if matches!(id,ValueIdentity::MemoryValue(..)){out.entry(id).or_insert_with(||bounds::Proof::default().with_identity(id));}}}
+            for fields in view::resource_paths(&data.ty){if let Some(child)=model_data(data.elements.known(),&fields){owned(child,out);}}
         }
         let mut out=ElementBindings::new();owned(data,&mut out);
         let ordinal=ValueIdentity::ElementIndex(0);out.insert(ordinal,bounds::Proof::default().with_identity(ordinal));
@@ -3186,7 +3258,7 @@ impl Builder<'_> {
         let parent=parent.output_bound(&shifts);
         let index=bounds::Operand::Value(ValueIdentity::ElementIndex(0)).at_call(bindings);
         for fields in view::resource_paths(&data.ty) {
-            if let Some(resource)=model_data(&data.elements,&fields) {
+            if let Some(resource)=model_data(data.elements.known(),&fields) {
                 let id=ValueIdentity::ElementComponent(resource.root.regs[0]);
                 let proof=bindings.entry(id).or_default();
                 let mut borrow=proof.view_borrow(0);
@@ -3196,31 +3268,43 @@ impl Builder<'_> {
             }
         }
     }
-    pub(super) fn application_element_scopes(&self,sources:&[ValueIdentity],resource:&view::Borrow,data:&Data)->Vec<(Vec<Vec<usize>>,bool)> {
-        fn collect(borrow:&view::Borrow,owner:&view::Borrow,path:&bounds::Clause)->Vec<(Vec<Vec<usize>>,bool)> {
+    fn element_index_operand(&self,index:bounds::Operand,context:(&bounds::Clause,&BTreeMap<String,Binding>))->bounds::Operand {
+        match index {
+            bounds::Operand::Value(id)=>{
+                let proof=bounds::scoped_proof(&Ty::scalar(Scalar::U32),bounds::Proof::default().with_identity(id),context.0,context.1);
+                bounds::Operand::Value(proof.origins.iter().flatten().copied().fold(id,std::cmp::min))
+            },
+            constant=>constant,
+        }
+    }
+    pub(super) fn application_element_scopes(&self,sources:&[ValueIdentity],resource:&view::Borrow,data:&Data,context:(&bounds::Clause,&BTreeMap<String,Binding>))->Vec<(Vec<Vec<usize>>,bool,bounds::Condition)> {
+        fn collect(builder:&Builder<'_>,borrow:&view::Borrow,owner:&view::Borrow,path:&bounds::Clause,env:&BTreeMap<String,Binding>)->Vec<(Vec<Vec<usize>>,bool,bounds::Condition)> {
             let mut paths=Vec::new();let selected=borrow.restricted(path);let root=owner.restricted(path);
             let shared=selected.sources.entries().any(|(source,when)|matches!(source,view::Source::Data(_)|view::Source::Parameter(..)|view::Source::Element{..})&&root.overlaps_source(source,&when))
                 ||selected.calls.entries().any(|(call,when)|when.overlaps(&root.calls.when(call)))
                 ||selected.inputs.entries().any(|(input,when)|when.overlaps(&root.inputs.when(input)));
-            if shared{paths.push((Vec::new(),selected==root));}
+            if shared{paths.push((Vec::new(),selected==root,bounds::Condition::constant(true)));}
             for(source,when)in borrow.sources.entries(){
                 let truth=bounds::Condition::guard(when).truth_in(path);
                 if truth==Some(false){continue;}
                 match source {
-                    view::Source::Element{parent,fields,..}=>for(mut nested,complete)in collect(parent,owner,path){nested.push(fields.clone());paths.push((nested,complete&&truth==Some(true)));},
-                    view::Source::Projection{parent,..}=>for(nested,complete)in collect(parent,owner,path){paths.push((nested,complete&&truth==Some(true)));},
+                    view::Source::Element{parent,fields,index}=>for(mut nested,complete,choice)in collect(builder,parent,owner,path,env){
+                        let choice=choice.scope_element_indices(1).logical(index.map(|index|bounds::Condition::element_index(0,builder.element_index_operand(index,(path,env)))).unwrap_or_default(),false);
+                        nested.push(fields.clone());paths.push((nested,complete&&truth==Some(true),choice));
+                    },
+                    view::Source::Projection{parent,..}=>for(nested,complete,choice)in collect(builder,parent,owner,path,env){paths.push((nested,complete&&truth==Some(true),choice));},
                     _=>{},
                 }
             }
             paths
         }
-        if sources==[data.root.identity()]{return vec![(Vec::new(),true)];}
+        if sources==[data.root.identity()]{return vec![(Vec::new(),true,bounds::Condition::constant(true))];}
         let mut paths=BTreeMap::new();
-        if sources.contains(&data.root.identity()){paths.insert(Vec::new(),true);}
+        if sources.contains(&data.root.identity()){paths.insert(Vec::new(),(true,bounds::Condition::constant(true)));}
         let owner=view::resource_borrow(data);
         let owners=std::iter::once(&owner).chain(self.loop_contexts.iter().filter_map(|context|context.view_resources.get(&data.root.identity())));
-        for owner in owners{for(path,complete)in collect(resource,owner,&self.path){paths.entry(path).and_modify(|old|*old|=complete).or_insert(complete);}}
-        paths.into_iter().collect()
+        for owner in owners{for(path,complete,choice)in collect(self,resource,owner,context.0,context.1){paths.entry(path).and_modify(|(old,selection)|{*old|=complete;*selection=selection.clone().logical(choice.clone(),true);}).or_insert((complete,choice));}}
+        paths.into_iter().map(|(path,(complete,choice))|(path,complete,choice)).collect()
     }
     pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[&Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {
         let Some(mut place)=self.application_index(data.clone(),index)?else{return Ok(())};
@@ -3243,8 +3327,8 @@ impl Builder<'_> {
         self.require_owned_writable(&place,span)?;self.writable_storage(&place,span,true)?;
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let loaded=self.read_storage_value(&place,span, None)?;
-        let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone(),&place);
-        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone(),&place),false);}
+        let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone(),&place)?;
+        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone(),&place)?,false);}
         let held=self.hold_binding(Binding::DataReference(data.clone()));
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
         if !self.flow.continues(){return Ok(());}
@@ -3254,48 +3338,70 @@ impl Builder<'_> {
         self.store_owned_returned(place,old,value,span)
     }
     // These are the original already-evaluated metadata positions, not a second element table.
-    fn element_selection(place:Option<&Place>,first:usize,count:usize)->bounds::Condition {
+    fn element_selection(&self,place:Option<&Place>,first:usize,count:usize)->bounds::Condition {
         let mut current=place;let mut selected=bounds::Condition::constant(true);
         for depth in first..first+count{
             let Some(Place::ApplicationElement{index_value,parent,..})=current.map(Place::storage)else{return bounds::Condition::default()};
-            selected=selected.logical(bounds::Condition::element_index(depth,*index_value),false);current=parent.as_deref();
+            selected=selected.logical(bounds::Condition::element_index(depth,self.element_index_operand(*index_value,(&self.path,&self.env))),false);current=parent.as_deref();
         }
         selected
     }
-    fn assign_application_element_model(&mut self,data:&DataReference,place:&Place,paths:&[Vec<usize>],value:&returns::Returned){
+    fn assign_application_element_model(&mut self,data:&DataReference,place:&Place,paths:&[Vec<usize>],value:&returns::Returned)->Result<()> {
         let resource=view::resource_borrow(&data.data);let one=self.constant(Scalar::U32,1);
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
             let mut binding=self.env.remove(&name).unwrap();
-            each_binding_data(&mut binding,&mut|_,_,target|{
-                let scopes=self.application_element_scopes(&data.sources,&resource,target);let unique=scopes.len()==1;
-                for(scope,complete_scope)in scopes {
-                let count=scope.len()+1;
-                let qualifier=if unique&&complete_scope&&paths.len()==1{bounds::Condition::constant(true)}else{bounds::Condition::default()};
-                let selected=qualifier.logical(Self::element_selection(Some(place),0,count),false);
-                let mut complete_scope=bounds::Condition::constant(complete_scope);
-                let mut target=&mut *target;
-                for fields in scope{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);target=model_data_mut(&mut target.elements,&fields).unwrap();}
-                for projection in paths {
-                    let mut fresh=self.capture_element_model(target,projection,value.clone());
-                    let mut previous=(*target.elements).clone();
-                    for field in projection{let returns::Returned::OwnedValue(parent)=previous else{unreachable!()};previous=self.unpack_record(&parent,*field);}
-                    let complete=bounds::Condition::constant(unique&&paths.len()==1&&matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})).logical(complete_scope.clone(),false).logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);
-                    let truth=complete.truth_in(&self.path);
-                    let locations=(truth!=Some(true)).then(||(fresh.clone(),previous.clone()));
-                    match truth{
-                        Some(true)=>{},Some(false)=>fresh.join(previous,true),
-                        None=>{let mut common=fresh.clone();common.join(previous,true);fresh.join_locations(*common,&complete,true);},
+            for resource_index in 0..binding_element_count(&binding){
+                let Some(target)=binding_element_data_mut(&mut binding,resource_index)else{continue;};
+                let scopes=self.application_element_scopes(&data.sources,&resource,target,(&self.path,&self.env));let unique=scopes.len()==1;
+                for(scope,complete_scope,_)in scopes {
+                    let count=scope.len()+1;
+                    let qualifier=if unique&&complete_scope&&paths.len()==1{bounds::Condition::constant(true)}else{bounds::Condition::default()};
+                    let selected=qualifier.logical(self.element_selection(Some(place),0,count),false);
+                    let mut complete_scope=bounds::Condition::constant(complete_scope);
+                    let mut target=Some(&mut *target);
+                    for fields in scope{target=match target{
+                        Some(target)=>{self.expand_current_element_facts(target)?;complete_scope=complete_scope.clone().logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);model_data_mut(target.elements.known_mut(),&fields)},
+                        None=>None,
+                    };}
+                    let Some(target)=target else{continue;};self.expand_current_element_facts(target)?;
+                    for projection in paths {
+                        let mut fresh=self.capture_element_model(target,projection,value.clone());
+                        let complete=bounds::Condition::constant(unique&&paths.len()==1&&matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})).logical(complete_scope.clone(),false).logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);
+                        let truth=complete.truth_in(&self.path);
+                        if projection.is_empty(){
+                            target.elements=match(std::mem::take(&mut target.elements),truth){
+                                (_,Some(true))=>ElementFacts::Known(fresh),
+                                (ElementFacts::Known(previous),truth)=>{
+                                    let incoming=fresh.clone();let old=previous.clone();
+                                    if truth==Some(false){fresh.join(*previous,true);}else{let mut common=fresh.clone();common.join(*previous,true);fresh.join_locations(*common,&complete,true);}
+                                    residency::select_elements(&mut fresh,&incoming,&old,&selected,count);ElementFacts::Known(fresh)
+                                },
+                                (previous,Some(false))=>previous.common(ElementFacts::Known(fresh)),
+                                (previous,None)=>{let incoming=ElementFacts::Known(fresh);incoming.clone().selected(previous.common(incoming),&complete)},
+                            };
+                            continue;
+                        }
+                        let mut stored=target.elements.known_mut();
+                        let (last,prefix)=projection.split_last().unwrap();
+                        for field in prefix{stored=stored.and_then(|stored|match stored{returns::Returned::OwnedValue(parent)=>parent.payloads[*field].as_deref_mut(),_=>None});}
+                        let Some(returns::Returned::OwnedValue(parent))=stored else{continue;};
+                        let stored=&mut parent.payloads[*last];
+                        *stored=match(stored.take(),truth){
+                            (_,Some(true))=>Some(fresh),
+                            (Some(previous),truth)=>{
+                                let incoming=fresh.clone();let old=previous.clone();
+                                if truth==Some(false){fresh.join(*previous,true);}else{let mut common=fresh.clone();common.join(*previous,true);fresh.join_locations(*common,&complete,true);}
+                                residency::select_elements(&mut fresh,&incoming,&old,&selected,count);Some(fresh)
+                            },
+                            (None,_)=>None,
+                        };
                     }
-                    if let Some((incoming,old))=locations{residency::select_elements(&mut fresh,&incoming,&old,&selected,count);}
-                    let mut stored=target.elements.as_mut();
-                    for field in projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
-                    *stored=*fresh;
                 }
-                }
-            });
+            }
             self.env.insert(name,binding);
         }
+        Ok(())
     }
     fn application_owned_references(&self,place:&Place)->Vec<(DataReference,Vec<Vec<usize>>)>{
         fn projections(ty:&Ty,wanted:&Ty,words:&[u32],indexed:bool,offset:u32,path:&mut Vec<usize>,into:&mut Vec<Vec<usize>>){
@@ -3306,12 +3412,12 @@ impl Builder<'_> {
         }
         let Place::ApplicationElement{sources,resource,words,..}=place.storage()else{unreachable!()};
         let mut references=Vec::new();
-        for binding in self.env.values(){for index in 0..binding_element_types(binding).len(){if let Some(data)=binding_element_data(binding,index){
-            for(scope,_)in self.application_element_scopes(sources,resource,data){
-                let mut parent=self.data_value_borrow(data);let mut data=data;
-                for fields in scope{parent=view::Borrow::element(parent,fields.clone(),None);data=model_data(&data.elements,&fields).unwrap();}
+        for binding in self.env.values(){for index in 0..binding_element_count(binding){if let Some(data)=binding_element_data(binding,index){
+            for(scope,_,_)in self.application_element_scopes(sources,resource,data,(&self.path,&self.env)){
+                let mut data=data;
+                for fields in scope{data=model_data(data.elements.known(),&fields).unwrap();}
                 let mut paths=Vec::new();projections(&data.ty,place.ty(),words,matches!(place,Place::Indexed{..}),0,&mut Vec::new(),&mut paths);
-                if !paths.is_empty(){let mut data=data.clone();data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,parent);references.push((DataReference::direct(data),paths));}
+                if !paths.is_empty(){let mut data=data.clone();data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,resource.clone());references.push((DataReference::direct(data),paths));}
             }
         }}}
         references
@@ -3319,14 +3425,15 @@ impl Builder<'_> {
     pub(super) fn application_owned_argument(&mut self,place:&Place,span:Span)->Result<returns::Returned>{
         let loaded=self.read_storage_value(place,span,None)?;
         let references=self.application_owned_references(place);let mut values=Vec::new();
-        for(mut data,paths)in references{for path in paths{data.projection=path;values.push(self.materialize_element(&data,loaded.clone(),place));}}
+        for(mut data,paths)in references{for path in paths{data.projection=path;values.push(self.materialize_element(&data,loaded.clone(),place)?);}}
         let mut models=values.into_iter();
         let mut model=models.next().unwrap();for other in models{model.join(other,false);}
         if let returns::Returned::OwnedValue(value)=&mut model{value.place=Some(place.clone());}
         Ok(model)
     }
-    pub(super) fn assign_application_owned_argument(&mut self,place:&Place,value:&returns::Returned){
-        for(data,paths)in self.application_owned_references(place){self.assign_application_element_model(&data,place,&paths,value);}
+    pub(super) fn assign_application_owned_argument(&mut self,place:&Place,value:&returns::Returned)->Result<()> {
+        for(data,paths)in self.application_owned_references(place){self.assign_application_element_model(&data,place,&paths,value)?;}
+        Ok(())
     }
     fn capture_element_model(&self,data:&Data,projection:&[usize],mut model:returns::Returned)->Box<returns::Returned>{
         model.bind_outputs(None,&BTreeMap::new(),&bounds::Clause::default());
@@ -3338,7 +3445,7 @@ impl Builder<'_> {
             bindings.insert(id,proof.clone());
             for source in value.component_origins(component){bindings.entry(source).or_insert_with(||proof.clone());}
         }
-        for fields in view::resource_paths(&value.ty){if let Some(resource)=model_data(&model,&fields){
+        for fields in view::resource_paths(&value.ty){if let Some(resource)=model_data(Some(&model),&fields){
             let(mut offset,mut ty)=(0,&value.ty);
             for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
             let component=value.ty.components.iter().position(|(_,word)|*word==offset).unwrap();
@@ -3358,8 +3465,8 @@ impl Builder<'_> {
         }
         self.close_stored_resources(&mut model,&original,&bindings);Box::new(model)
     }
-    pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value,place:&Place)->returns::Returned{
-        let mut model=(*data.elements).clone();let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
+    pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value,place:&Place)->Result<returns::Returned>{
+        let mut model=*self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?;let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
         for field in &data.projection{
             let returns::Returned::OwnedValue(owner)=model else{unreachable!()};
             let(offset,ty)=owner.value.ty.aggregate_part(*field);
@@ -3367,9 +3474,10 @@ impl Builder<'_> {
             model=self.unpack_record(&owner,*field);
         }
         let original=model.clone();let storage=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
-        let mut selected=Some(place);let mut depth=0;
+        let mut selected=Some(place);let mut depth=0;let mut parent_indices=BTreeMap::new();
         while let Some(Place::ApplicationElement{index_value,index_range,parent,..})=selected.map(Place::storage){
             let proof=bounds::Proof::element_operand(*index_value,*index_range);
+            if depth!=0{parent_indices.insert(ValueIdentity::ElementIndex(depth-1),proof.clone());}
             bindings.insert(ValueIdentity::ElementIndex(depth),proof);
             selected=parent.as_deref();depth+=1;
         }
@@ -3388,66 +3496,99 @@ impl Builder<'_> {
         owned_borrows::each_data(&mut model,&mut Vec::new(),&mut|child,path|{
             let mut fields=data.projection.clone();fields.extend_from_slice(path);
             let index=match place.storage(){Place::ApplicationElement{index_value,..}=>Some(*index_value),_=>None};
+            if data.elements.known().is_none(){
+                let path=std::iter::once(residency::Part::Selected(index)).chain(fields.iter().copied().map(residency::Part::Field)).collect::<Vec<_>>();
+                // Data's stored parent indices exclude the element being loaded now.
+                child.residency=data.residency.element_indices(&parent_indices).project(&path,&bindings);
+            }
             child.root.proof=child.root.proof.clone().with_view_borrow(0,child.root.proof.view_borrow(0).joined(view::Borrow::element(borrow.clone(),fields,index)));
         });
-        model
+        Ok(model)
     }
-    pub(super) fn application_element_proof(&self,place:&Place,regs:&[Reg])->Option<bounds::Proof>{
-        let Place::ApplicationElement{sources,resource:borrow,words,index_value,index_range,..}=place else{return None};let mut result=None;
-        for binding in self.env.values(){
-            for resource in 0..binding_element_types(binding).len(){
-                if let Some(data)=binding_element_data(binding,resource)
+    pub(super) fn application_element_proof(&mut self,place:&Place,regs:&[Reg])->Result<Option<bounds::Proof>>{
+        let Place::ApplicationElement{sources,resource:borrow,words,..}=place else{return Ok(None)};let mut result=None;
+        let names=self.env.keys().cloned().collect::<Vec<_>>();
+        for name in names{
+            let mut binding=self.env[&name].clone();
+            for resource in 0..binding_element_count(&binding){
+                if let Some(data)=binding_element_data_mut(&mut binding,resource)
                     && self.resolve_ownership(&data.ownership,None).available(){
-                    for(scope,_)in self.application_element_scopes(sources,borrow,data){
-                    let mut data=data;let mut parent=self.data_value_borrow(data);for fields in scope{parent=view::Borrow::element(parent,fields.clone(),None);data=model_data(&data.elements,&fields)?;}
-                    let components=words.iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Option<Vec<_>>>()?;
-                    let value=self.returned_storage(&data.elements);let mut bindings=self.element_owner_bindings(data);
-                    for(component,reg)in components.iter().zip(regs){
-                        let proof=bounds::Proof::default().with_identity(ValueIdentity::Register(*reg));
-                        bindings.insert(ValueIdentity::ElementComponent(*component),proof.clone());
-                        for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..))){
-                            bindings.insert(source,proof.clone().with_view_borrow(0,value.proof.view_borrow(*component)));
+                    for(scope,_,_)in self.application_element_scopes(sources,borrow,data,(&self.path,&self.env)){
+                        let mut data=&mut *data;let mut parent=self.data_value_borrow(data);
+                        for fields in scope{
+                            self.expand_current_element_facts(data)?;parent=view::Borrow::element(parent,fields.clone(),None);
+                            let Some(child)=model_data_mut(data.elements.known_mut(),&fields)else{return Ok(None)};data=child;
                         }
-                    }
-                    bindings.insert(ValueIdentity::ElementIndex(0),bounds::Proof::element_operand(*index_value,*index_range));
-                    self.bind_element_resource_borrows(data,&parent,&mut bindings);
-                    // Stored model slots are not registers in the caller function.
-                    let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings);
-                    for (target,component) in components.iter().enumerate() {
-                        for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..))) {
-                            let scalar=value.ty.components[*component].0;proof.mark_domain(target,IndexDomain::CommonRange(source,scalar,scalar,scalar,scalar));
+                        self.expand_current_element_facts(data)?;
+                        let Some(components)=words.iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Option<Vec<_>>>()else{return Ok(None)};
+                        let Some(model)=data.elements.known()else{return Ok(None)};
+                        let value=self.returned_storage(model);let mut bindings=self.element_owner_bindings(data);
+                        for(component,reg)in components.iter().zip(regs){
+                            let proof=bounds::Proof::default().with_identity(ValueIdentity::Register(*reg));
+                            bindings.insert(ValueIdentity::ElementComponent(*component),proof.clone());
+                            for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..))){
+                                bindings.insert(source,proof.clone().with_view_borrow(0,value.proof.view_borrow(*component)));
+                            }
                         }
-                    }
-                    if let Some(previous)=&mut result{bounds::Proof::join(previous,&proof,regs.len(),None);}else{result=Some(proof);}
+                        let mut selected=Some(place);let mut depth=0;
+                        while let Some(Place::ApplicationElement{index_value,index_range,parent,..})=selected.map(Place::storage){
+                            bindings.insert(ValueIdentity::ElementIndex(depth),bounds::Proof::element_operand(*index_value,*index_range));
+                            selected=parent.as_deref();depth+=1;
+                        }
+                        self.bind_element_resource_borrows(data,&parent,&mut bindings);
+                        let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings);
+                        for(target,component)in components.iter().enumerate(){
+                            for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..))){
+                                let scalar=value.ty.components[*component].0;proof.mark_domain(target,IndexDomain::CommonRange(source,scalar,scalar,scalar,scalar));
+                            }
+                        }
+                        if let Some(previous)=&mut result{bounds::Proof::join(previous,&proof,regs.len(),None);}else{result=Some(proof);}
                     }
                 }
             }
+            self.env.insert(name,binding);
         }
-        result
+        Ok(result)
     }
-    pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],update:ElementUpdate<'_>){
+    pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],update:ElementUpdate<'_>)->Result<()> {
         let names=self.env.keys().cloned().collect::<Vec<_>>();
-        let range=match &update{ElementUpdate::Element{range,..}=>*range,_=>None};
+        let index=match &update{ElementUpdate::Element{index,..}=>*index,_=>None};
+        let range=index.map(|(_,range)|range);
         let one=(range==Some((0,0))).then(||self.constant(Scalar::U32,1));
-        let selected=range.map(|(a,b)|bounds::Condition::paths(bounds::Clause::values([(Scalar::U32,ValueIdentity::ElementIndex(0),&bounds::Proof::unsigned(a,b))]),bounds::Clause::default()));
         for name in names{
             let mut binding=self.env[&name].clone();
-            each_binding_data(&mut binding,&mut |_,_,data|{
-                let scopes=self.application_element_scopes(sources,resource,data);let unique=scopes.len()==1;
-                for(scope,complete_scope)in scopes {
-                let mut complete_scope=bounds::Condition::constant(complete_scope);let mut data=&mut *data;
-                for fields in scope{if let Some(one)=&one{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false);}data=model_data_mut(&mut data.elements,&fields).unwrap();}
+            for resource_index in 0..binding_element_count(&binding){
+                let Some(data)=binding_element_data_mut(&mut binding,resource_index)else{continue;};
+                let scopes=self.application_element_scopes(sources,resource,data,(&self.path,&self.env));let unique=scopes.len()==1;
+                for(scope,complete_scope,parents)in scopes {
+                let selected=(unique&&complete_scope).then(||parents.scope_element_indices(1).logical(match index{
+                    Some((index,_))=>bounds::Condition::element_index(0,self.element_index_operand(index,(&self.path,&self.env))),
+                    None=>bounds::Condition::default(),
+                },false));
+                let mut complete_scope=bounds::Condition::constant(complete_scope);let mut selected_data=Some(&mut *data);
+                for fields in scope{
+                    selected_data=match selected_data{
+                        Some(data)=>{self.expand_current_element_facts(data)?;if let Some(one)=&one{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false);}model_data_mut(data.elements.known_mut(),&fields)},
+                        None=>None,
+                    };
+                }
+                let Some(data)=selected_data else{continue;};self.expand_current_element_facts(data)?;
                 let components=words.iter().filter_map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Vec<_>>();
                 if components.is_empty(){continue;}
                 data.prefixes.retain(|word,_|!words.contains(word));
-                let old=self.returned_storage(&data.elements);let mut updated=old.clone();updated.constant=None;
+                let Some(elements)=data.elements.known()else{continue;};
+                let old=self.returned_storage(elements);let mut updated=old.clone();updated.constant=None;
                 let mut bindings=element_scope_bindings(&self.element_owner_bindings(data),old.regs.len(),false);
                 for component in 0..old.regs.len(){if !components.contains(&component){for id in old.component_origins(component){
                     if !matches!(id,ValueIdentity::ElementComponent(at) if components.contains(&at)){
                         bindings.entry(id).or_insert_with(||bounds::Proof::default().with_identity(id));
                     }
                 }}}
-                updated.proof=bounds::Proof::capture(&old).at_call(&bindings);
+                let previous=bounds::Proof::capture(&old);
+                for id in previous.scalar_identities().into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))){
+                    bindings.insert(id,bounds::Proof::default().with_identity(id));
+                }
+                updated.proof=previous.at_call(&bindings);
                 let written=if let ElementUpdate::Element{proof:fresh,..}=&update{
                     let mut bindings=self.element_owner_bindings(data);
                     for(index,component)in components.iter().enumerate(){
@@ -3469,11 +3610,9 @@ impl Builder<'_> {
                 };
                 let truth=complete.truth_in(&self.path);
                 if truth!=Some(true){
-                    let mut common=updated.proof.clone();
                     let mut proof=updated.proof.project(&components,old.regs.len());
-                    proof.join_condition(&old.proof.project(&components,old.regs.len()),components.len(),selected.as_ref());
-                    common.assign(&components,old.regs.len(),proof);
-                    if truth==Some(false){updated.proof=common;}else{updated.proof.join_condition(&common,old.regs.len(),Some(&complete));}
+                    proof.join_condition(&previous.project(&components,old.regs.len()),components.len(),selected.as_ref());
+                    updated.proof.assign(&components,old.regs.len(),proof);
                 }
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
                 for(component,origins)in updated.proof.origins.iter_mut().enumerate(){
@@ -3481,32 +3620,32 @@ impl Builder<'_> {
                     if !origins.contains(&identity){origins.push(identity);}
                 }
                 updated.proof.retain_view_borrows(&updated.ty);
-                match data.elements.as_mut(){
-                    returns::Returned::Value(value)=>**value=updated.clone(),
-                    returns::Returned::OwnedValue(value)=>value.value=updated.clone(),
-                    returns::Returned::Dataset(_)=>{},
-                    returns::Returned::Unit=>{},
+                match data.elements.known_mut(){
+                    Some(returns::Returned::Value(value))=>**value=updated.clone(),
+                    Some(returns::Returned::OwnedValue(value))=>value.value=updated.clone(),
+                    Some(returns::Returned::Dataset(_)|returns::Returned::Unit)|None=>{},
                 }
                 for path in view::resource_paths(&updated.ty){
-                    if let Some(inner)=model_data_mut(&mut data.elements,&path){
+                    if let Some(inner)=model_data_mut(data.elements.known_mut(),&path){
                         let handle=inner.root.regs[0];let length=inner.length.regs[0];
                         let borrow=inner.root.proof.view_borrow(0);
                         inner.root=self.value_component(&updated,handle);inner.length=self.value_component(&updated,length);
                         inner.root.proof=std::mem::take(&mut inner.root.proof).with_identity(ValueIdentity::ElementComponent(handle)).with_view_borrow(0,borrow);
                         if components.contains(&handle)||components.contains(&length){
-                            // 数值失效不改变原资源位置；实际拥有赋值交接新位置。
-                            let mut elements=self.unknown_element_model(&inner.ty);
+                            let original=self.element_model(&inner.ty,&inner.elements,(&inner.residency,&[]),self.definition.function.span)?;
+                            let mut elements=self.unknown_element_model(&inner.ty,(&inner.residency,&[]))?;
                             residency::visit(&mut elements,&mut residency::Input::new(0),&mut|data,input|{
-                                if let Some(source)=residency::model_location(&inner.elements,&input.fields){data.residency=source.residency.clone();}
+                                if let Some(source)=residency::model_location(&original,&input.fields){data.residency=source.residency.clone();}
                             });
-                            inner.elements=elements;
+                            inner.elements=ElementFacts::Known(elements);
                         }
                     }
                 }
                 }
-            });
+            }
             self.env.insert(name,binding);
         }
+        Ok(())
     }
     fn projected_element_model(&mut self, model: &returns::Returned, projection: &[usize]) -> returns::Returned {
         projection.iter().fold(model.clone(), |model, field| match model {
@@ -3528,52 +3667,66 @@ impl Builder<'_> {
             self.replace_element_model(parent.payloads[*field].as_deref_mut().unwrap(), rest, fresh);
         }
     }
-    pub(super) fn apply_application_prefixes(&mut self,reference:&DataReference,facts:&prefix::Fields) {
-        let resource=view::resource_borrow(&reference.data);
-        let names=self.env.keys().cloned().collect::<Vec<_>>();
+    pub(super) fn apply_application_prefixes(&mut self,reference:&DataReference,facts:&prefix::Fields)->Result<()> {
+        let resource=view::resource_borrow(&reference.data);let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
             let mut binding=self.env[&name].clone();
-            each_binding_data(&mut binding,&mut |_,_,data| {
-                let scopes=self.application_element_scopes(&reference.sources,&resource,data);
-                let unique=scopes.len()==1;
-                for(scope,mut complete)in scopes {
+            for index in 0..binding_element_count(&binding){
+                let Some(data)=binding_element_data_mut(&mut binding,index)else{continue;};
+                let scopes=self.application_element_scopes(&reference.sources,&resource,data,(&self.path,&self.env));let unique=scopes.len()==1;
+                for(scope,mut complete,_)in scopes {
                     let mut data=&mut *data;
                     for fields in scope {
+                        self.expand_current_element_facts(data)?;
                         complete&=data.length.minimum()==1&&data.length.maximum()==1;
-                        data=model_data_mut(&mut data.elements,&fields).unwrap();
+                        data=model_data_mut(data.elements.known_mut(),&fields).unwrap();
                     }
                     let when=bounds::Condition::constant(unique&&complete).assume(&bounds::Clause::default(),true);
-                    for(word,fact)in facts {
-                        data.prefixes.entry(*word).or_default().union(&fact.restricted(&when));
-                    }
+                    for(word,fact)in facts {data.prefixes.entry(*word).or_default().union(&fact.restricted(&when));}
                 }
-            });
+            }
             self.env.insert(name,binding);
         }
+        Ok(())
     }
-    pub(super) fn apply_application_dataset_model(&mut self,reference:&DataReference,model:returns::Returned){
+    pub(super) fn apply_application_dataset_model(&mut self,reference:&DataReference,model:ElementFacts)->Result<()>{
         let resource=view::resource_borrow(&reference.data);let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names{
             let mut binding=self.env[&name].clone();
-            each_binding_data(&mut binding,&mut |_,_,data|{
-                let scopes=self.application_element_scopes(&reference.sources,&resource,data);let unique=scopes.len()==1;
-                for(scope,mut complete)in scopes{
+            for index in 0..binding_element_count(&binding){
+                let Some(data)=binding_element_data_mut(&mut binding,index)else{continue;};
+                let scopes=self.application_element_scopes(&reference.sources,&resource,data,(&self.path,&self.env));let unique=scopes.len()==1;
+                for(scope,mut complete,_)in scopes{
                     let count=scope.len()+1;
                     let qualifier=if unique&&complete{bounds::Condition::constant(true)}else{bounds::Condition::default()};
-                    let selected=qualifier.logical(Self::element_selection(reference.data.place.as_ref(),1,scope.len()),false);
-                    let mut data=&mut *data;
-                    for fields in scope{complete&=data.length.minimum()==1&&data.length.maximum()==1;data=model_data_mut(&mut data.elements,&fields).unwrap();}
+                    let selected=qualifier.logical(self.element_selection(reference.data.place.as_ref(),1,scope.len()),false);
+                    let mut selected_data=Some(&mut *data);
+                    for fields in scope{selected_data=match selected_data{
+                        Some(data)=>{self.expand_current_element_facts(data)?;complete&=data.length.minimum()==1&&data.length.maximum()==1;model_data_mut(data.elements.known_mut(),&fields)},
+                        None=>None,
+                    };}
+                    let Some(data)=selected_data else{continue;};
+                    if reference.projection.is_empty()&&unique&&complete{
+                        data.elements=model.clone().map(&mut |model|self.capture_element_model(data,&reference.projection,*model),&mut |when|when);continue;
+                    }
+                    let incoming=self.element_model(reference.element_layout().1,&model,(&reference.residency,&reference.projection),self.definition.function.span)?;let model=incoming.as_ref();
                     let mut fresh=self.capture_element_model(data,&reference.projection,model.clone());
+                    if reference.projection.is_empty()&&unique&&complete{data.elements=application::ElementFacts::Known(fresh);continue;}
+                    // A real partial write supplies new facts; only its enclosing model is materialized.
+                    // Invalidating absent facts above does not manufacture an unknown element tree.
+                    if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?);}
+                    let stored=data.elements.known_mut().unwrap();
                     if !unique||!complete{
-                        let incoming=fresh.clone();let previous=self.projected_element_model(&data.elements,&reference.projection);
+                        let incoming=fresh.clone();let previous=self.projected_element_model(stored,&reference.projection);
                         fresh.join(previous.clone(),true);
                         residency::select_elements(&mut fresh,&incoming,&previous,&selected,count);
                     }
-                    self.replace_element_model(&mut data.elements,&reference.projection,*fresh);
+                    self.replace_element_model(stored,&reference.projection,*fresh);
                 }
-            });
+            }
             self.env.insert(name,binding);
         }
+        Ok(())
     }
 }
 
@@ -3584,7 +3737,7 @@ impl Builder<'_> {
         fn visit(builder:&mut Builder<'_>,model:&returns::Returned,owned:&view::Borrow,parents:&[usize],span:Span)->Result<()> {
             let value=builder.returned_storage(model);
             for path in view::resource_paths(&value.ty) {
-                if let Some(data)=model_data(model,&path){check(builder,data,owned,parents,span)?;}
+                if let Some(data)=model_data(Some(model),&path){check(builder,data,owned,parents,span)?;}
             }
             Ok(())
         }
@@ -3596,13 +3749,20 @@ impl Builder<'_> {
                 shifts.insert(id,ValueIdentity::ElementParent(depth,component));
             }}
             let mut scoped=owned.output_bound(&shifts);
-            for resource in view_contracts::resource_borrows(&data.elements){scoped.union(&resource);}
-            if let Some(value)=data.elements.view_value() && value.ty.contains_borrows(){
+            let Some(elements)=data.elements.known()else{
+                if builder.world.stored_borrows(&data.ty,&builder.definition.source,span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new())?{
+                    let proof=bounds::Proof::default().with_view_borrow(0,view::Borrow::source(view::Source::Unresolved));
+                    builder.require_view_return_proof(&proof,scoped,span)?;
+                }
+                return Ok(());
+            };
+            for resource in view_contracts::resource_borrows(elements){scoped.union(&resource);}
+            if let Some(value)=data.elements.known().and_then(returns::Returned::view_value) && value.ty.contains_borrows(){
                 let mut proof=value.proof.borrow_state();proof.retain_view_borrows(&value.ty);
                 builder.require_view_return_proof(&proof,scoped.clone(),span)?;
             }
-            let mut nested=vec![data.elements.registers().len()];nested.extend_from_slice(parents);
-            visit(builder,&data.elements,&scoped,&nested,span)
+            let mut nested=vec![elements.registers().len()];nested.extend_from_slice(parents);
+            visit(builder,elements,&scoped,&nested,span)
         }
         visit(self,model,owned,&[],span)
     }
@@ -3617,10 +3777,10 @@ impl Builder<'_> {
                 .then(||proof.known_identity(0).map(|target|(*source,target))).flatten()
         }).collect::<BTreeMap<_,_>>();
         let value=self.returned_storage(model);
-        for path in view::resource_paths(&value.ty){if let(Some(data),Some(source))=(model_data_mut(model,&path),model_data(original,&path)){
+        for path in view::resource_paths(&value.ty){if let(Some(data),Some(source))=(model_data_mut(Some(model),&path),model_data(Some(original),&path)){
             if data.ownership.may_own(){data.root.proof=data.root.proof.clone().with_view_borrow(0,view::resource_borrow(source).output_bound(&names));}
-            let nested=element_scope_bindings(bindings,source.elements.registers().len(),true);
-            self.close_stored_resources(&mut data.elements,&source.elements,&nested);
+            let nested=element_scope_bindings(bindings,source.ty.components.len(),true);
+            if let(Some(value),Some(original))=(data.elements.known_mut(),source.elements.known()){self.close_stored_resources(value,original,&nested);}
         }}
     }
 }
@@ -3630,7 +3790,7 @@ pub(super) fn element_parameter_sources(model:&returns::Returned)->BTreeSet<Valu
             if let view::Source::Parameter(id,_)=source{out.insert(id);}
         }}
         match model{
-            returns::Returned::Dataset(data)=>visit(&data.elements,out),
+            returns::Returned::Dataset(data)=>if let Some(elements)=data.elements.known(){visit(elements,out);},
             returns::Returned::OwnedValue(value)=>for payload in value.payloads.iter().flatten(){visit(payload,out);},
             returns::Returned::Value(_)|returns::Returned::Unit=>{},
         }
@@ -3783,4 +3943,44 @@ pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::applicat
         *code=out;
     }
     block(&mut body.registers,&mut body.locals,&mut body.code,resources);
+}
+
+impl Builder<'_>{
+    pub(super) fn element_model(&mut self,ty:&Ty,facts:&ElementFacts,location:(&residency::Residency,&[usize]),span:Span)->Result<Box<returns::Returned>> {
+        Ok(match facts{
+            ElementFacts::Unknown=>self.unknown_element_model(ty,location)?,
+            ElementFacts::Known(model)=>model.clone(),
+            ElementFacts::Cleanup(when)=>{
+                let mut model=self.unknown_element_model(ty,location)?;
+                contracts::mark_cleanup_model(self,&mut model,when.scope_element_indices(1),span)?;model
+            },
+            ElementFacts::Common(a,b)=>{let mut model=self.element_model(ty,a,location,span)?;model.join(*self.element_model(ty,b,location,span)?,true);model},
+            ElementFacts::Selected(when,a,b)=>{let mut model=self.element_model(ty,a,location,span)?;model.join_locations(*self.element_model(ty,b,location,span)?,when,true);model},
+        })
+    }
+    pub(super) fn normalize_element_facts(&mut self,value:&mut returns::Returned,span:Span)->Result<()> {
+        match value{
+            returns::Returned::Dataset(data)=>{
+                if matches!(data.elements,ElementFacts::Common(..)|ElementFacts::Selected(..)){
+                    data.elements=ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)?);
+                }
+                if let Some(model)=data.elements.known_mut(){self.normalize_element_facts(model,span)?;}
+            },
+            returns::Returned::OwnedValue(owner)=>for child in owner.payloads.iter_mut().flatten(){self.normalize_element_facts(child,span)?;},
+            returns::Returned::Value(_)|returns::Returned::Unit=>{},
+        }
+        Ok(())
+    }
+}
+
+impl Builder<'_>{
+    pub(super) fn expand_current_element_facts(&mut self,data:&mut Data)->Result<()> {
+        match data.elements{
+            ElementFacts::Cleanup(_)|ElementFacts::Common(..)|ElementFacts::Selected(..)=>{
+                data.elements=ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?);
+            },
+            ElementFacts::Unknown|ElementFacts::Known(_)=>{},
+        }
+        Ok(())
+    }
 }

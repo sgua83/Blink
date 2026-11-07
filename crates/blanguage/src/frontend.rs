@@ -1,6 +1,7 @@
 use crate::*;
 use std::{
     cell::RefCell,
+    fmt::Write,
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
@@ -228,8 +229,29 @@ impl Compiler {
             let value = world.ty(&name, &source, span, &module, imports)?;
             if name.dataset {
                 let count = world.shape(&name.count, &source, span, &module, imports)?;
-                Ok(ir::Ty::owned_dataset(value, count))
+                Ok(ir::Ty::owned_dataset((value).syntax(), count))
             } else { Ok(value) }
+        })
+    }
+    /// Returns the root name, selected byte offset and layout JSON while the source World is alive.
+    pub fn type_layout_json(&self, path: &Path, root: &Path, request: &str, field: Option<&str>) -> Result<(String, u32, String)> {
+        self.ast(path, |worker| {
+            let source = Source { path: "<layout>".into(), text: request.into() };
+            let span = Span { start: 0, end: request.len() };
+            let name = parser::type_query(source.clone())?;
+            let (world, module) = read_world(path, root, None, &[], worker, None, None)?;
+            let imports = &world.interfaces[&module].imports;
+            let value = world.ty(&name, &source, span, &module, imports)?;
+            let value = if name.dataset {
+                ir::Ty::owned_dataset(value.syntax(), world.shape(&name.count, &source, span, &module, imports)?)
+            } else { value };
+            let (offset, selected) = if let Some(field) = field {
+                value.field(field).ok_or_else(|| Diagnostic { source: source.clone(), span, code: "B141",
+                    message: format!("类型 {} 没有可定位的静态字段路径 {field}", value.name) })?
+            } else { (0, &value) };
+            let mut json = String::new();
+            world.write_type_layout_json(&mut json, selected, &source, span, &module, imports, &mut BTreeSet::new())?;
+            Ok((value.name, offset, json))
         })
     }
     pub fn compile(&self, path: &Path, root: &Path) -> Result<Compilation> {
@@ -821,6 +843,141 @@ impl Declarations {
     }
 }
 impl World {
+    pub(crate) fn type_reference(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<TypeName> {
+        if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
+            return Ok(self.c_function_type(name, source, span, module, imports)?.syntax());
+        }
+        let mut syntax = name.clone();
+        syntax.canonical = false;
+        let (types, count, code) = match name.name.as_str() {
+            "array" => (1, 2, "B238"),
+            "result" => (2, 2, "B269"),
+            "owned" => (1, 2, "B224"),
+            "void" | "never" => (0, 0, "B228"),
+            _ => {
+                if let Some(builtin) = ir::Ty::builtin(&name.name) {
+                    syntax.name = builtin.name;
+                    (0, 0, "B232")
+                } else {
+                    let key = if name.canonical {
+                        self.records.get_key_value(&name.name).map(|(key, _)| key.clone())
+                    } else { self.resolve(&name.name, module, imports, false) };
+                    let Some(key) = key else { return source.fail(span, "B031", format!("未知或不明确的类型 {}", name.name)); };
+                    let record = &self.record(&key).0;
+                    syntax.name = key;
+                    syntax.canonical = true;
+                    (record.types.len(), record.types.len() + record.values.len(), "B232")
+                }
+            }
+        };
+        if name.arguments.len() != count {
+            return source.fail(span, code, format!("类型 {} 需要 {count} 个类型及const实参，实际为 {}", syntax.name, name.arguments.len()));
+        }
+        syntax.arguments.clear();
+        for (index, argument) in name.arguments.iter().enumerate() {
+            let argument = if name.name == "owned" && index == 1 {
+                let GenericArgument::Type(function) = argument else {
+                    return source.fail(span, "B224", "owned<T,F>需要载荷类型与静态释放函数");
+                };
+                if function.dataset || function.tile || function.view || !function.arguments.is_empty() {
+                    return source.fail(span, "B224", "释放函数由载荷推导泛型，声明处使用函数名称");
+                }
+                let key = if function.canonical && self.functions.contains_key(&function.name) { Some(function.name.clone()) }
+                    else { self.resolve(&function.name, module, imports, true) };
+                let Some(key) = key else { return source.fail(span, "B158", format!("未知或未导出的释放函数 {}", function.name)); };
+                let mut function = TypeName::named(key);
+                function.canonical = true;
+                GenericArgument::Type(function)
+            } else if index < types {
+                let GenericArgument::Type(ty) = argument else { return source.fail(span, code, "此位置需要类型实参"); };
+                GenericArgument::Type(self.type_reference(ty, source, span, module, imports)?)
+            } else {
+                let value = argument.shape().ok_or_else(|| crate::Diagnostic {
+                    source: source.clone(), span, code: "B235", message: "const实参需要u32编译期表达式".into(),
+                })?;
+                let value = self.shape(&Some(value), source, span, module, imports)?.unwrap();
+                GenericArgument::Value(Shape::Literal(value))
+            };
+            syntax.arguments.push(argument);
+        }
+        if let Some(count) = &name.count {
+            syntax.count = Some(Shape::Literal(self.shape(&Some(count.clone()), source, span, module, imports)?.unwrap()));
+        }
+        Ok(syntax)
+    }
+    fn write_type_layout_json(&self, out: &mut String, value: &ir::Ty, source: &Source, span: Span,
+        module: &str, imports: &[String], active: &mut BTreeSet<String>) -> Result<()> {
+        active.insert(value.name.clone());
+        let result = ir::write_type_json(out, value, &mut |out, reference| {
+            let element = self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())?;
+            write!(out, ",\"element_stride_bytes\":{},\"element\":", ir::align_up(element.size, element.align)).unwrap();
+            if active.contains(&element.name) {
+                out.push_str("{\"kind\":\"type_reference\",\"name\":");
+                crate::json::string(out, &element.name); out.push('}');
+            } else {
+                self.write_type_layout_json(out, &element, source, span, module, imports, active)?;
+            }
+            Ok(())
+        });
+        active.remove(&value.name);
+        result
+    }
+    // Query stored values through the original nominal references. Generic
+    // arguments and function signatures do not themselves occupy this storage.
+    pub(crate) fn stored_borrows(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<bool> {
+        if !consumed.insert(ty.name.clone()) { return Ok(false); }
+        if ty.view.is_some() || ty.is_address() { return Ok(true); }
+        for nested in ty.fields.iter().map(|(_, _, ty)| ty.as_ref())
+            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
+            .chain(ty.array.as_deref().filter(|_| ty.values[0] != 0)) {
+            if self.stored_borrows(nested, source, span, module, imports, consumed)? { return Ok(true); }
+        }
+        if let Some(reference) = ty.dataset.as_deref().filter(|_| ty.values.first() != Some(&0)) {
+            let element = self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())?;
+            return self.stored_borrows(&element, source, span, module, imports, consumed);
+        }
+        Ok(false)
+    }
+    // An absent element model loses only actual F input requirements.
+    pub(crate) fn cleanup_requirements(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<bool> {
+        if !consumed.insert(ty.name.clone()) { return Ok(false); }
+        if let Some(key) = &ty.cleanup {
+            return Ok(self.functions[key].function.contracts.iter().any(|contract| contract.kind == ContractKind::Requires));
+        }
+        for nested in ty.fields.iter().map(|(_, _, ty)| ty.as_ref())
+            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
+            .chain(ty.array.as_deref().filter(|_| ty.values[0] != 0)) {
+            if self.cleanup_requirements(nested, source, span, module, imports, consumed)? { return Ok(true); }
+        }
+        if let Some(reference) = ty.dataset.as_deref().filter(|_| ty.values.first() != Some(&0)) {
+            let element = self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())?;
+            return self.cleanup_requirements(&element, source, span, module, imports, consumed);
+        }
+        Ok(false)
+    }
+    pub(crate) fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
+        if !consumed.insert(ty.name.clone()) { return Ok(()); }
+        if let Some(function) = &ty.function {
+            let (parameters, result, _) = self.c_function_signature(function, source, span, module, imports)?;
+            crate::check::outputs::validate_function_contracts(
+                self,&parameters, result.as_ref(), &function.contracts, source, span)?;
+            for parameter in parameters {
+                let ty = match parameter.kind { ir::CallParameterKind::Value(ty) | ir::CallParameterKind::Reference { ty, .. } => ty };
+                self.validate_type_references(&ty, source, span, module, imports, consumed)?;
+            }
+            if let Some(result) = result { self.validate_type_references(&result, source, span, module, imports, consumed)?; }
+        }
+        for nested in ty.arguments.iter().chain(ty.fields.iter().map(|(_, _, ty)| ty.as_ref()))
+            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
+            .chain(ty.array.as_deref()).chain(ty.view.as_deref()) {
+            self.validate_type_references(nested, source, span, module, imports, consumed)?;
+        }
+        if let Some(reference) = ty.dataset.as_deref() {
+            let element=self.ty_inner(reference,source,span,module,imports,&mut BTreeSet::new())?;
+            self.validate_type_references(&element,source,span,module,imports,consumed)?;
+        }
+        Ok(())
+    }
     pub(crate) fn ty(
         &self,
         name: &TypeName,
@@ -830,7 +987,7 @@ impl World {
         imports: &[String],
     ) -> Result<ir::Ty> {
         let ty = self.ty_inner(name, source, span, module, imports, &mut BTreeSet::new())?;
-        self.validate_c_functions(&ty, source, span, module, imports, &mut BTreeSet::new())?;
+        self.validate_type_references(&ty, source, span, module, imports, &mut BTreeSet::new())?;
         Ok(ty)
     }
     pub(crate) fn ty_inner(
@@ -906,14 +1063,14 @@ impl World {
             let f=&self.functions[&cleanup].function;
             if f.kind!=FunctionKind::Value||f.target!=Target::Cpu||f.params.len()!=1||f.params[0].access!=Access::Value||f.result!=TypeName::named("void"){return source.fail(span,"B224","释放函数必须是接收一个按值载荷并返回void的普通on cpu函数");}
             let mut ty=self.ty_inner(payload,source,span,module,imports,stack)?;
-            if payload.dataset {if ty.contains_views(){return source.fail(span,"B033","dataset元素不能保存view借用");}ty=ir::Ty::owned_dataset(ty,self.shape(&payload.count,source,span,module,imports)?);}
+            if payload.dataset {if ty.contains_views(){return source.fail(span,"B033","dataset元素不能保存view借用");}ty=ir::Ty::owned_dataset((ty).syntax(),self.shape(&payload.count,source,span,module,imports)?);}
             let owner=ir::Ty::owned(ty,cleanup.clone());let identity=format!("owned contract:{}",owner.name);
             if !stack.insert(identity.clone()){return source.fail(span,"B224","释放函数的载荷合同不能递归要求同一拥有包装");}
             let definition=&self.functions[&cleanup];
             let instance=check::generics::specialize(self,&cleanup,&[check::generics::Actual::value(&owner.arguments[0])],None,(&definition.source,&definition.module,&definition.imports),definition.function.span).map_err(|error|Diagnostic{source:source.clone(),span,code:error.code,message:format!("释放函数 {}：{}",cleanup,error.message)})?;
             let parameter=&instance.definition.function.params[0];
             let mut expected=self.ty_inner(&parameter.ty,&instance.definition.source,parameter.span,&instance.definition.module,&instance.definition.imports,stack)?;
-            if parameter.ty.dataset{expected=ir::Ty::owned_dataset(expected,self.shape(&parameter.ty.count,&instance.definition.source,parameter.span,&instance.definition.module,&instance.definition.imports)?);}
+            if parameter.ty.dataset{expected=ir::Ty::owned_dataset((expected).syntax(),self.shape(&parameter.ty.count,&instance.definition.source,parameter.span,&instance.definition.module,&instance.definition.imports)?);}
             stack.remove(&identity);
             let payload=&owner.arguments[0];
             let compatible=if let(Some(expected),Some(actual))=(&expected.dataset,&payload.dataset){expected==actual}else{expected==*payload};
@@ -942,7 +1099,7 @@ impl World {
                         return source.fail(span, "B033", "dataset 元素不能保存view借用");
                     }
                     let count = self.shape(&payload.count, source, span, module, imports)?;
-                    ty = ir::Ty::owned_dataset(ty, count);
+                    ty = ir::Ty::owned_dataset((ty).syntax(), count);
                 }
                 payloads.push(ty);
             }
@@ -971,7 +1128,7 @@ impl World {
                     return source.fail(span, "B033", "dataset 元素不能保存view借用");
                 }
                 let count = self.shape(&element.count, source, span, module, imports)?;
-                element_ty = ir::Ty::owned_dataset(element_ty, count);
+                element_ty = ir::Ty::owned_dataset((element_ty).syntax(), count);
             }
             let element = element_ty;
             let length = name.arguments[1].shape().ok_or_else(|| Diagnostic {
@@ -1055,7 +1212,7 @@ impl World {
             };
             if arg.dataset {
                 if actual.contains_views() { return source.fail(span, "B033", "dataset元素不能保存view借用"); }
-                actual = ir::Ty::owned_dataset(actual, self.shape(&arg.count, source, span, module, imports)?);
+                actual = ir::Ty::owned_dataset((actual).syntax(), self.shape(&arg.count, source, span, module, imports)?);
             }
             if !self.family_accepts(&parameter.family, &actual, s, record.span, m, i, stack)? {
                 return source.fail(
@@ -1141,7 +1298,7 @@ impl World {
                         else { self.ty_inner(&syntax, s, variant.span, m, i, stack)? };
                     if syntax.dataset {
                         if payload.contains_views() { return s.fail(variant.span, "B033", "dataset元素不能保存view借用"); }
-                        payload = ir::Ty::owned_dataset(payload, self.shape(&syntax.count, s, variant.span, m, i)?);
+                        payload = ir::Ty::owned_dataset((payload).syntax(), self.shape(&syntax.count, s, variant.span, m, i)?);
                     }
                     alternatives.push(ir::Variant { name: variant.name.clone(), discriminant: tag, ty: Box::new(payload) });
                 }
@@ -1177,10 +1334,11 @@ impl World {
             let mut field_type = field.ty.clone();
             generics::substitute_type(&mut field_type, &replacements, s, field.span)?;
             value_parameters::substitute_type(&mut field_type, &value_map,s)?;
-            let mut f = self.ty_inner(&field_type, s, field.span, m, i, stack)?;
-            if field_type.dataset {
-                f = ir::Ty::owned_dataset(f, self.shape(&field_type.count, s, field.span, m, i)?);
-            }
+            let f = if field_type.dataset {
+                let mut element=field_type.clone();element.dataset=false;element.count=None;
+                let reference=self.type_reference(&element,s,field.span,m,i)?;
+                ir::Ty::owned_dataset(reference,self.shape(&field_type.count,s,field.span,m,i)?)
+            } else { self.ty_inner(&field_type,s,field.span,m,i,stack)? };
             let offset = (ty.size as u64).div_ceil(f.align as u64) * f.align as u64;
             let end = offset + f.size as u64;
             if end > u32::MAX as u64 {

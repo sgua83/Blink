@@ -125,7 +125,7 @@ enum Predicate {
     Nonzero(Selection),
     Nonempty(Resource),
     Index(Selection, Resource, Option<(bounds::Condition, bounds::Condition)>),
-    Cleanup { when: bounds::Condition, required: bounds::Condition },
+    Cleanup { value:String, when: bounds::Condition, required: bounds::Condition },
 }
 pub(super) struct Requirement {
     predicate: Predicate,
@@ -133,7 +133,7 @@ pub(super) struct Requirement {
 }
 
 fn select(
-    builder: &Builder<'_>, definition: &Definition, env: &BTreeMap<String, Binding>, path: &str, span: Span,
+    builder: &mut Builder<'_>, definition: &Definition, env: &BTreeMap<String, Binding>, path: &str, span: Span,
 ) -> Result<Selection> {
     if path.contains("[*]"){return select_elements(builder,definition,env,path,span);}
     let root = path.split('.').next().unwrap();
@@ -185,7 +185,7 @@ fn selected_data<'a>(binding:&'a Binding,paths:&[Vec<usize>])->Option<&'a applic
         Binding::OwnedValue(value)=>view::owned_data_at(value,first)?,
         _=>return None,
     };
-    for path in rest {data=application::model_data(&data.elements,path)?;}
+    for path in rest {data=application::model_data(data.elements.known(),path)?;}
     Some(data)
 }
 fn selected_data_mut<'a>(binding:&'a mut Binding,paths:&[Vec<usize>])->Option<&'a mut application::Data> {
@@ -196,7 +196,7 @@ fn selected_data_mut<'a>(binding:&'a mut Binding,paths:&[Vec<usize>])->Option<&'
         Binding::OwnedValue(value)=>view::owned_data_at_mut(value,first)?,
         _=>return None,
     };
-    for path in rest {data=application::model_data_mut(&mut data.elements,path)?;}
+    for path in rest {data=application::model_data_mut(data.elements.known_mut(),path)?;}
     Some(data)
 }
 impl Selection {
@@ -226,7 +226,7 @@ impl Selection {
             if let Binding::OwnedValue(value)=binding {owned(value,last);}
             else if let Some(data)=selected_data_mut(binding,&self.element_paths){empty(data);}
         }else if let Some(data)=selected_data_mut(binding,parents)
-            && let returns::Returned::OwnedValue(value)=data.elements.as_mut() {owned(value,last);}
+            && let Some(returns::Returned::OwnedValue(value))=data.elements.known_mut() {owned(value,last);}
     }
     fn assume_owned_nonempty(&self,value:&mut owned_values::OwnedValue,component:usize) {
         value.value.proof.mark_nonzero(component);
@@ -245,10 +245,10 @@ impl Selection {
         let component=self.components[if self.value.ty.dataset.is_some(){1}else{2}];
         if !self.element_paths.is_empty() {
             if let Some(data)=selected_data_mut(binding,&self.element_paths) {
-                match data.elements.as_mut() {
+                if let Some(model)=data.elements.known_mut(){match model {
                     returns::Returned::OwnedValue(value)=>self.assume_owned_nonempty(value,component),
                     model=>{if let Some(value)=model.view_value_mut(){value.proof.mark_nonzero(component);}},
-                }
+                }}
             }
             return;
         }
@@ -262,7 +262,7 @@ impl Selection {
         }
     }
     fn assumed_value<'a>(&self,binding:&'a mut Binding)->Option<&'a mut Value> {
-        if !self.element_paths.is_empty(){return selected_data_mut(binding,&self.element_paths)?.elements.view_value_mut();}
+        if !self.element_paths.is_empty(){return selected_data_mut(binding,&self.element_paths)?.elements.known_mut()?.view_value_mut();}
         match binding {
             Binding::Value(value)=>Some(value),
             Binding::OwnedValue(value)=>{value.value.proof=bounds::Proof::capture(&value.value);Some(&mut value.value)},
@@ -278,50 +278,99 @@ fn field_path(mut ty:&Ty,path:&str,source:&Source,span:Span)->Result<Vec<usize>>
     }
     Ok(result)
 }
-fn select_elements(builder:&Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,path:&str,span:Span)->Result<Selection> {
-    use std::borrow::Cow;
+// The source contract names the finite common-element input paths.
+// Materialize only those physical values in the original argument model;
+// caller-only descendant facts do not add or renumber formal input slots.
+pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definition,env:&mut BTreeMap<String,Binding>)->Result<BTreeSet<residency::Input>> {
+    let mut inputs=BTreeSet::new();
+    for(parameter,p)in definition.function.params.iter().enumerate(){
+        let Some(binding)=env.get_mut(&p.name)else{continue;};
+        let roots=match &*binding{
+            Binding::ApplicationData(_)|Binding::DataReference(_)=>vec![Vec::new()],
+            Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty),
+            _=>Vec::new(),
+        };
+        for fields in roots{
+            if let Some(data)=selected_data_mut(binding,std::slice::from_ref(&fields)){
+                if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),definition.function.span)?);}
+                inputs.insert(residency::Input{parameter,fields:fields.into_iter().map(residency::Part::Field).chain([residency::Part::Elements]).collect()});
+            }
+        }
+    }
+    for contract in &definition.function.contracts{
+        let paths:Vec<&str>=match &contract.predicate{
+            ContractPredicate::Nonzero(path)|ContractPredicate::Nonempty(path)|ContractPredicate::Contiguous(path)=>vec![path],
+            ContractPredicate::Index{value,resource}=>vec![value,resource],
+            ContractPredicate::SameLength{left,right}=>vec![left,right],
+            ContractPredicate::Initialized{value,..}|ContractPredicate::Cleanup{value,..}=>vec![value],
+            ContractPredicate::Prefix{data,count,field}=>vec![data,count,field],
+            ContractPredicate::Memory(_)=>Vec::new(),
+        };
+        for path in paths{
+            if !path.contains("[*]"){continue;}
+            let parts=path.split("[*]").collect::<Vec<_>>();
+            let(root,fields)=parts[0].split_once('.').unwrap_or((parts[0],""));
+            let parameter=definition.function.params.iter().position(|p|p.name==root).ok_or_else(||Diagnostic{source:definition.source.clone(),span:contract.span,code:"B225",message:"共同元素合同需要实际输入参数".into()})?;
+            let binding=env.get_mut(root).unwrap();
+            let first=match &*binding{
+                Binding::OwnedValue(value)=>field_path(&value.value.ty,fields,&definition.source,contract.span)?,
+                Binding::ApplicationData(_)|Binding::DataReference(_)if fields.is_empty()=>Vec::new(),
+                _=>return definition.source.fail(contract.span,"B225","[*]需要实际CPU dataset输入及其共同元素模型"),
+            };
+            let (projection,projected_ty)=match &*binding{Binding::DataReference(reference)=>(reference.projection.clone(),Some(reference.element_layout().1.clone())),_=>(Vec::new(),None)};
+            let Some(mut data)=selected_data_mut(binding,std::slice::from_ref(&first))else{return definition.source.fail(contract.span,"B225","[*]需要实际dataset字段");};
+            let mut input=residency::Input{parameter,fields:first.into_iter().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
+            for level in 0..parts.len()-1{
+                if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),definition.function.span)?);}
+                inputs.insert(input.clone());
+                if level+1==parts.len()-1{break;}
+                let logical=if level==0{projected_ty.as_ref().unwrap_or(&data.ty)}else{&data.ty};
+                let fields=field_path(logical,parts[level+1],&definition.source,contract.span)?;
+                let actual=if level==0{projection.iter().chain(&fields).copied().collect::<Vec<_>>()}else{fields.clone()};
+                input.fields.extend(fields.into_iter().map(residency::Part::Field));input.fields.push(residency::Part::Elements);
+                let Some(next)=application::model_data_mut(data.elements.known_mut(),&actual)else{return definition.source.fail(contract.span,"B225","[*]需要所选共同元素中的实际dataset字段");};data=next;
+            }
+        }
+    }
+    Ok(inputs)
+}
+fn select_elements(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,path:&str,span:Span)->Result<Selection> {
     let parts=path.split("[*]").collect::<Vec<_>>();let first=parts[0];
-    let(root,fields)=first.split_once('.').unwrap_or((first,""));
-    let source=&definition.source;
+    let(root,fields)=first.split_once('.').unwrap_or((first,""));let source=&definition.source;
     if !definition.function.params.iter().any(|p|p.name==root&&matches!(p.access,Access::Value|Access::Read|Access::InOut)) {
         return source.fail(span,"B225","共同元素约束需要读取实际普通CPU dataset输入");
     }
     let Some(binding)=env.get(root)else{return source.fail(span,"B225","共同元素约束需要实际dataset参数");};
-    let(elements,mut ty,mut paths,mut scope,projection)=match binding {
-        Binding::Data(view) if fields.is_empty()=>{
+    let(mut model,mut ty,mut paths,mut scope,projection)=match binding {
+        Binding::Data(view)if fields.is_empty()=>{
             let ty=&builder.program.buffers[view.binding].ty;
-            let mut model=builder.unknown_element_model(ty);
+            let mut model=builder.unknown_element_model(ty,(&residency::Residency::default(),&[]))?;
             let words=ty.components.iter().map(|(_,at)|*at).collect::<Vec<_>>();
-            if let Some(common)=builder.common_element_proof(view.binding,&words)
-                && let Some(value)=model.view_value_mut() {
-                value.proof.constrain_common_ranges(&common,ty.components.len());
-            }
-            let scope=if view.length.unsigned_maximum(0)==0 {bounds::Condition::constant(false)}
-                else if view.length.unsigned_minimum(0)!=0 {bounds::Condition::constant(true)}
-                else {bounds::Condition::nonzero_proof(&view.length,0)};
-            (Cow::Owned(*model),ty,vec![Vec::new()],scope,view.projection.as_slice())
+            if let Some(common)=builder.common_element_proof(view.binding,&words)&&let Some(value)=model.view_value_mut(){value.proof.constrain_common_ranges(&common,ty.components.len());}
+            let scope=if view.length.unsigned_maximum(0)==0{bounds::Condition::constant(false)}else if view.length.unsigned_minimum(0)!=0{bounds::Condition::constant(true)}else{bounds::Condition::nonzero_proof(&view.length,0)};
+            (model,ty.clone(),vec![Vec::new()],scope,view.projection.clone())
         },
         _=>{
             let first_path=match binding {
                 Binding::OwnedValue(value)=>field_path(&value.value.ty,fields,source,span)?,
-                Binding::ApplicationData(_)|Binding::DataReference(_) if fields.is_empty()=>Vec::new(),
+                Binding::ApplicationData(_)|Binding::DataReference(_)if fields.is_empty()=>Vec::new(),
                 _=>return source.fail(span,"B225","[*]需要实际CPU dataset存储及其共同元素模型"),
             };
-            let paths=vec![first_path];
-            let Some(data)=selected_data(binding,&paths)else{return source.fail(span,"B225","[*]需要实际dataset字段");};
-            let projection=match binding {Binding::DataReference(reference)=>reference.projection.as_slice(),_=>&[]};
-            (Cow::Borrowed(data.elements.as_ref()),&data.ty,paths,bounds::Condition::nonzero_value(&data.length),projection)
+            let paths=vec![first_path];let Some(data)=selected_data(binding,&paths)else{return source.fail(span,"B225","[*]需要实际dataset字段");};
+            let projection=match binding{Binding::DataReference(reference)=>reference.projection.clone(),_=>Vec::new()};
+            (builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)?,data.ty.clone(),paths,bounds::Condition::nonzero_value(&data.length),projection)
         },
     };
-    let mut model=elements.as_ref();let mut projection_name=String::new();let mut field_ty=ty;
-    for field in projection {let(name,_,child)=&field_ty.fields[*field];projection_name.push('.');projection_name.push_str(name);field_ty=child;}
-    for part in &parts[1..parts.len()-1] {
-        let selected=field_path(ty,&(projection_name.clone()+part),source,span)?;
-        let Some(next)=application::model_data(model,&selected)else{return source.fail(span,"B225","[*]需要所选共同元素中的实际dataset字段");};
+    let mut projection_name=String::new();let mut field_ty=&ty;
+    for field in &projection{let(name,_,child)=&field_ty.fields[*field];projection_name.push('.');projection_name.push_str(name);field_ty=child;}
+    for part in &parts[1..parts.len()-1]{
+        let selected=field_path(&ty,&(projection_name.clone()+part),source,span)?;
+        let Some(next)=application::model_data(Some(&model),&selected)else{return source.fail(span,"B225","[*]需要所选共同元素中的实际dataset字段");};
         paths.push(selected);scope=scope.logical(bounds::Condition::nonzero_value(&next.length),false);
-        model=&next.elements;ty=&next.ty;projection_name.clear();
+        let next_ty=next.ty.clone();let next_model=builder.element_model(&next.ty,&next.elements,(&next.residency,&[]),span)?;
+        model=next_model;ty=next_ty;projection_name.clear();
     }
-    let Some(value)=model.view_value()else{return source.fail(span,"B225","约束需要选择共同元素的实际值／字段");};
+    let Some(value)=model.view_value()else{return source.fail(span,"B225","约束需要所选共同元素的实际值或字段");};
     let mut selection=select_value(value,&(root.to_owned()+&projection_name+parts.last().unwrap()),source,span)?;
     selection.element_paths=paths;selection.scope=Some(scope);Ok(selection)
 }
@@ -362,7 +411,7 @@ pub(super) fn prove_c_inputs(builder: &Builder<'_>, contract: outputs::Contract<
 }
 
 fn resource(
-    builder: &Builder<'_>,
+    builder: &mut Builder<'_>,
     definition: &Definition,
     env: &BTreeMap<String, Binding>,
     path: &str,
@@ -503,7 +552,7 @@ pub(super) fn resolve(
                 let when=outputs::expression(builder,definition.into(),condition,&inputs,None,contract.span)?;
                 let(model,active)=cleanup_selection(builder,definition,env,value,contract.span)?;
                 let required=cleanup_condition(builder,model,active,contract.span)?;
-                (Predicate::Cleanup{when:bounds::Condition::of(&when),required},format!("cleanup({value})"))
+                (Predicate::Cleanup{value:value.clone(),when:bounds::Condition::of(&when),required},format!("cleanup({value})"))
             },
             ContractPredicate::Nonzero(path) => {
                 let selection = select(builder, definition, env, path, contract.span)?;
@@ -568,7 +617,7 @@ fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
                 let available=match builder.prefix_facts{Some(facts)=>facts.iter().any(|known|known.covers(relation,&builder.program.buffers)),None=>builder.program.prefix_requirements.iter().any(|known|known.covers(relation,&builder.program.buffers))};
                 available&&!builder.memory_regions.get(&relation.count.binding).is_some_and(|(_,writes)|writes.keys().any(|&(start,end)|u64::from(start)<u64::from(relation.count.word)+4&&u64::from(relation.count.word)<u64::from(end)))
             },
-            Predicate::Cleanup{when,required}=>builder.condition_truth(&when.clone().negate().logical(required.clone(),true),None)==Some(true),
+            Predicate::Cleanup{when,required,..}=>builder.condition_truth(&when.clone().negate().logical(required.clone(),true),None)==Some(true),
             Predicate::SameLength(left, right) => builder.length_proofs_equal(&left.proof, &right.proof),
             Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
             Predicate::Nonzero(selection) => selection.empty() || builder.condition_truth(&bounds::Condition::nonzero_value(&selection.value),None)==Some(true),
@@ -614,12 +663,20 @@ pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: S
     }
     Ok(())
 }
-pub(super) fn assume(env: &mut BTreeMap<String, Binding>, path:&mut bounds::Clause, requirements: &[Requirement]) {
+pub(super) fn assume(builder:&mut Builder<'_>,definition:&Definition,env:&mut BTreeMap<String,Binding>,requirements:&[Requirement])->Result<()> {
     for requirement in requirements {
-        if let Predicate::Cleanup{when,required}=&requirement.predicate{*path=when.clone().negate().logical(required.clone(),true).assume(path,true);continue;}
-        if let Predicate::Index(_, _, Some((scope, nonempty))) = &requirement.predicate {
-            *path = scope.clone().negate().logical(nonempty.clone(), true).assume(path, true);
+        if let Predicate::Cleanup{value,when,required}=&requirement.predicate{
+            builder.path=when.clone().negate().logical(required.clone(),true).assume(&builder.path,true);
+            mark_cleanup_selection(builder,definition,env,value,when.clone(),definition.function.span)?;continue;
         }
+        if let Predicate::Index(_,_,Some((scope,nonempty)))=&requirement.predicate{
+            builder.path=scope.clone().negate().logical(nonempty.clone(),true).assume(&builder.path,true);
+        }
+        assume_values(env,requirement);
+    }
+    Ok(())
+}
+fn assume_values(env:&mut BTreeMap<String,Binding>,requirement:&Requirement){
         for (name, binding) in env.iter_mut() {
             match &requirement.predicate {
                 Predicate::SameLength(left, right) => {
@@ -646,7 +703,6 @@ pub(super) fn assume(env: &mut BTreeMap<String, Binding>, path:&mut bounds::Clau
                 }
             }
         }
-    }
 }
 
 fn reference(
@@ -748,9 +804,9 @@ fn cleanup_selection(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeM
         Some(Binding::OwnedValue(value))=>Returned::OwnedValue(value.clone()),
         Some(Binding::ApplicationData(data))=>Returned::Dataset(data.clone()),
         Some(Binding::DataReference(reference))=>{
-            let mut data=reference.data.clone();let mut model=(*data.elements).clone();
+            let mut data=reference.data.clone();let mut model=*builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)?;
             for field in &reference.projection {let Returned::OwnedValue(owner)=model else{return definition.source.fail(span,"B225","cleanup字段投影需要实际记录模型")};model=builder.unpack_record(&owner,*field);}
-            data.ty=reference.element_layout().1.clone();data.elements=Box::new(model);Returned::Dataset(data)
+            data.ty=reference.element_layout().1.clone();data.elements=application::ElementFacts::Known(Box::new(model));Returned::Dataset(data)
         },
         Some(Binding::Value(value))=>Returned::value(value.clone()),
         _=>return definition.source.fail(span,"B225","cleanup需要实际按值输入或dataset共同元素"),
@@ -759,7 +815,7 @@ fn cleanup_selection(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeM
     while !rest.is_empty(){
         if let Some(next)=rest.strip_prefix("[*]") {
             let Returned::Dataset(data)=value else{return definition.source.fail(span,"B225","cleanup的[*]选择实际dataset共同元素")};
-            active=active.logical(if data.length.is_nonzero(){bounds::Condition::constant(true)}else{bounds::Condition::nonzero_value(&data.length)},false);value=*data.elements;rest=next;
+            active=active.logical(if data.length.is_nonzero(){bounds::Condition::constant(true)}else{bounds::Condition::nonzero_value(&data.length)},false);value=*builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)?;rest=next;
         }else{
             let Some(next)=rest.strip_prefix('.')else{return definition.source.fail(span,"B225","cleanup需要实际字段或[*]路径")};
             let end=next.find(['.','[']).unwrap_or(next.len());let field=&next[..end];
@@ -800,7 +856,7 @@ fn requirement_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BT
         Predicate::SameLength(left,right)=>bounds::Condition::same_length_proofs(&left.proof,&right.proof),
         Predicate::Prefix(_)=>bounds::Condition::constant(false),
         Predicate::Contiguous(_)=>bounds::Condition::default(),
-        Predicate::Cleanup{when,required}=>when.clone().negate().logical(required.clone(),true),
+        Predicate::Cleanup{when,required,..}=>when.clone().negate().logical(required.clone(),true),
     })
 }
 
@@ -823,16 +879,169 @@ fn cleanup_condition(builder:&mut Builder<'_>,value:returns::Returned,active:bou
                 if owner.payloads[index].is_none(){continue;}
                 let(value,when)=if owner.value.ty.has_variants(){
                     let tag=builder.value_component(&owner.value,0);let when=bounds::Condition::selected(ownership::ApplicationIndex::of(&tag),owner.value.ty.variants[index].discriminant as usize);
-                    (builder.unpack_variant(&owner,index),active.clone().logical(when,false))
+                    (builder.unpack_variant(&owner,index)?,active.clone().logical(when,false))
                 }else{(builder.unpack_record(&owner,index),active.clone())};
                 result=result.logical(cleanup_condition(builder,value,when,span)?,false);
             }
         },
         Returned::Dataset(data)=>{
             let when=if data.length.is_nonzero(){bounds::Condition::constant(true)}else{bounds::Condition::nonzero_value(&data.length)};
-            result=cleanup_condition(builder,*data.elements,active.logical(when,false),span)?;
+            let active=active.logical(when,false);
+            result=cleanup_element_condition(builder,&data.ty,data.elements,active,span)?;
         },
         Returned::Value(_)|Returned::Unit=>{},
     }
     Ok(result)
+}
+
+fn cleanup_element_condition(builder:&mut Builder<'_>,ty:&Ty,facts:application::ElementFacts,active:bounds::Condition,span:Span)->Result<bounds::Condition>{
+    use application::ElementFacts;
+    Ok(match facts{
+        ElementFacts::Known(model)=>cleanup_condition(builder,*model,active,span)?,
+        ElementFacts::Unknown=>if builder.world.cleanup_requirements(ty,&builder.definition.source,span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new())?{active.negate().logical(bounds::Condition::default(),true)}else{bounds::Condition::constant(true)},
+        ElementFacts::Cleanup(when)=>active.negate().logical(bounds::Condition::branch(when,bounds::Condition::constant(true),bounds::Condition::default()),true),
+        ElementFacts::Common(a,b)=>cleanup_element_condition(builder,ty,*a,active.clone(),span)?.logical(cleanup_element_condition(builder,ty,*b,active,span)?,false),
+        ElementFacts::Selected(when,a,b)=>bounds::Condition::branch(*when,cleanup_element_condition(builder,ty,*a,active.clone(),span)?,cleanup_element_condition(builder,ty,*b,active,span)?),
+    })
+}
+
+fn cleanup_store_field(builder:&Builder<'_>,owner:&mut owned_values::OwnedValue,index:usize,value:returns::Returned){
+    let stored=builder.returned_storage(&value);
+    let components=stored.regs.iter().map(|reg|owner.value.regs.iter().position(|parent|parent==reg).unwrap()).collect::<Vec<_>>();
+    owner.value.proof.assign(&components,owner.value.regs.len(),bounds::Proof::capture(&stored));
+    owner.payloads[index]=match value{returns::Returned::Value(_)=>None,value=>Some(Box::new(value))};
+}
+fn cleanup_guarded_value(current:&mut Value,previous:&Value,when:&bounds::Condition){
+    current.proof=match when.boolean_constant(){
+        Some(true)=>bounds::Proof::capture(current),
+        Some(false)=>bounds::Proof::capture(previous),
+        None=>bounds::Proof::common(current,previous,Some(when),None),
+    };
+}
+fn cleanup_guarded_data(current:&mut application::Data,previous:&application::Data,when:&bounds::Condition){
+    cleanup_guarded_value(&mut current.root,&previous.root,when);
+    cleanup_guarded_value(&mut current.length,&previous.length,when);
+    if let (Some(a),Some(b))=(current.elements.known_mut(),previous.elements.known()){cleanup_guarded_model(a,b,&when.scope_element_indices(1));}
+}
+fn cleanup_guarded_model(current:&mut returns::Returned,previous:&returns::Returned,when:&bounds::Condition){
+    use returns::Returned;
+    match(current,previous){
+        (Returned::Value(a),Returned::Value(b))=>cleanup_guarded_value(a,b,when),
+        (Returned::Dataset(a),Returned::Dataset(b))=>cleanup_guarded_data(a,b,when),
+        (Returned::OwnedValue(a),Returned::OwnedValue(b))=>{
+            cleanup_guarded_value(&mut a.value,&b.value,when);
+            for(a,b)in a.payloads.iter_mut().zip(&b.payloads){if let(Some(a),Some(b))=(a.as_deref_mut(),b.as_deref()){cleanup_guarded_model(a,b,when);}}
+        },
+        _=>{},
+    }
+}
+fn cleanup_guarded_binding(current:&mut Binding,previous:&Binding,when:&bounds::Condition){
+    match(current,previous){
+        (Binding::Value(a),Binding::Value(b))=>cleanup_guarded_value(a,b,when),
+        (Binding::ApplicationData(a),Binding::ApplicationData(b))=>cleanup_guarded_data(a,b,when),
+        (Binding::DataReference(a),Binding::DataReference(b))=>cleanup_guarded_data(&mut a.data,&b.data,when),
+        (Binding::OwnedValue(a),Binding::OwnedValue(b))=>{
+            cleanup_guarded_value(&mut a.value,&b.value,when);
+            for(a,b)in a.payloads.iter_mut().zip(&b.payloads){if let(Some(a),Some(b))=(a.as_deref_mut(),b.as_deref()){cleanup_guarded_model(a,b,when);}}
+        },
+        _=>{},
+    }
+}
+fn mark_cleanup_facts(builder:&mut Builder<'_>,facts:&mut application::ElementFacts,when:bounds::Condition,span:Span)->Result<()> {
+    use application::ElementFacts;
+    match facts{
+        ElementFacts::Unknown=>*facts=ElementFacts::Cleanup(when),
+        ElementFacts::Cleanup(previous)=>*previous=previous.clone().logical(when,true),
+        ElementFacts::Known(value)=>mark_cleanup_model(builder,value,when.scope_element_indices(1),span)?,
+        ElementFacts::Common(a,b)|ElementFacts::Selected(_,a,b)=>{mark_cleanup_facts(builder,a,when.clone(),span)?;mark_cleanup_facts(builder,b,when,span)?;},
+    }
+    Ok(())
+}
+fn mark_cleanup_owner(builder:&mut Builder<'_>,owner:&mut owned_values::OwnedValue,when:bounds::Condition,span:Span)->Result<()> {
+    use returns::Returned;
+    if let Some(key)=owner.value.ty.cleanup.as_ref(){
+            let definition=&builder.world.functions[key];
+            let instance=generics::specialize(builder.world,key,&[generics::Actual::value(&owner.value.ty.arguments[0])],None,(&definition.source,&definition.module,&definition.imports),span)?;
+            let mut payload=builder.unpack_record(owner,0);
+            let binding=match &payload{Returned::Dataset(data)=>Binding::ApplicationData(data.clone()),Returned::OwnedValue(value)=>Binding::OwnedValue(value.clone()),Returned::Value(value)=>Binding::Value((**value).clone()),Returned::Unit=>Binding::Value(builder.returned_storage(&Returned::Unit))};
+            let name=instance.definition.function.params[0].name.clone();let mut env=BTreeMap::from([(name.clone(),binding)]);
+            element_input_paths(builder,&instance.definition,&mut env)?;
+            let resources=instance.definition.function.params.iter().enumerate().filter_map(|(index,p)|match env.get(&p.name){
+                Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))),_=>None,
+            }).collect();
+            let requirements=resolve(builder,&instance.definition,&env,&resources)?;let before=env.clone();
+            for requirement in &requirements{assume_values(&mut env,requirement);}
+            for(name,binding)in &mut env{cleanup_guarded_binding(binding,&before[name],&when);}
+            for requirement in &requirements{if let Predicate::Cleanup{value,when:inner,..}=&requirement.predicate{
+                mark_cleanup_selection(builder,&instance.definition,&mut env,value,when.clone().logical(inner.clone(),false),span)?;
+            }}
+            match(&mut payload,&env[&name]){
+                (Returned::Dataset(value),Binding::ApplicationData(updated))=>*value=updated.clone(),
+                (Returned::OwnedValue(value),Binding::OwnedValue(updated))=>*value=updated.clone(),
+                (Returned::Value(value),Binding::Value(updated))=>**value=updated.clone(),
+                _=>{},
+            }
+            cleanup_store_field(builder,owner,0,payload);
+    }else{
+            for index in 0..owner.payloads.len(){
+                if owner.payloads[index].is_none(){continue;}
+                let mut child=if owner.value.ty.has_variants(){builder.unpack_variant(owner,index)?}else{builder.unpack_record(owner,index)};
+                let active=if owner.value.ty.has_variants(){let tag=builder.value_component(&owner.value,0);when.clone().logical(bounds::Condition::selected(ownership::ApplicationIndex::of(&tag),owner.value.ty.variants[index].discriminant as usize),false)}else{when.clone()};
+                mark_cleanup_model(builder,&mut child,active,span)?;cleanup_store_field(builder,owner,index,child);
+            }
+    }
+    Ok(())
+}
+pub(super) fn mark_cleanup_model(builder:&mut Builder<'_>,value:&mut returns::Returned,when:bounds::Condition,span:Span)->Result<()> {
+    use returns::Returned;
+    match value{
+        Returned::OwnedValue(owner)=>mark_cleanup_owner(builder,owner,when,span)?,
+        Returned::Dataset(data)=>mark_cleanup_facts(builder,&mut data.elements,when,span)?,
+        Returned::Value(_)|Returned::Unit=>{},
+    }
+    Ok(())
+}
+fn mark_cleanup_owner_path(builder:&mut Builder<'_>,owner:&mut owned_values::OwnedValue,path:&str,when:bounds::Condition,span:Span)->Result<()> {
+    if path.is_empty(){return mark_cleanup_owner(builder,owner,when,span);}
+    let rest=path.strip_prefix('.').unwrap();let end=rest.find(['.','[']).unwrap_or(rest.len());let field=&rest[..end];
+    let index=owner.value.ty.fields.iter().position(|(name,..)|name==field).unwrap();let mut child=builder.unpack_record(owner,index);
+    mark_cleanup_path(builder,&mut child,&rest[end..],when,span)?;cleanup_store_field(builder,owner,index,child);Ok(())
+}
+fn mark_cleanup_data_path(builder:&mut Builder<'_>,data:&mut application::Data,path:&str,when:bounds::Condition,span:Span)->Result<()> {
+    if path.is_empty(){return mark_cleanup_facts(builder,&mut data.elements,when,span);}
+    if path==".length"{return Ok(());}
+    let rest=path.strip_prefix("[*]").unwrap();let mut model=builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)?;
+    let active=when.logical(bounds::Condition::nonzero_value(&data.length),false);
+    mark_cleanup_path(builder,&mut model,rest,active.scope_element_indices(1),span)?;
+    data.elements=application::ElementFacts::Known(model);Ok(())
+}
+fn mark_cleanup_path(builder:&mut Builder<'_>,value:&mut returns::Returned,path:&str,when:bounds::Condition,span:Span)->Result<()> {
+    use returns::Returned;
+    match value{
+        Returned::OwnedValue(owner)=>mark_cleanup_owner_path(builder,owner,path,when,span),
+        Returned::Dataset(data)=>mark_cleanup_data_path(builder,data,path,when,span),
+        Returned::Value(_)|Returned::Unit=>Ok(()),
+    }
+}
+fn mark_cleanup_selection(builder:&mut Builder<'_>,_definition:&Definition,env:&mut BTreeMap<String,Binding>,path:&str,when:bounds::Condition,span:Span)->Result<()> {
+    let end=path.find(['.','[']).unwrap_or(path.len());let root=&path[..end];let rest=&path[end..];
+    let binding=env.remove(root).unwrap();
+    let binding=match binding{
+        Binding::OwnedValue(mut owner)=>{mark_cleanup_owner_path(builder,&mut owner,rest,when,span)?;Binding::OwnedValue(owner)},
+        Binding::ApplicationData(mut data)=>{mark_cleanup_data_path(builder,&mut data,rest,when,span)?;Binding::ApplicationData(data)},
+        Binding::DataReference(mut reference)=>{
+            if rest!=".length"{
+                let mut value=builder.element_model(&reference.ty,&reference.elements,(&reference.residency,&[]),span)?;
+                let mut selected=String::new();let mut ty=&reference.ty;
+                for index in &reference.projection{let(name,_,child)=&ty.fields[*index];selected.push('.');selected.push_str(name);ty=child;}
+                selected.push_str(rest.strip_prefix("[*]").unwrap_or(rest));
+                let active=when.logical(bounds::Condition::nonzero_value(&reference.length),false);
+                mark_cleanup_path(builder,&mut value,&selected,active.scope_element_indices(1),span)?;
+                reference.data.elements=application::ElementFacts::Known(value);
+            }
+            Binding::DataReference(reference)
+        },
+        binding=>binding,
+    };
+    env.insert(root.to_owned(),binding);Ok(())
 }

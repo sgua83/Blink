@@ -75,24 +75,21 @@ impl OwnedValuePayload {
     pub(super) fn loop_compatible(
         &self,
         other: &Self,
-        inputs: &mut residency::Inputs,
-        source: &Source,
+        builder: &mut Builder<'_>,
         span: Span,
         path: &bounds::Clause,
-    ) -> bool {
-        self.ownership == other.ownership
-            && self.payloads.iter().zip(&other.payloads).all(|(a, b)| {
-                match (a.as_deref(), b.as_deref()) {
-                    (Some(Returned::Dataset(a)), Some(Returned::Dataset(b))) => {
-                        a.loop_compatible(b,inputs,source,span,path)
-                    }
-                    (Some(Returned::OwnedValue(a)), Some(Returned::OwnedValue(b))) => {
-                        a.loop_compatible(b, inputs, source, span,path)
-                    }
-                    (None, Some(_)) => false,
-                    _ => true,
-                }
-            })
+    ) -> Result<bool> {
+        if self.ownership!=other.ownership{return Ok(false);}
+        for(a,b)in self.payloads.iter().zip(&other.payloads){
+            let compatible=match(a.as_deref(),b.as_deref()){
+                (Some(Returned::Dataset(a)),Some(Returned::Dataset(b)))=>a.loop_compatible(b,builder,span,path)?,
+                (Some(Returned::OwnedValue(a)),Some(Returned::OwnedValue(b)))=>a.loop_compatible(b,builder,span,path)?,
+                (None,Some(_))=>false,
+                _=>true,
+            };
+            if !compatible{return Ok(false);}
+        }
+        Ok(true)
     }
     pub(super) fn invalidate(&mut self) {
         self.value.constant = None;
@@ -250,7 +247,7 @@ impl Builder<'_> {
                 let mut proof = bounds::Proof::default();
                 proof.append(&data.root);
                 proof.append(&data.length);
-                let mut ty=Ty::owned_dataset(data.ty.clone(), data.count);
+                let mut ty=Ty::owned_dataset(data.ty.syntax(), data.count);
                 ty.components=vec![(data.root.ty.components[0].0,0),(Scalar::U32,data.root.ty.size)];
                 ty.align=data.root.ty.align.max(data.length.ty.align);
                 ty.size=ir::align_up(data.root.ty.size+data.length.ty.size,ty.align);
@@ -282,7 +279,7 @@ impl Builder<'_> {
                 &definition.module,
                 &definition.imports,
             )?;
-            Ok(Ty::owned_dataset(value, count))
+            Ok(Ty::owned_dataset((value).syntax(), count))
         } else {
             Ok(value)
         }
@@ -301,9 +298,10 @@ impl Builder<'_> {
         match value {
             Returned::Dataset(data) if expected.dataset.is_some() => {
                 let count = expected.values.first().copied();
+                let element=self.expected_storage(expected.dataset.as_deref().unwrap(),span)?;
                 self.application_data_type(
                     data,
-                    expected.dataset.as_deref().unwrap(),
+                    &element,
                     count,
                     span,
                 )?;
@@ -354,9 +352,10 @@ impl Builder<'_> {
             }
         }
     }
-    pub(super) fn template_returned(&self, mut value: Value, available: bool) -> Returned {
+    pub(super) fn template_returned(&self, mut value: Value, available: bool) -> Result<Returned> {
         if value.ty.dataset.is_none(){value.proof.retain_view_borrows(&value.ty);}
-        if let Some(element) = value.ty.dataset.as_deref() {
+        Ok(if let Some(reference) = value.ty.dataset.as_deref() {
+            let element=self.expected_storage(reference,self.definition.function.span)?;
             let mut handle = self.value_component(&value, 0);
             handle.proof = bounds::Proof::capture(&handle);
             let mut length = self.value_component(&value, 1);
@@ -372,7 +371,7 @@ impl Builder<'_> {
             }
             Returned::Dataset(Box::new(DataPayload {
                 prefixes: BTreeMap::new(),
-                elements:self.unknown_element_model(element),
+                elements:application::ElementFacts::Unknown,
                 root: handle,
                 length,
                 ty: element.clone(),
@@ -392,12 +391,12 @@ impl Builder<'_> {
             let payloads = (0..value.ty.aggregate_len())
                 .map(|i| {
                     if !value.ty.aggregate_part(i).1.owns_resources() {
-                        return None;
+                        return Ok(None);
                     }
                     let field = self.record_component(&value, i);
-                    Some(Box::new(self.template_returned(field, available)))
+                    Ok(Some(Box::new(self.template_returned(field, available)?)))
                 })
-                .collect();
+                .collect::<Result<Vec<_>>>()?;
             let ownership=if value.ty.cleanup.is_some() && !available {Ownership::Moved}else{Ownership::Owned};
             Returned::OwnedValue(Box::new(OwnedValuePayload {
                 value,
@@ -408,12 +407,12 @@ impl Builder<'_> {
         } else if value.ty.owns_resources() {
             let mut payloads = vec![None;value.ty.variants.len()];
             if !available {
-                return Returned::OwnedValue(Box::new(OwnedValuePayload {
+                return Ok(Returned::OwnedValue(Box::new(OwnedValuePayload {
                     value,
                     payloads,
                     ownership: Ownership::Moved,
                     place: None, declaration: 0,
-                }));
+                })));
             }
             for index in 0..value.ty.variants.len() {
                 let ty = &value.ty.variants[index].ty;
@@ -429,7 +428,7 @@ impl Builder<'_> {
                 }
                 let payload = Value { ty: (**ty).clone(), regs: components.iter().map(|i|value.regs[*i]).collect(),
                     proof, uniform: value.uniform, literal: false, constant: None };
-                payloads[index] = Some(Box::new(self.template_returned(payload, available)));
+                payloads[index] = Some(Box::new(self.template_returned(payload, available)?));
             }
             Returned::OwnedValue(Box::new(OwnedValuePayload {
                 value,
@@ -441,7 +440,7 @@ impl Builder<'_> {
             Returned::Unit
         } else {
             Returned::value(value)
-        }
+        })
     }
     pub(super) fn value_component(&self, value: &Value, index: usize) -> Value {
         Value {
@@ -453,12 +452,12 @@ impl Builder<'_> {
             constant: value.constant.as_ref().map(|v| vec![v[index]]),
         }
     }
-    pub(super) fn incoming_owned_value(&mut self, mut value: Value) -> OwnedValue {
+    pub(super) fn incoming_owned_value(&mut self, mut value: Value) -> Result<OwnedValue> {
         value.proof=bounds::Proof::capture(&value);
-        let Returned::OwnedValue(result) = self.template_returned(value, true) else {
+        let Returned::OwnedValue(result) = self.template_returned(value, true)? else {
             unreachable!()
         };
-        result
+        Ok(result)
     }
     pub(super) fn read_aggregate(&mut self,expr:&Expr,expected:Option<&Ty>)->Result<Option<(Returned,Option<String>)>> {
         if let ExprKind::Name(name)=&expr.kind
@@ -506,7 +505,7 @@ impl Builder<'_> {
                 let Some(place)=self.application_index(data.clone(),index)?else{return Ok(None)};
                 if !place.ty().owns_resources(){return self.read_place(&place,expr.span, None).map(|value|Some((Returned::value(value),None)));}
                 let packed=self.read_storage_value(&place,expr.span, None)?;
-                let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed,&place) else{unreachable!()};
+                let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed,&place)? else{unreachable!()};
                 value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),None)));
             }
             let Some((value,mut owner))=self.read_aggregate(base,None)? else{return Ok(None)};
@@ -521,7 +520,7 @@ impl Builder<'_> {
                     let Some(place)=self.application_index(data.clone(),index)?else{return Ok(None)};
                     if !place.ty().owns_resources(){return self.read_place(&place,expr.span, None).map(|value|Some((Returned::value(value),owner)));}
                     let packed=self.read_storage_value(&place,expr.span, None)?;
-                    let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed,&place)else{unreachable!()};
+                    let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed,&place)?else{unreachable!()};
                     value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),owner)));
                 }
                 Returned::OwnedValue(value)=>value,
@@ -562,7 +561,7 @@ impl Builder<'_> {
     pub(super) fn read_storage_value(&mut self,place:&Place,span:Span,element_read_origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
         let ty=place.ty().clone();let mut regs=Vec::new();
         for(index,(scalar,_))in ty.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[index]),span,element_read_origin.clone())?.regs[0]);}
-        let(proof,uniform)=self.read_owned_proof(place,&regs);
+        let(proof,uniform)=self.read_owned_proof(place,&regs)?;
         Ok(Value{ty,regs,proof,uniform,literal:false,constant:None})
     }
     pub(super) fn write_storage_value(&mut self,place:&Place,value:&Value,span:Span,local_origin:Option<Arc<GeneratedOrigin>>)->Result<()> {
@@ -657,7 +656,7 @@ impl Builder<'_> {
                 place: None, declaration: 0,
             })
         } else {
-            let Returned::OwnedValue(v) = self.template_returned(value, false) else {
+            let Returned::OwnedValue(v) = self.template_returned(value, false)? else {
                 unreachable!()
             };
             v
@@ -726,13 +725,13 @@ impl Builder<'_> {
         if value.payloads.iter().enumerate().all(|(i,p)|i==index||p.is_none()){return Ok(self.constant_with_origin(Scalar::Bool,1,origin));}
         self.variant_condition(&value.value,index,span,origin)
     }
-    fn unpack_owned(&mut self,value:&OwnedValue,success:bool)->Returned {self.unpack_variant(value,usize::from(!success))}
-    pub(super) fn unpack_variant(&mut self,value:&OwnedValue,index:usize)->Returned {
+    fn unpack_owned(&mut self,value:&OwnedValue,success:bool)->Result<Returned> {self.unpack_variant(value,usize::from(!success))}
+    pub(super) fn unpack_variant(&mut self,value:&OwnedValue,index:usize)->Result<Returned> {
         let payload=self.variant_payload(&value.value,index);
-        let Some(meta)=&value.payloads[index] else {return match payload {Some(value)=>self.template_returned(value,false),None=>Returned::Unit};};
+        let Some(meta)=&value.payloads[index] else {return match payload {Some(value)=>self.template_returned(value,false),None=>Ok(Returned::Unit)};};
         let mut item=(**meta).clone();if let Some(value)=payload {
             match &mut item {Returned::Value(current)=>**current=value,Returned::OwnedValue(current)=>{current.value=value;current.place=None;},_=>self.rebind_returned(&mut item,value.regs)}
-        }item
+        }Ok(item)
     }
     pub(super) fn evaluate_returned(
         &mut self,
@@ -947,7 +946,7 @@ impl Builder<'_> {
             |_| Ok(()),
             |b| {
                 let error = if let Some(r) = owned {
-                    b.unpack_owned(r, false)
+                    b.unpack_owned(r, false)?
                 } else {
                     b.result_payload(&value, false)
                         .map_or(Returned::Unit, Returned::value)
@@ -961,7 +960,7 @@ impl Builder<'_> {
             return Ok(None);
         }
         Ok(Some(if let Some(r) = owned {
-            self.unpack_owned(r, true)
+            self.unpack_owned(r, true)?
         } else {
             match self.result_payload(&value, true) {
                 Some(v) => Returned::value(v),
@@ -1016,7 +1015,7 @@ impl Builder<'_> {
         }
     }
     fn owned_arm(&mut self,value:&OwnedValue,index:usize,name:&Option<String>,body:&[Stmt],span:Span)->Result<()> {
-        let item=self.unpack_variant(value,index);
+        let item=self.unpack_variant(value,index)?;
         if let Some(name)=name.as_ref().filter(|n|n.as_str()!="_") {
             self.bind_returned(name,item,span)?;self.block(body)?;
             if self.flow.continues() { if let Some(binding)=self.env.get(name).cloned() {self.drop_binding(binding,&view::Borrow::default(),span)?;} }
@@ -1053,7 +1052,7 @@ impl Builder<'_> {
             Returned::Dataset(data)if data.ownership.may_own()=>view_liveness::Transfer::OwnedData(data),
             _=>return Ok(()),
         };
-        let mut borrow=self.view_uses.all(self,std::slice::from_ref(&transferred));borrow.union(retained);
+        let mut borrow=self.view_uses.all(self,std::slice::from_ref(&transferred))?;borrow.union(retained);
         let consumed=match &value {
             Returned::OwnedValue(value)=>value.place(),
             Returned::Dataset(data)=>data.place.clone(),
@@ -1107,18 +1106,18 @@ impl Builder<'_> {
     }
     fn drop_variant(&mut self,value:&OwnedValue,index:usize,retained:&view::Borrow,span:Span)->Result<()> {
         if index+1==value.payloads.len() {
-            let item=self.unpack_variant(value,index);return self.drop_owned_tree(item,retained,span);
+            let item=self.unpack_variant(value,index)?;return self.drop_owned_tree(item,retained,span);
         }
         let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
         let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropBranch,trigger:trigger.clone()});
         let selection=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropCondition,trigger});
         let condition=self.owned_variant_condition(value,index,span,Some(selection))?;
         if let Some(bits)=&condition.constant {
-            if bits[0]!=0 {let item=self.unpack_variant(value,index);self.drop_owned_tree(item,retained,span)}
+            if bits[0]!=0 {let item=self.unpack_variant(value,index)?;self.drop_owned_tree(item,retained,span)}
             else {self.drop_variant(value,index+1,retained,span)}
         } else {
             let outer=std::mem::take(&mut self.code);
-            let item=self.unpack_variant(value,index);self.drop_owned_tree(item,retained,span)?;
+            let item=self.unpack_variant(value,index)?;self.drop_owned_tree(item,retained,span)?;
             let yes=std::mem::take(&mut self.code);
             self.drop_variant(value,index+1,retained,span)?;
             let no=std::mem::replace(&mut self.code,outer);
@@ -1139,11 +1138,11 @@ impl Builder<'_> {
         &mut self,
         argument: &mut cooperative::Argument,
         access: Access,
-    ) -> Option<String> {
+    ) -> Result<Option<String>> {
         if let cooperative::Argument::Reference(owner)=argument {
             if access.reads() {
                 let regs=owner.place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect::<Vec<_>>();
-                (owner.proof,owner.uniform)=self.read_owned_proof(&owner.place,&regs);
+                (owner.proof,owner.uniform)=self.read_owned_proof(&owner.place,&regs)?;
             } else {owner.proof=bounds::Proof::default();}
         }
         let binding = match argument {
@@ -1159,14 +1158,14 @@ impl Builder<'_> {
             cooperative::Argument::Value(value) if value.ty.contains_borrows() => Binding::Value(value.clone()),
             cooperative::Argument::OwnedValue(value) => Binding::OwnedValue(value.clone()),
             cooperative::Argument::OwnedReference{place,..} if access==Access::Read => Binding::Owned(self.borrow_owned(place.clone())),
-            cooperative::Argument::OwnedReference{value,owner,..}=>{if let Some(owner)=owner{return Some(owner.clone());}let mut value=value.clone();value.borrow();Binding::OwnedValue(value)},
+            cooperative::Argument::OwnedReference{value,owner,..}=>{if let Some(owner)=owner{return Ok(Some(owner.clone()));}let mut value=value.clone();value.borrow();Binding::OwnedValue(value)},
             cooperative::Argument::ApplicationData(data) if access == Access::Value => {
                 Binding::ApplicationData(data.clone())
             }
-            cooperative::Argument::Scoped { owner, .. } => return Some(owner.clone()),
-            _ => return None,
+            cooperative::Argument::Scoped { owner, .. } => return Ok(Some(owner.clone())),
+            _ => return Ok(None),
         };
-        Some(self.hold_binding(binding))
+        Ok(Some(self.hold_binding(binding)))
     }
     pub(super) fn hold_binding(&mut self, binding: Binding) -> String {
         let index=self.env.keys().filter_map(|name|name.strip_prefix("\0argument:"))

@@ -85,10 +85,12 @@ pub(super) fn cleanup_borrow(binding:&Binding,omitted:&BTreeSet<usize>)->view::B
 fn data_contents(data:&application::Data,into:&mut view::Borrow){
     if !data.ownership.may_own()||data.length.maximum()==0{return;}
     let mut borrowed=view::Borrow::default();
-    match data.elements.as_ref(){
-        Returned::OwnedValue(value)=>value.cleanup_borrow(&BTreeSet::new(),&mut borrowed),
-        Returned::Dataset(child)=>data_contents(child,&mut borrowed),
-        Returned::Value(_)|Returned::Unit=>{},
+    match data.elements.known(){
+        Some(Returned::OwnedValue(value))=>value.cleanup_borrow(&BTreeSet::new(),&mut borrowed),
+        Some(Returned::Dataset(child))=>data_contents(child,&mut borrowed),
+        Some(Returned::Value(_)|Returned::Unit)=>{},
+        None if data.ty.owns_resources()||data.ty.contains_borrows()=>borrowed=view::Borrow::source(view::Source::Unresolved),
+        None=>{},
     }
     let borrowed=if let Ownership::Conditional(when)=&data.ownership{borrowed.restricted(&when.condition().assume(&bounds::Clause::default(),true))}else{borrowed};
     into.union(&borrowed);

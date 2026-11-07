@@ -81,7 +81,7 @@ impl Builder<'_> {
         for (name,binding) in &self.loop_contexts[level].entry.env {
             for (path,data,independent) in data_paths(binding){
                 slots.push(InputSlot::Data{name:name.clone(),path:path.clone(),independent});
-                if let Some(value)=data.elements.view_value(){for component in view_contracts::components(&value.ty){
+                if let Some(value)=data.elements.known().and_then(returns::Returned::view_value){for component in view_contracts::components(&value.ty){
                     slots.push(InputSlot::Value{name:name.clone(),contents:Some(path.clone()),component,identity:None});
                 }}
             }
@@ -222,7 +222,7 @@ impl Builder<'_> {
         let mut context=self.loop_contexts.pop().unwrap();self.close_view_context(&mut context,None,false)
     }
 
-    pub(super) fn application_iteration_elements(&mut self, exit: &mut LoopState, source: Option<&application::DataReference>, index: &Value, limit: &Value) {
+    pub(super) fn application_iteration_elements(&mut self, exit: &mut LoopState, source: Option<&application::DataReference>, index: &Value, limit: &Value)->Result<()> {
         let context = self.loop_contexts.last().unwrap();
         let resources = if let Some(data) = source { vec![data.clone()] } else {
             context.entry.env.values().flat_map(Binding::application_resources).filter(|data|
@@ -231,15 +231,17 @@ impl Builder<'_> {
             ).map(|data| application::DataReference::direct(data.clone())).collect()
         };
         for data in resources {
+            let model=self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?;
+            let initial=self.returned_storage(&model);
             let context = self.loop_contexts.last().unwrap();
             let cursor = if source.is_some() { context.control_source.cursor.as_ref().unwrap() } else { index };
             let ty = data.element_layout().1;
             let components=data.words().iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word).unwrap()).collect::<Vec<_>>();
             let complete=context.entry.cursor.as_ref().is_some_and(|begin|begin.minimum()==0&&begin.maximum()==0);
-            let (normal,broken)=self.application_indexed_proof(&data.data,cursor,context.continues.iter().chain(context.exits.iter()),&context.controls,&context.writes);
+            let (normal,broken)=self.application_indexed_proof(&data.data,cursor,&initial,context.continues.iter().chain(context.exits.iter()),&context.controls,&context.writes);
             let normal=normal.project(&components,data.ty.components.len());
             let partial=(!complete||!context.exits.is_empty()).then(||{
-                let mut proof=bounds::Proof::capture(&self.returned_storage(&data.data.elements)).project(&components,data.ty.components.len());
+                let mut proof=bounds::Proof::capture(&initial).project(&components,data.ty.components.len());
                 if !context.continues.is_empty(){proof.join_condition(&normal,ty.components.len(),None);}
                 if !context.exits.is_empty(){proof.join_condition(&broken.project(&components,data.ty.components.len()),ty.components.len(),None);}
                 self.application_iteration_interference(&data,cursor,&mut proof,context.continues.iter().chain(context.exits.iter()),&context.controls,&context.writes);
@@ -250,7 +252,7 @@ impl Builder<'_> {
                     let (name, _) = context.iterator.as_ref().unwrap();
                     let mut common: Option<bounds::Proof> = None;
                     for state in &context.continues {
-                        let Some(Binding::Owned(owner)) = state.env.get(name) else { return; };
+                        let Some(Binding::Owned(owner)) = state.env.get(name) else { return Ok(()); };
                         let incoming=bounds::scoped_proof(ty,owner.proof.clone(),&state.path,&state.env);
                         if let Some(proof) = &mut common { proof.join_condition(&incoming, ty.components.len(), None); }
                         else { common = Some(incoming); }
@@ -262,12 +264,13 @@ impl Builder<'_> {
                 })
             }else{partial.clone()};
             let mut breaks=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().exits);
-            if let Some(proof)=partial{for state in &mut breaks{self.publish_iteration_elements(state,&data,proof.clone());}}
+            if let Some(proof)=partial{for state in &mut breaks{self.publish_iteration_elements(state,&data,proof.clone())?;}}
             self.loop_contexts.last_mut().unwrap().exits=breaks;
-            if let Some(proof)=natural{self.publish_iteration_elements(exit,&data,proof);}
+            if let Some(proof)=natural{self.publish_iteration_elements(exit,&data,proof)?;}
         }
+        Ok(())
     }
-    fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, proof: bounds::Proof) {
+    fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, proof: bounds::Proof)->Result<()> {
         let ty = data.element_layout().1;
         std::mem::swap(&mut self.env, &mut exit.env);
         std::mem::swap(&mut self.path, &mut exit.path);
@@ -286,10 +289,11 @@ impl Builder<'_> {
         if !components.is_empty() {
             let words = data.words();
             let words = components.iter().map(|component| words[*component]).collect::<Vec<_>>();
-            self.update_application_contents(data, &words, application::ElementUpdate::WholeFacts(&proof.project(&components, ty.components.len())));
+            self.update_application_contents(data, &words, application::ElementUpdate::WholeFacts(&proof.project(&components, ty.components.len())))?;
         }
         std::mem::swap(&mut self.env, &mut exit.env);
         std::mem::swap(&mut self.path, &mut exit.path);
+        Ok(())
     }
     pub(super) fn initialize_iteration_exit(
         &self,
@@ -429,10 +433,12 @@ impl Builder<'_> {
             return Ok(());
         }
         let path=self.residency_path();
-        let entry = &self.loop_contexts.last().unwrap().entry.env;
-        for (name, binding) in &self.env {
-            if let Binding::OwnedValue(result) = binding
-                && let Some(Binding::OwnedValue(before)) = entry.get(name)
+        let names=self.env.keys().cloned().collect::<Vec<_>>();
+        for name in names {
+            let binding=self.env[&name].clone();
+            let entry=self.loop_contexts.last().unwrap().entry.env.get(&name).cloned();
+            if let Binding::OwnedValue(result) = &binding
+                && let Some(Binding::OwnedValue(before)) = entry.as_ref()
             {
                 if result.ownership != before.ownership {
                     return self.fail(
@@ -444,17 +450,16 @@ impl Builder<'_> {
                 if result.ownership == application::Ownership::Owned
                     && !before.loop_compatible(
                         result,
-                        &mut self.residency,
-                        &self.definition.source,
+                        self,
                         span,
                         &path,
-                    )
+                    )?
                 {
                     return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
                 }
             }
-            let data=match binding{Binding::ApplicationData(data)=>Some(data),Binding::DataReference(data)=>Some(&data.data),_=>None};
-            let before=match entry.get(name){Some(Binding::ApplicationData(data))=>Some(data),Some(Binding::DataReference(data))=>Some(&data.data),_=>None};
+            let data=match &binding{Binding::ApplicationData(data)=>Some(data),Binding::DataReference(data)=>Some(&data.data),_=>None};
+            let before=match entry.as_ref(){Some(Binding::ApplicationData(data))=>Some(data),Some(Binding::DataReference(data))=>Some(&data.data),_=>None};
             if let(Some(data),Some(before))=(data,before) {
                 if before.ownership != data.ownership {
                     return self.fail(
@@ -464,7 +469,7 @@ impl Builder<'_> {
                     );
                 }
                 if before.ownership != application::Ownership::Moved
-                    && !before.loop_compatible(data,&mut self.residency,&self.definition.source,span,&path)
+                    && !before.loop_compatible(data,self,span,&path)?
                 {
                     return self.fail(
                         span,
@@ -615,7 +620,7 @@ impl Builder<'_> {
                         data.length.proof.join_condition(&repeated.length.proof,data.length.regs.len(),Some(&empty));
                         data.length.uniform&=repeated.length.uniform;if data.length.constant!=repeated.length.constant{data.length.constant=None;}
                         data.residency=residency::Residency::conditional(empty.clone(),data.residency.clone(),repeated.residency);
-                        data.elements.join_locations(*repeated.elements,&empty,true);
+                        data.elements=std::mem::take(&mut data.elements).selected(repeated.elements,&empty);
                         data.prefixes=prefix::join_fields(&data.prefixes,&repeated.prefixes,Some(&empty));
                     }
                     continue;
@@ -660,7 +665,7 @@ impl Builder<'_> {
         if let Some(state)=natural{context.exits.push(state);guards.push(owned_presence::Presence::input(test).not());}
         let common=context.exits.iter().map(|state|state.initialized.clone()).reduce(|a,b|ownership::intersect_initialized(&a,&b));
         let initialized=context.exits.iter().zip(&guards).flat_map(|(state,when)|state.initialized.difference(common.as_ref().unwrap()).map(move|position|Position::selected(when.clone(),position.clone(),Position::Initialized))).collect::<BTreeSet<_>>();
-        let mut guards=guards.into_iter();let mut exits=context.exits.into_iter();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok((false,context.writes))};
+        let mut guards=guards.into_iter().rev();let mut exits=context.exits.into_iter().rev();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok((false,context.writes))};
         let _first=guards.next().unwrap();self.env=first.env;self.path=first.path;
         for exit in exits{let when=guards.next().unwrap();let mut previous=std::mem::replace(&mut self.env,exit.env);self.path=bounds::Clause::either(&self.path,&exit.path);self.join_environment_selected(&mut previous,&when);}
         self.env.retain(|name,_|context.names.contains(name));

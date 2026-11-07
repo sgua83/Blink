@@ -473,7 +473,7 @@ impl Builder<'_> {
             self.emit(instruction.kind);
             regs.push(dst);
         }
-        let (proof, uniform) = self.read_owned_proof(place, &regs);
+        let (proof, uniform) = self.read_owned_proof(place, &regs)?;
         Ok(Value {
             proof,
             literal: false,
@@ -507,7 +507,7 @@ impl Builder<'_> {
         }
         self.data_access(place, Access::Write, None);
         self.dataset_effect(place,Access::Write,false,span)?;
-        self.assign_owned_proof(place, bounds::Proof::capture(&value), false);
+        self.assign_owned_proof(place, bounds::Proof::capture(&value), false)?;
         self.initialize(place);
         for ((word, &(scalar, _)), value) in words.iter().zip(&value.ty.components).zip(value.regs) {
             let instruction = match &**base {

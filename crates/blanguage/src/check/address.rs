@@ -24,13 +24,13 @@ impl crate::module::codec::Decode for Layout {
 pub(super) enum Root {
     Local { base: usize, len: usize },
     Parameter(usize),
-    Resource(view::Borrow),
+    Resource { borrow: view::Borrow, index: Option<bounds::Operand> },
     Buffer(usize),
     Derived(view::Borrow),
     External(Identity),
     Dataset { borrow: view::Borrow, index: Option<bounds::Operand> },
 }
-crate::module::codec::variants!(Root { 0=>Local{base,len}, 1=>Parameter(index), 2=>Resource(borrow), 3=>Buffer(binding), 4=>Derived(borrow), 5=>External(identity), 6=>Dataset{borrow,index} });
+crate::module::codec::variants!(Root { 0=>Local{base,len}, 1=>Parameter(index), 2=>Resource{borrow,index}, 3=>Buffer(binding), 4=>Derived(borrow), 5=>External(identity), 6=>Dataset{borrow,index} });
 /// A projection of original storage; positions stay in the checking function.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Origin {
@@ -48,8 +48,13 @@ impl Origin {
         origin.root=match &self.root {
             Root::External(identity)=>Root::External(identity.substitute_values(values)),
             Root::Derived(borrow)=>Root::Derived(borrow.substitute_values(values)),
+            Root::Resource{borrow,index}=>Root::Resource{borrow:borrow.substitute_values(values),index:*index},
             root=>root.clone(),
         };
+        if let Root::Resource{borrow,index:Some(index)}|Root::Dataset{borrow,index:Some(index)}=&mut origin.root
+            &&let bounds::Operand::Value(id)=index && values.contains_key(id) {
+            match index.at_call(values){Some(bound)=>*index=bound,None=>*borrow=view::Borrow::source(view::Source::Unresolved)}
+        }
         origin
     }
 
@@ -132,13 +137,13 @@ impl Origin {
     }
     pub fn resources(&self) -> view::Borrow {
         match &self.root {
-            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} | Root::External(Identity::Storage(borrow)) => borrow.resources(),
+            Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} | Root::External(Identity::Storage(borrow)) => borrow.resources(),
             _ => view::Borrow::default(),
         }
     }
     pub fn owners(&self) -> view::Borrow {
         match &self.root {
-            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => borrow.owners(),
+            Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} => borrow.owners(),
             _ => view::Borrow::default(),
         }
     }
@@ -150,7 +155,7 @@ impl Origin {
         }
     }
     pub fn pending(&self) -> bool {
-        matches!(&self.root, Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} if borrow.pending())
+        matches!(&self.root, Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} if borrow.pending())
     }
     pub fn aliases(&self) -> Vec<MemoryAlias> {
         match &self.root {
@@ -165,7 +170,7 @@ impl Origin {
     pub fn memory_positions(&self,path:&bounds::Clause)->Option<Vec<Position>> {
         let borrow=match &self.root {
             Root::External(Identity::Storage(borrow))|Root::Derived(borrow)=>borrow,
-            Root::Resource(borrow)|Root::Dataset{borrow,..}=>return Some(self.words.iter().map(|word|Position::Borrowed(Arc::new(borrow.clone()),self.base.clone(),*word)).collect()),
+            Root::Resource{borrow,..}|Root::Dataset{borrow,..}=>return Some(self.words.iter().map(|word|Position::Borrowed(Arc::new(borrow.clone()),self.base.clone(),*word)).collect()),
             Root::External(_)=>return None,
             _=>return Some(self.positions.to_vec()),
         };
@@ -186,7 +191,7 @@ impl Origin {
     pub fn map_borrows(&self, map: impl Fn(&view::Borrow)->view::Borrow) -> Self {
         let mut value=self.clone();
         match &mut value.root {
-            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} | Root::External(Identity::Storage(borrow)) => *borrow=map(borrow),
+            Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} | Root::External(Identity::Storage(borrow)) => *borrow=map(borrow),
             _=>{}
         }
         value
@@ -194,11 +199,11 @@ impl Origin {
     pub fn bind_outputs(&self, bindings: &BTreeMap<ValueIdentity,ValueIdentity>) -> Self {
         let mut value=self.clone();
         match &mut value.root {
-            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.output_bound(bindings),
+            Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.output_bound(bindings),
             Root::External(identity)=>*identity=identity.output_bound(bindings),
             _ => {}
         }
-        if let Root::Dataset{index:Some(index),..}=&mut value.root {
+        if let Root::Resource{index:Some(index),..}|Root::Dataset{index:Some(index),..}=&mut value.root {
             if let bounds::Operand::Value(id)=index {if let Some(bound)=bindings.get(id){*id=*bound;}}
         }
         value
@@ -212,12 +217,12 @@ impl Origin {
                     .unwrap_or_else(||view::Borrow::source(view::Source::Unresolved));
                 value.root=Root::Derived(borrow);
             }
-            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.at_call(bindings),
+            Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.at_call(bindings),
             Root::External(identity)=>*identity=identity.at_call(bindings),
             _ => return value,
         }
         value.positions=Arc::from([]);
-        if let Root::Dataset{borrow,index:Some(index)}=&mut value.root {
+        if let Root::Resource{borrow,index:Some(index)}|Root::Dataset{borrow,index:Some(index)}=&mut value.root {
             match index.at_call(bindings) {Some(bound)=>*index=bound,None=>*borrow=view::Borrow::source(view::Source::Unresolved)}
         }
         value
@@ -656,12 +661,12 @@ impl Builder<'_> {
         self.positions(place).iter().enumerate().filter_map(|(i,position)|positions.iter().any(|written|
             owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()
     }
-    pub(super) fn write_address_values(&mut self,borrow:&view::Borrow) {
+    pub(super) fn write_address_values(&mut self,borrow:&view::Borrow)->Result<()> {
         let borrow=self.current_address_borrow(borrow);
         match self.address_write_positions(&borrow) {None=>{
         let data=self.env.values().flat_map(Binding::application_resources)
             .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
-        for data in data {self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown);}
+        for data in data {self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown)?;}
         for binding in self.env.values_mut() {
             if let Some((proof,uniform,owner))=binding.proof_storage() {
                 proof.forget_value(&(0..owner.ty().components.len()).collect::<Vec<_>>(),owner.ty().components.len());
@@ -675,12 +680,15 @@ impl Builder<'_> {
             let view::Source::Position(origin)=source else{return None;};
             if !origin.writable{return None;}
             match &origin.root {
-                Root::Resource(resource)|Root::Dataset{borrow:resource,..}=>Some((resource.restricted(&when),origin.words.to_vec())),
-                Root::External(Identity::Storage(resource))=>Some((resource.resources().restricted(&when),resource.sources.iter().filter_map(|source|match source{view::Source::Position(parent)=>Some(parent.words.iter().copied()),_=>None}).flatten().collect())),
+                Root::Resource{borrow:resource,index}|Root::Dataset{borrow:resource,index}=>Some((resource.restricted(&when),origin.words.to_vec(),index.map(|index|{
+                    let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)
+                }))),
+                Root::External(Identity::Storage(resource))=>Some((resource.resources().restricted(&when),resource.sources.iter().filter_map(|source|match source{view::Source::Position(parent)=>Some(parent.words.iter().copied()),_=>None}).flatten().collect(),None)),
                 _=>None,
             }
         }).collect::<Vec<_>>();
-        for(resource,words)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Unknown);}
+        let unknown=bounds::Proof::default();
+        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Element{proof:&unknown,index})?;}
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
             let components=self.address_write_components(&positions,&place);
@@ -695,6 +703,7 @@ impl Builder<'_> {
         }
         }
         }
+        Ok(())
     }
     pub(super) fn position_origin(&self,place:&Place,span:Span)->Result<Origin> {
         let layout=Layout::of(place.ty());
@@ -716,9 +725,9 @@ impl Builder<'_> {
                 let ty=cooperative::parameter_type(self.world,&self.definition.function.params[*parameter],&self.definition)?;
                 base=Layout::of(&ty);words=external::reference_words(place,&self.locals).unwrap();Root::Parameter(*parameter)
             }
-            Place::ApplicationElement{resource,element_layout,words:actual,..}=>{
+            Place::ApplicationElement{resource,element_layout,words:actual,index_value,..}=>{
                 base=element_layout.clone();words=actual.clone();
-                Root::Resource(resource.clone())
+                Root::Resource{borrow:resource.clone(),index:Some(*index_value)}
             },
             Place::Element{binding,..}=>Root::Buffer(*binding),
             Place::ViewElement{source,..}=>{
@@ -728,7 +737,7 @@ impl Builder<'_> {
                         && (0..3).all(|i|proof.known_identity(i)==Some(source[i])) {borrow.union(&proof.typed_view_borrow(ty));}
                 }
                 if borrow.empty(){borrow=view::Borrow::source(view::Source::Unresolved);}
-                Root::Resource(borrow)
+                Root::Resource{borrow,index:None}
             }
             _=>return self.fail(span,"B264","address_of需要CPU普通值的实际连续位置"),
         };
@@ -802,7 +811,7 @@ impl Builder<'_> {
         }
         for binding in self.env.values_mut(){application::each_binding_data(binding,&mut|_,_,data|{
             let source=view::resource_borrow(data);let fields=view::resource_paths(&data.ty);
-            let paths=std::iter::once(None).chain(view_contracts::resource_output_paths(&data.elements).into_iter().map(Some)).collect::<Vec<_>>();
+            let paths=std::iter::once(None).chain(data.elements.known().map(view_contracts::resource_output_paths).into_iter().flatten().map(Some)).collect::<Vec<_>>();
             for path in paths {
                 let(borrow,selected)=match path {
                     None=>(source.clone(),&mut *data),
@@ -810,14 +819,14 @@ impl Builder<'_> {
                         let(root,path)=&resource;
                         let mut borrow=view::Borrow::element(source.clone(),fields[*root].clone(),None);
                         for fields in path{borrow=view::Borrow::element(borrow,fields.clone(),None);}
-                        let Some(selected)=view_contracts::resource_output_mut(&mut data.elements,&resource)else{continue;};(borrow,selected)
+                        let Some(selected)=data.elements.known_mut().and_then(|model|view_contracts::resource_output_mut(model,&resource))else{continue;};(borrow,selected)
                     },
                 };
                 if selected.ownership==application::Ownership::Moved{continue;}
                 selected.prefixes.clear();
                 let layout=Layout::of(&selected.ty);let borrow=Arc::new(borrow);
-                let resources=view::resource_paths(&selected.ty).into_iter().filter(|fields|application::model_data(&selected.elements,fields).is_some()).collect();
-                if let Some(value)=selected.elements.view_value_mut(){
+                let resources=view::resource_paths(&selected.ty).into_iter().filter(|fields|application::model_data(selected.elements.known(),fields).is_some()).collect();
+                if let Some(value)=selected.elements.known_mut().and_then(returns::Returned::view_value_mut){
                     let positions=value.ty.components.iter().enumerate().map(|(component,(_,word))|(component,Position::Borrowed(borrow.clone(),layout.clone(),*word))).collect();
                     value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions,resources);value.constant=None;value.proof=bounds::Proof::capture(value);
                 }
@@ -834,7 +843,7 @@ impl Builder<'_> {
         if written.pending()&&self.address_write_positions(&written).is_none(){
             let snapshots=self.defer_address_values(usage);
             if let view::Requirement::Memory{snapshots:target,..}=&mut self.view_model.uses[usage].requirement{*target=Some(snapshots.into());}
-        }else{self.write_address_values(&written);}
+        }else{self.write_address_values(&written)?;}
         Ok(usage)
     }
     pub(super) fn position_address(&mut self,args:&[Expr],span:Span)->Result<Option<Value>> {

@@ -5,6 +5,17 @@ use sources::{Local, Scope};
 
 type ComponentProjection = (Ty, Vec<Vec<usize>>);
 
+// One original future-write query: resource identity can precede emitted storage.
+struct DataProjection<'a> {
+    data: Option<&'a application::Data>,
+    resource: view::Borrow,
+    base: Ty,
+    access: Access,
+    index: Option<bounds::Operand>,
+    value: ComponentProjection,
+}
+
+
 enum Write<'e> {
     Position {
         place: &'e Expr,
@@ -254,41 +265,35 @@ impl Builder<'_> {
     ) -> Result<()> {
         for write in writes {
             let changed=match write {
-                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{self.write_address_values(borrow);continue;},
+                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{self.write_address_values(borrow)?;continue;},
                 Write::External{..}|Write::Generator(_)|Write::Memory{..}=>{
                     let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
                         data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
                     )).collect::<Vec<_>>();
-                    for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
+                    for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown)?;}
                     continue;
                 },
                 Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|(data,offset,ty)|(
-                    data.root.identity(),view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>()
+                    vec![data.root.identity()],view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>(),None
                 )),
-                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,&|index|self.constant_index(index,writes))?.map(|(data,_,(_,components))|(
-                    data.root.identity(),view::resource_borrow(data),components.into_iter().flatten().map(|i|data.ty.components[i].1).collect::<Vec<_>>()
+                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))?.map(|projection|(
+                    projection.data.map(|data|data.root.identity()).into_iter().collect::<Vec<_>>(),projection.resource,
+                    projection.value.1.into_iter().flatten().map(|i|projection.base.components[i].1).collect::<Vec<_>>(),
+                    projection.index.map(|index|{let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)})
                 )),
             };
-            if let Some((source,resource,words))=changed{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown);}
+            if let Some((sources,resource,words,index))=changed{self.update_application_elements(&sources,&resource,&words,application::ElementUpdate::Element{proof:&bounds::Proof::default(),index})?;}
         }
-        let resources: Vec<_> = self
-            .env
-            .iter()
-            .filter_map(|(name, binding)| {
-                let Binding::ApplicationData(data) = binding else {
-                    return None;
-                };
-                (borrowed_data != Some(data.root.identity())
-                    && !data
-                        .root
-                        .proof
-                        .known_identity(0)
-                        .is_some_and(|id| self.application_borrowed(id))
-                    && writes.iter().any(|write| matches!(write,
-                        Write::Position{contents:false,place,..} if matches!(&place.kind, ExprKind::Name(target) if target == name))))
-                .then(|| name.clone())
-            })
-            .collect();
+        let mut resources = Vec::new();
+        for (name,binding) in &self.env {
+            let Binding::ApplicationData(data) = binding else { continue; };
+            if borrowed_data == Some(data.root.identity()) { continue; }
+            if let Some(id) = data.root.proof.known_identity(0) && self.application_borrowed(id)? { continue; }
+            if writes.iter().any(|write| matches!(write,
+                Write::Position{contents:false,place,..} if matches!(&place.kind, ExprKind::Name(target) if target == name))) {
+                resources.push(name.clone());
+            }
+        }
         for name in resources {
             if let Some(Binding::ApplicationData(data)) = self.env.get_mut(&name) {
                 data.root.proof.forget_value(&[0],data.root.ty.components.len());
@@ -366,35 +371,52 @@ impl Builder<'_> {
         Ok(())
     }
     fn loop_write_projection<'a>(
-        &'a self,expr:&Expr,known_index:&impl Fn(&Expr)->Result<Option<u32>>,
-    )->Result<Option<(&'a application::Data,Option<u32>,ComponentProjection)>> {
+        &'a self,expr:&Expr,known_index:&impl Fn(&Expr)->Result<Option<bounds::Operand>>,
+    )->Result<Option<DataProjection<'a>>> {
         match &expr.kind {
             ExprKind::Name(name)=>{
                 let Some(Binding::Owned(owner))=self.env.get(name)else{return Ok(None);};
-                let Place::ApplicationElement{identity,words,index_range,..}=&owner.place else{return Ok(None);};
+                let Place::ApplicationElement{identity,words,index_value,..}=&owner.place else{return Ok(None);};
                 let Some(data)=self.env.values().flat_map(Binding::application_resources)
                     .find(|data|data.root.identity()==*identity)else{return Ok(None);};
                 let components=words.iter().map(|word|data.ty.components.iter().enumerate()
                     .filter_map(|(i,(_,offset))|(word==offset).then_some(i)).collect()).collect();
-                let index=(index_range.0==index_range.1).then_some(index_range.0);
-                Ok(Some((data,index,(owner.place.ty().clone(),components))))
+                let index=Some(*index_value);
+                Ok(Some(DataProjection{data:Some(data),resource:view::resource_borrow(data),base:data.ty.clone(),access:data.access,index,value:(owner.place.ty().clone(),components)}))
             },
             ExprKind::Index(base,index)=>{
                 if let Some((data,offset,ty))=self.written_application_data(base) {
                     let components=ty.components.iter().map(|(scalar,word)|vec![data.ty.components.iter().position(|part|part==&(*scalar,offset+word)).unwrap()]).collect();
-                    return Ok(Some((data,known_index(index)?,(ty.clone(),components))));
+                    return Ok(Some(DataProjection{data:Some(data),resource:view::resource_borrow(data),base:data.ty.clone(),access:data.access,index:known_index(index)?,value:(ty.clone(),components)}));
                 }
-                let Some((data,at,(ty,components)))=self.loop_write_projection(base,known_index)? else{return Ok(None);};
-                let Some(element)=&ty.array else{return Ok(None);};
-                let constant=known_index(index)?;let width=element.components.len();
-                let elements=(0..ty.values[0] as usize).filter(|i|constant.is_none_or(|value|*i==value as usize)).collect::<Vec<_>>();
-                let selected=(0..width).map(|component|elements.iter().flat_map(|i|components[*i*width+component].iter().copied()).collect()).collect();
-                Ok(Some((data,at,((**element).clone(),selected))))
+                let Some(mut projection)=self.loop_write_projection(base,known_index)? else{return Ok(None);};
+                let (ty,components)=projection.value;
+                if let Some(element)=&ty.dataset {
+                    let mut resource=view::Borrow::default();
+                    for fields in view::resource_paths(&projection.base) {
+                        let (mut offset,mut field)=(0,&projection.base);
+                        for at in &fields{let(word,next)=field.aggregate_part(*at);offset+=word;field=next;}
+                        if field.components.iter().zip(&components).all(|((scalar,word),parts)|parts.iter().any(|i|projection.base.components[*i]==(*scalar,offset+word))) {
+                            resource.union(&view::Borrow::element(projection.resource.clone(),fields,projection.index));
+                        }
+                    }
+                    let element=self.world.ty(element,&self.definition.source,expr.span,&self.definition.module,&self.definition.imports)?;
+                    let components=(0..element.components.len()).map(|i|vec![i]).collect();
+                    projection.data=None;projection.resource=resource;projection.base=element.clone();projection.index=known_index(index)?;projection.value=(element,components);
+                } else {
+                    let Some(element)=&ty.array else{return Ok(None);};
+                    let constant=match known_index(index)?{Some(bounds::Operand::Constant(Scalar::U32,value))=>Some(value as u32),_=>None};let width=element.components.len();
+                    let elements=(0..ty.values[0] as usize).filter(|i|constant.is_none_or(|value|*i==value as usize)).collect::<Vec<_>>();
+                    let selected=(0..width).map(|component|elements.iter().flat_map(|i|components[*i*width+component].iter().copied()).collect()).collect();
+                    projection.value=((**element).clone(),selected);
+                }
+                Ok(Some(projection))
             },
             ExprKind::Member(base,field)=>{
-                let Some((data,at,(ty,components)))=self.loop_write_projection(base,known_index)? else{return Ok(None);};
-                let(ty,selected)=member_type(&ty,field,&self.definition.source,expr.span)?;
-                Ok(Some((data,at,(ty,selected.iter().map(|i|components[*i].clone()).collect()))))
+                let Some(mut projection)=self.loop_write_projection(base,known_index)? else{return Ok(None);};
+                let(ty,selected)=member_type(&projection.value.0,field,&self.definition.source,expr.span)?;
+                projection.value=(ty,selected.iter().map(|i|projection.value.1[*i].clone()).collect());
+                Ok(Some(projection))
             },
             _=>Ok(None),
         }
@@ -466,10 +488,11 @@ impl Builder<'_> {
                         }else{effect.unknown_storage=true;}
                         continue;
                     }
-                    if let Some((data,index,(_,components)))=self.loop_write_projection(place,&|index|self.constant_index(index,writes))? {
-                        let root=data.root.regs[0];
-                        if let (Some(index),application::DataLayout::Declared)=(index,&data.layout) {
-                            let base=u128::from(index)*u128::from(ir::align_up(data.ty.size,data.ty.align));
+                    if let Some(projection)=self.loop_write_projection(place,&|index|Ok(self.constant_index(index,writes)?.map(|index|bounds::Operand::Constant(Scalar::U32,Bits::from(index)))))? {
+                        let Some(data)=projection.data else{effect.unknown_storage=true;continue;};
+                        let root=data.root.regs[0];let components=projection.value.1;
+                        if let (Some(bounds::Operand::Constant(Scalar::U32,index)),application::DataLayout::Declared)=(projection.index,&data.layout) {
+                            let base=u128::from(index as u32)*u128::from(ir::align_up(data.ty.size,data.ty.align));
                             for component in components.into_iter().flatten() {
                                 let(scalar,word)=data.ty.components[component];let start=base+u128::from(word);
                                 effect.storage.push((root,Some(start..start+u128::from(scalar.size()))));
@@ -557,16 +580,18 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         let known_index=|index:&Expr| {
             if let ExprKind::Name(name)=&index.kind
                 &&(self.bindings[..limit].iter().any(|(bound,_)|*bound==name)||!matches!(builder.env.get(name),Some(Binding::Value(_)))) {return Ok(None);}
-            builder.constant_index(index,&[])
+            if let Some(index)=builder.constant_index(index,&[])?{return Ok(Some(bounds::Operand::Constant(Scalar::U32,Bits::from(index))));}
+            Ok(match &index.kind{ExprKind::Name(name)=>match builder.env.get(name){Some(Binding::Value(value))if value.ty==Ty::scalar(Scalar::U32)=>Some(bounds::Operand::of(value,0)),_=>None},_=>None})
         };
         if matches!(binding,Binding::ApplicationData(_)|Binding::DataReference(_)|Binding::OwnedValue(_))
-            && let Some((data,_,(ty,parts)))=builder.loop_write_projection(expr,&known_index)? {
+            && let Some(projection)=builder.loop_write_projection(expr,&known_index)? {
+            let(ty,parts)=projection.value;
             let mut borrow=view::Borrow::default();
             for choice in 0..parts.first().map_or(0,Vec::len) {
                 let origin=address::Origin {
-                    root:address::Root::Resource(view::resource_borrow(data)),base:address::Layout::of(&data.ty),layout:address::Layout::of(&ty),
-                    words:parts.iter().map(|part|data.ty.components[part[choice]].1).collect(),positions:Arc::from([]),
-                    writable:matches!(data.access,Access::Write|Access::InOut),initialized:vec![false;ty.components.len()].into(),
+                    root:address::Root::Resource{borrow:projection.resource.clone(),index:projection.index},base:address::Layout::of(&projection.base),layout:address::Layout::of(&ty),
+                    words:parts.iter().map(|part|projection.base.components[part[choice]].1).collect(),positions:Arc::from([]),
+                    writable:projection.access.writes(),initialized:vec![false;ty.components.len()].into(),
                 };
                 borrow.union(&origin.normalize());
             }
@@ -586,7 +611,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             Binding::OwnedValue(owner)=>(owner.value.ty.clone(),bounds::Proof::default().with_external_borrows(&owner.value.ty),owner.place()),
             _=>return Ok(None),
         };
-        let Some((selected,parts))=builder.component_projection(expr,name,&ty,owner.as_ref(),None,&known_index)?else{return Ok(None);};
+        let Some((selected,parts))=builder.component_projection(expr,name,&ty,owner.as_ref(),None,&|index|Ok(match known_index(index)?{Some(bounds::Operand::Constant(Scalar::U32,value))=>Some(value as u32),_=>None}))?else{return Ok(None);};
         let mut value=None::<bounds::Proof>;let mut borrow=view::Borrow::default();
         for choice in 0..parts.first().map_or(0,Vec::len) {
             let indices=parts.iter().map(|part|part[choice]).collect::<Vec<_>>();
@@ -906,8 +931,7 @@ pub(super) fn modified_owners(
 
 
 // 同一位置写效果：位移、独立赋值，以及由同一c-x和恒等组成的有限反向关系。
-#[derive(Clone, Copy)]
-enum NumericPlace<'a> { Stored(&'a Place, usize), Length }
+enum LoopPlace { Stored(Place, usize), Length, Element(DataProjection<'static>, usize) }
 
 #[derive(Clone)]
 enum NumericEffect {
@@ -948,17 +972,163 @@ fn join_numeric_paths(a: Option<NumericEffect>, b: Option<NumericEffect>) -> Opt
     match (a,b) { (Some(a),Some(b))=>Some(a.join(b)), (a,None)|(None,a)=>a }
 }
 impl Builder<'_> {
-    fn numeric_write(&self, write: &Write<'_>, name: &str, target: NumericPlace<'_>, writes: &[Write<'_>]) -> Result<bool> {
-        let NumericPlace::Stored(owner,component)=target else {
+    fn loop_index_operand(&self,index:&Expr,writes:&[Write<'_>])->Result<Option<bounds::Operand>> {
+        Ok(match &index.kind {
+            ExprKind::Name(name)=>match self.env.get(name){
+                Some(Binding::Value(value))if value.ty==Ty::scalar(Scalar::U32)=>Some(bounds::Operand::of(value,0)),
+                _=>self.constant_index(index,writes)?.map(|value|bounds::Operand::Constant(Scalar::U32,Bits::from(value))),
+            },
+            ExprKind::StaticU32(_)|ExprKind::Number(_)=>self.constant_index(index,writes)?.map(|value|bounds::Operand::Constant(Scalar::U32,Bits::from(value))),
+            _=>None,
+        })
+    }
+    fn loop_element_proof(&mut self,target:&DataProjection<'_>,component:usize,environment:&BTreeMap<String,Binding>,path:&bounds::Clause)->Result<bounds::Proof> {
+        let mut result:Option<bounds::Proof>=None;
+        for binding in environment.values(){for original in binding.application_resources(){
+            for(scope,complete,parents)in self.application_element_scopes(&[],&target.resource,original,(path,environment)){
+                let mut data=original.clone();let mut available=true;
+                for fields in scope {
+                    let model=self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?;
+                    let Some(next)=application::model_data(Some(&model),&fields)else{available=false;break;};data=next.clone();
+                }
+                let proof=if available&&complete&&data.ty==target.base {
+                    let model=self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?;
+                    let value=self.returned_storage(&model);let mut value=self.value_component(&value,component);
+                    let selected=parents.scope_element_indices(1).logical(target.index.map(|index|bounds::Condition::element_index(0,index)).unwrap_or_else(||bounds::Condition::constant(true)),false);
+                    let active=selected.assume(path,true);
+                    value.proof=bounds::Proof::returning(&value,environment,&active);
+                    if bounds::Condition::nonzero_value(&value).truth_in(&bounds::Clause::default())==Some(true){value.proof.mark_nonzero(0);}
+                    value.proof=bounds::scoped_proof(&value.ty,value.proof,&active,environment);
+                    bounds::Proof::capture(&value)
+                }else{bounds::Proof::default()};
+                if let Some(previous)=&mut result{previous.join(&proof,1,None);}else{result=Some(proof);}
+            }
+        }}
+        Ok(result.unwrap_or_default())
+    }
+    fn retain_loop_element(&mut self,target:&DataProjection<'_>,component:usize,when:&bounds::Condition,environment:&mut BTreeMap<String,Binding>,context:(&bounds::Clause,&BTreeMap<String,Binding>),update:&impl Fn(&Value)->bounds::Proof)->Result<()> {
+        for name in environment.keys().cloned().collect::<Vec<_>>(){
+            let mut binding=environment[&name].clone();
+            for at in 0..application::binding_element_count(&binding){
+                let Some(root)=application::binding_element_data_mut(&mut binding,at)else{continue;};
+                for(scope,complete,parents)in self.application_element_scopes(&[],&target.resource,root,context){
+                    if !complete{continue;}
+                    let selected=parents.scope_element_indices(1).logical(target.index.map(|index|bounds::Condition::element_index(0,index)).unwrap_or_else(||bounds::Condition::constant(true)),false).logical(when.clone(),false);
+                    let mut data=Some(&mut *root);
+                    for fields in scope{data=match data{Some(data)=>{self.expand_current_element_facts(data)?;application::model_data_mut(data.elements.known_mut(),&fields)},None=>None};}
+                    let Some(data)=data else{continue;};
+                    if data.ty!=target.base{continue;}
+                    self.expand_current_element_facts(data)?;
+                    if let Some(value)=data.elements.known_mut().and_then(returns::Returned::view_value_mut){
+                        let previous=self.value_component(value,component);
+                        let mut next=update(&previous);next.join_condition(&bounds::Proof::capture(&previous),1,Some(&selected));value.proof.assign(&[component],value.regs.len(),next);
+                    }
+                }
+            }
+            environment.insert(name,binding);
+        }
+        Ok(())
+    }
+    fn numeric_write(&self, write: &Write<'_>, name: &str, target: &LoopPlace, writes: &[Write<'_>]) -> Result<bool> {
+        if let LoopPlace::Element(target,component)=target {
+            fn overlaps(a:&view::Borrow,b:&view::Borrow,path:&bounds::Clause)->bool {
+                a.unresolved()||b.unresolved()
+                    ||a.sources.entries().any(|(source,when)|b.overlaps_source(source,&bounds::Clause::both(path,&when)))
+                    ||a.inputs.entries().any(|(input,when)|bounds::Clause::both(path,&when).overlaps(&b.inputs.when(input)))
+                    ||a.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&b.calls.when(call)))
+            }
+            fn ancestors(resource:&view::Borrow,write:&DataProjection<'_>,path:&bounds::Clause)->bool {
+                resource.sources.entries().any(|(source,when)|{
+                    let active=bounds::Clause::both(path,&when);
+                    match source {
+                        view::Source::Element{parent,fields,index}=>{
+                            if overlaps(parent,&write.resource,&active)&&index.zip(write.index).is_none_or(|(a,b)|bounds::Condition::index_equal(a,b).assume(&active,true).possible()){
+                                let(mut offset,mut ty)=(0,&write.base);
+                                for field in fields {let(word,next)=ty.aggregate_part(*field);offset+=word;ty=next;}
+                                if write.value.1.iter().flatten().any(|part|{let(scalar,word)=write.base.components[*part];word<offset+ty.size&&offset<word+scalar.size()}){return true;}
+                            }
+                            ancestors(parent,write,&active)
+                        },
+                        view::Source::Projection{parent,..}=>overlaps(parent,&write.resource,&active)||ancestors(parent,write,&active),
+                        _=>false,
+                    }
+                })
+            }
+            if let Write::Memory{borrow,..}=write {
+                if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||borrow.unresolved()||target.resource.unresolved(){return Ok(true);}
+                let(scalar,word)=target.base.components[*component];
+                for(source,when)in borrow.sources.entries(){
+                    let active=bounds::Clause::both(&self.path,&when);if !active.possible(){continue;}
+                    let view::Source::Position(origin)=source else{if matches!(source,view::Source::Inactive){continue;}return Ok(true);};
+                    if !origin.writable{continue;}
+                    match &origin.root {
+                        address::Root::Resource{borrow,index}|address::Root::Dataset{borrow,index}
+                            if origin.base==address::Layout::of(&target.base)
+                                &&borrow.restricted(&active)==target.resource.restricted(&active)=>{
+                            if target.index.zip(*index).is_some_and(|(a,b)|!bounds::Condition::index_equal(a,b).assume(&active,true).possible()){continue;}
+                            if origin.layout.parts.iter().zip(origin.words.iter()).any(|((written,_),at)|word<*at+written.size()&&*at<word+scalar.size()){return Ok(true);}
+                        },
+                        address::Root::Local{..}=>{
+                            let Some(positions)=origin.memory_positions(&active)else{return Ok(true);};
+                            let mut matched=false;
+                            for binding in self.env.values(){for(path,data,_)in view::data_paths(binding){
+                                if self.application_element_scopes(&[],&target.resource,data,(&active,&self.env)).is_empty(){continue;}
+                                if data.ownership!=application::Ownership::Owned{return Ok(true);}
+                                let descriptor=match binding{Binding::ApplicationData(data)=>data.place.clone(),_=>binding.stored_place()};
+                                if let Some(mut descriptor)=descriptor{
+                                    for field in path{
+                                        if descriptor.ty().has_variants(){return Ok(true);}
+                                        let(offset,ty)=descriptor.ty().aggregate_part(field);
+                                        let components=ty.components.iter().map(|(_,at)|descriptor.ty().components.iter().position(|(_,word)|*word==offset+at).unwrap()).collect::<Vec<_>>();
+                                        let ty=ty.clone();descriptor=descriptor.project(ty,&components);
+                                    }
+                                    if !self.address_write_components(&positions,&descriptor).is_empty(){return Ok(true);}
+                                }
+                                // Register descriptors have no local slots for this address to write.
+                                matched=true;
+                            }}
+                            if !matched{return Ok(true);}
+                        },
+                        _=>return Ok(true),
+                    }
+                }
+                return Ok(false);
+            }
+            let Write::Position{place,contents,iterator,..}=write else{return Ok(true);};
+            if address_write(place)||iterator.is_some(){return Ok(true);}
+            if *contents{return Ok(self.written_application_data(place).is_none_or(|(data,..)|overlaps(&target.resource.owners(),&view::resource_borrow(data),&self.path)));}
+            if let Some(written)=self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))? {
+                if ancestors(&target.resource,&written,&self.path){return Ok(true);}
+                if !overlaps(&target.resource,&written.resource,&self.path){return Ok(false);}
+                if target.index.zip(written.index).is_some_and(|(a,b)|!bounds::Condition::index_equal(a,b).assume(&self.path,true).possible()){return Ok(false);}
+                if target.base!=written.base{return Ok(true);}
+                let(scalar,word)=target.base.components[*component];
+                return Ok(written.value.1.iter().flatten().any(|part|{let(other,at)=written.base.components[*part];word<at+other.size()&&at<word+scalar.size()}));
+            }
+            let Some(root)=assigned_root(place)else{return Ok(true);};let Some(binding)=self.env.get(root)else{return Ok(true);};let Some(owner)=binding.stored_place()else{return Ok(true);};
+            let Some((_,parts))=self.written_projection(place,root,&owner,None,writes)?else{return Ok(true);};
+            for data in binding.application_resources(){
+                if !self.application_element_scopes(&[],&target.resource,data,(&self.path,&self.env)).is_empty()
+                    && let Some(descriptor)=&data.place {
+                    let changed=self.address_write_components(&self.positions(descriptor),&owner);
+                    if parts.iter().flatten().any(|component|changed.contains(component)){return Ok(true);}
+                }
+            }
+            let(scalar,word)=target.base.components[*component];let origin=address::Origin{root:address::Root::Resource{borrow:target.resource.clone(),index:target.index},layout:address::Layout{size:scalar.size(),align:scalar.size(),parts:vec![(scalar,0)].into()},base:address::Layout::of(&target.base),words:vec![word].into(),positions:Arc::from([]),writable:true,initialized:vec![false].into()};
+            let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin)));let changed=self.loop_memory_components(&borrow,&owner);
+            return Ok(parts.iter().flatten().any(|component|changed.contains(component)));
+        }
+        let LoopPlace::Stored(owner,component)=target else {
             return Ok(matches!(write,Write::Position{contents:false,place,..}if matches!(&place.kind,ExprKind::Name(bound)if bound==name)));
         };
+        let component=*component;
         if let Write::Memory{borrow,..}=write{return Ok(self.loop_memory_components(borrow,owner).contains(&component));}
         let Write::Position{place,contents,iterator,..}=write else{return Ok(true);};
         let projection = if *contents { self.application_write_projection(place, owner) }
             else { self.written_projection(place, name, owner, *iterator, writes)? };
         Ok(projection.is_some_and(|(_,parts)|parts.iter().any(|part|part.contains(&component))))
     }
-    fn numeric_expression_effect(&self, expr: &Expr, name: &str, target: NumericPlace<'_>, writes: &[Write<'_>]) -> Result<NumericEffect> {
+    fn numeric_expression_effect(&self, expr: &Expr, name: &str, target: &LoopPlace, writes: &[Write<'_>]) -> Result<NumericEffect> {
         for write in writes.iter().filter(|write|match write {
             Write::External{call,..}|Write::Memory{call,..}|Write::Generator(call)=>contains_expression(expr,call),
             Write::Position{call,..}=>call.is_some_and(|call|contains_expression(expr,call)),
@@ -973,7 +1143,7 @@ impl Builder<'_> {
             match self.env.get(source) {
                 Some(Binding::Value(value)) if value.ty==Ty::scalar(Scalar::U32)=>bounds::Proof::capture(value),
                 Some(Binding::Owned(value)) if value.place.ty()==&Ty::scalar(Scalar::U32)=>{
-                    for write in writes {if self.numeric_write(write,source,NumericPlace::Stored(&value.place,0),writes)? {return Ok(NumericEffect::Unknown);}}
+                    for write in writes {if self.numeric_write(write,source,&LoopPlace::Stored(value.place.clone(),0),writes)? {return Ok(NumericEffect::Unknown);}}
                     value.proof.clone()
                 },
                 _=>return Ok(NumericEffect::Unknown),
@@ -981,8 +1151,14 @@ impl Builder<'_> {
         } else {return Ok(NumericEffect::Unknown);};
         Ok(NumericEffect::Assign(value))
     }
-    fn numeric_assignment_effect(&self, lhs: &Expr, op: &str, rhs: &Expr, name: &str, target: NumericPlace<'_>, writes: &[Write<'_>], absolute: bool, scope:&Scope<'_, '_, '_>) -> Result<NumericEffect> {
-        let NumericPlace::Stored(owner,component)=target else {
+    fn numeric_assignment_effect(&self, lhs: &Expr, op: &str, rhs: &Expr, name: &str, target: &LoopPlace, writes: &[Write<'_>], absolute: bool, scope:&Scope<'_, '_, '_>) -> Result<NumericEffect> {
+        if let LoopPlace::Element(_,_) = target {
+            if let Some(root)=assigned_root(lhs)&&let Some((_,local))=scope.bindings.iter().rev().find(|(name,_)|*name==root){
+                if matches!(local,Local::Typed(_)|Local::Inferred(_)|Local::Range|Local::Payload(..))&&scope.named(root,lhs.span)?.is_some_and(|ty|ty.is_numeric()||ty.is_c_function()){return Ok(NumericEffect::shift(0));}
+                return Ok(NumericEffect::Unknown);
+            }
+        }
+        if matches!(target,LoopPlace::Length) {
             if !matches!(&lhs.kind,ExprKind::Name(bound)if bound==name) || scope.bindings.iter().any(|(bound,_)|*bound==name) {return Ok(NumericEffect::shift(0));}
             if op!="=" {return Ok(NumericEffect::Unknown);}
             let length=match &rhs.kind {
@@ -994,13 +1170,29 @@ impl Builder<'_> {
             if matches!(&length.kind,ExprKind::Name(source)if scope.bindings.iter().any(|(bound,_)|bound==source)) {return Ok(NumericEffect::Unknown);}
             return self.numeric_assigned_value(length,writes,absolute);
         };
-        let Some((ty,parts))=self.written_projection(lhs,name,owner,None,writes)? else { return Ok(NumericEffect::shift(0)); };
+        let (ty,parts,component)=match target {
+            LoopPlace::Stored(owner,component)=>{
+                let Some((ty,parts))=self.written_projection(lhs,name,owner,None,writes)?else{return Ok(NumericEffect::shift(0));};(ty,parts,*component)
+            },
+            LoopPlace::Element(expected,component)=>{
+                let written=Write::Position{place:lhs,call:None,contents:false,iterator:None};
+                if !self.numeric_write(&written,name,target,writes)?{return Ok(NumericEffect::shift(0));}
+                let Some(actual)=self.loop_write_projection(lhs,&|index|self.loop_index_operand(index,writes))?else{return Ok(NumericEffect::Unknown);};
+                if expected.base!=actual.base||expected.resource.restricted(&self.path)!=actual.resource.restricted(&self.path)||!expected.index.zip(actual.index).is_some_and(|(a,b)|bounds::Condition::index_equal(a,b).truth_in(&self.path)==Some(true)){return Ok(NumericEffect::Unknown);}
+                (actual.value.0,actual.value.1,*component)
+            },
+            LoopPlace::Length=>return Ok(NumericEffect::Unknown),
+        };
         if !parts.iter().any(|part|part.contains(&component)) { return Ok(NumericEffect::shift(0)); }
         // 未知地址可能写此分量；单个候选分量不表示该次写必然选中了它。
         if address_write(lhs){return Ok(NumericEffect::Unknown);}
         // 动态候选位置不被当作同一实际分量。
         if parts.iter().any(|part|part.contains(&component)&&part.len()!=1) { return Ok(NumericEffect::Unknown); }
-        let relative=|base:&Expr|->Result<bool>{Ok(self.written_projection(base,name,owner,None,writes)?.is_some_and(|(source,selected)|source==ty&&selected==parts))};
+        let relative=|base:&Expr|->Result<bool>{Ok(match target{
+            LoopPlace::Stored(owner,_)=>self.written_projection(base,name,owner,None,writes)?.is_some_and(|(source,selected)|source==ty&&selected==parts),
+            LoopPlace::Element(expected,_)=>self.loop_write_projection(base,&|index|self.loop_index_operand(index,writes))?.is_some_and(|actual|actual.base==expected.base&&actual.resource.restricted(&self.path)==expected.resource.restricted(&self.path)&&actual.index.zip(expected.index).is_some_and(|(a,b)|bounds::Condition::index_equal(a,b).truth_in(&self.path)==Some(true))&&actual.value.0==ty&&actual.value.1==parts),
+            LoopPlace::Length=>false,
+        })};
         let (sign,amount)=match op {
             "+=" => (1,self.constant_index(rhs,writes)?),
             "-=" => (-1,self.constant_index(rhs,writes)?),
@@ -1018,7 +1210,7 @@ impl Builder<'_> {
         };
         Ok(amount.map(|amount|NumericEffect::shift(i128::from(amount)*sign)).unwrap_or(NumericEffect::Unknown))
     }
-    fn numeric_loop_paths<'e>(&self, body:&'e [Stmt], mut next:Option<NumericEffect>, continues:&mut Option<NumericEffect>, name:&str, target:NumericPlace<'_>, writes:&[Write<'_>], absolute:bool, scope:&mut Scope<'_, '_, 'e>)->Result<Option<NumericEffect>> {
+    fn numeric_loop_paths<'e>(&self, body:&'e [Stmt], mut next:Option<NumericEffect>, continues:&mut Option<NumericEffect>, name:&str, target:&LoopPlace, writes:&[Write<'_>], absolute:bool, scope:&mut Scope<'_, '_, 'e>)->Result<Option<NumericEffect>> {
         let outer = scope.bindings.len();
         for statement in body {
             let Some(before)=next.take() else { break; };
@@ -1073,65 +1265,75 @@ impl Builder<'_> {
     }
     pub(super) fn retain_loop_bounds(&mut self, condition:Option<&Expr>, body:&[Stmt], initial:&BTreeMap<String,Binding>, header:&mut BTreeMap<String,Binding>)->Result<()> {
         let mut writes=Vec::new();statement_writes(self,body,&mut|write|writes.push(write))?;if let Some(condition)=condition {expression_writes(self,condition,&mut|write|writes.push(write))?;}
+        let places=writes.iter().filter_map(|write|match write{Write::Position{place,contents:false,iterator:None,..}=>Some(*place),_=>None}).collect::<Vec<_>>();
         let writes=self.normalize_writes(writes)?;
-        let mut retained=Vec::new();
-        for (name,binding) in initial {
-            let length;
-            let (owner,proof)=match binding {
-                Binding::Owned(owner)=>(Some(owner.place.clone()),&owner.proof),
-                Binding::OwnedValue(owner)=>{let Some(place)=owner.place()else{continue};(Some(place),&owner.value.proof)},
-                Binding::ApplicationData(data)=>{length=bounds::Proof::capture(&data.length);(None,&length)},
-                _=>continue,
-            };
-            // 存储分量与dataset长度共用数值效果；长度不保留旧资源身份或固定类型count。
-            let components=match &owner {
-                Some(owner) if matches!(owner.storage(),Place::Local(..)|Place::Reference{..})=>owner.ty().components.as_slice(),
-                Some(_)=>continue,
-                None=>&[(Scalar::U32,0)],
-            };
-            for (component,(scalar,_)) in components.iter().enumerate() {
-                let target=match &owner{Some(owner)=>NumericPlace::Stored(owner,component),None=>NumericPlace::Length};
-                if *scalar!=Scalar::U32 {continue;}
-                let mut written=false;for write in &writes {if self.numeric_write(write,name,target,&writes)? {written=true;break;}}
-                if !written {continue;}
-                if let Some(condition)=condition && matches!(self.numeric_expression_effect(condition,name,target,&writes)?,NumericEffect::Unknown) {continue;}
-                let mut input=proof.project(&[component],components.len());
-                if let Some(identity)=input.known_identity(0) {
-                    let mut domains=input.domains(0);domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);
-                }
-                let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,name,target,&writes,!bounds::seeks(body),&mut Scope::current(self))?;
-                let (lower,upper,least,most)=match join_numeric_paths(next,continues) {
-                    None=>(true,true,0,0),
-                    Some(NumericEffect::Shift{low,high,least,most})=>(low>=0,high<=0,least,most),
-                    Some(NumericEffect::Reflect(amount))=>{
-                        let reflected=input.unsigned_reflected(amount);
-                        let mut invariant=input;invariant.join(&reflected,1,None);
-                        retained.push((name.clone(),owner.as_ref().map(|_|component),invariant,true,true));
-                        continue;
-                    },
-                    Some(NumericEffect::Assign(repeated))=>{
-                        let mut invariant=input;invariant.join(&repeated,1,None);
-                        retained.push((name.clone(),owner.as_ref().map(|_|component),invariant,true,true));
-                        continue;
-                    },
-                    Some(NumericEffect::Unknown)=>continue,
-                };
-                if !lower&&!upper {continue;}
-                let guard=match self.env.get(name) {Some(Binding::Owned(value))=>&value.proof,Some(Binding::OwnedValue(value))=>&value.value.proof,Some(Binding::ApplicationData(data))=>&data.length.proof,_=>continue};
-                let low=guard.unsigned_minimum(component).max(if lower{proof.unsigned_minimum(component)}else{0});
-                let high=guard.unsigned_maximum(component).min(if upper{proof.unsigned_maximum(component)}else{u32::MAX});
-                if i128::from(low)+least<0||i128::from(high)+most>i128::from(u32::MAX) {continue;}
-                retained.push((name.clone(),owner.as_ref().map(|_|component),input,lower,upper));
+        let mut elements=Vec::<DataProjection<'static>>::new();
+        for place in places{
+            if let Some(projection)=self.loop_write_projection(place,&|index|self.loop_index_operand(index,&writes))?{
+                elements.push(DataProjection{data:None,resource:projection.resource,base:projection.base,access:projection.access,index:projection.index,value:projection.value});
             }
         }
-        for (name,component,proof,lower,upper) in retained {
-            for environment in [&mut self.env,&mut *header] {
-                let Some(binding)=environment.get_mut(&name)else{continue;};
-                match component {
-                    Some(component)=>{if let Some((current,_,_))=binding.proof_storage(){current.retain_loop_bounds(&proof,component,lower,upper);}},
-                    None=>{if let Binding::ApplicationData(data)=binding{data.length.proof.retain_loop_bounds(&proof,0,lower,upper);}},
-                }
+        let context=self.loop_contexts.last().unwrap();let entry_path=context.entry.path.clone();
+        let empty=context.control_source.test.as_ref().unwrap().at_call(&context.control_source.bindings(&context.entry)).negate();
+        let mut candidates=Vec::new();
+        for(name,binding)in initial {
+            let length;let(owner,proof)=match binding {
+                Binding::Owned(owner)=>(Some(owner.place.clone()),&owner.proof),
+                Binding::OwnedValue(owner)=>{let Some(place)=owner.place()else{continue};(Some(place),&owner.value.proof)},
+                Binding::ApplicationData(data)=>{length=bounds::Proof::capture(&data.length);(None,&length)},_=>continue,
+            };
+            let components=match &owner{Some(owner)if matches!(owner.storage(),Place::Local(..)|Place::Reference{..})=>owner.ty().components.as_slice(),Some(_)=>continue,None=>&[(Scalar::U32,0)]};
+            let guard=match self.env.get(name){Some(Binding::Owned(value))=>&value.proof,Some(Binding::OwnedValue(value))=>&value.value.proof,Some(Binding::ApplicationData(data))=>&data.length.proof,_=>continue};
+            for(component,(scalar,_))in components.iter().enumerate(){if *scalar==Scalar::U32{
+                let target=match &owner{Some(owner)=>LoopPlace::Stored(owner.clone(),component),None=>LoopPlace::Length};
+                candidates.push((name.clone(),target,proof.project(&[component],components.len()),guard.project(&[component],components.len())));
+            }}
+        }
+        for projection in elements {
+            for component in projection.value.1.iter().flatten().copied().collect::<BTreeSet<_>>(){
+                if candidates.iter().any(|(_,target,_,_)|matches!(target,LoopPlace::Element(other,at)if *at==component&&other.base==projection.base&&other.resource==projection.resource&&other.index==projection.index)){continue;}
+                let input=self.loop_element_proof(&projection,component,initial,&entry_path)?;
+                let guard=self.loop_element_proof(&projection,component,header,&self.path.clone())?;
+                let selected=DataProjection{data:None,resource:projection.resource.clone(),base:projection.base.clone(),access:projection.access,index:projection.index,value:projection.value.clone()};
+                candidates.push((String::new(),LoopPlace::Element(selected,component),input,guard));
             }
+        }
+        let mut retained=Vec::new();
+        for(name,target,mut input,guard)in candidates {
+            let mut written=false;for write in &writes{if self.numeric_write(write,&name,&target,&writes)?{written=true;break;}}
+            if !written{continue;}
+            if let Some(condition)=condition&&matches!(self.numeric_expression_effect(condition,&name,&target,&writes)?,NumericEffect::Unknown){continue;}
+            if let LoopPlace::Element(element,component)=&target {
+                self.retain_loop_element(element,*component,&empty,header,(&entry_path,initial),&|_|input.clone())?;
+                if element.base.components[*component].0!=Scalar::U32{continue;}
+            }
+            if let Some(identity)=input.known_identity(0){let mut domains=input.domains(0);domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);}
+            let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,&writes,!bounds::seeks(body),&mut Scope::current(self))?;
+            let(lower,upper,least,most)=match join_numeric_paths(next,continues){
+                None=>(true,true,0,0),
+                Some(NumericEffect::Shift{low,high,least,most})=>(low>=0,high<=0,least,most),
+                Some(NumericEffect::Reflect(amount))=>{let reflected=input.unsigned_reflected(amount);input.join(&reflected,1,None);retained.push((name,target,input,true,true));continue;},
+                Some(NumericEffect::Assign(repeated))=>{input.join(&repeated,1,None);retained.push((name,target,input,true,true));continue;},
+                Some(NumericEffect::Unknown)=>continue,
+            };
+            if !lower&&!upper{continue;}
+            let low=guard.unsigned_minimum(0).max(if lower{input.unsigned_minimum(0)}else{0});let high=guard.unsigned_maximum(0).min(if upper{input.unsigned_maximum(0)}else{u32::MAX});
+            if i128::from(low)+least<0||i128::from(high)+most>i128::from(u32::MAX){continue;}
+            retained.push((name,target,input,lower,upper));
+        }
+        for(name,target,proof,lower,upper)in retained {
+            if let LoopPlace::Element(target,component)=target {
+                if target.index.is_none(){continue;}
+                let retain=|previous:&Value|{let mut value=previous.clone();value.proof.retain_loop_bounds(&proof,0,lower,upper);bounds::Proof::capture(&value)};
+                let mut environment=self.env.clone();self.retain_loop_element(&target,component,&bounds::Condition::constant(true),&mut environment,(&entry_path,initial),&retain)?;self.env=environment;
+                self.retain_loop_element(&target,component,&bounds::Condition::constant(true),header,(&entry_path,initial),&retain)?;
+            }else{for environment in [&mut self.env,&mut *header]{
+                let Some(binding)=environment.get_mut(&name)else{continue;};match &target{
+                    LoopPlace::Stored(_,component)=>{if let Some((current,_,_))=binding.proof_storage(){current.retain_loop_bounds(&proof,*component,lower,upper);}},
+                    LoopPlace::Length=>{if let Binding::ApplicationData(data)=binding{data.length.proof.retain_loop_bounds(&proof,0,lower,upper);}},
+                    LoopPlace::Element(..)=>{},
+                }
+            }}
         }
         Ok(())
     }

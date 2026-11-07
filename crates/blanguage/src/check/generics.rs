@@ -6,7 +6,7 @@ pub(crate) struct Actual<'a> {
     pub count: Option<u32>,
 }
 impl<'a> Actual<'a> {
-    pub fn dataset(ty:&Ty,count:Option<u32>)->Self{Self{ty:Some(std::borrow::Cow::Owned(Ty::owned_dataset(ty.clone(),count))),count}}
+    pub fn dataset(ty:&Ty,count:Option<u32>)->Self{Self{ty:Some(std::borrow::Cow::Owned(Ty::owned_dataset((ty.clone()).syntax(),count))),count}}
 
     pub fn value(ty: &'a Ty) -> Self {
         Self {
@@ -155,7 +155,7 @@ pub(crate) fn specialize(
                 world.ty(ty, source, span, module, imports)?
             };
             if ty.dataset {
-                actual=Ty::owned_dataset(actual,world.shape(&ty.count,source,span,module,imports)?);
+                actual=Ty::owned_dataset((actual).syntax(),world.shape(&ty.count,source,span,module,imports)?);
             }
             if !world.family_accepts(
                 &parameter.family,
@@ -295,11 +295,11 @@ fn infer_type(
     if !formal.mentions(&parameter.name) {
         return Ok(());
     }
-    let actual = if formal.dataset && actual.dataset.is_some() {
-        actual.dataset.as_deref().unwrap()
-    } else {
-        actual
-    };
+    let resolved;
+    let actual = if formal.dataset && let Some(reference)=actual.dataset.as_deref() {
+        resolved=world.ty(reference,source,span,&callee.module,&callee.imports)?;
+        &resolved
+    } else { actual };
     let actual = if formal.view {
         actual.view.as_deref().ok_or_else(|| Diagnostic {
             source: source.clone(),
@@ -476,11 +476,11 @@ fn infer_value(
         }
         *inferred = Some(*value);
     }
-    let actual = if formal.dataset && actual.dataset.is_some() {
-        actual.dataset.as_deref().unwrap()
-    } else {
-        actual
-    };
+    let resolved;
+    let actual = if formal.dataset && let Some(reference)=actual.dataset.as_deref() {
+        resolved=world.ty(reference,source,span,&callee.module,&callee.imports)?;
+        &resolved
+    } else { actual };
     let actual = if formal.view {
         let Some(actual) = actual.view.as_deref() else {
             return Ok(());

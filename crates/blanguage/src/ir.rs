@@ -8,6 +8,7 @@ pub use origin::{SourceOrigin, SourceDeclaration, DeclarationRepresentation, Sou
 pub(crate) use origin::SourceContext;
 mod layout;
 pub use layout::interface_layout_json;
+pub(crate) use layout::write_type_json;
 mod external;
 pub(crate) use external::DatasetBorrow;
 #[cfg(feature = "compiler")]
@@ -124,12 +125,11 @@ pub struct Ty {
     pub enumeration: bool,
     pub result: bool,
     pub variants: Vec<Variant>,
-    pub dataset: Option<Box<Ty>>,
+    pub dataset: Option<Box<crate::ast::TypeName>>,
     pub cleanup: Option<String>,
     pub function: Option<Box<CFunctionType>>,
 }
 impl Ty {
-    #[cfg(feature = "compiler")]
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
         if let Some(function) = &self.function { return function.syntax(); }
         if let Some(cleanup) = &self.cleanup {
@@ -138,7 +138,7 @@ impl Ty {
             ty.arguments=vec![crate::ast::GenericArgument::Type(self.arguments[0].syntax()),crate::ast::GenericArgument::Type(release)];return ty;
         }
         if let Some(element) = &self.dataset {
-            let mut ty = element.syntax();
+            let mut ty = (**element).clone();
             ty.dataset = true;
             ty.count = self.values.first().map(|v| crate::ast::Shape::Literal(*v));
             return ty;
@@ -201,11 +201,11 @@ impl Ty {
     pub fn owned(payload: Self, cleanup: String) -> Self {
         Self {name:format!("owned<{},{}>",payload.name,cleanup),arguments:vec![payload.clone()],values:Vec::new(),size:payload.size,align:payload.align,components:payload.components.clone(),fields:vec![("value".into(),0,Box::new(payload))],view:None,array:None,enumeration:false,result:false,variants:Vec::new(),dataset:None,cleanup:Some(cleanup),function:None}
     }
-    pub fn owned_dataset(element: Self, count: Option<u32>) -> Self {
+    pub fn owned_dataset(element: crate::ast::TypeName, count: Option<u32>) -> Self {
         Self {
             name: format!(
                 "dataset<{}{}>",
-                element.name,
+                crate::ast::type_name(&element),
                 count.map(|v| format!(",{v}")).unwrap_or_default()
             ),
             arguments: Vec::new(),
@@ -1999,7 +1999,6 @@ impl Ty {
 }
 
 impl CFunctionType {
-    #[cfg(feature = "compiler")]
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
         use crate::ast::{TypeName, GenericArgument};
         let mut syntax = TypeName::named("cfn");

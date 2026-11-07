@@ -57,13 +57,13 @@ impl Returned {
                 for fact in v.prefixes.values_mut(){*fact=fact.output_bound(bindings);}
                 value(&mut v.root, registers.map(|r| &r[..1]), bindings, aliases);
                 value(&mut v.length, registers.map(|r| &r[1..]), bindings, aliases);
-                if let Some(value)=v.elements.view_value_mut(){
-                    value.proof.origins.resize_with(value.regs.len(),Vec::new);
-                    for(component,origins)in value.proof.origins.iter_mut().enumerate(){
-                        if origins.is_empty(){origins.push(ValueIdentity::ElementComponent(component));}
+                v.elements=std::mem::take(&mut v.elements).map(&mut |mut elements|{
+                    if let Some(value)=elements.view_value_mut(){
+                        value.proof.origins.resize_with(value.regs.len(),Vec::new);
+                        for(component,origins)in value.proof.origins.iter_mut().enumerate(){if origins.is_empty(){origins.push(ValueIdentity::ElementComponent(component));}}
                     }
-                }
-                v.elements.bind_outputs(None,bindings,aliases);
+                    elements.bind_outputs(None,bindings,aliases);elements
+                },&mut |when|when.output_bound(bindings).with_aliases(aliases));
             }
         }
     }
@@ -84,7 +84,7 @@ impl Returned {
         }
         fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&bounds::Condition,stored:bool){match(target,a,b){
             (Returned::Value(target),Returned::Value(a),Returned::Value(b))=>{target.proof=if stored { let mut proof=a.proof.clone(); proof.join_condition(&b.proof,a.regs.len(),Some(choice)); proof } else { bounds::Proof::common(a,b,Some(choice),None) };},
-            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.length.proof=if stored { let mut proof=a.length.proof.clone(); proof.join_condition(&b.length.proof,a.length.regs.len(),Some(choice)); proof } else { bounds::Proof::common(&a.length,&b.length,Some(choice),None) };target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.prefixes=prefix::join_fields(&a.prefixes,&b.prefixes,Some(choice));target.root.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),choice);restore(&mut target.elements,&a.elements,&b.elements,choice,true);},
+            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.length.proof=if stored { let mut proof=a.length.proof.clone(); proof.join_condition(&b.length.proof,a.length.regs.len(),Some(choice)); proof } else { bounds::Proof::common(&a.length,&b.length,Some(choice),None) };target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.prefixes=prefix::join_fields(&a.prefixes,&b.prefixes,Some(choice));target.root.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),choice);target.elements=if a.length.maximum()==0{b.elements.clone()}else if b.length.maximum()==0{a.elements.clone()}else{a.elements.clone().selected(b.elements.clone(),choice)};},
             (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.value.proof=if stored { let mut proof=a.value.proof.clone(); proof.join_condition(&b.value.proof,a.value.regs.len(),Some(choice)); proof } else { bounds::Proof::common(&a.value,&b.value,Some(choice),None) };for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice,stored);}}},
             _=>{},
         }}
@@ -107,7 +107,9 @@ impl Returned {
                 data.ownership = application::Ownership::Moved;
             }
             data.root.proof = if stored { let mut proof=data.root.proof.clone(); proof.join_condition(&other.root.proof,data.root.regs.len(),None); proof } else { bounds::Proof::common(&data.root, &other.root,None,None) };
-            data.elements.join((*other.elements).clone(),true);
+            data.elements=if data.length.maximum()==0{other.elements.clone()}
+                else if other.length.maximum()==0{data.elements.clone()}
+                else{std::mem::take(&mut data.elements).common(other.elements.clone())};
             data.prefixes=prefix::join_fields(&data.prefixes,&other.prefixes,None);
         }
         let (other, residency) = match &other {
@@ -346,7 +348,7 @@ impl Builder<'_> {
                 Some(value)
             }
             (Some(Expected::Dataset { ty, count }), Some(expr)) => {
-                let returned=self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone(),*count)))?;
+                let returned=self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone().syntax(),*count)))?;
                 if !self.flow.continues(){return Ok(());}
                 let Some(Returned::Dataset(mut data))=returned else{return self.fail(span,"B224","返回需要实际拥有的dataset")};
                 self.application_data_type(&mut data, ty, *count, span)?;

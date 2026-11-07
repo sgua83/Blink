@@ -266,6 +266,7 @@ pub enum GenerationReason {
     DatasetResizeComplete,
     DatasetWriteComplete,
     DatasetCallComplete,
+    DatasetElementDrop,
 }
 /// Only the immutable origin facts of a consumed operation, never its IR or values.
 #[derive(Clone, Debug)]
@@ -704,6 +705,7 @@ impl GeneratedOrigin {
             GenerationReason::DatasetDropCondition => "dataset_drop_condition",
             GenerationReason::DatasetDropIndex => "dataset_drop_index",
             GenerationReason::DatasetDropElementRead => "dataset_drop_element_read",
+            GenerationReason::DatasetElementDrop => "dataset_element_drop",
             GenerationReason::DatasetDropAdvance => "dataset_drop_advance",
             GenerationReason::DatasetDropLoop => "dataset_drop_loop",
             GenerationReason::UserOwnedDrop => "user_owned_drop",

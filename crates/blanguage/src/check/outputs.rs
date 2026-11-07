@@ -90,7 +90,7 @@ pub(super) fn validate(world: &World, definition: &Definition) -> Result<()> {
     let parameters = definition.function.params.iter().map(|param| {
         let ty = cooperative::parameter_type(world, param, definition)?;
         Ok(if param.ty.dataset {
-            Ty::owned_dataset(ty, world.shape(&param.ty.count, &definition.source, param.span,
+            Ty::owned_dataset((ty).syntax(), world.shape(&param.ty.count, &definition.source, param.span,
                 &definition.module, &definition.imports)?)
         } else { ty })
     }).collect::<Result<Vec<_>>>()?;
@@ -99,7 +99,7 @@ pub(super) fn validate(world: &World, definition: &Definition) -> Result<()> {
         let ty = world.ty(result, &definition.source, definition.function.span,
             &definition.module, &definition.imports)?;
         Some(if result.dataset {
-            Ty::owned_dataset(ty, world.shape(&result.count, &definition.source,
+            Ty::owned_dataset((ty).syntax(), world.shape(&result.count, &definition.source,
                 definition.function.span, &definition.module, &definition.imports)?)
         } else { ty })
     };
@@ -122,7 +122,7 @@ pub(super) fn validate_named(world: &World, definition: &Definition,
             return definition.source.fail(contract.span, "B225", "initialized 是普通函数的 ensures 输出合同");
         }
         let condition = normalize(world, definition.into(), &definition.function.result, condition, contract.span)?;
-        validate_output(value, &condition, &input, returned, &definition.source, contract.span)?;
+        validate_output(world,value, &condition, &input, returned, &definition.source, contract.span)?;
     }
     Ok(())
 }
@@ -780,7 +780,7 @@ fn condition_type(value: &OutputCondition,
         }
     })
 }
-fn validate_output(value: &str, condition: &OutputCondition,
+fn validate_output(world:&World,value: &str, condition: &OutputCondition,
     input: &impl Fn(&str) -> Option<(Access, Ty)>, returned: Option<&Ty>,
     source: &Source, span: Span,
 ) -> Result<()> {
@@ -791,7 +791,7 @@ fn validate_output(value: &str, condition: &OutputCondition,
     };
     // Dataset output positions describe initialized elements; input/return
     // conditions consume the original handle/length storage type.
-    if let Some(element) = &ty.dataset { ty = element.as_ref().clone(); }
+    if let Some(reference)=&ty.dataset {ty=world.ty(reference,source,span,"",&[])?;}
     for field in fields { ty = member_type(&ty, field, source, span)?.0; }
     let path = |value: &OutputCondition| typed_path(value, input, returned, source, span);
     let (condition, _) = condition_type(condition, &path, source, span)?;
@@ -799,7 +799,7 @@ fn validate_output(value: &str, condition: &OutputCondition,
 }
 
 pub(crate) fn validate_function_contracts(
-    parameters: &[CallParameter], result: Option<&Ty>, outputs: &[ContractPredicate],
+    world:&World,parameters: &[CallParameter], result: Option<&Ty>, outputs: &[ContractPredicate],
     source: &crate::Source, span: Span,
 ) -> Result<()> {
     let input = |name: &str| parameters.iter().enumerate()
@@ -811,7 +811,7 @@ pub(crate) fn validate_function_contracts(
     for output in outputs {
         match output {
             ContractPredicate::Nonzero(path) => contracts::validate_nonzero_input(path, &input, source, span)?,
-            ContractPredicate::Initialized { value, condition } => validate_output(value, condition, &input, result, source, span)?,
+            ContractPredicate::Initialized { value, condition } => validate_output(world,value, condition, &input, result, source, span)?,
             ContractPredicate::Memory(_) => {},
             _ => return source.fail(span, "B225", "cfn合同使用requires nonzero、ensures initialized及ensures memory"),
         }
@@ -986,7 +986,7 @@ impl Builder<'_> {
                     let scoped=materialize(&old,&mut||scope.clone()).unwrap_or_else(||old.clone());
                     candidate.initialization =
                         Some(Position::selected(selected, scoped, old));
-                    self.assign_owned_place(&actual, Returned::Dataset(candidate));
+                    self.assign_owned_place(&actual, Returned::Dataset(candidate))?;
                     found = true;
                 }
             }

@@ -19,19 +19,16 @@ pub fn print(compiler: &blanguage::Compiler, args: &[String]) -> Result<(), Box<
         i += 2;
     }
     let root = root.canonicalize()?;
-    let value = compiler.type_layout(&path, &root, request)?;
-    let (offset, selected) = if let Some(field) = field {
-        value.field(field).ok_or_else(|| format!("类型 {} 没有可定位的静态字段路径 {field}", value.name))?
-    } else { (0, &value) };
+    let (root_type, offset, layout) = compiler.type_layout_json(&path, &root, request, field)?;
     let mut out = String::from("{\"kind\":\"type_layout\",\"phase\":\"checked_type\",\"source_path\":");
     string(&mut out, path.to_str().ok_or("源码路径不是UTF-8")?);
     out.push_str(",\"module_root\":"); string(&mut out, root.to_str().ok_or("模块根不是UTF-8")?);
     out.push_str(",\"request\":"); string(&mut out, request);
-    out.push_str(",\"root_type\":"); string(&mut out, &value.name);
+    out.push_str(",\"root_type\":"); string(&mut out, &root_type);
     out.push_str(",\"field\":");
     if let Some(field) = field { string(&mut out, field); }
     else { out.push_str("null"); }
-    write!(&mut out, ",\"offset_bytes\":{offset},\"layout\":{} }}", selected.layout_json()).unwrap();
+    write!(&mut out, ",\"offset_bytes\":{offset},\"layout\":{} }}", layout).unwrap();
     println!("{out}");
     Ok(())
 }

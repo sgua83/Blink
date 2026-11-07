@@ -50,7 +50,7 @@ pub(crate) fn instantiate(
                     &definition.imports,
                 )
                 .and_then(|actual| {
-                    Ok(if ty.dataset {Ty::owned_dataset(actual,world.shape(&ty.count,&definition.source,function.span,&definition.module,&definition.imports)?).name}
+                    Ok(if ty.dataset {Ty::owned_dataset((actual).syntax(),world.shape(&ty.count,&definition.source,function.span,&definition.module,&definition.imports)?).name}
                        else {actual.name})
                 })
         })

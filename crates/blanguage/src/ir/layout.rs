@@ -1,6 +1,6 @@
 //! Read-only serialization of the original Ty and program interface layouts.
 use super::{ProgramInterface, Ty, align_up};
-use crate::{ast::{Access, Target}, json::string};
+use crate::{ast::{Access, Target, TypeName}, json::string};
 use std::fmt::Write;
 
 impl Ty {
@@ -13,6 +13,13 @@ impl Ty {
 }
 
 fn ty(out: &mut String, value: &Ty) {
+    match write_type_json::<std::convert::Infallible>(out, value, &mut |_, _| Ok(())) {
+        Ok(()) => (),
+        Err(never) => match never {},
+    }
+}
+
+pub(crate) fn write_type_json<E>(out: &mut String, value: &Ty, references: &mut dyn FnMut(&mut String, &TypeName) -> Result<(), E>) -> Result<(), E> {
     out.push_str("{\"name\":");
     string(out, &value.name);
     out.push_str(",\"kind\":");
@@ -50,7 +57,7 @@ fn ty(out: &mut String, value: &Ty) {
         if i != 0 { out.push(','); }
         out.push_str("{\"name\":"); string(out, name);
         write!(out, ",\"offset_bytes\":{offset},\"layout\":").unwrap();
-        ty(out, field); out.push('}');
+        write_type_json(out, field, references)?; out.push('}');
     }
     out.push_str("],\"variants\":[");
     for (i, variant) in value.variants.iter().enumerate() {
@@ -58,34 +65,37 @@ fn ty(out: &mut String, value: &Ty) {
         let (offset, payload) = value.field(&variant.name).unwrap();
         out.push_str("{\"name\":"); string(out, &variant.name);
         write!(out, ",\"discriminant\":{},\"payload_offset_bytes\":{offset},\"layout\":", variant.discriminant).unwrap();
-        ty(out, payload); out.push('}');
+        write_type_json(out, payload, references)?; out.push('}');
     }
     out.push_str("],\"array\":");
     if let Some(element) = &value.array {
         write!(out, "{{\"count\":{},\"element_stride_bytes\":{},\"element\":", value.values[0], align_up(element.size, element.align)).unwrap();
-        ty(out, element); out.push('}');
+        write_type_json(out, element, references)?; out.push('}');
     } else { out.push_str("null"); }
     out.push_str(",\"view\":");
-    element(out, value.view.as_deref());
+    element(out, value.view.as_deref(), references)?;
     out.push_str(",\"dataset\":");
     if let Some(value_type) = &value.dataset {
         out.push_str("{\"fixed_count\":");
         if let Some(count) = value.values.first() { write!(out, "{count}").unwrap(); }
         else { out.push_str("null"); }
-        write!(out, ",\"element_stride_bytes\":{},\"element\":", align_up(value_type.size, value_type.align)).unwrap();
-        ty(out, value_type); out.push('}');
+        out.push_str(",\"element_reference\":");
+        string(out,&crate::ast::type_name(value_type));
+        references(out, value_type)?; out.push('}');
     } else { out.push_str("null"); }
     out.push_str(",\"cleanup\":");
     if let Some(cleanup) = &value.cleanup { string(out, cleanup); }
     else { out.push_str("null"); }
     out.push('}');
+    Ok(())
 }
 
-fn element(out: &mut String, value: Option<&Ty>) {
+fn element<E>(out: &mut String, value: Option<&Ty>, references: &mut dyn FnMut(&mut String, &TypeName) -> Result<(), E>) -> Result<(), E> {
     if let Some(value) = value {
         write!(out, "{{\"element_stride_bytes\":{},\"element\":", align_up(value.size, value.align)).unwrap();
-        ty(out, value); out.push('}');
+        write_type_json(out, value, references)?; out.push('}');
     } else { out.push_str("null"); }
+    Ok(())
 }
 
 /// JSON of the existing interface's data layouts. This adds no method to its runtime vtable.

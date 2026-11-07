@@ -70,7 +70,7 @@ impl Builder<'_> {
         }
         if (root(expr).is_some_and(|name| self.env.contains_key(name))
             || self.is_place(expr) && !self.temporary_projection(expr))
-            && !self.read_expression_type(expr).is_some_and(|ty|ty.owns_resources()) {
+            && !self.read_expression_type(expr)?.is_some_and(|ty|ty.owns_resources()) {
             if let Some(name) = root(expr)
                 && let Some(Binding::Value(value)) = self.env.get(name).cloned() {
                 let mut owner = self.materialize_array(value,None);
@@ -365,7 +365,7 @@ impl Builder<'_> {
                 if outputs::declared(d, index) { self.forget_output_initialization(&place, span)?; }
                 guards
             } else { vec![owned_presence::Presence::All; place.ty().components.len()] };
-            self.assign_owned_proof(&place, bounds::Proof::default().with_external_borrows(place.ty()), false);
+            self.assign_owned_proof(&place, bounds::Proof::default().with_external_borrows(place.ty()), false)?;
             self.initialize_output(&place, &guards);
         }
         for name in held { self.finish_scoped_argument(&name, span)?; }

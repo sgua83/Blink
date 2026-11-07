@@ -187,7 +187,7 @@ impl World {
             None => Ok(None),
             Some(Shape::Literal(n)) => Ok(Some(*n)),
             Some(Shape::Expression(expression))=>{
-                let key=format!("<shape>:{}:{module}:{}",source.path.display(),crate::function_types::expression_name(expression));
+                let key=format!("<shape>:{}:{module}:{}",source.path.display(),crate::ast::expression_name(expression));
                 Ok(Some(integer_expression(self,&key,source,module,imports,&Ty::scalar(Scalar::U32),expression,
                     ("B234","形状或const实参必须完全在编译期求值，不能包含运行期运算或副作用"))?))
             },

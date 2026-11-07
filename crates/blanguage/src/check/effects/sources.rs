@@ -25,12 +25,15 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
     fn declared_type(&self, syntax: &TypeName, definition: &Definition, span: Span) -> Result<Ty> {
         let ty = self.world.ty(syntax, &definition.source, span, &definition.module, &definition.imports)?;
         Ok(if syntax.dataset {
-            Ty::owned_dataset(ty, self.world.shape(&syntax.count, &definition.source, span, &definition.module, &definition.imports)?)
+            Ty::owned_dataset((ty).syntax(), self.world.shape(&syntax.count, &definition.source, span, &definition.module, &definition.imports)?)
         } else { ty })
     }
-    fn element(ty: Ty) -> Option<Ty> {
-        if let Some(inner) = ty.dataset.or(ty.view).or(ty.array) { Some(*inner) }
-        else { ty.components.first().map(|(scalar, _)| Ty::scalar(*scalar)) }
+    fn element(&self,ty:Ty,span:Span)->Result<Option<Ty>> {
+        if let Some(reference)=ty.dataset {
+            return self.world.ty(&reference,&self.definition.source,span,&self.definition.module,&self.definition.imports).map(Some);
+        }
+        Ok(if let Some(inner)=ty.view.or(ty.array){Some(*inner)}
+            else{ty.components.first().map(|(scalar,_)|Ty::scalar(*scalar))})
     }
     fn name(&self, name: &str, span: Span, limit: usize) -> Result<Option<Ty>> {
         if let Some(index) = self.bindings[..limit].iter().rposition(|(bound, _)| *bound == name) {
@@ -38,8 +41,8 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
                 Local::Typed(ty) => Some(self.declared_type(ty, self.definition, span)?),
                 Local::Inferred(expr) => self.ty(expr, index)?,
                 Local::Range => Some(Ty::scalar(Scalar::U32)),
-                Local::Element(expr) => self.ty(expr, index)?.and_then(Self::element),
-                Local::NamedElement(name) => self.name(name, span, index)?.and_then(Self::element),
+                Local::Element(expr) => match self.ty(expr,index)?{Some(ty)=>self.element(ty,span)?,None=>None},
+                Local::NamedElement(name) => match self.name(name,span,index)?{Some(ty)=>self.element(ty,span)?,None=>None},
                 Local::Payload(expr, variant) => self.ty(expr, index)?.and_then(|ty| {
                     let name = variant.rsplit("::").next().unwrap();
                     ty.variants.iter().find(|item| item.name == name).map(|item| *item.ty.clone())
@@ -50,10 +53,10 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             let ty = match binding {
                 Binding::Value(value) => Some(value.ty.clone()),
                 Binding::ViewElement { element, .. } => Some(element.place.ty().clone()),
-                Binding::ApplicationData(data) => Some(Ty::owned_dataset(data.ty.clone(), data.count)),
-                Binding::DataReference(data) => Some(Ty::owned_dataset(data.element_layout().1.clone(), data.count)),
-                Binding::Data(view) => Some(Ty::owned_dataset(builder.dataset_layout(view).1.clone(), builder.program.buffers[view.binding].count)),
-                Binding::Tile(view) => Some(Ty::owned_dataset(view.ty.clone(), match builder.tiles[view.tile].width { TileWidth::Fixed(count) => Some(count), TileWidth::Parameter => None })),
+                Binding::ApplicationData(data) => Some(Ty::owned_dataset((data.ty.clone()).syntax(), data.count)),
+                Binding::DataReference(data) => Some(Ty::owned_dataset((data.element_layout().1.clone()).syntax(), data.count)),
+                Binding::Data(view) => Some(Ty::owned_dataset((builder.dataset_layout(view).1.clone()).syntax(), builder.program.buffers[view.binding].count)),
+                Binding::Tile(view) => Some(Ty::owned_dataset((view.ty.clone()).syntax(), match builder.tiles[view.tile].width { TileWidth::Fixed(count) => Some(count), TileWidth::Parameter => None })),
                 other => other.stored_place().map(|place| place.ty().clone()),
             };
             return Ok(ty);
@@ -83,7 +86,7 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
     }
     fn call(&self, name: &str, explicit: Option<&[GenericArgument]>, args: &[Expr], span: Span, limit: usize) -> Result<Option<Ty>> {
         if name=="dataset" && let Some(explicit)=explicit {
-            return Builder::dataset_constructor_type(self.world,self.definition,explicit,args.len(),span).map(|(ty,count)|Some(Ty::owned_dataset(ty,count)));
+            return Builder::dataset_constructor_type(self.world,self.definition,explicit,args.len(),span).map(|(ty,count)|Some(Ty::owned_dataset((ty).syntax(),count)));
         }
         if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? { return self.returned(ty, span); }
         if explicit.is_none() && let ("own",[value,function])=(name,args) {
@@ -132,7 +135,7 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             ExprKind::StaticU32(_) => Some(Ty::scalar(Scalar::U32)),
             ExprKind::Bool(_) => Some(Ty::scalar(Scalar::Bool)),
             ExprKind::Member(base, name) => self.ty(base, limit)?.and_then(|ty| ty.field(name).map(|(_, ty)| ty.clone())),
-            ExprKind::Index(base, _) => self.ty(base, limit)?.and_then(Self::element),
+            ExprKind::Index(base, _) => match self.ty(base,limit)?{Some(ty)=>self.element(ty,expr.span)?,None=>None},
             ExprKind::Call(name, args) => self.call(name, None, args, expr.span, limit)?,
             ExprKind::Specialize(name, explicit, args) => self.call(name, Some(explicit), args, expr.span, limit)?,
             ExprKind::Cooperate(name, explicit, args) => self.call(name, explicit.as_deref(), args, expr.span, limit)?,

@@ -30,7 +30,8 @@ impl Imports {
     }
     pub(crate) fn object(&mut self, object: &Object) -> codec::Result<()> {
         self.insert(&object.name, &object.kind, object.symbols.iter()
-            .map(|symbol| (symbol.name.clone(), symbol.contract.clone())).collect())
+            .map(|symbol| (symbol.name.clone(), symbol.contract.clone()))
+            .chain(object.imports.iter().map(|(name,contract)|(name.clone(),contract.clone()))).collect())
     }
     pub(crate) fn insert(&mut self, name: &str, kind: &Kind, definitions: BTreeMap<String, Vec<u8>>) -> codec::Result<()> {
         let Kind::Module { interface, requirements, .. } = kind else {

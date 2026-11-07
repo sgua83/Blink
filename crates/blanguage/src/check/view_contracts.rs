@@ -140,14 +140,16 @@ pub(super) fn resource_value_mut(value:&mut returns::Returned,index:usize)->Opti
     returns::Returned::OwnedValue(value)=>{let path=view::resource_paths(&value.value.ty).get(index)?.clone();view::owned_data_at_mut(value,&path)},_=>None,
 }}
 pub(super) fn resource_output_paths(value:&returns::Returned)->Vec<ResourcePath> {
-    fn visit(ty:&Ty,root:usize,parents:&[Vec<usize>],out:&mut Vec<(usize,Vec<Vec<usize>>)>) {
-        for(fields,element)in view::resource_paths(ty).into_iter().zip(application::element_types(ty)){
-            let mut path=parents.to_vec();path.push(fields);out.push((root,path.clone()));visit(element,root,&path,out);
+    fn visit(data:&application::Data,root:usize,parents:&[Vec<usize>],out:&mut Vec<(usize,Vec<Vec<usize>>)>) {
+        for fields in view::resource_paths(&data.ty){
+            if let Some(child)=application::model_data(data.elements.known(),&fields){
+                let mut path=parents.to_vec();path.push(fields);out.push((root,path.clone()));visit(child,root,&path,out);
+            }
         }
     }
-    let types=match value{returns::Returned::Dataset(data)=>vec![&data.ty],returns::Returned::OwnedValue(value)=>application::element_types(&value.value.ty),_=>Vec::new()};
-    let mut out=(0..types.len()).map(|root|(root,Vec::new())).collect::<Vec<_>>();
-    for(root,ty)in types.into_iter().enumerate(){visit(ty,root,&[],&mut out);}out
+    let roots=match value{returns::Returned::Dataset(_)=>1,returns::Returned::OwnedValue(value)=>view::resource_paths(&value.value.ty).len(),_=>0};
+    let mut out=(0..roots).map(|root|(root,Vec::new())).collect::<Vec<_>>();
+    for root in 0..roots{if let Some(data)=root_resource(value,root){visit(data,root,&[],&mut out);}}out
 }
 fn root_resource(value:&returns::Returned,index:usize)->Option<&application::Data>{match value{
     returns::Returned::Dataset(data)if index==0=>Some(data),
@@ -158,7 +160,7 @@ pub(super) fn resource_outputs(value:&returns::Returned)->Vec<(ResourcePath,Borr
         let (root,path)=&resource;
         let data=path.iter().fold(root_resource(value,*root),|data,fields|{
             let data=data?;
-            if data.length.maximum()==0{None}else{application::model_data(&data.elements,fields)}
+            if data.length.maximum()==0{None}else{application::model_data(data.elements.known(),fields)}
         });
         let borrow=if let Some(data)=data {
             let name=resource_output_name(value,&resource).unwrap();
@@ -172,7 +174,7 @@ pub(super) fn resource_outputs(value:&returns::Returned)->Vec<(ResourcePath,Borr
 }
 pub(super) fn resource_output_mut<'a>(value:&'a mut returns::Returned,resource:&ResourcePath)->Option<&'a mut application::Data>{
     let(root,path)=resource;let mut data=resource_value_mut(value,*root)?;
-    for fields in path{data=application::model_data_mut(&mut data.elements,fields)?;}Some(data)
+    for fields in path{data=application::model_data_mut(data.elements.known_mut(),fields)?;}Some(data)
 }
 pub(super) fn resource_output_name(value:&returns::Returned,resource:&ResourcePath)->Option<Borrow>{
     let(root,path)=resource;let data=root_resource(value,*root)?;
@@ -229,7 +231,7 @@ impl Function {
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id,indices)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
                 .map(|id|Borrow::source(Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,self)).collect()))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
-            Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External(_)|address::Root::Dataset{..}) =>
+            Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External(_)|address::Root::Dataset{..}|address::Root::Resource{..}) =>
                 {
                     let mut origin=(*origin).clone();
                     if let address::Root::External(address::Identity::Storage(borrow))=&mut origin.root {
@@ -286,21 +288,21 @@ impl Function {
         let when=bounds::Condition::guard(when.assume(&bounds::Clause::default(),true).canonical());
         when.active().then_some(Access::Resource{resources,borrows,ownership,when})
     }
-    fn dataset_access(&self,borrow:Borrow,index:Option<bounds::Operand>,access:super::Access,atomic:bool,when:bounds::Condition)->Option<Access> {
-        fn inputs(borrow:&Borrow,function:&Function)->Borrow {
+    fn dataset_access(&self,borrow:Borrow,index:Option<bounds::Operand>,access:super::Access,atomic:bool,when:bounds::Condition,owns_input:&impl Fn(ValueIdentity)->bool)->Option<Access> {
+        fn inputs(borrow:&Borrow,function:&Function,owns_input:&impl Fn(ValueIdentity)->bool)->Borrow {
             borrow.map_sources(|source|match source {
-                Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id))=>Borrow::default(),
-                Origin::Element{parent,fields,index}=>Borrow::element(inputs(&parent,function),fields,index),
-                Origin::Projection{parent,fields}=>Borrow::projection(inputs(&parent,function),fields),
+                Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id)&&!owns_input(*id))=>Borrow::default(),
+                Origin::Element{parent,fields,index}=>Borrow::element(inputs(&parent,function,owns_input),fields,index),
+                Origin::Projection{parent,fields}=>Borrow::projection(inputs(&parent,function,owns_input),fields),
                 Origin::Position(origin)=>{
-                    let mut origin=origin.map_borrows(|borrow|inputs(borrow,function));
-                    if let address::Root::Resource(borrow)=origin.root {origin.root=address::Root::Derived(borrow);}
+                    let mut origin=origin.map_borrows(|borrow|inputs(borrow,function,owns_input));
+                    if let address::Root::Resource{borrow,index:None}=origin.root {origin.root=address::Root::Derived(borrow);}
                     origin.normalize()
                 },
                 source=>Borrow::source(source),
             })
         }
-        let(borrows,when)=self.address_borrows(inputs(&borrow,self),when)?;
+        let(borrows,when)=self.address_borrows(inputs(&borrow,self,owns_input),when)?;
         let index=index.and_then(|index|index.map(|id|self.parameters.get(&id).copied().filter(|id|self.input(*id))));
         Some(Access::Dataset{borrows,when,index,access,atomic})
     }
@@ -359,7 +361,7 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
             for source in &borrow.sources {
                 if let Origin::Element{parent,..}|Origin::Projection{parent,..}=source{roots.push(parent.as_ref().clone());}
                 if let Origin::Position(origin)=source {
-                    match &origin.root {address::Root::Resource(borrow)|address::Root::Derived(borrow)=>roots.push(borrow.clone()),_=>{}}
+                    match &origin.root {address::Root::Resource{borrow,..}|address::Root::Derived(borrow)=>roots.push(borrow.clone()),_=>{}}
                 }
             }
             for input in &borrow.inputs{if loops.insert(*input){roots.push(function.loops[input].borrow.clone());}}
@@ -413,7 +415,7 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&
             if let address::Root::External(address::Identity::Value(ids))=&mut value.root {
                 *ids=ids.iter().filter_map(|id|function.parameters.get(id).copied().filter(|id|function.input(*id))).collect();
             }
-            if let address::Root::Dataset{borrow,index:Some(index)}=&mut value.root {
+            if let address::Root::Resource{borrow,index:Some(index)}|address::Root::Dataset{borrow,index:Some(index)}=&mut value.root {
                 match index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id))) {
                     Some(bound)=>*index=bound,
                     None=>*borrow=Borrow::source(Origin::Unresolved),
@@ -648,7 +650,7 @@ fn initializations(function:&Function,state:&State,known:&States,candidates:bool
         }
         if fact.origin.has_local(){return None;}
         fact.origin=fact.origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,&exposed));
-        if let address::Root::Dataset{index:Some(index),..}=&mut fact.origin.root {
+        if let address::Root::Resource{index:Some(index),..}|address::Root::Dataset{index:Some(index),..}=&mut fact.origin.root {
             *index=index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id)))?;
         }
         fact.origin.positions=Arc::from([]);
@@ -690,7 +692,7 @@ fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut Sta
         if *known==next{break;}*known=next;
     }
 }
-fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
+fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_input:&impl Fn(&str,ValueIdentity)->bool) {
     loop {
         let mut next=known.clone();
         for(name,function)in functions {
@@ -721,7 +723,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                         bounds::Condition::guard(usage.path.clone())),
                     Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if !function.calls.iter().any(|call|call.memory==*memory)=>
                         function.address_access(evaluate(borrow,function,state,known,true),|borrows,when|Access::Memory{borrows,when,access:*access},bounds::Condition::guard(usage.path.clone())),
-                    Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,*access,*atomic,bounds::Condition::guard(usage.path.clone())),
+                    Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,*access,*atomic,bounds::Condition::guard(usage.path.clone()),&|id|owns_input(name,id)),
                     _=>None,
                 };
                 if let Some(value)=value{access.insert(value);}
@@ -739,7 +741,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                         function.initialization_access(&output_initialization_read(&borrows,&initialized,&path),when)
                     },
                     Access::Resource{resources,borrows,ownership,when}=>function.access(resources,borrows,ownership,when),
-                    Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,when),
+                    Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,when,&|id|owns_input(name,id)),
                 };
                 if let Some(value)=value{access.insert(value);}
             }}
@@ -773,7 +775,7 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
     }
 }
 pub(super) struct Solved {pub interfaces:BTreeMap<String,Interface>,pub memory:BTreeMap<String,BTreeMap<address::MemoryTarget,address::MemoryEffect>>,pub values:BTreeMap<String,BTreeMap<ValueIdentity,bounds::Proof>>}
-pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String,Interface>)->Result<Solved>{
+pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String,Interface>,owns_input:impl Fn(&str,ValueIdentity)->bool)->Result<Solved>{
     let loops=used_loops(functions,&closed);
     let mut known=closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect::<States>();
     for(name,function)in functions{known.insert(name.clone(),State{
@@ -784,7 +786,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
     let unknown=functions.iter().flat_map(|(name,function)|function.outputs.keys().filter_map(|output|known[name].interface.outputs[output].empty().then_some((name.clone(),output.clone())))).collect::<BTreeSet<_>>();
     if !unknown.is_empty(){converge(functions,&mut known,&unknown);}
     converge_initializations(functions,&mut known);
-    converge_access(functions,&mut known);
+    converge_access(functions,&mut known,&owns_input);
     let mut memory=BTreeMap::new();let mut scalar_values=BTreeMap::new();
     for(name,function)in functions {
         let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();

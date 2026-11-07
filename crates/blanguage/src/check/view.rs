@@ -146,7 +146,7 @@ impl Borrow{
     pub fn unresolved(&self)->bool {self.sources.entries().any(|(source,when)|when.possible()&&match source {
         Source::Unresolved=>true,
         Source::Element{parent,..}|Source::Projection{parent,..}=>parent.restricted(&when).unresolved(),
-        Source::Position(origin)=>matches!(&origin.root,address::Root::Resource(borrow)|address::Root::Derived(borrow)|address::Root::Dataset{borrow,..}if borrow.restricted(&when).unresolved()),
+        Source::Position(origin)=>matches!(&origin.root,address::Root::Resource{borrow,..}|address::Root::Derived(borrow)|address::Root::Dataset{borrow,..}if borrow.restricted(&when).unresolved()),
         _=>false,
     })}
     pub fn has_local(&self)->bool {self.sources.iter().any(|source|match source{Source::Position(origin)=>origin.has_local(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.has_local(),_=>false})}
@@ -212,7 +212,7 @@ impl InputSlot {
     pub fn independent(&self)->bool {matches!(self,Self::Data{independent:true,..})}
     pub fn value_proof<'a>(&self,env:&'a BTreeMap<String,Binding>)->Option<&'a bounds::Proof>{
         match self {
-            Self::Value{name,contents:Some(path),..}=>data_at(env.get(name)?,path)?.elements.view_value().map(|value|&value.proof),
+            Self::Value{name,contents:Some(path),..}=>data_at(env.get(name)?,path)?.elements.known()?.view_value().map(|value|&value.proof),
             Self::Value{name,contents:None,..}=>match env.get(name)? {
                 Binding::Value(value)=>Some(&value.proof),
                 Binding::Owned(value)|Binding::ViewElement{element:value,..}=>Some(&value.proof),
@@ -223,7 +223,7 @@ impl InputSlot {
     }
     pub fn value_proof_mut<'a>(&self,env:&'a mut BTreeMap<String,Binding>)->Option<&'a mut bounds::Proof>{
         match self {
-            Self::Value{name,contents:Some(path),..}=>data_at_mut(env.get_mut(name)?,path)?.elements.view_value_mut().map(|value|&mut value.proof),
+            Self::Value{name,contents:Some(path),..}=>data_at_mut(env.get_mut(name)?,path)?.elements.known_mut()?.view_value_mut().map(|value|&mut value.proof),
             Self::Value{name,contents:None,..}=>match env.get_mut(name)? {
                 Binding::Value(value)=>Some(&mut value.proof),
                 Binding::Owned(value)|Binding::ViewElement{element:value,..}=>Some(&mut value.proof),
@@ -450,14 +450,15 @@ impl Builder<'_> {
         result
     }
     pub(super) fn data_value_borrow(&self,data:&application::Data)->Borrow {resource_borrow(data)}
-    pub(super) fn application_view_borrowed(&self, identity: ValueIdentity) -> bool {
-        self.env
-            .iter()
-            .any(|(name,b)| self.live_view_borrow(name,b).owners().sources.contains(&Source::Data(identity)))
+    pub(super) fn application_view_borrowed(&self, identity: ValueIdentity) -> Result<bool> {
+        for (name,binding) in &self.env {
+            if self.live_view_borrow(name,binding)?.owners().sources.contains(&Source::Data(identity)) { return Ok(true); }
+        }
+        Ok(false)
     }
     pub(super) fn require_view_unborrowed(&mut self,resource:&Borrow,span:Span)->Result<()> {
         let mut borrow=Borrow::default();
-        for (name,binding) in &self.env {borrow.union(&self.live_view_borrow(name,binding));}
+        for (name,binding) in &self.env {borrow.union(&self.live_view_borrow(name,binding)?);}
         self.check_view_requirement(Requirement::Unborrowed{resource:resource.clone(),borrow,ownership:false,span})
     }
     pub(super) fn check_view_requirement(&mut self,requirement:Requirement)->Result<()> {

@@ -11,74 +11,6 @@ fn ordinary(ty: &Ty, syntax: &TypeName, source: &Source, span: Span) -> crate::R
     }
     Ok(())
 }
-fn type_name(ty: &TypeName) -> String {
-    let shape = |value: &Shape| match value { Shape::Literal(value) => value.to_string(), Shape::Constant(name) => name.clone(), Shape::Expression(expression)=>expression_name(expression) };
-    let mut name = ty.name.clone();
-    if !ty.arguments.is_empty() {
-        name.push('<');
-        name.push_str(&ty.arguments.iter().map(|argument| match argument {
-            GenericArgument::Type(ty) => type_name(ty),
-            GenericArgument::Value(value) => shape(value),
-        }).collect::<Vec<_>>().join(","));
-        name.push('>');
-    }
-    for (present, prefix) in [(ty.dataset, "dataset"), (ty.view, "view"), (ty.tile, "tile")] {
-        if present {
-            name = if let Some(count) = &ty.count { format!("{prefix}<{name},{}>", shape(count)) }
-                else { format!("{prefix}<{name}>") };
-        }
-    }
-    if let Some(outputs) = &ty.contracts {
-        for output in outputs.iter() {
-            if let ContractPredicate::Nonzero(value) = output {
-                name.push_str(&format!(" requires nonzero({value})"));
-            } else if let ContractPredicate::Memory(access)=output {
-                let mode=match access{None=>"none",Some(Access::Read)=>"read",Some(Access::Write)=>"write",Some(Access::InOut)=>"inout",Some(Access::Value)=>"value",Some(Access::Atomic)=>"atomic"};
-                name.push_str(&format!(" ensures memory({mode})"));
-            } else if let ContractPredicate::Initialized { value, condition } = output {
-                name.push_str(&format!(" ensures initialized({value},{})", condition_name(condition)));
-            }
-        }
-    }
-    name
-}
-pub(crate) fn expression_name(expression:&Expr)->String {
-    let arguments=|values:&[Expr]|values.iter().map(expression_name).collect::<Vec<_>>().join(",");
-    let generic=|values:&[GenericArgument]|values.iter().map(|value|match value {
-        GenericArgument::Type(ty)=>type_name(ty),
-        GenericArgument::Value(Shape::Literal(value))=>value.to_string(),
-        GenericArgument::Value(Shape::Constant(name))=>name.clone(),
-        GenericArgument::Value(Shape::Expression(value))=>expression_name(value),
-    }).collect::<Vec<_>>().join(",");
-    match &expression.kind {
-        ExprKind::Number(value)|ExprKind::Name(value)=>value.clone(),
-        ExprKind::StaticU32(value)=>value.to_string(),ExprKind::Bool(value)=>value.to_string(),
-        ExprKind::Member(base,field)=>format!("{}.{}",expression_name(base),field),
-        ExprKind::Index(base,index)=>format!("{}[{}]",expression_name(base),expression_name(index)),
-        ExprKind::Unary(op,value)=>format!("({op}{})",expression_name(value)),
-        ExprKind::Binary(op,a,b)=>format!("({}{op}{})",expression_name(a),expression_name(b)),
-        ExprKind::Select(a,b,c)=>format!("({}?{}:{})",expression_name(a),expression_name(b),expression_name(c)),
-        ExprKind::Call(name,args)=>format!("{name}({})",arguments(args)),
-        ExprKind::Invoke(callee,args)=>format!("{}({})",expression_name(callee),arguments(args)),
-        ExprKind::Construct(ty,args)=>format!("{}({})",type_name(ty),arguments(args)),
-        ExprKind::Specialize(name,types,args)=>format!("{name}<{}>({})",generic(types),arguments(args)),
-        ExprKind::FunctionRef(name,types)=>format!("{name}<{}>",generic(types)),
-        ExprKind::Cooperate(name,types,args)=>format!("cooperate {name}{}({})",types.as_ref().map(|types|format!("<{}>",generic(types))).unwrap_or_default(),arguments(args)),
-        ExprKind::Target(target,value)=>format!("target({},{})",match target {Target::Cpu=>"cpu",Target::Gpu=>"gpu",Target::Compute=>"compute"},expression_name(value)),
-    }
-}
-fn condition_name(condition: &OutputCondition) -> String {
-    match condition {
-        OutputCondition::Name(name) | OutputCondition::Number(name) => name.clone(),
-        OutputCondition::Bool(value) => value.to_string(),
-        OutputCondition::StaticU32(value) => value.to_string(),
-        OutputCondition::Member(base, field) => format!("{}.{}", condition_name(base), field),
-        OutputCondition::Unary(op, value) => format!("({op}{})", condition_name(value)),
-        OutputCondition::Binary(op, a, b) => format!("({}{op}{})", condition_name(a), condition_name(b)),
-        OutputCondition::Constant(value) => format!("{}[{}]", value.ty.name,
-            value.bits.iter().map(|bits| format!("{bits:016x}")).collect::<Vec<_>>().join(",")),
-    }
-}
 impl World {
     pub(crate) fn check_interface_types(&self, definition: &crate::Definition, actual: &Function,
         types: &BTreeMap<String, TypeName>, values: &BTreeMap<String, u32>,
@@ -121,68 +53,6 @@ impl World {
     }
 
     // Resolve names and const arguments without asking a signature reference for its record layout.
-    fn c_signature_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<TypeName> {
-        if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
-            return Ok(self.c_function_type(name, source, span, module, imports)?.syntax());
-        }
-        let mut syntax = name.clone();
-        syntax.canonical = false;
-        let (types, count, code) = match name.name.as_str() {
-            "array" => (1, 2, "B238"),
-            "result" => (2, 2, "B269"),
-            "owned" => (1, 2, "B224"),
-            "void" | "never" => (0, 0, "B228"),
-            _ => {
-                if let Some(builtin) = Ty::builtin(&name.name) {
-                    syntax.name = builtin.name;
-                    (0, 0, "B232")
-                } else {
-                    let key = if name.canonical {
-                        self.records.get_key_value(&name.name).map(|(key, _)| key.clone())
-                    } else { self.resolve(&name.name, module, imports, false) };
-                    let Some(key) = key else { return source.fail(span, "B031", format!("未知或不明确的类型 {}", name.name)); };
-                    let record = &self.record(&key).0;
-                    syntax.name = key;
-                    syntax.canonical = true;
-                    (record.types.len(), record.types.len() + record.values.len(), "B232")
-                }
-            }
-        };
-        if name.arguments.len() != count {
-            return source.fail(span, code, format!("类型 {} 需要 {count} 个类型及const实参，实际为 {}", syntax.name, name.arguments.len()));
-        }
-        syntax.arguments.clear();
-        for (index, argument) in name.arguments.iter().enumerate() {
-            let argument = if name.name == "owned" && index == 1 {
-                let GenericArgument::Type(function) = argument else {
-                    return source.fail(span, "B224", "owned<T,F>需要载荷类型与静态释放函数");
-                };
-                if function.dataset || function.tile || function.view || !function.arguments.is_empty() {
-                    return source.fail(span, "B224", "释放函数由载荷推导泛型，声明处使用函数名称");
-                }
-                let key = if function.canonical && self.functions.contains_key(&function.name) { Some(function.name.clone()) }
-                    else { self.resolve(&function.name, module, imports, true) };
-                let Some(key) = key else { return source.fail(span, "B158", format!("未知或未导出的释放函数 {}", function.name)); };
-                let mut function = TypeName::named(key);
-                function.canonical = true;
-                GenericArgument::Type(function)
-            } else if index < types {
-                let GenericArgument::Type(ty) = argument else { return source.fail(span, code, "此位置需要类型实参"); };
-                GenericArgument::Type(self.c_signature_type(ty, source, span, module, imports)?)
-            } else {
-                let value = argument.shape().ok_or_else(|| crate::Diagnostic {
-                    source: source.clone(), span, code: "B235", message: "const实参需要u32编译期表达式".into(),
-                })?;
-                let value = self.shape(&Some(value), source, span, module, imports)?.unwrap();
-                GenericArgument::Value(Shape::Literal(value))
-            };
-            syntax.arguments.push(argument);
-        }
-        if let Some(count) = &name.count {
-            syntax.count = Some(Shape::Literal(self.shape(&Some(count.clone()), source, span, module, imports)?.unwrap()));
-        }
-        Ok(syntax)
-    }
     /// Contract expressions project nominal fields before requesting a layout;
     /// a callback signature may refer to the containing record itself.
     pub(crate) fn output_path_type(&self, name: &TypeName, fields: &[&str], source: &Source,
@@ -192,7 +62,7 @@ impl World {
             return source.fail(span, if fields.is_empty() { "B148" } else { "B225" },
                 "函数签名没有数值运算或字段；原生地址通过function_address显式取得");
         }
-        let resolved = self.c_signature_type(name, source, span, module, imports)?;
+        let resolved = self.type_reference(name, source, span, module, imports)?;
         let name = &resolved;
         if let Some((field, rest)) = fields.split_first() {
             if *field == "length" && (name.dataset || name.name == "array") {
@@ -251,7 +121,7 @@ impl World {
             return source.fail(span, "B263", "cfn<R,P...>至少需要一个返回类型");
         };
         let GenericArgument::Type(result) = result else { return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值"); };
-        let result = self.c_signature_type(result, source, span, module, imports)?;
+        let result = self.type_reference(result, source, span, module, imports)?;
         let mut parsed = Vec::new();
         for parameter in parameters {
             let GenericArgument::Type(parameter) = parameter else { return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值"); };
@@ -264,7 +134,7 @@ impl World {
                 };
                 element
             };
-            parsed.push((access, self.c_signature_type(parameter, source, span, module, imports)?));
+            parsed.push((access, self.type_reference(parameter, source, span, module, imports)?));
         }
         let contracts = crate::check::outputs::bind_function_contracts(
             self, &result, &parsed, name.contracts.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
@@ -291,22 +161,5 @@ impl World {
         };
         Ok((parameters, result, never))
     }
-    pub(crate) fn validate_c_functions(&self, ty: &Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
-        if let Some(function) = &ty.function && consumed.insert(ty.name.clone()) {
-            let (parameters, result, _) = self.c_function_signature(function, source, span, module, imports)?;
-            crate::check::outputs::validate_function_contracts(
-                &parameters, result.as_ref(), &function.contracts, source, span)?;
-            for parameter in parameters {
-                let ty = match parameter.kind { CallParameterKind::Value(ty) | CallParameterKind::Reference { ty, .. } => ty };
-                self.validate_c_functions(&ty, source, span, module, imports, consumed)?;
-            }
-            if let Some(result) = result { self.validate_c_functions(&result, source, span, module, imports, consumed)?; }
-        }
-        for nested in ty.arguments.iter().chain(ty.fields.iter().map(|(_, _, ty)| ty.as_ref()))
-            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
-            .chain(ty.array.as_deref()).chain(ty.view.as_deref()).chain(ty.dataset.as_deref()) {
-            self.validate_c_functions(nested, source, span, module, imports, consumed)?;
-        }
-        Ok(())
-    }
+
 }
