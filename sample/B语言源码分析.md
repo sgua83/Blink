@@ -1495,7 +1495,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:947`。
+源码节选：`crates/blanguage/src/check/native_function.rs:939`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1725,7 +1725,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
                 },
 ```
 
-原Module只读查询消费同一Unit的Resource、Position、Dataset和Memory闭合Access，不维护第二份副作用状态。Scope与实际调用都以原Memory交接写区，非拥有write／inout许可不重复定义整值写；原C声明继续按实际外部内存合同与类型位置交接。dataset指针的原布局构造归application::dataset_origin，Scope::call_inputs只提供实际Data／字段／逻辑Ty，native_call的BorrowedData分支沿同一构造交接原ABI值，按值ApplicationData分支在原require_application_initialized完成后，也把同一实际Data及完整元素布局交给该调用的原输入Proof；没有额外IR、查询图或运行时状态。Frame句柄和长度仍是原机器值，Origin只表达合同所需的实际存储位置。循环内部尚未形成外层绑定的新拥有输入仍见Issues C-021.1.4.5.4.3.2.5.2，不能由实际调用的修正代替。同上下文的地址身份替换保留Local／Buffer的原固定位置；真正重绑的参数、资源、派生、外部及dataset根继续消费原实参映射并撤去旧形参位置。写区和初始化复用真实存储所有者，不跨模块发布局部槽，不改变机器参数、ABI或释放职责。dataset及拥有字段中的实际元素地址沿原InputSlot::Value引用Data.elements的对应分量，与普通值共享原LoopInput；资源句柄由Data槽交接；循环写预分析撤回旧数值事实时保留原LoopInput借用来源，独立拥有Data的循环源沿原Borrow.resources保留带成立条件的物理资源身份，借用Data及普通地址／view源继续交接实际位置与布局，不把元素内容或位置层当作拥有句柄。首次真实游标读取在原数值身份初始化接点同时取得已有共同来源，后续游标赋值保持本次精确来源，不合并已被覆盖的旧地址。循环出口可直接消费已闭合的Value来源；仍待求解的来源和资源存储版本继续原循环图。循环传地址后的真实写入会撤回相交位置的旧数值，写零后不能继续取得非零许可；原循环出口先将每条回边的原值别名交给同一出口值，再合流数值范围与原零次／重复分支；实际改变的值不成为相等身份，延后MemoryValue沿原Clause求解。普通for及其continue保持未写兄弟字段的事实；条件合流只为两侧均存在且不同的值身份建立输出名；缺少既有身份时不提前命名，实际读取沿原位置取得当前共同事实与借用来源，赋值继续交接其真实新值。复合continue保留实际指针写的原存储别名和后续真实读取。循环入口仍由原LoopWrites交接可能写的位置，尚未读取的地址不能由语法名称推断为不相交。间接影响的本地数值由原循环输入槽命名，入口与真实回边仍由同一LoopState持有，沿原Memory与这些生产者求解当前事实；同一数值效果消费本地存储分量与拥有dataset的长度赋值；resize及dataset构造的确定长度参数沿原独立赋值、分支和真实继续边合流，只保留入口与回边共同保证的数值界，数值界不恢复旧资源身份或冻结为类型count。对同一u32存储位置及循环中不变的常量，`x=c-x`沿原整数运算按回绕语义形成覆盖入口值与反向值的循环范围，原下标和非零消费者直接使用。同一反向与不变路径的顺序、分支及继续边沿同一数值效果合流。dataset绑定的元数据写直接交给原LoopWrites本地槽集合；自然出口按同一写槽选择实际重绑定的dataset，沿原LoopState把入口与真实继续边的长度和共同元素模型交给原Proof及Returned模型；根借用保留原LoopInput的来源，数值模型交接不再次合并根条件。元素归属消费原DataReference交接的实际根；仅有一个来源且就是当前Data根时，直接取得已确定的完整根作用域，多来源、别根和真实嵌套继续原查询。返回元素检查在原元素作用域投影已有拥有集合，不重复并入已由输出汇总或父层交入的当前根。普通调用先按各写访问自身条件合流，再在原Borrow返回处统一施加本次调用路径；各访问条件、未知与已知空写及实际存储版本继续分别保持。拥有状态、实际驻留及长度的uniform／constant事实仍按原数据职责合流，零次执行和break沿原条件处理，普通完整遍历继续由原完成生产者交付。非零使用消费闭合后的实际事实，写零撤回旧非零，未写分量保留当前不变量；break退出不作为下一轮生产者。条件沿现有规范编码比较，不因等价DAG的形状制造数值变更。完整借用与内存安全目标及剩余缺口仍见Issues C-036.5，不将局部能力视作完整保证。
+原生Unit直接持有同一个Arc<Definition>，module／public／source／span不再各存副本；实际发射的c_abi独立保留。原长度查询沿该声明及已有类型／reference_parameters布局接回真实输入，compiler专用ParameterOrigin缺席不改变语义。原Module只读查询消费同一Unit的Resource、Position、Dataset和Memory闭合Access，不维护第二份副作用状态。Scope与实际调用都以原Memory交接写区，非拥有write／inout许可不重复定义整值写；原C声明继续按实际外部内存合同与类型位置交接。dataset指针的原布局构造归application::dataset_origin，Scope::call_inputs只提供实际Data／字段／逻辑Ty，native_call的BorrowedData分支沿同一构造交接原ABI值，按值ApplicationData分支在原require_application_initialized完成后，也把同一实际Data及完整元素布局交给该调用的原输入Proof；没有额外IR、查询图或运行时状态。Frame句柄和长度仍是原机器值，Origin只表达合同所需的实际存储位置。循环内部尚未形成外层绑定的新拥有输入仍见Issues C-021.1.4.5.4.3.2.5.2，不能由实际调用的修正代替。同上下文的地址身份替换保留Local／Buffer的原固定位置；真正重绑的参数、资源、派生、外部及dataset根继续消费原实参映射并撤去旧形参位置。写区和初始化复用真实存储所有者，不跨模块发布局部槽，不改变机器参数、ABI或释放职责。dataset及拥有字段中的实际元素地址沿原InputSlot::Value引用Data.elements的对应分量，与普通值共享原LoopInput；资源句柄由Data槽交接；循环写预分析撤回旧数值事实时保留原LoopInput借用来源，独立拥有Data的循环源沿原Borrow.resources保留带成立条件的物理资源身份，借用Data及普通地址／view源继续交接实际位置与布局，不把元素内容或位置层当作拥有句柄。首次真实游标读取在原数值身份初始化接点同时取得已有共同来源，后续游标赋值保持本次精确来源，不合并已被覆盖的旧地址。循环出口可直接消费已闭合的Value来源；仍待求解的来源和资源存储版本继续原循环图。循环传地址后的真实写入会撤回相交位置的旧数值，写零后不能继续取得非零许可；原循环出口先将每条回边的原值别名交给同一出口值，再合流数值范围与原零次／重复分支；实际改变的值不成为相等身份，延后MemoryValue沿原Clause求解。普通for及其continue保持未写兄弟字段的事实；条件合流只为两侧均存在且不同的值身份建立输出名；缺少既有身份时不提前命名，实际读取沿原位置取得当前共同事实与借用来源，赋值继续交接其真实新值。复合continue保留实际指针写的原存储别名和后续真实读取。循环入口仍由原LoopWrites交接可能写的位置，尚未读取的地址不能由语法名称推断为不相交。间接影响的本地数值由原循环输入槽命名，入口与真实回边仍由同一LoopState持有，沿原Memory与这些生产者求解当前事实；同一数值效果消费本地存储分量与拥有dataset的长度赋值；resize及dataset构造的确定长度参数沿原独立赋值、分支和真实继续边合流，只保留入口与回边共同保证的数值界，数值界不恢复旧资源身份或冻结为类型count。对同一u32存储位置及循环中不变的常量，`x=c-x`沿原整数运算按回绕语义形成覆盖入口值与反向值的循环范围，原下标和非零消费者直接使用。同一反向与不变路径的顺序、分支及继续边沿同一数值效果合流。dataset绑定的元数据写直接交给原LoopWrites本地槽集合；自然出口按同一写槽选择实际重绑定的dataset，沿原LoopState把入口与真实继续边的长度和共同元素模型交给原Proof及Returned模型；根借用保留原LoopInput的来源，数值模型交接不再次合并根条件。元素归属消费原DataReference交接的实际根；仅有一个来源且就是当前Data根时，直接取得已确定的完整根作用域，多来源、别根和真实嵌套继续原查询。返回元素检查在原元素作用域投影已有拥有集合，不重复并入已由输出汇总或父层交入的当前根。普通调用先按各写访问自身条件合流，再在原Borrow返回处统一施加本次调用路径；各访问条件、未知与已知空写及实际存储版本继续分别保持。拥有状态、实际驻留及长度的uniform／constant事实仍按原数据职责合流，零次执行和break沿原条件处理，普通完整遍历继续由原完成生产者交付。非零使用消费闭合后的实际事实，写零撤回旧非零，未写分量保留当前不变量；break退出不作为下一轮生产者。条件沿现有规范编码比较，不因等价DAG的形状制造数值变更。完整借用与内存安全目标及剩余缺口仍见Issues C-036.5，不将局部能力视作完整保证。
 
 源码节选：`crates/blanguage/src/check/address.rs:206`。
 
@@ -1753,7 +1753,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
 
-源码节选：`crates/blanguage/src/check/native_function.rs:710`。
+源码节选：`crates/blanguage/src/check/native_function.rs:702`。
 
 ```rust
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
@@ -1784,7 +1784,7 @@ pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->addr
 }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:680`。
+源码节选：`crates/blanguage/src/check/native_function.rs:672`。
 
 ```rust
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
@@ -2010,7 +2010,7 @@ pub(super) enum Position {
 
 不可变view游标保留原view的活动借用，并以同一OwnedBinding保存该行内容的事实。view地址与长度的三分量语义身份、行寄存器、实际步长与字段字节偏移共同标识位置；固定字段和静态数组分量的重复读取取得同一内容来源。每次建立游标时，各字段具有自己的未知值身份，短路条件中尚未读取的一侧也沿这份身份合流。实际CPU／GPU装载仍读取原地址，字段值、资源借用和最后消费者的生命周期分别保持。一般动态数组分量的重复选择关系仍是独立能力缺口。
 
-循环与普通调用都保持这份原来源。循环出口先去掉直接自身边，识别直接不变输入，再用原resolve把这些输入代入其他来源定义。完整Borrow与入口相同的地址／view或资源槽按实际成立条件交回入口；改变的来源、条件和存储版本继续引用原循环关系。每个返回出口先在本出口的路径、值与初始化关系内改名，再参加原返回合流。函数合同只据真实输入和最终合流输出命名，不把私有出口别名汇成全函数表。驻留输入由check/residency.rs沿原Arguments和元素路径消费：原Call.bindings先把实际标量Proof交给同一元素选择，再用于位置条件，完整保留已知值、范围和原关系，不能只保留索引身份后重建没有数值事实的选择。直接实参与计算所得的索引沿同一合同交接；独立对象／归档消费原合同，不重读实现。资源输出在原physical来源合流入口沿Borrow.resources取得带成立条件的实际资源身份，再交exposed及canonical；实参typed Position的内存描述不成为递归中反复新增的资源身份。普通地址／view输出继续保留原位置、布局与初始化关系。资源输出以原根资源槽及逐层元素字段路径命名；原CallResult、来源命名、回写与地址快照直接消费这条路径，不再先压成遍历序号再重复枚举完整类型。根槽仍由原实际返回类型确定，空集合、未活动变体、真实借用、位置和最后释放继续由原合同交接。资源可用性匹配先沿原Borrow.resources取得带成立条件的实际资源身份；Position继续描述原内存位置，不以它的表层来源代替资源身份，也不因原输入名称已移动就遗漏仍持有该资源的返回拥有者。拥有dataset返回在原闭合来源确定仍是同一个按值dataset输入版本时，沿原CallParameter的实际输入分量取得该描述符length身份，交给原Proof::assume_same_length；这包含递归原样返回，源码、对象及归档消费同一合同。resize／take_last产生新存储版本，即便Frame槽位复用也不沿用旧长度；多个或未知来源、借用区间不由拥有者来源猜测等长。普通标量递归返回的输入别名分析仍见Issues C-021.1.7，不以资源元数据交接冒称一般数值分析完成。该编译期身份不成为运行时资源或另一张登记表。普通write／inout调用先消费被调用方原写回合同，再代入本次实参。原合同已经闭合时，即使实参仍带有调用方自己的待求解关系，也不再生产一个新的未知调用结果；真正缺失或未闭合的合同仍由原调用图收敛。这样保留真实依赖，同时避免把已知来源丢掉后反复重建。
+循环与普通调用都保持这份原来源。循环出口先去掉直接自身边，识别直接不变输入，再用原resolve把这些输入代入其他来源定义。完整Borrow与入口相同的地址／view或资源槽按实际成立条件交回入口；改变的来源、条件和存储版本继续引用原循环关系。每个返回出口先在本出口的路径、值与初始化关系内改名，再参加原返回合流。函数合同只据真实输入和最终合流输出命名，不把私有出口别名汇成全函数表。驻留输入由check/residency.rs沿原Arguments和元素路径消费：原Call.bindings先把实际标量Proof交给同一元素选择，再用于位置条件，完整保留已知值、范围和原关系，不能只保留索引身份后重建没有数值事实的选择。直接实参与计算所得的索引沿同一合同交接；独立对象／归档消费原合同，不重读实现。资源输出在原physical来源合流入口沿Borrow.resources取得带成立条件的实际资源身份，再交exposed及canonical；实参typed Position的内存描述不成为递归中反复新增的资源身份。普通地址／view输出继续保留原位置、布局与初始化关系。资源输出以原根资源槽及逐层元素字段路径命名；原CallResult、来源命名、回写与地址快照直接消费这条路径，不再先压成遍历序号再重复枚举完整类型。根槽仍由原实际返回类型确定，空集合、未活动变体、真实借用、位置和最后释放继续由原合同交接。资源可用性匹配先沿原Borrow.resources取得带成立条件的实际资源身份；Position继续描述原内存位置，不以它的表层来源代替资源身份，也不因原输入名称已移动就遗漏仍持有该资源的返回拥有者。拥有dataset返回在原闭合来源确定仍是同一个按值dataset输入版本时，按原ResourceParameter指向的源参数，从同一原声明及既有类型／引用布局取得真实CallParameter的length输入身份，交给原Proof::assume_same_length；这包含递归原样返回，源码、对象及归档消费同一合同。resize／take_last产生新存储版本，即便Frame槽位复用也不沿用旧长度；多个或未知来源、借用区间不由拥有者来源猜测等长。普通标量递归返回的输入别名分析仍见Issues C-021.1.7，不以资源元数据交接冒称一般数值分析完成。该编译期身份不成为运行时资源或另一张登记表。普通write／inout调用先消费被调用方原写回合同，再代入本次实参。原合同已经闭合时，即使实参仍带有调用方自己的待求解关系，也不再生产一个新的未知调用结果；真正缺失或未闭合的合同仍由原调用图收敛。这样保留真实依赖，同时避免把已知来源丢掉后反复重建。
 
 模块合同编码保留Inactive占位键，用它区别某个变体载荷已知没有view与来源尚未知。没有实际所有者的占位条件写为true，不授予任何资源、地址或初始化权限；真实来源的条件仍由原Condition编码规整。旧对象经同一解码／编码交接，链接器继续精确比较合同，不增加推导或忽略字段。
 

@@ -141,12 +141,9 @@ struct Unit {
     context: Option<CheckedContext>,
     function: Option<FunctionBody>,
     contract: Contract,
-    module: String,
-    public: bool,
+    definition: Arc<Definition>,
     c_abi: bool,
     residency: residency::Inputs,
-    source: Source,
-    span: Span,
     view_model: view_contracts::Function,
 }
 fn declaration(
@@ -165,7 +162,7 @@ fn declaration(
         Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
     }
     let checked = checked_function(world, &instance, Some(application::Context::default()), functions)?;
-    finish_declaration(&instance, checked)
+    finish_declaration(world, &instance, checked)
 }
 
 #[inline(never)]
@@ -190,15 +187,12 @@ fn compiled_declaration(
     functions.units.insert(
         instance.name.clone(),
         Some(Unit {
+            definition: instance.definition.clone(),
             context: None,
             function: None,
             contract,
-            module: instance.definition.module.clone(),
-            public: instance.definition.public,
             c_abi: instance.definition.function.c_abi,
             residency: residency::Inputs::default(),
-            source: instance.definition.source.clone(),
-            span: instance.definition.function.span,
             view_model: view_contracts::Function::default(),
         }),
     );
@@ -207,6 +201,7 @@ fn compiled_declaration(
 
 #[inline(never)]
 fn finish_declaration(
+    world: &World,
     instance: &crate::generics::Instance,
     checked: Box<CheckedFunction>,
 ) -> Result<Module> {
@@ -231,19 +226,16 @@ fn finish_declaration(
     functions.units.insert(
         instance.name.clone(),
         Some(Unit {
+            definition: instance.definition.clone(),
             context: Some(checked.context),
             function: Some(function),
             contract,
-            module: instance.definition.module.clone(),
-            public: instance.definition.public,
             c_abi: instance.definition.function.c_abi,
             residency,
-            source: instance.definition.source.clone(),
-            span: instance.definition.function.span,
             view_model: checked.view_model,
         }),
     );
-    resolve_views(&mut functions,Some(&instance.name))?;
+    resolve_views(world,&mut functions,Some(&instance.name))?;
     Ok(functions)
 }
 // 合同中的值编号属于接口，不进入实际IR寄存器表或产生转换指令。
@@ -397,7 +389,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let mut functions = declaration(world, instance, Module::default())?;
     lower_module_failures(world,&mut functions)?;
-    resolve_residencies(&mut functions)
+    resolve_residencies(world,&mut functions)
 }
 impl Builder<'_> {
     pub(super) fn native_declaration(&mut self, instance: &crate::generics::Instance) -> Result<()> {
@@ -1064,24 +1056,32 @@ fn view_outputs(contract:&Contract)->view_contracts::Interface {
 }
 // An unchanged owned input version carries the same descriptor length. A new
 // resize result has its own resource identity even when its Frame slot is reused.
-fn input_dataset_length(parameters:&[CallParameter],borrow:&view::Borrow)->Option<ValueIdentity>{
+fn input_dataset_length(world:&World,definition:&Definition,parameters:&[CallParameter],borrow:&view::Borrow)->Result<Option<ValueIdentity>>{
     let mut sources=borrow.sources.entries().filter(|(_,when)|when.possible()).map(|(source,_)|source);
-    let view::Source::Data(ValueIdentity::Register(root))=sources.next()? else{return None;};
-    if sources.next().is_some(){return None;}
-    let mut start=0;
-    for parameter in parameters {
-        let width=match &parameter.kind {
-            CallParameterKind::Value(ty)=>{
-                if start==*root && ty.dataset.is_some(){return Some(ValueIdentity::Register(start+1));}
-                ty.components.len()
-            },
-            CallParameterKind::Reference{..}=>2,
+    let Some(view::Source::Data(ValueIdentity::ResourceParameter(wanted,0)))=sources.next()else{return Ok(None);};
+    if sources.next().is_some(){return Ok(None);}
+    let mut slot=1;
+    let mut start=match &parameters[0].kind{CallParameterKind::Value(ty)=>ty.components.len(),CallParameterKind::Reference{..}=>2};
+    for(index,param)in definition.function.params.iter().enumerate(){
+        if param.ty.is_acceleration(){continue;}
+        let parts=if param.ty.dataset||param.ty.tile||param.ty.is_texture_resource()||param.access==Access::Value{1}else{
+            let ty=cooperative::parameter_type(world,param,definition)?;
+            if param.access==Access::Read&&ty.owns_resources()||definition.function.c_abi{1}else{reference_parameters(&ty).len()}
         };
-        start+=width;
+        for part in 0..parts{
+            match &parameters[slot].kind{
+                CallParameterKind::Value(ty)=>{
+                    if index==*wanted&&part==0&&param.access==Access::Value&&ty.dataset.is_some(){return Ok(Some(ValueIdentity::Register(start+1)));}
+                    start+=ty.components.len();
+                },
+                CallParameterKind::Reference{..}=>start+=2,
+            }
+            slot+=1;
+        }
     }
-    None
+    Ok(None)
 }
-fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
+fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> {
     fn scalar_values(value:&mut Value,bindings:&BTreeMap<ValueIdentity,bounds::Proof>){
         value.proof=value.proof.substitute_values(bindings);
         value.constant=value.constant.take().or_else(||value.proof.known_value(&value.ty));
@@ -1119,7 +1119,7 @@ fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
         let contract=&mut unit.contract;
         let interface=&outputs.interfaces[name];
         if interface.outputs.values().any(view::Borrow::has_local) {
-            return unit.source.fail(unit.span,"B227","地址不能返回或输出当前函数的局部存储");
+            return unit.definition.source.fail(unit.definition.function.span,"B227","地址不能返回或输出当前函数的局部存储");
         }
         contract.view_access=Some(interface.access.clone());
         contract.initialization=Some(interface.initialization.clone());
@@ -1133,7 +1133,7 @@ fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
                 view_contracts::Output::Written(parameter,component)=>if let Some(value)=contract.written[*parameter].as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(*component,borrow.clone());},
                 view_contracts::Output::ReturnedResource(resource)=>if let Some(value)=contract.returned.as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){
                     value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());
-                    if value.ownership==application::Ownership::Owned && let Some(length)=input_dataset_length(&contract.parameters,borrow){
+                    if value.ownership==application::Ownership::Owned && let Some(length)=input_dataset_length(world,&unit.definition,&contract.parameters,borrow)?{
                         value.length.proof.assume_same_length(&bounds::Proof::default().with_identity(length));
                     }
                 },
@@ -1147,8 +1147,8 @@ fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
     Ok(())
 }
 // 函数合同沿真实资源调用关系收敛，递归参数置换也消费同一输入条件。
-fn resolve_residencies(module: &mut Module) -> Result<()> {
-    resolve_views(module,None)?;
+fn resolve_residencies(world:&World,module: &mut Module) -> Result<()> {
+    resolve_views(world,module,None)?;
     let outputs = residency::solve_outputs(module.units.iter().map(|(name, unit)| {
         (
             name.as_str(),
@@ -1161,7 +1161,7 @@ fn resolve_residencies(module: &mut Module) -> Result<()> {
         for unit in module.units.values_mut(){let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
             let required=residency::infer(&unit.residency,&known,&outputs)?;
             let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
-            let required=residency::canonical(&required,&parameters,&unit.source,unit.span)?;
+            let required=residency::canonical(&required,&parameters,&unit.definition.source,unit.definition.function.span)?;
             changed|=required!=unit.contract.residency;unit.contract.residency=required;
         }
         if !changed{break;}
@@ -1510,7 +1510,7 @@ fn lower_failure_calls(
 }
 fn lower_module_failures(world:&World,module:&mut Module)->Result<()> {
     loop {
-        resolve_views(module,None)?;
+        resolve_views(world,module,None)?;
         failure_effects(module);
         let known=module.units.iter().filter_map(|(name,unit)|unit.as_ref().unwrap().contract.fallible.then(||name.clone())).collect::<BTreeSet<_>>();
         let names=module.units.keys().cloned().collect::<Vec<_>>();
@@ -1604,7 +1604,7 @@ fn finalize(
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
     lower_module_failures(world,&mut module)?;
-    resolve_residencies(&mut module)?;
+    resolve_residencies(world,&mut module)?;
     let mut resources = std::mem::take(&mut module.resources);
     let mut programs = programs.iter_mut().map(|program| &mut **program)
         .chain(resources.programs.iter_mut().map(|(_, program)| program)).collect::<Vec<_>>();
@@ -1618,7 +1618,7 @@ fn finalize(
         let mut next = reachable.clone();
         for name in &reachable {
             let unit=units.get_mut(name).unwrap();
-            if owner.is_none_or(|owner|unit.module==owner) {
+            if owner.is_none_or(|owner|unit.definition.module==owner) {
                 if let Some(function)=&mut unit.function {next.extend(dependencies(&mut function.body));}
             }
         }
@@ -1668,9 +1668,9 @@ fn finalize(
     for (name, unit) in &mut units {
         unit.contract.frame = frame.contains(name);
         if unit.c_abi && unit.contract.frame {
-            return unit.source.fail(unit.span, "B263", "C入口的实际调用闭包需要Frame；C ABI不能隐式取得执行上下文");
+            return unit.definition.source.fail(unit.definition.function.span, "B263", "C入口的实际调用闭包需要Frame；C ABI不能隐式取得执行上下文");
         }
-        if unit.function.is_none() || owner.is_some_and(|owner| unit.module != owner) {
+        if unit.function.is_none() || owner.is_some_and(|owner| unit.definition.module != owner) {
             imports.insert(name.clone(), unit.contract.bytes());
         }
     }
@@ -1679,7 +1679,7 @@ fn finalize(
         for name in &names {
             if frame.contains(name) && program.target()!=Target::Cpu {
                 let unit = &units[name];
-                return unit.source.fail(unit.span, "B263", "该范围产物尚未交接真实Frame及同源资源定义");
+                return unit.definition.source.fail(unit.definition.function.span, "B263", "该范围产物尚未交接真实Frame及同源资源定义");
             }
         }
         let needs_frame=names.iter().any(|name|frame.contains(name));
@@ -1710,7 +1710,7 @@ fn finalize(
         resources,
     };
     for (name, mut unit) in units {
-        let local = unit.function.is_some() && owner.is_none_or(|owner| unit.module == owner);
+        let local = unit.function.is_some() && owner.is_none_or(|owner| unit.definition.module == owner);
         if local {
             let mut function = unit.function.take().unwrap();
             prune(&mut function.body, &unframed);
@@ -1722,7 +1722,7 @@ fn finalize(
             }
             crate::optimize::value_code(&mut function.body);
             result.functions.push(function);
-            if owner.is_some() && unit.public {
+            if owner.is_some() && unit.definition.public {
                 result.exports.insert(name, unit.contract.bytes());
             }
         }
@@ -2156,15 +2156,12 @@ fn build_domain(
     functions.units.insert(
         name,
         Some(Unit {
+            definition: d.clone(),
             context: None,
             function: Some(function),
             contract,
-            module: d.module.clone(),
-            public: d.public,
             c_abi: false,
             residency: residency::Inputs::default(),
-            source: d.source.clone(),
-            span: d.function.span,
                 view_model: view_contracts::Function::default(),
         }),
     );
