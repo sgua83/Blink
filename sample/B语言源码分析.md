@@ -97,7 +97,7 @@ cd Blink
 cargo build --workspace --release
 ```
 
-原build.rs用上述种子bc逐模块生成B词法、泛型前瞻、对象元数据、COFF对象写出及归档生成对象，再由同一次blink归档静态链接；种子保留在安装目录，新构建产物进入工程target。Rust编译其余语法构造、AST、检查、IR、后端与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
+原build.rs用上述种子bc逐模块生成B词法、泛型前瞻与链接字符串解码、对象元数据、COFF对象写出及归档生成对象，再由同一次blink归档静态链接；种子保留在安装目录，新构建产物进入工程target。Rust编译其余语法构造、AST、检查、IR、后端与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
 
 先检查，再导出 CPU/GPU 代码：
 
@@ -929,7 +929,7 @@ C 结构体保存字段，Rust 的 `struct` 也如此。Rust 的 `enum` 还可�
 
 `Result<T,E>` 表示成功或错误：`Ok(value)` 与 `Err(error)`。函数调用后面的 `?` 表示成功就取出结果，失败就把错误交还上层。它不是重新尝试，也不是忽略错误。
 
-源码节选：`crates/blanguage/src/parser.rs:16`。
+源码节选：`crates/blanguage/src/parser.rs:32`。
 
 ```rust
 pub fn parse(source: Source) -> Result<Module> {
@@ -1112,9 +1112,9 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 5.4 稳定种子怎样参与正式构建
 
-原build.rs调用已安装稳定发行的bc，分别生成B词法、泛型前瞻、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子输入的VERSION由原共享读句柄保持到全部编译与归档子进程结束，新工具写工程target；编译器运行时直接调用已编入的B代码，构建保持原compiler角色与依赖关系。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。
+原build.rs调用已安装稳定发行的bc，分别生成B词法、泛型前瞻与链接字符串解码、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子输入的VERSION由原共享读句柄保持到全部编译与归档子进程结束，新工具写工程target；编译器运行时直接调用已编入的B代码，构建保持原compiler角色与依赖关系。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。
 
-词法扫描、泛型尖括号前瞻、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成由B接管；其余对象语义／合同及栈记录生成、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成由B接管；其余对象语义／合同及栈记录生成、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 **自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
@@ -1132,7 +1132,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 6.2 解析器怎样知道在哪里
 
-源码节选：`crates/blanguage/src/parser.rs:48`。
+源码节选：`crates/blanguage/src/parser.rs:64`。
 
 ```rust
 struct Parser {
@@ -1163,7 +1163,7 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:1107`。
+源码节选：`crates/blanguage/src/parser.rs:1112`。
 
 ```rust
             let prec = match self.peek() {
@@ -1246,7 +1246,17 @@ extern "C" AngleEnd angle_end(address source,address tokens,u64 count,u64 at) on
 }
 ```
 
-C ABI结果AngleEnd用end及present表达原Option，Rust同步入口只把结果交回type_argument_is_value、declaration_type及表达式解析的四处消费者。类型消费`>>`时仍推进原Span起点，后续前瞻读取这个实际范围。当前只有词法和这段前瞻由B实现，其他Parser职责及完整自举的剩余范围见Issues的C-032.2.2。
+C ABI结果AngleEnd用end及present表达原Option，Rust同步入口只把结果交回type_argument_is_value、declaration_type及表达式解析的四处消费者。类型消费`>>`时仍推进原Span起点，后续前瞻读取这个实际范围。词法扫描、这段前瞻和下面的链接字符串解码由B实现，其他Parser职责及完整自举的剩余范围见Issues的C-032.2.2。
+
+### 6.6 链接字符串怎样直接进入唯一输出
+
+`extern "C"`、DLL库名和`as`后的符号名使用链接字符串。它们接受非空、非NUL的ASCII，反斜线和双引号需要转义；普通Unicode文本值沿另一条字面量规则处理。
+
+`Parser::link_string`保留双引号语法入口，借用原Source中去掉双引号的Token内文。Rust按内文长度分配一个Vec输出：每个解码后的字节至少消费一个输入字节，所以这块存储就是输出上界。`bootstrap/parser.b::decode_link_string`一次扫描、解释转义并写入该缓冲，不复制整个Token，也不先计算长度再重扫。
+
+B返回成功长度，或不支持的转义、非ASCII／NUL、空结果这三类错误。Rust用原Span报告B263；成功时把已初始化部分交成String，沿用同一分配。错误时原Vec直接释放，输入始终属于Source，B不保存任何借用地址。这个私有C ABI由实际输入范围、同步调用和唯一输出所有者承担内存职责，没有逐字符回调、第二份字符串或新的释放链。
+
+AST构造、普通Unicode文本解码和其余语法仍由各自现有实现处理，局部B接管不代表完整解析器或编译器自举已经完成。
 
 ## 第七章 类型与布局：不只检查能不能相加
 

@@ -8,9 +8,25 @@ struct AngleEnd {
     end: usize,
     present: u32,
 }
+// These discriminants are produced by bootstrap/parser.b through its C ABI.
+#[repr(u32)]
+#[allow(dead_code)]
+enum LinkStringError {
+    None,
+    Escape,
+    Ascii,
+    Empty,
+}
+#[repr(C)]
+struct LinkStringResult {
+    count: usize,
+    error: LinkStringError,
+}
 unsafe extern "C" {
     #[link_name = "bootstrap.parser::angle_end"]
     fn angle_end(source: *const u8, tokens: *const Token, count: usize, at: usize) -> AngleEnd;
+    #[link_name = "bootstrap.parser::decode_link_string"]
+    fn decode_link_string(source: *const u8, length: usize, output: *mut u8) -> LinkStringResult;
 }
 
 pub fn parse(source: Source) -> Result<Module> {
@@ -91,42 +107,31 @@ impl Parser {
     }
     fn link_string(&mut self) -> Result<String> {
         let span = self.span();
-        let text = self.peek().to_owned();
+        let text = self.peek();
         if !text.starts_with('"') {
             return self
                 .source
                 .fail(span, "B263", "C ABI 与链接名称使用双引号字符串");
         }
-        let mut result = String::new();
-        let mut chars = text[1..text.len() - 1].chars();
-        while let Some(c) = chars.next() {
-            let c = if c == '\\' {
-                match chars.next() {
-                    Some('\\') => '\\',
-                    Some('"') => '"',
-                    _ => {
-                        return self.source.fail(
-                            span,
-                            "B263",
-                            "链接字符串只支持 \\\\ 与 \\\" 转义",
-                        );
-                    }
-                }
-            } else {
-                c
-            };
-            if !c.is_ascii() || c == '\0' {
-                return self
-                    .source
-                    .fail(span, "B263", "PE 链接名称需要非 NUL 的 ASCII 字符");
+        let input = &text.as_bytes()[1..text.len() - 1];
+        // Each output byte consumes at least one input byte. B writes synchronously
+        // into this caller-owned buffer and retains neither address.
+        let mut output = Vec::<u8>::with_capacity(input.len());
+        let result = unsafe {
+            decode_link_string(input.as_ptr(), input.len(), output.as_mut_ptr())
+        };
+        let message = match result.error {
+            LinkStringError::None => {
+                // Successful B decoding initialized exactly count non-NUL ASCII bytes.
+                unsafe { output.set_len(result.count); }
+                self.at += 1;
+                return Ok(unsafe { String::from_utf8_unchecked(output) });
             }
-            result.push(c);
-        }
-        if result.is_empty() {
-            return self.source.fail(span, "B263", "链接名称不能为空");
-        }
-        self.at += 1;
-        Ok(result)
+            LinkStringError::Escape => "链接字符串只支持 \\\\ 与 \\\" 转义",
+            LinkStringError::Ascii => "PE 链接名称需要非 NUL 的 ASCII 字符",
+            LinkStringError::Empty => "链接名称不能为空",
+        };
+        self.source.fail(span, "B263", message)
     }
     fn qualified(&mut self, sep: &str) -> Result<String> {
         let mut s = self.ident()?;

@@ -179,7 +179,7 @@ C/C++ print `3 5 7 9`; Rust prints `[3.0, 5.0, 7.0, 9.0]`. Deploy the host EXE w
 
 `main` is under active development. Its [VERSION](../VERSION) can be newer than the formal release. The source SDK instructions below and relative reference links follow main. The introduction above uses a fixed example snapshot with the stated formal tools; books in older tags are historical release snapshots.
 
-Before building the current compiler, install a stable Blink seed supporting its current B frontend sources. The default `compiler` feature retains the complete compiler APIs. The original `build.rs` invokes installed `bc` and `blink` from `%ProgramFiles%/Blink/bin` to statically build the B lexer and generic-lookahead modules; newly built target tools are not their own bootstrap prerequisite. Runtime-only consumers disable `compiler`, avoiding the frontend seed and source frontend.
+Before building the current compiler, install a stable Blink seed supporting its current B frontend sources. The default `compiler` feature retains the complete compiler APIs. The original `build.rs` invokes installed `bc` and `blink` from `%ProgramFiles%/Blink/bin` to statically build the B lexer and parser-helper modules (generic lookahead and C ABI/PE link-string decoding); newly built target tools are not their own bootstrap prerequisite. Runtime-only consumers disable `compiler`, avoiding the frontend seed and source frontend.
 
 Use Windows x64, the [Rust stable MSVC toolchain](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. Open an x64 Developer PowerShell:
 

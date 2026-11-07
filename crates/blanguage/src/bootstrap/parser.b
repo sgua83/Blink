@@ -45,3 +45,20 @@ extern "C" AngleEnd angle_end(address source,address tokens,u64 count,u64 at) on
     }
     return AngleEnd(0u64,0);
 }
+
+extern "C" LinkStringResult decode_link_string(address source,u64 length,address output) on cpu {
+    u64 at=0u64;u64 count=0u64;
+    while(at<length){
+        u32 c=byte_at(source,at);at+=1u64;
+        if(c==92){
+            if(at==length){return LinkStringResult(0u64,1);}
+            c=byte_at(source,at);at+=1u64;
+            if(c!=92&&c!=34){return LinkStringResult(0u64,1);}
+        }
+        if(c==0||c>127){return LinkStringResult(0u64,2);}
+        unsafe_position<u8>(unsafe_address(address_bits(output)+count))=u8(c);
+        count+=1u64;
+    }
+    if(count==0u64){return LinkStringResult(0u64,3);}
+    return LinkStringResult(count,0);
+}
