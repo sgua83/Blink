@@ -23,6 +23,7 @@ enum Write<'e> {
         contents: bool,
         iterator: Option<(&'e str, &'e Expr)>,
         when: Option<bounds::Condition>,
+        local_value: bool,
     },
     External { call:&'e Expr, instance:Option<crate::generics::Instance>, arguments:BTreeMap<ValueIdentity,bounds::Proof>, syntax:&'e[Expr] },
     Memory { call:&'e Expr, borrow:view::Borrow },
@@ -709,7 +710,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         }
         for ((access, _), arg) in function.parameters.iter().zip(args) {
             if matches!(access, Access::Write | Access::InOut) {
-                writes(Write::Position{ place: arg, call: Some(call), contents: false, iterator: None,when:None});
+                writes(Write::Position{ place: arg, call: Some(call), contents: false, iterator: None,when:None,local_value:false});
             }
         }
         Ok(())
@@ -735,10 +736,10 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             }
             ExprKind::Call(name, args) | ExprKind::Cooperate(name, _, args) | ExprKind::Specialize(name, _, args) => {
                 if self.builder.is_none() && name == "address_of" && let [place] = args.as_slice() {
-                    writes(Write::Position{ place, call: Some(expr), contents: false, iterator: None,when:None});
+                    writes(Write::Position{ place, call: Some(expr), contents: false, iterator: None,when:None,local_value:false});
                 }
                 if name=="take_last" && self.named(name,expr.span)?.is_none() && let [_,place]=args.as_slice() {
-                    writes(Write::Position{place,call:Some(expr),contents:false,iterator:None,when:None});
+                    writes(Write::Position{place,call:Some(expr),contents:false,iterator:None,when:None,local_value:false});
                 }
                 let local = if matches!(expr.kind, ExprKind::Call(..)) { self.named(name, expr.span)? } else { None };
                 if let Some(ty) = local { self.function_writes(ty, args, expr, writes)?; }
@@ -753,7 +754,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
                                 let contents=param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some());
-                                if !read_only {writes(Write::Position{ place: arg, call: Some(expr), contents, iterator: None,when:None});}
+                                if !read_only {writes(Write::Position{ place: arg, call: Some(expr), contents, iterator: None,when:None,local_value:false});}
                             }
                         }
                         if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(&instance.definition,args)?,None=>BTreeMap::new()};writes(Write::External{call:expr,instance,arguments,syntax:args});}
@@ -823,7 +824,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     self.bindings.push((name, ty.as_ref().map_or(Local::Inferred(expr), Local::Typed)));
                 }
                 StmtKind::Assign(lhs, _, rhs) => {
-                    writes(Write::Position{ place: lhs, call: None, contents: false, iterator: None,when:None});
+                    writes(Write::Position{ place: lhs, call: None, contents: false, iterator: None,when:None,local_value:self.builder.is_some()&&self.local_value_write(lhs)?==Some(true)});
                     self.writes_expression(lhs, writes)?;
                     self.writes_expression(rhs, writes)?;
                 }
@@ -1127,7 +1128,8 @@ impl Builder<'_> {
                 }
                 return Ok(false);
             }
-            let Write::Position{place,contents,iterator,..}=write else{return Ok(true);};
+            let Write::Position{place,contents,iterator,local_value,..}=write else{return Ok(true);};
+            if *local_value{return Ok(false);}
             if address_write(place)||iterator.is_some(){return Ok(true);}
             if *contents{return Ok(self.written_application_data(place).is_none_or(|(data,..)|overlaps(&target.resource.owners(),&view::resource_borrow(data),&self.path)));}
             if let Some((written,_))=self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))? {
@@ -1185,11 +1187,8 @@ impl Builder<'_> {
         Ok(NumericEffect::Assign(value))
     }
     fn numeric_assignment_effect(&self, lhs: &Expr, op: &str, rhs: &Expr, name: &str, target: &LoopPlace, writes: &[Write<'_>], absolute: bool, scope:&Scope<'_, '_, '_>) -> Result<NumericEffect> {
-        if let LoopPlace::Element(_,_) = target {
-            if let Some(root)=assigned_root(lhs)&&let Some((_,local))=scope.bindings.iter().rev().find(|(name,_)|*name==root){
-                if matches!(local,Local::Typed(_)|Local::Inferred(_)|Local::Range|Local::Payload(..))&&scope.named(root,lhs.span)?.is_some_and(|ty|ty.is_numeric()||ty.is_c_function()){return Ok(NumericEffect::shift(0));}
-                return Ok(NumericEffect::Unknown);
-            }
+        if matches!(target,LoopPlace::Element(..))&&let Some(local)=scope.local_value_write(lhs)? {
+            return Ok(if local{NumericEffect::shift(0)}else{NumericEffect::Unknown});
         }
         if matches!(target,LoopPlace::Length) {
             if !matches!(&lhs.kind,ExprKind::Name(bound)if bound==name) || scope.bindings.iter().any(|(bound,_)|*bound==name) {return Ok(NumericEffect::shift(0));}
@@ -1208,7 +1207,7 @@ impl Builder<'_> {
                 let Some((ty,parts))=self.written_projection(lhs,name,owner,None,writes)?else{return Ok(NumericEffect::shift(0));};(ty,parts,*component)
             },
             LoopPlace::Element(expected,component)=>{
-                let written=Write::Position{place:lhs,call:None,contents:false,iterator:None,when:None};
+                let written=Write::Position{place:lhs,call:None,contents:false,iterator:None,when:None,local_value:false};
                 if !self.numeric_write(&written,name,target,writes)?{return Ok(NumericEffect::shift(0));}
                 let Some((actual,_))=self.loop_write_projection(lhs,&|index|self.loop_index_operand(index,writes))?else{return Ok(NumericEffect::Unknown);};
                 if expected.base!=actual.base||expected.resource.restricted(&self.path)!=actual.resource.restricted(&self.path)||!expected.index.zip(actual.index).is_some_and(|(a,b)|bounds::Condition::index_equal(a,b).truth_in(&self.path)==Some(true)){return Ok(NumericEffect::Unknown);}

@@ -1585,7 +1585,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 短路或选择表达式可把读取放在已完成If内部。ApplicationLoads::prior_snapshot只有在当前原Condition／Clause能确定实际执行分支时才进入该分支，并按整个嵌套指令区间核对真实可能写入。若If条件来自LoadLocal，只沿该次读取之前的指令查找实际StoreLocal值；未知写终止查询，后续环境或bool赋值不替代原条件来源。此处交接的是原数值身份，不复用机器寄存器或移动装载，也不从未执行分支取事实。原整数非零检查继续拒绝从矛盾路径取得许可。
 
-循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。位置是否已知先沿原address_write_positions查询；LoopInput属于待闭合资源来源不等于地址未知，已闭合且仅使用引用ABI的B调用先消费其真实写区，不由pending标记重复扩大写入。真实未知位置继续撤回可能相交事实。未来Position指向子资源时，原投影直接交接已经取得的真实输入，由ApplicationLoads沿该输入、World元素类型及已发射ViewLoad查询当前物理根；不把模型寄存器作为句柄，也不另存根表或装载历史。LoopWrites仍是原本次写摘要，根相同、已有独占父子关系和真实字段字节共同决定是否影响读取。父描述真实改写继续撤回旧长度，不用载荷写影响另一块描述存储。原元素更新和读取绑定保留所选下标条件。`Value::nonzero_bytes`按真实完整字节范围，将每个可能为零分量已经携带的false条件直接交给同一本次查询，再与实际零值身份及当前路径比较；不同下标时原非零事实由这个原条件取得。除法与返回值拆字复用同一查询，真实同一／可能重叠写零继续拒绝。原`Scope::input_snapshot`从稳定u32输入的真实值／身份形成已有相等条件，`writes_expression`沿原Condition处理布尔组合；`writes_statements`在原直接Position写摘要交接采用条件，调用及未知效果仍按原职责解释。`ElementUpdate`把同一条件交给元素选择与完整覆盖，单元素也不能绕过写的采用关系；`Proof::join_condition`继续拥有数值合流。循环可变名不取得虚假稳定条件，不重放正文或复制恢复入口全树。变化父路径回边的数值缺口继续见Issues C-020.1.3.2.1.2.2.13.4.1.10；Write::Memory未来读取范围继续C-021.1.4.5.4.3.2.2。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
+循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。位置是否已知先沿原address_write_positions查询；LoopInput属于待闭合资源来源不等于地址未知，已闭合且仅使用引用ABI的B调用先消费其真实写区，不由pending标记重复扩大写入。真实未知位置继续撤回可能相交事实。未来Position指向子资源时，原投影直接交接已经取得的真实输入，由ApplicationLoads沿该输入、World元素类型及已发射ViewLoad查询当前物理根；不把模型寄存器作为句柄，也不另存根表或装载历史。LoopWrites仍是原本次写摘要，根相同、已有独占父子关系和真实字段字节共同决定是否影响读取。父描述真实改写继续撤回旧长度，不用载荷写影响另一块描述存储。原元素更新和读取绑定保留所选下标条件。`Value::nonzero_bytes`按真实完整字节范围，将每个可能为零分量已经携带的false条件直接交给同一本次查询，再与实际零值身份及当前路径比较；不同下标时原非零事实由这个原条件取得。除法与返回值拆字复用同一查询，真实同一／可能重叠写零继续拒绝。原`Scope::input_snapshot`从稳定u32输入的真实值／身份形成已有相等条件，`writes_expression`沿原Condition处理布尔组合；`writes_statements`在原直接Position写摘要交接采用条件，调用及未知效果仍按原职责解释。`ElementUpdate`把同一条件交给元素选择与完整覆盖，单元素也不能绕过写的采用关系；`Proof::join_condition`继续拥有数值合流。原`Scope::local_value_write`统一交接已有Typed／Inferred／Range／Payload纯数值或C函数值局部的分类；原`writes_statements`在该次赋值产生`Write::Position`时携带实际词法来源，原`numeric_write`元素相交查询消费它，不在嵌套外层按同名重查。直接赋值继续使用同一分类，不再因Builder.env尚未发射局部而制造伪元素写。Element／NamedElement别名及未取得类型的位置不属于纯值局部，仍沿原真实相交关系解释；声明收集阶段不为后续数值查询提前解析实际类型，没有额外声明表、AST遍历或写效果状态。循环可变名不取得虚假稳定条件，不重放正文或复制恢复入口全树。变化父路径回边的数值缺口继续见Issues C-020.1.3.2.1.2.2.13.4.1.10；Write::Memory未来读取范围继续C-021.1.4.5.4.3.2.2。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
 
 源码节选：`crates/blanguage/src/check/application.rs:175`。
 
@@ -1636,7 +1636,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-源码节选：`crates/blanguage/src/check/effects/sources.rs:88`。
+源码节选：`crates/blanguage/src/check/effects/sources.rs:93`。
 
 ```rust
         if name=="dataset" && let Some(explicit)=explicit {
@@ -1688,7 +1688,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-源码节选：`crates/blanguage/src/check/effects.rs:267`。
+源码节选：`crates/blanguage/src/check/effects.rs:268`。
 
 ```rust
         for write in writes {
@@ -1716,7 +1716,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 显式可写dataset实参的contents输入沿原written_application_data取得无拥有资源的真实根，给原LoopWrites.storage交接该根未知字节区间；不再将这份已知存储写扩大为全部存储未知。iterator来源、未知位置及拥有内容仍按实际未知范围处理，原Call整体效果独立保留，不凭签名取消实际写。无拥有资源的元素／字段写由loop_write_projection沿written_application_data、member_type及固定数组分量映射取得实际根与Scalar投影。constant_index只使用未被全部可能写输入改变的原下标事实；声明布局给出步长和分量word／宽度，LoopWrites交接真实字节区间。ApplicationLoads既复用原allocate结果区分不同实际分配，也把同根已知读取与未来区间交给和StoreIndexed共用的byte_overlap；多个写区间分别保留，不把中间未写字节也当作覆盖。未知下标／布局仍是未知范围，未解析子dataset或拥有内容结束不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通静态CPU值调用在原Scope仍持有正文let等词法实参Ty／count时，以原generics选定实例；Write::External携带这个实际实例，循环归一在原入口条件及正文读取之前，通过native_declaration形成／导入同一Unit，再查询同一Module闭合view_access；原Module::declare保持实例只构造一次。原写输入按所有权传入、消费者按借用读取，不复制实例或离开作用域后用入口环境重新推导正文局部；没有另一实例表、调用图、IR求值或数值失效跳过路径。无拥有结果且合同实际只读时保留元素读取与局部数值。闭合写仅指向原ABI借用dataset输入、且原显式contents Position已经交接这些实参时，也不重复添加全局External；真实写仍由原Position和LoopWrites处理。元素无拥有内容／清理F的按值dataset输入也由同一typed根覆盖：原arguments先检查调用者保留view／地址与别名，原move_application_dataset交付唯一拥有并使旧绑定Moved，callee沿原最后消费者完成与释放链结束该存储。这份已转移存储的闭合写不再扩大为所有旧存储未知；没有正文未来AST根表、资源复制或第二释放链。普通已闭合B调用复用native_call_memory的Access、实际输入Proof和when，向同一LoopWrites交接真正写位置，不因存在隐藏地址或Memory条款而扩大为整次外部写。该投影只替代其覆盖的dataset内容写，显式Reference与实际拥有位置继续交给原消费者；不能因存在Memory而先删除未覆盖的标量写。component_projection同时投影已有类型和实际位置，Scope只读取已形成的值快照，不重新解释或求值实参、下标，也不复制IR或再造调用图。未生成的动态来源保留原未知，不能据不完整输入推定无写；资源拥有继续由原Position和唯一拥有者消费。原address_write_components由普通写入与循环共同查询，只撤回真实相交的局部、记录及数组分量；源码与已编译对象／归档消费相同合同。address按值形参没有inout标记不能证明无写；真正只读address函数和普通记录结果按实际合同保持组合能力。dataset的实际静态factory调用也参与同一交接。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。
 
-源码节选：`crates/blanguage/src/check/effects.rs:442`。
+源码节选：`crates/blanguage/src/check/effects.rs:443`。
 
 ```rust
                 Write::External{call,instance:Some(instance),arguments,syntax}=>{
@@ -1838,7 +1838,7 @@ pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->addr
     }
 ```
 
-源码节选：`crates/blanguage/src/check/effects.rs:34`。
+源码节选：`crates/blanguage/src/check/effects.rs:35`。
 
 ```rust
 pub(super) struct LoopWrites {
@@ -2171,7 +2171,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 原loop_write_projection从该ApplicationElement取得实际根、字段字节与已知下标，后续仍由同一写效果撤回Data.elements。别名按真实相交位置交接，未写字段及独立资源保持；不新增元素表、运行状态或第二效果图：
 
-源码节选：`crates/blanguage/src/check/effects.rs:378`。
+源码节选：`crates/blanguage/src/check/effects.rs:379`。
 
 ```rust
             ExprKind::Name(name)=>{

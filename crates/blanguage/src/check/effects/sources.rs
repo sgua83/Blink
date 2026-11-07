@@ -76,6 +76,11 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             || self.builder.is_some_and(|builder| builder.env.contains_key(name))
             || self.definition.function.params.iter().any(|param| param.name == name)
     }
+    pub fn local_value_write(&self,place:&Expr)->Result<Option<bool>> {
+        let Some(name)=assigned_root(place)else{return Ok(None);};
+        let Some((_,local))=self.bindings.iter().rev().find(|(bound,_)|*bound==name)else{return Ok(None);};
+        Ok(Some(matches!(local,Local::Typed(_)|Local::Inferred(_)|Local::Range|Local::Payload(..))&&self.named(name,place.span)?.is_some_and(|ty|ty.is_numeric()||ty.is_c_function())))
+    }
     pub fn named(&self, name: &str, span: Span) -> Result<Option<Ty>> {
         if self.bound(name, self.bindings.len()) { self.name(name, span, self.bindings.len()) } else { Ok(None) }
     }
