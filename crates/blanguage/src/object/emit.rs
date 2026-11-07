@@ -241,7 +241,7 @@ fn functions(
         call(&mut bytes, &mut patches, kernel("ExitProcess"));
         let end = u32::try_from(bytes.len())?;
         let calls = std::iter::once(Call::Reference { offset: 5, tail: false }).chain(patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false })).collect();
-        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, unwind_info(4, vec![(4, vec![4, 0x42])]))), Some(Layout::Generated));
+        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, unwind_info(4, vec![(4, vec![4, 0x42])]))), Some(Layout::Startup));
         let calls = native.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
         let main = function(&mut sections, &mut frames, format!("entry {name}"), native.stack_bytes, calls, native.bytes, Some((native.function_end.try_into()?, native.unwind)), native.tail_regions.map(|tails| Layout::Function { tails, references: native.tail_references }));
         symbols.insert("main".into(), (main, 0));
@@ -281,14 +281,14 @@ fn functions(
                     } else { name.symbol.clone() },
                 });
                 let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: true }).collect();
-                function(&mut sections, &mut frames, format!("{op:?}"), 0, calls, bytes, None, Some(Layout::Generated))
+                function(&mut sections, &mut frames, format!("{op:?}"), 0, calls, bytes, None, Some(Layout::ImportThunk))
             }
             NativeSymbol::Print(scalar) => {
                 let helper = print(*scalar)?;
                 patches = helper.patches;
                 let end = u32::try_from(helper.bytes.len())?;
                 let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false }).collect();
-                function(&mut sections, &mut frames, format!("{op:?}"), helper.local, calls, helper.bytes, Some((end, helper.unwind)), Some(Layout::Generated))
+                function(&mut sections, &mut frames, format!("{op:?}"), helper.local, calls, helper.bytes, Some((end, helper.unwind)), Some(Layout::Print(*scalar)))
             }
         };
         targets.insert(op, text);

@@ -5,8 +5,10 @@ use crate::{build::hash, codec::{Decode, Encode, record, variants}, native::{Reg
 pub(crate) enum Layout {
     /// The main end remains in the original .pdata; only emitted tails are retained here.
     Function { tails: Vec<Region>, references: Option<Vec<TailReference>> },
-    /// The original handwritten producer emitted this entire section as code.
-    Generated,
+    /// Each original handwritten producer owns this entire code section.
+    Startup,
+    Print(crate::ir::Scalar),
+    ImportThunk,
 }
 struct SectionLayout {
     section: usize,
@@ -16,11 +18,11 @@ struct SectionLayout {
 pub(super) struct Material {
     sections: Vec<SectionLayout>,
 }
-variants!(Layout { 0=>Function{tails,references}, 1=>Generated });
+variants!(Layout { 0=>Function{tails,references}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk });
 record!(TailReference { target, rel32_fields });
 record!(SectionLayout { section, identity, layout });
 record!(Material { sections });
-const MAGIC: &[u8; 8] = b"BLCF\x02\0\0\0";
+const MAGIC: &[u8; 8] = b"BLCF\x03\0\0\0";
 
 fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     let section = &facts.sections[index];
@@ -45,9 +47,9 @@ fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     hash::digest(&bytes)
 }
 impl Layout {
-    fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {
+    pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {
         match self {
-            Self::Generated => Ok(vec![("generated_code", 0, length)]),
+            Self::Startup | Self::Print(_) | Self::ImportThunk => Ok(vec![("generated_code", 0, length)]),
             Self::Function { tails, .. } => {
                 let mut main = spans.iter().filter(|s| s.section == index && s.start == 0);
                 let end = main.next().ok_or("COFF generated function material has no matching original .pdata range")?.end;
@@ -64,6 +66,21 @@ impl Layout {
             }
         }
     }
+    pub(super) fn references(&self) -> Option<&[TailReference]> {
+        match self {
+            Self::Function { references, .. } => references.as_deref(),
+            Self::Startup | Self::Print(_) | Self::ImportThunk => None,
+        }
+    }
+    pub(super) fn generation(&self) -> String {
+        match self {
+            Self::Function { .. } => "null".into(),
+            Self::Startup => object(&[("reason", text("application_startup"))]),
+            Self::Print(scalar) => object(&[("reason", text("scalar_output")), ("scalar", text(scalar.name()))]),
+            Self::ImportThunk => object(&[("reason", text("import_thunk"))]),
+        }
+    }
+
 }
 impl Material {
     pub(super) fn read(facts: &Facts<'_>, spans: &[Span], bytes: &[u8]) -> Result<Self> {
@@ -93,15 +110,8 @@ impl Material {
         }
         Ok(value)
     }
-    pub(super) fn references(&self, index: usize) -> Option<&[TailReference]> {
-        self.sections.iter().find(|section| section.section == index + 1).and_then(|section| match &section.layout {
-            Layout::Function { references, .. } => references.as_deref(),
-            Layout::Generated => None,
-        })
-    }
-    pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {
-        // read() has already matched every code section in its original order.
-        self.sections.iter().find(|s| s.section == index + 1).unwrap().layout.regions(index, length, spans)
+    pub(super) fn layout(&self, index: usize) -> Option<&Layout> {
+        self.sections.iter().find(|section| section.section == index + 1).map(|section| &section.layout)
     }
 }
 pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {

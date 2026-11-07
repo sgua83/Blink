@@ -176,8 +176,9 @@ impl<'a> Facts<'a> {
             ("relocation_count", section.relocations.len().to_string()), ("selected", selected.to_string())];
         if selected {
             let bytes = unsafe { row.bytes.borrowed() };
-            let regions = if let Some(material) = material.filter(|_| row.flags & 0x20 != 0) {
-                material.regions(index, bytes.len(), spans)?.into_iter().map(|(kind, start, end)| {
+            let layout = material.and_then(|material| material.layout(index));
+            let regions = if let Some(layout) = layout {
+                layout.regions(index, bytes.len(), spans)?.into_iter().map(|(kind, start, end)| {
                     let instructions = if matches!(kind, "literal" | "alignment") { "null".into() }
                     else {
                         crate::native::instructions_json(&bytes[start..end], start as u64).map_err(|error| {
@@ -211,7 +212,8 @@ impl<'a> Facts<'a> {
             };
             values.extend([("bytes", hex(bytes)), ("regions", array(regions)),
                 ("relocations", array(section.relocations.iter().map(|r| self.relocation(r)).collect::<Result<Vec<_>>>()?)),
-                ("tail_references", material.and_then(|material| material.references(index)).map_or_else(|| "null".into(), |references|
+                ("generation", layout.map_or_else(|| "null".into(), |layout| layout.generation())),
+                ("tail_references", layout.and_then(|layout| layout.references()).map_or_else(|| "null".into(), |references|
                     array(references.iter().map(|reference| object(&[
                         ("target_offset_bytes", reference.target.to_string()),
                         ("rel32_field_offsets_bytes", array(reference.rel32_fields.iter().map(usize::to_string))),
