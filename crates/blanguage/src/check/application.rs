@@ -470,29 +470,30 @@ impl ApplicationLoads<'_, '_> {
         }
         result
     }
-    fn stored_paths(&self, code: &[Inst], mut next: Option<bounds::Proof>, data: &Data, source: &IndexedSource, word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState, controls: &BTreeMap<Reg, Value>) -> (Option<bounds::Proof>, Option<bounds::Proof>, Option<bounds::Proof>) {
+    fn stored_paths(&self, code: &[Inst], mut next: Option<bounds::Proof>, data: &Data, source: &IndexedSource, word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState, controls: &BTreeMap<Reg, Value>) -> (Option<bounds::Proof>, Option<bounds::Proof>, Option<bounds::Proof>, Option<bounds::Proof>) {
         fn join(a: Option<bounds::Proof>, b: Option<bounds::Proof>,choice:Option<&bounds::Condition>) -> Option<bounds::Proof> {
             match (a, b) { (Some(mut a), Some(b)) => { a.join_condition(&b, 1, choice); Some(a) }, (a, None) | (None, a) => a }
         }
         let mut continues = None;
         let mut exits = None;
+        let mut breaks = None;
         for inst in code {
             let Some(current) = next.take() else { break; };
             match &inst.kind {
                 InstKind::Continue => continues = join(continues, Some(current),None),
-                InstKind::Break => {},
+                InstKind::Break => breaks = join(breaks, Some(current),None),
                 InstKind::Exit => exits = join(exits, Some(current),None),
                 InstKind::If { condition, yes, no } => {
                     let raw = Value { ty: Ty::scalar(Scalar::Bool), regs: vec![*condition], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
                     let condition = bounds::Condition::of(controls.get(condition).unwrap_or(&raw));
                     let truth = condition.truth_in(path);
-                    let a = if truth == Some(false) { (None, None, None) } else { self.stored_paths(yes, Some(current.clone()), data, source, word, scalar, &condition.assume(path, true), state, controls) };
-                    let b = if truth == Some(true) { (None, None, None) } else { self.stored_paths(no, Some(current), data, source, word, scalar, &condition.assume(path, false), state, controls) };
-                    next = join(a.0,b.0,Some(&condition)); continues = join(continues,join(a.1,b.1,Some(&condition)),None); exits = join(exits,join(a.2,b.2,Some(&condition)),None);
+                    let a = if truth == Some(false) { (None, None, None, None) } else { self.stored_paths(yes, Some(current.clone()), data, source, word, scalar, &condition.assume(path, true), state, controls) };
+                    let b = if truth == Some(true) { (None, None, None, None) } else { self.stored_paths(no, Some(current), data, source, word, scalar, &condition.assume(path, false), state, controls) };
+                    next = join(a.0,b.0,Some(&condition)); continues = join(continues,join(a.1,b.1,Some(&condition)),None); exits = join(exits,join(a.2,b.2,Some(&condition)),None); breaks = join(breaks,join(a.3,b.3,Some(&condition)),None);
                 },
                 InstKind::Scope(body) => {
-                    let (normal, continued, exited) = self.stored_paths(body, Some(current), data, source, word, scalar, path, state, controls);
-                    next = join(normal,exited,None); continues = join(continues,continued,None);
+                    let (normal, continued, exited, broken) = self.stored_paths(body, Some(current), data, source, word, scalar, path, state, controls);
+                    next = join(normal,exited,None); continues = join(continues,continued,None); breaks = join(breaks,broken,None);
                 },
                 InstKind::Call(call @ Call{target:CallTarget::Defined(name),..}) if self.current_reference_writes(call,source,word,scalar) && self.writes_indexed(inst,source,word,scalar) => {
                     let contract=&self.0.functions.units[name].as_ref().unwrap().contract;
@@ -520,7 +521,7 @@ impl ApplicationLoads<'_, '_> {
                 } else if self.writes_indexed(inst, source, word, scalar) { bounds::Proof::default() } else { current }),
             }
         }
-        (next, continues, exits)
+        (next, continues, exits, breaks)
     }
 
     fn prior_snapshot<'a>(&'a self,code:impl Iterator<Item=&'a Inst>,mut load:&'a Inst)->Option<Reg> {
@@ -578,12 +579,12 @@ impl Builder<'_> {
         }
         writes(&ApplicationLoads(self),code,position)
     }
-    pub(super) fn application_iteration_interference(&self, data: &DataReference, index: &Value, proof: &mut bounds::Proof, states: &[flow::LoopState], controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) {
+    pub(super) fn application_iteration_interference<'s>(&self, data: &DataReference, index: &Value, proof: &mut bounds::Proof, states: impl Iterator<Item=&'s flow::LoopState>+Clone, controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) {
         let loads = ApplicationLoads(self);
         let (offset, ty) = data.element_layout();
         for (component, &(scalar, word)) in ty.components.iter().enumerate() {
             let mut current = proof.project(&[component], ty.components.len());
-            for state in states {
+            for state in states.clone() {
                 if let Some(source) = loads.stored_position(&self.code, &data.data, index, offset + word, scalar, state, writes) {
                     if let Some(other) = loads.iteration_interference(&self.code, source, offset + word, scalar, &state.path, state, controls) { current.join_condition(&other, 1, None); }
                 } else { current = bounds::Proof::default(); }
@@ -591,23 +592,24 @@ impl Builder<'_> {
             proof.assign(&[component], ty.components.len(), current);
         }
     }
-    pub(super) fn application_indexed_proof(&self, data: &Data, index: &Value, states: &[flow::LoopState], controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) -> bounds::Proof {
+    pub(super) fn application_indexed_proof<'s>(&self, data: &Data, index: &Value, states: impl Iterator<Item=&'s flow::LoopState>+Clone, controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) -> (bounds::Proof,bounds::Proof) {
         let loads = ApplicationLoads(self);
-        let mut output = bounds::Proof::default();
-        let initial=self.returned_storage(&data.elements);
+        let mut output = [bounds::Proof::default(),bounds::Proof::default()];
+        let initial=bounds::Proof::capture(&self.returned_storage(&data.elements));
         for (component, &(scalar, word)) in data.ty.components.iter().enumerate() {
-            let mut common: Option<bounds::Proof> = None;
-            for state in states {
-                let mut proof = bounds::Proof::default();
-                if let Some(source) = loads.stored_position(&self.code, data, index, word, scalar, state, writes) {
-                    let (normal, continued, _) = loads.stored_paths(&self.code, Some(initial.proof.project(&[component],data.ty.components.len())), data, source, word, scalar, &state.path, state, controls);
-                    proof = match (normal, continued) { (Some(mut a), Some(b)) => { a.join_condition(&b, 1, None); a }, (Some(a), None) | (None, Some(a)) => a, _ => bounds::Proof::default() };
-                }
-                if let Some(value) = &mut common { value.join_condition(&proof, 1, None); } else { common = Some(proof); }
+            let mut common: [Option<bounds::Proof>;2] = [None,None];
+            for state in states.clone() {
+                let paths=if let Some(source) = loads.stored_position(&self.code, data, index, word, scalar, state, writes) {
+                    let (normal, continued, _, broken) = loads.stored_paths(&self.code, Some(initial.project(&[component],data.ty.components.len())), data, source, word, scalar, &state.path, state, controls);
+                    [[normal,continued].into_iter().flatten().reduce(|mut a,b|{a.join_condition(&b,1,None);a}),broken]
+                }else{[Some(bounds::Proof::default()),Some(bounds::Proof::default())]};
+                for (part,proof) in paths.into_iter().enumerate(){if let Some(proof)=proof{
+                    if let Some(value)=&mut common[part]{value.join_condition(&proof,1,None);}else{common[part]=Some(proof);}
+                }}
             }
-            if let Some(proof) = common { output.assign(&[component], data.ty.components.len(), proof); }
+            for (part,proof) in common.into_iter().enumerate(){if let Some(proof)=proof{output[part].assign(&[component],data.ty.components.len(),proof);}}
         }
-        output
+        let [normal,broken]=output;(normal,broken)
     }
     pub(super) fn application_read_snapshot(&self,reg:Reg)->Reg {ApplicationLoads(self).snapshot(reg)}
 }

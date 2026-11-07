@@ -225,18 +225,35 @@ impl Builder<'_> {
     pub(super) fn application_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference) {
         let context = self.loop_contexts.last().unwrap();
         let (name, _) = context.iterator.as_ref().unwrap();
+        let cursor=context.control_source.cursor.as_ref().unwrap();
         let ty = data.element_layout().1;
-        let mut common: Option<bounds::Proof> = None;
-        for state in &context.continues {
-            let Some(Binding::Owned(owner)) = state.env.get(name) else { return; };
-            let incoming=bounds::scoped_proof(ty,owner.proof.clone(),&state.path,&state.env);
-            if let Some(proof) = &mut common { proof.join_condition(&incoming, ty.components.len(), None); }
-            else { common = Some(incoming); }
-        }
-        let Some(mut proof) = common else { return; };
         let components=data.words().iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word).unwrap()).collect::<Vec<_>>();
-        proof.constrain_common_ranges(&self.application_indexed_proof(&data.data,context.control_source.cursor.as_ref().unwrap(),&context.continues,&context.controls,&context.writes).project(&components,data.ty.components.len()),ty.components.len());
-        self.publish_iteration_elements(exit, data, proof);
+        let complete=context.entry.cursor.as_ref().is_some_and(|begin|begin.minimum()==0&&begin.maximum()==0);
+        let (normal,broken)=self.application_indexed_proof(&data.data,cursor,context.continues.iter().chain(context.exits.iter()),&context.controls,&context.writes);
+        let partial=(!complete||!context.exits.is_empty()).then(||{
+            let mut proof=bounds::Proof::capture(&self.returned_storage(&data.data.elements)).project(&components,data.ty.components.len());
+            if !context.continues.is_empty(){proof.join_condition(&normal.project(&components,data.ty.components.len()),ty.components.len(),None);}
+            if !context.exits.is_empty(){proof.join_condition(&broken.project(&components,data.ty.components.len()),ty.components.len(),None);}
+            self.application_iteration_interference(data,cursor,&mut proof,context.continues.iter().chain(context.exits.iter()),&context.controls,&context.writes);
+            proof
+        });
+        let natural=if complete{
+            let mut common: Option<bounds::Proof> = None;
+            for state in &context.continues {
+                let Some(Binding::Owned(owner)) = state.env.get(name) else { return; };
+                let incoming=bounds::scoped_proof(ty,owner.proof.clone(),&state.path,&state.env);
+                if let Some(proof) = &mut common { proof.join_condition(&incoming, ty.components.len(), None); }
+                else { common = Some(incoming); }
+            }
+            common.map(|mut proof|{
+                proof.constrain_common_ranges(&normal.project(&components,data.ty.components.len()),ty.components.len());
+                self.application_iteration_interference(data,cursor,&mut proof,context.continues.iter(),&context.controls,&context.writes);proof
+            })
+        }else{partial.clone()};
+        let mut breaks=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().exits);
+        if let Some(proof)=partial{for state in &mut breaks{self.publish_iteration_elements(state,data,proof.clone());}}
+        self.loop_contexts.last_mut().unwrap().exits=breaks;
+        if let Some(proof)=natural{self.publish_iteration_elements(exit,data,proof);}
     }
     pub(super) fn application_indexed_elements(&mut self, exit: &mut LoopState, index: &Value, limit: &Value) {
         let context = self.loop_contexts.last().unwrap();
@@ -245,17 +262,17 @@ impl Builder<'_> {
             for data in binding.application_resources() {
                 if data.root.ty == Ty::scalar(Scalar::U32)
                     && bounds::Condition::comparison(Comparison::Equal, &data.length, limit).truth_in(&context.entry.path) == Some(true) {
-                    let proof = self.application_indexed_proof(data, index, &context.continues, &context.controls, &context.writes);
-                    results.push((application::DataReference::direct(data.clone()), proof));
+                    let reference=application::DataReference::direct(data.clone());
+                    let mut proof = self.application_indexed_proof(data, index, context.continues.iter(), &context.controls, &context.writes).0;
+                    self.application_iteration_interference(&reference,index,&mut proof,context.continues.iter(),&context.controls,&context.writes);
+                    results.push((reference, proof));
                 }
             }
         }
         for (data, proof) in results { self.publish_iteration_elements(exit, &data, proof); }
     }
-    fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, mut proof: bounds::Proof) {
+    fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, proof: bounds::Proof) {
         let ty = data.element_layout().1;
-        let context=self.loop_contexts.last().unwrap();
-        self.application_iteration_interference(data,context.control_source.cursor.as_ref().unwrap(),&mut proof,&context.continues,&context.controls,&context.writes);
         std::mem::swap(&mut self.env, &mut exit.env);
         std::mem::swap(&mut self.path, &mut exit.path);
         let mut proof = proof.at_call(&self.element_owner_bindings(&data.data));

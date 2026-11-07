@@ -3892,10 +3892,10 @@ impl<'a> Builder<'a> {
         }
         self.iterators.pop();
         self.loop_depth -= 1;
-        if !initial && begin.minimum() == 0 && begin.maximum() == 0 && !bounds::seeks(body) {
+        if !initial && !bounds::seeks(body) {
             if let Some(CursorSource::ApplicationData(data)) = &cursor_specification.data {
                 self.application_iteration_elements(&mut natural, data);
-            } else if cursor_specification.data.is_none() {
+            } else if cursor_specification.data.is_none() && begin.minimum() == 0 && begin.maximum() == 0 {
                 self.application_indexed_elements(&mut natural, &cursor, &limit);
             }
         }
