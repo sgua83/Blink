@@ -2635,7 +2635,7 @@ impl Condition {
     pub(super) fn nonzero_value(value:&Value)->Self {
         if value.is_nonzero(){return Self::constant(true);}
         if (0..value.regs.len()).any(|i|value.component_ranges(i).0.as_slice()==[(value.ty.components[i].0.order_bias(),value.ty.components[i].0.order_bias())]){return Self::constant(false);}
-        Self::guard(Clause::facts((0..value.regs.len()).map(|i|Fact::NonZero(value.component_identity(i))).collect()))
+        (0..value.regs.len()).fold(Self::constant(true),|condition,i|condition.logical(Self::component(value,i),false))
     }
     pub(super) fn nonzero_proof(proof:&Proof,component:usize)->Self {
         match proof.known_identity(component){Some(id)=>Self::guard(Clause::facts([Fact::NonZero(id)].into())),None=>Self::default()}
