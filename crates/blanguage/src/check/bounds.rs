@@ -2535,7 +2535,8 @@ fn contradictory(facts: &Facts) -> bool {
                 })
         }
         Fact::Below(a, b, strict, scalar) => (a == b && strict)
-            || contains(Fact::Below(b, a, !strict, scalar)) || {
+            || contains(Fact::Below(b, a, true, scalar))
+            || (strict && contains(Fact::Below(b, a, false, scalar))) || {
                 let (lower,_)=bounds(a,scalar);let (_,upper)=bounds(b,scalar);
                 lower>upper || strict && lower==upper
             },
@@ -2561,8 +2562,9 @@ fn cross_conflict(a: &Facts, b: &Facts) -> bool {
         Fact::Index(id, domain) => other.contains(&Fact::Outside(id, domain)),
         Fact::Outside(id, domain) => other.contains(&Fact::Index(id, domain)),
         Fact::Below(a, b, strict, scalar) => {
-            other.contains(&Fact::Below(b, a, !strict, scalar))
-                || (strict && other.contains(&Fact::equal(a, b)))
+            other.contains(&Fact::Below(b, a, true, scalar))
+                || (strict && (other.contains(&Fact::Below(b, a, false, scalar))
+                    || other.contains(&Fact::equal(a, b))))
         }
         Fact::Equal(a, b) => other.contains(&Fact::NotEqual(a, b))
             || (*fact == Fact::equal(a, b) && [Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64].into_iter().any(|scalar| {
