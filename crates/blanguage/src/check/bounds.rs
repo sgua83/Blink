@@ -498,10 +498,10 @@ impl Proof {
         let width=values.iter().map(|(_,proof)|proof.views.len()).max().unwrap_or(0);
         self.views=(0..width).map(|component|{let mut value=view::Borrow::default();for(when,proof)in values{value.union(&proof.view_borrow(component).restricted(&when.assume(&Clause::default(),true)));}value}).collect();
     }
-    pub(super) fn join_view_borrows(&mut self,a:&Self,b:&Self,choice:Option<&Condition>){
+    pub(super) fn join_view_borrows(&mut self,a:&Self,b:&Self,choice:&Condition){
         self.views=(0..a.views.len().max(b.views.len())).map(|component|{
             let a=a.view_borrow(component);let b=b.view_borrow(component);
-            match choice{Some(choice)=>view::Borrow::selected(choice,&a,&b),None=>a.joined(b)}
+            view::Borrow::selected(choice,&a,&b)
         }).collect();
     }
     pub(super) fn retain_view_borrows(&mut self,ty:&Ty) {let selected=view_contracts::components(ty);for(component,borrow)in self.views.iter_mut().enumerate(){if !selected.contains(&component){*borrow=view::Borrow::default();}}}
