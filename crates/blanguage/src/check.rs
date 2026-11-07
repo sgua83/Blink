@@ -837,8 +837,10 @@ fn expand_stages(
                     b.reads.insert(selection.binding);
                     b.cross_access.insert(selection.binding);
                 }
-                let write_regions = std::mem::take(&mut b.memory_regions).into_iter()
-                    .filter_map(|(binding, (_, written))| (!written.is_empty()).then_some((binding, written))).collect();
+                let memory_regions = std::mem::take(&mut b.memory_regions);
+                let write_regions = memory_regions.iter()
+                    .filter_map(|(&binding, (_, written))| (!written.is_empty())
+                        .then(|| (binding, written.keys().copied().collect()))).collect();
                 *functions = std::mem::take(&mut b.functions);
                 let (elements, access, appends) = (b.env, b.view_access, b.appends);
                 let mut stage = Stage {
@@ -861,7 +863,30 @@ fn expand_stages(
                     cross_access: b.cross_access.into_iter().collect(),
                 };
                 for (&binding, written) in &stage.write_regions {
-                    let output = if prefix.is_none() && selection.is_none()
+                    let output = if access[&binding] == Access::Atomic {
+                        facts.elements.get(&binding).map(|old| {
+                            let ty = &program.buffers[binding].ty;
+                            let mut output = old.clone();
+                            for (component, &(scalar, offset)) in ty.components.iter().enumerate() {
+                                let mut value = old.project(&[component], ty.components.len());
+                                for (&(start, end), stored) in &memory_regions[&binding].1 {
+                                    if u64::from(offset) < u64::from(end)
+                                        && u64::from(start) < u64::from(offset) + u64::from(scalar.size())
+                                    {
+                                        if start == offset && u64::from(end) == u64::from(offset) + u64::from(scalar.size())
+                                            && let Some(stored) = stored
+                                        {
+                                            value.join(stored, 1, None);
+                                        } else {
+                                            value.forget_value(&[0], 1);
+                                        }
+                                    }
+                                }
+                                output.assign_elements(&[component], ty.components.len(), &value);
+                            }
+                            output
+                        })
+                    } else if prefix.is_none() && selection.is_none()
                         && access[&binding] != Access::Atomic
                         && !appends.iter().any(|(target, count)| *target == binding || count.binding == binding)
                     {
@@ -1936,7 +1961,7 @@ struct Builder<'a> {
     reads: BTreeSet<usize>,
     writes: BTreeSet<usize>,
     cross_access: BTreeSet<usize>,
-    memory_regions: BTreeMap<usize, (BTreeSet<(bool, u32, u32)>, BTreeSet<(u32, u32)>)>,
+    memory_regions: BTreeMap<usize, (BTreeSet<(bool, u32, u32)>, BTreeMap<(u32, u32), Option<Box<bounds::Proof>>>)>,
     view_access: BTreeMap<usize, Access>,
     initialized: BTreeSet<Position>,
     output_scopes: usize,
@@ -2080,17 +2105,24 @@ impl<'a> Builder<'a> {
         self.source_site = previous;
         result
     }
-    fn data_access(&mut self, place: &Place, access: Access) {
+    fn data_access(&mut self, place: &Place, access: Access, output: Option<&bounds::Proof>) {
         let Place::Element { index, .. } = place.storage() else { return; };
         let cross = *index != self.global_index;
-        for ((scalar, _), position) in place.ty().components.iter().zip(place.data_positions()) {
+        for (component, ((scalar, _), position)) in place.ty().components.iter().zip(place.data_positions()).enumerate() {
             let mut pending = vec![&position];
             while let Some(position) = pending.pop() {
                 match position {
                     Position::Element(binding, word) => {
                         let (reads, writes) = self.memory_regions.entry(*binding).or_default();
                         if access.reads() { reads.insert((cross, *word, *word + scalar.size())); }
-                        if access.writes() { writes.insert((*word, *word + scalar.size())); }
+                        if access.writes() {
+                            let stored = output.map(|proof| Box::new(proof.project(&[component], place.ty().components.len())));
+                            writes.entry((*word, *word + scalar.size()))
+                                .and_modify(|value| match (value.as_deref_mut(), stored.as_deref()) {
+                                    (Some(value), Some(stored)) => value.join(stored, 1, None),
+                                    _ => *value = None,
+                                }).or_insert(stored);
+                        }
                     }
                     Position::Indexed(choices, _) => pending.extend(choices.iter()),
                     _ => {}
@@ -2103,7 +2135,7 @@ impl<'a> Builder<'a> {
             if !reads.is_empty() && self.appends.iter().any(|(output, count)| output == binding || count.binding == *binding) {
                 return self.fail(span, "B221", "append 的共享输出／计数不能在同一阶段作为普通共享输入读取");
             }
-            let mut writes = writes.iter().filter(|(start, end)| start < end).peekable();
+            let mut writes = writes.keys().filter(|(start, end)| start < end).peekable();
             for read in reads.iter().filter(|(cross, start, end)| *cross && start < end) {
                 while writes.peek().is_some_and(|write| write.1 <= read.1) { writes.next(); }
                 if writes.peek().is_some_and(|write| write.0 < read.2) {
@@ -2465,7 +2497,7 @@ impl<'a> Builder<'a> {
                 if self.view_access[binding].writes() {
                     self.require_initialized(p, span)?;
                 }
-                self.data_access(p, Access::Read);
+                self.data_access(p, Access::Read, None);
                 self.reads.insert(*binding);
                 if *index != self.global_index {
                     self.cross_access.insert(*binding);
@@ -2596,7 +2628,7 @@ impl<'a> Builder<'a> {
                 if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
                     return self.fail(span, "B143", "赋值位置包含重复分量");
                 }
-                self.data_access(p, Access::Write);
+                self.data_access(p, Access::Write, None);
                 self.writes.insert(*binding);
                 self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
                 for (word, value) in words.iter().zip(value.regs) {

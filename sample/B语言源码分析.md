@@ -1366,7 +1366,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:4242`。
+源码节选：`crates/blanguage/src/check.rs:4274`。
 
 ```rust
         let binding = view.binding;
@@ -1529,7 +1529,7 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 调用者证明输入条件蕴含实际F前提；独立函数入口把同一关系交给原Condition／Proof，具体F调用仍消费原contracts::prove。function_parameters暂借原env形成合同，随后归还同一环境并沿原path假定已声明前提，不增加另一份合同状态。实际写入及移动继续改变原身份，旧快照不成为当前值的新许可；未证明的contiguous仍为未知。
 
-源码节选：`crates/blanguage/src/check.rs:1762`。
+源码节选：`crates/blanguage/src/check.rs:1787`。
 
 ```rust
     let environment=std::mem::take(&mut b.env);
@@ -1635,7 +1635,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 原address_write_positions是内存位置投影的唯一入口。具体Origin内的资源即使含LoopInput，仍可按真实布局与word投影；顶层未形成位置的输入／调用、Unresolved或其他未知来源不被静默当作空写。原write_address_values与循环消费者直接消费同一结果，不能用递归pending标志代替实际写位置。初始化在该快照中保持未知。闭合普通B调用的实际写区统一由原Memory合同交接，非拥有write／inout权限不重复定义整值写区，typed written数值输出、初始化与拥有参数消费仍各归原调用合同。dataset指针在预分析和实际调用中交接同一原Origin：实际Data、逻辑元素布局和字段字节由application统一构造，不改变机器句柄、长度、步长或ABI参数。预分析初始化保持未知；真实读输入只消费原初始化检查已经取得的事实，write输入继续原输出初始化分支。模块dataset出口先沿原输入关系过滤私有Data，再将输入资源位置归一为原Derived符号指针，嵌套调用及obj／lib保留真实写区；未知仍如实未知，不增加资源镜像、效果图、状态或运行时校验。命名元素继续使用已经求值的句柄、布局、索引和步长，其资源来源在Place生产处通过原data_borrow引用当前循环映射，与下标访问保持同一来源，不保存进入前的过期来源。未来读取缓存、同字段读前范围和独立数值缺口继续各原编号。下面的代码只形成编译期位置，不增加运行时表、资源镜像或释放链。
 
-源码节选：`crates/blanguage/src/check.rs:3762`。
+源码节选：`crates/blanguage/src/check.rs:3794`。
 
 ```rust
                 CursorSource::ApplicationData(mut data) => {
@@ -2120,7 +2120,7 @@ pub(crate) struct Interface {
 
 可信外部字段沿原生SDK的unsafe DomainBindings::produced_element和unsafe Frame::complete_field交接；Frame的原blink_complete_field C签名、ElementInterval及u32严格界保持。前者按值消费ElementRange并并入同一原domains，后者从同一原Ty取得Scalar并同步借用数值数组。提供者须保证实际字节、完整初始化、字段布局、值域、真实完成／原执行依赖及寿命，声明不读取载荷、不完成写或等待；普通安全输入没有自动字段保证。写、可写地址、替换、取出裸数据和释放沿原失效。Stella原函数体及无源obj／lib的独立CPU／GPU路径已完成原生核对，记录归FixedIssues原.4.3.1；实际引擎跨轮采用仍见Issues C-021.1.4.5.2.4.3.2。
 
-共同字段的逻辑索引在实际读取时，同时消费原目标声明形状、已有same_length长度Proof和当前路径上已成立的长度上界，形成同一个数值Proof；例如目标长度为二时，字段乘八加七可索引十六项表。未知长度不猜成常量，真实写分量先沿原memory_regions撤回，空集合的全称前提不创造机器值。该静态推导复用原data_index_proof／Proof::element_facts，不增加运行检查、元数据或公共ABI。同一次完整parallel写入同长度的其他普通可写dataset时，当前元素的数值模型沿原Place与Proof更新，不依赖源码命名的迭代缓冲；真实写字段由原Stage.element_guarantees和prefix::Facts交接。分支、重叠及未知写继续沿原模型合流／撤回，prefix、稀疏选择和不同长度的部分覆盖不冒充全体保证；原子共享更新的共同范围仍见Issues C-021.1.4.5.2.4.3.2.1.2。
+共同字段的逻辑索引在实际读取时，同时消费原目标声明形状、已有same_length长度Proof和当前路径上已成立的长度上界，形成同一个数值Proof；例如目标长度为二时，字段乘八加七可索引十六项表。未知长度不猜成常量，真实写分量先沿原memory_regions撤回，空集合的全称前提不创造机器值。该静态推导复用原data_index_proof／Proof::element_facts，不增加运行检查、元数据或公共ABI。同一次完整parallel写入同长度的其他普通可写dataset时，当前元素的数值模型沿原Place与Proof更新，不依赖源码命名的迭代缓冲；真实写字段由原Stage.element_guarantees和prefix::Facts交接。分支、重叠及未知写继续沿原模型合流／撤回，prefix、稀疏选择和不同长度的部分覆盖不冒充全体保证；部分整数原子store／exchange、compare_exchange的desired及min／max候选，沿原写效果与未写元素可能保留的旧共同值求并；已知范围或相同逻辑目标可交接后继CPU／GPU，未知写或未闭合的其他RMW撤回。该摘要不作为atomic_load或RMW返回值的稳定读事实，不表示全体命中或完整初始化；原内存序、实际字节、完成和资源拥有者保持。
 
 write_place的非循环ApplicationElement在真实write_application_place、initialize与assign_owned_proof之后，按原sources交接受影响资源；for_statement仍接收for_loop经leave_loop移交的原LoopWrites，在真实Loop之后按原storage／locals与unknown_storage选择已完成写的资源。两者共用complete_application_writes，只选择仍可用、明确在CPU的原U32 Frame绑定，刷新同一Data.elements后交给complete_application_elements；原U64地址不取得Frame。DatasetWriteComplete对应实际赋值或原for语句，循环不在迭代体逐次发布，initial递归展开不重复发射；失败右值、return及原错误退出不进入相应正常完成点。该入口只发布原模型已成立的共同数值，部分写不冒充全覆盖，不扫描元素或恢复已撤回Prefix；没有第二份写集合、Frame、资源表或完成状态。
 
@@ -2128,11 +2128,11 @@ write_place的非循环ApplicationElement在真实write_application_place、init
 
 普通B引用的声明权限与Frame可写暴露分别交接：原函数合同已闭合为无实际写，且返回地址及保留原数值存储关系的地址位模式均无可写来源外泄时，引用沿原地址入口只形成读区，不撤回已有字段保证。判定直接查询原Contract.view_access与Returned.proof的views／addresses，包括聚合字段及原返回拥有树中的dataset元素载荷；不建立另一份效果、来源或运行状态。声明Access、原子权限、初始化／借用规则及机器Reference ABI不变。真实写、可写地址或位模式返回、尚未闭合及外部未知调用保留原可写暴露和Frame撤回；普通写后的真实完成继续沿原完成入口，不为只读调用追加完成。
 
-该编码为BLCO71；资源ABI保持BLRI43。普通值resize也复用原填充值捕获与保留前缀合流，实际拥有值不能广播的规则保持。prefix／where的部分覆盖与原子改写不产生全容量新值域；持久外部输入合同、同字段循环读前范围及普通引用调用精度分别见Issues C-021.1.4.5.2／.5.4.2／.5.4.3。
+该编码为BLCO71；资源ABI保持BLRI43。普通值resize也复用原填充值捕获与保留前缀合流，实际拥有值不能广播的规则保持。prefix／where的普通部分覆盖不声明完整覆盖；整数原子共享更新在原memory_regions的实际写字节键汇总可能存储的数值Proof，未知写没有可用数值，原选择臂按可能性求并。阶段完成把这些候选与原facts.elements中的旧共同值求并，只交真实写字段；输入寄存器、Clause及借用在原atomic_effect的求值点转为纯共同数值及Data目标，不在摘要保留稳定读身份。完整字段和物理部分重叠分别处理，原Stage.write_regions仍只交字节集合，Stage.element_guarantees交最终保证；部分命中不表示完整初始化。持久外部输入合同、同字段循环读前范围及普通引用调用精度分别见Issues C-021.1.4.5.2／.5.4.2／.5.4.3。
 
 CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文使用的同一个游标绑定，再运行原loop_writes；循环IR、真实入口、条件与退出仍由原LoopContext交接。没有先造一份影子游标或把正文未知写扩成全存储写：
 
-源码节选：`crates/blanguage/src/check.rs:3821`。
+源码节选：`crates/blanguage/src/check.rs:3853`。
 
 ```rust
         self.env.insert(name.clone(), binding);
@@ -4510,7 +4510,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
 
 普通函数的实际输入在原声明入口形成：
 
-源码节选：`crates/blanguage/src/check.rs:1598`。
+源码节选：`crates/blanguage/src/check.rs:1623`。
 
 ```rust
         if p.ty.is_texture_resource() {

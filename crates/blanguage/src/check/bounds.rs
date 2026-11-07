@@ -4023,7 +4023,7 @@ impl Builder<'_> {
         let mut common = common.project(&components, ty.components.len());
         let changed = components.iter().enumerate().filter_map(|(component, &source)| {
             let (scalar, offset) = ty.components[source];
-            self.memory_regions.get(&binding).is_some_and(|(_, writes)| writes.iter().any(|&(start, end)|
+            self.memory_regions.get(&binding).is_some_and(|(_, writes)| writes.keys().any(|&(start, end)|
                 u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset)+u64::from(scalar.size()))).then_some(component)
         }).collect::<Vec<_>>();
         common.forget_value(&changed, words.len());

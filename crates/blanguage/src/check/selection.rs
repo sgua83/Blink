@@ -122,7 +122,13 @@ impl Builder<'_> {
             if retain {
                 for (binding, (reads, writes)) in regions {
                     let entry = self.memory_regions.entry(binding).or_default();
-                    entry.0.extend(reads); entry.1.extend(writes);
+                    entry.0.extend(reads);
+                    for (range, value) in writes {
+                        entry.1.entry(range).and_modify(|stored| match (stored.as_deref_mut(), value.as_deref()) {
+                            (Some(stored), Some(value)) => stored.join(value, 1, None),
+                            _ => *stored = None,
+                        }).or_insert(value);
+                    }
                 }
             }
         }

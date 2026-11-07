@@ -959,7 +959,7 @@ impl Builder<'_> {
                                 }
                                 if access.writes(){
                                     self.writes.insert(*binding);
-                                    self.memory_regions.entry(*binding).or_default().1.insert((*word,*word+scalar.size()));
+                                    self.memory_regions.entry(*binding).or_default().1.insert((*word,*word+scalar.size()),None);
                                 }
                                 if cross||*atomic{self.cross_access.insert(*binding);}
                             }

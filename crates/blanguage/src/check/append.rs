@@ -126,9 +126,9 @@ impl Builder<'_> {
         self.appends.insert(target, count);
         self.reads.insert(binding);
         self.writes.extend([target, binding]);
-        self.memory_regions.entry(binding).or_default().1.insert((count.word, count.word + 4));
+        self.memory_regions.entry(binding).or_default().1.insert((count.word, count.word + 4), None);
         for &(scalar, word) in &self.program.buffers[target].ty.components {
-            self.memory_regions.entry(target).or_default().1.insert((word, word + scalar.size()));
+            self.memory_regions.entry(target).or_default().1.insert((word, word + scalar.size()), None);
         }
         self.cross_access.extend([target, binding]);
         let accepted = self.reg(Scalar::Bool);

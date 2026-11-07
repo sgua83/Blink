@@ -450,7 +450,7 @@ impl Builder<'_> {
             }
             _ => {}
         }
-        self.data_access(place, Access::Read);
+        self.data_access(place, Access::Read, None);
         self.dataset_effect(place,Access::Read,false,span)?;
         let mut regs = Vec::new();
         for ((scalar, _), word) in ty.components.iter().zip(words) {
@@ -505,7 +505,7 @@ impl Builder<'_> {
         if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
             return self.fail(span, "B143", "赋值位置包含重复分量");
         }
-        self.data_access(place, Access::Write);
+        self.data_access(place, Access::Write, None);
         self.dataset_effect(place,Access::Write,false,span)?;
         self.assign_owned_proof(place, bounds::Proof::capture(&value), false);
         self.initialize(place);
