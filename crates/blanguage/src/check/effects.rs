@@ -22,6 +22,7 @@ enum Write<'e> {
         call: Option<&'e Expr>,
         contents: bool,
         iterator: Option<(&'e str, &'e Expr)>,
+        when: Option<bounds::Condition>,
     },
     External { call:&'e Expr, instance:Option<crate::generics::Instance>, arguments:BTreeMap<ValueIdentity,bounds::Proof>, syntax:&'e[Expr] },
     Memory { call:&'e Expr, borrow:view::Borrow },
@@ -273,16 +274,16 @@ impl Builder<'_> {
                     for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown)?;}
                     continue;
                 },
-                Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|(data,offset,ty)|(
-                    vec![data.root.identity()],view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>(),None
+                Write::Position{place,contents:true,when,..}=>self.written_application_data(place).map(|(data,offset,ty)|(
+                    vec![data.root.identity()],view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>(),None,when.as_ref()
                 )),
-                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))?.map(|(projection,_)|(
+                Write::Position{place,contents:false,when,..}=>self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))?.map(|(projection,_)|(
                     projection.data.map(|data|data.root.identity()).into_iter().collect::<Vec<_>>(),projection.resource,
                     projection.value.1.into_iter().flatten().map(|i|projection.base.components[i].1).collect::<Vec<_>>(),
-                    projection.index.map(|index|{let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)})
+                    projection.index.map(|index|{let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)}),when.as_ref()
                 )),
             };
-            if let Some((sources,resource,words,index))=changed{self.update_application_elements(&sources,&resource,&words,application::ElementUpdate::Element{proof:&bounds::Proof::default(),index})?;}
+            if let Some((sources,resource,words,index,when))=changed{self.update_application_elements(&sources,&resource,&words,application::ElementUpdate::Element{proof:&bounds::Proof::default(),index,when})?;}
         }
         let mut resources = Vec::new();
         for (name,binding) in &self.env {
@@ -572,6 +573,23 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             &&let Some(i)=self.bindings[..limit].iter().rposition(|(bound,_)|*bound==name)
             &&let Local::Inferred(value)=self.bindings[i].1
             &&!builder.mutable_names.contains(name) {return self.input_snapshot(value,i,access);}
+        match &expr.kind {
+            ExprKind::StaticU32(value)=>return Ok(Some((Ty::scalar(Scalar::U32),bounds::Proof::unsigned(*value,*value),view::Borrow::default()))),
+            ExprKind::Number(number)=>{
+                let(ty,value)=super::number(&self.definition.source,expr.span,number)?;
+                return Ok((ty==Ty::scalar(Scalar::U32)).then(||(ty,bounds::Proof::unsigned(value as u32,value as u32),view::Borrow::default())));
+            },
+            ExprKind::Binary(op,a,b)if matches!(op.as_str(),"=="|"!=")=>{
+                if [a,b].into_iter().any(|expr|assigned_root(expr).is_some_and(|name|builder.mutable_names.contains(name))){return Ok(None);}
+                let(Some((left,a,_)),Some((right,b,_)))=(self.input_snapshot(a,limit,Access::Value)?,self.input_snapshot(b,limit,Access::Value)?)else{return Ok(None);};
+                if left!=Ty::scalar(Scalar::U32)||right!=left{return Ok(None);}
+                let operand=|proof:&bounds::Proof|proof.known_value(&left).map(|bits|bounds::Operand::Constant(Scalar::U32,bits[0])).or_else(||proof.known_identity(0).map(bounds::Operand::Value));
+                let(Some(a),Some(b))=(operand(&a),operand(&b))else{return Ok(None);};
+                let condition=bounds::Condition::index_equal(a,b);let condition=if op=="!="{condition.negate()}else{condition};
+                return Ok(Some((Ty::scalar(Scalar::Bool),bounds::Proof::condition(condition),view::Borrow::default())));
+            },
+            _=>{},
+        }
         let Some(name)=assigned_root(expr)else{
             if let ExprKind::Bool(value)=expr.kind{return Ok(Some((Ty::scalar(Scalar::Bool),bounds::Proof::condition(bounds::Condition::constant(value)),view::Borrow::default())));}
             return Ok(None);
@@ -691,19 +709,19 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         }
         for ((access, _), arg) in function.parameters.iter().zip(args) {
             if matches!(access, Access::Write | Access::InOut) {
-                writes(Write::Position { place: arg, call: Some(call), contents: false, iterator: None });
+                writes(Write::Position{ place: arg, call: Some(call), contents: false, iterator: None,when:None});
             }
         }
         Ok(())
     }
-    fn writes_expression(&self, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<Option<bool>> {
+    fn writes_expression(&self, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<Option<bounds::Condition>> {
         let mut truth = None;
         match &expr.kind {
-            ExprKind::Bool(value) => truth = Some(*value),
+            ExprKind::Bool(value) => truth = Some(bounds::Condition::constant(*value)),
             ExprKind::Name(name) if self.builder.is_some_and(|builder|!builder.mutable_names.contains(name)) || self.writes.is_some() => {
                 if let Some((ty,proof,_))=self.input_snapshot(expr,self.bindings.len(),Access::Value)?
                     && ty==Ty::scalar(Scalar::Bool) {
-                    truth=proof.known_value(&ty).map(|bits|bits[0]!=0);
+                    truth=proof.component_condition(0).cloned().or_else(||proof.known_value(&ty).map(|bits|bounds::Condition::constant(bits[0]!=0)));
                 }
             }
             ExprKind::Invoke(callee, args) => {
@@ -717,10 +735,10 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             }
             ExprKind::Call(name, args) | ExprKind::Cooperate(name, _, args) | ExprKind::Specialize(name, _, args) => {
                 if self.builder.is_none() && name == "address_of" && let [place] = args.as_slice() {
-                    writes(Write::Position { place, call: Some(expr), contents: false, iterator: None });
+                    writes(Write::Position{ place, call: Some(expr), contents: false, iterator: None,when:None});
                 }
                 if name=="take_last" && self.named(name,expr.span)?.is_none() && let [_,place]=args.as_slice() {
-                    writes(Write::Position{place,call:Some(expr),contents:false,iterator:None});
+                    writes(Write::Position{place,call:Some(expr),contents:false,iterator:None,when:None});
                 }
                 let local = if matches!(expr.kind, ExprKind::Call(..)) { self.named(name, expr.span)? } else { None };
                 if let Some(ty) = local { self.function_writes(ty, args, expr, writes)?; }
@@ -735,7 +753,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
                                 let contents=param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some());
-                                if !read_only {writes(Write::Position { place: arg, call: Some(expr), contents, iterator: None });}
+                                if !read_only {writes(Write::Position{ place: arg, call: Some(expr), contents, iterator: None,when:None});}
                             }
                         }
                         if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(&instance.definition,args)?,None=>BTreeMap::new()};writes(Write::External{call:expr,instance,arguments,syntax:args});}
@@ -770,21 +788,24 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 for arg in args { self.writes_expression(arg, writes)?; }
             }
             ExprKind::Construct(_, args) => for arg in args { self.writes_expression(arg, writes)?; },
+            ExprKind::Unary(op,base)if op=="!"=>truth=self.writes_expression(base,writes)?.map(bounds::Condition::negate),
             ExprKind::Target(_, base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => { self.writes_expression(base, writes)?; }
             ExprKind::Index(a, b) => { self.writes_expression(a, writes)?; self.writes_expression(b, writes)?; }
             ExprKind::Binary(op, a, b) => {
                 let left = self.writes_expression(a, writes)?;
-                let skipped = matches!((op.as_str(), left), ("&&", Some(false)) | ("||", Some(true)));
+                let skipped = matches!((op.as_str(), left.as_ref().and_then(bounds::Condition::boolean_constant)), ("&&", Some(false)) | ("||", Some(true)));
                 let right = if self.builder.is_none() || !skipped { self.writes_expression(b, writes)? } else { None };
-                truth = match (op.as_str(), left, right) {
-                    ("&&", Some(false), _) | ("&&", _, Some(false)) => Some(false),
-                    ("||", Some(true), _) | ("||", _, Some(true)) => Some(true),
-                    ("&&", Some(true), right) | ("||", Some(false), right) => right,
-                    _ => None,
+                truth = match op.as_str() {
+                    "&&"|"||"=>{
+                        let condition=left.unwrap_or_default().logical(right.unwrap_or_default(),op=="||");
+                        (!condition.unconstrained()).then_some(condition)
+                    },
+                    "=="|"!=" if self.builder.is_some()=>self.input_snapshot(expr,self.bindings.len(),Access::Value)?.and_then(|(ty,proof,_)|(ty==Ty::scalar(Scalar::Bool)).then(||proof.component_condition(0).cloned()).flatten()),
+                    _=>None,
                 };
             }
             ExprKind::Select(a, b, c) => {
-                let selected=self.writes_expression(a,writes)?;
+                let selected=self.writes_expression(a,writes)?.as_ref().and_then(bounds::Condition::boolean_constant);
                 if self.builder.is_none() || selected!=Some(false){self.writes_expression(b,writes)?;}
                 if self.builder.is_none() || selected!=Some(true){self.writes_expression(c,writes)?;}
             }
@@ -802,15 +823,26 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     self.bindings.push((name, ty.as_ref().map_or(Local::Inferred(expr), Local::Typed)));
                 }
                 StmtKind::Assign(lhs, _, rhs) => {
-                    writes(Write::Position { place: lhs, call: None, contents: false, iterator: None });
+                    writes(Write::Position{ place: lhs, call: None, contents: false, iterator: None,when:None});
                     self.writes_expression(lhs, writes)?;
                     self.writes_expression(rhs, writes)?;
                 }
                 StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Seek(_, expr) => { self.writes_expression(expr, writes)?; }
                 StmtKind::If(expr, yes, no) => {
-                    let truth = self.writes_expression(expr, writes)?;
-                    if truth != Some(false) { self.writes_statements(yes, writes)?; }
-                    if truth != Some(true) { self.writes_statements(no, writes)?; }
+                    let condition=self.writes_expression(expr,writes)?;
+                    let known=condition.as_ref().and_then(bounds::Condition::boolean_constant);
+                    for(truth,body)in [(true,yes),(false,no)]{
+                        if known==Some(!truth){continue;}
+                        if let Some(condition)=condition.as_ref().filter(|_|known.is_none()){
+                            let condition=if truth{condition.clone()}else{condition.clone().negate()};
+                            self.writes_statements(body,&mut|mut write|{
+                                if let Write::Position{call:None,when,..}=&mut write{
+                                    *when=Some(match when.take(){Some(previous)=>previous.logical(condition.clone(),false),None=>condition.clone()});
+                                }
+                                writes(write);
+                            })?;
+                        }else{self.writes_statements(body,writes)?;}
+                    }
                 }
                 StmtKind::Match(value, arms) => {
                     self.writes_expression(value, writes)?;
@@ -1176,7 +1208,7 @@ impl Builder<'_> {
                 let Some((ty,parts))=self.written_projection(lhs,name,owner,None,writes)?else{return Ok(NumericEffect::shift(0));};(ty,parts,*component)
             },
             LoopPlace::Element(expected,component)=>{
-                let written=Write::Position{place:lhs,call:None,contents:false,iterator:None};
+                let written=Write::Position{place:lhs,call:None,contents:false,iterator:None,when:None};
                 if !self.numeric_write(&written,name,target,writes)?{return Ok(NumericEffect::shift(0));}
                 let Some((actual,_))=self.loop_write_projection(lhs,&|index|self.loop_index_operand(index,writes))?else{return Ok(NumericEffect::Unknown);};
                 if expected.base!=actual.base||expected.resource.restricted(&self.path)!=actual.resource.restricted(&self.path)||!expected.index.zip(actual.index).is_some_and(|(a,b)|bounds::Condition::index_equal(a,b).truth_in(&self.path)==Some(true)){return Ok(NumericEffect::Unknown);}
@@ -1229,7 +1261,7 @@ impl Builder<'_> {
                 StmtKind::Expr(expr)=>Some(before.then(self.numeric_expression_effect(expr,name,target,writes)?)),
                 StmtKind::If(condition,yes,no)=>{
                     let before=before.then(self.numeric_expression_effect(condition,name,target,writes)?);
-                    let truth=scope.writes_expression(condition,&mut |_|{})?;
+                    let truth=scope.writes_expression(condition,&mut |_|{})?.as_ref().and_then(bounds::Condition::boolean_constant);
                     let yes=if truth==Some(false){None}else{self.numeric_loop_paths(yes,Some(before.clone()),continues,name,target,writes,absolute,scope)?};
                     let no=if truth==Some(true){None}else{self.numeric_loop_paths(no,Some(before),continues,name,target,writes,absolute,scope)?};
                     join_numeric_paths(yes,no)

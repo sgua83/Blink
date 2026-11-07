@@ -105,7 +105,7 @@ impl Binding {
 // 更新描述只属于原共同元素模型，不成为运行期状态。
 pub(super) enum ElementUpdate<'a> {
     Unknown,
-    Element { proof: &'a bounds::Proof, index: Option<(bounds::Operand,(u32,u32))> },
+    Element { proof: &'a bounds::Proof, index: Option<(bounds::Operand,(u32,u32))>, when: Option<&'a bounds::Condition> },
     WholeFacts(&'a bounds::Proof),
 }
 // 动态数组借用携带实际可能的资源叶；这些来源只用于编译期别名和存活期。
@@ -3614,6 +3614,7 @@ impl Builder<'_> {
     pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],update:ElementUpdate<'_>)->Result<()> {
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         let index=match &update{ElementUpdate::Element{index,..}=>*index,_=>None};
+        let when=match &update{ElementUpdate::Element{when,..}=>*when,_=>None};
         let range=index.map(|(_,range)|range);
         let one=(range==Some((0,0))).then(||self.constant(Scalar::U32,1));
         for name in names{
@@ -3626,6 +3627,7 @@ impl Builder<'_> {
                     Some((index,_))=>bounds::Condition::element_index(0,self.element_index_operand(index,(&self.path,&self.env))),
                     None=>bounds::Condition::default(),
                 },false));
+                let selected=if let Some(when)=when{Some(selected.unwrap_or_default().logical(when.clone(),false))}else{selected};
                 let mut complete_scope=bounds::Condition::constant(complete_scope);let mut selected_data=Some(&mut *data);
                 for fields in scope{
                     selected_data=match selected_data{
@@ -3669,6 +3671,7 @@ impl Builder<'_> {
                     ElementUpdate::WholeFacts(_)=>bounds::Condition::constant(unique).logical(complete_scope,false),
                     _=>match &one{Some(one)=>bounds::Condition::constant(unique).logical(complete_scope,false).logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false),None=>bounds::Condition::constant(false)},
                 };
+                let complete=if let Some(when)=when{complete.logical(when.clone(),false)}else{complete};
                 let truth=complete.truth_in(&self.path);
                 if truth!=Some(true){
                     let mut proof=updated.proof.project(&components,old.regs.len());

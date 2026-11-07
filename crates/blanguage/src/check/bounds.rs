@@ -4137,12 +4137,12 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool)->Result<()> {
-        if let Place::ApplicationElement{sources,resource,words,index_value,index_range,..}=place {self.update_application_elements(sources,resource,words,application::ElementUpdate::Element{proof:&fresh,index:Some((*index_value,*index_range))})?;}
+        if let Place::ApplicationElement{sources,resource,words,index_value,index_range,..}=place {self.update_application_elements(sources,resource,words,application::ElementUpdate::Element{proof:&fresh,index:Some((*index_value,*index_range)),when:None})?;}
         if let Place::Indexed{locations,..}=place && let Place::ApplicationElement{sources,resource,..}=place.storage() {
             for(component,position)in locations.iter().enumerate(){
                 let mut selected=BTreeSet::new();owned_borrows::positions(position,&mut selected);
                 let proof=fresh.project(&[component],place.ty().components.len());
-                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,resource,&[word],application::ElementUpdate::Element{proof:&proof,index:None})?;}
+                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,resource,&[word],application::ElementUpdate::Element{proof:&proof,index:None,when:None})?;}
             }
         }
         let positions=if place.ty().contains_borrows(){self.positions(place)}else{Vec::new()};

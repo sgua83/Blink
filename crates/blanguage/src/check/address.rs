@@ -688,7 +688,7 @@ impl Builder<'_> {
             }
         }).collect::<Vec<_>>();
         let unknown=bounds::Proof::default();
-        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Element{proof:&unknown,index})?;}
+        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Element{proof:&unknown,index,when:None})?;}
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
             let components=self.address_write_components(&positions,&place);
