@@ -3703,13 +3703,12 @@ impl Builder<'_> {
     }
     pub(super) fn path_proof(&self, ty: &Ty, proof: Proof) -> Proof { scoped_proof(ty, proof, &self.path, &self.env) }
     pub(super) fn data_index_proof(&self, binding: usize) -> Proof {
-        Proof::unsigned(
-            0,
-            self.program.buffers[binding]
-                .count
-                .unwrap_or(u32::MAX)
-                .saturating_sub(1),
-        )
+        let count = self.program.buffers[binding].count.unwrap_or_else(||
+            self.resource_length_proofs(IndexDomain::Data(binding)).into_iter()
+                .map(|(proof, component)| self.path_proof(&Ty::scalar(Scalar::U32),
+                    proof.project(&[component], proof.width())).unsigned_maximum(0))
+                .min().unwrap_or(u32::MAX));
+        Proof::unsigned(0, count.saturating_sub(1))
     }
     pub(super) fn index_known(&self, value: &Value, domain: IndexDomain, limit: u32, lengths: &[(&Proof, usize)]) -> bool {
         value.proof.domains(0).iter().any(|source| {
@@ -4027,7 +4026,8 @@ impl Builder<'_> {
                 u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset)+u64::from(scalar.size()))).then_some(component)
         }).collect::<Vec<_>>();
         common.forget_value(&changed, words.len());
-        Some(common)
+        Some(common.element_facts(|target| self.data_index_proof(target)
+            .with_domains(Domains::from([IndexDomain::Data(target)]))))
     }
     pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg]) -> (Proof, bool) {
         let (snapshots,common)=match place {

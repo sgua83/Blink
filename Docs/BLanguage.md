@@ -2879,9 +2879,13 @@ void consume(dataset<owned<Item,dispose>> input) on cpu
 
 ### 原生整域的持久字段索引前提
 
+共同字段的逻辑索引在实际读取时，同时消费原目标声明形状、已有same_length长度Proof和当前路径上已成立的长度上界，形成同一个数值Proof；例如目标长度为二时，字段乘八加七可索引十六项表。未知长度不猜成常量，真实写分量先沿原memory_regions撤回，空集合的全称前提不创造机器值。该静态推导复用原data_index_proof／Proof::element_facts，不增加运行检查、元数据或公共ABI。
+
+普通B同一dataset在两条继续分支都完整写入后应可读；当前CPU／GPU双分支组合的独立初始化合流仍有C-020.1.7误拒绝，输入和合法正期望见Issues，不能用预填输出掩盖。
+
 普通B的非循环元素赋值在实际存储、初始化及原Data.elements更新后，将本次受影响的真实Frame资源交回原字段完成入口，只发布同一模型已成立的共同数值和必要长度快照。只改一个元素时继续消费原共同模型，不把局部值推广为全体；未写兄弟字段保持原语义。原for循环在正常出口批量交接，赋值入口不在迭代体逐次全域发布；此处自动交接的实际范围不代替其他循环内部／出口的完成能力。数值发布不恢复被计数字段改写撤回的Prefix，失败右值不进入实际store及写完成。后继CPU／GPU范围沿原资源关系消费，不在消费入口补写、不扫描载荷，不增加ABI字段、Frame或状态表。
 
-可信外部字段沿原生SDK的unsafe DomainBindings::produced_element和unsafe Frame::complete_field交接；Frame的原blink_complete_field C签名、ElementInterval及u32严格界保持。前者按值消费ElementRange并并入同一原domains，后者从同一原Ty取得Scalar并同步借用数值数组。提供者须保证实际字节、完整初始化、字段布局、值域、真实完成／原执行依赖及寿命，声明不读取载荷、不完成写或等待；普通安全输入没有自动字段保证。写、可写地址、替换、取出裸数据和释放沿原失效。Stella原消费者的额外静态推导及引擎采用仍见Issues C-021.1.4.5.2.4.3。
+可信外部字段沿原生SDK的unsafe DomainBindings::produced_element和unsafe Frame::complete_field交接；Frame的原blink_complete_field C签名、ElementInterval及u32严格界保持。前者按值消费ElementRange并并入同一原domains，后者从同一原Ty取得Scalar并同步借用数值数组。提供者须保证实际字节、完整初始化、字段布局、值域、真实完成／原执行依赖及寿命，声明不读取载荷、不完成写或等待；普通安全输入没有自动字段保证。写、可写地址、替换、取出裸数据和释放沿原失效。Stella原函数体及无源obj／lib的独立CPU／GPU路径已完成原生核对，记录归FixedIssues原.4.3.1；实际引擎跨轮采用仍见Issues C-021.1.4.5.2.4.3.2。
 
 整域函数可声明`requires index(data[*].slot,table)`，其中data以普通read／inout读取，所选字段为u32标量或向量分量，table为实际dataset参数。记录字段与swizzle按原类型选择；前提不隐含两个集合逐项配对，也不允许从原子并发输入假设共同值。该输入条件与same_length分别检查，例如：
 

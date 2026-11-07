@@ -171,7 +171,11 @@ Frame::data共享借用同一原DomainBindings<Option<ResidentData>>，datasets�
 
 DomainBindings::domain_relations共享借用原domains Vec。DomainRelation的Prefix变体中，domain／count.binding是当前datasets槽索引，offset／bytes是记录内字段字节范围，count.word是记录内计数字段的字节偏移；Element变体直接保存ElementRange的实际binding、字段offset、Scalar及有序区间Vec。原容器及区间Vec分别提供实际len／capacity，不把外层关系槽字节当成全部载荷。原生产、真实写入撤回、重排／分区与资源拥有者保持；复制同形元数据不能发布关系或绕过当前require，也不证明完成／初始化。容器字段仍私有；可信生产者只能在明确unsafe produced_element／Frame::complete_field边界担保真实数值，查询本身不发布关系。当前公开Frame没有宿主冻结／with_views输入入口，不以私有注入冒称集成；Frame程序根按下节借用原对象，B／C观察仍按原剩余范围推进。详细语义见[Frame根与原关系](BLanguage.md#应用frame数据根与有效域关系的借用)。
 
-字段输入条件与完整输出保证由BLRI43的原ProgramLayout交接，requires／guarantees共用ElementFact的Range／Index表示及原TemplateProgram入口类别；动态Index在实际CPU完成处按当次目标数量形成ElementRange，同字段数值在原关系Vec中求交，之后不持有旧目标引用。不增加普通函数或Frame C调用的机器参数。CPU实际绑定组在原类型／布局／数量已接受后核对字段元数据，原DomainRelation以Prefix／Element变体共用同一实际存储所有者。未知原始字节仍没有字段事实；可信外部SDK／Frame入口及普通B初始化完成交接已经实现，Stella原消费者及引擎采用继续Issues C-021.1.4.5.2.4.3，不以Rust容器或一份同形范围描述冒充真实保证。
+字段输入条件与完整输出保证由BLRI43的原ProgramLayout交接，requires／guarantees共用ElementFact的Range／Index表示及原TemplateProgram入口类别；动态Index在实际CPU完成处按当次目标数量形成ElementRange，同字段数值在原关系Vec中求交，之后不持有旧目标引用。不增加普通函数或Frame C调用的机器参数。CPU实际绑定组在原类型／布局／数量已接受后核对字段元数据，原DomainRelation以Prefix／Element变体共用同一实际存储所有者。未知原始字节仍没有字段事实；可信外部SDK／Frame入口及普通B初始化完成交接已经实现，Stella原生源码／无源模块已核对，引擎实际采用继续Issues C-021.1.4.5.2.4.3.2，不以Rust容器或一份同形范围描述冒充真实保证。
+
+## 字段索引前提的静态数值消费
+
+共同字段的逻辑索引在实际读取时，同时消费原目标声明形状、已有same_length长度Proof和当前路径上已成立的长度上界，形成同一个数值Proof；例如目标长度为二时，字段乘八加七可索引十六项表。未知长度不猜成常量，真实写分量先沿原memory_regions撤回，空集合的全称前提不创造机器值。该静态推导复用原data_index_proof／Proof::element_facts，不增加运行检查、元数据或公共ABI。实际输入仍由原require按本次绑定／目标数量核对；编译精化不替代载荷真值或设备完成。
 
 ## 可信外部字段的原生交接
 
