@@ -3324,31 +3324,6 @@ impl Builder<'_> {
         self.close_stored_resources(&mut model,&original,&bindings);Box::new(model)
     }
     pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value,place:&Place)->returns::Returned{
-        fn loaded_value(builder:&Builder<'_>,target:&mut Value,loaded:&Value){
-            let mut proof=bounds::Proof::default();
-            for(component,reg)in target.regs.iter().enumerate(){
-                let index=loaded.regs.iter().position(|source|source==reg).unwrap();
-                let mut part=builder.value_component(target,component);
-                part.proof=builder.path_proof(&part.ty,part.proof.with_identity(loaded.component_origins(index)[0]));
-                proof.append(&part);
-            }
-            target.proof=proof;
-        }
-        fn loaded_model(builder:&Builder<'_>,model:&mut returns::Returned,loaded:&Value){
-            match model{
-                returns::Returned::Value(target)=>loaded_value(builder,target,loaded),
-                returns::Returned::OwnedValue(target)=>{
-                    loaded_value(builder,&mut target.value,loaded);
-                    for payload in target.payloads.iter_mut().flatten(){loaded_model(builder,payload,loaded);}
-                },
-                returns::Returned::Dataset(target)=>{
-                    loaded_value(builder,&mut target.root,loaded);
-                    loaded_value(builder,&mut target.length,loaded);
-                    target.length.proof=std::mem::take(&mut target.length.proof).with_domains(Domains::from([IndexDomain::ApplicationLength(target.root.identity())]));
-                },
-                returns::Returned::Unit=>{},
-            }
-        }
         let mut model=(*data.elements).clone();let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
         for field in &data.projection{
             let returns::Returned::OwnedValue(owner)=model else{unreachable!()};
@@ -3364,12 +3339,8 @@ impl Builder<'_> {
             selected=parent.as_deref();depth+=1;
         }
         for(component,index)in components.into_iter().zip(0..value.regs.len()){
-            let mut proof=bounds::Proof::default();
-            proof.origins=vec![storage.proof.origins.get(index).cloned().unwrap_or_default()];
-            let proof=self.path_proof(&Ty::scalar(value.ty.components[index].0),proof);
-            let loaded=bounds::Proof::default().with_identity(value.component_origins(index)[0]);
-            let renamed=proof.origins[0].iter().map(|source|(*source,loaded.clone())).collect();
-            let proof=proof.substitute_values(&renamed);
+            let loaded=self.value_component(&value,index);
+            let proof=self.path_proof(&loaded.ty,bounds::Proof::capture(&loaded));
             bindings.insert(ValueIdentity::ElementComponent(component),proof.clone());
             for source in storage.component_origins(index).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
                 bindings.insert(source,proof.clone().with_view_borrow(0,storage.proof.view_borrow(index)));
@@ -3378,7 +3349,6 @@ impl Builder<'_> {
         self.bind_element_resource_borrows(data,&self.data_value_borrow(data),&mut bindings);
         native_function::rebind_model(&mut model,value.regs.clone());
         native_function::translate_returned(&mut model,&original,&bindings,true);
-        loaded_model(self,&mut model,&value);
         let borrow=self.data_value_borrow(&data.data);
         owned_borrows::each_data(&mut model,&mut Vec::new(),&mut|child,path|{
             let mut fields=data.projection.clone();fields.extend_from_slice(path);
