@@ -876,9 +876,10 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
             if let Requirement::Nonzero{value,path,span}=&usage.requirement {
                 let values=&scalar_values[name];
                 let mut value=(**value).clone();
-                value.proof=value.proof.substitute_values(values);
+                let path=bounds::Clause::both(path,&context);
+                value.proof=bounds::scoped_proof(&value.ty,value.proof.substitute_values(values),&path,&BTreeMap::new());
                 value.constant=value.constant.or_else(||value.proof.known_value(&value.ty));
-                Requirement::Nonzero{value:Box::new(value),path:bounds::Clause::both(path,&context),span:*span}.check(&usage.source)?;
+                Requirement::Nonzero{value:Box::new(value),path,span:*span}.check(&usage.source)?;
                 continue;
             }
             if let Requirement::Initialized{read,code,span,..}=&usage.requirement {

@@ -4423,9 +4423,18 @@ impl crate::module::codec::Decode for Proof {
 crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,scalar,lower),3=>Maximum(value,scalar,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,scalar),7=>Outside(value,domain),8=>Zero(value),9=>NotEqual(a,b),10=>Predicate(predicate,truth)});
 
 pub(super) fn scoped_proof(ty: &Ty, mut proof: Proof, path: &Clause, env: &BTreeMap<String, Binding>) -> Proof {
-    if let Some(facts) = path.required_in(&environment_facts(env)) {
+    let environment=environment_facts(env);
+    if let Some(facts) = path.required_in(&environment) {
         proof.extend_equalities(&equality_roots(&facts));
         for component in 0..ty.components.len() {
+            for domain in proof.domains(component) {
+                if let IndexDomain::CommonRange(id,from,low,extended,to)=domain
+                    && [from,low,extended,to].into_iter().all(Scalar::is_integer)
+                    && let Some(bits)=KnownBits::facts(from,id,[&environment,&facts]) {
+                    let bits=bits.cast(low).cast(extended).cast(to);
+                    if bits.mask!=0{proof.mark_domain(component,bits.domain());}
+                }
+            }
             for fact in &facts {
                 if fact.identity().is_some_and(|identity| proof.origins.get(component).is_some_and(|origins|origins.contains(&identity))) {
                     proof.refine(ty, component, *fact);

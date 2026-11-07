@@ -1673,7 +1673,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 源码节选：`crates/blanguage/src/check/address.rs:670`。
 
-原Origin只查询同一位置的字节区间，address_write_positions向位置消费者投影同一结果；MemoryEffect与原write_address_values按真实覆盖字节撤去旧完整值关系。未写整数位由同一Proof.domains中的KnownBits交接，普通存储、延后Memory与Data.elements各自消费，不另存一份位向量、写表或运行状态。区间及位事实沿原投影、类型转换、共同合流和at_call传递，对象编码为BLCO79，资源ABI仍BLRI47；either_facts使用原KnownBits数学工具和有序Fact范围取得两支共同位，后继部分写沿原Use.path及此前已解值消费同一事实；最终Nonzero查询使用现有value_context。合流后再缩窄的待解查询仍见Issues C-005.60.3.4。
+原Origin只查询同一位置的字节区间，address_write_positions向位置消费者投影同一结果；MemoryEffect与原write_address_values按真实覆盖字节撤去旧完整值关系。未写整数位由同一Proof.domains中的KnownBits交接，普通存储、延后Memory与Data.elements各自消费，不另存一份位向量、写表或运行状态。区间及位事实沿原投影、类型转换、共同合流和at_call传递，对象编码为BLCO79，资源ABI仍BLRI47；either_facts使用原KnownBits数学工具和有序Fact范围取得两支共同位，后继部分写沿原Use.path及此前已解值消费同一事实；最终Nonzero查询使用现有value_context。整数转换沿原CommonRange保留来源类型、截断、扩展及目标类型；实际非零查询由同一scoped_proof读取原环境和本次路径中的来源位事实，按这条真实转换链投影到目标位宽。已知位与范围继续属于原Proof.domains，符号扩展沿实际符号位处理；目标可能为零或来源未知时不取得新的非零事实，不恢复旧值身份、地址、初始化或资源寿命。
 
 ```rust
     pub(super) fn address_write_positions(&self,borrow:&view::Borrow)->Option<Vec<Position>> {
