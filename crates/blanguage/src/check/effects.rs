@@ -1251,7 +1251,7 @@ impl Builder<'_> {
         };
         Ok(amount.map(|amount|NumericEffect::shift(i128::from(amount)*sign)).unwrap_or(NumericEffect::Unknown))
     }
-    fn numeric_loop_paths<'e>(&self, body:&'e [Stmt], mut next:Option<NumericEffect>, continues:&mut Option<NumericEffect>, name:&str, target:&LoopPlace, writes:&[Write<'_>], absolute:bool, scope:&mut Scope<'_, '_, 'e>)->Result<Option<NumericEffect>> {
+    fn numeric_loop_paths<'e>(&self, body:&'e [Stmt], mut next:Option<NumericEffect>, continues:&mut Option<NumericEffect>, name:&str, target:&LoopPlace, writes:&[Write<'_>], absolute:bool, scope:&mut Scope<'_, '_, 'e>, path:&bounds::Clause)->Result<Option<NumericEffect>> {
         let outer = scope.bindings.len();
         for statement in body {
             let Some(before)=next.take() else { break; };
@@ -1269,16 +1269,17 @@ impl Builder<'_> {
                 StmtKind::Expr(expr)=>Some(before.then(self.numeric_expression_effect(expr,name,target,writes)?)),
                 StmtKind::If(condition,yes,no)=>{
                     let before=before.then(self.numeric_expression_effect(condition,name,target,writes)?);
-                    let truth=scope.writes_expression(condition,&mut |_|{})?.as_ref().and_then(bounds::Condition::boolean_constant);
-                    let yes=if truth==Some(false){None}else{self.numeric_loop_paths(yes,Some(before.clone()),continues,name,target,writes,absolute,scope)?};
-                    let no=if truth==Some(true){None}else{self.numeric_loop_paths(no,Some(before),continues,name,target,writes,absolute,scope)?};
+                    let condition=scope.writes_expression(condition,&mut |_|{})?.unwrap_or_default();
+                    let truth=condition.truth_in(path);
+                    let yes=if truth==Some(false){None}else{self.numeric_loop_paths(yes,Some(before.clone()),continues,name,target,writes,absolute,scope,&condition.assume(path,true))?};
+                    let no=if truth==Some(true){None}else{self.numeric_loop_paths(no,Some(before),continues,name,target,writes,absolute,scope,&condition.assume(path,false))?};
                     join_numeric_paths(yes,no)
                 },
                 StmtKind::Match(value,arms)=>{
                     let before=before.then(self.numeric_expression_effect(value,name,target,writes)?);let mut next=None;
                     for arm in arms {
                         if let Some(local)=&arm.binding{scope.bindings.push((local,Local::Payload(value,&arm.variant)));}
-                        next=join_numeric_paths(next,self.numeric_loop_paths(&arm.body,Some(before.clone()),continues,name,target,writes,absolute,scope)?);
+                        next=join_numeric_paths(next,self.numeric_loop_paths(&arm.body,Some(before.clone()),continues,name,target,writes,absolute,scope,path)?);
                         if arm.binding.is_some(){scope.bindings.pop();}
                     }next
                 },
@@ -1349,7 +1350,7 @@ impl Builder<'_> {
                 if element.base.components[*component].0!=Scalar::U32{continue;}
             }
             if let Some(identity)=input.known_identity(0){let mut domains=input.domains(0);domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);}
-            let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,&writes,!bounds::seeks(body),&mut Scope::current(self))?;
+            let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,&writes,!bounds::seeks(body),&mut Scope::current(self),&bounds::Clause::default())?;
             let(lower,upper,least,most)=match join_numeric_paths(next,continues){
                 None=>(true,true,0,0),
                 Some(NumericEffect::Shift{low,high,least,most})=>(low>=0,high<=0,least,most),
