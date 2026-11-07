@@ -907,7 +907,7 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-1-4"></a>
 
-**CPU纹理采样降低操作的来源。** 输入是原TextureSample来源与实际采样参数，生产者是原texture::Lower::sample／block，输出是同一次降低生成的Inst及其来源／生成职责。只交接真实结果，保持原采样、位模式、寄存器与数值行为，不保留旧采样IR或在机器查询处反推来源。结构控制的原..inst继续保持已有材料；新建采样指令的交接当前待实现，见[独立台账](Issues.md#c-021-7-9-7-4-1-4)。
+**CPU纹理采样降低操作的来源。** 输入是原TextureSample来源与实际采样参数，生产者是原texture::Lower::sample及block，输出是同一次降低生成的Inst及其来源／生成职责。每个采样的Lower直接借用原Stage唯一寄存器容器，原OperationOrigin成为该次cpu_texture_sample生成职责的输入，所有新采样指令共享同一不可变GeneratedOrigin；不持有已消费的采样IR或另建来源表。Scope／If／Loop沿原block递归移动完整Inst，保留其自身材料。普通CPU函数发射沿原operation_ranges交接实际字节区间和该来源，NativeCode::code_json查询同一次原结果；采样数值、指令次序、机器码、重定位、栈和执行ABI保持。CPU并行主入口的指令来源及COFF／执行映像独立材料的操作来源保存分别继续原C-021.7.9.7.4.2、C-021.7.9.7.5.2／.5.1，不以本降低点交接代替这些能力。
 
 <a id="tool-7-4-2"></a>
 

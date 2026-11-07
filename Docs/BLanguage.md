@@ -3044,7 +3044,7 @@ void shade(inout dataset<Sample> pixels, read texture2d albedo) on compute {
 
 资源维度、参数数量、坐标／LOD 类型、只读权限与不可存储性在编译期检查，分别使用 B239 或既有类型诊断 B124。当前跨后端数值约定以有限坐标／LOD 为前提，编译器尚无一般有限值证明，不增加逐次采样的运行时修正。采样的目标精度和允许差异见下节；返回 float4 不表示原生过滤的所有中间量都按 CPU f32 求值。
 
-源采样进入同一 TextureSample IR，TextureBinding 保存实际静态维度，结果与坐标／LOD 参与原活跃性、死值删除、静态函数内联和 tile 私有值交接。GPU 自研后端按该维度直接编码 `OpTypeImage`、`OpTypeSampledImage` 与 `OpImageSampleExplicitLod`，由 Vulkan sampled image／sampler 执行过滤；不经过 HLSL／GLSL 或第三方编译器。CPU 后端沿同一降低器读取 mip 元数据，二维取四点、三维取八点，逐轴插值后混合 mip，使用 64 位 texel 地址并直接生成 x64 指令，没有逐 texel 的宿主回调。含采样的 map 当前使用标量范围代码，采样通道裁剪、重复采样复用与更宽 SIMD 仍需后端工作。
+源采样进入同一 TextureSample IR，TextureBinding 保存实际静态维度，结果与坐标／LOD 参与原活跃性、死值删除、静态函数内联和 tile 私有值交接。GPU 自研后端按该维度直接编码 `OpTypeImage`、`OpTypeSampledImage` 与 `OpImageSampleExplicitLod`，由 Vulkan sampled image／sampler 执行过滤；不经过 HLSL／GLSL 或第三方编译器。CPU 后端沿同一降低器读取 mip 元数据，二维取四点、三维取八点，逐轴插值后混合 mip，使用 64 位 texel 地址并直接生成 x64 指令，没有逐 texel 的宿主回调。CPU采样降低在实际生成指令时保留原采样来源与cpu_texture_sample生成职责；普通函数的同次NativeCode操作范围据此交接，观察材料不改变执行代码或ABI。含采样的 map 当前使用标量范围代码，采样通道裁剪、重复采样复用与更宽 SIMD 仍需后端工作。
 
 ### 采样数值与目标精度
 

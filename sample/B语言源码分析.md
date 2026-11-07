@@ -3158,6 +3158,8 @@ native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 c
 
 算术、加载、存储和转换也都进入 Emitter。`operands.rs` 选择可直接使用的操作数，`integer.rs` 处理整数专门降低，`texture.rs` 将 CPU 纹理访问连接到对应实现。不能只读 `emit` 入口就认为已读完全部指令生成。
 
+CPU纹理降低的Lower只对应一次TextureSample，直接借用Stage唯一寄存器容器；每个新Inst在生成点共享同一cpu_texture_sample职责及原OperationOrigin。原SourceSite、实际实例／内联链和已有生成材料随结果交接，Scope／If／Loop仍移动完整Inst。普通函数的NativeCode操作范围消费这些真实来源，无需保存旧采样IR或从最终地址猜原表达式；独立COFF及执行映像的操作来源保存仍属于各自待实现范围。该材料不参与采样数值、指令选择、布局或执行ABI。
+
 ### 14.4 重定位解决外部地址
 
 打印和外部 C 调用在装载时取得真实地址，生成的重定位清单随机器码保留。取得函数地址也需要重定位，但取址本身不是调用。发射器只在实际 invoke 处记录调用，把调用重定位位置或间接目标事实交给同一 NativeCode；栈报告消费这份记录，不从重定位数量猜测调用。
@@ -4552,7 +4554,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
 
 后端从调用方已交付的参数或原范围绑定表取得同一描述项；这两者是不同执行入口的真实输入，数组选择之后仍指向原存储：
 
-源码节选：`crates/blanguage/src/native/texture.rs:375`。
+源码节选：`crates/blanguage/src/native/texture.rs:368`。
 
 ```rust
     pub(super) fn texture_binding_address(&mut self, texture: TextureSource) {
