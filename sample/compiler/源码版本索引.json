@@ -116,7 +116,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "008bad6104a3161542416153428fd702ca2df208b8f54fe650649ce2e9b79a10"
+      "sha256": "e5d7136ab050c9a4e42a016ee07f39f4be626abcf0673875dc49b363c04971ed"
     },
     {
       "path": "crates/blanguage/src/check/bounds/floating.rs",
@@ -180,11 +180,11 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_borrows.rs",
-      "sha256": "51350646ca8193308c227b26cec2c3d147c87cc38f3d88fc5c6e8948ee5cb51a"
+      "sha256": "a284e57a9f04f1b8070c0e8da1b7b66bf7ba35186a88b129e46f5d4711792d83"
     },
     {
       "path": "crates/blanguage/src/check/owned_presence.rs",
-      "sha256": "09c06814da0987cb35372b40ef836c95153bc73ba97df2e22d601a92a6fcc17c"
+      "sha256": "b958d707aef7734b850c03d25a2323604be50fcf294f107d8c6d473d4fdf462a"
     },
     {
       "path": "crates/blanguage/src/check/owned_records.rs",
@@ -924,7 +924,7 @@
       "path": "crates/blanguage/src/check/owned_presence.rs",
       "start_line": 46,
       "end_line": 54,
-      "sha256": "6a4272d281beae8b2cacd11b0981d77a6cb2720b209e613ef6a7e7c163b303f3"
+      "sha256": "68361b6ce65640c642aace83f2eddeec998a805534eb02548d08ed2e7c1b574a"
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",

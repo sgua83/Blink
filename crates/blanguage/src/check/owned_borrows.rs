@@ -65,7 +65,7 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         for(name,path,old)in self.owned_place_candidates(place){
             let mut value=value.clone();
             if let(Returned::OwnedValue(value),Returned::OwnedValue(old))=(&mut value,&old){value.declaration=old.declaration;}
-            let actual=storage(&old).unwrap();let when=Presence::selected(&place.owned_positions().unwrap()[0],&actual.owned_positions().unwrap()[0]);value.join_presence(old,Some(&when));set_storage(&mut value,actual);
+            let actual=storage(&old).unwrap();let when=Presence::selected(&place.owned_positions().unwrap()[0],&actual.owned_positions().unwrap()[0]);value.join_presence(old,&when);set_storage(&mut value,actual);
             self.store_owned_candidate(name,&path,value);
         }
     }

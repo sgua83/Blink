@@ -4008,10 +4008,10 @@ impl Builder<'_> {
                 }
                 (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
                 (Binding::OwnedValue(a), Binding::OwnedValue(b)) => {
-                    let mut value=returns::Returned::OwnedValue(a.clone());value.join_presence(returns::Returned::OwnedValue(b.clone()),Some(when));let returns::Returned::OwnedValue(value)=value else{unreachable!()};*a=value;
+                    let mut value=returns::Returned::OwnedValue(a.clone());value.join_presence(returns::Returned::OwnedValue(b.clone()),when);let returns::Returned::OwnedValue(value)=value else{unreachable!()};*a=value;
                 }
                 (Binding::ApplicationData(a), Binding::ApplicationData(b)) => {
-                    let mut value=returns::Returned::Dataset(a.clone());value.join_presence(returns::Returned::Dataset(b.clone()),Some(when));let returns::Returned::Dataset(value)=value else{unreachable!()};*a=value;
+                    let mut value=returns::Returned::Dataset(a.clone());value.join_presence(returns::Returned::Dataset(b.clone()),when);let returns::Returned::Dataset(value)=value else{unreachable!()};*a=value;
                 }
                 (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1, None),
                 _ => {}
