@@ -60,12 +60,13 @@ pub fn run(backend: &str) -> Result<()> {
             data
         }
         "gpu" => {
-            let device = Device::for_program(&code)?;
+            let image = blanguage::spirv::compile_program(code)?;
+            let device = Device::for_program(image.program())?;
             let data = data
                 .into_iter()
                 .map(|d| device.upload(d))
                 .collect::<Result<Vec<_>>>()?;
-            let code = device.compile(code)?;
+            let code = device.load(image)?;
             let done = code.submit(data, &[])?.wait().map_err(|(error, _)| error)?;
             done.datasets()
                 .iter()

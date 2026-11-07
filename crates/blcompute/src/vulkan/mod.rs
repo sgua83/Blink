@@ -218,15 +218,15 @@ impl PhysicalDevice {
         self.properties.deviceType == 2
     }
     pub fn device(&self) -> Result<Device> {
-        Device::create(std::iter::once(self.clone()), std::iter::empty::<&dyn ProgramInterface>())
+        Device::create(std::iter::once(self.clone()), std::iter::empty::<&Program>())
     }
-    pub fn for_program(&self, program: &dyn ProgramInterface) -> Result<Device> {
+    pub fn for_program(&self, program: &Program) -> Result<Device> {
         self.for_programs(std::iter::once(program))
     }
     /// 在选定物理设备上声明各程序能力；呈现能力由原实例的显式创建方式决定。
-    pub fn for_programs<'a, P: ProgramInterface + ?Sized + 'a>(
+    pub fn for_programs<'a>(
         &self,
-        programs: impl IntoIterator<Item = &'a P>,
+        programs: impl IntoIterator<Item = &'a Program>,
     ) -> Result<Device> {
         Device::create(std::iter::once(self.clone()), programs)
     }
@@ -362,35 +362,41 @@ impl Device {
         Rc::ptr_eq(&self.inner, &other.inner)
     }
     pub fn new() -> Result<Self> {
-        Self::create(Instance::new()?.physical_devices()?, std::iter::empty::<&dyn ProgramInterface>())
+        Self::create(Instance::new()?.physical_devices()?, std::iter::empty::<&Program>())
     }
-    pub fn for_program(program: &dyn ProgramInterface) -> Result<Self> {
+    pub fn for_program(program: &Program) -> Result<Self> {
         Self::for_programs(std::iter::once(program))
     }
     /// 同一逻辑设备消费多个B程序，按实际程序集合声明能力，不在执行中重建设备。
-    pub fn for_programs<'a, P: ProgramInterface + ?Sized + 'a>(
-        programs: impl IntoIterator<Item = &'a P>,
+    pub fn for_programs<'a>(
+        programs: impl IntoIterator<Item = &'a Program>,
     ) -> Result<Self> {
         Self::create(Instance::new()?.physical_devices()?, programs)
     }
-    pub fn with_presentation(program: &dyn ProgramInterface) -> Result<Self> {
+    pub fn with_presentation(program: &Program) -> Result<Self> {
         Self::with_presentation_programs(std::iter::once(program))
     }
-    pub fn with_presentation_programs<'a, P: ProgramInterface + ?Sized + 'a>(
-        programs: impl IntoIterator<Item = &'a P>,
+    pub fn with_presentation_programs<'a>(
+        programs: impl IntoIterator<Item = &'a Program>,
     ) -> Result<Self> {
         Self::create(Instance::with_presentation()?.physical_devices()?, programs)
     }
-    fn create<'a, P: ProgramInterface + ?Sized + 'a>(
+    fn create<'a>(
         candidates: impl IntoIterator<Item = PhysicalDevice>,
-        programs: impl IntoIterator<Item = &'a P>,
+        programs: impl IntoIterator<Item = &'a Program>,
     ) -> Result<Self> {
         let mut requirements = DeviceRequirements::default();
         let mut uniform_bytes = 0;
         let mut texture_count = 0;
+        let mut workgroup_width = 0;
+        let mut shared_bytes = 0;
         for program in programs {
             uniform_bytes = uniform_bytes.max(program.uniform_bytes());
             texture_count = texture_count.max(program.textures().iter().map(|texture| texture.elements() as usize).sum::<usize>());
+            for stage in program.stages() {
+                workgroup_width = workgroup_width.max(stage.workgroup_width());
+                shared_bytes = shared_bytes.max(stage.shared_bytes());
+            }
             let required = program.requirements();
             requirements.float64 |= required.float64;
             requirements.float32_preserve |= required.float32_preserve;
@@ -467,6 +473,16 @@ impl Device {
                     || texture_count > properties.limits.maxDescriptorSetSampledImages as usize
                 {
                     unavailable.push(format!("{device_name}: 纹理描述符需要{texture_count}项，maxPerStageDescriptorSamplers={}，maxPerStageDescriptorSampledImages={}，maxDescriptorSetSamplers={}，maxDescriptorSetSampledImages={}", properties.limits.maxPerStageDescriptorSamplers, properties.limits.maxPerStageDescriptorSampledImages, properties.limits.maxDescriptorSetSamplers, properties.limits.maxDescriptorSetSampledImages));
+                    continue 'physical;
+                }
+                if workgroup_width > properties.limits.maxComputeWorkGroupInvocations
+                    || workgroup_width > properties.limits.maxComputeWorkGroupSize[0]
+                {
+                    unavailable.push(format!("{device_name}: 程序工作组需要{workgroup_width}个调用，maxComputeWorkGroupInvocations={}，maxComputeWorkGroupSize[0]={}", properties.limits.maxComputeWorkGroupInvocations, properties.limits.maxComputeWorkGroupSize[0]));
+                    continue 'physical;
+                }
+                if shared_bytes > properties.limits.maxComputeSharedMemorySize as u64 {
+                    unavailable.push(format!("{device_name}: 程序共享内存需要{shared_bytes}字节，maxComputeSharedMemorySize为{}", properties.limits.maxComputeSharedMemorySize));
                     continue 'physical;
                 }
                 let features_fn: unsafe extern "system" fn(
@@ -1003,15 +1019,6 @@ impl Device {
             remaining -= bytes;
         }
         Ok(words)
-    }
-    #[cfg(feature = "compiler")]
-    pub fn compile(&self, program: ExecutableProgram) -> Result<GpuProgram> {
-        self.load(blanguage::spirv::compile_program(program).map_err(error)?)
-    }
-    #[cfg(feature = "compiler")]
-    pub fn compile_template(&self, program: TemplateProgram) -> Result<GpuTemplate> {
-        self.load_template(blanguage::spirv::compile_program(program).map_err(error)?)
-            .map_err(|(error, _)| error)
     }
     pub fn load(
         &self,

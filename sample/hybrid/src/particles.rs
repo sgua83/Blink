@@ -1,9 +1,9 @@
 use crate::{elapsed, f32_at, program, put};
-use blanguage::ExecutableProgram;
+use blanguage::ir::ProgramInterface;
 use blcompute::{Dataset, Result, Value, cpu::CpuProgram, vulkan::Device};
 use std::time::Instant;
 
-fn inputs(code: &ExecutableProgram, count: u32) -> Result<Vec<Dataset>> {
+fn inputs(code: &dyn ProgramInterface, count: u32) -> Result<Vec<Dataset>> {
     let mut bodies = Dataset::new(code, 0, count)?;
     let stride = bodies.stride() as usize / 4;
     let position = bodies.field_offset("position")? as usize / 4;
@@ -41,9 +41,10 @@ pub fn run(backend: &str, count: u32) -> Result<()> {
             data
         }
         "gpu" => {
-            let device = Device::for_program(&code)?;
+            let image = blanguage::spirv::compile_program(code)?;
+            let device = Device::for_program(image.program())?;
             println!("GPU {}", device.name());
-            let code = device.compile(code)?.with_timestamps(true)?;
+            let code = device.load(image)?.with_timestamps(true)?;
             println!("setup_ms={:.3}", elapsed(setup));
             let transfer = Instant::now();
             let data = data
@@ -88,12 +89,13 @@ pub fn run(backend: &str, count: u32) -> Result<()> {
 
 pub fn steps() -> Result<()> {
     let code = program("simulation/statistics.b", "step_and_total")?;
-    let device = Device::for_program(&code)?;
-    let data = inputs(&code, 3)?
+    let image = blanguage::spirv::compile_program(code)?;
+    let device = Device::for_program(image.program())?;
+    let data = inputs(image.program(), 3)?
         .into_iter()
         .map(|d| device.upload(d))
         .collect::<Result<Vec<_>>>()?;
-    let code = device.compile(code)?;
+    let code = device.load(image)?;
     let first = code.submit(data, &values())?;
     let second = code.submit_after(first, &[0, 1], vec![], &values())?;
     let third = code.submit_after(second, &[0, 1], vec![], &values())?;
@@ -113,12 +115,14 @@ pub fn steps() -> Result<()> {
 pub fn flow() -> Result<()> {
     let code = program("simulation/statistics.b", "step_and_total")?;
     let finish = program("book/handoff.b", "finish")?;
-    let device = Device::for_program(&code)?;
-    let left = inputs(&code, 3)?
+    let code = blanguage::spirv::compile_program(code)?;
+    let finish = blanguage::spirv::compile_program(finish)?;
+    let device = Device::for_programs([code.program(), finish.program()])?;
+    let left = inputs(code.program(), 3)?
         .into_iter()
         .map(|d| device.upload(d))
         .collect::<Result<Vec<_>>>()?;
-    let mut right_data = inputs(&code, 3)?;
+    let mut right_data = inputs(code.program(), 3)?;
     // 第二个群体的速度为前者两倍；能量因此约为四倍。
     for i in 0..3 {
         put(&mut right_data[0], i, "velocity", &[0.0, 2.0, 0.0])?;
@@ -127,9 +131,9 @@ pub fn flow() -> Result<()> {
         .into_iter()
         .map(|d| device.upload(d))
         .collect::<Result<Vec<_>>>()?;
-    let output = device.zeroed(&finish, 2, 1)?;
-    let code = device.compile(code)?;
-    let finish = device.compile(finish)?;
+    let output = device.zeroed(finish.program(), 2, 1)?;
+    let code = device.load(code)?;
+    let finish = device.load(finish)?;
     let left = code.submit(left, &values())?;
     let right = code.submit(right, &values())?;
     let joined = finish

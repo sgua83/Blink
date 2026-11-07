@@ -464,7 +464,7 @@ f64标量按Windows x64的C double／Rust f64传参和返回；仅真实浮点�
 
 生成C／C++和Rust算法记录分别使用double与f64，uniform及Dataset::set_scalar使用Value::F64。Value完整标签和布局集中于规范；类型化数学入口及Float64设备要求随实际编译产物交接，不靠布局猜测兼容。
 
-SDK可显式选择具有所需能力的物理设备；原C绑定的backend=GPU与Device::for_program(s)共用原创建入口，首次创建前按完整DeviceRequirements特性、计算队列和必要设备扩展确定默认物理设备；保留独显优先次序，同类沿驱动枚举顺序，设备类别不排除候选。显式目标不满足Float64或浮点保留模式时返回真实错误；创建后的设备身份保持，错误不触发工作重放或数值模式变化。推送常量的实际uniform_bytes在原程序遍历中取最大值，与候选已有maxPushConstantsSize匹配后才创建逻辑设备；独立装入仍消费已有设备的真实容量。同一原程序遍历还合计实际纹理数组元素，多程序取最大值，在创建前匹配候选已有stage／set的sampler及sampled image四项容量；实际装入只在本调用内共用一个纹理总数。工作组、共享内存、存储／组合stage及AS绑定等其余限额参与默认选择仍见Issues C-022.5.4.3。CPU、GPU、外部C／Rust、对象／归档及实际消费者采用分别记录，未实现的GPU f64超越函数、完整JSON／容器迁移及版本演化不由本节宣称完成。
+SDK可显式选择具有所需能力的物理设备；原C绑定的backend=GPU与Device::for_program(s)共用原创建入口，首次创建前按完整DeviceRequirements特性、计算队列和必要设备扩展确定默认物理设备；保留独显优先次序，同类沿驱动枚举顺序，设备类别不排除候选。显式目标不满足Float64或浮点保留模式时返回真实错误；创建后的设备身份保持，错误不触发工作重放或数值模式变化。推送常量的实际uniform_bytes在原程序遍历中取最大值，与候选已有maxPushConstantsSize匹配后才创建逻辑设备；独立装入仍消费已有设备的真实容量。同一原程序遍历还合计实际纹理数组元素，多程序取最大值，在创建前匹配候选已有stage／set的sampler及sampled image四项容量；实际装入只在本调用内共用一个纹理总数。GPU设备创建借用实际将装入映像的ExecutionPlan，默认、显式物理设备与呈现入口共用该交接。阶段workgroup_width及发射后的shared_bytes分别按各阶段、各独立程序取最大值，直接匹配候选已有maxComputeWorkGroupInvocations／maxComputeWorkGroupSize[0]及maxComputeSharedMemorySize；不相加独立程序的宽度或共享存储。后续装入继续核对已确定设备的实际容量。存储／组合stage及AS绑定的创建前容量匹配仍见Issues C-022.5.4.3.3／.6。CPU、GPU、外部C／Rust、对象／归档及实际消费者采用分别记录，未实现的GPU f64超越函数、完整JSON／容器迁移及版本演化不由本节宣称完成。
 
 ## 打包存储的逻辑记录数量
 

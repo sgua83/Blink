@@ -17,8 +17,9 @@ fn main() -> blcompute::Result<()> {
         row[velocity + 1] = 1.0_f32.to_bits();
     }
     // This application chooses GPU execution in code, without a CLI switch.
-    let device = Device::for_program(&code)?;
-    let program = device.compile(code)?;
+    let image = blanguage::spirv::compile_program(code)?;
+    let device = Device::for_program(image.program())?;
+    let program = device.load(image)?;
     let inputs = vec![device.upload(bodies)?, device.upload(total)?];
     let values = [Value::F32(0.01), Value::F32(0.2)];
     let done = program.submit(inputs, &values)?.wait().map_err(|(error, _)| error)?;

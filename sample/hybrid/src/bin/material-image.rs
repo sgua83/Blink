@@ -14,11 +14,12 @@ fn main() -> Result<()> {
     let root = Path::new("sample/hybrid/Programs");
     let mut compiled = blanguage::compile_entry(&root.join("book/sheet.b"), root, "image")?;
     let code = compiled.programs.remove(0);
-    let device = Device::for_program(&code)?;
+    let image = blanguage::spirv::compile_program(code)?;
+    let device = Device::for_program(image.program())?;
     println!("GPU {}", device.name());
-    let points = device.zeroed(&code, 0, 1_000_000)?;
-    let pixels = device.zeroed(&code, 1, 1_000_000)?;
-    let display = device.zeroed(&code, 2, 1_000_000)?;
+    let points = device.zeroed(image.program(), 0, 1_000_000)?;
+    let pixels = device.zeroed(image.program(), 1, 1_000_000)?;
+    let display = device.zeroed(image.program(), 2, 1_000_000)?;
     let albedo = Texture2D::new(vec![TextureMip {
         width: 2,
         height: 2,
@@ -31,7 +32,7 @@ fn main() -> Result<()> {
         .into(),
     }])?;
     let albedo = device.upload_texture(&albedo)?;
-    let program = device.compile(code)?.with_timestamps(true)?;
+    let program = device.load(image)?.with_timestamps(true)?;
     println!(
         "setup_enqueue_ms={:.3}",
         setup.elapsed().as_secs_f64() * 1000.0

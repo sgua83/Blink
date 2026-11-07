@@ -27,8 +27,9 @@ impl LibraryProgram {
         match backend {
             0 => Ok(Self::Cpu(CpuProgram::new(program)?)),
             1 => {
-                let device = Device::for_program(&program)?;
-                let program = device.compile(program)?;
+                let image = blanguage::spirv::compile_program(program).map_err(error)?;
+                let device = Device::for_program(image.program())?;
+                let program = device.load(image)?;
                 Ok(Self::Gpu { device, program })
             }
             _ => Err(error("backend 必须为 CPU(0) 或 GPU(1)")),

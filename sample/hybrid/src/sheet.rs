@@ -50,9 +50,10 @@ pub fn run(backend: &str) -> Result<()> {
             output.into_datasets().remove(0)
         }
         "gpu" => {
-            let device = Device::for_program(&code)?;
+            let image = blanguage::spirv::compile_program(code)?;
+            let device = Device::for_program(image.program())?;
             println!("GPU {}", device.name());
-            let code = device.compile(code)?.with_timestamps(true)?;
+            let code = device.load(image)?.with_timestamps(true)?;
             let points = device.upload(points)?;
             let albedo = device.upload_texture(&albedo)?;
             println!("setup_upload_enqueue_ms={:.3}", elapsed(setup));

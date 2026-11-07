@@ -123,9 +123,10 @@ fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
             .map_err(|(error, _)| error)?
             .into_datasets(),
         "gpu" => {
-            let device = Device::for_program(&program)?;
+            let image = blanguage::spirv::compile_program(program).map_err(error)?;
+            let device = Device::for_program(image.program())?;
             println!("GPU {}", device.name());
-            let compiled = device.compile(program)?.with_timestamps(capture_timestamps)?;
+            let compiled = device.load(image)?.with_timestamps(capture_timestamps)?;
             let data = datasets
                 .into_iter()
                 .map(|d| device.upload(d))

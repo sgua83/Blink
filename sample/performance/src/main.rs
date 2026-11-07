@@ -319,9 +319,10 @@ fn main() -> Result<()> {
         cpu_error = difference(&program, &serial, &cpu);
     }
     let prepare = Instant::now();
-    let device = Device::for_program(&program)?;
+    let image = blanguage::spirv::compile_program(program.clone())?;
+    let device = Device::for_program(image.program())?;
     eprintln!("GPU {}", device.name());
-    let compiled = device.compile(program.clone())?.with_timestamps(true)?;
+    let compiled = device.load(image)?.with_timestamps(true)?;
     let textures = if kind == 10 {
         vec![device.upload_texture(&texture)?.into()]
     } else {

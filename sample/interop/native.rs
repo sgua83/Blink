@@ -13,9 +13,10 @@ fn main() -> blcompute::Result<()> {
     // Select the backend in host code; this ordinary example runs on the CPU.
     let use_gpu = false;
     let output = if use_gpu {
-        let device = Device::for_program(&program)?;
+        let image = blanguage::spirv::compile_program(program)?;
+        let device = Device::for_program(image.program())?;
         let input = device.upload(data)?;
-        let program = device.compile(program)?;
+        let program = device.load(image)?;
         let completed = program.submit(vec![input], &[])?.wait().map_err(|(error, _)| error)?;
         device.download(&completed.datasets()[0])?
     } else {
