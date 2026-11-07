@@ -2596,7 +2596,7 @@ impl<'a> Builder<'a> {
                 self.initialize(p);
                 self.assign_owned_proof(p, proof, false)?;
                 if self.loop_contexts.is_empty() {
-                    self.complete_application_writes(|data| sources.contains(&data.root.identity()), span)?;
+                    self.complete_application_writes(|_,data| sources.contains(&data.root.identity()), span)?;
                 }
                 return Ok(());
             }
@@ -3738,8 +3738,8 @@ impl<'a> Builder<'a> {
             &begin,
         )?;
         if self.flow.continues() {
-            self.complete_application_writes(|data| writes.unknown_storage
-                || writes.storage.iter().any(|(root, _)| *root == data.root.regs[0])
+            self.complete_application_writes(|builder,data| writes.unknown_storage
+                || writes.storage.iter().any(|written| written.includes_root(builder,data.root.regs[0]))
                 || data.place.as_ref().is_some_and(|place| matches!(place.storage(),
                     Place::Local(_, slots, _) if slots.iter().any(|slot| writes.locals.contains(slot)))), span)?;
         }

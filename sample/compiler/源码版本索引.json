@@ -96,7 +96,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "af0f250176c5797df8434c7bd50f0b7c1b4f85bd59db1a5f7e84378d469cc6f5"
+      "sha256": "345e6260067b56c3b8aad063099f656eb1474fdfcabd9eed4bb61511c2d70d6c"
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
@@ -108,7 +108,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "3a00baec3439cdded13379bc1819d69261ebc8935d0be005b24f36a91060c2b0"
+      "sha256": "80d81e9daea62eb8a042a5f15a128d637d1927d12b1350b6aaf3e932be186ec2"
     },
     {
       "path": "crates/blanguage/src/check/array.rs",
@@ -148,7 +148,7 @@
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "sha256": "0e95006d256caaca5bec550309047e8c50cb3f417596f482187607efa5776982"
+      "sha256": "97bb2959b3c941dd7a5a5b8061214faac65a26909c628bf3dc8084b36a824c6c"
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
@@ -784,8 +784,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1297,
-      "end_line": 1304,
+      "start_line": 1319,
+      "end_line": 1326,
       "sha256": "8a7b8f27fb419ada395676d976de4acf83da085494b2022a32b38c04798b1b60"
     },
     {
@@ -796,8 +796,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1355,
-      "end_line": 1365,
+      "start_line": 1377,
+      "end_line": 1387,
       "sha256": "3cb75a1c70eb9812440ff1227b1b16e06857306422336a546f8119a04d12289f"
     },
     {
@@ -826,14 +826,14 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 180,
-      "end_line": 182,
+      "start_line": 191,
+      "end_line": 193,
       "sha256": "3086442727a4985b5702204bd585443816609b14fe837340bab8a3b72e8fa6a8"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1734,
-      "end_line": 1767,
+      "start_line": 1756,
+      "end_line": 1789,
       "sha256": "c97c1a253937200545c15cc55eeba2a833b571b6860ee7370b04ed9e315a7345"
     },
     {
@@ -856,14 +856,14 @@
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "start_line": 268,
-      "end_line": 288,
+      "start_line": 272,
+      "end_line": 292,
       "sha256": "873103cda18435d5b1ef7155afbf73e21798628e1bec870614d436f90ce4d25e"
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "start_line": 443,
-      "end_line": 458,
+      "start_line": 447,
+      "end_line": 462,
       "sha256": "fa4d95c94a41815ca9eb85fb29ca2d6733e84299ea0e3c4c1c6ceaf58fc6433e"
     },
     {
@@ -904,14 +904,14 @@
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "start_line": 35,
-      "end_line": 40,
-      "sha256": "3a13b1c17a74a3d56bd57a0f9664b0cb73b95343af594a88b6cc3fc725ec2146"
+      "start_line": 39,
+      "end_line": 44,
+      "sha256": "2161190cd415d315e21d37ba7523e36d334213d3bb642762dcfd9394406ddb29"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1696,
-      "end_line": 1733,
+      "start_line": 1718,
+      "end_line": 1755,
       "sha256": "18e8e40a5236812da1a1256b8261229ab14f7f1cd9ce13433ed85c07fb11733a"
     },
     {
@@ -970,20 +970,20 @@
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "start_line": 379,
-      "end_line": 388,
+      "start_line": 383,
+      "end_line": 392,
       "sha256": "7e835944f2413d0908c522a48105e022f28d4c8969d899e9aad23b252d87a758"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 3699,
-      "end_line": 3703,
+      "start_line": 3721,
+      "end_line": 3725,
       "sha256": "193861ab4c55cede9471f1e79757d0a04cfefac9da2a73c8c1eb9adc909b54b2"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 3355,
-      "end_line": 3358,
+      "start_line": 3377,
+      "end_line": 3380,
       "sha256": "ed5f1e17a0afda5d6de83007a503382ced3be0c9f95b36377c41f2eff47caae0"
     },
     {

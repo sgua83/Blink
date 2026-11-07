@@ -172,6 +172,17 @@ pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->addr
     }
 }
 
+impl effects::StorageWrite {
+    pub(super) fn includes_root(&self,builder:&Builder<'_>,root:Reg)->bool {
+        match self {
+            Self::Frame{root:written,..}=>*written==root,
+            Self::Descendants{root:ancestor}=>{
+                let loads=ApplicationLoads(builder);
+                !loads.same(root,*ancestor)&&!loads.frame_descendant(*ancestor,root)
+            },
+        }
+    }
+}
 // Numeric snapshots query the original emitted operations, including the outer
 // IR owned by active loop contexts. Loop write inputs describe future backedges;
 // no loaded-value or memory-version state is retained beside IR and Proof.
@@ -187,15 +198,20 @@ impl ApplicationLoads<'_, '_> {
             boundary+=context.outer.len();
             a.min(b)<boundary && a.max(b)>=boundary && match &read.kind {
                 InstKind::LoadLocal(_,slot)=>context.writes.external||context.writes.locals.contains(slot),
-                InstKind::ViewLoad{dst,address,index,stride,word}=>context.writes.unknown_storage||context.writes.storage.iter().any(|(written,range)|
-                    match (self.frame_root(*address),range,self.constant(*index),self.stride(*stride)) {
-                        (Some(root),_,_,_)if self.disjoint_roots(root,*written)||self.frame_descendant(root,*written)||self.frame_descendant(*written,root)=>false,
-                        (Some(root),Some(range),Some(index),Some(stride))if self.same(root,*written)=>{
-                            let start=u128::from(index)*u128::from(stride)+u128::from(*word);
-                            Self::byte_overlap(&(start..start+u128::from(self.0.registers[*dst].size())),range)
+                InstKind::ViewLoad{dst,address,index,stride,word}=>context.writes.unknown_storage||context.writes.storage.iter().any(|written|{
+                    let root=self.frame_root(*address);
+                    match written {
+                        effects::StorageWrite::Descendants{..}=>root.is_none_or(|root|written.includes_root(self.0,root)),
+                        effects::StorageWrite::Frame{root:written,range}=>match (root,range,self.constant(*index),self.stride(*stride)) {
+                            (Some(root),_,_,_)if self.disjoint_roots(root,*written)||self.frame_descendant(root,*written)||self.frame_descendant(*written,root)=>false,
+                            (Some(root),Some(range),Some(index),Some(stride))if self.same(root,*written)=>{
+                                let start=u128::from(index)*u128::from(stride)+u128::from(*word);
+                                Self::byte_overlap(&(start..start+u128::from(self.0.registers[*dst].size())),range)
+                            },
+                            _=>true,
                         },
-                        _=>true,
-                    }),
+                    }
+                }),
                 _=>false,
             }
         })
@@ -305,21 +321,26 @@ impl ApplicationLoads<'_, '_> {
         self.same(container,parent)||self.frame_descendant(container,parent)
     }
     // Resolve only metadata already produced by the original IR. No model register becomes storage.
-    fn resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(Reg,Ty,DataLayout)>>> {
+    fn resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(effects::StorageWrite,Ty,DataLayout)>>> {
         let resource=resource.restricted(&self.0.path);
         if view::resource_borrow(input).restricted(&self.0.path)==resource {
-            return Ok(Some(vec![(input.root.regs[0],input.ty.clone(),input.layout.clone())]));
+            return Ok(Some(vec![(effects::StorageWrite::Frame{root:input.root.regs[0],range:None},input.ty.clone(),input.layout.clone())]));
         }
         if !resource.inputs.is_empty()||!resource.calls.is_empty(){return Ok(None);}
         let mut storage=Vec::new();
         for(source,when)in resource.sources.entries().filter(|(_,when)|when.possible()) {
-            let view::Source::Element{parent,fields,index:Some(index)}=source else{return Ok(None);};
+            let view::Source::Element{parent,fields,index}=source else{return Ok(None);};
             let Some(parents)=self.resource_storage(input,parent)?else{return Ok(None);};
-            for(root,ty,layout)in parents {
+            for(location,ty,layout)in parents {
                 let(mut word,mut field)=(0,&ty);
                 for at in fields{let(offset,next)=field.aggregate_part(*at);word+=offset;field=next;}
                 let Some(reference)=field.dataset.as_deref()else{return Ok(None);};
                 let element=self.0.world.ty(reference,&self.0.definition.source,self.0.definition.function.span,&self.0.definition.module,&self.0.definition.imports)?;
+                let root=match location {
+                    effects::StorageWrite::Descendants{root}=>{storage.push((effects::StorageWrite::Descendants{root},element,DataLayout::Declared));continue;},
+                    effects::StorageWrite::Frame{root,..}=>root,
+                };
+                let Some(index)=index else{storage.push((effects::StorageWrite::Descendants{root},element,DataLayout::Declared));continue;};
                 let index_equal=|at|{
                     let actual=match self.constant(at){Some(value)=>bounds::Operand::Constant(Scalar::U32,value),None=>bounds::Operand::Value(ValueIdentity::Register(at))};
                     let actual=self.0.element_index_operand(actual,(&self.0.path,&self.0.env));
@@ -342,7 +363,8 @@ impl ApplicationLoads<'_, '_> {
                     };
                     (selected&&!self.code().skip(at+1).any(|later|self.writes(later,inst))).then_some(*dst)
                 });
-                let Some(root)=loaded else{return Ok(None);};storage.push((root,element,DataLayout::Declared));
+                let root=match loaded{Some(root)=>effects::StorageWrite::Frame{root,range:None},None=>effects::StorageWrite::Descendants{root}};
+                storage.push((root,element,DataLayout::Declared));
             }
         }
         Ok((!storage.is_empty()).then_some(storage))
@@ -1929,13 +1951,13 @@ impl Builder<'_> {
         self.env.remove(&owner);
         Ok(Some(elements))
     }
-    pub(super) fn complete_application_writes(&mut self, written: impl Fn(&Data) -> bool, span: Span) -> Result<()> {
+    pub(super) fn complete_application_writes(&mut self, written: impl Fn(&Self,&Data) -> bool, span: Span) -> Result<()> {
         let path=self.residency_path();
         let data = self.env.values().flat_map(Binding::application_resources).filter(|data| {
             data.root.ty == Ty::scalar(Scalar::U32)
                 && self.resolve_ownership(&data.ownership, None).available()
                 && self.residency.known_at(&data.residency,Target::Cpu,&path)
-                && written(data)
+                && written(self,data)
         }).cloned().collect::<Vec<_>>();
         let origin = Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetWriteComplete,
@@ -2055,7 +2077,7 @@ impl Builder<'_> {
         self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
-    pub(super) fn application_resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(Reg,Ty,DataLayout)>>> {ApplicationLoads(self).resource_storage(input,resource)}
+    pub(super) fn application_resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(effects::StorageWrite,Ty,DataLayout)>>> {ApplicationLoads(self).resource_storage(input,resource)}
     pub(super) fn application_element(
         data: &Data,
         index: &Value,

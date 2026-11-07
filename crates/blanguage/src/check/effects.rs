@@ -30,11 +30,15 @@ enum Write<'e> {
     Generator(&'e Expr),
 }
 
+pub(super) enum StorageWrite {
+    Frame { root:Reg, range:Option<std::ops::Range<u128>> },
+    Descendants { root:Reg },
+}
 // Immutable output of the existing loop write preanalysis, not memory state.
 #[derive(Default)]
 pub(super) struct LoopWrites {
     pub locals: BTreeSet<usize>,
-    pub storage: Vec<(Reg,Option<std::ops::Range<u128>>)>,
+    pub storage: Vec<StorageWrite>,
     pub unknown_storage: bool,
     pub external: bool,
 }
@@ -486,20 +490,25 @@ impl Builder<'_> {
                     if iterator.is_some() {effect.unknown_storage=true;continue;}
                     if *contents {
                         if let Some((data,_,ty))=self.written_application_data(place) && !ty.owns_resources() {
-                            effect.storage.push((data.root.regs[0],None));
+                            effect.storage.push(StorageWrite::Frame{root:data.root.regs[0],range:None});
                         }else{effect.unknown_storage=true;}
                         continue;
                     }
                     if let Some((projection,input))=self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))? {
                         let Some(storage)=self.application_resource_storage(input,&projection.resource)?else{effect.unknown_storage=true;continue;};
-                        for(root,ty,layout)in storage {
-                            if let (Some(bounds::Operand::Constant(Scalar::U32,index)),application::DataLayout::Declared)=(projection.index,&layout) {
-                                let base=u128::from(index as u32)*u128::from(ir::align_up(ty.size,ty.align));
-                                for component in projection.value.1.iter().flatten() {
-                                    let(scalar,word)=projection.base.components[*component];let start=base+u128::from(word);
-                                    effect.storage.push((root,Some(start..start+u128::from(scalar.size()))));
-                                }
-                            }else{effect.storage.push((root,None));}
+                        for(storage,ty,layout)in storage {
+                            match storage {
+                                StorageWrite::Descendants{root}=>effect.storage.push(StorageWrite::Descendants{root}),
+                                StorageWrite::Frame{root,..}=>{
+                                    if let (Some(bounds::Operand::Constant(Scalar::U32,index)),application::DataLayout::Declared)=(projection.index,&layout) {
+                                        let base=u128::from(index as u32)*u128::from(ir::align_up(ty.size,ty.align));
+                                        for component in projection.value.1.iter().flatten() {
+                                            let(scalar,word)=projection.base.components[*component];let start=base+u128::from(word);
+                                            effect.storage.push(StorageWrite::Frame{root,range:Some(start..start+u128::from(scalar.size()))});
+                                        }
+                                    }else{effect.storage.push(StorageWrite::Frame{root,range:None});}
+                                },
+                            }
                         }
                         continue;
                     }
