@@ -471,23 +471,37 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn require_view_available(&self, value: &Value, resources: &[&application::Data], span: Span) -> Result<()> {
-        let borrow=value.proof.typed_view_borrow(&value.ty).restricted(&self.path).owners();
-        for(source,when)in borrow.sources.entries(){
-            if !when.possible(){continue;}
-            match source {
-                Source::Data(id) => self.application_handle_available(*id, span, resources,&when)?,
-                Source::Unresolved => {
-                    return self.fail(span, "B271", "view返回的实际借用来源尚未形成合同");
+        fn selected(source:&Source)->bool{match source{
+            Source::Data(_)=>true,
+            Source::Parameter(_,indices)=>indices.iter().all(Option::is_some),
+            Source::Element{parent,index:Some(_),..}|Source::Projection{parent,..}=>parent.calls.is_empty()&&parent.inputs.is_empty()&&!parent.sources.is_empty()&&parent.sources.iter().all(selected),
+            _=>false,
+        }}
+        fn available(builder:&Builder<'_>,borrow:Borrow,resources:&[&application::Data],span:Span)->Result<()>{
+            for(source,when)in borrow.sources.entries(){
+                if !when.possible(){continue;}
+                if matches!(source,Source::Element{..}|Source::Projection{..})&&selected(source){
+                    let held=resources.iter().copied().chain(builder.env.values().flat_map(Binding::application_resources)).any(|data|{
+                        let present=match &data.ownership{
+                            application::Ownership::Conditional(present)=>builder.condition_truth(&present.condition(),Some(&bounds::Condition::guard(when.clone())))==Some(true),
+                            ownership=>ownership.available(),
+                        };
+                        let actual=resource_borrow(data).restricted(&builder.path);
+                        present&&!when.overlaps(&bounds::Condition::guard(actual.sources.when(source)).assume(&bounds::Clause::default(),false))
+                    });
+                    if held{continue;}
                 }
-                Source::Position(origin) => {
-                    for(source,when)in origin.resources().restricted(&when).sources.entries() {
-                        if when.possible() && let Source::Data(id)=source { self.application_handle_available(*id,span,resources,&when)?; }
-                    }
+                match source{
+                    Source::Data(id)=>builder.application_handle_available(*id,span,resources,&when)?,
+                    Source::Element{parent,..}|Source::Projection{parent,..}=>available(builder,parent.restricted(&when),resources,span)?,
+                    Source::Position(origin)=>available(builder,origin.owners().restricted(&when),resources,span)?,
+                    Source::Unresolved=>return builder.fail(span,"B271","view返回的实际借用来源尚未形成合同"),
+                    Source::Parameter(..)|Source::Inactive|Source::External=>{},
                 }
-                Source::Parameter(..) | Source::Inactive | Source::External | Source::Element{..} | Source::Projection{..} => {}
             }
+            Ok(())
         }
-        Ok(())
+        available(self,value.proof.typed_view_borrow(&value.ty).restricted(&self.path),resources,span)
     }
     pub(super) fn require_view_return_proof(&mut self,proof:&bounds::Proof,owned:Borrow,span:Span)->Result<()> {
         let mut allowed=self.env.values().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Borrowed).flat_map(|data|std::iter::once(data.root.identity()).chain(data.root.proof.borrowed_views().into_iter().filter_map(|source|match source {Source::Data(id)=>Some(id),_=>None}))).collect::<BTreeSet<_>>();
