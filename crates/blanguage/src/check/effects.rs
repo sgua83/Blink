@@ -271,7 +271,7 @@ impl Builder<'_> {
     ) -> Result<()> {
         for write in writes {
             let changed=match write {
-                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{self.write_address_values(borrow)?;continue;},
+                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{self.write_address_values(&[(borrow.clone(),Some(Access::Write),None)])?;continue;},
                 Write::External{..}|Write::Generator(_)|Write::Memory{..}=>{
                     let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
                         data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
@@ -456,7 +456,7 @@ impl Builder<'_> {
                     }
                     normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),place,..}
                         if std::ptr::eq(*origin,call)&&!owned.iter().any(|arg|std::ptr::eq(*arg,*place))));
-                    let borrow=match self.native_call_memory(&instance.name,&arguments){Some(borrow)=>borrow,None=>view::Borrow::source(view::Source::Unresolved)};
+                    let borrow=match self.native_call_memory(&instance.name,&arguments){Some(memory)=>memory.into_iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(&borrow);result}),None=>view::Borrow::source(view::Source::Unresolved)};
                     if !borrow.active(){continue;}
                     Write::Memory{call,borrow}
                 },

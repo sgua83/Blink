@@ -109,7 +109,7 @@ impl Binding {
 // 更新描述只属于原共同元素模型，不成为运行期状态。
 pub(super) enum ElementUpdate<'a> {
     Unknown,
-    Bytes {regions:&'a [address::MemoryRegion],index:Option<(bounds::Operand,(u32,u32))>},
+    Bytes {effect:&'a address::MemoryEffect,index:Option<(bounds::Operand,(u32,u32))>},
     Element { proof: &'a bounds::Proof, index: Option<(bounds::Operand,(u32,u32))>, when: Option<&'a bounds::Condition> },
     WholeFacts(&'a bounds::Proof),
 }
@@ -696,7 +696,7 @@ impl Builder<'_> {
                 InstKind::Loop{condition,body,..}=>writes(loads,condition,position,scalar)||writes(loads,body,position,scalar),
                 InstKind::Scope(body)|InstKind::Cleanup{body,..}=>writes(loads,body,position,scalar),
                 InstKind::Call(call)=>{
-                    let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut).written_bytes(position,scalar)!=0);
+                    let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut,None).written_bytes(position,scalar)!=0);
                     position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().contains(slot)))
                         ||loads.call_memory_writes(call,affected)
                         ||call.memory_use.is_some_and(|first|loads.0.view_model.uses.iter().skip(first+1)
@@ -3397,7 +3397,7 @@ impl Builder<'_> {
             },
             _=>unreachable!(),
         }}
-        self.require_owned_writable(&place,span)?;self.writable_storage(&place,span,true)?;
+        self.require_owned_writable(&place,span)?;self.writable_storage(&place,span,Some(bounds::Proof::default()))?;
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let loaded=self.read_storage_value(&place,span, None)?;
         let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone(),&place)?;
@@ -3665,10 +3665,10 @@ impl Builder<'_> {
                     };
                 }
                 let Some(data)=selected_data else{continue;};self.expand_current_element_facts(data)?;
-                let byte_writes=if let ElementUpdate::Bytes{regions,..}=&update {
+                let byte_writes=if let ElementUpdate::Bytes{effect,..}=&update {
                     let borrow=Arc::new(resource.clone());let layout=address::Layout::of(&data.ty);
                     data.ty.components.iter().enumerate().filter_map(|(component,(scalar,word))|{
-                        let position=Position::Borrowed(borrow.clone(),layout.clone(),*word);let bytes=regions.iter().fold(0,|bytes,region|bytes|region.written_bytes(&position,*scalar));
+                        let position=Position::Borrowed(borrow.clone(),layout.clone(),*word);let bytes=effect.written_bytes(&position,*scalar);
                         (bytes!=0).then_some((component,bytes))
                     }).collect::<Vec<_>>()
                 }else{Vec::new()};
@@ -3698,9 +3698,13 @@ impl Builder<'_> {
                         }
                     }
                     fresh.at_call(&bindings)
-                }else if matches!(update,ElementUpdate::Bytes{..}){
+                }else if let ElementUpdate::Bytes{effect,..}=&update{
                     let mut proof=bounds::Proof::default();
-                    for(target,(component,bytes))in byte_writes.iter().enumerate(){proof.assign(&[target],components.len(),previous.written_range(*component,data.ty.components[*component].0,*bytes));}
+                    let borrow=Arc::new(resource.clone());let layout=address::Layout::of(&data.ty);
+                    for(target,(component,_))in byte_writes.iter().enumerate(){
+                        let(scalar,word)=data.ty.components[*component];let position=Position::Borrowed(borrow.clone(),layout.clone(),word);
+                        proof.assign(&[target],components.len(),effect.written_value(&position,scalar,&previous.project(&[*component],old.regs.len())));
+                    }
                     proof
                 }else{bounds::Proof::default()};
                 updated.proof.assign(&components,old.regs.len(),written);

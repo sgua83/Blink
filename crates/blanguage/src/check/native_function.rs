@@ -34,7 +34,7 @@ impl Module {
             access.iter().all(|access|match access {
                 view_contracts::Access::Resource{ownership,..}=>!*ownership,
                 view_contracts::Access::Memory{access,..}=>!access.writes(),
-                view_contracts::Access::Position{position,..}=>!position.writes,
+                view_contracts::Access::Position{position,..}=>position.written.is_none(),
                 view_contracts::Access::Dataset{access,..}=>!access.writes(),
                 view_contracts::Access::Initialized{..}=>true,
             }))
@@ -82,7 +82,7 @@ impl Module {
                 view_contracts::Access::Memory{access,borrows,..}=>!access.writes()||references(borrows),
                 view_contracts::Access::Dataset{access,..}=>!access.writes(),
                 view_contracts::Access::Initialized{..}=>true,
-                view_contracts::Access::Position{position,borrows,..}=>!position.writes||references(borrows),
+                view_contracts::Access::Position{position,borrows,..}=>position.written.is_none()||references(borrows),
             }))
     }
     fn owns_input(&self, function: &str, id: ValueIdentity) -> bool {
@@ -453,21 +453,20 @@ impl Builder<'_> {
         Ok(())
     }
     #[inline(never)]
-    pub(super) fn native_call_memory(&self,name:&str,arguments:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<view::Borrow> {
+    pub(super) fn native_call_memory(&self,name:&str,arguments:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<Vec<(view::Borrow,Option<Access>,Option<bounds::Proof>)>> {
         let access=self.functions.units.get(name)?.as_ref()?.contract.view_access.as_ref()?;
-        let mut written=view::Borrow::default();
+        let mut memory=Vec::new();
         for access in access {
-            let(borrows,when)=match access {
-                view_contracts::Access::Memory{borrows,when,access}if access.writes()=>(borrows,when),
-                view_contracts::Access::Position{borrows,when,position:view_contracts::PositionAccess{writes:true,..}}=>(borrows,when),
-                view_contracts::Access::Dataset{borrows,when,access,..}if access.writes()=>(borrows,when),
+            let(borrows,when,access,written)=match access {
+                view_contracts::Access::Memory{borrows,when,access}|view_contracts::Access::Dataset{borrows,when,access,..}if access.writes()=>(borrows,when,*access,None),
+                view_contracts::Access::Position{borrows,when,position}if position.written.is_some()=>(borrows,when,Access::Write,position.written.as_ref()),
                 _=>continue,
             };
             let path=when.guard_at_call(arguments).assume(&bounds::Clause::default(),true);
             let borrow=self.current_address_borrow(&borrows.at_call(arguments));
-            written.union(&borrow.restricted(&path));
+            memory.push((borrow.restricted(&bounds::Clause::both(&path,&self.path)),Some(access),written.map(|proof|proof.at_call(arguments))));
         }
-        Some(written.restricted(&self.path))
+        Some(memory)
     }
     fn native_call(
         &mut self,
@@ -812,21 +811,22 @@ impl Builder<'_> {
             .flat_map(|ty| &ty.components)
             .map(|(scalar, _)| self.reg(*scalar))
             .collect::<Vec<_>>();
-        let views_closed=self.functions.units[&instance.name].as_ref().is_some_and(|unit|unit.contract.view_access.is_some());
-        if let Some(written)=self.native_call_memory(&instance.name,&view_arguments) {
-            memory_borrow=written;
-        }
+        let closed_memory=self.native_call_memory(&instance.name,&view_arguments);
+        let views_closed=closed_memory.is_some();
         let memory=if self.application.is_none(){
             let access=self.functions.units[&instance.name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();
             self.native_dataset_access(&access,&view_arguments,span)?
         }else{Vec::new()};
-        let memory_use=if views_closed {
-            self.call_address_memory([(memory_borrow,Some(Access::InOut))],span)?
-        }else{
-            let usage=self.view_model.uses.len();let snapshots=self.defer_address_values(usage);
-            self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(usage),borrow:memory_borrow,access:Some(Access::InOut),snapshots:Some(snapshots.into()),span})?;
-            usage
+        let memory_use=self.view_model.uses.len();
+        let(borrow,snapshots)=match closed_memory {
+            Some(memory)=>{
+                let borrow=memory.iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(borrow);result});
+                let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory_use).into())}else{self.write_address_values(&memory)?;None};
+                (borrow,snapshots)
+            },
+            None=>(memory_borrow,Some(self.defer_address_values(memory_use).into())),
         };
+        self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(memory_use),borrow,access:Some(Access::InOut),written:None,snapshots,span})?;
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
         for argument in &mut arguments {
             if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {borrow.call=self.view_model.calls.len();}

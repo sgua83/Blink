@@ -2364,8 +2364,8 @@ impl<'a> Builder<'a> {
                 ty, address, words, ..
             } => {
                 if let Some((target,borrow))=self.reference_memory(p,span)? {
-                    self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:address::Layout::of(ty),writes:false,writable:false,initialized:true,span})?;
-                    self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Read),snapshots:None,span})?;
+                    self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:address::Layout::of(ty),written:None,writable:false,initialized:true,span})?;
+                    self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Read),written:None,snapshots:None,span})?;
                 }else{self.require_initialized(p, span)?;}
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 let mut regs = Vec::new();
@@ -2549,10 +2549,11 @@ impl<'a> Builder<'a> {
         self.require_view_available(&value, &[], span)?;
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
+        let written=if matches!(p,Place::Reference{..}){self.path_proof(ty,bounds::Proof::capture(&value)).numeric_facts()}else{bounds::Proof::default()};
         if let Some((target,borrow))=self.reference_memory(p,span)? {
             let memory=self.view_model.uses.len();
-            let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory).into())}else{self.write_address_values(&borrow)?;None};
-            self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Write),snapshots,span})?;
+            let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory).into())}else{self.write_address_values(&[(borrow.clone(),Some(Access::Write),Some(written.clone()))])?;None};
+            self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Write),written:Some(written.clone()),snapshots,span})?;
         }
         match p {
             Place::AtomicParameter(_)
@@ -2561,7 +2562,7 @@ impl<'a> Builder<'a> {
                 return self.fail(span, "B214", "原子借用只能通过显式原子操作修改");
             }
             Place::Reference { address, words, .. } => {
-                self.writable_storage(p, span, true)?;
+                self.writable_storage(p, span, Some(written.clone()))?;
                 self.assign_owned_proof(p, bounds::Proof::capture(&value), false)?;
                 self.initialize(p);
                 let zero = self.constant(Scalar::U32, 0).regs[0];
@@ -2584,7 +2585,7 @@ impl<'a> Builder<'a> {
                 words,
                 ..
             } => {
-                self.writable_storage(p, span, true)?;
+                self.writable_storage(p, span, Some(written))?;
                 self.dataset_effect(p,Access::Write,false,span)?;
                 let proof = bounds::Proof::capture(&value);
                 if self.iterators.last().is_some_and(Option::is_some) {

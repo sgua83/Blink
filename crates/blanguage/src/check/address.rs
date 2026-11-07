@@ -329,7 +329,7 @@ impl crate::module::codec::Decode for Identity {
 pub(super) enum MemoryTarget { Value(Reg), Call(usize) }
 // External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
 #[derive(Default)]
-pub(super) struct MemoryEffect {external:Option<Access>,known:Vec<(Arc<Origin>,bounds::Clause,Access)>}
+pub(super) struct MemoryEffect {external:Option<Access>,known:Vec<(Arc<Origin>,bounds::Clause,Access,Option<bounds::Proof>)>}
 pub(super) fn external_memory(borrow:&view::Borrow)->bool {
     borrow.sources.entries().any(|(source,when)|when.possible()&&match source {
         view::Source::External=>true,
@@ -342,10 +342,10 @@ pub(super) fn external_memory(borrow:&view::Borrow)->bool {
     })
 }
 impl MemoryEffect {
-    pub fn of(borrow:&view::Borrow,access:Access)->Self {
+    pub fn of(borrow:&view::Borrow,access:Access,written:Option<&bounds::Proof>)->Self {
         let external=external_memory(borrow).then_some(access);
         let known=borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,when)|match source{
-            view::Source::Position(origin)=>vec![(origin.clone(),when,if origin.writable{access}else{Access::Read})],
+            view::Source::Position(origin)=>vec![(origin.clone(),when,if origin.writable{access}else{Access::Read},written.cloned())],
             _=>Vec::new(),
         }).collect();
         Self{external,known}
@@ -354,22 +354,49 @@ impl MemoryEffect {
         self.known.extend(other.known);
         if let Some(access)=other.external{self.external=Some(match self.external{Some(old)if old!=access=>Access::InOut,_=>access});}
     }
-    pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar)->u8 {
+    fn origin_written_bytes(origin:&Origin,when:&bounds::Clause,position:&Position,scalar:Scalar)->u8 {
         let all=((1u16<<scalar.size())-1) as u8;
-        if self.external.is_some_and(|access|access.writes()){return all;}
-        let known=||self.known.iter().filter(|(_,_,access)|access.writes()).fold(0,|bytes,(origin,when,_)|bytes|origin.memory_regions(when).map(|regions|regions.iter().fold(0,|bytes,region|bytes|region.written_bytes(position,scalar))).unwrap_or(all));
+        let known=||origin.memory_regions(when).map(|regions|regions.iter().fold(0,|bytes,region|bytes|region.written_bytes(position,scalar))).unwrap_or(all);
         match position{
             Position::Initialized=>0,
             Position::Local(_)=>known(),
-            Position::Element(binding,_)=>if self.known.iter().any(|(origin,_,access)|access.writes()&&origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Data(actual)if actual==binding))){all}else{0},
+            Position::Element(binding,_)=>if origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Data(actual)if actual==binding)){all}else{0},
             Position::Borrowed(borrow,_,_) if !borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>known(),
-            Position::Both(a,b)|Position::Conditional(_,a,b)=>self.written_bytes(a,scalar)|self.written_bytes(b,scalar),
-            Position::Indexed(positions,_)=>positions.iter().fold(0,|bytes,position|bytes|self.written_bytes(position,scalar)),
-            _=>if self.known.iter().any(|(_,_,access)|access.writes()){all}else{0},
+            Position::Both(a,b)|Position::Conditional(_,a,b)=>Self::origin_written_bytes(origin,when,a,scalar)|Self::origin_written_bytes(origin,when,b,scalar),
+            Position::Indexed(positions,_)=>positions.iter().fold(0,|bytes,position|bytes|Self::origin_written_bytes(origin,when,position,scalar)),
+            _=>all,
         }
     }
+    pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar)->u8 {
+        if self.external.is_some_and(|access|access.writes()){return ((1u16<<scalar.size())-1) as u8;}
+        self.known.iter().filter(|(_,_,access,_)|access.writes()).fold(0,|bytes,(origin,when,_,_)|bytes|Self::origin_written_bytes(origin,when,position,scalar))
+    }
+    // A possible write joins its value with the old value; it is never a must-write guarantee.
+    pub(super) fn written_value(&self,position:&Position,scalar:Scalar,previous:&bounds::Proof)->bounds::Proof {
+        if self.written_bytes(position,scalar)==0{return previous.clone();}
+        let previous=previous.numeric_facts().at_call(&BTreeMap::new());let mut result=previous.clone();
+        if self.external.is_some_and(|access|access.writes()){return bounds::Proof::default();}
+        let all=((1u16<<scalar.size())-1) as u8;
+        for(origin,when,access,written)in &self.known {
+            if !access.writes(){continue;}
+            let bytes=Self::origin_written_bytes(origin,when,position,scalar);if bytes==0{continue;}
+            let incoming=written.as_ref().and_then(|proof|{
+                let regions=origin.memory_regions(when)?;let mut incoming=None;
+                for region in regions.iter().filter(|region|region.written_bytes(position,scalar)!=0){
+                    let component=origin.layout.parts.iter().position(|part|*part==(scalar,region.word))?;
+                    if region.offset!=0||region.size!=scalar.size()||region.written_bytes(position,scalar)!=all{return None;}
+                    let proof=proof.project(&[component],origin.layout.parts.len()).numeric_facts().at_call(&BTreeMap::new());
+                    if let Some(incoming)=&mut incoming{bounds::Proof::join(incoming,&proof,1,None);}else{incoming=Some(proof);}
+                }
+                incoming
+            });
+            let incoming=match incoming{Some(incoming)=>incoming,None=>previous.written_range(0,scalar,bytes)};
+            result.join(&incoming,1,None);
+        }
+        result
+    }
     fn local_effects(&self,locals:&BTreeMap<usize,Ty>)->Vec<MemoryAccess> {
-        let mut effects=self.known.iter().flat_map(|(origin,_,access)|origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:*access})).collect::<Vec<_>>();
+        let mut effects=self.known.iter().flat_map(|(origin,_,access,_)|origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:*access})).collect::<Vec<_>>();
         if let Some(access)=self.external{effects.extend(locals.iter().map(|(end,ty)|MemoryAccess{alias:MemoryAlias::Local{base:*end-ty.components.len(),len:ty.components.len()},access}));}
         effects
     }
@@ -686,8 +713,11 @@ impl Builder<'_> {
         self.positions(place).iter().enumerate().filter_map(|(i,position)|positions.iter().any(|written|
             owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()
     }
-    pub(super) fn write_address_values(&mut self,borrow:&view::Borrow)->Result<()> {
-        let borrow=self.current_address_borrow(borrow);
+    pub(super) fn write_address_values(&mut self,memory:&[(view::Borrow,Option<Access>,Option<bounds::Proof>)])->Result<()> {
+        let mut borrow=view::Borrow::default();let mut effect=MemoryEffect::default();
+        for(source,access,written)in memory{if let Some(access)=access.filter(|access|access.writes()){
+            let source=self.current_address_borrow(source);borrow.union(&source);effect.union(MemoryEffect::of(&source,access,written.as_ref()));
+        }}
         match self.address_write_regions(&borrow) {None=>{
         let data=self.env.values().flat_map(Binding::application_resources)
             .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
@@ -700,7 +730,7 @@ impl Builder<'_> {
                 if let Binding::OwnedValue(owner)=binding {owner.value.constant=None;}
             }
         }
-        },Some(positions)=>{
+        },Some(_)=>{
         let data=borrow.sources.entries().filter(|(_,when)|when.possible()).filter_map(|(source,when)|{
             let view::Source::Position(origin)=source else{return None;};
             if !origin.writable{return None;}
@@ -712,11 +742,11 @@ impl Builder<'_> {
                 _=>None,
             }
         }).collect::<Vec<_>>();
-        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Bytes{regions:&positions,index})?;}
+        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Bytes{effect:&effect,index})?;}
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
             let components=self.positions(&place).iter().zip(place.ty().components.iter()).enumerate().filter_map(|(component,(position,(scalar,_)))|{
-                let bytes=positions.iter().fold(0,|bytes,region|bytes|region.written_bytes(position,*scalar));(bytes!=0).then_some((component,bytes))
+                let bytes=effect.written_bytes(position,*scalar);(bytes!=0).then_some((component,position.clone()))
             }).collect::<Vec<_>>();
             (!components.is_empty()).then(||(name.clone(),components))
         }).collect::<BTreeMap<_,_>>();
@@ -725,12 +755,12 @@ impl Builder<'_> {
             match self.env.get_mut(&name).unwrap(){
                 Binding::Owned(owner)=>{
                     let ty=owner.place.ty();let mut ranges=bounds::Proof::default();
-                    for(component,bytes)in &written{ranges.assign(&[*component],ty.components.len(),owner.proof.written_range(*component,ty.components[*component].0,*bytes));}
+                    for(component,position)in &written{ranges.assign(&[*component],ty.components.len(),effect.written_value(position,ty.components[*component].0,&owner.proof.project(&[*component],ty.components.len())));}
                     owner.uniform=false;owner.proof.forget_value(&components,ty.components.len());owner.proof.constrain_common_ranges(&ranges,ty.components.len());
                 },
                 Binding::OwnedValue(owner)=>{
                     let ty=&owner.value.ty;let mut ranges=bounds::Proof::default();
-                    for(component,bytes)in &written{ranges.assign(&[*component],ty.components.len(),owner.value.proof.written_range(*component,ty.components[*component].0,*bytes));}
+                    for(component,position)in &written{ranges.assign(&[*component],ty.components.len(),effect.written_value(position,ty.components[*component].0,&owner.value.proof.project(&[*component],ty.components.len())));}
                     owner.invalidate_components(&components,None);owner.value.proof.constrain_common_ranges(&ranges,owner.value.ty.components.len());
                 },
                 _=>{},
@@ -874,12 +904,12 @@ impl Builder<'_> {
         let usage=self.view_model.uses.len();let mut written=view::Borrow::default();
         for(borrow,access)in memory{
             if access.is_some_and(|access|access.writes()){written.union(&borrow);}
-            self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,access,snapshots:None,span})?;
+            self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,access,written:None,snapshots:None,span})?;
         }
         if written.pending()&&self.address_write_positions(&written).is_none(){
             let snapshots=self.defer_address_values(usage);
             if let view::Requirement::Memory{snapshots:target,..}=&mut self.view_model.uses[usage].requirement{*target=Some(snapshots.into());}
-        }else{self.write_address_values(&written)?;}
+        }else{self.write_address_values(&[(written,Some(Access::Write),None)])?;}
         Ok(usage)
     }
     pub(super) fn position_address(&mut self,args:&[Expr],span:Span)->Result<Option<Value>> {
@@ -933,7 +963,7 @@ impl Builder<'_> {
         let Some(mut value) = self.expr(arg)? else { return Ok(None); };
         self.require_same(&Ty::builtin("address").unwrap(), &value.ty, arg.span)?;
         let borrow=borrow_in_path(&self.current_address_borrow(&value.proof.view_borrow(0)),&self.path);
-        self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:Layout::of(&ty),writes:false,writable:false,initialized:false,span})?;
+        self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:Layout::of(&ty),written:None,writable:false,initialized:false,span})?;
         let external=!borrow.pending()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|matches!(source,view::Source::External));
         let identity = value.proof.addresses.first().cloned().flatten().unwrap_or_else(||match bounds::Proof::capture(&value).known_value(&value.ty) {
             Some(bits) => Identity::Constant(bits[0]),

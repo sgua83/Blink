@@ -272,8 +272,8 @@ pub(super) fn data_at_mut<'a>(binding:&'a mut Binding,path:&[usize])->Option<&'a
 pub(super) enum Requirement {
     Unborrowed {resource:Borrow,borrow:Borrow,ownership:bool,span:Span},
     Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,owned:Borrow,span:Span},
-    Address {borrow:Borrow,layout:address::Layout,writes:bool,writable:bool,initialized:bool,span:Span},
-    Memory {target:address::MemoryTarget,borrow:Borrow,access:Option<Access>,snapshots:Option<Arc<[view_contracts::ValueSnapshot]>>,span:Span},
+    Address {borrow:Borrow,layout:address::Layout,written:Option<bounds::Proof>,writable:bool,initialized:bool,span:Span},
+    Memory {target:address::MemoryTarget,borrow:Borrow,access:Option<Access>,written:Option<bounds::Proof>,snapshots:Option<Arc<[view_contracts::ValueSnapshot]>>,span:Span},
     Dataset {borrow:Borrow,index:Option<bounds::Operand>,access:Access,atomic:bool,values:Option<Arc<[view_contracts::ElementRead]>>,span:Span},
     Initialized {borrow:Borrow,read:address::InitializationRead,code:&'static str,span:Span},
     Nonzero {value:Box<Value>,path:bounds::Clause,span:Span},
@@ -290,8 +290,8 @@ impl Requirement {
         match self {
             Self::Unborrowed{resource,borrow,ownership,span}=>Self::Unborrowed{resource:map(resource),borrow:map(borrow),ownership:*ownership,span:*span},
             Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),owned:map(owned),span:*span},
-            Self::Address{borrow,layout,writes,writable,initialized,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),writes:*writes,writable:*writable,initialized:*initialized,span:*span},
-            Self::Memory{target,borrow,access,snapshots,span}=>Self::Memory{target:*target,borrow:map(borrow),access:*access,snapshots:snapshots.clone(),span:*span},
+            Self::Address{borrow,layout,written,writable,initialized,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),written:written.clone(),writable:*writable,initialized:*initialized,span:*span},
+            Self::Memory{target,borrow,access,written,snapshots,span}=>Self::Memory{target:*target,borrow:map(borrow),access:*access,written:written.clone(),snapshots:snapshots.clone(),span:*span},
             Self::Dataset{borrow,index,access,atomic,values,span}=>Self::Dataset{borrow:map(borrow),index:*index,access:*access,atomic:*atomic,values:values.clone(),span:*span},
             Self::Initialized{borrow,read,code,span}=>Self::Initialized{borrow:map(borrow),read:read.clone(),code,span:*span},
             Self::Nonzero{..}=>self.clone(),

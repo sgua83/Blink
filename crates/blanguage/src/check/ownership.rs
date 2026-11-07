@@ -365,7 +365,7 @@ impl Builder<'_> {
             return self.fail(expr.span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
         }
         self.require_owned_writable(&place, expr.span)?;
-        let positions = self.writable_storage(&place, expr.span, false)?;
+        let positions = self.writable_storage(&place, expr.span, None)?;
         if positions.iter().copied().collect::<BTreeSet<_>>().len() != positions.len() {
             return self.fail(expr.span, "B227", "独占借用位置不能包含重复分量");
         }
@@ -380,13 +380,13 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn writable_storage(&mut self, place: &Place, span: Span, writes: bool) -> Result<Vec<usize>> {
+    pub(super) fn writable_storage(&mut self, place: &Place, span: Span, written: Option<bounds::Proof>) -> Result<Vec<usize>> {
         if let Place::Indexed { base, words, .. } = place {
-            self.writable_storage(base, span, writes)?;
+            self.writable_storage(base, span, written.map(|_|bounds::Proof::default()))?;
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
         if matches!(place,Place::Reference{..}) {let borrow=self.position_origin(place,span)?.normalize();
-            self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),writes,writable:true,initialized:false,span})?;
+            self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),written,writable:true,initialized:false,span})?;
         }
         match place {
             Place::Reference { words, access: Access::Write | Access::InOut, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
@@ -500,7 +500,7 @@ impl Builder<'_> {
         if !self.is_initialized(place) {
             if self.defer_initialization(place,"B142",span)?{return Ok(());}
             if let Some((_,borrow))=self.reference_memory(place,span)? {
-                return self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),writes:false,writable:false,initialized:true,span});
+                return self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),written:None,writable:false,initialized:true,span});
             }
             return self.fail(
                 span,
