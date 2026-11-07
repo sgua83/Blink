@@ -389,13 +389,16 @@ impl Device {
         let mut uniform_bytes = 0;
         let mut texture_count = 0;
         let mut resource_count = 0;
+        let mut storage_count = 0;
         let mut workgroup_width = 0;
         let mut shared_bytes = 0;
         for program in programs {
             uniform_bytes = uniform_bytes.max(program.uniform_bytes());
             let textures = program.texture_count();
             texture_count = texture_count.max(textures);
-            resource_count = resource_count.max(program.buffers().len() + program.auxiliary_buffers() + textures);
+            let storage = program.buffers().len() + program.auxiliary_buffers();
+            storage_count = storage_count.max(storage);
+            resource_count = resource_count.max(storage + textures);
             for stage in program.stages() {
                 workgroup_width = workgroup_width.max(stage.workgroup_width());
                 shared_bytes = shared_bytes.max(stage.shared_bytes());
@@ -476,6 +479,12 @@ impl Device {
                     || texture_count > properties.limits.maxDescriptorSetSampledImages as usize
                 {
                     unavailable.push(format!("{device_name}: 纹理描述符需要{texture_count}项，maxPerStageDescriptorSamplers={}，maxPerStageDescriptorSampledImages={}，maxDescriptorSetSamplers={}，maxDescriptorSetSampledImages={}", properties.limits.maxPerStageDescriptorSamplers, properties.limits.maxPerStageDescriptorSampledImages, properties.limits.maxDescriptorSetSamplers, properties.limits.maxDescriptorSetSampledImages));
+                    continue 'physical;
+                }
+                if storage_count > properties.limits.maxPerStageDescriptorStorageBuffers as usize
+                    || storage_count > properties.limits.maxDescriptorSetStorageBuffers as usize
+                {
+                    unavailable.push(format!("{device_name}: storage描述符需要{storage_count}项，maxPerStageDescriptorStorageBuffers={}，maxDescriptorSetStorageBuffers={}", properties.limits.maxPerStageDescriptorStorageBuffers, properties.limits.maxDescriptorSetStorageBuffers));
                     continue 'physical;
                 }
                 if resource_count > properties.limits.maxPerStageResources as usize {
@@ -1962,10 +1971,11 @@ impl GpuProgram {
                 return Err(error("纹理绑定数量超出设备能力"));
             }
             let auxiliary = program.auxiliary_buffers();
+            let storage_count = program.buffers().len() + auxiliary;
             if program.uniform_bytes() > limits.maxPushConstantsSize
-                || program.buffers().len() + auxiliary
-                    > limits.maxPerStageDescriptorStorageBuffers as usize
-                || program.buffers().len() + auxiliary + texture_count
+                || storage_count > limits.maxPerStageDescriptorStorageBuffers as usize
+                || storage_count > limits.maxDescriptorSetStorageBuffers as usize
+                || storage_count + texture_count
                     > limits.maxPerStageResources as usize
                 || program.stages().iter().any(|s| {
                     s.workgroup_width() > limits.maxComputeWorkGroupInvocations
