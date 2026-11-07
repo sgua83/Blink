@@ -542,12 +542,12 @@ fn assigned_root(expr: &Expr) -> Option<&str> {
 }
 impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
 
-    fn input_snapshot(&self,expr:&Expr,limit:usize)->Result<Option<(Ty,bounds::Proof,view::Borrow)>> {
+    fn input_snapshot(&self,expr:&Expr,limit:usize,access:Access)->Result<Option<(Ty,bounds::Proof,view::Borrow)>> {
         let builder=self.builder.unwrap();
         if let ExprKind::Name(name)=&expr.kind
             &&let Some(i)=self.bindings[..limit].iter().rposition(|(bound,_)|*bound==name)
             &&let Local::Inferred(value)=self.bindings[i].1
-            &&!builder.mutable_names.contains(name) {return self.input_snapshot(value,i);}
+            &&!builder.mutable_names.contains(name) {return self.input_snapshot(value,i,access);}
         let Some(name)=assigned_root(expr)else{
             if let ExprKind::Bool(value)=expr.kind{return Ok(Some((Ty::scalar(Scalar::Bool),bounds::Proof::condition(bounds::Condition::constant(value)),view::Borrow::default())));}
             return Ok(None);
@@ -592,7 +592,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             let indices=parts.iter().map(|part|part[choice]).collect::<Vec<_>>();
             let projection=proof.project(&indices,ty.components.len());
             if let Some(value)=&mut value{value.join_condition(&projection,selected.components.len(),None);}else{value=Some(projection);}
-            if let Some(place)=&owner{borrow.union(&builder.position_origin(&place.clone().project(selected.clone(),&indices),expr.span)?.normalize());}
+            if access!=Access::Value && let Some(place)=&owner{borrow.union(&builder.position_origin(&place.clone().project(selected.clone(),&indices),expr.span)?.normalize());}
         }
         Ok(Some((selected,value.unwrap_or_default(),borrow)))
     }
@@ -611,7 +611,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 }
                 offset+=descriptor.components.len();continue;
             }
-            let(proof,storage)=match self.input_snapshot(arg,self.bindings.len())?{Some((_,proof,storage))=>(proof,storage),None=>(bounds::Proof::default().with_external_borrows(&ty),view::Borrow::source(view::Source::Unresolved))};
+            let(proof,storage)=match self.input_snapshot(arg,self.bindings.len(),parameter.access)?{Some((_,proof,storage))=>(proof,storage),None=>(bounds::Proof::default().with_external_borrows(&ty),view::Borrow::source(view::Source::Unresolved))};
             if matches!(parameter.access,Access::Read|Access::Write|Access::InOut|Access::Atomic) {
                 let storage=if storage.empty(){view::Borrow::source(view::Source::Unresolved)}else{storage};
                 inputs.insert(ValueIdentity::ParameterStorage(index),bounds::Proof::default().with_view_borrow(0,storage));
@@ -675,7 +675,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         match &expr.kind {
             ExprKind::Bool(value) => truth = Some(*value),
             ExprKind::Name(name) if self.builder.is_some_and(|builder|!builder.mutable_names.contains(name)) || self.writes.is_some() => {
-                if let Some((ty,proof,_))=self.input_snapshot(expr,self.bindings.len())?
+                if let Some((ty,proof,_))=self.input_snapshot(expr,self.bindings.len(),Access::Value)?
                     && ty==Ty::scalar(Scalar::Bool) {
                     truth=proof.known_value(&ty).map(|bits|bits[0]!=0);
                 }
