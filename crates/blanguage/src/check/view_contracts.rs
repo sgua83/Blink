@@ -845,8 +845,10 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
             if let Some(snapshots)=snapshots{for(component,snapshot)in snapshots.iter().enumerate(){
                 let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluate(borrow,function,&known[name],&known,true)),layout.clone(),*word),position=>position.clone()};
                 let bytes=effect.written_bytes(&position,snapshot.scalar);let proof=snapshot.proof.substitute_values(&resolved);
-                let proof=if bytes==0{proof}else{proof.written_range(0,snapshot.scalar,bytes)};
-                resolved.insert(ValueIdentity::MemoryValue(memory,component),proof);
+                let proof=if bytes==0{proof}else if !snapshot.scalar.is_integer()||bytes==((1u16<<snapshot.scalar.size())-1) as u8{bounds::Proof::default()}else{
+                    let path=usage.path.substitute_values(&resolved);bounds::scoped_proof(&Ty::scalar(snapshot.scalar),proof,&path,&BTreeMap::new()).written_range(0,snapshot.scalar,bytes)
+                };
+                let identity=ValueIdentity::MemoryValue(memory,component);resolved.insert(identity,proof.with_identity(identity));
             }}
             values.entry(*target).or_default().union(effect);
         }
@@ -876,7 +878,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                 let mut value=(**value).clone();
                 value.proof=value.proof.substitute_values(values);
                 value.constant=value.constant.or_else(||value.proof.known_value(&value.ty));
-                Requirement::Nonzero{value:Box::new(value),path:path.substitute_values(values),span:*span}.check(&usage.source)?;
+                Requirement::Nonzero{value:Box::new(value),path:bounds::Clause::both(path,&context),span:*span}.check(&usage.source)?;
                 continue;
             }
             if let Requirement::Initialized{read,code,span,..}=&usage.requirement {

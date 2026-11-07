@@ -463,7 +463,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1774`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1790`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -488,7 +488,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2886`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2907`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -507,7 +507,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1762`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1778`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1673,7 +1673,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 源码节选：`crates/blanguage/src/check/address.rs:670`。
 
-原Origin只查询同一位置的字节区间，address_write_positions向位置消费者投影同一结果；MemoryEffect与原write_address_values按真实覆盖字节撤去旧完整值关系。未写整数位由同一Proof.domains中的KnownBits交接，普通存储、延后Memory与Data.elements各自消费，不另存一份位向量、写表或运行状态。区间及位事实沿原投影、类型转换、共同合流和at_call传递，对象编码为BLCO79，资源ABI仍BLRI47；待解条件赋值合流见Issues C-005.60.3。
+原Origin只查询同一位置的字节区间，address_write_positions向位置消费者投影同一结果；MemoryEffect与原write_address_values按真实覆盖字节撤去旧完整值关系。未写整数位由同一Proof.domains中的KnownBits交接，普通存储、延后Memory与Data.elements各自消费，不另存一份位向量、写表或运行状态。区间及位事实沿原投影、类型转换、共同合流和at_call传递，对象编码为BLCO79，资源ABI仍BLRI47；either_facts使用原KnownBits数学工具和有序Fact范围取得两支共同位，后继部分写沿原Use.path及此前已解值消费同一事实；最终Nonzero查询使用现有value_context。合流后再缩窄的待解查询仍见Issues C-005.60.3.4。
 
 ```rust
     pub(super) fn address_write_positions(&self,borrow:&view::Borrow)->Option<Vec<Position>> {
@@ -2081,7 +2081,7 @@ enum Fact {
 
 完整parallel的输出属于原资源，而不是前一游标的寄存器身份。prefix::Facts沿原阶段效果保存每个元素共同成立的数值范围和逻辑Data目标；下一Builder消费同一共同事实。抽取只保留ranges和经过实际调用绑定重映射的目标索引事实，旧寄存器、路径和借用不跨阶段：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:435`。
+源码节选：`crates/blanguage/src/check/bounds.rs:451`。
 
 ```rust
     // 阶段完成只交接共同数值和逻辑数据目标；值身份、路径及借用不跨阶段。
@@ -2129,7 +2129,7 @@ pub(crate) struct Interface {
 
 普通B应用沿同一合同更新Data.elements，原未知写与单元素值更新入口共同处理完整数值结果，不新建范围表。应用游标局部事实与共同字段范围同时成立；读取点消费两者交集，原局部值不进入共同资源查询。范围交集直接复用同一ScalarRanges，共同索引域并入原局部Proof；它们同时约束本次读取，不表示两个元素拥有相同数值：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:508`。
+源码节选：`crates/blanguage/src/check/bounds.rs:524`。
 
 ```rust
     pub(super) fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
@@ -2223,7 +2223,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1147`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1163`。
 
 ```rust
         self.nonzero = (0..width)
@@ -2236,7 +2236,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1305`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1321`。
 
 ```rust
     pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
@@ -2319,7 +2319,7 @@ F32除法只在原规范的分母范围内交接包含设备误差的结果，�
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1896`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1912`。
 
 ```rust
 impl Drop for Clause {

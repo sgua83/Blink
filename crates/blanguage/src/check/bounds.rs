@@ -395,6 +395,22 @@ impl KnownBits {
         let other=other.cast(self.scalar);let mask=self.mask&other.mask&!(self.value^other.value);
         (mask!=0).then_some(Self{scalar:self.scalar,mask,value:self.value&mask})
     }
+    fn facts(scalar:Scalar,id:ValueIdentity,sets:[&Facts;2])->Option<Self> {
+        let (mut lower,mut upper)=(0,scalar.bit_mask());
+        for facts in sets {
+            if let Some(Fact::Minimum(_,_,bound))=facts.range(Fact::Minimum(id,scalar,0)..=Fact::Minimum(id,scalar,scalar.bit_mask())).next_back(){lower=lower.max(*bound);}
+            if let Some(Fact::Maximum(_,_,bound))=facts.range(Fact::Maximum(id,scalar,0)..=Fact::Maximum(id,scalar,scalar.bit_mask())).next(){upper=upper.min(*bound);}
+            if facts.contains(&Fact::Zero(id)){lower=lower.max(scalar.order_bias());upper=upper.min(scalar.order_bias());}
+        }
+        let mut bits=Self::ranges(scalar,ScalarRanges::interval(lower,upper));
+        for facts in sets {for fact in facts.range(Fact::Index(id,IndexDomain::KnownBits(scalar,0,0))..=Fact::Index(id,IndexDomain::KnownBits(scalar,Bits::MAX,Bits::MAX))) {
+            if let Fact::Index(_,IndexDomain::KnownBits(from,mask,value))=*fact {
+                let incoming=Self{scalar:from,mask,value}.cast(scalar);
+                bits=Some(match bits{Some(old)=>old.combined(incoming),None=>incoming});
+            }
+        }}
+        bits
+    }
     fn ranges(scalar:Scalar,ranges:ScalarRanges)->Option<Self> {
         let mut result:Option<Self>=None;
         for(lower,upper)in ranges.restrict(0,scalar.bit_mask()).0 {
@@ -2602,6 +2618,11 @@ fn either_facts<'a>(environment: &Facts, environment_roots: &BTreeMap<ValueIdent
                     };
                     let fact = Fact::equal(representative, *identity);
                     if !environment.contains(&fact) { common.insert(fact); }
+                }
+            }
+            for (id,scalar) in a.union(&b).filter_map(|fact|match fact{Fact::Index(id,IndexDomain::KnownBits(scalar,..))=>Some((*id,*scalar)),_=>None}) {
+                if let Some(bits)=KnownBits::facts(scalar,id,[environment,&a]).zip(KnownBits::facts(scalar,id,[environment,&b])).and_then(|(a,b)|a.common(b)) {
+                    let fact=Fact::Index(id,bits.domain());if !environment.contains(&fact){common.insert(fact);}
                 }
             }
             // 环境仍归原所有者；这里只生产两支共同新增的范围。
