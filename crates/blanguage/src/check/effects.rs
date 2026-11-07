@@ -584,6 +584,11 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             &&let Local::Inferred(value)=self.bindings[i].1
             &&!builder.mutable_names.contains(name) {return self.input_snapshot(value,i,access);}
         match &expr.kind {
+            ExprKind::Member(base,field)if field=="length"=>{
+                if let Some((ty,proof,_))=self.input_snapshot(base,limit,Access::Value)? && ty.dataset.is_some() {
+                    return Ok(Some((Ty::scalar(Scalar::U32),proof.project(&[1],ty.components.len()),view::Borrow::default())));
+                }
+            },
             ExprKind::StaticU32(value)=>return Ok(Some((Ty::scalar(Scalar::U32),bounds::Proof::unsigned(*value,*value),view::Borrow::default()))),
             ExprKind::Number(number)=>{
                 let(ty,value)=super::number(&self.definition.source,expr.span,number)?;
