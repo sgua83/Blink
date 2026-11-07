@@ -233,6 +233,11 @@ impl ApplicationLoads<'_, '_> {
         matches!(self.definition(root),Some((_,Inst{kind:InstKind::Call(call),..}))if Self::allocation(call))
     }
     fn disjoint_roots(&self,a:Reg,b:Reg)->bool {a!=b&&self.allocated(a)&&self.allocated(b)}
+    fn frame_descendant(&self,child:Reg,parent:Reg)->bool {
+        let Some((_,Inst{kind:InstKind::ViewLoad{address,..},..}))=self.definition(child)else{return false;};
+        let Some(container)=self.frame_root(*address)else{return false;};
+        self.same(container,parent)||self.frame_descendant(container,parent)
+    }
     fn byte_overlap(a:&std::ops::Range<u128>,b:&std::ops::Range<u128>)->bool {a.start<b.end&&b.start<a.end}
     fn store_overlaps(&self,read:&IndexedSource,read_word:u32,read_scalar:Scalar,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
         let IndexedSource::View{address,index,stride}=read else{return true;};
@@ -261,8 +266,11 @@ impl ApplicationLoads<'_, '_> {
             _=>return true,
         };
         if !self.same_address(*address,*other) {
+            // Stored Frame handles are owned children: dataset elements cannot
+            // contain views. Query their original loads, without extending this
+            // relation to the arbitrary native addresses used by loop effects.
             if let(Some(a),Some(b))=(self.frame_root(*address),self.frame_root(*other))
-                &&self.disjoint_roots(a,b){return false;}
+                &&(self.disjoint_roots(a,b)||self.frame_descendant(a,b)||self.frame_descendant(b,a)){return false;}
             return true;
         }
         let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>value,None=>return true}};
