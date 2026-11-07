@@ -608,7 +608,7 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
         let out=match data.elements.known(){
             Some(elements)if path.is_empty()=>model(builder,elements,path,excluded,true,&omitted,Some(&bindings),&passed,transferred,cleanup)?,
             Some(elements)=>if let Some(step@Step::Index(_))=path.first(){model(builder,elements,&path[1..],&without(excluded,step),true,&omitted,Some(&bindings),&passed,transferred,cleanup)?}else{view::Borrow::default()},
-            None if builder.world.stored_borrows(&data.ty,&builder.definition.source,builder.definition.function.span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new())?=>view::Borrow::source(view::Source::Unresolved),
+            None if builder.world.stored_borrows(&data.ty,&builder.definition.source,builder.definition.function.span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new(),cleanup)?=>view::Borrow::source(view::Source::Unresolved),
             None=>view::Borrow::default(),
         };
         Ok(if let application::Ownership::Conditional(when)=&data.ownership{out.restricted(&when.condition().at_call(&bindings).assume(&bounds::Clause::default(),true))}else{out})

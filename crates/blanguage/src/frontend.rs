@@ -922,19 +922,20 @@ impl World {
         active.remove(&value.name);
         result
     }
-    // Query stored values through the original nominal references. Generic
-    // arguments and function signatures do not themselves occupy this storage.
-    pub(crate) fn stored_borrows(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<bool> {
-        if !consumed.insert(ty.name.clone()) { return Ok(false); }
-        if ty.view.is_some() || ty.is_address() { return Ok(true); }
+    // Query stored borrows through nominal references; cleanup retains possible
+    // reads by actual F. Generic arguments and signatures do not occupy storage.
+    pub(crate) fn stored_borrows(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<(String,bool)>, cleanup: bool) -> crate::Result<bool> {
+        let cleanup=cleanup&&ty.cleanup.is_none();
+        if !consumed.insert((ty.name.clone(),cleanup)) { return Ok(false); }
+        if ty.view.is_some() || ty.is_address() { return Ok(!cleanup); }
         for nested in ty.fields.iter().map(|(_, _, ty)| ty.as_ref())
             .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
             .chain(ty.array.as_deref().filter(|_| ty.values[0] != 0)) {
-            if self.stored_borrows(nested, source, span, module, imports, consumed)? { return Ok(true); }
+            if self.stored_borrows(nested, source, span, module, imports, consumed, cleanup)? { return Ok(true); }
         }
         if let Some(reference) = ty.dataset.as_deref().filter(|_| ty.values.first() != Some(&0)) {
             let element = self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())?;
-            return self.stored_borrows(&element, source, span, module, imports, consumed);
+            return self.stored_borrows(&element, source, span, module, imports, consumed, cleanup);
         }
         Ok(false)
     }
