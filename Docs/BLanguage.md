@@ -297,7 +297,7 @@ compiler角色的NativeCode可选持有operation_ranges，元素OperationRange�
 
 NativeCode::code_json在原输出中增加operation_ranges：None为null，已采集但没有操作为[]，每项提供start_byte、end_byte、byte_length、includes_nested_operations及origin（原OperationOrigin JSON）。偏移相对该映像字节零，单位为字节且范围为半开；机器反汇编仍来自同一最终bytes。序列按操作发射完成顺序交接，实际嵌套操作先于包含它的父操作，范围可以包含／重叠；这不是前端IR编号、独立指令数或动态执行次数，不能求和计成本。零长度明确表示该原操作没有发射字节，其位置只是游标，不能当作可设置断点的指令地址。origin两项均为空仍表示真实范围的来源未知，与整份材料未保留分别表达。
 
-当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量的来源仍按独立叶推进，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；纹理降低中未交接的来源保持未知。执行编码不保存operation_ranges，compiler角色恢复执行映像时为None；现有BLCR／BLCF只恢复其原布局材料，不恢复此来源，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
+当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量的来源仍按独立叶推进，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存operation_ranges，compiler角色恢复执行映像时为None；现有BLCR／BLCF只恢复其原布局材料，不恢复此来源，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
 
 ### 普通CPU函数ABI参数的实际发射来源
 

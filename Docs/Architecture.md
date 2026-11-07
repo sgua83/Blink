@@ -859,7 +859,7 @@ GenerationAnchor::BitcastConstantFold的expression借用该Constant原source_sit
 
 材料在原Emitter中随正在形成的代码暂存，完成时移动到NativeCode的compiler专用可选operation_ranges。Some空序列表示已采集但没有操作，None表示本映像没有保留该材料；单条OperationOrigin为空表示已知真实发射范围但来源未知，不从函数或相邻行补造。普通application::emit_value启用同一容器，其余发射入口先保持None，CPU并行／SIMD与集合辅助仍沿.4.2／.4.3。源和生成事实只不可变共享，不持有Inst、ValueCode、Stage、AST／World或运行资源；到最后代码事实消费者结束即释放，不为查询保持可执行资源。
 
-NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继续读同一最终字节。观察只覆盖实际IR操作发射，不把未交接的参数home、栈保存／结果搬移、退出或尾部来源写成已映射；这些分别归.2／.3。原reads::place移动完整Inst，来源随实际顺序移动；纹理采样降低的缺失归.4，不在查询处补造。必要执行编码不保存operation_ranges，执行解码在compiler角色中明确为None；现有BLCR／BLCF尚不保存本来源，不通过恢复尾部分区冒称已恢复操作来源。原SDK可直接借用新编译映像的实际操作范围；已实现范围与验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-1)。
+NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继续读同一最终字节。观察只覆盖实际IR操作发射，不把未交接的参数home、栈保存／结果搬移、退出或尾部来源写成已映射；这些分别归.2／.3。原reads::place移动完整Inst，来源随实际顺序移动；纹理采样降低由原生成点共享cpu_texture_sample职责与原OperationOrigin，已沿.4闭合，不在查询处补造。必要执行编码不保存operation_ranges，执行解码在compiler角色中明确为None；现有BLCR／BLCF尚不保存本来源，不通过恢复尾部分区冒称已恢复操作来源。原SDK可直接借用新编译映像的实际操作范围；已实现范围与验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-1)。
 
 <a id="tool-7-4-1-2"></a>
 
