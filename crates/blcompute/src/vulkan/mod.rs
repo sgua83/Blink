@@ -388,11 +388,14 @@ impl Device {
         let mut requirements = DeviceRequirements::default();
         let mut uniform_bytes = 0;
         let mut texture_count = 0;
+        let mut resource_count = 0;
         let mut workgroup_width = 0;
         let mut shared_bytes = 0;
         for program in programs {
             uniform_bytes = uniform_bytes.max(program.uniform_bytes());
-            texture_count = texture_count.max(program.textures().iter().map(|texture| texture.elements() as usize).sum::<usize>());
+            let textures = program.texture_count();
+            texture_count = texture_count.max(textures);
+            resource_count = resource_count.max(program.buffers().len() + program.auxiliary_buffers() + textures);
             for stage in program.stages() {
                 workgroup_width = workgroup_width.max(stage.workgroup_width());
                 shared_bytes = shared_bytes.max(stage.shared_bytes());
@@ -473,6 +476,10 @@ impl Device {
                     || texture_count > properties.limits.maxDescriptorSetSampledImages as usize
                 {
                     unavailable.push(format!("{device_name}: 纹理描述符需要{texture_count}项，maxPerStageDescriptorSamplers={}，maxPerStageDescriptorSampledImages={}，maxDescriptorSetSamplers={}，maxDescriptorSetSampledImages={}", properties.limits.maxPerStageDescriptorSamplers, properties.limits.maxPerStageDescriptorSampledImages, properties.limits.maxDescriptorSetSamplers, properties.limits.maxDescriptorSetSampledImages));
+                    continue 'physical;
+                }
+                if resource_count > properties.limits.maxPerStageResources as usize {
+                    unavailable.push(format!("{device_name}: 程序compute stage资源需要{resource_count}项，maxPerStageResources为{}", properties.limits.maxPerStageResources));
                     continue 'physical;
                 }
                 if workgroup_width > properties.limits.maxComputeWorkGroupInvocations

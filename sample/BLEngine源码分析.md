@@ -986,7 +986,7 @@ resolve 对平均值执行 `radiance/(radiance+1)`，再取约为 `1/2.2` 的幂
 
 ### 18.1 并行的是数据域，不是主机回调
 
-语言侧执行映像沿原ProgramLayout的DeviceRequirements交接f32／f64实际保留模式需求，BLRI43保存同一合同，GPU装入据此消费真实设备能力。程序数值需求归语言编译与运行库，场景和渲染算法仍归引擎；语言运行库在逻辑设备创建前，按程序已声明特性、计算队列及必要扩展确定默认物理设备；保留独显优先次序、同类沿驱动顺序，全部候选保留，显式选择仍保持原真实句柄。推送常量容量直接使用程序uniform_bytes的最大值，在创建前匹配候选已有物理属性，装入继续消费确定设备的容量；纹理描述符也在同一遍历按原数组元素合计、多程序取最大值，匹配候选已有stage／set的sampler和sampled image容量；装入在该调用内共用一次纹理总数。GPU设备创建借用实际将装入映像的ExecutionPlan，默认、显式物理设备与呈现入口共用该交接。阶段workgroup_width及发射后的shared_bytes分别按各阶段、各独立程序取最大值，直接匹配候选已有maxComputeWorkGroupInvocations／maxComputeWorkGroupSize[0]及maxComputeSharedMemorySize；不相加独立程序的宽度或共享存储。后续装入继续核对已确定设备的实际容量。存储／组合stage及AS绑定的创建前容量匹配仍见Issues C-022.5.4.3.3／.6。语言运行库交付与引擎实际采用分别确认。
+语言侧执行映像沿原ProgramLayout的DeviceRequirements交接f32／f64实际保留模式需求，BLRI43保存同一合同，GPU装入据此消费真实设备能力。程序数值需求归语言编译与运行库，场景和渲染算法仍归引擎；语言运行库在逻辑设备创建前，按程序已声明特性、计算队列及必要扩展确定默认物理设备；保留独显优先次序、同类沿驱动顺序，全部候选保留，显式选择仍保持原真实句柄。推送常量容量直接使用程序uniform_bytes的最大值，在创建前匹配候选已有物理属性，装入继续消费确定设备的容量；纹理描述符也在同一遍历按原数组元素合计、多程序取最大值，匹配候选已有stage／set的sampler和sampled image容量；装入在该调用内共用一次纹理总数。GPU设备创建借用实际将装入映像的ExecutionPlan，默认、显式物理设备与呈现入口共用该交接。阶段workgroup_width及发射后的shared_bytes分别按各阶段、各独立程序取最大值，直接匹配候选已有maxComputeWorkGroupInvocations／maxComputeWorkGroupSize[0]及maxComputeSharedMemorySize；不相加独立程序的宽度或共享存储。后续装入继续核对已确定设备的实际容量。同一创建遍历复用每个程序的texture_count，将实际普通及辅助storage binding数量与纹理数组元素总数求和，再按独立程序取最大组合数，直接匹配候选已有maxPerStageResources。combined image sampler每个数组元素计一项，AS不进入该项；不能将不同程序各自最大的storage与texture数量拼成不存在的布局。存储描述符stage／set及AS的创建前容量匹配仍见Issues C-022.5.4.3.3.1／.6。语言运行库交付与引擎实际采用分别确认。
 
 以相机产生的内部像素为例，`parallel(pixel in pixels)` 为每个像素分配工作，`index()` 给出它在数据域中的编号。每个工作项写自己的 pixel，读取共享场景、材质和图像。
 
