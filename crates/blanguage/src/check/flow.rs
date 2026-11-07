@@ -258,7 +258,7 @@ impl Builder<'_> {
         let mut proof = proof.at_call(&self.element_owner_bindings(&data.data));
         for (component, (scalar, _)) in ty.components.iter().enumerate() {
             if let Some(identity) = proof.known_identity(component) {
-                proof.mark_domain(component, IndexDomain::CommonRange(identity, *scalar, *scalar));
+                proof.mark_domain(component, IndexDomain::CommonRange(identity, *scalar, *scalar, *scalar, *scalar));
                 if *scalar == Scalar::U32 { proof.mark_domain(component, IndexDomain::Upper(identity, 0)); }
             }
         }

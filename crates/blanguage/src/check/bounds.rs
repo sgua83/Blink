@@ -197,9 +197,6 @@ type OutputBindings = BTreeMap<ValueIdentity, ValueIdentity>;
 fn output_identity(identity: ValueIdentity, bindings: &OutputBindings) -> ValueIdentity {
     bindings.get(&identity).copied().unwrap_or(identity)
 }
-fn output_domain(domain:IndexDomain,bindings:&OutputBindings)->IndexDomain {
-    map_domain(domain,&|id|output_identity(id,bindings))
-}
 fn map_domain(domain:IndexDomain, identity:&impl Fn(ValueIdentity)->ValueIdentity)->IndexDomain {
     match domain {
         IndexDomain::View(ids) => IndexDomain::View(ids.map(|id| identity(id))),
@@ -219,13 +216,28 @@ fn map_domain(domain:IndexDomain, identity:&impl Fn(ValueIdentity)->ValueIdentit
         IndexDomain::Offset(base, amount) => IndexDomain::Offset(identity(base), amount),
         IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base), identity(limit), distance),
         IndexDomain::Computed(expression) => IndexDomain::Computed(expression.map(|id| Some(identity(id))).unwrap()),
-        IndexDomain::CommonRange(source,from,to) => IndexDomain::CommonRange(identity(source),from,to),
-        IndexDomain::CommonNonzero(source,from,to) => IndexDomain::CommonNonzero(identity(source),from,to),
+        IndexDomain::CommonRange(source,from,low,extended,to) => IndexDomain::CommonRange(identity(source),from,low,extended,to),
         other => other,
     }
 }
+fn cast_domain(domain:IndexDomain,source:Scalar,target:Scalar)->Option<IndexDomain> {
+    match domain {
+        IndexDomain::CommonRange(id,base,mut low,mut extended,_) if source.is_integer()&&target.is_integer()=>{
+            let unsigned=|scalar|match scalar{Scalar::I8=>Scalar::U8,Scalar::I16=>Scalar::U16,Scalar::I32=>Scalar::U32,Scalar::I64=>Scalar::U64,other=>other};
+            if target.size()<=low.size(){low=target;extended=unsigned(target);}
+            else if target.size()<extended.size(){extended=unsigned(target);}
+            else if source.is_signed()&&source.size()==extended.size(){
+                if source.size()==low.size(){low=source;}
+                extended=unsigned(target);
+            }
+            Some(IndexDomain::CommonRange(id,base,low,extended,target))
+        }
+        domain if source==target&&common_range_domain(domain)||source.is_integer()&&target.is_integer()&&!source.is_signed()&&!target.is_signed()&&target.size()>source.size()=>Some(domain),
+        _=>None,
+    }
+}
 fn numeric_domain(domain: &IndexDomain) -> bool {
-    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..) | IndexDomain::CommonRange(..) | IndexDomain::CommonNonzero(..) | IndexDomain::Computed(..))
+    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..) | IndexDomain::CommonRange(..) | IndexDomain::Computed(..))
 }
 impl Place {
     fn refine_position(
@@ -575,7 +587,7 @@ impl Proof {
         for domains in &mut proof.domains {
             *domains = domains
                 .iter()
-                .map(|d| output_domain(*d, bindings))
+                .map(|d| map_domain(*d,&|id|output_identity(id,bindings)))
                 .collect();
         }
         let cases = proof.conditions.iter_mut().flatten()
@@ -663,7 +675,6 @@ impl Proof {
                 IndexDomain::Offset(base, amount) => IndexDomain::Offset(identity(base, bindings)?, amount),
                 IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base, bindings)?, identity(limit, bindings)?, distance),
                 IndexDomain::Computed(expression) => IndexDomain::Computed(expression.at_call(bindings)?),
-                IndexDomain::CommonNonzero(source,from,to) => IndexDomain::CommonNonzero(identity(source,bindings)?,from,to),
                 _ => return None,
             })
         }
@@ -751,20 +762,19 @@ impl Proof {
                     identity(a, bindings).zip(identity(b, bindings))
                         .map(|(a,b)| Fact::NotEqual(a.min(b), a.max(b)))
                 },
-                Fact::Index(id, IndexDomain::CommonRange(source,from,to)) => {
+                Fact::Index(id, IndexDomain::CommonRange(source,from,low,extended,to)) => {
                     let mut facts=Facts::new();
                     if let Some(target)=identity(id,bindings) && let Some(input)=bindings.get(&source){
-                        let range=input.range_set(0).cast(from,to,input.nonzero.first()==Some(&true));
+                        let range=input.range_set(0).cast(from,low,input.nonzero.first()==Some(&true)).cast(low,extended,false).cast(extended,to,false);
                         if to==Scalar::Bool && let Some(truth)=input.component_condition(0).and_then(Condition::boolean_constant){facts.insert(Fact::Boolean(target,truth));}
                         let nonzero=if to.is_integer(){!range.contains(to.order_bias())}else{input.nonzero.first()==Some(&true)};
                         if nonzero{facts.insert(Fact::NonZero(target));}
                         if to.is_integer()||to.is_float(){let(minimum,maximum)=range.hull();if minimum!=0{facts.insert(Fact::Minimum(target,to,minimum));}if maximum!=to.bit_mask(){facts.insert(Fact::Maximum(target,to,maximum));}}
-                        facts.extend(input.domains(0).into_iter().filter_map(|domain|match domain{domain if from==to && common_range_domain(domain)=>Some(domain),IndexDomain::CommonRange(source,base,middle)if base==middle||to.size()<=middle.size()=>Some(IndexDomain::CommonRange(source,base,to)),IndexDomain::CommonRange(source,base,middle)if from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source,base,middle)),IndexDomain::CommonNonzero(source,base,middle)if from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source,base,middle)),_=>None}).map(|domain|Fact::Index(target,domain)));
-                        facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source,from,to))));
+                        facts.extend(input.domains(0).into_iter().filter_map(|domain|cast_domain(domain,from,low).and_then(|domain|cast_domain(domain,low,extended)).and_then(|domain|cast_domain(domain,extended,to))).map(|domain|Fact::Index(target,domain)));
+                        facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source,from,low,extended,to))));
                     }
                     return Clause::facts(facts);
                 },
-                Fact::Index(id, IndexDomain::CommonNonzero(source,from,to)) if bindings.get(&source).is_some_and(|input|!input.range_set(0).cast(from,to,input.nonzero.first()==Some(&true)).contains(to.order_bias())) => identity(id,bindings).map(Fact::NonZero),
                 Fact::Index(id, d) => identity(id, bindings)
                     .zip(domain(d, bindings))
                     .map(|(id, d)| Fact::Index(id, d)),
@@ -840,24 +850,20 @@ impl Proof {
         }
         for (component, domains) in self.domains.iter().enumerate() {
             for domain in domains {
-                if let IndexDomain::CommonRange(source,from,to) = domain {
+                if let IndexDomain::CommonRange(source,from,low,extended,to) = domain {
                     if let Some(incoming) = bindings.get(source) {
-                        let range=incoming.range_set(0).cast(*from,*to,incoming.nonzero.first()==Some(&true));
+                        let range=incoming.range_set(0).cast(*from,*low,incoming.nonzero.first()==Some(&true)).cast(*low,*extended,false).cast(*extended,*to,false);
                         translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
                         translated.ranges[component] = translated.ranges[component].combine(&range,
                             |(al, ah), (bl, bh)| ScalarRanges::interval(al.max(bl), ah.min(bh)));
                         translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
                         translated.nonzero[component] |= if to.is_integer(){!range.contains(to.order_bias())}else{incoming.nonzero.first()==Some(&true)};
                         translated.domains.resize_with(translated.domains.len().max(component + 1), Domains::new);
-                        translated.domains[component].extend(incoming.domains(0).into_iter().filter_map(|domain|match domain{domain if from==to && common_range_domain(domain)=>Some(domain),IndexDomain::CommonRange(source,base,middle)if base==middle||to.size()<=middle.size()=>Some(IndexDomain::CommonRange(source,base,*to)),IndexDomain::CommonRange(source,base,middle)if from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source,base,middle)),IndexDomain::CommonNonzero(source,base,middle)if from.is_integer()&&to.is_integer()&&to.size()>=from.size()=>Some(IndexDomain::CommonNonzero(source,base,middle)),_=>None}));
+                        translated.domains[component].extend(incoming.domains(0).into_iter().filter_map(|domain|cast_domain(domain,*from,*low).and_then(|domain|cast_domain(domain,*low,*extended)).and_then(|domain|cast_domain(domain,*extended,*to))));
                         translated.domains[component].extend(incoming.origins.first().into_iter().flatten()
                             .filter(|id|!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_)))
-                            .map(|id|IndexDomain::CommonRange(*id,*from,*to)));
+                            .map(|id|IndexDomain::CommonRange(*id,*from,*low,*extended,*to)));
                     }
-                }
-                if let IndexDomain::CommonNonzero(source,from,to) = domain && bindings.get(source).is_some_and(|input|!input.range_set(0).cast(*from,*to,input.nonzero.first()==Some(&true)).contains(to.order_bias())) {
-                    translated.nonzero.resize(translated.nonzero.len().max(component+1),false);
-                    translated.nonzero[component]=true;
                 }
                 if let IndexDomain::Computed(expression) = domain
                     && let Some(range) = expression.ranges_at_call(bindings)
@@ -1190,13 +1196,8 @@ impl Proof {
                 ScalarRanges::interval(target.order_bias(), target.order_bias() + 1)
             } else { floating::cast(value, i, target) };
             proof.nonzero[i] = integers && !proof.ranges[i].contains(target.order_bias());
-            let domains=proof.domains(i).into_iter().filter_map(|domain|match domain{
-                domain if same_value=>Some(domain),
-                IndexDomain::CommonRange(id,base,middle)if integers&&(base==middle||target.size()<=middle.size())=>Some(IndexDomain::CommonRange(id,base,target)),
-                IndexDomain::CommonRange(id,base,middle)if integers&&target.size()>=source.size()=>Some(IndexDomain::CommonNonzero(id,base,middle)),
-                IndexDomain::CommonNonzero(id,base,middle)if integers&&target.size()>=source.size()=>Some(IndexDomain::CommonNonzero(id,base,middle)),
-                _=>None,
-            }).chain(proof.origins[i].iter().copied().filter(|_|integers&&!same_value).map(|id|IndexDomain::CommonRange(id,source,target))).collect::<Domains>();
+            let domains=proof.domains(i).into_iter().filter_map(|domain|cast_domain(domain,source,target))
+                .chain(proof.origins[i].iter().copied().filter(|_|integers&&!same_value).filter_map(|id|cast_domain(IndexDomain::CommonRange(id,source,source,source,source),source,target))).collect::<Domains>();
             if let Some(current)=proof.domains.get_mut(i){current.clear();}
             for domain in domains{proof.mark_domain(i,domain);}
             if !same_value{proof.origins[i].clear();}
@@ -2356,8 +2357,8 @@ fn contradictory(facts: &Facts) -> bool {
         }
         Fact::Below(a, b, strict, scalar) => Fact::Below(root(a), root(b), strict, scalar),
         Fact::Predicate(predicate, truth) => Fact::Predicate(predicate.map(|id|Some(root(id))).unwrap(), truth),
-        Fact::Index(id, domain) => Fact::Index(root(id), output_domain(domain, &roots)),
-        Fact::Outside(id, domain) => Fact::Outside(root(id), output_domain(domain, &roots)),
+        Fact::Index(id, domain) => Fact::Index(root(id), map_domain(domain,&root)),
+        Fact::Outside(id, domain) => Fact::Outside(root(id), map_domain(domain,&root)),
         value => value.identity().map(|id| value.at(root(id))).unwrap_or(value),
     };
     // 原查询只生产一次别名规范视图；排序、查找及判定不重复投影。
@@ -2757,7 +2758,7 @@ impl Condition {
                 if truth != 0 { Fact::NonZero(identity) } else { Fact::Zero(identity) }
             } else { continue; };
             let mut facts = Facts::from([fact]);
-            facts.extend(value.proof.domains(component).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..)|IndexDomain::CommonNonzero(..))).map(|domain|Fact::Index(identity,domain)));
+            facts.extend(value.proof.domains(component).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(identity,domain)));
             if scalar.is_integer() {
                 let (minimum, maximum) = value.component_range(component);
                 if minimum != 0 { facts.insert(Fact::Minimum(identity, scalar, minimum)); }
@@ -4321,7 +4322,7 @@ fn common_range_domain(domain: IndexDomain) -> bool {
         IndexDomain::Data(_) | IndexDomain::Fixed(_) | IndexDomain::Tile
         | IndexDomain::View(_) | IndexDomain::ApplicationData(_)
         | IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(_)
-        | IndexDomain::Shifted(..) | IndexDomain::CommonRange(..) | IndexDomain::CommonNonzero(..) => true,
+        | IndexDomain::Shifted(..) | IndexDomain::CommonRange(..) => true,
         IndexDomain::DataLength(_) | IndexDomain::TileLength | IndexDomain::ViewLength(_)
         | IndexDomain::ApplicationLength(_) | IndexDomain::Sum(..) | IndexDomain::Offset(..)
         | IndexDomain::Computed(_) => false,
