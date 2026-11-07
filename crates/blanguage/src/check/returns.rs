@@ -152,7 +152,7 @@ struct BodyState {
     caller: Option<ReturnContext>,
     flow: Flow,
     uniform: bool,
-    outer: Vec<Inst>,
+    code_start: usize,
 }
 impl ReturnContext {
     pub(super) fn exit_count(&self) -> usize {
@@ -590,13 +590,13 @@ impl Builder<'_> {
         });
         let flow = std::mem::replace(&mut self.flow, Flow::NEXT);
         let uniform = self.control_uniform;
-        let outer = std::mem::take(&mut self.code);
-        Ok(Box::new(BodyState { entry, definition, scoped, initial, caller, flow, uniform, outer }))
+        let code_start = self.code.len();
+        Ok(Box::new(BodyState { entry, definition, scoped, initial, caller, flow, uniform, code_start }))
     }
 
     #[inline(never)]
     fn finish_function_body(&mut self, body: &[Stmt], state: Box<BodyState>) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
-        let BodyState { entry, definition, scoped, initial, caller, flow, uniform, outer } = *state;
+        let BodyState { entry, definition, scoped, initial, caller, flow, uniform, code_start } = *state;
         let sequence = self.flow;
         let name = &definition.function.result;
         if name.is_never() && sequence.continues() {
@@ -620,7 +620,7 @@ impl Builder<'_> {
         self.return_context = caller;
         self.flow = flow;
         self.control_uniform = uniform;
-        let mut code = std::mem::replace(&mut self.code, outer);
+        let mut code = self.code.split_off(code_start);
         let single_exit = scoped
             && matches!(code.last().map(|inst| &inst.kind), Some(InstKind::Exit))
             && !owns_exit(&code[..code.len() - 1]);

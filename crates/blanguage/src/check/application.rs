@@ -169,26 +169,29 @@ impl ApplicationLoads<'_, '_> {
         }
         match call.arguments.get(1) {Some(CallArgument::Value{values,..})=>values.first().copied(),_=>None}
     }
+    fn local_source(&self,at:usize,read:&Inst)->Option<Reg> {
+        let InstKind::LoadLocal(reg,slot)=&read.kind else{return None;};
+        if !self.code().nth(at)?.results().any(|result|result==*reg){return None;}
+        let(distance,write)=self.code().rev().skip(self.len()-at).enumerate().find(|(_,inst)|self.writes_local(inst,*slot))?;
+        if self.loop_writes(at-distance-1,at,read){return None;}
+        match &write.kind {InstKind::StoreLocal(_,value)=>Some(*value),_=>None}
+    }
     fn constant(&self,reg:Reg)->Option<Bits> {
         let(at,inst)=self.definition(reg)?;
         match &inst.kind {
             InstKind::Constant(_,_,bits)=>Some(*bits),
             InstKind::Cast{src,..}=>constant::cast(self.0.registers[*src],self.0.registers[reg],self.constant(*src)?),
-            InstKind::LoadLocal(_,slot)if self.code().nth(at)?.results().any(|result|result==reg)=>{
-                let(distance,write)=self.code().rev().skip(self.len()-at).enumerate().find(|(_,inst)|self.writes_local(inst,*slot))?;
-                if self.loop_writes(at-distance-1,at,inst){return None;}
-                match &write.kind {
-                    InstKind::StoreLocal(_,value)=>self.constant(*value),
-                    _=>None,
-                }
-            },
+            InstKind::LoadLocal(..)=>self.local_source(at,inst).and_then(|value|self.constant(value)),
             _=>None,
         }
     }
     fn same(&self,a:Reg,b:Reg)->bool {
         if a==b{return true;}
         if self.0.registers[a]!=self.0.registers[b]{return false;}
-        let(Some((ai,a_inst)),Some((bi,b_inst)))=(self.definition(a),self.definition(b))else{return false;};
+        let a_definition=self.definition(a);let b_definition=self.definition(b);
+        if let Some((at,inst))=a_definition && let Some(value)=self.local_source(at,inst){return self.same(value,b);}
+        if let Some((at,inst))=b_definition && let Some(value)=self.local_source(at,inst){return self.same(a,value);}
+        let(Some((ai,a_inst)),Some((bi,b_inst)))=(a_definition,b_definition)else{return false;};
         match (&a_inst.kind,&b_inst.kind) {
             (InstKind::Constant(_,sa,a),InstKind::Constant(_,sb,b))=>sa==sb&&a==b,
             (InstKind::Cast{src:a,..},InstKind::Cast{src:b,..})=>self.same(*a,*b),
