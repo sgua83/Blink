@@ -2604,7 +2604,7 @@ impl Ord for Condition {
     }
 }
 impl crate::module::codec::Encode for Condition {
-    fn encode(&self,w:&mut crate::module::codec::Writer){let condition=Self{cases:self.cases.each_ref().map(Clause::canonical)};crate::module::codec::Encode::encode(&Proof::condition(condition),w);}
+    fn encode(&self,w:&mut crate::module::codec::Writer){crate::module::codec::Encode::encode(&Proof::condition(self.clone()),w);}
 }
 impl crate::module::codec::Decode for Condition {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{

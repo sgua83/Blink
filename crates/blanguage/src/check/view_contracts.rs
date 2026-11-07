@@ -244,7 +244,6 @@ impl Function {
         if !selected.active(){return None;}
         let bindings=residency::input_parameters(&self.parameters,self.input_width);
         let when=when.guard_at_call(&bindings);
-        let when=bounds::Condition::guard(when.assume(&bounds::Clause::default(),true).canonical());
         let borrows=selected.guards_at_call(&bindings);
         when.active().then_some((borrows,when))
     }
