@@ -905,7 +905,7 @@ impl Builder<'_> {
             _=>vec![Position::Initialization(Arc::new(effect))],
         }).collect::<Vec<_>>();
         self.initialized.extend(positions);
-        let output_value=result.as_ref().map(|ty|Value{ty:ty.clone(),regs:values.clone(),
+        let output_value=result.as_ref().filter(|_|!written.is_empty()||!written_stage.is_empty()||!written_data.is_empty()).map(|ty|Value{ty:ty.clone(),regs:values.clone(),
             proof:model.as_ref().map(|model|bounds::Proof::capture(&self.returned_storage(model)).at_call(&bindings)).unwrap_or_default(),
             uniform:false,literal:false,constant:None});
         for(index,p)in d.function.params.iter().enumerate(){
