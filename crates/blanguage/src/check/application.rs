@@ -18,16 +18,18 @@ pub(super) enum Ownership {
 pub(super) enum ElementFacts {
     #[default]
     Unknown,
+    Input(bounds::Condition),
     Known(Box<returns::Returned>),
     Cleanup(bounds::Condition),
     Common(Box<ElementFacts>,Box<ElementFacts>),
     Selected(Box<bounds::Condition>,Box<ElementFacts>,Box<ElementFacts>),
 }
 impl ElementFacts {
-    pub(super) fn known(&self)->Option<&returns::Returned>{match self{Self::Known(value)=>Some(value),Self::Unknown|Self::Cleanup(_)|Self::Common(..)|Self::Selected(..)=>None}}
-    pub(super) fn known_mut(&mut self)->Option<&mut returns::Returned>{match self{Self::Known(value)=>Some(value),Self::Unknown|Self::Cleanup(_)|Self::Common(..)|Self::Selected(..)=>None}}
+    pub(super) fn known(&self)->Option<&returns::Returned>{match self{Self::Known(value)=>Some(value),Self::Unknown|Self::Input(_)|Self::Cleanup(_)|Self::Common(..)|Self::Selected(..)=>None}}
+    pub(super) fn known_mut(&mut self)->Option<&mut returns::Returned>{match self{Self::Known(value)=>Some(value),Self::Unknown|Self::Input(_)|Self::Cleanup(_)|Self::Common(..)|Self::Selected(..)=>None}}
     pub(super) fn common(self,other:Self)->Self {match(self,other){
         (Self::Unknown,_)|(_,Self::Unknown)=>Self::Unknown,
+        (Self::Input(a),Self::Input(b))=>Self::Input(a.logical(b,false)),
         (Self::Known(mut a),Self::Known(b))=>{a.join(*b,true);Self::Known(a)},
         (Self::Cleanup(a),Self::Cleanup(b))=>Self::Cleanup(a.logical(b,false)),
         (a,b)=>Self::Common(Box::new(a),Box::new(b)),
@@ -36,6 +38,7 @@ impl ElementFacts {
         if let Some(truth)=when.boolean_constant(){return if truth{self}else{other};}
         match(self,other){
             (Self::Unknown,Self::Unknown)=>Self::Unknown,
+            (Self::Input(a),Self::Input(b))=>Self::Input(bounds::Condition::branch(when.clone(),a,b)),
             (Self::Known(mut a),Self::Known(b))=>{a.join_locations(*b,when,true);Self::Known(a)},
             (Self::Cleanup(a),Self::Cleanup(b))=>Self::Cleanup(bounds::Condition::branch(when.clone(),a,b)),
             (Self::Cleanup(a),Self::Unknown)=>Self::Cleanup(when.clone().logical(a,false)),
@@ -45,13 +48,14 @@ impl ElementFacts {
     }
     pub(super) fn map(self,values:&mut impl FnMut(Box<returns::Returned>)->Box<returns::Returned>,conditions:&mut impl FnMut(bounds::Condition)->bounds::Condition)->Self {match self{
         Self::Unknown=>Self::Unknown,
+        Self::Input(when)=>Self::Input(conditions(when)),
         Self::Known(value)=>Self::Known(values(value)),
         Self::Cleanup(when)=>Self::Cleanup(conditions(when)),
         Self::Common(a,b)=>a.map(values,conditions).common(b.map(values,conditions)),
         Self::Selected(when,a,b)=>{let when=conditions(*when);a.map(values,conditions).selected(b.map(values,conditions),&when)},
     }}
 }
-crate::module::codec::variants!(ElementFacts {0=>Unknown,1=>Known(value),2=>Cleanup(when),3=>Common(a,b),4=>Selected(when,a,b)});
+crate::module::codec::variants!(ElementFacts {0=>Unknown,1=>Known(value),2=>Cleanup(when),3=>Common(a,b),4=>Selected(when,a,b),5=>Input(when)});
 // CPU 应用的私有资源描述由原绑定持有，不铺进每层设备表达式的按值载荷。
 pub(super) type Data = Box<DataPayload>;
 #[derive(Clone)]
@@ -79,7 +83,7 @@ impl DataPayload {
         // Only an existing element model introduces child resources to compare.
         // An unknown counterpart is projected by the same finite model owner.
         if matches!((&self.elements,&other.elements),
-            (ElementFacts::Unknown|ElementFacts::Cleanup(_),ElementFacts::Unknown|ElementFacts::Cleanup(_))){return Ok(true);}
+            (ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_),ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_))){return Ok(true);}
         let before=builder.element_model(&self.ty,&self.elements,(&self.residency,&[]),span)?;
         let after=builder.element_model(&other.ty,&other.elements,(&other.residency,&[]),span)?;
         match(before.as_ref(),after.as_ref()){
@@ -3125,8 +3129,9 @@ pub(super) fn canonical_element_inputs(builder:&Builder<'_>,bindings:&mut Elemen
         }
     }
 }
-pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,paths:&BTreeSet<residency::Input>)->(ElementBindings,view::Borrow) {
-    fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,parameter:usize,resource:usize,next:&mut usize,out:&mut ElementBindings,memory:&mut view::Borrow,reads:bool,input:&residency::Input,paths:&BTreeSet<residency::Input>){
+pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,paths:&BTreeSet<residency::Input>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>)->(ElementBindings,view::Borrow) {
+    fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,parameter:usize,resource:usize,next:&mut usize,out:&mut ElementBindings,memory:&mut view::Borrow,reads:bool,input:&residency::Input,paths:&BTreeSet<residency::Input>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>){
+        let identity=match declared{Some(declared)=>declared.get(input).copied(),None=>Some((resource,*next))};
         let model=data.elements.known().unwrap();
         let value=builder.returned_storage(model);let width=value.regs.len();
         for component in 0..width{
@@ -3147,7 +3152,7 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Defini
             let mut input=proof.project(&[component],width);
             if !references.contains(&component){input=input.substitute_values(&model_values);}
             let input=input.with_view_borrow(0,borrow);
-            out.insert(ValueIdentity::DatasetContent(parameter,resource,*next+component),input);
+            if let Some((resource,start))=identity{out.insert(ValueIdentity::DatasetContent(parameter,resource,start+component),input);}
         }
         if reads{memory.union(&builder.address_contents(&value.ty,&proof));}
         *next+=width;
@@ -3156,7 +3161,7 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Defini
             if paths.contains(&selected){
                 let child=model_data(Some(model),&fields).unwrap();
                 let nested=element_scope_bindings(&bindings,child.ty.components.len(),true);
-                collect(builder,child,view::Borrow::element(parent.clone(),fields,Some(bounds::Operand::Value(ValueIdentity::ElementIndex(0)))),nested,parameter,resource,next,out,memory,reads&&child.length.maximum()!=0,&selected,paths);
+                collect(builder,child,view::Borrow::element(parent.clone(),fields,Some(bounds::Operand::Value(ValueIdentity::ElementIndex(0)))),nested,parameter,resource,next,out,memory,reads&&child.length.maximum()!=0,&selected,paths,declared);
             }
         }
     }
@@ -3179,56 +3184,57 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Defini
                     }else{data};
                     let fields=match binding{Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty)[resource].clone(),_=>Vec::new()};
                     let input=residency::Input{parameter,fields:fields.into_iter().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
-                    collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access!=Access::Write&&data.length.maximum()!=0,&input,paths);
+                    collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access!=Access::Write&&data.length.maximum()!=0,&input,paths,declared);
                 }
             }
         }
     }
     (out,memory)
 }
-pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Definition,paths:&BTreeSet<residency::Input>){
-    fn bind(builder:&Builder<'_>,model:&mut returns::Returned,parameter:usize,resource:usize,next:&mut usize,inputs:&mut ElementBindings,depth:usize,input:&residency::Input,paths:&BTreeSet<residency::Input>){
+pub(super) fn bind_element_input(builder:&mut Builder<'_>,model:&mut returns::Returned,resource:usize,next:&mut usize,inputs:&mut ElementBindings,input:&residency::Input){
         let value=builder.returned_storage(model);let width=value.regs.len();let mut bindings=inputs.clone();
+        let parameter=input.parameter;let depth=input.depth();
+        let (resource,start)=*builder.view_model.element_inputs.entry(input.clone()).or_insert((resource,*next));
         for component in 0..width{
-            let id=ValueIdentity::DatasetContent(parameter,resource,*next+component);
+            let id=ValueIdentity::DatasetContent(parameter,resource,start+component);
             inputs.insert(id,bounds::Proof::default().with_identity(id));
+            builder.view_model.parameters.insert(id,id);
             bindings.insert(ValueIdentity::ElementComponent(component),bounds::Proof::default()
                 .with_identity(ValueIdentity::ElementComponent(component)).with_identity(id));
         }
         let original=model.clone();native_function::translate_returned(model,&original,&bindings,true);
-        let start=*next;
         if let Some(value)=model.view_value_mut(){
             let indices=(0..depth).rev().map(|depth|Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth)))).collect::<Vec<_>>();
             value.proof=value.proof.clone().view_parameters(&value.ty,&indices,|component|ValueIdentity::DatasetContent(parameter,resource,start+component));
         }
-        *next+=width;
-        for fields in view::resource_paths(&value.ty){
-            let mut selected=input.clone();selected.fields.extend(fields.iter().copied().map(residency::Part::Field));selected.fields.push(residency::Part::Elements);
-            if paths.contains(&selected){
-                let data=model_data_mut(Some(model),&fields).unwrap();
-                bind(builder,data.elements.known_mut().unwrap(),parameter,resource,next,inputs,depth+1,&selected,paths);
-            }
+        *next=start+width;
+        if builder.definition.function.params[parameter].access!=Access::Write{
+            for fields in view::resource_paths(&value.ty){if let Some(data)=model_data_mut(Some(model),&fields) && matches!(data.elements,ElementFacts::Unknown){data.elements=ElementFacts::Input(bounds::Condition::default());}}
         }
-    }
+}
+pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Definition,paths:&BTreeSet<residency::Input>){
     for(parameter,p)in definition.function.params.iter().enumerate(){
         if let Some(mut binding)=builder.env.remove(&p.name){
             each_binding_data(&mut binding,&mut |resource,path,data|{
-                let Some(elements)=data.elements.known_mut()else{return;};
-                let mut inputs=ElementBindings::new();
-                let input=residency::Input{parameter,fields:path.iter().copied().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
-                bind(builder,elements,parameter,resource,&mut 0,&mut inputs,1,&input,paths);
-                builder.view_model.parameters.extend(inputs.keys().map(|id|(*id,*id)));
-                if p.access!=Access::Write && data.length.maximum()!=0 {
-                    let mut input=residency::Input{parameter,fields:path.iter().copied().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
-                    residency::visit(elements,&mut input,&mut |data,input|data.residency=residency::Residency::input(input.model()));
+                let root=residency::Input{parameter,fields:path.iter().copied().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
+                let mut next=0;let mut inputs=ElementBindings::new();
+                for input in paths.iter().filter(|input|input.parameter==parameter&&input.fields.starts_with(&root.fields)){
+                    let mut selected=&mut *data;let mut fields=Vec::new();
+                    for part in &input.fields[root.fields.len()..]{match part{
+                        residency::Part::Field(field)=>fields.push(*field),
+                        _=>{selected=model_data_mut(selected.elements.known_mut(),&fields).unwrap();fields.clear();},
+                    }}
+                    let Some(elements)=selected.elements.known_mut()else{continue;};
+                    bind_element_input(builder,elements,resource,&mut next,&mut inputs,input);
+                    if p.access!=Access::Write && selected.length.maximum()!=0 {
+                        residency::visit(elements,&mut input.clone(),&mut |data,input|data.residency=residency::Residency::input(input.model()));
+                    }
                 }
-            
             });
             builder.env.insert(p.name.clone(),binding);
         }
     }
-
-    }
+}
 impl Builder<'_> {
     pub(super) fn unknown_element_model(&self,ty:&Ty,location:(&residency::Residency,&[usize]))->Result<Box<returns::Returned>>{
         let mut proof=bounds::Proof::default();
@@ -4025,6 +4031,24 @@ impl Builder<'_>{
     pub(super) fn element_model(&mut self,ty:&Ty,facts:&ElementFacts,location:(&residency::Residency,&[usize]),span:Span)->Result<Box<returns::Returned>> {
         Ok(match facts{
             ElementFacts::Unknown=>self.unknown_element_model(ty,location)?,
+            ElementFacts::Input(when)=>{
+                let mut paths=BTreeSet::new();residency::inputs(&location.0.under(&self.path),&mut paths);
+                let mut result:Option<Box<returns::Returned>>=None;
+                for input in paths{
+                    let mut input=input.family();input.fields.push(residency::Part::Elements);
+                    let Some((resource,_))=self.view_model.element_inputs.iter()
+                        .filter(|(parent,_)|parent.parameter==input.parameter&&input.fields.starts_with(&parent.fields))
+                        .max_by_key(|(parent,_)|parent.fields.len()).map(|(_,id)|*id)else{continue;};
+                    let parameter=input.parameter;
+                    let mut next=self.view_model.parameters.keys().filter_map(|id|match id{ValueIdentity::DatasetContent(p,r,component)if (*p,*r)==(parameter,resource)=>Some(component+1),_=>None}).max().unwrap_or(0);
+                    let mut model=self.unknown_element_model(ty,location)?;
+                    bind_element_input(self,&mut model,resource,&mut next,&mut ElementBindings::new(),&input);
+                    residency::visit(&mut model,&mut input,&mut|data,input|data.residency=residency::Residency::input(input.model()));
+                    if let Some(previous)=&mut result{previous.join(*model,true);}else{result=Some(model);}
+                }
+                let mut model=match result{Some(model)=>model,None=>self.unknown_element_model(ty,location)?};
+                contracts::mark_cleanup_model(self,&mut model,when.scope_element_indices(1),span)?;model
+            },
             ElementFacts::Known(model)=>model.clone(),
             ElementFacts::Cleanup(when)=>{
                 let mut model=self.unknown_element_model(ty,location)?;
@@ -4052,7 +4076,7 @@ impl Builder<'_>{
 impl Builder<'_>{
     pub(super) fn expand_current_element_facts(&mut self,data:&mut Data)->Result<()> {
         match data.elements{
-            ElementFacts::Cleanup(_)|ElementFacts::Common(..)|ElementFacts::Selected(..)=>{
+            ElementFacts::Input(_)|ElementFacts::Cleanup(_)|ElementFacts::Common(..)|ElementFacts::Selected(..)=>{
                 data.elements=ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?);
             },
             ElementFacts::Unknown|ElementFacts::Known(_)=>{},

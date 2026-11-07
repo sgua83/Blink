@@ -1790,7 +1790,7 @@ fn function_parameters(
         );
     }
     let mut environment=std::mem::take(&mut b.env);
-    let element_paths=contracts::element_input_paths(b,d,&mut environment)?;
+    let element_paths=contracts::element_input_paths(b,d,&mut environment,None)?;
     b.env=environment;
     application::bind_parameter_elements(b,d,&element_paths);
     let resources=d.function.params.iter().enumerate().filter_map(|(index,p)|match b.env.get(&p.name){

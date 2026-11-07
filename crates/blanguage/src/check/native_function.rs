@@ -106,6 +106,7 @@ pub(crate) struct Contract {
     parameters: Vec<CallParameter>,
     result: Option<Ty>,
     inputs: Vec<Reg>,
+    element_inputs:BTreeMap<residency::Input,(usize,usize)>,
     returned: Option<Returned>,
     pub(super) written: Vec<Option<Returned>>,
     requires: BTreeSet<(ContractKind, ContractPredicate)>,
@@ -119,7 +120,7 @@ pub(crate) struct Contract {
 }
 impl crate::module::codec::Encode for Contract {
     fn encode(&self,w:&mut crate::module::codec::Writer){
-        self.parameters.encode(w);self.result.encode(w);self.inputs.encode(w);
+        self.parameters.encode(w);self.result.encode(w);self.inputs.encode(w);self.element_inputs.encode(w);
         self.returned.encode(w);self.written.encode(w);self.requires.encode(w);
         self.target.encode(w);self.frame.encode(w);self.fallible.encode(w);self.domain.encode(w);
         self.residency.encode(w);
@@ -130,7 +131,7 @@ impl crate::module::codec::Decode for Contract {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
         use crate::module::codec::Decode;
         Ok(Self{
-            parameters:Decode::decode(r)?,result:Decode::decode(r)?,inputs:Decode::decode(r)?,
+            parameters:Decode::decode(r)?,result:Decode::decode(r)?,inputs:Decode::decode(r)?,element_inputs:Decode::decode(r)?,
             returned:Decode::decode(r)?,written:Decode::decode(r)?,requires:Decode::decode(r)?,
             target:Decode::decode(r)?,frame:Decode::decode(r)?,fallible:Decode::decode(r)?,domain:Decode::decode(r)?,
             residency:Decode::decode(r)?,view_access:Some(Decode::decode(r)?),initialization:Some(Decode::decode(r)?),
@@ -204,7 +205,7 @@ fn compiled_declaration(
 fn finish_declaration(
     world: &World,
     instance: &crate::generics::Instance,
-    checked: Box<CheckedFunction>,
+    mut checked: Box<CheckedFunction>,
 ) -> Result<Module> {
     let residency=checked.residency;
     let mut functions = checked.functions;
@@ -214,6 +215,7 @@ fn finish_declaration(
         parameters: function.parameters.clone(),
         result: function.result.clone(),
         inputs: checked.inputs,
+        element_inputs:std::mem::take(&mut checked.view_model.element_inputs),
         returned: checked.returned,
         written: checked.written,
         requires: checked.contracts,
@@ -767,8 +769,9 @@ impl Builder<'_> {
                 }
             }
         }
-        let element_paths=contracts::element_input_paths(self,d,&mut env)?;
-        let (element_inputs,element_memory)=application::element_input_bindings(self,d,&env,&element_paths);
+        let declared=self.functions.units[&instance.name].as_ref().map(|unit|unit.contract.element_inputs.clone());
+        let element_paths=contracts::element_input_paths(self,d,&mut env,declared.as_ref())?;
+        let (element_inputs,element_memory)=application::element_input_bindings(self,d,&env,&element_paths,declared.as_ref());
         memory_borrow.union(&element_memory);
         let requirements = contracts::resolve(self, d, &env,&resource_inputs)?;
         contracts::prove(self, &requirements, span)?;
@@ -2178,6 +2181,7 @@ fn build_domain(
         parameters,
         result: None,
         inputs,
+        element_inputs:BTreeMap::new(),
         returned: None,
         written: vec![None; d.function.params.len()],
         requires: crate::contract_signature(&d.function)

@@ -124,6 +124,7 @@ pub(super) struct Function {
     pub normal_returns:Option<bounds::Condition>,
     pub resource_names:BTreeMap<Output,Borrow>,
     pub parameters:BTreeMap<ValueIdentity,ValueIdentity>,
+    pub element_inputs:BTreeMap<residency::Input,(usize,usize)>,
     pub input_width:usize,
     pub uses:Vec<Use>,
 }

@@ -36,8 +36,8 @@ pub(super) struct Input {
     pub fields: Vec<Part>,
 }
 impl Input {
-    fn depth(&self)->usize{self.fields.iter().filter(|part|!matches!(part,Part::Field(_))).count()}
-    fn family(&self)->Self{Self{parameter:self.parameter,fields:path_family(&self.fields)}}
+    pub(super) fn depth(&self)->usize{self.fields.iter().filter(|part|!matches!(part,Part::Field(_))).count()}
+    pub(super) fn family(&self)->Self{Self{parameter:self.parameter,fields:path_family(&self.fields)}}
     fn selection(&self)->BTreeMap<ValueIdentity,bounds::Proof>{path_selection(&self.fields)}
     pub(super) fn model(&self)->Self{Self{parameter:self.parameter,fields:path_model(&self.fields)}}
     fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{
@@ -436,12 +436,12 @@ fn query_consume(required:&mut Requirements,deferred:&mut bool,wanted:Option<&In
     }
 }
 // 声明中的Input映射还引用实参已有的后代模型，不把父位置当作完整子树。
-fn bind_arguments(declared:&Arguments,actual:&Arguments,bindings:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs)->Arguments{
-    fn inputs(value:&Residency,out:&mut BTreeSet<Input>){match value{
+pub(super) fn inputs(value:&Residency,out:&mut BTreeSet<Input>){match value{
         Residency::Selected(_,a,b)=>{inputs(a,out);inputs(b,out);},
         Residency::Origins(origins)=>out.extend(origins.iter().filter_map(|origin|match origin{Origin::Input(input)=>Some(input.clone()),_=>None})),
         Residency::Absent=>{},
     }}
+fn bind_arguments(declared:&Arguments,actual:&Arguments,bindings:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs)->Arguments{
     fn family(value:&Residency,depth:usize)->Residency{match value{
         Residency::Selected(when,a,b)=>Residency::conditional(when.as_ref().clone(),family(a,depth),family(b,depth)),
         Residency::Origins(origins)=>Residency::Origins(origins.iter().map(|origin|match origin{
@@ -532,16 +532,11 @@ fn equal_under(a:&Residency,b:&Residency,path:&bounds::Clause,leaf:&mut impl FnM
     leaf(&a,&b,path)
 }
 pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs,known:&BTreeMap<String,Contract>,parameter_count:usize)->Result<()>{
-    fn origins(value:&Residency,inputs:&mut BTreeSet<Input>){match value{
-        Residency::Selected(_,a,b)=>{origins(a,inputs);origins(b,inputs);},
-        Residency::Origins(values)=>inputs.extend(values.iter().filter_map(|value|match value{Origin::Input(input)=>Some(input.clone()),_=>None})),
-        Residency::Absent=>{},
-    }}
     let mut required=contract.required.clone();
     let arguments=(0..parameter_count).map(|parameter|(Input::new(parameter),Residency::parameter(parameter))).collect::<Arguments>();
     let bindings=parameters.values().filter_map(|proof|proof.known_identity(0)).map(|id|(id,bounds::Proof::default().with_identity(id))).collect::<BTreeMap<_,_>>();
     for usage in &inputs.uses{if let Use::Same{before,after,source,span,..}=usage{
-        let mut wanted=BTreeSet::new();origins(&evaluate(before,outputs),&mut wanted);origins(&evaluate(after,outputs),&mut wanted);
+        let mut wanted=BTreeSet::new();self::inputs(&evaluate(before,outputs),&mut wanted);self::inputs(&evaluate(after,outputs),&mut wanted);
         for input in wanted{
             let input=input.at_call(parameters);
             let call=Call{function:name.into(),arguments:arguments.clone(),bindings:bindings.clone(),path:bounds::Clause::default(),source:None,span:Span::default()};

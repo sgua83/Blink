@@ -281,7 +281,7 @@ fn field_path(mut ty:&Ty,path:&str,source:&Source,span:Span)->Result<Vec<usize>>
 // The source contract names the finite common-element input paths.
 // Materialize only those physical values in the original argument model;
 // caller-only descendant facts do not add or renumber formal input slots.
-pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definition,env:&mut BTreeMap<String,Binding>)->Result<BTreeSet<residency::Input>> {
+pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definition,env:&mut BTreeMap<String,Binding>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>)->Result<BTreeSet<residency::Input>> {
     let mut inputs=BTreeSet::new();
     for(parameter,p)in definition.function.params.iter().enumerate(){
         let Some(binding)=env.get_mut(&p.name)else{continue;};
@@ -331,6 +331,17 @@ pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definitio
                 let Some(next)=application::model_data_mut(data.elements.known_mut(),&actual)else{return definition.source.fail(contract.span,"B225","[*]需要所选共同元素中的实际dataset字段");};data=next;
             }
         }
+    }
+    for input in declared.into_iter().flat_map(BTreeMap::keys){
+        let Some(binding)=env.get_mut(&definition.function.params[input.parameter].name)else{continue;};
+        let depth=input.depth();
+        let mut paths=input.fields.split(|part|matches!(part,residency::Part::Elements)).take(depth)
+            .map(|fields|fields.iter().filter_map(|part|match part{residency::Part::Field(field)=>Some(*field),_=>None}).collect::<Vec<_>>()).collect::<Vec<_>>();
+        if let Binding::DataReference(reference)=&*binding && let Some(path)=paths.get_mut(1){path.splice(0..0,reference.projection.iter().copied());}
+        for end in 1..=paths.len(){if let Some(data)=selected_data_mut(binding,&paths[..end]) && data.elements.known().is_none(){
+            data.elements=application::ElementFacts::Known(builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),definition.function.span)?);
+        }}
+        inputs.insert(input.clone());
     }
     Ok(inputs)
 }
@@ -899,6 +910,7 @@ fn cleanup_element_condition(builder:&mut Builder<'_>,ty:&Ty,facts:application::
     Ok(match facts{
         ElementFacts::Known(model)=>cleanup_condition(builder,*model,active,span)?,
         ElementFacts::Unknown=>if builder.world.cleanup_requirements(ty,&builder.definition.source,span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new())?{active.negate().logical(bounds::Condition::default(),true)}else{bounds::Condition::constant(true)},
+        ElementFacts::Input(when)=>if builder.world.cleanup_requirements(ty,&builder.definition.source,span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new())?{active.negate().logical(bounds::Condition::branch(when,bounds::Condition::constant(true),bounds::Condition::default()),true)}else{bounds::Condition::constant(true)},
         ElementFacts::Cleanup(when)=>active.negate().logical(bounds::Condition::branch(when,bounds::Condition::constant(true),bounds::Condition::default()),true),
         ElementFacts::Common(a,b)=>cleanup_element_condition(builder,ty,*a,active.clone(),span)?.logical(cleanup_element_condition(builder,ty,*b,active,span)?,false),
         ElementFacts::Selected(when,a,b)=>bounds::Condition::branch(*when,cleanup_element_condition(builder,ty,*a,active.clone(),span)?,cleanup_element_condition(builder,ty,*b,active,span)?),
@@ -951,7 +963,7 @@ fn mark_cleanup_facts(builder:&mut Builder<'_>,facts:&mut application::ElementFa
     use application::ElementFacts;
     match facts{
         ElementFacts::Unknown=>*facts=ElementFacts::Cleanup(when),
-        ElementFacts::Cleanup(previous)=>*previous=previous.clone().logical(when,true),
+        ElementFacts::Input(previous)|ElementFacts::Cleanup(previous)=>*previous=previous.clone().logical(when,true),
         ElementFacts::Known(value)=>mark_cleanup_model(builder,value,when.scope_element_indices(1),span)?,
         ElementFacts::Common(a,b)|ElementFacts::Selected(_,a,b)=>{mark_cleanup_facts(builder,a,when.clone(),span)?;mark_cleanup_facts(builder,b,when,span)?;},
     }
@@ -965,7 +977,7 @@ fn mark_cleanup_owner(builder:&mut Builder<'_>,owner:&mut owned_values::OwnedVal
             let mut payload=builder.unpack_record(owner,0);
             let binding=match &payload{Returned::Dataset(data)=>Binding::ApplicationData(data.clone()),Returned::OwnedValue(value)=>Binding::OwnedValue(value.clone()),Returned::Value(value)=>Binding::Value((**value).clone()),Returned::Unit=>Binding::Value(builder.returned_storage(&Returned::Unit))};
             let name=instance.definition.function.params[0].name.clone();let mut env=BTreeMap::from([(name.clone(),binding)]);
-            element_input_paths(builder,&instance.definition,&mut env)?;
+            element_input_paths(builder,&instance.definition,&mut env,None)?;
             let resources=instance.definition.function.params.iter().enumerate().filter_map(|(index,p)|match env.get(&p.name){
                 Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))),_=>None,
             }).collect();
