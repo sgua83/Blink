@@ -471,31 +471,31 @@ impl ApplicationLoads<'_, '_> {
         result
     }
     fn stored_paths(&self, code: &[Inst], mut next: Option<bounds::Proof>, source: &IndexedSource, word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState, controls: &BTreeMap<Reg, Value>) -> (Option<bounds::Proof>, Option<bounds::Proof>, Option<bounds::Proof>) {
-        fn join(a: Option<bounds::Proof>, b: Option<bounds::Proof>) -> Option<bounds::Proof> {
-            match (a, b) { (Some(mut a), Some(b)) => { a.join_condition(&b, 1, None); Some(a) }, (a, None) | (None, a) => a }
+        fn join(a: Option<bounds::Proof>, b: Option<bounds::Proof>,choice:Option<&bounds::Condition>) -> Option<bounds::Proof> {
+            match (a, b) { (Some(mut a), Some(b)) => { a.join_condition(&b, 1, choice); Some(a) }, (a, None) | (None, a) => a }
         }
         let mut continues = None;
         let mut exits = None;
         for inst in code {
             let Some(current) = next.take() else { break; };
             match &inst.kind {
-                InstKind::Continue => continues = join(continues, Some(current)),
+                InstKind::Continue => continues = join(continues, Some(current),None),
                 InstKind::Break => {},
-                InstKind::Exit => exits = join(exits, Some(current)),
+                InstKind::Exit => exits = join(exits, Some(current),None),
                 InstKind::If { condition, yes, no } => {
                     let raw = Value { ty: Ty::scalar(Scalar::Bool), regs: vec![*condition], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
                     let condition = bounds::Condition::of(controls.get(condition).unwrap_or(&raw));
                     let truth = condition.truth_in(path);
                     let a = if truth == Some(false) { (None, None, None) } else { self.stored_paths(yes, Some(current.clone()), source, word, scalar, &condition.assume(path, true), state, controls) };
                     let b = if truth == Some(true) { (None, None, None) } else { self.stored_paths(no, Some(current), source, word, scalar, &condition.assume(path, false), state, controls) };
-                    next = join(a.0, b.0); continues = join(continues, join(a.1, b.1)); exits = join(exits, join(a.2, b.2));
+                    next = join(a.0,b.0,Some(&condition)); continues = join(continues,join(a.1,b.1,Some(&condition)),None); exits = join(exits,join(a.2,b.2,Some(&condition)),None);
                 },
                 InstKind::Scope(body) => {
                     let (normal, continued, exited) = self.stored_paths(body, Some(current), source, word, scalar, path, state, controls);
-                    next = join(normal, exited); continues = join(continues, continued);
+                    next = join(normal,exited,None); continues = join(continues,continued,None);
                 },
                 _ => next = Some(if let Some(value) = self.field_store(source, word, scalar, inst, true) {
-                    bounds::scoped_proof(&Ty::scalar(scalar), bounds::Proof::default().with_identity(ValueIdentity::Register(value)), path, &state.env)
+                    bounds::Proof::capture(&Value{ty:Ty::scalar(scalar),regs:vec![value],proof:bounds::scoped_proof(&Ty::scalar(scalar),bounds::Proof::default().with_identity(ValueIdentity::Register(value)),path,&state.env),literal:false,uniform:false,constant:self.constant(value).map(|bits|vec![bits])})
                 } else if self.writes_indexed(inst, source, word, scalar) { bounds::Proof::default() } else { current }),
             }
         }
@@ -573,14 +573,14 @@ impl Builder<'_> {
     pub(super) fn application_indexed_proof(&self, data: &Data, index: &Value, states: &[flow::LoopState], controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) -> bounds::Proof {
         let loads = ApplicationLoads(self);
         let mut output = bounds::Proof::default();
+        let initial=self.returned_storage(&data.elements);
         for (component, &(scalar, word)) in data.ty.components.iter().enumerate() {
             let mut common: Option<bounds::Proof> = None;
             for state in states {
                 let mut proof = bounds::Proof::default();
                 if let Some(source) = loads.stored_position(&self.code, data, index, word, scalar, state, writes) {
-                    let (normal, continued, _) = loads.stored_paths(&self.code, Some(bounds::Proof::default()), source, word, scalar, &state.path, state, controls);
+                    let (normal, continued, _) = loads.stored_paths(&self.code, Some(initial.proof.project(&[component],data.ty.components.len())), source, word, scalar, &state.path, state, controls);
                     proof = match (normal, continued) { (Some(mut a), Some(b)) => { a.join_condition(&b, 1, None); a }, (Some(a), None) | (None, Some(a)) => a, _ => bounds::Proof::default() };
-                    if let Some(other) = loads.iteration_interference(&self.code, source, word, scalar, &state.path, state, controls) { proof.join_condition(&other, 1, None); }
                 }
                 if let Some(value) = &mut common { value.join_condition(&proof, 1, None); } else { common = Some(proof); }
             }

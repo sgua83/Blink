@@ -234,7 +234,8 @@ impl Builder<'_> {
             else { common = Some(incoming); }
         }
         let Some(mut proof) = common else { return; };
-        self.application_iteration_interference(data, context.control_source.cursor.as_ref().unwrap(), &mut proof, &context.continues, &context.controls, &context.writes);
+        let components=data.words().iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word).unwrap()).collect::<Vec<_>>();
+        proof.constrain_common_ranges(&self.application_indexed_proof(&data.data,context.control_source.cursor.as_ref().unwrap(),&context.continues,&context.controls,&context.writes).project(&components,data.ty.components.len()),ty.components.len());
         self.publish_iteration_elements(exit, data, proof);
     }
     pub(super) fn application_indexed_elements(&mut self, exit: &mut LoopState, index: &Value, limit: &Value) {
@@ -251,8 +252,10 @@ impl Builder<'_> {
         }
         for (data, proof) in results { self.publish_iteration_elements(exit, &data, proof); }
     }
-    fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, proof: bounds::Proof) {
+    fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, mut proof: bounds::Proof) {
         let ty = data.element_layout().1;
+        let context=self.loop_contexts.last().unwrap();
+        self.application_iteration_interference(data,context.control_source.cursor.as_ref().unwrap(),&mut proof,&context.continues,&context.controls,&context.writes);
         std::mem::swap(&mut self.env, &mut exit.env);
         std::mem::swap(&mut self.path, &mut exit.path);
         let mut proof = proof.at_call(&self.element_owner_bindings(&data.data));

@@ -466,11 +466,16 @@ impl Proof {
     }
     pub(super) fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
         self.domains.resize_with(width, Domains::new);
-        for component in 0..width { self.domains[component].extend(other.domains(component)); }
         self.ranges.resize_with(width, ScalarRanges::default);
+        self.conditions.resize_with(width,||None);
         for component in 0..width {
+            self.domains[component].extend(other.domains(component));
             self.ranges[component] = self.range_set(component).combine(&other.range_set(component),
                 |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
+            if let Some(incoming)=other.component_condition(component){
+                let condition=self.conditions[component].get_or_insert_with(||Box::new(Condition::default()));
+                for(target,incoming)in condition.cases.iter_mut().zip(&incoming.cases){*target=Clause::both(target,incoming);}
+            }
         }
     }
     pub(super) fn assume_same_length(&mut self, other: &Self) {
