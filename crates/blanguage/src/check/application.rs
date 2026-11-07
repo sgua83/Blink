@@ -891,7 +891,8 @@ impl Builder<'_> {
         let scalar = if access == Access::Value { Scalar::U32 }
             else { Self::borrowed_dataset_parameter_type(access, self.definition.execution).components[0].0 };
         let reg = self.reg(scalar);
-        let handle = self.application_root(reg);
+        let mut handle = self.application_root(reg);
+        if access==Access::Value{handle.proof=handle.proof.with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::ResourceParameter(parameter,0))]));}
         let length_reg = self.reg(Scalar::U32);
         let count = self.program.buffers[binding].count;
         let mut length = Value {
