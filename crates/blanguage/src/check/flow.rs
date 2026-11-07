@@ -264,7 +264,8 @@ impl Builder<'_> {
         }
         let ranges = proof.element_ranges(0, ty);
         let components = ty.components.iter().enumerate().filter_map(|(component, (_, word))| {
-            (ranges.iter().any(|range| range.offset == *word) || !proof.domains(component).is_empty()).then_some(component)
+            (ranges.iter().any(|range| range.offset == *word) || !proof.domains(component).is_empty()
+                || proof.component_condition(component).is_some_and(|condition| !condition.unconstrained())).then_some(component)
         }).collect::<Vec<_>>();
         if !components.is_empty() {
             let words = data.words();

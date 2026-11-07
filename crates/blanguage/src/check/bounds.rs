@@ -456,10 +456,12 @@ impl Proof {
         self.origins.resize_with(width, Vec::new);
         self.ranges.resize_with(width, ScalarRanges::default);
         self.domains.resize_with(width, Domains::new);
+        self.conditions.resize_with(width, || None);
         for (source, &component) in components.iter().enumerate() {
             self.origins[component] = fresh.origins.get(source).cloned().unwrap_or_default();
             self.ranges[component] = fresh.range_set(source);
             self.domains[component] = fresh.domains(source);
+            self.conditions[component] = fresh.conditions.get(source).cloned().flatten();
         }
     }
     pub(super) fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
@@ -1167,7 +1169,7 @@ impl Proof {
     pub(super) fn domains(&self, component: usize) -> Domains {
         self.domains.get(component).cloned().unwrap_or_default()
     }
-    fn component_condition(&self, component: usize) -> Option<&Condition> {
+    pub(super) fn component_condition(&self, component: usize) -> Option<&Condition> {
         self.conditions.get(component)?.as_deref()
     }
     fn value_condition(value: &Value, component: usize) -> Option<Box<Condition>> {
