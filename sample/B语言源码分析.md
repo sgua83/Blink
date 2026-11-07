@@ -461,7 +461,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1700`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1702`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -486,7 +486,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2812`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2814`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -510,13 +510,15 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
         let mut zero = Facts::new();
+        let mut path = path.clone();
         for (component, (scalar, at)) in self.ty.components.iter().enumerate() {
             if !scalar.is_integer() || *at < offset || at + scalar.size() > offset + size { continue; }
             if self.component_nonzero(component) { return true; }
+            if let Some(condition) = self.proof.component_condition(component) { path = condition.assume(&path, false); }
             zero.extend(self.component_origins(component).into_iter().map(Fact::Zero));
             zero.insert(Fact::Zero(ValueIdentity::Register(self.regs[component])));
         }
-        !zero.is_empty() && !Clause::both(path, &Clause::facts(zero)).possible()
+        !zero.is_empty() && !Clause::both(&path, &Clause::facts(zero)).possible()
     }
 ```
 
@@ -1581,7 +1583,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 短路或选择表达式可把读取放在已完成If内部。ApplicationLoads::prior_snapshot只有在当前原Condition／Clause能确定实际执行分支时才进入该分支，并按整个嵌套指令区间核对真实可能写入。若If条件来自LoadLocal，只沿该次读取之前的指令查找实际StoreLocal值；未知写终止查询，后续环境或bool赋值不替代原条件来源。此处交接的是原数值身份，不复用机器寄存器或移动装载，也不从未执行分支取事实。原整数非零检查继续拒绝从矛盾路径取得许可。
 
-循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。位置是否已知先沿原address_write_positions查询；LoopInput属于待闭合资源来源不等于地址未知，已闭合且仅使用引用ABI的B调用先消费其真实写区，不由pending标记重复扩大写入。真实未知位置继续撤回可能相交事实。未来Position指向子资源时，原投影直接交接已经取得的真实输入，由ApplicationLoads沿该输入、World元素类型及已发射ViewLoad查询当前物理根；不把模型寄存器作为句柄，也不另存根表或装载历史。LoopWrites仍是原本次写摘要，根相同、已有独占父子关系和真实字段字节共同决定是否影响读取。父描述真实改写继续撤回旧长度，不用载荷写影响另一块描述存储。稳定不等分支未采用写、动态不同叶读取及变化父路径回边的数值缺口分别见Issues C-020.1.3.2.1.2.2.13.4.1.8／.9／.10；Write::Memory未来读取范围继续C-021.1.4.5.4.3.2.2。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
+循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。位置是否已知先沿原address_write_positions查询；LoopInput属于待闭合资源来源不等于地址未知，已闭合且仅使用引用ABI的B调用先消费其真实写区，不由pending标记重复扩大写入。真实未知位置继续撤回可能相交事实。未来Position指向子资源时，原投影直接交接已经取得的真实输入，由ApplicationLoads沿该输入、World元素类型及已发射ViewLoad查询当前物理根；不把模型寄存器作为句柄，也不另存根表或装载历史。LoopWrites仍是原本次写摘要，根相同、已有独占父子关系和真实字段字节共同决定是否影响读取。父描述真实改写继续撤回旧长度，不用载荷写影响另一块描述存储。原元素更新和读取绑定保留所选下标条件。`Value::nonzero_bytes`按真实完整字节范围，将每个可能为零分量已经携带的false条件直接交给同一本次查询，再与实际零值身份及当前路径比较；不同下标时原非零事实由这个原条件取得。除法与返回值拆字复用同一查询，真实同一／可能重叠写零继续拒绝。稳定不等分支未采用写及变化父路径回边的数值缺口分别见Issues C-020.1.3.2.1.2.2.13.4.1.8／.10；Write::Memory未来读取范围继续C-021.1.4.5.4.3.2.2。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
 
 源码节选：`crates/blanguage/src/check/application.rs:175`。
 
@@ -2309,7 +2311,7 @@ F32除法只在原规范的分母范围内交接包含设备误差的结果，�
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1822`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1824`。
 
 ```rust
 impl Drop for Clause {

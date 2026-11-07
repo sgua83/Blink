@@ -1689,13 +1689,15 @@ impl Value {
     // A complete byte range is nonzero when its contained integer words cannot all be zero.
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
         let mut zero = Facts::new();
+        let mut path = path.clone();
         for (component, (scalar, at)) in self.ty.components.iter().enumerate() {
             if !scalar.is_integer() || *at < offset || at + scalar.size() > offset + size { continue; }
             if self.component_nonzero(component) { return true; }
+            if let Some(condition) = self.proof.component_condition(component) { path = condition.assume(&path, false); }
             zero.extend(self.component_origins(component).into_iter().map(Fact::Zero));
             zero.insert(Fact::Zero(ValueIdentity::Register(self.regs[component])));
         }
-        !zero.is_empty() && !Clause::both(path, &Clause::facts(zero)).possible()
+        !zero.is_empty() && !Clause::both(&path, &Clause::facts(zero)).possible()
     }
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
         let mut required = Clause::default();
