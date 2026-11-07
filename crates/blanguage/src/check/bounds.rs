@@ -1122,8 +1122,13 @@ impl Proof {
                 if self.component_condition(i).is_none() && other.component_condition(i).is_none() {
                     return None;
                 }
-                let a = self.component_condition(i).cloned().unwrap_or_default();
-                let b = other.component_condition(i).cloned().unwrap_or_default();
+                let condition=|proof:&Self|match proof.component_condition(i){
+                    Some(value)=>value.clone(),
+                    None if proof.nonzero.get(i)==Some(&true)=>Condition::constant(true),
+                    None=>Condition::default(),
+                };
+                let a=condition(self);
+                let b=condition(other);
                 Some(Box::new(if let Some(c) = branch {
                     Condition::branch(c.clone(), a, b)
                 } else {

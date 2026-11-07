@@ -463,7 +463,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1790`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1795`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -488,7 +488,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2932`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2937`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -507,7 +507,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1778`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1783`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1585,7 +1585,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 短路或选择表达式可把读取放在已完成If内部。ApplicationLoads::prior_snapshot只有在当前原Condition／Clause能确定实际执行分支时才进入该分支，并按整个嵌套指令区间核对真实可能写入。若If条件来自LoadLocal，只沿该次读取之前的指令查找实际StoreLocal值；未知写终止查询，后续环境或bool赋值不替代原条件来源。此处交接的是原数值身份，不复用机器寄存器或移动装载，也不从未执行分支取事实。原整数非零检查继续拒绝从矛盾路径取得许可。
 
-循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。位置是否已知先沿原address_write_positions查询；LoopInput属于待闭合资源来源不等于地址未知，已闭合且仅使用引用ABI的B调用先消费其真实写区，不由pending标记重复扩大写入。真实未知位置继续撤回可能相交事实。未来Position写在原LoopWrites.storage的同一条目中交接明确Frame字节范围或某个真实Frame的严格拥有后代范围。未定子下标或尚无已发射子根时，保留已知祖先及其后代范围；父Frame及其祖先不属于该写范围，其他可能相交的存储仍按真实可能写处理。ApplicationLoads读取缓存与原CPU循环结束的Frame完成选择消费同一根范围查询；实际父元数据改写、重绑定及真正未知写继续按原效果失效。原StorageWrite::Frame继续交接实际根和字节范围，Descendants只持有实际已知祖先；ApplicationLoads::resource_storage沿原输入、World元素类型及已发射ViewLoad解析明确子根。无法取得具体子根时沿原同一范围保留真实不确定性，不把模型寄存器或任意已加载兄弟作为目标句柄。原complete_application_writes的筛选回调直接接收当前Builder，由同一includes_root解释后代范围；不复制根集合或另建完成状态。LoopWrites仍是原本次写摘要，根相同、已有独占父子关系和真实字段字节共同决定是否影响读取。父描述真实改写继续撤回旧长度，不用载荷写影响另一块描述存储。原元素更新和读取绑定保留所选下标条件。`Value::nonzero_bytes`按真实完整字节范围，将每个可能为零分量已经携带的false条件直接交给同一本次查询，再与实际零值身份及当前路径比较；不同下标时原非零事实由这个原条件取得。除法与返回值拆字复用同一查询，真实同一／可能重叠写零继续拒绝。原`Scope::input_snapshot`从稳定u32输入的真实值／身份形成已有相等条件，`writes_expression`沿原Condition处理布尔组合；`writes_statements`在原直接Position写摘要交接采用条件，调用及未知效果仍按原职责解释。`ElementUpdate`把同一条件交给元素选择与完整覆盖，单元素也不能绕过写的采用关系；`Proof::join_condition`继续拥有数值合流。原numeric_loop_paths在同一次递归中交接原Clause，If用原Condition::assume／truth_in把当前真／假关系交给子路径，Match原样交接已有路径，再沿原NumericEffect合流；Scope未提供的条件保留两侧可能性。retain_loop_bounds从原空路径开始，不从被写数值初值或整体header推定稳定条件，实际可变guard与未知／外部写保持原效果。已有稳定bool、原快照和u32等式关系由原Scope生产。原Scope对稳定u32的<、<=、>、>=沿同一input_snapshot交接实际Operand及Proof，由原Condition生成真／假顺序条件；常量使用原Minimum／Maximum，值间关系复用原Below及constrain_proofs，不生成寄存器或另一数值模型。数值If继续消费同一Clause；真正可变或未知来源仍保留可能分支。原顺序事实的矛盾查询直接消费实际方向与严格性：相反方向至少一侧严格时互斥，两侧均非严格仍允许相等；同一关系在原contradictory与cross_conflict处理，不向生产者补写冗余弱关系，也不新增求解器或值模型。实际子长度来源及调用返回关系的精化仍分别见Issues C-020.1.3.2.1.2.2.13.4.1.13.3／.5，不作为永久语言边界。不另建AST遍历、数值图、回边状态、表或运行保护。原`Scope::local_value_write`统一交接已有Typed／Inferred／Range／Payload纯数值或C函数值局部的分类；原`writes_statements`在该次赋值产生`Write::Position`时携带实际词法来源，原`numeric_write`元素相交查询消费它，不在嵌套外层按同名重查。直接赋值继续使用同一分类，不再因Builder.env尚未发射局部而制造伪元素写。Element／NamedElement别名及未取得类型的位置不属于纯值局部，仍沿原真实相交关系解释；声明收集阶段不为后续数值查询提前解析实际类型，没有额外声明表、AST遍历或写效果状态。循环可变名不取得虚假稳定条件，不重放正文或复制恢复入口全树。变化父路径回边的数值缺口继续见Issues C-020.1.3.2.1.2.2.13.4.1.10；Write::Memory未来读取范围继续C-021.1.4.5.4.3.2.2。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
+循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。位置是否已知先沿原address_write_positions查询；LoopInput属于待闭合资源来源不等于地址未知，已闭合且仅使用引用ABI的B调用先消费其真实写区，不由pending标记重复扩大写入。真实未知位置继续撤回可能相交事实。未来Position写在原LoopWrites.storage的同一条目中交接明确Frame字节范围或某个真实Frame的严格拥有后代范围。未定子下标或尚无已发射子根时，保留已知祖先及其后代范围；父Frame及其祖先不属于该写范围，其他可能相交的存储仍按真实可能写处理。ApplicationLoads读取缓存与原CPU循环结束的Frame完成选择消费同一根范围查询；实际父元数据改写、重绑定及真正未知写继续按原效果失效。原StorageWrite::Frame继续交接实际根和字节范围，Descendants只持有实际已知祖先；ApplicationLoads::resource_storage沿原输入、World元素类型及已发射ViewLoad解析明确子根。无法取得具体子根时沿原同一范围保留真实不确定性，不把模型寄存器或任意已加载兄弟作为目标句柄。原complete_application_writes的筛选回调直接接收当前Builder，由同一includes_root解释后代范围；不复制根集合或另建完成状态。LoopWrites仍是原本次写摘要，根相同、已有独占父子关系和真实字段字节共同决定是否影响读取。父描述真实改写继续撤回旧长度，不用载荷写影响另一块描述存储。原元素更新和读取绑定保留所选下标条件。`Value::nonzero_bytes`按真实完整字节范围，将每个可能为零分量已经携带的false条件直接交给同一本次查询，再与实际零值身份及当前路径比较；不同下标时原非零事实由这个原条件取得。除法与返回值拆字复用同一查询，真实同一／可能重叠写零继续拒绝。原`Scope::input_snapshot`从稳定u32输入的真实值／身份形成已有相等条件，`writes_expression`沿原Condition处理布尔组合；`writes_statements`在原直接Position写摘要交接采用条件，调用及未知效果仍按原职责解释。`ElementUpdate`把同一条件交给元素选择与完整覆盖，单元素也不能绕过写的采用关系；`Proof::join_condition`继续拥有数值合流。原numeric_loop_paths在同一次递归中交接原Clause，If用原Condition::assume／truth_in把当前真／假关系交给子路径，Match原样交接已有路径，再沿原NumericEffect合流；Scope未提供的条件保留两侧可能性。retain_loop_bounds从原空路径开始，不从被写数值初值或整体header推定稳定条件，实际可变guard与未知／外部写保持原效果。已有稳定bool、原快照和u32等式关系由原Scope生产。原Scope对稳定u32的<、<=、>、>=沿同一input_snapshot交接实际Operand及Proof，由原Condition生成真／假顺序条件；常量使用原Minimum／Maximum，值间关系复用原Below及constrain_proofs，不生成寄存器或另一数值模型。数值If继续消费同一Clause；真正可变或未知来源仍保留可能分支。原顺序事实的矛盾查询直接消费实际方向与严格性：相反方向至少一侧严格时互斥，两侧均非严格仍允许相等；同一关系在原contradictory与cross_conflict处理，不向生产者补写冗余弱关系，也不新增求解器或值模型。原Proof的分支条件合流同时消费本分量已有Condition与nonzero事实：已有条件及其关系原样交接；没有Condition且该分量已确定非零时，以确定真条件参与同一分支合流；其余保持未知。两侧都没有条件时沿原共有数值事实合流，不额外形成条件图。实际写入继续由原所有者失效，不从入口或header恢复旧事实；循环未进入条件写分支时，原非零值的关系可继续沿返回合同交给实际调用者。实际子长度来源仍见Issues C-020.1.3.2.1.2.2.13.4.1.13.3，不作为永久语言边界。不另建AST遍历、数值图、回边状态、表或运行保护。原`Scope::local_value_write`统一交接已有Typed／Inferred／Range／Payload纯数值或C函数值局部的分类；原`writes_statements`在该次赋值产生`Write::Position`时携带实际词法来源，原`numeric_write`元素相交查询消费它，不在嵌套外层按同名重查。直接赋值继续使用同一分类，不再因Builder.env尚未发射局部而制造伪元素写。Element／NamedElement别名及未取得类型的位置不属于纯值局部，仍沿原真实相交关系解释；声明收集阶段不为后续数值查询提前解析实际类型，没有额外声明表、AST遍历或写效果状态。循环可变名不取得虚假稳定条件，不重放正文或复制恢复入口全树。变化父路径回边的数值缺口继续见Issues C-020.1.3.2.1.2.2.13.4.1.10；Write::Memory未来读取范围继续C-021.1.4.5.4.3.2.2。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
 
 源码节选：`crates/blanguage/src/check/application.rs:191`。
 
@@ -2223,7 +2223,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1163`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1168`。
 
 ```rust
         self.nonzero = (0..width)
@@ -2236,7 +2236,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1321`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1326`。
 
 ```rust
     pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
@@ -2319,7 +2319,7 @@ F32除法只在原规范的分母范围内交接包含设备误差的结果，�
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1912`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1917`。
 
 ```rust
 impl Drop for Clause {
