@@ -239,7 +239,7 @@ impl Builder<'_> {
         };
         let mut result = match (a_result.take(), b_result) {
             (Some(mut a), Some(b)) => {
-                a.join_locations(b,&bounds::Condition::of(&c),false);
+                a.join(b,false,Some(&bounds::Condition::of(&c)));
                 a
             }
             (Some(a), None) | (None, Some(a)) => a,

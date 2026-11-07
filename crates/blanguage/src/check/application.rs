@@ -30,7 +30,7 @@ impl ElementFacts {
     pub(super) fn common(self,other:Self)->Self {match(self,other){
         (Self::Unknown,_)|(_,Self::Unknown)=>Self::Unknown,
         (Self::Input(a),Self::Input(b))=>Self::Input(a.logical(b,false)),
-        (Self::Known(mut a),Self::Known(b))=>{a.join(*b,true);Self::Known(a)},
+        (Self::Known(mut a),Self::Known(b))=>{a.join(*b,true,None);Self::Known(a)},
         (Self::Cleanup(a),Self::Cleanup(b))=>Self::Cleanup(a.logical(b,false)),
         (a,b)=>Self::Common(Box::new(a),Box::new(b)),
     }}
@@ -39,7 +39,7 @@ impl ElementFacts {
         match(self,other){
             (Self::Unknown,Self::Unknown)=>Self::Unknown,
             (Self::Input(a),Self::Input(b))=>Self::Input(bounds::Condition::branch(when.clone(),a,b)),
-            (Self::Known(mut a),Self::Known(b))=>{a.join_locations(*b,when,true);Self::Known(a)},
+            (Self::Known(mut a),Self::Known(b))=>{a.join(*b,true,Some(when));Self::Known(a)},
             (Self::Cleanup(a),Self::Cleanup(b))=>Self::Cleanup(bounds::Condition::branch(when.clone(),a,b)),
             (Self::Cleanup(a),Self::Unknown)=>Self::Cleanup(when.clone().logical(a,false)),
             (Self::Unknown,Self::Cleanup(b))=>Self::Cleanup(when.clone().negate().logical(b,false)),
@@ -1661,11 +1661,11 @@ impl Builder<'_> {
                 value.proof.under_path(&value.ty,&present.assume(&bounds::Clause::default(),true));
             }
             if grows == Some(true) {
-                previous.join(*incoming,true);
+                previous.join(*incoming,true,None);
             } else {
                 let mut combined = previous.clone();
-                combined.join(*incoming,true);
-                previous.join_locations(*combined, &growth.negate(), true);
+                combined.join(*incoming,true,None);
+                previous.join(*combined,true,Some(&growth.negate()));
             }
             ElementFacts::Known(previous)
         }else{data.elements.common(ElementFacts::Known(incoming))};
@@ -3401,7 +3401,7 @@ impl Builder<'_> {
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let loaded=self.read_storage_value(&place,span, None)?;
         let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone(),&place)?;
-        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone(),&place)?,false);}
+        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone(),&place)?,false,None);}
         let held=self.hold_binding(Binding::DataReference(data.clone()));
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
         if !self.flow.continues(){return Ok(());}
@@ -3447,7 +3447,7 @@ impl Builder<'_> {
                                 (_,Some(true))=>ElementFacts::Known(fresh),
                                 (ElementFacts::Known(previous),truth)=>{
                                     let incoming=fresh.clone();let old=previous.clone();
-                                    if truth==Some(false){fresh.join(*previous,true);}else{let mut common=fresh.clone();common.join(*previous,true);fresh.join_locations(*common,&complete,true);}
+                                    if truth==Some(false){fresh.join(*previous,true,None);}else{let mut common=fresh.clone();common.join(*previous,true,None);fresh.join(*common,true,Some(&complete));}
                                     residency::select_elements(&mut fresh,&incoming,&old,&selected,count);ElementFacts::Known(fresh)
                                 },
                                 (previous,Some(false))=>previous.common(ElementFacts::Known(fresh)),
@@ -3464,7 +3464,7 @@ impl Builder<'_> {
                             (_,Some(true))=>Some(fresh),
                             (Some(previous),truth)=>{
                                 let incoming=fresh.clone();let old=previous.clone();
-                                if truth==Some(false){fresh.join(*previous,true);}else{let mut common=fresh.clone();common.join(*previous,true);fresh.join_locations(*common,&complete,true);}
+                                if truth==Some(false){fresh.join(*previous,true,None);}else{let mut common=fresh.clone();common.join(*previous,true,None);fresh.join(*common,true,Some(&complete));}
                                 residency::select_elements(&mut fresh,&incoming,&old,&selected,count);Some(fresh)
                             },
                             (None,_)=>None,
@@ -3500,7 +3500,7 @@ impl Builder<'_> {
         let references=self.application_owned_references(place);let mut values=Vec::new();
         for(mut data,paths)in references{for path in paths{data.projection=path;values.push(self.materialize_element(&data,loaded.clone(),place)?);}}
         let mut models=values.into_iter();
-        let mut model=models.next().unwrap();for other in models{model.join(other,false);}
+        let mut model=models.next().unwrap();for other in models{model.join(other,false,None);}
         if let returns::Returned::OwnedValue(value)=&mut model{value.place=Some(place.clone());}
         Ok(model)
     }
@@ -3826,7 +3826,7 @@ impl Builder<'_> {
                     let stored=data.elements.known_mut().unwrap();
                     if !unique||!complete{
                         let incoming=fresh.clone();let previous=self.projected_element_model(stored,&reference.projection);
-                        fresh.join(previous.clone(),true);
+                        fresh.join(previous.clone(),true,None);
                         residency::select_elements(&mut fresh,&incoming,&previous,&selected,count);
                     }
                     self.replace_element_model(stored,&reference.projection,*fresh);
@@ -4070,7 +4070,7 @@ impl Builder<'_>{
                     let mut model=self.unknown_element_model(ty,location)?;
                     bind_element_input(self,&mut model,resource,&mut next,&mut ElementBindings::new(),&input);
                     residency::visit(&mut model,&mut input,&mut|data,input|data.residency=residency::Residency::input(input.model()));
-                    if let Some(previous)=&mut result{previous.join(*model,true);}else{result=Some(model);}
+                    if let Some(previous)=&mut result{previous.join(*model,true,None);}else{result=Some(model);}
                 }
                 let mut model=match result{Some(model)=>model,None=>self.unknown_element_model(ty,location)?};
                 contracts::mark_cleanup_model(self,&mut model,when.scope_element_indices(1),span)?;model
@@ -4080,8 +4080,8 @@ impl Builder<'_>{
                 let mut model=self.unknown_element_model(ty,location)?;
                 contracts::mark_cleanup_model(self,&mut model,when.scope_element_indices(1),span)?;model
             },
-            ElementFacts::Common(a,b)=>{let mut model=self.element_model(ty,a,location,span)?;model.join(*self.element_model(ty,b,location,span)?,true);model},
-            ElementFacts::Selected(when,a,b)=>{let mut model=self.element_model(ty,a,location,span)?;model.join_locations(*self.element_model(ty,b,location,span)?,when,true);model},
+            ElementFacts::Common(a,b)=>{let mut model=self.element_model(ty,a,location,span)?;model.join(*self.element_model(ty,b,location,span)?,true,None);model},
+            ElementFacts::Selected(when,a,b)=>{let mut model=self.element_model(ty,a,location,span)?;model.join(*self.element_model(ty,b,location,span)?,true,Some(when));model},
         })
     }
     pub(super) fn normalize_element_facts(&mut self,value:&mut returns::Returned,span:Span)->Result<()> {

@@ -15,22 +15,19 @@ pub(super) struct OwnedValuePayload {
 }
 impl OwnedValuePayload {
     pub(super) fn place(&self)->Option<Place>{self.place.clone()}
-    pub(super) fn join(&mut self, other: OwnedValue, stored: bool) {
+    pub(super) fn join(&mut self, other: OwnedValue, stored: bool, choice: Option<&bounds::Condition>) {
         if self.ownership != other.ownership {
             self.ownership = Ownership::Moved;
         }
-        self.value.proof = if stored { let mut proof=self.value.proof.clone(); proof.join_condition(&other.value.proof,self.value.regs.len(),None); proof } else { bounds::Proof::common(&self.value, &other.value,None,None) };
+        self.value.proof = if stored { let mut proof=self.value.proof.clone(); proof.join_condition(&other.value.proof,self.value.regs.len(),choice); proof } else { bounds::Proof::common(&self.value, &other.value,choice,None) };
         self.value.uniform &= other.value.uniform;
         if self.value.constant != other.value.constant {
             self.value.constant = None;
         }
-        self.join_payloads(other.payloads,stored);
-    }
-    pub(super) fn join_payloads(&mut self, payloads: Vec<Option<Box<Returned>>>, stored: bool) {
-        for (current, other) in self.payloads.iter_mut().zip(payloads) {
+        for (current, other) in self.payloads.iter_mut().zip(other.payloads) {
             if let Some(other) = other {
                 if let Some(current) = current {
-                    current.join(*other,stored);
+                    current.join(*other,stored,choice);
                 } else {
                     *current = Some(other);
                 }
@@ -535,7 +532,7 @@ impl Builder<'_> {
             let mut item=if index.minimum()==index.maximum(){self.unpack_record(&value,index.minimum()as usize)}else{
                 let mut selected=(0..count).filter(|i|*i>=index.minimum()&&*i<=index.maximum());
                 let mut model=self.unpack_record(&value,selected.next().unwrap()as usize);
-                for i in selected{model.join(self.unpack_record(&value,i as usize),false);}
+                for i in selected{model.join(self.unpack_record(&value,i as usize),false,None);}
                 let place=match value.place(){Some(place)=>place,None=>self.materialize_array(value.value.clone(),None).place};let place=self.array_index(place,index,expr.span)?;
                 let mut regs=Vec::new();
                 for(i,(scalar,_))in element.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[i]),expr.span, None)?.regs[0]);}

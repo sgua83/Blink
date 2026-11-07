@@ -613,7 +613,7 @@ impl Builder<'_> {
                     let mut repeated:Option<returns::Returned>=None;
                     for edge in &context.continues {
                         let next=returns::Returned::Dataset(data_at(&edge.env[name],&[]).unwrap().clone());
-                        if let Some(common)=repeated.as_mut(){common.join(next,true);}else{repeated=Some(next);}
+                        if let Some(common)=repeated.as_mut(){common.join(next,true,None);}else{repeated=Some(next);}
                     }
                     if let Some(returns::Returned::Dataset(repeated))=repeated {
                         if data.ownership!=repeated.ownership{data.ownership=application::Ownership::Moved;}

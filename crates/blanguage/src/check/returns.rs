@@ -75,23 +75,8 @@ impl Returned {
             Self::Dataset(data) => vec![data.root.regs[0], data.length.regs[0]],
         }
     }
-    pub(super) fn join_locations(&mut self,other:Self,choice:&bounds::Condition,stored:bool){
-        if let (Self::Value(value),Self::Value(other))=(&mut *self,&other){
-            value.proof=if stored { let mut proof=value.proof.clone(); proof.join_condition(&other.proof,value.regs.len(),Some(choice)); proof } else { bounds::Proof::common(value,other,Some(choice),None) };
-            value.uniform &= other.uniform;
-            if value.constant != other.constant { value.constant=None; }
-            return;
-        }
-        fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&bounds::Condition,stored:bool){match(target,a,b){
-            (Returned::Value(target),Returned::Value(a),Returned::Value(b))=>{target.proof=if stored { let mut proof=a.proof.clone(); proof.join_condition(&b.proof,a.regs.len(),Some(choice)); proof } else { bounds::Proof::common(a,b,Some(choice),None) };},
-            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.length.proof=if stored { let mut proof=a.length.proof.clone(); proof.join_condition(&b.length.proof,a.length.regs.len(),Some(choice)); proof } else { bounds::Proof::common(&a.length,&b.length,Some(choice),None) };target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.prefixes=prefix::join_fields(&a.prefixes,&b.prefixes,Some(choice));target.root.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),choice);target.elements=if a.length.maximum()==0{b.elements.clone()}else if b.length.maximum()==0{a.elements.clone()}else{a.elements.clone().selected(b.elements.clone(),choice)};},
-            (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.value.proof=if stored { let mut proof=a.value.proof.clone(); proof.join_condition(&b.value.proof,a.value.regs.len(),Some(choice)); proof } else { bounds::Proof::common(&a.value,&b.value,Some(choice),None) };for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice,stored);}}},
-            _=>{},
-        }}
-        let before=self.clone();self.join(other.clone(),stored);restore(self,&before,&other,choice,stored);
-    }
     // Data.elements contains logical model slots, not registers of the current function.
-    pub(super) fn join(&mut self, other: Self, stored: bool) {
+    pub(super) fn join(&mut self, mut other: Self, stored: bool, choice: Option<&bounds::Condition>) {
         if matches!(self, Self::Unit) {
             return;
         }
@@ -99,18 +84,30 @@ impl Returned {
             let Self::OwnedValue(other) = other else {
                 unreachable!()
             };
-            value.join(other,stored);
+            value.join(other,stored,choice);
             return;
         }
-        if let (Self::Dataset(data), Self::Dataset(other)) = (&mut *self, &other) {
+        if let (Self::Dataset(data), Self::Dataset(other)) = (&mut *self, &mut other) {
+            let borrows=choice.map(|choice| {
+                let a=view::resource_borrow(data);let b=view::resource_borrow(other);
+                data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,view::Borrow::default());
+                other.root.proof=std::mem::take(&mut other.root.proof).with_view_borrow(0,view::Borrow::default());
+                (choice,a,b)
+            });
             if data.ownership != other.ownership {
                 data.ownership = application::Ownership::Moved;
             }
             data.root.proof = if stored { let mut proof=data.root.proof.clone(); proof.join_condition(&other.root.proof,data.root.regs.len(),None); proof } else { bounds::Proof::common(&data.root, &other.root,None,None) };
+            if let Some((choice,a,b))=borrows {
+                data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,view::Borrow::selected(choice,&a,&b));
+            }
             data.elements=if data.length.maximum()==0{other.elements.clone()}
-                else if other.length.maximum()==0{data.elements.clone()}
-                else{std::mem::take(&mut data.elements).common(other.elements.clone())};
-            data.prefixes=prefix::join_fields(&data.prefixes,&other.prefixes,None);
+                else if other.length.maximum()==0{std::mem::take(&mut data.elements)}
+                else{match choice {
+                    Some(choice)=>std::mem::take(&mut data.elements).selected(other.elements.clone(),choice),
+                    None=>std::mem::take(&mut data.elements).common(other.elements.clone()),
+                }};
+            data.prefixes=prefix::join_fields(&data.prefixes,&other.prefixes,choice);
         }
         let (other, residency) = match &other {
             Self::Unit | Self::OwnedValue(_) => unreachable!(),
@@ -122,13 +119,16 @@ impl Returned {
             Self::Value(value) => value.as_mut(),
             Self::Dataset(data) => &mut data.length,
         };
-        value.proof = if stored { let mut proof=value.proof.clone(); proof.join_condition(&other.proof,value.regs.len(),None); proof } else { bounds::Proof::common(value, other,None,None) };
+        value.proof = if stored { let mut proof=value.proof.clone(); proof.join_condition(&other.proof,value.regs.len(),choice); proof } else { bounds::Proof::common(value, other,choice,None) };
         value.uniform &= other.uniform;
         if value.constant != other.constant {
             value.constant = None;
         }
         if let Self::Dataset(data) = self {
-            data.residency.join(&residency.unwrap());
+            match choice {
+                Some(choice)=>data.residency=residency::Residency::conditional(choice.clone(),data.residency.clone(),residency.unwrap()),
+                None=>data.residency.join(&residency.unwrap()),
+            }
         }
     }
 }
@@ -699,11 +699,11 @@ impl Builder<'_> {
             let choice=bounds::Condition::paths(self.path.clone(),path.clone());
             self.path = bounds::Clause::either(&self.path, &path);
             if let (Some(value), Some(other)) = (&mut result, other) {
-                value.join_locations(other,&choice,false);
+                value.join(other,false,Some(&choice));
             }
             for (name, owner) in &mut borrowed {
                 let other = &other_borrowed[name];
-                owner.join_locations(other.clone(),&choice,false);
+                owner.join(other.clone(),false,Some(&choice));
             }
         }
         // 出口已分别检查并合流；不能再用最后解析分支的环境重建输出。
