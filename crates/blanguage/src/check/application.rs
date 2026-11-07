@@ -105,6 +105,7 @@ impl Binding {
 // 更新描述只属于原共同元素模型，不成为运行期状态。
 pub(super) enum ElementUpdate<'a> {
     Unknown,
+    Bytes {regions:&'a [address::MemoryRegion],index:Option<(bounds::Operand,(u32,u32))>},
     Element { proof: &'a bounds::Proof, index: Option<(bounds::Operand,(u32,u32))>, when: Option<&'a bounds::Condition> },
     WholeFacts(&'a bounds::Proof),
 }
@@ -663,13 +664,13 @@ impl Builder<'_> {
     pub(super) fn application_condition_writes(&self,code:&[Inst],place:&Place,component:usize)->bool {
         let mut positions=place.data_positions();if positions.is_empty(){positions=self.positions(place);}
         let position=positions.get(component);
-        fn writes(loads:&ApplicationLoads<'_, '_>,code:&[Inst],position:Option<&Position>)->bool {
+        fn writes(loads:&ApplicationLoads<'_, '_>,code:&[Inst],position:Option<&Position>,scalar:Scalar)->bool {
             code.iter().any(|inst|match &inst.kind {
-                InstKind::If{yes,no,..}=>writes(loads,yes,position)||writes(loads,no,position),
-                InstKind::Loop{condition,body,..}=>writes(loads,condition,position)||writes(loads,body,position),
-                InstKind::Scope(body)|InstKind::Cleanup{body,..}=>writes(loads,body,position),
+                InstKind::If{yes,no,..}=>writes(loads,yes,position,scalar)||writes(loads,no,position,scalar),
+                InstKind::Loop{condition,body,..}=>writes(loads,condition,position,scalar)||writes(loads,body,position,scalar),
+                InstKind::Scope(body)|InstKind::Cleanup{body,..}=>writes(loads,body,position,scalar),
                 InstKind::Call(call)=>{
-                    let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut).writes_position(position));
+                    let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut).written_bytes(position,scalar)!=0);
                     position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().contains(slot)))
                         ||loads.call_memory_writes(call,affected)
                         ||call.memory_use.is_some_and(|first|loads.0.view_model.uses.iter().skip(first+1)
@@ -680,7 +681,7 @@ impl Builder<'_> {
                 _=>position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().contains(slot))),
             })
         }
-        writes(&ApplicationLoads(self),code,position)
+        writes(&ApplicationLoads(self),code,position,place.ty().components[component].0)
     }
     pub(super) fn application_iteration_interference<'s>(&self, data: &DataReference, index: &Value, proof: &mut bounds::Proof, states: impl Iterator<Item=&'s flow::LoopState>+Clone, controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) {
         let loads = ApplicationLoads(self);
@@ -3613,7 +3614,7 @@ impl Builder<'_> {
     }
     pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],update:ElementUpdate<'_>)->Result<()> {
         let names=self.env.keys().cloned().collect::<Vec<_>>();
-        let index=match &update{ElementUpdate::Element{index,..}=>*index,_=>None};
+        let index=match &update{ElementUpdate::Element{index,..}|ElementUpdate::Bytes{index,..}=>*index,_=>None};
         let when=match &update{ElementUpdate::Element{when,..}=>*when,_=>None};
         let range=index.map(|(_,range)|range);
         let one=(range==Some((0,0))).then(||self.constant(Scalar::U32,1));
@@ -3636,9 +3637,16 @@ impl Builder<'_> {
                     };
                 }
                 let Some(data)=selected_data else{continue;};self.expand_current_element_facts(data)?;
-                let components=words.iter().filter_map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Vec<_>>();
+                let byte_writes=if let ElementUpdate::Bytes{regions,..}=&update {
+                    let borrow=Arc::new(resource.clone());let layout=address::Layout::of(&data.ty);
+                    data.ty.components.iter().enumerate().filter_map(|(component,(scalar,word))|{
+                        let position=Position::Borrowed(borrow.clone(),layout.clone(),*word);let bytes=regions.iter().fold(0,|bytes,region|bytes|region.written_bytes(&position,*scalar));
+                        (bytes!=0).then_some((component,bytes))
+                    }).collect::<Vec<_>>()
+                }else{Vec::new()};
+                let components=if matches!(update,ElementUpdate::Bytes{..}){byte_writes.iter().map(|(component,_)|*component).collect::<Vec<_>>()}else{words.iter().filter_map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Vec<_>>()};
                 if components.is_empty(){continue;}
-                data.prefixes.retain(|word,_|!words.contains(word));
+                data.prefixes.retain(|word,_|!components.iter().any(|component|data.ty.components[*component].1==*word));
                 let Some(elements)=data.elements.known()else{continue;};
                 let old=self.returned_storage(elements);let mut updated=old.clone();updated.constant=None;
                 let mut bindings=element_scope_bindings(&self.element_owner_bindings(data),old.regs.len(),false);
@@ -3662,6 +3670,10 @@ impl Builder<'_> {
                         }
                     }
                     fresh.at_call(&bindings)
+                }else if matches!(update,ElementUpdate::Bytes{..}){
+                    let mut proof=bounds::Proof::default();
+                    for(target,(component,bytes))in byte_writes.iter().enumerate(){proof.assign(&[target],components.len(),previous.written_range(*component,data.ty.components[*component].0,*bytes));}
+                    proof
                 }else{bounds::Proof::default()};
                 updated.proof.assign(&components,old.regs.len(),written);
                 if let ElementUpdate::WholeFacts(proof)=&update {

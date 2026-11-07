@@ -42,6 +42,24 @@ pub(super) struct Origin {
     pub writable: bool,
     pub initialized: Arc<[bool]>,
 }
+// A queried byte interval in one original scalar position; no stored memory state.
+pub(super) struct MemoryRegion { pub position:Position, pub word:u32, pub offset:u32, pub size:u32 }
+impl MemoryRegion {
+    pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar)->u8 {
+        let offset=match (&self.position,position) {
+            (Position::Borrowed(other,base,word),Position::Borrowed(borrow,layout,at)) if base==layout=>{
+                if !borrow.sources.entries().any(|(source,when)|other.overlaps_source(source,&when)){return 0;}
+                i64::from(*word)+i64::from(self.offset)-i64::from(*at)
+            },
+            (written,position) if written==position=>i64::from(self.offset),
+            (written,position) if owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None=>return ((1u16<<scalar.size())-1) as u8,
+            _=>return 0,
+        };
+        let begin=offset.max(0);let end=(offset+i64::from(self.size)).min(i64::from(scalar.size()));
+        if begin>=end{return 0;}
+        (((1u16<<(end-begin))-1)<<begin) as u8
+    }
+}
 impl Origin {
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         let mut origin=self.clone();
@@ -168,25 +186,30 @@ impl Origin {
     }
 
     pub fn memory_positions(&self,path:&bounds::Clause)->Option<Vec<Position>> {
+        self.memory_regions(path).map(|regions|regions.into_iter().map(|region|region.position).collect())
+    }
+    fn memory_regions(&self,path:&bounds::Clause)->Option<Vec<MemoryRegion>> {
         let borrow=match &self.root {
             Root::External(Identity::Storage(borrow))|Root::Derived(borrow)=>borrow,
-            Root::Resource{borrow,..}|Root::Dataset{borrow,..}=>return Some(self.words.iter().map(|word|Position::Borrowed(Arc::new(borrow.clone()),self.base.clone(),*word)).collect()),
+            Root::Resource{borrow,..}|Root::Dataset{borrow,..}=>return Some(self.layout.parts.iter().zip(self.words.iter()).map(|((scalar,word),at)|MemoryRegion{position:Position::Borrowed(Arc::new(borrow.clone()),self.base.clone(),*at),word:*word,offset:0,size:scalar.size()}).collect()),
             Root::External(_)=>return None,
-            _=>return Some(self.positions.to_vec()),
+            _=>return Some(self.layout.parts.iter().zip(self.positions.iter()).map(|((scalar,word),position)|MemoryRegion{position:position.clone(),word:*word,offset:0,size:scalar.size()}).collect()),
         };
         if borrow.empty()||borrow.pending(){return None;}
-        let mut positions=Vec::new();
+        let mut regions=Vec::new();
         for(source,when)in borrow.sources.entries(){
             let when=bounds::Condition::guard(when).assume(path,true);if !when.possible(){continue;}
             let view::Source::Position(parent)=source else{return None;};
-            let positions_at_parent=parent.memory_positions(&when)?;
-            if positions_at_parent.len()!=parent.layout.parts.len(){return None;}
-            for((scalar,_),word)in self.layout.parts.iter().zip(self.words.iter()) {
-                let end=u64::from(*word)+u64::from(scalar.size());if end>u64::from(parent.layout.size){return None;}
-                for(index,(actual,offset))in parent.layout.parts.iter().enumerate(){if u64::from(*offset)<end&&u64::from(*word)<u64::from(*offset)+u64::from(actual.size()){positions.push(positions_at_parent[index].clone());}}
+            let parent_regions=parent.memory_regions(&when)?;
+            for((scalar,word),at)in self.layout.parts.iter().zip(self.words.iter()) {
+                let end=u64::from(*at)+u64::from(scalar.size());if end>u64::from(parent.layout.size){return None;}
+                for region in &parent_regions {
+                    let begin=(*at).max(region.word);let end=(end as u32).min(region.word+region.size);
+                    if begin<end{regions.push(MemoryRegion{position:region.position.clone(),word:*word+begin-*at,offset:region.offset+begin-region.word,size:end-begin});}
+                }
             }
         }
-        Some(positions)
+        Some(regions)
     }
     pub fn map_borrows(&self, map: impl Fn(&view::Borrow)->view::Borrow) -> Self {
         let mut value=self.clone();
@@ -331,19 +354,18 @@ impl MemoryEffect {
         self.known.extend(other.known);
         if let Some(access)=other.external{self.external=Some(match self.external{Some(old)if old!=access=>Access::InOut,_=>access});}
     }
-    pub(super) fn writes_position(&self,position:&Position)->bool {
-        if self.external.is_some_and(|access|access.writes()){return true;}
+    pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar)->u8 {
+        let all=((1u16<<scalar.size())-1) as u8;
+        if self.external.is_some_and(|access|access.writes()){return all;}
+        let known=||self.known.iter().filter(|(_,_,access)|access.writes()).fold(0,|bytes,(origin,when,_)|bytes|origin.memory_regions(when).map(|regions|regions.iter().fold(0,|bytes,region|bytes|region.written_bytes(position,scalar))).unwrap_or(all));
         match position{
-            Position::Initialized=>false,
-            Position::Local(_)=>self.known.iter().any(|(origin,when,access)|access.writes()&&origin.memory_positions(when).is_none_or(|positions|positions.iter().any(|written|owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None))),
-            Position::Element(binding,_)=>self.known.iter().any(|(origin,_,access)|access.writes()&&origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Data(actual)if actual==binding))),
-            Position::Borrowed(borrow,_,word) if !borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>self.known.iter().any(|(origin,when,access)|access.writes()&&origin.memory_positions(when).is_none_or(|positions|positions.iter().any(|position|match position {
-                Position::Borrowed(other,_,actual) if actual==word=>borrow.sources.entries().any(|(source,when)|other.overlaps_source(source,&when)),
-                _=>false,
-            }))),
-            Position::Both(a,b)|Position::Conditional(_,a,b)=>self.writes_position(a)||self.writes_position(b),
-            Position::Indexed(positions,_)=>positions.iter().any(|position|self.writes_position(position)),
-            _=>self.known.iter().any(|(_,_,access)|access.writes()),
+            Position::Initialized=>0,
+            Position::Local(_)=>known(),
+            Position::Element(binding,_)=>if self.known.iter().any(|(origin,_,access)|access.writes()&&origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Data(actual)if actual==binding))){all}else{0},
+            Position::Borrowed(borrow,_,_) if !borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>known(),
+            Position::Both(a,b)|Position::Conditional(_,a,b)=>self.written_bytes(a,scalar)|self.written_bytes(b,scalar),
+            Position::Indexed(positions,_)=>positions.iter().fold(0,|bytes,position|bytes|self.written_bytes(position,scalar)),
+            _=>if self.known.iter().any(|(_,_,access)|access.writes()){all}else{0},
         }
     }
     fn local_effects(&self,locals:&BTreeMap<usize,Ty>)->Vec<MemoryAccess> {
@@ -646,11 +668,14 @@ impl ReferenceAddress {
 }
 impl Builder<'_> {
     pub(super) fn address_write_positions(&self,borrow:&view::Borrow)->Option<Vec<Position>> {
+        self.address_write_regions(borrow).map(|regions|regions.into_iter().map(|region|region.position).collect())
+    }
+    fn address_write_regions(&self,borrow:&view::Borrow)->Option<Vec<MemoryRegion>> {
         if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||borrow.unresolved(){return None;}
         let mut positions=Vec::new();
         for(source,when)in borrow.sources.entries().filter(|(_,when)|when.possible()) {
             match source {
-                view::Source::Position(origin)if origin.writable=>positions.extend(origin.memory_positions(&when)?),
+                view::Source::Position(origin)if origin.writable=>positions.extend(origin.memory_regions(&when)?),
                 view::Source::Position(_)|view::Source::Inactive=>{},
                 _=>return None,
             }
@@ -663,7 +688,7 @@ impl Builder<'_> {
     }
     pub(super) fn write_address_values(&mut self,borrow:&view::Borrow)->Result<()> {
         let borrow=self.current_address_borrow(borrow);
-        match self.address_write_positions(&borrow) {None=>{
+        match self.address_write_regions(&borrow) {None=>{
         let data=self.env.values().flat_map(Binding::application_resources)
             .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
         for data in data {self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown)?;}
@@ -687,19 +712,30 @@ impl Builder<'_> {
                 _=>None,
             }
         }).collect::<Vec<_>>();
-        let unknown=bounds::Proof::default();
-        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Element{proof:&unknown,index,when:None})?;}
+        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Bytes{regions:&positions,index})?;}
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
-            let components=self.address_write_components(&positions,&place);
+            let components=self.positions(&place).iter().zip(place.ty().components.iter()).enumerate().filter_map(|(component,(position,(scalar,_)))|{
+                let bytes=positions.iter().fold(0,|bytes,region|bytes|region.written_bytes(position,*scalar));(bytes!=0).then_some((component,bytes))
+            }).collect::<Vec<_>>();
             (!components.is_empty()).then(||(name.clone(),components))
         }).collect::<BTreeMap<_,_>>();
-        for(name,components)in selected {
+        for(name,written)in selected {
+            let components=written.iter().map(|(component,_)|*component).collect::<Vec<_>>();
             match self.env.get_mut(&name).unwrap(){
-                Binding::Owned(owner)=>{owner.uniform=false;owner.proof.forget_value(&components,owner.place.ty().components.len());}
-                Binding::OwnedValue(owner)=>owner.invalidate_components(&components,None),
+                Binding::Owned(owner)=>{
+                    let ty=owner.place.ty();let mut ranges=bounds::Proof::default();
+                    for(component,bytes)in &written{ranges.assign(&[*component],ty.components.len(),owner.proof.written_range(*component,ty.components[*component].0,*bytes));}
+                    owner.uniform=false;owner.proof.forget_value(&components,ty.components.len());owner.proof.constrain_common_ranges(&ranges,ty.components.len());
+                },
+                Binding::OwnedValue(owner)=>{
+                    let ty=&owner.value.ty;let mut ranges=bounds::Proof::default();
+                    for(component,bytes)in &written{ranges.assign(&[*component],ty.components.len(),owner.value.proof.written_range(*component,ty.components[*component].0,*bytes));}
+                    owner.invalidate_components(&components,None);owner.value.proof.constrain_common_ranges(&ranges,owner.value.ty.components.len());
+                },
                 _=>{},
             }
+
         }
         }
         }

@@ -166,6 +166,7 @@ enum IndexDomain {
     Computed(bounds::IntegerExpression),
     // Selected numeric snapshots inherit common bounds, never common value identity.
     CommonRange(ValueIdentity,Scalar,Scalar,Scalar,Scalar),
+    KnownBits(Scalar,Bits,Bits),
 }
 type Domains = BTreeSet<IndexDomain>;
 #[derive(Clone)]
@@ -4822,7 +4823,7 @@ crate::module::codec::record!(Value {
     constant
 });
 crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource),5=>ParameterStorage(parameter),6=>ElementComponent(component),7=>ElementParent(depth,component),8=>DatasetContent(parameter,resource,component),9=>MemoryValue(call,component),10=>ElementIndex(depth)});
-crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance),13=>Offset(base,amount),14=>Computed(expression),15=>Lower(base,distance),16=>CommonRange(source,from,low,extended,to)});
+crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance),13=>Offset(base,amount),14=>Computed(expression),15=>Lower(base,distance),16=>CommonRange(source,from,low,extended,to),17=>KnownBits(scalar,mask,value)});
 
 
 // 已编译符号的空合同表示没有B函数合同；非空合同由原所有者交接规范身份。

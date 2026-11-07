@@ -222,6 +222,11 @@ fn map_domain(domain:IndexDomain, identity:&impl Fn(ValueIdentity)->ValueIdentit
 }
 fn cast_domain(domain:IndexDomain,source:Scalar,target:Scalar)->Option<IndexDomain> {
     match domain {
+        IndexDomain::KnownBits(from,mask,value)=>{
+            if !source.is_integer()||!target.is_integer(){return None;}
+            let bits=KnownBits{scalar:from,mask,value}.cast(source).cast(target);
+            (bits.mask!=0).then(||bits.domain())
+        },
         IndexDomain::CommonRange(id,base,mut low,mut extended,_) if source.is_integer()&&target.is_integer()=>{
             let unsigned=|scalar|match scalar{Scalar::I8=>Scalar::U8,Scalar::I16=>Scalar::U16,Scalar::I32=>Scalar::U32,Scalar::I64=>Scalar::U64,other=>other};
             if target.size()<=low.size(){low=target;extended=unsigned(target);}
@@ -237,7 +242,7 @@ fn cast_domain(domain:IndexDomain,source:Scalar,target:Scalar)->Option<IndexDoma
     }
 }
 fn numeric_domain(domain: &IndexDomain) -> bool {
-    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..) | IndexDomain::CommonRange(..) | IndexDomain::Computed(..))
+    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..) | IndexDomain::CommonRange(..) | IndexDomain::Computed(..) | IndexDomain::KnownBits(..))
 }
 impl Place {
     fn refine_position(
@@ -368,6 +373,39 @@ impl ScalarRanges {
         Self::from_intervals(intervals)
     }
 }
+#[derive(Clone,Copy,PartialEq,Eq)]
+struct KnownBits { scalar:Scalar, mask:Bits, value:Bits }
+impl KnownBits {
+    fn domain(self)->IndexDomain {IndexDomain::KnownBits(self.scalar,self.mask,self.value)}
+    fn cast(self,scalar:Scalar)->Self {
+        let mut mask=self.mask&scalar.bit_mask();let mut value=self.value&mask;
+        if scalar.size()>self.scalar.size(){
+            let extra=scalar.bit_mask()&!self.scalar.bit_mask();
+            if !self.scalar.is_signed(){mask|=extra;}
+            else {let sign=1u64<<(self.scalar.bit_width()-1);if self.mask&sign!=0{mask|=extra;if self.value&sign!=0{value|=extra;}}}
+        }
+        Self{scalar,mask,value}
+    }
+    fn combined(self,other:Self)->Self {
+        let scalar=if self.scalar.size()>=other.scalar.size(){self.scalar}else{other.scalar};
+        let a=self.cast(scalar);let b=other.cast(scalar);
+        Self{scalar,mask:a.mask|b.mask,value:a.value|b.value}
+    }
+    fn common(self,other:Self)->Option<Self> {
+        let other=other.cast(self.scalar);let mask=self.mask&other.mask&!(self.value^other.value);
+        (mask!=0).then_some(Self{scalar:self.scalar,mask,value:self.value&mask})
+    }
+    fn ranges(scalar:Scalar,ranges:ScalarRanges)->Option<Self> {
+        let mut result:Option<Self>=None;
+        for(lower,upper)in ranges.restrict(0,scalar.bit_mask()).0 {
+            let different=lower^upper;let mask=scalar.bit_mask()&if different==0{Bits::MAX}else{!(Bits::MAX>>different.leading_zeros())};
+            if mask==0{return None;}
+            let value=Self{scalar,mask,value:(lower^scalar.order_bias())&mask};
+            result=Some(match result {Some(previous)=>previous.common(value)?,None=>value});
+        }
+        result
+    }
+}
 #[derive(Clone, Default)]
 pub(crate) struct Proof {
     // 首项是实际来源，其余是当前路径已经证明相等的快照。
@@ -404,6 +442,7 @@ impl Proof {
         facts.ranges.resize_with(self.ranges.len().max(self.domains.len()), ScalarRanges::default);
         for (component, domains) in self.domains.iter().enumerate() {
             for domain in domains {
+                if matches!(domain,IndexDomain::KnownBits(..)){facts.mark_domain(component,*domain);}
                 if let IndexDomain::Data(binding) = domain {
                     let bound = target(*binding);
                     facts.domains[component].extend(bound.domains(0));
@@ -457,7 +496,9 @@ impl Proof {
         self.ranges.resize_with(width, ScalarRanges::default);
         self.domains.resize_with(width, Domains::new);
         self.conditions.resize_with(width, || None);
+        self.nonzero.resize(width,false);
         for (source, &component) in components.iter().enumerate() {
+            self.nonzero[component]=fresh.nonzero.get(source)==Some(&true);
             self.origins[component] = fresh.origins.get(source).cloned().unwrap_or_default();
             self.ranges[component] = fresh.range_set(source);
             self.domains[component] = fresh.domains(source);
@@ -469,7 +510,7 @@ impl Proof {
         self.ranges.resize_with(width, ScalarRanges::default);
         self.conditions.resize_with(width,||None);
         for component in 0..width {
-            self.domains[component].extend(other.domains(component));
+            for domain in other.domains(component){self.mark_domain(component,domain);}
             self.ranges[component] = self.range_set(component).combine(&other.range_set(component),
                 |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
             if let Some(incoming)=other.component_condition(component){
@@ -662,6 +703,7 @@ impl Proof {
         ) -> Option<IndexDomain> {
             Some(match value {
                 IndexDomain::Fixed(n) => IndexDomain::Fixed(n),
+                IndexDomain::KnownBits(..)=>value,
                 IndexDomain::ApplicationData(id) => {
                     IndexDomain::ApplicationData(identity(id, bindings)?)
                 }
@@ -687,6 +729,11 @@ impl Proof {
                 IndexDomain::Computed(expression) => IndexDomain::Computed(expression.at_call(bindings)?),
                 _ => return None,
             })
+        }
+        fn common_bits(input:&Proof,from:Scalar,low:Scalar,extended:Scalar,to:Scalar)->Option<KnownBits> {
+            if ![from,low,extended,to].into_iter().all(Scalar::is_integer){return None;}
+            let bits=input.known_bits(0,from)?.cast(low).cast(extended).cast(to);
+            (bits.mask!=0).then_some(bits)
         }
         fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
             let translated = match value {
@@ -777,7 +824,7 @@ impl Proof {
                     if let Some(target)=identity(id,bindings) && let Some(input)=bindings.get(&source){
                         let range=input.range_set(0).cast(from,low,input.nonzero.first()==Some(&true)).cast(low,extended,false).cast(extended,to,false);
                         if to==Scalar::Bool && let Some(truth)=input.component_condition(0).and_then(Condition::boolean_constant){facts.insert(Fact::Boolean(target,truth));}
-                        let nonzero=if to.is_integer(){!range.contains(to.order_bias())}else{input.nonzero.first()==Some(&true)};
+                        let nonzero=if to.is_integer(){!range.contains(to.order_bias())||common_bits(input,from,low,extended,to).is_some_and(|bits|bits.value!=0)}else{input.nonzero.first()==Some(&true)};
                         if nonzero{facts.insert(Fact::NonZero(target));}
                         if to.is_integer()||to.is_float(){let(minimum,maximum)=range.hull();if minimum!=0{facts.insert(Fact::Minimum(target,to,minimum));}if maximum!=to.bit_mask(){facts.insert(Fact::Maximum(target,to,maximum));}}
                         facts.extend(input.domains(0).into_iter().filter_map(|domain|cast_domain(domain,from,low).and_then(|domain|cast_domain(domain,low,extended)).and_then(|domain|cast_domain(domain,extended,to))).map(|domain|Fact::Index(target,domain)));
@@ -863,6 +910,7 @@ impl Proof {
                 if let IndexDomain::CommonRange(source,from,low,extended,to) = domain {
                     if let Some(incoming) = bindings.get(source) {
                         let range=incoming.range_set(0).cast(*from,*low,incoming.nonzero.first()==Some(&true)).cast(*low,*extended,false).cast(*extended,*to,false);
+                        if let Some(bits)=common_bits(incoming,*from,*low,*extended,*to){translated.mark_domain(component,bits.domain());}
                         translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
                         translated.ranges[component] = translated.ranges[component].combine(&range,
                             |(al, ah), (bl, bh)| ScalarRanges::interval(al.max(bl), ah.min(bh)));
@@ -995,6 +1043,25 @@ impl Proof {
             if let Some(id) = initial.known_identity(0) { self.mark_domain(component, IndexDomain::Upper(id, 0)); }
         }
     }
+    fn known_bits(&self,component:usize,scalar:Scalar)->Option<KnownBits> {
+        let mut bits=KnownBits::ranges(scalar,self.range_set(component));
+        for domain in self.domains.get(component).into_iter().flatten(){
+            let IndexDomain::KnownBits(from,mask,value)=*domain else{continue;};
+            let incoming=KnownBits{scalar:from,mask,value}.cast(scalar);
+            if incoming.mask!=0{bits=Some(match bits{Some(old)=>old.combined(incoming),None=>incoming});}
+        }
+        bits
+    }
+    pub(super) fn written_range(&self,component:usize,scalar:Scalar,bytes:u8)->Self {
+        if !scalar.is_integer()||bytes==((1u16<<scalar.size())-1) as u8{return Self::default();}
+        let mask=(0..scalar.size()).filter(|byte|bytes&(1<<byte)!=0).fold(0,|mask,byte|mask|(255u64<<(byte*8)));
+        let kept=scalar.bit_mask()&!mask;let ordered=kept^scalar.order_bias();
+        let range=arithmetic_ranges("&",scalar,self.range_set(component).restrict(0,scalar.bit_mask()),ScalarRanges::interval(ordered,ordered));
+        let changed=ScalarRanges::interval(0,mask).cast(Scalar::U64,scalar,false);
+        let mut proof=Self{ranges:vec![arithmetic_ranges("|",scalar,range,changed)],..Self::default()};
+        if let Some(mut bits)=self.known_bits(component,scalar){bits.mask&=kept;bits.value&=bits.mask;if bits.mask!=0{proof.mark_domain(0,bits.domain());}}
+        proof
+    }
     pub(super) fn forget_value(&mut self, components: &[usize], width: usize) {
         let fresh=Self { views:components.iter().map(|i|self.view_borrow(*i)).collect(),..Self::default() };
         self.assign(components,width,fresh);
@@ -1062,6 +1129,10 @@ impl Proof {
                 });
                 if let [Some(a),Some(b)]=distances {common.insert(IndexDomain::Upper(*limit,a.min(b)));}
             }
+            if let Some(scalar)=a.union(&b).find_map(|domain|match domain{IndexDomain::KnownBits(scalar,..)=>Some(*scalar),_=>None}){
+                common.retain(|domain|!matches!(domain,IndexDomain::KnownBits(..)));
+                if let Some(bits)=self.known_bits(i,scalar).zip(other.known_bits(i,scalar)).and_then(|(a,b)|a.common(b)){common.insert(bits.domain());}
+            }
             common
         }).collect();
         self.origins = (0..width)
@@ -1074,7 +1145,7 @@ impl Proof {
             })
             .collect();
         self.nonzero = (0..width)
-            .map(|i| self.nonzero.get(i) == Some(&true) && other.nonzero.get(i) == Some(&true))
+            .map(|i| self.nonzero.get(i) == Some(&true) && other.nonzero.get(i) == Some(&true) || self.domains(i).iter().any(|domain|matches!(domain,IndexDomain::KnownBits(_,_,value)if *value!=0)))
             .collect();
         self.ranges = (0..width)
             .map(|i| self.range_set(i).union(&other.range_set(i)))
@@ -1409,6 +1480,7 @@ impl Proof {
         self.nonzero[component] = true;
     }
     pub(super) fn mark_domain(&mut self, component: usize, domain: IndexDomain) {
+        if matches!(domain,IndexDomain::KnownBits(_,_,value)if value!=0){self.nonzero.resize(self.nonzero.len().max(component+1),false);self.nonzero[component]=true;}
         let count = match domain {
             IndexDomain::Fixed(count) => Some(count),
             // 这些动态资源的当前长度ABI为u32，索引严格小于长度。
@@ -4348,7 +4420,7 @@ fn common_range_domain(domain: IndexDomain) -> bool {
         IndexDomain::Data(_) | IndexDomain::Fixed(_) | IndexDomain::Tile
         | IndexDomain::View(_) | IndexDomain::ApplicationData(_)
         | IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(_)
-        | IndexDomain::Shifted(..) | IndexDomain::CommonRange(..) => true,
+        | IndexDomain::Shifted(..) | IndexDomain::CommonRange(..) | IndexDomain::KnownBits(..) => true,
         IndexDomain::DataLength(_) | IndexDomain::TileLength | IndexDomain::ViewLength(_)
         | IndexDomain::ApplicationLength(_) | IndexDomain::Sum(..) | IndexDomain::Offset(..)
         | IndexDomain::Computed(_) => false,

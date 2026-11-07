@@ -843,7 +843,8 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
             }
             if let Some(snapshots)=snapshots{for(component,snapshot)in snapshots.iter().enumerate(){
                 let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluate(borrow,function,&known[name],&known,true)),layout.clone(),*word),position=>position.clone()};
-                let proof=if effect.writes_position(&position){bounds::Proof::default()}else{snapshot.proof.substitute_values(&resolved)};
+                let bytes=effect.written_bytes(&position,snapshot.scalar);let proof=snapshot.proof.substitute_values(&resolved);
+                let proof=if bytes==0{proof}else{proof.written_range(0,snapshot.scalar,bytes)};
                 resolved.insert(ValueIdentity::MemoryValue(memory,component),proof);
             }}
             values.entry(*target).or_default().union(effect);
