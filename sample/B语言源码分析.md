@@ -1450,7 +1450,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1249`。
+源码节选：`crates/blanguage/src/check/application.rs:1292`。
 
 ```rust
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1484,7 +1484,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1307`。
+源码节选：`crates/blanguage/src/check/application.rs:1350`。
 
 ```rust
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1581,7 +1581,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 短路或选择表达式可把读取放在已完成If内部。ApplicationLoads::prior_snapshot只有在当前原Condition／Clause能确定实际执行分支时才进入该分支，并按整个嵌套指令区间核对真实可能写入。若If条件来自LoadLocal，只沿该次读取之前的指令查找实际StoreLocal值；未知写终止查询，后续环境或bool赋值不替代原条件来源。此处交接的是原数值身份，不复用机器寄存器或移动装载，也不从未执行分支取事实。原整数非零检查继续拒绝从矛盾路径取得许可。
 
-循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。位置是否已知先沿原address_write_positions查询；LoopInput属于待闭合资源来源不等于地址未知，已闭合且仅使用引用ABI的B调用先消费其真实写区，不由pending标记重复扩大写入。真实未知位置继续撤回可能相交事实。内层循环子资源投影及稳定不等分支的剩余缺口仍分别见Issues C-021.1.4.5.4.2.2.2与C-020.1.3.2.1.2.2.13.4.1.8。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
+循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。位置是否已知先沿原address_write_positions查询；LoopInput属于待闭合资源来源不等于地址未知，已闭合且仅使用引用ABI的B调用先消费其真实写区，不由pending标记重复扩大写入。真实未知位置继续撤回可能相交事实。未来Position指向子资源时，原投影直接交接已经取得的真实输入，由ApplicationLoads沿该输入、World元素类型及已发射ViewLoad查询当前物理根；不把模型寄存器作为句柄，也不另存根表或装载历史。LoopWrites仍是原本次写摘要，根相同、已有独占父子关系和真实字段字节共同决定是否影响读取。父描述真实改写继续撤回旧长度，不用载荷写影响另一块描述存储。稳定不等分支未采用写、动态不同叶读取及变化父路径回边的数值缺口分别见Issues C-020.1.3.2.1.2.2.13.4.1.8／.9／.10；Write::Memory未来读取范围继续C-021.1.4.5.4.3.2.2。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
 
 源码节选：`crates/blanguage/src/check/application.rs:175`。
 
@@ -1593,7 +1593,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1686`。
+源码节选：`crates/blanguage/src/check/application.rs:1729`。
 
 ```rust
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
@@ -1700,7 +1700,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
                 Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|(data,offset,ty)|(
                     vec![data.root.identity()],view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>(),None
                 )),
-                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))?.map(|projection|(
+                Write::Position{place,contents:false,..}=>self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))?.map(|(projection,_)|(
                     projection.data.map(|data|data.root.identity()).into_iter().collect::<Vec<_>>(),projection.resource,
                     projection.value.1.into_iter().flatten().map(|i|projection.base.components[i].1).collect::<Vec<_>>(),
                     projection.index.map(|index|{let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)})
@@ -1849,7 +1849,7 @@ pub(super) struct LoopWrites {
 
 take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。存活性消费时点由实际调用者选择；assign_application_element保持after(rhs.span)，普通assign_owned_storage及take_last各选择自身原after(span)。共用函数只消费已求值载荷及当前ViewUses，不把Frame元素旧内容的清理切换到新内容的后续读取；check_returned_type只借用Builder，不重选存活性。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
 
-源码节选：`crates/blanguage/src/check/application.rs:1648`。
+源码节选：`crates/blanguage/src/check/application.rs:1691`。
 
 ```rust
     pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
@@ -2178,7 +2178,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
                 let components=words.iter().map(|word|data.ty.components.iter().enumerate()
                     .filter_map(|(i,(_,offset))|(word==offset).then_some(i)).collect()).collect();
                 let index=Some(*index_value);
-                Ok(Some(DataProjection{data:Some(data),resource:view::resource_borrow(data),base:data.ty.clone(),access:data.access,index,value:(owner.place.ty().clone(),components)}))
+                Ok(Some((DataProjection{data:Some(data),resource:view::resource_borrow(data),base:data.ty.clone(),access:data.access,index,value:(owner.place.ty().clone(),components)},data)))
             },
 ```
 
@@ -2186,7 +2186,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:3617`。
+源码节选：`crates/blanguage/src/check/application.rs:3661`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -2198,7 +2198,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 全局目标本身可以是借用输入，其真实根与长度和拥有资源进入同一element_owner_bindings。元素归属先使用原DataReference已经确定的唯一当前根；其余来源及真实嵌套关系，沿活动LoopContext已有映射查询各层作用域，不另造别名状态：
 
-源码节选：`crates/blanguage/src/check/application.rs:3304`。
+源码节选：`crates/blanguage/src/check/application.rs:3348`。
 
 ```rust
         let owner=view::resource_borrow(data);

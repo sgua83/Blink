@@ -184,8 +184,8 @@ impl ApplicationLoads<'_, '_> {
                 InstKind::LoadLocal(_,slot)=>context.writes.external||context.writes.locals.contains(slot),
                 InstKind::ViewLoad{dst,address,index,stride,word}=>context.writes.unknown_storage||context.writes.storage.iter().any(|(written,range)|
                     match (self.frame_root(*address),range,self.constant(*index),self.stride(*stride)) {
-                        (Some(root),_,_,_)if self.disjoint_roots(root,*written)=>false,
-                        (Some(root),Some(range),Some(index),Some(stride))if root==*written=>{
+                        (Some(root),_,_,_)if self.disjoint_roots(root,*written)||self.frame_descendant(root,*written)||self.frame_descendant(*written,root)=>false,
+                        (Some(root),Some(range),Some(index),Some(stride))if self.same(root,*written)=>{
                             let start=u128::from(index)*u128::from(stride)+u128::from(*word);
                             Self::byte_overlap(&(start..start+u128::from(self.0.registers[*dst].size())),range)
                         },
@@ -298,6 +298,49 @@ impl ApplicationLoads<'_, '_> {
         let Some((_,Inst{kind:InstKind::ViewLoad{address,..},..}))=self.definition(child)else{return false;};
         let Some(container)=self.frame_root(*address)else{return false;};
         self.same(container,parent)||self.frame_descendant(container,parent)
+    }
+    // Resolve only metadata already produced by the original IR. No model register becomes storage.
+    fn resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(Reg,Ty,DataLayout)>>> {
+        let resource=resource.restricted(&self.0.path);
+        if view::resource_borrow(input).restricted(&self.0.path)==resource {
+            return Ok(Some(vec![(input.root.regs[0],input.ty.clone(),input.layout.clone())]));
+        }
+        if !resource.inputs.is_empty()||!resource.calls.is_empty(){return Ok(None);}
+        let mut storage=Vec::new();
+        for(source,when)in resource.sources.entries().filter(|(_,when)|when.possible()) {
+            let view::Source::Element{parent,fields,index:Some(index)}=source else{return Ok(None);};
+            let Some(parents)=self.resource_storage(input,parent)?else{return Ok(None);};
+            for(root,ty,layout)in parents {
+                let(mut word,mut field)=(0,&ty);
+                for at in fields{let(offset,next)=field.aggregate_part(*at);word+=offset;field=next;}
+                let Some(reference)=field.dataset.as_deref()else{return Ok(None);};
+                let element=self.0.world.ty(reference,&self.0.definition.source,self.0.definition.function.span,&self.0.definition.module,&self.0.definition.imports)?;
+                let index_equal=|at|{
+                    let actual=match self.constant(at){Some(value)=>bounds::Operand::Constant(Scalar::U32,value),None=>bounds::Operand::Value(ValueIdentity::Register(at))};
+                    let actual=self.0.element_index_operand(actual,(&self.0.path,&self.0.env));
+                    bounds::Condition::index_equal(actual,*index).truth_in(&self.0.path)==Some(true)
+                };
+                let mut at=self.len();
+                let loaded=self.code().rev().find_map(|inst|{
+                    at-=1;
+                    let InstKind::ViewLoad{dst,address,index,stride,word:offset}=&inst.kind else{return None;};
+                    if *offset!=word||self.0.registers[*dst]!=Scalar::U32{return None;}
+                    let selected=match &layout {
+                        DataLayout::Declared=>self.stride(*stride)==Some(u64::from(ir::align_up(ty.size,ty.align)))
+                            && self.frame_root(*address).is_some_and(|actual|self.same(actual,root))&&index_equal(*index),
+                        DataLayout::Parameter{stride:step,offset:field,..}=>self.constant(*index)==Some(0)&&self.stride(*stride)==Some(0)
+                            && self.offset_position(*address).is_some_and(|(base,index,stride,offset)|{
+                                let same_root=if self.0.registers[root]==Scalar::U64{self.split_address(base).is_some_and(|actual|self.same(actual,root))}
+                                    else{self.frame_root(base).is_some_and(|actual|self.same(actual,root))};
+                                same_root&&self.same(stride,step.regs[0])&&self.same(offset,field.regs[0])&&index_equal(index)
+                            }),
+                    };
+                    (selected&&!self.code().skip(at+1).any(|later|self.writes(later,inst))).then_some(*dst)
+                });
+                let Some(root)=loaded else{return Ok(None);};storage.push((root,element,DataLayout::Declared));
+            }
+        }
+        Ok((!storage.is_empty()).then_some(storage))
     }
     fn byte_overlap(a:&std::ops::Range<u128>,b:&std::ops::Range<u128>)->bool {a.start<b.end&&b.start<a.end}
     fn store_overlaps(&self,read:&IndexedSource,read_word:u32,read_scalar:Scalar,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
@@ -2007,6 +2050,7 @@ impl Builder<'_> {
         self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
+    pub(super) fn application_resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(Reg,Ty,DataLayout)>>> {ApplicationLoads(self).resource_storage(input,resource)}
     pub(super) fn application_element(
         data: &Data,
         index: &Value,
