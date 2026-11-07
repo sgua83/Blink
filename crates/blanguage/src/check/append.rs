@@ -29,7 +29,7 @@ pub(super) fn clear(
         );
     }
     facts.written(program, count, word, word + 4, None);
-    let prefix_guarantees = vec![PrefixRelation {
+    let prefix_guarantees = vec![PrefixRelation { domain_region: None,
         domain: target,
         count: PrefixCount {
             binding: count,

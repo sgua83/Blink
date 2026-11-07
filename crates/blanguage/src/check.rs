@@ -550,7 +550,7 @@ fn expand_program(
         .filter(|c| c.kind == ContractKind::Ensures)
     {
         let relation = prefix::relation(program, env, d, contract)?;
-        if !facts.holds(relation) {
+        if !facts.holds(relation,program) {
             return d.source.fail(
                 contract.span,
                 "B193",
@@ -734,6 +734,7 @@ fn expand_stages(
                     .transpose()?;
                 let mut b = Builder::new(world, d, program, *domain, Some(&instance.name))?;
                 b.element_facts = Some(&facts.elements);
+                b.prefix_facts = Some(&facts.scopes.last().unwrap().0);
                 b.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*b.source_context).clone() });
                 b.functions = std::mem::take(functions);
                 b.roots(env);
@@ -797,7 +798,7 @@ fn expand_stages(
                 let appended: Vec<_> = b
                     .appends
                     .iter()
-                    .map(|(domain, count)| PrefixRelation {
+                    .map(|(domain, count)| PrefixRelation { domain_region: None,
                         domain: *domain,
                         count: *count,
                     })
@@ -805,6 +806,7 @@ fn expand_stages(
                 for relation in &appended {
                     prefix::prove(
                         facts,
+                        program,
                         relation.domain,
                         relation.count,
                         &d.source,
@@ -1200,6 +1202,7 @@ fn expand_stages(
                 for relation in &required {
                     prefix::prove(
                         facts,
+                        program,
                         relation.domain,
                         relation.count,
                         &d.source,
@@ -1542,7 +1545,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
             });
         }
     }
-    let program = Program {
+    let mut program = Program {
         name: name.clone(),
         source_origin: d.source_origin(),
         generated_origin: None,
@@ -1579,6 +1582,8 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
+    let roots=program.buffers.iter().enumerate().map(|(index,b)|(b.name.clone(),Root::Data(index,b.access))).collect();
+    program.prefix_requirements=d.function.contracts.iter().filter(|c|c.kind==ContractKind::Requires&&matches!(c.predicate,ContractPredicate::Prefix{..})).map(|c|prefix::relation(&program,&roots,d,c)).collect::<Result<_>>()?;
     Ok(Arc::new(program))
 }
 
@@ -1784,8 +1789,11 @@ fn function_parameters(
         );
     }
     application::bind_parameter_elements(b,d);
+    let resources=d.function.params.iter().enumerate().filter_map(|(index,p)|match b.env.get(&p.name){
+        Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))),_=>None,
+    }).collect();
     let environment=std::mem::take(&mut b.env);
-    let requirements=contracts::resolve(b,d,&environment);b.env=environment;
+    let requirements=contracts::resolve(b,d,&environment,&resources);b.env=environment;
     let requirements=requirements?;
     contracts::assume(&mut b.env, &mut b.path, &requirements);
     b.materialize_array_bindings();
@@ -1813,7 +1821,7 @@ fn finish_checked_function(
         Some(b.expected_storage(&d.function.result, d.function.span)?)
     };
     let (returned, semantic_inputs, written, initialization) =
-        native_function::canonical(&mut b, returned, &inputs, written);
+        native_function::canonical(&mut b, returned, &inputs, &parameters, written);
     let body = FunctionBody {
         fallible: false,
         name: name.clone(),
@@ -1947,6 +1955,7 @@ struct Builder<'a> {
     definition: Arc<Definition>,
     program: &'a Program,
     element_facts: Option<&'a BTreeMap<usize, bounds::Proof>>,
+    prefix_facts: Option<&'a BTreeSet<PrefixRelation>>,
     domain: usize,
     element_domains: BTreeSet<usize>,
     env: BTreeMap<String, Binding>,
@@ -2019,6 +2028,7 @@ impl<'a> Builder<'a> {
             definition: definition.clone(),
             program,
             element_facts: None,
+            prefix_facts: None,
             domain,
             element_domains: BTreeSet::from([domain]),
             env: BTreeMap::new(),

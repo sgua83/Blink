@@ -256,8 +256,8 @@ impl<D> DomainBindings<D> {
         self.domains
             .extend(program.prefix_guarantees().iter().map(|r| DomainRelation::Prefix {
                 domain: binding(r.domain).0,
-                offset: binding(r.domain).1,
-                bytes: program.buffers()[r.domain].ty.size,
+                offset: binding(r.domain).1+r.domain_layout(program.buffers()).0,
+                bytes: r.domain_layout(program.buffers()).1,
                 count: PrefixCount {
                     binding: binding(r.count.binding).0,
                     word: r.count.word + binding(r.count.binding).1,
@@ -362,8 +362,8 @@ pub(crate) fn require<D: DomainStorage>(
         if !domains.iter().any(|known| {
             matches!(known, DomainRelation::Prefix { domain, offset, bytes, count }
                 if same(*domain, binding(relation.domain).0)
-                && *offset == binding(relation.domain).1
-                && *bytes == program.buffers()[relation.domain].ty.size
+                && u64::from(*offset) <= u64::from(binding(relation.domain).1)+u64::from(relation.domain_layout(program.buffers()).0)
+                && u64::from(binding(relation.domain).1)+u64::from(relation.domain_layout(program.buffers()).0)+u64::from(relation.domain_layout(program.buffers()).1)<=u64::from(*offset)+u64::from(*bytes)
                 && u64::from(count.word) == u64::from(relation.count.word) + u64::from(binding(relation.count.binding).1)
                 && same(count.binding, binding(relation.count.binding).0))
         }) {

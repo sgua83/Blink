@@ -1,7 +1,7 @@
 //! 函数类型作用域持有域关系与真实完成效果；模块只交接原输入／输出能力。
 use super::*;
 pub(super) struct Facts {
-    scopes: Vec<(BTreeSet<PrefixRelation>, usize)>,
+    pub(super) scopes: Vec<(BTreeSet<PrefixRelation>, usize)>,
     pub outputs: Vec<crate::module::domain::Output>,
     pub elements: BTreeMap<usize, bounds::Proof>,
 }
@@ -35,8 +35,8 @@ impl Facts {
                 || u64::from(start) >= u64::from(r.count.word) + 4);
         }
     }
-    pub fn holds(&self, relation: PrefixRelation) -> bool {
-        self.scopes.last().unwrap().0.contains(&relation)
+    pub fn holds(&self, relation: PrefixRelation,program:&Program) -> bool {
+        self.scopes.last().unwrap().0.iter().any(|known|known.covers(&relation,&program.buffers))
     }
     pub fn grant(&mut self, relation: PrefixRelation) {
         self.scopes.last_mut().unwrap().0.insert(relation);
@@ -79,6 +79,7 @@ pub(super) fn resolve(
     let (binding, word, _) = collective_field(program, env, expr, d, Scalar::U32)?;
     prove(
         facts,
+        program,
         domain,
         PrefixCount { binding, word },
         &d.source,
@@ -87,12 +88,13 @@ pub(super) fn resolve(
 }
 pub(super) fn prove(
     facts: &Facts,
+    program: &Program,
     domain: usize,
     count: PrefixCount,
     source: &Source,
     span: Span,
 ) -> Result<PrefixCount> {
-    if facts.holds(PrefixRelation { domain, count }) {
+    if facts.holds(PrefixRelation { domain_region: None, domain, count },program) {
         return Ok(count);
     }
     source.fail(
@@ -114,21 +116,26 @@ pub(super) fn relation(
             "整域接口接受prefix域约束及same_length长度前提；值约束用于普通／cooperative函数",
         );
     };
-    let Some(Root::Data(domain, _)) = env.get(data) else {
+    let mut selected=data.split('.');let name=selected.next().unwrap();
+    let Some(Root::Data(domain, _)) = env.get(name) else {
         return d
             .source
             .fail(contract.span, "B192", "前缀域约束需要命名 dataset 参数");
     };
-    let expr = Expr {
+    let mut domain_ty=&program.buffers[*domain].ty;let mut offset=0;let mut projected=false;
+    for field in selected {let Some((_,at,ty))=domain_ty.fields.iter().find(|(name,..)|name==field)else{return d.source.fail(contract.span,"B192","prefix需要实际dataset字段投影");};offset+=*at;domain_ty=ty;projected=true;}
+    let mut fields=field.split('.');
+    let mut expr = Expr {
         span: contract.span,
         kind: ExprKind::Member(
             Box::new(Expr {
                 span: contract.span,
                 kind: ExprKind::Name(count.clone()),
             }),
-            field.clone(),
+            fields.next().unwrap().to_owned(),
         ),
     };
+    for field in fields{expr=Expr{span:contract.span,kind:ExprKind::Member(Box::new(expr),field.into())};}
     let (binding, word, access) = collective_field(program, env, &expr, d, Scalar::U32)?;
     if *domain == binding
         || program.buffers[binding].count != Some(1)
@@ -146,7 +153,7 @@ pub(super) fn relation(
             "requires prefix 的计数参数需要 read 或 inout 能力",
         );
     }
-    Ok(PrefixRelation {
+    Ok(PrefixRelation { domain_region: projected.then_some((offset,domain_ty.size)),
         domain: *domain,
         count: PrefixCount { binding, word },
     })
@@ -164,7 +171,7 @@ pub(super) fn relations(
         .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. }))
         .map(|c| relation(program, env, d, c))
         .collect::<Result<Vec<_>>>()?;
-    result.sort_by_key(|r| (r.domain, r.count.binding, r.count.word));
+    result.sort();
     result.dedup();
     Ok(result)
 }
@@ -341,4 +348,61 @@ pub(super) fn fields_overlap(
                 .iter()
                 .any(|(_, b)| source_word + *a == target_word + *b)
         })
+}
+
+// A Count field records which original resource projections have a valid prefix.
+// These are compile-time facts, never access rights or runtime owners.
+pub(super) fn domain(data: &application::DataReference) -> view::Borrow {
+    view::Borrow::projection(view::resource_borrow(&data.data), data.projection.clone())
+}
+pub(super) fn common(a: &view::Borrow, b: &view::Borrow) -> view::Borrow {
+    let mut out=view::Borrow::default();
+    for (source,when) in a.sources.entries() {
+        if b.sources.contains(source) {
+            out.sources.insert_when(source.clone(),bounds::Clause::both(&when,&b.sources.when(source)));
+        }
+    }
+    for (input,when) in a.inputs.entries() {
+        if b.inputs.contains(input) { out.inputs.insert_when(*input,bounds::Clause::both(&when,&b.inputs.when(input))); }
+    }
+    for (call,when) in a.calls.entries() {
+        if b.calls.contains(call) { out.calls.insert_when(call.clone(),bounds::Clause::both(&when,&b.calls.when(call))); }
+    }
+    out
+}
+pub(super) fn covers(known: &view::Borrow, required: &view::Borrow, path: &bounds::Clause) -> bool {
+    fn source_covers(known:&view::Source,required:&view::Source,path:&bounds::Clause)->bool {
+        if matches!(known,view::Source::Unresolved|view::Source::External|view::Source::Inactive)
+            ||matches!(required,view::Source::Unresolved|view::Source::External|view::Source::Inactive){return false;}
+        if known==required{return true;}
+        match required {
+            view::Source::Projection{parent,fields} => match known {
+                view::Source::Projection{parent:other,fields:prefix} =>
+                    fields.starts_with(prefix)&&covers(other,parent,path),
+                _ => covers(&view::Borrow::source(known.clone()),parent,path),
+            },
+            _ => false,
+        }
+    }
+    fn implied(available:bounds::Clause,when:bounds::Clause,path:&bounds::Clause)->bool {
+        bounds::Condition::guard(available).truth_in(&bounds::Clause::both(path,&when))==Some(true)
+    }
+    if required.empty(){return false;}
+    required.sources.entries().all(|(source,when)| {
+        let available=known.sources.entries().filter(|(candidate,_)|source_covers(candidate,source,path))
+            .fold(bounds::Clause::impossible(),|all,(_,when)|bounds::Clause::either(&all,&when));
+        implied(available,when,path)
+    }) && required.inputs.entries().all(|(input,when)|implied(known.inputs.when(input),when,path))
+      && required.calls.entries().all(|(call,when)|implied(known.calls.when(call),when,path))
+}
+
+
+pub(super) type Fields = BTreeMap<u32, view::Borrow>;
+pub(super) fn join_fields(a:&Fields,b:&Fields,choice:Option<&bounds::Condition>)->Fields {
+    a.keys().chain(b.keys()).copied().collect::<BTreeSet<_>>().into_iter().filter_map(|word| {
+        let empty=view::Borrow::default();
+        let a=a.get(&word).unwrap_or(&empty);let b=b.get(&word).unwrap_or(&empty);
+        let known=match choice {Some(choice)=>view::Borrow::selected(choice,a,b),None=>common(a,b)};
+        (!known.empty()).then_some((word,known))
+    }).collect()
 }

@@ -16,6 +16,7 @@ pub(crate) struct Interface {
     pub uniforms: Vec<Uniform>,
     pub length_requirements: Vec<(usize, usize)>,
     pub element_requirements: Vec<ElementFact>,
+    pub prefix_guarantees: Vec<PrefixRelation>,
     pub outputs: Vec<Output>,
     pub elements: std::collections::BTreeMap<usize, crate::check::Proof>,
 }
@@ -38,6 +39,7 @@ super::codec::record!(Interface {
     uniforms,
     length_requirements,
     element_requirements,
+    prefix_guarantees,
     outputs,
     elements
 });

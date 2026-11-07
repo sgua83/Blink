@@ -85,7 +85,7 @@ pub(super) fn compile(
     }
     write_regions.entry(count.binding).or_insert_with(BTreeSet::new).insert((count.word, count.word + 4));
     facts.written(program, count.binding, count.word, count.word + 4, None);
-    let prefix_guarantees = vec![PrefixRelation {
+    let prefix_guarantees = vec![PrefixRelation { domain_region: None,
         domain: target,
         count,
     }];

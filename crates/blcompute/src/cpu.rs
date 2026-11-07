@@ -1115,8 +1115,8 @@ impl CpuCode {
             }
             if frame.is_some() {
                 input_domains.extend(stage.prefix_guarantees.iter().map(|relation|
-                    crate::DomainRelation::Prefix { domain:relation.domain,offset:0,
-                        bytes:buffers[relation.domain].ty.size,count:relation.count }));
+                    crate::DomainRelation::Prefix { domain:relation.domain,offset:relation.domain_region.unwrap_or((0,buffers[relation.domain].ty.size)).0,
+                        bytes:relation.domain_region.unwrap_or((0,buffers[relation.domain].ty.size)).1,count:relation.count }));
                 for range in crate::bindings::produced_ranges(&stage.element_guarantees,
                     |binding| (binding, 0), |target| buffers[target].count) {
                     crate::bindings::produced_element(&mut input_domains, range);

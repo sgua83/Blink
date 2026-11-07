@@ -605,6 +605,7 @@ impl Builder<'_> {
                         data.length.uniform&=repeated.length.uniform;if data.length.constant!=repeated.length.constant{data.length.constant=None;}
                         data.residency=residency::Residency::conditional(empty.clone(),data.residency.clone(),repeated.residency);
                         data.elements.join_locations(*repeated.elements,&empty,true);
+                        data.prefixes=prefix::join_fields(&data.prefixes,&repeated.prefixes,Some(&empty));
                     }
                     continue;
                 }

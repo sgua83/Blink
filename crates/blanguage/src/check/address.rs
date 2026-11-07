@@ -814,6 +814,7 @@ impl Builder<'_> {
                     },
                 };
                 if selected.ownership==application::Ownership::Moved{continue;}
+                selected.prefixes.clear();
                 let layout=Layout::of(&selected.ty);let borrow=Arc::new(borrow);
                 let resources=view::resource_paths(&selected.ty).into_iter().filter(|fields|application::model_data(&selected.elements,fields).is_some()).collect();
                 if let Some(value)=selected.elements.view_value_mut(){

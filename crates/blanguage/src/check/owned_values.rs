@@ -373,6 +373,7 @@ impl Builder<'_> {
                 length.constant = Some(vec![Bits::from(n)]);
             }
             Returned::Dataset(Box::new(DataPayload {
+                prefixes: BTreeMap::new(),
                 elements:self.unknown_element_model(element),
                 root: handle,
                 length,

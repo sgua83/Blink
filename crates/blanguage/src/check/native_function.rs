@@ -290,7 +290,7 @@ pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
         }
     }
 }
-pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,inputs:&[Reg],written:Vec<Option<Returned>>)->(Option<Returned>,Vec<Reg>,Vec<Option<Returned>>,Option<Vec<address::Initialization>>) {
+pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,inputs:&[Reg],parameters:&[CallParameter],written:Vec<Option<Returned>>)->(Option<Returned>,Vec<Reg>,Vec<Option<Returned>>,Option<Vec<address::Initialization>>) {
     builder.view_model.input_width=inputs.len();
     let mut bindings=inputs.iter().enumerate().map(|(index,reg)|(ValueIdentity::Register(*reg),bounds::Proof::default().with_identity(ValueIdentity::Register(index)))).collect::<BTreeMap<_,_>>();
     for(parameter,p)in builder.definition.function.params.iter().enumerate(){
@@ -363,7 +363,30 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
         }))
     });
     builder.view_model.parameters=names;
-    let mut models=models.into_iter().map(|pair|pair.map(|(mut value,model)|{translate_returned(&mut value,&model,&bindings,false);value}));
+    // Count事实按原ABI输入槽命名，实际地址和存储效果继续沿原合同交接。
+    let mut resources=BTreeMap::new();let mut start=0;
+    for parameter in parameters {
+        if let Some(origin)=&parameter.origin
+            && let ParameterOrigin::Parameter{index,..}=origin.as_ref()
+            && builder.definition.function.params[*index].ty.dataset {
+            let id=ValueIdentity::Register(start);
+            resources.insert(id,bounds::Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(ValueIdentity::ResourceParameter(*index,0),Vec::new()))));
+        }
+        start+=match &parameter.kind{CallParameterKind::Value(ty)=>ty.components.len(),CallParameterKind::Reference{..}=>2};
+    }
+    fn prefix_inputs(value:&mut Returned,resources:&BTreeMap<ValueIdentity,bounds::Proof>) {
+        match value {
+            Returned::Dataset(data)=>{
+                for fact in data.prefixes.values_mut(){*fact=fact.substitute_values(resources);}
+                prefix_inputs(&mut data.elements,resources);
+            },
+            Returned::OwnedValue(value)=>for value in value.payloads.iter_mut().flatten(){prefix_inputs(value,resources);},
+            _=>{},
+        }
+    }
+    let mut models=models.into_iter().map(|pair|pair.map(|(mut value,model)|{
+        translate_returned(&mut value,&model,&bindings,false);prefix_inputs(&mut value,&resources);value
+    }));
     (models.next().unwrap(),(0..inputs.len()).collect(),models.collect(),initialization)
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
@@ -497,6 +520,7 @@ impl Builder<'_> {
             let arg=match arg {
                 Argument::BorrowedData(mut reference)=>{
                     let source=self.data_value_borrow(&reference.data);
+                    resource_inputs.insert(ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,prefix::domain(&reference)));
                     let borrow=if matches!(p.access,Access::Read|Access::Atomic) && d.execution==crate::execution::Requirement::Invocation {
                         let (_,ty)=reference.element_layout();
                         address::Origin{
@@ -643,7 +667,6 @@ impl Builder<'_> {
                     if p.access==Access::Write||p.access==Access::InOut&&outputs::declared(d,index){
                         written_data.push((index,reference.clone()));
                     }
-                    if p.access.writes(){self.update_application_contents(&reference,&reference.words(),application::ElementUpdate::Unknown);}
                     let descriptor=Self::borrowed_dataset_parameter_type(p.access,d.execution);
                     let dataset_borrow=if descriptor.components[0].0==Scalar::U64 && reference.root.ty.components[0].0==Scalar::U32 {
                         let frame=self.application_frame(span)?;
@@ -684,6 +707,7 @@ impl Builder<'_> {
                     self.require_same(&ty,&data.ty,span)?;
                     self.require_application_initialized(&data,span)?;
                     self.native_dataset_shape(p,d,data.count,span)?;
+                    resource_inputs.insert(ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(&data)));
                     let mut value=self.returned_storage(&Returned::Dataset(data.clone()));
                     value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&data,0,&data.ty,true).normalize());
                     append_actual(&mut actual,&value);
@@ -721,7 +745,7 @@ impl Builder<'_> {
         }
         let (element_inputs,element_memory)=application::element_input_bindings(self,d,&env);
         memory_borrow.union(&element_memory);
-        let requirements = contracts::resolve(self, d, &env)?;
+        let requirements = contracts::resolve(self, d, &env,&resource_inputs)?;
         contracts::prove(self, &requirements, span)?;
         let output_inputs=outputs::inputs(self,d,&env)?;
         let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
@@ -860,7 +884,7 @@ impl Builder<'_> {
             uniform:false,literal:false,constant:None});
         for(index,p)in d.function.params.iter().enumerate(){
             if p.ty.dataset && matches!(p.access,Access::Write|Access::InOut) && let Some(Binding::DataReference(reference))=env.get(&p.name){
-                let mut data=reference.data.clone();data.ty=reference.element_layout().1.clone();data.elements=self.unknown_element_model(&data.ty);
+                let mut data=reference.data.clone();data.ty=reference.element_layout().1.clone();data.elements=self.unknown_element_model(&data.ty);data.prefixes.clear();
                 let mut updated=Returned::Dataset(data);
                 if let Some(Some(model))=writes.get(index){translate_returned(&mut updated,model,&bindings,false);}
                 residency::output(&mut updated,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);
@@ -874,6 +898,9 @@ impl Builder<'_> {
                     self.complete_application_elements(reference,&updated.elements,&snapshots,span,origin)?;
                 }
                 self.apply_application_dataset_model(reference,*updated.elements);
+                let offset=reference.element_layout().0;
+                let facts=updated.prefixes.into_iter().map(|(word,fact)|(offset+word,fact)).collect();
+                self.apply_application_prefixes(reference,&facts);
             }
         }
         for (index, place) in written {
@@ -998,6 +1025,7 @@ pub(super) fn translate_returned(
                     IndexDomain::ApplicationLength(value.root.identity()),
                 ]));
             value.residency = model.residency.at_call(bindings);
+            value.prefixes=model.prefixes.iter().map(|(word,fact)|(*word,fact.at_call(bindings))).collect();
             value.count = model.count;
             let element_bindings=application::element_scope_bindings(bindings,model.elements.registers().len(),stored);
             translate_returned(&mut value.elements,&model.elements,&element_bindings,true);
@@ -1059,6 +1087,7 @@ fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
             Returned::Value(value)=>scalar_values(value,bindings),
             Returned::Dataset(value)=>{
                 scalar_values(&mut value.root,bindings);scalar_values(&mut value.length,bindings);
+                for fact in value.prefixes.values_mut(){*fact=fact.substitute_values(bindings);}
                 returned_values(&mut value.elements,bindings);
             },
             Returned::OwnedValue(value)=>{
@@ -1962,6 +1991,7 @@ fn build_domain(
         write_regions,
         length_requirements: signature.length_requirements.clone(),
         element_requirements: signature.element_requirements.clone(),
+        prefix_guarantees: signature.prefix_guarantees.clone(),
         outputs: expanded.outputs,
         elements: expanded.elements,
     };

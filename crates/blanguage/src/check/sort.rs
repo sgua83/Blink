@@ -94,7 +94,7 @@ pub(super) fn compile(
         write_regions.entry(target).or_insert_with(BTreeSet::new).insert((word, end));
         facts.written(program, target, word, end, None);
     }
-    let prefix_guarantees: Vec<_> = prefix.map(|count| PrefixRelation { domain: target, count }).into_iter().collect();
+    let prefix_guarantees: Vec<_> = prefix.map(|count| PrefixRelation { domain_region: None, domain: target, count }).into_iter().collect();
     for &relation in &prefix_guarantees { facts.grant(relation); }
     let reads: Vec<_> = std::iter::once(source)
         .chain(prefix.map(|p| p.binding))

@@ -1185,7 +1185,15 @@ pub struct PrefixCount {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PrefixRelation {
     pub domain: usize,
+    pub domain_region: Option<(u32,u32)>,
     pub count: PrefixCount,
+}
+impl PrefixRelation {
+    pub fn domain_layout(&self,buffers:&[Buffer])->(u32,u32){self.domain_region.unwrap_or((0,buffers[self.domain].ty.size))}
+    pub fn covers(&self,required:&Self,buffers:&[Buffer])->bool {
+        let(a,bytes)=self.domain_layout(buffers);let(b,needed)=required.domain_layout(buffers);
+        self.domain==required.domain&&self.count==required.count&&a<=b&&u64::from(b)+u64::from(needed)<=u64::from(a)+u64::from(bytes)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection {
@@ -1923,8 +1931,8 @@ impl Program {
         ] {
             for relation in relations {
                 out += &format!(
-                    "  {kind} prefix({}, {} word {})\n",
-                    self.buffers[relation.domain].name,
+                    "  {kind} prefix({} region {:?}, {} word {})\n",
+                    self.buffers[relation.domain].name, relation.domain_layout(&self.buffers),
                     self.buffers[relation.count.binding].name,
                     relation.count.word
                 );

@@ -28,6 +28,7 @@ pub(super) struct DataPayload {
     pub residency: residency::Residency,
     pub layout: DataLayout,
     pub elements: Box<returns::Returned>,
+    pub prefixes: prefix::Fields,
 }
 impl DataPayload {
     pub(super) fn permits(&self, access: Access) -> bool {
@@ -914,6 +915,7 @@ impl Builder<'_> {
         let element_ty=self.program.buffers[binding].ty.clone();
         let elements=self.unknown_element_model(&element_ty);
         Ok(Box::new(DataPayload {
+            prefixes: BTreeMap::new(),
             elements,
             root: handle,
             place: None,
@@ -1367,6 +1369,7 @@ impl Builder<'_> {
         self.env.insert(
             name.into(),
             Binding::ApplicationData(Box::new(DataPayload {
+            prefixes: BTreeMap::new(),
                 elements,
                 root: value(handle),
                 length: value(length),
@@ -1548,6 +1551,7 @@ impl Builder<'_> {
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
         let data = Box::new(DataPayload {
+            prefixes: BTreeMap::new(),
             elements,
             root: handle, place: None, initialization: None, ty, length,
             ownership: Ownership::Owned, access: Access::InOut, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
@@ -1688,6 +1692,7 @@ impl Builder<'_> {
         ]));
         let elements=self.unknown_element_model(&ty);
         let mut data=Box::new(DataPayload {
+            prefixes: BTreeMap::new(),
             elements,
             root: handle,
             place: None,
@@ -2464,17 +2469,23 @@ impl Builder<'_> {
         self.initialize_application_domain(&interface, &data);
         let frame = self.application_frame(span)?;
         let mut physical = vec![argument(frame)];
-        let mut data = data.into_iter();
+        let mut data_arguments = data.iter();
         let mut uniforms = uniforms.into_iter();
         for parameter in &callee.function.params {
             if parameter.ty.dataset {
-                let value = data.next().unwrap();
-                physical.push(self.application_domain_argument(&value));
+                let value = data_arguments.next().unwrap();
+                physical.push(self.application_domain_argument(value));
             } else {
                 physical.push(argument(uniforms.next().unwrap()));
             }
         }
         self.call_domain(instance, target, physical);
+        for relation in &interface.prefix_guarantees {
+            let count=&data[relation.count.binding];
+            let word=count.element_layout().0+relation.count.word;
+            let facts=BTreeMap::from([(word,prefix::domain(&data[relation.domain]))]);
+            self.apply_application_prefixes(count,&facts);
+        }
         for name in held {
             self.finish_scoped_argument(&name, span)?;
         }
@@ -2530,6 +2541,39 @@ impl Builder<'_> {
         }
         self.check_argument_aliases(&params, &args, |_| statement.span)?;
         let mut contracts = Vec::new();
+        fn count_fields(ty:&Ty,path:&str,offset:u32,out:&mut Vec<(String,u32)>) {
+            for(field,at,ty)in &ty.fields {
+                let name=if path.is_empty(){field.clone()}else{format!("{path}.{field}")};
+                if **ty==Ty::scalar(Scalar::U32){out.push((name,offset+at));}
+                else{count_fields(ty,&name,offset+at,out);}
+            }
+        }
+        fn domains(resource:&view::Borrow,ty:&Ty,known:&view::Borrow,path:&bounds::Clause,name:&str,selected:&mut Vec<usize>,out:&mut Vec<String>) {
+            let projected=view::Borrow::projection(resource.clone(),selected.clone());
+            if prefix::covers(known,&projected,path){out.push(name.into());return;}
+            for(index,(field,_,ty))in ty.fields.iter().enumerate(){
+                selected.push(index);domains(resource,ty,known,path,&format!("{name}.{field}"),selected,out);selected.pop();
+            }
+        }
+        for (count_index,argument) in args.iter().enumerate() {
+            let Argument::BorrowedData(count)=argument else{continue;};
+            if count.count!=Some(1)||!params[count_index].access.reads(){continue;}
+            let (offset,ty)=count.element_layout();let mut fields=Vec::new();
+            count_fields(ty,"",offset,&mut fields);
+            for(field,word)in fields {
+                let Some(known)=count.prefixes.get(&word)else{continue;};
+                for(data_index,argument)in args.iter().enumerate() {
+                    if data_index==count_index{continue;}
+                    let Argument::BorrowedData(data)=argument else{continue;};
+                    let mut names=Vec::new();
+                    domains(&prefix::domain(data),data.element_layout().1,known,&self.path,&params[data_index].name,&mut Vec::new(),&mut names);
+                    for name in names {
+                        contracts.push(FunctionContract{kind:ContractKind::Requires,
+                            predicate:ContractPredicate::Prefix{data:name,count:params[count_index].name.clone(),field:field.clone()},span:statement.span});
+                    }
+                }
+            }
+        }
         let mut groups: Vec<usize> = Vec::new();
         for (index, argument) in args.iter().enumerate() {
             let Argument::BorrowedData(data) = argument else { continue; };
@@ -2848,12 +2892,12 @@ impl crate::module::codec::Decode for Ownership{fn decode(r:&mut crate::module::
 // slots与初始化位置属于当前编译调用；实际原生接口只交接已初始化资源。
 impl crate::module::codec::Encode for DataPayload {
     fn encode(&self,w:&mut crate::module::codec::Writer) {
-        self.root.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.access.encode(w);self.count.encode(w);self.residency.encode(w);self.layout.encode(w);self.elements.encode(w);
+        self.root.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.access.encode(w);self.count.encode(w);self.residency.encode(w);self.layout.encode(w);self.elements.encode(w);self.prefixes.encode(w);
     }
 }
 impl crate::module::codec::Decode for DataPayload {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self> {
-        Ok(Self{root:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,access:Access::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,layout:DataLayout::decode(r)?,elements:Box::<returns::Returned>::decode(r)?,place:None,initialization:None})
+        Ok(Self{root:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,access:Access::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,layout:DataLayout::decode(r)?,elements:Box::<returns::Returned>::decode(r)?,prefixes:BTreeMap::decode(r)?,place:None,initialization:None})
     }
 }
 
@@ -3389,6 +3433,7 @@ impl Builder<'_> {
                 for fields in scope{if let Some(one)=&one{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false);}data=model_data_mut(&mut data.elements,&fields).unwrap();}
                 let components=words.iter().filter_map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Vec<_>>();
                 if components.is_empty(){continue;}
+                data.prefixes.retain(|word,_|!words.contains(word));
                 let old=self.returned_storage(&data.elements);let mut updated=old.clone();updated.constant=None;
                 let mut bindings=element_scope_bindings(&self.element_owner_bindings(data),old.regs.len(),false);
                 for component in 0..old.regs.len(){if !components.contains(&component){for id in old.component_origins(component){
@@ -3468,6 +3513,29 @@ impl Builder<'_> {
         if let returns::Returned::OwnedValue(parent) = stored
             && parent.value.ty.aggregate_part(*field).1.owns_resources() {
             self.replace_element_model(parent.payloads[*field].as_deref_mut().unwrap(), rest, fresh);
+        }
+    }
+    pub(super) fn apply_application_prefixes(&mut self,reference:&DataReference,facts:&prefix::Fields) {
+        let resource=view::resource_borrow(&reference.data);
+        let names=self.env.keys().cloned().collect::<Vec<_>>();
+        for name in names {
+            let mut binding=self.env[&name].clone();
+            each_binding_data(&mut binding,&mut |_,_,data| {
+                let scopes=self.application_element_scopes(&reference.sources,&resource,data);
+                let unique=scopes.len()==1;
+                for(scope,mut complete)in scopes {
+                    let mut data=&mut *data;
+                    for fields in scope {
+                        complete&=data.length.minimum()==1&&data.length.maximum()==1;
+                        data=model_data_mut(&mut data.elements,&fields).unwrap();
+                    }
+                    let when=bounds::Condition::constant(unique&&complete).assume(&bounds::Clause::default(),true);
+                    for(word,fact)in facts {
+                        data.prefixes.entry(*word).or_default().union(&fact.restricted(&when));
+                    }
+                }
+            });
+            self.env.insert(name,binding);
         }
     }
     pub(super) fn apply_application_dataset_model(&mut self,reference:&DataReference,model:returns::Returned){

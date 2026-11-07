@@ -1,4 +1,4 @@
-//! 函数约束只精化原参数 Proof；调用点证明真实前提，不生成运行期检查。
+//! 函数约束精化原参数与真实资源模型；调用点证明真实前提，不生成运行期检查。
 use super::*;
 
 pub(super) fn root_lengths(
@@ -120,6 +120,7 @@ impl Resource {
 }
 enum Predicate {
     SameLength(Length, Length),
+    Prefix(Prefix),
     Contiguous(Place),
     Nonzero(Selection),
     Nonempty(Resource),
@@ -433,10 +434,46 @@ fn resource(
     Ok(Resource::Value(selection))
 }
 
+enum Prefix {
+    Application { count:String, word:u32, known:view::Borrow, required:view::Borrow },
+    Domain(PrefixRelation),
+}
+fn prefix_requirement(builder:&Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,resources:&BTreeMap<ValueIdentity,bounds::Proof>,data:&str,count:&str,field:&str,span:Span)->Result<Prefix> {
+    fn application(binding:&Binding)->Option<(&application::Data,&[usize])> {match binding {
+        Binding::ApplicationData(data)=>Some((data,&[])),Binding::DataReference(data)=>Some((&data.data,&data.projection)),_=>None,
+    }}
+    if data==count{return definition.source.fail(span,"B192","前缀域约束需要独立形状1资源中的u32计数字段");}
+    let data_binding=env.get(data);let count_binding=env.get(count);
+    match (data_binding,count_binding,data_binding.and_then(application),count_binding.and_then(application)) {
+        (Some(Binding::Data(data)),Some(Binding::Data(count)),_,_)=>{
+            let (offset,ty)=builder.dataset_layout(count);
+            let (selected,components)=member_type(ty,field,&definition.source,span)?;
+            if selected!=Ty::scalar(Scalar::U32)||builder.program.buffers[count.binding].count!=Some(1)||!count.access.reads() {
+                return definition.source.fail(span,"B192","requires prefix需要可读独立形状1资源中的u32计数字段");
+            }
+            let (data_offset,data_ty)=builder.dataset_layout(data);
+            Ok(Prefix::Domain(PrefixRelation{ domain_region: Some((data_offset,data_ty.size)),domain:data.binding,count:PrefixCount{binding:count.binding,word:offset+ty.components[components[0]].1}}))
+        },
+        (_,_,Some(_),Some((count_reference,projection)))=>{
+            let mut ty=&count_reference.ty;let mut offset=0;
+            for field in projection{let(at,next)=ty.aggregate_part(*field);offset+=at;ty=next;}
+            let (selected,components)=member_type(ty,field,&definition.source,span)?;
+            if selected!=Ty::scalar(Scalar::U32)||count_reference.count!=Some(1)||!count_reference.access.reads() {
+                return definition.source.fail(span,"B192","requires prefix需要可读独立形状1资源中的u32计数字段");
+            }
+            let word=offset+ty.components[components[0]].1;
+            let parameter=definition.function.params.iter().position(|p|p.name==data).unwrap();
+            let required=resources[&ValueIdentity::ResourceParameter(parameter,0)].view_borrow(0);
+            Ok(Prefix::Application{count:count.into(),word,known:count_reference.prefixes.get(&word).cloned().unwrap_or_default(),required})
+        },
+        _=>definition.source.fail(span,"B192","前缀域约束需要命名dataset参数"),
+    }
+}
 pub(super) fn resolve(
     builder: &mut Builder<'_>,
     definition: &Definition,
     env: &BTreeMap<String, Binding>,
+    resources: &BTreeMap<ValueIdentity,bounds::Proof>,
 ) -> Result<Vec<Requirement>> {
     if !definition.function.c_abi { outputs::validate(builder.world, definition)?; }
     let mut result = Vec::new();
@@ -444,9 +481,7 @@ pub(super) fn resolve(
         if matches!(contract.predicate, ContractPredicate::Initialized { .. }) {
             continue;
         }
-        if contract.kind != ContractKind::Requires
-            && !matches!(contract.predicate, ContractPredicate::Prefix { .. })
-        {
+        if contract.kind != ContractKind::Requires {
             return definition.source.fail(
                 contract.span,
                 "B225",
@@ -512,13 +547,10 @@ pub(super) fn resolve(
                     format!("index({value},{path})"),
                 )
             }
-            ContractPredicate::Prefix { .. } => {
-                return definition.source.fail(
-                    contract.span,
-                    "B192",
-                    "前缀域约束只用于 program 接口",
-                );
-            }
+            ContractPredicate::Prefix { data,count,field } => (
+                Predicate::Prefix(prefix_requirement(builder,definition,env,resources,data,count,field,contract.span)?),
+                format!("prefix({data},{count}.{field})"),
+            ),
             ContractPredicate::Initialized { .. } => unreachable!(),
         };
         result.push(Requirement {
@@ -531,6 +563,11 @@ pub(super) fn resolve(
 
 fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
     Ok(match &requirement.predicate {
+            Predicate::Prefix(Prefix::Application{known,required,..})=>prefix::covers(known,required,&builder.path),
+            Predicate::Prefix(Prefix::Domain(relation))=>{
+                let available=match builder.prefix_facts{Some(facts)=>facts.iter().any(|known|known.covers(relation,&builder.program.buffers)),None=>builder.program.prefix_requirements.iter().any(|known|known.covers(relation,&builder.program.buffers))};
+                available&&!builder.memory_regions.get(&relation.count.binding).is_some_and(|(_,writes)|writes.keys().any(|&(start,end)|u64::from(start)<u64::from(relation.count.word)+4&&u64::from(relation.count.word)<u64::from(end)))
+            },
             Predicate::Cleanup{when,required}=>builder.condition_truth(&when.clone().negate().logical(required.clone(),true),None)==Some(true),
             Predicate::SameLength(left, right) => builder.length_proofs_equal(&left.proof, &right.proof),
             Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
@@ -589,7 +626,10 @@ pub(super) fn assume(env: &mut BTreeMap<String, Binding>, path:&mut bounds::Clau
                     assume_length(name, binding, left, right);
                     assume_length(name, binding, right, left);
                 }
-                Predicate::Contiguous(_)|Predicate::Cleanup{..} => {}
+                Predicate::Prefix(Prefix::Application{count,word,required,..})=>{
+                    if name==count {application::each_binding_data(binding,&mut|_,_,data|{data.prefixes.entry(*word).or_default().union(required);});}
+                },
+                Predicate::Prefix(Prefix::Domain(_))|Predicate::Contiguous(_)|Predicate::Cleanup{..} => {}
                 Predicate::Nonzero(selection) => {
                     if selection.root == *name && let Some(value)=selection.assumed_value(binding) {
                         for component in &selection.components {value.proof.mark_nonzero(*component);}
@@ -758,6 +798,7 @@ fn requirement_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BT
             match scope { Some((exists,_)) => exists.clone().negate().logical(condition,true), None => condition }
         },
         Predicate::SameLength(left,right)=>bounds::Condition::same_length_proofs(&left.proof,&right.proof),
+        Predicate::Prefix(_)=>bounds::Condition::constant(false),
         Predicate::Contiguous(_)=>bounds::Condition::default(),
         Predicate::Cleanup{when,required}=>when.clone().negate().logical(required.clone(),true),
     })
@@ -772,7 +813,7 @@ fn cleanup_condition(builder:&mut Builder<'_>,value:returns::Returned,active:bou
             let instance=generics::specialize(builder.world,key,&[generics::Actual::value(&owner.value.ty.arguments[0])],None,(&definition.source,&definition.module,&definition.imports),span)?;
             let payload=builder.unpack_record(&owner,0);let binding=match payload{Returned::Dataset(data)=>Binding::ApplicationData(data),Returned::OwnedValue(value)=>Binding::OwnedValue(value),Returned::Value(value)=>Binding::Value(*value),Returned::Unit=>Binding::Value(builder.returned_storage(&Returned::Unit))};
             let env=BTreeMap::from([(instance.definition.function.params[0].name.clone(),binding)]);
-            for requirement in resolve(builder,&instance.definition,&env)? {
+            for requirement in resolve(builder,&instance.definition,&env,&BTreeMap::new())? {
                 result=result.logical(requirement_condition(builder,&instance.definition,&env,&requirement,span)?,false);
             }
             result=active.negate().logical(result,true);

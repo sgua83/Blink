@@ -54,6 +54,7 @@ impl Returned {
             }
             Self::Dataset(v) => {
                 v.residency=v.residency.output_bound(bindings).with_aliases(aliases);
+                for fact in v.prefixes.values_mut(){*fact=fact.output_bound(bindings);}
                 value(&mut v.root, registers.map(|r| &r[..1]), bindings, aliases);
                 value(&mut v.length, registers.map(|r| &r[1..]), bindings, aliases);
                 if let Some(value)=v.elements.view_value_mut(){
@@ -83,7 +84,7 @@ impl Returned {
         }
         fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&bounds::Condition,stored:bool){match(target,a,b){
             (Returned::Value(target),Returned::Value(a),Returned::Value(b))=>{target.proof=if stored { let mut proof=a.proof.clone(); proof.join_condition(&b.proof,a.regs.len(),Some(choice)); proof } else { bounds::Proof::common(a,b,Some(choice),None) };},
-            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.length.proof=if stored { let mut proof=a.length.proof.clone(); proof.join_condition(&b.length.proof,a.length.regs.len(),Some(choice)); proof } else { bounds::Proof::common(&a.length,&b.length,Some(choice),None) };target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.root.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),Some(choice));restore(&mut target.elements,&a.elements,&b.elements,choice,true);},
+            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.length.proof=if stored { let mut proof=a.length.proof.clone(); proof.join_condition(&b.length.proof,a.length.regs.len(),Some(choice)); proof } else { bounds::Proof::common(&a.length,&b.length,Some(choice),None) };target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.prefixes=prefix::join_fields(&a.prefixes,&b.prefixes,Some(choice));target.root.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),Some(choice));restore(&mut target.elements,&a.elements,&b.elements,choice,true);},
             (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.value.proof=if stored { let mut proof=a.value.proof.clone(); proof.join_condition(&b.value.proof,a.value.regs.len(),Some(choice)); proof } else { bounds::Proof::common(&a.value,&b.value,Some(choice),None) };for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice,stored);}}},
             _=>{},
         }}
@@ -107,6 +108,7 @@ impl Returned {
             }
             data.root.proof = if stored { let mut proof=data.root.proof.clone(); proof.join_condition(&other.root.proof,data.root.regs.len(),None); proof } else { bounds::Proof::common(&data.root, &other.root,None,None) };
             data.elements.join((*other.elements).clone(),true);
+            data.prefixes=prefix::join_fields(&data.prefixes,&other.prefixes,None);
         }
         let (other, residency) = match &other {
             Self::Unit | Self::OwnedValue(_) => unreachable!(),

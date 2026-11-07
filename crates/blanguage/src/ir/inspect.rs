@@ -38,7 +38,7 @@ fn element_fact(fact: &ElementFact) -> String {
     }
 }
 fn relation(value: &PrefixRelation) -> String {
-    node("prefix_relation", &[("domain", number(value.domain)), ("count", prefix(&value.count))])
+    node("prefix_relation", &[("domain", number(value.domain)), ("domain_region", optional(value.domain_region.as_ref(), |(offset,bytes)|node("region",&[("offset",number(*offset)),("bytes",number(*bytes))]))), ("count", prefix(&value.count))])
 }
 fn alias(value: &MemoryAlias) -> String {
     match value {

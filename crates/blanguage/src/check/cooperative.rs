@@ -571,7 +571,7 @@ impl<'a> Builder<'a> {
             };
             env.insert(param.name.clone(), binding);
         }
-        let requirements = contracts::resolve(self, callee, &env)?;
+        let requirements = contracts::resolve(self, callee, &env,&BTreeMap::new())?;
         contracts::prove(self, &requirements, span)?;
         contracts::assume(&mut env, &mut self.path, &requirements);
         let old_env = std::mem::replace(&mut self.env, env);
