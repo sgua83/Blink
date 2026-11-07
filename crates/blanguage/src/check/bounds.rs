@@ -414,6 +414,23 @@ impl Proof {
             (intervals != [(0, scalar.bit_mask())]).then_some(ElementRange { binding, offset, scalar, intervals })
         }).collect()
     }
+    pub(super) fn element_guarantees(&self, binding: usize, ty: &Ty, selected: impl Fn(u32, u32) -> bool) -> Vec<ElementFact> {
+        let mut facts = Vec::new();
+        for (component, &(scalar, offset)) in ty.components.iter().enumerate() {
+            if !selected(offset, scalar.size()) { continue; }
+            let intervals = self.element_range(component, scalar).0;
+            if intervals != [(0, scalar.bit_mask())] {
+                facts.push(ElementFact::Range(ElementRange { binding, offset, scalar, intervals }));
+            }
+            if scalar == Scalar::U32 {
+                facts.extend(self.domains(component).into_iter().filter_map(|domain| match domain {
+                    IndexDomain::Data(target) => Some(ElementFact::Index { binding, offset, target }),
+                    _ => None,
+                }));
+            }
+        }
+        facts
+    }
     pub(super) fn constrain_element_range(&mut self, component: usize, range: &ElementRange) {
         self.ranges.resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
         self.ranges[component] = self.range_set(component).combine(&ScalarRanges::from_intervals(range.intervals.iter().copied()),

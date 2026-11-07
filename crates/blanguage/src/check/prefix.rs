@@ -221,15 +221,7 @@ impl Facts {
     pub fn element_facts(&self, program: &Program) -> Vec<ElementFact> {
         let mut facts = Vec::new();
         for (&binding, proof) in &self.elements {
-            let ty = &program.buffers[binding].ty;
-            facts.extend(proof.element_ranges(binding, ty).into_iter().map(ElementFact::Range));
-            for (component, &(scalar, offset)) in ty.components.iter().enumerate() {
-                if scalar != Scalar::U32 { continue; }
-                facts.extend(proof.domains(component).into_iter().filter_map(|domain| match domain {
-                    IndexDomain::Data(target) => Some(ElementFact::Index { binding, offset, target }),
-                    _ => None,
-                }));
-            }
+            facts.extend(proof.element_guarantees(binding, &program.buffers[binding].ty, |_, _| true));
         }
         facts.sort();
         facts.dedup();

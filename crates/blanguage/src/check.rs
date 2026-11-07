@@ -834,7 +834,7 @@ fn expand_stages(
                 let write_regions = std::mem::take(&mut b.memory_regions).into_iter()
                     .filter_map(|(binding, (_, written))| (!written.is_empty()).then_some((binding, written))).collect();
                 *functions = std::mem::take(&mut b.functions);
-                let stage = Stage {
+                let mut stage = Stage {
                     domain: *domain,
                     prefix,
                     selection,
@@ -850,11 +850,17 @@ fn expand_stages(
                     writes: b.writes.into_iter().collect(),
                     write_regions,
                     prefix_guarantees: appended,
+                    element_guarantees: Vec::new(),
                     cross_access: b.cross_access.into_iter().collect(),
                 };
                 for (&binding, written) in &stage.write_regions {
                     let output = if binding == *domain { element_ranges.as_ref() } else { None };
                     for &(start, end) in written { facts.written(program, binding, start, end, output); }
+                }
+                if let Some(output) = element_ranges {
+                    stage.element_guarantees = output.element_guarantees(*domain, &program.buffers[*domain].ty,
+                        |offset, bytes| stage.write_regions.get(domain).is_some_and(|written| written.iter().any(|&(start, end)|
+                            u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset) + u64::from(bytes))));
                 }
                 for &relation in &stage.prefix_guarantees {
                     facts.grant(relation);

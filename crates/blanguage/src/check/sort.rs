@@ -121,6 +121,7 @@ pub(super) fn compile(
         writes: vec![target],
         write_regions,
         prefix_guarantees,
+        element_guarantees: Vec::new(),
         cross_access: reads,
     });
     Ok(())

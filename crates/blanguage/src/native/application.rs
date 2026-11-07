@@ -40,6 +40,7 @@ fn emit_value(
         writes: Vec::new(),
         write_regions: Default::default(),
         prefix_guarantees: Vec::new(),
+        element_guarantees: Vec::new(),
         cross_access: Vec::new(),
     };
     let program = Program {

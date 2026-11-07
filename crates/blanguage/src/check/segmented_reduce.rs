@@ -123,6 +123,7 @@ pub(super) fn compile(
         writes: vec![target, count.binding],
         write_regions,
         prefix_guarantees,
+        element_guarantees: Vec::new(),
         cross_access: reads,
         tiles: Vec::new(),
     });

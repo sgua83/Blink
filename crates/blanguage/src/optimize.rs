@@ -36,6 +36,15 @@ pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std:
                 previous.prefix_guarantees.retain(|relation| !stage.write_regions.get(&relation.count.binding).is_some_and(|written|
                     written.iter().any(|&(start,end)| start < relation.count.word + 4 && relation.count.word < end)));
                 previous.prefix_guarantees.extend(stage.prefix_guarantees);
+                previous.element_guarantees.retain(|fact| {
+                    let (binding, offset, bytes) = match fact {
+                        ElementFact::Range(range) => (range.binding, range.offset, range.scalar.size()),
+                        ElementFact::Index { binding, offset, .. } => (*binding, *offset, 4),
+                    };
+                    !stage.write_regions.get(&binding).is_some_and(|written| written.iter().any(|&(start,end)|
+                        u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset) + u64::from(bytes)))
+                });
+                previous.element_guarantees.extend(stage.element_guarantees);
                 for (binding, written) in stage.write_regions {
                     previous.write_regions.entry(binding).or_default().extend(written);
                 }

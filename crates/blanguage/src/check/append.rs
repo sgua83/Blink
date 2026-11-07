@@ -61,6 +61,7 @@ pub(super) fn clear(
         writes: vec![count],
         write_regions: BTreeMap::from([(count, BTreeSet::from([(word, word + 4)]))]),
         prefix_guarantees,
+        element_guarantees: Vec::new(),
         cross_access: Vec::new(),
         tiles: Vec::new(),
     });

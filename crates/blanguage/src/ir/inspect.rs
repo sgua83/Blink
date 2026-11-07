@@ -26,6 +26,17 @@ fn node(kind: &str, fields: &[(&str, String)]) -> String {
 fn prefix(value: &PrefixCount) -> String {
     node("prefix_count", &[("binding", number(value.binding)), ("word", number(value.word))])
 }
+fn element_fact(fact: &ElementFact) -> String {
+    match fact {
+        ElementFact::Range(range) => node("element_range", &[
+            ("binding", number(range.binding)), ("offset", number(range.offset)), ("scalar", name(&range.scalar)),
+            ("intervals", array(range.intervals.iter().map(|(lower, upper)| format!("[{lower},{upper}]")))),
+        ]),
+        ElementFact::Index { binding, offset, target } => node("element_index", &[
+            ("binding", number(binding)), ("offset", number(offset)), ("target", number(target)),
+        ]),
+    }
+}
 fn relation(value: &PrefixRelation) -> String {
     node("prefix_relation", &[("domain", number(value.domain)), ("count", prefix(&value.count))])
 }
@@ -271,6 +282,8 @@ impl Stage {
             ("generated_origin", optional(self.generated_origin(), GeneratedOrigin::ir_json)),
             ("registers", array(self.registers.iter().map(name))), ("locals", locals(&self.locals)), ("code", code(&self.code)),
             ("reads", numbers(&self.reads)), ("writes", numbers(&self.writes)), ("cross_access", numbers(&self.cross_access)),
+            ("prefix_guarantees", array(self.prefix_guarantees.iter().map(relation))),
+            ("element_guarantees", array(self.element_guarantees.iter().map(element_fact))),
             ("tiles", array(self.tiles.iter().map(|value| node("tile", &[("source", match value.source { TileSource::Input { binding, word } => node("input", &[("binding", number(binding)), ("word", number(word))]), TileSource::Published => node("published", &[]) }), ("type", value.ty.layout_json()), ("width", number(value.width))])))),
         ])
     }
@@ -303,6 +316,8 @@ impl Program {
             ("textures", array(self.textures.iter().map(|v| node("texture_binding", &[("name", text(&v.name)), ("dimension", number(v.dimension.components())), ("count", optional(v.count.as_ref(), |v| number(v))), ("format", optional(v.format.as_ref(), |v| text(v.name())))])))),
             ("prefix_requirements", array(self.prefix_requirements.iter().map(relation))),
             ("prefix_guarantees", array(self.prefix_guarantees.iter().map(relation))),
+            ("element_requirements", array(self.element_requirements.iter().map(element_fact))),
+            ("element_guarantees", array(self.element_guarantees.iter().map(element_fact))),
             ("length_requirements", array(self.length_requirements.iter().map(|(left, right)| node("same_length", &[("left", number(left)), ("right", number(right))])))),
             ("stages", array(self.stages.iter().map(Stage::ir_json))),
         ])

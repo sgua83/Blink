@@ -263,19 +263,9 @@ impl<D> DomainBindings<D> {
                     word: r.count.word + binding(r.count.binding).1,
                 },
             }));
-        for fact in program.element_guarantees() {
-            let range = match fact {
-                ElementFact::Range(range) => range.clone(),
-                ElementFact::Index { binding: source, offset, target } => ElementRange {
-                    binding: *source, offset: *offset, scalar: Scalar::U32,
-                    intervals: self.datasets[binding(*target).0].element_count().checked_sub(1)
-                        .map(|last| (0, u64::from(last))).into_iter().collect(),
-                },
-            };
-            let range = ElementRange {
-                binding: binding(range.binding).0, offset: range.offset + binding(range.binding).1, ..range
-            };
-            unsafe { self.produced_element(range) };
+        for range in produced_ranges(program.element_guarantees(), &binding,
+            |target| self.datasets[binding(target).0].element_count()) {
+            produced_element(&mut self.domains, range);
         }
         self.domains.sort();
         self.domains.dedup();
@@ -322,17 +312,38 @@ impl<D> DomainBindings<D> {
     /// 实际写已完成或由原存储执行依赖覆盖后续消费者；本调用不提交或等待。
     /// 原存储及最后消费者的寿命／访问约束继续成立，外部别名不得绕过原写入撤回。
     pub unsafe fn produced_element(&mut self, range: ElementRange) {
-        if let Some(known) = self.domains.iter_mut().find_map(|relation| match relation {
-            DomainRelation::Element(known) if known.binding == range.binding && known.offset == range.offset
-                && known.scalar == range.scalar => Some(known),
-            _ => None,
-        }) {
-            known.intervals = known.intervals.iter().flat_map(|&(a, b)| range.intervals.iter().filter_map(move |&(c, d)| {
-                let (start, end) = (a.max(c), b.min(d)); (start <= end).then_some((start, end))
-            })).collect();
-        } else {
-            self.domains.push(DomainRelation::Element(range));
-        }
+        produced_element(&mut self.domains, range);
+    }
+}
+
+pub(crate) fn produced_ranges(
+    facts: &[ElementFact],
+    binding: impl Fn(usize) -> (usize, u32),
+    count: impl Fn(usize) -> u32,
+) -> impl Iterator<Item = ElementRange> {
+    facts.iter().map(move |fact| {
+        let range = match fact {
+            ElementFact::Range(range) => range.clone(),
+            ElementFact::Index { binding, offset, target } => ElementRange {
+                binding: *binding, offset: *offset, scalar: Scalar::U32,
+                intervals: count(*target).checked_sub(1).map(|last| (0, u64::from(last))).into_iter().collect(),
+            },
+        };
+        let (source, offset) = binding(range.binding);
+        ElementRange { binding: source, offset: range.offset + offset, ..range }
+    })
+}
+pub(crate) fn produced_element(domains: &mut Vec<DomainRelation>, range: ElementRange) {
+    if let Some(known) = domains.iter_mut().find_map(|relation| match relation {
+        DomainRelation::Element(known) if known.binding == range.binding && known.offset == range.offset
+            && known.scalar == range.scalar => Some(known),
+        _ => None,
+    }) {
+        known.intervals = known.intervals.iter().flat_map(|&(a, b)| range.intervals.iter().filter_map(move |&(c, d)| {
+            let (start, end) = (a.max(c), b.min(d)); (start <= end).then_some((start, end))
+        })).collect();
+    } else {
+        domains.push(DomainRelation::Element(range));
     }
 }
 
