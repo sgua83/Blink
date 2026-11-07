@@ -1783,18 +1783,16 @@ impl Builder<'_> {
         self.env.remove(&owner);
         Ok(elements)
     }
-    pub(super) fn complete_application_loop(&mut self, writes: &effects::LoopWrites, span: Span) -> Result<()> {
+    pub(super) fn complete_application_writes(&mut self, written: impl Fn(&Data) -> bool, span: Span) -> Result<()> {
         let path=self.residency_path();
         let data = self.env.values().flat_map(Binding::application_resources).filter(|data| {
             data.root.ty == Ty::scalar(Scalar::U32)
                 && self.resolve_ownership(&data.ownership, None).available()
                 && self.residency.known_at(&data.residency,Target::Cpu,&path)
-                && (writes.unknown_storage || writes.storage.iter().any(|(root, _)| *root == data.root.regs[0])
-                    || data.place.as_ref().is_some_and(|place| matches!(place.storage(),
-                        Place::Local(_, slots, _) if slots.iter().any(|slot| writes.locals.contains(slot)))))
+                && written(data)
         }).cloned().collect::<Vec<_>>();
         let origin = Arc::new(GeneratedOrigin {
-            reason: GenerationReason::DatasetLoopComplete,
+            reason: GenerationReason::DatasetWriteComplete,
             trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
         });
         let mut completed = BTreeSet::new();
