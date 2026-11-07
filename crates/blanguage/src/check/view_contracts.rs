@@ -391,14 +391,18 @@ fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_
 fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds::Operand>{
     index.and_then(|index|index.map(|id|match id{ValueIdentity::ElementIndex(_)=>Some(id),_=>function.parameters.get(&id).copied().filter(|id|function.input(*id))}))
 }
-fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&BTreeMap<ValueIdentity,Borrow>)->Borrow {
+fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&BTreeMap<Origin,Borrow>)->Borrow {
     let parameters=function.parameters.iter().map(|(a,b)|(*a,bounds::Proof::default().with_identity(*b))).collect();
-    let renamed=|source|match source {
+    let renamed=|source|{
+        if matches!(&source,Origin::Element{..}|Origin::Projection{..}) && let Some(outputs)=exposed.get(&source){
+            return match resource{Some(resource)=>resource.clone(),None=>outputs.clone()};
+        }
+        match source {
         Origin::Data(id)=>{
             let input=function.parameters.get(&id).copied().filter(|id|function.input(*id));
             if let Some(input)=input{Borrow::source(Origin::Data(input))}
             else if let Some(resource)=resource{resource.clone()}
-            else if let Some(outputs)=exposed.get(&id){outputs.clone()}
+            else if let Some(outputs)=exposed.get(&Origin::Data(id)){outputs.clone()}
             else{Borrow::source(Origin::Unresolved)}
         }
         Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().map(|id|Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,function)).collect())).unwrap_or(Origin::Unresolved)),
@@ -419,7 +423,7 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&
             Borrow::source(Origin::Position(Arc::new(value)))
         }
         Origin::Unresolved|Origin::Inactive|Origin::External=>Borrow::source(source),
-    };
+    }};
     match resource {
         // 拥有输出的来源改名不附加条件，先投影正式输入关系。
         Some(_)=>borrow.guards_at_call(&parameters).map_sources(renamed),
@@ -609,16 +613,25 @@ fn output_initialization_read(borrows:&Borrow,initialized:&[address::Initializat
 fn normalized_condition(when:bounds::Condition)->bounds::Condition {
     bounds::Condition::paths(when.assume(&bounds::Clause::default(),true).canonical(),when.assume(&bounds::Clause::default(),false).canonical())
 }
-fn exposed_resources(function:&Function,state:&State,known:&States)->BTreeMap<ValueIdentity,Borrow> {
-    let mut exposed:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
-    for(output,name)in &function.resource_names {
-        let physical=evaluate(&function.outputs[output],function,state,known,true);
-        for(source,when)in physical.sources.entries(){if let Origin::Data(id)=source{if !matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){exposed.entry(*id).or_default().union(&name.restricted(&when));}}}
+fn exposed_resources<'a>(function:&Function,physical:impl Iterator<Item=(&'a Output,Borrow)>)->BTreeMap<Origin,Borrow> {
+    fn local(source:&Origin,function:&Function)->bool{match source{
+        Origin::Data(id)=>matches!(id,ValueIdentity::Register(_))&&!function.parameters.get(id).is_some_and(|id|function.input(*id)),
+        Origin::Element{parent,index:Some(_),..}|Origin::Projection{parent,..}=>parent.calls.is_empty()&&parent.inputs.is_empty()&&parent.active()&&parent.sources.iter().all(|source|local(source,function)),
+        _=>false,
+    }}
+    let mut exposed:BTreeMap<Origin,Borrow>=BTreeMap::new();
+    for(output,physical)in physical {
+        if let Some(name)=function.resource_names.get(output){
+            for(source,when)in physical.sources.entries(){
+                let named=match source{Origin::Data(id)=>!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)),source=>local(source,function)};
+                if named{exposed.entry(source.clone()).or_default().union(&name.restricted(&when));}
+            }
+        }
     }
     exposed
 }
 fn initializations(function:&Function,state:&State,known:&States,candidates:bool)->Vec<address::Initialization> {
-    let exposed=exposed_resources(function,state,known);
+    let exposed=exposed_resources(function,function.resource_names.keys().map(|output|(output,evaluate(&function.outputs[output],function,state,known,true))));
     let parameters=function.parameters.iter().map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect();
     let exits=function.initialization.iter().map(|effect|match effect {address::InitializationEffect::Position(fact)=>&fact.when,address::InitializationEffect::Call{when,..}|address::InitializationEffect::Iteration{when,..}=>when}).map(|when|when.guard_at_call(&parameters)).collect::<Vec<_>>();
     let facts=initialization_effects(&function.initialization,function,state,known).facts;
@@ -748,8 +761,7 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
                 (output.clone(),value)
             }).collect::<Outputs>();
             // 每个真实资源输出命名自己的交付存储；view保留所有可能的实际输出所有者。
-            let mut exposed:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
-            for(output,name)in &function.resource_names{for(source,when)in physical[output].sources.entries(){if let Origin::Data(id)=source{if !matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){exposed.entry(*id).or_default().union(&name.restricted(&when));}}}}
+            let exposed=exposed_resources(function,physical.iter().map(|(output,value)|(output,value.clone())));
             for(output,definition)in &physical{
                 let mut value=canonical(definition.clone(),function,function.resource_names.get(output),&exposed);
                 if unknown.contains(&(name.clone(),output.clone())){value.sources.insert(Origin::Unresolved);}
