@@ -1445,7 +1445,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1166`。
+源码节选：`crates/blanguage/src/check/application.rs:1187`。
 
 ```rust
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1479,7 +1479,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1224`。
+源码节选：`crates/blanguage/src/check/application.rs:1245`。
 
 ```rust
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1587,7 +1587,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1604`。
+源码节选：`crates/blanguage/src/check/application.rs:1625`。
 
 ```rust
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
@@ -1840,7 +1840,7 @@ pub(super) struct LoopWrites {
 
 take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。存活性消费时点由实际调用者选择；assign_application_element保持after(rhs.span)，普通assign_owned_storage及take_last各选择自身原after(span)。共用函数只消费已求值载荷及当前ViewUses，不把Frame元素旧内容的清理切换到新内容的后续读取；check_returned_type只借用Builder，不重选存活性。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
 
-源码节选：`crates/blanguage/src/check/application.rs:1566`。
+源码节选：`crates/blanguage/src/check/application.rs:1587`。
 
 ```rust
     pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
@@ -2177,7 +2177,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:3443`。
+源码节选：`crates/blanguage/src/check/application.rs:3464`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -2189,7 +2189,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 全局目标本身可以是借用输入，其真实根与长度和拥有资源进入同一element_owner_bindings。元素归属先使用原DataReference已经确定的唯一当前根；其余来源及真实嵌套关系，沿活动LoopContext已有映射查询各层作用域，不另造别名状态：
 
-源码节选：`crates/blanguage/src/check/application.rs:3185`。
+源码节选：`crates/blanguage/src/check/application.rs:3206`。
 
 ```rust
         let owner=view::resource_borrow(data);
@@ -2197,7 +2197,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
         for owner in owners{for(path,complete)in collect(resource,owner,&self.path){paths.entry(path).and_modify(|old|*old|=complete).or_insert(complete);}}
 ```
 
-同一输入合同可由独立obj／lib消费，不能把普通CPU静态前提当作跨次运行的持久保证。原运行拥有组的字段事实仍见Issues C-021.1.4.5.2；嵌套游标写无关字段的过度失效见C-021.1.4.5.4.1.1；命名游标子资源替换使用同一实际Place，普通函数循环中的静态工厂或直接dataset构造替换、连续替换、嵌套字段、整元素及显式下标更新，沿原元素及输出模型交接已有共同子长度。store_overlaps复用split_address解释PositionAddress，沿offset_position取得真正的Frame根；只有原Frame地址生产者指向的函数输入与本轮新分配、不同实际分配或严格父子拥有关系才据此区分存储。无定义寄存器在这里对应原函数输入，不推广到任意未知地址。查询不改地址、字段偏移、步长或loop_writes的原写范围；新子资源初始化不冒作父描述写入，真实清空、引用写及跨下标覆盖仍撤回受影响事实。选中条件写入的数值沿原循环及written交接，调用方须保有实际选择条件。普通分支中的dataset与拥有记录按真实选择保留原数值事实，真实零值及空子资源继续按所属分支检查；完整for自然出口及continue沿真实路径交接已写数值与未写分支的原输入关系，真实清空、跨下标写和变化条件仍影响保证；显式下标循环中的inout调用结果及非空break出口的共同事实仍有分析缺口，分别见C-005.70.10／.11。
+同一输入合同可由独立obj／lib消费，不能把普通CPU静态前提当作跨次运行的持久保证。原运行拥有组的字段事实仍见Issues C-021.1.4.5.2；嵌套游标写无关字段的过度失效见C-021.1.4.5.4.1.1；命名游标子资源替换使用同一实际Place，普通函数循环中的静态工厂或直接dataset构造替换、连续替换、嵌套字段、整元素及显式下标更新，沿原元素及输出模型交接已有共同子长度。store_overlaps复用split_address解释PositionAddress，沿offset_position取得真正的Frame根；只有原Frame地址生产者指向的函数输入与本轮新分配、不同实际分配或严格父子拥有关系才据此区分存储。无定义寄存器在这里对应原函数输入，不推广到任意未知地址。查询不改地址、字段偏移、步长或loop_writes的原写范围；新子资源初始化不冒作父描述写入，真实清空、引用写及跨下标覆盖仍撤回受影响事实。选中条件写入的数值沿原循环及written交接，调用方须保有实际选择条件。普通分支中的dataset与拥有记录按真实选择保留原数值事实，真实零值及空子资源继续按所属分支检查；完整for自然出口及continue沿真实路径交接已写数值与未写分支的原输入关系，真实清空、跨下标写和变化条件仍影响保证；显式下标循环的普通inout调用在原IR已证明全部相交引用写指向当前实际位置／下标时，沿同次调用的ParameterStorage位置、原字段布局及已绑定written合同交接对应分量；循环别名只经原拥有作用域查询，不依赖可选观察来源或重建参数ABI。未知写、其他下标写与真实清空继续影响保证。非空break出口的共同事实仍有分析缺口，见C-005.70.11。
 
 ### 9.3 两条路径汇合，什么知识还能保留
 

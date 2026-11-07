@@ -25,7 +25,7 @@ pub(super) fn reference_parameters(ty: &Ty) -> Vec<Ty> {
 }
 #[derive(Default)]
 pub(super) struct Module {
-    units: BTreeMap<String, Option<Unit>>,
+    pub(super) units: BTreeMap<String, Option<Unit>>,
     pub(super) resources: crate::application::Resources,
 }
 impl Module {
@@ -100,7 +100,7 @@ pub(crate) struct Contract {
     result: Option<Ty>,
     inputs: Vec<Reg>,
     returned: Option<Returned>,
-    written: Vec<Option<Returned>>,
+    pub(super) written: Vec<Option<Returned>>,
     requires: BTreeSet<(ContractKind, ContractPredicate)>,
     target: Target,
     frame: bool,
@@ -137,10 +137,10 @@ impl crate::module::codec::Decode for Contract {
     }
 }
 
-struct Unit {
+pub(super) struct Unit {
     context: Option<CheckedContext>,
     function: Option<FunctionBody>,
-    contract: Contract,
+    pub(super) contract: Contract,
     definition: Arc<Definition>,
     c_abi: bool,
     residency: residency::Inputs,
