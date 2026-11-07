@@ -202,7 +202,7 @@ pub(super) fn resource_aliases(data:&application::Data)->Borrow {
 pub(super) fn resource_borrow(data:&application::Data)->Borrow{
     let mut value=data.root.proof.view_borrow(0);if value.empty()||matches!(data.root.identity(),ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){value.sources.insert(Source::Data(data.root.identity()));}value
 }
-pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.root.proof.clone().with_view_borrow(0,resource_borrow(data))}
+pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.root.proof.borrow_state().with_view_borrow(0,resource_borrow(data))}
 
 pub(super) enum InputSlot {
     Value {name:String,contents:Option<Vec<usize>>,component:usize,identity:Option<(ValueIdentity,Scalar)>},
