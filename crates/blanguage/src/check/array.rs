@@ -451,7 +451,7 @@ impl Builder<'_> {
             _ => {}
         }
         self.data_access(place, Access::Read, None);
-        self.dataset_effect(place,Access::Read,false,span)?;
+        let reads=self.dataset_effect(place,Access::Read,false,span)?;
         let mut regs = Vec::new();
         for ((scalar, _), word) in ty.components.iter().zip(words) {
             let dst = self.reg(*scalar);
@@ -473,7 +473,7 @@ impl Builder<'_> {
             self.emit(instruction.kind);
             regs.push(dst);
         }
-        let (proof, uniform) = self.read_owned_proof(place, &regs)?;
+        let (proof, uniform) = self.read_owned_proof(place, &regs, &reads)?;
         Ok(Value {
             proof,
             literal: false,

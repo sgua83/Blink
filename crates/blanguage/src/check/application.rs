@@ -3549,8 +3549,9 @@ impl Builder<'_> {
         });
         Ok(model)
     }
-    pub(super) fn application_element_proof(&mut self,place:&Place,regs:&[Reg])->Result<Option<bounds::Proof>>{
+    pub(super) fn application_element_proof(&mut self,place:&Place,regs:&[Reg],reads:&[(usize,usize)])->Result<Option<bounds::Proof>>{
         let Place::ApplicationElement{sources,resource:borrow,words,..}=place else{return Ok(None)};let mut result=None;
+        let mut projections:Vec<Vec<view_contracts::ElementRead>>=Vec::new();let mut pending=false;
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names{
             let mut binding=self.env[&name].clone();
@@ -3581,8 +3582,16 @@ impl Builder<'_> {
                         }
                         self.bind_element_resource_borrows(data,&parent,&mut bindings);
                         let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings);
+                        if !reads.is_empty() {
+                            pending|=value.proof.scalar_identities().into_iter().any(|source|matches!(source,ValueIdentity::MemoryValue(..)));
+                            let bindings=Arc::new(bindings);
+                            if projections.is_empty(){projections.resize_with(regs.len(),Vec::new);}
+                            for(target,component)in components.iter().enumerate(){
+                                projections[target].push(view_contracts::ElementRead{scalar:value.ty.components[*component].0,proof:value.proof.project(&[*component],value.regs.len()),bindings:bindings.clone()});
+                            }
+                        }
                         for(target,component)in components.iter().enumerate(){
-                            for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..))){
+                            for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
                                 let scalar=value.ty.components[*component].0;proof.mark_domain(target,IndexDomain::CommonRange(source,scalar,scalar,scalar,scalar));
                             }
                         }
@@ -3591,6 +3600,14 @@ impl Builder<'_> {
                 }
             }
             self.env.insert(name,binding);
+        }
+        if pending && let Some(proof)=&mut result {
+            let mut projections=projections.into_iter().map(|values|(!values.is_empty()).then(||Arc::<[view_contracts::ElementRead]>::from(values))).collect::<Vec<_>>();
+            for &(component,usage) in reads {
+                if let (Some(values),view::Requirement::Dataset{values:target,..})=(projections.get_mut(component).and_then(Option::take),&mut self.view_model.uses[usage].requirement) {
+                    *target=Some(values);*proof=std::mem::take(proof).with_component_identity(component,ValueIdentity::MemoryValue(usage,0));
+                }
+            }
         }
         Ok(result)
     }

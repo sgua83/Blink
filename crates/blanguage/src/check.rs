@@ -2379,7 +2379,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (mut proof, uniform) = self.read_owned_proof(p, &regs)?;
+                let (mut proof, uniform) = self.read_owned_proof(p, &regs, &[])?;
                 if matches!(address, ReferenceAddress::External { .. }) {
                     proof = proof.with_external_borrows(ty);
                 }
@@ -2402,10 +2402,10 @@ impl<'a> Builder<'a> {
                 ..
             } => {
                 self.require_initialized(p, span)?;
-                self.dataset_effect(p,Access::Read,false,span)?;
+                let reads=self.dataset_effect(p,Access::Read,false,span)?;
                 let mut value = self
                     .read_application_place(ty, *handle, *identity, *index, *stride, words, span, element_read_origin)?;
-                let (proof, uniform) = self.read_owned_proof(p, &value.regs)?;
+                let (proof, uniform) = self.read_owned_proof(p, &value.regs, &reads)?;
                 value.constant = proof.known_value(ty);
                 value.proof = proof;
                 value.uniform = uniform;
@@ -2432,7 +2432,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs)?;
+                let (proof, uniform) = self.read_owned_proof(p, &regs, &[])?;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2468,7 +2468,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs)?;
+                let (proof, uniform) = self.read_owned_proof(p, &regs, &[])?;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2488,7 +2488,7 @@ impl<'a> Builder<'a> {
                     self.emit(InstKind::LoadLocal(r, *slot));
                     regs.push(r);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs)?;
+                let (proof, uniform) = self.read_owned_proof(p, &regs, &[])?;
                 let constant = proof.known_value(ty);
                 Ok(Value {
                     proof,
@@ -2528,7 +2528,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let proof = self.read_owned_proof(p, &regs)?.0;
+                let proof = self.read_owned_proof(p, &regs, &[])?.0;
                 Ok(Value {
                     proof,
                     literal: false,

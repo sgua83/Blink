@@ -309,9 +309,10 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     if let Some(value)=&returned{builder.view_model.capture_resources(value,view_contracts::Output::ReturnedResource);}
     for(parameter,value)in written.iter().enumerate(){if let Some(value)=value{builder.view_model.capture_resources(value,|resource|view_contracts::Output::WrittenResource(parameter,resource));}}
     for(memory,usage)in builder.view_model.uses.iter().enumerate(){
-        if let view::Requirement::Memory{snapshots:Some(snapshots),..}=&usage.requirement{for component in 0..snapshots.len(){
+        let count=match &usage.requirement{view::Requirement::Memory{snapshots:Some(snapshots),..}=>snapshots.len(),view::Requirement::Dataset{values:Some(_),..}=>1,_=>0};
+        for component in 0..count{
             let id=ValueIdentity::MemoryValue(memory,component);bindings.insert(id,bounds::Proof::default().with_identity(id));
-        }}
+        }
     }
     let mut next=inputs.len();
     let models=std::iter::once(returned).chain(written).enumerate().map(|(model_index,model)|model.map(|model|{
@@ -1434,9 +1435,10 @@ fn failure_scope(
     // These writes happen on a failed execution, never promise normal outputs.
     b.view_model.initialization.truncate(initialization);
     for(memory,usage)in b.view_model.uses.iter().enumerate(){
-        if let view::Requirement::Memory{snapshots:Some(snapshots),..}=&usage.requirement{for component in 0..snapshots.len(){
+        let count=match &usage.requirement{view::Requirement::Memory{snapshots:Some(snapshots),..}=>snapshots.len(),view::Requirement::Dataset{values:Some(_),..}=>1,_=>0};
+        for component in 0..count{
             let id=ValueIdentity::MemoryValue(memory,component);b.view_model.parameters.insert(id,id);
-        }}
+        }
     }
     unit.context.as_mut().unwrap().output_scopes=b.output_scopes;
     unit.view_model=b.view_model;unit.residency=b.residency;

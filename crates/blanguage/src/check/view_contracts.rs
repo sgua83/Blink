@@ -38,6 +38,8 @@ crate::module::codec::variants!(Access {0=>Resource{resources,borrows,ownership,
 #[derive(Clone,Default,PartialEq,Eq)]
 pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub initialization:Vec<address::Initialization>}
 pub(super) struct ValueSnapshot { pub position:Position, pub scalar:Scalar, pub proof:bounds::Proof }
+// The original element model and the inputs selected by this read, after earlier Memory values close.
+pub(super) struct ElementRead { pub scalar:Scalar, pub proof:bounds::Proof, pub bindings:Arc<BTreeMap<ValueIdentity,bounds::Proof>> }
 pub(super) struct Call {
     pub(super) function:String,
     pub(super) memory:usize,
@@ -196,14 +198,21 @@ fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSe
     fresh(a,b)||fresh(b,a)
 }
 impl Function {
-    pub fn pending_values(&self)->bool {self.loops.values().any(|definition|definition.value.is_some())||self.uses.iter().any(|usage|matches!(&usage.requirement,Requirement::Memory{snapshots:Some(snapshots),..}if !snapshots.is_empty()))}
+    pub fn pending_values(&self)->bool {self.loops.values().any(|definition|definition.value.is_some())||self.uses.iter().any(|usage|match &usage.requirement {
+        Requirement::Memory{snapshots:Some(snapshots),..}=>!snapshots.is_empty(),
+        Requirement::Dataset{values:Some(_),..}=>true,
+        _=>false,
+    })}
     fn value_context(&self,values:Option<&BTreeMap<ValueIdentity,bounds::Proof>>)->bounds::Clause {
         match values {
             Some(values)=>bounds::Clause::values(self.uses.iter().enumerate().flat_map(|(memory,usage)|{
                 let snapshots=match &usage.requirement{Requirement::Memory{snapshots:Some(snapshots),..}=>snapshots.as_ref(),_=>&[]};
+                let read=match &usage.requirement{Requirement::Dataset{values:Some(read),..}=>Some(read.as_ref()),_=>None};
                 snapshots.iter().enumerate().map(move |(component,snapshot)|{
                     let id=ValueIdentity::MemoryValue(memory,component);(snapshot.scalar,id,&values[&id])
-                })
+                }).chain(read.into_iter().map(move |read|{
+                    let id=ValueIdentity::MemoryValue(memory,0);(read[0].scalar,id,&values[&id])
+                }))
             }).chain(self.loops.values().filter_map(|definition|definition.value).map(|(id,scalar)|(scalar,id,&values[&id])))),
             None=>bounds::Clause::default(),
         }
@@ -796,6 +805,15 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
         let previous=function.loops.values().any(|definition|definition.value.is_some()).then(||resolved.clone());values.clear();
         let mut calls=function.calls.iter().peekable();let mut usages=function.uses.iter().enumerate().peekable();
         while let Some((memory,usage))=usages.next(){
+            if let Requirement::Dataset{values:Some(read),..}=&usage.requirement {
+                let mut proof=read[0].proof.substitute_values(&resolved).at_call(&read[0].bindings);
+                for value in &read[1..] {
+                    let value=value.proof.substitute_values(&resolved).at_call(&value.bindings);
+                    bounds::Proof::join(&mut proof,&value,1,None);
+                }
+                resolved.insert(ValueIdentity::MemoryValue(memory,0),proof);
+                continue;
+            }
             let Requirement::Memory{target,snapshots,..}=&usage.requirement else{continue;};
             let mut effect=address::MemoryEffect::default();
             if calls.peek().is_some_and(|call|call.memory==memory){
@@ -910,10 +928,11 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
 }
 
 impl Builder<'_> {
-    pub(super) fn dataset_effect(&mut self,place:&Place,access:super::Access,atomic:bool,span:Span)->Result<()> {
-        let Place::ApplicationElement{sources,element_layout,index_value,..}=place.storage() else {return Ok(())};
+    pub(super) fn dataset_effect(&mut self,place:&Place,access:super::Access,atomic:bool,span:Span)->Result<Vec<(usize,usize)>> {
+        let mut reads=Vec::new();
+        let Place::ApplicationElement{sources,element_layout,index_value,..}=place.storage() else {return Ok(reads)};
         let borrow=self.data_borrow(sources);
-        for ((scalar,_),position) in place.ty().components.iter().zip(place.data_positions()) {
+        for (component,((scalar,_),position)) in place.ty().components.iter().zip(place.data_positions()).enumerate() {
             let mut pending=vec![(position,bounds::Clause::default())];
             while let Some((position,path))=pending.pop() {
                 match position {
@@ -923,14 +942,16 @@ impl Builder<'_> {
                             base:element_layout.clone(),words:Arc::from([word]),positions:Arc::from([]),
                             writable:access.writes(),initialized:Arc::from([access.reads()]),
                         };
-                        self.check_view_requirement(Requirement::Dataset{borrow:Borrow::source(Origin::Position(Arc::new(origin))).restricted(&path),index:Some(*index_value),access,atomic,span})?;
+                        let usage=self.view_model.uses.len();
+                        self.check_view_requirement(Requirement::Dataset{borrow:Borrow::source(Origin::Position(Arc::new(origin))).restricted(&path),index:Some(*index_value),access,atomic,values:None,span})?;
+                        if access==super::Access::Read&&!atomic {reads.push((component,usage));}
                     }
                     Position::Indexed(choices,index)=>pending.extend(choices.iter().enumerate().map(|(i,position)|(position.clone(),bounds::Clause::both(&path,&bounds::Clause::selection(index,i))))),
                     _=>{},
                 }
             }
         }
-        Ok(())
+        Ok(reads)
     }
 
     pub(super) fn native_dataset_access(&mut self,access:&BTreeSet<Access>,arguments:&BTreeMap<ValueIdentity,bounds::Proof>,span:Span)->Result<Vec<MemoryAccess>> {

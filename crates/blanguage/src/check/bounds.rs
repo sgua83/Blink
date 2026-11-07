@@ -4054,11 +4054,11 @@ impl Builder<'_> {
         Some(common.element_facts(|target| self.data_index_proof(target)
             .with_domains(Domains::from([IndexDomain::Data(target)]))))
     }
-    pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg]) -> Result<(Proof, bool)> {
+    pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg], reads: &[(usize,usize)]) -> Result<(Proof, bool)> {
         let (snapshots,common)=match place {
             Place::ApplicationElement{..}=>{
                 let snapshots=regs.iter().map(|reg|self.application_read_snapshot(*reg)).collect::<Vec<_>>();
-                let common=self.application_element_proof(place,&snapshots)?;(snapshots,common)
+                let common=self.application_element_proof(place,&snapshots,reads)?;(snapshots,common)
             },
             _=>(Vec::new(),None),
         };
