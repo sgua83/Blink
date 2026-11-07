@@ -1522,7 +1522,7 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 普通CPU函数的`requires nonzero(input[*].value)`、`requires nonempty(input[*].value.values)`与`requires index(input[*].value.index,input[*].value.values)`分别交接共同标量、子资源非空及同一元素的索引关系。parser在原Nonzero／Nonempty／Index路径保存[*]，contracts的Selection沿同一拥有树定位Data.elements，调用处消费实际Proof、入口在原模型接收前提。共同Index的目标含[*]时，两端选择同一dataset与同一嵌套作用域；目标也可为独立全局dataset、不可变view或固定array，源的每个所选u32分量对应同一目标；值分量在原Proof标记原资源IndexDomain，所选子资源的长度Proof直接交给原bounds::index_in，与范围／域／below_length共同判断。长度在一至二变化时，长度减一仍对应同一实际资源，不用最小长度替代关系，也不全局混合不同共同模型的局部身份。拥有字段的原Value元数据与payload Data.length仍归同一OwnedValue；固定array使用真实类型数量，共同array保留原Selection作用域。已证明外0元素只形成全称空集合，零长array的非空／index前提沿同一父值与payload长度Proof表达外dataset为空，不生成array元素或元素0访问。真实字段写入与合法inout记录整体替换撤回旧事实；u32向量与swizzle只交接所选分量，兄弟资源不借用关系。普通函数、泛型及无实现源码的对象／归档沿原合同交接，没有运行时扫描、检查或另一合同／拥有状态。源为空时全称关系成立，却不能据此推出独立目标非空；原Clause只接收源作用域非空蕴含目标非空的关系。Selection临时持有原作用域各层长度，运行期不扫描元素或维护合同表。当前不定义两个共同集合的逐项配对或标量对共同资源的量化映射；参数、元素及借用模式仍按现行可表达能力使用。
 
-拥有类型中的静态F身份不自动把其requires变成值不变量。公开requires cleanup(value[,condition])沿原可读输入选择实际拥有子树、字段或dataset共同元素，按原Ty和generics专门化确定F，仅展开其真实公开前提。普通分量没有F义务；集合为空或变体不活动时，原长度及标签条件保留其适用范围。递归元素使用原ElementFacts的Input、Unknown、Known、Cleanup、Common与Selected表达当前有限事实：尚未展开的入口来源、未知内容、已知载荷、释放前提、共同保证及条件选择分别保留。实际读取复用bind_element_input逐层形成有限DatasetContent输入，原Function中的路径及分量描述完成后移交NativeContract；调用者按同一描述消费实参模型，obj／lib无需提供者实现。没有内容模型不等于没有F义务，也不递归构造无限拥有树；没有额外F前提的类型不因入口未展开而被要求证明cleanup，实际写后的Unknown也不重新取得入口保证。条件只消费原纯输入快照，不读取调用或存储；合同不执行F、移动或释放资源，也不授予write／atomic已有内容事实。
+拥有类型中的静态F身份不自动把其requires变成值不变量。公开requires cleanup(value[,condition])沿原可读输入选择实际拥有子树、字段或dataset共同元素，按原Ty和generics专门化确定F，仅展开其真实公开前提。普通分量没有F义务；集合为空或变体不活动时，原长度及标签条件保留其适用范围。递归元素使用原ElementFacts的Input、Unknown、Known、Cleanup、Common与Selected表达当前有限事实：尚未展开的入口来源、未知内容、已知载荷、释放前提、共同保证及条件选择分别保留。实际读取复用bind_element_input逐层形成有限DatasetContent输入，原Function中的路径及分量描述完成后移交NativeContract；调用者按同一描述消费实参模型，obj／lib无需提供者实现。未改写入口子树整体经普通返回转交时，native_call在原Returned处按已有输入路径借用本次实参的Data.elements，并复用Residency::bind交接实际位置；二次调用不会把原输入来源改成另一个待恢复的输出。它只交接原有限模型，真实Unknown和已生成的返回事实保持，不增加运行时表或另一拥有者。两个拥有输入选支时未采用输入的清理保留查询仍是Issues C-020.1.6.5.4.7的独立缺口。没有内容模型不等于没有F义务，也不递归构造无限拥有树；没有额外F前提的类型不因入口未展开而被要求证明cleanup，实际写后的Unknown也不重新取得入口保证。条件只消费原纯输入快照，不读取调用或存储；合同不执行F、移动或释放资源，也不授予write／atomic已有内容事实。
 
 源码节选：`crates/blanguage/src/check/contracts.rs:561`。
 
@@ -2850,7 +2850,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1759`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1789`。
 
 ```rust
             if !frame.contains(&name) {

@@ -215,7 +215,7 @@ impl Residency {
         let names=self.index_names().into_iter().filter_map(|id|match id{ValueIdentity::ElementIndex(index)if index>=bound=>Some((id,ValueIdentity::ElementIndex(index+depth))),_=>None}).collect();
         self.output_bound(&names)
     }
-    fn bind(&self,arguments:&Arguments)->Option<Self>{
+    pub(super) fn bind(&self,arguments:&Arguments)->Option<Self>{
         if let Self::Selected(when,a,b)=self{return Some(Self::conditional(when.as_ref().clone(),a.bind(arguments).unwrap_or(Self::Absent),b.bind(arguments).unwrap_or(Self::Absent))).filter(|value|!value.absent());}
         let Self::Origins(origins)=self else{return None};
         if origins.is_empty(){return Some(Self::default());}

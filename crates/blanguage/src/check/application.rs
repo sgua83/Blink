@@ -3854,7 +3854,7 @@ impl Builder<'_> {
             }}
             let mut scoped=owned.output_bound(&shifts);
             let Some(elements)=data.elements.known()else{
-                if builder.world.stored_borrows(&data.ty,&builder.definition.source,span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new())?{
+                if builder.world.stored_borrows(&data.ty,&builder.definition.source,span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new())? && !matches!(data.elements,ElementFacts::Input(_)){
                     let proof=bounds::Proof::default().with_view_borrow(0,view::Borrow::source(view::Source::Unresolved));
                     builder.require_view_return_proof(&proof,scoped,span)?;
                 }

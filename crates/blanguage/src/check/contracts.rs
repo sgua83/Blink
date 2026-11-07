@@ -177,7 +177,7 @@ fn select_value(value: &Value, path: &str, source: &Source, span: Span) -> Resul
     })
 }
 
-fn selected_data<'a>(binding:&'a Binding,paths:&[Vec<usize>])->Option<&'a application::Data> {
+pub(super) fn selected_data<'a>(binding:&'a Binding,paths:&[Vec<usize>])->Option<&'a application::Data> {
     let(first,rest)=paths.split_first()?;
     let mut data=match binding {
         Binding::ApplicationData(data) if first.is_empty()=>data,

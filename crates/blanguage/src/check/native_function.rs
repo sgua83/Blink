@@ -854,7 +854,7 @@ impl Builder<'_> {
                 )
             });
         let input_width=actual.len();
-        let (mut bindings, model, writes) = if let Some((inputs, model, writes)) = prototype {
+        let (mut bindings, mut model, writes) = if let Some((inputs, model, writes)) = prototype {
             (
                 inputs
                     .into_iter()
@@ -980,8 +980,8 @@ impl Builder<'_> {
             constant: None,
         };
         let mut returned = self.template_returned(value, true)?;
-        if let Some(model) = model {
-            translate_returned(&mut returned, &model, &bindings,false);
+        if let Some(model) = &model {
+            translate_returned(&mut returned, model, &bindings,false);
             residency::returned(&mut returned, &locations);
         }
         residency::output(&mut returned, &instance.name,residency::OutputKind::Returned, &locations,&view_arguments);
@@ -991,6 +991,36 @@ impl Builder<'_> {
                 let actual=value.proof.view_borrow(component);
                 let resolved=self.view_model.result(call,view_contracts::Output::Returned(component));
                 if actual.empty()||actual.pending()||actual.unresolved(){value.proof=value.proof.clone().with_view_borrow(component,resolved);}
+            }
+        }
+        if let Some(model)=&mut model {
+            fn input_elements(location:&residency::Residency,definition:&Definition,env:&BTreeMap<String,Binding>)->application::ElementFacts {
+                match location {
+                    residency::Residency::Selected(when,a,b)=>input_elements(a,definition,env).selected(input_elements(b,definition,env),when),
+                    residency::Residency::Absent=>application::ElementFacts::Unknown,
+                    residency::Residency::Origins(origins)=>{
+                        let mut result:Option<application::ElementFacts>=None;
+                        for origin in origins {
+                            let facts=if let residency::Origin::Input(input)=origin {
+                                let binding=&env[&definition.function.params[input.parameter].name];
+                                let mut paths=input.fields.split(|part|!matches!(part,residency::Part::Field(_)))
+                                    .map(|fields|fields.iter().filter_map(|part|match part{residency::Part::Field(field)=>Some(*field),_=>None}).collect::<Vec<_>>()).collect::<Vec<_>>();
+                                if let Binding::DataReference(reference)=binding && let Some(path)=paths.get_mut(1){path.splice(0..0,reference.projection.iter().copied());}
+                                contracts::selected_data(binding,&paths).map(|data|data.elements.clone()).unwrap_or_default()
+                            }else{application::ElementFacts::Unknown};
+                            result=Some(match result{Some(old)=>old.common(facts),None=>facts});
+                        }
+                        result.unwrap_or_default()
+                    },
+                }
+            }
+            for resource in view_contracts::resource_output_paths(model){
+                let source=view_contracts::resource_output_mut(model,&resource).unwrap();
+                if matches!(source.elements,application::ElementFacts::Input(_)) && let Some(target)=view_contracts::resource_output_mut(&mut returned,&resource){
+                    let location=source.residency.at_call(&bindings);
+                    target.elements=input_elements(&location,d,&env);
+                    if let Some(location)=location.bind(&locations){target.residency=location;}
+                }
             }
         }
         let pending=match &returned {
