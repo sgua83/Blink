@@ -275,7 +275,7 @@ impl<D> DomainBindings<D> {
             let range = ElementRange {
                 binding: binding(range.binding).0, offset: range.offset + binding(range.binding).1, ..range
             };
-            self.produced_element(range);
+            unsafe { self.produced_element(range) };
         }
         self.domains.sort();
         self.domains.dedup();
@@ -312,7 +312,16 @@ impl<D> DomainBindings<D> {
         }
         result.sort();result.dedup();result
     }
-    pub(crate) fn produced_element(&mut self, range: ElementRange) {
+    /// 将真实生产者的共同字段保证并入本组原关系，不读取或修改载荷。
+    ///
+    /// # Safety
+    /// binding是本组当前实际存储，offset／Scalar对应其真实标量字段。
+    /// 全部元素已经初始化，值位于所声明的有序闭区间并集；非空存储不能交空集。
+    /// 区间须为该Scalar的有效有序数值编码，端点及区间次序保持其原规范。
+    /// 保证来自编译器证明或调用者信任的真实实现，不能仅从任意字节推定。
+    /// 实际写已完成或由原存储执行依赖覆盖后续消费者；本调用不提交或等待。
+    /// 原存储及最后消费者的寿命／访问约束继续成立，外部别名不得绕过原写入撤回。
+    pub unsafe fn produced_element(&mut self, range: ElementRange) {
         if let Some(known) = self.domains.iter_mut().find_map(|relation| match relation {
             DomainRelation::Element(known) if known.binding == range.binding && known.offset == range.offset
                 && known.scalar == range.scalar => Some(known),

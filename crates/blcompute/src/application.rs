@@ -276,8 +276,17 @@ impl Frame {
             .domains
             .retain(|r| !r.references(index));
     }
-    // 只由受信任编译完成点调用；字段布局和完整写已由原编译器确定。
-    fn complete_field(&mut self, handle: u32, offset: u32,
+    /// 将编译器或可信外部提供者的共同字段保证交给原Frame拥有组。
+    /// 数值数组只同步借用；本调用不写载荷、不提交或等待设备。
+    ///
+    /// # Safety
+    /// handle是本Frame当前存活存储，offset是其真实标量字段；全部元素已初始化。
+    /// intervals以该Scalar有效有序编码描述全部字段值的闭区间并集。
+    /// 非空limits仅用于u32字段，每项为已保证的严格上界；保证须来自编译器证明
+    /// 或可信实现对实际字节的担保，不能凭ABI签名、格式或非零推定。
+    /// 实际写已完成或由原存储依赖覆盖后续消费者，最后消费者前的寿命及访问
+    /// 约束继续成立；外部可写访问须先沿原address写区撤回，不能保留未跟踪写别名。
+    pub unsafe fn complete_field(&mut self, handle: u32, offset: u32,
         intervals: &[blanguage::resource::ElementInterval], limits: &[u32]) {
         let ty = match self.data.datasets[handle as usize].as_ref().unwrap() {
             ResidentData::Cpu(data) => &data.ty,
@@ -292,7 +301,7 @@ impl Frame {
                 (a <= end).then_some((a, end))
             }).collect();
         }
-        self.data.produced_element(blanguage::ir::ElementRange { binding: handle as usize, offset, scalar, intervals });
+        unsafe { self.data.produced_element(blanguage::ir::ElementRange { binding: handle as usize, offset, scalar, intervals }) };
         self.data.domains.sort();
         self.data.domains.dedup();
     }

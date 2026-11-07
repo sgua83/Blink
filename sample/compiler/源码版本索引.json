@@ -448,15 +448,15 @@
     },
     {
       "path": "crates/blcompute/src/application.rs",
-      "sha256": "5088e1ce2e1a34e276c3442e117f476a701c926273841d65379a412555708bf2"
+      "sha256": "8168a03abb32113d763e9f86a6db692a580ab8c5b8999ebd5384b8d558022022"
     },
     {
       "path": "crates/blcompute/src/application/abi.rs",
-      "sha256": "78c824e1bb6b4ad4653e3c493dd118ade13caff50637d648cccc07d45973a082"
+      "sha256": "c9a25fd15df7d233346475f0394ba309bfcbde85b269ce561274d82c3a220c8b"
     },
     {
       "path": "crates/blcompute/src/bindings.rs",
-      "sha256": "337adc8a892e770e3b1255d236770c6089c3f9660a57d754a407ab9864edf99a"
+      "sha256": "821e89544e33c38568cf70045316d65dcc6065642d1ec77b9f30dfef94b8da4c"
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
