@@ -771,6 +771,21 @@ fn expand_stages(
                         .map(|(_, offset)| Position::Element(*binding, *offset)));
                 }
                 b.env.insert(name.clone(), element);
+                // 同一次迭代的其他普通写目标与命名游标共用原位置事实和合流。
+                for (&binding, &access) in &b.view_access {
+                    if binding != *domain && matches!(access, Access::Write | Access::InOut)
+                        && program.same_length(binding, *domain)
+                    {
+                        let ty = program.buffers[binding].ty.clone();
+                        let words = ty.components.iter().map(|x| x.1).collect();
+                        b.env.insert(format!("\0{binding}"), Binding::Owned(OwnedBinding {
+                            place: Place::Element { ty, binding, index, words, writable: true },
+                            proof: facts.elements.get(&binding).cloned().unwrap_or_default(),
+                            uniform: false,
+                            initialization: None,
+                        }));
+                    }
+                }
                 if let Some(limit) = &prefix {
                     b.reads.insert(limit.binding);
                     b.cross_access.insert(limit.binding);
@@ -822,17 +837,10 @@ fn expand_stages(
                     b.reads.insert(selection.binding);
                     b.cross_access.insert(selection.binding);
                 }
-                let element_ranges = if prefix.is_none() && selection.is_none()
-                    && b.view_access[domain] != Access::Atomic
-                    && !b.appends.iter().any(|(output, count)| output == domain || count.binding == *domain)
-                {
-                    b.env.get_mut(name).and_then(Binding::proof_storage)
-                        .map(|(proof, _, _)| proof.element_facts(|binding|
-                            bounds::Proof::default().with_domains(Domains::from([IndexDomain::Data(binding)]))))
-                } else { None };
                 let write_regions = std::mem::take(&mut b.memory_regions).into_iter()
                     .filter_map(|(binding, (_, written))| (!written.is_empty()).then_some((binding, written))).collect();
                 *functions = std::mem::take(&mut b.functions);
+                let (elements, access, appends) = (b.env, b.view_access, b.appends);
                 let mut stage = Stage {
                     domain: *domain,
                     prefix,
@@ -853,13 +861,24 @@ fn expand_stages(
                     cross_access: b.cross_access.into_iter().collect(),
                 };
                 for (&binding, written) in &stage.write_regions {
-                    let output = if binding == *domain { element_ranges.as_ref() } else { None };
-                    for &(start, end) in written { facts.written(program, binding, start, end, output); }
-                }
-                if let Some(output) = element_ranges {
-                    stage.element_guarantees = output.element_guarantees(*domain, &program.buffers[*domain].ty,
-                        |offset, bytes| stage.write_regions.get(domain).is_some_and(|written| written.iter().any(|&(start, end)|
-                            u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset) + u64::from(bytes))));
+                    let output = if prefix.is_none() && selection.is_none()
+                        && access[&binding] != Access::Atomic
+                        && !appends.iter().any(|(target, count)| *target == binding || count.binding == binding)
+                    {
+                        elements.values().find_map(|value| match value {
+                            Binding::Owned(OwnedBinding { place: Place::Element { binding: target, index: current, ty, .. }, proof, .. })
+                                if *target == binding && *current == index && *ty == program.buffers[binding].ty =>
+                                Some(proof.element_facts(|target| bounds::Proof::default()
+                                    .with_domains(Domains::from([IndexDomain::Data(target)])))),
+                            _ => None,
+                        })
+                    } else { None };
+                    for &(start, end) in written { facts.written(program, binding, start, end, output.as_ref()); }
+                    if let Some(output) = output {
+                        stage.element_guarantees.extend(output.element_guarantees(binding, &program.buffers[binding].ty,
+                            |offset, bytes| written.iter().any(|&(start, end)|
+                                u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset) + u64::from(bytes))));
+                    }
                 }
                 for &relation in &stage.prefix_guarantees {
                     facts.grant(relation);

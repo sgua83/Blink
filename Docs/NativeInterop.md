@@ -175,7 +175,7 @@ DomainBindings::domain_relations共享借用原domains Vec。DomainRelation的Pr
 
 ## 字段索引前提的静态数值消费
 
-共同字段的逻辑索引在实际读取时，同时消费原目标声明形状、已有same_length长度Proof和当前路径上已成立的长度上界，形成同一个数值Proof；例如目标长度为二时，字段乘八加七可索引十六项表。未知长度不猜成常量，真实写分量先沿原memory_regions撤回，空集合的全称前提不创造机器值。该静态推导复用原data_index_proof／Proof::element_facts，不增加运行检查、元数据或公共ABI。实际输入仍由原require按本次绑定／目标数量核对；编译精化不替代载荷真值或设备完成。
+共同字段的逻辑索引在实际读取时，同时消费原目标声明形状、已有same_length长度Proof和当前路径上已成立的长度上界，形成同一个数值Proof；例如目标长度为二时，字段乘八加七可索引十六项表。未知长度不猜成常量，真实写分量先沿原memory_regions撤回，空集合的全称前提不创造机器值。该静态推导复用原data_index_proof／Proof::element_facts，不增加运行检查、元数据或公共ABI。同一次完整parallel写入同长度的其他普通可写dataset时，当前元素的数值模型沿原Place与Proof更新，不依赖源码命名的迭代缓冲；真实写字段由原Stage.element_guarantees和prefix::Facts交接。分支、重叠及未知写继续沿原模型合流／撤回，prefix、稀疏选择和不同长度的部分覆盖不冒充全体保证；原子共享更新的共同范围仍见Issues C-021.1.4.5.2.4.3.2.1.2。实际输入仍由原require按本次绑定／目标数量核对；编译精化不替代载荷真值或设备完成。
 
 ## 可信外部字段的原生交接
 
