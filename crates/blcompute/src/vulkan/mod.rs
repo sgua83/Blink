@@ -390,6 +390,7 @@ impl Device {
         let mut texture_count = 0;
         let mut resource_count = 0;
         let mut storage_count = 0;
+        let mut acceleration_count = 0;
         let mut workgroup_width = 0;
         let mut shared_bytes = 0;
         for program in programs {
@@ -398,6 +399,7 @@ impl Device {
             texture_count = texture_count.max(textures);
             let storage = program.buffers().len() + program.auxiliary_buffers();
             storage_count = storage_count.max(storage);
+            acceleration_count = acceleration_count.max(program.accelerations().len());
             resource_count = resource_count.max(storage + textures);
             for stage in program.stages() {
                 workgroup_width = workgroup_width.max(stage.workgroup_width());
@@ -618,11 +620,17 @@ impl Device {
                     owner
                         .library
                         .get(instance, c"vkGetPhysicalDeviceProperties2")?;
+                let mut ray_properties: ray::Properties = zero();
+                ray_properties.kind = 1000150014;
                 let mut control: sort::ControlProperties = zero();
                 control.kind = 1000225000;
                 let mut float_controls: VkPhysicalDeviceFloatControlsProperties = zero();
                 float_controls.sType = 1000197000;
+                if ray_query {
+                    float_controls.pNext = (&mut ray_properties as *mut ray::Properties).cast();
+                }
                 if sorting {
+                    control.next = float_controls.pNext;
                     float_controls.pNext = (&mut control as *mut sort::ControlProperties).cast();
                 }
                 let mut subgroup: VkPhysicalDeviceSubgroupProperties = zero();
@@ -680,6 +688,12 @@ impl Device {
                 }
                 if float64 && features.features[39] == 0 {
                     unavailable.push(format!("{device_name}: {}", "程序需要 shaderFloat64，目标 GPU 不支持"));
+                    continue 'physical;
+                }
+                if acceleration_count > ray_properties.per_stage as usize
+                    || acceleration_count > ray_properties.per_set as usize
+                {
+                    unavailable.push(format!("{device_name}: AS绑定需要{acceleration_count}项，maxPerStageDescriptorAccelerationStructures={}，maxDescriptorSetAccelerationStructures={}", ray_properties.per_stage, ray_properties.per_set));
                     continue 'physical;
                 }
                 features.features.fill(0);
@@ -868,19 +882,6 @@ impl Device {
                 });
                 let functions = Functions::load(device, get_device)?;
                 let ray = if ray_query {
-                    let mut ray_properties: ray::Properties = zero();
-                    ray_properties.kind = 1000150014;
-                    let mut properties2: VkPhysicalDeviceProperties2 = zero();
-                    properties2.kind = 1000059001;
-                    properties2.next = (&mut ray_properties as *mut ray::Properties).cast();
-                    let get: unsafe extern "system" fn(
-                        VkPhysicalDevice,
-                        *mut VkPhysicalDeviceProperties2,
-                    ) = device_owner
-                        ._instance
-                        .library
-                        .get(instance, c"vkGetPhysicalDeviceProperties2")?;
-                    get(physical, &mut properties2);
                     Some(ray::RayDevice::load(device, get_device, ray_properties)?)
                 } else {
                     None
@@ -1945,12 +1946,15 @@ impl GpuProgram {
                 )));
             }
             let limits = &inner.properties.limits;
-            if !program.accelerations().is_empty() {
+            let acceleration_count = program.accelerations().len();
+            if acceleration_count != 0 {
                 let ray = inner
                     .ray
                     .as_ref()
                     .ok_or_else(|| error("光线查询程序必须以 Device::for_program 声明设备能力"))?;
-                if program.accelerations().len() > ray.properties.per_stage as usize {
+                if acceleration_count > ray.properties.per_stage as usize
+                    || acceleration_count > ray.properties.per_set as usize
+                {
                     return Err(error("加速结构绑定数量超出设备能力"));
                 }
             }
