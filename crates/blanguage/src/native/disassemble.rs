@@ -74,7 +74,7 @@ fn memory(instruction: &Instruction, kind: OpKind) -> String {
         ("scale", if explicit { instruction.memory_index_scale() } else { 1 }.to_string()),
         ("displacement", displacement), ("size", memory_size(instruction.memory_size()))])
 }
-fn operand(instruction: &Instruction, operand: u32) -> Result<String, String> {
+fn operand(instruction: &Instruction, operand: u32) -> String {
     let kind = instruction.op_kind(operand);
     let value = match kind {
         OpKind::Register => object(&[("register", register(instruction.op_register(operand)))]),
@@ -87,15 +87,14 @@ fn operand(instruction: &Instruction, operand: u32) -> Result<String, String> {
         OpKind::Memory | OpKind::MemorySegSI | OpKind::MemorySegESI | OpKind::MemorySegRSI
         | OpKind::MemorySegDI | OpKind::MemorySegEDI | OpKind::MemorySegRDI
         | OpKind::MemoryESDI | OpKind::MemoryESEDI | OpKind::MemoryESRDI => memory(instruction, kind),
-        _ => return Err(format!("unsupported operand kind {kind:?}")),
     };
-    Ok(object(&[("kind", name(&kind)), ("value", value)]))
+    object(&[("kind", name(&kind)), ("value", value)])
 }
 fn instruction_json(instruction: &Instruction, offsets: &ConstantOffsets, raw: &[u8], offset: usize,
-    factory: &mut InstructionInfoFactory) -> Result<String, String> {
-    let operands = (0..instruction.op_count()).map(|index| operand(instruction, index)).collect::<Result<Vec<_>, _>>()?;
+    factory: &mut InstructionInfoFactory) -> String {
+    let operands = (0..instruction.op_count()).map(|index| operand(instruction, index)).collect::<Vec<_>>();
     let info = factory.info(instruction);
-    Ok(object(&[
+    object(&[
         ("offset_bytes", offset.to_string()), ("ip", bits(instruction.ip())), ("next_ip", bits(instruction.next_ip())),
         ("length_bytes", instruction.len().to_string()), ("bytes", bytes(raw)),
         ("code", name(&instruction.code())), ("mnemonic", name(&instruction.mnemonic())),
@@ -124,7 +123,7 @@ fn instruction_json(instruction: &Instruction, offsets: &ConstantOffsets, raw: &
         ("flags", object(&[("read", flags(instruction.rflags_read())), ("written", flags(instruction.rflags_written())),
             ("cleared", flags(instruction.rflags_cleared())), ("set", flags(instruction.rflags_set())),
             ("undefined", flags(instruction.rflags_undefined()))])),
-    ]))
+    ])
 }
 
 /// Decodes exactly this declared instruction range in 64-bit mode. Does not classify code/data.
@@ -140,9 +139,7 @@ pub fn instructions_json(raw: &[u8], ip: u64) -> Result<String, DecodeError> {
             return Err(DecodeError { offset, ip: instruction.ip(), reason: format!("{:?}", decoder.last_error()) });
         }
         let offsets = decoder.get_constant_offsets(&instruction);
-        let value = instruction_json(&instruction, &offsets, &raw[offset..decoder.position()], offset, &mut factory)
-            .map_err(|reason| DecodeError { offset, ip: instruction.ip(), reason })?;
-        instructions.push(value);
+        instructions.push(instruction_json(&instruction, &offsets, &raw[offset..decoder.position()], offset, &mut factory));
     }
     Ok(object(&[("kind", text("x64_instructions")), ("bitness", "64".into()),
         ("decoder", text("iced-x86")), ("origin_ip", bits(ip)), ("byte_length", raw.len().to_string()),
