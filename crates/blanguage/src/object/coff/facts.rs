@@ -210,7 +210,12 @@ impl<'a> Facts<'a> {
             regions
             };
             values.extend([("bytes", hex(bytes)), ("regions", array(regions)),
-                ("relocations", array(section.relocations.iter().map(|r| self.relocation(r)).collect::<Result<Vec<_>>>()?))]);
+                ("relocations", array(section.relocations.iter().map(|r| self.relocation(r)).collect::<Result<Vec<_>>>()?)),
+                ("tail_references", material.and_then(|material| material.references(index)).map_or_else(|| "null".into(), |references|
+                    array(references.iter().map(|reference| object(&[
+                        ("target_offset_bytes", reference.target.to_string()),
+                        ("rel32_field_offsets_bytes", array(reference.rel32_fields.iter().map(usize::to_string))),
+                    ])))))]);
         }
         Ok(object(&values))
     }

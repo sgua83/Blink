@@ -297,7 +297,7 @@ compiler角色的NativeCode可选持有operation_ranges，元素OperationRange�
 
 NativeCode::code_json在原输出中增加operation_ranges：None为null，已采集但没有操作为[]，每项提供start_byte、end_byte、byte_length、includes_nested_operations及origin（原OperationOrigin JSON）。偏移相对该映像字节零，单位为字节且范围为半开；机器反汇编仍来自同一最终bytes。序列按操作发射完成顺序交接，实际嵌套操作先于包含它的父操作，范围可以包含／重叠；这不是前端IR编号、独立指令数或动态执行次数，不能求和计成本。零长度明确表示该原操作没有发射字节，其位置只是游标，不能当作可设置断点的指令地址。origin两项均为空仍表示真实范围的来源未知，与整份材料未保留分别表达。
 
-当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量的来源仍按独立叶推进，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存operation_ranges，compiler角色恢复执行映像时为None；现有BLCR／BLCF只恢复其原布局材料，不恢复此来源，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
+当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量的来源仍按独立叶推进，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存operation_ranges，compiler角色恢复执行映像时为None；现有BLCR恢复其原布局，BLCF2恢复原COFF布局与尾部引用，两者均不恢复此操作来源，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
 
 ### 普通CPU函数ABI参数的实际发射来源
 
@@ -323,7 +323,7 @@ code_json的tail_references未保留时为null，已采集但没有相应引用�
 
 普通函数的使用来源由字段所属的原operation_ranges及function_abi范围说明；多个父子范围如实保留，不强选唯一语句。字面量数据只说明实际存储，原值来自源字面量还是编译期生成仍由原IR说明；仅凭池中位模式不能猜源数值类型或最初声明，确切值与合同继续由原IR查询。探栈调用可沿原FrameAllocate范围理解生成职责；辅助代码和调用代码分别说明。其他CPU并行／SIMD／集合入口复用同一finish交接物理引用，并不因此已有其完整源码关系，原未交接来源保持未知。
 
-材料从原finish局部容器移动至同一NativeCode，原字面量references Vec直接转移；不持有Emitter、Frame、字面量拥有表或运行资源，随最后代码事实消费者结束释放。必要执行编码不保存tail_references，compiler角色执行解码后为None；现有BLCR／BLCF只恢复原尾部分区，不恢复这些引用，不自动重编或从指令补造。其余字段、保存格式、执行ABI与实际字节不变，职责见[架构](Architecture.md#tool-7-4-1-3)。
+材料从原finish局部容器移动至同一NativeCode，原字面量references Vec直接转移；不持有Emitter、Frame、字面量拥有表或运行资源，随最后代码事实消费者结束释放。必要执行编码不保存tail_references，compiler角色执行解码后为None；BLCR尚不恢复这些引用；COFF原Function Layout按值接收同一可选引用，并沿BLCF2保存／恢复，查询不自动重编或从指令补造。必要执行编码、执行ABI与实际字节不变，职责见[架构](Architecture.md#tool-7-4-1-3)。
 
 ### IR操作的语法来源
 
@@ -1066,11 +1066,11 @@ function_tables保留原.pdata的每条12字节记录、begin／end／unwind原�
 
 ### COFF原生成范围的独立材料
 
-新生成的`Object::code_observations()`显式返回独立BLCF1字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions，主末端仍由原.pdata交接；Generated由原手写生产者声明整节都是代码，适用于启动、输出和无帧导入跳板。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。
+新生成的`Object::code_observations()`显式返回独立BLCF2字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions与tail_references，主末端仍由原.pdata交接；Generated由原手写生产者声明整节都是代码，适用于启动、输出和无帧导入跳板。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。
 
-显式捕获先确认原事实可取得，再复用原COFF编码作一次临时序列化，沿原B读取器消费最终节及重定位，不读取源文件或编译／生成第二份机器码。临时编码字节在返回后释放，材料不含代码、源码、执行图、资源拥有表或编译器私有容器。此额外编码／摘要工作只随明确捕获请求发生；普通构建、链接、运行不写入或消费材料。链接组合后的新节及新增导入／资源数据节不冒称持有原生成材料，最终链接观察仍沿.9。
+显式捕获先确认原事实可取得，再借用同一Layout直接编码，不克隆原布局或引用；复用原COFF编码作一次临时序列化，沿原B读取器消费最终节及重定位，不读取源文件或编译／生成第二份机器码。临时编码字节在返回后释放，材料不含代码、源码、执行图、资源拥有表或编译器私有容器。此额外编码／摘要工作只随明确捕获请求发生；普通构建、链接、运行不写入或消费材料。链接组合后的新节及新增导入／资源数据节不冒称持有原生成材料，最终链接观察仍沿.9。
 
-BLCF1由8字节`BLCF\x01\0\0\0`、u64记录数量及按原物理代码节顺序排列的记录组成；整数均小端。每条为u64物理节号、32字节SHA-256、u32布局类别；0=Function，随后u64尾部分区数量及各项u64排他末端／u32类别（0探栈、1对齐、2字面量）；1=Generated，无额外范围。Function不另存主末端，查询消费原.pdata中从节内0开始的同一主范围；尾部单调且完整覆盖该节。Generated明确覆盖0至原节字节长度，不能从代码特征位推导。
+BLCF2由8字节`BLCF\x02\0\0\0`、u64记录数量及按原物理代码节顺序排列的记录组成；整数均小端。每条为u64物理节号、32字节SHA-256、u32布局类别；0=Function，随后u64尾部分区数量及各项u64排他末端／u32类别（0探栈、1对齐、2字面量），再写u8引用可用标记（0=未保留，1=已采集）。标记1后为u64引用数量，各项为u64目标偏移、u64字段数量及各u64 rel32字段偏移；目标和字段均相对此节字节0。1=Generated，无额外范围或引用。旧BLCF版本明确不支持，调用者应保存同次原Object生成的新材料，不自动重编或兼容解码。Function不另存主末端，查询消费原.pdata中从节内0开始的同一主范围；尾部单调且完整覆盖该节。Generated明确覆盖0至原节字节长度，不能从代码特征位推导。
 
 摘要以原长度前缀字段依次消费代码字节、节特征、重定位数量及各项offset／type／原目标名称／带符号节号／value，再消费本节已解析.pdata范围数量及各项start／end；数量、偏移、特征和数值沿原64位字段表示。物理节号在记录中配对，不散列文件位置、符号表索引、私有BLCO／构建记录、SDK或工具链。材料匹配说明同一范围相关的代码／重定位／原声明范围，不证明来源、执行安全或整个包所有内容相同；函数表、展开及其余COFF事实继续读取本次原文件。已有归档成员不因材料存在而被展开。
 
@@ -1080,7 +1080,7 @@ bc code --object target/module.obj --observations target/module.blcf --section 1
 bc code --object target/module.obj --function exact-symbol --observations target/module.blcf
 ```
 
-SDK使用`object::code_facts_with_observations(bytes, selection, material)`。先完整核对所有原代码特征节的数量、顺序／物理号、摘要及布局覆盖，再生成选定查询；错误直接失败，不输出部分成功，也不转为无材料查询。成功JSON增加code_observations=matched，原物理节、符号／重定位、文件位置和function_tables保持。代码节regions分别为runtime_function、stack_probe、generated_code、alignment、literal；前三类解码完整原指令，对齐和字面量instructions=null。各分区原bytes合起来重建同一节；非代码节仍保留原查询语义，不据材料伪造分类。没有材料时继续明确保留unclassified；符号选择仍只定位原节，不改变原函数／代码布局。
+SDK使用`object::code_facts_with_observations(bytes, selection, material)`。先完整核对所有原代码特征节的数量、顺序／物理号、摘要及布局覆盖，再检查原引用目标不超出节长度、完整四字节字段位于节内，以及field+4+原有符号rel32位移=target，再生成选定查询；错误直接失败，不输出部分成功，也不转为无材料查询。成功JSON增加code_observations=matched，原物理节、符号／重定位、文件位置和function_tables保持。选中节增加tail_references；每项为target_offset_bytes及rel32_field_offsets_bytes。null表示材料未交接该事实，包括无材料、手写Generated和非代码节；[]表示原Function已采集但无引用。代码节regions分别为runtime_function、stack_probe、generated_code、alignment、literal；前三类解码完整原指令，对齐和字面量instructions=null。各分区原bytes合起来重建同一节；非代码节仍保留原查询语义，不据材料伪造分类。没有材料时继续明确保留unclassified；符号选择仍只定位原节，不改变原函数／代码布局。
 
 完整优化的执行对象不携带`.blcf`仍可按原编码链接／运行；保存构建输入的对象与原Object.write对象可复用同一材料，因为相同代码的文件位置／私有记录不成为匹配前置。材料由调用者持有和释放，不延长代码、模块、进程或GPU消费者寿命。最终PE／归档及完整静态运行库、源码来源与实际地址分别沿原.9、.7、.13，不把本接口写成完整原生调试已经交付。
 

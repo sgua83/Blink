@@ -1,11 +1,10 @@
 //! Optional layout facts transferred from the original Object, never encoded as execution data.
 use super::*;
-use crate::{build::hash, codec::{Decode, Encode, record, variants}, native::{Region, RegionKind}};
+use crate::{build::hash, codec::{Decode, Encode, record, variants}, native::{Region, RegionKind, TailReference}};
 
-#[derive(Clone)]
 pub(crate) enum Layout {
     /// The main end remains in the original .pdata; only emitted tails are retained here.
-    Function(Vec<Region>),
+    Function { tails: Vec<Region>, references: Option<Vec<TailReference>> },
     /// The original handwritten producer emitted this entire section as code.
     Generated,
 }
@@ -17,10 +16,11 @@ struct SectionLayout {
 pub(super) struct Material {
     sections: Vec<SectionLayout>,
 }
-variants!(Layout { 0=>Function(tails), 1=>Generated });
+variants!(Layout { 0=>Function{tails,references}, 1=>Generated });
+record!(TailReference { target, rel32_fields });
 record!(SectionLayout { section, identity, layout });
 record!(Material { sections });
-const MAGIC: &[u8; 8] = b"BLCF\x01\0\0\0";
+const MAGIC: &[u8; 8] = b"BLCF\x02\0\0\0";
 
 fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     let section = &facts.sections[index];
@@ -48,7 +48,7 @@ impl Layout {
     fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {
         match self {
             Self::Generated => Ok(vec![("generated_code", 0, length)]),
-            Self::Function(tails) => {
+            Self::Function { tails, .. } => {
                 let mut main = spans.iter().filter(|s| s.section == index && s.start == 0);
                 let end = main.next().ok_or("COFF generated function material has no matching original .pdata range")?.end;
                 if main.any(|s| s.end != end) { return Err("COFF original main range is ambiguous".into()); }
@@ -76,8 +76,28 @@ impl Material {
                 return Err("COFF observation material does not match the original code section and relocations".into());
             }
             saved.layout.regions(index, section.row.bytes.length, spans)?;
+            if let Layout::Function { references: Some(references), .. } = &saved.layout {
+                let code = unsafe { section.row.bytes.borrowed() };
+                for reference in references {
+                    if reference.target > code.len() { return Err("COFF tail reference target is outside its code section".into()); }
+                    for &field in &reference.rel32_fields {
+                        let value = code.get(field..).and_then(|bytes| bytes.get(..4))
+                            .ok_or("COFF tail reference field is outside its code section")?;
+                        let displacement = i32::from_le_bytes(value.try_into()?);
+                        if field as i128 + 4 + i128::from(displacement) != reference.target as i128 {
+                            return Err("COFF tail reference does not match its original rel32 field".into());
+                        }
+                    }
+                }
+            }
         }
         Ok(value)
+    }
+    pub(super) fn references(&self, index: usize) -> Option<&[TailReference]> {
+        self.sections.iter().find(|section| section.section == index + 1).and_then(|section| match &section.layout {
+            Layout::Function { references, .. } => references.as_deref(),
+            Layout::Generated => None,
+        })
     }
     pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {
         // read() has already matched every code section in its original order.
@@ -85,15 +105,21 @@ impl Material {
     }
 }
 pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {
-    let layouts = object.sections.iter().enumerate().filter(|(_, s)| s.flags & 0x20 != 0)
-        .map(|(index, section)| Ok((index, section, section.layout.as_ref().ok_or("COFF producer code ranges were not retained")?)))
-        .collect::<Result<Vec<_>>>()?;
+    let layouts = object.sections.iter().enumerate().filter(|(_, section)| section.flags & 0x20 != 0);
+    if layouts.clone().any(|(_, section)| section.layout.is_none()) {
+        return Err("COFF producer code ranges were not retained".into());
+    }
     let encoded = super::super::encode(object)?;
     let facts = Facts::read(&encoded)?;
     let (spans, _) = facts.ranges()?;
-    let sections = layouts.into_iter().map(|(index, section, layout)| {
+    let mut writer = crate::codec::Writer(MAGIC.to_vec());
+    layouts.clone().count().encode(&mut writer);
+    for (index, section) in layouts {
+        let layout = section.layout.as_ref().unwrap();
         layout.regions(index, section.bytes.len(), &spans)?;
-        Ok(SectionLayout { section: index + 1, identity: identity(&facts, index, &spans), layout: layout.clone() })
-    }).collect::<Result<Vec<_>>>()?;
-    let mut bytes = MAGIC.to_vec(); bytes.extend(Material { sections }.bytes()); Ok(bytes)
+        (index + 1).encode(&mut writer);
+        identity(&facts, index, &spans).encode(&mut writer);
+        layout.encode(&mut writer);
+    }
+    Ok(writer.0)
 }
