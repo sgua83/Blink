@@ -69,6 +69,20 @@ fn parallel_abi_fields(part: &super::ParallelRangePart, origin: String) -> Vec<(
             fields.extend([("binding_index", binding.to_string()), ("field_offset_bytes", offset.to_string())]);
             if matches!(part, ScalarSelection { .. }) { "scalar_selection" } else { "packet_collect" }
         }
+        TileBase { storage_offset } => { fields.push(("storage_offset_bytes", storage_offset.to_string())); "tile_base" }
+        TilePhaseEnter { phase } | TilePhaseAdvance { phase } => {
+            fields.push(("phase_index", phase.to_string()));
+            if matches!(part, TilePhaseEnter { .. }) { "tile_phase_enter" } else { "tile_phase_advance" }
+        }
+        TilePrivatePointer { phase, restore } => {
+            fields.push(("phase_index", phase.to_string()));
+            if *restore { "tile_private_restore_pointer" } else { "tile_private_save_pointer" }
+        }
+        TilePrivate { phase, restore, local, slot, storage_offset, scalar } => {
+            fields.extend([("phase_index", phase.to_string()), ("slot_kind", text(if *local { "local" } else { "register" })),
+                ("slot_index", slot.to_string()), ("storage_offset_bytes", storage_offset.to_string()), ("scalar", text(scalar.name()))]);
+            if *restore { "tile_private_restore" } else { "tile_private_save" }
+        }
         TileInputBoundary { width } => { fields.push(("width", width.to_string())); "tile_input_boundary" }
         TileInputCopy { binding, source_offset, storage_offset, unit_bytes } => {
             fields.extend([("binding_index", binding.to_string()), ("source_offset_bytes", source_offset.to_string()),

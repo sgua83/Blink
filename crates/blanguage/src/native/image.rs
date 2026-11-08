@@ -133,6 +133,11 @@ pub enum ParallelRangePart {
     PacketTail,
     TileInputBoundary { width: u32 },
     TileInputCopy { binding: usize, source_offset: u32, storage_offset: u32, unit_bytes: u32 },
+    TileBase { storage_offset: u32 },
+    TilePhaseEnter { phase: usize },
+    TilePhaseAdvance { phase: usize },
+    TilePrivatePointer { phase: usize, restore: bool },
+    TilePrivate { phase: usize, restore: bool, local: bool, slot: usize, storage_offset: u32, scalar: crate::ir::Scalar },
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

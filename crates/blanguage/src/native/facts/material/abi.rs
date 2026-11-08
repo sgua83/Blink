@@ -65,6 +65,8 @@ variants!(crate::native::ParallelRangePart {
     0=>Enter{frame_bytes}, 1=>ScalarBounds, 2=>ScalarSelection{binding,offset}, 3=>ScalarAdvance, 4=>ScalarBackEdge,
     5=>Exit{frame_bytes}, 6=>PacketBounds, 7=>PacketCollect{binding,offset}, 8=>PacketAdvance, 9=>PacketBackEdge, 10=>PacketTail,
     11=>TileInputBoundary{width}, 12=>TileInputCopy{binding,source_offset,storage_offset,unit_bytes},
+    13=>TileBase{storage_offset}, 14=>TilePhaseEnter{phase}, 15=>TilePhaseAdvance{phase},
+    16=>TilePrivatePointer{phase,restore}, 17=>TilePrivate{phase,restore,local,slot,storage_offset,scalar},
 });
 impl Encode for crate::native::FunctionAbi {
     fn encode(&self, writer: &mut Writer) {
