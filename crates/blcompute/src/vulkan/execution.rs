@@ -220,7 +220,7 @@ impl Execution {
         Ok(sources)
     }
     pub fn discard(&self, storage: DatasetStorage) {
-        if self.point.result.get() == Some(0) {
+        if matches!(self.point.result.get(), Some(0 | -4)) {
             drop(storage);
         } else {
             self.discarded.borrow_mut().push(storage);
