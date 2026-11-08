@@ -39,7 +39,7 @@ fn division_results_json(results: &[ir::IntegerDivisionOp]) -> String {
 }
 
 #[derive(Clone, Debug)]
-struct OperationOrigin {
+pub(super) struct OperationOrigin {
     source_site: Option<Box<SourceSite>>,
     generated_origin: Option<Box<GeneratedOrigin>>,
 }

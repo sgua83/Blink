@@ -36,7 +36,7 @@ struct AbiRange { start: usize, end: usize, kind: AbiRangeKind }
 record!(FunctionAbi { definition, instance, ranges });
 record!(AbiRange { start, end, kind });
 #[derive(Clone, Debug)]
-enum AbiRangeKind {
+enum AbiRangeKind<O = super::operations::OperationOrigin> {
     HiddenResultHome { slot: usize },
     ParameterHome { slot: usize, parameter_index: usize, origin: Option<Parameter> },
     ParameterInput { slot: usize, parameter_index: usize, origin: Option<Parameter> },
@@ -52,19 +52,33 @@ enum AbiRangeKind {
     IntegerResult,
     FallibleSuccessStatus,
     FunctionReturn,
+    ParallelRange { part: crate::native::ParallelRangePart, origin: O },
 }
-variants!(AbiRangeKind {
+variants!(@<O> AbiRangeKind<O> {
     0=>HiddenResultHome{slot}, 1=>ParameterHome{slot,parameter_index,origin},
     2=>ParameterInput{slot,parameter_index,origin}, 3=>ScratchSave, 4=>ScratchRestore,
     5=>FrameAllocate{bytes}, 6=>FrameRelease{bytes}, 7=>NonvolatileSave, 8=>NonvolatileRestore,
     9=>ResultAddressSave{stack_offset}, 10=>IndirectResult{stack_offset},
-    11=>FloatResult, 12=>IntegerResult, 13=>FallibleSuccessStatus, 14=>FunctionReturn,
+    11=>FloatResult, 12=>IntegerResult, 13=>FallibleSuccessStatus, 14=>FunctionReturn, 15=>ParallelRange{part,origin},
 });
-impl From<&crate::native::FunctionAbi> for FunctionAbi {
-    fn from(value: &crate::native::FunctionAbi) -> Self {
-        Self { definition: value.definition.as_ref().map(Definition::capture), instance: value.instance.clone(),
-            ranges: value.ranges.iter().map(|range| AbiRange { start: range.start, end: range.end,
-                kind: match &range.kind {
+variants!(crate::native::ParallelRangePart {
+    0=>Enter{frame_bytes}, 1=>ScalarBounds, 2=>ScalarSelection{binding,offset}, 3=>ScalarAdvance, 4=>ScalarBackEdge,
+    5=>Exit{frame_bytes}, 6=>PacketBounds, 7=>PacketCollect{binding,offset}, 8=>PacketAdvance, 9=>PacketBackEdge, 10=>PacketTail,
+});
+impl Encode for crate::native::FunctionAbi {
+    fn encode(&self, writer: &mut Writer) {
+        self.definition.as_ref().map(Definition::capture).encode(writer);
+        self.instance.encode(writer); self.ranges.encode(writer);
+    }
+}
+impl Encode for crate::native::AbiRange {
+    fn encode(&self, writer: &mut Writer) {
+        self.start.encode(writer); self.end.encode(writer); self.kind.encode(writer);
+    }
+}
+impl Encode for crate::native::AbiRangeKind {
+    fn encode(&self, writer: &mut Writer) {
+        let value: AbiRangeKind<&ir::OperationOrigin> = match self {
                     crate::native::AbiRangeKind::HiddenResultHome { slot } => AbiRangeKind::HiddenResultHome { slot: *slot },
                     crate::native::AbiRangeKind::ParameterHome { slot, parameter_index, origin } => AbiRangeKind::ParameterHome { slot: *slot, parameter_index: *parameter_index, origin: origin.as_deref().map(Parameter::capture) },
                     crate::native::AbiRangeKind::ParameterInput { slot, parameter_index, origin } => AbiRangeKind::ParameterInput { slot: *slot, parameter_index: *parameter_index, origin: origin.as_deref().map(Parameter::capture) },
@@ -80,12 +94,10 @@ impl From<&crate::native::FunctionAbi> for FunctionAbi {
                     crate::native::AbiRangeKind::IntegerResult => AbiRangeKind::IntegerResult,
                     crate::native::AbiRangeKind::FallibleSuccessStatus => AbiRangeKind::FallibleSuccessStatus,
                     crate::native::AbiRangeKind::FunctionReturn => AbiRangeKind::FunctionReturn,
-                },
-            }).collect() }
+                    crate::native::AbiRangeKind::ParallelRange { part, origin } => AbiRangeKind::ParallelRange { part: *part, origin },
+        };
+        value.encode(writer);
     }
-}
-impl Encode for crate::native::FunctionAbi {
-    fn encode(&self, writer: &mut Writer) { FunctionAbi::from(self).encode(writer); }
 }
 impl FunctionAbi {
     pub(super) fn validate(&self, main_end: usize) -> super::Result<()> {
@@ -123,6 +135,9 @@ impl FunctionAbi {
                     AbiRangeKind::IntegerResult => "integer_result",
                     AbiRangeKind::FallibleSuccessStatus => "fallible_success_status",
                     AbiRangeKind::FunctionReturn => "function_return",
+                    AbiRangeKind::ParallelRange { part, origin } => {
+                        fields.extend(super::super::parallel_abi_fields(part, origin.ir_json())); "parallel_range"
+                    }
                 };
                 fields.insert(0, ("kind", text(kind)));
                 object(&fields)

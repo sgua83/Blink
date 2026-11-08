@@ -115,6 +115,22 @@ pub enum AbiRangeKind {
     IntegerResult,
     FallibleSuccessStatus,
     FunctionReturn,
+    ParallelRange { part: ParallelRangePart, origin: crate::ir::OperationOrigin },
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, Debug)]
+pub enum ParallelRangePart {
+    Enter { frame_bytes: u32 },
+    ScalarBounds,
+    ScalarSelection { binding: usize, offset: u32 },
+    ScalarAdvance,
+    ScalarBackEdge,
+    Exit { frame_bytes: u32 },
+    PacketBounds,
+    PacketCollect { binding: usize, offset: u32 },
+    PacketAdvance,
+    PacketBackEdge,
+    PacketTail,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

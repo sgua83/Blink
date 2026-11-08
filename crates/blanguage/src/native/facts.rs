@@ -50,11 +50,29 @@ fn function_abi(value: &super::FunctionAbi) -> String {
                 super::AbiRangeKind::IntegerResult => "integer_result",
                 super::AbiRangeKind::FallibleSuccessStatus => "fallible_success_status",
                 super::AbiRangeKind::FunctionReturn => "function_return",
+                super::AbiRangeKind::ParallelRange { part, origin } => {
+                    fields.extend(parallel_abi_fields(part, origin.ir_json())); "parallel_range"
+                }
             };
             fields.insert(0, ("kind", text(kind)));
             object(&fields)
         }))),
     ])
+}
+fn parallel_abi_fields(part: &super::ParallelRangePart, origin: String) -> Vec<(&'static str, String)> {
+    use super::ParallelRangePart::*;
+    let mut fields = vec![("stage_origin", origin)];
+    let part = match part {
+        Enter { frame_bytes } => { fields.push(("local_frame_bytes", frame_bytes.to_string())); "enter" }
+        Exit { frame_bytes } => { fields.push(("local_frame_bytes", frame_bytes.to_string())); "exit" }
+        ScalarSelection { binding, offset } | PacketCollect { binding, offset } => {
+            fields.extend([("binding_index", binding.to_string()), ("field_offset_bytes", offset.to_string())]);
+            if matches!(part, ScalarSelection { .. }) { "scalar_selection" } else { "packet_collect" }
+        }
+        ScalarBounds => "scalar_bounds", ScalarAdvance => "scalar_advance", ScalarBackEdge => "scalar_back_edge",
+        PacketBounds => "packet_bounds", PacketAdvance => "packet_advance", PacketBackEdge => "packet_back_edge", PacketTail => "packet_tail",
+    };
+    fields.insert(0, ("part", text(part))); fields
 }
 pub(crate) mod material;
 pub use material::SavedSources;

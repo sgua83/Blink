@@ -31,6 +31,9 @@ pub(crate) trait Encode {
         writer.0
     }
 }
+impl<T: Encode + ?Sized> Encode for &T {
+    fn encode(&self, writer: &mut Writer) { T::encode(*self, writer); }
+}
 pub(crate) trait Decode: Sized {
     fn decode(reader: &mut Reader<'_>) -> Result<Self>;
     fn from_bytes(bytes: &[u8]) -> Result<Self> {

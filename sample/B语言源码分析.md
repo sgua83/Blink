@@ -3214,7 +3214,7 @@ SIMD临时计划的Step把原执行kind与对应Inst的借用放在同一记录�
 
 尾部与使用点之间还由同一NativeCode的compiler专用tail_references交接：探栈记录原probe字段和实际辅助起点，字面量记录实际目标并直接移动原references Vec。TailReference只持有target及原rel32_fields，目标种类仍归tail_regions，不复制字面量表、IR或来源图。code_json输出target_offset_bytes及rel32_field_offsets_bytes；字段是同一代码中的四字节有符号PC相对位移位置，目标等于字段末端加原位移，不能把它当作指令或断点地址。共享数据保留每个真实使用字段，源关系借原操作／ABI范围；不能仅凭位模式推为唯一源字面量，未知来源仍未知。所有材料随同一代码事实消费者释放，不保留Emitter／Frame或运行资源。
 
-这些观察事实不进入必要执行编码；无compiler的运行库不含tail_regions／tail_references／sources。从执行映像恢复后若未保留尾部分区，查询明确报告缺失；BLCR2沿原Compilation／Module恢复已保存的操作、ABI与尾部引用；同一sources互斥持有Emitted原事实、Restored只读事实或Unavailable，不旁挂另一来源表；COFF原Section按值接收原引用与同一CodeSources，BLCF5沿同一材料保存与恢复。启动、标量输出和导入跳板在同一Layout分别交出Startup、Print(Scalar)、ImportThunk，generation只说明整节真实目的，目标仍读原重定位；每节查询只取得一次原Layout，区域、引用、ABI与操作来源直接借用，不分别建立查找包装。ABI与操作共用`crates/blanguage/src/native/facts/material/source.rs`的只读位置表示；原Object生成只移动事实，明确code_observations请求才投影Source快照的身份、摘要、路径编码与UTF-8半开范围／Unicode标量行列。`operations.rs`逐字段编码原OperationOrigin、GeneratedOrigin及其已有变换关系，不先展开另一棵来源树，不保存源码文本、IR指令或运行值，也不伪造Source；枚举JSON拼写继续复用原IR名称函数。读取材料得到本次调用者的只读事实，ABI与操作区间以各原主函数为界，COFF沿原.pdata，BLCR沿原function_end，保留原顺序、嵌套、零长度及真实未知；JSON的function_abi与operation_ranges未保留／未提供材料／手写节为null，已采集空操作为[]。原Source随原代码／Section事实消费者保持；ABI在原finish一次交接，恢复以只读材料替换原sources后释放被替换的Source引用，解码材料不延长原源码快照寿命；编译完成对象、来源材料、链接、执行与运行资源仍各归原所有者。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
+这些观察事实不进入必要执行编码；无compiler的运行库不含tail_regions／tail_references／sources。从执行映像恢复后若未保留尾部分区，查询明确报告缺失；BLCR3沿原Compilation／Module恢复已保存的操作、ABI与尾部引用；同一sources互斥持有Emitted原事实、Restored只读事实或Unavailable，不旁挂另一来源表；COFF原Section按值接收原引用与同一CodeSources，BLCF6沿同一材料保存与恢复。启动、标量输出和导入跳板在同一Layout分别交出Startup、Print(Scalar)、ImportThunk，generation只说明整节真实目的，目标仍读原重定位；每节查询只取得一次原Layout，区域、引用、ABI与操作来源直接借用，不分别建立查找包装。ABI与操作共用`crates/blanguage/src/native/facts/material/source.rs`的只读位置表示；原Object生成只移动事实，明确code_observations请求才投影Source快照的身份、摘要、路径编码与UTF-8半开范围／Unicode标量行列。`operations.rs`逐字段编码原OperationOrigin、GeneratedOrigin及其已有变换关系，不先展开另一棵来源树，不保存源码文本、IR指令或运行值，也不伪造Source；枚举JSON拼写继续复用原IR名称函数。读取材料得到本次调用者的只读事实，ABI与操作区间以各原主函数为界，COFF沿原.pdata，BLCR沿原function_end，保留原顺序、嵌套、零长度及真实未知；JSON的function_abi与operation_ranges未保留／未提供材料／手写节为null，已采集空操作为[]。原Source随原代码／Section事实消费者保持；ABI在原finish一次交接，恢复以只读材料替换原sources后释放被替换的Source引用，解码材料不延长原源码快照寿命；编译完成对象、来源材料、链接、执行与运行资源仍各归原所有者。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 
@@ -3245,7 +3245,7 @@ SIMD临时计划的Step把原执行kind与对应Inst的借用放在同一记录�
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:728`。
+源码节选：`crates/blanguage/src/native/codegen.rs:734`。
 
 ```rust
     let stage = &lowered;
