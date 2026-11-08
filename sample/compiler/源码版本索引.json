@@ -359,6 +359,10 @@
       "sha256": "130e17aa00fed665c4a095ecdc58da93607f68cd4ea1f325345043aba468bba9"
     },
     {
+      "path": "crates/blanguage/src/native/custom_reduce.rs",
+      "sha256": "29744e876ca2809bcff85a03fdb796514932514a123147f68cc4388c78bafa94"
+    },
+    {
       "path": "crates/blanguage/src/native/external.rs",
       "sha256": "02c7fbac88ced4e16ddec962fc5dd5a7b42ed47a3632a7dbd7a2c5698ffcd52c"
     },
