@@ -284,6 +284,7 @@ pub enum ContractPredicate {
         value: String,
         resource: String,
     },
+    Range { value: String, intervals: Vec<(OutputCondition, OutputCondition)> },
     SameLength { left: String, right: String },
     Initialized {
         value: String,

@@ -2600,7 +2600,7 @@ impl Builder<'_> {
             let component = source.data.ty.components.iter().position(|(_, at)| *at == word).unwrap();
             let value = self.value_component(&model, component);
             let proven = match requirement {
-                ElementFact::Range(range) => value.proof.holds_element_range(0, range),
+                ElementFact::Range(range) => value.proof.holds_range(0, range.scalar, &range.intervals),
                 ElementFact::Index { target, .. } => {
                     let target = &data[*target];
                     self.index_in(&value, IndexDomain::ApplicationData(target.root.identity()), target.length.minimum(), None)

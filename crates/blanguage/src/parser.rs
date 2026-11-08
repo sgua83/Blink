@@ -220,6 +220,20 @@ impl Parser {
                 let (left, right) = if left <= right { (left, right) } else { (right, left) };
                 ContractPredicate::SameLength { left, right }
             }
+            "range" => {
+                let value = self.contract_value_path()?;
+                let mut intervals = Vec::new();
+                while self.take(",") {
+                    let lower = self.expr(0, false)?;
+                    self.expect(",")?;
+                    let upper = self.expr(0, false)?;
+                    let endpoint = |expression: &Expr| OutputCondition::from_expr(expression)
+                        .ok_or_else(|| Diagnostic { source: self.source.clone(), span: expression.span,
+                            code: "B225", message: "range端点使用类型化编译期常量及纯数值运算".into() });
+                    intervals.push((endpoint(&lower)?, endpoint(&upper)?));
+                }
+                ContractPredicate::Range { value, intervals }
+            }
             "index" => {
                 let value = self.contract_value_path()?;
                 self.expect(",")?;
@@ -230,7 +244,7 @@ impl Parser {
                 return self.source.fail(
                     span,
                     "B225",
-                    "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous、same_length、cleanup、memory 或 initialized",
+                    "未知接口约束；使用 prefix、nonzero、nonempty、index、range、contiguous、same_length、cleanup、memory 或 initialized",
                 );
             }
         };

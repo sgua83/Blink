@@ -236,7 +236,7 @@ impl Decode for ir::CallParameter {
     fn decode(r: &mut Reader<'_>) -> Result<Self> { Ok(Self::new(Decode::decode(r)?)) }
 }
 variants!(ast::ContractKind{0=>Requires,1=>Ensures});
-variants!(ast::ContractPredicate{0=>Prefix{data,count,field},1=>Nonzero(name),2=>Nonempty(name),3=>Index{value,resource},4=>Contiguous(name),5=>Initialized{value,condition},6=>SameLength{left,right},7=>Cleanup{value,condition},8=>Memory(access)});
+variants!(ast::ContractPredicate{0=>Prefix{data,count,field},1=>Nonzero(name),2=>Nonempty(name),3=>Index{value,resource},4=>Contiguous(name),5=>Initialized{value,condition},6=>SameLength{left,right},7=>Cleanup{value,condition},8=>Memory(access),9=>Range{value,intervals}});
 variants!(ast::OutputCondition{0=>Name(name),1=>Number(number),2=>Bool(value),3=>Member(base,field),4=>Unary(op,value),5=>Binary(op,a,b),6=>StaticU32(value),7=>Constant(value)});
 impl Encode for ast::OutputConstant {
     fn encode(&self, w: &mut Writer) { self.ty.encode(w); self.bits.encode(w); }

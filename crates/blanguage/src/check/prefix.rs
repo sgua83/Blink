@@ -168,7 +168,7 @@ pub(super) fn relations(
         .function
         .contracts
         .iter()
-        .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. }))
+        .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. } | ContractPredicate::Range { .. }))
         .map(|c| relation(program, env, d, c))
         .collect::<Result<Vec<_>>>()?;
     result.sort();
@@ -176,17 +176,20 @@ pub(super) fn relations(
     Ok(result)
 }
 
-pub(super) fn element_requirements(buffers: &[Buffer], env: &BTreeMap<String, Root>, d: &Definition) -> Result<Vec<ElementFact>> {
+pub(super) fn element_requirements(world: &World, buffers: &[Buffer], env: &BTreeMap<String, Root>, d: &Definition) -> Result<Vec<ElementFact>> {
     let mut requirements = Vec::new();
     for contract in &d.function.contracts {
-        let ContractPredicate::Index { value, resource } = &contract.predicate else { continue; };
+        let value = match &contract.predicate {
+            ContractPredicate::Index { value, .. } | ContractPredicate::Range { value, .. } => value,
+            _ => continue,
+        };
         if contract.kind != ContractKind::Requires {
-            return d.source.fail(contract.span, "B225", "整域index声明实际输入前提；输出由完整真实写入推导");
+            return d.source.fail(contract.span, "B225", "整域index／range声明实际输入前提；输出由完整真实写入推导");
         }
         let Some((root, fields)) = value.split_once("[*]") else {
-            return d.source.fail(contract.span, "B225", "整域index需要实际dataset共同元素的[*]字段选择");
+            return d.source.fail(contract.span, "B225", "整域index／range需要实际dataset共同元素的[*]字段选择");
         };
-        let (Some(Root::Data(binding, access)), Some(Root::Data(target, _))) = (env.get(root), env.get(resource)) else {
+        let Some(Root::Data(binding, access)) = env.get(root) else {
             return d.source.fail(contract.span, "B225", "整域index需要共同元素源与独立dataset目标");
         };
         if !access.reads() || *access == Access::Atomic {
@@ -199,12 +202,28 @@ pub(super) fn element_requirements(buffers: &[Buffer], env: &BTreeMap<String, Ro
             components = indices.iter().map(|&i| components[i]).collect();
             ty = selected;
         }
-        if !ty.is_numeric() || ty.components.iter().any(|(scalar, _)| *scalar != Scalar::U32) {
-            return d.source.fail(contract.span, "B225", "index字段需要u32标量或向量分量");
+        match &contract.predicate {
+            ContractPredicate::Index { resource, .. } => {
+                if !ty.is_numeric() || ty.components.iter().any(|(scalar, _)| *scalar != Scalar::U32) {
+                    return d.source.fail(contract.span, "B225", "index字段需要u32标量或向量分量");
+                }
+                let Some(Root::Data(target, _)) = env.get(resource) else {
+                    return d.source.fail(contract.span, "B225", "整域index需要独立dataset目标");
+                };
+                requirements.extend(components.into_iter().map(|component| ElementFact::Index {
+                    binding: *binding, offset: buffers[*binding].ty.components[component].1, target: *target,
+                }));
+            }
+            ContractPredicate::Range { intervals, .. } => {
+                let scalar = bounds::range_scalar(&ty, &d.source, contract.span)?;
+                let constants = outputs::range_constants(world, d, Some(scalar), intervals, contract.span)?;
+                let intervals = bounds::numeric_intervals(scalar, constants.iter().map(|(a,b)| (a.bits[0],b.bits[0])), &d.source, contract.span)?;
+                requirements.extend(components.into_iter().map(|component| ElementFact::Range(ElementRange {
+                    binding: *binding, offset: buffers[*binding].ty.components[component].1, scalar, intervals: intervals.clone(),
+                })));
+            }
+            _ => unreachable!(),
         }
-        requirements.extend(components.into_iter().map(|component| ElementFact::Index {
-            binding: *binding, offset: buffers[*binding].ty.components[component].1, target: *target,
-        }));
     }
     requirements.sort();
     requirements.dedup();
@@ -220,7 +239,7 @@ impl Facts {
             let component = program.buffers[binding].ty.components.iter().position(|(_, word)| *word == offset).unwrap();
             let proof = self.elements.entry(binding).or_default();
             match requirement {
-                ElementFact::Range(range) => proof.constrain_element_range(component, range),
+                ElementFact::Range(range) => proof.constrain_range(component, &range.intervals),
                 ElementFact::Index { target, .. } => proof.mark_domain(component, IndexDomain::Data(*target)),
             }
         }
@@ -243,12 +262,12 @@ impl Facts {
             if program.buffers[binding].count == Some(0) { continue; }
             let component = program.buffers[binding].ty.components.iter().position(|(_, word)| *word == offset).unwrap();
             let proven = self.elements.get(&binding).is_some_and(|proof| match requirement {
-                ElementFact::Range(range) => proof.holds_element_range(component, range),
+                ElementFact::Range(range) => proof.holds_range(component, range.scalar, &range.intervals),
                 ElementFact::Index { target, .. } => proof.domains(component).into_iter().any(|domain| matches!(domain, IndexDomain::Data(other) if program.same_length(other, *target)))
                     || proof.element_ranges(binding, &program.buffers[binding].ty).iter().any(|range| range.offset == offset
                         && range.intervals.iter().all(|&(_, upper)| upper < u64::from(program.buffers[*target].count.unwrap_or(0)))),
             });
-            if !proven { return d.source.fail(span, "B226", "整域调用前尚未证明共同字段的目标索引前提"); }
+            if !proven { return d.source.fail(span, "B226", "整域调用前尚未证明共同字段的数值／目标索引前提"); }
         }
         Ok(())
     }

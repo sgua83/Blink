@@ -1,7 +1,7 @@
 //! 同一Proof区间集合中的有限浮点次序；不拥有运行资源或另一份事实表。
 use super::*;
 
-fn order(scalar: Scalar, bits: Bits) -> Bits {
+pub(super) fn order(scalar: Scalar, bits: Bits) -> Bits {
     let sign = 1 << (scalar.bit_width() - 1);
     if bits & sign == 0 { bits ^ sign } else { !bits & scalar.bit_mask() }
 }

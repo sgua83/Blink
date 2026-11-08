@@ -230,6 +230,7 @@ pub(super) fn expression(
     inputs: &BTreeMap<String, Value>,
     returned: Option<&Value>,
     span: Span,
+    expected: Option<&Ty>,
 ) -> Result<Value> {
     fn atom(values: &mut BTreeMap<String, Binding>, value: Value, span: Span) -> Expr {
         let name = format!("\0output-condition:{}", values.len());
@@ -399,7 +400,7 @@ pub(super) fn expression(
             span,
         )?;
         let outer = std::mem::replace(&mut builder.env, values);
-        let result = builder.expr(&expression);
+        let result = builder.expr_expected(&expression, expected);
         builder.env = outer;
         let value = result?.ok_or_else(|| Diagnostic {
             source: builder.definition.source.clone(),
@@ -407,7 +408,7 @@ pub(super) fn expression(
             code: "B225",
             message: "输出条件必须产生bool值".into(),
         })?;
-        builder.require_bool(&value, span)?;
+        if let Some(expected) = expected { builder.require_same(expected, &value.ty, span)?; }
         Ok(value)
     })();
     if let Some(declaration) = declaration {
@@ -459,6 +460,7 @@ pub(super) fn guards<'a>(
             inputs,
             returned,
             span,
+            Some(&Ty::scalar(Scalar::Bool)),
         )?);
         for component in components {
             guards[component] = Some(
@@ -484,9 +486,39 @@ pub(super) fn contract_predicates(
         if let ContractPredicate::Initialized { condition, .. }|ContractPredicate::Cleanup { condition, .. } = &mut predicate {
             *condition = normalize(builder.world, definition.into(), &definition.function.result, condition, contract.span)?;
         }
+        if let ContractPredicate::Range { intervals, .. } = &mut predicate {
+            *intervals = range_constants(builder.world, definition, None, intervals, contract.span)?
+                .into_iter().map(|(lower, upper)| (OutputCondition::Constant(lower), OutputCondition::Constant(upper))).collect();
+        }
         predicates.insert((contract.kind, predicate));
     }
     Ok(predicates)
+}
+
+pub(super) fn range_constants(
+    world: &World, definition: &Definition, scalar: Option<Scalar>,
+    intervals: &[(OutputCondition, OutputCondition)], span: Span,
+) -> Result<Vec<(OutputConstant, OutputConstant)>> {
+    let context = constant::constant_context(&definition.function.name);
+    let (source_definition, source_context) = definition.syntax_context(None);
+    let mut builder = Builder::from_checked(world, &Arc::new(definition.clone()), &context, 0, source_definition, source_context, BTreeSet::new());
+    builder.in_function = true;
+    let mut endpoint = |value: &OutputCondition| -> Result<OutputConstant> {
+        let value = bind_constants(world, definition.into(), value, span)?;
+        let first = builder.code.len();
+        let value = expression(&mut builder, definition.into(), &value, &BTreeMap::new(), None, span, None)?;
+        if !value.ty.is_numeric() || value.ty.components.len() != 1
+            || value.ty.components[0].0 == Scalar::Bool
+            || scalar.is_some_and(|scalar| value.ty != Ty::scalar(scalar))
+            || value.constant.is_none()
+            || builder.code[first..].iter().any(|inst| !matches!(&inst.kind, InstKind::Constant(..)))
+        {
+            return definition.source.fail(span, "B225", "range端点必须完全编译期求值，且为选中分量同类型的数值标量");
+        }
+        Ok(OutputConstant { ty: value.ty, bits: value.constant.unwrap(),
+            generated_origin: builder.code.last().and_then(|inst| inst.generated_origin.clone()) })
+    };
+    intervals.iter().map(|(lower, upper)| Ok((endpoint(lower)?, endpoint(upper)?))).collect()
 }
 
 fn bind_constants(

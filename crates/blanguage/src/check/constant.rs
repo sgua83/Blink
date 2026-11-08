@@ -100,7 +100,7 @@ fn evaluation_operations<'a>(code: impl Iterator<Item = &'a Inst>) -> Vec<Operat
     ));
     operations
 }
-fn constant_context(name:&str)->Program {
+pub(super) fn constant_context(name:&str)->Program {
 Program {
             name: name.into(),
             source_origin: None,

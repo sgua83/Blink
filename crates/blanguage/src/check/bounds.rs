@@ -288,6 +288,31 @@ impl Place {
         }
     }
 }
+pub(super) fn range_scalar(ty: &Ty, source: &Source, span: Span) -> Result<Scalar> {
+    if !ty.is_numeric() || ty.components.is_empty() || ty.components[0].0 == Scalar::Bool
+        || ty.components.iter().any(|(scalar, _)| *scalar != ty.components[0].0)
+    {
+        return source.fail(span, "B225", "range选择同类型数值标量或向量分量");
+    }
+    Ok(ty.components[0].0)
+}
+pub(super) fn numeric_intervals(scalar: Scalar, intervals: impl IntoIterator<Item = (Bits, Bits)>, source: &Source, span: Span) -> Result<Vec<(Bits, Bits)>> {
+    let intervals = intervals.into_iter().map(|(lower, upper)| {
+        let (lower, upper) = if scalar.is_float() {
+            let number = |bits| if scalar == Scalar::F32 { f32::from_bits(bits as u32) as f64 } else { f64::from_bits(bits) };
+            if number(lower).is_nan() || number(upper).is_nan() {
+                return source.fail(span, "B225", "range浮点端点不能是NaN");
+            }
+            let lower = if number(lower) == 0.0 { 1 << (scalar.bit_width() - 1) } else { lower };
+            let upper = if number(upper) == 0.0 { 0 } else { upper };
+            (floating::order(scalar, lower), floating::order(scalar, upper))
+        } else { (lower ^ scalar.order_bias(), upper ^ scalar.order_bias()) };
+        if lower > upper { return source.fail(span, "B225", "range闭区间下端点不能大于上端点"); }
+        Ok((lower, upper))
+    }).collect::<Result<Vec<_>>>()?;
+    Ok(ScalarRanges::from_intervals(intervals).0)
+}
+
 #[derive(Clone)]
 struct ScalarRanges(Vec<(Bits, Bits)>);
 impl Default for ScalarRanges {
@@ -514,14 +539,14 @@ impl Proof {
         }
         facts
     }
-    pub(super) fn constrain_element_range(&mut self, component: usize, range: &ElementRange) {
+    pub(super) fn constrain_range(&mut self, component: usize, intervals: &[(Bits, Bits)]) {
         self.ranges.resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
-        self.ranges[component] = self.range_set(component).combine(&ScalarRanges::from_intervals(range.intervals.iter().copied()),
+        self.ranges[component] = self.range_set(component).combine(&ScalarRanges::from_intervals(intervals.iter().copied()),
             |(a,b),(c,d)| ScalarRanges::interval(a.max(c), b.min(d)));
     }
-    pub(super) fn holds_element_range(&self, component: usize, range: &ElementRange) -> bool {
-        self.element_range(component, range.scalar).0.iter().all(|&(a,b)|
-            range.intervals.iter().any(|&(c,d)| c <= a && b <= d))
+    pub(super) fn holds_range(&self, component: usize, scalar: Scalar, intervals: &[(Bits, Bits)]) -> bool {
+        self.element_range(component, scalar).0.iter().all(|&(a,b)|
+            intervals.iter().any(|&(c,d)| c <= a && b <= d))
     }
     pub(super) fn assign_elements(&mut self, components: &[usize], width: usize, fresh: &Self) {
         self.origins.resize_with(width, Vec::new);
@@ -2963,6 +2988,20 @@ impl Condition {
     }
     pub fn of(value: &Value) -> Self {
         Self::component(value, 0)
+    }
+    pub(super) fn range_value(value: &Value, scalar: Scalar, intervals: &[(Bits, Bits)]) -> Self {
+        let mut condition = Clause::default();
+        for component in 0..value.regs.len() {
+            let identity = value.component_identity(component);
+            let mut selected = Clause::impossible();
+            for &(lower, upper) in intervals {
+                selected = Clause::either(&selected, &Clause::facts([
+                    Fact::Minimum(identity, scalar, lower), Fact::Maximum(identity, scalar, upper),
+                ].into()));
+            }
+            condition = Clause::both(&condition, &selected);
+        }
+        Self { cases: [condition.negate(), condition] }
     }
     fn component(value: &Value, component: usize) -> Self {
         let mut condition = value

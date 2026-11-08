@@ -123,6 +123,7 @@ enum Predicate {
     Prefix(Prefix),
     Contiguous(Place),
     Nonzero(Selection),
+    Range(Selection, Scalar, Vec<(Bits, Bits)>),
     Nonempty(Resource),
     Index(Selection, Resource, Option<(bounds::Condition, bounds::Condition)>),
     Cleanup { value:String, when: bounds::Condition, required: bounds::Condition },
@@ -302,7 +303,7 @@ pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definitio
             ContractPredicate::Nonzero(path)|ContractPredicate::Nonempty(path)|ContractPredicate::Contiguous(path)=>vec![path],
             ContractPredicate::Index{value,resource}=>vec![value,resource],
             ContractPredicate::SameLength{left,right}=>vec![left,right],
-            ContractPredicate::Initialized{value,..}|ContractPredicate::Cleanup{value,..}=>vec![value],
+            ContractPredicate::Initialized{value,..}|ContractPredicate::Cleanup{value,..}|ContractPredicate::Range{value,..}=>vec![value],
             ContractPredicate::Prefix{data,count,field}=>vec![data,count,field],
             ContractPredicate::Memory(_)=>Vec::new(),
         };
@@ -560,7 +561,7 @@ pub(super) fn resolve(
             ),
             ContractPredicate::Cleanup { value, condition } => {
                 let inputs=outputs::inputs(builder,definition,env)?;
-                let when=outputs::expression(builder,definition.into(),condition,&inputs,None,contract.span)?;
+                let when=outputs::expression(builder,definition.into(),condition,&inputs,None,contract.span,Some(&Ty::scalar(Scalar::Bool)))?;
                 let(model,active)=cleanup_selection(builder,definition,env,value,contract.span)?;
                 let required=cleanup_condition(builder,model,active,contract.span)?;
                 (Predicate::Cleanup{value:value.clone(),when:bounds::Condition::of(&when),required},format!("cleanup({value})"))
@@ -569,6 +570,13 @@ pub(super) fn resolve(
                 let selection = select(builder, definition, env, path, contract.span)?;
                 validate_nonzero_type(&selection.value.ty, &definition.source, contract.span)?;
                 (Predicate::Nonzero(selection), format!("nonzero({path})"))
+            }
+            ContractPredicate::Range { value, intervals } => {
+                let selection = select(builder, definition, env, value, contract.span)?;
+                let scalar = bounds::range_scalar(&selection.value.ty, &definition.source, contract.span)?;
+                let constants = outputs::range_constants(builder.world, definition, Some(scalar), intervals, contract.span)?;
+                let intervals = bounds::numeric_intervals(scalar, constants.iter().map(|(a,b)| (a.bits[0],b.bits[0])), &definition.source, contract.span)?;
+                (Predicate::Range(selection, scalar, intervals), format!("range({value})"))
             }
             ContractPredicate::Nonempty(path) => (
                 Predicate::Nonempty(resource(builder, definition, env, path, contract.span)?),
@@ -632,6 +640,10 @@ fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
             Predicate::SameLength(left, right) => builder.length_proofs_equal(&left.proof, &right.proof),
             Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
             Predicate::Nonzero(selection) => selection.empty() || builder.condition_truth(&bounds::Condition::nonzero_value(&selection.value),None)==Some(true),
+            Predicate::Range(selection, scalar, intervals) => {
+                let proof = builder.path_proof(&selection.value.ty, bounds::Proof::capture(&selection.value));
+                selection.empty() || (0..selection.value.regs.len()).all(|component| proof.holds_range(component, *scalar, intervals))
+            }
             Predicate::Nonempty(resource) => {
                 resource.empty() || builder.resource_minimum(resource.domain(), resource.minimum()) != 0
             }
@@ -701,6 +713,11 @@ fn assume_values(env:&mut BTreeMap<String,Binding>,requirement:&Requirement){
                 Predicate::Nonzero(selection) => {
                     if selection.root == *name && let Some(value)=selection.assumed_value(binding) {
                         for component in &selection.components {value.proof.mark_nonzero(*component);}
+                    }
+                }
+                Predicate::Range(selection, _, intervals) => {
+                    if selection.root == *name && let Some(value) = selection.assumed_value(binding) {
+                        for component in &selection.components { value.proof.constrain_range(*component, intervals); }
                     }
                 }
                 Predicate::Nonempty(resource) => resource.assume_nonempty(name, binding),
@@ -858,6 +875,10 @@ fn requirement_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BT
     if holds(builder,requirement,span)?{return Ok(bounds::Condition::constant(true));}
     Ok(match &requirement.predicate {
         Predicate::Nonzero(selection)=>bounds::Condition::nonzero_value(&selection.value),
+        Predicate::Range(selection, scalar, intervals)=>{
+            let condition = bounds::Condition::range_value(&selection.value, *scalar, intervals);
+            match &selection.scope { Some(scope) => scope.clone().negate().logical(condition, true), None => condition }
+        },
         Predicate::Nonempty(resource)=>nonempty_condition(builder,definition,env,resource,span)?,
         Predicate::Index(selection,resource,scope)=>{
             let nonempty = match scope { Some((_,condition)) => condition.clone(), None => nonempty_condition(builder,definition,env,resource,span)? };

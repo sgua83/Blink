@@ -493,7 +493,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
     program.length_requirements = contracts::root_lengths(&env, d)?;
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
     program.prefix_guarantees = prefix::relations(&program, &env, d, ContractKind::Ensures)?;
-    program.element_requirements = prefix::element_requirements(&program.buffers, &env, d)?;
+    program.element_requirements = prefix::element_requirements(world, &program.buffers, &env, d)?;
     program.element_requirements.extend_from_slice(element_inputs);
     program.element_requirements.sort();
     program.element_requirements.dedup();
@@ -1206,7 +1206,7 @@ fn expand_stages(
                     }
                 }
                 let required = prefix::relations(program, &child, callee, ContractKind::Requires)?;
-                let elements = prefix::element_requirements(&program.buffers, &child, callee)?;
+                let elements = prefix::element_requirements(world, &program.buffers, &child, callee)?;
                 facts.prove_elements(program, &elements, callee, statement.span)?;
                 for relation in &required {
                     prefix::prove(
