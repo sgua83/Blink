@@ -3156,6 +3156,14 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                     let right = b.component_ranges(bi);
                     let signed = scalar.is_signed();
                     let bias = scalar.order_bias();
+                    if op == "/" && !signed && a.proof.domains.get(ai).is_some_and(|domains| {
+                        domains.iter().any(|domain| matches!(domain,
+                            IndexDomain::Computed(IntegerExpression::Binary(
+                                IntegerOperation::Remainder, source, _, divisor
+                            )) if *source == scalar && *divisor == Operand::of(b, bi)))
+                    }) {
+                        return left.combine(&right, |_, _| ScalarRanges::interval(bias, bias));
+                    }
                     if matches!(op, "-" | "^" | "&" | "|" | "/" | "%" | "min" | "max")
                         && a.same_component(ai, b, bi)
                     {
