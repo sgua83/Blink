@@ -37,7 +37,12 @@ enum ReadSource {
         uniform: bool,
     },
 }
-enum Step {
+// The temporary lowering step borrows its original instruction; it owns no source copy.
+struct Step<'a> {
+    instruction: &'a Inst,
+    kind: StepKind<'a>,
+}
+enum StepKind<'a> {
     Constant(Reg, u32),
     Index(Reg),
     Uniform(Reg, u32),
@@ -96,25 +101,25 @@ enum Step {
     },
     If {
         condition: Reg,
-        yes: Vec<Step>,
-        no: Vec<Step>,
+        yes: Vec<Step<'a>>,
+        no: Vec<Step<'a>>,
     },
     Loop {
-        condition: Vec<Step>,
+        condition: Vec<Step<'a>>,
         test: Reg,
-        body: Vec<Step>,
+        body: Vec<Step<'a>>,
     },
-    Scope(Vec<Step>),
+    Scope(Vec<Step<'a>>),
     Exit,
     Break,
     Continue,
 }
-pub(super) struct Plan {
-    code: Vec<Step>,
+pub(super) struct Plan<'a> {
+    code: Vec<Step<'a>>,
     pub address_only: BTreeSet<Reg>,
 }
-impl Plan {
-    pub fn new(program: &Program, stage: &Stage) -> Option<Self> {
+impl<'a> Plan<'a> {
+    pub fn new(program: &Program, stage: &'a Stage) -> Option<Self> {
         if stage.has_tile_scope() || stage.writes.is_empty()
             || stage.registers.iter().chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar))).any(|scalar| scalar.size() != 4)
         {
@@ -144,21 +149,21 @@ impl Plan {
     fn block(
         program: &Program,
         stage: &Stage,
-        instructions: &[Inst],
+        instructions: &'a [Inst],
         uniform: &[bool],
         indices: &BTreeSet<Reg>,
-    ) -> Option<Vec<Step>> {
+    ) -> Option<Vec<Step<'a>>> {
         let mut code = Vec::new();
         for inst in instructions {
             let step = match &(inst).kind {
-                InstKind::Constant(dst, _, bits) => Step::Constant(*dst, *bits as u32),
-                InstKind::Index(dst) => Step::Index(*dst),
-                InstKind::Uniform(dst, offset) => Step::Uniform(*dst, *offset),
+                InstKind::Constant(dst, _, bits) => StepKind::Constant(*dst, *bits as u32),
+                InstKind::Index(dst) => StepKind::Index(*dst),
+                InstKind::Uniform(dst, offset) => StepKind::Uniform(*dst, *offset),
                 InstKind::LoadLocal(dst, slot) => {
-                    Step::Copy(PrivateSlot::Register(*dst), PrivateSlot::Local(*slot))
+                    StepKind::Copy(PrivateSlot::Register(*dst), PrivateSlot::Local(*slot))
                 }
                 InstKind::StoreLocal(slot, src) => {
-                    Step::Copy(PrivateSlot::Local(*slot), PrivateSlot::Register(*src))
+                    StepKind::Copy(PrivateSlot::Local(*slot), PrivateSlot::Register(*src))
                 }
                 InstKind::Load {
                     dst,
@@ -178,7 +183,7 @@ impl Plan {
                         return None;
                     }
                     if broadcast || element {
-                        Step::Load {
+                        StepKind::Load {
                             dst: *dst,
                             binding: *binding,
                             index: if broadcast {
@@ -189,7 +194,7 @@ impl Plan {
                             word: *word,
                         }
                     } else {
-                        Step::Gather {
+                        StepKind::Gather {
                             dst: *dst,
                             source: ReadSource::Dataset(*binding),
                             index: *index,
@@ -210,7 +215,7 @@ impl Plan {
                     }
                     let same_address = uniform[address[0]] && uniform[address[1]];
                     let broadcast = same_address && uniform[*index] && stride.all_operands(&mut |reg| uniform[reg]);
-                    Step::Gather {
+                    StepKind::Gather {
                         dst: *dst,
                         source: ReadSource::View {
                             address: *address,
@@ -236,14 +241,14 @@ impl Plan {
                     {
                         return None;
                     }
-                    Step::Store {
+                    StepKind::Store {
                         binding: *binding,
                         index: Address::Element,
                         word: *word,
                         value: *value,
                     }
                 }
-                InstKind::Unary { dst, op, a } => Step::Unary {
+                InstKind::Unary { dst, op, a } => StepKind::Unary {
                     dst: *dst,
                     op: *op,
                     a: *a,
@@ -268,7 +273,7 @@ impl Plan {
                         BinaryOp::ShiftRightLogical => Binary::ShiftEach(5),
                         BinaryOp::ShiftRightArithmetic => Binary::ShiftEach(7),
                     };
-                    Step::Binary {
+                    StepKind::Binary {
                         dst: *dst,
                         op,
                         a: *a,
@@ -279,7 +284,7 @@ impl Plan {
                     result,
                     src,
                     divisor,
-                } => Step::IntegerDivide {
+                } => StepKind::IntegerDivide {
                     result: *result,
                     src: *src,
                     divisor: *divisor,
@@ -288,9 +293,9 @@ impl Plan {
                     let from = stage.registers[*src];
                     let into = stage.registers[*dst];
                     if operands::bit_copy(from, into) {
-                        Step::Copy(PrivateSlot::Register(*dst), PrivateSlot::Register(*src))
+                        StepKind::Copy(PrivateSlot::Register(*dst), PrivateSlot::Register(*src))
                     } else {
-                        Step::Cast {
+                        StepKind::Cast {
                             dst: *dst,
                             src: *src,
                             from,
@@ -306,7 +311,7 @@ impl Plan {
                         MathOp::Max => Math::Max,
                         _ => return None,
                     };
-                    Step::Math {
+                    StepKind::Math {
                         dst: *dst,
                         op,
                         args: args.clone(),
@@ -317,7 +322,7 @@ impl Plan {
                     condition,
                     a,
                     b,
-                } => Step::Select {
+                } => StepKind::Select {
                     dst: *dst,
                     condition: *condition,
                     a: *a,
@@ -327,7 +332,7 @@ impl Plan {
                     if !uniform[*condition] {
                         return None;
                     }
-                    Step::If {
+                    StepKind::If {
                         condition: *condition,
                         yes: Self::block(program, stage, yes, uniform, indices)?,
                         no: Self::block(program, stage, no, uniform, indices)?,
@@ -341,21 +346,21 @@ impl Plan {
                     if !uniform[*test] {
                         return None;
                     }
-                    Step::Loop {
+                    StepKind::Loop {
                         condition: Self::block(program, stage, condition, uniform, indices)?,
                         test: *test,
                         body: Self::block(program, stage, body, uniform, indices)?,
                     }
                 }
                 InstKind::Scope(body) => {
-                    Step::Scope(Self::block(program, stage, body, uniform, indices)?)
+                    StepKind::Scope(Self::block(program, stage, body, uniform, indices)?)
                 }
-                InstKind::Exit => Step::Exit,
-                InstKind::Break => Step::Break,
-                InstKind::Continue => Step::Continue,
+                InstKind::Exit => StepKind::Exit,
+                InstKind::Break => StepKind::Break,
+                InstKind::Continue => StepKind::Continue,
                 _ => return None,
             };
-            code.push(step);
+            code.push(Step { instruction: inst, kind: step });
         }
         Some(code)
     }
@@ -617,7 +622,7 @@ impl Emitter<'_> {
         }
         self.packet_store(allocation, Register(dst), target);
     }
-    pub(super) fn packet_loop(&mut self, plan: &Plan, allocation: &PacketAllocation) {
+    pub(super) fn packet_loop(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) {
         let begin = self.code.len();
         let sparse = self.stage.selection.is_some();
         let tail = if let Some(selection) = self.stage.selection {
@@ -667,12 +672,14 @@ impl Emitter<'_> {
         }
     }
 
-    fn packet_block(&mut self, code: &[Step], allocation: &PacketAllocation) {
+    fn packet_block(&mut self, code: &[Step<'_>], allocation: &PacketAllocation) {
         use PrivateSlot::Register;
         let sparse = self.stage.selection.is_some();
         for step in code {
-            match step {
-                Step::If { condition, yes, no } => {
+            let start = self.code.len();
+            let first = self.operation_ranges.as_ref().map(Vec::len);
+            match &step.kind {
+                StepKind::If { condition, yes, no } => {
                     self.packet_lane(allocation, *condition, 0, 0);
                     self.bytes(&[0x85, 0xc0]);
                     let other = self.jump(Some(0x84));
@@ -682,7 +689,7 @@ impl Emitter<'_> {
                     self.packet_block(no, allocation);
                     self.patch(end, self.code.len());
                 }
-                Step::Loop {
+                StepKind::Loop {
                     condition,
                     test,
                     body,
@@ -704,7 +711,7 @@ impl Emitter<'_> {
                         self.patch(at, target);
                     }
                 }
-                Step::Scope(body) => {
+                StepKind::Scope(body) => {
                     self.exits.push(Vec::new());
                     self.packet_block(body, allocation);
                     let target = self.code.len();
@@ -712,19 +719,19 @@ impl Emitter<'_> {
                         self.patch(at, target);
                     }
                 }
-                Step::Exit => {
+                StepKind::Exit => {
                     let at = self.jump(None);
                     self.exits.last_mut().unwrap().push(at);
                 }
-                Step::Break => {
+                StepKind::Break => {
                     let at = self.jump(None);
                     self.breaks.last_mut().unwrap().push(at);
                 }
-                Step::Continue => {
+                StepKind::Continue => {
                     let at = self.jump(None);
                     self.patch(at, *self.continues.last().unwrap());
                 }
-                Step::Constant(dst, bits) => {
+                StepKind::Constant(dst, bits) => {
                     let target = match allocation.location(Register(*dst)) {
                         PacketPlace::Register(r) => r,
                         _ => 0,
@@ -732,7 +739,7 @@ impl Emitter<'_> {
                     self.packet_constant(target, *bits);
                     self.packet_store(allocation, Register(*dst), target);
                 }
-                Step::Index(dst) => {
+                StepKind::Index(dst) => {
                     if sparse {
                         self.instruction(
                             None,
@@ -764,7 +771,7 @@ impl Emitter<'_> {
                     self.packed(Some(0x66), 0xfe, 0, 1);
                     self.packet_store(allocation, Register(*dst), 0);
                 }
-                Step::Uniform(dst, offset) => {
+                StepKind::Uniform(dst, offset) => {
                     let target = match allocation.location(Register(*dst)) {
                         PacketPlace::Register(r) => r,
                         _ => 0,
@@ -780,7 +787,7 @@ impl Emitter<'_> {
                     self.packet_from_word(*dst, target);
                     self.packet_store(allocation, Register(*dst), target);
                 }
-                Step::Copy(dst, src) => {
+                StepKind::Copy(dst, src) => {
                     let d = allocation.location(*dst);
                     let s = allocation.location(*src);
                     if d != s {
@@ -794,7 +801,7 @@ impl Emitter<'_> {
                         }
                     }
                 }
-                Step::Load { dst, binding, index, word } => {
+                StepKind::Load { dst, binding, index, word } => {
                     let broadcast = matches!(index, Address::Uniform(_));
                     let target = match allocation.location(Register(*dst)) {
                         PacketPlace::Register(r) => r,
@@ -825,7 +832,7 @@ impl Emitter<'_> {
                     self.packet_from_word(*dst, target);
                     self.packet_store(allocation, Register(*dst), target);
                 }
-                Step::Store { binding, index, word, value } => {
+                StepKind::Store { binding, index, word, value } => {
                     let source = match allocation.location(Register(*value)) {
                         PacketPlace::Register(r) => r,
                         PacketPlace::Stack(_) => {
@@ -852,14 +859,14 @@ impl Emitter<'_> {
                     }
                     if let Some(done) = done { self.patch(done, self.code.len()); }
                 }
-                Step::Gather {
+                StepKind::Gather {
                     dst,
                     source,
                     index,
                     word,
                     broadcast,
                 } => self.packet_gather(allocation, *dst, source, *index, *word, *broadcast),
-                Step::Unary { dst, op, a } => {
+                StepKind::Unary { dst, op, a } => {
                     let target = match allocation.location(Register(*dst)) {
                         PacketPlace::Register(r) => r,
                         _ => 0,
@@ -890,7 +897,7 @@ impl Emitter<'_> {
                     }
                     self.packet_store(allocation, Register(*dst), target);
                 }
-                Step::Binary { dst, op, a, b } => match op {
+                StepKind::Binary { dst, op, a, b } => match op {
                     Binary::Float(opcode) => {
                         self.packet_binary(allocation, *dst, *a, *b, None, *opcode)
                     }
@@ -924,7 +931,7 @@ impl Emitter<'_> {
                         self.packet_store(allocation, Register(*dst), 0);
                     }
                 },
-                Step::IntegerDivide {
+                StepKind::IntegerDivide {
                     result,
                     src,
                     divisor,
@@ -936,7 +943,7 @@ impl Emitter<'_> {
                         self.packet_divide_value(allocation, *result, *src, *divisor)
                     }
                 },
-                Step::Cast {
+                StepKind::Cast {
                     dst,
                     src,
                     from,
@@ -944,7 +951,7 @@ impl Emitter<'_> {
                 } => {
                     self.packet_cast(allocation, *dst, *src, *from, *into);
                 }
-                Step::Math { dst, op, args } => match op {
+                StepKind::Math { dst, op, args } => match op {
                     Math::Min => self.packet_binary(allocation, *dst, args[0], args[1], None, 0x5d),
                     Math::Max => self.packet_binary(allocation, *dst, args[0], args[1], None, 0x5f),
                     Math::Sqrt => {
@@ -972,7 +979,7 @@ impl Emitter<'_> {
                         self.packet_store(allocation, Register(*dst), target);
                     }
                 },
-                Step::Select {
+                StepKind::Select {
                     dst,
                     condition,
                     a,
@@ -1000,6 +1007,7 @@ impl Emitter<'_> {
                     self.packet_store(allocation, Register(*dst), target);
                 }
             }
+            self.operation_range(step.instruction, start, first);
         }
     }
 }

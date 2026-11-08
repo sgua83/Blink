@@ -880,7 +880,7 @@ GenerationAnchor::BitcastConstantFold的expression借用该Constant原source_sit
 
 **普通函数标量操作到实际发射范围。** 输入是原Emitter::block收到的实际Inst及其OperationOrigin。唯一生产者是同一次原标量发射：在该操作前后读取原code长度，保留start／end半开字节范围、原来源事实及是否实际包含嵌套操作。每次已尝试并成功完成的操作都交接一次，即使没有发射字节；零长度只是该次发射游标，不是可断点的指令地址。递归控制与实际子操作分别记录，平铺序列按发射完成顺序交接，父范围可包含子范围，不能求和冒充指令数或运行次数，也不按最终指令反猜源操作。
 
-材料在原Emitter中随正在形成的代码暂存，完成时移动到NativeCode.sources的compiler专用Emitted.operation_ranges。Some空序列表示已采集但没有操作，None表示本映像没有保留该材料；单条OperationOrigin为空表示已知真实发射范围但来源未知，不从函数或相邻行补造。普通application::emit_value启用同一容器，其余发射入口先保持None，CPU并行／SIMD与集合辅助仍沿.4.2／.4.3。源和生成事实只不可变共享，不持有Inst、ValueCode、Stage、AST／World或运行资源；到最后代码事实消费者结束即释放，不为查询保持可执行资源。
+材料在原Emitter中随正在形成的代码暂存，完成时移动到NativeCode.sources的compiler专用Emitted.operation_ranges。Some空序列表示已采集但没有操作，None表示本映像没有保留该材料；单条OperationOrigin为空表示已知真实发射范围但来源未知，不从函数或相邻行补造。普通application::emit_value和codegen::emit的并行主入口启用同一容器，标量block与SIMD packet_block共用Emitter::operation_range；集合专用生成器仍未保留这些逐Inst范围，沿.4.3。源和生成事实只不可变共享，不持有Inst、ValueCode、Stage、AST／World或运行资源；到最后代码事实消费者结束即释放，不为查询保持可执行资源。
 
 NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继续读同一最终字节。观察只覆盖实际IR操作发射，不把未交接的参数home、栈保存／结果搬移、退出或尾部来源写成已映射；这些分别归.2／.3。原reads::place移动完整Inst，来源随实际顺序移动；纹理采样降低由原生成点共享cpu_texture_sample职责与原OperationOrigin，已沿.4闭合，不在查询处补造。必要执行编码不保存来源，compiler角色执行解码为CodeSources::Unavailable；BLCR2恢复已保存的只读操作来源；BLCF5沿原Section显式保存与恢复已有操作范围、原语法及生成事实，不通过恢复尾部分区冒称已恢复操作来源。原SDK可直接借用新编译映像的实际操作范围；已实现范围与验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-1)。
 
@@ -934,7 +934,19 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-2"></a>
 
-**CPU并行主入口与SIMD的指令来源。** 原Stage带来源操作→native/codegen.rs及packet→主NativeCode。标量与实际SIMD、控制分支和展开均交接真实区间及源／实例关系，不把生成循环整体当一条源语句；指令及向量化策略保持。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。当前待设计／实现，范围见[原编号](Issues.md#c-021-7-9-7-4-2)。
+**CPU并行主入口与SIMD的指令来源。** 原Stage带来源操作→native/codegen.rs及packet→主NativeCode。标量与实际SIMD、控制分支和展开均交接真实区间及源／实例关系，不把生成循环整体当一条源语句；指令及向量化策略保持。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。实际标量IR与SIMD步骤的范围已交接，生成外层范围包装仍未完成，分别见下列独立职责；父项[剩余范围](Issues.md#c-021-7-9-7-4-2)不占源码。
+
+<a id="tool-7-4-2-1"></a>
+
+**CPU并行入口标量IR的实际指令来源。** 原Stage.code及已完成的纹理降低／私有读排布→原Emitter::block→同一NativeCode.sources。主入口开启已有范围容器，逐实际Inst的标量与控制嵌套发射共用原operation_range，不重走IR或从生成循环猜语句。范围、来源、零长度及实际嵌套含义与普通函数一致；同一代码事实所有者持有最终OperationOrigin，最后事实消费者结束即释放，材料不持有原Inst／Stage。原指令、帧、寄存器分配和执行范围保持；生成外层循环及范围包装不在本叶冒称交接。已实现与实际验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-2-1)。
+
+<a id="tool-7-4-2-2"></a>
+
+**SIMD计划到实际指令的原IR来源。** 原Stage Inst→原packet::Plan的临时Step→同次packet_block发射→原OperationRange。Step将其既有执行kind与对应原Inst借用放在同一记录，借用只活到原计划结束；不克隆IR、复制另一来源列表或保留计划。逐实际Step发射前后读取同一字节游标，最终范围通过原Emitter::operation_range取得OperationOrigin，控制父项在实际子项之后交接，允许多对多、嵌套、零长度和未知。原向量化选择、地址专用Index移除及指令均保持；已移除步骤没有SIMD发射范围，不补造指令，同一原操作在SIMD和标量尾部的实际发射分别记录。与标量材料一起由同一NativeCode及既有BLCR2／BLCF5消费，执行编码不保留。已实现与实际验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-2-2)。
+
+<a id="tool-7-4-2-3"></a>
+
+**CPU并行范围包装的生成来源。** 原Stage及范围ABI→codegen::emit的帧与范围边界／选择、索引推进，以及packet_loop的四lane收集／推进→原主代码。实际生成步骤由原发射所有者交接，不套成一条业务源语句，也不以整个函数范围替代内部IR；来源事实和运行资源保持各自真实生命周期。当前待设计／实现，见[原编号](Issues.md#c-021-7-9-7-4-2-3)；现有操作范围不冒称已覆盖这些包装。
 
 <a id="tool-7-4-3"></a>
 

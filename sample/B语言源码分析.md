@@ -3202,7 +3202,9 @@ pub struct NativeCode {
 
 同一 NativeCode 还交付主函数末端 function_end 与 Windows x64 展开字节 unwind。末端不包含映像尾部的无帧探栈叶辅助和常量；展开信息只描述真实主函数序言中的压栈、帧分配和非易失寄存器保存。普通应用、范围和集合辅助入口复用 native/unwind.rs 的同一编码，按实际指令完成位置写入展开操作。
 
-普通CPU函数还在同一次原标量发射中取得OperationRange：对每个实际Inst读取原code的起止游标，保存原OperationOrigin及是否包含已记录的嵌套操作。材料从原Emitter移动到同一NativeCode.sources的Emitted.operation_ranges，SDK code_json只借用这些事实；SourceSite／GeneratedOrigin不可变共享，不保留Inst、ValueCode、Stage或AST／World。范围按发射完成顺序平铺，控制父项可以包含子范围，不能求和当作指令数或运行次数；零长度表示没有新增字节，游标不是可断点地址。None表示未保留材料，Some空序列表示已采集而没有操作，真实范围的空来源仍保持未知。普通application发射启用，其余并行／SIMD与集合辅助暂为None；ABI参数／结果／退出、尾部来源及纹理降低在各原生产点分别交接，不把操作body材料写成完整映射。原私有读排布移动完整Inst，来源随实际次序交接，不建另一来源表或图。
+普通CPU函数与并行主入口在同次实际发射中取得OperationRange：标量block与SIMD packet_block对实际操作读取原code的起止游标，共用Emitter::operation_range交接原OperationOrigin及是否包含已记录的嵌套操作。材料从原Emitter移动到同一NativeCode.sources的Emitted.operation_ranges，SDK code_json只借用这些事实；SourceSite／GeneratedOrigin不可变共享，不保留Inst、ValueCode、Stage或AST／World。范围按发射完成顺序平铺，控制父项可以包含子范围，不能求和当作指令数或运行次数；零长度表示没有新增字节，游标不是可断点地址。None表示未保留材料，Some空序列表示已采集而没有操作，真实范围的空来源仍保持未知。普通application与codegen的并行主入口启用，集合专用生成器仍未保留逐Inst范围；ABI参数／结果／退出、尾部来源及纹理降低在各原生产点分别交接，不把操作body材料写成完整映射。原私有读排布移动完整Inst，来源随实际次序交接，不建另一来源表或图。
+
+SIMD临时计划的Step把原执行kind与对应Inst的借用放在同一记录，原计划结束即不再持有借用；packet_block逐实际步骤使用与标量相同的范围生产函数，最终材料只共享原OperationOrigin。没有另建来源表、复制IR或重跑发射，原SIMD选择、地址专用Index移除、寄存器分配与机器指令保持。一个原操作可在SIMD与标量尾部各产生范围，控制父项保留实际嵌套；移除的SIMD步骤没有机器区间，不补造指令。外层范围循环、四lane收集、索引推进及并行ABI包装尚未交接，不能将整段生成代码标成某条业务源语句；集合辅助也继续各自原台账。
 
 同一普通函数映像的sources中Emitted.function_abi直接记录参数home与输入搬移的实际字节范围。原emit_function只交接原定义和真实实例，emit_value在实际home／读取前后读取code游标，ParameterOrigin仍由原参数不可变共享；ABI槽序号与CallParameter逻辑序号分别表达，隐藏结果地址home单独标识，不伪造源参数。FunctionAbi材料完成时移入同一NativeCode，不保留函数体、类型合同、分配器或运行资源。None表示未保留，Some空ranges表示已采集但没有当前已交接步骤；零长度不能当作断点地址。原栈维护也直接交接scratch保存／恢复、帧分配／释放及非易失寄存器保存／恢复范围；frame_bytes来自原分配／释放值，未新增字节的原调用保持零长度，不虚构指令或保存清单。原结果地址保存与间接输出交接真实stack_offset_bytes（相对已分配帧RSP），浮点、整数及打包聚合输出由实际结果分支说明；没有结果不产生输出记录。不保留结果运行值或复制合同，共同末尾RET还在原发射点交接FunctionReturn范围（JSON function_return），function_end继续是原主函数末端，不包含尾部数据。该记录不等同于源码return、执行成功／失败或资源完成，原Scope／Exit及Raise的错误值装载／退出跳转仍随IR操作来源交接。原fallible成功出口将RAX清零，由同一FunctionAbi记录FallibleSuccessStatus（JSON fallible_success_status）；只交接原分支真实发射范围，没有失败的函数不生成该记录。失败转移绕过此清零，共同RET不代替成功状态、错误值或资源完成。各职责在其原生产者交接，不另给已有IR失败指令复制标签，不按未匹配字节反推职责。
 
@@ -3241,7 +3243,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:725`。
+源码节选：`crates/blanguage/src/native/codegen.rs:728`。
 
 ```rust
     let stage = &lowered;

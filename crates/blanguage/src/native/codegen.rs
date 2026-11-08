@@ -345,6 +345,12 @@ impl Emitter<'_> {
         );
         self.copy(self.location(dst), allocation::Location::Gpr(target));
     }
+    fn operation_range(&mut self, inst: &Inst, start: usize, first: Option<usize>) {
+        if let (Some(first), Some(ranges)) = (first, &mut self.operation_ranges) {
+            ranges.push(super::OperationRange { start, end: self.code.len(),
+                includes_nested_operations: ranges.len() != first, origin: OperationOrigin::from_instruction(inst) });
+        }
+    }
     fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
         for inst in code {
             let start = self.code.len();
@@ -672,10 +678,7 @@ impl Emitter<'_> {
                     self.patch(at, *self.continues.last().unwrap());
                 }
             }
-            if let (Some(first), Some(ranges)) = (first, &mut self.operation_ranges) {
-                ranges.push(super::OperationRange { start, end: self.code.len(),
-                    includes_nested_operations: ranges.len() != first, origin: OperationOrigin::from_instruction(inst) });
-            }
+            self.operation_range(inst, start, first);
         }
         Ok(())
     }
@@ -759,7 +762,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: None,
+        operation_ranges: Some(Vec::new()),
         literals: std::collections::BTreeMap::new(),
         stage,
         program,
