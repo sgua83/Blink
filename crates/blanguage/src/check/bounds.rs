@@ -2227,7 +2227,7 @@ impl Clause {
         fn facts(value:&Facts)->Option<Facts>{
             if contradictory(value){return None;}
             let lower=minimums(value);
-            let mut next=value.iter().filter(|fact|!matches!(fact,Fact::Minimum(..)|Fact::Maximum(..))&&!matches!(fact,Fact::NonZero(id)if lower.iter().any(|((other,scalar),n)|other==id&&*n>1&&scalar.is_integer()&&!scalar.is_signed()))).copied().collect::<Facts>();
+            let mut next=value.iter().filter(|fact|!matches!(fact,Fact::Below(a,b,false,scalar)if a==b&&scalar.is_integer())&&!matches!(fact,Fact::Index(id,IndexDomain::Upper(limit,0))if id==limit)&&!matches!(fact,Fact::Minimum(..)|Fact::Maximum(..))&&!matches!(fact,Fact::NonZero(id)if lower.iter().any(|((other,scalar),n)|other==id&&*n>1&&scalar.is_integer()&&!scalar.is_signed()))).copied().collect::<Facts>();
             next.extend(lower.into_iter().filter(|((id,scalar),n)|*n!=0&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|if n==1&&scalar.is_integer()&&!scalar.is_signed(){Fact::NonZero(id)}else{Fact::Minimum(id, scalar, n)}));
             next.extend(maximums(value).into_iter().filter(|((id,scalar),n)|*n!=scalar.bit_mask()&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|if n==0&&scalar.is_integer()&&!scalar.is_signed(){Fact::Zero(id)}else{Fact::Maximum(id, scalar, n)}));
             Some(next)
@@ -2514,7 +2514,7 @@ fn contradictory(facts: &Facts) -> bool {
         Fact::Zero(id) => contains(Fact::NonZero(id)),
         Fact::NonZero(id) => contains(Fact::Zero(id)),
         Fact::Index(id, domain) => contains(Fact::Outside(id, domain)),
-        Fact::Outside(id, domain) => contains(Fact::Index(id, domain)),
+        Fact::Outside(id, domain) => matches!(domain,IndexDomain::Upper(limit,0)if id==limit)||contains(Fact::Index(id, domain)),
         Fact::Minimum(id, scalar, _) | Fact::Maximum(id, scalar, _) => {
             let (lower, upper) = bounds(id, scalar);
             let zero = scalar.order_bias();
