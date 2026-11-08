@@ -21,14 +21,18 @@ pub fn print(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn object(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    use blanguage::object::{CodeSelection, code_facts, code_facts_with_observations};
-    let usage = "usage: bc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol]";
+    use blanguage::object::{CodeSelection, code_facts, code_facts_with_observations, source_facts};
+    let usage = "usage: bc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol] [--source-range start:end]";
     let source = args.get(2).ok_or(usage)?;
-    let mut selection = None; let mut material = None; let mut at = 3;
+    let mut selection = None; let mut material = None; let mut range = None; let mut at = 3;
     while at < args.len() {
         let value = args.get(at + 1).ok_or(usage)?;
         match args[at].as_str() {
             "--observations" if material.is_none() => material = Some(value),
+            "--source-range" if range.is_none() => {
+                let (start, end) = value.split_once(':').ok_or(usage)?;
+                range = Some(start.parse()?..end.parse()?);
+            }
             "--section" if selection.is_none() => selection = Some(CodeSelection::Section(value.parse()?)),
             "--function" if selection.is_none() => selection = Some(CodeSelection::Function(value)),
             _ => return Err(usage.into()),
@@ -37,9 +41,11 @@ fn object(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     let selection = selection.unwrap_or(CodeSelection::CodeSections);
     let bytes = fs::read(source)?;
-    let facts = match material {
-        Some(path) => code_facts_with_observations(&bytes, selection, &fs::read(path)?)?,
-        None => code_facts(&bytes, selection)?,
+    let material = material.map(fs::read).transpose()?;
+    let facts = match (range, material.as_deref()) {
+        (Some(range), material) => source_facts(&bytes, selection, range, material)?,
+        (None, Some(material)) => code_facts_with_observations(&bytes, selection, material)?,
+        (None, None) => code_facts(&bytes, selection)?,
     };
     println!("{facts}");
     Ok(())

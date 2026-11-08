@@ -267,6 +267,10 @@
       "sha256": "f3d28605396b54641ecb4908a259a074f663ebd6ed04e42144517a8cbb750db5"
     },
     {
+      "path": "crates/blanguage/src/code_facts.rs",
+      "sha256": "d3db40fb3ba918bdf802c764f0c40ec5d51e5c2593e25ff8c81a27dd7867371d"
+    },
+    {
       "path": "crates/blanguage/src/codec.rs",
       "sha256": "5b71fd5c3015d311d705c25a00ccd4a371f1060333f242663d8dd36dc76d2b75"
     },
@@ -392,19 +396,19 @@
     },
     {
       "path": "crates/blanguage/src/native/facts.rs",
-      "sha256": "d6d3f164232d427b2366d7c6477664627b8401add07ce3153dee401c36211479"
+      "sha256": "5f780879e86bcda39e337a2fb75cc064c4613d3ed150e0e0dcc106512caa5681"
     },
     {
       "path": "crates/blanguage/src/native/facts/material.rs",
-      "sha256": "f2adea818786bc22b18bba5a2f5a599d1ac68a72640d614d91aa73a76e38b842"
+      "sha256": "f9e9be38d1f3d7aa2b4ac1613768e97ea8c4b1ea8028ef6f5cd40473d9a266a7"
     },
     {
       "path": "crates/blanguage/src/native/facts/material/abi.rs",
-      "sha256": "8871eabb8edc8388c32e45f9407bf7217d86df85c60bf31d9feab3c86e2c77a1"
+      "sha256": "dd3f5c8f0e56480494661e8c3071be3549813103aaeea8e0989f47aecf6c707b"
     },
     {
       "path": "crates/blanguage/src/native/facts/material/operations.rs",
-      "sha256": "6a54df5a5acefc28cc2268ce3127edee2d07e61fc661619ba62d6a2fa0174c59"
+      "sha256": "d889a3aa4acc83f07aa7b8eeae25bba8f6019fd810f01a9218abe467cd23043a"
     },
     {
       "path": "crates/blanguage/src/native/facts/material/source.rs",
@@ -459,12 +463,16 @@
       "sha256": "03c24b08bf13daec792707fe5469cea196b4bd0488a0f81498c8a79443709e9a"
     },
     {
+      "path": "crates/blanguage/src/object/coff/facts.rs",
+      "sha256": "5601b901ae493e7567bcbeae31fc712c67445e70ee9721c81f302464f55e89a3"
+    },
+    {
       "path": "crates/blanguage/src/object/coff/facts/observations.rs",
-      "sha256": "a0a11870c4dd142ad213fec3b7b75756b74796c48774681567e633c48314329e"
+      "sha256": "4ebac523428c4014681f65cff8c550e753f0f947f07d166e6fe8e44f12d00d2f"
     },
     {
       "path": "crates/blanguage/src/object/mod.rs",
-      "sha256": "67882247c78476e882c9dde9c0dd0a8e024bd4de40e2bbc59216a9fc0ac3db66"
+      "sha256": "a9ae6953c2507857f0a762e347ed63d9e60045d92d9184e578b55cd2032d79fc"
     },
     {
       "path": "crates/blanguage/src/object/static_library.rs",

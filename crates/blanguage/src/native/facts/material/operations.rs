@@ -17,8 +17,9 @@ impl Encode for crate::native::OperationRange {
         self.includes_nested_operations.encode(writer); self.origin.encode(writer);
     }
 }
-pub(super) fn ranges_json(ranges: &[OperationRange]) -> String {
-    array(ranges.iter().map(|range| object(&[
+pub(super) fn ranges_json(ranges: &[OperationRange], selected: Option<&std::ops::Range<usize>>) -> String {
+    array(ranges.iter().filter(|range| selected.is_none_or(|selected|
+        range.start.max(selected.start) < range.end.min(selected.end))).map(|range| object(&[
         ("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
         ("byte_length", (range.end - range.start).to_string()),
         ("includes_nested_operations", range.includes_nested_operations.to_string()),

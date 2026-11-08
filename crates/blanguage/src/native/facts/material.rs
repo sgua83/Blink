@@ -25,11 +25,11 @@ impl Encode for CodeSources {
     }
 }
 impl SavedSources {
-    pub(crate) fn function_abi_json(&self) -> String {
-        self.function_abi.as_ref().map_or_else(|| "null".into(), abi::FunctionAbi::json)
+    pub(crate) fn function_abi_json(&self, selected: Option<&std::ops::Range<usize>>) -> String {
+        self.function_abi.as_ref().map_or_else(|| "null".into(), |abi| abi.json(selected))
     }
-    pub(crate) fn operation_ranges_json(&self) -> String {
-        self.operation_ranges.as_deref().map_or_else(|| "null".into(), operations::ranges_json)
+    pub(crate) fn operation_ranges_json(&self, selected: Option<&std::ops::Range<usize>>) -> String {
+        self.operation_ranges.as_deref().map_or_else(|| "null".into(), |ranges| operations::ranges_json(ranges, selected))
     }
     pub(crate) fn validate(&self, main_end: usize) -> Result<()> {
         if let Some(abi) = &self.function_abi { abi.validate(main_end)?; }

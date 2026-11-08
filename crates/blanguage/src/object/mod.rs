@@ -101,7 +101,7 @@ impl Object {
     }
 }
 
-pub use coff::facts::{CodeSelection, code_facts, code_facts_with_observations};
+pub use coff::facts::{CodeSelection, code_facts, code_facts_with_observations, source_facts};
 
 impl Object {
     /// Captures original generated code ranges as independent material, without compiling code.

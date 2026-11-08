@@ -133,7 +133,7 @@ impl CodeSources {
     pub(crate) fn function_abi_json(&self) -> String {
         match self {
             Self::Emitted { function_abi: abi, .. } => abi.as_ref().map_or_else(|| "null".into(), function_abi),
-            Self::Restored(saved) => saved.function_abi_json(),
+            Self::Restored(saved) => saved.function_abi_json(None),
             Self::Unavailable => "null".into(),
         }
     }
@@ -144,7 +144,7 @@ impl CodeSources {
                 ("byte_length", (range.end - range.start).to_string()),
                 ("includes_nested_operations", range.includes_nested_operations.to_string()), ("origin", range.origin.ir_json()),
             ])))),
-            Self::Restored(saved) => saved.operation_ranges_json(),
+            Self::Restored(saved) => saved.operation_ranges_json(None),
             Self::Unavailable => "null".into(),
         }
     }

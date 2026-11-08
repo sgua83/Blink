@@ -82,15 +82,15 @@ impl<S> Layout<S> {
 
 }
 impl Layout<crate::native::SavedSources> {
-    pub(super) fn operation_ranges(&self) -> String {
+    pub(super) fn operation_ranges(&self, selected: Option<&std::ops::Range<usize>>) -> String {
         match self {
-            Self::Function { sources, .. } => sources.operation_ranges_json(),
+            Self::Function { sources, .. } => sources.operation_ranges_json(selected),
             Self::Startup | Self::Print(_) | Self::ImportThunk => "null".into(),
         }
     }
-    pub(super) fn function_abi(&self) -> String {
+    pub(super) fn function_abi(&self, selected: Option<&std::ops::Range<usize>>) -> String {
         match self {
-            Self::Function { sources, .. } => sources.function_abi_json(),
+            Self::Function { sources, .. } => sources.function_abi_json(selected),
             Self::Startup | Self::Print(_) | Self::ImportThunk => "null".into(),
         }
     }

@@ -1076,6 +1076,21 @@ function_tables保留原.pdata的每条12字节记录、begin／end／unwind原�
 未提供生成材料时，选中节中已声明范围以外的字节全部原样交接为unclassified，instructions=null。原代码特征位、函数符号或能反汇编不证明整节都是指令；完整生成分类由下述独立材料显式交接。多个已声明范围分别保留原表来源，不据其重叠生成另一代码布局。结构截断、无效字符串／符号／重定位引用、真实范围越界／反向及ISA解码错误直接失败，不输出部分成功；解码错误保留原物理节号、节内字节偏移及相对IP。标准定义见[Microsoft PE／COFF格式](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)。最终PE、归档成员抽取及完整静态运行库观察仍沿C-021.7.9.9，源码来源和运行地址分别沿.7／.13。
 
 
+### COFF机器区间反查原来源
+
+```text
+bc code --object target/module.obj --observations target/module.blcf --section 1 --source-range 32:48
+bc code --object target/module.obj --observations target/module.blcf --function exact-qualified-symbol --source-range 32:48
+```
+
+Rust SDK使用`object::source_facts(bytes, selection, start..end, Some(material))`；selection沿原CodeSelection，省略材料传None。CLI在原code --object入口增加可选--source-range，未使用它时保持原完整coff_code查询。start／end为十进制节内字节半开范围，不是源码位置、函数内偏移、文件位置、RVA或装载地址；--function仍只选择该精确符号所在物理节，不从symbol.value重置字节零，不推断该函数新末端。默认选择全部原代码节，同一范围分别应用到每节的字节零，结果保留各自上下文。反向范围报错；start=end为空查询；范围可越过节末端或完全位于其外，不钳制输入或推断来源。
+
+结果kind=coff_source_ranges、address_basis=section_relative、range_unit=byte、range_kind=half_open；start_byte／end_byte保留原请求，selection沿原物理选择。sections仅列所选原节的section_number／name／byte_length及regions／generation／function_abi／operation_ranges；查询不输出机器字节、指令解码或另一份符号／重定位目录。regions返回与请求存在实际字节交集的原生成分区，保留原kind、start_byte／end_byte／byte_length；function_abi保留原定义／实例上下文，只筛选其ranges；operation_ranges直接筛选原操作记录。原区间、嵌套／顺序、参数、实例、内联、域及变换来源完整保留，不裁短记录、合并命中或按地址只取第一项。零长度记录没有字节交集；即使位于请求内部也不当作机器命中。
+
+generation保留所选整节真实生成目的，function_abi的definition／instance也仅是上下文；实际命中须读对应regions／ranges／operation_ranges，不把上下文冒充所查字节的具体来源。原字段未采集／手写节没有对应字段／未提供材料为null；原已采集序列经筛选无命中为空列表。未知来源记录仍原样返回，空范围和范围外不会制造源码、已消除状态、断点或机器安全结论；原完整查询可继续观察零长度及消除材料。源范围正查和CPU映像查询仍沿C-021.7.9.7.6其他叶待实现，不将本入口写成完整双向查询。
+
+提供材料时先由原Material读取、配对整组代码节／重定位／主范围及全部原布局，然后借用同一只读SavedSources筛选原字段；错误沿原入口交接，不输出部分材料。未提供材料时regions及两类来源字段明确为null，不从可解码性或.pdata猜生成来源。查询不读源码、重编、建立反向索引／来源树、装入代码或创建执行资源；所有临时读取和返回字符串归调用者，结束后不持有原Source／IR或运行资源。BLCF10／BLCR7及必要执行编码、材料捕获和资源生命周期保持。
+
 ### COFF原生成范围的独立材料
 
 新生成的`Object::code_observations()`显式返回独立BLCF10字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions、tail_references与sources，主末端仍由原.pdata交接；原手写生产者分别声明Startup、Print(Scalar)、ImportThunk，职责均覆盖同一整节：启动及结果交接、所选类型的标准输出、实际导入尾跳转。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。

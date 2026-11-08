@@ -213,8 +213,8 @@ impl<'a> Facts<'a> {
             values.extend([("bytes", hex(bytes)), ("regions", array(regions)),
                 ("relocations", array(section.relocations.iter().map(|r| self.relocation(r)).collect::<Result<Vec<_>>>()?)),
                 ("generation", layout.map_or_else(|| "null".into(), |layout| layout.generation())),
-                ("function_abi", layout.map_or_else(|| "null".into(), |layout| layout.function_abi())),
-                ("operation_ranges", layout.map_or_else(|| "null".into(), |layout| layout.operation_ranges())),
+                ("function_abi", layout.map_or_else(|| "null".into(), |layout| layout.function_abi(None))),
+                ("operation_ranges", layout.map_or_else(|| "null".into(), |layout| layout.operation_ranges(None))),
                 ("tail_references", layout.and_then(|layout| layout.references()).map_or_else(|| "null".into(), |references|
                     array(references.iter().map(|reference| object(&[
                         ("target_offset_bytes", reference.target.to_string()),
@@ -253,6 +253,36 @@ fn query(bytes: &[u8], selection: CodeSelection<'_>, material: Option<&[u8]>) ->
         ("sections", array(facts.sections.iter().enumerate().map(|(i, _)| facts.section_json(i, selected.contains(&i), &spans, material.as_ref())).collect::<Result<Vec<_>>>()?))];
     if material.is_some() { values.push(("code_observations", text("matched"))); }
     Ok(object(&values))
+}
+
+/// Queries all original source records intersecting a section-relative byte range.
+/// Context and original ranges are retained; absent material is not an empty capture.
+pub fn source_facts(bytes: &[u8], selection: CodeSelection<'_>, range: std::ops::Range<usize>, material: Option<&[u8]>) -> Result<String> {
+    if range.start > range.end { return Err("COFF source query range is reversed".into()); }
+    let facts = Facts::read(bytes)?;
+    let (selected, selection_json) = facts.selected(selection)?;
+    let (spans, _) = facts.ranges()?;
+    let material = material.map(|bytes| observations::Material::read(&facts, &spans, bytes)).transpose()?;
+    let sections = selected.into_iter().map(|index| {
+        let row = facts.sections[index].row;
+        let layout = material.as_ref().and_then(|material| material.layout(index));
+        let regions = layout.map(|layout| -> Result<String> {
+            Ok(array(layout.regions(index, row.bytes.length, &spans)?.into_iter()
+                .filter(|(_, start, end)| (*start).max(range.start) < (*end).min(range.end))
+                .map(|(kind, start, end)| object(&[("kind", text(kind)),
+                    ("start_byte", start.to_string()), ("end_byte", end.to_string()),
+                    ("byte_length", (end - start).to_string())]))))
+        }).transpose()?.unwrap_or_else(|| "null".into());
+        Ok(object(&[("section_number", (index + 1).to_string()), ("name", text(&read_text(row.name)?)),
+            ("byte_length", row.bytes.length.to_string()), ("regions", regions),
+            ("generation", layout.map_or_else(|| "null".into(), |layout| layout.generation())),
+            ("function_abi", layout.map_or_else(|| "null".into(), |layout| layout.function_abi(Some(&range)))),
+            ("operation_ranges", layout.map_or_else(|| "null".into(), |layout| layout.operation_ranges(Some(&range))))]))
+    }).collect::<Result<Vec<_>>>()?;
+    Ok(object(&[("kind", text("coff_source_ranges")), ("address_basis", text("section_relative")),
+        ("range_unit", text("byte")), ("range_kind", text("half_open")),
+        ("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
+        ("selection", selection_json), ("sections", array(sections))]))
 }
 
 pub(crate) mod observations;

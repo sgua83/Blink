@@ -121,11 +121,12 @@ impl FunctionAbi {
         }
         Ok(())
     }
-    pub(super) fn json(&self) -> String {
+    pub(super) fn json(&self, selected: Option<&std::ops::Range<usize>>) -> String {
         object(&[("kind", text("function_abi")),
             ("definition", self.definition.as_ref().map_or_else(|| "null".into(), Definition::json)),
             ("instance", self.instance.as_deref().map_or_else(|| "null".into(), text)),
-            ("ranges", array(self.ranges.iter().map(|range| {
+            ("ranges", array(self.ranges.iter().filter(|range| selected.is_none_or(|selected|
+                range.start.max(selected.start) < range.end.min(selected.end))).map(|range| {
                 let mut fields = vec![("start_byte", range.start.to_string()),
                     ("end_byte", range.end.to_string()), ("byte_length", (range.end - range.start).to_string())];
                 let kind = match &range.kind {
