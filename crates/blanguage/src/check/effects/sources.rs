@@ -80,7 +80,9 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
     pub fn local_value_write(&self,place:&Expr)->Result<Option<bool>> {
         let Some(name)=assigned_root(place)else{return Ok(None);};
         let Some((_,local))=self.bindings.iter().rev().find(|(bound,_)|*bound==name)else{return Ok(None);};
-        Ok(Some(matches!(local,Local::Typed(_)|Local::Initialized(..)|Local::Range|Local::Payload(..))&&self.named(name,place.span)?.is_some_and(|ty|ty.is_numeric()||ty.is_c_function())))
+        let Some(ty)=self.named(name,place.span)?else{return Ok(Some(false));};
+        Ok(Some(matches!(local,Local::Typed(_)|Local::Initialized(..)|Local::Range|Local::Payload(..))
+            &&!ty.owns_resources()&&self.builder.unwrap().component_projection(place,name,&ty,None,None,&|_|Ok(None))?.is_some()))
     }
     pub fn named(&self, name: &str, span: Span) -> Result<Option<Ty>> {
         if self.bound(name, self.bindings.len()) { self.name(name, span, self.bindings.len()) } else { Ok(None) }

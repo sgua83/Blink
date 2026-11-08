@@ -453,7 +453,7 @@ impl Builder<'_> {
         Ok(())
     }
     #[inline(never)]
-    pub(super) fn native_call_memory(&self,name:&str,arguments:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<Vec<(view::Borrow,Option<Access>,Option<bounds::Proof>)>> {
+    pub(super) fn native_call_memory(&self,name:&str,arguments:&BTreeMap<ValueIdentity,bounds::Proof>,project:impl Fn(usize)->bool)->Option<Vec<(view::Borrow,Option<Access>,Option<bounds::Proof>)>> {
         let access=self.functions.units.get(name)?.as_ref()?.contract.view_access.as_ref()?;
         let mut memory=Vec::new();
         for access in access {
@@ -463,7 +463,11 @@ impl Builder<'_> {
                 _=>continue,
             };
             let path=when.guard_at_call(arguments).assume(&bounds::Clause::default(),true);
-            let borrow=self.current_address_borrow(&borrows.at_call(arguments));
+            let borrow=borrows.guards_at_call(arguments).map_sources(|source|match &source {
+                view::Source::Position(origin)if matches!(&origin.root,address::Root::Parameter(parameter)if project(*parameter))=>view::Borrow::default(),
+                _=>source.at_call(arguments),
+            });
+            let borrow=self.current_address_borrow(&borrow);
             memory.push((borrow.restricted(&bounds::Clause::both(&path,&self.path)),Some(access),written.map(|proof|proof.at_call(arguments))));
         }
         Some(memory)
@@ -811,7 +815,7 @@ impl Builder<'_> {
             .flat_map(|ty| &ty.components)
             .map(|(scalar, _)| self.reg(*scalar))
             .collect::<Vec<_>>();
-        let closed_memory=self.native_call_memory(&instance.name,&view_arguments);
+        let closed_memory=self.native_call_memory(&instance.name,&view_arguments,|_|false);
         let views_closed=closed_memory.is_some();
         let memory=if self.application.is_none(){
             let access=self.functions.units[&instance.name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();

@@ -453,14 +453,18 @@ impl Builder<'_> {
                     if self.functions.read_only(&instance.name) {
                         normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if std::ptr::eq(*origin,call)));
                     }
-                    // Closed memory effects own writes; owned arguments still consume their places.
+                    let local=normalized.iter().filter_map(|write|match write {
+                        Write::Position{call:Some(origin),place,local_value:true,..}if std::ptr::eq(*origin,call)=>Some(*place),
+                        _=>None,
+                    }).collect::<Vec<_>>();
+                    // Direct lexical storage stays a syntax position; other memory uses the closed contract.
                     let mut owned=Vec::new();
                     for(parameter,arg)in instance.definition.function.params.iter().zip(syntax){
                         if cooperative::parameter_type(self.world,parameter,&instance.definition)?.owns_resources(){owned.push(arg);}
                     }
                     normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),place,..}
-                        if std::ptr::eq(*origin,call)&&!owned.iter().any(|arg|std::ptr::eq(*arg,*place))));
-                    let borrow=match self.native_call_memory(&instance.name,&arguments){Some(memory)=>memory.into_iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(&borrow);result}),None=>view::Borrow::source(view::Source::Unresolved)};
+                        if std::ptr::eq(*origin,call)&&!owned.iter().chain(local.iter()).any(|arg|std::ptr::eq(*arg,*place))));
+                    let borrow=match self.native_call_memory(&instance.name,&arguments,|parameter|syntax.get(parameter).is_some_and(|arg|local.iter().any(|place|std::ptr::eq(*place,arg)))){Some(memory)=>memory.into_iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(&borrow);result}),None=>view::Borrow::source(view::Source::Unresolved)};
                     if !borrow.active(){continue;}
                     Write::Memory{call,borrow}
                 },
@@ -770,7 +774,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         }
         for ((access, _), arg) in function.parameters.iter().zip(args) {
             if matches!(access, Access::Write | Access::InOut) {
-                writes(Write::Position{ place: arg, call: Some(call), contents: false, iterator: None,when:None,local_value:false})?;
+                writes(Write::Position{ place: arg, call: Some(call), contents: false, iterator: None,when:None,local_value:self.builder.is_some()&&self.local_value_write(arg)?==Some(true)})?;
             }
         }
         Ok(())
@@ -814,7 +818,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
                                 let contents=param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some());
-                                if !read_only {writes(Write::Position{ place: arg, call: Some(expr), contents, iterator: None,when:None,local_value:false})?;}
+                                if !read_only {writes(Write::Position{ place: arg, call: Some(expr), contents, iterator: None,when:None,local_value:self.builder.is_some()&&self.local_value_write(arg)?==Some(true)})?;}
                             }
                         }
                         if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(&instance.definition,args)?,None=>BTreeMap::new()};writes(Write::External{call:expr,instance,arguments,syntax:args})?;}
