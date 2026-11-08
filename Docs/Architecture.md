@@ -880,7 +880,7 @@ GenerationAnchor::BitcastConstantFold的expression借用该Constant原source_sit
 
 **普通函数标量操作到实际发射范围。** 输入是原Emitter::block收到的实际Inst及其OperationOrigin。唯一生产者是同一次原标量发射：在该操作前后读取原code长度，保留start／end半开字节范围、原来源事实及是否实际包含嵌套操作。每次已尝试并成功完成的操作都交接一次，即使没有发射字节；零长度只是该次发射游标，不是可断点的指令地址。递归控制与实际子操作分别记录，平铺序列按发射完成顺序交接，父范围可包含子范围，不能求和冒充指令数或运行次数，也不按最终指令反猜源操作。
 
-材料在原Emitter中随正在形成的代码暂存，完成时移动到NativeCode.sources的compiler专用Emitted.operation_ranges。Some空序列表示已采集但没有操作，None表示本映像没有保留该材料；单条OperationOrigin为空表示已知真实发射范围但来源未知，不从函数或相邻行补造。普通application::emit_value和codegen::emit的并行主入口启用同一容器，标量block与SIMD packet_block共用Emitter::operation_range；集合专用生成器仍未保留这些逐Inst范围，沿.4.3。源和生成事实只不可变共享，不持有Inst、ValueCode、Stage、AST／World或运行资源；到最后代码事实消费者结束即释放，不为查询保持可执行资源。
+材料在原Emitter中随正在形成的代码暂存，完成时移动到NativeCode.sources的compiler专用Emitted.operation_ranges。Some空序列表示已采集但没有操作，None表示本映像没有保留该材料；单条OperationOrigin为空表示已知真实发射范围但来源未知，不从函数或相邻行补造。普通application::emit_value和codegen::emit的并行主入口启用同一容器，标量block与SIMD packet_block共用Emitter::operation_range；custom_reduce::emit的自定义集合八类入口也启用同一容器；其余内建集合发射器及完整生成职责继续.4.3。源和生成事实只不可变共享，不持有Inst、ValueCode、Stage、AST／World或运行资源；到最后代码事实消费者结束即释放，不为查询保持可执行资源。
 
 NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继续读同一最终字节。观察只覆盖实际IR操作发射，不把未交接的参数home、栈保存／结果搬移、退出或尾部来源写成已映射；这些分别归.2／.3。原reads::place移动完整Inst，来源随实际顺序移动；纹理采样降低由原生成点共享cpu_texture_sample职责与原OperationOrigin，已沿.4闭合，不在查询处补造。必要执行编码不保存来源，compiler角色执行解码为CodeSources::Unavailable；BLCR2恢复已保存的只读操作来源；BLCF5沿原Section显式保存与恢复已有操作范围、原语法及生成事实，不通过恢复尾部分区冒称已恢复操作来源。原SDK可直接借用新编译映像的实际操作范围；已实现范围与验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-1)。
 
@@ -950,7 +950,11 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-3"></a>
 
-**CPU集合与辅助入口的指令来源。** 原集合调用／值核及其来源→reduce／scan／compact／sort等原生成器→全部辅助NativeCode。所有实际归约、扫描、分段、排序和延续入口关联原调用及生成步骤，集合投影／合并值核继续保留内部定义与调用点；无遗漏模块。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。当前待设计／实现，范围见[原编号](Issues.md#c-021-7-9-7-4-3)。
+**CPU集合与辅助入口的指令来源。** 原集合调用／值核及其来源→reduce／scan／compact／sort等原生成器→全部辅助NativeCode。所有实际归约、扫描、分段、排序和延续入口关联原调用及生成步骤，集合投影／合并值核继续保留内部定义与调用点；无遗漏模块。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。自定义集合实际IR范围按下列.1交接；生成包装、内建reduce／scan／segmented_reduce／compact／sort及其他辅助的完整来源仍未完成，见[父项](Issues.md#c-021-7-9-7-4-3)。
+
+<a id="tool-7-4-3-1"></a>
+
+**自定义集合实际IR的指令范围与来源。** 原CustomReduction::kernel及其实际Inst→原custom_reduce::emit的初始化／循环／末尾三段block→同一NativeCode.sources。Reduce、ReduceTail、Scan、ScanPrefix、ScanAdd、SegmentReduce、SegmentPrefix、SegmentFinish共用原Emitter::operation_range，仅在原容器保留真实发射范围；分段扫描仍复用其原Scan路径。值核已有SourceSite／GeneratedOrigin原样交接，原生成Inst无来源时仍为未知，不从集合调用补造语句；真实范围与完整生成职责分别表达。原代码顺序、内嵌控制、零长度、主函数边界及多对多语义沿同一OperationRange，最终材料不保留临时Stage／IR／kernel或运行资源，随最后事实消费者释放。原kernel、分配、归约顺序、范围ABI和机器字节保持；BLCR2／BLCF5沿原材料保存恢复，旧材料未保留的范围仍如实缺失。原范围外的机器原语、帧／范围包装、摘要输出及其他内建生成职责不在本叶冒称交接。已实现与实际验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-3-1)。
 
 <a id="tool-7-5-1"></a>
 

@@ -516,7 +516,7 @@ pub(super) fn emit(
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: None,
+        operation_ranges: Some(Vec::new()),
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
         program: &program,
