@@ -497,6 +497,10 @@
     {
       "path": "sample/lessons/map.b",
       "sha256": "82e03d5236d4a884cc9c4cd3c1145738d9dd79b43a577373f12e50d2fab949d9"
+    },
+    {
+      "path": "crates/blanguage/src/object/coff/facts/observations/abi.rs",
+      "sha256": "925150769bba42765c28a0bb4cce65c1628175d1fea238ee4c0d2e46fec059a9"
     }
   ],
   "excerpts": [

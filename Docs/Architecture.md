@@ -203,7 +203,7 @@ ModuleCode已在BLRI47内保存，直接模块查询不依赖NativeCode尾部分
 
 **COFF原生成代码、辅助、常量和对齐范围的完整交接**
 
-原Emitter／NativeCode及object::emit真实写入是范围类别的唯一生产者；普通函数、无帧叶入口与尾部各区间由同一Section可选持有并按需保存，不建立第二代码／图／索引或资源所有者。Function按值接收同一NativeCode的tail_regions与tail_references，主末端继续沿原.pdata；原启动／输出／导入跳板直接交出Startup／Print(Scalar)／ImportThunk，三者都明确拥有整节代码的生成职责，不再交接含糊的Generated类别。原Object::code_observations先确认原事实仍在，再复用原COFF编码作一次临时序列化，沿原B读取器取得最终物理节、重定位与已声明范围；输出独立BLCF3材料，不含执行代码、源码或SDK身份，临时编码结束释放。不读源文件或重新生成机器码，缓存没有事实明确缺失，不自动重编；无代码对象可以交接空集合。
+原Emitter／NativeCode及object::emit真实写入是范围类别的唯一生产者；普通函数、无帧叶入口与尾部各区间由同一Section可选持有并按需保存，不建立第二代码／图／索引或资源所有者。Function按值接收同一NativeCode的tail_regions、tail_references与function_abi，主末端继续沿原.pdata；原启动／输出／导入跳板直接交出Startup／Print(Scalar)／ImportThunk，三者都明确拥有整节代码的生成职责，不再交接含糊的Generated类别。原Object::code_observations先确认原事实仍在，再复用原COFF编码作一次临时序列化，沿原B读取器取得最终物理节、重定位与已声明范围；输出独立BLCF4材料，不含执行代码、源码或SDK身份，临时编码结束释放。不读源文件或重新生成机器码，缓存没有事实明确缺失，不自动重编；无代码对象可以交接空集合。
 
 材料按原物理代码节顺序保存节号、相关代码／节特征／重定位真实目标／原声明范围摘要，以及Function尾部及可选原引用或Startup／Print／ImportThunk类别；Print直接保存该次原Scalar。捕获借用同一Layout直接编码，不克隆布局或原引用向量；查询每节只沿Material取得一次原Layout，区域、原引用和手写职责都直接借用它，不在Material分别维护或查找这些事实。文件位置、私有构建／BLCO、工具链和符号表索引不成为身份；匹配不证明来源、执行安全或整个包相同。code_facts_with_observations与bc code --object --observations先核对整组数量、顺序、代码／重定位／范围及全部布局，再沿原查询返回选定值；原引用目标不超出节长度，四字节rel32字段完整位于同一物理节，字段的实际有符号位移加字段末端须等于原目标。错误不降为无材料成功。选中节tail_references中，null表示未交接，空列表表示已采集但没有引用；目标与字段均为节内字节偏移，不改变地址基准。普通函数、探栈辅助与完整手写生成代码解码，对齐及字面量只交接原字节，非代码节保持原观察范围。没有材料时明确unclassified，不由.text或可解码性猜补。.pdata／展开事实始终读取实际文件，各地址仍为节内相对值。
 
@@ -899,7 +899,7 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-1-3-1"></a>
 
-**探栈辅助的实际调用字段。** 输入是原probe保存的真实rel32字段位置，唯一生产者是原finish的probe分支，输出为同一NativeCode的TailReference(target,rel32_fields)，目标是该次辅助实际起点，引用列表只交接该原调用字段。原FrameAllocate范围可解释调用的生成职责，原辅助分区说明实际代码；两者不互相冒充，不能套成某条源码操作。记录在原finish局部容器中随代码形成，完成时移动至同一NativeCode，随最后代码事实消费者释放；不保留Emitter／Frame、调用图或运行资源，不改变原patch、探栈字节、栈／展开／完成规则。None表示材料未保留，Some空列表表示已采集但无尾部引用；执行解码为None；BLCR尚不恢复该材料，COFF已由BLCF3沿同一Section保存／恢复。已实现范围及验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-3-1)。
+**探栈辅助的实际调用字段。** 输入是原probe保存的真实rel32字段位置，唯一生产者是原finish的probe分支，输出为同一NativeCode的TailReference(target,rel32_fields)，目标是该次辅助实际起点，引用列表只交接该原调用字段。原FrameAllocate范围可解释调用的生成职责，原辅助分区说明实际代码；两者不互相冒充，不能套成某条源码操作。记录在原finish局部容器中随代码形成，完成时移动至同一NativeCode，随最后代码事实消费者释放；不保留Emitter／Frame、调用图或运行资源，不改变原patch、探栈字节、栈／展开／完成规则。None表示材料未保留，Some空列表表示已采集但无尾部引用；执行解码为None；BLCR尚不恢复该材料，COFF已由BLCF4沿同一Section保存／恢复。已实现范围及验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-3-1)。
 
 <a id="tool-7-4-1-3-2"></a>
 
@@ -923,9 +923,11 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-5-2"></a>
 
-**COFF来源材料的可选保存／恢复。** 原FunctionBody／NativeCode来源→原Object／Section→原BLCF材料与COFF查询。普通函数及实际辅助节的来源随原Section与材料交接，匹配实际代码／重定位／布局；最终PE来源沿原.9链接映射，不复制代码或装入器。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。当前尾部目标与rel32引用已沿同一Function Layout移入BLCF3并由原COFF查询恢复，null与已采集空列表分别表达；手写整节职责由原Startup／Print(Scalar)／ImportThunk直接交接，原操作与ABI来源仍按独立叶推进，范围见[原编号](Issues.md#c-021-7-9-7-5-2)。
+**COFF来源材料的可选保存／恢复。** 原FunctionBody／NativeCode来源→原Object／Section→原BLCF材料与COFF查询。普通函数及实际辅助节的来源随原Section与材料交接，匹配实际代码／重定位／布局；最终PE来源沿原.9链接映射，不复制代码或装入器。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。当前尾部目标与rel32引用已沿同一Function Layout移入BLCF4并由原COFF查询恢复，null与已采集空列表分别表达；手写整节职责由原Startup／Print(Scalar)／ImportThunk直接交接，原操作来源仍沿.1推进，ABI来源已沿同一材料交接，范围见[原编号](Issues.md#c-021-7-9-7-5-2)。
 
 手写职责只指同一整节的原生成目的，generation.reason分别为application_startup、scalar_output、import_thunk；scalar_output另交接真实scalar。启动段负责原main调用及ExitProcess结果交接，输出段负责原标量格式化与标准输出，导入段负责原导入尾跳转；目标仍消费本节真实重定位，不复制导入名称、资源或调用图。三类原regions继续为覆盖整节的generated_code；普通Function、非代码节或未取得材料时generation=null，不能从符号、.text、可解码性或.pdata猜职责，也不把它当作源级操作／ABI来源。材料归原Section及实际调用者，随其事实消费者释放；机器执行、栈／展开、外部实现及资源寿命保持各自原所有者。细分范围与实际交付见[闭合台账](FixedIssues.md#c-021-7-9-7-5-2-4)。
+
+普通函数的原FunctionAbi直接移入同一Function Layout，不在普通对象生成时计算源码摘要或位置投影。显式code_observations沿原编码入口，将已持有的Source不可变快照投影为定义／形参的只读身份、摘要、原UTF-8字节半开范围、Unicode标量行列、平台路径编码及实际实例／内联／域路径；不复制源码文本、IR、拥有树或运行资源。原ABI各类范围和参数来源按当前有限类别编码，None与已采集空ranges分别表达；不恢复伪造Source。原Section持有原事实至最后事实消费者，临时投影随本次编码释放，已解码事实与查询结果归本次调用者。原COFF查询在选中代码节的function_abi交回这些事实，节内偏移以同一代码字节0为基准；未提供材料、未保留ABI或手写节为null，不能从符号、指令模式或空来源猜补。原材料读取边界继续消费代码／重定位／.pdata匹配，ABI区间须位于同一主函数内，错误不交回部分查询。BLCF4不改变BLCO、BLRI、机器代码、资源ABI、链接或执行；BLCR仍不恢复ABI来源。已实现范围见[闭合台账](FixedIssues.md#c-021-7-9-7-5-2-2)。
 
 <a id="tool-7-6"></a>
 

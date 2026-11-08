@@ -1,10 +1,11 @@
 //! Optional layout facts transferred from the original Object, never encoded as execution data.
 use super::*;
+mod abi;
 use crate::{build::hash, codec::{Decode, Encode, record, variants}, native::{Region, RegionKind, TailReference}};
 
-pub(crate) enum Layout {
-    /// The main end remains in the original .pdata; only emitted tails are retained here.
-    Function { tails: Vec<Region>, references: Option<Vec<TailReference>> },
+pub(crate) enum Layout<A = crate::native::FunctionAbi> {
+    /// The original .pdata owns the main end; ABI facts and tails belong to this section.
+    Function { tails: Vec<Region>, references: Option<Vec<TailReference>>, abi: Option<A> },
     /// Each original handwritten producer owns this entire code section.
     Startup,
     Print(crate::ir::Scalar),
@@ -13,16 +14,16 @@ pub(crate) enum Layout {
 struct SectionLayout {
     section: usize,
     identity: [u8; 32],
-    layout: Layout,
+    layout: Layout<abi::FunctionAbi>,
 }
 pub(super) struct Material {
     sections: Vec<SectionLayout>,
 }
-variants!(Layout { 0=>Function{tails,references}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk });
+variants!(@<A> Layout<A> { 0=>Function{tails,references,abi}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk });
 record!(TailReference { target, rel32_fields });
 record!(SectionLayout { section, identity, layout });
 record!(Material { sections });
-const MAGIC: &[u8; 8] = b"BLCF\x03\0\0\0";
+const MAGIC: &[u8; 8] = b"BLCF\x04\0\0\0";
 
 fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     let section = &facts.sections[index];
@@ -46,7 +47,7 @@ fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     }
     hash::digest(&bytes)
 }
-impl Layout {
+impl<A> Layout<A> {
     pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {
         match self {
             Self::Startup | Self::Print(_) | Self::ImportThunk => Ok(vec![("generated_code", 0, length)]),
@@ -82,6 +83,14 @@ impl Layout {
     }
 
 }
+impl Layout<abi::FunctionAbi> {
+    pub(super) fn function_abi(&self) -> String {
+        match self {
+            Self::Function { abi, .. } => abi.as_ref().map_or_else(|| "null".into(), abi::FunctionAbi::json),
+            Self::Startup | Self::Print(_) | Self::ImportThunk => "null".into(),
+        }
+    }
+}
 impl Material {
     pub(super) fn read(facts: &Facts<'_>, spans: &[Span], bytes: &[u8]) -> Result<Self> {
         let bytes = bytes.strip_prefix(MAGIC).ok_or("unsupported COFF code observation material")?;
@@ -92,7 +101,8 @@ impl Material {
             if saved.section != index + 1 || saved.identity != identity(facts, index, spans) {
                 return Err("COFF observation material does not match the original code section and relocations".into());
             }
-            saved.layout.regions(index, section.row.bytes.length, spans)?;
+            let regions = saved.layout.regions(index, section.row.bytes.length, spans)?;
+            if let Layout::Function { abi: Some(abi), .. } = &saved.layout { abi.validate(regions[0].2)?; }
             if let Layout::Function { references: Some(references), .. } = &saved.layout {
                 let code = unsafe { section.row.bytes.borrowed() };
                 for reference in references {
@@ -110,7 +120,7 @@ impl Material {
         }
         Ok(value)
     }
-    pub(super) fn layout(&self, index: usize) -> Option<&Layout> {
+    pub(super) fn layout(&self, index: usize) -> Option<&Layout<abi::FunctionAbi>> {
         self.sections.iter().find(|section| section.section == index + 1).map(|section| &section.layout)
     }
 }

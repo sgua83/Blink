@@ -213,6 +213,7 @@ impl<'a> Facts<'a> {
             values.extend([("bytes", hex(bytes)), ("regions", array(regions)),
                 ("relocations", array(section.relocations.iter().map(|r| self.relocation(r)).collect::<Result<Vec<_>>>()?)),
                 ("generation", layout.map_or_else(|| "null".into(), |layout| layout.generation())),
+                ("function_abi", layout.map_or_else(|| "null".into(), |layout| layout.function_abi())),
                 ("tail_references", layout.and_then(|layout| layout.references()).map_or_else(|| "null".into(), |references|
                     array(references.iter().map(|reference| object(&[
                         ("target_offset_bytes", reference.target.to_string()),
