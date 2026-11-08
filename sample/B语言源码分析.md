@@ -800,7 +800,7 @@ pub struct Dataset {
     }
 ```
 
-Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。原Execution::wait确认Completion缓存0或DEVICE_LOST后，先沿原release_known释放本次命令、scratch、绑定参数与依赖持有，再原样返回Result；设备丢失继续是错误，原输入及观察者的所有权保持。GpuDataset或Structure明确交出原存储时，Execution::discard／discard_structure复用同一已缓存0／DEVICE_LOST终态直接drop DatasetStorage／StructureStorage；未确认终止仍交原discarded／discarded_structures。ReadDataset、AS及其BLAS来源共享的原Rc保持其他真实拥有者，最后拥有者退出前不销毁底层资源；结构自身构建完成不冒充后来查询结束，不新增等待或释放链。未确认终止的错误不提前释放在途资源。
+Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。Completion的非阻塞查询只把实际0／DEVICE_LOST记录为原终态，NOT_READY仍为false且未知，其他查询错误不记录终止。原Execution::wait／is_complete确认同一缓存0或DEVICE_LOST后，先沿原release_known释放本次命令、scratch、绑定参数与依赖持有，再原样返回原Result；设备丢失继续是错误，原输入及观察者的所有权保持。GpuDataset或Structure明确交出原存储时，Execution::discard／discard_structure复用同一已缓存0／DEVICE_LOST终态直接drop DatasetStorage／StructureStorage；未确认终止仍交原discarded／discarded_structures。ReadDataset、AS及其BLAS来源共享的原Rc保持其他真实拥有者，最后拥有者退出前不销毁底层资源；结构自身构建完成不冒充后来查询结束，不新增等待或释放链。未确认终止的错误不提前释放在途资源。
 
 Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节、GPU来源按第十九章直接借用原绑定；Frame当前数据根见2.6，程序根见2.7；其他宿主容器及B／C实际入口仍有独立未完成范围。
 
@@ -3849,7 +3849,7 @@ pub(super) struct Completion {
 }
 ```
 
-Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留真实结果，Execution 在完成后释放该次命令资源和不再使用的存储。共享多个引用不会制造多个设备完成事实，它们指向同一个完成点。
+Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留真实结果；`is_complete`使用原vkGetFenceStatus，0和DEVICE_LOST写入同一result，NOT_READY交回false，其他查询错误不记录终态。缓存查询沿当前查询入口报告错误，不另存调用来源；重复终态查询不再次访问fence。Execution的wait／is_complete在已知0／DEVICE_LOST后沿原release_known释放该次命令资源和不再使用的存储，随后原样交回Result；DEVICE_LOST仍是错误，不把终止等同成功。共享多个引用不会制造多个设备完成事实，它们指向同一个完成点。
 
 GpuDataset::last_use把这个原点直接交给观察者：device限定原逻辑设备，sequence是原队列从零开始的序号，complete沿原Execution查询。它只复制本次元数据，不持有另一个Execution，也不清除last_use或制造新的完成状态。
 

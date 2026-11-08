@@ -50,7 +50,7 @@ unsafe bottom_level复制CPU几何到自有传输资源后提交构建；unsafe 
 
 ## 数据绑定保留点的只读查询
 
-GpuDataset::last_use返回Result<Option<GpuDatasetUse>>，从本绑定原dependency交付device／sequence及当前complete；序号0是第一个真实提交，None只是没有保留点。查询使用原Execution::is_complete，不等待或提交新工作，原执行所有者仍清理已完成命令资源；错误直接交回。快照不保活执行、数据或设备。
+GpuDataset::last_use返回Result<Option<GpuDatasetUse>>，从本绑定原dependency交付device／sequence及当前complete；序号0是第一个真实提交，None只是没有保留点。查询使用原Execution::is_complete，不等待或提交新工作；原Completion记录0／DEVICE_LOST终态，原执行所有者在该终态结束命令等中间资源，再交回原Result。NOT_READY只表示未完成，其他未知错误不提前释放；DEVICE_LOST仍交回错误，不产生成功快照或数据可用保证。快照不保活执行、数据或设备。
 
 冻结来源保留其原生产点，后续每个read绑定可保留自己的真实读取点。same_storage只辨认同一GpuStorage，不合并使用点；旧生产点完成不代表后来别名或AS／渲染消费者已完成。显式wait清除本次绑定点后，Read仍可能交回继承的原来源点。此查询不代替AS自身is_complete／wait，也不建立全存储所有消费者的完成表。实际view来源与类型布局借用见[GPU来源与绑定保留点](BLanguage.md#gpu布局view来源与绑定保留点)。
 

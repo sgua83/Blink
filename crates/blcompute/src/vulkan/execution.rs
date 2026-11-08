@@ -65,15 +65,16 @@ impl Completion {
     }
     fn is_complete(&self) -> Result<bool> {
         if let Some(r) = self.result.get() {
-            check(r, "vkWaitForFences")?;
+            check(r, "vkGetFenceStatus")?;
             return Ok(true);
         }
         let r = unsafe {
             (self.inner.functions.vkGetFenceStatus)(self.inner.owner.device, self.fence.get())
         };
         match r {
-            0 => {
-                self.result.set(Some(0));
+            0 | -4 => {
+                self.result.set(Some(r));
+                check(r, "vkGetFenceStatus")?;
                 Ok(true)
             }
             1 => Ok(false),
@@ -265,12 +266,11 @@ impl Execution {
         self.point.release_fence();
     }
     pub fn is_complete(&self) -> Result<bool> {
-        if self.point.is_complete()? {
+        let result = self.point.is_complete();
+        if matches!(self.point.result.get(), Some(0 | -4)) {
             self.release_known();
-            Ok(true)
-        } else {
-            Ok(false)
         }
+        result
     }
     pub fn wait(&self) -> Result<()> {
         let result = self.point.wait();
