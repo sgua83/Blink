@@ -73,14 +73,23 @@ $selected = @(
             }
         }
         if (-not $seen.Add($absolute)) { continue }
-        $ancestor = [IO.DirectoryInfo]::new([IO.Path]::GetDirectoryName($absolute))
+        $native = $absolute
+        if ([IO.Path]::DirectorySeparatorChar -eq '\' -and -not $native.StartsWith('\\?\')) {
+            $native = if ($native.StartsWith('\\')) { '\\?\UNC\' + $native.Substring(2) } else { '\\?\' + $native }
+        }
+        $ancestor = [IO.DirectoryInfo]::new([IO.Path]::GetDirectoryName($native))
         while ($null -ne $ancestor) {
             if (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                 throw "Reparse point redirects a parent of the selected path: $relative"
             }
             $ancestor = $ancestor.Parent
         }
-        $item = Get-Item -LiteralPath $absolute
+        $attributes = [IO.File]::GetAttributes($native)
+        $item = if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+            [IO.DirectoryInfo]::new($native)
+        } else {
+            [IO.FileInfo]::new($native)
+        }
         $size = Measure-SelectedItem $item
         [pscustomobject]@{ Item = $item; Path = $relative; Files = $size.Files; Bytes = $size.Bytes }
     }
