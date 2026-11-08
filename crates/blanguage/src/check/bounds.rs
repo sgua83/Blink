@@ -4294,11 +4294,21 @@ impl Builder<'_> {
                 None => (self.projected_owned_proof(place, Some(regs)).unwrap_or_default(), false),
             },
         };
-        if let Place::TileElement { tile, words, .. } = place
-            && let TileOrigin::Bound(TileSource::Input { binding, word }) = self.tiles[*tile].source
-            && let Some(common) = self.common_element_proof((binding, word), words, None)
-        {
-            proof.constrain_common_ranges(&common, regs.len());
+        if let Place::TileElement { tile, words, .. } = place {
+            let common = match &self.tiles[*tile].source {
+                TileOrigin::Input { binding, word, .. } =>
+                    self.common_element_proof((*binding, *word), words, None),
+                TileOrigin::Published(value) if self.tiles[*tile].access == Access::Value => {
+                    let components = words.iter().map(|word| value.ty.components.iter()
+                        .position(|(_, byte)| byte == word).unwrap()).collect::<Vec<_>>();
+                    Some(Proof::capture(value).project(&components, value.regs.len()).element_facts(
+                        |target| self.data_index_proof(target).with_domains(Domains::from([IndexDomain::Data(target)]))))
+                }
+                _ => None,
+            };
+            if let Some(common) = common {
+                proof.constrain_common_ranges(&common, regs.len());
+            }
         }
         Ok((proof, uniform))
     }

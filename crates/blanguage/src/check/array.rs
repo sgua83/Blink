@@ -441,11 +441,11 @@ impl Builder<'_> {
                 }
             }
             Place::TileElement { tile, .. } => {
-                if let TileOrigin::Bound(TileSource::Input { binding, .. }) =
-                    self.tiles[*tile].source
+                if let TileOrigin::Input { binding, .. } =
+                    &self.tiles[*tile].source
                 {
-                    self.reads.insert(binding);
-                    self.cross_access.insert(binding);
+                    self.reads.insert(*binding);
+                    self.cross_access.insert(*binding);
                 }
             }
             _ => {}

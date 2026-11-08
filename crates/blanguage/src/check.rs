@@ -241,16 +241,23 @@ struct ForLoop {
     slot: usize,
     initialization: Vec<(application::Data, Vec<u32>)>,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum TileOrigin {
-    Bound(TileSource),
-    Parameter,
+    Input { binding: usize, word: u32, ty: Ty },
+    Published(Value),
+    Parameter(Ty),
 }
 struct CheckedTile {
     source: TileOrigin,
-    ty: Ty,
     width: TileWidth,
     access: Access,
+}
+impl CheckedTile {
+    fn ty(&self) -> &Ty {
+        match &self.source {
+            TileOrigin::Input { ty, .. } | TileOrigin::Parameter(ty) => ty,
+            TileOrigin::Published(value) => &value.ty,
+        }
+    }
 }
 #[derive(Clone, Eq)]
 enum ReferenceAddress {
@@ -1673,8 +1680,7 @@ fn function_parameters(
             let ty = cooperative::parameter_type(world, p, d)?;
             let tile = b.tiles.len();
             b.tiles.push(CheckedTile {
-                source: TileOrigin::Parameter,
-                ty,
+                source: TileOrigin::Parameter(ty),
                 width: TileWidth::Parameter,
                 access: p.access,
             });
@@ -2453,11 +2459,11 @@ impl<'a> Builder<'a> {
                 if self.tiles[*tile].access == Access::Atomic {
                     return self.fail(span, "B214", "atomic tile 元素只能通过显式原子操作读取");
                 }
-                if let TileOrigin::Bound(TileSource::Input { binding, .. }) =
-                    self.tiles[*tile].source
+                if let TileOrigin::Input { binding, .. } =
+                    &self.tiles[*tile].source
                 {
-                    self.reads.insert(binding);
-                    self.cross_access.insert(binding);
+                    self.reads.insert(*binding);
+                    self.cross_access.insert(*binding);
                 }
                 let mut regs = Vec::new();
                 for ((scalar, _), word) in ty.components.iter().zip(words) {

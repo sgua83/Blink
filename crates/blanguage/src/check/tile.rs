@@ -52,22 +52,18 @@ impl Builder<'_> {
                 self.element_domains.insert(source);
             }
             let tile = if let Some(index) = self.tiles.iter().position(|t| {
-                t.source
-                    == TileOrigin::Bound(TileSource::Input {
-                        binding: source,
-                        word,
-                    })
-                    && t.ty == ty
+                matches!(&t.source, TileOrigin::Input { binding, word: at, ty: input }
+                    if (*binding, *at) == (source, word) && input == &ty)
             }) {
                 index
             } else {
                 let index = self.tiles.len();
                 self.tiles.push(CheckedTile {
-                    source: TileOrigin::Bound(TileSource::Input {
+                    source: TileOrigin::Input {
                         binding: source,
                         word,
-                    }),
-                    ty,
+                        ty,
+                    },
                     width: TileWidth::Fixed(width),
                     access: Access::Value,
                 });
@@ -132,8 +128,7 @@ impl Builder<'_> {
             .map(|((_, byte), r)| (*byte, *r))
             .collect();
         self.tiles.push(CheckedTile {
-            source: TileOrigin::Bound(TileSource::Published),
-            ty: value.ty,
+            source: TileOrigin::Published(value),
             width,
             access: if atomic {
                 Access::Atomic
@@ -190,9 +185,9 @@ impl Builder<'_> {
                 "atomic tile 需要先显式原子读取并发布不可变值，再参与集合运算",
             );
         }
-        if let TileOrigin::Bound(TileSource::Input { binding, .. }) = self.tiles[tile].source {
-            self.reads.insert(binding);
-            self.cross_access.insert(binding);
+        if let TileOrigin::Input { binding, .. } = &self.tiles[tile].source {
+            self.reads.insert(*binding);
+            self.cross_access.insert(*binding);
         }
         if !ty.is_numeric() || !op.operator().accepts(ty.components[0].0) {
             return self.fail(
@@ -236,7 +231,7 @@ impl Builder<'_> {
         }
     }
     pub(super) fn bind_tile(&mut self, name: &str, tile: usize) {
-        let ty = self.tiles[tile].ty.clone();
+        let ty = self.tiles[tile].ty().clone();
         let words = ty.components.iter().map(|(_, byte)| *byte).collect();
         let length = bounds::Proof::unsigned(1, self.tile_width_bound())
             .with_domains(Domains::from([IndexDomain::TileLength]))
@@ -273,9 +268,14 @@ impl Builder<'_> {
         std::mem::take(&mut self.tiles)
             .into_iter()
             .map(|t| match (t.source, t.width) {
-                (TileOrigin::Bound(source), TileWidth::Fixed(width)) => Ok(Tile {
-                    source,
-                    ty: t.ty,
+                (TileOrigin::Input { binding, word, ty }, TileWidth::Fixed(width)) => Ok(Tile {
+                    source: TileSource::Input { binding, word },
+                    ty,
+                    width,
+                }),
+                (TileOrigin::Published(value), TileWidth::Fixed(width)) => Ok(Tile {
+                    source: TileSource::Published,
+                    ty: value.ty,
                     width,
                 }),
                 _ => self.fail(
