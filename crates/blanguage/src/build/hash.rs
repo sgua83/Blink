@@ -22,11 +22,14 @@ pub fn digest(bytes: &[u8]) -> [u8; 32] {
         0x1f83d9ab,
         0x5be0cd19,
     ];
-    let mut padded = bytes.to_vec();
-    padded.push(0x80);
-    padded.resize((bytes.len() + 9).div_ceil(64) * 64 - 8, 0);
-    padded.extend((bytes.len() as u64 * 8).to_be_bytes());
-    for chunk in padded.chunks_exact(64) {
+    let blocks = bytes.chunks_exact(64);
+    let remainder = blocks.remainder();
+    let mut tail = [0u8; 128];
+    tail[..remainder.len()].copy_from_slice(remainder);
+    tail[remainder.len()] = 0x80;
+    let end = if remainder.len() < 56 { 64 } else { 128 };
+    tail[end - 8..end].copy_from_slice(&(bytes.len() as u64 * 8).to_be_bytes());
+    for chunk in blocks.chain(tail[..end].chunks_exact(64)) {
         let mut w = [0u32; 64];
         for (word, bytes) in w.iter_mut().zip(chunk.chunks_exact(4)) {
             *word = u32::from_be_bytes(bytes.try_into().unwrap());
