@@ -4370,6 +4370,13 @@ impl Builder<'_> {
             let Some(facts) = self.path.required_in(&environment) else {
                 return;
             };
+            // Keep branch-derived integer bounds on the path that established them.
+            self.path = Clause::both(&self.path, &Clause::facts(facts.difference(&environment)
+                .filter(|fact| match fact {
+                    Fact::Minimum(_, scalar, _) | Fact::Maximum(_, scalar, _) => scalar.is_integer(),
+                    Fact::Zero(_) | Fact::NonZero(_) => true,
+                    _ => false,
+                }).copied().collect()));
             let roots = equality_roots(&facts);
             for binding in std::iter::once(first).chain(consumers) {
                 match &mut *binding {
