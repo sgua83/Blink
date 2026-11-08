@@ -176,7 +176,7 @@ impl Builder<'_> {
             );
         }
         let TileView {
-            tile, ty, words, ..
+            tile, ty, words, length,
         } = self.tile_view(&args[0])?;
         if self.tiles[tile].access == Access::Atomic {
             return self.fail(
@@ -196,6 +196,12 @@ impl Builder<'_> {
                 "tile 集合运算需要数值标量／向量或其字段，按位操作只接受整数；不接受 bool、记录或资源",
             );
         }
+        let mut proof = bounds::Proof::default();
+        if op == TileOp::ReduceSum
+            && let Some(input) = self.common_tile_proof(tile, &words)
+        {
+            proof = bounds::tile_sum(&input, &ty, &length);
+        }
         let regs: Vec<_> = ty.components.iter().map(|(s, _)| self.reg(*s)).collect();
         self.emit(InstKind::TileCollective(TileCollective {
             op,
@@ -203,7 +209,7 @@ impl Builder<'_> {
             results: words.into_iter().zip(regs.iter().copied()).collect(),
         }));
         Ok(Value {
-            proof: bounds::Proof::default(),
+            proof,
             literal: false,
             ty,
             regs,

@@ -3162,6 +3162,26 @@ fn constrain_proofs(
         facts.insert(Fact::Minimum(limit_id, scalar, lower));
     }
 }
+// An integer reduction sums distinct elements, not repeated copies of one identity.
+pub(super) fn tile_sum(input: &Proof, ty: &Ty, length: &Proof) -> Proof {
+    let (minimum, maximum) = length.range_set(0).restrict(1, Bits::from(u32::MAX)).hull();
+    Proof {
+        ranges: ty.components.iter().enumerate().map(|(component, (scalar, _))| {
+            if !scalar.is_integer() { return ScalarRanges::default(); }
+            let (lower, upper) = input.element_range(component, *scalar).hull();
+            if lower > upper || minimum > maximum { return ScalarRanges(Vec::new()); }
+            let number = |bits| if scalar.is_signed() {
+                i128::from(scalar.signed(bits ^ scalar.order_bias()))
+            } else { i128::from(bits) };
+            let (lower, upper) = (number(lower), number(upper));
+            let ends = [lower*i128::from(minimum), lower*i128::from(maximum),
+                upper*i128::from(minimum), upper*i128::from(maximum)];
+            integer_result_range((*ends.iter().min().unwrap(), *ends.iter().max().unwrap()),
+                scalar.order_bias(), scalar.bit_width())
+        }).collect(),
+        ..Proof::default()
+    }
+}
 /// 数值区间逐分量计算；资源索引域只沿已证明的无符号关系传递。
 pub(super) fn math(op: MathOp, args: &[Value]) -> Proof {
     let width = args.iter().map(|value| value.regs.len()).max().unwrap();
@@ -4234,6 +4254,19 @@ impl Builder<'_> {
         Some(common.element_facts(|target| self.data_index_proof(target)
             .with_domains(Domains::from([IndexDomain::Data(target)]))))
     }
+    pub(super) fn common_tile_proof(&self, tile: usize, words: &[u32]) -> Option<Proof> {
+        match &self.tiles[tile].source {
+            TileOrigin::Input { binding, word, .. } =>
+                self.common_element_proof((*binding, *word), words, None),
+            TileOrigin::Published(value) if self.tiles[tile].access == Access::Value => {
+                let components = words.iter().map(|word| value.ty.components.iter()
+                    .position(|(_, byte)| byte == word).unwrap()).collect::<Vec<_>>();
+                Some(Proof::capture(value).project(&components, value.regs.len()).element_facts(
+                    |target| self.data_index_proof(target).with_domains(Domains::from([IndexDomain::Data(target)]))))
+            }
+            _ => None,
+        }
+    }
     pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg], reads: &[(usize,usize)]) -> Result<(Proof, bool)> {
         let (snapshots,common)=match place {
             Place::ApplicationElement{..}=>{
@@ -4294,21 +4327,10 @@ impl Builder<'_> {
                 None => (self.projected_owned_proof(place, Some(regs)).unwrap_or_default(), false),
             },
         };
-        if let Place::TileElement { tile, words, .. } = place {
-            let common = match &self.tiles[*tile].source {
-                TileOrigin::Input { binding, word, .. } =>
-                    self.common_element_proof((*binding, *word), words, None),
-                TileOrigin::Published(value) if self.tiles[*tile].access == Access::Value => {
-                    let components = words.iter().map(|word| value.ty.components.iter()
-                        .position(|(_, byte)| byte == word).unwrap()).collect::<Vec<_>>();
-                    Some(Proof::capture(value).project(&components, value.regs.len()).element_facts(
-                        |target| self.data_index_proof(target).with_domains(Domains::from([IndexDomain::Data(target)]))))
-                }
-                _ => None,
-            };
-            if let Some(common) = common {
-                proof.constrain_common_ranges(&common, regs.len());
-            }
+        if let Place::TileElement { tile, words, .. } = place
+            && let Some(common) = self.common_tile_proof(*tile, words)
+        {
+            proof.constrain_common_ranges(&common, regs.len());
         }
         Ok((proof, uniform))
     }
