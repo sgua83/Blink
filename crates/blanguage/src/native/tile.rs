@@ -1,5 +1,6 @@
 //! 每个原生范围拥有完整逻辑 tile；发布后按阶段执行所有 lane，私有值随 lane 保存。
 use super::*;
+use crate::native::{FunctionAbi, ParallelRangePart};
 use super::allocation::Location;
 impl Emitter<'_> {
     fn tile_length_slot(&self) -> u32 {
@@ -56,7 +57,8 @@ impl Emitter<'_> {
             self.store(dst);
         } else { self.read_scalar_address(dst, memory); }
     }
-    pub(super) fn tile_input(&mut self) {
+    pub(super) fn tile_input(&mut self, abi: &mut FunctionAbi) {
+        let start = self.code.len();
         let width = self.stage.workgroup_width();
         self.bytes(&[0x89, 0xd8, 0x31, 0xd2, 0xb9]);
         self.u32(width);
@@ -67,20 +69,18 @@ impl Emitter<'_> {
         self.u32(width);
         self.bytes(&[0x39, 0xc8, 0x0f, 0x47, 0xc1, 0x89, 0x84, 0x24]);
         self.u32(self.tile_length_slot());
+        self.parallel_abi(abi, start, ParallelRangePart::TileInputBoundary { width });
         for ((source, word), fragments) in self.stage.input_words() {
           for (byte, unit) in fragments {
+            let start = self.code.len();
             self.bytes(&[0x4d, 0x8b, 0x94, 0x24]);
             self.u32(source as u32 * BUFFER_BYTES);
             self.bytes(&[0x89, 0xd8]);
             self.scale_buffer_index(12, source, 0);
             self.bytes(&[0x49, 0x01, 0xc2, 0x4c, 0x8d, 0x9c, 0x24]);
-            self.u32(
-                self.tile_storage_base()
-                    + self.stage.word_offset(SharedWord::Input {
-                        binding: source,
-                        word,
-                    }) as u32 + byte % 4,
-            );
+            let storage_offset = self.tile_storage_base()
+                + self.stage.word_offset(SharedWord::Input { binding: source, word }) as u32 + byte % 4;
+            self.u32(storage_offset);
             self.bytes(&[0x8b, 0x8c, 0x24]);
             self.u32(self.tile_length_slot());
             let begin = self.code.len();
@@ -94,6 +94,7 @@ impl Emitter<'_> {
             self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
             let again = self.jump(Some(0x85));
             self.patch(again, begin);
+            self.parallel_abi(abi, start, ParallelRangePart::TileInputCopy { binding: source, source_offset: byte, storage_offset, unit_bytes: unit.size() });
           }
         }
         self.patch(skip, self.code.len());
@@ -150,10 +151,10 @@ impl Emitter<'_> {
             }
         }
     }
-    pub(super) fn tile_phases(&mut self) -> Result<(), &'static str> {
+    pub(super) fn tile_phases(&mut self, abi: &mut FunctionAbi) -> Result<(), &'static str> {
         self.bytes(&[0x89, 0x9c, 0x24]);
         self.u32(self.tile_base_slot());
-        self.tile_input();
+        self.tile_input(abi);
         for phase in self.stage.tile_phases() {
             self.bytes(&[0x8b, 0x9c, 0x24]);
             self.u32(self.tile_base_slot());

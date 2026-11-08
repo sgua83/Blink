@@ -804,10 +804,10 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         skip
     });
     if stage.has_tile_steps() {
-        e.tile_phases()?;
+        e.tile_phases(&mut abi)?;
     } else {
         if stage.has_tile_scope() {
-            e.tile_input();
+            e.tile_input(&mut abi);
         }
         e.block(&stage.code)?;
         if let Some(skip) = skip_selection {

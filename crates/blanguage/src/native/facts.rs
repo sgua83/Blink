@@ -69,6 +69,11 @@ fn parallel_abi_fields(part: &super::ParallelRangePart, origin: String) -> Vec<(
             fields.extend([("binding_index", binding.to_string()), ("field_offset_bytes", offset.to_string())]);
             if matches!(part, ScalarSelection { .. }) { "scalar_selection" } else { "packet_collect" }
         }
+        TileInputBoundary { width } => { fields.push(("width", width.to_string())); "tile_input_boundary" }
+        TileInputCopy { binding, source_offset, storage_offset, unit_bytes } => {
+            fields.extend([("binding_index", binding.to_string()), ("source_offset_bytes", source_offset.to_string()),
+                ("storage_offset_bytes", storage_offset.to_string()), ("unit_bytes", unit_bytes.to_string())]); "tile_input_copy"
+        }
         ScalarBounds => "scalar_bounds", ScalarAdvance => "scalar_advance", ScalarBackEdge => "scalar_back_edge",
         PacketBounds => "packet_bounds", PacketAdvance => "packet_advance", PacketBackEdge => "packet_back_edge", PacketTail => "packet_tail",
     };

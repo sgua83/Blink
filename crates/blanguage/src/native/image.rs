@@ -131,6 +131,8 @@ pub enum ParallelRangePart {
     PacketAdvance,
     PacketBackEdge,
     PacketTail,
+    TileInputBoundary { width: u32 },
+    TileInputCopy { binding: usize, source_offset: u32, storage_offset: u32, unit_bytes: u32 },
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

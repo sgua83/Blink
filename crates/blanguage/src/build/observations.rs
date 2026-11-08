@@ -4,7 +4,7 @@ use crate::{native::{CodeSources, NativeCode, Region, RegionKind, SavedSources, 
 use crate::codec::{Decode, Encode, Writer, record, variants};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"BLCR\x03\0\0\0";
+const MAGIC: &[u8; 8] = b"BLCR\x04\0\0\0";
 struct CodeRanges {
     identity: [u8; 32],
     tails: Vec<Region>,
