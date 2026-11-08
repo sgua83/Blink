@@ -109,7 +109,7 @@ impl Builder<'_> {
                     message: "省略发布宽度需要既有 tile 范围".into(),
                 })?
         };
-        let Some(value) = self.expr(&args[0])? else {
+        let Some(mut value) = self.expr(&args[0])? else {
             return Ok(());
         };
         if value.ty.contains_views() || value.ty.components.is_empty() {
@@ -119,6 +119,7 @@ impl Builder<'_> {
                 "tile 发布需要普通值，不能发布资源 view 或能力句柄",
             );
         }
+        value.proof.under_path(&value.ty, &self.path);
         let tile = self.tiles.len();
         let values = value
             .ty
@@ -200,7 +201,7 @@ impl Builder<'_> {
         if op == TileOp::ReduceSum
             && let Some(input) = self.common_tile_proof(tile, &words)
         {
-            proof = bounds::tile_sum(&input, &ty, &length);
+            proof = self.tile_sum(tile, &words, &input, &ty, &length);
         }
         let regs: Vec<_> = ty.components.iter().map(|(s, _)| self.reg(*s)).collect();
         self.emit(InstKind::TileCollective(TileCollective {
@@ -307,16 +308,24 @@ impl Builder<'_> {
     pub(super) fn tile_lane(&mut self) -> Value {
         let r = self.reg(Scalar::U32);
         self.emit(InstKind::TileLane(r));
-        Value {
-            proof: self
-                .tile_index_proof()
-                .with_domains(Domains::from([IndexDomain::Tile])),
+        let mut proof = self.tile_index_proof().with_domains(Domains::from([IndexDomain::Tile]));
+        if let Some(TileWidth::Fixed(width)) = self.tiles.first().map(|tile| tile.width) {
+            proof.mark_domain(0, IndexDomain::Computed(bounds::IntegerExpression::Binary(
+                bounds::IntegerOperation::Remainder, Scalar::U32,
+                bounds::Operand::Value(ValueIdentity::Register(self.global_index)),
+                bounds::Operand::Constant(Scalar::U32, Bits::from(width)),
+            )));
+        }
+        let value = Value {
+            proof,
             literal: false,
             ty: Ty::scalar(Scalar::U32),
             regs: vec![r],
             uniform: false,
             constant: None,
-        }
+        };
+        self.observe_bounds(&value);
+        value
     }
     fn tile_width_bound(&self) -> u32 {
         match self.tiles.first().map(|t| t.width) {

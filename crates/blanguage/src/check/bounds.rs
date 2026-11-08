@@ -3436,28 +3436,6 @@ fn integer_relation_facts(facts: &Facts) -> Option<Facts> {
     output.retain(|fact| !facts.contains(fact));
     Some(output)
 }
-// A reduction sums distinct elements, not repeated copies of one identity.
-pub(super) fn tile_sum(input: &Proof, ty: &Ty, length: &Proof) -> Proof {
-    let (minimum, maximum) = length.range_set(0).restrict(1, Bits::from(u32::MAX)).hull();
-    Proof {
-        ranges: ty.components.iter().enumerate().map(|(component, (scalar, _))| {
-            if minimum > maximum { return ScalarRanges(Vec::new()); }
-            if *scalar == Scalar::F32 { return floating::sum(input, component, maximum); }
-            if !scalar.is_integer() { return ScalarRanges::default(); }
-            let (lower, upper) = input.element_range(component, *scalar).hull();
-            if lower > upper { return ScalarRanges(Vec::new()); }
-            let number = |bits| if scalar.is_signed() {
-                i128::from(scalar.signed(bits ^ scalar.order_bias()))
-            } else { i128::from(bits) };
-            let (lower, upper) = (number(lower), number(upper));
-            let ends = [lower*i128::from(minimum), lower*i128::from(maximum),
-                upper*i128::from(minimum), upper*i128::from(maximum)];
-            integer_result_range((*ends.iter().min().unwrap(), *ends.iter().max().unwrap()),
-                scalar.order_bias(), scalar.bit_width())
-        }).collect(),
-        ..Proof::default()
-    }
-}
 /// 数值区间逐分量计算；资源索引域只沿已证明的无符号关系传递。
 pub(super) fn math(op: MathOp, args: &[Value]) -> Proof {
     let width = args.iter().map(|value| value.regs.len()).max().unwrap();
@@ -3964,13 +3942,15 @@ impl Builder<'_> {
             "<<" => IntegerOperation::ShiftLeft, ">>" => IntegerOperation::ShiftRight,
             _ => return,
         };
-        let facts = (0..result.regs.len()).map(|component| {
+        let mut facts: Facts = (0..result.regs.len()).map(|component| {
             let left = Operand::of(a, component % a.regs.len());
             let right = Operand::of(b, component % b.regs.len());
             let domain = IndexDomain::Computed(IntegerExpression::Binary(operation, scalar, left, right));
             result.proof.mark_domain(component, domain);
             Fact::Index(result.component_identity(component), domain)
         }).collect();
+        facts.extend(Proof::capture(result).facts(&result.ty).into_iter().filter(|fact|
+            matches!(fact, Fact::Minimum(..) | Fact::Maximum(..) | Fact::Zero(_) | Fact::NonZero(_))));
         self.path = Clause::observed(&self.path,facts);
     }
     pub(super) fn observe_bounds(&mut self, value: &Value) {
@@ -4529,6 +4509,75 @@ impl Builder<'_> {
         common.forget_value(&changed, words.len());
         Some(common.element_facts(|target| self.data_index_proof(target)
             .with_domains(Domains::from([IndexDomain::Data(target)]))))
+    }
+    // A reduction sums distinct elements, not repeated copies of one identity.
+    pub(super) fn tile_sum(&self, tile: usize, words: &[u32], input: &Proof, ty: &Ty, length: &Proof) -> Proof {
+        let (minimum, maximum) = length.range_set(0).restrict(1, Bits::from(u32::MAX)).hull();
+        Proof {
+            ranges: ty.components.iter().enumerate().map(|(component, (scalar, _))| {
+                if minimum > maximum { return ScalarRanges(Vec::new()); }
+                if *scalar == Scalar::F32 { return floating::sum(input, component, maximum); }
+                if !scalar.is_integer() { return ScalarRanges::default(); }
+                let (lower, upper) = input.element_range(component, *scalar).hull();
+                if lower > upper { return ScalarRanges(Vec::new()); }
+                let number = |bits| if scalar.is_signed() {
+                    i128::from(scalar.signed(bits ^ scalar.order_bias()))
+                } else { i128::from(bits) };
+                let (lower, upper) = (number(lower), number(upper));
+                let ends = [lower*i128::from(minimum), lower*i128::from(maximum),
+                    upper*i128::from(minimum), upper*i128::from(maximum)];
+                let mut range = (*ends.iter().min().unwrap(), *ends.iter().max().unwrap());
+                if let Some(count) = self.tile_nonzero_count(tile, words[component], maximum as u32) {
+                    let count = i128::from(count);
+                    range.0 = range.0.max(lower.min(0) * count);
+                    range.1 = range.1.min(upper.max(0) * count);
+                }
+                if range.0 > range.1 { return ScalarRanges(Vec::new()); }
+                integer_result_range(range, scalar.order_bias(), scalar.bit_width())
+            }).collect(),
+            ..Proof::default()
+        }
+    }
+    fn tile_nonzero_count(&self, tile: usize, word: u32, maximum: u32) -> Option<u32> {
+        let TileOrigin::Published(value) = &self.tiles[tile].source else { return None; };
+        let TileWidth::Fixed(width) = self.tiles[tile].width else { return None; };
+        let component = value.ty.components.iter().position(|(_, at)| *at == word).unwrap();
+        let condition = Condition::component(value, component);
+        let Some(facts) = condition.cases[1].required() else { return Some(0); };
+        let query = IntegerQuery::new(&facts);
+        let global = query.root(ValueIdentity::Register(self.global_index));
+        let mut count: Option<u32> = None;
+        for fact in &facts {
+            let Fact::Index(lane, IndexDomain::Computed(IntegerExpression::Binary(
+                IntegerOperation::Remainder, Scalar::U32, Operand::Value(index), Operand::Constant(Scalar::U32, span)
+            ))) = *fact else { continue; };
+            if span != Bits::from(width) || query.root(index) != global { continue; }
+            let (lower, upper) = query.bounds(lane, Scalar::U32);
+            let upper = upper.min(i128::from(maximum.min(width)-1));
+            let mut population = if lower > upper { 0 } else { (upper-lower+1) as u32 };
+            if population != 0 {
+                for fact in &facts {
+                    let Fact::Index(remainder, IndexDomain::Computed(IntegerExpression::Binary(
+                        IntegerOperation::Remainder, Scalar::U32, Operand::Value(source), Operand::Constant(Scalar::U32, period)
+                    ))) = *fact else { continue; };
+                    if query.root(source) != query.root(lane) { continue; }
+                    let (first, last) = query.bounds(remainder, Scalar::U32);
+                    let last = last.min(i128::from(period)-1);
+                    let selected = if first > last { 0 } else {
+                        // Count an integer interval of residues without enumerating lanes.
+                        let (first, last) = (first as u64, last as u64);
+                        let prefix = |end: u64| {
+                            let tail = (end % period).min(last+1);
+                            end / period * (last-first+1) + tail-first.min(tail)
+                        };
+                        (prefix(upper as u64+1)-prefix(lower as u64)) as u32
+                    };
+                    population = population.min(selected);
+                }
+            }
+            count = Some(count.map_or(population, |old| old.min(population)));
+        }
+        count
     }
     pub(super) fn common_tile_proof(&self, tile: usize, words: &[u32]) -> Option<Proof> {
         match &self.tiles[tile].source {
