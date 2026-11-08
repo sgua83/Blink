@@ -22,8 +22,10 @@ pub(super) fn ranges(value: &Value, component: usize) -> ScalarRanges {
     }
 }
 fn finite(value: &Value, component: usize) -> Option<(f64, f64)> {
-    let scalar = value.ty.components[component].0;
-    let (a,b) = ranges(value, component).hull();
+    finite_ranges(value.ty.components[component].0, ranges(value, component))
+}
+fn finite_ranges(scalar: Scalar, ranges: ScalarRanges) -> Option<(f64, f64)> {
+    let (a,b) = ranges.hull();
     if a > b { return None; }
     let (mut lower, mut upper) = (number(scalar,a), number(scalar,b));
     if !lower.is_finite() || !upper.is_finite() { return None; }
@@ -150,6 +152,33 @@ pub(super) fn math(op: MathOp, args: &[Value], component: usize) -> ScalarRanges
         _ => return ScalarRanges::default(),
     };
     interval(scalar,lower,upper)
+}
+// The original FAdd tree has at most N-1 non-identity additions per result.
+pub(super) fn sum(input: &Proof, component: usize, maximum: Bits) -> ScalarRanges {
+    let input = input.element_range(component, Scalar::F32);
+    if input.0.is_empty() { return input; }
+    let Some((lower, upper)) = finite_ranges(Scalar::F32, input) else { return ScalarRanges::default(); };
+    if maximum == 1 { return interval(Scalar::F32, lower, upper); }
+    let mut power = maximum - 1;
+    let mut base = 1.0 + 2.0f64.powi(-23);
+    let mut factor = 1.0;
+    while power != 0 {
+        if power & 1 != 0 { factor = multiply_up(factor, base); }
+        power >>= 1;
+        if power != 0 { base = multiply_up(base, base); }
+    }
+    let count = maximum as f64;
+    let magnitude = multiply_up(count, lower.abs().max(upper.abs()));
+    // Flushing a subnormal can cost a full minimum normal, not one subnormal ULP.
+    // Below that magnitude all F32 sums lie on the exact subnormal lattice.
+    let flushed = multiply_up(multiply_up(factor, count - 1.0),
+        (f32::MIN_POSITIVE as f64).min(magnitude));
+    let error = add_up(multiply_up(add_up(factor, -1.0), magnitude), flushed);
+    // Final cancellation does not establish finiteness of earlier additions.
+    if add_up(magnitude, error) > f32::MAX as f64 { return ScalarRanges::default(); }
+    let lower = if lower >= 0.0 { lower } else { -add_up(multiply_up(-lower, count), error) };
+    let upper = if upper <= 0.0 { upper } else { add_up(multiply_up(upper, count), error) };
+    interval(Scalar::F32, lower, upper)
 }
 pub(super) fn negate(value: &Value, component: usize) -> ScalarRanges {
     match finite(value,component) {

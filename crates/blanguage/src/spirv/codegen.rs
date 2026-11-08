@@ -485,8 +485,7 @@ impl Emitter<'_> {
                     self.from_words(*dst, &words, Scalar::U32);
                 }
                 InstKind::Constant(dst, s, bits) => {
-                    let constant = self.constant_bits(*s, *bits);
-                    self.emit(83, &[self.ty(*dst), self.value(*dst), constant]);
+                    self.regs[*dst] = self.constant_bits(*s, *bits);
                 }
                 InstKind::Index(dst) => self.emit(83, &[self.ty(*dst), self.value(*dst), self.index]),
                 InstKind::Uniform(dst, offset) => {

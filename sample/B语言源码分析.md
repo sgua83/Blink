@@ -2162,7 +2162,7 @@ pub(crate) struct Interface {
 
 同一已求值整数来源的加、减和常量乘法比较，由原Clause共有事实查询消费已有Computed整数式、Scalar、Below及数值上下界；本次查询内按同一来源消元，并把成立的整数界留在原Facts供实际索引及分支读取。u8／i8至u64／i64分别使用原机器整数的位宽、有序编码和零位置；只在当前来源范围内不发生回绕的每一步运算才作为数学整数等式展开。会回绕、不同来源或非仿射运算继续保留原机器值，不把它们拒绝为非法B程序。旧值快照与当前改写值分别命名，等价身份沿原事实交接；局部系数及查询中间材料在本次查询结束释放，不增加公共表达式格式、持久缓存、运行状态、范围钳制或新的条件图。整数商到被除数的反推、非零请求位置到归约基数，以及直接返回仿射比较时的公开数值交接仍有独立缺口，见Issues C-021.1.4.4.3.5.2至.4；不能用本次同源范围推导代替这些能力。
 
-普通tile读取与整数tile_reduce_sum共享这一来源数值查询；求和逐分量消费整个允许输入集合的数值包络与当前有效长度的已知范围，在数学整数中形成总和界，再由原整数模区间算法解释真实位宽及有符号回绕。不能按互不相交输入片段分别假定所有元素取同一片段，也不把某一元素的身份、路径或借用传给总和。结果只在原Proof.ranges中交接，现有模块合同及原索引消费者直接使用；u32逐值在0至1且有效长度至多W时可交出0至W，但这不证明实际请求选择的更小密度上界。浮点求和、其他归约／exclusive扫描及尚无共同输入事实的协作参数继续按原Issues对应缺口推进，不补造范围或限制合法程序。原IR、CPU／GPU归约顺序、指令、同步及Frame资源所有者保持；不增加运行检查、事实表、发布缓存、格式标签或ABI。分支、重叠及未知写继续沿原模型合流／撤回，prefix、稀疏选择和不同长度的部分覆盖不冒充全体保证；部分整数原子store／exchange、compare_exchange的desired及min／max候选，沿原写效果与未写元素可能保留的旧共同值求并；已知范围或相同逻辑目标可交接后继CPU／GPU，未知写或未闭合的其他RMW撤回。该摘要不作为atomic_load或RMW返回值的稳定读事实，不表示全体命中或完整初始化；原内存序、实际字节、完成和资源拥有者保持。
+普通tile读取与整数tile_reduce_sum共享这一来源数值查询；求和逐分量消费整个允许输入集合的数值包络与当前有效长度的已知范围，在数学整数中形成总和界，再由原整数模区间算法解释真实位宽及有符号回绕。不能按互不相交输入片段分别假定所有元素取同一片段，也不把某一元素的身份、路径或借用传给总和。结果只在原Proof.ranges中交接，现有模块合同及原索引消费者直接使用；u32逐值在0至1且有效长度至多W时可交出0至W，但这不证明实际请求选择的更小密度上界。F32 tile_reduce_sum复用同一来源与Proof.ranges，将有限输入集合的包络及有效长度上界N交给原浮点区间所有者。原finite与集合输入共用finite_ranges及次正规数解释；最多N−1次非单位元加法的舍入因子(1+2^-23)^(N−1)按指数位以原有向端点乘法计算，覆盖实际线性／树形顺序及允许的次正规清零，不能直接用理想实数的输入界乘长度替代。单元素保留单位元范围，非负／非正输入保留真实符号；结果向外舍入并包含两种零的位模式。只有能建立所有中间加法有限时才交出有限结果区间，不能由最终相消推定中间不溢出；未知、NaN／无穷或无法建立中间有限性的输入保持未知，不限制合法程序或增加运行保护。F64求和、其他归约／exclusive扫描及尚无共同输入事实的协作参数继续按原Issues对应缺口推进。原IR、CPU／GPU归约顺序、指令、同步及Frame资源所有者保持；不增加运行检查、事实表、发布缓存、格式标签或ABI。分支、重叠及未知写继续沿原模型合流／撤回，prefix、稀疏选择和不同长度的部分覆盖不冒充全体保证；部分整数原子store／exchange、compare_exchange的desired及min／max候选，沿原写效果与未写元素可能保留的旧共同值求并；已知范围或相同逻辑目标可交接后继CPU／GPU，未知写或未闭合的其他RMW撤回。该摘要不作为atomic_load或RMW返回值的稳定读事实，不表示全体命中或完整初始化；原内存序、实际字节、完成和资源拥有者保持。
 
 write_place的非循环ApplicationElement在真实write_application_place、initialize与assign_owned_proof之后，按原sources交接受影响资源；for_statement仍接收for_loop经leave_loop移交的原LoopWrites，在真实Loop之后按原storage／locals与unknown_storage选择已完成写的资源。两者共用complete_application_writes，只选择仍可用、明确在CPU的原U32 Frame绑定，刷新同一Data.elements后交给complete_application_elements；原U64地址不取得Frame。DatasetWriteComplete对应实际赋值或原for语句，循环不在迭代体逐次发布，initial递归展开不重复发射；失败右值、return及原错误退出不进入相应正常完成点。该入口只发布原模型已成立的共同数值，部分写不冒充全覆盖，不扫描元素或恢复已撤回Prefix；没有第二份写集合、Frame、资源表或完成状态。
 
@@ -2301,7 +2301,7 @@ pub(super) fn ranges(value: &Value, component: usize) -> ScalarRanges {
 
 端点计算也不能假装宿主双精度完全精确。F32相加的极小第二项可能在宿主F64求值时消失；原数值生产者保留主值与残差，再根据下界／上界向外取可表示值。它仅在编译器里生成原范围，不向B程序加入判断：
 
-源码节选：`crates/blanguage/src/check/bounds/floating.rs:44`。
+源码节选：`crates/blanguage/src/check/bounds/floating.rs:46`。
 
 ```rust
 fn sum_bound(a: f64, b: f64, lower: bool) -> f64 {
@@ -3512,6 +3512,8 @@ GPU 把大量实例组织成工作组。每个实例有本组编号和组内编�
 ## 第十七章 SPIR-V：直接生成 GPU 能接受的程序
 
 ### 17.1 SPIR-V 位于哪里
+
+GPU阶段的非浮点常量直接使用原constants中唯一的模块级SPIR-V常量ID，不先生成逐lane CopyObject。tile_phases只为实际私有SSA值交接跨发布点的Phi；已有模块常量在所有lane和阶段都可直接引用，消费同一原constants身份，不为它选择无效lane的零值或创建第二份常量表。动态值的原guard／Phi、屏障、尾lane、私有local、发布共享字及真实集合顺序保持；浮点原位常量继续按既有原始字与bitcast物化，不改变NaN载荷、IR、布局、设备能力、公共ABI或资源寿命。
 
 spirv.rs 是公开入口，spirv/codegen.rs 及其子模块在 compiler feature 中生成 SPIR-V；spirv/image.rs 保存编译器和执行器共用的 Shader、阶段映像、页绑定和前缀布局。Compiler::spirv或spirv::compile_program先完成GPU映像，Device创建借用它的ExecutionPlan以取得实际阶段需求，再由Device::load／load_template直接装入。编译与设备创建、装入按真实生产和消费顺序交接，同一映像及资源继续由原所有者保持。
 

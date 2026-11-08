@@ -3374,14 +3374,16 @@ fn integer_affine_facts(facts: &Facts) -> Option<Facts> {
     output.retain(|fact| !facts.contains(fact));
     Some(output)
 }
-// An integer reduction sums distinct elements, not repeated copies of one identity.
+// A reduction sums distinct elements, not repeated copies of one identity.
 pub(super) fn tile_sum(input: &Proof, ty: &Ty, length: &Proof) -> Proof {
     let (minimum, maximum) = length.range_set(0).restrict(1, Bits::from(u32::MAX)).hull();
     Proof {
         ranges: ty.components.iter().enumerate().map(|(component, (scalar, _))| {
+            if minimum > maximum { return ScalarRanges(Vec::new()); }
+            if *scalar == Scalar::F32 { return floating::sum(input, component, maximum); }
             if !scalar.is_integer() { return ScalarRanges::default(); }
             let (lower, upper) = input.element_range(component, *scalar).hull();
-            if lower > upper || minimum > maximum { return ScalarRanges(Vec::new()); }
+            if lower > upper { return ScalarRanges(Vec::new()); }
             let number = |bits| if scalar.is_signed() {
                 i128::from(scalar.signed(bits ^ scalar.order_bias()))
             } else { i128::from(bits) };
