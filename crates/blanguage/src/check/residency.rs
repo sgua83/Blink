@@ -415,7 +415,12 @@ fn query_value(value:&Residency,wanted:Option<&Input>,outputs:&Outputs,w:&mut cr
 }
 fn query_key(call:&Call,wanted:Option<&Input>,outputs:&Outputs)->Vec<u8>{
     use crate::module::codec::Encode;
-    let mut w=crate::module::codec::Writer(Vec::new());call.function.encode(&mut w);call.bindings.encode(&mut w);bounds::Condition::guard(call.path.canonical()).encode(&mut w);
+    let mut w=crate::module::codec::Writer(Vec::new());call.function.encode(&mut w);call.bindings.len().encode(&mut w);
+    for(id,proof)in &call.bindings {
+        id.encode(&mut w);let identity=proof.known_identity(0).filter(|_|proof.origins.len()==1);identity.encode(&mut w);
+        if identity.is_none(){proof.encode(&mut w);}
+    }
+    bounds::Condition::guard(call.path.canonical()).encode(&mut w);
     call.arguments.len().encode(&mut w);
     for(input,value)in &call.arguments{input.encode(&mut w);query_value(value,wanted,outputs,&mut w);}
     w.0
