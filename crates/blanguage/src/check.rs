@@ -3571,21 +3571,23 @@ impl<'a> Builder<'a> {
         self.require_bool(&c, condition.span)?;
         self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(&c,&self.env,None);
         let partition = Arc::new(bounds::Condition::of(&c));
-        let condition_code = std::mem::take(&mut self.code);
-        if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
-            let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
-            self.finish_view_condition()?;
-            self.refine_bounds(&partition, false);
-            self.code = outer;
-            self.code.extend(condition_code);
-            return Ok(());
-        }
-        self.code = condition_code;
         let condition_prefix = self.code.len();
         let mut condition_env = self.env.clone();
         let condition_path = self.path.clone();
-        self.refine_bounds(&partition, true);
-        if !initial { self.retain_loop_bounds(Some(condition), body, &environment, &mut condition_env)?; }
+        let mut possible=!c.constant.as_ref().is_some_and(|bits|bits[0]==0);
+        if possible {
+            self.refine_bounds(&partition,true);
+            if !initial {possible=self.retain_loop_bounds(Some(condition),body,&environment,&mut condition_env)?;}
+        }
+        if !possible {
+            self.env=condition_env;self.path=condition_path;
+            let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
+            self.finish_view_condition()?;
+            self.refine_bounds(&partition,false);
+            let condition_code=std::mem::replace(&mut self.code,outer);
+            self.code.extend(condition_code);
+            return Ok(());
+        }
         let body_env = std::mem::replace(&mut self.env, condition_env);
         let body_path = std::mem::replace(&mut self.path, condition_path);
         let natural = if c.constant.as_ref().is_some_and(|bits| bits[0] != 0) {

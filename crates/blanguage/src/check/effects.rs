@@ -1051,6 +1051,29 @@ enum NumericEffect {
     Shift { low: i128, high: i128, least: i128, most: i128 },
 }
 impl NumericEffect {
+
+    fn iteration_bound(&self,input:&bounds::Proof,guard:&bounds::Proof)->Option<i128> {
+        let Self::Shift{low,high,least,most}=self else{return None;};
+        let(first,last)=(i128::from(input.unsigned_minimum(0)),i128::from(input.unsigned_maximum(0)));
+        let(lower,upper)=(i128::from(guard.unsigned_minimum(0)),i128::from(guard.unsigned_maximum(0)));
+        if last<lower||first>upper{return Some(0);}
+        if lower.checked_add(*least)?<0||upper.checked_add(*most)?>i128::from(u32::MAX){return None;}
+        if *high<0{Some((last-lower)/high.checked_neg()?+1)}
+        else if *low>0{Some((upper-first)/low+1)}else{None}
+    }
+    fn bounded_ranges(&self,input:&bounds::Proof,iterations:i128)->Option<((u32,u32),(u32,u32))> {
+        let Self::Shift{low,high,least,most}=self else{return None;};
+        let(first,last)=(i128::from(input.unsigned_minimum(0)),i128::from(input.unsigned_maximum(0)));
+        // A zero-iteration body has no reachable values; entry is also its sound overapproximation.
+        let before=if iterations==0{0}else{iterations-1};
+        let body_low=first.checked_add(before.checked_mul(*low)?.min(0))?;
+        let body_high=last.checked_add(before.checked_mul(*high)?.max(0))?;
+        if body_low.checked_add(*least)?<0||body_high.checked_add(*most)?>i128::from(u32::MAX){return None;}
+        let header_low=first.checked_add(iterations.checked_mul(*low)?.min(0))?;
+        let header_high=last.checked_add(iterations.checked_mul(*high)?.max(0))?;
+        Some(((body_low as u32,body_high as u32),(header_low as u32,header_high as u32)))
+    }
+
     fn shift(amount: i128) -> Self { Self::Shift { low: amount, high: amount, least: amount.min(0), most: amount.max(0) } }
     fn then(self, next: Self) -> Self {
         match (&self,&next) {
@@ -1372,7 +1395,7 @@ impl Builder<'_> {
         scope.bindings.truncate(outer);
         Ok(next)
     }
-    pub(super) fn retain_loop_bounds(&mut self, condition:Option<&Expr>, body:&[Stmt], initial:&BTreeMap<String,Binding>, header:&mut BTreeMap<String,Binding>)->Result<()> {
+    pub(super) fn retain_loop_bounds(&mut self, condition:Option<&Expr>, body:&[Stmt], initial:&BTreeMap<String,Binding>, header:&mut BTreeMap<String,Binding>)->Result<bool> {
         let mut writes=Vec::new();statement_writes(self,body,&mut|write|{writes.push(write);Ok(())})?;if let Some(condition)=condition {expression_writes(self,condition,&mut|write|{writes.push(write);Ok(())})?;}
         let places=writes.iter().filter_map(|write|match write{Write::Position{place,contents:false,iterator:None,..}=>Some(*place),_=>None}).collect::<Vec<_>>();
         let writes=self.normalize_writes(writes)?;
@@ -1419,32 +1442,42 @@ impl Builder<'_> {
             if let Some(identity)=input.known_identity(0){let mut domains=input.domains(0);domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);}
             let mut scope=Scope::current(self);scope.writes=Some(&self.loop_contexts.last().unwrap().writes);
             let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,&writes,!bounds::seeks(body),&mut scope,&bounds::Clause::default())?;
-            let(lower,upper,least,most)=match join_numeric_paths(next,continues){
-                None=>(true,true,0,0),
-                Some(NumericEffect::Shift{low,high,least,most})=>(low>=0,high<=0,least,most),
-                Some(NumericEffect::Reflect(amount))=>{let reflected=input.unsigned_reflected(amount);input.join(&reflected,1,None);retained.push((name,target,input,true,true));continue;},
-                Some(NumericEffect::Assign(repeated))=>{input.join(&repeated,1,None);retained.push((name,target,input,true,true));continue;},
+            retained.push((name,target,input,guard,join_numeric_paths(next,continues)));
+        }
+        let iterations=retained.iter().filter_map(|(_,_,input,guard,effect)|effect.as_ref().and_then(|effect|effect.iteration_bound(input,guard))).min();
+        for(name,target,mut proof,guard,effect)in retained {
+            let bounded=iterations.and_then(|iterations|effect.as_ref()?.bounded_ranges(&proof,iterations));
+            let(lower,upper)=match effect {
+                None=>(true,true),
+                Some(NumericEffect::Shift{low,high,least,most})=>{
+                    let(lower,upper)=(low>=0,high<=0);
+                    let low=guard.unsigned_minimum(0).max(if lower{proof.unsigned_minimum(0)}else{0});
+                    let high=guard.unsigned_maximum(0).min(if upper{proof.unsigned_maximum(0)}else{u32::MAX});
+                    if bounded.is_some()||i128::from(low)+least>=0&&i128::from(high)+most<=i128::from(u32::MAX){(lower,upper)}else{(false,false)}
+                },
+                Some(NumericEffect::Reflect(amount))=>{let reflected=proof.unsigned_reflected(amount);proof.join(&reflected,1,None);(true,true)},
+                Some(NumericEffect::Assign(repeated))=>{proof.join(&repeated,1,None);(true,true)},
                 Some(NumericEffect::Unknown)=>continue,
             };
-            if !lower&&!upper{continue;}
-            let low=guard.unsigned_minimum(0).max(if lower{input.unsigned_minimum(0)}else{0});let high=guard.unsigned_maximum(0).min(if upper{input.unsigned_maximum(0)}else{u32::MAX});
-            if i128::from(low)+least<0||i128::from(high)+most>i128::from(u32::MAX){continue;}
-            retained.push((name,target,input,lower,upper));
-        }
-        for(name,target,proof,lower,upper)in retained {
+            if !lower&&!upper&&bounded.is_none(){continue;}
             if let LoopPlace::Element(target,component)=target {
                 if target.index.is_none(){continue;}
-                let retain=|previous:&Value|{let mut value=previous.clone();value.proof.retain_loop_bounds(&proof,0,lower,upper);bounds::Proof::capture(&value)};
-                let mut environment=self.env.clone();self.retain_loop_element(&target,component,&bounds::Condition::constant(true),&mut environment,(&entry_path,initial),&retain)?;self.env=environment;
-                self.retain_loop_element(&target,component,&bounds::Condition::constant(true),header,(&entry_path,initial),&retain)?;
-            }else{for environment in [&mut self.env,&mut *header]{
-                let Some(binding)=environment.get_mut(&name)else{continue;};match &target{
-                    LoopPlace::Stored(_,component)=>{if let Some((current,_,_))=binding.proof_storage(){current.retain_loop_bounds(&proof,*component,lower,upper);}},
-                    LoopPlace::Length=>{if let Binding::ApplicationData(data)=binding{data.length.proof.retain_loop_bounds(&proof,0,lower,upper);}},
-                    LoopPlace::Element(..)=>{},
+                let retain=|previous:&Value,range:Option<(u32,u32)>|{let mut value=previous.clone();value.proof.retain_loop_bounds(&proof,0,lower,upper);if let Some((low,high))=range{value.proof.retain_loop_bounds(&bounds::Proof::unsigned(low,high),0,true,true);}bounds::Proof::capture(&value)};
+                let mut environment=self.env.clone();self.retain_loop_element(&target,component,&bounds::Condition::constant(true),&mut environment,(&entry_path,initial),&|value|retain(value,bounded.map(|ranges|ranges.0)))?;self.env=environment;
+                self.retain_loop_element(&target,component,&bounds::Condition::constant(true),header,(&entry_path,initial),&|value|retain(value,bounded.map(|ranges|ranges.1)))?;
+            }else{for(environment,range)in [(&mut self.env,bounded.map(|ranges|ranges.0)),(&mut *header,bounded.map(|ranges|ranges.1))]{
+                let Some(binding)=environment.get_mut(&name)else{continue;};
+                let current=match &target{
+                    LoopPlace::Stored(_,component)=>binding.proof_storage().map(|(proof,_,_)|(proof,*component)),
+                    LoopPlace::Length=>if let Binding::ApplicationData(data)=binding{Some((&mut data.length.proof,0))}else{None},
+                    LoopPlace::Element(..)=>None,
+                };
+                if let Some((current,component))=current{
+                    current.retain_loop_bounds(&proof,component,lower,upper);
+                    if let Some((low,high))=range{current.retain_loop_bounds(&bounds::Proof::unsigned(low,high),component,true,true);}
                 }
             }}
         }
-        Ok(())
+        Ok(iterations!=Some(0))
     }
 }
