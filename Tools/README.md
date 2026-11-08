@@ -90,3 +90,14 @@ BLSupervisor system-exec <实际节点> "<该节点实际下载路径> --quiet"
 中央自动安装向PublishRelease.ps1传入-NodeRegistry <现有Matrix节点登记接口>，按真实BLanguage P4工作区Owner／Host及项目关系选取消费者。BLSupervisor从本机29083实际控制进程取得，默认使用原生维护身份配置；也可显式传入-Supervisor、-MaintenanceConfig及-MaintenanceTargets。不固定节点或源码盘符，不分发GitHub写凭据、不新增服务。
 
 已发布同一版本时不重复构建或发包；各节点独立处理，一台失败继续其他节点，最后汇总真实失败，不重试。安装器遇到相同发行记录及VERSION时报告ALREADY_INSTALLED并确认PATH；源码发布、节点安装和实际命令可用分别记录。
+
+## 已结束批次的中间文件清理
+
+在实际源码工作区运行 Tools/Clean.ps1 -Path <工程相对路径>。默认工程根来自脚本所在目录，也可用 -Root 明确指定；路径必须位于该工程的Saved子目录，使用原样路径，不展开通配符。先加 -WhatIf 查看将删除的文件数、逻辑字节及具体路径，再去掉该参数执行。返回值分别记录已选／已删文件数与逻辑字节，以及所在卷实际空闲前后值；压缩文件的逻辑大小不等于实际回收空间。
+
+    ./Tools/Clean.ps1 -Path Saved/Development/FinishedBatch/Output -WhatIf
+    ./Tools/Clean.ps1 -Path Saved/Development/FinishedBatch/Output
+
+由原任务所有者确认整批实际验证已成功、最后消费者已结束，再明确选择对应临时脚本／输入／中间产物。可以传入多个明确文件或目录；目录才递归删除。脚本不按日期、后缀或文件大小推测生命周期，不维护另一份批次状态。未完成或失败调查的材料、必要原始日志和仍有效的构建／依赖／对象缓存按真实用途保留；不清空Saved根，不选择Git发布目录、正式产物或仍有消费者的工作区。Cargo target由Cargo原生清理入口负责，不交给本脚本递归删除。
+
+删除使用LiteralPath，不默认Force；重解析点不能将删除重定向到原Saved范围之外，错误直接终止并保留真实错误，不重试或假称成功。此入口不停止进程、不改源码／P4状态／权限，不运行发行、安装、Git镜像或PDF生成。
