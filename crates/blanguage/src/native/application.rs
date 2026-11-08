@@ -1,7 +1,7 @@
 //! 普通函数入口／结果使用 Windows x64 ABI；栈布局与调用活跃性复用原后端。
 use super::operands::Operand;
 use super::*;
-use crate::native::{AbiRange, AbiRangeKind, FunctionAbi};
+use crate::native::{AbiRangeKind, FunctionAbi};
 pub(crate) fn emit(body: &ValueCode) -> Result<NativeCode, &'static str> {
     emit_value(body, &[], Some(&Ty::scalar(Scalar::U32)), false, None, None)
 }
@@ -122,6 +122,9 @@ fn emit_value(
         relocations: Vec::new(),
         calls: Vec::new(),
         operation_ranges: Some(Vec::new()),
+        function_abi: Some(FunctionAbi {
+            definition: definition.cloned(), instance: instance.map(str::to_owned), ranges: Vec::new(),
+        }),
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
         program: &program,
@@ -130,9 +133,6 @@ fn emit_value(
         continues: Vec::new(),
         allocation,
         frame: layout,
-    };
-    let mut abi = FunctionAbi {
-        definition: definition.cloned(), instance: instance.map(str::to_owned), ranges: Vec::new(),
     };
     // Home every register argument before allocation, probing or input moves may overwrite it.
     // These are the Windows x64 caller-provided home slots, not another parameter copy owner.
@@ -149,29 +149,27 @@ fn emit_value(
         } else {
             e.instruction(None, &[0x89], true, [1, 2, 8, 9][slot], memory);
         }
-        abi.ranges.push(AbiRange { start, end: e.code.len(), kind:
-            if hidden && slot == 0 { AbiRangeKind::HiddenResultHome { slot } }
+        e.abi_range(start, if hidden && slot == 0 { AbiRangeKind::HiddenResultHome { slot } }
             else { AbiRangeKind::ParameterHome { slot, parameter_index: slot - usize::from(hidden),
-                origin: value.and_then(|parameter| parameter.origin.clone()) } },
-        });
+                origin: value.and_then(|parameter| parameter.origin.clone()) } });
     }
     if scratch {
         let start = e.code.len();
         e.push_registers(&[15]);
-        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::ScratchSave });
+        e.abi_range(start, AbiRangeKind::ScratchSave);
     }
     let start = e.code.len();
     e.allocate_frame(frame);
-    abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::FrameAllocate { bytes: frame } });
+    e.abi_range(start, AbiRangeKind::FrameAllocate { bytes: frame });
     let start = e.code.len();
     e.preserve_registers(false);
-    abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::NonvolatileSave });
+    e.abi_range(start, AbiRangeKind::NonvolatileSave);
     let home = frame + if scratch { 8 } else { 0 } + 8;
     if let Some(at) = result_pointer {
         let start = e.code.len();
         e.instruction(None, &[0x8b], true, 0, Operand::memory(4, home));
         e.instruction(None, &[0x89], true, 0, Operand::memory(4, at));
-        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::ResultAddressSave { stack_offset: at } });
+        e.abi_range(start, AbiRangeKind::ResultAddressSave { stack_offset: at });
     }
     let mut inputs = body.inputs.iter();
     for (i, parameter) in parameters.iter().enumerate() {
@@ -197,10 +195,8 @@ fn emit_value(
                 }
             }
         }
-        abi.ranges.push(AbiRange { start, end: e.code.len(),
-            kind: AbiRangeKind::ParameterInput { slot: i + usize::from(hidden),
-                parameter_index: i, origin: parameter.origin.clone() },
-        });
+        e.abi_range(start, AbiRangeKind::ParameterInput { slot: i + usize::from(hidden),
+                parameter_index: i, origin: parameter.origin.clone() });
     }
     // 最外退出属于本函数，嵌套Scope继续拥有各自的Exit。
     e.exits.push(Vec::new());
@@ -233,31 +229,31 @@ fn emit_value(
             e.bytes(&[0x48, 0x89, 0xc8]);
             AbiRangeKind::IntegerResult
         };
-        abi.ranges.push(AbiRange { start, end: e.code.len(), kind });
+        e.abi_range(start, kind);
     }
     if fallible {
         let start = e.code.len();
         e.bytes(&[0x31, 0xc0]);
-        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::FallibleSuccessStatus });
+        e.abi_range(start, AbiRangeKind::FallibleSuccessStatus);
     }
     let target=e.code.len();
     for at in e.exits.pop().unwrap(){e.patch(at,target);}
     let start = e.code.len();
     e.preserve_registers(true);
-    abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::NonvolatileRestore });
+    e.abi_range(start, AbiRangeKind::NonvolatileRestore);
     if frame != 0 {
         let start = e.code.len();
         e.bytes(&[0x48, 0x81, 0xc4]);
         e.u32(frame);
-        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::FrameRelease { bytes: frame } });
+        e.abi_range(start, AbiRangeKind::FrameRelease { bytes: frame });
     }
     if scratch {
         let start = e.code.len();
         e.bytes(&[0x41, 0x5f]);
-        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::ScratchRestore });
+        e.abi_range(start, AbiRangeKind::ScratchRestore);
     }
     let start = e.code.len();
     e.bytes(&[0xc3]);
-    abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::FunctionReturn });
-    Ok(e.finish(frame + u32::from(scratch) * 8, Some(abi)))
+    e.abi_range(start, AbiRangeKind::FunctionReturn);
+    Ok(e.finish(frame + u32::from(scratch) * 8))
 }

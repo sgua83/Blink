@@ -622,7 +622,7 @@ impl Emitter<'_> {
         }
         self.packet_store(allocation, Register(dst), target);
     }
-    pub(super) fn packet_loop(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation, abi: &mut crate::native::FunctionAbi) {
+    pub(super) fn packet_loop(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) {
         let begin = self.code.len();
         let sparse = self.stage.selection.is_some();
         let tail = if let Some(selection) = self.stage.selection {
@@ -645,24 +645,24 @@ impl Emitter<'_> {
             self.bytes(&[0xff, 0xc3, 0x83, 0xf9, 0x04]);
             let again = self.jump(Some(0x85));
             self.patch(again, collect);
-            self.parallel_abi(abi, begin, crate::native::ParallelRangePart::PacketCollect { binding: selection.binding, offset: selection.word });
+            self.parallel_abi(begin, crate::native::ParallelRangePart::PacketCollect { binding: selection.binding, offset: selection.word });
             tail
         } else {
             // 用 64 位检查 index+4；u32 域末端附近也不让加法提前回绕。
             self.bytes(&[0x89, 0xd8, 0x48, 0x83, 0xc0, 0x04, 0x4c, 0x39, 0xf0]);
             let tail = self.jump(Some(0x87));
-            self.parallel_abi(abi, begin, crate::native::ParallelRangePart::PacketBounds);
+            self.parallel_abi(begin, crate::native::ParallelRangePart::PacketBounds);
             tail
         };
         self.packet_block(&plan.code, allocation);
         if !sparse {
             let start = self.code.len();
             self.bytes(&[0x83, 0xc3, 0x04]);
-            self.parallel_abi(abi, start, crate::native::ParallelRangePart::PacketAdvance);
+            self.parallel_abi(start, crate::native::ParallelRangePart::PacketAdvance);
         }
         let start = self.code.len();
         let again = self.jump(None);
-        self.parallel_abi(abi, start, crate::native::ParallelRangePart::PacketBackEdge);
+        self.parallel_abi(start, crate::native::ParallelRangePart::PacketBackEdge);
         self.patch(again, begin);
         self.patch(tail, self.code.len());
         if sparse {
@@ -677,7 +677,7 @@ impl Emitter<'_> {
                 Operand::memory(4, self.frame.end as u32),
             );
             self.patch(empty, self.code.len());
-            self.parallel_abi(abi, start, crate::native::ParallelRangePart::PacketTail);
+            self.parallel_abi(start, crate::native::ParallelRangePart::PacketTail);
         }
     }
 

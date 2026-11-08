@@ -83,6 +83,22 @@ fn parallel_abi_fields(part: &super::ParallelRangePart, origin: String) -> Vec<(
                 ("slot_index", slot.to_string()), ("storage_offset_bytes", storage_offset.to_string()), ("scalar", text(scalar.name()))]);
             if *restore { "tile_private_restore" } else { "tile_private_save" }
         }
+        TilePublishPointer { tile } => { fields.push(("tile_index", tile.to_string())); "tile_publish_pointer" }
+        TilePublishLoad { tile, word, value, scalar } => {
+            fields.extend([("tile_index", tile.to_string()), ("value_offset_bytes", word.to_string()),
+                ("value_register_index", value.to_string()), ("scalar", text(scalar.name()))]);
+            "tile_publish_load"
+        }
+        TilePublishShift { tile, word, value, scalar, part } => {
+            fields.extend([("tile_index", tile.to_string()), ("value_offset_bytes", word.to_string()),
+                ("value_register_index", value.to_string()), ("scalar", text(scalar.name()))]);
+            fields.push(("part_index", part.to_string())); "tile_publish_shift"
+        }
+        TilePublishStore { tile, word, value, scalar, part, storage_offset, unit_bytes } => {
+            fields.extend([("tile_index", tile.to_string()), ("value_offset_bytes", word.to_string()),
+                ("value_register_index", value.to_string()), ("scalar", text(scalar.name()))]);
+            fields.extend([("part_index", part.to_string()), ("storage_offset_bytes", storage_offset.to_string()), ("unit_bytes", unit_bytes.to_string())]); "tile_publish_store"
+        }
         TileInputBoundary { width } => { fields.push(("width", width.to_string())); "tile_input_boundary" }
         TileInputCopy { binding, source_offset, storage_offset, unit_bytes } => {
             fields.extend([("binding_index", binding.to_string()), ("source_offset_bytes", source_offset.to_string()),

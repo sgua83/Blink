@@ -9,6 +9,7 @@ fn emitter(program: &Program) -> Emitter<'_> {
         relocations: Vec::new(),
         calls: Vec::new(),
         operation_ranges: None,
+        function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,
@@ -78,7 +79,7 @@ pub(super) fn initialize(program: &Program, s: &Sorting, key: usize, first: bool
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0x31, 0xc0, 0x41, 0x5c, 0xc3]);
-    e.finish(8, None)
+    e.finish(8)
 }
 pub fn emit_sort_histogram(program: &Program) -> NativeCode {
     let mut e = emitter(program);
@@ -95,7 +96,7 @@ pub fn emit_sort_histogram(program: &Program) -> NativeCode {
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0x31, 0xc0, 0xc3]);
-    e.finish(0, None)
+    e.finish(0)
 }
 pub fn emit_sort_scatter(program: &Program) -> NativeCode {
     let mut e = emitter(program);
@@ -114,7 +115,7 @@ pub fn emit_sort_scatter(program: &Program) -> NativeCode {
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0x31, 0xc0, 0x5b, 0xc3]);
-    e.finish(8, None)
+    e.finish(8)
 }
 pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     let mut e = emitter(program);
@@ -158,5 +159,5 @@ pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0x31, 0xc0, 0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5b, 0xc3]);
-    e.finish(40, None)
+    e.finish(40)
 }

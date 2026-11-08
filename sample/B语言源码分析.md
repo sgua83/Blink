@@ -3066,7 +3066,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:164`。
+源码节选：`crates/blanguage/src/native/codegen.rs:165`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -3145,7 +3145,7 @@ pub(super) enum Location {
 
 native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，关闭compiler的执行SDK不编入Compiler、编译预算、优化器及自定义归约lowering；运行摘要与共有布局仍由原定义交接。Ty::syntax与CFunctionType::syntax只在compiler角色把共有类型重建为源码TypeName，供原World、泛型与检查消费；运行角色保留实际布局、Access及签名／合同身份，不包含这两个源码转换入口。应用根与算法DLL的原archive::compile为执行框架生成独立Cargo单元，对blanguage／blcompute依赖明确关闭默认特性；根包装只消费共同资源ABI、原类型／执行布局与已编译映像。发行包交接工具及源码SDK，不将workspace编译器特性统一后的静态库当作无compiler运行库采用。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:181`。
+源码节选：`crates/blanguage/src/native/codegen.rs:182`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -3214,13 +3214,13 @@ SIMD临时计划的Step把原执行kind与对应Inst的借用放在同一记录�
 
 尾部与使用点之间还由同一NativeCode的compiler专用tail_references交接：探栈记录原probe字段和实际辅助起点，字面量记录实际目标并直接移动原references Vec。TailReference只持有target及原rel32_fields，目标种类仍归tail_regions，不复制字面量表、IR或来源图。code_json输出target_offset_bytes及rel32_field_offsets_bytes；字段是同一代码中的四字节有符号PC相对位移位置，目标等于字段末端加原位移，不能把它当作指令或断点地址。共享数据保留每个真实使用字段，源关系借原操作／ABI范围；不能仅凭位模式推为唯一源字面量，未知来源仍未知。所有材料随同一代码事实消费者释放，不保留Emitter／Frame或运行资源。
 
-原输入快照生成器[`native/tile.rs`](../crates/blanguage/src/native/tile.rs)直接将块入口／长度及逐源片段复制记入同一FunctionAbi，沿BLCR5／BLCF8保存。boundary保留原width；copy保留binding、源记录字节偏移、最终栈字节偏移与复制单元宽度。原偏移直接消费本次编译期Frame持有的共享地址，观察只消费同一结果；共享去重、窄字节打包、64位分片继续由原Stage布局与Frame栈位置负责，尾块长度沿原运行ABI交接。Stage来源只说明上下文，不冒充具体捕获语法；普通tile与分阶段tile都借用同一ABI，阶段控制和私有流生成同样沿原ABI交接，发布及集合内部生成仍按原独立叶项推进。
+原输入快照生成器[`native/tile.rs`](../crates/blanguage/src/native/tile.rs)直接将块入口／长度及逐源片段复制记入同一FunctionAbi，沿BLCR6／BLCF9保存。boundary保留原width；copy保留binding、源记录字节偏移、最终栈字节偏移与复制单元宽度。原偏移直接消费本次编译期Frame持有的共享地址，观察只消费同一结果；共享去重、窄字节打包、64位分片继续由原Stage布局与Frame栈位置负责，尾块长度沿原运行ABI交接。Stage来源只说明上下文，不冒充具体捕获语法；普通tile与分阶段tile都直接消费同次Emitter持有的ABI，阶段控制和私有流生成同样沿原ABI交接，发布内部生成沿同一事实交接，集合内部生成仍按原独立叶项推进。
 
-原tile_phases直接交块基址、phase入口和lane推进／边界／回边，phase_index取同一次原计划的零起顺序。原tile_restore／tile_save分别交地址准备及每个真实PrivateSlot读写，slot_kind与slot_index保持原IR局部身份，不是机器GPR或运行地址；Scalar仍归原统一枚举。每个原私有流偏移只查一次，用于原机器发射及事实；空活跃集合只描述实际地址准备，不补造槽，原liveness、布局、分配、顺序和完成保持。所有事实仍经同一FunctionAbi、BLCR5／BLCF8保存与恢复，没有另一个计划、槽表或释放者。
+原tile_phases直接交块基址、phase入口和lane推进／边界／回边，phase_index取同一次原计划的零起顺序。原tile_restore／tile_save分别交地址准备及每个真实PrivateSlot读写，slot_kind与slot_index保持原IR局部身份，不是机器GPR或运行地址；Scalar仍归原统一枚举。每个原私有流偏移只查一次，用于原机器发射及事实；空活跃集合只描述实际地址准备，不补造槽，原liveness、布局、分配、顺序和完成保持。所有事实仍经同一FunctionAbi、BLCR6／BLCF9保存与恢复，没有另一个计划、槽表或释放者。
 
-原[`check/tile.rs`](../crates/blanguage/src/check/tile.rs)的发布与原子发布共用原emit，直接保留当前声明语句及内联上下文。块内阶段在[`ir/tile.rs`](../crates/blanguage/src/ir/tile.rs)直接借用原Inst；原活跃性转换复用live_before与Inst.results。CPU的发布／集合生成沿已有operation_range收取原指令对应的整段机器范围与来源，阶段计划不丢掉源关系，也不保存另一份类别／载荷。最终事实只共享不可变OperationOrigin，IR及临时计划照原生命周期结束；未知来源仍未知，整条IR范围不冒充内部片段生成描述。[GPU tile生成器](../crates/blanguage/src/spirv/tile.rs)消费同一借用，实际屏障、SSA延续和集合指令保持，来源观察不改变执行代码或现行材料格式。
+原[`check/tile.rs`](../crates/blanguage/src/check/tile.rs)的发布与原子发布共用原emit，直接保留当前声明语句及内联上下文。原FunctionAbi现在与操作来源共同归同次Emitter持有，原Some／None范围保持；tile、SIMD和finish不再传来传去，普通ABI记录也由同一abi_range读取真实代码游标，最后直接随NativeCode交出。块内阶段在[`ir/tile.rs`](../crates/blanguage/src/ir/tile.rs)直接借用原Inst；原活跃性转换复用live_before与Inst.results。CPU的发布／集合生成沿已有operation_range收取原指令对应的整段机器范围与来源，阶段计划不丢掉源关系，也不保存另一份类别／载荷。最终事实只共享不可变OperationOrigin，IR及临时计划照原生命周期结束；未知来源仍未知，整条IR范围不冒充内部片段生成描述。原publish_values直接在原地址准备、值载入、高字右移及实际存储处记录tile_publish_pointer／load／shift／store。tile_index、原值字节位置、原IR寄存器／Scalar、片段编号与最终栈偏移／真实写宽分别交接；未使用字段没有存储事实，零长度载入明确没有机器指令，不补NOP。共享地址沿编译期Frame，原发布语法沿相交OperationRange，stage_origin继续只表示阶段上下文。材料按BLCR6／BLCF9保存，CPU执行编码保持；集合内部职责仍待实现。[GPU tile生成器](../crates/blanguage/src/spirv/tile.rs)消费同一借用，实际屏障、SSA延续和集合指令保持。
 
-这些观察事实不进入必要执行编码；无compiler的运行库不含tail_regions／tail_references／sources。从执行映像恢复后若未保留尾部分区，查询明确报告缺失；BLCR5沿原Compilation／Module恢复已保存的操作、ABI与尾部引用；同一sources互斥持有Emitted原事实、Restored只读事实或Unavailable，不旁挂另一来源表；COFF原Section按值接收原引用与同一CodeSources，BLCF8沿同一材料保存与恢复。启动、标量输出和导入跳板在同一Layout分别交出Startup、Print(Scalar)、ImportThunk，generation只说明整节真实目的，目标仍读原重定位；每节查询只取得一次原Layout，区域、引用、ABI与操作来源直接借用，不分别建立查找包装。ABI与操作共用`crates/blanguage/src/native/facts/material/source.rs`的只读位置表示；原Object生成只移动事实，明确code_observations请求才投影Source快照的身份、摘要、路径编码与UTF-8半开范围／Unicode标量行列。`operations.rs`逐字段编码原OperationOrigin、GeneratedOrigin及其已有变换关系，不先展开另一棵来源树，不保存源码文本、IR指令或运行值，也不伪造Source；枚举JSON拼写继续复用原IR名称函数。读取材料得到本次调用者的只读事实，ABI与操作区间以各原主函数为界，COFF沿原.pdata，BLCR沿原function_end，保留原顺序、嵌套、零长度及真实未知；JSON的function_abi与operation_ranges未保留／未提供材料／手写节为null，已采集空操作为[]。原Source随原代码／Section事实消费者保持；ABI在原finish一次交接，恢复以只读材料替换原sources后释放被替换的Source引用，解码材料不延长原源码快照寿命；编译完成对象、来源材料、链接、执行与运行资源仍各归原所有者。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
+这些观察事实不进入必要执行编码；无compiler的运行库不含tail_regions／tail_references／sources。从执行映像恢复后若未保留尾部分区，查询明确报告缺失；BLCR6沿原Compilation／Module恢复已保存的操作、ABI与尾部引用；同一sources互斥持有Emitted原事实、Restored只读事实或Unavailable，不旁挂另一来源表；COFF原Section按值接收原引用与同一CodeSources，BLCF9沿同一材料保存与恢复。启动、标量输出和导入跳板在同一Layout分别交出Startup、Print(Scalar)、ImportThunk，generation只说明整节真实目的，目标仍读原重定位；每节查询只取得一次原Layout，区域、引用、ABI与操作来源直接借用，不分别建立查找包装。ABI与操作共用`crates/blanguage/src/native/facts/material/source.rs`的只读位置表示；原Object生成只移动事实，明确code_observations请求才投影Source快照的身份、摘要、路径编码与UTF-8半开范围／Unicode标量行列。`operations.rs`逐字段编码原OperationOrigin、GeneratedOrigin及其已有变换关系，不先展开另一棵来源树，不保存源码文本、IR指令或运行值，也不伪造Source；枚举JSON拼写继续复用原IR名称函数。读取材料得到本次调用者的只读事实，ABI与操作区间以各原主函数为界，COFF沿原.pdata，BLCR沿原function_end，保留原顺序、嵌套、零长度及真实未知；JSON的function_abi与operation_ranges未保留／未提供材料／手写节为null，已采集空操作为[]。原Source随原代码／Section事实消费者保持；ABI在原finish一次交接，恢复以只读材料替换原sources后释放被替换的Source引用，解码材料不延长原源码快照寿命；编译完成对象、来源材料、链接、执行与运行资源仍各归原所有者。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 
@@ -3251,7 +3251,7 @@ SIMD临时计划的Step把原执行kind与对应Inst的借用放在同一记录�
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:733`。
+源码节选：`crates/blanguage/src/native/codegen.rs:738`。
 
 ```rust
     let stage = &lowered;

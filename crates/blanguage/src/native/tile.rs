@@ -1,6 +1,6 @@
 //! 每个原生范围拥有完整逻辑 tile；发布后按阶段执行所有 lane，私有值随 lane 保存。
 use super::*;
-use crate::native::{FunctionAbi, ParallelRangePart};
+use crate::native::ParallelRangePart;
 use super::allocation::Location;
 impl Emitter<'_> {
     fn tile_length_slot(&self) -> u32 {
@@ -56,7 +56,7 @@ impl Emitter<'_> {
             self.store(dst);
         } else { self.read_scalar_address(dst, memory); }
     }
-    pub(super) fn tile_input(&mut self, abi: &mut FunctionAbi) {
+    pub(super) fn tile_input(&mut self) {
         let start = self.code.len();
         let width = self.stage.workgroup_width();
         self.bytes(&[0x89, 0xd8, 0x31, 0xd2, 0xb9]);
@@ -68,7 +68,7 @@ impl Emitter<'_> {
         self.u32(width);
         self.bytes(&[0x39, 0xc8, 0x0f, 0x47, 0xc1, 0x89, 0x84, 0x24]);
         self.u32(self.tile_length_slot());
-        self.parallel_abi(abi, start, ParallelRangePart::TileInputBoundary { width });
+        self.parallel_abi(start, ParallelRangePart::TileInputBoundary { width });
         for ((source, word), fragments) in self.stage.input_words() {
           for (byte, unit) in fragments {
             let start = self.code.len();
@@ -92,7 +92,7 @@ impl Emitter<'_> {
             self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
             let again = self.jump(Some(0x85));
             self.patch(again, begin);
-            self.parallel_abi(abi, start, ParallelRangePart::TileInputCopy { binding: source, source_offset: byte, storage_offset, unit_bytes: unit.size() });
+            self.parallel_abi(start, ParallelRangePart::TileInputCopy { binding: source, source_offset: byte, storage_offset, unit_bytes: unit.size() });
           }
         }
         self.patch(skip, self.code.len());
@@ -106,10 +106,10 @@ impl Emitter<'_> {
     fn private_stream(&self, slot: PrivateSlot) -> u32 {
         self.frame.tile_private[&slot]
     }
-    fn tile_restore(&mut self, abi: &mut FunctionAbi, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>) {
+    fn tile_restore(&mut self, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>) {
         let start = self.code.len();
         self.tile_lane_pointer();
-        self.parallel_abi(abi, start, ParallelRangePart::TilePrivatePointer { phase, restore: true });
+        self.parallel_abi(start, ParallelRangePart::TilePrivatePointer { phase, restore: true });
         for slot in slots {
             let start = self.code.len();
             let storage_offset = self.private_stream(*slot);
@@ -123,13 +123,13 @@ impl Emitter<'_> {
             }
             self.copy_scalar(self.allocation.location(*slot), Location::Gpr(0), scalar);
             let (local, slot) = match *slot { PrivateSlot::Register(index) => (false, index), PrivateSlot::Local(index) => (true, index) };
-            self.parallel_abi(abi, start, ParallelRangePart::TilePrivate { phase, restore: true, local, slot, storage_offset, scalar });
+            self.parallel_abi(start, ParallelRangePart::TilePrivate { phase, restore: true, local, slot, storage_offset, scalar });
         }
     }
-    fn tile_save(&mut self, abi: &mut FunctionAbi, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>) {
+    fn tile_save(&mut self, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>) {
         let start = self.code.len();
         self.tile_lane_pointer();
-        self.parallel_abi(abi, start, ParallelRangePart::TilePrivatePointer { phase, restore: false });
+        self.parallel_abi(start, ParallelRangePart::TilePrivatePointer { phase, restore: false });
         for slot in slots {
             let start = self.code.len();
             let storage_offset = self.private_stream(*slot);
@@ -142,39 +142,50 @@ impl Emitter<'_> {
                 self.u32(storage_offset + self.stage.workgroup_width()*4);
             }
             let (local, slot) = match *slot { PrivateSlot::Register(index) => (false, index), PrivateSlot::Local(index) => (true, index) };
-            self.parallel_abi(abi, start, ParallelRangePart::TilePrivate { phase, restore: false, local, slot, storage_offset, scalar });
+            self.parallel_abi(start, ParallelRangePart::TilePrivate { phase, restore: false, local, slot, storage_offset, scalar });
         }
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
+        let start = self.code.len();
         self.tile_lane_pointer();
+        self.parallel_abi(start, ParallelRangePart::TilePublishPointer { tile: publication.tile });
         let used = self.stage.storage_words();
         for (word, value) in &publication.values {
+            let start = self.code.len();
             self.load(*value);
             let scalar = self.stage.registers[*value];
+            self.parallel_abi(start, ParallelRangePart::TilePublishLoad { tile: publication.tile, word: *word, value: *value, scalar });
             for part in 0..scalar.size().div_ceil(4) {
-                if part != 0 { self.bytes(&[0x48, 0xc1, 0xe8, 32]); }
+                if part != 0 {
+                    let start = self.code.len();
+                    self.bytes(&[0x48, 0xc1, 0xe8, 32]);
+                    self.parallel_abi(start, ParallelRangePart::TilePublishShift { tile: publication.tile, word: *word, value: *value, scalar, part });
+                }
                 let shared = SharedWord::Published { tile: publication.tile, word: *word + part * 4 };
                 if used.contains(&shared) {
                     let at = self.shared_stream(shared) + word % 4;
-                    self.write_value_address(Location::Gpr(0), Memory::new(10, at), scalar.size().min(4));
+                    let unit_bytes = scalar.size().min(4);
+                    let start = self.code.len();
+                    self.write_value_address(Location::Gpr(0), Memory::new(10, at), unit_bytes);
+                    self.parallel_abi(start, ParallelRangePart::TilePublishStore { tile: publication.tile, word: *word, value: *value, scalar, part, storage_offset: at, unit_bytes });
                 }
             }
         }
     }
-    pub(super) fn tile_phases(&mut self, abi: &mut FunctionAbi) -> Result<(), &'static str> {
+    pub(super) fn tile_phases(&mut self) -> Result<(), &'static str> {
         let start = self.code.len();
         let storage_offset = self.tile_base_slot();
         self.bytes(&[0x89, 0x9c, 0x24]);
         self.u32(storage_offset);
-        self.parallel_abi(abi, start, ParallelRangePart::TileBase { storage_offset });
-        self.tile_input(abi);
+        self.parallel_abi(start, ParallelRangePart::TileBase { storage_offset });
+        self.tile_input();
         for (phase_index, phase) in self.stage.tile_phases().into_iter().enumerate() {
             let start = self.code.len();
             self.bytes(&[0x8b, 0x9c, 0x24]);
             self.u32(self.tile_base_slot());
-            self.parallel_abi(abi, start, ParallelRangePart::TilePhaseEnter { phase: phase_index });
+            self.parallel_abi(start, ParallelRangePart::TilePhaseEnter { phase: phase_index });
             let begin = self.code.len();
-            self.tile_restore(abi, phase_index, &phase.live_in);
+            self.tile_restore(phase_index, &phase.live_in);
             self.block(phase.code)?;
             if let Some(inst @ Inst { kind: InstKind::TilePublish(publication), .. }) = phase.step {
                 let start = self.code.len();
@@ -182,7 +193,7 @@ impl Emitter<'_> {
                 self.publish_values(publication);
                 self.operation_range(inst, start, first);
             }
-            self.tile_save(abi, phase_index, &phase.preserved_out());
+            self.tile_save(phase_index, &phase.preserved_out());
             let start = self.code.len();
             self.bytes(&[0xff, 0xc3, 0x89, 0xd8, 0x2b, 0x84, 0x24]);
             self.u32(self.tile_base_slot());
@@ -190,7 +201,7 @@ impl Emitter<'_> {
             self.u32(self.tile_length_slot());
             let again = self.jump(Some(0x82));
             self.patch(again, begin);
-            self.parallel_abi(abi, start, ParallelRangePart::TilePhaseAdvance { phase: phase_index });
+            self.parallel_abi(start, ParallelRangePart::TilePhaseAdvance { phase: phase_index });
             if let Some(inst @ Inst { kind: InstKind::TileCollective(collective), .. }) = phase.step {
                 let start = self.code.len();
                 let first = self.operation_ranges.as_ref().map(Vec::len);

@@ -21,7 +21,7 @@ pub(super) struct Material {
 variants!(@<S> Layout<S> { 0=>Function{tails,references,sources}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk });
 record!(SectionLayout { section, identity, layout });
 record!(Material { sections });
-const MAGIC: &[u8; 8] = b"BLCF\x08\0\0\0";
+const MAGIC: &[u8; 8] = b"BLCF\x09\0\0\0";
 
 fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     let section = &facts.sections[index];

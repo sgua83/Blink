@@ -517,6 +517,7 @@ pub(super) fn emit(
         relocations: Vec::new(),
         calls: Vec::new(),
         operation_ranges: Some(Vec::new()),
+        function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
         program: &program,
@@ -562,5 +563,5 @@ pub(super) fn emit(
         }
     }
     e.leave(frame);
-    Ok(e.finish(frame + 40, None))
+    Ok(e.finish(frame + 40))
 }

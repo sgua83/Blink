@@ -13,6 +13,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
         relocations: Vec::new(),
         calls: Vec::new(),
         operation_ranges: None,
+        function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,
@@ -111,5 +112,5 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
         e.write_value_address(value, Memory::new(10, *offset), scalar.size());
     }
     e.bytes(&[0x31, 0xc0, 0x41, 0x5c, 0xc3]);
-    e.finish(8, None)
+    e.finish(8)
 }

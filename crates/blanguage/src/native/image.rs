@@ -138,6 +138,10 @@ pub enum ParallelRangePart {
     TilePhaseAdvance { phase: usize },
     TilePrivatePointer { phase: usize, restore: bool },
     TilePrivate { phase: usize, restore: bool, local: bool, slot: usize, storage_offset: u32, scalar: crate::ir::Scalar },
+    TilePublishPointer { tile: usize },
+    TilePublishLoad { tile: usize, word: u32, value: usize, scalar: crate::ir::Scalar },
+    TilePublishShift { tile: usize, word: u32, value: usize, scalar: crate::ir::Scalar, part: u32 },
+    TilePublishStore { tile: usize, word: u32, value: usize, scalar: crate::ir::Scalar, part: u32, storage_offset: u32, unit_bytes: u32 },
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

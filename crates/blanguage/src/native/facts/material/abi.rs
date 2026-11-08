@@ -67,6 +67,8 @@ variants!(crate::native::ParallelRangePart {
     11=>TileInputBoundary{width}, 12=>TileInputCopy{binding,source_offset,storage_offset,unit_bytes},
     13=>TileBase{storage_offset}, 14=>TilePhaseEnter{phase}, 15=>TilePhaseAdvance{phase},
     16=>TilePrivatePointer{phase,restore}, 17=>TilePrivate{phase,restore,local,slot,storage_offset,scalar},
+    18=>TilePublishPointer{tile}, 19=>TilePublishLoad{tile,word,value,scalar},
+    20=>TilePublishShift{tile,word,value,scalar,part}, 21=>TilePublishStore{tile,word,value,scalar,part,storage_offset,unit_bytes},
 });
 impl Encode for crate::native::FunctionAbi {
     fn encode(&self, writer: &mut Writer) {

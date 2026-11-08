@@ -66,6 +66,7 @@ struct Emitter<'a> {
     relocations: Vec<Relocation>,
     calls: Vec<Option<usize>>,
     operation_ranges: Option<Vec<super::OperationRange>>,
+    function_abi: Option<super::FunctionAbi>,
     literals: std::collections::BTreeMap<(Bits, bool), Vec<usize>>,
     stage: &'a Stage,
     program: &'a Program,
@@ -78,7 +79,7 @@ struct Emitter<'a> {
 impl Emitter<'_> {
     // Literal bytes belong to this code image, after all returning instructions
     // and any local helpers. Their references move with the same image.
-    fn finish(mut self, stack_bytes: u32, function_abi: Option<super::FunctionAbi>) -> NativeCode {
+    fn finish(mut self, stack_bytes: u32) -> NativeCode {
         let function_end = self.code.len();
         let mut tail_regions = Vec::new();
         let mut tail_references = Vec::new();
@@ -125,7 +126,7 @@ impl Emitter<'_> {
             unwind,
             tail_regions: Some(tail_regions),
             tail_references: Some(tail_references),
-            sources: super::CodeSources::Emitted { operation_ranges: self.operation_ranges, function_abi },
+            sources: super::CodeSources::Emitted { operation_ranges: self.operation_ranges, function_abi: self.function_abi },
         }
     }
     fn push_registers(&mut self, registers: &[u8]) {
@@ -344,11 +345,15 @@ impl Emitter<'_> {
         );
         self.copy(self.location(dst), allocation::Location::Gpr(target));
     }
-    fn parallel_abi(&self, abi: &mut super::FunctionAbi, start: usize, part: super::ParallelRangePart) {
-        abi.ranges.push(super::AbiRange { start, end: self.code.len(),
-            kind: super::AbiRangeKind::ParallelRange { part, origin: OperationOrigin {
-                source_site: self.stage.operation_source.clone(), generated_origin: self.stage.generated_origin.clone(),
-            } } });
+    fn abi_range(&mut self, start: usize, kind: super::AbiRangeKind) {
+        if let Some(abi) = &mut self.function_abi {
+            abi.ranges.push(super::AbiRange { start, end: self.code.len(), kind });
+        }
+    }
+    fn parallel_abi(&mut self, start: usize, part: super::ParallelRangePart) {
+        self.abi_range(start, super::AbiRangeKind::ParallelRange { part, origin: OperationOrigin {
+            source_site: self.stage.operation_source.clone(), generated_origin: self.stage.generated_origin.clone(),
+        } });
     }
     fn operation_range(&mut self, inst: &Inst, start: usize, first: Option<usize>) {
         if let (Some(first), Some(ranges)) = (first, &mut self.operation_ranges) {
@@ -774,6 +779,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         relocations: Vec::new(),
         calls: Vec::new(),
         operation_ranges: Some(Vec::new()),
+        function_abi: Some(super::FunctionAbi { definition: None, instance: None, ranges: Vec::new() }),
         literals: std::collections::BTreeMap::new(),
         stage,
         program,
@@ -783,17 +789,16 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         allocation,
         frame: frame_layout,
     };
-    let mut abi = super::FunctionAbi { definition: None, instance: None, ranges: Vec::new() };
     let start = e.code.len();
     e.enter(frame);
-    e.parallel_abi(&mut abi, start, super::ParallelRangePart::Enter { frame_bytes: frame });
+    e.parallel_abi(start, super::ParallelRangePart::Enter { frame_bytes: frame });
     if let Some((plan, allocation)) = packet {
-        e.packet_loop(&plan, &allocation, &mut abi);
+        e.packet_loop(&plan, &allocation);
     }
     let begin = e.code.len();
     e.bytes(&[0x44, 0x39, 0xf3]);
     let end = e.jump(Some(0x83));
-    e.parallel_abi(&mut abi, begin, super::ParallelRangePart::ScalarBounds);
+    e.parallel_abi(begin, super::ParallelRangePart::ScalarBounds);
     let skip_selection = stage.selection.map(|selection| {
         let start = e.code.len();
         // R12 is the data table, EBX the original record index.
@@ -805,14 +810,14 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         e.instruction(None, &[0x83], false, 7, memory.into());
         e.bytes(&[0]);
         let skip = e.jump(Some(0x84));
-        e.parallel_abi(&mut abi, start, super::ParallelRangePart::ScalarSelection { binding: selection.binding, offset: selection.word });
+        e.parallel_abi(start, super::ParallelRangePart::ScalarSelection { binding: selection.binding, offset: selection.word });
         skip
     });
     if stage.has_tile_steps() {
-        e.tile_phases(&mut abi)?;
+        e.tile_phases()?;
     } else {
         if stage.has_tile_scope() {
-            e.tile_input(&mut abi);
+            e.tile_input();
         }
         e.block(&stage.code)?;
         if let Some(skip) = skip_selection {
@@ -820,15 +825,15 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         }
         let start = e.code.len();
         e.bytes(&[0xff, 0xc3]);
-        e.parallel_abi(&mut abi, start, super::ParallelRangePart::ScalarAdvance);
+        e.parallel_abi(start, super::ParallelRangePart::ScalarAdvance);
     }
     let start = e.code.len();
     let back = e.jump(None);
-    e.parallel_abi(&mut abi, start, super::ParallelRangePart::ScalarBackEdge);
+    e.parallel_abi(start, super::ParallelRangePart::ScalarBackEdge);
     e.patch(back, begin);
     e.patch(end, e.code.len());
     let start = e.code.len();
     e.leave(frame);
-    e.parallel_abi(&mut abi, start, super::ParallelRangePart::Exit { frame_bytes: frame });
-    Ok(e.finish(frame + 40, Some(abi)))
+    e.parallel_abi(start, super::ParallelRangePart::Exit { frame_bytes: frame });
+    Ok(e.finish(frame + 40))
 }
