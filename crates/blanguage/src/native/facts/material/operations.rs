@@ -3,6 +3,7 @@ use super::super::{array, object, text};
 use super::source::{Definition as SourceOrigin, Site as SourceSite, Declaration as SourceDeclaration, Range};
 use crate::{codec::{Encode, Writer, record, variants}, ir::{self, ReuseResult, ReductionInputRole, ReductionPartition, ReductionUniformOperation, IntegerKnownValueBasis}};
 
+#[derive(Clone, Debug)]
 pub(crate) struct OperationRange {
     pub(super) start: usize,
     pub(super) end: usize,
@@ -37,6 +38,7 @@ fn division_results_json(results: &[ir::IntegerDivisionOp]) -> String {
     })))
 }
 
+#[derive(Clone, Debug)]
 struct OperationOrigin {
     source_site: Option<Box<SourceSite>>,
     generated_origin: Option<Box<GeneratedOrigin>>,
@@ -53,6 +55,7 @@ impl OperationOrigin {
     }
 }
 
+#[derive(Clone, Debug)]
 struct StageForBound {
     expression: Option<Box<SourceSite>>,
     value: u32,
@@ -70,6 +73,7 @@ impl StageForBound {
     }
 }
 
+#[derive(Clone, Debug)]
 struct StageForIteration {
     index: u32,
     returned: bool,
@@ -90,6 +94,7 @@ impl StageForIteration {
     }
 }
 
+#[derive(Clone, Debug)]
 struct ExpressionReuse {
     result: ReuseResult,
     paired_input: bool,
@@ -111,6 +116,7 @@ impl ExpressionReuse {
     }
 }
 
+#[derive(Clone, Debug)]
 struct LocalReadForward {
     result_index: usize,
     result_count: usize,
@@ -129,6 +135,7 @@ impl LocalReadForward {
     }
 }
 
+#[derive(Clone, Debug)]
 struct IndexedStoreReadForward {
     result_index: usize,
     result_count: usize,
@@ -148,6 +155,7 @@ impl IndexedStoreReadForward {
     }
 }
 
+#[derive(Clone, Debug)]
 struct InputReadForward {
     input_index: usize,
     reads: Vec<OperationOrigin>,
@@ -163,6 +171,7 @@ impl InputReadForward {
     }
 }
 
+#[derive(Clone, Debug)]
 struct ReductionInputReadForward {
     role: ReductionInputRole,
     component_index: usize,
@@ -180,6 +189,7 @@ impl ReductionInputReadForward {
     }
 }
 
+#[derive(Clone, Debug)]
 enum EliminatedOperation {
     ValueResults {
         result_types: Vec<ir::Scalar>,
@@ -223,6 +233,7 @@ impl EliminatedOperation {
     }
 }
 
+#[derive(Clone, Debug)]
 enum GenerationAnchor {
     Syntax(Box<SourceSite>),
     CpuTextureSample { sample: OperationOrigin },
@@ -462,6 +473,7 @@ impl GenerationAnchor {
     }
 }
 
+#[derive(Clone, Debug)]
 struct GeneratedOrigin {
     reason: String,
     trigger: Option<GenerationAnchor>,

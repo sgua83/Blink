@@ -78,7 +78,7 @@ struct Emitter<'a> {
 impl Emitter<'_> {
     // Literal bytes belong to this code image, after all returning instructions
     // and any local helpers. Their references move with the same image.
-    fn finish(mut self, stack_bytes: u32) -> NativeCode {
+    fn finish(mut self, stack_bytes: u32, function_abi: Option<super::FunctionAbi>) -> NativeCode {
         let function_end = self.code.len();
         let mut tail_regions = Vec::new();
         let mut tail_references = Vec::new();
@@ -125,8 +125,7 @@ impl Emitter<'_> {
             unwind,
             tail_regions: Some(tail_regions),
             tail_references: Some(tail_references),
-            operation_ranges: self.operation_ranges,
-            function_abi: None,
+            sources: super::CodeSources::Emitted { operation_ranges: self.operation_ranges, function_abi },
         }
     }
     fn push_registers(&mut self, registers: &[u8]) {
@@ -804,5 +803,5 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.leave(frame);
-    Ok(e.finish(frame + 40))
+    Ok(e.finish(frame + 40, None))
 }

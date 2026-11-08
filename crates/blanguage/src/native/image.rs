@@ -53,12 +53,21 @@ pub struct NativeCode {
     /// 原尾部目标与实际rel32字段；执行编码不保留。
     #[cfg(feature = "compiler")]
     pub tail_references: Option<Vec<TailReference>>,
-    /// 原IR操作的实际发射区间；仅compiler观察，执行编码不保留。
+    /// The same owner holds emitted facts or source-free restored facts, never both.
+    /// Execution encoding does not retain either representation.
     #[cfg(feature = "compiler")]
-    pub operation_ranges: Option<Vec<OperationRange>>,
-    /// 同一次普通函数发射的ABI生成事实；执行编码不保留。
-    #[cfg(feature = "compiler")]
-    pub function_abi: Option<FunctionAbi>,
+    pub sources: CodeSources,
+}
+/// Compiler-only source representations at the real persistence boundary.
+#[cfg(feature = "compiler")]
+#[derive(Clone, Debug)]
+pub enum CodeSources {
+    Unavailable,
+    Emitted {
+        operation_ranges: Option<Vec<OperationRange>>,
+        function_abi: Option<FunctionAbi>,
+    },
+    Restored(Box<super::SavedSources>),
 }
 #[cfg(feature = "compiler")]
 #[derive(Clone, Debug)]

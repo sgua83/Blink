@@ -17,3 +17,8 @@ pub use disassemble::{DecodeError, instructions_json};
 
 #[cfg(feature = "compiler")]
 mod facts;
+
+#[cfg(feature = "compiler")]
+pub use facts::SavedSources;
+#[cfg(feature = "compiler")]
+pub(crate) use facts::material;

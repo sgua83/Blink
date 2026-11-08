@@ -173,5 +173,5 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         e.u32((k as u32 + 1) * 4);
     }
     e.bytes(&[0x31, 0xc0, 0x41, 0x5d, 0x41, 0x5c, 0xc3]);
-    e.finish(16)
+    e.finish(16, None)
 }

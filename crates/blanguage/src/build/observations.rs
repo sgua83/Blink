@@ -1,18 +1,20 @@
 //! Optional CPU range material. Execution codecs and runtime owners do not consume it.
 use super::{Compilation, Result, hash};
-use crate::{native::{NativeCode, Region, RegionKind}, resource};
-use crate::codec::{Decode, Encode, record, variants};
+use crate::{native::{CodeSources, NativeCode, Region, RegionKind, SavedSources, TailReference}, resource};
+use crate::codec::{Decode, Encode, Writer, record, variants};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"BLCR\x01\0\0\0";
+const MAGIC: &[u8; 8] = b"BLCR\x02\0\0\0";
 struct CodeRanges {
     identity: [u8; 32],
     tails: Vec<Region>,
+    references: Option<Vec<TailReference>>,
+    sources: SavedSources,
 }
 struct Observations {
     codes: Vec<CodeRanges>,
 }
-record!(CodeRanges { identity, tails });
+record!(CodeRanges { identity, tails, references, sources });
 record!(Observations { codes });
 variants!(RegionKind { 0=>StackProbe, 1=>Alignment, 2=>Literal });
 record!(Region { end, kind });
@@ -26,16 +28,19 @@ fn image_codes_mut<P>(image: &mut resource::Image<P>) -> impl Iterator<Item = &m
     cpu.into_iter().flat_map(crate::native::ProgramImage::code_mut)
 }
 fn capture<'a>(codes: impl Iterator<Item = &'a NativeCode>) -> Result<Vec<u8>> {
-    let codes = codes.map(|code| {
+    let codes = codes.collect::<Vec<_>>();
+    if codes.is_empty() { return Err("no CPU code images for CPU range observation material".into()); }
+    let mut writer = Writer(MAGIC.to_vec());
+    codes.len().encode(&mut writer);
+    for code in codes {
         let tails = code.tail_regions.as_ref().ok_or("CPU observation ranges were not retained")?;
         ranges(code, tails)?;
-        Ok(CodeRanges { identity: hash::digest(&code.bytes()), tails: tails.clone() })
-    }).collect::<Result<Vec<_>>>()?;
-    if codes.is_empty() { return Err("no CPU code images for CPU range observation material".into()); }
-    let mut bytes = MAGIC.to_vec();
-    bytes.extend(Observations { codes }.bytes());
-    Ok(bytes)
+        hash::digest(&code.bytes()).encode(&mut writer);
+        tails.encode(&mut writer); code.tail_references.encode(&mut writer); code.sources.encode(&mut writer);
+    }
+    Ok(writer.0)
 }
+
 fn ranges(code: &NativeCode, tails: &[Region]) -> Result<()> {
     let mut end = code.function_end;
     if end > code.bytes.len() { return Err("CPU main function is outside its code image".into()); }
@@ -57,9 +62,15 @@ fn restore<'a>(codes: impl Iterator<Item = &'a mut NativeCode>, bytes: &[u8]) ->
     for (code, saved) in codes.iter().zip(&material.codes) {
         if hash::digest(&code.bytes()) != saved.identity { return Err("CPU observation material does not match execution code".into()); }
         ranges(code, &saved.tails)?;
+        saved.sources.validate(code.function_end).map_err(|error| std::io::Error::other(error.to_string()))?;
+        if let Some(references) = &saved.references {
+            crate::native::material::references(&code.bytes, references).map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
     }
     for (code, saved) in codes.iter_mut().zip(material.codes) {
         code.tail_regions = Some(saved.tails);
+        code.tail_references = saved.references;
+        code.sources = CodeSources::Restored(Box::new(saved.sources));
     }
     Ok(())
 }

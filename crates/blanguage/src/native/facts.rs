@@ -1,5 +1,5 @@
 //! Queries borrow the original emitted image; execution ABI bytes carry no observation ranges.
-use super::{ContinuationCode, DecodeError, NativeCode, NativeSymbol, ProgramImage, RangeResult, RegionKind, StageCode};
+use super::{CodeSources, ContinuationCode, DecodeError, NativeCode, NativeSymbol, ProgramImage, RangeResult, RegionKind, StageCode};
 use super::disassemble::{array, bits, bytes, object, text};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -56,6 +56,28 @@ fn function_abi(value: &super::FunctionAbi) -> String {
         }))),
     ])
 }
+pub(crate) mod material;
+pub use material::SavedSources;
+impl CodeSources {
+    pub(crate) fn function_abi_json(&self) -> String {
+        match self {
+            Self::Emitted { function_abi: abi, .. } => abi.as_ref().map_or_else(|| "null".into(), function_abi),
+            Self::Restored(saved) => saved.function_abi_json(),
+            Self::Unavailable => "null".into(),
+        }
+    }
+    pub(crate) fn operation_ranges_json(&self) -> String {
+        match self {
+            Self::Emitted { operation_ranges, .. } => operation_ranges.as_ref().map_or_else(|| "null".into(), |ranges| array(ranges.iter().map(|range| object(&[
+                ("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
+                ("byte_length", (range.end - range.start).to_string()),
+                ("includes_nested_operations", range.includes_nested_operations.to_string()), ("origin", range.origin.ir_json()),
+            ])))),
+            Self::Restored(saved) => saved.operation_ranges_json(),
+            Self::Unavailable => "null".into(),
+        }
+    }
+}
 impl NativeCode {
     /// Queries this actual compiler result. `ip` is the caller's address for byte zero.
     /// Execution-only deserialization does not retain these observation facts.
@@ -80,12 +102,8 @@ impl NativeCode {
             ("relocations", array(self.relocations.iter().map(|value| object(&[
                 ("offset_bytes", value.offset.to_string()), ("target", symbol(&value.target)),
             ])))), ("regions", array(regions)),
-            ("operation_ranges", self.operation_ranges.as_ref().map_or_else(|| "null".into(), |ranges| array(ranges.iter().map(|range| object(&[
-                ("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
-                ("byte_length", (range.end - range.start).to_string()),
-                ("includes_nested_operations", range.includes_nested_operations.to_string()), ("origin", range.origin.ir_json()),
-            ]))))),
-            ("function_abi", self.function_abi.as_ref().map_or_else(|| "null".into(), function_abi)),
+            ("operation_ranges", self.sources.operation_ranges_json()),
+            ("function_abi", self.sources.function_abi_json()),
             ("tail_references", self.tail_references.as_ref().map_or_else(|| "null".into(), |references| array(references.iter().map(|reference| object(&[
                 ("target_offset_bytes", reference.target.to_string()),
                 ("rel32_field_offsets_bytes", array(reference.rel32_fields.iter().map(usize::to_string))),

@@ -358,9 +358,7 @@ impl Decode for native::NativeCode {
             #[cfg(feature = "compiler")]
             tail_references: None,
             #[cfg(feature = "compiler")]
-            operation_ranges: None,
-            #[cfg(feature = "compiler")]
-            function_abi: None,
+            sources: native::CodeSources::Unavailable,
         })
     }
 }

@@ -2,6 +2,7 @@
 use super::super::{array, object, text};
 use crate::{ast::Span, build::hash, codec::{Encode, Writer, record, variants}, ir};
 
+#[derive(Clone, Debug)]
 struct Position { line: usize, column: usize }
 record!(Position { line, column });
 impl Position {
@@ -15,6 +16,7 @@ impl Position {
         object(&[("line", self.line.to_string()), ("column", self.column.to_string())])
     }
 }
+#[derive(Clone, Debug)]
 pub(super) struct Range { span: Span, start: Option<Position>, end: Option<Position> }
 record!(Range { span, start, end });
 impl Range {
@@ -30,6 +32,7 @@ impl Range {
             ("end", optional(self.end.as_ref(), Position::json))]
     }
 }
+#[derive(Clone, Debug)]
 enum PathEncoding { Windows(Vec<u16>), Unix(Vec<u8>) }
 variants!(PathEncoding { 0=>Windows(units), 1=>Unix(bytes) });
 impl PathEncoding {
@@ -50,6 +53,7 @@ impl PathEncoding {
         }
     }
 }
+#[derive(Clone, Debug)]
 pub(super) struct Definition {
     module: String, name: String, path: Option<String>, digest: [u8; 32],
     bytes: usize, range: Range, encoding: PathEncoding,
@@ -73,6 +77,7 @@ impl Definition {
         fields.extend(self.range.fields()); fields.push(self.encoding.field()); fields
     }
 }
+#[derive(Clone, Debug)]
 struct Inline { definition: Option<Definition>, instance: Option<String>, range: Range }
 record!(Inline { definition, instance, range });
 impl Inline {
@@ -87,6 +92,7 @@ impl Inline {
         fields.extend(self.range.fields()); object(&fields)
     }
 }
+#[derive(Clone, Debug)]
 struct Domain {
     definition: Option<Definition>, instance: Option<String>, range: Range,
     target: String, transition: ir::DomainTransition,
@@ -107,6 +113,7 @@ impl Domain {
         fields.extend(self.range.fields()); object(&fields)
     }
 }
+#[derive(Clone, Debug)]
 pub(super) struct Site {
     definition: Definition, instance: Option<String>, syntax: ir::SourceSyntax,
     inlined_at: Vec<Inline>, domain_path: Vec<Domain>, range: Range,
@@ -134,6 +141,7 @@ pub(super) fn optional<T: ?Sized>(value: Option<&T>, json: impl FnOnce(&T) -> St
     value.map_or_else(|| "null".into(), json)
 }
 
+#[derive(Clone, Debug)]
 pub(super) struct Declaration { value: Definition, representation: ir::DeclarationRepresentation }
 record!(Declaration { value, representation });
 variants!(ir::DeclarationRepresentation { 0=>Source, 1=>CompiledInterface });

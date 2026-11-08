@@ -43,7 +43,7 @@ pub(super) fn emit_count(program: &Program, c: &Compaction) -> NativeCode {
     // 第五参数是本范围的算法输出，返回寄存器仅交接执行状态。
     e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x30, 0x41, 0x89, 0x02]);
     e.bytes(&[0x31, 0xc0, 0x41, 0x5c, 0xc3]);
-    e.finish(8)
+    e.finish(8, None)
 }
 pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
     let mut e = emitter(program);
@@ -116,5 +116,5 @@ pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0x31, 0xc0, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5b, 0xc3]);
-    e.finish(56)
+    e.finish(56, None)
 }

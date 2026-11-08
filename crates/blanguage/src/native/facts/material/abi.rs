@@ -3,6 +3,7 @@ use super::super::{array, object, text};
 use crate::{codec::{Encode, Writer, record, variants}, ir};
 use super::source::{Definition, Site, optional};
 
+#[derive(Clone, Debug)]
 enum Parameter {
     Frame,
     Parameter { index: usize, name: String, instance: String, generated: bool, site: Option<Site> },
@@ -28,10 +29,13 @@ impl Parameter {
         }
     }
 }
+#[derive(Clone, Debug)]
 pub(crate) struct FunctionAbi { definition: Option<Definition>, instance: Option<String>, ranges: Vec<AbiRange> }
+#[derive(Clone, Debug)]
 struct AbiRange { start: usize, end: usize, kind: AbiRangeKind }
 record!(FunctionAbi { definition, instance, ranges });
 record!(AbiRange { start, end, kind });
+#[derive(Clone, Debug)]
 enum AbiRangeKind {
     HiddenResultHome { slot: usize },
     ParameterHome { slot: usize, parameter_index: usize, origin: Option<Parameter> },
@@ -86,7 +90,7 @@ impl Encode for crate::native::FunctionAbi {
 impl FunctionAbi {
     pub(super) fn validate(&self, main_end: usize) -> super::Result<()> {
         if self.ranges.iter().any(|r| r.start > r.end || r.end > main_end) {
-            return Err("COFF ABI range is outside its original main function".into());
+            return Err("CPU ABI range is outside its original main function".into());
         }
         Ok(())
     }

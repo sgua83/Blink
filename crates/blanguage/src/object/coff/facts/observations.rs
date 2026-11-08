@@ -1,13 +1,10 @@
 //! Optional layout facts transferred from the original Object, never encoded as execution data.
 use super::*;
-mod abi;
-mod source;
-mod operations;
 use crate::{build::hash, codec::{Decode, Encode, record, variants}, native::{Region, RegionKind, TailReference}};
 
-pub(crate) enum Layout<A = crate::native::FunctionAbi, O = crate::native::OperationRange> {
+pub(crate) enum Layout<S = crate::native::CodeSources> {
     /// The original .pdata owns the main end; ABI facts and tails belong to this section.
-    Function { tails: Vec<Region>, references: Option<Vec<TailReference>>, abi: Option<A>, operations: Option<Vec<O>> },
+    Function { tails: Vec<Region>, references: Option<Vec<TailReference>>, sources: S },
     /// Each original handwritten producer owns this entire code section.
     Startup,
     Print(crate::ir::Scalar),
@@ -16,13 +13,12 @@ pub(crate) enum Layout<A = crate::native::FunctionAbi, O = crate::native::Operat
 struct SectionLayout {
     section: usize,
     identity: [u8; 32],
-    layout: Layout<abi::FunctionAbi, operations::OperationRange>,
+    layout: Layout<crate::native::SavedSources>,
 }
 pub(super) struct Material {
     sections: Vec<SectionLayout>,
 }
-variants!(@<A,O> Layout<A,O> { 0=>Function{tails,references,abi,operations}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk });
-record!(TailReference { target, rel32_fields });
+variants!(@<S> Layout<S> { 0=>Function{tails,references,sources}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk });
 record!(SectionLayout { section, identity, layout });
 record!(Material { sections });
 const MAGIC: &[u8; 8] = b"BLCF\x05\0\0\0";
@@ -49,7 +45,7 @@ fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     }
     hash::digest(&bytes)
 }
-impl<A,O> Layout<A,O> {
+impl<S> Layout<S> {
     pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {
         match self {
             Self::Startup | Self::Print(_) | Self::ImportThunk => Ok(vec![("generated_code", 0, length)]),
@@ -85,20 +81,21 @@ impl<A,O> Layout<A,O> {
     }
 
 }
-impl Layout<abi::FunctionAbi, operations::OperationRange> {
+impl Layout<crate::native::SavedSources> {
     pub(super) fn operation_ranges(&self) -> String {
         match self {
-            Self::Function { operations, .. } => operations.as_deref().map_or_else(|| "null".into(), operations::ranges_json),
+            Self::Function { sources, .. } => sources.operation_ranges_json(),
             Self::Startup | Self::Print(_) | Self::ImportThunk => "null".into(),
         }
     }
     pub(super) fn function_abi(&self) -> String {
         match self {
-            Self::Function { abi, .. } => abi.as_ref().map_or_else(|| "null".into(), abi::FunctionAbi::json),
+            Self::Function { sources, .. } => sources.function_abi_json(),
             Self::Startup | Self::Print(_) | Self::ImportThunk => "null".into(),
         }
     }
 }
+
 impl Material {
     pub(super) fn read(facts: &Facts<'_>, spans: &[Span], bytes: &[u8]) -> Result<Self> {
         let bytes = bytes.strip_prefix(MAGIC).ok_or("unsupported COFF code observation material")?;
@@ -110,32 +107,16 @@ impl Material {
                 return Err("COFF observation material does not match the original code section and relocations".into());
             }
             let regions = saved.layout.regions(index, section.row.bytes.length, spans)?;
-            if let Layout::Function { abi, operations, .. } = &saved.layout {
-                if let Some(abi) = abi { abi.validate(regions[0].2)?; }
-                if let Some(operations) = operations {
-                    if operations.iter().any(|range| range.start > range.end || range.end > regions[0].2) {
-                        return Err("COFF operation range is outside its original main function".into());
-                    }
-                }
-            }
-            if let Layout::Function { references: Some(references), .. } = &saved.layout {
-                let code = unsafe { section.row.bytes.borrowed() };
-                for reference in references {
-                    if reference.target > code.len() { return Err("COFF tail reference target is outside its code section".into()); }
-                    for &field in &reference.rel32_fields {
-                        let value = code.get(field..).and_then(|bytes| bytes.get(..4))
-                            .ok_or("COFF tail reference field is outside its code section")?;
-                        let displacement = i32::from_le_bytes(value.try_into()?);
-                        if field as i128 + 4 + i128::from(displacement) != reference.target as i128 {
-                            return Err("COFF tail reference does not match its original rel32 field".into());
-                        }
-                    }
+            if let Layout::Function { sources, references, .. } = &saved.layout {
+                sources.validate(regions[0].2)?;
+                if let Some(references) = references {
+                    crate::native::material::references(unsafe { section.row.bytes.borrowed() }, references)?;
                 }
             }
         }
         Ok(value)
     }
-    pub(super) fn layout(&self, index: usize) -> Option<&Layout<abi::FunctionAbi, operations::OperationRange>> {
+    pub(super) fn layout(&self, index: usize) -> Option<&Layout<crate::native::SavedSources>> {
         self.sections.iter().find(|section| section.section == index + 1).map(|section| &section.layout)
     }
 }

@@ -259,7 +259,5 @@ fn emit_value(
     let start = e.code.len();
     e.bytes(&[0xc3]);
     abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::FunctionReturn });
-    let mut code = e.finish(frame + u32::from(scratch) * 8);
-    code.function_abi = Some(abi);
-    Ok(code)
+    Ok(e.finish(frame + u32::from(scratch) * 8, Some(abi)))
 }

@@ -297,11 +297,11 @@ function_tables按原.pdata节和每12字节记录顺序返回section_index、of
 
 ### 普通CPU函数操作的实际发射范围
 
-compiler角色的NativeCode可选持有operation_ranges，元素OperationRange包含start、end、includes_nested_operations及原OperationOrigin。范围由同一次原Emitter::block在每个实际Inst发射前后读取原字节游标，不重走发射、复制IR或按汇编猜来源。普通application::emit_value启用该材料，其余并行／SIMD与集合辅助入口目前为None；它们仍沿各自原台账推进。材料完成时从Emitter移入同一NativeCode，只共享原SourceSite与GeneratedOrigin，不持有Inst、ValueCode、Stage、AST／World或运行资源。
+compiler角色的NativeCode.sources以CodeSources::Emitted可选持有operation_ranges，元素OperationRange包含start、end、includes_nested_operations及原OperationOrigin。范围由同一次原Emitter::block在每个实际Inst发射前后读取原字节游标，不重走发射、复制IR或按汇编猜来源。普通application::emit_value启用该材料，其余并行／SIMD与集合辅助入口目前为None；它们仍沿各自原台账推进。材料完成时从Emitter移入同一NativeCode，只共享原SourceSite与GeneratedOrigin，不持有Inst、ValueCode、Stage、AST／World或运行资源。
 
 NativeCode::code_json在原输出中增加operation_ranges：None为null，已采集但没有操作为[]，每项提供start_byte、end_byte、byte_length、includes_nested_operations及origin（原OperationOrigin JSON）。偏移相对该映像字节零，单位为字节且范围为半开；机器反汇编仍来自同一最终bytes。序列按操作发射完成顺序交接，实际嵌套操作先于包含它的父操作，范围可以包含／重叠；这不是前端IR编号、独立指令数或动态执行次数，不能求和计成本。零长度明确表示该原操作没有发射字节，其位置只是游标，不能当作可设置断点的指令地址。origin两项均为空仍表示真实范围的来源未知，与整份材料未保留分别表达。
 
-当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量分别由原ABI与尾部材料交接，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存operation_ranges，compiler角色恢复执行映像时为None；BLCR只恢复其原布局而未恢复此操作来源；BLCF5沿原COFF布局保存／恢复这些已有操作范围及原OperationOrigin，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
+当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量分别由原ABI与尾部材料交接，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存来源，compiler角色恢复执行映像时sources为Unavailable；BLCR2将已保存的操作来源恢复为同一sources中的只读SavedSources；BLCF5沿原COFF布局保存／恢复这些已有操作范围及原OperationOrigin，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
 
 ### 普通CPU函数ABI参数的实际发射来源
 
@@ -317,7 +317,7 @@ code_json的function_abi未保留时为null；已采集但没有当前已交接A
 
 共同末尾机器返回由AbiRangeKind::FunctionReturn交接，JSON kind为function_return，只记录原emit_value在结果与栈恢复后实际发射RET的范围；function_end继续来自同一原主函数末端，不含尾部辅助或字面量。职责只说明这条真实机器返回，不伪造源码return、不解释为成功、失败或最后资源消费者完成；源内提前return形成的原Scope／Exit仍随operation_ranges交接，不创建另一退出目标、图或清理链。
 
-原可失败函数成功出口的状态清零由AbiRangeKind::FallibleSuccessStatus交接，JSON kind为fallible_success_status；范围只包含原emit_value在fallible分支发射的RAX置零指令，表示没有拥有错误，不是业务结果或共同机器返回。无失败函数不生成此职责。真实错误值装载和原退出跳转继续沿Raise的operation_ranges及其原触发来源表达，不重复生成ABI标签、退出目标或来源图；失败跳转绕过成功状态清零，原错误和清理语义保持。当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出、可失败成功状态及共同机器返回，不能把未命中范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；BLCR不恢复此材料；BLCF5沿同一Object／Section显式保存与恢复原ABI事实，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
+原可失败函数成功出口的状态清零由AbiRangeKind::FallibleSuccessStatus交接，JSON kind为fallible_success_status；范围只包含原emit_value在fallible分支发射的RAX置零指令，表示没有拥有错误，不是业务结果或共同机器返回。无失败函数不生成此职责。真实错误值装载和原退出跳转继续沿Raise的operation_ranges及其原触发来源表达，不重复生成ABI标签、退出目标或来源图；失败跳转绕过成功状态清零，原错误和清理语义保持。当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出、可失败成功状态及共同机器返回，不能把未命中范围的字节自动归类。必要执行编码不保存来源，compiler角色执行解码后sources为Unavailable；BLCR2恢复原ABI只读事实；BLCF5沿同一Object／Section显式保存与恢复原ABI事实，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
 
 ### 原生尾部目标及真实rel32字段
 
@@ -327,7 +327,7 @@ code_json的tail_references未保留时为null，已采集但没有相应引用�
 
 普通函数的使用来源由字段所属的原operation_ranges及function_abi范围说明；多个父子范围如实保留，不强选唯一语句。字面量数据只说明实际存储，原值来自源字面量还是编译期生成仍由原IR说明；仅凭池中位模式不能猜源数值类型或最初声明，确切值与合同继续由原IR查询。探栈调用可沿原FrameAllocate范围理解生成职责；辅助代码和调用代码分别说明。其他CPU并行／SIMD／集合入口复用同一finish交接物理引用，并不因此已有其完整源码关系，原未交接来源保持未知。
 
-材料从原finish局部容器移动至同一NativeCode，原字面量references Vec直接转移；不持有Emitter、Frame、字面量拥有表或运行资源，随最后代码事实消费者结束释放。必要执行编码不保存tail_references，compiler角色执行解码后为None；BLCR尚不恢复这些引用；COFF原Function Layout按值接收同一可选引用，并沿BLCF5保存／恢复，查询不自动重编或从指令补造。必要执行编码、执行ABI与实际字节不变，职责见[架构](Architecture.md#tool-7-4-1-3)。
+材料从原finish局部容器移动至同一NativeCode，原字面量references Vec直接转移；不持有Emitter、Frame、字面量拥有表或运行资源，随最后代码事实消费者结束释放。必要执行编码不保存tail_references，compiler角色执行解码后为None；BLCR2保存／恢复同一可选引用；COFF原Function Layout按值接收同一可选引用，并沿BLCF5保存／恢复，查询不自动重编或从指令补造。必要执行编码、执行ABI与实际字节不变，职责见[架构](Architecture.md#tool-7-4-1-3)。
 
 ### IR操作的语法来源
 
@@ -1035,11 +1035,13 @@ value_ir增加entry_origin：没有集合入口为null，否则kind为value_entr
 
 ### 保存和恢复可选CPU范围材料
 
+compiler Rust接口的NativeCode.sources统一表示三种互斥状态：Emitted持有原可选operation_ranges与function_abi，Restored持有源文本之外的SavedSources，Unavailable表示执行解码没有来源。原两个顶层字段由该字段替代；code_json的function_abi与operation_ranges输出模式及未知／空列表语义保持。原Emitter::finish一次交接ABI和操作材料；COFF按值接收同一sources，BLCR恢复替换原来源时释放其Source引用，不维护第二份权威。保存只借用原事实，恢复后的重复保存产生同一材料；执行编码和运行库均不消费这些字段。
+
 原新生成的`build::Compilation`可显式调用`code_observations()`取得独立字节，由调用者保存为`.blcr`；`resource::Module`提供同名方法。只读捕获不修改执行文件、构建键或缓存。当前SDK是捕获入口，`bc build`的`.x64.json`不等同这份材料；未保存材料的缓存结果不能重新导出范围，不为取得材料自动重编。正式执行文件不要求携带`.blcr`，部署映像仍由`build::execution_image`／`bc image`交接。
 
-BLCR1由8字节`BLCR\x01\0\0\0`、u64条目数量及逐条记录组成；整数均为小端，每条记录含32字节SHA-256、u64尾部分区数量及各分区的u64排他末端／u32类别（0探栈辅助、1对齐、2字面量）。摘要消费同一NativeCode的原执行字段编码，覆盖原字节、重定位、帧、调用、主末端和展开，不含tail_regions、源码、SDK版本或工具链身份；材料不复制机器码、执行图或主末端。它配对同一执行编码，不能证明材料来源、指令安全、硬件支持或真实执行，调用者应保留原生产材料。
+BLCR2由8字节`BLCR\x02\0\0\0`、u64条目数量及逐条记录组成；整数均为小端。每条记录依次为32字节SHA-256、u64尾部分区数量及各分区的u64排他末端／u32类别（0探栈辅助、1对齐、2字面量），再是可选尾部引用、可选FunctionAbi及可选OperationRange序列。可选值以一字节bool标明是否存在，序列以u64数量开头；每个TailReference含u64 target及u64数量的rel32字段位置序列。ABI、操作、定义／声明／语法及变换记录与下文BLCF5共用同一native/facts/material字段编码；只读SavedSources不含Source或源码文本，原未知与已采集空列表分别保持。BLCR1不再受支持。摘要消费同一NativeCode的原执行字段编码，覆盖原字节、重定位、帧、调用、主末端和展开，不含观察材料、源码、SDK版本或工具链身份；材料不复制机器码、执行图或主末端。它配对同一执行编码，不能证明材料来源、指令安全、硬件支持或真实执行，调用者应保留原生产材料。
 
-`restore_code_observations(material)`按原容器顺序消费全部CPU代码：Compilation先programs后templates；Module按原prefix合同将无前置条件映像置前、条件模板置后，各组保持原顺序，与构建结果一致。每个CPU映像沿原阶段，Element先main再实际延续入口，Sort先全部initialize再histogram／scatter／gather，再交接原functions命名callee及同一资源目录的CPU子映像阶段／callee；GPU不占CPU条目。恢复先核对完整数量、执行字段摘要、主末端、尾部单调范围与完整覆盖，再整体写入同一tail_regions；错误不部分改写。原字节、执行／资源合同、GPU内容和最后消费者保持；纯GPU集合明确不支持CPU观察。
+`restore_code_observations(material)`按原容器顺序消费全部CPU代码：Compilation先programs后templates；Module按原prefix合同将无前置条件映像置前、条件模板置后，各组保持原顺序，与构建结果一致。每个CPU映像沿原阶段，Element先main再实际延续入口，Sort先全部initialize再histogram／scatter／gather，再交接原functions命名callee及同一资源目录的CPU子映像阶段／callee；GPU不占CPU条目。恢复先核对数量、全部执行字段摘要、主末端、尾部分区的范围／顺序／完整覆盖、实际rel32字段与目标、ABI及操作范围；全通过才将tail_regions、tail_references及CodeSources::Restored移动回同一NativeCode；错误不部分改写。原字节、执行／资源合同、GPU内容和最后消费者保持；纯GPU集合明确不支持CPU观察。
 
 ```text
 bc code target/cache/entry.blbi --observations target/entry.blcr
@@ -1070,7 +1072,7 @@ function_tables保留原.pdata的每条12字节记录、begin／end／unwind原�
 
 ### COFF原生成范围的独立材料
 
-新生成的`Object::code_observations()`显式返回独立BLCF5字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions、tail_references、function_abi与operation_ranges，主末端仍由原.pdata交接；原手写生产者分别声明Startup、Print(Scalar)、ImportThunk，职责均覆盖同一整节：启动及结果交接、所选类型的标准输出、实际导入尾跳转。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。
+新生成的`Object::code_observations()`显式返回独立BLCF5字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions、tail_references与sources，主末端仍由原.pdata交接；原手写生产者分别声明Startup、Print(Scalar)、ImportThunk，职责均覆盖同一整节：启动及结果交接、所选类型的标准输出、实际导入尾跳转。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。
 
 显式捕获先确认原事实可取得，再借用同一Layout直接编码，不克隆原布局或引用；ABI定义／形参与操作的语法、声明、生成事实共用source.rs的位置投影，只在此时从原不可变Source快照取得不含文本的只读事实；原生成与变换关系按原字段直接编码，不先展开临时来源树，普通对象生成只移动原FunctionAbi与OperationRange，不提前计算摘要或位置；复用原COFF编码作一次临时序列化，沿原B读取器消费最终节及重定位，不读取源文件或编译／生成第二份机器码。临时编码字节在返回后释放，材料不含代码、源码、执行图、资源拥有表或编译器私有容器。此额外编码／摘要工作只随明确捕获请求发生；普通构建、链接、运行不写入或消费材料。链接组合后的新节及新增导入／资源数据节不冒称持有原生成材料，最终链接观察仍沿.9。
 

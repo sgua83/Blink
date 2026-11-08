@@ -179,7 +179,7 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     e.bytes(&[0x31, 0xc0]);
     if !add { e.bytes(&[0x41, 0x5d]); }
     e.bytes(&[0x41, 0x5c, 0xc3]);
-    e.finish(if add { 8 } else { 16 })
+    e.finish(if add { 8 } else { 16 }, None)
 }
 fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> NativeCode {
     let r = &scan.values;
@@ -361,5 +361,5 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
         e.u32(scan.ty.size.div_ceil(4) * 4);
     }
     e.bytes(&[0x31, 0xc0, 0x41, 0x5d, 0x41, 0x5c, 0xc3]);
-    e.finish(16)
+    e.finish(16, None)
 }
