@@ -235,7 +235,11 @@ fn emit_value(
         };
         abi.ranges.push(AbiRange { start, end: e.code.len(), kind });
     }
-    if fallible { e.bytes(&[0x31, 0xc0]); }
+    if fallible {
+        let start = e.code.len();
+        e.bytes(&[0x31, 0xc0]);
+        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::FallibleSuccessStatus });
+    }
     let target=e.code.len();
     for at in e.exits.pop().unwrap(){e.patch(at,target);}
     let start = e.code.len();

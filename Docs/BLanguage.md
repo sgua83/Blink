@@ -315,7 +315,7 @@ code_json的function_abi未保留时为null；已采集但没有当前已交接A
 
 共同末尾机器返回由AbiRangeKind::FunctionReturn交接，JSON kind为function_return，只记录原emit_value在结果与栈恢复后实际发射RET的范围；function_end继续来自同一原主函数末端，不含尾部辅助或字面量。职责只说明这条真实机器返回，不伪造源码return、不解释为成功、失败或最后资源消费者完成；源内提前return形成的原Scope／Exit仍随operation_ranges交接，不创建另一退出目标、图或清理链。
 
-当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出及共同机器返回；普通B错误结果ABI已有实现，失败结果／转移生成来源仍按独立叶沿其真实生成点推进，不能把未命中ABI范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；现有BLCR／BLCF不恢复此材料，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
+原可失败函数成功出口的状态清零由AbiRangeKind::FallibleSuccessStatus交接，JSON kind为fallible_success_status；范围只包含原emit_value在fallible分支发射的RAX置零指令，表示没有拥有错误，不是业务结果或共同机器返回。无失败函数不生成此职责。真实错误值装载和原退出跳转继续沿Raise的operation_ranges及其原触发来源表达，不重复生成ABI标签、退出目标或来源图；失败跳转绕过成功状态清零，原错误和清理语义保持。当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出、可失败成功状态及共同机器返回，不能把未命中范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；现有BLCR／BLCF不恢复此材料，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
 
 ### 原生尾部目标及真实rel32字段
 

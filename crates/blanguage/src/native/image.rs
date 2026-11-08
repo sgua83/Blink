@@ -104,6 +104,7 @@ pub enum AbiRangeKind {
     IndirectResult { stack_offset: u32 },
     FloatResult,
     IntegerResult,
+    FallibleSuccessStatus,
     FunctionReturn,
 }
 #[derive(Clone, Copy, Debug)]
