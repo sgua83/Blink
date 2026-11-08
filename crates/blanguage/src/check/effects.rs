@@ -466,6 +466,22 @@ impl Builder<'_> {
         }
         Ok(normalized)
     }
+    fn project_loop_storage(&self,input:&application::Data,resource:&view::Borrow,index:Option<bounds::Operand>,parts:&[(Scalar,u32)])->Result<Option<Vec<StorageWrite>>> {
+        let Some(locations)=self.application_resource_storage(input,resource)?else{return Ok(None);};
+        let mut writes=Vec::new();
+        for(location,ty,layout)in locations {
+            match location {
+                StorageWrite::Descendants{root}=>writes.push(StorageWrite::Descendants{root}),
+                StorageWrite::Frame{root,..}=>{
+                    if let(Some(bounds::Operand::Constant(Scalar::U32,index)),application::DataLayout::Declared)=(index,&layout){
+                        let base=u128::from(index as u32)*u128::from(ir::align_up(ty.size,ty.align));
+                        for(scalar,word)in parts{let start=base+u128::from(*word);writes.push(StorageWrite::Frame{root,range:Some(start..start+u128::from(scalar.size()))});}
+                    }else{writes.push(StorageWrite::Frame{root,range:None});}
+                },
+            }
+        }
+        Ok(Some(writes))
+    }
     fn project_loop_writes(&self,writes:&[Write<'_>])->Result<LoopWrites>{
         let mut effect=LoopWrites::default();
         for write in writes {
@@ -473,7 +489,23 @@ impl Builder<'_> {
                 Write::External{..}|Write::Generator(_)=>{effect.unknown_storage=true;effect.external=true;},
                 Write::Memory{borrow,..}=>{
                     let Some(positions)=self.address_write_positions(borrow)else{effect.unknown_storage=true;effect.external=true;continue;};
-                    if borrow.resources().active(){effect.unknown_storage=true;}
+                    for(source,_)in borrow.sources.entries().filter(|(_,when)|when.possible()) {
+                        let view::Source::Position(origin)=source else{continue;};
+                        if !origin.writable{continue;}
+                        match &origin.root {
+                            address::Root::Resource{borrow,index}|address::Root::Dataset{borrow,index}=>{
+                                let parts=origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar,_),word)|(*scalar,*word)).collect::<Vec<_>>();
+                                let mut located=false;
+                                for input in self.env.values().flat_map(Binding::application_resources){
+                                    if let Some(storage)=self.project_loop_storage(input,borrow,*index,&parts)?{
+                                        located=true;effect.storage.extend(storage);
+                                    }
+                                }
+                                if !located{effect.unknown_storage=true;}
+                            },
+                            _=>if origin.resources().active(){effect.unknown_storage=true;},
+                        }
+                    }
                     for binding in self.env.values(){
                         let Some(owner)=binding.stored_place()else{continue;};
                         let components=self.address_write_components(&positions,&owner);
@@ -495,20 +527,10 @@ impl Builder<'_> {
                         continue;
                     }
                     if let Some((projection,input))=self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))? {
-                        let Some(storage)=self.application_resource_storage(input,&projection.resource)?else{effect.unknown_storage=true;continue;};
-                        for(storage,ty,layout)in storage {
-                            match storage {
-                                StorageWrite::Descendants{root}=>effect.storage.push(StorageWrite::Descendants{root}),
-                                StorageWrite::Frame{root,..}=>{
-                                    if let (Some(bounds::Operand::Constant(Scalar::U32,index)),application::DataLayout::Declared)=(projection.index,&layout) {
-                                        let base=u128::from(index as u32)*u128::from(ir::align_up(ty.size,ty.align));
-                                        for component in projection.value.1.iter().flatten() {
-                                            let(scalar,word)=projection.base.components[*component];let start=base+u128::from(word);
-                                            effect.storage.push(StorageWrite::Frame{root,range:Some(start..start+u128::from(scalar.size()))});
-                                        }
-                                    }else{effect.storage.push(StorageWrite::Frame{root,range:None});}
-                                },
-                            }
+                        let parts=projection.value.1.iter().flatten().map(|component|projection.base.components[*component]).collect::<Vec<_>>();
+                        match self.project_loop_storage(input,&projection.resource,projection.index,&parts)?{
+                            Some(storage)=>effect.storage.extend(storage),
+                            None=>effect.unknown_storage=true,
                         }
                         continue;
                     }

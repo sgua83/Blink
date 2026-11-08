@@ -44,11 +44,18 @@ pub(super) struct Origin {
 }
 // A queried byte interval in one original scalar position; no stored memory state.
 pub(super) struct MemoryRegion { pub position:Position, pub word:u32, pub offset:u32, pub size:u32 }
+// A single original loop input names one logical resource in that scope.
+// Its byte layout does not depend on closing the source/lifetime relation.
+fn same_loop_input(a:&view::Borrow,b:&view::Borrow)->bool {
+    if !a.sources.is_empty()||!b.sources.is_empty()||!a.calls.is_empty()||!b.calls.is_empty(){return false;}
+    let mut a=a.inputs.iter();let mut b=b.inputs.iter();
+    matches!((a.next(),b.next(),a.next(),b.next()),(Some(a),Some(b),None,None)if a==b)
+}
 impl MemoryRegion {
     pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar)->u8 {
         let offset=match (&self.position,position) {
             (Position::Borrowed(other,base,word),Position::Borrowed(borrow,layout,at)) if base==layout=>{
-                if !borrow.sources.entries().any(|(source,when)|other.overlaps_source(source,&when)){return 0;}
+                if !same_loop_input(other,borrow)&&!borrow.sources.entries().any(|(source,when)|other.overlaps_source(source,&when)){return 0;}
                 i64::from(*word)+i64::from(self.offset)-i64::from(*at)
             },
             (written,position) if written==position=>i64::from(self.offset),
@@ -361,7 +368,9 @@ impl MemoryEffect {
             Position::Initialized=>0,
             Position::Local(_)=>known(),
             Position::Element(binding,_)=>if origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Data(actual)if actual==binding)){all}else{0},
-            Position::Borrowed(borrow,_,_) if !borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>known(),
+            Position::Borrowed(borrow,_,_) if matches!(&origin.root,
+                Root::Resource{borrow:source,index:Some(_)}|Root::Dataset{borrow:source,index:Some(_)}if same_loop_input(source,borrow))
+                ||!borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>known(),
             Position::Both(a,b)|Position::Conditional(_,a,b)=>Self::origin_written_bytes(origin,when,a,scalar)|Self::origin_written_bytes(origin,when,b,scalar),
             Position::Indexed(positions,_)=>positions.iter().fold(0,|bytes,position|bytes|Self::origin_written_bytes(origin,when,position,scalar)),
             _=>all,
