@@ -282,7 +282,7 @@ impl Builder<'_> {
                 Write::Position{place,contents:true,when,..}=>self.written_application_data(place).map(|(data,offset,ty)|(
                     vec![data.root.identity()],view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>(),None,when.as_ref()
                 )),
-                Write::Position{place,contents:false,when,..}=>self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))?.map(|(projection,_)|(
+                Write::Position{place,contents:false,when,..}=>self.loop_write_projection(place,&|index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))?.map(|(projection,_,_)|(
                     projection.data.map(|data|data.root.identity()).into_iter().collect::<Vec<_>>(),projection.resource,
                     projection.value.1.into_iter().flatten().map(|i|projection.base.components[i].1).collect::<Vec<_>>(),
                     projection.index.map(|index|{let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)}),when.as_ref()
@@ -377,8 +377,8 @@ impl Builder<'_> {
         Ok(())
     }
     fn loop_write_projection<'a>(
-        &'a self,expr:&Expr,known_index:&impl Fn(&Expr)->Result<Option<bounds::Operand>>,
-    )->Result<Option<(DataProjection<'a>,&'a application::Data)>> {
+        &'a self,expr:&Expr,known_index:&impl Fn(&Expr,bool)->Result<(Option<bounds::Operand>,Option<bounds::Condition>)>,
+    )->Result<Option<(DataProjection<'a>,&'a application::Data,Option<bounds::Condition>)>> {
         match &expr.kind {
             ExprKind::Name(name)=>{
                 let Some(Binding::Owned(owner))=self.env.get(name)else{return Ok(None);};
@@ -388,14 +388,15 @@ impl Builder<'_> {
                 let components=words.iter().map(|word|data.ty.components.iter().enumerate()
                     .filter_map(|(i,(_,offset))|(word==offset).then_some(i)).collect()).collect();
                 let index=Some(*index_value);
-                Ok(Some((DataProjection{data:Some(data),resource:view::resource_borrow(data),base:data.ty.clone(),access:data.access,index,value:(owner.place.ty().clone(),components)},data)))
+                Ok(Some((DataProjection{data:Some(data),resource:view::resource_borrow(data),base:data.ty.clone(),access:data.access,index,value:(owner.place.ty().clone(),components)},data,None)))
             },
             ExprKind::Index(base,index)=>{
                 if let Some((data,offset,ty))=self.written_application_data(base) {
                     let components=ty.components.iter().map(|(scalar,word)|vec![data.ty.components.iter().position(|part|part==&(*scalar,offset+word)).unwrap()]).collect();
-                    return Ok(Some((DataProjection{data:Some(data),resource:view::resource_borrow(data),base:data.ty.clone(),access:data.access,index:known_index(index)?,value:(ty.clone(),components)},data)));
+                    let(index,when)=known_index(index,true)?;
+                    return Ok(Some((DataProjection{data:Some(data),resource:view::resource_borrow(data),base:data.ty.clone(),access:data.access,index,value:(ty.clone(),components)},data,when)));
                 }
-                let Some((mut projection,input))=self.loop_write_projection(base,known_index)? else{return Ok(None);};
+                let Some((mut projection,input,mut when))=self.loop_write_projection(base,known_index)? else{return Ok(None);};
                 let (ty,components)=projection.value;
                 if let Some(element)=&ty.dataset {
                     let mut resource=view::Borrow::default();
@@ -408,21 +409,24 @@ impl Builder<'_> {
                     }
                     let element=self.world.ty(element,&self.definition.source,expr.span,&self.definition.module,&self.definition.imports)?;
                     let components=(0..element.components.len()).map(|i|vec![i]).collect();
-                    projection.data=None;projection.resource=resource;projection.base=element.clone();projection.index=known_index(index)?;projection.value=(element,components);
+                    let(index,selection)=known_index(index,true)?;
+                    when=when.map(|when|when.scope_element_indices(1));
+                    if let Some(selection)=selection{when=Some(match when{Some(previous)=>previous.logical(selection,false),None=>selection});}
+                    projection.data=None;projection.resource=resource;projection.base=element.clone();projection.index=index;projection.value=(element,components);
                 } else {
                     let Some(element)=&ty.array else{return Ok(None);};
-                    let constant=match known_index(index)?{Some(bounds::Operand::Constant(Scalar::U32,value))=>Some(value as u32),_=>None};let width=element.components.len();
+                    let constant=match known_index(index,false)?.0{Some(bounds::Operand::Constant(Scalar::U32,value))=>Some(value as u32),_=>None};let width=element.components.len();
                     let elements=(0..ty.values[0] as usize).filter(|i|constant.is_none_or(|value|*i==value as usize)).collect::<Vec<_>>();
                     let selected=(0..width).map(|component|elements.iter().flat_map(|i|components[*i*width+component].iter().copied()).collect()).collect();
                     projection.value=((**element).clone(),selected);
                 }
-                Ok(Some((projection,input)))
+                Ok(Some((projection,input,when)))
             },
             ExprKind::Member(base,field)=>{
-                let Some((mut projection,input))=self.loop_write_projection(base,known_index)? else{return Ok(None);};
+                let Some((mut projection,input,when))=self.loop_write_projection(base,known_index)? else{return Ok(None);};
                 let(ty,selected)=member_type(&projection.value.0,field,&self.definition.source,expr.span)?;
                 projection.value=(ty,selected.iter().map(|i|projection.value.1[*i].clone()).collect());
-                Ok(Some((projection,input)))
+                Ok(Some((projection,input,when)))
             },
             _=>Ok(None),
         }
@@ -526,7 +530,7 @@ impl Builder<'_> {
                         }else{effect.unknown_storage=true;}
                         continue;
                     }
-                    if let Some((projection,input))=self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))? {
+                    if let Some((projection,input,_))=self.loop_write_projection(place,&|index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))? {
                         let parts=projection.value.1.iter().flatten().map(|component|projection.base.components[*component]).collect::<Vec<_>>();
                         match self.project_loop_storage(input,&projection.resource,projection.index,&parts)?{
                             Some(storage)=>effect.storage.extend(storage),
@@ -561,9 +565,9 @@ impl Builder<'_> {
         initial: bool,
     ) -> Result<LoopWrites> {
         let mut writes = Vec::new();
-        statement_writes(self, body, &mut |place| writes.push(place))?;
+        statement_writes(self, body, &mut |place| {writes.push(place);Ok(())})?;
         if let Some(condition)=condition {
-            expression_writes(self, condition, &mut |place| writes.push(place))?;
+            expression_writes(self, condition, &mut |place| {writes.push(place);Ok(())})?;
         }
         let writes=self.normalize_writes(writes)?;
         let mut effect=self.project_loop_writes(&writes)?;
@@ -571,8 +575,8 @@ impl Builder<'_> {
             let mut selected=Vec::new();
             {
                 let mut scope=Scope::current(self);scope.writes=Some(&effect);
-                scope.writes_statements(body,&mut|write|selected.push(write))?;
-                if let Some(condition)=condition {scope.writes_expression(condition,&mut|write|selected.push(write),None)?;}
+                scope.writes_statements(body,&mut|write|{selected.push(write);Ok(())})?;
+                if let Some(condition)=condition {scope.writes_expression(condition,&mut|write|{selected.push(write);Ok(())},None)?;}
             }
             let writes=self.normalize_writes(selected)?;
             effect=self.project_loop_writes(&writes)?;
@@ -646,7 +650,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             Ok(match &index.kind{ExprKind::Name(name)=>match builder.env.get(name){Some(Binding::Value(value))if value.ty==Ty::scalar(Scalar::U32)=>Some(bounds::Operand::of(value,0)),_=>None},_=>None})
         };
         if matches!(binding,Binding::ApplicationData(_)|Binding::DataReference(_)|Binding::OwnedValue(_))
-            && let Some((projection,input))=builder.loop_write_projection(expr,&known_index)? {
+            && let Some((projection,input,_))=builder.loop_write_projection(expr,&|index,_|known_index(index).map(|index|(index,None)))? {
             let proof=match(element,self.writes){
                 (Some((target,path)),Some(writes))=>builder.application_element_snapshot(&projection,input,target,(writes,path))?,
                 _=>bounds::Proof::default().with_external_borrows(&projection.value.0),
@@ -747,21 +751,21 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         generics::specialize(self.world,&key,&[actual],explicit,
             (&self.definition.source,&self.definition.module,&self.definition.imports),factory.span).map(Some)
     }
-    fn function_writes(&self, ty: Ty, args: &'e [Expr], call: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+    fn function_writes(&self, ty: Ty, args: &'e [Expr], call: &'e Expr, writes: &mut dyn FnMut(Write<'e>)->Result<()>) -> Result<()> {
         let Some(function) = &ty.function else {
             return self.definition.source.fail(call.span, "B263", "间接调用目标需要cfn原生C签名值");
         };
         if outputs::external_memory(function.contracts.iter()).is_some_and(|access|access.writes()){
-            writes(Write::External{call,instance:None,arguments:BTreeMap::new(),syntax:args});
+            writes(Write::External{call,instance:None,arguments:BTreeMap::new(),syntax:args})?;
         }
         for ((access, _), arg) in function.parameters.iter().zip(args) {
             if matches!(access, Access::Write | Access::InOut) {
-                writes(Write::Position{ place: arg, call: Some(call), contents: false, iterator: None,when:None,local_value:false});
+                writes(Write::Position{ place: arg, call: Some(call), contents: false, iterator: None,when:None,local_value:false})?;
             }
         }
         Ok(())
     }
-    fn writes_expression(&self, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>), element:Option<(&DataProjection<'_>,&bounds::Clause)>) -> Result<Option<bounds::Condition>> {
+    fn writes_expression(&self, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)->Result<()>, element:Option<(&DataProjection<'_>,&bounds::Clause)>) -> Result<Option<bounds::Condition>> {
         let mut truth = None;
         match &expr.kind {
             ExprKind::Bool(value) => truth = Some(bounds::Condition::constant(*value)),
@@ -782,10 +786,10 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             }
             ExprKind::Call(name, args) | ExprKind::Cooperate(name, _, args) | ExprKind::Specialize(name, _, args) => {
                 if self.builder.is_none() && name == "address_of" && let [place] = args.as_slice() {
-                    writes(Write::Position{ place, call: Some(expr), contents: false, iterator: None,when:None,local_value:false});
+                    writes(Write::Position{ place, call: Some(expr), contents: false, iterator: None,when:None,local_value:false})?;
                 }
                 if name=="take_last" && self.named(name,expr.span)?.is_none() && let [_,place]=args.as_slice() {
-                    writes(Write::Position{place,call:Some(expr),contents:false,iterator:None,when:None,local_value:false});
+                    writes(Write::Position{place,call:Some(expr),contents:false,iterator:None,when:None,local_value:false})?;
                 }
                 let local = if matches!(expr.kind, ExprKind::Call(..)) { self.named(name, expr.span)? } else { None };
                 if let Some(ty) = local { self.function_writes(ty, args, expr, writes)?; }
@@ -800,10 +804,10 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
                                 let contents=param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some());
-                                if !read_only {writes(Write::Position{ place: arg, call: Some(expr), contents, iterator: None,when:None,local_value:false});}
+                                if !read_only {writes(Write::Position{ place: arg, call: Some(expr), contents, iterator: None,when:None,local_value:false})?;}
                             }
                         }
-                        if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(&instance.definition,args)?,None=>BTreeMap::new()};writes(Write::External{call:expr,instance,arguments,syntax:args});}
+                        if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(&instance.definition,args)?,None=>BTreeMap::new()};writes(Write::External{call:expr,instance,arguments,syntax:args})?;}
                     }
                 }
                 if name=="dataset" && matches!(&expr.kind,ExprKind::Specialize(..))
@@ -829,7 +833,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                             let result=self.world.ty(&definition.function.result,&definition.source,definition.function.span,&definition.module,&definition.imports)?;
                             !result.owns_resources()&&builder.functions.writes_only_references(&instance.name)
                         }else{false};
-                        if !read_only {writes(Write::Generator(factory));}
+                        if !read_only {writes(Write::Generator(factory))?;}
                     }
                 }
                 for arg in args { self.writes_expression(arg,writes,element)?; }
@@ -860,7 +864,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         }
         Ok(truth)
     }
-    fn writes_statements(&mut self, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+    fn writes_statements(&mut self, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)->Result<()>) -> Result<()> {
         let outer = self.bindings.len();
         for statement in code {
             match &statement.kind {
@@ -870,7 +874,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     self.bindings.push((name, ty.as_ref().map_or(Local::Inferred(expr), Local::Typed)));
                 }
                 StmtKind::Assign(lhs, _, rhs) => {
-                    writes(Write::Position{ place: lhs, call: None, contents: false, iterator: None,when:None,local_value:self.builder.is_some()&&self.local_value_write(lhs)?==Some(true)});
+                    writes(Write::Position{ place: lhs, call: None, contents: false, iterator: None,when:None,local_value:self.builder.is_some()&&self.local_value_write(lhs)?==Some(true)})?;
                     self.writes_expression(lhs,writes,None)?;
                     self.writes_expression(rhs,writes,None)?;
                 }
@@ -886,7 +890,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                                 if let Write::Position{call:None,when,..}=&mut write{
                                     *when=Some(match when.take(){Some(previous)=>previous.logical(condition.clone(),false),None=>condition.clone()});
                                 }
-                                writes(write);
+                                writes(write)
                             })?;
                         }else{self.writes_statements(body,writes)?;}
                     }
@@ -903,11 +907,34 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 StmtKind::For(name, start, end, body) => {
                     self.writes_expression(start,writes,None)?;
                     if let Some(end) = end { self.writes_expression(end,writes,None)?; }
+                    let mut range=None::<bounds::Condition>;
+                    if self.builder.is_some() && let Some(end)=end {
+                        let ordinal=bounds::Operand::Value(ValueIdentity::ElementIndex(0));
+                        let proof=bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0));
+                        for(expr,lower)in [(start,true),(end,false)] {
+                            if lower&&bounds::seeks(body){continue;}
+                            let Some((ty,bound,_))=self.input_snapshot(expr,self.bindings.len(),Access::Value,None)?else{continue;};
+                            if ty!=Ty::scalar(Scalar::U32){continue;}
+                            let operand=bound.known_value(&ty).map(|bits|bounds::Operand::Constant(Scalar::U32,bits[0])).or_else(||bound.known_identity(0).map(bounds::Operand::Value));
+                            let Some(operand)=operand else{continue;};
+                            let condition=if lower{bounds::Condition::index_below((operand,&bound),(ordinal,&proof),false)}
+                                else{bounds::Condition::index_below((ordinal,&proof),(operand,&bound),true)};
+                            range=Some(match range{Some(previous)=>previous.logical(condition,false),None=>condition});
+                        }
+                    }
+                    let builder=self.builder;
                     self.bindings.push((name, if end.is_some() { Local::Range } else { Local::Element(start) }));
                     self.writes_statements(body, &mut |mut write| {
+                        if let Write::Position{place,call:None,when,..}=&mut write
+                            && let (Some(builder),Some(range))=(builder,range.as_ref()) {
+                            if let Some((_,_,Some(selection)))=builder.loop_write_projection(place,&|index,dataset|Ok((None,
+                                (dataset&&matches!(&index.kind,ExprKind::Name(bound)if bound==name)).then(||range.clone()))))? {
+                                *when=Some(match when.take(){Some(previous)=>previous.logical(selection,false),None=>selection});
+                            }
+                        }
                         if let Write::Position{place,iterator,..}=&mut write
                             && end.is_none() && assigned_root(place)==Some(name) {*iterator=Some((name,start));}
-                        writes(write);
+                        writes(write)
                     })?;
                     self.bindings.pop();
                 }
@@ -924,16 +951,17 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         Ok(())
     }
 }
-fn expression_writes<'e>(builder: &Builder<'_>, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+fn expression_writes<'e>(builder: &Builder<'_>, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)->Result<()>) -> Result<()> {
     Scope::current(builder).writes_expression(expr,writes,None).map(|_| ())
 }
-fn statement_writes<'e>(builder: &Builder<'_>, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+fn statement_writes<'e>(builder: &Builder<'_>, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)->Result<()>) -> Result<()> {
     Scope::current(builder).writes_statements(code, writes)
 }
 pub(super) fn value_writes<'e>(builder: &Builder<'_>, body: &'e [Stmt]) -> Result<Vec<&'e Expr>> {
     let mut values = Vec::new();
     statement_writes(builder, body, &mut |write| {
         if let Write::Position{contents:false,iterator:None,place,..}=write {values.push(place);}
+        Ok(())
     })?;
     Ok(values)
 }
@@ -941,12 +969,14 @@ pub(super) fn expression_assignments(builder: &Builder<'_>, expr: &Expr, names: 
     expression_writes(builder, expr, &mut |write| {
         if let Write::Position{contents:false,place,..}=write
             && let Some(root)=assigned_root(place) {names.insert(root.to_owned());}
+        Ok(())
     })
 }
 pub(super) fn assigned_names(world: &World, definition: &Definition, code: &[Stmt], names: &mut BTreeSet<String>) -> Result<()> {
     Scope::declared(world, definition).writes_statements(code, &mut |write| {
         if let Write::Position{contents:false,place,..}=write
             && let Some(root)=assigned_root(place) {names.insert(root.to_owned());}
+        Ok(())
     })
 }
 fn contains_expression(root: &Expr, selected: &Expr) -> bool {
@@ -1178,7 +1208,7 @@ impl Builder<'_> {
             if *local_value{return Ok(false);}
             if address_write(place)||iterator.is_some(){return Ok(true);}
             if *contents{return Ok(self.written_application_data(place).is_none_or(|(data,..)|overlaps(&target.resource.owners(),&view::resource_borrow(data),&self.path)));}
-            if let Some((written,_))=self.loop_write_projection(place,&|index|self.loop_index_operand(index,writes))? {
+            if let Some((written,_,_))=self.loop_write_projection(place,&|index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))? {
                 if ancestors(&target.resource,&written,&self.path){return Ok(true);}
                 if !overlaps(&target.resource,&written.resource,&self.path){return Ok(false);}
                 if target.index.zip(written.index).is_some_and(|(a,b)|!bounds::Condition::index_equal(a,b).assume(&self.path,true).possible()){return Ok(false);}
@@ -1255,7 +1285,7 @@ impl Builder<'_> {
             LoopPlace::Element(expected,component)=>{
                 let written=Write::Position{place:lhs,call:None,contents:false,iterator:None,when:None,local_value:false};
                 if !self.numeric_write(&written,name,target,writes)?{return Ok(NumericEffect::shift(0));}
-                let Some((actual,_))=self.loop_write_projection(lhs,&|index|self.loop_index_operand(index,writes))?else{return Ok(NumericEffect::Unknown);};
+                let Some((actual,_,_))=self.loop_write_projection(lhs,&|index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))?else{return Ok(NumericEffect::Unknown);};
                 if expected.base!=actual.base||expected.resource.restricted(&self.path)!=actual.resource.restricted(&self.path)||!expected.index.zip(actual.index).is_some_and(|(a,b)|bounds::Condition::index_equal(a,b).truth_in(&self.path)==Some(true)){return Ok(NumericEffect::Unknown);}
                 (actual.value.0,actual.value.1,*component)
             },
@@ -1268,7 +1298,7 @@ impl Builder<'_> {
         if parts.iter().any(|part|part.contains(&component)&&part.len()!=1) { return Ok(NumericEffect::Unknown); }
         let relative=|base:&Expr|->Result<bool>{Ok(match target{
             LoopPlace::Stored(owner,_)=>self.written_projection(base,name,owner,None,writes)?.is_some_and(|(source,selected)|source==ty&&selected==parts),
-            LoopPlace::Element(expected,_)=>self.loop_write_projection(base,&|index|self.loop_index_operand(index,writes))?.is_some_and(|(actual,_)|actual.base==expected.base&&actual.resource.restricted(&self.path)==expected.resource.restricted(&self.path)&&actual.index.zip(expected.index).is_some_and(|(a,b)|bounds::Condition::index_equal(a,b).truth_in(&self.path)==Some(true))&&actual.value.0==ty&&actual.value.1==parts),
+            LoopPlace::Element(expected,_)=>self.loop_write_projection(base,&|index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))?.is_some_and(|(actual,_,_)|actual.base==expected.base&&actual.resource.restricted(&self.path)==expected.resource.restricted(&self.path)&&actual.index.zip(expected.index).is_some_and(|(a,b)|bounds::Condition::index_equal(a,b).truth_in(&self.path)==Some(true))&&actual.value.0==ty&&actual.value.1==parts),
             LoopPlace::Length=>false,
         })};
         let (sign,amount)=match op {
@@ -1306,7 +1336,7 @@ impl Builder<'_> {
                 StmtKind::Expr(expr)=>Some(before.then(self.numeric_expression_effect(expr,name,target,writes)?)),
                 StmtKind::If(condition,yes,no)=>{
                     let before=before.then(self.numeric_expression_effect(condition,name,target,writes)?);
-                    let condition=scope.writes_expression(condition,&mut |_|{},match target{LoopPlace::Element(target,_)=>Some((target,path)),_=>None})?.unwrap_or_default();
+                    let condition=scope.writes_expression(condition,&mut |_|Ok(()),match target{LoopPlace::Element(target,_)=>Some((target,path)),_=>None})?.unwrap_or_default();
                     let truth=condition.truth_in(path);
                     let yes=if truth==Some(false){None}else{self.numeric_loop_paths(yes,Some(before.clone()),continues,name,target,writes,absolute,scope,&condition.assume(path,true))?};
                     let no=if truth==Some(true){None}else{self.numeric_loop_paths(no,Some(before),continues,name,target,writes,absolute,scope,&condition.assume(path,false))?};
@@ -1343,12 +1373,12 @@ impl Builder<'_> {
         Ok(next)
     }
     pub(super) fn retain_loop_bounds(&mut self, condition:Option<&Expr>, body:&[Stmt], initial:&BTreeMap<String,Binding>, header:&mut BTreeMap<String,Binding>)->Result<()> {
-        let mut writes=Vec::new();statement_writes(self,body,&mut|write|writes.push(write))?;if let Some(condition)=condition {expression_writes(self,condition,&mut|write|writes.push(write))?;}
+        let mut writes=Vec::new();statement_writes(self,body,&mut|write|{writes.push(write);Ok(())})?;if let Some(condition)=condition {expression_writes(self,condition,&mut|write|{writes.push(write);Ok(())})?;}
         let places=writes.iter().filter_map(|write|match write{Write::Position{place,contents:false,iterator:None,..}=>Some(*place),_=>None}).collect::<Vec<_>>();
         let writes=self.normalize_writes(writes)?;
         let mut elements=Vec::<DataProjection<'static>>::new();
         for place in places{
-            if let Some((projection,_))=self.loop_write_projection(place,&|index|self.loop_index_operand(index,&writes))?{
+            if let Some((projection,_,_))=self.loop_write_projection(place,&|index,_|self.loop_index_operand(index,&writes).map(|index|(index,None)))?{
                 elements.push(DataProjection{data:None,resource:projection.resource,base:projection.base,access:projection.access,index:projection.index,value:projection.value});
             }
         }
