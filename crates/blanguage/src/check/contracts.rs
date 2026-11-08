@@ -357,7 +357,7 @@ fn select_elements(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap
             let ty=&builder.program.buffers[view.binding].ty;
             let mut model=builder.unknown_element_model(ty,(&residency::Residency::default(),&[]))?;
             let words=ty.components.iter().map(|(_,at)|*at).collect::<Vec<_>>();
-            if let Some(common)=builder.common_element_proof(view.binding,&words)&&let Some(value)=model.view_value_mut(){value.proof.constrain_common_ranges(&common,ty.components.len());}
+            if let Some(common)=builder.common_element_proof((view.binding,0),&words,builder.memory_regions.get(&view.binding).map(|(_,writes)|writes))&&let Some(value)=model.view_value_mut(){value.proof.constrain_common_ranges(&common,ty.components.len());}
             let scope=if view.length.unsigned_maximum(0)==0{bounds::Condition::constant(false)}else if view.length.unsigned_minimum(0)!=0{bounds::Condition::constant(true)}else{bounds::Condition::nonzero_proof(&view.length,0)};
             (model,ty.clone(),vec![Vec::new()],scope,view.projection.clone())
         },
