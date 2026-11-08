@@ -595,7 +595,6 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 return Ok((ty==Ty::scalar(Scalar::U32)).then(||(ty,bounds::Proof::unsigned(value as u32,value as u32),view::Borrow::default())));
             },
             ExprKind::Binary(op,a,b)if matches!(op.as_str(),"=="|"!="|"<"|"<="|">"|">=")=>{
-                if [a,b].into_iter().any(|expr|assigned_root(expr).is_some_and(|name|builder.mutable_names.contains(name))){return Ok(None);}
                 let(Some((left,a,_)),Some((right,b,_)))=(self.input_snapshot(a,limit,Access::Value)?,self.input_snapshot(b,limit,Access::Value)?)else{return Ok(None);};
                 if left!=Ty::scalar(Scalar::U32)||right!=left{return Ok(None);}
                 let operand=|proof:&bounds::Proof|proof.known_value(&left).map(|bits|bounds::Operand::Constant(Scalar::U32,bits[0])).or_else(||proof.known_identity(0).map(bounds::Operand::Value));
@@ -639,19 +638,20 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             let proof=bounds::Proof::default().with_external_borrows(&ty);
             return Ok(Some((ty,proof,borrow)));
         }
-        let (ty,proof,owner)=match binding {
+        let (ty,source,owner)=match binding {
             Binding::Value(value)=>(value.ty.clone(),bounds::Proof::capture(value),None),
-            Binding::Owned(owner)=>{
-                let mut proof=bounds::Proof::default().with_external_borrows(owner.place.ty());
-                if let Some(writes)=self.writes && !writes.external
-                    && *owner.place.ty()==Ty::scalar(Scalar::Bool)
-                    && let Place::Local(_,slots,..)=owner.place.storage()
-                    && slots.iter().all(|slot|!writes.locals.contains(slot)) {proof=owner.proof.clone();}
-                (owner.place.ty().clone(),proof,Some(owner.place.clone()))
-            },
-            Binding::OwnedValue(owner)=>(owner.value.ty.clone(),bounds::Proof::default().with_external_borrows(&owner.value.ty),owner.place()),
+            Binding::Owned(owner)=>(owner.place.ty().clone(),owner.proof.clone(),Some(owner.place.clone())),
+            Binding::OwnedValue(owner)=>(owner.value.ty.clone(),bounds::Proof::capture(&owner.value),owner.place()),
             _=>return Ok(None),
         };
+        let kept=match (binding,self.writes,owner.as_ref().map(Place::storage)) {
+            (Binding::Value(_),_,_)=>(0..ty.components.len()).collect::<Vec<_>>(),
+            (_,Some(writes),Some(Place::Local(_,slots,..)))if !writes.external=>slots.iter().enumerate()
+                .filter_map(|(component,slot)|(!writes.locals.contains(slot)).then_some(component)).collect(),
+            _=>Vec::new(),
+        };
+        let mut proof=bounds::Proof::default().with_external_borrows(&ty);
+        proof.assign(&kept,ty.components.len(),source.project(&kept,ty.components.len()));
         let Some((selected,parts))=builder.component_projection(expr,name,&ty,owner.as_ref(),None,&|index|Ok(match known_index(index)?{Some(bounds::Operand::Constant(Scalar::U32,value))=>Some(value as u32),_=>None}))?else{return Ok(None);};
         let mut value=None::<bounds::Proof>;let mut borrow=view::Borrow::default();
         for choice in 0..parts.first().map_or(0,Vec::len) {
@@ -1362,7 +1362,8 @@ impl Builder<'_> {
                 if element.base.components[*component].0!=Scalar::U32{continue;}
             }
             if let Some(identity)=input.known_identity(0){let mut domains=input.domains(0);domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);}
-            let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,&writes,!bounds::seeks(body),&mut Scope::current(self),&bounds::Clause::default())?;
+            let mut scope=Scope::current(self);scope.writes=Some(&self.loop_contexts.last().unwrap().writes);
+            let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,&writes,!bounds::seeks(body),&mut scope,&bounds::Clause::default())?;
             let(lower,upper,least,most)=match join_numeric_paths(next,continues){
                 None=>(true,true,0,0),
                 Some(NumericEffect::Shift{low,high,least,most})=>(low>=0,high<=0,least,most),
