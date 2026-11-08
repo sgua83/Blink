@@ -9,8 +9,8 @@ impl Emitter<'_> {
     fn tile_base_slot(&self) -> u32 {
         self.tile_length_slot() + 4
     }
-    pub(super) fn tile_storage_base(&self) -> u32 {
-        self.tile_length_slot() + 4 + if self.stage.has_tile_steps() { 4 } else { 0 }
+    pub(super) fn shared_stream(&self, word: SharedWord) -> u32 {
+        self.frame.tile_shared[&word.aligned()]
     }
     pub(super) fn tile_length(&mut self, dst: Reg) {
         self.bytes(&[0x8b, 0x84, 0x24]);
@@ -44,10 +44,9 @@ impl Emitter<'_> {
             self.load(index);
             self.bytes(&[0x49, 0x89, 0xe7]);
             self.offset_address(4);
-            let base = self.tile_storage_base();
             let bias = match self.stage.shared_word(tile, word) { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 };
-            let low = Memory::new(15, base + self.stage.word_offset(self.stage.shared_word(tile, word)) as u32 + bias);
-            let high = if scalar.size() == 8 { Memory::new(15, base + self.stage.word_offset(self.stage.shared_word(tile, word + 4)) as u32) } else { low };
+            let low = Memory::new(15, self.shared_stream(self.stage.shared_word(tile, word)) + bias);
+            let high = if scalar.size() == 8 { Memory::new(15, self.shared_stream(self.stage.shared_word(tile, word + 4))) } else { low };
             (low, high)
         };
         if scalar.size() == 8 {
@@ -78,8 +77,7 @@ impl Emitter<'_> {
             self.bytes(&[0x89, 0xd8]);
             self.scale_buffer_index(12, source, 0);
             self.bytes(&[0x49, 0x01, 0xc2, 0x4c, 0x8d, 0x9c, 0x24]);
-            let storage_offset = self.tile_storage_base()
-                + self.stage.word_offset(SharedWord::Input { binding: source, word }) as u32 + byte % 4;
+            let storage_offset = self.shared_stream(SharedWord::Input { binding: source, word }) + byte % 4;
             self.u32(storage_offset);
             self.bytes(&[0x8b, 0x8c, 0x24]);
             self.u32(self.tile_length_slot());
@@ -157,7 +155,7 @@ impl Emitter<'_> {
                 if part != 0 { self.bytes(&[0x48, 0xc1, 0xe8, 32]); }
                 let shared = SharedWord::Published { tile: publication.tile, word: *word + part * 4 };
                 if used.contains(&shared) {
-                    let at = self.tile_storage_base() + self.stage.word_offset(shared) as u32 + word % 4;
+                    let at = self.shared_stream(shared) + word % 4;
                     self.write_value_address(Location::Gpr(0), Memory::new(10, at), scalar.size().min(4));
                 }
             }
@@ -206,11 +204,7 @@ impl Emitter<'_> {
         for (word, result) in &collective.results {
             self.bytes(&[0x4c, 0x8d, 0x94, 0x24]);
             self.u32(
-                self.tile_storage_base()
-                    + self
-                        .stage
-                        .word_offset(self.stage.shared_word(collective.tile, *word))
-                        as u32
+                self.shared_stream(self.stage.shared_word(collective.tile, *word))
                     + match self.stage.shared_word(collective.tile, *word) { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 },
             );
             self.bytes(&[0x4c, 0x8d, 0x9c, 0x24]);
@@ -223,8 +217,8 @@ impl Emitter<'_> {
             let operator = collective.op.operator();
             let identity = operator.identity(scalar);
             let high_delta = if wide {
-                (self.stage.word_offset(self.stage.shared_word(collective.tile, *word + 4)) as i64
-                    - self.stage.word_offset(self.stage.shared_word(collective.tile, *word)) as i64) as u32
+                (self.shared_stream(self.stage.shared_word(collective.tile, *word + 4)) as i64
+                    - self.shared_stream(self.stage.shared_word(collective.tile, *word)) as i64) as u32
             } else { 0 };
             let store = |e: &mut Self| {
                 if float && !wide {

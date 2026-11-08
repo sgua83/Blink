@@ -3112,7 +3112,7 @@ pub(super) enum Location {
 
 位置分为通用寄存器、XMM 和栈。放不下的值进入栈槽，这叫溢出；同样不同时使用的溢出值仍可复用栈空间。
 
-源码节选：`crates/blanguage/src/native/allocation.rs:51`。
+源码节选：`crates/blanguage/src/native/allocation.rs:52`。
 
 ```rust
     fn edge(&mut self, a: usize, b: usize) {
@@ -3214,7 +3214,7 @@ SIMD临时计划的Step把原执行kind与对应Inst的借用放在同一记录�
 
 尾部与使用点之间还由同一NativeCode的compiler专用tail_references交接：探栈记录原probe字段和实际辅助起点，字面量记录实际目标并直接移动原references Vec。TailReference只持有target及原rel32_fields，目标种类仍归tail_regions，不复制字面量表、IR或来源图。code_json输出target_offset_bytes及rel32_field_offsets_bytes；字段是同一代码中的四字节有符号PC相对位移位置，目标等于字段末端加原位移，不能把它当作指令或断点地址。共享数据保留每个真实使用字段，源关系借原操作／ABI范围；不能仅凭位模式推为唯一源字面量，未知来源仍未知。所有材料随同一代码事实消费者释放，不保留Emitter／Frame或运行资源。
 
-原输入快照生成器[`native/tile.rs`](../crates/blanguage/src/native/tile.rs)直接将块入口／长度及逐源片段复制记入同一FunctionAbi，沿BLCR5／BLCF8保存。boundary保留原width；copy保留binding、源记录字节偏移、最终栈字节偏移与复制单元宽度。原偏移表达式只求值一次，观察只消费结果；共享去重、窄字节打包、64位分片和尾块长度继续由原Stage及运行ABI负责。Stage来源只说明上下文，不冒充具体捕获语法；普通tile与分阶段tile都借用同一ABI，阶段控制和私有流生成同样沿原ABI交接，发布及集合内部生成仍按原独立叶项推进。
+原输入快照生成器[`native/tile.rs`](../crates/blanguage/src/native/tile.rs)直接将块入口／长度及逐源片段复制记入同一FunctionAbi，沿BLCR5／BLCF8保存。boundary保留原width；copy保留binding、源记录字节偏移、最终栈字节偏移与复制单元宽度。原偏移直接消费本次编译期Frame持有的共享地址，观察只消费同一结果；共享去重、窄字节打包、64位分片继续由原Stage布局与Frame栈位置负责，尾块长度沿原运行ABI交接。Stage来源只说明上下文，不冒充具体捕获语法；普通tile与分阶段tile都借用同一ABI，阶段控制和私有流生成同样沿原ABI交接，发布及集合内部生成仍按原独立叶项推进。
 
 原tile_phases直接交块基址、phase入口和lane推进／边界／回边，phase_index取同一次原计划的零起顺序。原tile_restore／tile_save分别交地址准备及每个真实PrivateSlot读写，slot_kind与slot_index保持原IR局部身份，不是机器GPR或运行地址；Scalar仍归原统一枚举。每个原私有流偏移只查一次，用于原机器发射及事实；空活跃集合只描述实际地址准备，不补造槽，原liveness、布局、分配、顺序和完成保持。所有事实仍经同一FunctionAbi、BLCR5／BLCF8保存与恢复，没有另一个计划、槽表或释放者。
 
@@ -3251,7 +3251,7 @@ SIMD临时计划的Step把原执行kind与对应Inst的借用放在同一记录�
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:734`。
+源码节选：`crates/blanguage/src/native/codegen.rs:733`。
 
 ```rust
     let stage = &lowered;
@@ -4101,7 +4101,7 @@ CPU 排序则使用自己的原生范围与合并路径，位于 `native/sort.rs
 
 邻域或小块算法经常需要同一组读取一块数据。若直接让每个实例随意共享写，很难推断谁看到了哪一步。tile 将输入形状、有效长度和读取关系明确表达；publish 再交付阶段中生成的不可变中间值。
 
-前端位于 `check/tile.rs` 和 `check/subgroup.rs`，共享布局和操作由 IR 保存；CPU 的 `native/tile.rs` 与 GPU 的 `spirv/tile.rs` 分别落实。CPU 不会为了模仿每个 GPU lane 再创建一个系统线程，它可以在一个范围内顺序模拟相应块内步骤，保持同样的语言结果。
+前端位于 `check/tile.rs` 和 `check/subgroup.rs`，共享字生存期、连续分组及槽复用由 IR 的 `Stage::tile_layout` 计算。CPU 在本次范围发射时计算一次共享布局，由 `native::allocation::Frame` 持有共享流最终栈字节位置；大小与输入拷贝、读取、发布、原子及集合寻址消费同一结果，窄字段字节偏移与64位高低平面保持原映射。该编译期 Frame 同时拥有私有流布局，随发射结束释放；它与运行期资源 Frame 分属原有职责，不在产物或运行期保留共享地址表。GPU 的 `spirv/codegen.rs` 也由本次发射者持有一份自己的原生共享布局，再由 `spirv/tile.rs` 消费。CPU 不会为了模仿每个 GPU lane 再创建一个系统线程，它可以在一个范围内顺序处理相应块内步骤，保持同样的语言结果。
 
 ### 25.2 barrier 不是随意插入的一次暂停
 

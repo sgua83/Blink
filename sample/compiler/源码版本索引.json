@@ -312,7 +312,7 @@
     },
     {
       "path": "crates/blanguage/src/ir/tile.rs",
-      "sha256": "abeb5bcfcb03ee8107bd030fffca08683393d873e73bb437c65e400a26868afc"
+      "sha256": "f3920b1634e1c4971b2803f3aa223f07e6375b207a3e60aa9600726d015be7de"
     },
     {
       "path": "crates/blanguage/src/lexer.rs",
@@ -360,7 +360,7 @@
     },
     {
       "path": "crates/blanguage/src/native/allocation.rs",
-      "sha256": "34a65f2fc25e1dc9dd1fe8b251f4a56ee32053d8ca87e40525100387eafecacd"
+      "sha256": "e210057bc3168a4698b2669fb709431424c1694fc56686272fcdb46854797e02"
     },
     {
       "path": "crates/blanguage/src/native/application.rs",
@@ -368,7 +368,7 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "sha256": "0a9f83f38886e3b744aa76171e56f50a672a5b5e2d21f30041704c315bdb8fc9"
+      "sha256": "1acf232f6b1a2ab44eed05bd2b63ab4011c69d16657be7b612c27d171cf8f356"
     },
     {
       "path": "crates/blanguage/src/native/custom_reduce.rs",
@@ -420,7 +420,7 @@
     },
     {
       "path": "crates/blanguage/src/native/tile.rs",
-      "sha256": "5d111a54624f119fbfa2ba4c254cf36b447fc90ccce33c23cba021d5eb12d35c"
+      "sha256": "662d8d0f9c357f7e355f938ced6f685c1de15a7d91d6eff322bbdab968a3e3c3"
     },
     {
       "path": "crates/blanguage/src/native/unwind.rs",
@@ -545,6 +545,10 @@
     {
       "path": "sample/lessons/map.b",
       "sha256": "82e03d5236d4a884cc9c4cd3c1145738d9dd79b43a577373f12e50d2fab949d9"
+    },
+    {
+      "path": "crates/blanguage/src/native/atomic.rs",
+      "sha256": "dba9e5cb5f1f54d23942292a199953bc2bd2ac0e37b0530079a8ab1520b6352e"
     }
   ],
   "excerpts": [
@@ -1186,8 +1190,8 @@
     },
     {
       "path": "crates/blanguage/src/native/allocation.rs",
-      "start_line": 51,
-      "end_line": 68,
+      "start_line": 52,
+      "end_line": 69,
       "sha256": "f594ceccd25b849978ee3c97811b6b5cdc3ab76aa793f5f4413fc2a90fb712ad"
     },
     {
@@ -1210,8 +1214,8 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "start_line": 734,
-      "end_line": 745,
+      "start_line": 733,
+      "end_line": 744,
       "sha256": "a601489cc4cfcc83c58e45d0f5ca044221cdbfea964023eb964c052d17889aef"
     },
     {

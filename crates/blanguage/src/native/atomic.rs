@@ -17,8 +17,7 @@ impl Emitter<'_> {
                 IndexedSource::Tile { tile, index } => {
                     self.load(index);
                     self.bytes(&[0x4c, 0x8d, 0x3c, 0x84]); // r15 = rsp + index * 4
-                    Memory::new(15, self.tile_storage_base()
-                        + self.stage.word_offset(self.stage.shared_word(tile, atomic.word)) as u32)
+                    Memory::new(15, self.shared_stream(self.stage.shared_word(tile, atomic.word)))
                 }
                 IndexedSource::View { .. } | IndexedSource::Pointer { .. } => {
                     self.indexed_base(&atomic.target);
@@ -27,8 +26,8 @@ impl Emitter<'_> {
             }
         };
         if wide && let IndexedSource::Tile { tile, .. } = atomic.target {
-            let delta = (self.stage.word_offset(self.stage.shared_word(tile, atomic.word + 4)) as i64
-                - self.stage.word_offset(self.stage.shared_word(tile, atomic.word)) as i64) as u32;
+            let delta = (self.shared_stream(self.stage.shared_word(tile, atomic.word + 4)) as i64
+                - self.shared_stream(self.stage.shared_word(tile, atomic.word)) as i64) as u32;
             self.tile_atomic64(atomic, at, at.offset(delta));
             return;
         }

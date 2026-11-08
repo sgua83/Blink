@@ -30,6 +30,7 @@ pub(super) struct Frame {
     pub saved_gpr: Vec<(u8, u32)>,
     pub saved_xmm: Vec<(u8, u32)>,
     pub end: u64,
+    pub tile_shared: std::collections::BTreeMap<SharedWord, u32>,
     pub tile_private: std::collections::BTreeMap<PrivateSlot, u32>,
 }
 pub(super) struct Graph {
@@ -528,6 +529,7 @@ impl Frame {
             saved_gpr,
             saved_xmm,
             end,
+            tile_shared: std::collections::BTreeMap::new(),
             tile_private: std::collections::BTreeMap::new(),
         }
     }

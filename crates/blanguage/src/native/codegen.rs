@@ -262,8 +262,7 @@ impl Emitter<'_> {
                 self.load(*index);
                 self.bytes(&[0x4c, 0x8d, 0xbc, 0x84]);
                 self.u32(
-                    self.tile_storage_base()
-                        + self.stage.word_offset(self.stage.shared_word(*tile, 0)) as u32,
+                    self.shared_stream(self.stage.shared_word(*tile, 0)),
                 );
                 return self.stage.workgroup_width();
             }
@@ -745,7 +744,13 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     );
     let mut tile_bytes = 0;
     if stage.has_tile_scope() {
-        tile_bytes = 4 + stage.tile_data_bytes();
+        let shared = stage.tile_layout(false);
+        let stride = u64::from(stage.workgroup_width()) * 4;
+        tile_bytes = 4 + shared.values().map(|(_, slot, _)| (*slot as u64 + 1) * stride).max().unwrap_or(0);
+        let base = frame_layout.end + 4 + if stage.has_tile_steps() { 4 } else { 0 };
+        // 本次栈帧持有共享流的实际字节位置；发射地址只消费这一份布局。
+        frame_layout.tile_shared = shared.into_iter()
+            .map(|(word, (_, slot, _))| (word, (base + slot as u64 * stride) as u32)).collect();
         if stage.has_tile_steps() {
             tile_bytes += 4;
             // 本次 CPU 栈帧拥有私有流的唯一字节布局；保存／恢复不再重建阶段活跃图。

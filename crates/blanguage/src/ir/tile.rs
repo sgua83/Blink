@@ -300,9 +300,6 @@ impl Stage {
             layout
         }
     }
-    pub fn word_offset(&self, word: SharedWord) -> u64 {
-        self.tile_layout(false)[&word.aligned()].1 as u64 * self.workgroup_width() as u64 * 4
-    }
     pub fn tile_data_bytes(&self) -> u64 {
         self.tile_layout(false).values().map(|(_, slot, _)| slot).max().map_or(0, |slot| {
             (*slot as u64 + 1) * self.workgroup_width() as u64 * 4
