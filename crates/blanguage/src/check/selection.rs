@@ -233,13 +233,20 @@ impl Builder<'_> {
                 reg
             })
             .collect();
+        let mut selected = bounds::Clause::impossible();
+        for (value, truth) in [(a.as_ref(), true), (b.as_ref(), false)] {
+            let Some(value) = value else { continue; };
+            let aliases = bounds::Proof::capture(value).output_aliases(&regs, &self.registers, &BTreeMap::new());
+            selected = bounds::Clause::either(&selected, &partition.assume(&aliases, truth));
+        }
+        self.path = bounds::Clause::both(&self.path, &selected);
         let proof = match (&a, &b) {
-            (Some(a), Some(b)) => bounds::Proof::common(a,b,Some(&bounds::Condition::of(&c)),Some(&regs)),
+            (Some(a), Some(b)) => bounds::Proof::common(a,b,Some(&partition),Some(&regs)),
             _ => bounds::Proof::capture(storage),
         };
         let mut result = match (a_result.take(), b_result) {
             (Some(mut a), Some(b)) => {
-                a.join(b,false,Some(&bounds::Condition::of(&c)));
+                a.join(b,false,Some(&partition));
                 a
             }
             (Some(a), None) | (None, Some(a)) => a,

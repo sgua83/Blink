@@ -240,7 +240,7 @@
     },
     {
       "path": "crates/blanguage/src/check/selection.rs",
-      "sha256": "c1f63854c93763d1bd656bc9d7a64f56d7977b3fa398b5b42cea91b44a9f4991"
+      "sha256": "f7937eb5415c29e9a8b76b2b0f517dd050c14df36bd2dcf466d77702575843cc"
     },
     {
       "path": "crates/blanguage/src/check/sort.rs",
