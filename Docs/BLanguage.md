@@ -4575,7 +4575,7 @@ Vulkan 不保证 LocalInvocationIndex 与 subgroup lane 的直接对应关系，
 
 `bitcast_u32(value)` 将 f32／float2／float3／float4 的每个原始 32 位分量解释为 u32／uint2／uint3／uint4；`bitcast_f32(value)` 做相反解释。它们各接收一个参数，保持分量数及全部位，不执行数值转换。正负零、非正规数、无穷及 NaN 载荷直接交接；之后的浮点算术仍遵守其本身语义，不承诺保留 NaN 载荷。bool、i32、矩阵、数组和记录不能作为这两个内建的输入，参数数量错误报 B153，类型错误报 B154。
 
-例如 `bitcast_u32(1.0)` 得到 `0x3f800000`，`u32(1.0)` 仍得到 1；`bitcast_f32(0x80000000)` 是负零。已知输入在编译期间保留原位形成常量；GPU 对 IR f32 Constant 同样先保留 u32 常量字，再以 OpBitcast 交付 f32，保持特殊 NaN 等原始位。运行期进入同一 Unary IR 的 Bitcast，CPU 标量与 SSE2 复制原位，GPU 使用 SPIR-V OpBitcast。位解释不把源数值范围、非零或资源索引证明授予目标类型，结果作为安全下标或除数仍须证明自身所需关系。
+例如 `bitcast_u32(1.0)` 得到 `0x3f800000`，`u32(1.0)` 仍得到 1；`bitcast_f32(0x80000000)` 是负零。已知输入在编译期间保留原位形成常量；GPU 对 IR f32 Constant 同样先保留 u32 常量字，再以 OpBitcast 交付 f32，保持特殊 NaN 等原始位。运行期进入同一 Unary IR 的 Bitcast，CPU 标量与 SSE2 复制原位，GPU 使用 SPIR-V OpBitcast。动态bitcast_f32／bitcast_u32及bitcast_f64／bitcast_u64将原允许位集合按目标的真实数值次序重新形成区间。原浮点有序编码与原始位在实际符号位断点两侧分别单调，区间只在该断点切分并映射端点，不数值转换、不枚举输入位模式。源数值相等、条件、非零标志、资源索引及借用身份不跨类型复制；目标非零或有界性只能由重新形成的数值集合及原消费者取得。正负零保持两种位模式，NaN／无穷及其载荷不被删除，未知位集合仍不能取得有限浮点许可。结果只使用原Proof.ranges，字段／向量、共同元素及公开模块输出按原合同交接；不保存来源图、运行表或额外拥有者，不改变原UnaryOp::Bitcast、机器指令、数据布局、BLCO81／BLRI47或C ABI。结果作为安全下标或除数仍须由原消费者证明自身关系。
 
 `for (node in nodes)` 是每个并行实例自己的有界索引访问，不额外生成一批并行任务。`ordinal(node)` 读取游标索引；`seek(node, node.escape)` 将最内层游标移到指定位置并重新进入循环检查，服务线性 BVH 跳过子树。循环的索引受数据集长度约束；程序仍有责任保证跳转推进和算法终止。
 

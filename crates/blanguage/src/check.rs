@@ -2796,6 +2796,7 @@ impl<'a> Builder<'a> {
             result.literal = false;
             return Ok(result);
         }
+        let proof = bounds::Proof::bitcast(&value, target);
         let mut regs = Vec::with_capacity(n);
         for a in value.regs {
             let dst = self.reg(target);
@@ -2807,7 +2808,7 @@ impl<'a> Builder<'a> {
             regs.push(dst);
         }
         Ok(Value {
-            proof: bounds::Proof::default(),
+            proof,
             literal: false,
             ty,
             regs,

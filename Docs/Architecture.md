@@ -842,6 +842,8 @@ GenerationAnchor::CastConstantFold的expression借用该Constant原source_site�
 
 **位重解释常量折叠的来源。** 原Builder::bitcast拥有已检查的源／目标Scalar、分量数及Value.constant；原constant_value直接以同一组位模式生成目标类型Constant，不执行数值转换。仅在该原成功物化接点，把BitcastConstantFold交给同一Constant；动态输入继续生成原UnaryOp::Bitcast，不因查询而物化或求值。
 
+**位重解释的数值范围。** 动态bitcast_f32／bitcast_u32及bitcast_f64／bitcast_u64将原允许位集合按目标的真实数值次序重新形成区间。原浮点有序编码与原始位在实际符号位断点两侧分别单调，区间只在该断点切分并映射端点，不数值转换、不枚举输入位模式。源数值相等、条件、非零标志、资源索引及借用身份不跨类型复制；目标非零或有界性只能由重新形成的数值集合及原消费者取得。正负零保持两种位模式，NaN／无穷及其载荷不被删除，未知位集合仍不能取得有限浮点许可。结果只使用原Proof.ranges，字段／向量、共同元素及公开模块输出按原合同交接；不保存来源图、运行表或额外拥有者，不改变原UnaryOp::Bitcast、机器指令、数据布局、BLCO81／BLRI47或C ABI。
+
 GenerationAnchor::BitcastConstantFold的expression借用该Constant原source_site；source_scalar／target_scalar说明真实重解释方向，bits记录两者共用的同一位模式，component_index／component_count是从零开始的结果平坦逻辑分量位置与总数。它不记录浮点解释后的宿主数值，不复制输入／结果两份相同bits，不代表寄存器身份、运行次数或完整输入谱系。单源查询只解释已有expression，未知为null，不补造或扩大范围。
 
 原位宽、向量许可、数量／类型诊断、literal、Proof、布局、寄存器及动态指令保持。材料仅归compiler原Inst、CSE／DCE／空Map根、模块／阶段实际结果与查询快照，到最后IR消费者后释放；不持有旧IR、AST／World或运行资源，不新增求值器、来源表、必要编码、运行指令或保活。数值转换沿.9.3，最终机器来源沿原独立编号；已交接的具体范围与验证见[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-9-4)。

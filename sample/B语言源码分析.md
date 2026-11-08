@@ -463,7 +463,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1831`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1837`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -488,7 +488,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2978`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2984`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -507,7 +507,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1819`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1825`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1375,7 +1375,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:4300`。
+源码节选：`crates/blanguage/src/check.rs:4301`。
 
 ```rust
         let binding = view.binding;
@@ -1648,7 +1648,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 原address_write_positions是内存位置投影的唯一入口。具体Origin内的资源即使含LoopInput，仍可按真实布局与word投影；顶层未形成位置的输入／调用、Unresolved或其他未知来源不被静默当作空写。原write_address_values与循环消费者直接消费同一结果，不能用递归pending标志代替实际写位置。初始化在该快照中保持未知。闭合普通B调用的实际写区统一由原Memory合同交接，非拥有write／inout权限不重复定义整值写区，typed written数值输出、初始化与拥有参数消费仍各归原调用合同。dataset指针在预分析和实际调用中交接同一原Origin：实际Data、逻辑元素布局和字段字节由application统一构造，不改变机器句柄、长度、步长或ABI参数。预分析初始化保持未知；真实读输入只消费原初始化检查已经取得的事实，write输入继续原输出初始化分支。模块dataset出口先沿原输入关系过滤私有Data，再将输入资源位置归一为原Derived符号指针，嵌套调用及obj／lib保留真实写区；未知仍如实未知，不增加资源镜像、效果图、状态或运行时校验。命名元素继续使用已经求值的句柄、布局、索引和步长，其资源来源在Place生产处通过原data_borrow引用当前循环映射，与下标访问保持同一来源，不保存进入前的过期来源。未来读取缓存、同字段读前范围和独立数值缺口继续各原编号。下面的代码只形成编译期位置，不增加运行时表、资源镜像或释放链。
 
-源码节选：`crates/blanguage/src/check.rs:3820`。
+源码节选：`crates/blanguage/src/check.rs:3821`。
 
 ```rust
                 CursorSource::ApplicationData(mut data) => {
@@ -2170,7 +2170,7 @@ write_place的非循环ApplicationElement在真实write_application_place、init
 
 CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文使用的同一个游标绑定，再运行原loop_writes；循环IR、真实入口、条件与退出仍由原LoopContext交接。没有先造一份影子游标或把正文未知写扩成全存储写：
 
-源码节选：`crates/blanguage/src/check.rs:3879`。
+源码节选：`crates/blanguage/src/check.rs:3880`。
 
 ```rust
         self.env.insert(name.clone(), binding);
@@ -2240,7 +2240,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1362`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1368`。
 
 ```rust
     pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
@@ -2325,7 +2325,7 @@ F32除法只在原规范的分母范围内交接包含设备误差的结果，�
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1953`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1959`。
 
 ```rust
 impl Drop for Clause {
@@ -2882,7 +2882,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 
 数值常量转换仍由原cast和constant::cast处理。成功物化的各Constant仅在该分量源／目标Scalar不同的时候附加CastConstantFold，保留原expression、逐分量源／目标类型、输入／结果位模式与逻辑分量下标／数量；混合记录不能复用首字段类型。相同Scalar的寄存器复用或混合结果中的同型物化不制造事件，不能常量求值的原Cast与位重解释保留独立职责。原literal、Proof、布局、source_site及数值行为保持，材料沿原IR与CSE／DCE／空Map、模块／阶段结果到最后查询消费者，不重算、保活或增加来源／执行状态；静态记录不是实际转换次数或机器成本。
 
-位重解释与数值转换分别表达。原bitcast在完整常量输入时，以同一组位模式生成目标Scalar的原Constant，并在同一接点交接BitcastConstantFold；expression沿该Constant的source_site，源／目标Scalar说明方向，bits只保存一份共同位模式，逻辑分量下标／总数说明向量位置。它不把NaN、负零或其他位模式解释为宿主数值，不另存相同的输入／结果bits。动态输入保持原UnaryOp::Bitcast，原类型／数量诊断、literal、Proof、布局及运行行为不改。材料沿原IR、CSE／DCE／空Map根、模块／阶段实际结果及查询快照，到最后IR消费者后释放，不增加求值、来源表、必要执行编码或保活；它不代表运行次数、完整输入谱系或最终机器映射。
+位重解释与数值转换分别表达。原bitcast在完整常量输入时，以同一组位模式生成目标Scalar的原Constant，并在同一接点交接BitcastConstantFold；expression沿该Constant的source_site，源／目标Scalar说明方向，bits只保存一份共同位模式，逻辑分量下标／总数说明向量位置。它不把NaN、负零或其他位模式解释为宿主数值，不另存相同的输入／结果bits。动态输入保持原UnaryOp::Bitcast；原类型／数量诊断、literal、布局及运行行为保持。动态bitcast_f32／bitcast_u32及bitcast_f64／bitcast_u64将原允许位集合按目标的真实数值次序重新形成区间。原浮点有序编码与原始位在实际符号位断点两侧分别单调，区间只在该断点切分并映射端点，不数值转换、不枚举输入位模式。源数值相等、条件、非零标志、资源索引及借用身份不跨类型复制；目标非零或有界性只能由重新形成的数值集合及原消费者取得。正负零保持两种位模式，NaN／无穷及其载荷不被删除，未知位集合仍不能取得有限浮点许可。结果只使用原Proof.ranges，字段／向量、共同元素及公开模块输出按原合同交接；不保存来源图、运行表或额外拥有者，不改变原UnaryOp::Bitcast、机器指令、数据布局、BLCO81／BLRI47或C ABI。材料沿原IR、CSE／DCE／空Map根、模块／阶段实际结果及查询快照，到最后IR消费者后释放，不增加求值、来源表、必要执行编码或保活；它不代表运行次数、完整输入谱系或最终机器映射。
 
 整数min／max的已知结果来自原bounds::arithmetic与整数已知值求值，不要求两侧Value.constant都存在。普通known_value与观察接点共用原整数分量求值，在同一次取得结果时交接SingletonRange或ZeroCondition依据；不追加一次条件求解。原成功物化的Constant取得MinmaxKnownValue，保留expression、实际min／max、共同Scalar、输入有效区间、原完整常量载荷是否存在、同值关系、广播分量及结果位模式。区间端点是原始Scalar位模式，按真实数值排序并包含端点；有符号偏置只归内部分析，不导出为原始值。它是本次局部前提快照，不是完整输入谱系或证明图。原Bool与其他known_value消费者保持，浮点及未取得完整已知结果的比较／Select不误标；来源仍沿原IR、消除根、模块／阶段结果及查询快照到最后消费者，不留Proof／条件图、旧IR或运行状态，不增加求值器、必要执行编码或保活。
 

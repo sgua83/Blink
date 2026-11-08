@@ -61,6 +61,20 @@ fn interval(scalar: Scalar, lower: f64, upper: f64) -> ScalarRanges {
     let raw = |x:f64| if scalar == Scalar::F32 { (x as f32).to_bits() as Bits } else { x.to_bits() };
     ScalarRanges::interval(order(scalar,raw(lower)),order(scalar,raw(upper)))
 }
+pub(super) fn bitcast(value: &Value, component: usize, target: Scalar) -> ScalarRanges {
+    let source = value.ty.components[component].0;
+    let (scalar, ranges, convert): (_, _, fn(Scalar, Bits) -> Bits) = if source.is_float() {
+        (source, ranges(value, component), bits)
+    } else { (target, value.component_ranges(component), order) };
+    let sign = 1 << (scalar.bit_width() - 1);
+    // Both encodings are monotone on each side of the real sign-bit boundary.
+    ranges.map(|(lower, upper)| ScalarRanges::from_intervals(
+        [(lower, upper.min(sign - 1)), (lower.max(sign), upper)].into_iter()
+            .filter(|(a, b)| a <= b).map(|(a, b)| {
+                let (a, b) = (convert(scalar, a), convert(scalar, b));
+                (a.min(b), a.max(b))
+            })))
+}
 pub(super) fn cast(value: &Value, component: usize, target: Scalar) -> ScalarRanges {
     let source = value.ty.components[component].0;
     if source.is_integer() && target.is_float() {

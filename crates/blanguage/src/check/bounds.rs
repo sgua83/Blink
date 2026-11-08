@@ -1318,6 +1318,12 @@ impl Proof {
     fn range_set(&self, component: usize) -> ScalarRanges {
         self.ranges.get(component).cloned().unwrap_or_default()
     }
+    pub(super) fn bitcast(value: &Value, target: Scalar) -> Self {
+        Self {
+            ranges: (0..value.regs.len()).map(|component| floating::bitcast(value, component, target)).collect(),
+            ..Self::default()
+        }
+    }
     pub(super) fn cast(value: &Value, target: Scalar) -> Self {
         let mut proof = Self::capture(value);
         for (i, &(source, _)) in value.ty.components.iter().enumerate() {
