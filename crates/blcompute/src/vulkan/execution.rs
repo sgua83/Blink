@@ -227,7 +227,7 @@ impl Execution {
         }
     }
     pub fn discard_structure(&self, storage: ray::StructureStorage) {
-        if self.point.result.get() == Some(0) {
+        if matches!(self.point.result.get(), Some(0 | -4)) {
             drop(storage);
         } else {
             self.discarded_structures.borrow_mut().push(storage);

@@ -484,7 +484,7 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/execution.rs",
-      "sha256": "8c37d2746515770481e2c8e33e3b18df976e1bcdcf86ff99b2833a59b618a719"
+      "sha256": "c3a7ddffa472680cbb63ba54fdc44b393379b0352cd957267b2baf90ef22019b"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
