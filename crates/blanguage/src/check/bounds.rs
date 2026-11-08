@@ -2834,7 +2834,7 @@ impl Condition {
         // 先投影真实输入关系，再求补集；不可用的私有布尔不能成为接口条件。
         let value=self.at_call(bindings);Self::guard(value.cases[1].clone())
     }
-    pub(super) fn covers(&self,other:&Self)->bool{!Clause::both(&self.cases[0],&other.cases[1]).possible()}
+    pub(super) fn covers(&self,other:&Self)->bool{!self.cases[0].overlaps(&other.cases[1])}
     pub(super) fn overlaps(&self,other:&Self)->bool{Clause::both(&self.cases[1],&other.cases[1]).possible()}
     pub(super) fn active(&self)->bool{self.cases[1].possible()}
     pub(super) fn with_aliases(&self,aliases:&Clause)->Self{
