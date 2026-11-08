@@ -2436,10 +2436,15 @@ impl Clause {
                 facts[index].value = Some(required);
             }
             let required = Self::take_query(&mut facts, 0)?;
-            if required.is_empty() {
+            let unchanged = required.is_empty();
+            if !unchanged {
+                environment.to_mut().extend(required.iter().copied());
+            }
+            let numeric = integer_affine_facts(&environment)?;
+            if unchanged && numeric.is_empty() {
                 return Some(environment.into_owned());
             }
-            environment.to_mut().extend(required.iter().copied());
+            environment.to_mut().extend(numeric);
             if contradictory(&environment) {
                 return None;
             }
@@ -3167,6 +3172,207 @@ fn constrain_proofs(
     {
         facts.insert(Fact::Minimum(limit_id, scalar, lower));
     }
+}
+// These coefficients belong to one numeric query. The original snapshot
+// equations and scalar bounds remain the facts' only source.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct IntegerAffine {
+    source: Option<ValueIdentity>,
+    scale: i128,
+    offset: i128,
+}
+impl IntegerAffine {
+    fn constant(value: i128) -> Self { Self { source: None, scale: 0, offset: value } }
+    fn variable(source: ValueIdentity) -> Self { Self { source: Some(source), scale: 1, offset: 0 } }
+    fn scaled(self, factor: i128) -> Option<Self> {
+        let scale = self.scale.checked_mul(factor)?;
+        Some(Self {
+            source: if scale == 0 { None } else { self.source },
+            scale,
+            offset: self.offset.checked_mul(factor)?,
+        })
+    }
+    fn plus(self, other: Self) -> Option<Self> {
+        let source = match (self.source, other.source) {
+            (Some(a), Some(b)) if a != b => return None,
+            (Some(source), _) | (_, Some(source)) => Some(source),
+            _ => None,
+        };
+        let scale = self.scale.checked_add(other.scale)?;
+        Some(Self {
+            source: if scale == 0 { None } else { source },
+            scale,
+            offset: self.offset.checked_add(other.offset)?,
+        })
+    }
+}
+struct IntegerAffineQuery<'a> {
+    facts: &'a Facts,
+    roots: BTreeMap<ValueIdentity, ValueIdentity>,
+    lower: BTreeMap<(ValueIdentity, Scalar), Bits>,
+    upper: BTreeMap<(ValueIdentity, Scalar), Bits>,
+    coefficients: BTreeMap<(ValueIdentity, Scalar), IntegerAffine>,
+    expanding: BTreeSet<(ValueIdentity, Scalar)>,
+}
+impl<'a> IntegerAffineQuery<'a> {
+    fn new(facts: &'a Facts) -> Self {
+        let roots = equality_roots(facts);
+        let mut lower = BTreeMap::new();
+        let mut upper = BTreeMap::new();
+        for ((id, scalar), value) in minimums(facts) {
+            let id = roots.get(&id).copied().unwrap_or(id);
+            lower.entry((id, scalar)).and_modify(|old: &mut Bits| *old = (*old).max(value)).or_insert(value);
+        }
+        for ((id, scalar), value) in maximums(facts) {
+            let id = roots.get(&id).copied().unwrap_or(id);
+            upper.entry((id, scalar)).and_modify(|old: &mut Bits| *old = (*old).min(value)).or_insert(value);
+        }
+        Self { facts, roots, lower, upper, coefficients: BTreeMap::new(), expanding: BTreeSet::new() }
+    }
+    fn root(&self, id: ValueIdentity) -> ValueIdentity { self.roots.get(&id).copied().unwrap_or(id) }
+    fn number(scalar: Scalar, bits: Bits) -> i128 {
+        if scalar.is_signed() { i128::from(scalar.signed(bits)) }
+        else { i128::from(scalar.truncate(bits)) }
+    }
+    fn scalar_bounds(scalar: Scalar) -> (i128, i128) {
+        (Self::number(scalar, scalar.order_bias()), Self::number(scalar, scalar.bit_mask() ^ scalar.order_bias()))
+    }
+    fn bounds(&self, id: ValueIdentity, scalar: Scalar) -> (i128, i128) {
+        let key = (self.root(id), scalar);
+        let lower = self.lower.get(&key).copied().unwrap_or(0);
+        let upper = self.upper.get(&key).copied().unwrap_or(scalar.bit_mask());
+        (Self::number(scalar, lower ^ scalar.order_bias()), Self::number(scalar, upper ^ scalar.order_bias()))
+    }
+    fn interval(&self, value: IntegerAffine, scalar: Scalar) -> Option<(i128, i128)> {
+        let Some(source) = value.source else { return Some((value.offset, value.offset)); };
+        let (a, b) = self.bounds(source, scalar);
+        let a = a.checked_mul(value.scale)?.checked_add(value.offset)?;
+        let b = b.checked_mul(value.scale)?.checked_add(value.offset)?;
+        Some((a.min(b), a.max(b)))
+    }
+    fn operand(&mut self, operand: Operand, scalar: Scalar) -> IntegerAffine {
+        let id = match operand {
+            Operand::Constant(_, bits) => return IntegerAffine::constant(Self::number(scalar, bits)),
+            Operand::Value(id) => id,
+        };
+        let key = (id, scalar);
+        if let Some(value) = self.coefficients.get(&key) { return *value; }
+        let symbol = IntegerAffine::variable(self.root(id));
+        // The facts are equations: an equality may lead back to the same value.
+        // Retain that variable while eliminating the surrounding expression.
+        if !self.expanding.insert(key) { return symbol; }
+        let (lower, upper) = self.bounds(id, scalar);
+        let mut value = if lower == upper { IntegerAffine::constant(lower) } else { symbol };
+        if value == symbol {
+            let expressions = self.facts.range(Fact::Index(id, IndexDomain::Data(0))..)
+                .take_while(|fact| matches!(fact, Fact::Index(source, _) if *source == id))
+                .filter_map(|fact| match fact {
+                    Fact::Index(_, IndexDomain::Computed(expression)) => Some(*expression),
+                    _ => None,
+                }).collect::<Vec<_>>();
+            for expression in expressions {
+                if let Some(affine) = self.expression(expression, scalar) {
+                    if affine != symbol { value = affine; break; }
+                }
+            }
+        }
+        self.expanding.remove(&key);
+        self.coefficients.insert(key, value);
+        value
+    }
+    fn expression(&mut self, expression: IntegerExpression, scalar: Scalar) -> Option<IntegerAffine> {
+        let IntegerExpression::Binary(op, actual, a, b) = expression;
+        if actual != scalar || !matches!(op, IntegerOperation::Add | IntegerOperation::Subtract | IntegerOperation::Multiply) { return None; }
+        let a = self.operand(a, scalar);
+        let b = self.operand(b, scalar);
+        let value = match op {
+            IntegerOperation::Add => a.plus(b)?,
+            IntegerOperation::Subtract => a.plus(b.scaled(-1)?)?,
+            IntegerOperation::Multiply if a.source.is_none() => b.scaled(a.offset)?,
+            IntegerOperation::Multiply if b.source.is_none() => a.scaled(b.offset)?,
+            _ => return None,
+        };
+        let (lower, upper) = self.interval(value, scalar)?;
+        let (minimum, maximum) = Self::scalar_bounds(scalar);
+        // Only a non-wrapping machine operation has this integer equation.
+        (minimum <= lower && lower <= upper && upper <= maximum).then_some(value)
+    }
+    fn retain(&self, output: &mut Facts, id: ValueIdentity, scalar: Scalar, lower: i128, upper: i128) -> Option<()> {
+        let id = self.root(id);
+        let (before_lower, before_upper) = self.bounds(id, scalar);
+        if lower > before_upper || upper < before_lower || lower > upper { return None; }
+        let ordered = |number| scalar.truncate(number as Bits) ^ scalar.order_bias();
+        if lower > before_lower { output.insert(Fact::Minimum(id, scalar, ordered(lower))); }
+        if upper < before_upper { output.insert(Fact::Maximum(id, scalar, ordered(upper))); }
+        Some(())
+    }
+    fn at_most_zero(&self, output: &mut Facts, value: IntegerAffine, scalar: Scalar) -> Option<()> {
+        let Some(source) = value.source else { return (value.offset <= 0).then_some(()); };
+        let (minimum, maximum) = Self::scalar_bounds(scalar);
+        let magnitude = value.offset.unsigned_abs();
+        let divisor = value.scale.unsigned_abs();
+        if value.scale > 0 {
+            let upper = if value.offset <= 0 {
+                let quotient = magnitude / divisor;
+                if quotient >= maximum as u128 { return Some(()); }
+                quotient as i128
+            } else {
+                let quotient = magnitude / divisor + u128::from(magnitude % divisor != 0);
+                if quotient > minimum.unsigned_abs() { return None; }
+                -(quotient as i128)
+            };
+            self.retain(output, source, scalar, minimum, upper)
+        } else {
+            let lower = if value.offset >= 0 {
+                let quotient = magnitude / divisor + u128::from(magnitude % divisor != 0);
+                if quotient > maximum as u128 { return None; }
+                quotient as i128
+            } else {
+                let quotient = magnitude / divisor;
+                if quotient >= minimum.unsigned_abs() { return Some(()); }
+                -(quotient as i128)
+            };
+            self.retain(output, source, scalar, lower, maximum)
+        }
+    }
+}
+fn integer_affine_facts(facts: &Facts) -> Option<Facts> {
+    let mut query = IntegerAffineQuery::new(facts);
+    let mut output = Facts::new();
+    for fact in facts {
+        match *fact {
+            Fact::Below(a, b, strict, scalar) if scalar.is_integer() => {
+                let a = query.operand(Operand::Value(a), scalar);
+                let b = query.operand(Operand::Value(b), scalar);
+                if let Some(mut difference) = b.scaled(-1).and_then(|b| a.plus(b)) {
+                    if let Some(offset) = difference.offset.checked_add(i128::from(strict)) {
+                        difference.offset = offset;
+                        query.at_most_zero(&mut output, difference, scalar)?;
+                    }
+                }
+            }
+            Fact::Index(id, IndexDomain::Computed(expression)) => {
+                let IntegerExpression::Binary(_, scalar, _, _) = expression;
+                if !scalar.is_integer() { continue; }
+                if let Some(value) = query.expression(expression, scalar) {
+                    let id = query.root(id);
+                    if value.source == Some(id) {
+                        if let Some(difference) = value.plus(IntegerAffine { source: Some(id), scale: -1, offset: 0 }) {
+                            query.at_most_zero(&mut output, difference, scalar)?;
+                            if let Some(reverse) = difference.scaled(-1) {
+                                query.at_most_zero(&mut output, reverse, scalar)?;
+                            }
+                        }
+                    } else if let Some((lower, upper)) = query.interval(value, scalar) {
+                        query.retain(&mut output, id, scalar, lower, upper)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    output.retain(|fact| !facts.contains(fact));
+    Some(output)
 }
 // An integer reduction sums distinct elements, not repeated copies of one identity.
 pub(super) fn tile_sum(input: &Proof, ty: &Ty, length: &Proof) -> Proof {
