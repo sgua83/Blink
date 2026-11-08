@@ -183,6 +183,21 @@ impl IntegerExpression {
 crate::module::codec::variants!(Operand{0=>Value(identity),1=>Constant(scalar,bits)});
 crate::module::codec::variants!(IntegerOperation{0=>Add,1=>Subtract,2=>Multiply,3=>Divide,4=>Remainder,5=>And,6=>Or,7=>Xor,8=>ShiftLeft,9=>ShiftRight});
 crate::module::codec::variants!(IntegerExpression{0=>Binary(op,scalar,a,b)});
+// The existing numeric fact owns one source snapshot and its valid integer domain.
+// Upper means value <= a*d+b+c/d (a >= 0); Cast names the actual F32 conversion.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FloatingForm { Cast, Upper }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct FloatingBound {
+    source: ValueIdentity,
+    lower: Bits,
+    upper: Bits,
+    terms: [Bits; 3],
+    scalar: Scalar,
+    form: FloatingForm,
+}
+crate::module::codec::variants!(FloatingForm{0=>Cast,1=>Upper});
+crate::module::codec::record!(FloatingBound{source,lower,upper,terms,scalar,form});
 type Facts = BTreeSet<Fact>;
 // 固定点环境只由本轮持有；节点仅交接环境之外的事实，保持到最后消费。
 type QueryFacts<'a> = Arc<Cow<'a, Facts>>;
@@ -217,6 +232,7 @@ fn map_domain(domain:IndexDomain, identity:&impl Fn(ValueIdentity)->ValueIdentit
         IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base), identity(limit), distance),
         IndexDomain::Computed(expression) => IndexDomain::Computed(expression.map(|id| Some(identity(id))).unwrap()),
         IndexDomain::CommonRange(source,from,low,extended,to) => IndexDomain::CommonRange(identity(source),from,low,extended,to),
+        IndexDomain::Floating(bound) => IndexDomain::Floating(FloatingBound { source: identity(bound.source), ..bound }),
         other => other,
     }
 }
@@ -242,7 +258,7 @@ fn cast_domain(domain:IndexDomain,source:Scalar,target:Scalar)->Option<IndexDoma
     }
 }
 fn numeric_domain(domain: &IndexDomain) -> bool {
-    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..) | IndexDomain::CommonRange(..) | IndexDomain::Computed(..) | IndexDomain::KnownBits(..))
+    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..) | IndexDomain::CommonRange(..) | IndexDomain::Computed(..) | IndexDomain::KnownBits(..) | IndexDomain::Floating(..))
 }
 impl Place {
     fn refine_position(
@@ -743,6 +759,7 @@ impl Proof {
                 IndexDomain::Offset(base, amount) => IndexDomain::Offset(identity(base, bindings)?, amount),
                 IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base, bindings)?, identity(limit, bindings)?, distance),
                 IndexDomain::Computed(expression) => IndexDomain::Computed(expression.at_call(bindings)?),
+                IndexDomain::Floating(bound) => IndexDomain::Floating(bound.at_call(bindings)?),
                 _ => return None,
             })
         }
@@ -938,6 +955,13 @@ impl Proof {
                             .filter(|id|!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_)))
                             .map(|id|IndexDomain::CommonRange(*id,*from,*low,*extended,*to)));
                     }
+                }
+                if let IndexDomain::Floating(bound) = domain
+                    && let Some(range) = bound.range_at_call(bindings)
+                {
+                    translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
+                    translated.ranges[component] = translated.ranges[component].combine(&range,
+                        |(al, ah), (bl, bh)| ScalarRanges::interval(al.max(bl), ah.min(bh)));
                 }
                 if let IndexDomain::Computed(expression) = domain
                     && let Some(range) = expression.ranges_at_call(bindings)
@@ -1311,6 +1335,9 @@ impl Proof {
                 .chain(proof.origins[i].iter().copied().filter(|_|integers&&!same_value).filter_map(|id|cast_domain(IndexDomain::CommonRange(id,source,source,source,source),source,target))).collect::<Domains>();
             if let Some(current)=proof.domains.get_mut(i){current.clear();}
             for domain in domains{proof.mark_domain(i,domain);}
+            if target == Scalar::F32 {
+                for domain in floating::cast_domains(value, i) { proof.mark_domain(i, domain); }
+            }
             if !same_value{proof.origins[i].clear();}
             if !integers || target.size() < source.size() { proof.conditions[i] = None; }
         }
@@ -3207,7 +3234,9 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
         } else {
             Vec::new()
         },
-        domains: if a.ty.components[0].0 == Scalar::U32 {
+        domains: if scalar == Scalar::F32 {
+            (0..count).map(|i| floating::arithmetic_domains(op, a, b, i)).collect()
+        } else if scalar == Scalar::U32 {
             (0..count)
                 .map(|i| arithmetic_domains(op, a, b, i))
                 .collect()
@@ -3216,6 +3245,9 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
         },
         ..Proof::default()
     };
+    if scalar == Scalar::F32 {
+        floating::refine(&mut proof);
+    }
     if scalar.is_integer() {
         for component in 0..count {
             if let Some((value, source)) = arithmetic_source(op, a, b, component) {
@@ -4512,7 +4544,7 @@ fn common_range_domain(domain: IndexDomain) -> bool {
         IndexDomain::Data(_) | IndexDomain::Fixed(_) | IndexDomain::Tile
         | IndexDomain::View(_) | IndexDomain::ApplicationData(_)
         | IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(_)
-        | IndexDomain::Shifted(..) | IndexDomain::CommonRange(..) | IndexDomain::KnownBits(..) => true,
+        | IndexDomain::Shifted(..) | IndexDomain::CommonRange(..) | IndexDomain::KnownBits(..) | IndexDomain::Floating(..) => true,
         IndexDomain::DataLength(_) | IndexDomain::TileLength | IndexDomain::ViewLength(_)
         | IndexDomain::ApplicationLength(_) | IndexDomain::Sum(..) | IndexDomain::Offset(..)
         | IndexDomain::Computed(_) => false,
