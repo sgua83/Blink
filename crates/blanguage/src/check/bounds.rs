@@ -464,6 +464,34 @@ impl KnownBits {
         }}
         bits
     }
+    fn shifted(self, left: bool, counts: ScalarRanges) -> Option<Self> {
+        let mask = self.scalar.bit_mask();
+        let sign = 1u64 << (self.scalar.bit_width() - 1);
+        let zero_fill = left || !self.scalar.is_signed() || self.mask & sign != 0 && self.value & sign == 0;
+        let one_fill = !left && self.scalar.is_signed() && self.mask & self.value & sign != 0;
+        let shift = |bits: Bits, count: u32, fill: bool| {
+            let moved = if left { bits << count } else { bits >> count };
+            let padding = if left { mask & !(mask << count) } else { mask & !(mask >> count) };
+            (moved | if fill { padding } else { 0 }) & mask
+        };
+        let mut result: Option<Self> = None;
+        for (lower, upper) in counts.0 {
+            let lower = (lower ^ self.scalar.order_bias()) as u32;
+            let upper = (upper ^ self.scalar.order_bias()) as u32;
+            let mut zero = shift(self.mask & !self.value, lower, zero_fill);
+            let mut one = shift(self.value, lower, one_fill);
+            let mut covered = 1;
+            while covered <= upper - lower {
+                let offset = covered.min(upper - lower + 1 - covered);
+                zero &= shift(zero, offset, zero_fill);
+                one &= shift(one, offset, one_fill);
+                covered += offset;
+            }
+            let bits = Self { scalar: self.scalar, mask: zero | one, value: one };
+            result = Some(match result { Some(before) => before.common(bits)?, None => bits });
+        }
+        result.filter(|bits| bits.mask != 0)
+    }
     fn ranges(scalar:Scalar,ranges:ScalarRanges)->Option<Self> {
         let mut result:Option<Self>=None;
         for(lower,upper)in ranges.restrict(0,scalar.bit_mask()).0 {
@@ -3648,7 +3676,16 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
         floating::refine(&mut proof);
     }
     if scalar.is_integer() {
+        let shift_input = matches!(op, "<<" | ">>").then(|| Proof::capture(a));
         for component in 0..count {
+            if let Some(input) = &shift_input {
+                let source = input.known_bits(component % a.regs.len(), scalar)
+                    .unwrap_or(KnownBits { scalar, mask: 0, value: 0 });
+                let counts = b.component_ranges(component % b.regs.len()).shift_counts(scalar);
+                if let Some(bits) = source.shifted(op == "<<", counts) {
+                    proof.mark_domain(component, bits.domain());
+                }
+            }
             if let Some((value, source)) = arithmetic_source(op, a, b, component) {
                 let mut exact = value.projected_proof(&[source]);
                 // 继承操作数身份，但仍与运算的可达片段相交，保留空路径。

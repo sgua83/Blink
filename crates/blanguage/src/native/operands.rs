@@ -650,6 +650,10 @@ impl Emitter<'_> {
         let shift = self.location(b);
         if !matches!(shift, Location::Immediate(_)) {
             self.copy_scalar(Location::Gpr(1), shift, self.stage.registers[b]);
+            if scalar.size() < 4 {
+                self.instruction(None, &[0x83], false, 4, Operand::Register(1));
+                self.bytes(&[(scalar.bit_width() - 1) as u8]);
+            }
         }
         let d = self.location(dst);
         let target = match d {
@@ -659,7 +663,7 @@ impl Emitter<'_> {
         self.copy_scalar(Location::Gpr(target), self.location(a), scalar);
         if let Location::Immediate(bits) = shift {
             self.instruction(None, &[0xc1], wide, kind, Operand::Register(target));
-            self.bytes(&[(bits & if wide { 63 } else { 31 }) as u8]);
+            self.bytes(&[(bits & Bits::from(scalar.bit_width() - 1)) as u8]);
         } else {
             self.instruction(None, &[0xd3], wide, kind, Operand::Register(target));
         }
