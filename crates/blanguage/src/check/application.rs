@@ -192,26 +192,29 @@ impl ApplicationLoads<'_, '_> {
         self.0.loop_contexts.iter().flat_map(|context|context.outer.iter()).chain(self.0.code.iter())
     }
     fn len(&self)->usize {self.0.loop_contexts.iter().map(|context|context.outer.len()).sum::<usize>()+self.0.code.len()}
+    fn storage_writes(&self,writes:&effects::LoopWrites,root:Option<Reg>,range:Option<std::ops::Range<u128>>)->bool {
+        writes.unknown_storage||writes.storage.iter().any(|written|match written {
+            effects::StorageWrite::Descendants{..}=>root.is_none_or(|root|written.includes_root(self.0,root)),
+            effects::StorageWrite::Frame{root:written,range:changed}=>match(root,range.as_ref(),changed.as_ref()) {
+                (Some(root),_,_)if self.disjoint_roots(root,*written)||self.frame_descendant(root,*written)||self.frame_descendant(*written,root)=>false,
+                (Some(root),Some(range),Some(changed))if self.same(root,*written)=>Self::byte_overlap(range,changed),
+                _=>true,
+            },
+        })
+    }
     fn loop_writes(&self,a:usize,b:usize,read:&Inst)->bool {
         let mut boundary=0;
         self.0.loop_contexts.iter().any(|context|{
             boundary+=context.outer.len();
             a.min(b)<boundary && a.max(b)>=boundary && match &read.kind {
                 InstKind::LoadLocal(_,slot)=>context.writes.external||context.writes.locals.contains(slot),
-                InstKind::ViewLoad{dst,address,index,stride,word}=>context.writes.unknown_storage||context.writes.storage.iter().any(|written|{
-                    let root=self.frame_root(*address);
-                    match written {
-                        effects::StorageWrite::Descendants{..}=>root.is_none_or(|root|written.includes_root(self.0,root)),
-                        effects::StorageWrite::Frame{root:written,range}=>match (root,range,self.constant(*index),self.stride(*stride)) {
-                            (Some(root),_,_,_)if self.disjoint_roots(root,*written)||self.frame_descendant(root,*written)||self.frame_descendant(*written,root)=>false,
-                            (Some(root),Some(range),Some(index),Some(stride))if self.same(root,*written)=>{
-                                let start=u128::from(index)*u128::from(stride)+u128::from(*word);
-                                Self::byte_overlap(&(start..start+u128::from(self.0.registers[*dst].size())),range)
-                            },
-                            _=>true,
-                        },
-                    }
-                }),
+                InstKind::ViewLoad{dst,address,index,stride,word}=>{
+                    let range=self.constant(*index).zip(self.stride(*stride)).map(|(index,stride)|{
+                        let start=u128::from(index)*u128::from(stride)+u128::from(*word);
+                        start..start+u128::from(self.0.registers[*dst].size())
+                    });
+                    self.storage_writes(&context.writes,self.frame_root(*address),range)
+                },
                 _=>false,
             }
         })
@@ -3350,7 +3353,7 @@ impl Builder<'_> {
             constant=>constant,
         }
     }
-    pub(super) fn application_element_scopes(&self,sources:&[ValueIdentity],resource:&view::Borrow,data:&Data,context:(&bounds::Clause,&BTreeMap<String,Binding>))->Vec<(Vec<Vec<usize>>,bool,bounds::Condition)> {
+    fn element_resource_scopes(&self,resource:&view::Borrow,owner:&view::Borrow,context:(&bounds::Clause,&BTreeMap<String,Binding>))->Vec<(Vec<Vec<usize>>,bool,bounds::Condition)> {
         fn collect(builder:&Builder<'_>,borrow:&view::Borrow,owner:&view::Borrow,path:&bounds::Clause,env:&BTreeMap<String,Binding>)->Vec<(Vec<Vec<usize>>,bool,bounds::Condition)> {
             let mut paths=Vec::new();let selected=borrow.restricted(path);let root=owner.restricted(path);
             let shared=selected.sources.entries().any(|(source,when)|matches!(source,view::Source::Data(_)|view::Source::Parameter(..)|view::Source::Element{..})&&root.overlaps_source(source,&when))
@@ -3371,12 +3374,62 @@ impl Builder<'_> {
             }
             paths
         }
+        collect(self,resource,owner,context.0,context.1)
+    }
+    // These names belong to this target's existing element input domain. They
+    // describe a stable field of that owner, not an emitted or global read.
+    pub(super) fn application_element_snapshot(&self,source:&effects::DataProjection<'_>,input:&Data,target:&effects::DataProjection<'_>,context:(&effects::LoopWrites,&bounds::Clause))->Result<bounds::Proof> {
+        let(writes,path)=context;let(ty,parts)=&source.value;
+        let mut proof=bounds::Proof::default().with_external_borrows(ty);
+        let address_changed=writes.external||matches!(input.place.as_ref().map(Place::storage),Some(Place::Local(_,slots,..))if slots.iter().any(|slot|writes.locals.contains(slot)));
+        if address_changed{return Ok(proof);}
+        let loads=ApplicationLoads(self);let locations=loads.resource_storage(input,&source.resource)?;
+        let scopes=self.element_resource_scopes(&target.resource,&source.resource,(path,&self.env));
+        proof.origins.resize_with(ty.components.len(),Vec::new);
+        for(output,choices)in parts.iter().enumerate(){
+            let mut merged=None::<bounds::Proof>;
+            for &component in choices {
+                let(scalar,word)=source.base.components[component];
+                let written=match &locations {
+                    Some(locations)=>locations.iter().any(|(location,element,layout)|match location {
+                        effects::StorageWrite::Frame{root,..}=>{
+                            let range=match(layout,source.index){
+                                (DataLayout::Declared,Some(bounds::Operand::Constant(Scalar::U32,index)))=>{
+                                    let start=u128::from(index)*u128::from(ir::align_up(element.size,element.align))+u128::from(word);
+                                    Some(start..start+u128::from(scalar.size()))
+                                },
+                                _=>None,
+                            };
+                            loads.storage_writes(writes,Some(*root),range)
+                        },
+                        effects::StorageWrite::Descendants{..}=>loads.storage_writes(writes,None,None),
+                    }),
+                    None=>loads.storage_writes(writes,None,None),
+                };
+                for(scope,complete,parents)in &scopes {
+                    let selected=match source.index {
+                        Some(index)if scope.is_empty()=>target.index.is_some_and(|target|bounds::Condition::index_equal(index,target).truth_in(path)==Some(true)),
+                        Some(index)=>bounds::Condition::element_index(scope.len()-1,index).truth_in(&parents.assume(path,true))==Some(true),
+                        None=>false,
+                    };
+                    let candidate=if !written&&*complete&&selected {
+                        let identity=if scope.is_empty(){ValueIdentity::ElementComponent(component)}else{ValueIdentity::ElementParent(scope.len()-1,component)};
+                        bounds::Proof::default().with_identity(identity)
+                    }else{bounds::Proof::default()};
+                    if let Some(merged)=&mut merged{merged.join(&candidate,1,None);}else{merged=Some(candidate);}
+                }
+            }
+            if let Some(merged)=merged{proof.origins[output]=merged.origins.first().cloned().unwrap_or_default();}
+        }
+        Ok(proof)
+    }
+    pub(super) fn application_element_scopes(&self,sources:&[ValueIdentity],resource:&view::Borrow,data:&Data,context:(&bounds::Clause,&BTreeMap<String,Binding>))->Vec<(Vec<Vec<usize>>,bool,bounds::Condition)> {
         if sources==[data.root.identity()]{return vec![(Vec::new(),true,bounds::Condition::constant(true))];}
         let mut paths=BTreeMap::new();
         if sources.contains(&data.root.identity()){paths.insert(Vec::new(),(true,bounds::Condition::constant(true)));}
         let owner=view::resource_borrow(data);
         let owners=std::iter::once(&owner).chain(self.loop_contexts.iter().filter_map(|context|context.view_resources.get(&data.root.identity())));
-        for owner in owners{for(path,complete,choice)in collect(self,resource,owner,context.0,context.1){paths.entry(path).and_modify(|(old,selection)|{*old|=complete;*selection=selection.clone().logical(choice.clone(),true);}).or_insert((complete,choice));}}
+        for owner in owners{for(path,complete,choice)in self.element_resource_scopes(resource,owner,context){paths.entry(path).and_modify(|(old,selection)|{*old|=complete;*selection=selection.clone().logical(choice.clone(),true);}).or_insert((complete,choice));}}
         paths.into_iter().map(|(path,(complete,choice))|(path,complete,choice)).collect()
     }
     pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[&Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {
