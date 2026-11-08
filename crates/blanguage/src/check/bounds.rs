@@ -972,7 +972,7 @@ impl Proof {
                 }
             }
         }
-        let roots: Vec<_> = self
+        let mut roots: Vec<_> = self
             .conditions
             .iter()
             .flatten()
@@ -980,14 +980,21 @@ impl Proof {
             .collect();
         if !roots.is_empty() {
             let mut clauses = BTreeMap::new();
+            let mut private_numeric = false;
             for clause in Clause::ordered(&roots) {
                 let mapped = match &**clause.0 {
                     ClauseNode::Impossible => Clause::impossible(),
-                    ClauseNode::Facts(facts) => facts
-                        .iter()
-                        .fold(Clause::facts(Facts::new()), |current, value| {
+                    ClauseNode::Facts(facts) => {
+                        private_numeric |= facts.iter().any(|value| match value {
+                            Fact::Below(a, b, _, _) => identity(*a, bindings).zip(identity(*b, bindings)).is_none(),
+                            Fact::Index(id, IndexDomain::Computed(expression)) =>
+                                identity(*id, bindings).and_then(|_| expression.at_call(bindings)).is_none(),
+                            _ => false,
+                        });
+                        facts.iter().fold(Clause::facts(Facts::new()), |current, value| {
                             Clause::both(&current, &fact(*value, bindings))
-                        }),
+                        })
+                    },
                     ClauseNode::Both(a, b) => Clause::both(&clauses[&a.key()], &clauses[&b.key()]),
                     ClauseNode::Branch(parent, condition, truth) => Clause::both(
                         &clauses[&parent.key()],
@@ -998,6 +1005,21 @@ impl Proof {
                     }
                 };
                 clauses.insert(clause.key(), mapped);
+            }
+            if private_numeric {
+                // Consume the original numeric condition before private snapshots leave scope.
+                roots.sort_by_key(Clause::key);
+                roots.dedup_by_key(|root| root.key());
+                for root in &roots {
+                    let numeric = match root.required() {
+                        Some(facts) => facts.into_iter()
+                            .filter(|value| matches!(value, Fact::Minimum(..) | Fact::Maximum(..)))
+                            .fold(Clause::default(), |current, value| Clause::both(&current, &fact(value, bindings))),
+                        None => Clause::impossible(),
+                    };
+                    let mapped = clauses.get_mut(&root.key()).unwrap();
+                    *mapped = Clause::both(mapped, &numeric);
+                }
             }
             for condition in translated.conditions.iter_mut().flatten() {
                 condition.cases =
