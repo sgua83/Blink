@@ -176,7 +176,7 @@ impl Emitter<'_> {
             self.emit(250, &[active, execute, end]);
             self.emit(248, &[execute]);
             self.block(phase.code, None)?;
-            if let Some(TileStep::Publish(publication)) = phase.step {
+            if let Some(InstKind::TilePublish(publication)) = phase.step.map(|inst| &inst.kind) {
                 self.publish_values(publication);
             }
             let producer = self.current_label;
@@ -194,10 +194,11 @@ impl Emitter<'_> {
                     self.regs[*r] = value;
                 }
             }
-            match phase.step {
-                Some(TileStep::Publish(_) | TileStep::Barrier) => self.tile_barrier(),
-                Some(TileStep::Collective(c)) => self.tile_collective(c),
-                None => {}
+            if matches!(phase.step.map(|inst| &inst.kind), Some(InstKind::TilePublish(_) | InstKind::TileBarrier)) {
+                self.tile_barrier();
+            }
+            if let Some(InstKind::TileCollective(c)) = phase.step.map(|inst| &inst.kind) {
+                self.tile_collective(c);
             }
         }
         Ok(())

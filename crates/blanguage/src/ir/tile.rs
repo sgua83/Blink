@@ -22,22 +22,16 @@ pub(crate) enum PrivateSlot {
 }
 pub(crate) struct TilePhase<'a> {
     pub code: &'a [Inst],
-    pub step: Option<TileStep<'a>>,
+    pub step: Option<&'a Inst>,
     pub live_in: BTreeSet<PrivateSlot>,
     pub live_out: BTreeSet<PrivateSlot>,
-}
-#[derive(Clone, Copy)]
-pub(crate) enum TileStep<'a> {
-    Publish(&'a Publication),
-    Collective(&'a TileCollective),
-    Barrier,
 }
 impl TilePhase<'_> {
     pub fn preserved_out(&self) -> BTreeSet<PrivateSlot> {
         let mut slots = self.live_out.clone();
-        if let Some(TileStep::Collective(c)) = self.step {
-            for (_, r) in &c.results {
-                slots.remove(&PrivateSlot::Register(*r));
+        if let Some(inst) = self.step {
+            for result in inst.results() {
+                slots.remove(&PrivateSlot::Register(result));
             }
         }
         slots
@@ -86,12 +80,8 @@ impl Stage {
         let mut phases = Vec::new();
         let mut begin = 0;
         for (i, inst) in self.code.iter().enumerate() {
-            let step = match &(inst).kind {
-                InstKind::TilePublish(p) => Some(TileStep::Publish(p)),
-                InstKind::TileCollective(c) => Some(TileStep::Collective(c)),
-                InstKind::TileBarrier => Some(TileStep::Barrier),
-                _ => None,
-            };
+            let step = matches!(&inst.kind,
+                InstKind::TilePublish(_) | InstKind::TileCollective(_) | InstKind::TileBarrier).then_some(inst);
             if step.is_some() {
                 phases.push(TilePhase {
                     code: &self.code[begin..i],
@@ -111,19 +101,9 @@ impl Stage {
         let mut live = BTreeSet::new();
         for phase in phases.iter_mut().rev() {
             phase.live_out = live.clone();
-            match phase.step {
-                Some(TileStep::Publish(publication)) => live.extend(
-                    publication
-                        .values
-                        .iter()
-                        .map(|(_, r)| PrivateSlot::Register(*r)),
-                ),
-                Some(TileStep::Collective(c)) => {
-                    for (_, r) in &c.results {
-                        live.remove(&PrivateSlot::Register(*r));
-                    }
-                }
-                Some(TileStep::Barrier) | None => {}
+            if let Some(inst) = phase.step {
+                live = live_before(std::slice::from_ref(inst), live,
+                    &BTreeSet::new(), &BTreeSet::new(), &BTreeSet::new());
             }
             live = live_before(
                 phase.code,

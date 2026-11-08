@@ -178,8 +178,11 @@ impl Emitter<'_> {
             let begin = self.code.len();
             self.tile_restore(abi, phase_index, &phase.live_in);
             self.block(phase.code)?;
-            if let Some(TileStep::Publish(publication)) = phase.step {
+            if let Some(inst @ Inst { kind: InstKind::TilePublish(publication), .. }) = phase.step {
+                let start = self.code.len();
+                let first = self.operation_ranges.as_ref().map(Vec::len);
                 self.publish_values(publication);
+                self.operation_range(inst, start, first);
             }
             self.tile_save(abi, phase_index, &phase.preserved_out());
             let start = self.code.len();
@@ -190,8 +193,11 @@ impl Emitter<'_> {
             let again = self.jump(Some(0x82));
             self.patch(again, begin);
             self.parallel_abi(abi, start, ParallelRangePart::TilePhaseAdvance { phase: phase_index });
-            if let Some(TileStep::Collective(collective)) = phase.step {
+            if let Some(inst @ Inst { kind: InstKind::TileCollective(collective), .. }) = phase.step {
+                let start = self.code.len();
+                let first = self.operation_ranges.as_ref().map(Vec::len);
                 self.tile_collective(collective);
+                self.operation_range(inst, start, first);
             }
         }
         Ok(())

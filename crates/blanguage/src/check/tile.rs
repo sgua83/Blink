@@ -141,8 +141,7 @@ impl Builder<'_> {
                 Access::Value
             },
         });
-        self.code
-            .push(Inst::new(InstKind::TilePublish(Publication { tile, values })));
+        self.emit(InstKind::TilePublish(Publication { tile, values }));
         self.bind_tile(name, tile);
         Ok(())
     }

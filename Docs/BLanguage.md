@@ -305,6 +305,8 @@ NativeCode::code_json在原输出中增加operation_ranges：None为null，已�
 
 自定义集合的原custom_reduce::emit将初始化、循环体及末尾真实Inst依次交给原block，与普通函数／并行代码共用operation_range。Reduce／ReduceTail、Scan／ScanPrefix／ScanAdd、SegmentReduce／SegmentPrefix／SegmentFinish均保留实际范围，分段扫描复用原Scan路径；现有值核的语法及生成关系保持，原生成Inst无来源时仍为未知。最终材料只持有原OperationOrigin，临时kernel／Stage／IR不因观察延寿。真实IR范围不代替机器原语、帧／范围循环和摘要输出的完整生成职责，其他内建集合来源继续[原范围](Architecture.md#tool-7-4-3)。BLCR5／BLCF8字段编码与执行ABI保持，原材料没有采集的范围不能由新版本查询补造。
 
+tile_publish与tile_atomic经原Builder::emit交接当前声明语句及实际定义／实例／内联上下文到TilePublish，不绕过该原来源生产者构造空Inst。CPU tile发布和tile集合的原Inst在phase计划中直接借用，临时计划不复制另一套指令类别／载荷；原活跃性沿同一live_before与Inst.results处理。实际publish_values／tile_collective生成前后复用已有operation_range交接整条原IR的真实范围及OperationOrigin，普通block仍走同一机制；源定义、语法、实例、内联及生成关系按原指令保留，未知不猜造。原IR范围不是每个共享片段、单位元、循环或填充的独立生成描述，这些细分继续[发布](Architecture.md#tool-7-4-2-4-4-2)／[集合](Architecture.md#tool-7-4-2-4-5-2)的未完成职责。IR借用随阶段消费结束，最终材料只留不可变来源；CPU指令、GPU SPIR-V生成、原phase／liveness／布局／完成保持，格式沿现行BLCR5／BLCF8。旧材料只恢复其中已有记录，不因新查询端而补造范围。
+
 当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量分别由原ABI与尾部材料交接，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存来源，compiler角色恢复执行映像时sources为Unavailable；BLCR5将已保存的操作来源恢复为同一sources中的只读SavedSources；BLCF8沿原COFF布局保存／恢复这些已有操作范围及原OperationOrigin，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
 
 ### 普通CPU函数ABI参数的实际发射来源

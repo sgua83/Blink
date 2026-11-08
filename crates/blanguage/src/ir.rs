@@ -1386,7 +1386,7 @@ pub struct TileCollective {
 }
 mod tile;
 pub use tile::SharedWord;
-pub(crate) use tile::{PrivateSlot, TileStep, live_before, loop_live, private_spans};
+pub(crate) use tile::{PrivateSlot, live_before, loop_live, private_spans};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SubgroupOp {
     Lane,
