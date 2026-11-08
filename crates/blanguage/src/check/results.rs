@@ -150,7 +150,7 @@ impl Builder<'_> {
                 };
                 let constant = word.constant.as_ref().zip(rhs.constant.as_ref())
                     .and_then(|(a,b)| constant::binary(op, target, a[0], b[0]).map(|bits| vec![bits]));
-                let proof = bounds::arithmetic(name, &word, &rhs);
+                let proof = bounds::arithmetic(self, name, &word, &rhs);
                 let dst = self.reg(target);
                 self.emit(InstKind::Binary { dst, op, a: word.regs[0], b: rhs.regs[0] });
                 word = Value { ty: Ty::scalar(target), regs: vec![dst], proof, uniform: word.uniform && rhs.uniform,

@@ -290,7 +290,7 @@ pub(super) fn cast_domains(value: &Value, component: usize) -> Domains {
     }
     domains
 }
-pub(super) fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domains {
+pub(super) fn arithmetic_domains(builder: &Builder<'_>, op: &str, a: &Value, b: &Value, component: usize) -> Domains {
     let (ai,bi) = (component % a.regs.len(),component % b.regs.len());
     let Some((al,ah)) = finite(a,ai) else { return Domains::new(); };
     let Some((bl,bh)) = finite(b,bi) else { return Domains::new(); };
@@ -298,6 +298,9 @@ pub(super) fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usiz
     for (value,at,other_min,other_max) in [(a,ai,bl,bh),(b,bi,al,ah)] {
         for domain in value.proof.domains(at) {
             let IndexDomain::Floating(bound) = domain else { continue; };
+            let bound = if bound.form == FloatingForm::Cast && op == "+" {
+                bound.upper([1.0 + conversion_error(bound.upper), 0.0, 0.0])
+            } else { bound };
             if bound.form != FloatingForm::Upper { continue; }
             let [x,y,z] = bound.coefficients();
             let result = match op {
@@ -337,6 +340,14 @@ pub(super) fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usiz
                     if right.form != FloatingForm::Upper { continue; }
                     let [x,y,z] = right.coefficients();
                     if x != 0.0 || y < 0.0 { continue; }
+                    let mut left = left;
+                    let mut b = b;
+                    if left.source != right.source && left.scalar == right.scalar && a >= 0.0 && z != 0.0
+                        && builder.integer_below(left.source, right.source, left.scalar)
+                    {
+                        b = add_up(b, -a);
+                        left = FloatingBound { source: right.source, lower: right.lower, upper: right.upper, ..left }.upper([a,b,0.0]);
+                    }
                     if let Some(common) = left.common(right) {
                         let result = common.upper([multiply_up(a,y),add_up(multiply_up(a,z),multiply_up(b,y)),multiply_up(b,z)]).rounded();
                         domains.insert(IndexDomain::Floating(result));

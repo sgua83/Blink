@@ -3295,6 +3295,80 @@ impl<'a> IntegerQuery<'a> {
         if scalar.is_signed() { i128::from(scalar.signed(bits)) }
         else { i128::from(scalar.truncate(bits)) }
     }
+    fn computed(&self, id: ValueIdentity, scalar: Scalar) -> Option<IntegerExpression> {
+        let root = self.root(id);
+        self.facts.iter().find_map(|fact| match fact {
+            Fact::Index(value, IndexDomain::Computed(expression @ IntegerExpression::Binary(_, actual, _, _)))
+                if self.root(*value) == root && *actual == scalar => Some(*expression),
+            _ => None,
+        })
+    }
+    fn source_plan(&mut self, left: ValueIdentity, right: ValueIdentity, scalar: Scalar) -> Option<(ValueIdentity, Vec<ValueIdentity>)> {
+        let mut pending = vec![(Operand::Value(left), false), (Operand::Value(right), false)];
+        let mut order = Vec::new();
+        let mut source = None;
+        let result = (|| {
+            while let Some((operand, ready)) = pending.pop() {
+                let Operand::Value(id) = operand else { continue; };
+                let (lower, upper) = self.bounds(id, scalar);
+                if lower == upper { continue; }
+                if ready { order.push(id); continue; }
+                if !self.expanding.insert((self.root(id), scalar)) { continue; }
+                if let Some(IntegerExpression::Binary(_, _, a, b)) = self.computed(id, scalar) {
+                    pending.push((operand, true));
+                    pending.extend([(a, false), (b, false)]);
+                } else {
+                    let id = self.root(id);
+                    if source.is_some_and(|known| known != id) { return None; }
+                    source = Some(id);
+                }
+            }
+            Some((source?, order))
+        })();
+        self.expanding.clear();
+        result
+    }
+    fn below_in(&mut self, left: ValueIdentity, right: ValueIdentity, scalar: Scalar,
+        source: ValueIdentity, (lower, upper): (Bits, Bits), order: &[ValueIdentity],
+    ) -> Option<bool> {
+        self.lower.entry((source, scalar)).and_modify(|value| *value = (*value).max(lower)).or_insert(lower);
+        self.upper.entry((source, scalar)).and_modify(|value| *value = (*value).min(upper)).or_insert(upper);
+        let ordered = |value: i128| scalar.truncate(value as Bits) ^ scalar.order_bias();
+        for &id in order {
+            let (minimum, maximum) = self.bounds(id, scalar);
+            if minimum > maximum { return Some(true); }
+            if minimum == maximum { continue; }
+            let IntegerExpression::Binary(op, _, a, b) = self.computed(id, scalar)?;
+            let operand = |operand| match operand {
+                Operand::Constant(actual, bits) if actual == scalar => {
+                    let at = bits ^ scalar.order_bias(); Some(ScalarRanges::interval(at, at))
+                }
+                Operand::Value(id) => {
+                    let (lower, upper) = self.bounds(id, scalar);
+                    Some(ScalarRanges::interval(ordered(lower), ordered(upper)))
+                }
+                _ => None,
+            };
+            let (a, b) = (operand(a)?, operand(b)?);
+            if matches!(op, IntegerOperation::Divide | IntegerOperation::Remainder)
+                && b.contains(scalar.order_bias()) { return None; }
+            let op = match op {
+                IntegerOperation::Add => "+", IntegerOperation::Subtract => "-",
+                IntegerOperation::Multiply => "*", IntegerOperation::Divide => "/",
+                IntegerOperation::Remainder => "%", IntegerOperation::And => "&",
+                IntegerOperation::Or => "|", IntegerOperation::Xor => "^",
+                IntegerOperation::ShiftLeft => "<<", IntegerOperation::ShiftRight => ">>",
+            };
+            let range = arithmetic_ranges(op, scalar, a, b).restrict(ordered(minimum), ordered(maximum));
+            if range.0.is_empty() { return Some(true); }
+            let (lower, upper) = range.hull();
+            let key = (self.root(id), scalar);
+            self.lower.insert(key, lower);
+            self.upper.insert(key, upper);
+        }
+        let (a, b) = (self.bounds(left, scalar), self.bounds(right, scalar));
+        Some(a.0 > a.1 || b.0 > b.1 || a.1 < b.0)
+    }
     fn scalar_bounds(scalar: Scalar) -> (i128, i128) {
         (Self::number(scalar, scalar.order_bias()), Self::number(scalar, scalar.bit_mask() ^ scalar.order_bias()))
     }
@@ -3483,7 +3557,7 @@ pub(super) fn math(op: MathOp, args: &[Value]) -> Proof {
         ..Proof::default()
     }
 }
-pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
+pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) -> Proof {
     let count = a.regs.len().max(b.regs.len());
     let scalar = a.ty.components[0].0;
     let mut proof = Proof {
@@ -3548,7 +3622,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
             Vec::new()
         },
         domains: if scalar == Scalar::F32 {
-            (0..count).map(|i| floating::arithmetic_domains(op, a, b, i)).collect()
+            (0..count).map(|i| floating::arithmetic_domains(builder, op, a, b, i)).collect()
         } else if scalar == Scalar::U32 {
             (0..count)
                 .map(|i| arithmetic_domains(op, a, b, i))
@@ -3991,6 +4065,39 @@ impl Builder<'_> {
         facts.extend(Proof::capture(result).facts(&result.ty).into_iter().filter(|fact|
             matches!(fact, Fact::Minimum(..) | Fact::Maximum(..) | Fact::Zero(_) | Fact::NonZero(_))));
         self.path = Clause::observed(&self.path,facts);
+    }
+    fn integer_below(&self, left: ValueIdentity, right: ValueIdentity, scalar: Scalar) -> bool {
+        let environment = environment_facts(&self.env);
+        let Some(mut facts) = self.path.required_in(&environment) else { return false; };
+        facts.extend(environment);
+        let mut query = IntegerQuery::new(&facts);
+        if query.bounds(left, scalar).1 < query.bounds(right, scalar).0 { return true; }
+        let Some((source, order)) = query.source_plan(left, right, scalar) else { return false; };
+        let mut ranges: Option<ScalarRanges> = None;
+        let mut collect = |proof: &Proof, ty: &Ty| {
+            for (component, &(actual, _)) in ty.components.iter().enumerate() {
+                if actual == scalar && proof.origins.get(component).is_some_and(|origins|
+                    origins.iter().any(|id| query.root(*id) == source))
+                {
+                    let current = proof.element_range(component, scalar);
+                    ranges = Some(match ranges.take() {
+                        Some(previous) => previous.combine(&current, |(a,b),(c,d)| ScalarRanges::interval(a.max(c),b.min(d))),
+                        None => current,
+                    });
+                }
+            }
+        };
+        for binding in self.env.values() {
+            match binding {
+                Binding::Value(value) => collect(&Proof::capture(value), &value.ty),
+                Binding::OwnedValue(owner) => collect(&Proof::capture(&owner.value), &owner.value.ty),
+                Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => collect(&owner.proof, owner.place.ty()),
+                _ => {}
+            }
+        }
+        let Some(ranges) = ranges else { return false; };
+        ranges.0.iter().all(|&range| IntegerQuery::new(&facts)
+            .below_in(left, right, scalar, source, range, &order) == Some(true))
     }
     pub(super) fn observe_bounds(&mut self, value: &Value) {
         self.path = Clause::observed(&self.path,Proof::capture(value).facts(&value.ty));

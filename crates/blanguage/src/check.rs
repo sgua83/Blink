@@ -2942,7 +2942,7 @@ impl<'a> Builder<'a> {
         let proof = if let Some(BinaryOp::Compare(op)) = operation {
             bounds::Proof::comparison(op, &a, &b)
         } else {
-            bounds::arithmetic(op, &a, &b)
+            bounds::arithmetic(self, op, &a, &b)
         };
         let known_comparison = if !constant_fold && comparison { proof.known_boolean_value(n) } else { None };
         let constant = constant.or_else(|| known_comparison.as_ref().map(|known| known.iter().map(|(bits, _)| *bits).collect()));
@@ -3051,7 +3051,7 @@ impl<'a> Builder<'a> {
             let n = a.regs.len().max(b.regs.len());
             let scalar = a.ty.components[0].0;
             let ty = Ty::vector(scalar, n);
-            let proof = bounds::arithmetic(op, &a, &b);
+            let proof = bounds::arithmetic(self, op, &a, &b);
             let literal = a.literal && b.literal;
             if let Some(known) = proof.known_integer_value(&ty) {
                 let first = self.code.len();
