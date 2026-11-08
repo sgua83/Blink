@@ -93,7 +93,7 @@ BLSupervisor system-exec <实际节点> "<该节点实际下载路径> --quiet"
 
 ## 已结束批次的中间文件清理
 
-在实际源码工作区运行 Tools/Clean.ps1 -Path <工程相对路径>。默认工程根来自脚本所在目录，也可用 -Root 明确指定；路径必须位于该工程的Saved子目录，或Cargo metadata声明的target_directory及其子目录。使用原样路径，不展开通配符。只有选择Saved以外的构建输出时才读取Cargo metadata；清理Saved不依赖Cargo启动。先加 -WhatIf 查看将删除的文件数、逻辑字节及具体路径，再去掉该参数执行。返回值分别记录已选／已删文件数与逻辑字节，以及所在卷实际空闲前后值；压缩文件的逻辑大小不等于实际回收空间。
+在实际源码工作区运行 Tools/Clean.ps1 -Path <工程相对路径>。默认工程根来自脚本所在目录，也可用 -Root 明确指定；路径必须位于该工程的Saved子目录，或Cargo metadata声明的target_directory及其子目录。输入、WhatIf预览及返回的Paths均使用工程相对路径，返回的Root为`.`，表示这些路径共同采用的工程根；不将盘符或机器目录写入结果。使用原样路径，不展开通配符。只有选择Saved以外的构建输出时才读取Cargo metadata；清理Saved不依赖Cargo启动。先加 -WhatIf 查看将删除的文件数、逻辑字节及具体路径，再去掉该参数执行。返回值分别记录已选／已删文件数与逻辑字节，以及所在卷实际空闲前后值；压缩文件的逻辑大小不等于实际回收空间。
 
     ./Tools/Clean.ps1 -Path Saved/Development/FinishedBatch/Output -WhatIf
     ./Tools/Clean.ps1 -Path Saved/Development/FinishedBatch/Output

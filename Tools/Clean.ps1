@@ -7,6 +7,7 @@ Keep unfinished investigations and reusable caches with their original owners.
 Cargo metadata owns the build output location; no directory name is inferred.
 .PARAMETER Path
 Literal workspace-relative generated paths. No automatic age or suffix selection.
+Preview and result paths use the same workspace-relative paths.
 .EXAMPLE
 ./Tools/Clean.ps1 -Path Saved/Development/Finished/Output -WhatIf
 .EXAMPLE
@@ -36,7 +37,7 @@ function Measure-SelectedItem([IO.FileSystemInfo]$Item) {
     while ($pending.Count -gt 0) {
         $entry = $pending.Pop()
         if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "Reparse point redirects the selected deletion: $($entry.FullName)"
+            throw "Reparse point redirects the selected deletion: $relative$($entry.FullName.Substring($Item.FullName.Length))"
         }
         if ($entry -is [IO.DirectoryInfo]) {
             foreach ($child in $entry.EnumerateFileSystemInfos()) { $pending.Push($child) }
@@ -74,13 +75,13 @@ $selected = @(
         $ancestor = [IO.DirectoryInfo]::new([IO.Path]::GetDirectoryName($absolute))
         while ($null -ne $ancestor) {
             if (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "Reparse point redirects the selected deletion: $($ancestor.FullName)"
+                throw "Reparse point redirects a parent of the selected path: $relative"
             }
             $ancestor = $ancestor.Parent
         }
         $item = Get-Item -LiteralPath $absolute
         $size = Measure-SelectedItem $item
-        [pscustomobject]@{ Item = $item; Files = $size.Files; Bytes = $size.Bytes }
+        [pscustomobject]@{ Item = $item; Path = $relative; Files = $size.Files; Bytes = $size.Bytes }
     }
 )
 
@@ -88,7 +89,7 @@ $rows = @(
     foreach ($entry in $selected) {
         $item = $entry.Item
         $removed = $false
-        if ($PSCmdlet.ShouldProcess($item.FullName, 'Remove selected generated intermediates')) {
+        if ($PSCmdlet.ShouldProcess($entry.Path, 'Remove selected generated intermediates')) {
             if ($item -is [IO.DirectoryInfo]) {
                 Remove-Item -LiteralPath $item.FullName -Recurse
             } else {
@@ -97,7 +98,7 @@ $rows = @(
             $removed = $true
         }
         [pscustomobject]@{
-            Path = $item.FullName
+            Path = $entry.Path
             Action = $(if ($removed) { 'Removed' } else { 'Preview' })
             Files = $entry.Files
             LogicalBytes = $entry.Bytes
@@ -107,7 +108,7 @@ $rows = @(
 $removedRows = @($rows | Where-Object Action -eq 'Removed')
 $freeAfter = $drive.AvailableFreeSpace
 [pscustomobject]@{
-    Root = $workspace
+    Root = '.'
     SelectedFiles = ($selected | Measure-Object -Property Files -Sum).Sum
     SelectedLogicalBytes = ($selected | Measure-Object -Property Bytes -Sum).Sum
     RemovedFiles = [long]($removedRows | Measure-Object -Property Files -Sum).Sum
