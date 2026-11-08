@@ -120,7 +120,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "8c7a2bd9c96271c9a353725780365c8b174b386ccc5fa19a735e994f7eaadad2"
+      "sha256": "04e10180713e8189961ae8bc7b2f83114b29964275d2067d5a40f28ecd51172a"
     },
     {
       "path": "crates/blanguage/src/check/bounds/floating.rs",
@@ -152,7 +152,7 @@
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "sha256": "a742dd83d9770c1f5c3467c7409abd749a2fc456408aa3c5d46bcbf772f1e76f"
+      "sha256": "3cc6637ff80141c0a861647f692c3f296c5f00967503151a3266318bdcc95e6a"
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
@@ -658,20 +658,20 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1795,
-      "end_line": 1812,
+      "start_line": 1804,
+      "end_line": 1821,
       "sha256": "a9f28171a24b1d4791d7e67600aa964e6c31712f4d8be18bc3c5b06a923f4fd3"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 2942,
-      "end_line": 2953,
+      "start_line": 2951,
+      "end_line": 2962,
       "sha256": "38baaaf1d661aea2654eb95357005783b4d70a537ee5c599dfc16f19a6b57ade"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1783,
-      "end_line": 1794,
+      "start_line": 1792,
+      "end_line": 1803,
       "sha256": "e4ee4799a9953a519e237563c51b231d2c531bcdadef49ced0f3ddd597644742"
     },
     {
@@ -1066,8 +1066,8 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1326,
-      "end_line": 1343,
+      "start_line": 1335,
+      "end_line": 1352,
       "sha256": "8623749ec07abe897159a735a12fb306a2ed1be7f9fff3f2c12bbf7b4dd82624"
     },
     {
@@ -1084,8 +1084,8 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1917,
-      "end_line": 1939,
+      "start_line": 1926,
+      "end_line": 1948,
       "sha256": "e3f4220275ff7e5907a7b8766432e82e6abfd3cbcd8c0637901cf23036429901"
     },
     {

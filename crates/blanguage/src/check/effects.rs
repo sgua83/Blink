@@ -929,7 +929,8 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                             let mut prefix_scope=Scope{bindings:scope.bindings[..=binding_at].to_vec(),writes:scope.writes,..Scope::current(builder)};
                             let mut prefix=None;
                             builder.numeric_loop_paths(*after,Some(NumericEffect::shift(0)),&mut None,name,&target,&future,false,&mut prefix_scope,&bounds::Clause::default(),Some(expr),&mut prefix)?;
-                            if !matches!(prefix,Some(NumericEffect::Shift{low:0,high:0,..})){continue;}
+                            let Some(NumericEffect::Shift{low,high,..})=prefix else{continue;};
+                            let input=if low==0&&high==0{input}else{input.unsigned_shifted(low,high)};
                             let before=builder.numeric_expression_effect(expr,name,&target,&future)?;
                             if !matches!(before,NumericEffect::Shift{low:0,high:0,..}){continue;}
                             let guard=scope.input_snapshot(expr,scope.bindings.len(),Access::Value,None,Some(name))?

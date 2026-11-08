@@ -1208,6 +1208,15 @@ impl Proof {
             ..Self::default()
         }
     }
+    pub(super) fn unsigned_shifted(&self, low: i128, high: i128) -> Self {
+        let scalar = Scalar::U32;
+        Self {
+            ranges: vec![arithmetic_ranges("+", scalar,
+                self.range_set(0).cast(scalar,scalar,self.nonzero.get(0)==Some(&true)),
+                integer_result_range((low,high),0,scalar.bit_width()))],
+            ..Self::default()
+        }
+    }
     pub(super) fn unsigned_reflected(&self, amount: u32) -> Self {
         let amount = Bits::from(amount);
         Self {
