@@ -1,11 +1,13 @@
 //! Optional layout facts transferred from the original Object, never encoded as execution data.
 use super::*;
 mod abi;
+mod source;
+mod operations;
 use crate::{build::hash, codec::{Decode, Encode, record, variants}, native::{Region, RegionKind, TailReference}};
 
-pub(crate) enum Layout<A = crate::native::FunctionAbi> {
+pub(crate) enum Layout<A = crate::native::FunctionAbi, O = crate::native::OperationRange> {
     /// The original .pdata owns the main end; ABI facts and tails belong to this section.
-    Function { tails: Vec<Region>, references: Option<Vec<TailReference>>, abi: Option<A> },
+    Function { tails: Vec<Region>, references: Option<Vec<TailReference>>, abi: Option<A>, operations: Option<Vec<O>> },
     /// Each original handwritten producer owns this entire code section.
     Startup,
     Print(crate::ir::Scalar),
@@ -14,16 +16,16 @@ pub(crate) enum Layout<A = crate::native::FunctionAbi> {
 struct SectionLayout {
     section: usize,
     identity: [u8; 32],
-    layout: Layout<abi::FunctionAbi>,
+    layout: Layout<abi::FunctionAbi, operations::OperationRange>,
 }
 pub(super) struct Material {
     sections: Vec<SectionLayout>,
 }
-variants!(@<A> Layout<A> { 0=>Function{tails,references,abi}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk });
+variants!(@<A,O> Layout<A,O> { 0=>Function{tails,references,abi,operations}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk });
 record!(TailReference { target, rel32_fields });
 record!(SectionLayout { section, identity, layout });
 record!(Material { sections });
-const MAGIC: &[u8; 8] = b"BLCF\x04\0\0\0";
+const MAGIC: &[u8; 8] = b"BLCF\x05\0\0\0";
 
 fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     let section = &facts.sections[index];
@@ -47,7 +49,7 @@ fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     }
     hash::digest(&bytes)
 }
-impl<A> Layout<A> {
+impl<A,O> Layout<A,O> {
     pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {
         match self {
             Self::Startup | Self::Print(_) | Self::ImportThunk => Ok(vec![("generated_code", 0, length)]),
@@ -83,7 +85,13 @@ impl<A> Layout<A> {
     }
 
 }
-impl Layout<abi::FunctionAbi> {
+impl Layout<abi::FunctionAbi, operations::OperationRange> {
+    pub(super) fn operation_ranges(&self) -> String {
+        match self {
+            Self::Function { operations, .. } => operations.as_deref().map_or_else(|| "null".into(), operations::ranges_json),
+            Self::Startup | Self::Print(_) | Self::ImportThunk => "null".into(),
+        }
+    }
     pub(super) fn function_abi(&self) -> String {
         match self {
             Self::Function { abi, .. } => abi.as_ref().map_or_else(|| "null".into(), abi::FunctionAbi::json),
@@ -102,7 +110,14 @@ impl Material {
                 return Err("COFF observation material does not match the original code section and relocations".into());
             }
             let regions = saved.layout.regions(index, section.row.bytes.length, spans)?;
-            if let Layout::Function { abi: Some(abi), .. } = &saved.layout { abi.validate(regions[0].2)?; }
+            if let Layout::Function { abi, operations, .. } = &saved.layout {
+                if let Some(abi) = abi { abi.validate(regions[0].2)?; }
+                if let Some(operations) = operations {
+                    if operations.iter().any(|range| range.start > range.end || range.end > regions[0].2) {
+                        return Err("COFF operation range is outside its original main function".into());
+                    }
+                }
+            }
             if let Layout::Function { references: Some(references), .. } = &saved.layout {
                 let code = unsafe { section.row.bytes.borrowed() };
                 for reference in references {
@@ -120,7 +135,7 @@ impl Material {
         }
         Ok(value)
     }
-    pub(super) fn layout(&self, index: usize) -> Option<&Layout<abi::FunctionAbi>> {
+    pub(super) fn layout(&self, index: usize) -> Option<&Layout<abi::FunctionAbi, operations::OperationRange>> {
         self.sections.iter().find(|section| section.section == index + 1).map(|section| &section.layout)
     }
 }

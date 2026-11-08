@@ -300,7 +300,7 @@
     },
     {
       "path": "crates/blanguage/src/ir/origin.rs",
-      "sha256": "d7f2d871fcfd17953b09bf87423fc0d9f9b3664734f4f0245a8a00e3f1ab0182"
+      "sha256": "6d5ca53f1fc39c432fd6acf2397b80fd9033635c2230677c668e113898033e38"
     },
     {
       "path": "crates/blanguage/src/lexer.rs",
@@ -500,7 +500,15 @@
     },
     {
       "path": "crates/blanguage/src/object/coff/facts/observations/abi.rs",
-      "sha256": "925150769bba42765c28a0bb4cce65c1628175d1fea238ee4c0d2e46fec059a9"
+      "sha256": "593a13420364ec80020e777702a7bfd7ebbff6a63ec5b3f9153f1b952bd6cea1"
+    },
+    {
+      "path": "crates/blanguage/src/object/coff/facts/observations/source.rs",
+      "sha256": "3304c60fdb070f45e034436559fa2a75c0dfac125b880ac11834094bf85cb71f"
+    },
+    {
+      "path": "crates/blanguage/src/object/coff/facts/observations/operations.rs",
+      "sha256": "c84940a6e6d836f18f9d9133121ca45481ac5ea5c669bc890c44c680809e861e"
     }
   ],
   "excerpts": [

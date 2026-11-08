@@ -301,7 +301,7 @@ compiler角色的NativeCode可选持有operation_ranges，元素OperationRange�
 
 NativeCode::code_json在原输出中增加operation_ranges：None为null，已采集但没有操作为[]，每项提供start_byte、end_byte、byte_length、includes_nested_operations及origin（原OperationOrigin JSON）。偏移相对该映像字节零，单位为字节且范围为半开；机器反汇编仍来自同一最终bytes。序列按操作发射完成顺序交接，实际嵌套操作先于包含它的父操作，范围可以包含／重叠；这不是前端IR编号、独立指令数或动态执行次数，不能求和计成本。零长度明确表示该原操作没有发射字节，其位置只是游标，不能当作可设置断点的指令地址。origin两项均为空仍表示真实范围的来源未知，与整份材料未保留分别表达。
 
-当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量分别由原ABI与尾部材料交接，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存operation_ranges，compiler角色恢复执行映像时为None；现有BLCR恢复其原布局，BLCF4恢复原COFF布局、尾部引用及手写职责，两者均不恢复此操作来源，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
+当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量分别由原ABI与尾部材料交接，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存operation_ranges，compiler角色恢复执行映像时为None；BLCR只恢复其原布局而未恢复此操作来源；BLCF5沿原COFF布局保存／恢复这些已有操作范围及原OperationOrigin，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
 
 ### 普通CPU函数ABI参数的实际发射来源
 
@@ -317,7 +317,7 @@ code_json的function_abi未保留时为null；已采集但没有当前已交接A
 
 共同末尾机器返回由AbiRangeKind::FunctionReturn交接，JSON kind为function_return，只记录原emit_value在结果与栈恢复后实际发射RET的范围；function_end继续来自同一原主函数末端，不含尾部辅助或字面量。职责只说明这条真实机器返回，不伪造源码return、不解释为成功、失败或最后资源消费者完成；源内提前return形成的原Scope／Exit仍随operation_ranges交接，不创建另一退出目标、图或清理链。
 
-原可失败函数成功出口的状态清零由AbiRangeKind::FallibleSuccessStatus交接，JSON kind为fallible_success_status；范围只包含原emit_value在fallible分支发射的RAX置零指令，表示没有拥有错误，不是业务结果或共同机器返回。无失败函数不生成此职责。真实错误值装载和原退出跳转继续沿Raise的operation_ranges及其原触发来源表达，不重复生成ABI标签、退出目标或来源图；失败跳转绕过成功状态清零，原错误和清理语义保持。当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出、可失败成功状态及共同机器返回，不能把未命中范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；BLCR不恢复此材料；BLCF4沿同一Object／Section显式保存与恢复原ABI事实，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
+原可失败函数成功出口的状态清零由AbiRangeKind::FallibleSuccessStatus交接，JSON kind为fallible_success_status；范围只包含原emit_value在fallible分支发射的RAX置零指令，表示没有拥有错误，不是业务结果或共同机器返回。无失败函数不生成此职责。真实错误值装载和原退出跳转继续沿Raise的operation_ranges及其原触发来源表达，不重复生成ABI标签、退出目标或来源图；失败跳转绕过成功状态清零，原错误和清理语义保持。当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出、可失败成功状态及共同机器返回，不能把未命中范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；BLCR不恢复此材料；BLCF5沿同一Object／Section显式保存与恢复原ABI事实，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
 
 ### 原生尾部目标及真实rel32字段
 
@@ -327,7 +327,7 @@ code_json的tail_references未保留时为null，已采集但没有相应引用�
 
 普通函数的使用来源由字段所属的原operation_ranges及function_abi范围说明；多个父子范围如实保留，不强选唯一语句。字面量数据只说明实际存储，原值来自源字面量还是编译期生成仍由原IR说明；仅凭池中位模式不能猜源数值类型或最初声明，确切值与合同继续由原IR查询。探栈调用可沿原FrameAllocate范围理解生成职责；辅助代码和调用代码分别说明。其他CPU并行／SIMD／集合入口复用同一finish交接物理引用，并不因此已有其完整源码关系，原未交接来源保持未知。
 
-材料从原finish局部容器移动至同一NativeCode，原字面量references Vec直接转移；不持有Emitter、Frame、字面量拥有表或运行资源，随最后代码事实消费者结束释放。必要执行编码不保存tail_references，compiler角色执行解码后为None；BLCR尚不恢复这些引用；COFF原Function Layout按值接收同一可选引用，并沿BLCF4保存／恢复，查询不自动重编或从指令补造。必要执行编码、执行ABI与实际字节不变，职责见[架构](Architecture.md#tool-7-4-1-3)。
+材料从原finish局部容器移动至同一NativeCode，原字面量references Vec直接转移；不持有Emitter、Frame、字面量拥有表或运行资源，随最后代码事实消费者结束释放。必要执行编码不保存tail_references，compiler角色执行解码后为None；BLCR尚不恢复这些引用；COFF原Function Layout按值接收同一可选引用，并沿BLCF5保存／恢复，查询不自动重编或从指令补造。必要执行编码、执行ABI与实际字节不变，职责见[架构](Architecture.md#tool-7-4-1-3)。
 
 ### IR操作的语法来源
 
@@ -1070,17 +1070,59 @@ function_tables保留原.pdata的每条12字节记录、begin／end／unwind原�
 
 ### COFF原生成范围的独立材料
 
-新生成的`Object::code_observations()`显式返回独立BLCF4字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions、tail_references与function_abi，主末端仍由原.pdata交接；原手写生产者分别声明Startup、Print(Scalar)、ImportThunk，职责均覆盖同一整节：启动及结果交接、所选类型的标准输出、实际导入尾跳转。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。
+新生成的`Object::code_observations()`显式返回独立BLCF5字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions、tail_references、function_abi与operation_ranges，主末端仍由原.pdata交接；原手写生产者分别声明Startup、Print(Scalar)、ImportThunk，职责均覆盖同一整节：启动及结果交接、所选类型的标准输出、实际导入尾跳转。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。
 
-显式捕获先确认原事实可取得，再借用同一Layout直接编码，不克隆原布局或引用；ABI定义／形参来源只在此时从原不可变Source快照投影为不含文本的只读事实，普通对象生成只移动原FunctionAbi，不提前计算摘要或位置；复用原COFF编码作一次临时序列化，沿原B读取器消费最终节及重定位，不读取源文件或编译／生成第二份机器码。临时编码字节在返回后释放，材料不含代码、源码、执行图、资源拥有表或编译器私有容器。此额外编码／摘要工作只随明确捕获请求发生；普通构建、链接、运行不写入或消费材料。链接组合后的新节及新增导入／资源数据节不冒称持有原生成材料，最终链接观察仍沿.9。
+显式捕获先确认原事实可取得，再借用同一Layout直接编码，不克隆原布局或引用；ABI定义／形参与操作的语法、声明、生成事实共用source.rs的位置投影，只在此时从原不可变Source快照取得不含文本的只读事实；原生成与变换关系按原字段直接编码，不先展开临时来源树，普通对象生成只移动原FunctionAbi与OperationRange，不提前计算摘要或位置；复用原COFF编码作一次临时序列化，沿原B读取器消费最终节及重定位，不读取源文件或编译／生成第二份机器码。临时编码字节在返回后释放，材料不含代码、源码、执行图、资源拥有表或编译器私有容器。此额外编码／摘要工作只随明确捕获请求发生；普通构建、链接、运行不写入或消费材料。链接组合后的新节及新增导入／资源数据节不冒称持有原生成材料，最终链接观察仍沿.9。
 
-BLCF4由8字节`BLCF\x04\0\0\0`、u64记录数量及按原物理代码节顺序排列的记录组成；整数均小端。每条为u64物理节号、32字节SHA-256、u32布局类别；0=Function，随后u64尾部分区数量及各项u64排他末端／u32类别（0探栈、1对齐、2字面量），再写u8引用可用标记（0=未保留，1=已采集）。标记1后为u64引用数量，各项为u64目标偏移、u64字段数量及各u64 rel32字段偏移；目标和字段均相对此节字节0。其后是u8 ABI可用标记，0=未保留、1=后随下述FunctionAbi记录。1=Startup，无额外字段；2=Print，随后u32 Scalar（0=f32、1=u32、2=i32、3=bool、4=u64、5=i64、6=f64、7=u8、8=i8、9=u16、10=i16）；3=ImportThunk，无额外字段。三种手写类别均没有尾部引用或函数ABI记录。旧BLCF版本明确不支持，调用者应保存同次原Object生成的新材料，不自动重编或兼容解码。Function不另存主末端，查询消费原.pdata中从节内0开始的同一主范围；尾部单调且完整覆盖该节。Startup／Print／ImportThunk明确覆盖0至原节字节长度，不能从代码特征位推导。
+BLCF5由8字节`BLCF\x05\0\0\0`、u64记录数量及按原物理代码节顺序排列的记录组成；整数均小端。每条为u64物理节号、32字节SHA-256、u32布局类别；0=Function，随后u64尾部分区数量及各项u64排他末端／u32类别（0探栈、1对齐、2字面量），再写u8引用可用标记（0=未保留，1=已采集）。标记1后为u64引用数量，各项为u64目标偏移、u64字段数量及各u64 rel32字段偏移；目标和字段均相对此节字节0。其后是u8 ABI可用标记，0=未保留、1=后随下述FunctionAbi记录。其后是u8操作材料可用标记，0=未保留、1=后随u64数量及OperationRange记录。1=Startup，无额外字段；2=Print，随后u32 Scalar（0=f32、1=u32、2=i32、3=bool、4=u64、5=i64、6=f64、7=u8、8=i8、9=u16、10=i16）；3=ImportThunk，无额外字段。三种手写类别均没有尾部引用、函数ABI或IR操作记录。旧BLCF版本明确不支持，调用者应保存同次原Object生成的新材料，不自动重编或兼容解码。Function不另存主末端，查询消费原.pdata中从节内0开始的同一主范围；尾部单调且完整覆盖该节。Startup／Print／ImportThunk明确覆盖0至原节字节长度，不能从代码特征位推导。
 
 FunctionAbi按序为可选Definition、可选实例字符串、u64范围数量及范围记录。每条范围为u64 start、u64排他end和u32职责：0=hidden_result_home（u64 abi_slot），1=parameter_home、2=parameter_input（均为u64 abi_slot、u64 parameter_index、可选Parameter），3=scratch_save，4=scratch_restore，5=frame_allocate、6=frame_release（均为u32 frame_bytes），7=nonvolatile_save，8=nonvolatile_restore，9=result_address_save、10=indirect_result（均为u32 stack_offset_bytes），11=float_result，12=integer_result，13=fallible_success_status，14=function_return。无附加字段的职责只写类别。实际区间可为零长度，且start≤end≤同一.pdata主末端；不得覆盖尾部、跨节或推断运行值。原COFF查询的function_abi与原NativeCode::code_json使用相同JSON字段和单位；未选中节不增加详细内容，选中但未取得材料、未保留ABI或手写节为null。
 
 下列材料字符串均为u64 UTF-8字节数与原字节，可选值均为u8的0／1标记，序列均先写u64数量，bool为u8的0／1，不直接编码Rust容器内存。Definition依次为module、definition、可选source_path字符串、32字节源文本SHA-256、u64源文本字节数、Range和路径编码。Range依次为u64 UTF-8 start／end、可选start位置、可选end位置；每个位置为u64 line／column，均从1开始，column按Unicode标量计数。路径编码为u32类别及序列，0=Windows原u16 UTF-16单元、1=Unix原u8路径字节，查询保留生成端编码，不从查询机路径重建。材料不包含源文本；缺少定义时不猜行列。
 
 Parameter类别为u32：0=implicit_frame，无附加字段；1=普通／生成形参，随后u64逻辑index、name、instance字符串、generated bool和可选Site。Site依次为Definition、可选实例字符串、u32语法类别（0=statement、1=expression、2=place、3=parameter）、Inline序列、Domain序列和本Site的Range。Inline为可选Definition、可选实例和Range；Domain再于相同三字段后保存target字符串与u32 transition（0=expanded、1=compiled）。两种路径顺序均为outermost_first。未知来源、真实生成形参与隐式Frame继续使用各自原表示，不给无源步骤补造定义；解码只恢复这些只读字段，不构造Source、AST、IR、Frame或资源。
+
+OperationRange按原发射完成顺序保存u64 start、u64排他end、bool includes_nested_operations与OperationOrigin。start≤end≤原.pdata主末端；允许零长度和实际控制父／子范围重叠，不要求按起点排序，不将范围长度求和作为指令数或运行次数。OperationOrigin依次是可选Site与可选GeneratedOrigin，二者可以共同存在，也可都缺失；记录中的未知来源与整个operation_ranges未保留分别表达。选中节的operation_ranges与原NativeCode::code_json字段一致：start_byte、end_byte、byte_length、includes_nested_operations和origin；未提供材料／未保留／手写节为null，已采集空序列为[]，不从机器模式补造来源。
+
+GeneratedOrigin依次为原GenerationReason的现行JSON名称字符串及可选GenerationAnchor。枚举名称仍由原IR唯一提供，字符串只描述该原事实，不用作执行、反射或运行调度。GenerationAnchor用u32类别和按以下顺序串联的字段编码；字段的含义沿原IR来源合同，保持原语法、定义、声明、重写输入与保留事实，不包含原Inst、Reg、Local、FunctionBody、Stage或运行值。Site／Definition与前述同名记录相同；Declaration为Definition形状的声明身份与u32 representation（0=source、1=compiled_interface），JSON使用source_declaration及declaration字段；ContractCondition的span保存带原行列的Range。可选值、列表、字符串、bool和位宽沿本节原规则，Box仅编码被指向的事实，不编码地址。
+
+| u32类别 | 原Anchor | 字段顺序 |
+|---|---|---|
+| 0 | Syntax | site |
+| 1 | CpuTextureSample | sample |
+| 2 | Definition | origin,instance |
+| 3 | IntegerDivisionPair | quotient,remainder |
+| 4 | ExpressionReuse | retained,reused |
+| 5 | LocalReadForward | retained,reads |
+| 6 | IndexedStoreReadForward | retained,reads |
+| 7 | IndexedReadReuse | retained,reused |
+| 8 | LocalInputForward | retained,inputs |
+| 9 | ReductionInputForward | retained,inputs |
+| 10 | EliminatedOperations | retained,operations |
+| 11 | EmptyMapRemoval | retained,stages |
+| 12 | IntegerDivisionResultPrune | retained,input_results,output_results |
+| 13 | ReductionUniformExtract | retained,partition,operation,uniform_operand_count |
+| 14 | UnaryConstantFold | expression,operation,scalar,input_bits,result_bits,component_index,component_count |
+| 15 | BinaryConstantFold | expression,operation,scalar,result_scalar,left_bits,right_bits,result_bits,left_component_index,left_component_count,right_component_index,right_component_count,component_index,component_count,retained |
+| 16 | CastConstantFold | expression,source_scalar,target_scalar,input_bits,result_bits,component_index,component_count |
+| 17 | BitcastConstantFold | expression,source_scalar,target_scalar,bits,component_index,component_count |
+| 18 | MinmaxKnownValue | expression,operation,scalar,left_ranges,right_ranges,left_constant_present,right_constant_present,same_value,result_bits,basis,left_component_index,left_component_count,right_component_index,right_component_count,component_index,component_count |
+| 19 | ComparisonKnownValue | expression,operation,scalar,left_ranges,right_ranges,left_constant_present,right_constant_present,same_value,result_bits,false_possible,true_possible,left_component_index,left_component_count,right_component_index,right_component_count,component_index,component_count,retained |
+| 20 | ModuleConstantEvaluation | definition,constant,operations |
+| 21 | StageConstantEvaluation | expression,operations |
+| 22 | StageIfSelection | condition,value,evaluation,returned,stages,calls,retained |
+| 23 | StageForExpansion | statement,counter,first,last,iterations,retained |
+| 24 | DomainEntry | context,expansion |
+| 25 | StageConstantReference | reference,retained |
+| 26 | DomainCallLiteral | call,evaluation |
+| 27 | DeclarationReference | declaration,retained |
+| 28 | ContractCondition | declaration,span,retained |
+
+ExpressionReuse记录result、paired_input及origin；LocalReadForward记录result_index、result_count、result与origin；IndexedStoreReadForward记录同前三字段及store、read；InputReadForward记录input_index与reads；ReductionInputReadForward记录role、component_index与reads。各index／count为u64，paired_input为bool，origin／store／read为OperationOrigin，reads为相应事实列表。ReuseResult用u32的0=value、1=quotient、2=remainder；ReductionInputRole为0=source、1=left、2=right；IntegerDivisionOp为0=quotient、1=remainder。
+
+EliminatedOperation用u32类别：0=ValueResults（Scalar序列result_types、可选IntegerDivisionOp序列integer_division_results、OperationOrigin）；1=DirectPrivateWrite（Scalar、OperationOrigin）；2=IndexedPrivateWrite（u64 component_count、Scalar index_type、u32 byte_offset、Scalar、OperationOrigin）。StageForBound保存可选Site expression、u32 value及可选GeneratedOrigin evaluation；StageForIteration保存u32 index、bool returned、OperationOrigin列表stages／calls及可选GeneratedOrigin expansion。上述值描述已有编译事实，不是新的执行结果或完成状态。
+
+Anchor中的位模式为u64，component_index／count及uniform_operand_count为u64，已知范围是u64上下界对及相应可选列表，presence／same_value／possible／returned及StageIfSelection的value字段为bool。Scalar沿前述现行编码；UnaryOp用u32的0=FloatNegate、1=SignedNegate、2=UnsignedNegate、3=LogicalNot、4=BitNot、5=Bitcast；ReductionPartition为0=identity、1=project、2=combine；ReductionUniformOperation为0=Constant、1=Uniform、2=BufferStride、3=Unary、4=Binary、5=Cast、6=Math、7=Select、8=ConstantIntegerDivide；IntegerKnownValueBasis为0=singleton_range、1=zero_condition。BinaryConstantFold／MinmaxKnownValue／ComparisonKnownValue的operation及instance／constant／counter字段为原字符串；具体Source与GeneratedOrigin递归关系、字段顺序由同一观察格式交接，不建立另一来源登记表或强制保留已消除代码。
 
 摘要以原长度前缀字段依次消费代码字节、节特征、重定位数量及各项offset／type／原目标名称／带符号节号／value，再消费本节已解析.pdata范围数量及各项start／end；数量、偏移、特征和数值沿原64位字段表示。物理节号在记录中配对，不散列文件位置、符号表索引、私有BLCO／构建记录、SDK或工具链。材料匹配说明同一范围相关的代码／重定位／原声明范围，不证明来源、执行安全或整个包所有内容相同；函数表、展开及其余COFF事实继续读取本次原文件。已有归档成员不因材料存在而被展开。
 

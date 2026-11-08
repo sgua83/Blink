@@ -269,6 +269,85 @@ pub enum GenerationReason {
     DatasetCallComplete,
     DatasetElementDrop,
 }
+impl GenerationReason {
+    pub(crate) fn ir_name(self) -> &'static str {
+        match self {
+            GenerationReason::ParallelIndex => "parallel_index", GenerationReason::ClearPrefix => "clear_prefix",
+            GenerationReason::ApplicationEntry => "application_entry", GenerationReason::ApplicationEntryCall => "application_entry_call",
+            GenerationReason::FrameErrorReceiver => "frame_error_receiver", GenerationReason::FrameErrorContext => "frame_error_context",
+            GenerationReason::FrameCreate => "frame_create", GenerationReason::FrameReadiness => "frame_readiness",
+            GenerationReason::FrameFailureExit => "frame_failure_exit", GenerationReason::FrameDestroy => "frame_destroy",
+            GenerationReason::DatasetAllocate => "dataset_allocate",
+            GenerationReason::DatasetInitializeCursor => "dataset_initialize_cursor",
+            GenerationReason::DatasetInitializeCondition => "dataset_initialize_condition",
+            GenerationReason::DatasetInitializeCall => "dataset_initialize_call",
+            GenerationReason::DatasetInitializeWrite => "dataset_initialize_write",
+            GenerationReason::DatasetInitializeAdvance => "dataset_initialize_advance",
+            GenerationReason::DatasetInitializeLoop => "dataset_initialize_loop",
+            GenerationReason::DatasetInitializeComplete => "dataset_initialize_complete",
+            GenerationReason::DatasetResizeComplete => "dataset_resize_complete",
+            GenerationReason::DatasetWriteComplete => "dataset_write_complete",
+            GenerationReason::DatasetCallComplete => "dataset_call_complete",
+            GenerationReason::DatasetBindSlots => "dataset_bind_slots",
+            GenerationReason::DatasetAssignSlots => "dataset_assign_slots",
+            GenerationReason::DatasetRelease => "dataset_release",
+            GenerationReason::DatasetDropCursor => "dataset_drop_cursor",
+            GenerationReason::DatasetDropCondition => "dataset_drop_condition",
+            GenerationReason::DatasetDropIndex => "dataset_drop_index",
+            GenerationReason::DatasetDropElementRead => "dataset_drop_element_read",
+            GenerationReason::DatasetElementDrop => "dataset_element_drop",
+            GenerationReason::DatasetDropAdvance => "dataset_drop_advance",
+            GenerationReason::DatasetDropLoop => "dataset_drop_loop",
+            GenerationReason::UserOwnedDrop => "user_owned_drop",
+            GenerationReason::ConditionalDropBranch => "conditional_drop_branch",
+            GenerationReason::ConditionalDropCondition => "conditional_drop_condition",
+            GenerationReason::VariantDropBranch => "variant_drop_branch",
+            GenerationReason::VariantDropCondition => "variant_drop_condition",
+            GenerationReason::DatasetResizeFill => "dataset_resize_fill",
+            GenerationReason::DatasetResizeCall => "dataset_resize_call",
+            GenerationReason::DatasetAddress => "dataset_address",
+            GenerationReason::DatasetStorageAddress => "dataset_storage_address",
+            GenerationReason::DatasetRootAddress => "dataset_root_address",
+            GenerationReason::DatasetOffsetAddress => "dataset_offset_address",
+            GenerationReason::DatasetWriteAddress => "dataset_write_address",
+            GenerationReason::DatasetAccessLayout => "dataset_access_layout",
+            GenerationReason::DatasetFieldLayout => "dataset_field_layout",
+            GenerationReason::DatasetProjectionAddress => "dataset_projection_address",
+            GenerationReason::DatasetUpload => "dataset_upload",
+            GenerationReason::DatasetDownload => "dataset_download",
+            GenerationReason::ApplicationDomainCall => "application_domain_call",
+            GenerationReason::DomainEntry => "domain_entry",
+            GenerationReason::DomainCallLiteral => "domain_call_literal",
+            GenerationReason::DomainPartCall => "domain_part_call",
+            GenerationReason::DatasetCallArgument => "dataset_call_argument",
+            GenerationReason::DatasetBorrowStrideCast => "dataset_borrow_stride_cast",
+            GenerationReason::CpuTextureSample => "cpu_texture_sample",
+            GenerationReason::ArrayParameterStore => "array_parameter_store",
+            GenerationReason::IntegerDivisionPair => "integer_division_pair",
+            GenerationReason::ExpressionReuse => "expression_reuse",
+            GenerationReason::LocalReadForward => "local_read_forward",
+            GenerationReason::IndexedStoreReadForward => "indexed_store_read_forward",
+            GenerationReason::IndexedReadReuse => "indexed_read_reuse",
+            GenerationReason::UnusedOperations => "unused_operations",
+            GenerationReason::EmptyMapRemoval => "empty_map_removal",
+            GenerationReason::IntegerDivisionResultPrune => "integer_division_result_prune",
+            GenerationReason::ReductionUniformExtract => "reduction_uniform_extract",
+            GenerationReason::UnaryConstantFold => "unary_constant_fold",
+            GenerationReason::BinaryConstantFold => "binary_constant_fold",
+            GenerationReason::CastConstantFold => "cast_constant_fold",
+            GenerationReason::BitcastConstantFold => "bitcast_constant_fold",
+            GenerationReason::MinmaxKnownValue => "minmax_known_value",
+            GenerationReason::ComparisonKnownValue => "comparison_known_value",
+            GenerationReason::ModuleConstantEvaluation => "module_constant_evaluation",
+            GenerationReason::StageConstantEvaluation => "stage_constant_evaluation",
+            GenerationReason::StageIfSelection => "stage_if_selection",
+            GenerationReason::StageForExpansion => "stage_for_expansion",
+            GenerationReason::StageConstantReference => "stage_constant_reference",
+            GenerationReason::DeclarationReference => "declaration_reference",
+            GenerationReason::ContractCondition => "contract_condition",
+        }
+    }
+}
 /// Only the immutable origin facts of a consumed operation, never its IR or values.
 #[derive(Clone, Debug)]
 pub struct OperationOrigin {
@@ -460,12 +539,12 @@ fn division_results_json(results: &[super::IntegerDivisionOp]) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReductionPartition { Identity, Project, Combine }
 impl ReductionPartition {
-    fn ir_name(self) -> &'static str { match self { Self::Identity => "identity", Self::Project => "project", Self::Combine => "combine" } }
+    pub(crate) fn ir_name(self) -> &'static str { match self { Self::Identity => "identity", Self::Project => "project", Self::Combine => "combine" } }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReductionUniformOperation { Constant, Uniform, BufferStride, Unary, Binary, Cast, Math, Select, ConstantIntegerDivide }
 impl ReductionUniformOperation {
-    fn ir_name(self) -> &'static str { match self {
+    pub(crate) fn ir_name(self) -> &'static str { match self {
         Self::Constant => "Constant", Self::Uniform => "Uniform", Self::BufferStride => "BufferStride", Self::Unary => "Unary",
         Self::Binary => "Binary", Self::Cast => "Cast", Self::Math => "Math", Self::Select => "Select", Self::ConstantIntegerDivide => "ConstantIntegerDivide",
     } }
@@ -473,7 +552,7 @@ impl ReductionUniformOperation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntegerKnownValueBasis { SingletonRange, ZeroCondition }
 impl IntegerKnownValueBasis {
-    fn ir_name(self) -> &'static str { match self { Self::SingletonRange => "singleton_range", Self::ZeroCondition => "zero_condition" } }
+    pub(crate) fn ir_name(self) -> &'static str { match self { Self::SingletonRange => "singleton_range", Self::ZeroCondition => "zero_condition" } }
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -684,82 +763,8 @@ impl GeneratedOrigin {
     pub fn trigger(&self) -> Option<&SourceSite> { self.trigger.as_ref().and_then(GenerationAnchor::syntax) }
     pub fn anchor(&self) -> Option<&GenerationAnchor> { self.trigger.as_ref() }
     pub fn ir_json(&self) -> String {
-        let reason = match self.reason {
-            GenerationReason::ParallelIndex => "parallel_index", GenerationReason::ClearPrefix => "clear_prefix",
-            GenerationReason::ApplicationEntry => "application_entry", GenerationReason::ApplicationEntryCall => "application_entry_call",
-            GenerationReason::FrameErrorReceiver => "frame_error_receiver", GenerationReason::FrameErrorContext => "frame_error_context",
-            GenerationReason::FrameCreate => "frame_create", GenerationReason::FrameReadiness => "frame_readiness",
-            GenerationReason::FrameFailureExit => "frame_failure_exit", GenerationReason::FrameDestroy => "frame_destroy",
-            GenerationReason::DatasetAllocate => "dataset_allocate",
-            GenerationReason::DatasetInitializeCursor => "dataset_initialize_cursor",
-            GenerationReason::DatasetInitializeCondition => "dataset_initialize_condition",
-            GenerationReason::DatasetInitializeCall => "dataset_initialize_call",
-            GenerationReason::DatasetInitializeWrite => "dataset_initialize_write",
-            GenerationReason::DatasetInitializeAdvance => "dataset_initialize_advance",
-            GenerationReason::DatasetInitializeLoop => "dataset_initialize_loop",
-            GenerationReason::DatasetInitializeComplete => "dataset_initialize_complete",
-            GenerationReason::DatasetResizeComplete => "dataset_resize_complete",
-            GenerationReason::DatasetWriteComplete => "dataset_write_complete",
-            GenerationReason::DatasetCallComplete => "dataset_call_complete",
-            GenerationReason::DatasetBindSlots => "dataset_bind_slots",
-            GenerationReason::DatasetAssignSlots => "dataset_assign_slots",
-            GenerationReason::DatasetRelease => "dataset_release",
-            GenerationReason::DatasetDropCursor => "dataset_drop_cursor",
-            GenerationReason::DatasetDropCondition => "dataset_drop_condition",
-            GenerationReason::DatasetDropIndex => "dataset_drop_index",
-            GenerationReason::DatasetDropElementRead => "dataset_drop_element_read",
-            GenerationReason::DatasetElementDrop => "dataset_element_drop",
-            GenerationReason::DatasetDropAdvance => "dataset_drop_advance",
-            GenerationReason::DatasetDropLoop => "dataset_drop_loop",
-            GenerationReason::UserOwnedDrop => "user_owned_drop",
-            GenerationReason::ConditionalDropBranch => "conditional_drop_branch",
-            GenerationReason::ConditionalDropCondition => "conditional_drop_condition",
-            GenerationReason::VariantDropBranch => "variant_drop_branch",
-            GenerationReason::VariantDropCondition => "variant_drop_condition",
-            GenerationReason::DatasetResizeFill => "dataset_resize_fill",
-            GenerationReason::DatasetResizeCall => "dataset_resize_call",
-            GenerationReason::DatasetAddress => "dataset_address",
-            GenerationReason::DatasetStorageAddress => "dataset_storage_address",
-            GenerationReason::DatasetRootAddress => "dataset_root_address",
-            GenerationReason::DatasetOffsetAddress => "dataset_offset_address",
-            GenerationReason::DatasetWriteAddress => "dataset_write_address",
-            GenerationReason::DatasetAccessLayout => "dataset_access_layout",
-            GenerationReason::DatasetFieldLayout => "dataset_field_layout",
-            GenerationReason::DatasetProjectionAddress => "dataset_projection_address",
-            GenerationReason::DatasetUpload => "dataset_upload",
-            GenerationReason::DatasetDownload => "dataset_download",
-            GenerationReason::ApplicationDomainCall => "application_domain_call",
-            GenerationReason::DomainEntry => "domain_entry",
-            GenerationReason::DomainCallLiteral => "domain_call_literal",
-            GenerationReason::DomainPartCall => "domain_part_call",
-            GenerationReason::DatasetCallArgument => "dataset_call_argument",
-            GenerationReason::DatasetBorrowStrideCast => "dataset_borrow_stride_cast",
-            GenerationReason::CpuTextureSample => "cpu_texture_sample",
-            GenerationReason::ArrayParameterStore => "array_parameter_store",
-            GenerationReason::IntegerDivisionPair => "integer_division_pair",
-            GenerationReason::ExpressionReuse => "expression_reuse",
-            GenerationReason::LocalReadForward => "local_read_forward",
-            GenerationReason::IndexedStoreReadForward => "indexed_store_read_forward",
-            GenerationReason::IndexedReadReuse => "indexed_read_reuse",
-            GenerationReason::UnusedOperations => "unused_operations",
-            GenerationReason::EmptyMapRemoval => "empty_map_removal",
-            GenerationReason::IntegerDivisionResultPrune => "integer_division_result_prune",
-            GenerationReason::ReductionUniformExtract => "reduction_uniform_extract",
-            GenerationReason::UnaryConstantFold => "unary_constant_fold",
-            GenerationReason::BinaryConstantFold => "binary_constant_fold",
-            GenerationReason::CastConstantFold => "cast_constant_fold",
-            GenerationReason::BitcastConstantFold => "bitcast_constant_fold",
-            GenerationReason::MinmaxKnownValue => "minmax_known_value",
-            GenerationReason::ComparisonKnownValue => "comparison_known_value",
-            GenerationReason::ModuleConstantEvaluation => "module_constant_evaluation",
-            GenerationReason::StageConstantEvaluation => "stage_constant_evaluation",
-            GenerationReason::StageIfSelection => "stage_if_selection",
-            GenerationReason::StageForExpansion => "stage_for_expansion",
-            GenerationReason::StageConstantReference => "stage_constant_reference",
-            GenerationReason::DeclarationReference => "declaration_reference",
-            GenerationReason::ContractCondition => "contract_condition",
-        };
-        format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
+
+        format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(self.reason.ir_name()),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))
     }
 }
