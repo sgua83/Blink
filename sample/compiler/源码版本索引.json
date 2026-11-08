@@ -212,7 +212,7 @@
     },
     {
       "path": "crates/blanguage/src/check/residency.rs",
-      "sha256": "b9cea8cef2396039045ae2f9525eac96b97ec7a8af72db79275a3eba5651f114"
+      "sha256": "9fe40acde52ac94e75a33d17de72d6b246c1a68e0077f50e4273dd67e88311e3"
     },
     {
       "path": "crates/blanguage/src/check/results.rs",

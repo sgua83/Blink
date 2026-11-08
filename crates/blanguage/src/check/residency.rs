@@ -796,7 +796,7 @@ pub(super) fn output(value: &mut Returned, function: &str,kind:OutputKind, argum
                 kind:kind.clone(),
                 fields: path.fields.clone(),
                 arguments: arguments.clone(),
-                bindings: bindings.clone(),
+                bindings,
             })]));
     });
 }
