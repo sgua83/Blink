@@ -2148,6 +2148,10 @@ impl Clause {
                 b.clone()
             }
             _ if Arc::ptr_eq(&a.0, &b.0) => a.clone(),
+            _ if matches!(a.query_inputs(), Some((left,right,false))
+                if Arc::ptr_eq(&left.0,&b.0)||Arc::ptr_eq(&right.0,&b.0)) => b.clone(),
+            _ if matches!(b.query_inputs(), Some((left,right,false))
+                if Arc::ptr_eq(&left.0,&a.0)||Arc::ptr_eq(&right.0,&a.0)) => a.clone(),
             _ => Self::node(ClauseNode::Either(a.clone(), b.clone())),
         }
     }
