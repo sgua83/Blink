@@ -98,6 +98,10 @@ BLSupervisor system-exec <实际节点> "<该节点实际下载路径> --quiet"
     ./Tools/Clean.ps1 -Path Saved/Development/FinishedBatch/Output -WhatIf
     ./Tools/Clean.ps1 -Path Saved/Development/FinishedBatch/Output
 
+没有可清理对象时，显式传入空集合；脚本返回零选择、零删除和空Paths，不执行删除或读取Cargo metadata：
+
+    ./Tools/Clean.ps1 -Path @()
+
 已确认无消费者的项目构建输出同样明确选择，不连带删除其他构建档位或仍有效的缓存：
 
     ./Tools/Clean.ps1 -Path target/debug -WhatIf

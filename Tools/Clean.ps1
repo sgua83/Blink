@@ -16,6 +16,7 @@ Preview and result paths use the same workspace-relative paths.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
     [string[]]$Path,
     [string]$Root = (Split-Path -Parent $PSScriptRoot)
 )
@@ -109,8 +110,8 @@ $removedRows = @($rows | Where-Object Action -eq 'Removed')
 $freeAfter = $drive.AvailableFreeSpace
 [pscustomobject]@{
     Root = '.'
-    SelectedFiles = ($selected | Measure-Object -Property Files -Sum).Sum
-    SelectedLogicalBytes = ($selected | Measure-Object -Property Bytes -Sum).Sum
+    SelectedFiles = [long]($selected | Measure-Object -Property Files -Sum).Sum
+    SelectedLogicalBytes = [long]($selected | Measure-Object -Property Bytes -Sum).Sum
     RemovedFiles = [long]($removedRows | Measure-Object -Property Files -Sum).Sum
     RemovedLogicalBytes = [long]($removedRows | Measure-Object -Property LogicalBytes -Sum).Sum
     FreeBytesBefore = $freeBefore
