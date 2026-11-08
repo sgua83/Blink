@@ -3,7 +3,7 @@ use super::*;
 #[derive(Clone,Copy)]
 pub(super) enum Local<'s> {
     Typed(&'s TypeName),
-    Inferred(&'s Expr),
+    Initialized(Option<&'s TypeName>, &'s Expr, &'s [Stmt]),
     Range,
     Element(&'s Expr),
     NamedElement(&'s str),
@@ -40,7 +40,7 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
         if let Some(index) = self.bindings[..limit].iter().rposition(|(bound, _)| *bound == name) {
             return Ok(match &self.bindings[index].1 {
                 Local::Typed(ty) => Some(self.declared_type(ty, self.definition, span)?),
-                Local::Inferred(expr) => self.ty(expr, index)?,
+                Local::Initialized(ty,expr,_) => match ty{Some(ty)=>Some(self.declared_type(ty,self.definition,span)?),None=>self.ty(expr,index)?},
                 Local::Range => Some(Ty::scalar(Scalar::U32)),
                 Local::Element(expr) => match self.ty(expr,index)?{Some(ty)=>self.element(ty,span)?,None=>None},
                 Local::NamedElement(name) => match self.name(name,span,index)?{Some(ty)=>self.element(ty,span)?,None=>None},
@@ -80,7 +80,7 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
     pub fn local_value_write(&self,place:&Expr)->Result<Option<bool>> {
         let Some(name)=assigned_root(place)else{return Ok(None);};
         let Some((_,local))=self.bindings.iter().rev().find(|(bound,_)|*bound==name)else{return Ok(None);};
-        Ok(Some(matches!(local,Local::Typed(_)|Local::Inferred(_)|Local::Range|Local::Payload(..))&&self.named(name,place.span)?.is_some_and(|ty|ty.is_numeric()||ty.is_c_function())))
+        Ok(Some(matches!(local,Local::Typed(_)|Local::Initialized(..)|Local::Range|Local::Payload(..))&&self.named(name,place.span)?.is_some_and(|ty|ty.is_numeric()||ty.is_c_function())))
     }
     pub fn named(&self, name: &str, span: Span) -> Result<Option<Ty>> {
         if self.bound(name, self.bindings.len()) { self.name(name, span, self.bindings.len()) } else { Ok(None) }
