@@ -2254,6 +2254,7 @@ impl Clause {
             };values.insert(clause.key(),next);
         }
         let mut terms=values.remove(&self.key()).unwrap();
+        drop(values);
         // Consensus removes the short-circuit partition: A || (!A && B)
         // has the same complete sum as A || B. Negation stays with Clause.
         loop {
