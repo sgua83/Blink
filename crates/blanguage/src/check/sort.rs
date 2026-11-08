@@ -88,11 +88,22 @@ pub(super) fn compile(
                 .fail(span, "B188", "排序输出容量必须容纳完整输入域");
         }
     }
+    let output = facts.elements.get(&source).map(|proof| {
+        let mut output = proof.element_facts(|binding| bounds::Proof::default()
+            .with_domains(Domains::from([IndexDomain::Data(binding)])));
+        if prefix.is_some() || !program.same_length(source, target) {
+            output.join(&facts.elements.get(&target).cloned().unwrap_or_default(),
+                program.buffers[target].ty.components.len(), None);
+        }
+        output
+    });
+    let element_guarantees = output.as_ref().map(|proof|
+        proof.element_guarantees(target, &program.buffers[target].ty, |_, _| true)).unwrap_or_default();
     let mut write_regions = BTreeMap::new();
     for &(scalar, word) in &program.buffers[target].ty.components {
         let end = word + scalar.size();
         write_regions.entry(target).or_insert_with(BTreeSet::new).insert((word, end));
-        facts.written(program, target, word, end, None);
+        facts.written(program, target, word, end, output.as_ref());
     }
     let prefix_guarantees: Vec<_> = prefix.map(|count| PrefixRelation { domain_region: None, domain: target, count }).into_iter().collect();
     for &relation in &prefix_guarantees { facts.grant(relation); }
@@ -121,7 +132,7 @@ pub(super) fn compile(
         writes: vec![target],
         write_regions,
         prefix_guarantees,
-        element_guarantees: Vec::new(),
+        element_guarantees,
         cross_access: reads,
     });
     Ok(())

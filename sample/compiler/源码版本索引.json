@@ -244,7 +244,7 @@
     },
     {
       "path": "crates/blanguage/src/check/sort.rs",
-      "sha256": "6aa6551fca48c472de2d22a438c24751d311a012e10f1fc7f77547961be40ad1"
+      "sha256": "7373edbed8af1db9f2b0a867bc5b0c3f445f1046b848225cb3fafb6db04a7ca8"
     },
     {
       "path": "crates/blanguage/src/check/tile.rs",
