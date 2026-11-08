@@ -1,5 +1,6 @@
 //! 写入预分析只借用原声明和词法来源；实际类型仍由World及原泛型实例产生。
 use super::*;
+#[derive(Clone,Copy)]
 pub(super) enum Local<'s> {
     Typed(&'s TypeName),
     Inferred(&'s Expr),
