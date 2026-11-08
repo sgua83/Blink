@@ -273,9 +273,11 @@ impl Execution {
         }
     }
     pub fn wait(&self) -> Result<()> {
-        self.point.wait()?;
-        self.release_known();
-        Ok(())
+        let result = self.point.wait();
+        if matches!(self.point.result.get(), Some(0 | -4)) {
+            self.release_known();
+        }
+        result
     }
 }
 impl Drop for Execution {

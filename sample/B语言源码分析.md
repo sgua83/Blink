@@ -800,7 +800,7 @@ pub struct Dataset {
     }
 ```
 
-Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。
+Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。原Execution::wait确认Completion缓存0或DEVICE_LOST后，先沿原release_known释放本次命令、scratch、绑定参数与依赖持有，再原样返回Result；设备丢失继续是错误，原输入及观察者的所有权保持，未确认终止的错误不提前释放在途资源。
 
 Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节、GPU来源按第十九章直接借用原绑定；Frame当前数据根见2.6，程序根见2.7；其他宿主容器及B／C实际入口仍有独立未完成范围。
 
