@@ -432,6 +432,18 @@ impl KnownBits {
         let a=self.cast(scalar);let b=other.cast(scalar);
         Self{scalar,mask:a.mask|b.mask,value:a.value|b.value}
     }
+    fn bitwise(operation:IntegerOperation,scalar:Scalar,a:Option<Self>,b:Option<Self>)->Option<Self> {
+        let (am,av)=a.map_or((0,0),|bits|(bits.mask,bits.value));
+        let (bm,bv)=b.map_or((0,0),|bits|(bits.mask,bits.value));
+        let (az,bz)=(am&!av,bm&!bv);
+        let (mask,value)=match operation {
+            IntegerOperation::And=>(az|bz|(av&bv),av&bv),
+            IntegerOperation::Or=>((az&bz)|av|bv,av|bv),
+            IntegerOperation::Xor=>(am&bm,(av^bv)&am&bm),
+            _=>return None,
+        };
+        (mask!=0).then_some(Self{scalar,mask,value})
+    }
     fn common(self,other:Self)->Option<Self> {
         let other=other.cast(self.scalar);let mask=self.mask&other.mask&!(self.value^other.value);
         (mask!=0).then_some(Self{scalar:self.scalar,mask,value:self.value&mask})
@@ -4055,6 +4067,16 @@ impl Builder<'_> {
             "<<" => IntegerOperation::ShiftLeft, ">>" => IntegerOperation::ShiftRight,
             _ => return,
         };
+        if matches!(operation,IntegerOperation::And|IntegerOperation::Or|IntegerOperation::Xor) {
+            let inputs=[Proof::capture(a),Proof::capture(b)];
+            for component in 0..result.regs.len() {
+                if let Some(bits)=KnownBits::bitwise(operation,scalar,
+                    inputs[0].known_bits(component%a.regs.len(),scalar),
+                    inputs[1].known_bits(component%b.regs.len(),scalar)) {
+                    result.proof.mark_domain(component,bits.domain());
+                }
+            }
+        }
         let mut facts: Facts = (0..result.regs.len()).map(|component| {
             let left = Operand::of(a, component % a.regs.len());
             let right = Operand::of(b, component % b.regs.len());
@@ -4063,7 +4085,7 @@ impl Builder<'_> {
             Fact::Index(result.component_identity(component), domain)
         }).collect();
         facts.extend(Proof::capture(result).facts(&result.ty).into_iter().filter(|fact|
-            matches!(fact, Fact::Minimum(..) | Fact::Maximum(..) | Fact::Zero(_) | Fact::NonZero(_))));
+            matches!(fact, Fact::Minimum(..) | Fact::Maximum(..) | Fact::Zero(_) | Fact::NonZero(_) | Fact::Index(_,IndexDomain::KnownBits(..)))));
         self.path = Clause::observed(&self.path,facts);
     }
     fn integer_below(&self, left: ValueIdentity, right: ValueIdentity, scalar: Scalar) -> bool {
