@@ -1,14 +1,16 @@
 <#
 .SYNOPSIS
-Remove explicitly selected generated files below this workspace's Saved directory.
+Remove explicitly selected generated files from Saved or Cargo build output.
 .DESCRIPTION
 Select paths only after their batch succeeded and the last consumer ended.
 Keep unfinished investigations and reusable caches with their original owners.
-Cargo build directories are cleaned by Cargo, outside this command.
+Cargo metadata owns the build output location; no directory name is inferred.
 .PARAMETER Path
-Literal workspace-relative paths below Saved. No automatic age or suffix selection.
+Literal workspace-relative generated paths. No automatic age or suffix selection.
 .EXAMPLE
 ./Tools/Clean.ps1 -Path Saved/Development/Finished/Output -WhatIf
+.EXAMPLE
+./Tools/Clean.ps1 -Path target/debug -WhatIf
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -21,10 +23,11 @@ $ErrorActionPreference = 'Stop'
 $workspace = (Get-Item -LiteralPath $Root).FullName
 $saved = [IO.Path]::GetFullPath((Join-Path $workspace 'Saved'))
 $boundary = $saved.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$cargoTarget = $null
 $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($workspace))
 $freeBefore = $drive.AvailableFreeSpace
 
-# The Saved boundary authorizes deletion; reparse points must not redirect it.
+# Generated output boundaries must not be redirected by reparse points.
 function Measure-SelectedItem([IO.FileSystemInfo]$Item) {
     $pending = [Collections.Generic.Stack[IO.FileSystemInfo]]::new()
     $pending.Push($Item)
@@ -53,7 +56,19 @@ $selected = @(
         }
         $absolute = [IO.Path]::GetFullPath((Join-Path $workspace $relative))
         if (-not $absolute.StartsWith($boundary, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Select a specific path below Saved: $relative"
+            if ($null -eq $cargoTarget) {
+                Push-Location $workspace
+                try {
+                    $metadata = & cargo metadata --no-deps --format-version 1 --manifest-path (Join-Path $workspace 'Cargo.toml')
+                    if ($LASTEXITCODE -ne 0) { throw "Cargo metadata failed with exit code $LASTEXITCODE" }
+                    $cargoTarget = [IO.Path]::GetFullPath(($metadata | ConvertFrom-Json).target_directory)
+                } finally { Pop-Location }
+            }
+            $cargoBoundary = $cargoTarget.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+            if (-not $absolute.Equals($cargoTarget, [StringComparison]::OrdinalIgnoreCase) -and
+                    -not $absolute.StartsWith($cargoBoundary, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Select a generated path below Saved or the Cargo target directory: $relative"
+            }
         }
         if (-not $seen.Add($absolute)) { continue }
         $ancestor = [IO.DirectoryInfo]::new([IO.Path]::GetDirectoryName($absolute))
