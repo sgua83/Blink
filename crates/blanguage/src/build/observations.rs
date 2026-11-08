@@ -100,11 +100,13 @@ impl resource::Module {
         restore(programs.into_iter().chain(templates).flat_map(image_codes_mut), material)
     }
 }
-fn image_json<P>(images: &[resource::Image<P>]) -> Result<String> {
+fn image_json<P>(images: &[resource::Image<P>], selected: Option<&std::ops::Range<usize>>) -> Result<String> {
+    if selected.is_some_and(|range| range.start > range.end) { return Err("CPU source query range is reversed".into()); }
     let values = images.iter().enumerate().map(|(index, image)| {
         Ok(match image {
             resource::Image::Cpu(image) => format!("{{\"index\":{index},\"target\":\"cpu\",\"code\":{}}}",
-                image.code_json().map_err(|e| std::io::Error::other(e.to_string()))?),
+                image.facts_json(selected).map_err(|e| std::io::Error::other(e.to_string()))?),
+            resource::Image::Gpu(_) if selected.is_some() => format!("{{\"index\":{index},\"target\":\"gpu\",\"code\":{{\"status\":\"not_supported\"}}}}"),
             resource::Image::Gpu(image) => format!("{{\"index\":{index},\"target\":\"gpu\",\"code\":{}}}",
                 image.code_json()?),
         })
@@ -117,12 +119,28 @@ pub fn code_facts(path: &Path, material: Option<&[u8]>) -> Result<String> {
     let mut compilation = unsafe { super::load(path) }?;
     if let Some(material) = material { compilation.restore_code_observations(material)?; }
     Ok(format!("{{\"kind\":\"build_code\",\"programs\":{},\"templates\":{}}}",
-        image_json(&compilation.programs)?, image_json(&compilation.templates)?))
+        image_json(&compilation.programs, None)?, image_json(&compilation.templates, None)?))
 }
 /// Reads an explicitly selected BLRI; no executable memory or runtime resource is created.
 pub fn image_code_facts(execution: &[u8], material: Option<&[u8]>) -> Result<String> {
     let mut module = unsafe { resource::from_compiler_output(execution) }
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     if let Some(material) = material { module.restore_code_observations(material)?; }
-    Ok(format!("{{\"kind\":\"execution_image_code\",\"images\":{}}}", image_json(&module.images)?))
+    Ok(format!("{{\"kind\":\"execution_image_code\",\"images\":{}}}", image_json(&module.images, None)?))
+}
+
+/// Queries original CPU sources from a BLBI, retaining each original code container.
+pub fn source_facts(path: &Path, range: std::ops::Range<usize>, material: Option<&[u8]>) -> Result<String> {
+    let mut compilation = unsafe { super::load(path) }?;
+    if let Some(material) = material { compilation.restore_code_observations(material)?; }
+    Ok(format!("{{\"kind\":\"build_source_ranges\",\"range_unit\":\"byte\",\"range_kind\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"programs\":{},\"templates\":{}}}",
+        range.start, range.end, image_json(&compilation.programs, Some(&range))?, image_json(&compilation.templates, Some(&range))?))
+}
+/// Queries original CPU sources from an explicitly selected BLRI; no executable memory is created.
+pub fn image_source_facts(execution: &[u8], range: std::ops::Range<usize>, material: Option<&[u8]>) -> Result<String> {
+    let mut module = unsafe { resource::from_compiler_output(execution) }
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    if let Some(material) = material { module.restore_code_observations(material)?; }
+    Ok(format!("{{\"kind\":\"execution_image_source_ranges\",\"range_unit\":\"byte\",\"range_kind\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"images\":{}}}",
+        range.start, range.end, image_json(&module.images, Some(&range))?))
 }

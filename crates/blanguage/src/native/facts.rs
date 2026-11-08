@@ -21,11 +21,12 @@ fn symbol(value: &NativeSymbol) -> String {
         NativeSymbol::Function(name) => object(&[("kind", text("function")), ("name", text(name))]),
     }
 }
-fn function_abi(value: &super::FunctionAbi) -> String {
+fn function_abi(value: &super::FunctionAbi, selected: Option<&std::ops::Range<usize>>) -> String {
     object(&[("kind", text("function_abi")),
         ("definition", value.definition.as_ref().map_or_else(|| "null".into(), crate::ir::SourceOrigin::ir_json)),
         ("instance", value.instance.as_deref().map_or_else(|| "null".into(), text)),
-        ("ranges", array(value.ranges.iter().map(|range| {
+        ("ranges", array(value.ranges.iter().filter(|range| selected.is_none_or(|selected|
+            range.start.max(selected.start) < range.end.min(selected.end))).map(|range| {
             let mut fields = vec![("start_byte", range.start.to_string()),
                 ("end_byte", range.end.to_string()), ("byte_length", (range.end - range.start).to_string())];
             let kind = match &range.kind {
@@ -130,26 +131,51 @@ fn parallel_abi_fields(part: &super::ParallelRangePart, origin: String) -> Vec<(
 pub(crate) mod material;
 pub use material::SavedSources;
 impl CodeSources {
-    pub(crate) fn function_abi_json(&self) -> String {
+    pub(crate) fn function_abi_json(&self, selected: Option<&std::ops::Range<usize>>) -> String {
         match self {
-            Self::Emitted { function_abi: abi, .. } => abi.as_ref().map_or_else(|| "null".into(), function_abi),
-            Self::Restored(saved) => saved.function_abi_json(None),
+            Self::Emitted { function_abi: abi, .. } => abi.as_ref().map_or_else(|| "null".into(), |abi| function_abi(abi, selected)),
+            Self::Restored(saved) => saved.function_abi_json(selected),
             Self::Unavailable => "null".into(),
         }
     }
-    pub(crate) fn operation_ranges_json(&self) -> String {
+    pub(crate) fn operation_ranges_json(&self, selected: Option<&std::ops::Range<usize>>) -> String {
         match self {
-            Self::Emitted { operation_ranges, .. } => operation_ranges.as_ref().map_or_else(|| "null".into(), |ranges| array(ranges.iter().map(|range| object(&[
+            Self::Emitted { operation_ranges, .. } => operation_ranges.as_ref().map_or_else(|| "null".into(), |ranges| array(ranges.iter().filter(|range| selected.is_none_or(|selected|
+                range.start.max(selected.start) < range.end.min(selected.end))).map(|range| object(&[
                 ("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
                 ("byte_length", (range.end - range.start).to_string()),
                 ("includes_nested_operations", range.includes_nested_operations.to_string()), ("origin", range.origin.ir_json()),
             ])))),
-            Self::Restored(saved) => saved.operation_ranges_json(None),
+            Self::Restored(saved) => saved.operation_ranges_json(selected),
             Self::Unavailable => "null".into(),
         }
     }
 }
+fn source_json(code: &NativeCode, range: &std::ops::Range<usize>) -> String {
+    let regions = code.tail_regions.as_ref().map_or_else(|| "null".into(), |tails| {
+        let mut start = 0;
+        let parts = std::iter::once(("main_function", code.function_end)).chain(tails.iter().map(|part| {
+            (match part.kind { RegionKind::StackProbe => "stack_probe", RegionKind::Alignment => "alignment", RegionKind::Literal => "literal" }, part.end)
+        }));
+        array(parts.filter_map(|(kind, end)| {
+            let begin = start; start = end;
+            (begin.max(range.start) < end.min(range.end)).then(|| object(&[("kind", text(kind)),
+                ("start_byte", begin.to_string()), ("end_byte", end.to_string()), ("byte_length", (end - begin).to_string())]))
+        }))
+    });
+    object(&[("kind", text("native_source_ranges")), ("address_basis", text("image_relative")),
+        ("range_unit", text("byte")), ("range_kind", text("half_open")),
+        ("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
+        ("byte_length", code.bytes.len().to_string()), ("function_end", code.function_end.to_string()),
+        ("regions", regions), ("function_abi", code.sources.function_abi_json(Some(range))),
+        ("operation_ranges", code.sources.operation_ranges_json(Some(range)))])
+}
 impl NativeCode {
+    /// Borrows original source records for a byte range relative to this code image.
+    pub fn source_json(&self, range: std::ops::Range<usize>) -> Result<String> {
+        if range.start > range.end { return Err("CPU source query range is reversed".into()); }
+        Ok(source_json(self, &range))
+    }
     /// Queries this actual compiler result. `ip` is the caller's address for byte zero.
     /// Execution-only deserialization does not retain these observation facts.
     pub fn code_json(&self, ip: u64) -> Result<String> {
@@ -173,8 +199,8 @@ impl NativeCode {
             ("relocations", array(self.relocations.iter().map(|value| object(&[
                 ("offset_bytes", value.offset.to_string()), ("target", symbol(&value.target)),
             ])))), ("regions", array(regions)),
-            ("operation_ranges", self.sources.operation_ranges_json()),
-            ("function_abi", self.sources.function_abi_json()),
+            ("operation_ranges", self.sources.operation_ranges_json(None)),
+            ("function_abi", self.sources.function_abi_json(None)),
             ("tail_references", self.tail_references.as_ref().map_or_else(|| "null".into(), |references| array(references.iter().map(|reference| object(&[
                 ("target_offset_bytes", reference.target.to_string()),
                 ("rel32_field_offsets_bytes", array(reference.rel32_fields.iter().map(usize::to_string))),
@@ -184,36 +210,39 @@ impl NativeCode {
 impl StageCode {
     /// Each nested code image uses its own byte-zero origin, not a shared loaded address.
     pub fn code_json(&self) -> Result<String> {
+        self.facts_json(&|code| code.code_json(0))
+    }
+    fn facts_json(&self, observe: &impl Fn(&NativeCode) -> Result<String>) -> Result<String> {
         Ok(match self {
             Self::Element { main, continuation, result } => {
                 let continuation = match continuation {
                     None => "null".into(),
-                    Some(ContinuationCode::ReductionTail(code)) => single("reduction_tail", code)?,
-                    Some(ContinuationCode::ScanAdd(code)) => single("scan_add", code)?,
-                    Some(ContinuationCode::CompactScatter(code)) => single("compact_scatter", code)?,
-                    Some(ContinuationCode::SegmentedFinish(code)) => single("segmented_finish", code)?,
+                    Some(ContinuationCode::ReductionTail(code)) => single("reduction_tail", code, observe)?,
+                    Some(ContinuationCode::ScanAdd(code)) => single("scan_add", code, observe)?,
+                    Some(ContinuationCode::CompactScatter(code)) => single("compact_scatter", code, observe)?,
+                    Some(ContinuationCode::SegmentedFinish(code)) => single("segmented_finish", code, observe)?,
                     Some(ContinuationCode::Scan { prefix, apply, source, target }) => object(&[
                         ("kind", text("scan")), ("source", source.to_string()), ("target", target.to_string()),
-                        ("prefix", prefix.code_json(0)?), ("apply", apply.code_json(0)?),
+                        ("prefix", observe(prefix)?), ("apply", observe(apply)?),
                     ]),
                 };
                 let result = match result {
                     RangeResult::None => object(&[("kind", text("none"))]),
                     RangeResult::Values(words) => object(&[("kind", text("values")), ("words", words.to_string())]),
                 };
-                object(&[("kind", text("element")), ("main", main.code_json(0)?),
+                object(&[("kind", text("element")), ("main", observe(main)?),
                     ("continuation", continuation), ("result", result)])
             }
             Self::Sort(code) => object(&[("kind", text("sort")), ("source", code.source.to_string()),
                 ("target", code.target.to_string()),
-                ("initialize", array(code.initialize.iter().map(|code| code.code_json(0)).collect::<Result<Vec<_>>>()?)),
-                ("histogram", code.histogram.code_json(0)?), ("scatter", code.scatter.code_json(0)?),
-                ("gather", code.gather.code_json(0)?)]),
+                ("initialize", array(code.initialize.iter().map(observe).collect::<Result<Vec<_>>>()?)),
+                ("histogram", observe(&code.histogram)?), ("scatter", observe(&code.scatter)?),
+                ("gather", observe(&code.gather)?)]),
         })
     }
 }
-fn single(kind: &str, code: &NativeCode) -> Result<String> {
-    Ok(object(&[("kind", text(kind)), ("code", code.code_json(0)?)]))
+fn single(kind: &str, code: &NativeCode, observe: &impl Fn(&NativeCode) -> Result<String>) -> Result<String> {
+    Ok(object(&[("kind", text(kind)), ("code", observe(code)?)]))
 }
 impl super::ModuleCode {
     /// Borrows the selected sections. Addresses remain section-relative until actual loading.
@@ -298,21 +327,40 @@ impl super::ModuleCode {
 }
 impl<P> ProgramImage<P> {
     /// Observes the original root and resource images without recompiling or loading executable memory.
-    pub fn code_json(&self) -> Result<String> {
+    pub fn code_json(&self) -> Result<String> { self.facts_json(None) }
+    /// Retains original stage, function and resource contexts for CPU source-range queries.
+    pub fn source_json(&self, range: std::ops::Range<usize>) -> Result<String> {
+        if range.start > range.end { return Err("CPU source query range is reversed".into()); }
+        self.facts_json(Some(&range))
+    }
+    pub(crate) fn facts_json(&self, selected: Option<&std::ops::Range<usize>>) -> Result<String> {
         use crate::ir::ProgramInterface;
-        Ok(object(&[("kind", text("native_program_image")), ("program", text(self.program().name())),
-            ("address_basis", text("each_image_relative")),
-            ("stages", array(self.stages().iter().map(StageCode::code_json).collect::<Result<Vec<_>>>()?)),
+        let observe = |code: &NativeCode| match selected {
+            Some(range) => Ok(source_json(code, range)), None => code.code_json(0),
+        };
+        let module = match (&self.module_code, selected) {
+            (None, _) => "null".into(),
+            (Some(_), Some(_)) => object(&[("address_basis", text("section_relative")), ("status", text("not_collected"))]),
+            (Some(module), None) => module.code_json()?,
+        };
+        let mut fields = vec![("kind", text(if selected.is_some() { "native_program_source_ranges" } else { "native_program_image" })),
+            ("program", text(self.program().name())), ("address_basis", text("each_image_relative")),
+            ("stages", array(self.stages().iter().map(|stage| stage.facts_json(&observe)).collect::<Result<Vec<_>>>()?)),
             ("functions", array(self.functions().iter().map(|(name, code)| {
-                Ok(object(&[("name", text(name)), ("code", code.code_json(0)?)]))
-            }).collect::<Result<Vec<_>>>()?)),
-            ("module_code", self.module_code.as_ref().map(super::ModuleCode::code_json).transpose()?.unwrap_or_else(|| "null".into())),
+                Ok(object(&[("name", text(name)), ("code", observe(code)?)]))
+            }).collect::<Result<Vec<_>>>()?)), ("module_code", module),
             ("resource_images", array(self.resources.iter().flat_map(|module| &module.images).enumerate().map(|(index, image)| {
                 let (target, code) = match image {
-                    crate::resource::Image::Cpu(image) => ("cpu", image.code_json()?),
+                    crate::resource::Image::Cpu(image) => ("cpu", image.facts_json(selected)?),
+                    crate::resource::Image::Gpu(_) if selected.is_some() => ("gpu", object(&[("status", text("not_supported"))])),
                     crate::resource::Image::Gpu(image) => ("gpu", image.code_json()?),
                 };
                 Ok(object(&[("index", index.to_string()), ("target", text(target)), ("code", code)]))
-            }).collect::<Result<Vec<_>>>()?))]))
+            }).collect::<Result<Vec<_>>>()?))];
+        if let Some(range) = selected {
+            fields.push(("source_range", object(&[("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
+                ("range_unit", text("byte")), ("range_kind", text("half_open"))])));
+        }
+        Ok(object(&fields))
     }
 }

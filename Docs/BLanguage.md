@@ -293,7 +293,7 @@ function_tables按原.pdata节和每12字节记录顺序返回section_index、of
 
 `bc build`显式导出原`.x64`时同时写同名`.x64.json`，包含同一映像的分区、指令及原重定位；这次查询不改变发射字节、CPU／GPU执行路径或正常`bc -c`部署内容。普通`.reloc`导出仍沿原入口，JSON查询保留每个映像原本已有的全部重定位。
 
-这些范围是compiler结果中的观察材料，不属于必要执行字段；无compiler的NativeCode不含tail_regions／tail_references／operation_ranges／function_abi或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有尾部分区材料时，code_json明确报告缺失，不从源码、旧模板或可解码性重建。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
+这些范围是compiler结果中的观察材料，不属于必要执行字段；无compiler的NativeCode不含tail_regions／tail_references／sources或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有尾部分区材料时，code_json明确报告缺失，不从源码、旧模板或可解码性重建。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
 
 ### 普通CPU函数操作的实际发射范围
 
@@ -1057,6 +1057,23 @@ bc code --image target/deployment.blri --observations target/entry.blcr
 SDK由`build::code_facts(path, Some(material))`或显式BLRI模式的`build::image_code_facts(execution_bytes, Some(material))`交接同一JSON；纯GPU不需要CPU范围材料，传None并省略CLI的--observations即可。CLI在Compiler初始化前只读装入原编码，显式提供CPU材料时沿原恢复，不读取B源码、不调用编译器／驱动、不分配可执行内存或运行代码；读取、编码、错配及范围错误直接失败，不输出部分成功。BLBI结果kind=build_code，programs／templates保留各原索引；BLRI结果kind=execution_image_code，images保留原索引。CPU项target=cpu，code为原native::ProgramImage::code_json；GPU项target=gpu，code为原spirv::ProgramImage::code_json，各模块独立ID／偏移。材料仍只配对CPU代码，纯GPU误提供CPU材料明确失败；CPU缺失材料不猜范围。所有代码地址／模块偏移均为相对值，不代表装载现场。普通COFF／最终PE、源码来源及实际装载地址分别沿C-021.7.9.5.3／.9、.7、.13交付。
 
 
+### CPU映像机器区间反查原来源
+
+```text
+bc code target/blink/entry.blbi --observations target/ranges.blcr --source-range 32:48
+bc code --image target/deployment.blri --source-range 32:48 --observations target/ranges.blcr
+```
+
+compiler Rust SDK可对原`NativeCode::source_json(start..end)`或`ProgramImage::source_json(start..end)`直接查询；保存后用`build::source_facts(path,start..end,Some(material))`及`build::image_source_facts(execution_bytes,start..end,Some(material))`，无材料传None。CLI沿原code／code --image入口增加source-range选项，与observations可任意先后；不加source-range时仍为原完整机器代码／GPU模块查询。只有读取原BLBI／BLRI及可选BLCR，不读B源码、创建Compiler、重新生成代码、分配可执行内存或运行CPU／GPU。
+
+范围单位为字节且为半开区间，每个原NativeCode各用自己的字节零；它不是整个程序的共同装载地址、某个函数符号的新起点、RVA或文件位置。start／end为十进制usize；反向范围报错，空范围没有命中，超出或完全位于代码外的范围不钳制、不推断来源。原ABI／操作／分区只按实际字节交集筛选，保留原完整区间、顺序、嵌套与全部原来源，不解码或裁短指令，不只取首项；零长度没有机器字节，不作为命中，无命中不证明已消除。
+
+NativeCode结果kind=native_source_ranges、address_basis=image_relative，保留range_unit=byte、range_kind=half_open、请求start_byte／end_byte及原byte_length／function_end；regions返回原main_function／stack_probe／alignment／literal中的相交分区及原start_byte／end_byte／byte_length，function_abi保留定义／实例上下文并筛选ranges，operation_ranges保留相交操作记录及其完整origin。定义／实例只说明所属上下文，不作为机器命中。Emitted直接借用原IR来源，Restored复用同一SavedSources筛选；不投影另一来源树或重解析JSON。原字段未保留或没有材料时为null，已采集序列筛选无相交为空列表，未知origin仍保持未知。
+
+ProgramImage结果kind=native_program_source_ranges、address_basis=each_image_relative；program、stages、functions及resource_images沿原完整查询的真实容器结构，source_range交接同次请求及单位／半开语义。Element的main、全部延续入口、Scan的prefix／apply、Sort的全部initialize／histogram／scatter／gather及具名函数分别交出上述NativeCode结果；不会因多个入口都从0起而合并它们。CPU资源子映像递归复用同一原结构，保留原索引／target；GPU项的code明确为`{"status":"not_supported"}`，不输出伪GPU来源或借用完整SPIR-V指令冒充来源。原module_code不存在时为null；存在但尚无来源材料时返回section_relative及not_collected，不丢失这个存在事实或从物理代码猜来源。这些状态是本次只读结果，不增加运行状态、来源注册表、索引或资源拥有者。
+
+保存BLBI结果kind=build_source_ranges，programs／templates保留原索引和target；BLRI结果kind=execution_image_source_ranges，images保留原索引和target。两者同样交接range_unit／range_kind及请求start_byte／end_byte；CPU的code为上述ProgramImage来源结果，GPU项明确not_supported。提供BLCR时先沿原整组身份／范围／引用及Source字段恢复，错误直接交接，不输出部分匹配；无材料的CPU查询仍返回真实代码长度／容器上下文和null来源，而原完整CPU机器查询仍保留其缺少尾部分区的错误语义。执行编码、BLCR7／BLCF10及最后消费者的资源寿命保持；返回字符串归调用者，不延长原Source／IR或实际CPU／GPU消费者。源码范围正查仍沿.6.3／.6.4待实现，真实装载地址仍沿.13。
+
 ### 已保存COFF的物理结构与代码查询
 
 ```text
@@ -1087,7 +1104,7 @@ Rust SDK使用`object::source_facts(bytes, selection, start..end, Some(material)
 
 结果kind=coff_source_ranges、address_basis=section_relative、range_unit=byte、range_kind=half_open；start_byte／end_byte保留原请求，selection沿原物理选择。sections仅列所选原节的section_number／name／byte_length及regions／generation／function_abi／operation_ranges；查询不输出机器字节、指令解码或另一份符号／重定位目录。regions返回与请求存在实际字节交集的原生成分区，保留原kind、start_byte／end_byte／byte_length；function_abi保留原定义／实例上下文，只筛选其ranges；operation_ranges直接筛选原操作记录。原区间、嵌套／顺序、参数、实例、内联、域及变换来源完整保留，不裁短记录、合并命中或按地址只取第一项。零长度记录没有字节交集；即使位于请求内部也不当作机器命中。
 
-generation保留所选整节真实生成目的，function_abi的definition／instance也仅是上下文；实际命中须读对应regions／ranges／operation_ranges，不把上下文冒充所查字节的具体来源。原字段未采集／手写节没有对应字段／未提供材料为null；原已采集序列经筛选无命中为空列表。未知来源记录仍原样返回，空范围和范围外不会制造源码、已消除状态、断点或机器安全结论；原完整查询可继续观察零长度及消除材料。源范围正查和CPU映像查询仍沿C-021.7.9.7.6其他叶待实现，不将本入口写成完整双向查询。
+generation保留所选整节真实生成目的，function_abi的definition／instance也仅是上下文；实际命中须读对应regions／ranges／operation_ranges，不把上下文冒充所查字节的具体来源。原字段未采集／手写节没有对应字段／未提供材料为null；原已采集序列经筛选无命中为空列表。未知来源记录仍原样返回，空范围和范围外不会制造源码、已消除状态、断点或机器安全结论；原完整查询可继续观察零长度及消除材料。源范围正查仍沿C-021.7.9.7.6.3／.6.4待实现；CPU映像反查见下述独立入口，不将COFF入口写成完整双向查询。
 
 提供材料时先由原Material读取、配对整组代码节／重定位／主范围及全部原布局，然后借用同一只读SavedSources筛选原字段；错误沿原入口交接，不输出部分材料。未提供材料时regions及两类来源字段明确为null，不从可解码性或.pdata猜生成来源。查询不读源码、重编、建立反向索引／来源树、装入代码或创建执行资源；所有临时读取和返回字符串归调用者，结束后不持有原Source／IR或运行资源。BLCF10／BLCR7及必要执行编码、材料捕获和资源生命周期保持。
 

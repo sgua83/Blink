@@ -5,7 +5,7 @@ mod identity;
 mod inputs;
 mod graph;
 mod observations;
-pub use observations::{code_facts, image_code_facts};
+pub use observations::{code_facts, image_code_facts, source_facts, image_source_facts};
 pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
 pub(crate) use inputs::Inputs;
 pub use identity::{Declaration, Inputs as InputFacts, Selection, SourceInput, SourceInputs};
