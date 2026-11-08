@@ -1,6 +1,6 @@
 //! 每个原生范围拥有完整逻辑 tile；发布后按阶段执行所有 lane，私有值随 lane 保存。
 use super::*;
-use crate::native::ParallelRangePart;
+use crate::native::{ParallelRangePart, TileCollectivePart};
 use super::allocation::Location;
 impl Emitter<'_> {
     fn tile_length_slot(&self) -> u32 {
@@ -213,16 +213,21 @@ impl Emitter<'_> {
     }
     pub(super) fn tile_collective(&mut self, collective: &TileCollective) {
         for (word, result) in &collective.results {
+            let start = self.code.len();
             self.bytes(&[0x4c, 0x8d, 0x94, 0x24]);
-            self.u32(
-                self.shared_stream(self.stage.shared_word(collective.tile, *word))
-                    + match self.stage.shared_word(collective.tile, *word) { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 },
-            );
+            let input_offset = self.shared_stream(self.stage.shared_word(collective.tile, *word))
+                + match self.stage.shared_word(collective.tile, *word) { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 };
+            self.u32(input_offset);
             self.bytes(&[0x4c, 0x8d, 0x9c, 0x24]);
-            self.u32(self.private_stream(PrivateSlot::Register(*result)));
+            let output_offset = self.private_stream(PrivateSlot::Register(*result));
+            self.u32(output_offset);
             self.bytes(&[0x8b, 0x8c, 0x24]);
-            self.u32(self.tile_length_slot());
+            let length_offset = self.tile_length_slot();
+            self.u32(length_offset);
             let scalar = self.stage.registers[*result];
+            let plane_stride = self.stage.workgroup_width()*4;
+            self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
+                part: TileCollectivePart::Setup { input_offset, output_offset, length_offset, plane_stride } });
             let float = scalar.is_float();
             let wide = scalar.size() == 8;
             let operator = collective.op.operator();
@@ -239,10 +244,11 @@ impl Emitter<'_> {
                     e.bytes(&[0x41, 0x89, 0x03]);
                     if wide {
                         e.bytes(&[0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 32, 0x41, 0x89, 0x93]);
-                        e.u32(e.stage.workgroup_width()*4);
+                        e.u32(plane_stride);
                     }
                 }
             };
+            let start = self.code.len();
             if identity == 0 {
                 self.bytes(if float {
                     &[0x0f, 0x57, 0xc0]
@@ -257,11 +263,17 @@ impl Emitter<'_> {
                     self.instruction(Some(0x66), &[0x0f, 0x6e], wide, 0, operands::Operand::Register(0));
                 }
             }
+            self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
+                part: TileCollectivePart::Identity { bits: identity } });
             let begin = self.code.len();
             if collective.op.exclusive() {
+                let start = self.code.len();
                 store(self);
                 self.bytes(&[0x49, 0x83, 0xc3, 0x04]);
+                self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
+                    part: TileCollectivePart::ScanOutput });
             }
+            let start = self.code.len();
             if float && wide {
                 self.instruction(None, &[0x8b], false, 2, operands::Operand::memory(10, 0));
                 self.instruction(None, &[0x8b], false, 8, operands::Operand::memory(10, high_delta));
@@ -318,14 +330,19 @@ impl Emitter<'_> {
             self.bytes(&[0x49, 0x83, 0xc2, 0x04, 0xff, 0xc9]);
             let again = self.jump(Some(0x85));
             self.patch(again, begin);
+            self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
+                part: TileCollectivePart::Accumulate { input_high_delta: high_delta, loop_start: begin } });
             if !collective.op.exclusive() {
+                let start = self.code.len();
                 self.bytes(&[0x8b, 0x8c, 0x24]);
-                self.u32(self.tile_length_slot());
+                self.u32(length_offset);
                 let fill = self.code.len();
                 store(self);
                 self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
                 let again = self.jump(Some(0x85));
                 self.patch(again, fill);
+                self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
+                    part: TileCollectivePart::Fill { length_offset, loop_start: fill } });
             }
         }
     }

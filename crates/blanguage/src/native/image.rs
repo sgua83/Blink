@@ -142,6 +142,16 @@ pub enum ParallelRangePart {
     TilePublishLoad { tile: usize, word: u32, value: usize, scalar: crate::ir::Scalar },
     TilePublishShift { tile: usize, word: u32, value: usize, scalar: crate::ir::Scalar, part: u32 },
     TilePublishStore { tile: usize, word: u32, value: usize, scalar: crate::ir::Scalar, part: u32, storage_offset: u32, unit_bytes: u32 },
+    TileCollective { tile: usize, word: u32, result: usize, scalar: crate::ir::Scalar, operation: crate::ir::TileOp, part: TileCollectivePart },
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, Debug)]
+pub enum TileCollectivePart {
+    Setup { input_offset: u32, output_offset: u32, length_offset: u32, plane_stride: u32 },
+    Identity { bits: crate::ir::Bits },
+    ScanOutput,
+    Accumulate { input_high_delta: u32, loop_start: usize },
+    Fill { length_offset: u32, loop_start: usize },
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

@@ -99,6 +99,24 @@ fn parallel_abi_fields(part: &super::ParallelRangePart, origin: String) -> Vec<(
                 ("value_register_index", value.to_string()), ("scalar", text(scalar.name()))]);
             fields.extend([("part_index", part.to_string()), ("storage_offset_bytes", storage_offset.to_string()), ("unit_bytes", unit_bytes.to_string())]); "tile_publish_store"
         }
+        TileCollective { tile, word, result, scalar, operation, part } => {
+            fields.extend([("tile_index", tile.to_string()), ("value_offset_bytes", word.to_string()),
+                ("result_register_index", result.to_string()), ("scalar", text(scalar.name())), ("tile_operation", text(&format!("{operation:?}")))]);
+            match part {
+                super::TileCollectivePart::Setup { input_offset, output_offset, length_offset, plane_stride } => {
+                    fields.extend([("input_offset_bytes", input_offset.to_string()), ("output_offset_bytes", output_offset.to_string()),
+                        ("length_offset_bytes", length_offset.to_string()), ("plane_stride_bytes", plane_stride.to_string())]); "tile_collective_setup"
+                }
+                super::TileCollectivePart::Identity { bits } => { fields.push(("identity_bits", text(&format!("0x{bits:016x}")))); "tile_collective_identity" }
+                super::TileCollectivePart::ScanOutput => "tile_collective_scan_output",
+                super::TileCollectivePart::Accumulate { input_high_delta, loop_start } => {
+                    fields.extend([("input_high_delta_bytes", input_high_delta.to_string()), ("loop_start_byte", loop_start.to_string())]); "tile_collective_accumulate"
+                }
+                super::TileCollectivePart::Fill { length_offset, loop_start } => {
+                    fields.extend([("length_offset_bytes", length_offset.to_string()), ("loop_start_byte", loop_start.to_string())]); "tile_collective_fill"
+                }
+            }
+        }
         TileInputBoundary { width } => { fields.push(("width", width.to_string())); "tile_input_boundary" }
         TileInputCopy { binding, source_offset, storage_offset, unit_bytes } => {
             fields.extend([("binding_index", binding.to_string()), ("source_offset_bytes", source_offset.to_string()),

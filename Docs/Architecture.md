@@ -190,7 +190,7 @@ StageCode／ContinuationCode／SortCode按实际容器逐层交接，ProgramImag
 
 **已保存原生映像的可选范围事实与装入交接**
 
-原生成结果显式保存与同一CPU代码匹配的必要范围事实，交接独立BLCR6材料；无源码装入后消费原材料，不重编或猜历史。代码、身份及材料各有原所有者与结束条件，不复制代码、图、索引或装入器。正式包不带材料仍保持原执行字节、必要ABI、重定位及原生展开；未保存或剥离后如实报告不可取得。接续.5.2.1，部署材料分离复用.70，普通COFF仍沿.5.3。
+原生成结果显式保存与同一CPU代码匹配的必要范围事实，交接独立BLCR7材料；无源码装入后消费原材料，不重编或猜历史。代码、身份及材料各有原所有者与结束条件，不复制代码、图、索引或装入器。正式包不带材料仍保持原执行字节、必要ABI、重定位及原生展开；未保存或剥离后如实报告不可取得。接续.5.2.1，部署材料分离复用.70，普通COFF仍沿.5.3。
 
 现有build::Compilation与resource::Module的code_observations／restore_code_observations只交接各原CPU代码的执行字段摘要、原尾部分区、实际尾部引用及已有操作／ABI来源；Module按原前置合同分组以对应Compilation的programs／templates，各组及原阶段／延续／Sort容器顺序保持，每个CPU映像随后交接functions原顺序的命名callee，再沿同一资源目录的实际顺序交接CPU子映像的阶段与callee；GPU不占CPU条目，完整查询则在resource_images保留其真实目标和原目录索引。捕获和恢复共用同一代码顺序。摘要消费原NativeCode执行编码，不含源码、SDK或工具链身份；匹配只说明同一执行编码，不证明来源、指令安全或硬件运行。数量、匹配及范围完整覆盖在任何写入前核对，成功后将tail_regions、tail_references及只读来源移动到同一NativeCode，错误不部分改写。材料归调用者，无材料的缓存或部署值明确缺失，不自动重编；BLBI1／BLRI47执行编码与运行角色不消费材料，纯GPU不伪造CPU范围。
 
@@ -226,7 +226,7 @@ ModuleCode已在BLRI47内保存，直接模块查询不依赖NativeCode尾部分
 
 **COFF原生成代码、辅助、常量和对齐范围的完整交接**
 
-原Emitter／NativeCode及object::emit真实写入是范围类别的唯一生产者；普通函数、无帧叶入口与尾部各区间由同一Section可选持有并按需保存，不建立第二代码／图／索引或资源所有者。Function按值接收同一NativeCode的tail_regions、tail_references与sources，主末端继续沿原.pdata；原启动／输出／导入跳板直接交出Startup／Print(Scalar)／ImportThunk，三者都明确拥有整节代码的生成职责，不再交接含糊的Generated类别。原Object::code_observations先确认原事实仍在，再复用原COFF编码作一次临时序列化，沿原B读取器取得最终物理节、重定位与已声明范围；输出独立BLCF9材料，不含执行代码、源码文本或SDK身份，临时编码结束释放。不读源文件或重新生成机器码，缓存没有事实明确缺失，不自动重编；无代码对象可以交接空集合。
+原Emitter／NativeCode及object::emit真实写入是范围类别的唯一生产者；普通函数、无帧叶入口与尾部各区间由同一Section可选持有并按需保存，不建立第二代码／图／索引或资源所有者。Function按值接收同一NativeCode的tail_regions、tail_references与sources，主末端继续沿原.pdata；原启动／输出／导入跳板直接交出Startup／Print(Scalar)／ImportThunk，三者都明确拥有整节代码的生成职责，不再交接含糊的Generated类别。原Object::code_observations先确认原事实仍在，再复用原COFF编码作一次临时序列化，沿原B读取器取得最终物理节、重定位与已声明范围；输出独立BLCF10材料，不含执行代码、源码文本或SDK身份，临时编码结束释放。不读源文件或重新生成机器码，缓存没有事实明确缺失，不自动重编；无代码对象可以交接空集合。
 
 材料按原物理代码节顺序保存节号、相关代码／节特征／重定位真实目标／原声明范围摘要，以及Function尾部及可选原引用或Startup／Print／ImportThunk类别；Print直接保存该次原Scalar。捕获借用同一Layout直接编码，不克隆布局或原引用向量；查询每节只沿Material取得一次原Layout，区域、原引用和手写职责都直接借用它，不在Material分别维护或查找这些事实。文件位置、私有构建／BLCO、工具链和符号表索引不成为身份；匹配不证明来源、执行安全或整个包相同。code_facts_with_observations与bc code --object --observations先核对整组数量、顺序、代码／重定位／范围及全部布局，再沿原查询返回选定值；原引用目标不超出节长度，四字节rel32字段完整位于同一物理节，字段的实际有符号位移加字段末端须等于原目标。错误不降为无材料成功。选中节tail_references中，null表示未交接，空列表表示已采集但没有引用；目标与字段均为节内字节偏移，不改变地址基准。普通函数、探栈辅助与完整手写生成代码解码，对齐及字面量只交接原字节，非代码节保持原观察范围。没有材料时明确unclassified，不由.text或可解码性猜补。.pdata／展开事实始终读取实际文件，各地址仍为节内相对值。
 
@@ -886,7 +886,7 @@ GenerationAnchor::BitcastConstantFold的expression借用该Constant原source_sit
 
 材料在原Emitter中随正在形成的代码暂存，完成时移动到NativeCode.sources的compiler专用Emitted.operation_ranges。Some空序列表示已采集但没有操作，None表示本映像没有保留该材料；单条OperationOrigin为空表示已知真实发射范围但来源未知，不从函数或相邻行补造。普通application::emit_value和codegen::emit的并行主入口启用同一容器，标量block与SIMD packet_block共用Emitter::operation_range；custom_reduce::emit的自定义集合八类入口也启用同一容器；其余内建集合发射器及完整生成职责继续.4.3。源和生成事实只不可变共享，不持有Inst、ValueCode、Stage、AST／World或运行资源；到最后代码事实消费者结束即释放，不为查询保持可执行资源。
 
-NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继续读同一最终字节。观察只覆盖实际IR操作发射，不把未交接的参数home、栈保存／结果搬移、退出或尾部来源写成已映射；这些分别归.2／.3。原reads::place移动完整Inst，来源随实际顺序移动；纹理采样降低由原生成点共享cpu_texture_sample职责与原OperationOrigin，已沿.4闭合，不在查询处补造。必要执行编码不保存来源，compiler角色执行解码为CodeSources::Unavailable；BLCR6恢复已保存的只读操作来源；BLCF9沿原Section显式保存与恢复已有操作范围、原语法及生成事实，不通过恢复尾部分区冒称已恢复操作来源。原SDK可直接借用新编译映像的实际操作范围；已实现范围与验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-1)。
+NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继续读同一最终字节。观察只覆盖实际IR操作发射，不把未交接的参数home、栈保存／结果搬移、退出或尾部来源写成已映射；这些分别归.2／.3。原reads::place移动完整Inst，来源随实际顺序移动；纹理采样降低由原生成点共享cpu_texture_sample职责与原OperationOrigin，已沿.4闭合，不在查询处补造。必要执行编码不保存来源，compiler角色执行解码为CodeSources::Unavailable；BLCR7恢复已保存的只读操作来源；BLCF10沿原Section显式保存与恢复已有操作范围、原语法及生成事实，不通过恢复尾部分区冒称已恢复操作来源。原SDK可直接借用新编译映像的实际操作范围；已实现范围与验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-1)。
 
 <a id="tool-7-4-1-2"></a>
 
@@ -926,7 +926,7 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-1-3-1"></a>
 
-**探栈辅助的实际调用字段。** 输入是原probe保存的真实rel32字段位置，唯一生产者是原finish的probe分支，输出为同一NativeCode的TailReference(target,rel32_fields)，目标是该次辅助实际起点，引用列表只交接该原调用字段。原FrameAllocate范围可解释调用的生成职责，原辅助分区说明实际代码；两者不互相冒充，不能套成某条源码操作。记录在原finish局部容器中随代码形成，完成时移动至同一NativeCode，随最后代码事实消费者释放；不保留Emitter／Frame、调用图或运行资源，不改变原patch、探栈字节、栈／展开／完成规则。None表示材料未保留，Some空列表表示已采集但无尾部引用；执行解码为None；BLCR6与BLCF9分别沿原映像和Section保存／恢复同一可选尾部引用。已实现范围及验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-3-1)。
+**探栈辅助的实际调用字段。** 输入是原probe保存的真实rel32字段位置，唯一生产者是原finish的probe分支，输出为同一NativeCode的TailReference(target,rel32_fields)，目标是该次辅助实际起点，引用列表只交接该原调用字段。原FrameAllocate范围可解释调用的生成职责，原辅助分区说明实际代码；两者不互相冒充，不能套成某条源码操作。记录在原finish局部容器中随代码形成，完成时移动至同一NativeCode，随最后代码事实消费者释放；不保留Emitter／Frame、调用图或运行资源，不改变原patch、探栈字节、栈／展开／完成规则。None表示材料未保留，Some空列表表示已采集但无尾部引用；执行解码为None；BLCR7与BLCF10分别沿原映像和Section保存／恢复同一可选尾部引用。已实现范围及验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-3-1)。
 
 <a id="tool-7-4-1-3-2"></a>
 
@@ -938,7 +938,7 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-2"></a>
 
-**CPU并行主入口与SIMD的指令来源。** 原Stage带来源操作→native/codegen.rs及packet→主NativeCode。标量与实际SIMD、控制分支和展开均交接真实区间及源／实例关系，不把生成循环整体当一条源语句；指令及向量化策略保持。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。实际标量IR、SIMD步骤及下列范围ABI／标量控制／packet控制均沿原事实交接；tile输入快照、阶段控制及私有流生成范围已交接，发布与集合核生成范围仍未完成，分别见下列独立职责；父项[剩余范围](Issues.md#c-021-7-9-7-4-2)不占源码。
+**CPU并行主入口与SIMD的指令来源。** 原Stage带来源操作→native/codegen.rs及packet→主NativeCode。标量与实际SIMD、控制分支和展开均交接真实区间及源／实例关系，不把生成循环整体当一条源语句；指令及向量化策略保持。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。实际标量IR、SIMD步骤及下列范围ABI／标量控制／packet控制均沿原事实交接；tile输入快照、阶段控制、私有流、发布与集合内部生成范围均沿下列原实际发射者交接；[闭合范围](FixedIssues.md#c-021-7-9-7-4-2)只覆盖本并行主入口与SIMD，普通集合辅助、GPU来源、运行观察及其他工具继续各自原职责，不将本项扩大为完整调试／观察交付。
 
 <a id="tool-7-4-2-1"></a>
 
@@ -946,11 +946,11 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-2-2"></a>
 
-**SIMD计划到实际指令的原IR来源。** 原Stage Inst→原packet::Plan的临时Step→同次packet_block发射→原OperationRange。Step将其既有执行kind与对应原Inst借用放在同一记录，借用只活到原计划结束；不克隆IR、复制另一来源列表或保留计划。逐实际Step发射前后读取同一字节游标，最终范围通过原Emitter::operation_range取得OperationOrigin，控制父项在实际子项之后交接，允许多对多、嵌套、零长度和未知。原向量化选择、地址专用Index移除及指令均保持；已移除步骤没有SIMD发射范围，不补造指令，同一原操作在SIMD和标量尾部的实际发射分别记录。与标量材料一起由同一NativeCode及既有BLCR6／BLCF9消费，执行编码不保留。已实现与实际验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-2-2)。
+**SIMD计划到实际指令的原IR来源。** 原Stage Inst→原packet::Plan的临时Step→同次packet_block发射→原OperationRange。Step将其既有执行kind与对应原Inst借用放在同一记录，借用只活到原计划结束；不克隆IR、复制另一来源列表或保留计划。逐实际Step发射前后读取同一字节游标，最终范围通过原Emitter::operation_range取得OperationOrigin，控制父项在实际子项之后交接，允许多对多、嵌套、零长度和未知。原向量化选择、地址专用Index移除及指令均保持；已移除步骤没有SIMD发射范围，不补造指令，同一原操作在SIMD和标量尾部的实际发射分别记录。与标量材料一起由同一NativeCode及既有BLCR7／BLCF10消费，执行编码不保留。已实现与实际验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-2-2)。
 
 <a id="tool-7-4-2-3"></a>
 
-**CPU并行范围包装的生成来源。** 原Stage及五参数范围ABI→原codegen::emit和packet_loop实际字节游标→原FunctionAbi.ranges→同一NativeCode.sources。AbiRangeKind::ParallelRange以part区分下列生成职责，stage_origin只借原operation_source／generated_origin作为阶段上下文，不是选择条件或每条控制指令的精确业务语法位置。FunctionAbi.definition／instance保持None，不伪造普通B函数、B形参或源语句。每段只围住该所有者实际生成的字节，不包住block／packet_block的用户IR；操作范围继续独立保留原多对多关系。可选FunctionAbi与操作来源统一由同次Emitter持有；普通函数及范围入口保持原定义／实例和Some采集，原未采集辅助入口保持None。各发射点直接向同一abi_range记录，tile／packet不再逐层传递局部ABI；finish直接移动已有材料，最后事实消费者结束即释放，不保留Stage、IR或运行资源。与原普通ABI共用唯一职责编码表，编码直接借用原范围及来源，删除整组只读投影副本；恢复仅生成无源文本的只读事实。BLCR6／BLCF9保存同一字段，旧版本材料明确不支持；必要BLRI／BLCO、机器码、帧、展开、SIMD选择和运行生命周期保持。三项已实现，见[闭合台账](FixedIssues.md#c-021-7-9-7-4-2-3)。
+**CPU并行范围包装的生成来源。** 原Stage及五参数范围ABI→原codegen::emit和packet_loop实际字节游标→原FunctionAbi.ranges→同一NativeCode.sources。AbiRangeKind::ParallelRange以part区分下列生成职责，stage_origin只借原operation_source／generated_origin作为阶段上下文，不是选择条件或每条控制指令的精确业务语法位置。FunctionAbi.definition／instance保持None，不伪造普通B函数、B形参或源语句。每段只围住该所有者实际生成的字节，不包住block／packet_block的用户IR；操作范围继续独立保留原多对多关系。可选FunctionAbi与操作来源统一由同次Emitter持有；普通函数及范围入口保持原定义／实例和Some采集，原未采集辅助入口保持None。各发射点直接向同一abi_range记录，tile／packet不再逐层传递局部ABI；finish直接移动已有材料，最后事实消费者结束即释放，不保留Stage、IR或运行资源。与原普通ABI共用唯一职责编码表，编码直接借用原范围及来源，删除整组只读投影副本；恢复仅生成无源文本的只读事实。BLCR7／BLCF10保存同一字段，旧版本材料明确不支持；必要BLRI／BLCO、机器码、帧、展开、SIMD选择和运行生命周期保持。三项已实现，见[闭合台账](FixedIssues.md#c-021-7-9-7-4-2-3)。
 
 <a id="tool-7-4-2-3-1"></a>
 
@@ -966,11 +966,11 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-2-4"></a>
 
-**tile内部协作包装。** 输入快照、阶段控制及私有流生成范围已沿下列.1／.2／.3交接；发布与集合的原IR指令范围沿.4.1／.5.1交接，其内部逐片段／机器生成职责仍未完成。来源与运行资源各随最后真实消费者存活，原block范围、外层ABI或整条IR区间不代替未交接职责，见[原父项](Issues.md#c-021-7-9-7-4-2-4)。
+**tile内部协作包装。** 输入快照、阶段控制及私有流生成范围沿下列.1／.2／.3交接；发布与集合分别保留.4.1／.5.1原IR指令来源及.4.2／.5.2内部实际生成职责。各层直接记录同一Emitter的ABI／操作事实，不保存第二套阶段计划，静态材料与运行资源分别按其最后真实消费者存活；原block范围、外层ABI或整条IR区间不代替内部职责。[闭合父项](FixedIssues.md#c-021-7-9-7-4-2-4)。
 
 <a id="tool-7-4-2-4-1"></a>
 
-**tile输入快照生成。** 原Stage.input_words／workgroup_width及实际最终栈偏移→原tile_input实际字节游标→同一FunctionAbi.ranges／NativeCode.sources→原BLCR6／BLCF9保存和查询。tile_input_boundary描述块入口对齐判定与实际长度建立，保留width；tile_input_copy逐实际片段描述原指针建立及复制循环，保留binding_index、source_offset_bytes、storage_offset_bytes和unit_bytes。源偏移相对原输入绑定每条记录，目的偏移相对该次范围入口建立的RSP；一次循环复制每个有效lane的一个单元，相邻lane在原共享流中按四字节步长，运行长度与源stride仍由原ABI所有者解释。原存储表达式只求值一次并交接同一结果，片段去重、生命周期重用、窄字节与宽值分片仍归原Stage，不从观察材料重建布局。stage_origin只共享原阶段上下文，不是某个输入捕获或复制指令的精确业务语法；definition／instance保持None。普通tile入口与tile_phases都由原tile_input直接记录同次Emitter持有的ABI，用户block及phase／私有流／发布／集合内部控制不被该范围覆盖。来源在最后事实消费者结束后释放，不持有Stage、片段表或运行快照，不另建生产、存储或释放链。必要机器字节、展开、执行编码及快照顺序保持。已实现与实际验证见[闭合叶项](FixedIssues.md#c-021-7-9-7-4-2-4-1)。
+**tile输入快照生成。** 原Stage.input_words／workgroup_width及实际最终栈偏移→原tile_input实际字节游标→同一FunctionAbi.ranges／NativeCode.sources→原BLCR7／BLCF10保存和查询。tile_input_boundary描述块入口对齐判定与实际长度建立，保留width；tile_input_copy逐实际片段描述原指针建立及复制循环，保留binding_index、source_offset_bytes、storage_offset_bytes和unit_bytes。源偏移相对原输入绑定每条记录，目的偏移相对该次范围入口建立的RSP；一次循环复制每个有效lane的一个单元，相邻lane在原共享流中按四字节步长，运行长度与源stride仍由原ABI所有者解释。原存储表达式只求值一次并交接同一结果，片段去重、生命周期重用、窄字节与宽值分片仍归原Stage，不从观察材料重建布局。stage_origin只共享原阶段上下文，不是某个输入捕获或复制指令的精确业务语法；definition／instance保持None。普通tile入口与tile_phases都由原tile_input直接记录同次Emitter持有的ABI，用户block及phase／私有流／发布／集合内部控制不被该范围覆盖。来源在最后事实消费者结束后释放，不持有Stage、片段表或运行快照，不另建生产、存储或释放链。必要机器字节、展开、执行编码及快照顺序保持。已实现与实际验证见[闭合叶项](FixedIssues.md#c-021-7-9-7-4-2-4-1)。
 
 <a id="tool-7-4-2-4-2"></a>
 
@@ -986,23 +986,23 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-2-4-4-1"></a>
 
-**原发布指令来源。** 原Stage Inst→TilePhase.step对同一Inst的临时借用→原CPU实际生成区间→既有OperationRange／NativeCode.sources。阶段直接借用原指令，原活跃性沿live_before及Inst.results处理，不再维护只保留类别／载荷的中间指令枚举或第二份分类。CPU的原发布生成前后读取同一字节游标，复用原Emitter::operation_range交接原OperationOrigin；普通block仍使用同一记录机制，阶段路径不再丢失这条指令的SourceSite、实例／内联及生成关系。来源未知如实保持未知，不能从Stage位置重建语法；多条IR对应同一原语法、零长度和实际嵌套继续沿原规则。最终事实只持有原不可变来源，临时Inst借用随原阶段消费结束，不让NativeCode保存Stage、IR或活跃表。整条操作区间覆盖该次真实降低，未由此区分其中每个片段、单位元或循环职责；内部生成职责见下列.2。观察材料沿当前BLCR6／BLCF9，必要执行编码保持；已保存材料仅恢复原记录，查询不补造此前未采集的来源。已实现与实际验证见[闭合叶项](FixedIssues.md#c-021-7-9-7-4-2-4-4-1)。
+**原发布指令来源。** 原Stage Inst→TilePhase.step对同一Inst的临时借用→原CPU实际生成区间→既有OperationRange／NativeCode.sources。阶段直接借用原指令，原活跃性沿live_before及Inst.results处理，不再维护只保留类别／载荷的中间指令枚举或第二份分类。CPU的原发布生成前后读取同一字节游标，复用原Emitter::operation_range交接原OperationOrigin；普通block仍使用同一记录机制，阶段路径不再丢失这条指令的SourceSite、实例／内联及生成关系。来源未知如实保持未知，不能从Stage位置重建语法；多条IR对应同一原语法、零长度和实际嵌套继续沿原规则。最终事实只持有原不可变来源，临时Inst借用随原阶段消费结束，不让NativeCode保存Stage、IR或活跃表。整条操作区间覆盖该次真实降低，未由此区分其中每个片段、单位元或循环职责；内部生成职责见下列.2。观察材料沿当前BLCR7／BLCF10，必要执行编码保持；已保存材料仅恢复原记录，查询不补造此前未采集的来源。已实现与实际验证见[闭合叶项](FixedIssues.md#c-021-7-9-7-4-2-4-4-1)。
 
 <a id="tool-7-4-2-4-4-2"></a>
 
-**内部生成职责。** 原Publication和storage_words→publish_values的原地址准备、值装载、64位片段右移与实际共享存储→同一Emitter持有的FunctionAbi／NativeCode.sources，沿BLCR6／BLCF9保存和查询。TilePublishPointer记录原R10 lane地址准备及本Stage的tile_index；TilePublishLoad保留原value_offset_bytes、value_register_index与Scalar，寄存器号是该Stage的IR值身份，不是机器GPR或跨版本身份。TilePublishShift另交实际高字移位及零基part_index；TilePublishStore只交storage_words实际使用片段的写入，保留同一值身份、part_index、实际storage_offset_bytes与unit_bytes。value_offset_bytes是发布记录内原值起始字节，part_index乘四得到该32位片段的逻辑字节；u8／u16存储仍分别写一／二字节，u64／f64沿原高低平面各写四字节。共享地址直接消费原编译期Frame，无源字段不补造存储事实；原有未写载入或移位只描述真实生成，不冒充写入。零字节载入表示值已经在所需位置，保留零长度而不补指令。stage_origin只共享原范围上下文，实际发布语法／实例／内联关系沿相交的原OperationRange查询；不以阶段位置冒充发布声明。该材料只描述静态发射，不证明运行写入已发生、GPU完成或资源释放；最后原代码事实消费者结束后释放，不保留Publication、Stage、布局表或运行资源。原发布、tile_atomic、顺序、机器字节及执行ABI保持，集合内部职责继续原独立范围。[闭合叶项](FixedIssues.md#c-021-7-9-7-4-2-4-4-2)。
+**内部生成职责。** 原Publication和storage_words→publish_values的原地址准备、值装载、64位片段右移与实际共享存储→同一Emitter持有的FunctionAbi／NativeCode.sources，沿BLCR7／BLCF10保存和查询。TilePublishPointer记录原R10 lane地址准备及本Stage的tile_index；TilePublishLoad保留原value_offset_bytes、value_register_index与Scalar，寄存器号是该Stage的IR值身份，不是机器GPR或跨版本身份。TilePublishShift另交实际高字移位及零基part_index；TilePublishStore只交storage_words实际使用片段的写入，保留同一值身份、part_index、实际storage_offset_bytes与unit_bytes。value_offset_bytes是发布记录内原值起始字节，part_index乘四得到该32位片段的逻辑字节；u8／u16存储仍分别写一／二字节，u64／f64沿原高低平面各写四字节。共享地址直接消费原编译期Frame，无源字段不补造存储事实；原有未写载入或移位只描述真实生成，不冒充写入。零字节载入表示值已经在所需位置，保留零长度而不补指令。stage_origin只共享原范围上下文，实际发布语法／实例／内联关系沿相交的原OperationRange查询；不以阶段位置冒充发布声明。该材料只描述静态发射，不证明运行写入已发生、GPU完成或资源释放；最后原代码事实消费者结束后释放，不保留Publication、Stage、布局表或运行资源。原发布、tile_atomic、顺序、机器字节及执行ABI保持，集合内部职责继续原独立范围。[闭合叶项](FixedIssues.md#c-021-7-9-7-4-2-4-4-2)。
 
 <a id="tool-7-4-2-4-5"></a>
 
-**tile集合生成来源。** 原Inst来源范围已按下列.1交接；内部机器生成职责仍按.2待实现，不将整条IR区间当完整机器职责，原父项见[台账](Issues.md#c-021-7-9-7-4-2-4-5)。
+**tile集合生成来源。** 原Inst来源范围按下列.1交接，内部位置／单位元／顺序扫描／归约填充沿.2交给同一代码事实，两者分别说明原操作与机器生成。[闭合父项](FixedIssues.md#c-021-7-9-7-4-2-4-5)。
 
 <a id="tool-7-4-2-4-5-1"></a>
 
-**原集合指令来源。** 原Stage Inst→TilePhase.step对同一Inst的临时借用→原CPU实际生成区间→既有OperationRange／NativeCode.sources。阶段直接借用原指令，原活跃性沿live_before及Inst.results处理，不再维护只保留类别／载荷的中间指令枚举或第二份分类。CPU的原集合生成前后读取同一字节游标，复用原Emitter::operation_range交接原OperationOrigin；普通block仍使用同一记录机制，阶段路径不再丢失这条指令的SourceSite、实例／内联及生成关系。来源未知如实保持未知，不能从Stage位置重建语法；多条IR对应同一原语法、零长度和实际嵌套继续沿原规则。最终事实只持有原不可变来源，临时Inst借用随原阶段消费结束，不让NativeCode保存Stage、IR或活跃表。整条操作区间覆盖该次真实降低，未由此区分其中每个片段、单位元或循环职责；内部生成职责见下列.2。观察材料沿当前BLCR6／BLCF9，必要执行编码保持；已保存材料仅恢复原记录，查询不补造此前未采集的来源。已实现与实际验证见[闭合叶项](FixedIssues.md#c-021-7-9-7-4-2-4-5-1)。
+**原集合指令来源。** 原Stage Inst→TilePhase.step对同一Inst的临时借用→原CPU实际生成区间→既有OperationRange／NativeCode.sources。阶段直接借用原指令，原活跃性沿live_before及Inst.results处理，不再维护只保留类别／载荷的中间指令枚举或第二份分类。CPU的原集合生成前后读取同一字节游标，复用原Emitter::operation_range交接原OperationOrigin；普通block仍使用同一记录机制，阶段路径不再丢失这条指令的SourceSite、实例／内联及生成关系。来源未知如实保持未知，不能从Stage位置重建语法；多条IR对应同一原语法、零长度和实际嵌套继续沿原规则。最终事实只持有原不可变来源，临时Inst借用随原阶段消费结束，不让NativeCode保存Stage、IR或活跃表。整条操作区间覆盖该次真实降低，未由此区分其中每个片段、单位元或循环职责；内部生成职责见下列.2。观察材料沿当前BLCR7／BLCF10，必要执行编码保持；已保存材料仅恢复原记录，查询不补造此前未采集的来源。已实现与实际验证见[闭合叶项](FixedIssues.md#c-021-7-9-7-4-2-4-5-1)。
 
 <a id="tool-7-4-2-4-5-2"></a>
 
-**内部生成职责。** 原TileCollective、实际类型与输入／私有流布局→真实生成段；保持数值、lane顺序及完成／存储寿命，与普通集合辅助.4.3分别归其真实生产者。唯一生产者为native/tile.rs::tile_collective的原结果、单位元、顺序扫描／归约及填充。当前尚未实现，见[独立叶项](Issues.md#c-021-7-9-7-4-2-4-5)。独立范围为结果／单位元／顺序循环／填充的真实生成职责与位置，不能由.1整条操作来源替代，见[独立叶项](Issues.md#c-021-7-9-7-4-2-4-5-2)。
+**内部生成职责。** 原TileCollective的results、Scalar、TileOp及同次Frame的共享／私有流位置→tile_collective的五处原机器发射→同一Emitter的FunctionAbi／NativeCode.sources，沿BLCR7／BLCF10保存。ParallelRangePart::TileCollective持有本Stage的tile_index、原值value_offset_bytes、原IR result_register_index、Scalar和原TileOp；五种TileCollectivePart直接描述实际生成，不复制IR、阶段计划或另一份算法语义。Setup交原输入R10、结果R11及长度ECX准备，input_offset_bytes／output_offset_bytes／length_offset_bytes均相对原RSP，plane_stride_bytes为原width乘四的字流平面跨度；每个结果的这些位置只在原查询点求值一次，后续实际发射与观察消费同值。Identity保存原运算单位元的u64原始identity_bits。ScanOutput只在独占扫描实际写出前缀并推进R11处生成；Accumulate描述实际读取、类型运算、R10推进及计数回边，input_high_delta_bytes为原64位输入高平面偏移，loop_start_byte是该原回边目标，扫描时包含此前ScanOutput而非伪造另一循环。Fill只在归约完成后记录原长度重装、最终值逐lane写出及填充回边，保留原length_offset_bytes和真实loop_start_byte。私有结果按每lane一个u32流写出，窄逻辑Scalar仍写四字节，64位写两个相隔plane_stride_bytes的四字节平面，不将逻辑类型宽度冒充每次机器写宽。所有偏移及循环目标只解释同一原生函数，IR寄存器不是机器GPR或跨版本身份；stage_origin仍是阶段上下文，具体语法／实例／内联沿相交的原OperationRange查询。结果为空没有内部生成段，扫描不补归约填充，未发生的机器职责不补记录。材料只描述静态发射，不证明实际运行、GPU完成或资源释放，随原代码事实最后消费者结束，不持有原TileCollective、Frame、Stage或资源。原数值、lane顺序、尾块、布局、机器指令及执行ABI保持；普通集合辅助.4.3独立推进。[闭合叶项](FixedIssues.md#c-021-7-9-7-4-2-4-5-2)。
 
 <a id="tool-7-4-3"></a>
 
@@ -1010,21 +1010,21 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-3-1"></a>
 
-**自定义集合实际IR的指令范围与来源。** 原CustomReduction::kernel及其实际Inst→原custom_reduce::emit的初始化／循环／末尾三段block→同一NativeCode.sources。Reduce、ReduceTail、Scan、ScanPrefix、ScanAdd、SegmentReduce、SegmentPrefix、SegmentFinish共用原Emitter::operation_range，仅在原容器保留真实发射范围；分段扫描仍复用其原Scan路径。值核已有SourceSite／GeneratedOrigin原样交接，原生成Inst无来源时仍为未知，不从集合调用补造语句；真实范围与完整生成职责分别表达。原代码顺序、内嵌控制、零长度、主函数边界及多对多语义沿同一OperationRange，最终材料不保留临时Stage／IR／kernel或运行资源，随最后事实消费者释放。原kernel、分配、归约顺序、范围ABI和机器字节保持；BLCR6／BLCF9沿原材料保存恢复，旧材料未保留的范围仍如实缺失。原范围外的机器原语、帧／范围包装、摘要输出及其他内建生成职责不在本叶冒称交接。已实现与实际验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-3-1)。
+**自定义集合实际IR的指令范围与来源。** 原CustomReduction::kernel及其实际Inst→原custom_reduce::emit的初始化／循环／末尾三段block→同一NativeCode.sources。Reduce、ReduceTail、Scan、ScanPrefix、ScanAdd、SegmentReduce、SegmentPrefix、SegmentFinish共用原Emitter::operation_range，仅在原容器保留真实发射范围；分段扫描仍复用其原Scan路径。值核已有SourceSite／GeneratedOrigin原样交接，原生成Inst无来源时仍为未知，不从集合调用补造语句；真实范围与完整生成职责分别表达。原代码顺序、内嵌控制、零长度、主函数边界及多对多语义沿同一OperationRange，最终材料不保留临时Stage／IR／kernel或运行资源，随最后事实消费者释放。原kernel、分配、归约顺序、范围ABI和机器字节保持；BLCR7／BLCF10沿原材料保存恢复，旧材料未保留的范围仍如实缺失。原范围外的机器原语、帧／范围包装、摘要输出及其他内建生成职责不在本叶冒称交接。已实现与实际验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-3-1)。
 
 <a id="tool-7-5-1"></a>
 
-**原生映像来源材料的可选保存／恢复。** 原NativeCode／StageCode／ProgramImage来源事实→原BLCR观察材料→同代码恢复／查询。来源随原CPU材料及原容器交接，不进入必要执行编码；只匹配真实代码及范围，无材料／错配／被消除分别表达，不自动重编或持有IR。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。已有操作、ABI及尾部引用沿BLCR6保存／恢复，范围见[闭合台账](FixedIssues.md#c-021-7-9-7-5-1)。
+**原生映像来源材料的可选保存／恢复。** 原NativeCode／StageCode／ProgramImage来源事实→原BLCR观察材料→同代码恢复／查询。来源随原CPU材料及原容器交接，不进入必要执行编码；只匹配真实代码及范围，无材料／错配／被消除分别表达，不自动重编或持有IR。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。已有操作、ABI及尾部引用沿BLCR7保存／恢复，范围见[闭合台账](FixedIssues.md#c-021-7-9-7-5-1)。
 
-同一NativeCode.sources互斥持有编译期Emitted、恢复后的Restored(SavedSources)或Unavailable；不另挂来源表。Emitter::finish一次接收原操作范围和ABI，object::emit只移动同一sources。显式保存时逐字段编码原事实，移除临时尾部克隆；恢复在原入口核对全部代码及范围后，再将只读事实移入原代码，释放被替换的原Source引用。SavedSources只保存已有定义／声明／语法／生成关系及位置，不伪造Source、IR或源码文本；未知与已采集空序列保持原义。BLCR6和BLCF9共用native/facts/material下的source、abi、operations及TailReference字段编码，BLCF9格式保持。Rust compiler接口由原两来源字段改为sources；B语法、BLCO80／BLRI47和无compiler运行库不变。
+同一NativeCode.sources互斥持有编译期Emitted、恢复后的Restored(SavedSources)或Unavailable；不另挂来源表。Emitter::finish一次接收原操作范围和ABI，object::emit只移动同一sources。显式保存时逐字段编码原事实，移除临时尾部克隆；恢复在原入口核对全部代码及范围后，再将只读事实移入原代码，释放被替换的原Source引用。SavedSources只保存已有定义／声明／语法／生成关系及位置，不伪造Source、IR或源码文本；未知与已采集空序列保持原义。BLCR7和BLCF10共用native/facts/material下的source、abi、operations及TailReference字段编码，BLCF10格式保持。Rust compiler接口由原两来源字段改为sources；B语法、BLCO80／BLRI47和无compiler运行库不变。
 
 <a id="tool-7-5-2"></a>
 
-**COFF来源材料的可选保存／恢复。** 原FunctionBody／NativeCode来源→原Object／Section→原BLCF材料与COFF查询。普通函数及实际辅助节的来源随原Section与材料交接，匹配实际代码／重定位／布局；最终PE来源沿原.9链接映射，不复制代码或装入器。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。当前尾部目标与rel32引用已沿同一Function Layout移入BLCF9并由原COFF查询恢复，null与已采集空列表分别表达；手写整节职责由原Startup／Print(Scalar)／ImportThunk直接交接，实际操作来源、ABI来源、尾部引用及手写职责已沿同一材料交接；本项保存／恢复范围见[闭合台账](FixedIssues.md#c-021-7-9-7-5-2)，完整来源生产、最终PE与双向查询继续各自原未完成编号。
+**COFF来源材料的可选保存／恢复。** 原FunctionBody／NativeCode来源→原Object／Section→原BLCF材料与COFF查询。普通函数及实际辅助节的来源随原Section与材料交接，匹配实际代码／重定位／布局；最终PE来源沿原.9链接映射，不复制代码或装入器。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。当前尾部目标与rel32引用已沿同一Function Layout移入BLCF10并由原COFF查询恢复，null与已采集空列表分别表达；手写整节职责由原Startup／Print(Scalar)／ImportThunk直接交接，实际操作来源、ABI来源、尾部引用及手写职责已沿同一材料交接；本项保存／恢复范围见[闭合台账](FixedIssues.md#c-021-7-9-7-5-2)，完整来源生产、最终PE与双向查询继续各自原未完成编号。
 
 手写职责只指同一整节的原生成目的，generation.reason分别为application_startup、scalar_output、import_thunk；scalar_output另交接真实scalar。启动段负责原main调用及ExitProcess结果交接，输出段负责原标量格式化与标准输出，导入段负责原导入尾跳转；目标仍消费本节真实重定位，不复制导入名称、资源或调用图。三类原regions继续为覆盖整节的generated_code；普通Function、非代码节或未取得材料时generation=null，不能从符号、.text、可解码性或.pdata猜职责，也不把它当作源级操作／ABI来源。材料归原Section及实际调用者，随其事实消费者释放；机器执行、栈／展开、外部实现及资源寿命保持各自原所有者。细分范围与实际交付见[闭合台账](FixedIssues.md#c-021-7-9-7-5-2-4)。
 
-普通函数的原CodeSources连同FunctionAbi与OperationRange直接移入同一Function Layout，不在普通对象生成时计算源码摘要或位置投影。显式code_observations沿原编码入口逐字段消费原OperationOrigin、GeneratedOrigin及其已有变换关系，只将Source不可变快照投影为定义／声明／语法的只读身份、摘要、UTF-8字节半开范围、Unicode标量行列、平台路径编码与实际实例／内联／域路径；不先展开另一棵临时来源树，不复制源码文本、IR指令、拥有树或运行资源。ABI与操作共用native/facts/material/source.rs的位置表示；生成职责及有关枚举的JSON拼写复用原IR名称函数。原区间顺序、includes_nested_operations、零长度、两类来源及缺失事实保持，None与已采集空列表分别表达，不伪造Source。原Section持有事实至最后事实消费者，位置投影随本次字段编码释放；解码只恢复本次调用者的只读事实。原COFF查询在选中代码节的function_abi与operation_ranges交回这些事实，偏移相对同节字节0；未提供材料、对应事实未保留或手写节为null，已采集而无操作为[]，记录中的空来源仍为未知。原材料读取边界继续消费代码／重定位／.pdata匹配，两类区间都位于同一主函数内，允许零长度与真实嵌套而不附加顺序／不相交约束；错误不交回部分查询。BLCF9不改变BLCO、BLRI、机器代码、资源ABI、链接或执行；BLCR6共用同一字段编码恢复这些已有来源。细分范围见[ABI台账](FixedIssues.md#c-021-7-9-7-5-2-2)与[操作台账](FixedIssues.md#c-021-7-9-7-5-2-1)。
+普通函数的原CodeSources连同FunctionAbi与OperationRange直接移入同一Function Layout，不在普通对象生成时计算源码摘要或位置投影。显式code_observations沿原编码入口逐字段消费原OperationOrigin、GeneratedOrigin及其已有变换关系，只将Source不可变快照投影为定义／声明／语法的只读身份、摘要、UTF-8字节半开范围、Unicode标量行列、平台路径编码与实际实例／内联／域路径；不先展开另一棵临时来源树，不复制源码文本、IR指令、拥有树或运行资源。ABI与操作共用native/facts/material/source.rs的位置表示；生成职责及有关枚举的JSON拼写复用原IR名称函数。原区间顺序、includes_nested_operations、零长度、两类来源及缺失事实保持，None与已采集空列表分别表达，不伪造Source。原Section持有事实至最后事实消费者，位置投影随本次字段编码释放；解码只恢复本次调用者的只读事实。原COFF查询在选中代码节的function_abi与operation_ranges交回这些事实，偏移相对同节字节0；未提供材料、对应事实未保留或手写节为null，已采集而无操作为[]，记录中的空来源仍为未知。原材料读取边界继续消费代码／重定位／.pdata匹配，两类区间都位于同一主函数内，允许零长度与真实嵌套而不附加顺序／不相交约束；错误不交回部分查询。BLCF10不改变BLCO、BLRI、机器代码、资源ABI、链接或执行；BLCR7共用同一字段编码恢复这些已有来源。细分范围见[ABI台账](FixedIssues.md#c-021-7-9-7-5-2-2)与[操作台账](FixedIssues.md#c-021-7-9-7-5-2-1)。
 
 <a id="tool-7-6"></a>
 

@@ -69,6 +69,16 @@ variants!(crate::native::ParallelRangePart {
     16=>TilePrivatePointer{phase,restore}, 17=>TilePrivate{phase,restore,local,slot,storage_offset,scalar},
     18=>TilePublishPointer{tile}, 19=>TilePublishLoad{tile,word,value,scalar},
     20=>TilePublishShift{tile,word,value,scalar,part}, 21=>TilePublishStore{tile,word,value,scalar,part,storage_offset,unit_bytes},
+    22=>TileCollective{tile,word,result,scalar,operation,part},
+});
+variants!(crate::native::TileCollectivePart {
+    0=>Setup{input_offset,output_offset,length_offset,plane_stride}, 1=>Identity{bits}, 2=>ScanOutput,
+    3=>Accumulate{input_high_delta,loop_start}, 4=>Fill{length_offset,loop_start},
+});
+variants!(ir::TileOp {
+    0=>ReduceSum, 1=>ScanExclusiveSum, 2=>ReduceMin, 3=>ReduceMax,
+    4=>ScanExclusiveMin, 5=>ScanExclusiveMax, 6=>ReduceBitAnd, 7=>ReduceBitOr, 8=>ReduceBitXor,
+    9=>ScanExclusiveBitAnd, 10=>ScanExclusiveBitOr, 11=>ScanExclusiveBitXor,
 });
 impl Encode for crate::native::FunctionAbi {
     fn encode(&self, writer: &mut Writer) {
