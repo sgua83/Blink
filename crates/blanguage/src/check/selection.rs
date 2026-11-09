@@ -269,14 +269,15 @@ impl Builder<'_> {
             let value=builder.evaluate_returned(expr,expected)?;
             let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
             let borrow=retained.owners().restricted(&builder.path);
-            let mut names=builder.env.iter().filter(|(name,_)|name.starts_with("\0argument:")&&!original.contains(*name))
+            let mut names=Vec::new();
+            for(name,binding)in builder.env.iter().filter(|(name,_)|name.starts_with("\0argument:")&&!original.contains(*name))
                 .filter(|(_,binding)|matches!(binding,Binding::OwnedValue(value)if value.ownership.may_own()&&!matches!(value.place(),Some(Place::Reference{..})))||matches!(binding,Binding::ApplicationData(data)if data.ownership.may_own()))
-                .filter(|(_,binding)|{
-                    let mut references=binding.view_borrow().owners();
+                {
+                    let mut references=binding.view_borrow(builder)?.owners();
                     for data in binding.application_resources(){references.union(&builder.owned_resource_borrow(data).owners());}
                     references=references.restricted(&builder.path);
-                    borrow.pending()||references.pending()||borrow.sources.entries().any(|(source,when)|references.overlaps_source(source,&when))
-                }).map(|(name,_)|name.clone()).collect::<Vec<_>>();
+                    if borrow.pending()||references.pending()||borrow.sources.entries().any(|(source,when)|references.overlaps_source(source,&when)){names.push(name.clone());}
+                }
             names.sort_by_key(|name|name.strip_prefix("\0argument:").unwrap().parse::<usize>().unwrap());
             let owners=names.into_iter().map(|name|builder.env.remove(&name).unwrap()).collect();
             Ok(((value,owners),retained))

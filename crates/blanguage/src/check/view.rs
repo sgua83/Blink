@@ -405,15 +405,15 @@ impl Binding {
     pub(super) fn view_proof_mut(&mut self)->Option<&mut bounds::Proof> {
         match self {Self::Value(v) if v.ty.contains_borrows()=>Some(&mut v.proof),Self::Owned(v) | Self::ViewElement { element: v, .. } if v.place.ty().contains_borrows()=>Some(&mut v.proof),Self::OwnedValue(v) if v.value.ty.contains_borrows()=>Some(&mut v.value.proof),_=>None}
     }
-    pub(super) fn view_borrow(&self)->Borrow {
-        if let Self::DataReference(data)=self{return resource_borrow(&data.data);}
+    pub(super) fn view_borrow(&self,builder:&Builder<'_>)->Result<Borrow> {
+        if let Self::DataReference(data)=self{return Ok(resource_borrow(&data.data));}
         if let Self::OwnedValue(value)=self && value.ownership==application::Ownership::Borrowed {
             let mut borrow=value.value.proof.typed_view_borrow(&value.value.ty);
-            for data in value.resources(){borrow.union(&data.root.proof.view_borrow(0));}return borrow;
+            for data in value.resources(){borrow.union(&data.root.proof.view_borrow(0));}return Ok(borrow);
         }
-        if let Self::ViewElement{view,..}=self {return view.proof.borrowed_view();}
+        if let Self::ViewElement{view,..}=self {return Ok(view.proof.borrowed_view());}
         let mut borrow=self.view_parts().map(|(ty,proof)|proof.typed_view_borrow(ty)).unwrap_or_default();
-        borrow.union(&user_owned::cleanup_borrow(self,&BTreeSet::new()));borrow
+        borrow.union(&user_owned::cleanup_borrow(builder,self,&BTreeSet::new())?);Ok(borrow)
     }
 
 }

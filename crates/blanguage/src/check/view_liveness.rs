@@ -155,7 +155,7 @@ impl State {
         }}
 
         if name.starts_with('\0') {
-            if matches!(binding,Binding::DataReference(_)|Binding::ViewElement{..})||matches!(binding,Binding::OwnedValue(value)if value.ownership==application::Ownership::Borrowed){return Ok(binding.view_borrow());}
+            if matches!(binding,Binding::DataReference(_)|Binding::ViewElement{..})||matches!(binding,Binding::OwnedValue(value)if value.ownership==application::Ownership::Borrowed){return binding.view_borrow(builder);}
             let mut result=stored_element_borrow(builder,binding,&[],&BTreeSet::new(),&omitted,transferred,true)?;
             if let Some((ty,proof))=binding.view_parts(){for component in view_contracts::components(ty){result.union(&retained_component(proof.view_borrow(component),component,&omitted));}}
             return Ok(result);

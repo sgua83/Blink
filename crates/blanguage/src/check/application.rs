@@ -1475,7 +1475,7 @@ impl Builder<'_> {
         while let Some((name,binding))=bindings.pop(){
             let mut remaining=retained.clone();
             for(future,value)in &bindings{
-                if future.starts_with('\0'){remaining.union(&user_owned::cleanup_borrow(value,&BTreeSet::new()));}
+                if future.starts_with('\0'){remaining.union(&user_owned::cleanup_borrow(builder,value,&BTreeSet::new())?);}
             }
             builder.drop_binding(binding,&remaining,builder.definition.function.span)?;
             if name.starts_with('\0'){builder.env.remove(&name);}else{

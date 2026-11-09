@@ -72,28 +72,29 @@ impl Builder<'_> {
 }
 
 // 释放调用是作用域内的真实后续消费者；只复用原Proof及实际拥有条件。
-pub(super) fn cleanup_borrow(binding:&Binding,omitted:&BTreeSet<usize>)->view::Borrow {
+pub(super) fn cleanup_borrow(builder:&Builder<'_>,binding:&Binding,omitted:&BTreeSet<usize>)->Result<view::Borrow> {
     let mut result=view::Borrow::default();
     match binding{
-        Binding::OwnedValue(value)=>value.cleanup_borrow(omitted,&mut result),
-        Binding::ApplicationData(value)=>data_contents(value,&mut result),
+        Binding::OwnedValue(value)=>value.cleanup_borrow(builder,omitted,&mut result)?,
+        Binding::ApplicationData(value)=>data_contents(builder,value,&mut result)?,
         _=>{},
     }
-    result
+    Ok(result)
 }
 
-fn data_contents(data:&application::Data,into:&mut view::Borrow){
-    if !data.ownership.may_own()||data.length.maximum()==0{return;}
+fn data_contents(builder:&Builder<'_>,data:&application::Data,into:&mut view::Borrow)->Result<()>{
+    if !data.ownership.may_own()||data.length.maximum()==0{return Ok(());}
     let mut borrowed=view::Borrow::default();
     match data.elements.known(){
-        Some(Returned::OwnedValue(value))=>value.cleanup_borrow(&BTreeSet::new(),&mut borrowed),
-        Some(Returned::Dataset(child))=>data_contents(child,&mut borrowed),
+        Some(Returned::OwnedValue(value))=>value.cleanup_borrow(builder,&BTreeSet::new(),&mut borrowed)?,
+        Some(Returned::Dataset(child))=>data_contents(builder,child,&mut borrowed)?,
         Some(Returned::Value(_)|Returned::Unit)=>{},
-        None if data.ty.owns_resources()||data.ty.contains_borrows()=>borrowed=view::Borrow::source(view::Source::Unresolved),
+        None if builder.world.stored_borrows(&data.ty,&builder.definition.source,builder.definition.function.span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new(),true)?=>borrowed=view::Borrow::source(view::Source::Unresolved),
         None=>{},
     }
     let borrowed=if let Ownership::Conditional(when)=&data.ownership{borrowed.restricted(&when.condition().assume(&bounds::Clause::default(),true))}else{borrowed};
     into.union(&borrowed);
+    Ok(())
 }
 
 impl OwnedValuePayload {
@@ -117,20 +118,22 @@ impl OwnedValuePayload {
         if !value.ownership.may_own(){return;}
         if value.value.ty.contains_borrows(){visit(value,&value.value,0,&bounds::Clause::default(),omitted,into,map);}
     }
-    pub(super) fn cleanup_borrow(&self,omitted:&BTreeSet<usize>,into:&mut view::Borrow){
+    pub(super) fn cleanup_borrow(&self,builder:&Builder<'_>,omitted:&BTreeSet<usize>,into:&mut view::Borrow)->Result<()>{
         let value=self;
-        if !value.ownership.may_own(){return;}
+        if !value.ownership.may_own(){return Ok(());}
         value.cleanup_views(omitted,into,&|_,borrow|borrow);
-        fn children(value:&OwnedValuePayload,into:&mut view::Borrow){
-            if !value.ownership.may_own(){return;}
+        fn children(builder:&Builder<'_>,value:&OwnedValuePayload,into:&mut view::Borrow)->Result<()>{
+            if !value.ownership.may_own(){return Ok(());}
             for payload in value.payloads.iter().flatten(){match payload.as_ref(){
-                Returned::Dataset(child)=>data_contents(child,into),
-                Returned::OwnedValue(child)=>children(child,into),
+                Returned::Dataset(child)=>data_contents(builder,child,into)?,
+                Returned::OwnedValue(child)=>children(builder,child,into)?,
                 Returned::Value(_)|Returned::Unit=>{},
             }}
+            Ok(())
         }
-        let mut nested=view::Borrow::default();children(value,&mut nested);
+        let mut nested=view::Borrow::default();children(builder,value,&mut nested)?;
         let nested=if let Ownership::Conditional(when)=&value.ownership{nested.restricted(&when.condition().assume(&bounds::Clause::default(),true))}else{nested};
         into.union(&nested);
+        Ok(())
     }
 }

@@ -1094,7 +1094,7 @@ impl Builder<'_> {
                             let field=self.unpack_record(&result,i);
                             result.payloads[i].as_deref_mut().unwrap().restrict_owned(&owned_presence::Presence::None);
                             let mut remaining=retained.clone();
-                            result.cleanup_borrow(&BTreeSet::new(),&mut remaining);
+                            result.cleanup_borrow(self,&BTreeSet::new(),&mut remaining)?;
                             self.drop_owned_tree(field,&remaining,span)?;
                         }
                     }
