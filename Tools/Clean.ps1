@@ -30,7 +30,7 @@ $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($workspace))
 $freeBefore = $drive.AvailableFreeSpace
 
 # Generated output boundaries must not be redirected by reparse points.
-function Measure-SelectedItem([IO.FileSystemInfo]$Item) {
+function Measure-SelectedItem([IO.FileSystemInfo]$Item, [string]$Relative) {
     $pending = [Collections.Generic.Stack[IO.FileSystemInfo]]::new()
     $pending.Push($Item)
     $files = 0L
@@ -72,7 +72,6 @@ $selected = @(
                 throw "Select a generated path below Saved or the Cargo target directory: $relative"
             }
         }
-        if (-not $seen.Add($absolute)) { continue }
         $native = $absolute
         if ([IO.Path]::DirectorySeparatorChar -eq '\' -and -not $native.StartsWith('\\?\')) {
             $native = if ($native.StartsWith('\\')) { '\\?\UNC\' + $native.Substring(2) } else { '\\?\' + $native }
@@ -90,8 +89,20 @@ $selected = @(
         } else {
             [IO.FileInfo]::new($native)
         }
-        $size = Measure-SelectedItem $item
-        [pscustomobject]@{ Item = $item; Path = $relative; Files = $size.Files; Bytes = $size.Bytes }
+        if (-not $seen.Add($item.FullName.TrimEnd([IO.Path]::DirectorySeparatorChar))) { continue }
+        [pscustomobject]@{ Item = $item; Path = $relative }
+    }
+)
+
+$selected = @(
+    foreach ($entry in $selected) {
+        $ancestor = [IO.DirectoryInfo]::new([IO.Path]::GetDirectoryName($entry.Item.FullName))
+        while ($null -ne $ancestor -and -not $seen.Contains($ancestor.FullName.TrimEnd([IO.Path]::DirectorySeparatorChar))) {
+            $ancestor = $ancestor.Parent
+        }
+        if ($null -ne $ancestor) { continue }
+        $size = Measure-SelectedItem $entry.Item $entry.Path
+        [pscustomobject]@{ Item = $entry.Item; Path = $entry.Path; Files = $size.Files; Bytes = $size.Bytes }
     }
 )
 
