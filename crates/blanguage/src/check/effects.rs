@@ -344,9 +344,10 @@ impl Builder<'_> {
             Write::Position{contents:false,place,..}=>address_write(place),
             _=>false,
         });
+        let deferred=writes.iter().any(|write|matches!(write,Write::Memory{borrow,..}if self.address_write_positions(borrow).is_none()));
         for (name, binding) in &mut self.env {
             let context=self.loop_contexts.last_mut().unwrap();
-            if raw && context.view_scope.is_some() {
+            if deferred && context.view_scope.is_some() {
                 let paths=context.entry.env.get(name).into_iter().flat_map(view::data_paths).filter_map(|(path,data,_)|{
                     let value=data.elements.known()?.view_value()?;
                     let metadata=view::resource_paths(&value.ty).into_iter().filter(|fields|application::model_data(data.elements.known(),fields).is_some()).map(|fields|{
@@ -360,6 +361,7 @@ impl Builder<'_> {
                 for(path,components)in paths {
                     let Some(value)=view::data_at_mut(binding,&path).and_then(|data|data.elements.known_mut()).and_then(returns::Returned::view_value_mut)else{continue;};
                     for(component,scalar)in components {
+                        value.proof.forget_value(&[component],value.ty.components.len());
                         let id=context.value_input(name,Some(path.clone()),component,scalar);
                         value.proof=std::mem::take(&mut value.proof).with_component_identity(component,id);
                     }
@@ -462,6 +464,15 @@ impl Builder<'_> {
         let mut normalized=Vec::new();
         for write in writes {
             let write=match write {
+                Write::Position{place,call:None,contents:false,when,..}if address_write(place)=>{
+                    let scope=Scope::current(self);
+                    let mut borrow=match scope.input_snapshot(place,scope.bindings.len(),Access::Write,None,None)? {
+                        Some((_,_,borrow))=>borrow,
+                        None=>view::Borrow::source(view::Source::Unresolved),
+                    };
+                    if let Some(when)=when {borrow=borrow.restricted(&when.assume(&self.path,true));}
+                    Write::Memory{call:place,borrow}
+                },
                 Write::Generator(factory)=>{
                     if let Some(instance)=Scope::current(self).factory_instance(factory)? {
                         let function=&instance.definition.function;
@@ -656,6 +667,38 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 if let Some((ty,proof,_))=self.input_snapshot(base,limit,Access::Value,element,ordinal)? && ty.dataset.is_some() {
                     return Ok(Some((Ty::scalar(Scalar::U32),proof.project(&[1],ty.components.len()),view::Borrow::default())));
                 }
+            },
+            ExprKind::Call(name,args)if name=="address_of"=>{
+                let [place]=args.as_slice()else{return Ok(None);};
+                let Some((_,_,borrow))=self.input_snapshot(place,limit,Access::Read,element,ordinal)?else{return Ok(None);};
+                if !borrow.active(){return Ok(None);}
+                return Ok(Some((Ty::builtin("address").unwrap(),bounds::Proof::default().with_view_borrow(0,borrow),view::Borrow::default())));
+            },
+            ExprKind::Specialize(name,explicit,args)if name=="unsafe_position"=>{
+                let ([GenericArgument::Type(syntax)],[address])=(explicit.as_slice(),args.as_slice())else{return Ok(None);};
+                let Some((ty,proof,_))=self.input_snapshot(address,limit,Access::Value,element,ordinal)?else{return Ok(None);};
+                if !ty.is_address(){return Ok(None);}
+                let ty=builder.world.ty(syntax,&builder.definition.source,expr.span,&builder.definition.module,&builder.definition.imports)?;
+                let layout=address::Layout::of(&ty);
+                let origin=address::Origin{root:address::Root::Derived(proof.view_borrow(0)),base:layout.clone(),layout,words:ty.components.iter().map(|(_,word)|*word).collect(),positions:Arc::from([]),writable:true,initialized:vec![false;ty.components.len()].into()};
+                return Ok(Some((ty.clone(),bounds::Proof::default().with_external_borrows(&ty),origin.normalize())));
+            },
+            ExprKind::Member(base,field)if address_write(base)=>{
+                let Some((ty,proof,borrow))=self.input_snapshot(base,limit,access,element,ordinal)?else{return Ok(None);};
+                let(selected,parts)=member_type(&ty,field,&builder.definition.source,expr.span)?;
+                let origin=address::Origin{root:address::Root::Derived(borrow),base:address::Layout::of(&ty),layout:address::Layout::of(&selected),words:parts.iter().map(|part|ty.components[*part].1).collect(),positions:Arc::from([]),writable:true,initialized:vec![false;selected.components.len()].into()};
+                return Ok(Some((selected,proof.project(&parts,ty.components.len()),origin.normalize())));
+            },
+            ExprKind::Index(base,index)if address_write(base)=>{
+                let Some((ty,_,borrow))=self.input_snapshot(base,limit,access,element,ordinal)?else{return Ok(None);};
+                let Some(selected)=ty.array.as_deref()else{return Ok(None);};
+                let known=self.input_snapshot(index,limit,Access::Value,element,ordinal)?.and_then(|(ty,proof,_)|(ty==Ty::scalar(Scalar::U32)).then(||proof.known_value(&ty)).flatten()).map(|bits|bits[0]);
+                let mut locations=view::Borrow::default();
+                for at in (0..ty.values[0]).filter(|at|known.is_none_or(|known|known==u64::from(*at))) {
+                    let(offset,_)=ty.aggregate_part(at as usize);
+                    let origin=address::Origin{root:address::Root::Derived(borrow.clone()),base:address::Layout::of(&ty),layout:address::Layout::of(selected),words:selected.components.iter().map(|(_,word)|offset+word).collect(),positions:Arc::from([]),writable:true,initialized:vec![false;selected.components.len()].into()};locations.union(&origin.normalize());
+                }
+                return Ok(Some((selected.clone(),bounds::Proof::default().with_external_borrows(selected),locations)));
             },
             ExprKind::StaticU32(value)=>return Ok(Some((Ty::scalar(Scalar::U32),bounds::Proof::unsigned(*value,*value),view::Borrow::default()))),
             ExprKind::Number(number)=>{

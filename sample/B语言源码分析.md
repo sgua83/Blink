@@ -1729,7 +1729,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 显式可写dataset实参的contents输入沿原written_application_data取得无拥有资源的真实根，给原LoopWrites.storage交接该根未知字节区间；不再将这份已知存储写扩大为全部存储未知。iterator来源、未知位置及拥有内容仍按实际未知范围处理，原Call整体效果独立保留，不凭签名取消实际写。无拥有资源的元素／字段写由loop_write_projection沿written_application_data、member_type及固定数组分量映射取得实际根与Scalar投影。constant_index只使用未被全部可能写输入改变的原下标事实；声明布局给出步长和分量word／宽度，LoopWrites交接真实字节区间。ApplicationLoads既复用原allocate结果区分不同实际分配，也把同根已知读取与未来区间交给和StoreIndexed共用的byte_overlap；多个写区间分别保留，不把中间未写字节也当作覆盖。未知下标／布局仍是未知范围，未解析子dataset或拥有内容结束不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通静态CPU值调用在原Scope仍持有正文let等词法实参Ty／count时，以原generics选定实例；Write::External携带这个实际实例，循环归一在原入口条件及正文读取之前，通过native_declaration形成／导入同一Unit，再查询同一Module闭合view_access；原Module::declare保持实例只构造一次。原写输入按所有权传入、消费者按借用读取，不复制实例或离开作用域后用入口环境重新推导正文局部；没有另一实例表、调用图、IR求值或数值失效跳过路径。无拥有结果且合同实际只读时保留元素读取与局部数值。闭合写仅指向原ABI借用dataset输入、且原显式contents Position已经交接这些实参时，也不重复添加全局External；真实写仍由原Position和LoopWrites处理。元素无拥有内容／清理F的按值dataset输入也由同一typed根覆盖：原arguments先检查调用者保留view／地址与别名，原move_application_dataset交付唯一拥有并使旧绑定Moved，callee沿原最后消费者完成与释放链结束该存储。这份已转移存储的闭合写不再扩大为所有旧存储未知；没有正文未来AST根表、资源复制或第二释放链。普通已闭合B调用复用native_call_memory的Access、实际输入Proof和when，向同一LoopWrites交接真正写位置，不因存在隐藏地址或Memory条款而扩大为整次外部写。该投影只替代其覆盖的dataset内容写，显式Reference与实际拥有位置继续交给原消费者；不能因存在Memory而先删除未覆盖的标量写。component_projection同时投影已有类型和实际位置，Scope只读取已形成的值快照，不重新解释或求值实参、下标，也不复制IR或再造调用图。未生成的动态来源保留原未知，不能据不完整输入推定无写；资源拥有继续由原Position和唯一拥有者消费。原address_write_components由普通写入与循环共同查询，只撤回真实相交的局部、记录及数组分量；源码与已编译对象／归档消费相同合同。address按值形参没有inout标记不能证明无写；真正只读address函数和普通记录结果按实际合同保持组合能力。dataset的实际静态factory调用也参与同一交接。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。
 
-源码节选：`crates/blanguage/src/check/effects.rs:478`。
+源码节选：`crates/blanguage/src/check/effects.rs:489`。
 
 ```rust
                 Write::External{call,instance:Some(instance),arguments,syntax}=>{
@@ -2092,7 +2092,7 @@ enum Fact {
 
 公开位置访问经过输入投影后，沿同一Condition交接false与true两根。原Proof编码已经能按拓扑保存共享节点、去除结构重复并恢复两根，因此Condition直接借用这个编码；序列化不先枚举全部析取路径，也不把正支取出后重新制造补集。数学查询和同来源合流只在各自真实消费者处进行。
 
-循环共同普通载荷与Local共用原LoopInput槽登记的LoopValue(scope,input)，入口与真实继续边由同一LoopState交接，原Module在Memory使用顺序和既有LoopDefinition数值固定点中闭合关系。逻辑输入不增加空IR寄存器。dataset真实元素读取沿原Dataset使用记录交接MemoryValue与LoopValue，保持实际资源、下标和全部共同候选；未知或真实相交写仍撤回数值，资源描述分量继续归原类型化拥有模型。对象合同使用BLCO86标识这一表示。相同版本的编译、对象导入、静态归档与链接消费同一图；非当前格式须重新编译。链接依然核对类型、布局、访问及函数事实，原地址、初始化、浮点／NaN和实际写入失效规则保持，运行时Frame与资源ABI并未增加条件表或状态。
+已知裸地址的循环赋值沿Scope原输入快照的已有来源、目标布局及字段／固定数组字节投影，进入同一Memory失效；这个查询不执行表达式或发射IR，实际权限、初始化、布局与寿命仍归原位置入口。已知写不生产延后数值槽；dataset共同普通载荷仅在Memory位置尚不能投影时沿原LoopInput登记LoopValue(scope,input)，该数值输入撤回旧分量事实，入口与真实继续边由同一LoopState交接，原Module在Memory使用顺序和既有LoopDefinition数值固定点中闭合关系。逻辑输入不增加空IR寄存器。dataset真实元素读取沿原Dataset使用记录交接MemoryValue与LoopValue，保持实际资源、下标和全部共同候选；未知或真实相交写仍撤回数值，资源描述分量继续归原类型化拥有模型。对象合同使用BLCO86标识这一表示。相同版本的编译、对象导入、静态归档与链接消费同一图；非当前格式须重新编译。链接依然核对类型、布局、访问及函数事实，原地址、初始化、浮点／NaN和实际写入失效规则保持，运行时Frame与资源ABI并未增加条件表或状态。
 
 ### 9.2 为什么事实跟随值，而不是永远跟随变量名
 
@@ -2215,7 +2215,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 原loop_write_projection从该ApplicationElement取得实际根、字段字节与已知下标，后续仍由同一写效果撤回Data.elements。别名按真实相交位置交接，未写字段及独立资源保持；不新增元素表、运行状态或第二效果图：
 
-源码节选：`crates/blanguage/src/check/effects.rs:410`。
+源码节选：`crates/blanguage/src/check/effects.rs:412`。
 
 ```rust
             ExprKind::Name(name)=>{
