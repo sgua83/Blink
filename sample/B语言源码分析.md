@@ -786,9 +786,11 @@ pub struct Dataset {
 
 `words` 是 CPU 上的存储，`count` 是记录数，`stride` 是相邻记录间隔。这里使用 `Vec<u32>` 保存四字节 word，是保存原始位模式的容器，并不表示其中的所有字段都是 `u32`。
 
+读取BLDATA时，read_data先检查文件头和实际绑定，借用原Ty的大小／对齐核对记录步长，再把同一类型与数量交给with_type。错误步长不会先分配文件声明的记录载荷；合法数据仍按原完整逻辑字节读取，末字填充保持零，额外尾部继续报错。文件内没有另一份schema，步长相同也不证明业务类型相同。
+
 `memory()`按需读取这一个原Vec：逻辑字节是count乘stride，存储字节是当前word长度乘四，容量字节是Vec可用容量乘四。前者含声明布局／记录填充，第二项还含最后一个word的尾填充；缩容后保留的容量继续占用存储，零载荷也可能有非零预留容量。它们都不冒充OS承诺页、工作集、分配器开销或全对象图。
 
-源码节选：`crates/blcompute/src/lib.rs:215`。
+源码节选：`crates/blcompute/src/lib.rs:217`。
 
 ```rust
     pub fn memory(&self) -> DatasetMemory {

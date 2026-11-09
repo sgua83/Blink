@@ -173,10 +173,12 @@ impl Dataset {
         if word(8) != 1 {
             return Err(error("不支持的 BLDATA 版本"));
         }
-        let mut data = Self::new(program, binding, word(12))?;
-        if word(16) != data.stride {
+        let ty = &program.buffers().get(binding)
+            .ok_or_else(|| error("数据绑定编号越界"))?.ty;
+        if word(16) != blanguage::ir::align_up(ty.size, ty.align) {
             return Err(error("BLDATA 步长与编译布局不一致"));
         }
+        let mut data = Self::with_type(ty.clone(), word(12))?;
         let length = data.stride as usize * data.count as usize;
         for (index, word) in data.words.iter_mut().enumerate() {
             let mut bytes = [0; 4];
