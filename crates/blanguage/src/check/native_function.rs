@@ -468,7 +468,7 @@ impl Builder<'_> {
                 _=>source.at_call(arguments),
             });
             let borrow=self.current_address_borrow(&borrow);
-            memory.push((borrow.restricted(&bounds::Clause::both(&path,&self.path)),Some(access),written.map(|proof|proof.at_call(arguments))));
+            memory.push((borrow.restricted(&path),Some(access),written.map(|proof|proof.at_call(arguments))));
         }
         Some(memory)
     }
@@ -823,9 +823,12 @@ impl Builder<'_> {
         }else{Vec::new()};
         let memory_use=self.view_model.uses.len();
         let(borrow,snapshots)=match closed_memory {
-            Some(memory)=>{
-                let borrow=memory.iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(borrow);result});
-                let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory_use).into())}else{self.write_address_values(&memory)?;None};
+            Some(mut memory)=>{
+                let borrow=memory.iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(borrow);result}).restricted(&self.path);
+                let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory_use).into())}else{
+                    for(source,_,_)in &mut memory{*source=source.restricted(&self.path);}
+                    self.write_address_values(&borrow,&memory)?;None
+                };
                 (borrow,snapshots)
             },
             None=>(memory_borrow,Some(self.defer_address_values(memory_use).into())),

@@ -722,10 +722,10 @@ impl Builder<'_> {
         self.positions(place).iter().enumerate().filter_map(|(i,position)|positions.iter().any(|written|
             owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()
     }
-    pub(super) fn write_address_values(&mut self,memory:&[(view::Borrow,Option<Access>,Option<bounds::Proof>)])->Result<()> {
-        let mut borrow=view::Borrow::default();let mut effect=MemoryEffect::default();
+    pub(super) fn write_address_values(&mut self,borrow:&view::Borrow,memory:&[(view::Borrow,Option<Access>,Option<bounds::Proof>)])->Result<()> {
+        let borrow=self.current_address_borrow(borrow);let mut effect=MemoryEffect::default();
         for(source,access,written)in memory{if let Some(access)=access.filter(|access|access.writes()){
-            let source=self.current_address_borrow(source);borrow.union(&source);effect.union(MemoryEffect::of(&source,access,written.as_ref()));
+            let source=self.current_address_borrow(source);effect.union(MemoryEffect::of(&source,access,written.as_ref()));
         }}
         match self.address_write_regions(&borrow) {None=>{
         let data=self.env.values().flat_map(Binding::application_resources)
@@ -918,7 +918,7 @@ impl Builder<'_> {
         if written.pending()&&self.address_write_positions(&written).is_none(){
             let snapshots=self.defer_address_values(usage);
             if let view::Requirement::Memory{snapshots:target,..}=&mut self.view_model.uses[usage].requirement{*target=Some(snapshots.into());}
-        }else{self.write_address_values(&[(written,Some(Access::Write),None)])?;}
+        }else{let memory=[(written,Some(Access::Write),None)];self.write_address_values(&memory[0].0,&memory)?;}
         Ok(usage)
     }
     pub(super) fn position_address(&mut self,args:&[Expr],span:Span)->Result<Option<Value>> {

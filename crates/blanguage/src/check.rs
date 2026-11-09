@@ -2559,7 +2559,7 @@ impl<'a> Builder<'a> {
         let written=if matches!(p,Place::Reference{..}){self.path_proof(ty,bounds::Proof::capture(&value)).numeric_facts()}else{bounds::Proof::default()};
         if let Some((target,borrow))=self.reference_memory(p,span)? {
             let memory=self.view_model.uses.len();
-            let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory).into())}else{self.write_address_values(&[(borrow.clone(),Some(Access::Write),Some(written.clone()))])?;None};
+            let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory).into())}else{self.write_address_values(&borrow,&[(borrow.clone(),Some(Access::Write),Some(written.clone()))])?;None};
             self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Write),written:Some(written.clone()),snapshots,span})?;
         }
         match p {

@@ -271,7 +271,7 @@ impl Builder<'_> {
     ) -> Result<()> {
         for write in writes {
             let changed=match write {
-                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{self.write_address_values(&[(borrow.clone(),Some(Access::Write),None)])?;continue;},
+                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{self.write_address_values(borrow,&[(borrow.clone(),Some(Access::Write),None)])?;continue;},
                 Write::External{..}|Write::Generator(_)|Write::Memory{..}=>{
                     let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
                         data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
@@ -464,9 +464,16 @@ impl Builder<'_> {
                     }
                     normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),place,..}
                         if std::ptr::eq(*origin,call)&&!owned.iter().chain(local.iter()).any(|arg|std::ptr::eq(*arg,*place))));
-                    let borrow=match self.native_call_memory(&instance.name,&arguments,|parameter|syntax.get(parameter).is_some_and(|arg|local.iter().any(|place|std::ptr::eq(*place,arg)))){Some(memory)=>memory.into_iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(&borrow);result}),None=>view::Borrow::source(view::Source::Unresolved)};
-                    if !borrow.active(){continue;}
-                    Write::Memory{call,borrow}
+                    match self.native_call_memory(&instance.name,&arguments,|parameter|syntax.get(parameter).is_some_and(|arg|local.iter().any(|place|std::ptr::eq(*place,arg)))) {
+                        Some(memory)=>{
+                            normalized.extend(memory.into_iter().filter_map(|(borrow,_,_)|{
+                                let borrow=borrow.restricted(&self.path);
+                                borrow.active().then_some(Write::Memory{call,borrow})
+                            }));
+                            continue;
+                        },
+                        None=>Write::Memory{call,borrow:view::Borrow::source(view::Source::Unresolved)},
+                    }
                 },
                 write=>write,
             };
