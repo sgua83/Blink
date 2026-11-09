@@ -113,7 +113,14 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value, component: usize) -> Sc
     let (mut lower,mut upper) = match op {
         "+" => (sum_bound(scalar,al,bl,true),sum_bound(scalar,ah,bh,false)),
         "-" => (sum_bound(scalar,al,-bh,true),sum_bound(scalar,ah,-bl,false)),
-        "*" if scalar == Scalar::F32 => { let values=[al*bl,al*bh,ah*bl,ah*bh]; (values.into_iter().fold(f64::INFINITY,f64::min),values.into_iter().fold(f64::NEG_INFINITY,f64::max)) }
+        "*" => {
+            let values=[(al,bl),(al,bh),(ah,bl),(ah,bh)].map(|(a,b)| {
+                if scalar == Scalar::F32 { (a*b,a*b) }
+                else { (-multiply_up(-a,b),multiply_up(a,b)) }
+            });
+            (values.into_iter().map(|(lower,_)| lower).fold(f64::INFINITY,f64::min),
+                values.into_iter().map(|(_,upper)| upper).fold(f64::NEG_INFINITY,f64::max))
+        }
         "/" if scalar == Scalar::F32 => {
             // Vulkan OpFDiv的2.5 ULP保证只覆盖原规格的分母范围。
             if bl <= 0.0 && bh >= 0.0 || bl.abs().min(bh.abs()) < f32::MIN_POSITIVE as f64
