@@ -444,6 +444,29 @@ impl KnownBits {
         };
         (mask!=0).then_some(Self{scalar,mask,value})
     }
+    fn intersects(self,(lower,upper):(Bits,Bits))->bool {
+        let mask=u128::from(self.mask);
+        let fixed=u128::from((self.value^self.scalar.order_bias())&self.mask);
+        let mut value=u128::from(lower);
+        while value<=u128::from(upper) {
+            let conflict=(value^fixed)&mask;
+            if conflict==0{return true;}
+            let carry=u128::BITS-conflict.leading_zeros();
+            // 处理最高不匹配固定位后，低位回到实际必要的一位，不逐值推进。
+            let increment=u128::from(fixed&(1u128<<(carry-1))==0);
+            value=(((value>>carry)+increment)<<carry)|fixed;
+        }
+        false
+    }
+    fn covered(self,(lower,upper):(Bits,Bits),intervals:&[(Bits,Bits)])->bool {
+        let mut cursor=u128::from(lower);
+        for &(a,b) in intervals {
+            if cursor<u128::from(a)&&self.intersects((cursor as Bits,upper.min(a-1))){return false;}
+            cursor=cursor.max(u128::from(b)+1);
+            if cursor>u128::from(upper){return true;}
+        }
+        !self.intersects((cursor as Bits,upper))
+    }
     fn common(self,other:Self)->Option<Self> {
         let other=other.cast(self.scalar);let mask=self.mask&other.mask&!(self.value^other.value);
         (mask!=0).then_some(Self{scalar:self.scalar,mask,value:self.value&mask})
@@ -585,8 +608,11 @@ impl Proof {
             |(a,b),(c,d)| ScalarRanges::interval(a.max(c), b.min(d)));
     }
     pub(super) fn holds_range(&self, component: usize, scalar: Scalar, intervals: &[(Bits, Bits)]) -> bool {
-        self.element_range(component, scalar).0.iter().all(|&(a,b)|
-            intervals.iter().any(|&(c,d)| c <= a && b <= d))
+        let bits=scalar.is_integer().then(||self.known_bits(component,scalar)).flatten();
+        self.element_range(component, scalar).0.iter().all(|&range|match bits {
+            Some(bits)=>bits.covered(range,intervals),
+            None=>intervals.iter().any(|&(c,d)|c<=range.0&&range.1<=d),
+        })
     }
     pub(super) fn assign_elements(&mut self, components: &[usize], width: usize, fresh: &Self) {
         self.origins.resize_with(width, Vec::new);
