@@ -53,7 +53,7 @@ function ReadP4 {
     }
 }
 function InstallNodes {
-    param([string]$ReleaseVersion, [string]$DownloadDirectory)
+    param([string]$Package)
     $targets = @($MaintenanceTargets)
     if ($NodeRegistry) {
         $clients = @(ReadP4 @('clients', '-e', 'BLanguage_*'))
@@ -81,9 +81,6 @@ function InstallNodes {
         $Supervisor = (Get-CimInstance Win32_Process -Filter "ProcessId=$($owner.OwningProcess)").ExecutablePath
     }
     $name = 'Blink-Setup-windows-x64.exe'
-    $package = Join-Path $DownloadDirectory $name
-    Invoke-WebRequest -Uri "https://github.com/$repository/releases/download/v$ReleaseVersion/$name" -OutFile $package
-    Write-Output "DOWNLOADED v$ReleaseVersion $package"
     $failures = @()
     foreach ($node in $targets) {
         try {
@@ -103,7 +100,6 @@ function InstallNodes {
         }
     }
     if ($failures.Count -gt 0) { throw ($failures -join "`n") }
-    Remove-Item -LiteralPath $package
 }
 Push-Location $scriptRoot
 $lock = $null
@@ -115,6 +111,7 @@ try {
     $metadata = Native cargo @('metadata', '--no-deps', '--format-version', '1', '--manifest-path', (Join-Path $root 'Cargo.toml')) | ConvertFrom-Json
     $target = $metadata.target_directory
     $dist = Join-Path $target 'dist'
+    $archive = Join-Path $dist 'Blink-Setup-windows-x64.exe'
     [IO.Directory]::CreateDirectory($dist) | Out-Null
     $lock = [IO.FileStream]::new((Join-Path $dist 'release.lock'), [IO.FileMode]::OpenOrCreate,
         [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 4096, [IO.FileOptions]::DeleteOnClose)
@@ -145,7 +142,12 @@ try {
         $published = @($releases | Where-Object { -not $_.draft -and -not $_.prerelease })
         if ($published.Count -gt 0 -and $published[0].tag_name -eq $tag) {
             Write-Output "UNCHANGED RELEASE $tag"
-            InstallNodes $version $dist
+            if ($NodeRegistry -or $MaintenanceTargets.Count -gt 0) {
+                Invoke-WebRequest -Uri "https://github.com/$repository/releases/download/$tag/Blink-Setup-windows-x64.exe" -OutFile $archive
+                Write-Output "DOWNLOADED $tag $archive"
+                InstallNodes $archive
+                Remove-Item -LiteralPath $archive
+            }
             return
         }
         Write-Output "SOURCE P4 $change $commit VERSION $version"
@@ -210,7 +212,6 @@ try {
     $record = [ordered]@{ version = $version; source_change = $change; git_commit = $commit;
         target = 'x86_64-pc-windows-msvc'; profile = 'release'; files = $files }
     [IO.File]::WriteAllText((Join-Path $package 'release.json'), ($record | ConvertTo-Json -Depth 4), $utf8)
-    $archive = Join-Path $dist 'Blink-Setup-windows-x64.exe'
     if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive }
     Native (Join-Path $target 'release/blink-setup.exe') @('--pack', $package, $archive) | Write-Output
     Write-Output "BUILT $archive P4 $change VERSION $version"
@@ -238,11 +239,11 @@ try {
     $release = Invoke-RestMethod -Method Patch -Uri "$api/releases/$($draft.id)" -Headers $headers -ContentType 'application/json' -Body '{"draft":false,"make_latest":"true"}'
     Write-Output "PUBLISHED $($release.html_url) P4 $change VERSION $version"
     $headers.Clear()
+    InstallNodes $archive
     foreach ($directory in @($source, $package, $books)) { Remove-Item -LiteralPath $directory -Recurse }
     Remove-Item -LiteralPath $sourceZip
     Remove-Item -LiteralPath $archive
     Remove-Item -LiteralPath $bookArchive
-    InstallNodes $version $dist
 } finally {
     if ($transcript) { Stop-Transcript | Out-Null }
     if ($lock) { $lock.Dispose() }

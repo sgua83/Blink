@@ -31,7 +31,7 @@ powershell -NoProfile -File Tools/Submit.ps1 -Change 12345
 
 提交被拒绝时没有新的已提交版本；候选与真实错误保留，解决原冲突后再次调用入口重新计算，不自动重试。并发由同一 VERSION 文件的正常 P4 revision／resolve 处理，不建立计数服务或额外锁。其他任务在本 client 打开的 VERSION 不被覆盖。直接运行 `p4 submit` 不经过脚本，工程约定禁止绕过正式入口；没有安装服务器 trigger 或后台监控。
 
-任意节点成功提交后，由GUA／192.168.10.5的中央计划任务每天09:00和21:00调用 `Tools/PublishGit.ps1`，提交方不再启动Git发布，不需要GitHub凭据。每次读取GitHub远端main的P4-Change水位，覆盖其后所有节点的已提交变更；一次失败不推进远端水位，下次独立运行自然包含上次未发布范围。Git复制同一已提交VERSION，不再次递增，失败不回滚P4。两本台账只留P4。安装与操作见 [中央镜像发布](../Tools/README.md)。
+任意节点成功提交后，由GUA／192.168.10.5的中央计划任务每天09:00和21:00调用 `Tools/PublishGit.ps1`，提交方不再启动Git发布，不需要GitHub凭据。每次读取GitHub远端main的P4-Change水位，覆盖其后所有节点的已提交变更；一次失败不推进远端水位，下次独立运行自然包含上次未发布范围。Git复制同一已提交VERSION，不再次递增，失败不回滚P4。两本台账只留P4。安装与操作见 [中央镜像发布](../Tools/README.md)。既有中央任务以同一PowerShell动作执行原发布命令及finally中的Wiki，任一真实失败保持非零，不让后置Wiki覆盖发布异常；触发器、身份及原日志职责不变。
 
 ## 构建、缓存与兼容身份
 
@@ -67,7 +67,7 @@ Windows包是原生自解压EXE，嵌入同源bc、blink、brun、Rust源码SDK�
 
 源码SDK的普通构建不启用installed特性，仍从原源码根读取SDK并使用原SDK target。默认compiler功能提供完整源码工具；B资源包装的SDK路径依赖关闭该功能，沿同一次Cargo依赖图和原target/dll生产实际运行角色，不调用词法种子或装入源前端。正式发行启用blanguage/installed：SDK从%ProgramFiles%/Blink读取，临时单元和运行框架输出写当前工程target。正式Compiler会话持有安装VERSION的真实只读使用句柄，直到最后共享消费者结束；原生安装器取得同一文件的排他使用权后才覆盖。占用失败明确结束，不杀进程、不伪造成功，不在使用中覆盖输入。部分覆盖失败撤销安装VERSION，避免把残缺目录作为可用SDK。
 
-中央发布与节点安装分别输出PUBLISHED及INSTALLED；离线或安装失败不否定已发布事实，也不能宣称全体已采用。各节点独立执行，一台失败继续其他节点，最终汇总真实失败，不重试。没有新发行不重复发包，但仍可沿原维护入口使消费者安装当前版本；安装器遇到相同发行记录与VERSION时报告ALREADY_INSTALLED并确认PATH配置。
+新发行的本机安装EXE在上传后直接交给原节点消费者，实际安装结束后才由发行所有者清理；独立安装既有发行才取得一次已发布包。InstallNodes只消费本地输入，不删除后重取同份文件，失败保留实际材料。中央发布与节点安装分别输出PUBLISHED及INSTALLED；离线或安装失败不否定已发布事实，也不能宣称全体已采用。各节点独立执行，一台失败继续其他节点，最终汇总真实失败，不重试。没有新发行不重复发包，但仍可沿原维护入口使消费者安装当前版本；安装器遇到相同发行记录与VERSION时报告ALREADY_INSTALLED并确认PATH配置。
 
 ## 正式工具与后续自举
 

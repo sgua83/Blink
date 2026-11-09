@@ -19,7 +19,7 @@ $p4 = (Get-Command p4 -CommandType Application | Select-Object -First 1).Source
 $escapedPython = $python.Replace("'", "''")
 $escapedP4 = $p4.Replace("'", "''")
 $escapedClient = $P4Client.Replace("'", "''")
-$command = @"
+$wikiCommand = @"
 `$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new(`$false)
 `$env:PYTHONIOENCODING = 'utf-8'
@@ -30,19 +30,22 @@ $command = @"
 if (`$LASTEXITCODE -ne 0) { throw 'Unable to resolve the central P4 workspace.' }
 `$info = @(`$lines | ForEach-Object { `$_ | ConvertFrom-Json })[0]
 & '$escapedPython' (Join-Path `$info.clientRoot 'Tools/PublishBooksWiki.py')
-exit `$LASTEXITCODE
+if (`$LASTEXITCODE -ne 0) { throw "Wiki publisher exited `$LASTEXITCODE." }
 "@
-$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 foreach ($name in $TaskName) {
     $task = Get-ScheduledTask -TaskName $name -TaskPath '\'
     $original = @($task.Actions | Where-Object { $_.Id -ne 'BlinkBooksWiki' })
     if ($original.Count -ne 1) { throw "$name must retain exactly its existing mirror/release action." }
+    $originalCommand = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(
+        ($original[0].Arguments -split '\s-EncodedCommand\s+', 2)[1]))
+    $publishBody = if ($original[0].Id -eq 'BlinkPublishWithBooks') {
+        [Management.Automation.Language.Parser]::ParseInput($originalCommand, [ref]$null, [ref]$null).EndBlock.Statements[0].Body.Extent.Text
+    } else { "{`n$originalCommand`n}" }
+    $command = "try $publishBody`nfinally {`n$wikiCommand`n}"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $action = New-ScheduledTaskAction -Execute $original[0].Execute -Argument "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
-    $action.Id = 'BlinkBooksWiki'
-    Set-ScheduledTask -TaskName $name -TaskPath '\' -Action @($original[0], $action) -ErrorAction Stop | Out-Null
-    $adopted = Get-ScheduledTask -TaskName $name -TaskPath '\'
-    if ($adopted.Actions.Count -ne 2 -or $adopted.Actions[1].Id -ne 'BlinkBooksWiki' -or $adopted.Actions[1].Arguments -ne $action.Arguments) {
-        throw "$name did not adopt the Wiki action. Inspect its actual definition."
-    }
-    Write-Output "BOOKS_WIKI_INSTALLED $name (existing schedule, principal and first action retained)"
+    $action.Id = 'BlinkPublishWithBooks'
+    $action.WorkingDirectory = $original[0].WorkingDirectory
+    Set-ScheduledTask -TaskName $name -TaskPath '\' -Action @($action) -ErrorAction Stop | Out-Null
+    Write-Output "BOOKS_WIKI_INSTALLED $name (single action; existing schedule, principal and publication command retained)"
 }

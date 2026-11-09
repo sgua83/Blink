@@ -39,7 +39,7 @@ GUA 所有者在中央工作区采用已提交脚本后运行一次：
 pwsh -NoProfile -File ./Tools/InstallBooksWikiSync.ps1 -P4Client BLanguage_Gua -TaskName Blink.P4GitMirror
 ```
 
-安装器只为指定的原任务添加 ID 为 `BlinkBooksWiki` 的第二个动作，保留原动作、触发器、身份和任务设置，不创建新任务或保存新凭据。`Blink.P4GitMirror` 和 `Blink.WeeklyRelease` 均已采用：前者覆盖每日北京时间 09:00 及周一至周六 21:00，在原源码镜像结束后同步书籍；后者于周日 21:00 启动，在原镜像／软件发行步骤结束后同步书籍，因此实际 Wiki 更新时间可能晚于 21:00。两个 Wiki 动作完全一致，沿用原 Gua 用户和原运行级别；安装时的管理员授权不改变计划任务的运行权限。维护周日动作时同一入口指定 `-TaskName Blink.WeeklyRelease`，只采用该原任务。
+安装器把指定原任务的发布命令和Wiki收口保留在一个ID为`BlinkPublishWithBooks`的原生动作中：try执行原命令，finally继续Wiki，原发布异常不会被Wiki成功覆盖，Wiki非零也使本次任务失败。保留原命令、参数、工作目录、触发器、身份和任务设置，不创建新任务或保存凭据；重新采用读取原发布体，不重复包裹。两个既有任务继续使用原计划：前者覆盖每日北京时间 09:00 及周一至周六 21:00，在原源码镜像结束后同步书籍；后者于周日 21:00 启动，在原镜像／软件发行步骤结束后同步书籍，因此实际 Wiki 更新时间可能晚于 21:00。两个任务的Wiki收口使用相同入口，沿用原Gua用户和原运行级别；安装时的管理员授权不改变计划任务的运行权限。维护周日动作时同一入口指定 `-TaskName Blink.WeeklyRelease`，只采用该原任务。
 
 Wiki 故障独立返回失败，不回滚源码镜像或软件发行。后续运行从实际远端状态继续，不循环重试、不维护失败队列。机器、Gua 会话、P4/GitHub 网络及现有 Git 凭据仍是运行条件；动作每次从 P4 client 解析实际工程根。
 
@@ -49,7 +49,7 @@ Wiki 故障独立返回失败，不回滚源码镜像或软件发行。后续运
 python ./Tools/PublishBooksWiki.py
 ```
 
-默认 Wiki 裸仓库为 `Saved/GitPublish/Wiki.git`，可用 `--source-mirror`／`--wiki-mirror` 指定实际目录。脚本读取 Wiki 远端当前分支，以临时索引只更新四本书、两份目录及标记导航，正常快进推送并回读远端确认；并发用户修改导致非快进时如实失败，不强推。相同输入生成相同树，第二次报告 `WIKI_UNCHANGED`，不产生空提交。日志 `Saved/GitPublish/Wiki.git/publish-books.log` 记录 `WIKI_PUBLISHED`、`WIKI_UNCHANGED` 或 `WIKI_FAILED`。任务的 LastTaskResult 对应最后的 Wiki 动作；原源码／发行动作结果仍以其独立日志为准，不以 Wiki 成功证明前一步成功。GitHub 实际页面、计划任务采用和日志分别确认。编辑权限沿仓库 Settings → General → Features → Wikis 的现有设置，本工具不改变权限。
+默认 Wiki 裸仓库为 `Saved/GitPublish/Wiki.git`，可用 `--source-mirror`／`--wiki-mirror` 指定实际目录。脚本读取 Wiki 远端当前分支，以临时索引只更新四本书、两份目录及标记导航，正常快进推送并回读远端确认；并发用户修改导致非快进时如实失败，不强推。相同输入生成相同树，第二次报告 `WIKI_UNCHANGED`，不产生空提交。日志 `Saved/GitPublish/Wiki.git/publish-books.log` 记录 `WIKI_PUBLISHED`、`WIKI_UNCHANGED` 或 `WIKI_FAILED`。任务的LastTaskResult对应同一工作流进程，任一真实步骤失败均非零；源码、软件已发布、节点采用与Wiki仍分别以原日志和实际消费者为准，非零不回滚已经公开的发行。GitHub 实际页面、计划任务采用和日志分别确认。编辑权限沿仓库 Settings → General → Features → Wikis 的现有设置，本工具不改变权限。
 
 ## 已配置的研发工作区
 
@@ -72,7 +72,7 @@ python ./Tools/PublishBooksWiki.py
 pwsh -NoProfile -File ./Tools/PublishRelease.ps1 -P4Client <本机实际client>
 ```
 
-脚本从P4 client Root和Cargo metadata读取实际源码根／target，复用既有target缓存；GitHub写凭据只使用中央用户原有凭据管理器。当前Windows x64软件资产为target/dist/Blink-Setup-windows-x64.exe。周发行另由同一固定Git快照的四本MD、sample/figures、Tools/BuildBooks.ps1及Books.css生成标准版和手机版PDF，八份PDF压为target/dist/Blink-Books.zip；书籍不装入运行SDK。生成使用原PowerShell 7的Markdown转换、Windows中文／代码字体及Edge无窗口原生打印，不依赖临时开发脚本、Python包或已有PDF。版式／浏览器临时文件归本轮target/dist/books，由原发行所有者在最后消费者结束后清理；ZIP只收八份实际PDF。两个资产全部上传后才公开同一发行，VERSION不再次递增。生成或上传失败如实结束并保留定位材料，不拿旧PDF替代。成功清理临时源码、package、books、源码ZIP与本机发行资产，不清理可复用target。日志仍为target/dist/release.log。
+脚本从P4 client Root和Cargo metadata读取实际源码根／target，复用既有target缓存；GitHub写凭据只使用中央用户原有凭据管理器。当前Windows x64软件资产为target/dist/Blink-Setup-windows-x64.exe。周发行另由同一固定Git快照的四本MD、sample/figures、Tools/BuildBooks.ps1及Books.css生成标准版和手机版PDF，八份PDF压为target/dist/Blink-Books.zip；书籍不装入运行SDK。生成使用原PowerShell 7的Markdown转换、Windows中文／代码字体及Edge无窗口原生打印，不依赖临时开发脚本、Python包或已有PDF。版式／浏览器临时文件归本轮target/dist/books，由原发行所有者在最后消费者结束后清理；ZIP只收八份实际PDF。两个资产全部上传后才公开同一发行，VERSION不再次递增。生成或上传失败如实结束并保留定位材料，不拿旧PDF替代。新发行直接把刚生成并已上传的本机安装EXE交给原节点安装消费者，全部实际安装结束后再由发行所有者清理临时源码、package、books、源码ZIP与本机发行资产，不先删再从GitHub下载同份文件；失败保留本轮材料，不清理可复用target。日志仍为target/dist/release.log。
 
 普通研发打包用-BuildOnly：构建当前工作区，release.json的P4／Git身份为空，不上传。版本与平台资产分开，同一版本可以有多个架构／平台包；当前只交付Windows x64，不能把资产命名写成其他平台已支持。
 
@@ -85,7 +85,7 @@ BLSupervisor put <实际节点> <从GitHub下载的本机EXE> <节点实际临�
 BLSupervisor system-exec <实际节点> "<该节点实际下载路径> --quiet"
 ```
 
-中央普通用户从GitHub下载已发布EXE一次，再通过现有BLSupervisor put分发到节点的实际普通用户TEMP；节点无需外网、代理或脚本环境。特权入口只执行本地EXE的--quiet，不从SYSTEM发起GitHub网络请求。静默安装真实返回退出码及安装／PATH结果，不弹UAC。随后普通用户执行同一EXE的--refresh-environment，向其桌面通知环境更新，再清理本次下载文件。
+新发行复用仍由原发布者持有的本机安装EXE；独立安装既有发行时，中央普通用户从GitHub取得该已发布EXE一次。原InstallNodes只消费调用者交入的本地包，通过现有BLSupervisor put分发到节点的实际普通用户TEMP；节点无需外网、代理或脚本环境。特权入口只执行本地EXE的--quiet，不从SYSTEM发起GitHub网络请求。静默安装真实返回退出码及安装／PATH结果，不弹UAC。随后普通用户执行同一EXE的--refresh-environment，向其桌面通知环境更新，再清理本次下载文件。
 
 中央自动安装向PublishRelease.ps1传入-NodeRegistry <现有Matrix节点登记接口>，按真实BLanguage P4工作区Owner／Host及项目关系选取消费者。BLSupervisor从本机29083实际控制进程取得，默认使用原生维护身份配置；也可显式传入-Supervisor、-MaintenanceConfig及-MaintenanceTargets。不固定节点或源码盘符，不分发GitHub写凭据、不新增服务。
 
