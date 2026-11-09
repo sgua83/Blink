@@ -2,6 +2,7 @@
 param(
     [string]$P4Client,
     [switch]$BuildOnly,
+    [string]$BootstrapSdk,
     [string]$Supervisor,
     [string]$MaintenanceConfig,
     [string]$NodeRegistry,
@@ -18,7 +19,8 @@ $repository = 'sgua83/Blink'
 $scriptRoot = Split-Path $PSScriptRoot -Parent
 
 function Native {
-    param([string]$File, [string[]]$Arguments, [Text.Encoding]$StandardOutputEncoding = $utf8)
+    param([string]$File, [string[]]$Arguments, [Text.Encoding]$StandardOutputEncoding = $utf8,
+        [hashtable]$ProcessEnvironment = @{})
     $start = [Diagnostics.ProcessStartInfo]::new($File)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -28,6 +30,7 @@ function Native {
     $start.StandardOutputEncoding = $StandardOutputEncoding
     $start.StandardErrorEncoding = $utf8
     foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    foreach ($entry in $ProcessEnvironment.GetEnumerator()) { $start.Environment[$entry.Key] = $entry.Value }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     try {
@@ -186,8 +189,13 @@ try {
     }
     $compilerPackage = Native cargo @('pkgid', '--locked',
         '--manifest-path', (Join-Path $source 'crates/blanguage/Cargo.toml'))
+    $buildEnvironment = @{}
+    if ($BootstrapSdk) {
+        $buildEnvironment.BLINK_BOOTSTRAP_SDK = (Resolve-Path -LiteralPath $BootstrapSdk).ProviderPath
+        Write-Output "BOOTSTRAP SDK $($buildEnvironment.BLINK_BOOTSTRAP_SDK)"
+    }
     $buildOutput = Native cargo @('build', '--workspace', '--release', '--locked', '--features', 'blanguage/installed',
-        '--manifest-path', (Join-Path $source 'Cargo.toml'), '--target-dir', $target, '--message-format=json')
+        '--manifest-path', (Join-Path $source 'Cargo.toml'), '--target-dir', $target, '--message-format=json') -ProcessEnvironment $buildEnvironment
     $bootstrapLibrary = foreach ($line in $buildOutput -split "`n") {
         $message = $line | ConvertFrom-Json
         if ($message.reason -eq 'build-script-executed' -and $message.package_id -eq $compilerPackage) {

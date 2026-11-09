@@ -134,7 +134,7 @@ Set-Location Blink
 cargo build --workspace --release
 ```
 
-这条 cargo 命令使用已安装种子生成 B 引导模块，并构建 Blink 工具链。完成后，Blink 编译器位于 target/release/bc.exe；稳定种子保留在安装目录。下面一直在这个 Blink 目录中操作，后续 Rust 宿主构建也沿用上述前提。
+这条 cargo 命令默认使用已安装种子生成 B 引导模块，并构建 Blink 工具链。后续代可以用BLINK_BOOTSTRAP_SDK明确选择独立上一代SDK，输入保持到全部B编译与归档结束；它与待生成的新工具分开。完成后，Blink 编译器位于 target/release/bc.exe；稳定种子保留在安装目录。下面一直在这个 Blink 目录中操作，后续 Rust 宿主构建也沿用上述前提。
 
 ### 1.7　编译与链接：把 B 做成 DLL
 

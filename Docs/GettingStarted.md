@@ -179,7 +179,7 @@ C／C++ 输出 `3 5 7 9`，Rust 输出 `[3.0, 5.0, 7.0, 9.0]`。将生成的宿�
 
 `main` 持续研发，根 [VERSION](../VERSION) 是主线软件版本，可能领先正式版。下面保留主线源码 SDK 的构建方式；配套原书与相对文档链接随 main 演进，基础应用已按前述正式工具版本验证；旧标签中的书稿属于对应发行的历史快照，不含当前应用入口。
 
-从源码构建Blink前，先安装一份支持其B引导源码的独立稳定种子。默认compiler功能保留完整编译接口；源码生产者的build.rs从%ProgramFiles%/Blink/bin调用bc与blink生成原生B引导库，不以target中的新工具作为自己的构建前提。发行包交付同源固定引导库，并在SDK的Cargo构建入口声明build-sdk.rs；SDK消费者把固定输入捕获到本次OUT_DIR后链接，不调用种子。installed只选择运行SDK位置，不区分这两个构建角色。仅执行角色关闭compiler功能，不读取引导库或装入源码前端。
+从源码构建Blink前，先安装一份支持其B引导源码的独立稳定种子。默认compiler功能保留完整编译接口；源码生产者的build.rs默认从%ProgramFiles%/Blink/bin调用bc与blink生成原生B引导库；重建下一代时可通过BLINK_BOOTSTRAP_SDK显式选择独立上一代SDK，保持该输入到全部编译和归档结束，不以正在构建的新工具作为自己的唯一前提。发行包交付同源固定引导库，并在SDK的Cargo构建入口声明build-sdk.rs；SDK消费者把固定输入捕获到本次OUT_DIR后链接，不调用种子。installed只选择运行SDK位置，不区分这两个构建角色。仅执行角色关闭compiler功能，不读取引导库或装入源码前端。
 
 准备 Windows x64、[Rust stable MSVC 工具链](https://rust-lang.org/tools/install)和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具与 Windows SDK）。在 x64 Developer PowerShell 中执行：
 

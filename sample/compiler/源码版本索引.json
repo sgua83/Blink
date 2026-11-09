@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "687256f00b34e25515916624af2f58f4d833dd18cabec0772305324a48ce5359"
+      "sha256": "40c0c377901fe39c98b747d90a98abc03318bb5c71bfa02635123606c11d7183"
     },
     {
       "path": "crates/blanguage/src/application.rs",
