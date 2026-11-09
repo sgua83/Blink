@@ -82,7 +82,7 @@ pub(crate) fn application_source(
     functions.push_str(r#"
 unsafe extern "C" {
     fn blink_allocate(output:*mut u32,frame:*mut c_void,ty:u32,count:u32)->*mut c_void;
-    fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue)->*mut c_void;
+    fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue,textures:*const *const c_void)->*mut c_void;
     fn blink_complete_field(frame:*mut c_void,data:u32,offset:u32,intervals:*const ElementInterval,interval_count:usize,limits:*const u32,limit_count:usize);
     fn blink_error_message(error:*const c_void,bytes:*mut usize)->*const u8;
     fn blink_error_destroy(error:*mut c_void);
@@ -172,12 +172,18 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
                 ));
             }
         }
+        let textures = (0..program.textures.len()).map(|i| {
+            let name = format!("texture_{i}");
+            params.push(format!("{name}:*const c_void"));
+            name
+        }).collect::<Vec<_>>();
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({})->*mut c_void {{ let data=[{}];let words=[{}];unsafe {{ blink_run(frame,{prefix}_program_base+{index},data.as_ptr(),words.as_ptr()) }} }}",
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({})->*mut c_void {{ let data=[{}];let words=[{}];let textures=[{}];unsafe {{ blink_run(frame,{prefix}_program_base+{index},data.as_ptr(),words.as_ptr(),textures.as_ptr()) }} }}",
             params.join(","),
             handles.join(","),
-            words.join(",")
+            words.join(","),
+            textures.join(",")
         )?;
     }
     for (index, fields) in resources.completions.iter().enumerate() {

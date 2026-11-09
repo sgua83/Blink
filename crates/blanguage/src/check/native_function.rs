@@ -2015,7 +2015,7 @@ fn build_domain(
     let d = &instance.definition;
     let expanded = expand_domain(world, instance, functions, element_inputs)?;
     let mut signature = expanded.program;
-    if !signature.accelerations.is_empty() || !signature.textures.is_empty() {
+    if !signature.accelerations.is_empty() || target == Target::Gpu && !signature.textures.is_empty() {
         return d.source.fail(
             d.function.span,
             "B270",
@@ -2033,6 +2033,7 @@ fn build_domain(
         values: vec![0, 1],
     };
     let mut data = Vec::new();
+    let mut texture_values = Vec::new();
     let mut uniform_values = Vec::new();
     let mut uniform_regs = BTreeMap::new();
     let mut ui = 0;
@@ -2042,6 +2043,12 @@ fn build_domain(
             registers.extend([Scalar::U32; 2]);
             parameters.push(CallParameter::value(Builder::domain_dataset_parameter_type()));
             data.push([first, first + 1]);
+        } else if param.ty.is_texture_resource() {
+            registers.push(Scalar::U64);
+            parameters.push(CallParameter::value(Ty::scalar(Scalar::U64)));
+            texture_values.push(CallArgument::Value {
+                origin: None, dataset_borrow: None, ty: Ty::scalar(Scalar::U64), values: vec![first],
+            });
         } else {
             let ty = cooperative::parameter_type(world, param, d)?;
             registers.extend(ty.components.iter().map(|(s, _)| *s));
@@ -2067,7 +2074,7 @@ fn build_domain(
     };
     let mut interface = crate::module::domain::Interface {
         instance: signature.name.clone(), target,
-        buffers: signature.buffers.clone(), uniforms: signature.uniforms.clone(),
+        buffers: signature.buffers.clone(), textures: signature.textures.clone(), uniforms: signature.uniforms.clone(),
         write_regions,
         length_requirements: signature.length_requirements.clone(),
         element_requirements: signature.element_requirements.clone(),
@@ -2101,6 +2108,7 @@ fn build_domain(
             &frame,
             &data,
             &uniform_values,
+            &texture_values,
             &mut registers,
             &mut code,
         )?;
@@ -2112,6 +2120,7 @@ fn build_domain(
                     dataset_borrow:None, ty: Builder::domain_dataset_parameter_type(),
                     values: data[*i].to_vec(),
                 },
+                Root::Texture(i) => texture_values[*i].clone(),
                 Root::Uniform(ty, offset) => CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
                     dataset_borrow:None, ty: ty.clone(),
                     values: ty
@@ -2182,6 +2191,7 @@ fn build_domain(
         &frame,
         &data,
         &uniform_values,
+        &texture_values,
         &mut registers,
         &mut code,
     )?;
@@ -2260,6 +2270,7 @@ fn emit_domain_part(
     frame: &CallArgument,
     data: &[[Reg; 2]],
     uniforms: &[CallArgument],
+    textures: &[CallArgument],
     registers: &mut Vec<Scalar>,
     code: &mut Vec<Inst>,
 ) -> Result<()> {
@@ -2287,6 +2298,7 @@ fn emit_domain_part(
         values: vec![reg],
     }));
     arguments.extend_from_slice(uniforms);
+    arguments.extend_from_slice(textures);
     let error=registers.len();registers.push(Scalar::U64);
     code.push(Inst {
         generated_origin: Some(Arc::new(GeneratedOrigin {

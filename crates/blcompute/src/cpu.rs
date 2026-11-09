@@ -1,4 +1,4 @@
-pub use crate::texture::TextureInput;
+pub use crate::texture::{TextureInput, CpuTextureBinding, CpuTextures};
 mod dataset;
 mod sort;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
@@ -664,12 +664,13 @@ impl CpuTemplate {
         &self,
         bindings: &mut DomainBindings<crate::application::ResidentData>,
         order: &[(usize, u32)],
+        textures: &[CpuTextureBinding<'_>],
         values: &[Value],
         definitions: &std::sync::Arc<crate::application::Definitions>,
         writing: impl FnOnce(),
     ) -> Result<()> {
         self.code
-            .run_mapped(bindings, &[], values, order.len(), |i| order[i], writing,Some(definitions))
+            .run_mapped(bindings, textures, values, order.len(), |i| order[i], writing,Some(definitions))
     }
 }
 #[derive(Clone, Copy)]
@@ -832,7 +833,11 @@ impl CpuCode {
         values: &[Value],
     ) -> OwnedRunResult {
         let count = bindings.datasets.datasets.len();
-        match self.run_mapped(&mut bindings.datasets, &bindings.textures, values, count, |i| (i, 0), || {},self.definitions.as_ref()) {
+        let result = {
+            let descriptions = CpuTextures::new(&bindings.textures);
+            self.run_mapped(&mut bindings.datasets, &descriptions.bindings(), values, count, |i| (i, 0), || {},self.definitions.as_ref())
+        };
+        match result {
             Ok(()) => Ok(bindings.datasets),
             Err(error) => Err((error, bindings)),
         }
@@ -840,7 +845,7 @@ impl CpuCode {
     fn run_mapped<D:CpuStorage>(
         &self,
         bindings: &mut DomainBindings<D>,
-        textures: &[TextureInput],
+        textures: &[CpuTextureBinding<'_>],
         values: &[Value],
         count: usize,
         physical: impl Fn(usize) -> (usize, u32) + Copy,
@@ -895,12 +900,13 @@ impl CpuCode {
             .iter_mut()
             .map(CpuBuffer::owned)
             .collect::<Result<Vec<_>>>()?;
-        self.run_buffers(&buffers, textures, uniforms, || {},self.definitions.as_ref(),Vec::new())
+        let descriptions = CpuTextures::new(textures);
+        self.run_buffers(&buffers, &descriptions.bindings(), uniforms, || {},self.definitions.as_ref(),Vec::new())
     }
     fn run_buffers(
         &self,
         buffers: &[CpuBuffer<'_>],
-        textures: &[TextureInput],
+        textures: &[CpuTextureBinding<'_>],
         mut uniforms: Vec<u32>,
         writing: impl FnOnce(),
         definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
@@ -910,17 +916,16 @@ impl CpuCode {
             || textures.iter().zip(self.program.textures().iter().flat_map(|binding|
                 std::iter::repeat_n(binding, binding.elements() as usize)))
                 .any(|(texture, binding)| texture.dimension() != binding.dimension
-                    || binding.format.is_some_and(|format| texture.format() != format)) {
+                    || binding.format.is_some_and(|format| texture.format_code() != format as u32)) {
             return Err(error("纹理绑定数量、维度或格式与程序接口不一致"));
         }
         let frame=self.program.native_frame().map(|offset|
             definitions.map(|definitions|(definitions,offset as usize/4,uniforms.len(),buffers))
                 .ok_or_else(||error("CPU范围映像缺少实际资源定义目录"))).transpose()?;
-        let texture_descriptors = crate::texture::CpuTextures::new(textures);
         let pointers: Vec<_> = buffers
             .iter()
             .map(|d| BufferAddress { address: d.pointer, stride: d.stride as usize })
-            .chain(texture_descriptors.pointers().map(|address| BufferAddress { address, stride: 0 }))
+            .chain(textures.iter().map(|texture| BufferAddress { address: texture.pointer(), stride: 0 }))
             .collect();
         // 原参数及投影已接受；取得可写访问时撤回旧计数关系。
         // 后续失败可能已有写入，不将未完成调用发布为完整保证。

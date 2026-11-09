@@ -2530,6 +2530,7 @@ impl Builder<'_> {
         let mut data = Vec::new();
         let mut uniforms = Vec::new();
         let mut held = Vec::new();
+        let mut textures = Vec::new();
         for (parameter, value) in callee.function.params.iter().zip(prepared) {
             if parameter.ty.dataset {
                 let value = match value {
@@ -2561,6 +2562,15 @@ impl Builder<'_> {
                     self.require_application_reference_initialized(&value, span)?;
                 }
                 data.push(value);
+            } else if parameter.ty.is_texture_resource() {
+                let Argument::Texture(resource) = value else {
+                    return self.fail(span, "B239", "整域纹理参数需要实际只读纹理资源");
+                };
+                self.texture_parameter(parameter, &resource, callee, span)?;
+                let address = self.reg(Scalar::U64);
+                self.emit(InstKind::TextureBindingAddress { dst: address, texture: resource.source });
+                textures.push(CallArgument::Value { origin: None, dataset_borrow: None,
+                    ty: Ty::scalar(Scalar::U64), values: vec![address] });
             } else {
                 let Argument::Value(value) = value else {
                     return self.fail(span, "B266", "当前整域统一参数需要普通值");
@@ -2639,10 +2649,13 @@ impl Builder<'_> {
         let mut physical = vec![argument(frame)];
         let mut data_arguments = data.iter();
         let mut uniforms = uniforms.into_iter();
+        let mut textures = textures.into_iter();
         for parameter in &callee.function.params {
             if parameter.ty.dataset {
                 let value = data_arguments.next().unwrap();
                 physical.push(self.application_domain_argument(value));
+            } else if parameter.ty.is_texture_resource() {
+                physical.push(textures.next().unwrap());
             } else {
                 physical.push(argument(uniforms.next().unwrap()));
             }
@@ -4033,9 +4046,10 @@ pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::applicat
                 }
                 let uniform=record("@blink.UniformValue",16,8,&[("kind",Scalar::U32,0),("bits",Scalar::U64,8)]);
                 let words=packet(locals,&mut out,&inst,uniform,fields.len()/2,&fields);
+                let textures=packet(locals,&mut out,&inst,Ty::scalar(Scalar::U64),program.textures.len(),&inputs[at..]);
                 let program=constant(registers,&mut out,&inst,Scalar::U32,index as u64);
                 if let InstKind::Call(call)=&mut inst.kind{
-                    call.arguments=vec![call.arguments[0].clone(),value(program,Scalar::U32),data,words];
+                    call.arguments=vec![call.arguments[0].clone(),value(program,Scalar::U32),data,words,textures];
                     call.target=CallTarget::External(ExternalName{library:crate::resource::RUNTIME_LIBRARY.into(),symbol:"blink_run".into()});
                 }
             }else if let Some(index)=symbol.as_ref().and_then(|name|name.strip_prefix("blink_complete_")).and_then(|index|index.parse::<usize>().ok()){

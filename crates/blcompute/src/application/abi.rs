@@ -101,12 +101,18 @@ mod native {
     pub unsafe extern "C" fn blink_run(
         frame: *mut Frame, program: u32,
         data: *const blanguage::resource::DatasetBinding, values: *const Value,
+        textures: *const *const blanguage::native::BufferAddress,
     ) -> *mut c_void {
         let plan = unsafe { &*frame }.definitions.programs[program as usize].layout();
         let data = unsafe { std::slice::from_raw_parts(data, plan.buffers().len()) };
         let count = plan.uniforms().iter().map(|value| value.ty.components.len()).sum();
         let values = unsafe { std::slice::from_raw_parts(values, count) };
-        let result = unsafe { &mut *frame }.run(program, data, values);
+        let groups = unsafe { std::slice::from_raw_parts(textures, plan.textures().len()) };
+        let textures = groups.iter().zip(plan.textures()).flat_map(|(group, binding)| {
+            let group = unsafe { std::slice::from_raw_parts(*group, binding.elements() as usize) };
+            group.iter().map(|texture| unsafe { crate::cpu::CpuTextureBinding::from_raw(binding.dimension, texture.address) })
+        }).collect::<Vec<_>>();
+        let result = unsafe { &mut *frame }.run(program, data, values, &textures);
         finish(result, |()| {})
     }
     /// # Safety

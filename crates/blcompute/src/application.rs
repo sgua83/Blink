@@ -338,7 +338,7 @@ impl Frame {
     /// CPU 直接消费原存储，错误与成功均交回原输入及程序；参数拒绝保持原域，
     /// 取得可写访问后撤回覆盖的计数关系，只有真实完成才发布新保证。
     /// GPU 等待本次真实完成后返回，数据仍驻留原设备；不隐式下载。
-    pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value]) -> Result<()> {
+    pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value], textures: &[crate::cpu::CpuTextureBinding<'_>]) -> Result<()> {
         let index = program as usize;
         let definitions = self.definitions.clone();
         let definition = &definitions.programs[index];
@@ -376,6 +376,7 @@ impl Frame {
         let loaded = match definition {
             ProgramSlot::Cpu(program) => Program::Cpu(program),
             ProgramSlot::Gpu(image) => {
+                if !textures.is_empty() { return Err(error("CPU纹理借用不能作为GPU驻留资源")); }
                 self.load_gpu(index, image)?;
                 Program::Gpu(self.gpu_programs[index].as_ref().unwrap())
             }
@@ -397,7 +398,7 @@ impl Frame {
                     }
                 }
                 let mut inputs = DomainBindings { datasets, domains };
-                let result = program.run_projected(&mut inputs, &order, values, &definitions, || {
+                let result = program.run_projected(&mut inputs, &order, textures, values, &definitions, || {
                     crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
                         |i| (bindings[i].handle as usize, bindings[i].offset));
                 });

@@ -117,12 +117,31 @@ pub(crate) struct TextureDescriptor {
     mips: *const LevelDescriptor,
     format: u32,
 }
-pub(crate) struct CpuTextures {
+/// 同步CPU调用借用的实际描述；不取得像素或mip的释放权。
+#[derive(Clone, Copy)]
+pub struct CpuTextureBinding<'a> {
+    dimension: blanguage::ast::TextureDimension,
+    descriptor: &'a TextureDescriptor,
+}
+impl CpuTextureBinding<'_> {
+    /// # Safety
+    /// descriptor为声明维度的原有效CPU纹理描述，mip及像素保持至全部同步消费者结束。
+    /// 描述满足现行纹理ABI；本借用不接收原资源的释放权。
+    pub unsafe fn from_raw<'a>(dimension: blanguage::ast::TextureDimension, descriptor: *const u32) -> CpuTextureBinding<'a> {
+        CpuTextureBinding { dimension, descriptor: unsafe { &*descriptor.cast::<TextureDescriptor>() } }
+    }
+    pub(crate) fn dimension(&self) -> blanguage::ast::TextureDimension { self.dimension }
+    pub(crate) fn format_code(&self) -> u32 { self.descriptor.format }
+    pub(crate) fn pointer(&self) -> *mut u32 { (self.descriptor as *const TextureDescriptor).cast_mut().cast() }
+}
+/// 原CPU纹理的同步描述拥有者；显式借用像素输入，不能早于其结束该借用。
+pub struct CpuTextures<'a> {
+    inputs: &'a [TextureInput],
     _levels: Vec<Box<[LevelDescriptor]>>,
     descriptors: Vec<TextureDescriptor>,
 }
-impl CpuTextures {
-    pub fn new(textures: &[TextureInput]) -> Self {
+impl<'a> CpuTextures<'a> {
+    pub fn new(textures: &'a [TextureInput]) -> Self {
         let levels: Vec<Box<[LevelDescriptor]>> = textures.iter().map(|t| match t {
             TextureInput::D2(t) => t.levels.iter().map(|m| LevelDescriptor {
                 width: m.width, height: m.height, depth: 1, pixels: m.pixels.as_bytes().as_ptr(),
@@ -134,10 +153,11 @@ impl CpuTextures {
         let descriptors = levels.iter().zip(textures).map(|(m, t)| TextureDescriptor {
             levels: m.len() as u32, address: t.address_bits(), mips: m.as_ptr(), format: t.format() as u32,
         }).collect();
-        Self { _levels: levels, descriptors }
+        Self { inputs: textures, _levels: levels, descriptors }
     }
-    pub fn pointers(&self) -> impl Iterator<Item = *mut u32> {
-        self.descriptors.iter().map(|d| (d as *const TextureDescriptor).cast_mut().cast())
+    pub fn bindings(&self) -> Vec<CpuTextureBinding<'_>> {
+        self.descriptors.iter().zip(self.inputs).map(|(descriptor, input)|
+            CpuTextureBinding { dimension: input.dimension(), descriptor }).collect()
     }
 }
 impl Texture2D {
