@@ -10,6 +10,20 @@ pub struct ElementRange {
     pub offset: u32,
     pub scalar: Scalar,
     pub intervals: Vec<(Bits, Bits)>,
+    /// Fixed raw bits (mask, value), intersected with these ordered intervals.
+    pub known_bits: (Bits, Bits),
+}
+impl ElementRange {
+    pub fn within(&self,required:&Self)->bool {
+        self.intervals.iter().all(|&range|self.scalar.covers_range(range,self.known_bits,&required.intervals,required.known_bits))
+    }
+    pub fn intersect(&mut self,other:&Self) {
+        let conflict=(self.known_bits.1^other.known_bits.1)&self.known_bits.0&other.known_bits.0;
+        self.intervals=self.intervals.iter().flat_map(|&(a,b)|other.intervals.iter().filter_map(move|&(c,d)|{
+            let (start,end)=(a.max(c),b.min(d));(start<=end&&conflict==0).then_some((start,end))
+        })).collect();
+        self.known_bits=(self.known_bits.0|other.known_bits.0,self.known_bits.1|other.known_bits.1);
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ElementFact {

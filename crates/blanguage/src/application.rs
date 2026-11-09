@@ -25,6 +25,7 @@ pub(crate) struct Resources {
 pub(crate) struct ElementCompletion {
     pub offset: u32,
     pub intervals: Vec<(u64, u64)>,
+    pub known_bits: (u64, u64),
     pub limits: Vec<(usize, u32)>,
 }
 impl Application {

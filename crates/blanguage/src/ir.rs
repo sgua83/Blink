@@ -94,6 +94,39 @@ impl Scalar {
     pub const fn truncate(self, bits: Bits) -> Bits {
         bits & (Bits::MAX >> (64 - self.bit_width()))
     }
+    fn bits_intersect(self,(lower,upper):(Bits,Bits),(mask,value):(Bits,Bits))->bool {
+        let mask=u128::from(mask);
+        let fixed=u128::from((value^self.order_bias())&mask as Bits);
+        let mut value=u128::from(lower);
+        while value<=u128::from(upper) {
+            let conflict=(value^fixed)&mask;
+            if conflict==0{return true;}
+            let carry=u128::BITS-conflict.leading_zeros();
+            // 越过最高冲突固定位后，低位回到实际必要的一位，不逐值推进。
+            let increment=u128::from(fixed&(1u128<<(carry-1))==0);
+            value=(((value>>carry)+increment)<<carry)|fixed;
+        }
+        false
+    }
+    /// The actual ordered interval and fixed raw bits must imply the required set.
+    pub fn covers_range(self,range:(Bits,Bits),known_bits:(Bits,Bits),intervals:&[(Bits,Bits)],required_bits:(Bits,Bits))->bool {
+        let (lower,upper)=range;
+        let mut cursor=u128::from(lower);
+        for &(a,b) in intervals {
+            if cursor<u128::from(a)&&self.bits_intersect((cursor as Bits,upper.min(a-1)),known_bits){return false;}
+            cursor=cursor.max(u128::from(b)+1);
+            if cursor>u128::from(upper){break;}
+        }
+        if cursor<=u128::from(upper)&&self.bits_intersect((cursor as Bits,upper),known_bits){return false;}
+        let mut mask=required_bits.0;
+        while mask!=0 {
+            let bit=mask&mask.wrapping_neg();mask^=bit;
+            if known_bits.0&bit!=0&&(known_bits.1^required_bits.1)&bit==0{continue;}
+            let opposite=(known_bits.1&!bit)|((required_bits.1^bit)&bit);
+            if self.bits_intersect(range,(known_bits.0|bit,opposite)){return false;}
+        }
+        true
+    }
     pub const fn signed(self, bits: Bits) -> i64 {
         let shift = 64 - self.bit_width();
         ((bits << shift) as i64) >> shift

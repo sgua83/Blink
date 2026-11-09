@@ -117,7 +117,8 @@ mod native {
     }
     /// # Safety
     /// frame／handle是原存储所有者；offset为其实际标量字段，完整初始化已经完成。
-    /// intervals按该字段Scalar有序位交付共同闭区间，limits是已经证明的u32上界快照。
+    /// intervals按该字段Scalar有序位交付共同闭区间，与原始known_mask／known_value固定位交集成立。
+    /// 固定位仅用于整数，value只含mask内该Scalar有效位；limits是已经证明的u32上界快照。
     /// 非空limits仅用于u32字段。两数组具有有效对齐地址，仅同步借用。
     /// 编译器或可信外部实现担保实际字节及值域；任意外部输入不自动获得保证。
     /// 调用遵守Frame::complete_field的实际完成、原写区撤回、寿命及访问义务。
@@ -126,10 +127,11 @@ mod native {
         frame: *mut Frame, handle: u32, offset: u32,
         intervals: *const blanguage::resource::ElementInterval, interval_count: usize,
         limits: *const u32, limit_count: usize,
+        known_mask: u64, known_value: u64,
     ) {
         let intervals = unsafe { std::slice::from_raw_parts(intervals, interval_count) };
         let limits = unsafe { std::slice::from_raw_parts(limits, limit_count) };
-        unsafe { (&mut *frame).complete_field(handle, offset, intervals, limits) };
+        unsafe { (&mut *frame).complete_field(handle, offset, intervals, limits, (known_mask,known_value)) };
     }
     /// # Safety
     /// frame是本ABI创建且仍由调用者独占持有的实际Frame。

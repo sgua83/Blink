@@ -5,7 +5,7 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x30\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x32\0\0\0";
 pub const RUNTIME_LIBRARY: &str = "@blink.application@";
 // 非根资源静态包装声明的原C ABI，模块专属索引符号仍由原链接器绑定。
 pub(crate) const MODULE_RUNTIME_SYMBOLS: &[&str] = &["blink_allocate", "blink_run", "blink_complete_field"];
@@ -291,7 +291,7 @@ record!(DeviceRequirements {
     position_fetch,
     subgroup
 });
-record!(ElementRange { binding, offset, scalar, intervals });
+record!(ElementRange { binding, offset, scalar, intervals, known_bits });
 variants!(ElementFact { 0 => Range(range), 1 => Index { binding, offset, target } });
 record!(ProgramLayout {
     write_regions,

@@ -444,29 +444,6 @@ impl KnownBits {
         };
         (mask!=0).then_some(Self{scalar,mask,value})
     }
-    fn intersects(self,(lower,upper):(Bits,Bits))->bool {
-        let mask=u128::from(self.mask);
-        let fixed=u128::from((self.value^self.scalar.order_bias())&self.mask);
-        let mut value=u128::from(lower);
-        while value<=u128::from(upper) {
-            let conflict=(value^fixed)&mask;
-            if conflict==0{return true;}
-            let carry=u128::BITS-conflict.leading_zeros();
-            // 处理最高不匹配固定位后，低位回到实际必要的一位，不逐值推进。
-            let increment=u128::from(fixed&(1u128<<(carry-1))==0);
-            value=(((value>>carry)+increment)<<carry)|fixed;
-        }
-        false
-    }
-    fn covered(self,(lower,upper):(Bits,Bits),intervals:&[(Bits,Bits)])->bool {
-        let mut cursor=u128::from(lower);
-        for &(a,b) in intervals {
-            if cursor<u128::from(a)&&self.intersects((cursor as Bits,upper.min(a-1))){return false;}
-            cursor=cursor.max(u128::from(b)+1);
-            if cursor>u128::from(upper){return true;}
-        }
-        !self.intersects((cursor as Bits,upper))
-    }
     fn common(self,other:Self)->Option<Self> {
         let other=other.cast(self.scalar);let mask=self.mask&other.mask&!(self.value^other.value);
         (mask!=0).then_some(Self{scalar:self.scalar,mask,value:self.value&mask})
@@ -582,7 +559,8 @@ impl Proof {
     pub(super) fn element_ranges(&self, binding: usize, ty: &Ty) -> Vec<ElementRange> {
         ty.components.iter().enumerate().filter_map(|(component, &(scalar, offset))| {
             let intervals = self.element_range(component, scalar).0;
-            (intervals != [(0, scalar.bit_mask())]).then_some(ElementRange { binding, offset, scalar, intervals })
+            let known_bits=scalar.is_integer().then(||self.known_bits(component,scalar)).flatten().map_or((0,0),|bits|(bits.mask,bits.value));
+            (intervals != [(0, scalar.bit_mask())]||known_bits.0!=0).then_some(ElementRange { binding, offset, scalar, intervals, known_bits })
         }).collect()
     }
     pub(super) fn element_guarantees(&self, binding: usize, ty: &Ty, selected: impl Fn(u32, u32) -> bool) -> Vec<ElementFact> {
@@ -590,8 +568,9 @@ impl Proof {
         for (component, &(scalar, offset)) in ty.components.iter().enumerate() {
             if !selected(offset, scalar.size()) { continue; }
             let intervals = self.element_range(component, scalar).0;
-            if intervals != [(0, scalar.bit_mask())] {
-                facts.push(ElementFact::Range(ElementRange { binding, offset, scalar, intervals }));
+            let known_bits=scalar.is_integer().then(||self.known_bits(component,scalar)).flatten().map_or((0,0),|bits|(bits.mask,bits.value));
+            if intervals != [(0, scalar.bit_mask())]||known_bits.0!=0 {
+                facts.push(ElementFact::Range(ElementRange { binding, offset, scalar, intervals, known_bits }));
             }
             if scalar == Scalar::U32 {
                 facts.extend(self.domains(component).into_iter().filter_map(|domain| match domain {
@@ -607,12 +586,9 @@ impl Proof {
         self.ranges[component] = self.range_set(component).combine(&ScalarRanges::from_intervals(intervals.iter().copied()),
             |(a,b),(c,d)| ScalarRanges::interval(a.max(c), b.min(d)));
     }
-    pub(super) fn holds_range(&self, component: usize, scalar: Scalar, intervals: &[(Bits, Bits)]) -> bool {
-        let bits=scalar.is_integer().then(||self.known_bits(component,scalar)).flatten();
-        self.element_range(component, scalar).0.iter().all(|&range|match bits {
-            Some(bits)=>bits.covered(range,intervals),
-            None=>intervals.iter().any(|&(c,d)|c<=range.0&&range.1<=d),
-        })
+    pub(super) fn holds_range(&self, component: usize, scalar: Scalar, intervals: &[(Bits, Bits)], required_bits:(Bits,Bits)) -> bool {
+        let known_bits=scalar.is_integer().then(||self.known_bits(component,scalar)).flatten().map_or((0,0),|bits|(bits.mask,bits.value));
+        self.element_range(component, scalar).0.iter().all(|&range|scalar.covers_range(range,known_bits,intervals,required_bits))
     }
     pub(super) fn assign_elements(&mut self, components: &[usize], width: usize, fresh: &Self) {
         self.origins.resize_with(width, Vec::new);

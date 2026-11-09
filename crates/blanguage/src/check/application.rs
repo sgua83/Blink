@@ -1984,7 +1984,7 @@ impl Builder<'_> {
         let ty = data.element_layout().1;
         let model = self.returned_storage(elements);
         let mut ranges = model.proof.element_ranges(0, ty).into_iter()
-            .map(|range| (range.offset, range.intervals)).collect::<BTreeMap<_, _>>();
+            .map(|range| (range.offset, range)).collect::<BTreeMap<_, _>>();
         let mut candidates = vec![data.length.clone()];
         for &source in model.proof.origins.iter().flatten() {
             if let ValueIdentity::Register(reg) = source && self.registers[reg] == Scalar::U32 {
@@ -2034,10 +2034,12 @@ impl Builder<'_> {
                     }
                 }
             }
-            let intervals = ranges.remove(&offset);
+            let range = ranges.remove(&offset);
+            let known_bits = range.as_ref().map_or((0,0), |range| range.known_bits);
+            let intervals = range.map(|range| range.intervals);
             if intervals.is_some() || !limits.is_empty() {
                 fields.push(crate::application::ElementCompletion {
-                    offset, intervals: intervals.unwrap_or_else(|| vec![(0, scalar.bit_mask())]),
+                    offset, intervals: intervals.unwrap_or_else(|| vec![(0, scalar.bit_mask())]), known_bits,
                     limits: limits.into_iter().collect(),
                 });
             }
@@ -2610,7 +2612,7 @@ impl Builder<'_> {
             let component = source.data.ty.components.iter().position(|(_, at)| *at == word).unwrap();
             let value = self.value_component(&model, component);
             let proven = match requirement {
-                ElementFact::Range(range) => value.proof.holds_range(0, range.scalar, &range.intervals),
+                ElementFact::Range(range) => value.proof.holds_range(0, range.scalar, &range.intervals,range.known_bits),
                 ElementFact::Index { target, .. } => {
                     let target = &data[*target];
                     self.index_in(&value, IndexDomain::ApplicationData(target.root.identity()), target.length.minimum(), None)
@@ -4099,14 +4101,16 @@ pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::applicat
                         let next=registers.len();registers.push(Scalar::U32);
                         emit(&mut out,&inst,InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:count,b:increment});count=next;
                     }
-                    let field=constant(registers,&mut out,&inst,Scalar::U32,field.offset as u64);
+                    let field_offset=constant(registers,&mut out,&inst,Scalar::U32,field.offset as u64);
                     let offset=registers.len();registers.push(Scalar::U32);
-                    emit(&mut out,&inst,InstKind::Binary{dst:offset,op:ir::BinaryOp::IAdd,a:inputs[3],b:field});
+                    emit(&mut out,&inst,InstKind::Binary{dst:offset,op:ir::BinaryOp::IAdd,a:inputs[3],b:field_offset});
+                    let mask=constant(registers,&mut out,&inst,Scalar::U64,field.known_bits.0);
+                    let bits=constant(registers,&mut out,&inst,Scalar::U64,field.known_bits.1);
                     let range_count=constant(registers,&mut out,&inst,Scalar::U64,values.len()as u64/2);
                     let limit_count=registers.len();registers.push(Scalar::U64);
                     emit(&mut out,&inst,InstKind::Cast{dst:limit_count,src:count});
                     if let InstKind::Call(mut call)=inst.kind.clone(){
-                        call.arguments=vec![call.arguments[0].clone(),call.arguments[1].clone(),value(offset,Scalar::U32),ranges,value(range_count,Scalar::U64),bounds,value(limit_count,Scalar::U64)];
+                        call.arguments=vec![call.arguments[0].clone(),call.arguments[1].clone(),value(offset,Scalar::U32),ranges,value(range_count,Scalar::U64),bounds,value(limit_count,Scalar::U64),value(mask,Scalar::U64),value(bits,Scalar::U64)];
                         call.target=CallTarget::External(ExternalName{library:crate::resource::RUNTIME_LIBRARY.into(),symbol:"blink_complete_field".into()});
                         emit(&mut out,&inst,InstKind::Call(call));
                     }

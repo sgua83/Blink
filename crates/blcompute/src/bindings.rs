@@ -306,8 +306,8 @@ impl<D> DomainBindings<D> {
     ///
     /// # Safety
     /// binding是本组当前实际存储，offset／Scalar对应其真实标量字段。
-    /// 全部元素已经初始化，值位于所声明的有序闭区间并集；非空存储不能交空集。
-    /// 区间须为该Scalar的有效有序数值编码，端点及区间次序保持其原规范。
+    /// 全部元素已经初始化，值同时满足所声明的有序闭区间并集及原始固定位；非空存储不能交空集。
+    /// 区间须为该Scalar的有效有序数值编码，端点及区间次序保持其原规范；固定位仅用于整数，value只含mask内该Scalar有效位。
     /// 保证来自编译器证明或调用者信任的真实实现，不能仅从任意字节推定。
     /// 实际写已完成或由原存储执行依赖覆盖后续消费者；本调用不提交或等待。
     /// 原存储及最后消费者的寿命／访问约束继续成立，外部别名不得绕过原写入撤回。
@@ -325,7 +325,7 @@ pub(crate) fn produced_ranges(
         let range = match fact {
             ElementFact::Range(range) => range.clone(),
             ElementFact::Index { binding, offset, target } => ElementRange {
-                binding: *binding, offset: *offset, scalar: Scalar::U32,
+                binding: *binding, offset: *offset, scalar: Scalar::U32, known_bits:(0,0),
                 intervals: count(*target).checked_sub(1).map(|last| (0, u64::from(last))).into_iter().collect(),
             },
         };
@@ -339,9 +339,7 @@ pub(crate) fn produced_element(domains: &mut Vec<DomainRelation>, range: Element
             && known.scalar == range.scalar => Some(known),
         _ => None,
     }) {
-        known.intervals = known.intervals.iter().flat_map(|&(a, b)| range.intervals.iter().filter_map(move |&(c, d)| {
-            let (start, end) = (a.max(c), b.min(d)); (start <= end).then_some((start, end))
-        })).collect();
+        known.intersect(&range);
     } else {
         domains.push(DomainRelation::Element(range));
     }
@@ -386,8 +384,11 @@ pub(crate) fn require<D: DomainStorage>(
             let DomainRelation::Element(range) = known else { return false; };
             same(range.binding, source) && u64::from(range.offset) == u64::from(offset) + u64::from(word)
                 && range.scalar == scalar && match requirement {
-                    ElementFact::Range(required) => range.intervals.iter().all(|&(a, b)| required.intervals.iter().any(|&(c, d)| c <= a && b <= d)),
-                    ElementFact::Index { target, .. } => range.intervals.iter().all(|&(_, b)| b < u64::from(datasets[binding(*target).0].element_count())),
+                    ElementFact::Range(required) => range.within(required),
+                    ElementFact::Index { target, .. } => {
+                        let allowed=datasets[binding(*target).0].element_count().checked_sub(1).map(|last|(0,u64::from(last)));
+                        range.intervals.iter().all(|&actual|scalar.covers_range(actual,range.known_bits,allowed.as_slice(),(0,0)))
+                    },
                 }
         });
         if !holds { return Err(error(format!("程序 {} 缺少绑定 {} 字段 {} 的已生产数值范围", program.name(), program.buffers()[logical].name, word))); }

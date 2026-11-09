@@ -281,13 +281,14 @@ impl Frame {
     ///
     /// # Safety
     /// handle是本Frame当前存活存储，offset是其真实标量字段；全部元素已初始化。
-    /// intervals以该Scalar有效有序编码描述全部字段值的闭区间并集。
+    /// intervals以该Scalar有效有序编码描述全部字段值的闭区间并集，与known_bits交集成立。
+    /// known_bits是原始固定位(mask,value)，仅用于整数；value只含mask内该Scalar有效位。
     /// 非空limits仅用于u32字段，每项为已保证的严格上界；保证须来自编译器证明
     /// 或可信实现对实际字节的担保，不能凭ABI签名、格式或非零推定。
     /// 实际写已完成或由原存储依赖覆盖后续消费者，最后消费者前的寿命及访问
     /// 约束继续成立；外部可写访问须先沿原address写区撤回，不能保留未跟踪写别名。
     pub unsafe fn complete_field(&mut self, handle: u32, offset: u32,
-        intervals: &[blanguage::resource::ElementInterval], limits: &[u32]) {
+        intervals: &[blanguage::resource::ElementInterval], limits: &[u32], known_bits: (u64,u64)) {
         let ty = match self.data.datasets[handle as usize].as_ref().unwrap() {
             ResidentData::Cpu(data) => &data.ty,
             ResidentData::CpuBorrow(data) => &data.ty,
@@ -301,7 +302,7 @@ impl Frame {
                 (a <= end).then_some((a, end))
             }).collect();
         }
-        unsafe { self.data.produced_element(blanguage::ir::ElementRange { binding: handle as usize, offset, scalar, intervals }) };
+        unsafe { self.data.produced_element(blanguage::ir::ElementRange { binding: handle as usize, offset, scalar, intervals, known_bits }) };
         self.data.domains.sort();
         self.data.domains.dedup();
     }

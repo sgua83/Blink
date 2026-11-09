@@ -83,7 +83,7 @@ pub(crate) fn application_source(
 unsafe extern "C" {
     fn blink_allocate(output:*mut u32,frame:*mut c_void,ty:u32,count:u32)->*mut c_void;
     fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue,textures:*const *const c_void)->*mut c_void;
-    fn blink_complete_field(frame:*mut c_void,data:u32,offset:u32,intervals:*const ElementInterval,interval_count:usize,limits:*const u32,limit_count:usize);
+    fn blink_complete_field(frame:*mut c_void,data:u32,offset:u32,intervals:*const ElementInterval,interval_count:usize,limits:*const u32,limit_count:usize,known_mask:u64,known_value:u64);
     fn blink_error_message(error:*const c_void,bytes:*mut usize)->*const u8;
     fn blink_error_destroy(error:*mut c_void);
     fn blink_destroy(frame:*mut c_void);
@@ -192,6 +192,7 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
         writeln!(functions, "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_complete_{index}(frame:*mut c_void,data:u32,offset:u32{params}) {{")?;
         for field in fields {
             let offset = field.offset;
+            let (known_mask,known_value) = field.known_bits;
             let values = field.intervals.iter().map(|(lower, upper)| format!("ElementInterval{{lower:{lower},upper:{upper}}}")).collect::<Vec<_>>().join(",");
             let limit_count = field.limits.len();
             let limits = field.limits.iter().map(|(parameter, distance)| match *distance {
@@ -199,7 +200,7 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
                 1 => format!("Some(count_{parameter})"),
                 distance => format!("Some(count_{parameter}.saturating_sub({}))", distance - 1),
             }).collect::<Vec<_>>().join(",");
-            writeln!(functions, "{{ static INTERVALS:[ElementInterval;{}]=[{values}];let bounds:[Option<u32>;{limit_count}]=[{limits}];let mut limits=[0u32;{limit_count}];let mut count=0;for limit in bounds.into_iter().flatten(){{limits[count]=limit;count+=1;}}unsafe {{ blink_complete_field(frame,data,offset+{offset},INTERVALS.as_ptr(),INTERVALS.len(),limits.as_ptr(),count) }} }}", field.intervals.len())?;
+            writeln!(functions, "{{ static INTERVALS:[ElementInterval;{}]=[{values}];let bounds:[Option<u32>;{limit_count}]=[{limits}];let mut limits=[0u32;{limit_count}];let mut count=0;for limit in bounds.into_iter().flatten(){{limits[count]=limit;count+=1;}}unsafe {{ blink_complete_field(frame,data,offset+{offset},INTERVALS.as_ptr(),INTERVALS.len(),limits.as_ptr(),count,{known_mask},{known_value}) }} }}", field.intervals.len())?;
         }
         writeln!(functions, "}}")?;
     }

@@ -31,6 +31,7 @@ fn element_fact(fact: &ElementFact) -> String {
         ElementFact::Range(range) => node("element_range", &[
             ("binding", number(range.binding)), ("offset", number(range.offset)), ("scalar", name(&range.scalar)),
             ("intervals", array(range.intervals.iter().map(|(lower, upper)| format!("[{lower},{upper}]")))),
+            ("known_bits", numbers(&[range.known_bits.0,range.known_bits.1])),
         ]),
         ElementFact::Index { binding, offset, target } => node("element_index", &[
             ("binding", number(binding)), ("offset", number(offset)), ("target", number(target)),

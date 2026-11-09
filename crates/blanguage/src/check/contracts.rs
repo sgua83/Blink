@@ -642,7 +642,7 @@ fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
             Predicate::Nonzero(selection) => selection.empty() || builder.condition_truth(&bounds::Condition::nonzero_value(&selection.value),None)==Some(true),
             Predicate::Range(selection, scalar, intervals) => {
                 let proof = builder.path_proof(&selection.value.ty, bounds::Proof::capture(&selection.value));
-                selection.empty() || (0..selection.value.regs.len()).all(|component| proof.holds_range(component, *scalar, intervals))
+                selection.empty() || (0..selection.value.regs.len()).all(|component| proof.holds_range(component, *scalar, intervals,(0,0)))
             }
             Predicate::Nonempty(resource) => {
                 resource.empty() || builder.resource_minimum(resource.domain(), resource.minimum()) != 0

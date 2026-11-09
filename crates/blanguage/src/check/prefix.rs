@@ -219,7 +219,7 @@ pub(super) fn element_requirements(world: &World, buffers: &[Buffer], env: &BTre
                 let constants = outputs::range_constants(world, d, Some(scalar), intervals, contract.span)?;
                 let intervals = bounds::numeric_intervals(scalar, constants.iter().map(|(a,b)| (a.bits[0],b.bits[0])), &d.source, contract.span)?;
                 requirements.extend(components.into_iter().map(|component| ElementFact::Range(ElementRange {
-                    binding: *binding, offset: buffers[*binding].ty.components[component].1, scalar, intervals: intervals.clone(),
+                    binding: *binding, offset: buffers[*binding].ty.components[component].1, scalar, intervals: intervals.clone(), known_bits:(0,0),
                 })));
             }
             _ => unreachable!(),
@@ -239,7 +239,10 @@ impl Facts {
             let component = program.buffers[binding].ty.components.iter().position(|(_, word)| *word == offset).unwrap();
             let proof = self.elements.entry(binding).or_default();
             match requirement {
-                ElementFact::Range(range) => proof.constrain_range(component, &range.intervals),
+                ElementFact::Range(range) => {
+                    proof.constrain_range(component,&range.intervals);
+                    if range.known_bits.0!=0{proof.mark_domain(component,IndexDomain::KnownBits(range.scalar,range.known_bits.0,range.known_bits.1));}
+                },
                 ElementFact::Index { target, .. } => proof.mark_domain(component, IndexDomain::Data(*target)),
             }
         }
@@ -262,7 +265,7 @@ impl Facts {
             if program.buffers[binding].count == Some(0) { continue; }
             let component = program.buffers[binding].ty.components.iter().position(|(_, word)| *word == offset).unwrap();
             let proven = self.elements.get(&binding).is_some_and(|proof| match requirement {
-                ElementFact::Range(range) => proof.holds_range(component, range.scalar, &range.intervals),
+                ElementFact::Range(range) => proof.holds_range(component, range.scalar, &range.intervals,range.known_bits),
                 ElementFact::Index { target, .. } => proof.domains(component).into_iter().any(|domain| matches!(domain, IndexDomain::Data(other) if program.same_length(other, *target)))
                     || proof.element_ranges(binding, &program.buffers[binding].ty).iter().any(|range| range.offset == offset
                         && range.intervals.iter().all(|&(_, upper)| upper < u64::from(program.buffers[*target].count.unwrap_or(0)))),
