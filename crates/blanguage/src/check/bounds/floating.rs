@@ -239,9 +239,15 @@ impl Proof {
             finite(coordinate, i).is_some_and(|(a,b)| a >= -1.0 && b <= 1.0));
         let lod = finite(lod, 0).is_some_and(|(a,b)| a >= -4294967296.0 && b <= 4294967296.0);
         if !coordinates || !lod { return Self::default(); }
-        // 原固定LINEAR过滤为非负权重组合。宽界包含CPU lerp及Vulkan过滤舍入，
-        // 不将理想UNORM [0,1]冒充严格最终范围，也不扩大原采样精度许可。
-        Self { ranges: vec![interval(Scalar::F32, 0.0, 2.0); 4], ..Self::default() }
+        // Four linear dimensions (3D plus mip) have 16 nonnegative texel terms.
+        // Each contribution has at most 25 rounding factors, including conversions.
+        // Use four decimal digits, wider than Vulkan's minimum about 1 part in 10^5.
+        // CPU affine UNORM decode and four three-operation lerps fit inside this bound.
+        let upper = if matches!(format, Some(Rgba8Srgb)) { 2.0 } else {
+            let factor = add_up(1.0, 1.0e-4);
+            (0..25).fold(1.0, |value, _| multiply_up(value, factor))
+        };
+        Self { ranges: vec![interval(Scalar::F32, 0.0, upper); 4], ..Self::default() }
     }
 }
 
