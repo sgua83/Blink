@@ -419,24 +419,24 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
 }
 pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
     let meta = metadata(o)?;
-    let mut sections: Vec<(&str, &[u8], u32, &[Relocation])> = o
-        .sections
-        .iter()
-        .map(|s| {
-            (
-                s.name.as_str(),
-                s.bytes.as_slice(),
-                s.flags,
-                s.relocations.as_slice(),
-            )
-        })
-        .collect();
-    sections.push((META, &meta, 0x840, &[]));
-    if let Some(build) = build { sections.push((BUILD, build, 0x840, &[])); }
-    if let Some(a) = &o.archive {
-        sections.push((ARCHIVE, &a.bytes, 0x840, &[]));
-    }
-    let input_relocations = o.sections.iter().map(|section| {
+    let mut extra = vec![(META, meta.as_slice(), 0x840, &[][..])];
+    if let Some(build) = build { extra.push((BUILD, build, 0x840, &[])); }
+    if let Some(archive) = &o.archive { extra.push((ARCHIVE, archive.bytes.as_slice(), 0x840, &[])); }
+    encode_sections(&o.name, &o.sections, &o.symbols, &extra)
+}
+
+pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Symbol]) -> Result<Vec<u8>> {
+    encode_sections(name, source, declared, &[])
+}
+
+fn encode_sections(
+    name: &str, source: &[Section], declared: &[Symbol],
+    extra: &[(&str, &[u8], u32, &[Relocation])],
+) -> Result<Vec<u8>> {
+    let sections = source.iter().map(|section|
+        (section.name.as_str(), section.bytes.as_slice(), section.flags, section.relocations.as_slice())
+    ).chain(extra.iter().copied()).collect::<Vec<_>>();
+    let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {
             let empty = BindingBytes::new(&[]);
             let (target, section, name, dll) = match &relocation.target {
@@ -447,23 +447,23 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
             BindingRelocation { offset: relocation.offset as u64, kind: u64::from(relocation.kind), target, section, name, dll }
         }).collect::<Vec<_>>()
     }).collect::<Vec<_>>();
-    let mut binding_sections = o.sections.iter().zip(&input_relocations).map(|(section, relocations)| BindingSection {
+    let mut binding_sections = source.iter().zip(&input_relocations).map(|(section, relocations)| BindingSection {
         name: BindingBytes::new(section.name.as_bytes()), flags: u64::from(section.flags),
         relocations: relocations.as_ptr(), relocation_count: relocations.len(),
         associated: section.associated.as_ptr(), associated_count: section.associated.len(), owner: 0, symbol: 0,
     }).collect::<Vec<_>>();
-    let definitions = o.symbols.iter().map(|symbol| BindingDefinition {
+    let definitions = declared.iter().map(|symbol| BindingDefinition {
         name: BindingBytes::new(symbol.name.as_bytes()), section: symbol.section as u64,
         value: u64::from(symbol.value), function: u64::from(symbol.function),
     }).collect::<Vec<_>>();
     let relocation_count: usize = input_relocations.iter().map(Vec::len).sum();
     // At most two symbols per section and one per definition/reference.
     // Each definition/reference contributes at most one shared tree node.
-    let mut symbols = Vec::<CoffSymbolView>::with_capacity(2 * o.sections.len() + o.symbols.len() + relocation_count);
-    let mut nodes = Vec::<[u64; 9]>::with_capacity(o.symbols.len() + relocation_count);
+    let mut symbols = Vec::<CoffSymbolView>::with_capacity(2 * source.len() + declared.len() + relocation_count);
+    let mut nodes = Vec::<[u64; 9]>::with_capacity(declared.len() + relocation_count);
     let mut relocations = Vec::<CoffRelocationView>::with_capacity(relocation_count);
     let binding_input = BindingInput {
-        name: BindingBytes::new(o.name.as_bytes()),
+        name: BindingBytes::new(name.as_bytes()),
         sections: binding_sections.as_mut_ptr(), section_count: binding_sections.len(),
         definitions: definitions.as_ptr(), definition_count: definitions.len(),
     };
@@ -515,6 +515,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
     Ok(output)
 
 }
+
 pub(super) fn decode(b: &[u8]) -> Result<Object> {
     Reader::new(b)?.object()
 }

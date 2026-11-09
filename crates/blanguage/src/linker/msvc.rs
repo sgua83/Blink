@@ -134,86 +134,22 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
         object.write(&path)?;
         temporary.push(path);
     }
-    // 原COFF导入身份绑定到所属PE的IAT；模块与函数名称都保留实际字节。
-    let mut imports = std::collections::BTreeMap::<&str, std::collections::BTreeSet<&str>>::new();
-    for object in objects {
-        for relocation in object.sections.iter().flat_map(|section| &section.relocations) {
-            if let crate::object::Target::Import(import) = &relocation.target {
-                imports.entry(&import.dll).or_default().insert(&import.name);
-            }
-        }
-    }
+    // Same import-slot owner as the explicit native-host archive product.
+    let imports = objects.iter().flat_map(|object| &object.sections)
+        .flat_map(|section| &section.relocations)
+        .filter_map(|relocation| match &relocation.target {
+            crate::object::Target::Import(import) => Some(import), _ => None,
+        }).collect::<std::collections::BTreeSet<_>>();
     if !imports.is_empty() {
-        use crate::object::{Kind, Object, Relocation, Section, Symbol, Target};
-        let mut sections = [".idata$2", ".idata$3", ".idata$4", ".idata$5", ".idata$6", ".rdata"]
-            .into_iter().enumerate().map(|(index, name)| Section {
-                name: name.into(), bytes: Vec::new(),
-                flags: (if index == 5 { 0x40000040 } else { 0xc0000040 }) | match index { 0 | 1 => 0x00300000, 2 | 3 | 5 => 0x00400000, _ => 0x00200000 },
-                relocations: Vec::new(), associated: Vec::new(), layout: None,
-            }).collect::<Vec<_>>();
-        sections[1].bytes.resize(20, 0);
+        let mut members = Vec::new();
         let mut symbols = Vec::new();
-        for (dll, names) in imports {
-            if dll == crate::application::RUNTIME_LIBRARY {
-                for name in names {
-                    let value = u32::try_from(sections[5].bytes.len())?;
-                    sections[5].bytes.extend([0; 8]);
-                    symbols.push(Symbol {
-                        name: super::resources::import_symbol(&dll, &name),
-                        section: 5, value, contract: Vec::new(), function: false,
-                    });
-                    sections[5].relocations.push(Relocation {
-                        offset: value as usize, kind: 1, target: Target::Symbol(name.into()),
-                    });
-                }
-                continue;
-            }
-            let descriptor = sections[0].bytes.len();
-            sections[0].bytes.resize(descriptor + 20, 0);
-            let dll_name = sections[4].bytes.len();
-            sections[4].bytes.extend(dll.as_bytes());
-            sections[4].bytes.push(0);
-            for (field, section, addend) in [
-                (0, 2, sections[2].bytes.len()),
-                (12, 4, dll_name),
-                (16, 3, sections[3].bytes.len()),
-            ] {
-                sections[0].bytes[descriptor + field..descriptor + field + 4]
-                    .copy_from_slice(&u32::try_from(addend)?.to_le_bytes());
-                sections[0].relocations.push(Relocation {
-                    offset: descriptor + field, kind: 3, target: Target::Section(section, 0),
-                });
-            }
-            for name in names {
-                if sections[4].bytes.len() % 2 != 0 { sections[4].bytes.push(0); }
-                let hint = sections[4].bytes.len();
-                sections[4].bytes.extend([0, 0]);
-                sections[4].bytes.extend(name.as_bytes());
-                sections[4].bytes.push(0);
-                symbols.push(Symbol {
-                    name: super::resources::import_symbol(&dll, &name),
-                    section: 3, value: u32::try_from(sections[3].bytes.len())?,
-                    contract: Vec::new(), function: false,
-                });
-                for section in [2, 3] {
-                    let at = sections[section].bytes.len();
-                    sections[section].bytes.extend(u64::try_from(hint)?.to_le_bytes());
-                    sections[section].relocations.push(Relocation {
-                        offset: at, kind: 3, target: Target::Section(4, 0),
-                    });
-                }
-            }
-            sections[2].bytes.extend([0; 8]);
-            sections[3].bytes.extend([0; 8]);
+        for import in imports {
+            let (member, symbol) = super::imports::member(import)?;
+            symbols.push((members.len(), symbol));
+            members.push(member);
         }
-        let imports = Object {
-            name: "@blink.imports@".into(),
-            kind: Kind::Module { interface: String::new(), requirements: std::collections::BTreeMap::new(), stack_bytes: 0 },
-            sections, symbols, imports: std::collections::BTreeMap::new(),
-            archive: None, stack: Vec::new(),
-        };
-        let path = path.parent().unwrap().join(format!(".blink-link-{id}-imports.obj"));
-        imports.write(&path)?;
+        let path = path.parent().unwrap().join(format!(".blink-link-{id}-imports.lib"));
+        std::fs::write(&path, crate::object::library_bytes(&members, &symbols)?)?;
         temporary.push(path);
     }
     if let Some(binding) = binding {

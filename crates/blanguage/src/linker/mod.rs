@@ -1,6 +1,8 @@
 //! 独立链接阶段只读取 COFF 目标文件及其已编译静态库，不调用 B／Rust 编译器。
 mod combine;
 mod msvc;
+mod imports;
+pub use imports::host_archive;
 mod pe;
 mod resources;
 pub(crate) mod native;

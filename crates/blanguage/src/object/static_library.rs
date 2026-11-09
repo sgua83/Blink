@@ -42,12 +42,12 @@ impl Input {
         }
     }
 }
-struct Member {
-    name: String,
-    bytes: Vec<u8>,
+pub(crate) struct Member {
+    pub(crate) name: String,
+    pub(crate) bytes: Vec<u8>,
 }
 impl Member {
-    fn object(&self, native: bool) -> Result<Object> {
+    pub(crate) fn object(&self, native: bool) -> Result<Object> {
         (if native { coff::Reader::new(&self.bytes)?.native(&self.name) } else { coff::decode(&self.bytes) })
             .map_err(|error| format!("静态库成员 {}：{error}", self.name).into())
     }
@@ -197,6 +197,23 @@ unsafe extern "C" {
 
 /// 将已编译模块保存为标准 COFF 静态库；原对象字节保持，不调用编译器。
 pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
+    let members = members(inputs)?;
+    let mut symbols = Vec::new();
+    for (index, member) in members.iter().enumerate() {
+        let object = member.object(false)?;
+        if !matches!(object.kind, Kind::Module { .. }) {
+            return Err(format!("{} 不是独立模块产物", member.name).into());
+        }
+        symbols.extend(object.symbols.into_iter().map(|s| (index, s.name)));
+    }
+    let output = encode(&members, &symbols)?;
+    let path = std::path::absolute(path)?;
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(path, output)?;
+    Ok(())
+}
+
+pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
     let mut members = Vec::new();
     for input in inputs {
         let input = input.as_ref();
@@ -214,14 +231,10 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
             });
         }
     }
-    let mut symbols = Vec::new();
-    for (index, member) in members.iter().enumerate() {
-        let object = member.object(false)?;
-        if !matches!(object.kind, Kind::Module { .. }) {
-            return Err(format!("{} 不是独立模块产物", member.name).into());
-        }
-        symbols.extend(object.symbols.into_iter().map(|s| (index, s.name)));
-    }
+    Ok(members)
+}
+
+pub(crate) fn encode(members: &[Member], symbols: &[(usize, String)]) -> Result<Vec<u8>> {
     let mut member_views: Vec<_> = members.iter().map(|member| ArchiveMember {
         name: member.name.as_ptr(), name_length: member.name.len(),
         bytes: member.bytes.as_ptr(), byte_length: member.bytes.len(),
@@ -250,8 +263,6 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
         archive_encode(input, layout, output.as_mut_ptr());
         output.set_len(layout.length);
     }
-    let path = std::path::absolute(path)?;
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(path, output)?;
-    Ok(())
+    Ok(output)
 }
+
