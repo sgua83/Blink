@@ -107,7 +107,7 @@ fn compile_in(
     match fs::read(&artifact) {
         Ok(bytes) => {
             let mut stored = decode(&bytes)?;
-            if let Some(inputs) = identity::decode(&stored.identity)? && inputs.source == source {
+            if let Some(inputs) = identity::decode(&stored.identity)? && inputs.source.same_code(&source) {
                 let mut image = unsafe { resource::from_compiler_output(&stored.image) }
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 if inputs.imports == references(&world.declarations, imported, &image, &inputs.declarations) {

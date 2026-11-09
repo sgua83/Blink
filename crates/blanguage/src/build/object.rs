@@ -36,8 +36,7 @@ pub(super) fn compile<'a>(
     dependencies: impl IntoIterator<Item = &'a Object>,
     kind: ObjectKind<'_>, output: &Path, inputs: Option<&super::Inputs>,
 ) -> Result<ObjectCompilation> {
-    let source_path = path;
-    let source_root = root;
+    let source_path = if inputs.is_some() { path.into() } else { std::path::absolute(path)? };
     // .h是模块来源；纯类型模块不依赖伪造的.b。
     let mut header_path = path.to_path_buf();
     header_path.set_extension("h");
@@ -45,12 +44,12 @@ pub(super) fn compile<'a>(
     let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
     let artifact = std::path::absolute(output)?;
     let imports = crate::module::Imports::new(dependencies).map_err(|value| crate::ast::Diagnostic {
-            source: crate::ast::Source { path: source_path.into(), text: "".into() },
+            source: crate::ast::Source { path: source_path.clone(), text: "".into() },
             span: crate::ast::Span::default(), code: "B270", message: value.to_string(),
         })?;
     let imported = (!imports.modules.is_empty()).then_some(&imports);
     let requests = match kind { ObjectKind::Module(requests) => requests, _ => &[] };
-    let (world, module) = crate::read_world(source_path, source_root, imported, requests, worker, inputs,
+    let (world, module) = crate::read_world(&source_path, &root, imported, requests, worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let definitions = &world.declarations;
     let selection = match kind {
@@ -69,7 +68,7 @@ pub(super) fn compile<'a>(
             if let Some(bytes) = reader.build_inputs().map_err(error)?
                 && let Some(stored) = identity::decode(bytes)?
             {
-                if stored.source == source {
+                if stored.source.same_code(&source) {
                     let object = reader.object().map_err(error)?;
                     if stored.imports == identity::references(definitions, imported, object.imports.keys().map(String::as_str), &stored.declarations) {
                         let native = stored.native.map(|_| crate::object::native_inputs(runtime)).transpose()?;

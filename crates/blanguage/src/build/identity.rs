@@ -47,6 +47,15 @@ pub struct SourceInputs {
     pub requirements: Vec<(String, String)>,
 }
 record!(SourceInputs { path, root, working_directory, module, compiler, max_parameter_bytes, selection, sources, requirements });
+impl SourceInputs {
+    pub(super) fn same_code(&self, other: &Self) -> bool {
+        self.path == other.path && self.root == other.root
+            && self.module == other.module && self.compiler == other.compiler
+            && self.max_parameter_bytes == other.max_parameter_bytes
+            && self.selection == other.selection && self.sources == other.sources
+            && self.requirements == other.requirements
+    }
+}
 pub struct Inputs {
     pub source: SourceInputs,
     pub imports: [u8; 32],
