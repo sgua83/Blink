@@ -676,6 +676,6 @@ blctl run output --domain solve --id <solve-run> --name statistics --to statisti
 
 这是一套完整设计合同，不是“先做小例子再补底座”的实施计划。精确的线格式、启动／安装格式、平台实现、稳定 ABI 字段、域授权模型及升级兼容矩阵仍须研发落实；未确定编码细节不意味着可以省略上述职责和失败交接。复用现有实际编译与原生运行，不据此新增常驻测试、审核、模拟全网或独立证明链。
 
-关联 C-021.9、C-022.6／C-022.7／C-022.8 以及 C-020、C-023、C-024。域程序、参与入口与分片索引、直接传输、跨机集合算法和正式域SDK／CLI仍未实现；现有单机原生执行不代替这些能力。剩余任务沿原C-021.9.1、C-022.6.1至C-022.8.1及C-024.1.9细化，具体历史和实际验证只归双台账。
+关联 C-021.9、C-022.6／C-022.7／C-022.8 以及 C-020、C-023、C-024。域程序、参与入口与分片索引、直接传输、跨机集合算法和正式域SDK／CLI仍未实现；现有单机原生执行不代替这些能力。剩余任务沿原C-021.9.1、C-022.6.1至C-022.8.1及C-024.1.20／.21细化，具体历史和实际验证只归双台账。
 
 设计核对来源：[Matrix 独立维护边界](../../BLMatrix/Docs/Architecture.md#运维稳定边界)及其 `Core/BLRemoteControlProtocol`、`Apps/BLSupervisor/src/remote_cli.rs` 的现有接口；平台特权事实参考 [Microsoft LocalSystem](https://learn.microsoft.com/en-us/windows/win32/ad/the-localsystem-account)。更新信任、内容身份与密钥演化参考 [TUF 官方规范](https://theupdateframework.github.io/specification/)，不因此引入该第三方运行时或要求用户手写其元数据。
