@@ -4767,7 +4767,7 @@ CPU 标量与四元素 SSE2 共用自研整数倒数参数。二次幂以右移�
 
 ## 通用原生执行入口
 
-`brun <cpu|gpu> <module.b> <计算函数> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]` 直接编译并执行没有未满足前置条件的公开 计算函数。先按接口 dataset 顺序绑定数据，再按纹理参数顺序提供与其 texture2d／texture3d 声明维度匹配的 `.bltex`，与参数在原接口中是否交错无关；`:count` 明确申请该长度的全零数据。每个值参数按接口类型解析，向量按分量顺序提供。只写与读写数据输出为 `<参数名>.bldata`，read 数据不重复保存。加速结构和 view 通过原生 Bindings API 绑定，不从数据文件伪造地址。
+`brun <cpu|gpu> <module.b> <计算函数> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]` 直接编译并执行没有未满足前置条件的公开 计算函数。入口先接收精确的`cpu`／`gpu`后端；其他值直接交回后端参数错误，不编译模块、读取数据／纹理或生成程序描述。先按接口 dataset 顺序绑定数据，再按纹理参数顺序提供与其 texture2d／texture3d 声明维度匹配的 `.bltex`，与参数在原接口中是否交错无关；`:count` 明确申请该长度的全零数据。每个值参数按接口类型解析，向量按分量顺序提供。只写与读写数据输出为 `<参数名>.bldata`，read 数据不重复保存。加速结构和 view 通过原生 Bindings API 绑定，不从数据文件伪造地址。
 
 ```powershell
 ..\BLEngine\target\release\blengine.exe simulate cpu 1048576 8 Saved\bodies.bldata

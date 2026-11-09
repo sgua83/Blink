@@ -152,7 +152,7 @@ GPU 版 `map_gpu.b` 在同一文件完整定义 scale_values，并在 main 明�
 .\target\release\brun.exe gpu sample\lessons\map.b demo sample Saved\MapGpu :4
 ```
 
-`:4` 申请四个初始为零的元素；`demo` 自己填入初值。结果保存在相应目录的 `values.bldata`。这只属于后端隔离测试的数据协议；正常 B 应用直接运行 EXE，并由代码选择设备。附录提供不加命令别名的直接读取方法。
+brun先接收精确的`cpu`／`gpu`后端，其他值直接交回参数错误；接受后才编译模块和读取输入。`:4` 申请四个初始为零的元素；`demo` 自己填入初值。结果保存在相应目录的 `values.bldata`。这只属于后端隔离测试的数据协议；正常 B 应用直接运行 EXE，并由代码选择设备。附录提供不加命令别名的直接读取方法。
 
 正文节选对应当前源码，位置见现行源码索引；修订和原生运行历史只在P4双台账记录。
 

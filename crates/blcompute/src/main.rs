@@ -24,7 +24,10 @@ fn main() -> Result<()> {
 
 fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
     use blanguage::{ast::Access, ir::Scalar};
-    let backend = args.first().ok_or_else(|| error("缺少执行设备"))?;
+    let backend = &args[0];
+    if backend != "cpu" && backend != "gpu" {
+        return Err(error("执行设备只能为 cpu 或 gpu"));
+    }
     if capture_timestamps && backend != "gpu" {
         return Err(error("--gpu-timestamps只用于gpu执行"));
     }
@@ -117,55 +120,53 @@ fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
         .collect();
     println!("{}", program.describe());
     let start = Instant::now();
-    let result = match backend.as_str() {
-        "cpu" => CpuProgram::new(program)?
+    let result = if backend == "cpu" {
+        CpuProgram::new(program)?
             .run_owned(blcompute::cpu::Bindings { datasets, textures }, &values)
             .map_err(|(error, _)| error)?
-            .into_datasets(),
-        "gpu" => {
-            let image = blanguage::spirv::compile_program(program).map_err(error)?;
-            let device = Device::for_program(image.program())?;
-            println!("GPU {}", device.name());
-            let compiled = device.load(image)?.with_timestamps(capture_timestamps)?;
-            let data = datasets
-                .into_iter()
-                .map(|d| device.upload(d))
-                .collect::<Result<Vec<_>>>()?;
-            let textures = textures
-                .iter()
-                .map(|t| match t {
-                    blcompute::cpu::TextureInput::D2(t) => device.upload_texture(t).map(Into::into),
-                    blcompute::cpu::TextureInput::D3(t) => device.upload_texture3d(t).map(Into::into),
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let done = compiled
-                .submit(
-                    blcompute::vulkan::Bindings {
-                        datasets: data,
-                        accelerations: Vec::new(),
-                        textures,
-                    },
-                    &values,
-                )?
-                .wait().map_err(|(error, _)| error)?;
-            match &done.timings {
-                Some(timings) => println!("GPU_program_ms={:.3}", timings.elapsed_ms),
-                None => println!("GPU_program_timestamps=not_collected"),
-            }
-            // 只读数据的所有权仍随完成对象释放，文件消费者只读回实际输出。
-            std::fs::create_dir_all(out)?;
-            for (i, name) in &outputs {
-                device
-                    .download(&done.datasets()[*i])?
-                    .write_data(&out.join(format!("{name}.bldata")), 1)?;
-            }
-            println!(
-                "compute_elapsed_ms={:.3}",
-                start.elapsed().as_secs_f64() * 1000.0
-            );
-            return Ok(());
+            .into_datasets()
+    } else {
+        let image = blanguage::spirv::compile_program(program).map_err(error)?;
+        let device = Device::for_program(image.program())?;
+        println!("GPU {}", device.name());
+        let compiled = device.load(image)?.with_timestamps(capture_timestamps)?;
+        let data = datasets
+            .into_iter()
+            .map(|d| device.upload(d))
+            .collect::<Result<Vec<_>>>()?;
+        let textures = textures
+            .iter()
+            .map(|t| match t {
+                blcompute::cpu::TextureInput::D2(t) => device.upload_texture(t).map(Into::into),
+                blcompute::cpu::TextureInput::D3(t) => device.upload_texture3d(t).map(Into::into),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let done = compiled
+            .submit(
+                blcompute::vulkan::Bindings {
+                    datasets: data,
+                    accelerations: Vec::new(),
+                    textures,
+                },
+                &values,
+            )?
+            .wait().map_err(|(error, _)| error)?;
+        match &done.timings {
+            Some(timings) => println!("GPU_program_ms={:.3}", timings.elapsed_ms),
+            None => println!("GPU_program_timestamps=not_collected"),
         }
-        _ => return Err(error("执行设备只能为 cpu 或 gpu")),
+        // 只读数据的所有权仍随完成对象释放，文件消费者只读回实际输出。
+        std::fs::create_dir_all(out)?;
+        for (i, name) in &outputs {
+            device
+                .download(&done.datasets()[*i])?
+                .write_data(&out.join(format!("{name}.bldata")), 1)?;
+        }
+        println!(
+            "compute_elapsed_ms={:.3}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+        return Ok(());
     };
     std::fs::create_dir_all(out)?;
     for (i, name) in outputs {
