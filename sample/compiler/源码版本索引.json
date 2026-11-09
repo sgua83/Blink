@@ -112,7 +112,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "3921ed7d2c69a0d22eb3901cdd1206cdd98e08555eb910fde63c544f4e198d3c"
+      "sha256": "13220a781a629280c70a2a55e337a3d7683cfa0f89aa51f32ed6e430fe5ecad4"
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
@@ -216,7 +216,7 @@
     },
     {
       "path": "crates/blanguage/src/check/prefix.rs",
-      "sha256": "af101b7cf8f46bfaae7c2727c007027bf2a19cb1a824c2cb3b679d743991cb1f"
+      "sha256": "ca5f6d49b32f0344e21d9eb746bcd2f9b069e4f0818a41d05a9b91cf7355f9b0"
     },
     {
       "path": "crates/blanguage/src/check/records.rs",

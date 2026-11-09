@@ -1104,7 +1104,7 @@ pub struct Span {
 }
 ```
 
-Span的start/end是字节范围；诊断再从原Source计算行号和字符列，不能把中文UTF-8字节数当成人眼字数。`repr(C)`让这两个64位位置按B／Rust共同的C布局交接；Token是同一Span的透明包装。
+Span的start/end是字节范围；诊断再从原Source计算行号和字符列，不能把中文UTF-8字节数当成人眼字数。`repr(C)`让这两个64位位置按B／Rust共同的C布局交接；Token是同一Span的透明包装。 调用前提来自被调合同，未证明时的诊断Source及Span来自调用方同一真实调用；被调声明自身出错仍由原声明Source报告。Facts::prove_elements只借用本次诊断的Source，不接收整个Definition，证明过程继续消费原事实及要求。
 
 源码节选：`crates/blanguage/src/bootstrap/lexer.h:1`。
 

@@ -253,7 +253,7 @@ impl Facts {
         facts.dedup();
         facts
     }
-    pub fn prove_elements(&self, program: &Program, required: &[ElementFact], d: &Definition, span: Span) -> Result<()> {
+    pub fn prove_elements(&self, program: &Program, required: &[ElementFact], source: &Source, span: Span) -> Result<()> {
         for requirement in required {
             let (binding, offset) = match requirement {
                 ElementFact::Range(range) => (range.binding, range.offset),
@@ -267,7 +267,7 @@ impl Facts {
                     || proof.element_ranges(binding, &program.buffers[binding].ty).iter().any(|range| range.offset == offset
                         && range.intervals.iter().all(|&(_, upper)| upper < u64::from(program.buffers[*target].count.unwrap_or(0)))),
             });
-            if !proven { return d.source.fail(span, "B226", "整域调用前尚未证明共同字段的数值／目标索引前提"); }
+            if !proven { return source.fail(span, "B226", "整域调用前尚未证明共同字段的数值／目标索引前提"); }
         }
         Ok(())
     }

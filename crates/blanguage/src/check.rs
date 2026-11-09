@@ -1207,7 +1207,7 @@ fn expand_stages(
                 }
                 let required = prefix::relations(program, &child, callee, ContractKind::Requires)?;
                 let elements = prefix::element_requirements(world, &program.buffers, &child, callee)?;
-                facts.prove_elements(program, &elements, callee, statement.span)?;
+                facts.prove_elements(program, &elements, &d.source, statement.span)?;
                 for relation in &required {
                     prefix::prove(
                         facts,
