@@ -189,13 +189,11 @@ try {
     $buildOutput = Native cargo @('build', '--workspace', '--release', '--locked', '--features', 'blanguage/installed',
         '--manifest-path', (Join-Path $source 'Cargo.toml'), '--target-dir', $target, '--message-format=json')
     $bootstrapLibrary = foreach ($line in $buildOutput -split "`n") {
-        if ($line) {
-            $message = $line | ConvertFrom-Json
-            if ($message.reason -eq 'build-script-executed' -and $message.package_id -eq $compilerPackage) {
-                Join-Path $message.out_dir 'blink_compiler_bootstrap.lib'
-            }
-            if ($message.reason -eq 'compiler-message') { Write-Host $message.message.rendered }
+        $message = $line | ConvertFrom-Json
+        if ($message.reason -eq 'build-script-executed' -and $message.package_id -eq $compilerPackage) {
+            Join-Path $message.out_dir 'blink_compiler_bootstrap.lib'
         }
+        if ($message.reason -eq 'compiler-message') { Write-Host $message.message.rendered }
     }
     Native cargo @('rustc', '--release', '--locked', '--package', 'blink-installer', '--features', 'windows-installer',
         '--manifest-path', (Join-Path $source 'Cargo.toml'), '--target-dir', $target,
