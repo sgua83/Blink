@@ -628,8 +628,6 @@ impl Builder<'_> {
                     }
                     if let Some(returns::Returned::Dataset(repeated))=repeated {
                         if data.ownership!=repeated.ownership{data.ownership=application::Ownership::Moved;}
-                        data.length.proof.join_condition(&repeated.length.proof,data.length.regs.len(),Some(&empty));
-                        data.length.uniform&=repeated.length.uniform;if data.length.constant!=repeated.length.constant{data.length.constant=None;}
                         data.residency=residency::Residency::conditional(empty.clone(),data.residency.clone(),repeated.residency);
                         data.elements=std::mem::take(&mut data.elements).selected(repeated.elements,&empty);
                         data.prefixes=prefix::join_fields(&data.prefixes,&repeated.prefixes,Some(&empty));

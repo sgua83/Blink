@@ -1707,6 +1707,7 @@ impl Builder<'_> {
     }
     fn resize_application_storage(&mut self,root:Value,ty:Ty,mut length:Value,elements:ElementFacts,fill:CallArgument,snapshots:&[&Value],span:Span)->Result<Data> {
         let frame = self.application_frame(span)?;
+        let resource = root.proof.view_borrow(0);
         let reg = self.reg(Scalar::U32);
         let call_origin = Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetResizeCall,
@@ -1717,8 +1718,9 @@ impl Builder<'_> {
             argument(frame), argument(root), argument(length.clone()),
             fill,
         ], Some(Ty::scalar(Scalar::U32)), vec![reg],Some(error),self.failure_continuation(Vec::new())).kind, call_origin));
-        // Frame 槽位不变；新 SSA 身份使旧长度／下标证明停留在旧存储版本。
-        let handle = self.application_root(reg);
+        // Frame 槽位及已有资源来源保持；新 SSA 身份仍区分旧长度／下标版本。
+        let mut handle = self.application_root(reg);
+        handle.proof = handle.proof.with_view_borrow(0, resource);
         length.literal = false;
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),

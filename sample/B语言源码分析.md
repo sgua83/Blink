@@ -1604,7 +1604,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1776`。
+源码节选：`crates/blanguage/src/check/application.rs:1778`。
 
 ```rust
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
@@ -1877,7 +1877,7 @@ pub(super) struct LoopWrites {
 
 take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。存活性消费时点由实际调用者选择；assign_application_element保持after(rhs.span)，普通assign_owned_storage及take_last各选择自身原after(span)。共用函数只消费已求值载荷及当前ViewUses，不把Frame元素旧内容的清理切换到新内容的后续读取；check_returned_type只借用Builder，不重选存活性。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
 
-源码节选：`crates/blanguage/src/check/application.rs:1738`。
+源码节选：`crates/blanguage/src/check/application.rs:1740`。
 
 ```rust
     pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
@@ -2200,7 +2200,7 @@ write_place的非循环ApplicationElement在真实write_application_place、init
 
 普通B引用的声明权限与Frame可写暴露分别交接：原函数合同已闭合为无实际写，且返回地址及保留原数值存储关系的地址位模式均无可写来源外泄时，引用沿原地址入口只形成读区，不撤回已有字段保证。判定直接查询原Contract.view_access与Returned.proof的views／addresses，包括聚合字段及原返回拥有树中的dataset元素载荷；不建立另一份效果、来源或运行状态。声明Access、原子权限、初始化／借用规则及机器Reference ABI不变。真实写、可写地址或位模式返回、尚未闭合及外部未知调用保留原可写暴露和Frame撤回；普通写后的真实完成继续沿原完成入口，不为只读调用追加完成。
 
-该编码为BLCO86；资源ABI保持BLRI50。普通值resize也复用原填充值捕获与保留前缀合流，实际拥有值不能广播的规则保持。prefix／where的普通部分覆盖不声明完整覆盖；整数原子共享更新在原memory_regions的实际写字节键汇总可能存储的数值Proof，未知写没有可用数值，原选择臂按可能性求并。阶段完成把这些候选与原facts.elements中的旧共同值求并，只交真实写字段；输入寄存器、Clause及借用在原atomic_effect的求值点转为纯共同数值及Data目标，不在摘要保留稳定读身份。完整字段和物理部分重叠分别处理，原Stage.write_regions仍只交字节集合，Stage.element_guarantees交最终保证；部分命中不表示完整初始化。持久外部输入合同、同字段循环读前范围及普通引用调用精度分别见Issues C-021.1.4.5.2／.5.4.2／.5.4.3。
+该编码为BLCO86；资源ABI保持BLRI50。普通值resize也复用原填充值捕获与保留前缀合流，实际拥有值不能广播的规则保持。存储Call成功后，resize／take_last保留调用前已记录的资源Borrow，新的根SSA及长度域仍区分存储版本；来源保留不复用旧地址、下标或长度事实。循环长度数值由原NumericEffect交接，自然出口不重新拼入循环体的条件Proof；拥有、驻留、共同元素及prefix仍按实际出口合流。prefix／where的普通部分覆盖不声明完整覆盖；整数原子共享更新在原memory_regions的实际写字节键汇总可能存储的数值Proof，未知写没有可用数值，原选择臂按可能性求并。阶段完成把这些候选与原facts.elements中的旧共同值求并，只交真实写字段；输入寄存器、Clause及借用在原atomic_effect的求值点转为纯共同数值及Data目标，不在摘要保留稳定读身份。完整字段和物理部分重叠分别处理，原Stage.write_regions仍只交字节集合，Stage.element_guarantees交最终保证；部分命中不表示完整初始化。持久外部输入合同、同字段循环读前范围及普通引用调用精度分别见Issues C-021.1.4.5.2／.5.4.2／.5.4.3。
 
 CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文使用的同一个游标绑定，再运行原loop_writes；循环IR、真实入口、条件与退出仍由原LoopContext交接。没有先造一份影子游标或把正文未知写扩成全存储写：
 
@@ -2234,7 +2234,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:3844`。
+源码节选：`crates/blanguage/src/check/application.rs:3846`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -2246,7 +2246,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 全局目标本身可以是借用输入，其真实根与长度和拥有资源进入同一element_owner_bindings。元素归属先使用原DataReference已经确定的唯一当前根；其余来源及真实嵌套关系，沿活动LoopContext已有映射查询各层作用域，不另造别名状态：
 
-源码节选：`crates/blanguage/src/check/application.rs:3459`。
+源码节选：`crates/blanguage/src/check/application.rs:3461`。
 
 ```rust
         let owner=view::resource_borrow(data);
