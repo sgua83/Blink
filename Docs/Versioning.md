@@ -49,7 +49,7 @@ VERSION 更新工具内嵌显示，但不加入 BLINK_COMPILER_ID 或原生框�
 
 PublishRelease.ps1从实际P4 client Root及Cargo target_directory取得路径，不固定开发盘符。正式构建输入是本轮Git镜像的精确快照，临时源码在原target/dist/source，输出复用原target。版本与平台包分别命名，同一个VERSION可以对应多个平台／架构资产；当前实际交付Windows x64的target/dist/Blink-Setup-windows-x64.exe，其他平台包尚未实现。GitHub Releases标签为v<VERSION>，关联原Git提交。
 
-Windows包是原生自解压EXE，嵌入同源bc、blink、brun、Rust源码SDK、标准库及release.json；安装使用Rust标准库与Windows原生压缩／权限／环境接口，不需要用户执行PowerShell脚本或另装解压软件。源码SDK编译运行框架仍需要Rust MSVC、C++构建工具和Windows SDK；GPU使用实际系统Vulkan驱动。Git main源码镜像与正式发行分别记录。
+Windows包是原生自解压EXE，嵌入同源bc、blink、brun、Rust源码SDK、固定B引导原生库、标准库及release.json；安装使用Rust标准库与Windows原生压缩／权限／环境接口，不需要用户执行PowerShell脚本或另装解压软件。源码SDK编译运行框架仍需要Rust MSVC、C++构建工具和Windows SDK；GPU使用实际系统Vulkan驱动。Git main源码镜像与正式发行分别记录。
 
 -BuildOnly只构建当前工作区并标明working tree，不发布、不宣称已提交快照；正式定时入口不使用此选项。
 
@@ -65,7 +65,7 @@ Windows包是原生自解压EXE，嵌入同源bc、blink、brun、Rust源码SDK�
 
 中央机与所有节点从同一GitHub Release下载对应平台／架构资产。中央普通用户从GitHub下载该版本的平台资产到原target/dist，再由现有BLSupervisor put分发同一EXE至节点真实普通用户TEMP；system-exec／BLAdmin执行--quiet安装，普通用户通知桌面与清理本次文件。节点只需要现有运维网络，不要求额外外网或代理。下载路径来自节点真实执行结果，不嵌入中央开发路径，不复制代理配置。消费者由Matrix真实节点登记与BLanguage P4工作区Owner／Host及项目关系取得，不固定节点清单。
 
-源码SDK的普通构建不启用installed特性，仍从原源码根读取SDK并使用原SDK target。默认compiler功能提供完整源码工具；B资源包装的SDK路径依赖关闭该功能，沿同一次Cargo依赖图和原target/dll生产实际运行角色，不调用词法种子或装入源前端。正式发行启用blanguage/installed：SDK从%ProgramFiles%/Blink读取，临时单元和运行框架输出写当前工程target。正式Compiler会话持有安装VERSION的真实只读使用句柄，直到最后共享消费者结束；原生安装器取得同一文件的排他使用权后才覆盖。占用失败明确结束，不杀进程、不伪造成功，不在使用中覆盖输入。部分覆盖失败撤销安装VERSION，避免把残缺目录作为可用SDK。
+源码SDK的普通构建不启用installed特性，仍从原源码根读取SDK并使用原SDK target。默认compiler功能提供完整源码工具；B资源包装的SDK路径依赖关闭该功能，沿同一次Cargo依赖图和原target/dll生产实际运行角色，不调用词法种子或装入源前端。正式发行的源码生产者启用blanguage/installed，仍由独立稳定种子生成B引导库；该特性不是SDK消费角色的身份。PublishRelease从本次Cargo的blanguage build-script-executed.out_dir取得实际blink_compiler_bootstrap.lib，装入源码SDK的crates/blanguage/native，并将该包Cargo构建入口声明为build-sdk.rs。启用compiler的SDK消费者只读取本包固定库，持有本包VERSION读句柄完成输入捕获和原OUT_DIR链接快照，不重编九个B引导模块；缺少固定库直接交回I/O错误。关闭compiler的运行角色不读取此库。正式工具的SDK从%ProgramFiles%/Blink读取，临时单元和运行框架输出写当前工程target。正式Compiler会话持有安装VERSION的真实只读使用句柄，直到最后共享消费者结束；原生安装器取得同一文件的排他使用权后才覆盖。占用失败明确结束，不杀进程、不伪造成功，不在使用中覆盖输入。部分覆盖失败撤销安装VERSION，避免把残缺目录作为可用SDK。
 
 新发行的本机安装EXE在上传后直接交给原节点消费者，实际安装结束后才由发行所有者清理；独立安装既有发行才取得一次已发布包。InstallNodes只消费本地输入，不删除后重取同份文件，失败保留实际材料。中央发布与节点安装分别输出PUBLISHED及INSTALLED；离线或安装失败不否定已发布事实，也不能宣称全体已采用。各节点独立执行，一台失败继续其他节点，最终汇总真实失败，不重试。没有新发行不重复发包，但仍可沿原维护入口使消费者安装当前版本；安装器遇到相同发行记录与VERSION时报告ALREADY_INSTALLED并确认PATH配置。
 

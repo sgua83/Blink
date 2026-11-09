@@ -3,6 +3,7 @@ name = "blanguage"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+build = "build.rs"
 
 [lib]
 path = "src/lib.rs"

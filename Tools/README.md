@@ -74,6 +74,8 @@ pwsh -NoProfile -File ./Tools/PublishRelease.ps1 -P4Client <本机实际client>
 
 脚本从P4 client Root和Cargo metadata读取实际源码根／target，复用既有target缓存；GitHub写凭据只使用中央用户原有凭据管理器。当前Windows x64软件资产为target/dist/Blink-Setup-windows-x64.exe。周发行另由同一固定Git快照的四本MD、sample/figures、Tools/BuildBooks.ps1及Books.css生成标准版和手机版PDF，八份PDF压为target/dist/Blink-Books.zip；书籍不装入运行SDK。生成使用原PowerShell 7的Markdown转换、Windows中文／代码字体及Edge无窗口原生打印，不依赖临时开发脚本、Python包或已有PDF。版式／浏览器临时文件归本轮target/dist/books，由原发行所有者在最后消费者结束后清理；ZIP只收八份实际PDF。两个资产全部上传后才公开同一发行，VERSION不再次递增。生成或上传失败如实结束并保留定位材料，不拿旧PDF替代。新发行直接把刚生成并已上传的本机安装EXE交给原节点安装消费者，全部实际安装结束后再由发行所有者清理临时源码、package、books、源码ZIP与本机发行资产，不先删再从GitHub下载同份文件；失败保留本轮材料，不清理可复用target。日志仍为target/dist/release.log。
 
+源码生产构建继续使用独立稳定种子。包内源码SDK附带本次Cargo生产的固定B引导静态库，发行者按Cargo package_id与build-script-executed.out_dir取得它，不按mtime选择。包的Cargo构建入口为build-sdk.rs：compiler消费者把同包固定库捕获到本次OUT_DIR后链接，不调用种子重编；关闭compiler不读取该库。源码生产与SDK消费角色由各自包入口明确，installed仅选择原运行SDK位置。原生库归本次发行文件集合，缺少输入直接交回真实I/O错误。
+
 普通研发打包用-BuildOnly：构建当前工作区，release.json的P4／Git身份为空，不上传。版本与平台资产分开，同一版本可以有多个架构／平台包；当前只交付Windows x64，不能把资产命名写成其他平台已支持。
 
 Windows用户从GitHub Releases下载EXE并双击，由系统管理员授权后覆盖安装%ProgramFiles%/Blink。安装器自动配置机器PATH，保留已有项，通知桌面更新；新终端直接运行bc、blink、brun。用户不执行PS脚本，不手动解压或配置环境变量。只保留当前安装，原研发源码、target和BLEngine依赖保持。

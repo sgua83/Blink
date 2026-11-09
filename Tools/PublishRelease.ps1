@@ -35,8 +35,10 @@ function Native {
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
         $process.WaitForExit()
-        $output = ($stdout.GetAwaiter().GetResult() + "`n" + $stderr.GetAwaiter().GetResult()).TrimEnd()
-        if ($process.ExitCode -ne 0) { throw "$File exited $($process.ExitCode)`: $output" }
+        $output = $stdout.GetAwaiter().GetResult().TrimEnd()
+        $diagnostics = $stderr.GetAwaiter().GetResult().TrimEnd()
+        if ($process.ExitCode -ne 0) { throw "$File exited $($process.ExitCode)`: $output`n$diagnostics" }
+        if ($diagnostics) { [Console]::Error.WriteLine($diagnostics) }
         $output
     } finally { $process.Dispose() }
 }
@@ -182,8 +184,19 @@ try {
     Native git (@('--git-dir', $mirror, 'archive', '--format=zip', '-o', $sourceZip, $commit) + $inputs) | Out-Null
     [IO.Compression.ZipFile]::ExtractToDirectory($sourceZip, $source)
     }
-    Native cargo @('build', '--workspace', '--release', '--locked', '--features', 'blanguage/installed',
-        '--manifest-path', (Join-Path $source 'Cargo.toml'), '--target-dir', $target) | Write-Output
+    $compilerPackage = Native cargo @('pkgid', '--locked',
+        '--manifest-path', (Join-Path $source 'crates/blanguage/Cargo.toml'))
+    $buildOutput = Native cargo @('build', '--workspace', '--release', '--locked', '--features', 'blanguage/installed',
+        '--manifest-path', (Join-Path $source 'Cargo.toml'), '--target-dir', $target, '--message-format=json')
+    $bootstrapLibrary = foreach ($line in $buildOutput -split "`n") {
+        if ($line) {
+            $message = $line | ConvertFrom-Json
+            if ($message.reason -eq 'build-script-executed' -and $message.package_id -eq $compilerPackage) {
+                Join-Path $message.out_dir 'blink_compiler_bootstrap.lib'
+            }
+            if ($message.reason -eq 'compiler-message') { Write-Host $message.message.rendered }
+        }
+    }
     Native cargo @('rustc', '--release', '--locked', '--package', 'blink-installer', '--features', 'windows-installer',
         '--manifest-path', (Join-Path $source 'Cargo.toml'), '--target-dir', $target,
         '--', '-C', 'target-feature=+crt-static') | Write-Output
@@ -206,6 +219,12 @@ try {
     }
     # P4's source-file attributes are workspace metadata, not package ownership.
     Get-ChildItem -LiteralPath $package -File -Recurse | ForEach-Object { $_.IsReadOnly = $false }
+    $native = Join-Path $package 'crates/blanguage/native'
+    [IO.Directory]::CreateDirectory($native) | Out-Null
+    [IO.File]::Copy($bootstrapLibrary, (Join-Path $native 'blink_compiler_bootstrap.lib'))
+    $sdkManifest = Join-Path $package 'crates/blanguage/Cargo.toml'
+    $manifest = [IO.File]::ReadAllText($sdkManifest).Replace('build = "build.rs"', 'build = "build-sdk.rs"')
+    [IO.File]::WriteAllText($sdkManifest, $manifest, $utf8)
     $files = @(Get-ChildItem -LiteralPath $package -File -Recurse | ForEach-Object {
         [IO.Path]::GetRelativePath($package, $_.FullName).Replace('\', '/')
     }) + @('release.json')

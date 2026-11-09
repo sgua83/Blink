@@ -3,8 +3,12 @@
   "encoding": "UTF-8 without BOM",
   "source_files": [
     {
+      "path": "crates/blanguage/build-sdk.rs",
+      "sha256": "837f5cf8a799687acdda300999222a6d1c8925bf01721783af1fda6d98b59da7"
+    },
+    {
       "path": "crates/blanguage/build.rs",
-      "sha256": "fa15bab264198d2f00d54ec6b1ab3943bdeccd446ca2dac49abc5f680438f3ca"
+      "sha256": "687256f00b34e25515916624af2f58f4d833dd18cabec0772305324a48ce5359"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -85,6 +89,10 @@
     {
       "path": "crates/blanguage/src/bootstrap/parser.h",
       "sha256": "1f20f6b0718b4532b38ec22d659ac4f3a4164720be837659141d6ddc0849c004"
+    },
+    {
+      "path": "crates/blanguage/src/build/compiler_identity.rs",
+      "sha256": "7784618cfd0947509d58f6639b75dd9e6f8e16f1081092183556aeec6e4fdcd6"
     },
     {
       "path": "crates/blanguage/src/build/graph.rs",
