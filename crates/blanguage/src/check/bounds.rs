@@ -314,7 +314,7 @@ pub(super) fn numeric_intervals(scalar: Scalar, intervals: impl IntoIterator<Ite
 }
 
 #[derive(Clone)]
-struct ScalarRanges(Vec<(Bits, Bits)>);
+pub(super) struct ScalarRanges(pub(super) Vec<(Bits, Bits)>);
 impl Default for ScalarRanges {
     fn default() -> Self {
         Self(vec![(0, Bits::MAX)])
@@ -1961,7 +1961,7 @@ impl Value {
         let bits = |ordered| if scalar.is_float() { floating::bits(scalar, ordered) } else { ordered ^ scalar.order_bias() };
         self.component_ranges(component).0.into_iter().map(|(lower, upper)| (bits(lower), bits(upper))).collect()
     }
-    fn component_ranges(&self, component: usize) -> ScalarRanges {
+    pub(super) fn component_ranges(&self, component: usize) -> ScalarRanges {
         let scalar = self.ty.components[component].0;
         if scalar.is_float() { return floating::ranges(self, component); }
         if !scalar.is_integer() { return ScalarRanges::default(); }
@@ -2647,10 +2647,18 @@ fn contradictory(facts: &Facts) -> bool {
         Fact::Boolean(id, truth) => contains(Fact::Boolean(id, !truth)),
         Fact::Predicate(predicate, truth) => contains(Fact::Predicate(predicate, !truth)) || {
             let [a,b]=[predicate.a,predicate.b].map(|operand|match operand {
-                Operand::Constant(_,bits)=>Some(bits),
-                Operand::Value(id)=>{let(a,b)=bounds(id,predicate.scalar);(a==b).then(||if predicate.scalar.is_float(){floating::bits(predicate.scalar,a)}else{a^predicate.scalar.order_bias()})},
+                Operand::Constant(_,bits)=>{
+                    let at=if predicate.scalar.is_float(){floating::order(predicate.scalar,bits)}else{bits^predicate.scalar.order_bias()};
+                    (at,at)
+                },
+                Operand::Value(id)=>bounds(id,predicate.scalar),
             });
-            a.zip(b).and_then(|(a,b)|constant::binary(BinaryOp::Compare(predicate.op),predicate.scalar,a,b)).is_some_and(|value|value!=Bits::from(truth))
+            if predicate.scalar.is_float(){
+                !floating::comparison_possible(predicate.op,predicate.scalar,a,b,truth)
+            }else{
+                (a.0==a.1&&b.0==b.1).then(||(a.0^predicate.scalar.order_bias(),b.0^predicate.scalar.order_bias()))
+                    .and_then(|(a,b)|constant::binary(BinaryOp::Compare(predicate.op),predicate.scalar,a,b)).is_some_and(|value|value!=Bits::from(truth))
+            }
         },
         Fact::Zero(id) => contains(Fact::NonZero(id)),
         Fact::NonZero(id) => contains(Fact::Zero(id)),
@@ -3031,12 +3039,12 @@ impl Condition {
     pub fn of(value: &Value) -> Self {
         Self::component(value, 0)
     }
-    pub(super) fn range_value(value: &Value, scalar: Scalar, intervals: &[(Bits, Bits)]) -> Self {
+    pub(super) fn range_value<I: IntoIterator<Item = (Bits, Bits)>>(value: &Value, scalar: Scalar, intervals: impl Fn(usize) -> I) -> Self {
         let mut condition = Clause::default();
         for component in 0..value.regs.len() {
             let identity = value.component_identity(component);
             let mut selected = Clause::impossible();
-            for &(lower, upper) in intervals {
+            for (lower, upper) in intervals(component) {
                 selected = Clause::either(&selected, &Clause::facts([
                     Fact::Minimum(identity, scalar, lower), Fact::Maximum(identity, scalar, upper),
                 ].into()));
@@ -3128,8 +3136,21 @@ impl Condition {
         if scalar.is_float() {
             let predicate = ScalarPredicate::new(if op == Comparison::NotEqual { Comparison::Equal } else { op },
                 scalar, Operand::of(a, 0), Operand::of(b, 0));
-            let condition = Self { cases: std::array::from_fn(|truth|
-                Clause::facts(std::iter::once(Fact::Predicate(predicate, truth != 0)).chain([a,b].into_iter().flat_map(|value|value.proof.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(value.component_identity(0),domain)))).collect())) };
+            let infinity = if scalar == Scalar::F32 { f32::INFINITY.to_bits() as Bits } else { f64::INFINITY.to_bits() };
+            let sign = 1 << (scalar.bit_width() - 1);
+            let condition = Self { cases: std::array::from_fn(|truth| {
+                let mut facts = Facts::from([Fact::Predicate(predicate, truth != 0)]);
+                for value in [a,b] {
+                    let identity = value.component_identity(0);
+                    facts.extend(value.proof.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(identity,domain)));
+                    // An ordered comparison can be true only for non-NaN operands.
+                    if truth != 0 {
+                        facts.insert(Fact::Minimum(identity,scalar,floating::order(scalar,infinity | sign)));
+                        facts.insert(Fact::Maximum(identity,scalar,floating::order(scalar,infinity)));
+                    }
+                }
+                Clause::facts(facts)
+            }) };
             return if op == Comparison::NotEqual { condition.negate() } else { condition };
         }
         if !scalar.is_integer() { return Self::default(); }

@@ -13,6 +13,35 @@ fn number(scalar: Scalar, ordered: Bits) -> f64 {
     let raw = bits(scalar, ordered);
     if scalar == Scalar::F32 { f32::from_bits(raw as u32) as f64 } else { f64::from_bits(raw) }
 }
+// Compare the actual ordered bit intervals, including permitted input denormal flushing.
+pub(super) fn comparison_possible(op: Comparison, scalar: Scalar, a: (Bits, Bits), b: (Bits, Bits), truth: bool) -> bool {
+    if a.0 > a.1 || b.0 > b.1 { return false; }
+    let raw = |value: f64| if scalar == Scalar::F32 { (value as f32).to_bits() as Bits } else { value.to_bits() };
+    let numeric = (order(scalar,raw(f64::NEG_INFINITY)),order(scalar,raw(f64::INFINITY)));
+    let normal = if scalar == Scalar::F32 { f32::MIN_POSITIVE as f64 } else { f64::MIN_POSITIVE };
+    let interval = |(lower,upper): (Bits,Bits)| {
+        let nan = lower < numeric.0 || upper > numeric.1;
+        let (lower,upper) = (lower.max(numeric.0),upper.min(numeric.1));
+        let values = (lower <= upper).then(|| {
+            let (mut lower,mut upper) = (number(scalar,lower),number(scalar,upper));
+            if lower > 0.0 && lower < normal { lower = 0.0; }
+            if upper < 0.0 && upper > -normal { upper = 0.0; }
+            (lower,upper)
+        });
+        (values,nan)
+    };
+    let ((a,an),(b,bn)) = (interval(a),interval(b));
+    if (an || bn) && truth == (op == Comparison::NotEqual) { return true; }
+    let (Some((al,ah)),Some((bl,bh))) = (a,b) else { return false; };
+    match (op,truth) {
+        (Comparison::Less,true) | (Comparison::GreaterEqual,false) => al < bh,
+        (Comparison::LessEqual,true) | (Comparison::Greater,false) => al <= bh,
+        (Comparison::Greater,true) | (Comparison::LessEqual,false) => ah > bl,
+        (Comparison::GreaterEqual,true) | (Comparison::Less,false) => ah >= bl,
+        (Comparison::Equal,true) | (Comparison::NotEqual,false) => al <= bh && bl <= ah,
+        (Comparison::Equal,false) | (Comparison::NotEqual,true) => al != ah || bl != bh || al != bl,
+    }
+}
 pub(super) fn ranges(value: &Value, component: usize) -> ScalarRanges {
     let scalar = value.ty.components[component].0;
     let ranges = value.proof.range_set(component).restrict(0, scalar.bit_mask());

@@ -641,8 +641,14 @@ fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
             Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
             Predicate::Nonzero(selection) => selection.empty() || builder.condition_truth(&bounds::Condition::nonzero_value(&selection.value),None)==Some(true),
             Predicate::Range(selection, scalar, intervals) => {
-                let proof = builder.path_proof(&selection.value.ty, bounds::Proof::capture(&selection.value));
-                selection.empty() || (0..selection.value.regs.len()).all(|component| proof.holds_range(component, *scalar, intervals,(0,0)))
+                selection.empty() || if scalar.is_float() {
+                    let required = bounds::Condition::range_value(&selection.value, *scalar, |_| intervals.iter().copied());
+                    let values = bounds::Condition::range_value(&selection.value, *scalar, |component| selection.value.component_ranges(component).0);
+                    required.covers(&values.logical(bounds::Condition::guard(builder.residency_path()), false))
+                } else {
+                    let proof = builder.path_proof(&selection.value.ty, bounds::Proof::capture(&selection.value));
+                    (0..selection.value.regs.len()).all(|component| proof.holds_range(component, *scalar, intervals,(0,0)))
+                }
             }
             Predicate::Nonempty(resource) => {
                 resource.empty() || builder.resource_minimum(resource.domain(), resource.minimum()) != 0
@@ -876,7 +882,7 @@ fn requirement_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BT
     Ok(match &requirement.predicate {
         Predicate::Nonzero(selection)=>bounds::Condition::nonzero_value(&selection.value),
         Predicate::Range(selection, scalar, intervals)=>{
-            let condition = bounds::Condition::range_value(&selection.value, *scalar, intervals);
+            let condition = bounds::Condition::range_value(&selection.value, *scalar, |_| intervals.iter().copied());
             match &selection.scope { Some(scope) => scope.clone().negate().logical(condition, true), None => condition }
         },
         Predicate::Nonempty(resource)=>nonempty_condition(builder,definition,env,resource,span)?,
