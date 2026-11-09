@@ -339,7 +339,7 @@ impl Builder<'_> {
             .collect();
         for position in positions {
             if !states.iter().all(|state| {
-                self.position_initialized_in(&position, &state.initialized, &state.env)
+                self.position_initialized_in(&position, &state.initialized, &state.env,None)
             }) {
                 continue;
             }

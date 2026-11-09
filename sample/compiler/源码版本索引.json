@@ -120,7 +120,7 @@
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
-      "sha256": "792169dfd980ee2ed0b703ed3c5659e03b3d5add15e0f1f4e4a99da7cc203fa5"
+      "sha256": "bff3ce56a05e5794c9cfe60c1f80a8b8237f1460cdae4d6a93f72d14140ff0b8"
     },
     {
       "path": "crates/blanguage/src/check/append.rs",
@@ -180,7 +180,7 @@
     },
     {
       "path": "crates/blanguage/src/check/flow.rs",
-      "sha256": "22a42f9e725c7cb0ff2899647095d881edf562a171c0ccfbbb6c563c76de3a20"
+      "sha256": "fddc85615df421fd2b7889ed996f68cfce9f57c5fbad7ff89aabc1bdd76c874d"
     },
     {
       "path": "crates/blanguage/src/check/generics.rs",
@@ -216,7 +216,7 @@
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
-      "sha256": "544a80533ec965463fbed428bb95b41cab2d1b3b5c15c299923478d9a4902405"
+      "sha256": "7a6f293d6414e974a5d0fb0048bc81fdffed81b9e1ed00d3b1b06464f8b288bd"
     },
     {
       "path": "crates/blanguage/src/check/prefix.rs",

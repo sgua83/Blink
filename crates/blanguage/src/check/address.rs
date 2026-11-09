@@ -818,7 +818,7 @@ impl Builder<'_> {
         };
         let positions=self.positions(place);
         let initialized=if positions.len()==layout.parts.len(){
-            positions.iter().map(|position|self.position_initialized_in(position,&self.initialized,&self.env)).collect::<Vec<_>>()
+            positions.iter().map(|position|self.position_initialized_in(position,&self.initialized,&self.env,None)).collect::<Vec<_>>()
         }else{vec![self.is_initialized(place);layout.parts.len()]};
         Ok(Origin{root,layout,base,words:words.into(),positions:positions.into(),writable,initialized:initialized.into()})
     }
@@ -833,7 +833,7 @@ impl Builder<'_> {
             view::Source::Position(origin)=>{
                 let mut origin=origin.map_borrows(|borrow|self.current_address_borrow(borrow));
                 if !origin.positions.is_empty(){
-                    origin.initialized=origin.positions.iter().map(|position|self.position_initialized_in(position,&self.initialized,&self.env)).collect();
+                    origin.initialized=origin.positions.iter().map(|position|self.position_initialized_in(position,&self.initialized,&self.env,None)).collect();
                 }
                 origin.normalize()
             }

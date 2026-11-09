@@ -440,23 +440,41 @@ impl Builder<'_> {
         position: &Position,
         initialized: &BTreeSet<Position>,
         environment: &BTreeMap<String, Binding>,
+        assuming: Option<&owned_presence::Presence>,
     ) -> bool {
-        position.initialized_by(initialized) || address::initialized_by_effects(position,initialized,&self.path) || match position {
-            Position::Indexed(choices, _) => choices.iter().all(|choice| self.position_initialized_in(choice, initialized, environment)),
-            Position::ApplicationElement(scope, _, word) => environment.values().flat_map(Binding::application_resources).any(|data|
-                data.initialization.as_ref()==Some(&Position::Parameter(*scope,0)) && self.application_field_initialized_in(data,*word,initialized)),
-            _ => false,
+        let position=match assuming {
+            Some(assuming)=>std::borrow::Cow::Owned(self.resolve_owned_initialization(position,Some(assuming))),
+            None=>std::borrow::Cow::Borrowed(position),
+        };
+        let initialized=match assuming {
+            Some(assuming)=>std::borrow::Cow::Owned(initialized.iter().map(|position|self.resolve_owned_initialization(position,Some(assuming))).collect()),
+            None=>std::borrow::Cow::Borrowed(initialized),
+        };
+        let path=match assuming {
+            Some(assuming)=>std::borrow::Cow::Owned(assuming.condition().assume(&self.path,true)),
+            None=>std::borrow::Cow::Borrowed(&self.path),
+        };
+        position.initialized_by(&initialized) || address::initialized_by_effects(&position,&initialized,&path) || match position.as_ref() {
+            Position::Conditional(when,a,b)=>[(&**a,when.as_ref().clone()),(&**b,when.as_ref().clone().not())].into_iter().all(|(position,when)|{
+                let assuming=assuming.cloned().unwrap_or(owned_presence::Presence::All).and(when);
+                self.position_initialized_in(position,&initialized,environment,Some(&assuming))
+            }),
+            Position::Both(a,b)=>self.position_initialized_in(a,&initialized,environment,assuming)&&self.position_initialized_in(b,&initialized,environment,assuming),
+            Position::Indexed(choices,_)=>choices.iter().all(|choice|self.position_initialized_in(choice,&initialized,environment,assuming)),
+            Position::ApplicationElement(scope,_,word)=>environment.values().flat_map(Binding::application_resources).any(|data|
+                data.initialization.as_ref().is_some_and(|position|self.resolve_owned_initialization(position,assuming)==Position::Parameter(*scope,0))&&self.application_field_initialized_in(data,*word,&initialized)),
+            _=>false,
         }
     }
     pub(super) fn is_initialized(&self, place: &Place) -> bool {
         self.positions_initialized(&self.positions(place))
     }
     pub(super) fn positions_initialized(&self, positions: &[Position]) -> bool {
-        if positions.iter().all(|position| self.position_initialized_in(position, &self.initialized, &self.env)) {
+        if positions.iter().all(|position| self.position_initialized_in(position, &self.initialized, &self.env,None)) {
             return true;
         }
         let initialized=self.initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect();
-        positions.iter().all(|position|self.position_initialized_in(&self.resolve_owned_initialization(position,None),&initialized,&self.env))
+        positions.iter().all(|position|self.position_initialized_in(&self.resolve_owned_initialization(position,None),&initialized,&self.env,None))
     }
     pub(super) fn incomplete_positions(&self) -> bool {
         self.env.values().any(|binding| match binding {
