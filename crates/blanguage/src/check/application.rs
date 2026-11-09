@@ -3326,7 +3326,7 @@ impl Builder<'_> {
         }
         fn owned(data:&Data,out:&mut ElementBindings){
             aliases(&data.root.proof.view_borrow(0),out);
-            if let Some(value)=data.elements.known().and_then(returns::Returned::view_value){aliases(&value.proof.typed_view_borrow(&value.ty),out);for id in value.proof.scalar_identities(){if matches!(id,ValueIdentity::MemoryValue(..)){out.entry(id).or_insert_with(||bounds::Proof::default().with_identity(id));}}}
+            if let Some(value)=data.elements.known().and_then(returns::Returned::view_value){aliases(&value.proof.typed_view_borrow(&value.ty),out);for id in value.proof.scalar_identities(){if matches!(id,ValueIdentity::MemoryValue(..)|ValueIdentity::LoopValue(..)){out.entry(id).or_insert_with(||bounds::Proof::default().with_identity(id));}}}
             for fields in view::resource_paths(&data.ty){if let Some(child)=model_data(data.elements.known(),&fields){owned(child,out);}}
         }
         let mut out=ElementBindings::new();owned(data,&mut out);
@@ -3719,7 +3719,7 @@ impl Builder<'_> {
                         for(component,reg)in components.iter().zip(regs){
                             let proof=bounds::Proof::default().with_identity(ValueIdentity::Register(*reg));
                             bindings.insert(ValueIdentity::ElementComponent(*component),proof.clone());
-                            for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..))){
+                            for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..)|ValueIdentity::LoopValue(..))){
                                 bindings.insert(source,proof.clone().with_view_borrow(0,value.proof.view_borrow(*component)));
                             }
                         }
@@ -3731,7 +3731,7 @@ impl Builder<'_> {
                         self.bind_element_resource_borrows(data,&parent,&mut bindings);
                         let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings);
                         if !reads.is_empty() {
-                            pending|=value.proof.scalar_identities().into_iter().any(|source|matches!(source,ValueIdentity::MemoryValue(..)));
+                            pending|=value.proof.scalar_identities().into_iter().any(|source|matches!(source,ValueIdentity::MemoryValue(..)|ValueIdentity::LoopValue(..)));
                             let bindings=Arc::new(bindings);
                             if projections.is_empty(){projections.resize_with(regs.len(),Vec::new);}
                             for(target,component)in components.iter().enumerate(){

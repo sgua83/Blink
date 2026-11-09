@@ -71,6 +71,15 @@ pub(super) struct LoopContext {
     pub(super) view_resources: BTreeMap<ValueIdentity,view::Borrow>,
     pub(super) view_scope: Option<usize>,
 }
+impl LoopContext {
+    pub(super) fn value_input(&mut self,name:&str,contents:Option<Vec<usize>>,component:usize,scalar:Scalar)->ValueIdentity {
+        let index=self.view_inputs.iter().position(|slot|matches!(slot,InputSlot::Value{name:target,contents:path,component:part,..}if target==name&&path==&contents&&*part==component)).unwrap_or(self.view_inputs.len());
+        let identity=ValueIdentity::LoopValue(self.view_scope.unwrap(),index);
+        let slot=InputSlot::Value{name:name.to_owned(),contents,component,identity:Some((identity,scalar))};
+        if index==self.view_inputs.len(){self.view_inputs.push(slot);}else{self.view_inputs[index]=slot;}
+        identity
+    }
+}
 impl Builder<'_> {
     pub(super) fn prepare_view_loop(&mut self) {
         if self.application.is_none() || self.loop_contexts.last().unwrap().initial{return;}
@@ -170,8 +179,8 @@ impl Builder<'_> {
             borrow
         };
         for slot in &context.view_inputs {
-            if let InputSlot::Value{name,component,identity:Some((id,_)),..}=slot {
-                context.control_source.inputs.insert(*id,view_contracts::ControlInput::Value{name:name.clone(),component:*component});
+            if let InputSlot::Value{name,contents,component,identity:Some((id,_))}=slot {
+                context.control_source.inputs.insert(*id,view_contracts::ControlInput::Value{name:name.clone(),contents:contents.clone(),component:*component});
             }
         }
         let control=Arc::new(std::mem::take(&mut context.control_source));

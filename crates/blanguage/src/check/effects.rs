@@ -345,6 +345,27 @@ impl Builder<'_> {
             _=>false,
         });
         for (name, binding) in &mut self.env {
+            let context=self.loop_contexts.last_mut().unwrap();
+            if raw && context.view_scope.is_some() {
+                let paths=context.entry.env.get(name).into_iter().flat_map(view::data_paths).filter_map(|(path,data,_)|{
+                    let value=data.elements.known()?.view_value()?;
+                    let metadata=view::resource_paths(&value.ty).into_iter().filter(|fields|application::model_data(data.elements.known(),fields).is_some()).map(|fields|{
+                        let(mut offset,mut ty)=(0,&value.ty);
+                        for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
+                        offset..offset+ty.size
+                    }).collect::<Vec<_>>();
+                    let components=value.ty.components.iter().enumerate().filter_map(|(component,(scalar,word))|(!metadata.iter().any(|range|range.contains(word))).then_some((component,*scalar))).collect::<Vec<_>>();
+                    Some((path,components))
+                }).collect::<Vec<_>>();
+                for(path,components)in paths {
+                    let Some(value)=view::data_at_mut(binding,&path).and_then(|data|data.elements.known_mut()).and_then(returns::Returned::view_value_mut)else{continue;};
+                    for(component,scalar)in components {
+                        let id=context.value_input(name,Some(path.clone()),component,scalar);
+                        value.proof=std::mem::take(&mut value.proof).with_component_identity(component,id);
+                    }
+                    value.constant=None;value.uniform=false;
+                }
+            }
             if let Some(components) = modified.get(name) {
                 let components: Vec<_> = components.iter().copied().collect();
                 if raw && let Some((proof,_,storage))=binding.proof_storage() {
@@ -368,10 +389,7 @@ impl Builder<'_> {
                             && let Place::Local(_,slots,..)=owner.place.storage() {
                             for component in components.into_iter().filter(|component|!effect.locals.contains(&slots[*component])) {
                                 let scalar=owner.place.ty().components[component].0;
-                                let id=ValueIdentity::Register(self.registers.len());self.registers.push(scalar);
-                                let input=view::InputSlot::Value{name:name.clone(),contents:None,component,identity:Some((id,scalar))};
-                                if let Some(slot)=context.view_inputs.iter_mut().find(|slot|matches!(slot,view::InputSlot::Value{name:target,contents:None,component:part,..}if target==name&&*part==component)) {*slot=input;}
-                                else{context.view_inputs.push(input);}
+                                let id=context.value_input(name,None,component,scalar);
                                 owner.proof=std::mem::take(&mut owner.proof).with_component_identity(component,id);
                             }
                         }
@@ -1656,7 +1674,7 @@ impl Builder<'_> {
             })?else{continue;};
             let(Some(data),Some(bounds::Operand::Value(id)))=(projection.data,projection.index)else{continue;};
             let Some(begin)=initial.get(&id).and_then(index)else{continue;};
-            let Some(view_contracts::ControlInput::Value{name,component})=context.control_source.inputs.get(&id)else{continue;};
+            let Some(view_contracts::ControlInput::Value{name,contents:None,component})=context.control_source.inputs.get(&id)else{continue;};
             let cursor=if let Some(cursor)=context.control_source.cursor.as_ref().filter(|cursor|cursor.identity()==id){ApplicationIndex::Value(id,cursor.regs[0])}
                 else{
                     let Some(Binding::Owned(value))=self.env.get(name)else{continue;};

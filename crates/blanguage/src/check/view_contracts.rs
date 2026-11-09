@@ -61,7 +61,7 @@ pub(super) struct Call {
 pub(super) struct Use { pub requirement:Requirement, pub source:crate::Source, pub path:bounds::Clause, pub active_loops:BTreeSet<usize> }
 
 #[derive(Clone)]
-pub(super) enum ControlInput {Value{name:String,component:usize},Length{name:String,path:Vec<usize>}}
+pub(super) enum ControlInput {Value{name:String,contents:Option<Vec<usize>>,component:usize},Length{name:String,path:Vec<usize>}}
 #[derive(Clone,Default)]
 pub(super) struct LoopControl {
     pub cursor:Option<Value>,
@@ -83,7 +83,7 @@ impl LoopControl {
             if let Some((ty,proof))=binding_value(binding) {
                 for component in 0..ty.components.len() {
                     if let Some(id)=proof.known_identity(component) && condition.mentions(id) {
-                        inputs.insert(id,ControlInput::Value{name:name.clone(),component});
+                        inputs.insert(id,ControlInput::Value{name:name.clone(),contents:None,component});
                     }
                 }
             }
@@ -98,8 +98,11 @@ impl LoopControl {
         let mut values=BTreeMap::new();
         for(id,input)in &self.inputs {
             let proof=match input {
-                ControlInput::Value{name,component}=>producer.env.get(name).and_then(binding_value)
+                ControlInput::Value{name,contents:None,component}=>producer.env.get(name).and_then(binding_value)
                     .map(|(ty,proof)|proof.project(&[*component],ty.components.len())),
+                ControlInput::Value{name,contents:Some(path),component}=>producer.env.get(name).and_then(|binding|view::data_at(binding,path))
+                    .and_then(|data|data.elements.known()).and_then(returns::Returned::view_value)
+                    .map(|value|bounds::Proof::capture(value).project(&[*component],value.ty.components.len())),
                 ControlInput::Length{name,path}=>producer.env.get(name).and_then(|binding|view::data_at(binding,path))
                     .map(|data|bounds::Proof::capture(&data.length)),
             };
