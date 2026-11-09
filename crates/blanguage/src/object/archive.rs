@@ -171,6 +171,7 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
     if let Some(rustup) = rustup { optional(&mut bytes, &sdk.join(rustup).join("settings.toml"))?; }
     if runtime {
         let mut files = vec![sdk.join("Cargo.toml")];
+        optional(&mut bytes, &sdk.join("crates/blanguage/build-sdk.rs"))?;
         for name in ["blanguage", "blcompute"] {
             let package = sdk.join("crates").join(name);
             files.push(package.join("Cargo.toml"));
