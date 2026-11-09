@@ -58,7 +58,9 @@ impl Completion {
                     u64::MAX,
                 )
             };
-            self.result.set(Some(r));
+            if matches!(r, 0 | -4) {
+                self.result.set(Some(r));
+            }
             r
         };
         check(r, "vkWaitForFences")
