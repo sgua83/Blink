@@ -1653,7 +1653,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 原loop_writes收集正文和条件的写输入，同一LoopWrites交给原LoopContext的未来读取缓存与CPU循环结束的原Frame完成选择。共同模型逐项消费真实写。下标实参的原Scope::input_snapshot复用loop_write_projection，written_application_data只交回原Data、字段字节偏移与逻辑Ty；借用dataset、字段列、固定数组和拥有记录的dataset沿同一投影交接。原投影消费调用者给出的下标事实：写分析沿完整写集判断是否可用，输入快照不把可变入口值当作不变量。不再次求值或产生IR，也不重建另一资源／效果表。
 
-原address_write_positions是内存位置投影的唯一入口。具体Origin内的资源即使含LoopInput，仍可按真实布局与word投影；顶层未形成位置的输入／调用、Unresolved或其他未知来源不被静默当作空写。原write_address_values与循环消费者直接消费同一结果，不能用递归pending标志代替实际写位置。初始化在该快照中保持未知。闭合普通B调用的实际写区统一由原Memory合同交接，非拥有write／inout权限不重复定义整值写区，typed written数值输出、初始化与拥有参数消费仍各归原调用合同。dataset指针在预分析和实际调用中交接同一原Origin：实际Data、逻辑元素布局和字段字节由application统一构造，不改变机器句柄、长度、步长或ABI参数。预分析初始化保持未知；真实读输入只消费原初始化检查已经取得的事实，write输入继续原输出初始化分支。模块dataset出口先沿原输入关系过滤私有Data，再将输入资源位置归一为原Derived符号指针，嵌套调用及obj／lib保留真实写区；未知仍如实未知，不增加资源镜像、效果图、状态或运行时校验。命名元素继续使用已经求值的句柄、布局、索引和步长，其资源来源在Place生产处通过原data_borrow引用当前循环映射，与下标访问保持同一来源，不保存进入前的过期来源。未来读取缓存、同字段读前范围和独立数值缺口继续各原编号。下面的代码只形成编译期位置，不增加运行时表、资源镜像或释放链。
+原address_write_positions是内存位置投影的唯一入口。具体Origin内的资源即使含LoopInput，仍可按真实布局与word投影；顶层未形成位置的输入／调用、Unresolved或其他未知来源不被静默当作空写。原write_address_values与循环消费者直接消费同一结果，不能用递归pending标志代替实际写位置。初始化在该快照中保持未知。闭合普通B调用的实际写区统一由原Memory合同交接，非拥有write／inout权限不重复定义整值写区，typed written数值输出、初始化与拥有参数消费仍各归原调用合同。原Function::address_borrows在访问效果的公开投影处保留已知Resource／Dataset根，将不能绑定为公开输入的局部下标投影为该资源内未知下标；字段字节、条件和权限继续交接。原canonical的精确返回地址身份及初始化完成事实保持各自规则，不把可能访问范围当作精确身份或完整写入证明。dataset指针在预分析和实际调用中交接同一原Origin：实际Data、逻辑元素布局和字段字节由application统一构造，不改变机器句柄、长度、步长或ABI参数。预分析初始化保持未知；真实读输入只消费原初始化检查已经取得的事实，write输入继续原输出初始化分支。模块dataset出口先沿原输入关系过滤私有Data，再将输入资源位置归一为原Derived符号指针，嵌套调用及obj／lib保留真实写区；未知仍如实未知，不增加资源镜像、效果图、状态或运行时校验。命名元素继续使用已经求值的句柄、布局、索引和步长，其资源来源在Place生产处通过原data_borrow引用当前循环映射，与下标访问保持同一来源，不保存进入前的过期来源。未来读取缓存、同字段读前范围和独立数值缺口继续各原编号。下面的代码只形成编译期位置，不增加运行时表、资源镜像或释放链。
 
 源码节选：`crates/blanguage/src/check.rs:3817`。
 
@@ -1828,7 +1828,7 @@ pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->addr
                     value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&reference.data,field,ty,p.access.reads()).normalize());
 ```
 
-源码节选：`crates/blanguage/src/check/view_contracts.rs:335`。
+源码节选：`crates/blanguage/src/check/view_contracts.rs:338`。
 
 ```rust
     fn dataset_access(&self,borrow:Borrow,index:Option<bounds::Operand>,access:super::Access,atomic:bool,when:bounds::Condition,owns_input:&impl Fn(ValueIdentity)->bool)->Option<Access> {
