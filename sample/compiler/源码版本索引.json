@@ -204,7 +204,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_presence.rs",
-      "sha256": "3b8309021ac025208a15ad71addc056c03096875b8ece9628d08ed5eea546ef8"
+      "sha256": "af0ce715c7189a02a347dcadf535e15e3b02ced037c272f071c714cad0cd292d"
     },
     {
       "path": "crates/blanguage/src/check/owned_records.rs",

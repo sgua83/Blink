@@ -98,7 +98,7 @@ impl Ownership{
     pub(super) fn presence(&self)->Presence{match self{Self::Moved=>Presence::None,Self::Conditional(value)=>value.as_ref().clone(),_=>Presence::All}}
     fn from_presence(value:Presence)->Self{match value{Presence::All=>Self::Owned,Presence::None=>Self::Moved,value=>Self::Conditional(Box::new(value))}}
     pub(super) fn loop_compatible(&self,other:&Self,inputs:&BTreeMap<ValueIdentity,bounds::Proof>,path:&bounds::Clause)->bool{
-        if matches!((self,other),(Self::Borrowed,Self::Borrowed)){return true;}
+        if matches!((self,other),(Self::Borrowed,Self::Borrowed)|(Self::Owned,Self::Owned)){return true;}
         if matches!(self,Self::Borrowed)||matches!(other,Self::Borrowed){return false;}
         let expected=self.presence().loop_condition(inputs);let actual=other.presence().condition();
         let different=expected.clone().logical(actual.clone().negate(),false).logical(expected.negate().logical(actual,false),true);
