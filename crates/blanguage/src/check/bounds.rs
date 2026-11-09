@@ -4754,7 +4754,7 @@ impl Builder<'_> {
         Proof {
             ranges: ty.components.iter().enumerate().map(|(component, (scalar, _))| {
                 if minimum > maximum { return ScalarRanges(Vec::new()); }
-                if *scalar == Scalar::F32 { return floating::sum(input, component, maximum); }
+                if scalar.is_float() { return floating::sum(input, component, *scalar, maximum); }
                 if !scalar.is_integer() { return ScalarRanges::default(); }
                 let (lower, upper) = input.element_range(component, *scalar).hull();
                 if lower > upper { return ScalarRanges(Vec::new()); }

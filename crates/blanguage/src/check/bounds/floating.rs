@@ -154,13 +154,18 @@ pub(super) fn math(op: MathOp, args: &[Value], component: usize) -> ScalarRanges
     interval(scalar,lower,upper)
 }
 // The original FAdd tree has at most N-1 non-identity additions per result.
-pub(super) fn sum(input: &Proof, component: usize, maximum: Bits) -> ScalarRanges {
-    let input = input.element_range(component, Scalar::F32);
+pub(super) fn sum(input: &Proof, component: usize, scalar: Scalar, maximum: Bits) -> ScalarRanges {
+    let input = input.element_range(component, scalar);
     if input.0.is_empty() { return input; }
-    let Some((lower, upper)) = finite_ranges(Scalar::F32, input) else { return ScalarRanges::default(); };
-    if maximum == 1 { return interval(Scalar::F32, lower, upper); }
+    let Some((lower, upper)) = finite_ranges(scalar, input) else { return ScalarRanges::default(); };
+    if maximum == 1 { return interval(scalar, lower, upper); }
+    let (epsilon, normal, finite_maximum) = if scalar == Scalar::F32 {
+        (2.0f64.powi(-23), f32::MIN_POSITIVE as f64, f32::MAX as f64)
+    } else {
+        (2.0f64.powi(-52), f64::MIN_POSITIVE, f64::MAX)
+    };
     let mut power = maximum - 1;
-    let mut base = 1.0 + 2.0f64.powi(-23);
+    let mut base = 1.0 + epsilon;
     let mut factor = 1.0;
     while power != 0 {
         if power & 1 != 0 { factor = multiply_up(factor, base); }
@@ -170,15 +175,15 @@ pub(super) fn sum(input: &Proof, component: usize, maximum: Bits) -> ScalarRange
     let count = maximum as f64;
     let magnitude = multiply_up(count, lower.abs().max(upper.abs()));
     // Flushing a subnormal can cost a full minimum normal, not one subnormal ULP.
-    // Below that magnitude all F32 sums lie on the exact subnormal lattice.
+    // Below that magnitude sums lie on the selected scalar subnormal lattice.
     let flushed = multiply_up(multiply_up(factor, count - 1.0),
-        (f32::MIN_POSITIVE as f64).min(magnitude));
+        normal.min(magnitude));
     let error = add_up(multiply_up(add_up(factor, -1.0), magnitude), flushed);
     // Final cancellation does not establish finiteness of earlier additions.
-    if add_up(magnitude, error) > f32::MAX as f64 { return ScalarRanges::default(); }
+    if add_up(magnitude, error) > finite_maximum { return ScalarRanges::default(); }
     let lower = if lower >= 0.0 { lower } else { -add_up(multiply_up(-lower, count), error) };
     let upper = if upper <= 0.0 { upper } else { add_up(multiply_up(upper, count), error) };
-    interval(Scalar::F32, lower, upper)
+    interval(scalar, lower, upper)
 }
 pub(super) fn negate(value: &Value, component: usize) -> ScalarRanges {
     match finite(value,component) {
@@ -207,7 +212,7 @@ impl Proof {
     }
 }
 
-// Outward F64 evaluation belongs to the existing F32 analysis, not generated code.
+// Outward F64 evaluation belongs to floating range analysis, not generated code.
 fn add_up(a: f64, b: f64) -> f64 {
     let sum = a + b; let back = sum - a;
     let tail = (a - (sum - back)) + (b - back);
