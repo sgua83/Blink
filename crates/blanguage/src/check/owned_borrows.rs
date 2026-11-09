@@ -78,12 +78,18 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         for(name,path,mut old)in self.owned_place_candidates(place){let actual=storage(&old).unwrap();let when=Presence::selected(&place.owned_positions().unwrap()[0],&actual.owned_positions().unwrap()[0]);self.forget_owned_metadata(&old);old.restrict_owned(&when.not());self.store_owned_candidate(name,&path,old);}
     }
     pub(super) fn take_owned_place(&mut self,place:Place,span:Span)->Result<Returned>{
-        let mut value=self.owned_place_model(&place);
+        let element=matches!(place.storage(),Place::ApplicationElement{..});
+        let mut value=if element{
+            self.require_owned_writable(&place,span)?;self.writable_storage(&place,span,None)?;
+            self.application_owned_argument(&place,span)?
+        }else{self.owned_place_model(&place)};
         let resources=match &value{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
         for data in resources{if self.application_position_borrowed(data.root.identity()){return self.fail(span,"B227","dataset的元素仍被游标或位置借用，不能移动拥有值");}}
         match &value{Returned::Dataset(data)=>{self.application_available(data,span)?;if data.ownership!=Ownership::Owned{return self.fail(span,"B227","借用资源不能从拥有位置移动");}},Returned::OwnedValue(value)=>{if !value.all_available(){return self.fail(span,"B227","拥有位置仍有未初始化或已经移动的资源");}},_=>unreachable!()}
-        self.prepare_owned_read(&value);self.require_initialized(&place,span)?;let packed=self.read_storage_value(&place,span, None)?;
-        self.move_owned_place(&place);
+        self.prepare_owned_read(&value);self.require_initialized(&place,span)?;
+        let packed=if element{self.returned_storage(&value)}else{self.read_storage_value(&place,span,None)?};
+        if element{let mut inactive=value.clone();inactive.restrict_owned(&Presence::None);self.assign_owned_place(&place,inactive)?;}
+        else{self.move_owned_place(&place);}
         fn handoff(value:&mut Returned,old:&Returned){match(value,old){
             (Returned::Dataset(data),Returned::Dataset(old))=>{data.initialization=old.initialization.clone();let identity=ValueIdentity::Register(data.root.regs[0]);let mut borrow=old.root.proof.view_borrow(0);if borrow.empty(){borrow.sources.insert(view::Source::Data(old.root.identity()));}data.root.proof=bounds::Proof::default().with_identity(identity).with_view_borrow(0,borrow);data.length.proof=bounds::Proof::capture(&data.length).with_domains(Domains::from([IndexDomain::ApplicationLength(identity)]));},
             (Returned::OwnedValue(value),Returned::OwnedValue(old))=>for(index,payload)in value.payloads.iter_mut().enumerate(){if let Some(payload)=payload{handoff(payload,old.payloads[index].as_deref().unwrap());}},_=>{}}}

@@ -76,10 +76,11 @@ pub(super) struct DataPayload {
     pub prefixes: prefix::Fields,
 }
 impl DataPayload {
-    pub(super) fn loop_compatible(&self,other:&Self,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause)->Result<bool> {
-        if self.ownership!=other.ownership{return Ok(false);}
-        if self.ownership==Ownership::Moved{return Ok(true);}
-        if !builder.residency.same(&self.residency,&other.residency,&builder.definition.source,span,path){return Ok(false);}
+    pub(super) fn loop_compatible(&self,other:&Self,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause,inputs:&BTreeMap<ValueIdentity,bounds::Proof>)->Result<bool> {
+        if !self.ownership.loop_compatible(&other.ownership,inputs,path){return Ok(false);}
+        let path=other.ownership.presence().condition().assume(path,true);
+        if !path.possible(){return Ok(true);}
+        if !builder.residency.same(&self.residency,&other.residency,&builder.definition.source,span,&path){return Ok(false);}
         // Only an existing element model introduces child resources to compare.
         // An unknown counterpart is projected by the same finite model owner.
         if matches!((&self.elements,&other.elements),
@@ -87,8 +88,8 @@ impl DataPayload {
         let before=builder.element_model(&self.ty,&self.elements,(&self.residency,&[]),span)?;
         let after=builder.element_model(&other.ty,&other.elements,(&other.residency,&[]),span)?;
         match(before.as_ref(),after.as_ref()){
-            (returns::Returned::OwnedValue(a),returns::Returned::OwnedValue(b))=>a.loop_compatible(b,builder,span,path),
-            (returns::Returned::Dataset(a),returns::Returned::Dataset(b))=>a.loop_compatible(b,builder,span,path),
+            (returns::Returned::OwnedValue(a),returns::Returned::OwnedValue(b))=>a.loop_compatible(b,builder,span,&path,inputs),
+            (returns::Returned::Dataset(a),returns::Returned::Dataset(b))=>a.loop_compatible(b,builder,span,&path,inputs),
             _=>Ok(true),
         }
     }
@@ -1218,7 +1219,7 @@ impl Builder<'_> {
                     &&complete(builder,&b,word,length,initialized,assuming.and(when.as_ref().clone().not())),
                 Position::Both(a,b)=>complete(builder,&a,word,length,initialized,assuming.clone())
                     &&complete(builder,&b,word,length,initialized,assuming),
-                Position::Indexed(choices,index)=>choices.iter().enumerate().all(|(element,choice)|complete(builder,choice,word,length,initialized,assuming.clone().and(owned_presence::Presence::Selected(index,element)))),
+                Position::Indexed(choices,index)=>choices.iter().enumerate().all(|(element,choice)|complete(builder,choice,word,length,initialized,assuming.clone().and(owned_presence::Presence::indices(Comparison::Equal,index,ownership::ApplicationIndex::Constant(element as u32))))),
                 _=>false,
             }
         }
@@ -1227,6 +1228,17 @@ impl Builder<'_> {
         complete(self,scope,word,length,initialized,owned_presence::Presence::All)
     }
     pub(super) fn require_application_initialized(&mut self, data: &Data, span: Span) -> Result<()> {
+        if data.length.maximum()!=0 && !matches!(data.elements,ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_)) {
+            let mut model=self.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)?;
+            self.resolve_owned_model(&mut model,None);
+            let(available,resources)=match model.as_ref(){
+                returns::Returned::OwnedValue(value)=>(value.all_available(),value.resources()),
+                returns::Returned::Dataset(data)=>(data.ownership==Ownership::Owned,vec![data]),
+                _=>(true,Vec::new()),
+            };
+            if !available{return self.fail(span,"B227","完整dataset交接需要全部活动拥有元素；移出位置须先补回");}
+            for resource in resources{self.require_application_initialized(resource,span)?;}
+        }
         if !self.application_initialized(data)
             && !self.defer_position_initialization(data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),"B142",span)? {
             return self.fail(
@@ -1320,7 +1332,12 @@ impl Builder<'_> {
     }
 
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
-        self.application_movable(data,retained,span)?;
+        // Child resources are consumed by their actual element cleanup below.
+        // Releasing this allocation only ends positions in its own storage.
+        self.check_view_requirement(view::Requirement::Unborrowed{resource:view::resource_borrow(data),borrow:retained.clone(),ownership:false,span})?;
+        if self.application_position_borrowed(data.root.identity()) {
+            return self.fail(span,"B227","dataset 的元素仍被当前游标或位置借用，不能结束父存储");
+        }
         let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span, None)?.regs[0]}else{data.root.regs[0]};
         if data.ty.owns_resources(){self.drop_application_elements(data,retained,span)?;}
         let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetRelease,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
@@ -2078,7 +2095,7 @@ impl Builder<'_> {
         let place=Self::application_element(&data,&value_index,(value_index.minimum(),value_index.maximum()));
         let value=self.read_storage_value(&place,span,Some(origin(GenerationReason::DatasetDropElementRead)))?;
         let element=self.materialize_element(&DataReference::direct(data.clone()),value,&place)?;
-        self.native_element_drop(element,retained,span,origin(GenerationReason::DatasetElementDrop))?;
+        self.drop_owned_tree(element,retained,span)?;
         self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
@@ -2098,10 +2115,7 @@ impl Builder<'_> {
                 .initialization.clone()
                 .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
             index: index.regs[0],
-            index_value: match ownership::ApplicationIndex::of(index) {
-                ownership::ApplicationIndex::Constant(at)=>bounds::Operand::Constant(Scalar::U32,Bits::from(at)),
-                ownership::ApplicationIndex::Value(id,_)=>bounds::Operand::Value(id),
-            },
+            index_value: bounds::Operand::of(index,0),
             parent: data.place.clone().map(Box::new),
             element_layout: address::Layout::of(&data.ty),
             index_range,
@@ -3479,13 +3493,17 @@ impl Builder<'_> {
         self.store_owned_returned(place,old,value,span)
     }
     // These are the original already-evaluated metadata positions, not a second element table.
-    fn element_selection(&self,place:Option<&Place>,first:usize,count:usize)->bounds::Condition {
-        let mut current=place;let mut selected=bounds::Condition::constant(true);
+    fn element_selection(&self,place:Option<&Place>,first:usize,count:usize)->Option<owned_presence::Presence> {
+        let mut current=place;let mut selected=owned_presence::Presence::All;
         for depth in first..first+count{
-            let Some(Place::ApplicationElement{index_value,parent,..})=current.map(Place::storage)else{return bounds::Condition::default()};
-            selected=selected.logical(bounds::Condition::element_index(depth,self.element_index_operand(*index_value,(&self.path,&self.env))),false);current=parent.as_deref();
+            let Place::ApplicationElement{index,index_value,parent,..}=current.map(Place::storage)?else{return None;};
+            let actual=match *index_value{
+                bounds::Operand::Constant(_,at)=>ownership::ApplicationIndex::Constant(at as u32),
+                bounds::Operand::Value(id)=>ownership::ApplicationIndex::Value(id,*index),
+            };
+            selected=selected.and(owned_presence::Presence::indices(Comparison::Equal,ownership::ApplicationIndex::Value(ValueIdentity::ElementIndex(depth),depth),actual));current=parent.as_deref();
         }
-        selected
+        Some(selected)
     }
     fn assign_application_element_model(&mut self,data:&DataReference,place:&Place,paths:&[Vec<usize>],value:&returns::Returned)->Result<()> {
         let resource=view::resource_borrow(&data.data);let one=self.constant(Scalar::U32,1);
@@ -3498,7 +3516,9 @@ impl Builder<'_> {
                 for(scope,complete_scope,_)in scopes {
                     let count=scope.len()+1;
                     let qualifier=if unique&&complete_scope&&paths.len()==1{bounds::Condition::constant(true)}else{bounds::Condition::default()};
-                    let selected=qualifier.logical(self.element_selection(Some(place),0,count),false);
+                    let selection=self.element_selection(Some(place),0,count);
+                    let selected=qualifier.logical(match &selection{Some(selection)=>selection.condition(),None=>bounds::Condition::default()},false);
+                    let presence=selection.filter(|_|unique&&complete_scope&&paths.len()==1);
                     let mut complete_scope=bounds::Condition::constant(complete_scope);
                     let mut target=Some(&mut *target);
                     for fields in scope{target=match target{
@@ -3516,6 +3536,7 @@ impl Builder<'_> {
                                 (ElementFacts::Known(previous),truth)=>{
                                     let incoming=fresh.clone();let old=previous.clone();
                                     if truth==Some(false){fresh.join(*previous,true,None);}else{let mut common=fresh.clone();common.join(*previous,true,None);fresh.join(*common,true,Some(&complete));}
+                                    if let Some(presence)=&presence{fresh.select_presence(&[(presence.clone(),*incoming.clone()),(presence.clone().not(),*old.clone())]);}
                                     residency::select_elements(&mut fresh,&incoming,&old,&selected,count);ElementFacts::Known(fresh)
                                 },
                                 (previous,Some(false))=>previous.common(ElementFacts::Known(fresh)),
@@ -3533,7 +3554,8 @@ impl Builder<'_> {
                             (Some(previous),truth)=>{
                                 let incoming=fresh.clone();let old=previous.clone();
                                 if truth==Some(false){fresh.join(*previous,true,None);}else{let mut common=fresh.clone();common.join(*previous,true,None);fresh.join(*common,true,Some(&complete));}
-                                residency::select_elements(&mut fresh,&incoming,&old,&selected,count);Some(fresh)
+                                if let Some(presence)=&presence{fresh.select_presence(&[(presence.clone(),*incoming.clone()),(presence.clone().not(),*old.clone())]);}
+                                    residency::select_elements(&mut fresh,&incoming,&old,&selected,count);Some(fresh)
                             },
                             (None,_)=>None,
                         };
@@ -3644,6 +3666,35 @@ impl Builder<'_> {
             }
             child.root.proof=child.root.proof.clone().with_view_borrow(0,child.root.proof.view_borrow(0).joined(view::Borrow::element(borrow.clone(),fields,index)));
         });
+        // Data.elements uses the same logical ordinal slots as its value model.
+        // Bind those selections at the actual load before native cleanup consumes them.
+        fn bind_presence(when:&owned_presence::Presence,indices:&[ownership::ApplicationIndex],depth:usize)->owned_presence::Presence{
+            use owned_presence::Presence;
+            let bind=|index:&ownership::ApplicationIndex|match index{
+                ownership::ApplicationIndex::Value(ValueIdentity::ElementIndex(at),_)if *at>=depth=>indices[*at-depth],
+                index=>*index,
+            };
+            match when{
+                Presence::Selected(operator,a,b)=>Presence::indices(*operator,bind(a),bind(b)),
+                Presence::Not(a)=>bind_presence(a,indices,depth).not(),
+                Presence::Both(a,b)=>bind_presence(a,indices,depth).and(bind_presence(b,indices,depth)),
+                Presence::Either(a,b)=>bind_presence(a,indices,depth).or(bind_presence(b,indices,depth)),
+                when=>when.clone(),
+            }
+        }
+        fn bind_model(model:&mut returns::Returned,indices:&[ownership::ApplicationIndex],depth:usize){
+            let bind=|mode:&mut Ownership|if let Ownership::Conditional(when)=mode{*when=Box::new(bind_presence(when,indices,depth));};
+            match model{
+                returns::Returned::OwnedValue(value)=>{bind(&mut value.ownership);for child in value.payloads.iter_mut().flatten(){bind_model(child,indices,depth);}},
+                returns::Returned::Dataset(data)=>{bind(&mut data.ownership);data.elements=std::mem::take(&mut data.elements).map(&mut|mut model|{bind_model(&mut model,indices,depth+1);model},&mut|when|when);},
+                _=>{},
+            }
+        }
+        let mut indices=Vec::new();let mut current=Some(place);
+        while let Some(Place::ApplicationElement{index,index_value,parent,..})=current.map(Place::storage){
+            indices.push(match index_value{bounds::Operand::Constant(_,at)=>ownership::ApplicationIndex::Constant(*at as u32),bounds::Operand::Value(id)=>ownership::ApplicationIndex::Value(*id,*index)});current=parent.as_deref();
+        }
+        bind_model(&mut model,&indices,0);self.resolve_owned_model(&mut model,None);
         Ok(model)
     }
     pub(super) fn application_element_proof(&mut self,place:&Place,regs:&[Reg],reads:&[(usize,usize)])->Result<Option<bounds::Proof>>{
@@ -3875,7 +3926,8 @@ impl Builder<'_> {
                 for(scope,mut complete,_)in scopes{
                     let count=scope.len()+1;
                     let qualifier=if unique&&complete{bounds::Condition::constant(true)}else{bounds::Condition::default()};
-                    let selected=qualifier.logical(self.element_selection(reference.data.place.as_ref(),1,scope.len()),false);
+                    let selection=self.element_selection(reference.data.place.as_ref(),1,scope.len());
+                    let selected=qualifier.logical(match selection{Some(selection)=>selection.condition(),None=>bounds::Condition::default()},false);
                     let mut selected_data=Some(&mut *data);
                     for fields in scope{selected_data=match selected_data{
                         Some(data)=>{self.expand_current_element_facts(data)?;complete&=data.length.minimum()==1&&data.length.maximum()==1;model_data_mut(data.elements.known_mut(),&fields)},

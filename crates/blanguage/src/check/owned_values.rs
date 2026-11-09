@@ -75,12 +75,15 @@ impl OwnedValuePayload {
         builder: &mut Builder<'_>,
         span: Span,
         path: &bounds::Clause,
+        inputs: &BTreeMap<ValueIdentity,bounds::Proof>,
     ) -> Result<bool> {
-        if self.ownership!=other.ownership{return Ok(false);}
+        if !self.ownership.loop_compatible(&other.ownership,inputs,path){return Ok(false);}
+        let path=other.ownership.presence().condition().assume(path,true);
+        if !path.possible(){return Ok(true);}
         for(a,b)in self.payloads.iter().zip(&other.payloads){
             let compatible=match(a.as_deref(),b.as_deref()){
-                (Some(Returned::Dataset(a)),Some(Returned::Dataset(b)))=>a.loop_compatible(b,builder,span,path)?,
-                (Some(Returned::OwnedValue(a)),Some(Returned::OwnedValue(b)))=>a.loop_compatible(b,builder,span,path)?,
+                (Some(Returned::Dataset(a)),Some(Returned::Dataset(b)))=>a.loop_compatible(b,builder,span,&path,inputs)?,
+                (Some(Returned::OwnedValue(a)),Some(Returned::OwnedValue(b)))=>a.loop_compatible(b,builder,span,&path,inputs)?,
                 (None,Some(_))=>false,
                 _=>true,
             };
@@ -876,6 +879,10 @@ impl Builder<'_> {
     fn indexed_returned(&mut self, expr: &Expr, base: &Expr, index: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
         if self.owned_element_type(base).is_some_and(|ty|ty.array.is_some() && ty.owns_resources()) || self.temporary_projection(base) {
             return self.owned_array_index(expr,base,index);
+        }
+        if self.read_expression_type(expr)?.is_some_and(|ty|ty.owns_resources()){
+            let Some(place)=self.place(expr)?else{return Ok(None)};
+            return self.take_owned_place(place,expr.span).map(Some);
         }
         self.expr_expected(expr,expected).map(|value|value.map(Returned::value))
     }

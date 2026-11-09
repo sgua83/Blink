@@ -2321,9 +2321,7 @@ impl<'a> Builder<'a> {
             self.flow = Flow::BREAK;
         } else {
             if let Some(Some((_, slot))) = self.iterators.last().cloned() {
-                let index = self.reg(Scalar::U32);
-                self.emit(InstKind::LoadLocal(index, slot));
-                self.advance_iterator(index, slot)?;
+                self.advance_iterator(slot)?;
             }
             self.check_application_loop(s.span)?;
             self.emit(InstKind::Continue);
@@ -3746,7 +3744,6 @@ impl<'a> Builder<'a> {
             span,
             initial,
             nonempty,
-            &begin,
         )?;
         if self.flow.continues() {
             self.complete_application_writes(|builder,data| writes.unknown_storage
@@ -3763,7 +3760,6 @@ impl<'a> Builder<'a> {
         span: Span,
         initial: bool,
         nonempty: bool,
-        original_begin: &Value,
     ) -> Result<effects::LoopWrites> {
         self.flow = Flow::NEXT;
         let ForLoop {
@@ -3814,7 +3810,7 @@ impl<'a> Builder<'a> {
             ..cursor.clone()
         };
         if !bounds::seeks(body) {
-            self.refine_bounds(&Arc::new(bounds::Condition::comparison(Comparison::LessEqual, original_begin, &cursor)), true);
+            self.refine_bounds(&Arc::new(bounds::Condition::comparison(Comparison::LessEqual, &begin, &cursor)), true);
         }
         let binding = if let Some(domain) = data {
             match domain {
@@ -3904,7 +3900,7 @@ impl<'a> Builder<'a> {
         let mut body_flow = self.flow;
         let body_reachable = body_flow.continues();
         if body_reachable {
-            self.advance_iterator(index, slot)?;
+            self.advance_iterator(slot)?;
             self.check_application_loop(span)?;
         }
         self.iterators.pop();
@@ -3938,7 +3934,7 @@ impl<'a> Builder<'a> {
                     cursor.begin = next.unwrap();
                     let initial=builder.next_initial_loop(body)?;
                     let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
-                    builder.for_loop(cursor, body, span, initial, nonempty, original_begin).map(|_| ())
+                    builder.for_loop(cursor, body, span, initial, nonempty).map(|_| ())
                 })?;
             code = expanded;
             body_flow = body_flow.union(flow);
@@ -4452,21 +4448,12 @@ impl<'a> Builder<'a> {
 
         Ok(())
     }
-    fn advance_iterator(&mut self, index: Reg, slot: usize) -> Result<()> {
-        let mut source = self.loop_cursor().unwrap_or(Value {
-            proof: bounds::Proof::default(),
-            literal: false,
-            ty: Ty::scalar(Scalar::U32),
-            regs: vec![index],
-            uniform: false,
-            constant: None,
-        });
-        source.regs = vec![index];
-        let one = self.constant(Scalar::U32, 1);
-        let value = self.binary("+", source, one, self.definition.function.span,None)?;
-        self.emit(InstKind::StoreLocal(slot, value.regs[0]));
-        self.capture_loop_cursor(value);
-        Ok(())
+    fn advance_iterator(&mut self, slot: usize) -> Result<()> {
+        let source=self.loop_cursor().unwrap();
+        let one=self.constant(Scalar::U32,1);
+        let value=self.binary("+",source,one,self.definition.function.span,None)?;
+        self.emit(InstKind::StoreLocal(slot,value.regs[0]));
+        self.capture_loop_cursor(value);Ok(())
     }
     #[inline(never)]
     fn seek_statement(&mut self, name: &String, position: &Expr, span: Span) -> Result<()> {

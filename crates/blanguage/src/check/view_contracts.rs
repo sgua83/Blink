@@ -206,6 +206,23 @@ fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSe
         &&current.inputs.is_empty()&&!current.sources.is_empty()&&current.sources.iter().all(|source|matches!(source,Origin::Data(_)|Origin::Inactive));
     fresh(a,b)||fresh(b,a)
 }
+// Resource access binds its element variables once for both location and guard.
+// These names belong to one static access, not machine inputs or resource owners.
+fn resource_index_values(borrow:&Borrow)->BTreeSet<ValueIdentity>{
+    fn visit(borrow:&Borrow,ids:&mut BTreeSet<ValueIdentity>){
+        for path in borrow.sources.entries().map(|(_,when)|when).chain(borrow.inputs.entries().map(|(_,when)|when)).chain(borrow.calls.entries().map(|(_,when)|when)){
+            ids.extend(bounds::Proof::condition(bounds::Condition::guard(path)).scalar_identities().into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))));
+        }
+        for source in &borrow.sources{match source{
+            Origin::Element{parent,index,..}=>{if let Some(bounds::Operand::Value(id))=index{ids.insert(*id);}visit(parent,ids);},
+            Origin::Parameter(_,indices)=>{for index in indices{if let Some(bounds::Operand::Value(id))=index{ids.insert(*id);}}},
+            Origin::Projection{parent,..}=>visit(parent,ids),
+            Origin::Position(origin)=>visit(&origin.resources(),ids),
+            _=>{},
+        }}
+    }
+    let mut ids=BTreeSet::new();visit(borrow,&mut ids);ids
+}
 impl Function {
     pub fn pending_values(&self)->bool {self.loops.values().any(|definition|definition.value.is_some())||self.uses.iter().any(|usage|match &usage.requirement {
         Requirement::Memory{snapshots:Some(snapshots),..}=>!snapshots.is_empty(),
@@ -288,19 +305,28 @@ impl Function {
         Some(make(borrows,when))
     }
     fn access(&self,resources:Borrow,borrows:Borrow,ownership:bool,when:bounds::Condition)->Option<Access>{
-        let parameters=residency::input_parameters(&self.parameters,self.input_width);
-        fn external(function:&Function,borrow:Borrow)->Borrow{
-            let parameters=residency::input_parameters(&function.parameters,function.input_width);
+        let mut parameters=residency::input_parameters(&self.parameters,self.input_width);
+        let mut indices=resource_index_values(&resources);indices.extend(resource_index_values(&borrows));
+        indices.extend(bounds::Proof::condition(when.clone()).scalar_identities().into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))));
+        let mut next=0;
+        for id in indices{
+            if let Some(target)=self.parameters.get(&id).copied().filter(|target|self.input(*target)){
+                parameters.entry(id).or_insert_with(||bounds::Proof::default().with_identity(target));
+            }else{
+                parameters.insert(id,bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(next)));next+=1;
+            }
+        }
+        fn external(function:&Function,borrow:Borrow,parameters:&BTreeMap<ValueIdentity,bounds::Proof>)->Borrow{
             borrow.map_sources(|source|match source{
                 Origin::Data(id)=>function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Borrow::source(Origin::Data(id))).unwrap_or_default(),
-                Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,function)).collect())).unwrap_or(Origin::Unresolved)),
-                Origin::Element{parent,fields,index}=>Borrow::element(external(function,*parent),fields,input_index(index,function)),
-                Origin::Projection{parent,fields}=>Borrow::projection(external(function,*parent),fields),
+                Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Origin::Parameter(id,indices.into_iter().map(|index|index.and_then(|index|index.at_call(parameters))).collect())).unwrap_or(Origin::Unresolved)),
+                Origin::Element{parent,fields,index}=>Borrow::element(external(function,*parent,parameters),fields,index.and_then(|index|index.at_call(parameters))),
+                Origin::Projection{parent,fields}=>Borrow::projection(external(function,*parent,parameters),fields),
                 Origin::Position(origin)=>origin.resources(),
                 Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
-            }).guards_at_call(&parameters)
+            }).guards_at_call(parameters)
         }
-        let resources=external(self,resources.resources());let borrows=external(self,if ownership{borrows.owners()}else{borrows.resources()});
+        let resources=external(self,resources.resources(),&parameters);let borrows=external(self,if ownership{borrows.owners()}else{borrows.resources()},&parameters);
         if !resources.active()||!borrows.active(){return None;}
         let when=when.guard_at_call(&parameters);
         let when=bounds::Condition::guard(when.assume(&bounds::Clause::default(),true).canonical());
@@ -604,20 +630,37 @@ fn refreshed_at_call(borrow:&Borrow,call:&Call,path:&bounds::Clause,function:&Fu
 }
 
 fn access_at_call(access:&Access,call:&Call,path:&bounds::Clause,function:&Function,state:&State,known:&States)->Access{
+    let apply=|access:&Access,arguments:&BTreeMap<ValueIdentity,bounds::Proof>|{
     let(Access::Resource{borrows,when,..}|Access::Position{borrows,when,..}|Access::Memory{borrows,when,..}|Access::Dataset{borrows,when,..}|Access::Initialized{borrows,when,..})=access;
-    let borrows=borrows.at_call(&call.arguments);
-    let when=when.guard_at_call(&call.arguments).assume(path,true);
+    let borrows=borrows.at_call(arguments);
+    let when=when.guard_at_call(arguments).assume(path,true);
     let borrows=if matches!(access,Access::Initialized{..}){evaluate(&borrows,function,state,known,true)}else{refreshed_at_call(&borrows,call,path,function,state,known)};
     let when=bounds::Condition::guard(when);
     match access {
-        Access::Resource{resources,ownership,..}=>Access::Resource{resources:evaluate(&resources.at_call(&call.arguments),function,state,known,true),borrows,ownership:*ownership,when},
-        Access::Position{position,..}=>Access::Position{borrows,when,position:PositionAccess{written:position.written.as_ref().map(|proof|proof.at_call(&call.arguments)),..position.clone()}},
+        Access::Resource{resources,ownership,..}=>Access::Resource{resources:evaluate(&resources.at_call(arguments),function,state,known,true),borrows,ownership:*ownership,when},
+        Access::Position{position,..}=>Access::Position{borrows,when,position:PositionAccess{written:position.written.as_ref().map(|proof|proof.at_call(arguments)),..position.clone()}},
         Access::Memory{access,..}=>Access::Memory{borrows,when,access:*access},
-        Access::Initialized{initialized,..}=>Access::Initialized{borrows,when,initialized:initialized.iter().map(|fact|fact.at_call(&call.arguments)).collect()},
-        Access::Dataset{index,access,atomic,..}=>Access::Dataset{borrows,when,index:index.and_then(|index|index.at_call(&call.arguments)),access:*access,atomic:*atomic},
+        Access::Initialized{initialized,..}=>Access::Initialized{borrows,when,initialized:initialized.iter().map(|fact|fact.at_call(arguments)).collect()},
+        Access::Dataset{index,access,atomic,..}=>Access::Dataset{borrows,when,index:index.and_then(|index|index.at_call(arguments)),access:*access,atomic:*atomic},
+    }
+    };
+    match access{
+        Access::Resource{resources,borrows,when,..}=>{
+            let mut indices=resource_index_values(resources);indices.extend(resource_index_values(borrows));
+            indices.extend(bounds::Proof::condition(when.clone()).scalar_identities());
+            let mut caller=bounds::Proof::condition(bounds::Condition::guard(path.clone())).scalar_identities();
+            for value in call.arguments.values(){caller.extend(value.scalar_identities());caller.extend(resource_index_values(&value.borrowed_view()));}
+            let mut next=caller.into_iter().filter_map(|id|if let ValueIdentity::ElementIndex(index)=id{Some(index+1)}else{None}).max().unwrap_or(0);
+            let mut names=BTreeMap::new();let mut arguments=call.arguments.clone();
+            for id in indices{if matches!(id,ValueIdentity::ElementIndex(_)){
+                let target=ValueIdentity::ElementIndex(next);next+=1;
+                names.insert(id,bounds::Proof::default().with_identity(target));arguments.insert(target,bounds::Proof::default().with_identity(target));
+            }}
+            apply(&access.substitute_values(&names),&arguments)
+        },
+        _=>apply(access,&call.arguments),
     }
 }
-
 
 fn output_initialization_read(borrows:&Borrow,initialized:&[address::Initialization],path:&bounds::Clause)->address::InitializationRead {
     let mut positions=Vec::new();

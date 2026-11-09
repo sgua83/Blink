@@ -242,7 +242,8 @@ impl Values {
                             source_site: inst.source_site.clone(),
                             generated_origin: inst.generated_origin.clone(),
                         }));
-                        continue;
+                        // DCE removes the read only after all consumers, including
+                        // the enclosing loop's exit, have received their operands.
                     }
                     // 后续读取同一版本可直接复用；真实写入会更新其值。
                     self.locals.insert(*slot, *dst);

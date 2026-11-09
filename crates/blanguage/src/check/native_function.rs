@@ -421,31 +421,6 @@ impl Builder<'_> {
         self.native_declaration(&instance)?;
         self.native_call(instance, args, span, generated_origin, syntax)
     }
-    pub(super) fn native_element_drop(&mut self, value: Returned, retained: &view::Borrow, span: Span, origin: Arc<GeneratedOrigin>) -> Result<()> {
-        let ty = self.returned_storage(&value).ty;
-        let resources = match &value {
-            Returned::Dataset(data) => vec![data],
-            Returned::OwnedValue(value) => value.resources(),
-            _ => Vec::new(),
-        };
-        for data in resources { self.application_movable(data, retained, span)?; }
-        let name = crate::generics::key(&format!("{}::@dataset_element_drop", self.definition.module), std::slice::from_ref(&ty.name));
-        let function = Function {
-            name: name.clone(), types: Vec::new(), values: Vec::new(),
-            params: vec![Param { name: "value".into(), ty: ty.syntax(), access: Access::Value, span }],
-            result: TypeName::named("void"), kind: FunctionKind::Value, target: Target::Cpu,
-            contracts: vec![FunctionContract { kind: ContractKind::Requires, predicate: ContractPredicate::Cleanup { value: "value".into(), condition: OutputCondition::Bool(true) }, span }], body: Some(Vec::new()), c_abi: false, external: None, span,
-        };
-        let definition = Arc::new(Definition {
-            function, syntax_origin: crate::frontend::DefinitionSyntax::Generated(None),
-            execution: crate::execution::Requirement::Invocation,
-            source: self.definition.source.clone(), module: self.definition.module.clone(),
-            imports: self.definition.imports.clone(), public: false, compiled: None,
-        });
-        self.native_function(crate::generics::Instance { name, definition },
-            vec![Argument::resource(value)], span, Some(origin), None)?;
-        Ok(())
-    }
     fn native_dataset_shape(&self,param:&Param,definition:&Definition,count:Option<u32>,span:Span)->Result<()>{
         if param.ty.count.is_some()&&self.world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)?!=count{
             return self.fail(span,"B167","调用方没有声明函数需要的数据形状");

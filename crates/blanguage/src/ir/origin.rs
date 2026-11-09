@@ -267,7 +267,6 @@ pub enum GenerationReason {
     DatasetResizeComplete,
     DatasetWriteComplete,
     DatasetCallComplete,
-    DatasetElementDrop,
 }
 impl GenerationReason {
     pub(crate) fn ir_name(self) -> &'static str {
@@ -295,7 +294,6 @@ impl GenerationReason {
             GenerationReason::DatasetDropCondition => "dataset_drop_condition",
             GenerationReason::DatasetDropIndex => "dataset_drop_index",
             GenerationReason::DatasetDropElementRead => "dataset_drop_element_read",
-            GenerationReason::DatasetElementDrop => "dataset_element_drop",
             GenerationReason::DatasetDropAdvance => "dataset_drop_advance",
             GenerationReason::DatasetDropLoop => "dataset_drop_loop",
             GenerationReason::UserOwnedDrop => "user_owned_drop",

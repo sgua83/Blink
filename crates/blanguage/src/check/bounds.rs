@@ -1160,6 +1160,7 @@ impl Proof {
         if lower {
             self.ranges[component] = self.ranges[component].restrict(Bits::from(initial.unsigned_minimum(0)), Bits::from(u32::MAX));
             if initial.unsigned_minimum(0) != 0 { self.mark_nonzero(component); }
+            if let Some(id)=initial.known_identity(0){self.mark_domain(component,IndexDomain::Lower(id,0));}
             for domain in initial.domains(0) {
                 if let IndexDomain::Lower(base, distance) | IndexDomain::Offset(base, distance) = domain {
                     self.mark_domain(component, IndexDomain::Lower(base, distance));
@@ -1547,7 +1548,7 @@ impl Proof {
                         for domain in self.domains(component) {
                             facts.insert(Fact::Index(identity, domain));
                             match domain {
-                                IndexDomain::Offset(base, amount) => {
+                                IndexDomain::Lower(base, amount) | IndexDomain::Offset(base, amount) => {
                                     facts.insert(Fact::Below(base, identity, amount != 0, *scalar));
                                 }
                                 IndexDomain::Upper(limit, distance) => {

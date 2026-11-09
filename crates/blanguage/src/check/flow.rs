@@ -416,14 +416,14 @@ impl Builder<'_> {
         context.control_source.cursor=cursor;
     }
     pub(super) fn loop_cursor(&self) -> Option<Value> {
-        self.loop_contexts
-            .last()
-            .and_then(|context| context.control_source.cursor.clone())
+        self.loop_contexts.last().and_then(|context|context.iterator.as_ref()).map(|(name,cursor)|{
+            match &self.env[name]{Binding::Value(value)=>value.clone(),_=>cursor.clone()}
+        })
     }
     pub(super) fn capture_loop_cursor(&mut self, value: Value) {
-        if let Some((name,cursor))=self.loop_contexts.last_mut().and_then(|context|context.iterator.as_mut()) {
+        if let Some((_,cursor))=self.loop_contexts.last_mut().and_then(|context|context.iterator.as_mut()) {
             *cursor=value.clone();
-            if let Some(Binding::Value(source))=self.env.get_mut(name){*source=value;}
+
         }
     }
     pub(super) fn check_application_loop(&mut self, span: Span) -> Result<()> {
@@ -433,6 +433,7 @@ impl Builder<'_> {
             return Ok(());
         }
         let path=self.residency_path();
+        let inputs=self.loop_contexts.last().unwrap().control_source.bindings(&self.loop_state());
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
             let binding=self.env[&name].clone();
@@ -453,6 +454,7 @@ impl Builder<'_> {
                         self,
                         span,
                         &path,
+                        &inputs,
                     )?
                 {
                     return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
@@ -469,7 +471,7 @@ impl Builder<'_> {
                     );
                 }
                 if before.ownership != application::Ownership::Moved
-                    && !before.loop_compatible(data,self,span,&path)?
+                    && !before.loop_compatible(data,self,span,&path,&inputs)?
                 {
                     return self.fail(
                         span,

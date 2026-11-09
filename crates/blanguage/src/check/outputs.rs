@@ -924,7 +924,7 @@ impl Builder<'_> {
                 | (other, Position::Indexed(choices, index)) => {
                     let mut all = Presence::None;
                     for (element, choice) in choices.iter().enumerate() {
-                        all = all.or(Presence::Selected(*index, element)
+                        all = all.or(Presence::indices(Comparison::Equal,*index, ownership::ApplicationIndex::Constant(element as u32))
                             .and(overlap(builder, choice, other, span)?));
                     }
                     all

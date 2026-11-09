@@ -468,11 +468,11 @@ impl Builder<'_> {
                 else {
                     return Ok(None);
                 };
-                let value = self.read_place(&place, expr.span, None)?;
-                if value.proof.typed_view_borrow(&value.ty).empty() {
-                    self.finish_scoped_argument(&held, expr.span)?;
-                }
-                return Ok(Some(Returned::value(value)));
+                let value=if place.ty().owns_resources(){self.take_owned_place(place,expr.span)?}
+                    else{Returned::value(self.read_place(&place,expr.span,None)?)};
+                let stored=self.returned_storage(&value);
+                if stored.proof.typed_view_borrow(&stored.ty).empty(){self.finish_scoped_argument(&held,expr.span)?;}
+                return Ok(Some(value));
             }
             Some(Returned::Value(value)) if value.ty.indexed_element().is_some() => {
                 return self
