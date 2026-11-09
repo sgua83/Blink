@@ -140,7 +140,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds/floating.rs",
-      "sha256": "a09feec7fc706d6c7aaf869051379ef8694bc0c1a924c3b55ad6f54d038831b3"
+      "sha256": "adfbb1ba6dafae64a9049771f98bb412d2d800bf6ca8fc840ec1c13d82d49453"
     },
     {
       "path": "crates/blanguage/src/check/callback.rs",

@@ -150,19 +150,29 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value, component: usize) -> Sc
             (values.into_iter().map(|(lower,_)| lower).fold(f64::INFINITY,f64::min),
                 values.into_iter().map(|(_,upper)| upper).fold(f64::NEG_INFINITY,f64::max))
         }
-        "/" if scalar == Scalar::F32 => {
-            // Vulkan OpFDiv的2.5 ULP保证只覆盖原规格的分母范围。
-            if bl <= 0.0 && bh >= 0.0 || bl.abs().min(bh.abs()) < f32::MIN_POSITIVE as f64
-                || bl.abs().max(bh.abs()) > 2.0f64.powi(126) { return ScalarRanges::default(); }
+        "/" => {
+            // Interpret the Vulkan division model in the actual scalar format.
+            let (normal, maximum) = if scalar == Scalar::F32 {
+                (f32::MIN_POSITIVE as f64, 2.0f64.powi(126))
+            } else { (f64::MIN_POSITIVE, 2.0f64.powi(1022)) };
+            if bl <= 0.0 && bh >= 0.0 || bl.abs().min(bh.abs()) < normal
+                || bl.abs().max(bh.abs()) > maximum { return ScalarRanges::default(); }
             let values=[al/bl,al/bh,ah/bl,ah/bh];
             (values.into_iter().fold(f64::INFINITY,f64::min),values.into_iter().fold(f64::NEG_INFINITY,f64::max))
         }
         _ => return ScalarRanges::default(),
     };
     if op == "/" {
-        // 2.5 ULP <= 2.5*2^-23相对误差；3覆盖端点F64求值及最终向外舍入。
-        let error = |x:f64| 3.0*(x.abs()*2.0f64.powi(-23)).max(2.0f64.powi(-149));
-        lower -= error(lower); upper += error(upper);
+        if scalar == Scalar::F32 {
+            // 2.5 ULP <= 2.5*2^-23相对误差；3覆盖端点F64求值及最终向外舍入。
+            let error = |x:f64| 3.0*(x.abs()*2.0f64.powi(-23)).max(2.0f64.powi(-149));
+            lower -= error(lower); upper += error(upper);
+        } else {
+            // The binary64 reference permits 2.5 ULP; include host endpoint division.
+            let error = |x:f64| multiply_up(4.0,
+                multiply_up(x.abs(), f64::EPSILON).max(f64::from_bits(1)));
+            lower = -add_up(-lower, error(lower)); upper = add_up(upper, error(upper));
+        }
     }
     interval(scalar,lower,upper)
 }
