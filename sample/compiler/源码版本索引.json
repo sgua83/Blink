@@ -16,11 +16,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.b",
-      "sha256": "dcbd8881dda1166bbf1f43ae742ea171d961867bd1f6861222a5e3901716fbb1"
+      "sha256": "1cce27244207bc98edbcb2dfddc70f45d2a489d6c1b417e3870bc39a7ec093b7"
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.h",
-      "sha256": "be49fa8f69fb039096dc270aa2b1c7cec675e73b7fe4cc09e3ea663621b33528"
+      "sha256": "0c7ff032455e867c948e0262d89eaa05c64cd26df5d967280a5a1673a8348b7c"
     },
     {
       "path": "crates/blanguage/src/bootstrap/bindings.b",
@@ -476,7 +476,7 @@
     },
     {
       "path": "crates/blanguage/src/object/static_library.rs",
-      "sha256": "6f678e975fa2dcceff01c536cbdb8e3445b2d9576d16486009becbadbeebbb9a"
+      "sha256": "ce42caa32314843fea2dbb1caec0093e597d195011384c5793f7478a24ca7912"
     },
     {
       "path": "crates/blanguage/src/optimize.rs",

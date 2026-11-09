@@ -57,90 +57,80 @@ pub struct Library {
     symbols: BTreeMap<String, u32>,
     native: bool,
 }
-fn take<'a>(bytes: &'a [u8], at: &mut usize, size: usize) -> Result<&'a [u8]> {
-    let end = at.checked_add(size).ok_or("静态库偏移溢出")?;
-    let value = bytes.get(*at..end).ok_or("静态库被截断")?;
-    *at = end;
-    Ok(value)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ArchiveRange { start: usize, length: usize }
+impl ArchiveRange {
+    fn bytes<'a>(&self, bytes: &'a [u8]) -> &'a [u8] { &bytes[self.start..self.start+self.length] }
 }
-fn word(bytes: &[u8], at: &mut usize) -> Result<u32> {
-    Ok(u32::from_le_bytes(take(bytes, at, 4)?.try_into()?))
+#[repr(C)]
+struct ArchiveReadMember { offset: u32, name: ArchiveRange, body: ArchiveRange }
+#[repr(C)]
+struct ArchiveReadSymbol { member: u32, name: ArchiveRange }
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum ArchiveReadError {
+    None, Truncated, Header, Decimal, MissingDirectory, ZeroIndex,
+    IndexRange, StringOffset, UnterminatedString, UnterminatedName, MemberOffset, Receiver,
 }
-fn text<'a>(bytes: &'a [u8], at: &mut usize) -> Result<&'a str> {
-    let rest = bytes.get(*at..).ok_or("静态库字符串偏移错误")?;
-    let count = rest
-        .iter()
-        .position(|b| *b == 0)
-        .ok_or("静态库字符串未终止")?;
-    let value = std::str::from_utf8(take(bytes, at, count)?)?;
-    take(bytes, at, 1)?;
-    Ok(value)
+#[repr(C)]
+struct ArchiveReadResult { error: ArchiveReadError, at: usize }
+unsafe extern "C" {
+    #[link_name = "bootstrap.archive::decode"]
+    fn archive_decode(bytes: *const u8, length: usize, context: *mut std::ffi::c_void,
+        member: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveReadMember) -> u32,
+        symbol: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveReadSymbol) -> u32) -> ArchiveReadResult;
+}
+// The input, original Library containers, and an actual receiver error belong
+// to the synchronous Rust caller. B never retains the context or byte ranges.
+struct ArchiveRead<'a> { bytes: &'a [u8], library: Library, received: Result<()> }
+unsafe extern "C" fn read_member(context: *mut std::ffi::c_void, member: ArchiveReadMember) -> u32 {
+    let read = unsafe { &mut *(context as *mut ArchiveRead<'_>) };
+    match std::str::from_utf8(member.name.bytes(read.bytes)) {
+        Ok(name) => {
+            read.library.members.insert(member.offset, Some(Member {
+                name: name.into(), bytes: member.body.bytes(read.bytes).into(),
+            }));
+            1
+        }
+        Err(error) => { read.received=Err(error.into()); 0 }
+    }
+}
+unsafe extern "C" fn read_symbol(context: *mut std::ffi::c_void, symbol: ArchiveReadSymbol) -> u32 {
+    let read = unsafe { &mut *(context as *mut ArchiveRead<'_>) };
+    match std::str::from_utf8(symbol.name.bytes(read.bytes)) {
+        Ok(name) => { read.library.symbols.entry(name.into()).or_insert(symbol.member); 1 }
+        Err(error) => { read.received=Err(error.into()); 0 }
+    }
+}
+fn archive_read_result(result: ArchiveReadResult) -> Result<()> {
+    let message=match result.error {
+        ArchiveReadError::None => return Ok(()),
+        ArchiveReadError::Truncated => "静态库被截断",
+        ArchiveReadError::Header => "静态库成员头错误",
+        ArchiveReadError::Decimal => "静态库十进制成员大小或名称偏移错误",
+        ArchiveReadError::MissingDirectory => "COFF 静态库缺少第二链接成员",
+        ArchiveReadError::ZeroIndex => "静态库成员索引为零",
+        ArchiveReadError::IndexRange => "静态库成员索引越界",
+        ArchiveReadError::StringOffset => "静态库字符串偏移错误",
+        ArchiveReadError::UnterminatedString => "静态库字符串未终止",
+        ArchiveReadError::UnterminatedName => "静态库成员名未终止",
+        ArchiveReadError::MemberOffset => "静态库成员偏移超出 COFF 格式",
+        ArchiveReadError::Receiver => "静态库输出接收失败",
+    };
+    Err(format!("{message}（归档字节偏移 {}）",result.at).into())
 }
 impl Library {
     pub(crate) fn native(bytes: &[u8]) -> Result<Self> { Self::decode(bytes, true) }
     fn decode(bytes: &[u8], native: bool) -> Result<Self> {
-        let mut at = SIGNATURE.len();
-        let mut directory = Vec::new();
-        let mut longnames = &[][..];
-        let mut raw = Vec::new();
-        while at < bytes.len() {
-            let offset = u32::try_from(at)?;
-            let header = take(bytes, &mut at, 60)?;
-            if &header[58..] != b"`\n" {
-                return Err("静态库成员头错误".into());
-            }
-            let name = std::str::from_utf8(&header[..16])?.trim_end();
-            let size = std::str::from_utf8(&header[48..58])?.trim().parse()?;
-            let body = take(bytes, &mut at, size)?;
-            if at % 2 != 0 {
-                take(bytes, &mut at, 1)?;
-            }
-            match name {
-                "/" => directory.push(body),
-                "//" => longnames = body,
-                _ => raw.push((offset, name, body)),
-            }
-        }
-        // COFF 的第二链接成员直接给出排序符号与成员偏移；不重建另一套目录。
-        let directory = directory.get(1).ok_or("COFF 静态库缺少第二链接成员")?;
-        let mut at = 0;
-        let count = word(directory, &mut at)?;
-        let offsets = (0..count)
-            .map(|_| word(directory, &mut at))
-            .collect::<Result<Vec<_>>>()?;
-        let count = word(directory, &mut at)?;
-        let indices = (0..count)
-            .map(|_| Ok(u16::from_le_bytes(take(directory, &mut at, 2)?.try_into()?)))
-            .collect::<Result<Vec<_>>>()?;
-        let mut symbols = BTreeMap::new();
-        for index in indices {
-            let member = index.checked_sub(1).ok_or("静态库成员索引为零")?;
-            let offset = *offsets
-                .get(usize::from(member))
-                .ok_or("静态库成员索引越界")?;
-            symbols
-                .entry(text(directory, &mut at)?.into())
-                .or_insert(offset);
-        }
-        let members = raw
-            .into_iter()
-            .map(|(offset, name, bytes)| {
-                let name = if let Some(index) = name.strip_prefix('/') {
-                    let mut at = index.parse()?;
-                    text(longnames, &mut at)?
-                } else {
-                    name.strip_suffix('/').ok_or("静态库成员名未终止")?
-                };
-                Ok((
-                    offset,
-                    Some(Member {
-                        name: name.into(),
-                        bytes: bytes.into(),
-                    }),
-                ))
-            })
-            .collect::<Result<_>>()?;
-        Ok(Self { members, symbols, native })
+        let mut read=ArchiveRead {
+            bytes, library: Self { members:BTreeMap::new(), symbols:BTreeMap::new(), native }, received:Ok(()),
+        };
+        let result=unsafe { archive_decode(bytes.as_ptr(),bytes.len(),
+            &mut read as *mut ArchiveRead<'_> as *mut std::ffi::c_void,read_member,read_symbol) };
+        read.received?;
+        archive_read_result(result)?;
+        Ok(read.library)
     }
     pub(crate) fn extract(&mut self, symbol: &str) -> Result<Option<Object>> {
         let Some(offset) = self.symbols.get(symbol) else {

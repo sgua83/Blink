@@ -12,3 +12,11 @@ struct ArchiveInput {address members;u64 member_count;address symbols;u64 symbol
 struct ArchiveLayout {u64 length;u64 first;u64 second;u64 names;u32 error;};
 extern "C" ArchiveLayout layout(ArchiveInput input) on cpu;
 extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on cpu;
+
+struct ArchiveRange {u64 start;u64 length;};
+struct ArchiveReadMember {u32 offset;ArchiveRange name;ArchiveRange body;};
+struct ArchiveReadSymbol {u32 member;ArchiveRange name;};
+struct ArchiveReadResult {u32 error;u64 at;};
+extern "C" ArchiveReadResult decode(address bytes,u64 length,address context,
+    cfn<u32,address,ArchiveReadMember> member,cfn<u32,address,ArchiveReadSymbol> symbol) on cpu
+    requires nonzero(member) requires nonzero(symbol);

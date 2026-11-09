@@ -140,3 +140,142 @@ extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on c
         copy(out,member.offset+60u64,member.bytes,member.byte_length);i+=1u64;
     }
 }
+
+
+struct ArchiveReadHeader {ArchiveRange name;ArchiveRange body;u64 next;u32 error;u64 at;};
+struct ArchiveReadNumber {u64 value;bool valid;};
+
+u32 read_byte(address bytes,u64 at) on cpu {
+    return u32(unsafe_position<u8>(unsafe_address(address_bits(bytes)+at)));
+}
+u32 read_word(address bytes,u64 at) on cpu {
+    return read_byte(bytes,at)|read_byte(bytes,at+1u64)<<8
+        |read_byte(bytes,at+2u64)<<16|read_byte(bytes,at+3u64)<<24;
+}
+// Match the whitespace consumed by the existing UTF-8 read_header text reader.
+u32 header_space_width(address bytes,u64 at,u64 end) on cpu {
+    u32 a=read_byte(bytes,at);
+    if(a>=9&&a<=13||a==32){return 1;}
+    if(end-at>=2u64&&a==194){
+        u32 b=read_byte(bytes,at+1u64);
+        if(b==133||b==160){return 2;}
+    }
+    if(end-at>=3u64){
+        u32 b=read_byte(bytes,at+1u64);u32 c=read_byte(bytes,at+2u64);
+        if(a==225&&b==154&&c==128
+            ||a==226&&b==128&&(c>=128&&c<=138||c==168||c==169||c==175)
+            ||a==226&&b==129&&c==159||a==227&&b==128&&c==128){return 3;}
+    }
+    return 0;
+}
+ArchiveRange trim_header(address bytes,ArchiveRange range,bool leading) on cpu {
+    u64 at=range.start;u64 end=at+range.length;
+    if(leading){
+        while(at<end){u32 width=header_space_width(bytes,at,end);if(width==0){break;}at+=u64(width);}
+    }
+    u64 start=at;u64 content_end=at;
+    while(at<end){
+        u32 width=header_space_width(bytes,at,end);
+        if(width==0){at+=1u64;content_end=at;}else{at+=u64(width);}
+    }
+    return ArchiveRange(start,content_end-start);
+}
+ArchiveReadNumber read_decimal(address bytes,ArchiveRange range) on cpu {
+    u64 at=range.start;u64 end=at+range.length;
+    if(at<end&&read_byte(bytes,at)==43){at+=1u64;}
+    if(at==end){return ArchiveReadNumber(0u64,false);}
+    u64 value=0u64;
+    while(at<end){
+        u32 digit=read_byte(bytes,at);
+        if(digit<48||digit>57){return ArchiveReadNumber(0u64,false);}
+        value=value*10u64+u64(digit-48);at+=1u64;
+    }
+    return ArchiveReadNumber(value,true);
+}
+ArchiveReadHeader read_header(address bytes,u64 length,u64 at) on cpu {
+    if(at>4294967295u64){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,10,at);}
+    if(length-at<60u64){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,1,at);}
+    if(read_byte(bytes,at+58u64)!=96||read_byte(bytes,at+59u64)!=10){
+        return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,2,at);
+    }
+    ArchiveReadNumber size=read_decimal(bytes,trim_header(bytes,ArchiveRange(at+48u64,10u64),true));
+    if(!size.valid){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,3,at+48u64);}
+    u64 body=at+60u64;
+    if(size.value>length-body){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,1,body);}
+    u64 next=body+size.value;
+    if(next%2u64!=0u64){
+        if(next==length){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,1,next);}
+        next+=1u64;
+    }
+    return ArchiveReadHeader(trim_header(bytes,ArchiveRange(at,16u64),false),ArchiveRange(body,size.value),next,0,at);
+}
+bool header_named(address bytes,ArchiveRange name,u32 slashes) on cpu {
+    if(name.length!=u64(slashes)){return false;}
+    for(i in 0..slashes){if(read_byte(bytes,name.start+u64(i))!=47){return false;}}
+    return true;
+}
+ArchiveReadResult read_terminated(address bytes,ArchiveRange region,u64 offset) on cpu {
+    if(offset>region.length){return ArchiveReadResult(7,region.start);}
+    u64 at=offset;
+    while(at<region.length){if(read_byte(bytes,region.start+at)==0){return ArchiveReadResult(0,region.start+at);}at+=1u64;}
+    return ArchiveReadResult(8,region.start+offset);
+}
+extern "C" ArchiveReadResult decode(address bytes,u64 length,address context,
+    cfn<u32,address,ArchiveReadMember> member,cfn<u32,address,ArchiveReadSymbol> symbol) on cpu
+    requires nonzero(member) requires nonzero(symbol) {
+    if(length<8u64){return ArchiveReadResult(1,0u64);}
+    u64 at=8u64;u32 links=0;
+    ArchiveRange directory=ArchiveRange(0u64,0u64);ArchiveRange names=ArchiveRange(0u64,0u64);
+    // Locate the actual tables without keeping another raw-member collection.
+    while(at<length){
+        ArchiveReadHeader item=read_header(bytes,length,at);
+        if(item.error!=0){return ArchiveReadResult(item.error,item.at);}
+        if(header_named(bytes,item.name,1)){links+=1;if(links==2){directory=item.body;}}
+        else if(header_named(bytes,item.name,2)){names=item.body;}
+        at=item.next;
+    }
+    if(links<2){return ArchiveReadResult(4,0u64);}
+    u64 end=directory.start+directory.length;
+    if(directory.length<4u64){return ArchiveReadResult(1,directory.start);}
+    u32 count=read_word(bytes,directory.start);u64 offsets=directory.start+4u64;
+    if(u64(count)>(end-offsets)/4u64){return ArchiveReadResult(1,offsets);}
+    at=offsets+u64(count)*4u64;
+    if(end-at<4u64){return ArchiveReadResult(1,at);}
+    u32 symbols=read_word(bytes,at);u64 indices=at+4u64;
+    if(u64(symbols)>(end-indices)/2u64){return ArchiveReadResult(1,indices);}
+    at=indices+u64(symbols)*2u64;
+    for(i in 0..symbols){
+        u64 index_at=indices+u64(i)*2u64;
+        u32 index=read_byte(bytes,index_at)|read_byte(bytes,index_at+1u64)<<8;
+        if(index==0){return ArchiveReadResult(5,index_at);}
+        if(index>count){return ArchiveReadResult(6,index_at);}
+        ArchiveReadResult name_end=read_terminated(bytes,directory,at-directory.start);
+        if(name_end.error!=0){return name_end;}
+        u32 offset=read_word(bytes,offsets+u64(index-1)*4u64);
+        if(symbol(context,ArchiveReadSymbol(offset,ArchiveRange(at,name_end.at-at)))==0){return ArchiveReadResult(11,at);}
+        at=name_end.at+1u64;
+    }
+    // Read names only after the complete table location is known. The original
+    // bytes stay caller-owned and immutable throughout this synchronous call.
+    at=8u64;
+    while(at<length){
+        ArchiveReadHeader item=read_header(bytes,length,at);
+        if(item.error!=0){return ArchiveReadResult(item.error,item.at);}
+        if(!header_named(bytes,item.name,1)&&!header_named(bytes,item.name,2)){
+            ArchiveRange name=item.name;
+            if(name.length!=0u64&&read_byte(bytes,name.start)==47){
+                ArchiveReadNumber index=read_decimal(bytes,ArchiveRange(name.start+1u64,name.length-1u64));
+                if(!index.valid){return ArchiveReadResult(3,name.start+1u64);}
+                ArchiveReadResult name_end=read_terminated(bytes,names,index.value);
+                if(name_end.error!=0){return name_end;}
+                name=ArchiveRange(names.start+index.value,name_end.at-names.start-index.value);
+            }else{
+                if(name.length==0u64||read_byte(bytes,name.start+name.length-1u64)!=47){return ArchiveReadResult(9,name.start);}
+                name=ArchiveRange(name.start,name.length-1u64);
+            }
+            if(member(context,ArchiveReadMember(u32(at),name,item.body))==0){return ArchiveReadResult(11,name.start);}
+        }
+        at=item.next;
+    }
+    return ArchiveReadResult(0,0u64);
+}
