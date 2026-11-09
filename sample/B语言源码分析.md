@@ -2312,23 +2312,22 @@ pub(super) fn ranges(value: &Value, component: usize) -> ScalarRanges {
 }
 ```
 
-端点计算也不能假装宿主双精度完全精确。F32相加的极小第二项可能在宿主F64求值时消失；原数值生产者保留主值与残差，再根据下界／上界向外取可表示值。它仅在编译器里生成原范围，不向B程序加入判断：
+端点计算也不能假装宿主双精度完全精确。F32／F64加减的极小第二项可能在宿主F64主值中消失；同一数值生产者保留主值与残差，再向实际Scalar交接包含两侧舍入结果的端点。原add_up也复用这份残差生产，不保留重复算法。它仅在编译器里生成原范围，不向B程序加入判断：
 
 源码节选：`crates/blanguage/src/check/bounds/floating.rs:46`。
 
 ```rust
-fn sum_bound(a: f64, b: f64, lower: bool) -> f64 {
+fn sum_bound(scalar: Scalar, a: f64, b: f64, lower: bool) -> f64 {
     let sum = a + b;
     let back = sum - a;
     let tail = (a - (sum - back)) + (b - back);
-    let value = rounded(Scalar::F32,sum,lower);
-    if value == sum && (lower && tail < 0.0 || !lower && tail > 0.0) {
-        if lower { (value as f32).next_down() as f64 } else { (value as f32).next_up() as f64 }
-    } else { value }
+    let value = if lower && tail < 0.0 { sum.next_down() }
+        else if !lower && tail > 0.0 { sum.next_up() } else { sum };
+    rounded(scalar,value,lower)
 }
 ```
 
-F32除法只在原规范的分母范围内交接包含设备误差的结果，正有限对数只保留有限性，再由原clamp确定边界。范围越过整数可表示域、非法对数输入或真实后续覆盖仍按原索引／初始化消费者处理。当前共同四则范围覆盖F32，完整目标精度与其他数值能力继续原职责；普通模块以BLCO85解释该数值编码，资源ABI仍为BLRI50。
+F32除法只在原规范的分母范围内交接包含设备误差的结果，正有限对数只保留有限性，再由原clamp确定边界。范围越过整数可表示域、非法对数输入或真实后续覆盖仍按原索引／初始化消费者处理。当前共同加减范围覆盖F32／F64，乘除范围仍为F32，F64乘除及完整目标精度继续原Issues职责；普通模块以BLCO85解释该数值编码，资源ABI仍为BLRI50。
 
 同一动态无符号整数尺寸与坐标的关联由原Proof数值域持有：F32转换记录实际整数快照、类型及有效数值域，余数／已成立Upper关系形成相对上界a*d+b+c/d（a非负）。非负加法、非负常量缩放、与同一尺寸转换的除法及同基值仿射／倒数乘法按实际F32舍入交接该上界，原绝对区间继续持有下界和其余结果；正d域只需端点求最大。转换精度边界、除法误差、次正规值及中间溢出共同解释，不能从理想商的非负性推定零附近GPU结果可直接转成无符号索引。原函数合同按实际实参身份和数值域替换，私有或改写后的来源不混同；对象／归档保存同一事实。该分析不改B算法，不添加运行检查、范围表、表达式图或第二求解器，也不把当前可表达上界形状作为语言能力上限。
 

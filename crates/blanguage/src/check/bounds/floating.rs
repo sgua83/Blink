@@ -42,15 +42,14 @@ fn rounded(scalar: Scalar, value: f64, lower: bool) -> f64 {
     else if !lower && (result as f64) < value { result.next_up() as f64 }
     else { result as f64 }
 }
-// F32加减的精确和由F64主值与残差交接；很小的第二项不能被宿主舍入抹去。
-fn sum_bound(a: f64, b: f64, lower: bool) -> f64 {
+// 精确和由主值与残差交接，再向实际Scalar舍入；微小的第二项仍保留。
+fn sum_bound(scalar: Scalar, a: f64, b: f64, lower: bool) -> f64 {
     let sum = a + b;
     let back = sum - a;
     let tail = (a - (sum - back)) + (b - back);
-    let value = rounded(Scalar::F32,sum,lower);
-    if value == sum && (lower && tail < 0.0 || !lower && tail > 0.0) {
-        if lower { (value as f32).next_down() as f64 } else { (value as f32).next_up() as f64 }
-    } else { value }
+    let value = if lower && tail < 0.0 { sum.next_down() }
+        else if !lower && tail > 0.0 { sum.next_up() } else { sum };
+    rounded(scalar,value,lower)
 }
 fn interval(scalar: Scalar, lower: f64, upper: f64) -> ScalarRanges {
     let (mut lower, mut upper) = (rounded(scalar,lower,true), rounded(scalar,upper,false));
@@ -111,13 +110,11 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value, component: usize) -> Sc
     let scalar = a.ty.components[0].0;
     let Some((al,ah)) = finite(a,component % a.regs.len()) else { return ScalarRanges::default(); };
     let Some((bl,bh)) = finite(b,component % b.regs.len()) else { return ScalarRanges::default(); };
-    // 现行共同范围只分析F32四则；F64实际目标精度不凭宿主F64运算推定。
-    if scalar != Scalar::F32 { return ScalarRanges::default(); }
     let (mut lower,mut upper) = match op {
-        "+" => (sum_bound(al,bl,true),sum_bound(ah,bh,false)),
-        "-" => (sum_bound(al,-bh,true),sum_bound(ah,-bl,false)),
-        "*" => { let values=[al*bl,al*bh,ah*bl,ah*bh]; (values.into_iter().fold(f64::INFINITY,f64::min),values.into_iter().fold(f64::NEG_INFINITY,f64::max)) }
-        "/" => {
+        "+" => (sum_bound(scalar,al,bl,true),sum_bound(scalar,ah,bh,false)),
+        "-" => (sum_bound(scalar,al,-bh,true),sum_bound(scalar,ah,-bl,false)),
+        "*" if scalar == Scalar::F32 => { let values=[al*bl,al*bh,ah*bl,ah*bh]; (values.into_iter().fold(f64::INFINITY,f64::min),values.into_iter().fold(f64::NEG_INFINITY,f64::max)) }
+        "/" if scalar == Scalar::F32 => {
             // Vulkan OpFDiv的2.5 ULP保证只覆盖原规格的分母范围。
             if bl <= 0.0 && bh >= 0.0 || bl.abs().min(bh.abs()) < f32::MIN_POSITIVE as f64
                 || bl.abs().max(bh.abs()) > 2.0f64.powi(126) { return ScalarRanges::default(); }
@@ -214,9 +211,7 @@ impl Proof {
 
 // Outward F64 evaluation belongs to floating range analysis, not generated code.
 fn add_up(a: f64, b: f64) -> f64 {
-    let sum = a + b; let back = sum - a;
-    let tail = (a - (sum - back)) + (b - back);
-    if tail > 0.0 { sum.next_up() } else { sum }
+    sum_bound(Scalar::F64,a,b,false)
 }
 fn multiply_up(a: f64, b: f64) -> f64 {
     let product = a * b;
