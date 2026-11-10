@@ -24,34 +24,19 @@ impl World {
             let mut name = name.clone();
             crate::generics::substitute_type(&mut name, types, source, span)?;
             crate::value_parameters::substitute_type(&mut name, values,source)?;
-            self.interface_type(&name, source, span, &definition.module, &definition.imports)
+            self.type_reference(&name, source, span, &definition.module, &definition.imports)
         };
         let mut same = bind(&declaration.result, &interface.source, declaration.span)?
-            == self.interface_type(&actual.result, &definition.source, actual.span, &definition.module, &definition.imports)?;
+            == self.type_reference(&actual.result, &definition.source, actual.span, &definition.module, &definition.imports)?;
         for (declared, implemented) in declaration.params.iter().zip(&actual.params) {
             same &= bind(&declared.ty, &interface.source, declared.span)?
-                == self.interface_type(&implemented.ty, &definition.source, implemented.span, &definition.module, &definition.imports)?;
+                == self.type_reference(&implemented.ty, &definition.source, implemented.span, &definition.module, &definition.imports)?;
         }
         if !same {
             return definition.source.fail(actual.span, "B028", format!("{} 的实际类型或函数值合同与 .h 不一致", actual.name));
         }
         Ok(())
     }
-    fn interface_type(&self, name: &TypeName, source: &Source, span: Span, module: &str,
-        imports: &[String],
-    ) -> crate::Result<TypeName> {
-        if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
-            return Ok(self.c_function_type(name, source, span, module, imports)?.syntax());
-        }
-        let mut name = name.clone();
-        for argument in &mut name.arguments {
-            if let GenericArgument::Type(ty) = argument {
-                *ty = self.interface_type(ty, source, span, module, imports)?;
-            }
-        }
-        Ok(name)
-    }
-
     // Resolve names and const arguments without asking a signature reference for its record layout.
     /// Contract expressions project nominal fields before requesting a layout;
     /// a callback signature may refer to the containing record itself.
