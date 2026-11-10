@@ -5121,7 +5121,7 @@ BLEngine算法准备、compute与simulate消费入口复用API，映像位于其
 
 ## 构建记录与可部署执行映像
 
-BLBI1的原Artifact分别保存identity构建输入记录和image执行映像。`blanguage::build::execution_image(path) -> build::Result<Vec<u8>>`只读取并解码该包络，返回原image字段；不解析构建身份含义，不读取B源码、不创建Compiler或设备、不重新编译／重编码代码，也不修改原BLBI。构建缓存继续保存完整原输入身份并按原规则命中或失效。
+BLBI1包络依次保存identity构建输入记录和image执行映像两段长度前缀字节。共享解码器借用本次文件缓冲，完整校验两段范围和末端；input_facts只借identity解出原InputFacts，不物化image。`blanguage::build::execution_image(path) -> build::Result<Vec<u8>>`只将原image复制成调用者独立拥有的Vec，不物化identity、不解析其内部版本，不读取B源码、不创建Compiler或设备、不重新编译／重编码代码，也不修改原BLBI。入口复用与可信load使用同一包络解码和实际字节借用期；构建缓存继续保存完整原输入身份，按原规则命中或失效，原编码、错误及原子写出保持。
 
 ```powershell
 bc image target/cache/entry.blbi -o target/deployment.blri

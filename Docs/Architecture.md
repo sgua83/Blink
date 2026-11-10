@@ -1495,7 +1495,7 @@ GPU来源和调试描述可按明确选择保存或从正式SPIR-V移除，保�
 
 ##### 构建记录与可部署计算映像的分离
 
-原构建所有者区分供增量复用／AI查询的输入记录与供部署执行的代码、计划和必要合同。BLBI的原Artifact分别拥有identity和image，部署提取只交接同一image字段；原BLBI及其输入查询／复用保持，不重新编译／编码执行代码，不把源码或输入清单变成运行前置。现有build::execution_image(path)直接返回此原字段，不另建部署服务、索引权威或兼容读取路径。
+原构建所有者区分供增量复用／AI查询的输入记录与供部署执行的代码、计划和必要合同。BLBI1包络依次保存identity和image两段长度前缀字节；原Reader校验两段范围及末端，共享包络解码只借用本次文件缓冲。输入查询借identity解出原InputFacts，不构造未消费的image缓冲；build::execution_image(path)只将原image复制为交给调用者的独立Vec，不构造identity缓冲，也不解释其内部版本。入口复用和可信load沿同一解码器及文件字节的实际借用期读取，资源解码继续建立自己的实际拥有产物；重新链接确需写入时借原identity和实际新image，沿原Writer及原子publish交付同一字段次序，不维护第二读取路径。完整字段／末端校验及原错误保持，原BLBI及其输入查询／复用不重新编译／编码执行代码，不把源码或输入清单变成运行前置，也不另建部署服务或索引权威。
 
 原build模块的execution_image(path)返回独立BLRI字节，bc image <entry.blbi> -o <deployment.blri>显式创建调用者的新部署文件，源／既有输出由其原所有者保持；CLI在Compiler初始化之前处理，成功仅返回源／输出路径及实际字节量的JSON。提取只解码原BLBI包络，不解释构建身份，执行映像的信任／语义仍沿原resource边界；源文件只读，真实读取、格式和写入错误如实交回。模块类型、CPU代码及其必要重定位／展开、GPU SPIR-V、执行布局／顺序和实际合同均保留；运行所需名称与库引用不冒充可剥离调试材料。原resource::from_compiler_output恢复Module及TemplateProgram标记，原CpuTemplate／GpuTemplate和DomainBindings按实际前提／完成消费，不增加Frame、运行表或装入路径。执行权限与代码信任仍由原装入边界承担，提取成功不证明已执行、目标支持或完成发布。
 

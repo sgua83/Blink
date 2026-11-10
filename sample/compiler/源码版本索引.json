@@ -116,7 +116,7 @@
     },
     {
       "path": "crates/blanguage/src/build/mod.rs",
-      "sha256": "155ac0905173469f0d3c6a9e3b0e1a461fb0de54b29829f4c9bae2a9d9076d3b"
+      "sha256": "dd37014aa1c2377f07491ae0629dc46c063d78409a9bf1e11fdd04b70e2c3f4c"
     },
     {
       "path": "crates/blanguage/src/build/observations.rs",
@@ -292,7 +292,7 @@
     },
     {
       "path": "crates/blanguage/src/codec.rs",
-      "sha256": "9e0bbcef8dbad819f535d334def9ee2cce75bd48aa70e6a442db34d0c119e0e3"
+      "sha256": "e0c5b4c47da8a5ac20d4875c596b26802d3b92255faa496e9d24d836b07bd6b0"
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",

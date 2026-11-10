@@ -10,7 +10,7 @@ pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
 pub(crate) use inputs::Inputs;
 pub use identity::{Declaration, Inputs as InputFacts, Selection, SourceInput, SourceInputs};
 pub use object::{ObjectCompilation, ObjectKind, compile_object};
-use crate::module::codec::{Decode, Encode, record};
+use crate::module::codec::{Encode, Reader, Writer};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
 use std::{
     fs,
@@ -30,11 +30,6 @@ pub struct Compilation {
     pub reused: bool,
 }
 const MAGIC: &[u8; 8] = b"BLBI\x01\0\0\0";
-struct Artifact {
-    identity: Vec<u8>,
-    image: Vec<u8>,
-}
-record!(Artifact { identity, image });
 
 /// output 是调用方拥有的生成目录；按本次实际装入的源码和编译器实现复用入口。
 pub fn compile_entry(
@@ -106,17 +101,16 @@ fn compile_in(
         worker.compiler().max_parameter_bytes(), &world, &module, false)?;
     match fs::read(&artifact) {
         Ok(bytes) => {
-            let mut stored = decode(&bytes)?;
-            if let Some(inputs) = identity::decode(&stored.identity)? && inputs.source.same_code(&source) {
-                let mut image = unsafe { resource::from_compiler_output(&stored.image) }
+            let (identity, stored_image) = decode(&bytes)?;
+            if let Some(inputs) = identity::decode(identity)? && inputs.source.same_code(&source) {
+                let mut image = unsafe { resource::from_compiler_output(stored_image) }
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 if inputs.imports == references(&world.declarations, imported, &image, &inputs.declarations) {
                     if imported.is_some() {
                         link_inputs(&mut image, dependencies, borrowed, &imports)?;
                         let encoded = encode_image(&image);
-                        if stored.image != encoded {
-                            stored.image = encoded;
-                            write_artifact(&artifact, &stored)?;
+                        if stored_image != encoded {
+                            write_artifact(&artifact, identity, &encoded)?;
                         }
                     }
                     return Ok(images(image, artifact, true));
@@ -149,12 +143,10 @@ fn compile_in(
     let declarations = world.build_declarations.as_ref().unwrap().borrow().iter().cloned().collect::<Vec<_>>();
     let imports_identity = references(&world.declarations, imported, &image, &declarations);
     if imported.is_some() { link_inputs(&mut image, dependencies, borrowed, &imports)?; }
-    let stored = Artifact {
-        identity: identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode(),
-        image: encode_image(&image),
-    };
+    let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
+    let encoded = encode_image(&image);
     fs::create_dir_all(output)?;
-    write_artifact(&artifact, &stored)?;
+    write_artifact(&artifact, &identity, &encoded)?;
     Ok(images(image, artifact, false))
 }
 fn references(
@@ -185,50 +177,54 @@ fn encode_image(image: &resource::Module) -> Vec<u8> {
     encoded.extend(image.bytes());
     encoded
 }
-fn write_artifact(path: &Path, stored: &Artifact) -> Result<()> {
-    let mut bytes = MAGIC.to_vec();
-    bytes.extend(stored.bytes());
-    publish(path, &bytes)
+fn write_artifact(path: &Path, identity: &[u8], image: &[u8]) -> Result<()> {
+    let mut writer = Writer(MAGIC.to_vec());
+    (identity, image).encode(&mut writer);
+    publish(path, &writer.0)
 }
-fn decode(bytes: &[u8]) -> Result<Artifact> {
+fn decode(bytes: &[u8]) -> Result<(&[u8], &[u8])> {
     let bytes = bytes.strip_prefix(MAGIC).ok_or("不支持的入口构建映像")?;
-    Artifact::from_bytes(bytes).map_err(|e| std::io::Error::other(e.to_string()).into())
+    let mut reader = Reader::new(bytes);
+    let fields: crate::module::codec::Result<_> = (|| {
+        let identity = reader.byte_slice()?;
+        let image = reader.byte_slice()?;
+        reader.finish()?;
+        Ok((identity, image))
+    })();
+    fields.map_err(|e| std::io::Error::other(e.to_string()).into())
 }
 /// Reads the request and consumed source identities stored in an actual artifact.
 /// No source files, compiler workers, native code or device are opened.
 pub fn input_facts(path: &Path) -> Result<InputFacts> {
     let bytes = fs::read(path)?;
     let identity = if bytes.starts_with(MAGIC) {
-        decode(&bytes)?.identity
+        decode(&bytes)?.0
     } else {
         crate::object::ObjectReader::new(&bytes)
             .and_then(|reader| reader.build_inputs())
             .map_err(|error| std::io::Error::other(error.to_string()))?
-            .ok_or("该对象未保存构建输入")?.to_vec()
+            .ok_or("该对象未保存构建输入")?
     };
-    identity::decode(&identity)?
+    identity::decode(identity)?
         .ok_or_else(|| "产物未保存当前结构化构建输入；不能从旧摘要还原".into())
 }
 /// Extracts the original resource-ABI image from a build artifact.
 /// Does not interpret build inputs, recompile, load code, or change the source artifact.
 /// Code trust and execution contracts remain with the resource decoder and runtime.
 pub fn execution_image(path: &Path) -> Result<Vec<u8>> {
-    Ok(decode(&fs::read(path)?)?.image)
+    let bytes = fs::read(path)?;
+    Ok(decode(&bytes)?.1.to_vec())
 }
 /// 独立执行可只装入产物，不读取B源码或调用编译器后端。
 ///
 /// # Safety
 /// 文件必须是可信编译器产生且未修改的完整原生映像，保持资源ABI及真实前缀合同。
 pub unsafe fn load(path: &Path) -> Result<Compilation> {
-    let stored = decode(&fs::read(path)?)?;
-    stored.compilation(path.into(), true)
-}
-impl Artifact {
-    fn compilation(self, artifact: PathBuf, reused: bool) -> Result<Compilation> {
-        let module = unsafe { resource::from_compiler_output(&self.image) }
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        Ok(images(module, artifact, reused))
-    }
+    let bytes = fs::read(path)?;
+    let (_, image) = decode(&bytes)?;
+    let module = unsafe { resource::from_compiler_output(image) }
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(images(module, path.into(), true))
 }
 fn images(module: resource::Module, artifact: PathBuf, reused: bool) -> Compilation {
     let mut programs = Vec::new();

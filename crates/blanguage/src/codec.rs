@@ -16,6 +16,13 @@ impl<'a> Reader<'a> {
         self.position = end;
         Ok(bytes)
     }
+    pub fn byte_slice(&mut self) -> Result<&'a [u8]> {
+        let size = usize::decode(self)?;
+        // Match Vec<u8>'s truncated-payload error, including a maximum encoded count.
+        let bytes = self.bytes[self.position..].get(..size).ok_or("模块接口被截断")?;
+        self.position += size;
+        Ok(bytes)
+    }
     pub fn finish(self) -> Result<()> {
         if self.position != self.bytes.len() {
             return Err("模块接口有未消费内容".into());
