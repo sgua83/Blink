@@ -480,7 +480,7 @@
     },
     {
       "path": "crates/blanguage/src/object/coff/facts.rs",
-      "sha256": "5601b901ae493e7567bcbeae31fc712c67445e70ee9721c81f302464f55e89a3"
+      "sha256": "c5f8adfe5c3420c3959b8d0e7d008e28be269a8ca6ee9a92810ad22c66d8fb8a"
     },
     {
       "path": "crates/blanguage/src/object/coff/facts/observations.rs",

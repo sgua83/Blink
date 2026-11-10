@@ -1091,7 +1091,7 @@ Rust SDK使用`object::code_facts(bytes, object::CodeSelection::CodeSections)`�
 
 symbols返回全部主记录的原name／name_bytes、带符号section_number、value、storage_class、原读取器的function标记、18字节record_bytes及全部auxiliary_bytes／数量；符号文件位置与原表索引保持。节与符号名称沿现有UTF-8读取，原节名沿头内拼写，当前未展开长节名索引，不宣称支持全部COFF扩展或BigObj。relocations交接原节内offset_bytes、type、symbol_index及原目标name／section_number／value，不先规范化成另一个符号或把占位操作数当最终调用地址。原记录字节保留读取器当前未解释的字段；这些实现范围不成为语言和未来目标的永久边界。
 
-function_tables保留原.pdata的每条12字节记录、begin／end／unwind原加数与重定位。AMD64 ADDR32NB（3）指向同一文件已定义节时，将符号value与原加数相加，交接真实节内位置；字段无重定位、类型未支持或非节内目标分别标明no_relocation、relocation_type_not_supported、symbol_not_section_relative。begin／end在同一节且范围有效时，regions以runtime_function交接原范围，并调用原native::instructions_json；每条指令IP按该节内偏移解释，不代表最终RVA或装载地址。跨节开始／末端标cross_section_range，待实际链接布局，不据此判定源程序非法；未解析字段的表记录标unresolved，不猜范围。
+function_tables保留原.pdata的每条12字节记录、begin／end／unwind原加数与重定位。AMD64 ADDR32NB（3）指向同一文件已定义节时，将原32位符号value与u32加数在32位RVA字段内相加，保留低32位后再按目标节解释位置；例如value=1、addend=0xffffffff与value=0、addend=0均表示该节偏移0。随后沿原目标节长度及begin／end顺序解释真实范围，不把合法回绕扩大为64位节外偏移；字段无重定位、类型未支持或非节内目标分别标明no_relocation、relocation_type_not_supported、symbol_not_section_relative。begin／end在同一节且范围有效时，regions以runtime_function交接原范围，并调用原native::instructions_json；每条指令IP按该节内偏移解释，不代表最终RVA或装载地址。跨节开始／末端标cross_section_range，待实际链接布局，不据此判定源程序非法；未解析字段的表记录标unresolved，不猜范围。
 
 未提供生成材料时，选中节中已声明范围以外的字节全部原样交接为unclassified，instructions=null。原代码特征位、函数符号或能反汇编不证明整节都是指令；完整生成分类由下述独立材料显式交接。多个已声明范围分别保留原表来源，不据其重叠生成另一代码布局。结构截断、无效字符串／符号／重定位引用、真实范围越界／反向及ISA解码错误直接失败，不输出部分成功；解码错误保留原物理节号、节内字节偏移及相对IP。标准定义见[Microsoft PE／COFF格式](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)。最终PE、归档成员抽取及完整静态运行库观察仍沿C-021.7.9.9，源码来源和运行地址分别沿.7／.13。
 

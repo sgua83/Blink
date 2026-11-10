@@ -110,7 +110,7 @@ impl<'a> Facts<'a> {
                 else {
                     let index = usize::try_from(symbol.section - 1)?;
                     let target = self.sections.get(index).ok_or("COFF .pdata target section is outside the section table")?;
-                    let offset = usize::try_from(symbol.value + u64::from(addend))?;
+                    let offset = (symbol.value as u32).wrapping_add(addend) as usize;
                     if offset > target.row.bytes.length { return Err("COFF .pdata address is outside its target section".into()); }
                     (Some((index, offset)), "resolved")
                 }
