@@ -2183,22 +2183,19 @@ impl GpuProgram {
         steps: NonZeroU32,
     ) -> Result<Submission> {
         let count = owner.bindings.datasets.len();
-        self.submit_owned_mapped(&mut owner, values, steps, count, |i| (i, 0))
+        let uniforms = arguments(&self.compiled.program, owner.bindings.datasets.iter()
+            .map(|data| (&data.ty, data.count, Some(0))), values)?;
+        self.submit_owned_mapped(&mut owner, uniforms, steps, count, |i| (i, 0))
     }
     fn submit_owned_mapped(
         &self,
         owner: &mut InputOwner,
-        values: &[Value],
+        mut uniforms: Vec<u32>,
         steps: NonZeroU32,
         count: usize,
         location: impl Fn(usize) -> (usize, u32) + Copy,
     ) -> Result<Submission> {
         let c = &self.compiled;
-        let mut uniforms = arguments(&c.program, (0..count).map(|i| {
-            let (binding, offset) = location(i);
-            let data = &owner.bindings.datasets[binding];
-            (&data.ty, data.count, Some(offset))
-        }), values)?;
         crate::bindings::require(&owner.bindings.datasets, &owner.bindings.domains, &c.program, location)?;
         let physical = |i| location(i).0;
         if owner.textures.len() != c.program.texture_count()
@@ -2846,7 +2843,7 @@ impl GpuTemplate {
         &self,
         bindings: DomainBindings<GpuDataset>,
         order: &[(usize, u32)],
-        values: &[Value],
+        uniforms: Vec<u32>,
     ) -> std::result::Result<Submission, (Box<dyn std::error::Error + Send + Sync>, DomainBindings<GpuDataset>)> {
         let mut owner = InputOwner {
             dependencies: Vec::new(),
@@ -2856,7 +2853,7 @@ impl GpuTemplate {
         };
         self.code.submit_owned_mapped(
             &mut owner,
-            values,
+            uniforms,
             NonZeroU32::MIN,
             order.len(),
             |i| order[i],

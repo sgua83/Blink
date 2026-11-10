@@ -802,7 +802,7 @@ pub struct Dataset {
     }
 ```
 
-Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。Completion的阻塞等待与非阻塞查询只把实际0／DEVICE_LOST记录为原终态；查询NOT_READY仍为false且未知。其他等待／查询错误原样交回，不记录终止，保留同一执行资源，调用者下一次显式观察仍读取原fence，不自动重试。原Execution::wait／is_complete确认同一缓存0或DEVICE_LOST后，先沿原release_known释放本次命令、scratch、绑定参数与依赖持有，再原样返回原Result；设备丢失继续是错误，原输入及观察者的所有权保持。GpuDataset或Structure明确交出原存储时，Execution::discard／discard_structure复用同一已缓存0／DEVICE_LOST终态直接drop DatasetStorage／StructureStorage；未确认终止仍交原discarded／discarded_structures。ReadDataset、AS及其BLAS来源共享的原Rc保持其他真实拥有者，最后拥有者退出前不销毁底层资源；结构自身构建完成不冒充后来查询结束，不新增等待或释放链。未确认终止的错误不提前释放在途资源。
+Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。run先从仍在原槽中的实际类型、记录数及字段offset调用共同arguments；数量错误在物理别名下标查询前交回。接收同时产生本次执行所需的参数字，直接交给原CPU／GPU执行主体，不在projected内部入口重复编码。独立CPU／GPU调用仍由其原输入拥有者完成一次接收。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。Completion的阻塞等待与非阻塞查询只把实际0／DEVICE_LOST记录为原终态；查询NOT_READY仍为false且未知。其他等待／查询错误原样交回，不记录终止，保留同一执行资源，调用者下一次显式观察仍读取原fence，不自动重试。原Execution::wait／is_complete确认同一缓存0或DEVICE_LOST后，先沿原release_known释放本次命令、scratch、绑定参数与依赖持有，再原样返回原Result；设备丢失继续是错误，原输入及观察者的所有权保持。GpuDataset或Structure明确交出原存储时，Execution::discard／discard_structure复用同一已缓存0／DEVICE_LOST终态直接drop DatasetStorage／StructureStorage；未确认终止仍交原discarded／discarded_structures。ReadDataset、AS及其BLAS来源共享的原Rc保持其他真实拥有者，最后拥有者退出前不销毁底层资源；结构自身构建完成不冒充后来查询结束，不新增等待或释放链。未确认终止的错误不提前释放在途资源。
 
 Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节、GPU来源按第十九章直接借用原绑定；Frame当前数据根见2.6，程序根见2.7；其他宿主容器及B／C实际入口仍有独立未完成范围。
 
@@ -3940,7 +3940,7 @@ GpuDataset::last_use把这个原点直接交给观察者：device限定原逻辑
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:3002`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2999`。
 
 ```rust
         let timings = match result {
@@ -4012,7 +4012,7 @@ wait先等待真实执行；只有显式开启采集且存在实际阶段时才�
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2720`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2717`。
 
 ```rust
                                 let mut length = count;

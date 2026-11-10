@@ -665,12 +665,12 @@ impl CpuTemplate {
         bindings: &mut DomainBindings<crate::application::ResidentData>,
         order: &[(usize, u32)],
         textures: &[CpuTextureBinding<'_>],
-        values: &[Value],
+        uniforms: Vec<u32>,
         definitions: &std::sync::Arc<crate::application::Definitions>,
         writing: impl FnOnce(),
     ) -> Result<()> {
         self.code
-            .run_mapped(bindings, textures, values, order.len(), |i| order[i], writing,Some(definitions))
+            .run_mapped(bindings, textures, uniforms, order.len(), |i| order[i], writing,Some(definitions))
     }
 }
 #[derive(Clone, Copy)]
@@ -833,10 +833,14 @@ impl CpuCode {
         values: &[Value],
     ) -> OwnedRunResult {
         let count = bindings.datasets.datasets.len();
-        let result = {
+        let uniforms = arguments(&self.program, bindings.datasets.datasets.iter().map(|data| {
+            let (ty, count, _) = data.cpu_metadata();
+            (ty, count, Some(0))
+        }), values);
+        let result = uniforms.and_then(|uniforms| {
             let descriptions = CpuTextures::new(&bindings.textures);
-            self.run_mapped(&mut bindings.datasets, &descriptions.bindings(), values, count, |i| (i, 0), || {},self.definitions.as_ref())
-        };
+            self.run_mapped(&mut bindings.datasets, &descriptions.bindings(), uniforms, count, |i| (i, 0), || {},self.definitions.as_ref())
+        });
         match result {
             Ok(()) => Ok(bindings.datasets),
             Err(error) => Err((error, bindings)),
@@ -846,17 +850,12 @@ impl CpuCode {
         &self,
         bindings: &mut DomainBindings<D>,
         textures: &[CpuTextureBinding<'_>],
-        values: &[Value],
+        uniforms: Vec<u32>,
         count: usize,
         physical: impl Fn(usize) -> (usize, u32) + Copy,
         writing: impl FnOnce(),
         definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
     ) -> Result<()> {
-        let uniforms = arguments(&self.program, (0..count).map(|i| {
-            let (binding, offset) = physical(i);
-            let(ty,count,_)=bindings.datasets[binding].cpu_metadata();
-            (ty,count,Some(offset))
-        }), values)?;
         crate::bindings::require(&bindings.datasets, &bindings.domains, &self.program, physical)?;
         for (data, binding) in (0..count)
             .map(|i| &bindings.datasets[physical(i).0])
@@ -878,8 +877,7 @@ impl CpuCode {
         // 只复制原指针描述符，不重复借用或复制实际数据。
         let arguments = (0..count).map(|i| {
             let (physical, offset) = physical(i);
-            let expected = self.program.buffers().get(i)
-                .ok_or_else(|| error("设备调用的数据集数量不匹配"))?;
+            let expected = &self.program.buffers()[i];
             buffers[physical].projected(expected, offset)
         }).collect::<Result<Vec<_>>>()?;
         self.run_buffers(&arguments, textures, uniforms, || {

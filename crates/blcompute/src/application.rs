@@ -344,6 +344,15 @@ impl Frame {
         let definitions = self.definitions.clone();
         let definition = &definitions.programs[index];
         let layout = definition.layout();
+        let uniforms = crate::arguments(layout, bindings.iter().map(|binding| {
+            let data = self.data.datasets[binding.handle as usize].as_ref().unwrap();
+            let ty = match data {
+                ResidentData::Cpu(data) => &data.ty,
+                ResidentData::CpuBorrow(data) => &data.ty,
+                ResidentData::Gpu(data) => data.layout(),
+            };
+            (ty, crate::DomainStorage::element_count(data), Some(binding.offset))
+        }), values)?;
         // 参数是存储的引用；同一物理存储只移动一次。
         let mut selected = Vec::new();
         let mut order: Vec<(usize, u32)> = Vec::with_capacity(bindings.len());
@@ -399,7 +408,7 @@ impl Frame {
                     }
                 }
                 let mut inputs = DomainBindings { datasets, domains };
-                let result = program.run_projected(&mut inputs, &order, textures, values, &definitions, || {
+                let result = program.run_projected(&mut inputs, &order, textures, uniforms, &definitions, || {
                     crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
                         |i| (bindings[i].handle as usize, bindings[i].offset));
                 });
@@ -420,7 +429,7 @@ impl Frame {
                     }
                 }
                 let submission = match gpu_program
-                    .submit_projected(DomainBindings { datasets, domains }, &order, values)
+                    .submit_projected(DomainBindings { datasets, domains }, &order, uniforms)
                 {
                     Ok(submission) => submission,
                     Err((error, bindings)) => {
