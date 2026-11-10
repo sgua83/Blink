@@ -209,6 +209,7 @@ impl ApplicationLoads<'_, '_> {
             boundary+=context.outer.len();
             a.min(b)<boundary && a.max(b)>=boundary && match &read.kind {
                 InstKind::LoadLocal(_,slot)=>context.writes.external||context.writes.locals.contains(slot),
+                InstKind::Load{..}=>context.writes.external||context.writes.unknown_storage,
                 InstKind::ViewLoad{dst,address,index,stride,word}=>{
                     let range=self.constant(*index).zip(self.stride(*stride)).map(|(index,stride)|{
                         let start=u128::from(index)*u128::from(stride)+u128::from(*word);
@@ -285,7 +286,7 @@ impl ApplicationLoads<'_, '_> {
                         (Some(CallArgument::Value{values:a,..}),Some(CallArgument::Value{values:b,..}))=>a.len()==b.len()&&a.iter().zip(b).all(|(a,b)|self.same(*a,*b)),_=>false,
                     }
             },
-            (InstKind::ViewLoad{..},InstKind::ViewLoad{..})=>{
+            (InstKind::Load{..},InstKind::Load{..})|(InstKind::ViewLoad{..},InstKind::ViewLoad{..})=>{
                 let direct=self.code().nth(ai).unwrap().results().any(|reg|reg==a)&&self.code().nth(bi).unwrap().results().any(|reg|reg==b);
                 let range=if direct{ai.min(bi)+1..ai.max(bi)}else{ai.min(bi)..ai.max(bi)+1};
                 self.same_load(a_inst,b_inst)&&!self.code().skip(range.start).take(range.len()).any(|inst|self.writes(inst,a_inst))
@@ -300,6 +301,9 @@ impl ApplicationLoads<'_, '_> {
     fn same_address(&self,a:[Reg;2],b:[Reg;2])->bool {a.into_iter().zip(b).all(|(a,b)|self.same(a,b))}
     fn same_load(&self,a_inst:&Inst,b_inst:&Inst)->bool {
         match (&a_inst.kind,&b_inst.kind) {
+            (InstKind::Load{dst:a_dst,binding:a,index:ai,word:aw},InstKind::Load{dst:b_dst,binding:b,index:bi,word:bw})=>
+                self.0.registers[*a_dst]==self.0.registers[*b_dst]&&a==b&&aw==bw
+                    &&!self.loop_writes(self.definition(*a_dst).unwrap().0,self.definition(*b_dst).unwrap().0,a_inst)&&self.same(*ai,*bi),
             (InstKind::ViewLoad{dst:a_dst,address:a,index:ai,stride:as_,word:aw},InstKind::ViewLoad{dst:b_dst,address:b,index:bi,stride:bs,word:bw})=>
                 self.0.registers[*a_dst]==self.0.registers[*b_dst]&&self.same_stride(*as_,*bs)&&aw==bw
                     &&!self.loop_writes(self.definition(*a_dst).unwrap().0,self.definition(*b_dst).unwrap().0,a_inst)
@@ -375,6 +379,13 @@ impl ApplicationLoads<'_, '_> {
     }
     fn byte_overlap(a:&std::ops::Range<u128>,b:&std::ops::Range<u128>)->bool {a.start<b.end&&b.start<a.end}
     fn store_overlaps(&self,read:&IndexedSource,read_word:u32,read_scalar:Scalar,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
+        if let (IndexedSource::Data{binding:a,index:ai},IndexedSource::Data{binding:b,index:bi})=(read,source) {
+            if a!=b{return false;}
+            let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>u128::from(value),None=>return true}};
+            if matches!((self.constant(*ai),self.constant(*bi)),(Some(a),Some(b))if a!=b){return false;}
+            let a=u128::from(read_word);let b=offset+u128::from(word);
+            return Self::byte_overlap(&(a..a+u128::from(read_scalar.size())),&(b..b+u128::from(scalar.size())));
+        }
         let IndexedSource::View{address,index,stride}=read else{return true;};
         let mut selected=source;let mut written_word=u128::from(word);
         while let IndexedSource::Pointer{address,index,stride,..}=selected {
@@ -442,11 +453,15 @@ impl ApplicationLoads<'_, '_> {
         }
     }
     fn writes(&self,inst:&Inst,load:&Inst)->bool {
-        let InstKind::ViewLoad{dst,address,index,stride,word}=&load.kind else{return false;};
-        self.writes_indexed(inst,&IndexedSource::View{address:*address,index:*index,stride:*stride},*word,self.0.registers[*dst])
+        match &load.kind {
+            InstKind::Load{dst,binding,index,word}=>self.writes_indexed(inst,&IndexedSource::Data{binding:*binding,index:*index},*word,self.0.registers[*dst]),
+            InstKind::ViewLoad{dst,address,index,stride,word}=>self.writes_indexed(inst,&IndexedSource::View{address:*address,index:*index,stride:*stride},*word,self.0.registers[*dst]),
+            _=>false,
+        }
     }
     fn writes_indexed(&self,inst:&Inst,read:&IndexedSource,word:u32,scalar:Scalar)->bool {
         match &inst.kind {
+            InstKind::Store{binding,index,word:at_word,value}=>self.store_overlaps(read,word,scalar,&IndexedSource::Data{binding:*binding,index:*index},None,*at_word,self.0.registers[*value]),
             InstKind::StoreIndexed{source,offset,word:at_word,value}=>self.store_overlaps(read,word,scalar,source,Some(*offset),*at_word,self.0.registers[*value]),
             InstKind::Call(call)=>{
                 if call.arguments.iter().any(|argument|match argument {
@@ -472,7 +487,7 @@ impl ApplicationLoads<'_, '_> {
             InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes_indexed(inst,read,word,scalar)),
             InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes_indexed(inst,read,word,scalar)),
             InstKind::Scope(body)=>body.iter().any(|inst|self.writes_indexed(inst,read,word,scalar)),
-            InstKind::Store{..}|InstKind::Atomic(_)|InstKind::Append(_)=>true,
+            InstKind::Atomic(_)|InstKind::Append(_)=>true,
             _=>false,
         }
     }
@@ -679,14 +694,14 @@ impl ApplicationLoads<'_, '_> {
             }
             if self.writes(inst,load){break;}
             if self.same_load(inst,load) {
-                if let InstKind::ViewLoad{dst,..}=inst.kind{result=Some(dst);load=inst;}
+                if let InstKind::Load{dst,..}|InstKind::ViewLoad{dst,..}=inst.kind{result=Some(dst);load=inst;}
             }
         }
         result
     }
     fn snapshot(&self,reg:Reg)->Reg {
         let Some((at,load))=self.definition(reg)else{return reg;};
-        if !matches!(load.kind,InstKind::ViewLoad{..}){return reg;}
+        if !matches!(load.kind,InstKind::Load{..}|InstKind::ViewLoad{..}){return reg;}
         self.prior_snapshot(self.code().rev().skip(self.len()-at),load).unwrap_or(reg)
     }
 }

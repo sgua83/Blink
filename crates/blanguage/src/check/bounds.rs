@@ -4881,7 +4881,13 @@ impl Builder<'_> {
                 if let Some(common) = self.common_element_proof((*binding, 0), words, self.memory_regions.get(binding).map(|(_, writes)| writes)) {
                     proof.constrain_common_ranges(&common, regs.len());
                 }
-                (proof, uniform)
+                proof.origins.resize_with(regs.len(), Vec::new);
+                for (origins, reg) in proof.origins.iter_mut().zip(regs) {
+                    if origins.is_empty() {
+                        origins.push(ValueIdentity::Register(self.application_read_snapshot(*reg)));
+                    }
+                }
+                (self.path_proof(place.ty(), proof), uniform)
             }
             _ => match stored {
                 Some(stored) => stored,
