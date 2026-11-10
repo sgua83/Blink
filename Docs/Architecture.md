@@ -420,7 +420,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-3-2"></a>
 
-**dataset拥有元素逆序清理循环来源。** 原拥有元素Data及实际长度→drop_application_elements原游标初始化／条件／逆序选位／元素读取／回边→原Loop和准备Inst。原游标StoreLocal、条件LoadLocal／零常量／Greater、减一常量／ISub、实际元素ViewLoad、回边StoreLocal及Loop分别持有DatasetDropCursor、Condition、Index、ElementRead、Advance、Loop；同次展开共享当时原发射SourceSite形成的可选Syntax锚点，原实例／内联／域路径和范围保持，缺失不猜补。元素读取沿原read_storage_value→read_place→read_application_place交给唯一原ViewLoad，复用访问／初始化／Proof与寻址；只有清理读取传材料，其他调用及其他Place没有本项材料。原refresh与地址包装保持自身来源，地址完整分类沿.5.5；原drop_returned消费真实元素，静态F、最终release、条件拥有与变体选择各归自己的职责。原零长度不建循环、实际逆序、寄存器／槽位和资源寿命保持；原优化可删除常量和未使用分量，不保活节点或把保留材料当完整消除历史。材料随原IR共享及最后消费者结束，不拥有元素，不新增Builder状态、拥有表、读取算法或清理链。当前已交接六类原始生成职责，见[规范](BLanguage.md#dataset拥有元素逆序清理循环的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-2)。
+**dataset拥有元素逆序清理循环来源。** 原拥有元素Data及实际长度→drop_application_elements原游标初始化／条件／逆序选位／元素读取／必要元素清理调用／回边→原Loop、准备Inst和实际Call。原游标StoreLocal、条件LoadLocal／零常量／Greater、减一常量／ISub、实际元素ViewLoad、回边StoreLocal及Loop分别持有DatasetDropCursor、Condition、Index、ElementRead、Advance、Loop；同次展开共享当时原发射SourceSite形成的可选Syntax锚点，原实例／内联／域路径和范围保持，缺失不猜补。元素读取沿原read_storage_value→read_place→read_application_place交给唯一原ViewLoad，复用访问／初始化／Proof与寻址；只有清理读取传材料，其他调用及其他Place没有本项材料。原refresh与地址包装保持自身来源，地址完整分类沿.5.5。Unknown／Input／Cleanup元素进入类型化清理callee时，原Call持有DatasetElementDrop；Known／Common／Selected直接按本次局部拥有树清理，没有该Call。静态F、最终release、条件拥有与变体选择各归自己的职责。原零长度不建循环、实际逆序、寄存器／槽位和资源寿命保持；原优化可删除常量和未使用分量，不保活节点或把保留材料当完整消除历史。材料随原IR共享及最后消费者结束，不拥有元素，不新增Builder状态、拥有表、读取算法或清理链。原循环六类准备与控制职责及必要的一般元素清理调用均沿实际生成节点交接，见[规范](BLanguage.md#dataset拥有元素逆序清理循环的生成来源)；原循环来源的闭合范围见[台账](FixedIssues.md#c-021-7-9-7-2-4-5-3-2)，一般递归清理修订沿C-005.86。
 
 <a id="tool-7-2-4-5-3-3"></a>
 
@@ -1722,7 +1722,7 @@ dataset拥有元素按值读取沿原Place取出所选树，父集合继续持�
 
 循环局部元素状态沿原Presence／初始化、LoopState和控制值表达。原类型化Move及当前选择形成实际剩余条件，LoopControl在每条继续边代入真实下一轮输入并比较相同资源的拥有及CPU／GPU位置。两侧均为无条件Owned或均为Borrowed的确定配对由原Ownership直接交接，不生成Presence异或及路径查询；条件拥有配对继续按真实循环输入及原条件比较。for正文的词法i仍表示本轮值，计数器推进只交给原iterator／LoopState.cursor；break和自然出口保持各自模型与原控制条件。检查期数值身份不等于机器寄存器，运行条件消费原已发射读取；精确常量操作数与从当前范围推知的单值保持各自身份，不重新求值下标或伪造寄存器。数值递增本身不授予移交，未知、重复或重叠移动仍由原拥有和借用规则处理。
 
-最后清理在原drop_application_elements的实际元素装载处绑定局部选择，由原drop_owned_tree结束仍拥有的子树，再释放父存储；不生成把局部空位转交普通完整集合ABI的元素释放包装。原值转发只改写其掌握的等价使用点，读取指令由既有DCE按最后真实消费者决定是否删除，循环后释放消费的值仍保留实际定义。没有运行时空位表、第二拥有者、释放链或控制值历史副本；需要动态可空元素仍由显式变体表达。
+最后清理在原drop_application_elements的实际元素装载处绑定本次选择。Known／Common／Selected保留调用点实际拥有模型，由原drop_owned_tree结束仍拥有的子树，局部空位不交给普通完整集合ABI。Unknown／Input／Cleanup沿native_element_drop形成普通类型化清理callee，由原Module.units保存同型递归的静态调用回边；callee按原cleanup合同执行实际F、逆序子资源清理及同一Frame释放，不按未知数据深度无限内联。元素结束后再释放父存储。原值转发只改写其掌握的等价使用点，读取指令由既有DCE按最后真实消费者决定是否删除，循环后释放消费的值仍保留实际定义。没有运行时空位表、第二拥有者、释放链或控制值历史副本；需要动态可空元素仍由显式变体表达。
 
 ### 共享编译会话与本机资源
 

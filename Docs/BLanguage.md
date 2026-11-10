@@ -414,6 +414,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetDropCondition | dataset_drop_condition | 原逆序清理的游标读取／零值／比较 |
 | DatasetDropIndex | dataset_drop_index | 原逆序清理的减一值与ISub |
 | DatasetDropElementRead | dataset_drop_element_read | 原逆序清理实际元素分量ViewLoad |
+| DatasetElementDrop | dataset_element_drop | 原一般拥有元素的类型化清理Call；局部已知拥有树不产生该Call |
 | DatasetDropAdvance | dataset_drop_advance | 原逆序清理回边StoreLocal |
 | DatasetDropLoop | dataset_drop_loop | 原拥有元素逆序清理Loop |
 | UserOwnedDrop | user_owned_drop | 原owned<T,F>实际静态析构Call |
@@ -807,11 +808,11 @@ DatasetInitializeCursor标明原准备零值与实际起始StoreLocal，Conditio
 
 #### dataset拥有元素逆序清理循环的生成来源
 
-原drop_application_elements在已有零长度判断、Data刷新和CPU访问条件之后，将同次原发射SourceSite共享给六类生成材料。原长度写入游标槽是DatasetDropCursor；条件的LoadLocal、零常量与Greater是DatasetDropCondition；选前一个元素的常量一与ISub是DatasetDropIndex；读取实际元素标量分量的ViewLoad是DatasetDropElementRead；回边StoreLocal是DatasetDropAdvance；外层原Loop是DatasetDropLoop。各节点source_site为null，语法触发位于generated_origin.trigger，原定义、实际实例、inlined_at、domain_path及字节范围不变。没有原SourceSite时trigger仍为null，不把整个函数范围或邻近语句补成退出语法。
+原drop_application_elements在已有零长度判断、Data刷新和CPU访问条件之后，将同次原发射SourceSite共享给原清理循环及必要元素清理调用。原长度写入游标槽是DatasetDropCursor；条件的LoadLocal、零常量与Greater是DatasetDropCondition；选前一个元素的常量一与ISub是DatasetDropIndex；读取实际元素标量分量的ViewLoad是DatasetDropElementRead；回边StoreLocal是DatasetDropAdvance；外层原Loop是DatasetDropLoop。Unknown／Input／Cleanup元素的一般清理Call是DatasetElementDrop；Known／Common／Selected直接沿局部拥有树清理，不生成该Call。各节点source_site为null，语法触发位于generated_origin.trigger，原定义、实际实例、inlined_at、domain_path及字节范围不变。没有原SourceSite时trigger仍为null，不把整个函数范围或邻近语句补成退出语法。
 
 元素载入沿原read_storage_value的Ty标量投影、read_place的ApplicationElement检查以及read_application_place的唯一ViewLoad生产者交接可选element_read_origin。原访问／初始化／Proof、常量语义、地址／索引／stride／word、Reg与槽位保持；普通读取明确没有该材料，其他Place不借用此理由。原Frame地址包装、refresh取得描述的读取、静态F及最终release保持各自职责；没有复制读取检查或新增解释执行／旁路读取。常量复用既有constant_with_origin，不另写常量或数值规则。
 
-原循环仍从实际length逆序处理元素，先按原drop_returned完成当前元素清理，再更新原游标。嵌套拥有元素产生自己的原循环及材料；静态F函数体和调用、条件拥有及活动变体选择不整体改标清理循环。原长度确定为零时不创建游标、循环或读取；原优化可合并重复零／一常量或删除未消费字段，返回IR只保留实际节点，不伪造所有声明分量都已经读取，不为观察保活。生成来源不是循环已执行、析构已调用或最后设备消费者已完成的运行证据。
+原循环仍从实际length逆序处理元素。Known／Common／Selected在实际装载处绑定局部选择，由原drop_owned_tree结束仍拥有的子树，局部空位不进入普通完整拥有参数。Unknown／Input／Cleanup经原native_element_drop及Module.units形成普通类型化清理callee，按原cleanup合同执行实际F、逆序子资源结束及同一Frame释放；同型后代保留静态调用回边，不按未知数据深度继续内联。当前元素结束后再更新原游标。嵌套拥有元素产生自己的原循环及材料；静态F函数体和调用、条件拥有及活动变体选择不整体改标清理循环。原长度确定为零时不创建游标、循环或读取；原优化可合并重复零／一常量或删除未消费字段，返回IR只保留实际节点，不伪造所有声明分量都已经读取，不为观察保活。生成来源不是循环已执行、析构已调用或最后设备消费者已完成的运行证据。
 
 Data／Frame仍是唯一实际资源所有者，原CPU／GPU位置、资源ABI及最后消费者保持；材料只归compiler原Inst不可变共享，最后IR消费者后结束，不新增Builder状态、拥有表、资源副本、调度或第二清理链。完整消除／多来源与机器位置仍沿.7.3／.7.4，用户静态F、条件拥有及活动变体来源见以下各节。见[架构职责](Architecture.md#tool-7-2-4-5-3-2)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-2)。
 

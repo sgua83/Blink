@@ -2097,7 +2097,11 @@ impl Builder<'_> {
         let place=Self::application_element(&data,&value_index,(value_index.minimum(),value_index.maximum()));
         let value=self.read_storage_value(&place,span,Some(origin(GenerationReason::DatasetDropElementRead)))?;
         let element=self.materialize_element(&DataReference::direct(data.clone()),value,&place)?;
-        self.drop_owned_tree(element,retained,span)?;
+        if matches!(&data.elements,ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_)) {
+            self.native_element_drop(element,retained,span,origin(GenerationReason::DatasetElementDrop))?;
+        } else {
+            self.drop_owned_tree(element,retained,span)?;
+        }
         self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
