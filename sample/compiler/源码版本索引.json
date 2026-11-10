@@ -16,7 +16,7 @@
     },
     {
       "path": "crates/blanguage/src/ast.rs",
-      "sha256": "b8d1be6b4f84e7dbbe9e4160e70d5bcc111d60fbded04506f021cb4cc608a657"
+      "sha256": "921bdb09128bb31b9d42ade17b377121c155d994ea396277016114e15850e0c5"
     },
     {
       "path": "crates/blanguage/src/bin/blink.rs",
@@ -464,7 +464,7 @@
     },
     {
       "path": "crates/blanguage/src/native/texture.rs",
-      "sha256": "c45d1b9a9ed59a3d1d092e3abc5fbeb99a294ad2557d25b244a3ac82124854f2"
+      "sha256": "55b8d11f6b4db8554c7a15851998eff03490d3c37b086f59a02e37786870d732"
     },
     {
       "path": "crates/blanguage/src/native/tile.rs",
@@ -476,7 +476,7 @@
     },
     {
       "path": "crates/blanguage/src/object/coff.rs",
-      "sha256": "951587de1a7a2da724e4a2dc46631a12e68b871300154d20c06b5b62c59d611f"
+      "sha256": "593aca7eb6fde3de90f5b3a41e3a0cdf112e3ec5e88c256c7d541013930fb277"
     },
     {
       "path": "crates/blanguage/src/object/coff/facts.rs",
@@ -512,7 +512,7 @@
     },
     {
       "path": "crates/blanguage/src/resource.rs",
-      "sha256": "37a91c5a93f71e513c1cbbb0130d9e8542e27d9443871399b4a9f66c028a17e8"
+      "sha256": "e79bdf899a3c685d23bef459859e1899362639d065dd85c2cafc7670a05e6e18"
     },
     {
       "path": "crates/blanguage/src/resource/module_image.rs",
@@ -572,7 +572,7 @@
     },
     {
       "path": "crates/blcompute/src/texture.rs",
-      "sha256": "e5a18e78c0bd3b001e784e2b28e7273dfa24419300ac293966d5f80aea2b587d"
+      "sha256": "872b0b005bc1f021abbdfe9c541121074d91fadf0b56e0121a567f797bb626ce"
     },
     {
       "path": "crates/blcompute/src/views.rs",
@@ -588,11 +588,11 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "sha256": "67074f66048711a56e61171faded98fa6c3fb49edebe19cd1d94c366a5243a16"
+      "sha256": "435b83068fbe6a2b1ecea6761884a3f84c78bf22042c395918a33491c55e5629"
     },
     {
       "path": "crates/blcompute/src/vulkan/texture.rs",
-      "sha256": "887d1deac2857be75d5d29978635079cd11e9c7c779c45d64bfb293b28c3ad78"
+      "sha256": "a41113aee0f3c07eb8265eb0086125944e42aad20f34a71875d5724b51f4ce71"
     },
     {
       "path": "sample/lessons/map.b",
@@ -1478,20 +1478,20 @@
     },
     {
       "path": "crates/blcompute/src/texture.rs",
-      "start_line": 274,
-      "end_line": 279,
+      "start_line": 277,
+      "end_line": 282,
       "sha256": "ea6aaa1de4bdbb7c7121f9b1334d59aa8b017d3febaca738338a8631918f76fb"
     },
     {
       "path": "crates/blcompute/src/texture.rs",
-      "start_line": 282,
-      "end_line": 285,
+      "start_line": 285,
+      "end_line": 288,
       "sha256": "2ce0676ac34866184981e0e36210e34e7b6f63bb8ad3ecc716f07b2a840f7a5c"
     },
     {
       "path": "crates/blcompute/src/vulkan/texture.rs",
-      "start_line": 249,
-      "end_line": 252,
+      "start_line": 256,
+      "end_line": 259,
       "sha256": "4cefe8a58a75b7125dda5957166b03265403b847195b0331a61168b3e161edb3"
     },
     {
@@ -1502,8 +1502,8 @@
     },
     {
       "path": "crates/blanguage/src/native/texture.rs",
-      "start_line": 368,
-      "end_line": 392,
+      "start_line": 400,
+      "end_line": 424,
       "sha256": "8ab87ccb5b47a07b511c7650dafb396948f61d28e6b3288c147840a6d6692ceb"
     }
   ]

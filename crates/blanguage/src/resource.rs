@@ -5,7 +5,7 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x32\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x33\0\0\0";
 pub const RUNTIME_LIBRARY: &str = "@blink.application@";
 // 非根资源静态包装声明的原C ABI，模块专属索引符号仍由原链接器绑定。
 pub(crate) const MODULE_RUNTIME_SYMBOLS: &[&str] = &["blink_allocate", "blink_run", "blink_complete_field"];
@@ -227,7 +227,7 @@ impl<P> Decode for spirv::ProgramImage<P> {
 }
 record!(crate::ast::ExternalName { library, symbol });
 variants!(crate::ast::TextureDimension { 2=>D2, 3=>D3 });
-variants!(crate::ast::TextureFormat { 0=>Rgba32Float, 1=>Rgba8Unorm, 2=>Rgba8Srgb, 3=>R8Unorm, 4=>Rg16Unorm, 5=>Rgb10A2Unorm });
+variants!(crate::ast::TextureFormat { 0=>Rgba32Float, 1=>Rgba8Unorm, 2=>Rgba8Srgb, 3=>R8Unorm, 4=>Rg16Unorm, 5=>Rgb10A2Unorm, 6=>R11G11B10Float });
 record!(TextureBinding { name, count, dimension, format });
 record!(Reduction {
     source,

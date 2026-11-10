@@ -12,6 +12,7 @@ pub enum TextureTexels {
     R8Unorm(Vec<u8>),
     Rg16Unorm(Vec<[u16; 2]>),
     Rgb10A2Unorm(Vec<u32>),
+    R11G11B10Float(Vec<u32>),
 }
 impl From<Vec<[f32; 4]>> for TextureTexels {
     fn from(value: Vec<[f32; 4]>) -> Self {
@@ -27,6 +28,7 @@ impl TextureTexels {
             Self::R8Unorm(_) => TextureFormat::R8Unorm,
             Self::Rg16Unorm(_) => TextureFormat::Rg16Unorm,
             Self::Rgb10A2Unorm(_) => TextureFormat::Rgb10A2Unorm,
+            Self::R11G11B10Float(_) => TextureFormat::R11G11B10Float,
         }
     }
     pub fn as_bytes(&self) -> &[u8] {
@@ -35,7 +37,7 @@ impl TextureTexels {
             Self::Rgba8Unorm(v) | Self::Rgba8Srgb(v) => (v.as_ptr().cast(), v.len() * 4),
             Self::R8Unorm(v) => (v.as_ptr(), v.len()),
             Self::Rg16Unorm(v) => (v.as_ptr().cast(), v.len() * 4),
-            Self::Rgb10A2Unorm(v) => (v.as_ptr().cast(), v.len() * 4),
+            Self::Rgb10A2Unorm(v) | Self::R11G11B10Float(v) => (v.as_ptr().cast(), v.len() * 4),
         };
         unsafe { std::slice::from_raw_parts(pixels, bytes) }
     }
@@ -64,6 +66,7 @@ impl TextureTexels {
             TextureFormat::R8Unorm => Self::R8Unorm(bytes.to_vec()),
             TextureFormat::Rg16Unorm => Self::Rg16Unorm(copy(bytes)),
             TextureFormat::Rgb10A2Unorm => Self::Rgb10A2Unorm(copy(bytes)),
+            TextureFormat::R11G11B10Float => Self::R11G11B10Float(copy(bytes)),
         })
     }
 }

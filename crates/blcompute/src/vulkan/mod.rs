@@ -33,7 +33,7 @@ use std::{
     ptr::{null, null_mut},
     rc::Rc,
 };
-pub use texture::{Texture, TextureInput};
+pub use texture::{Texture, TextureCopyLevel, TextureInput};
 use texture::{BufferImageCopy, ImageBarrier, Subresource, SubresourceRange};
 
 #[link(name = "kernel32")]

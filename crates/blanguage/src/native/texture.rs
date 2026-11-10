@@ -79,6 +79,34 @@ impl Lower<'_> {
         let curve = self.math(MathOp::Pow, unit, exponent);
         self.select(Scalar::F32, condition, linear, curve)
     }
+    fn unsigned_float(&mut self, value: Reg, mantissa_bits: u32) -> Reg {
+        let shift = self.constant(Scalar::U32, mantissa_bits);
+        let exponent = self.binary(Scalar::U32, BinaryOp::ShiftRightLogical, value, shift);
+        let mask = self.constant(Scalar::U32, (1 << mantissa_bits) - 1);
+        let fraction = self.binary(Scalar::U32, BinaryOp::And, value, mask);
+        let shift = self.constant(Scalar::U32, 23 - mantissa_bits);
+        let payload = self.binary(Scalar::U32, BinaryOp::ShiftLeft, fraction, shift);
+        let bias = self.constant(Scalar::U32, 112);
+        let biased = self.binary(Scalar::U32, BinaryOp::IAdd, exponent, bias);
+        let shift = self.constant(Scalar::U32, 23);
+        let biased = self.binary(Scalar::U32, BinaryOp::ShiftLeft, biased, shift);
+        let normal = self.binary(Scalar::U32, BinaryOp::Or, biased, payload);
+        let maximum = self.constant(Scalar::U32, 31);
+        let special = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), exponent, maximum);
+        let infinity = self.constant(Scalar::U32, 0x7f800000);
+        let exceptional = self.binary(Scalar::U32, BinaryOp::Or, infinity, payload);
+        let bits = self.select(Scalar::U32, special, exceptional, normal);
+        let converted = self.reg(Scalar::F32);
+        self.code.push(Inst::generated(InstKind::Unary {
+            dst: converted, op: UnaryOp::Bitcast, a: bits,
+        }, self.origin.clone()));
+        let integer = self.cast(Scalar::F32, fraction);
+        let scale = self.constant(Scalar::F32, (127 - 14 - mantissa_bits) << 23);
+        let subnormal = self.binary(Scalar::F32, BinaryOp::FMul, integer, scale);
+        let zero = self.constant(Scalar::U32, 0);
+        let tiny = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), exponent, zero);
+        self.select(Scalar::F32, tiny, subnormal, converted)
+    }
     fn texel(
         &mut self,
         texture: TextureSource,
@@ -141,7 +169,7 @@ impl Lower<'_> {
         }, self.origin.clone()));
         let unpack_outer = std::mem::take(&mut self.code);
         let mut rgba = Vec::new();
-        for (tag, widths) in [(1, &[8,8,8,8][..]), (4, &[16,16][..]), (5, &[10,10,10,2][..])] {
+        for (tag, widths) in [(1, &[8,8,8,8][..]), (4, &[16,16][..]), (5, &[10,10,10,2][..]), (6, &[11,11,10][..])] {
             let mut offset = 0;
             for (channel, &bits) in widths.iter().enumerate() {
                 let shift = self.constant(Scalar::U32, offset);
@@ -149,9 +177,13 @@ impl Lower<'_> {
                 let shifted = self.binary(Scalar::U32, BinaryOp::ShiftRightLogical, raw, shift);
                 let mask = self.constant(Scalar::U32, (1 << bits) - 1);
                 let byte = self.binary(Scalar::U32, BinaryOp::And, shifted, mask);
-                let value = self.cast(Scalar::F32, byte);
-                let denominator = self.constant(Scalar::F32, (((1 << bits) - 1) as f32).to_bits());
-                let value = self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator);
+                let value = if tag == 6 {
+                    self.unsigned_float(byte, bits - 5)
+                } else {
+                    let value = self.cast(Scalar::F32, byte);
+                    let denominator = self.constant(Scalar::F32, (((1 << bits) - 1) as f32).to_bits());
+                    self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator)
+                };
                 self.code.push(Inst::generated(InstKind::Cast {
                     dst: result[channel],
                     src: value,
