@@ -6,10 +6,10 @@ mod selection;
 mod value_flow;
 pub(crate) use invariant::prepare_reduction;
 
-pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std::io::Result<()> {
-    let mut stages: Vec<Stage> = Vec::new();
-    for mut stage in std::mem::take(&mut program.stages) {
-        if let Some(previous) = stages.last_mut() {
+fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
+    let mut stages: Vec<(Stage, bool)> = Vec::new();
+    for (mut stage, needs_optimization) in input {
+        if let Some((previous, changed)) = stages.last_mut() {
             if matches!(previous.operation, Operation::Map)
                 && matches!(stage.operation, Operation::Map)
                 && previous.subgroup_operations().is_empty()
@@ -25,6 +25,24 @@ pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std:
                 && !cross_dependency(previous, &stage)
                 && !cross_dependency(&stage, previous)
             {
+                let following = OperationOrigin {
+                    source_site: stage.operation_source.clone(),
+                    generated_origin: stage.generated_origin.take(),
+                };
+                if let Some(GenerationAnchor::StageFusion { stages }) = previous.generated_origin.as_mut()
+                    .and_then(std::sync::Arc::get_mut).and_then(|origin| origin.trigger.as_mut())
+                {
+                    stages.push(following);
+                } else {
+                    let retained = OperationOrigin {
+                        source_site: previous.operation_source.clone(),
+                        generated_origin: previous.generated_origin.take(),
+                    };
+                    previous.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                        reason: GenerationReason::StageFusion,
+                        trigger: Some(GenerationAnchor::StageFusion { stages: vec![retained, following] }),
+                    }));
+                }
                 let base = previous.registers.len();
                 let local = previous.locals.last_key_value().map_or(0, |(end, _)| *end);
                 map(&mut stage.code, &|r| r + base, &|s| s + local);
@@ -55,26 +73,40 @@ pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std:
                 previous.writes.dedup();
                 previous.cross_access.sort_unstable();
                 previous.cross_access.dedup();
+                *changed = true;
                 continue;
             }
         }
-        stages.push(stage);
+        stages.push((stage, needs_optimization));
     }
-    stages = crate::parallel::try_map(worker, stages, |_| (), |_, mut stage| {
-        optimize_stage(&mut stage);
-        Ok::<_, std::convert::Infallible>(stage)
+    stages
+}
+
+fn optimize_stages(worker: &crate::compiler::Worker, stages: Vec<(Stage, bool)>) -> std::io::Result<Vec<(Stage, bool)>> {
+    crate::parallel::try_map(worker, stages, |_| (), |_, (mut stage, changed)| {
+        if changed { optimize_stage(&mut stage); }
+        Ok::<_, std::convert::Infallible>((stage, false))
     }).map_err(|error| match error {
         crate::parallel::Error::Resource(error) => error,
         crate::parallel::Error::Work(error) => match error {},
-    })?;
+    })
+}
+
+pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std::io::Result<()> {
+    let input = std::mem::take(&mut program.stages).into_iter().map(|stage| (stage, true));
+    let mut stages = optimize_stages(worker, fuse(input))?;
     let mut removed = Vec::new();
-    stages.retain(|stage| {
+    let mut boundary = false;
+    stages.retain_mut(|(stage, _)| {
         let keep = !matches!(stage.operation, Operation::Map) || !stage.code.is_empty();
         if !keep {
+            boundary |= stage.boundary_before;
             removed.push(OperationOrigin {
                 source_site: stage.operation_source.clone(),
                 generated_origin: stage.generated_origin.clone(),
             });
+        } else {
+            stage.boundary_before |= std::mem::take(&mut boundary);
         }
         keep
     });
@@ -84,8 +116,9 @@ pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std:
             reason: GenerationReason::EmptyMapRemoval,
             trigger: Some(GenerationAnchor::EmptyMapRemoval { retained, stages: removed }),
         }));
+        stages = optimize_stages(worker, fuse(stages))?;
     }
-    program.stages = stages;
+    program.stages = stages.into_iter().map(|(stage, _)| stage).collect();
     Ok(())
 }
 

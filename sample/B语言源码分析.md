@@ -2706,12 +2706,12 @@ pub enum ElementFact {
     values[i] = value × 2 + 1
 ```
 
-这首先是减少数据往返与阶段开销，而不是增加更多线程。
+这首先是减少数据往返与阶段开销，而不是增加更多线程。局部优化后删除空Map时，原阶段携带的phase必须交给下一真实阶段，随后只按同一融合条件处理新邻接；没有实际新合并的阶段不重跑局部优化。真实合并把两侧OperationOrigin保存在同一StageFusion生成材料中，包含各自已有的删除来源；独占的同一融合根可顺序扩展，不保留旧Stage或另建来源表。
 
 源码节选：`crates/blanguage/src/optimize.rs:12`。
 
 ```rust
-        if let Some(previous) = stages.last_mut() {
+        if let Some((previous, changed)) = stages.last_mut() {
             if matches!(previous.operation, Operation::Map)
                 && matches!(stage.operation, Operation::Map)
                 && previous.subgroup_operations().is_empty()
@@ -2727,6 +2727,24 @@ pub enum ElementFact {
                 && !cross_dependency(previous, &stage)
                 && !cross_dependency(&stage, previous)
             {
+                let following = OperationOrigin {
+                    source_site: stage.operation_source.clone(),
+                    generated_origin: stage.generated_origin.take(),
+                };
+                if let Some(GenerationAnchor::StageFusion { stages }) = previous.generated_origin.as_mut()
+                    .and_then(std::sync::Arc::get_mut).and_then(|origin| origin.trigger.as_mut())
+                {
+                    stages.push(following);
+                } else {
+                    let retained = OperationOrigin {
+                        source_site: previous.operation_source.clone(),
+                        generated_origin: previous.generated_origin.take(),
+                    };
+                    previous.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                        reason: GenerationReason::StageFusion,
+                        trigger: Some(GenerationAnchor::StageFusion { stages: vec![retained, following] }),
+                    }));
+                }
                 let base = previous.registers.len();
                 let local = previous.locals.last_key_value().map_or(0, |(end, _)| *end);
                 map(&mut stage.code, &|r| r + base, &|s| s + local);
@@ -2757,9 +2775,9 @@ pub enum ElementFact {
                 previous.writes.dedup();
                 previous.cross_access.sort_unstable();
                 previous.cross_access.dedup();
+                *changed = true;
                 continue;
             }
-        }
 ```
 
 源码明确检查 Map、相同域、相同前缀与筛选条件、没有要求保留的边界、没有跨元素依赖，也排除当前不能这样融合的 subgroup/tile 情况。不能只看到两个 parallel 就无条件合并。
@@ -2772,7 +2790,7 @@ pub enum ElementFact {
 
 假设第二阶段读 `values[i-1]`。如果实例 i 的后半步先执行，而实例 i-1 的前半步还没完成，就会读到旧内容。阶段融合必须关心读取来自哪里，不只关心数组名字是否相同。
 
-源码节选：`crates/blanguage/src/optimize.rs:282`。
+源码节选：`crates/blanguage/src/optimize.rs:315`。
 
 ```rust
 fn cross_dependency(a: &Stage, b: &Stage) -> bool {
@@ -3138,7 +3156,7 @@ impl ReductionKernel {
 
 IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指令的输入、结果和它的后续消费者必须使用同一映射；资源绑定编号仍属于原资源，不跟着寄存器改名。
 
-源码节选：`crates/blanguage/src/optimize.rs:325`。
+源码节选：`crates/blanguage/src/optimize.rs:358`。
 
 ```rust
             InstKind::Constant(dst, ..)

@@ -248,6 +248,7 @@ enum GenerationAnchor {
     ReductionInputForward { retained: Option<Box<GeneratedOrigin>>, inputs: Vec<ReductionInputReadForward> },
     EliminatedOperations { retained: Option<Box<GeneratedOrigin>>, operations: Vec<EliminatedOperation> },
     EmptyMapRemoval { retained: Option<Box<GeneratedOrigin>>, stages: Vec<OperationOrigin> },
+    StageFusion { stages: Vec<OperationOrigin> },
     IntegerDivisionResultPrune { retained: OperationOrigin, input_results: Vec<ir::IntegerDivisionOp>, output_results: Vec<ir::IntegerDivisionOp> },
     ReductionUniformExtract { retained: OperationOrigin, partition: ReductionPartition, operation: ReductionUniformOperation, uniform_operand_count: usize },
     UnaryConstantFold {
@@ -336,7 +337,8 @@ variants!(GenerationAnchor {
     25=>StageConstantReference{ reference, retained },
     26=>DomainCallLiteral{ call, evaluation },
     27=>DeclarationReference{ declaration, retained },
-    28=>ContractCondition{ declaration, span, retained }
+    28=>ContractCondition{ declaration, span, retained },
+    29=>StageFusion{ stages }
 });
 impl Encode for ir::GenerationAnchor {
     fn encode(&self, writer: &mut Writer) {
@@ -353,6 +355,7 @@ impl Encode for ir::GenerationAnchor {
             Self::ReductionInputForward{ retained, inputs } => { (9u32).encode(writer); retained.encode(writer); inputs.encode(writer); },
             Self::EliminatedOperations{ retained, operations } => { (10u32).encode(writer); retained.encode(writer); operations.encode(writer); },
             Self::EmptyMapRemoval{ retained, stages } => { (11u32).encode(writer); retained.encode(writer); stages.encode(writer); },
+            Self::StageFusion{ stages } => { (29u32).encode(writer); stages.encode(writer); },
             Self::IntegerDivisionResultPrune{ retained, input_results, output_results } => { (12u32).encode(writer); retained.encode(writer); input_results.encode(writer); output_results.encode(writer); },
             Self::ReductionUniformExtract{ retained, partition, operation, uniform_operand_count } => { (13u32).encode(writer); retained.encode(writer); partition.encode(writer); operation.encode(writer); uniform_operand_count.encode(writer); },
             Self::UnaryConstantFold{ expression, operation, scalar, input_bits, result_bits, component_index, component_count } => { (14u32).encode(writer); expression.encode(writer); operation.encode(writer); scalar.encode(writer); input_bits.encode(writer); result_bits.encode(writer); component_index.encode(writer); component_count.encode(writer); },
@@ -466,6 +469,7 @@ impl GenerationAnchor {
                 retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), operations.iter().map(EliminatedOperation::ir_json).collect::<Vec<_>>().join(",")),
             Self::EmptyMapRemoval { retained, stages } => format!("{{\"kind\":\"empty_map_removal\",\"retained\":{},\"stages\":[{}]}}",
                 retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), stages.iter().map(OperationOrigin::ir_json).collect::<Vec<_>>().join(",")),
+            Self::StageFusion { stages } => format!("{{\"kind\":\"stage_fusion\",\"stages\":[{}]}}", stages.iter().map(OperationOrigin::ir_json).collect::<Vec<_>>().join(",")),
             Self::ReductionUniformExtract { retained, partition, operation, uniform_operand_count } => format!("{{\"kind\":\"reduction_uniform_extract\",\"retained\":{},\"partition\":{},\"operation\":{},\"uniform_operand_count\":{}}}",
                 retained.ir_json(), text(partition.ir_name()), text(operation.ir_name()), uniform_operand_count),
             Self::IntegerDivisionResultPrune { retained, input_results, output_results } => format!("{{\"kind\":\"integer_division_result_prune\",\"retained\":{},\"input_results\":{},\"output_results\":{}}}",
