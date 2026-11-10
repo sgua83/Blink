@@ -757,12 +757,6 @@ impl Builder<'_> {
             }
             _ => {}
         }
-        if let ExprKind::Call(name,args)=&expr.kind {
-            if name=="resize" {return self.resize_application_dataset(args,expr.span).map(|value|value.map(Returned::Dataset));}
-            if name=="take_last" {return self.take_last_application_dataset(args,expr.span).map(|value|value.map(Returned::Dataset));}
-            if name=="own" {return self.make_user_owned(args,expr.span);}
-            if name=="into_inner" {return self.into_user_inner(args,expr.span);}
-        }
         if let Some(value) = self.variant_call(expr, expected)? {
             return Ok(value);
         }
@@ -847,7 +841,13 @@ impl Builder<'_> {
     }
     #[inline(never)]
     fn builtin_returned(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Returned>> {
-        self.builtin_call(name,args,span).map(|value|value.map(Returned::value))
+        match name {
+            "resize" => self.resize_application_dataset(args,span).map(|value|value.map(Returned::Dataset)),
+            "take_last" => self.take_last_application_dataset(args,span).map(|value|value.map(Returned::Dataset)),
+            "own" => self.make_user_owned(args,span),
+            "into_inner" => self.into_user_inner(args,span),
+            _ => self.builtin_call(name,args,span).map(|value|value.map(Returned::value)),
+        }
     }
     #[inline(never)]
     fn expected_owned_result(&mut self, expected: &Ty, success: bool, args: &[Expr], span: Span) -> Result<Option<Returned>> {

@@ -880,9 +880,6 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 if self.builder.is_none() && name == "address_of" && let [place] = args.as_slice() {
                     writes(Write::Position{ place, call: Some(expr), contents: false, iterator: None,when:None,local_value:false})?;
                 }
-                if name=="take_last" && self.named(name,expr.span)?.is_none() && let [_,place]=args.as_slice() {
-                    writes(Write::Position{place,call:Some(expr),contents:false,iterator:None,when:None,local_value:false})?;
-                }
                 let value_arguments=matches!(name.as_str(),"own"|"into_inner"|"try"|"Ok"|"Err")
                     ||Ty::builtin(name).is_some()||name=="array"
                     ||self.world.resolve(name,&self.definition.module,&self.definition.imports,false).is_some();
@@ -909,6 +906,8 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                             }
                         }
                         if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(&instance.definition,args)?,None=>BTreeMap::new()};writes(Write::External{call:expr,instance,arguments,syntax:args})?;}
+                    } else if !record && name=="take_last" && let [_,place]=args.as_slice() {
+                        writes(Write::Position{place,call:Some(expr),contents:false,iterator:None,when:None,local_value:false})?;
                     }
                 }
                 if name=="dataset" && matches!(&expr.kind,ExprKind::Specialize(..))
@@ -1485,7 +1484,8 @@ impl Builder<'_> {
             if !matches!(&lhs.kind,ExprKind::Name(bound)if bound==name) || scope.bindings.iter().any(|(bound,_)|*bound==name) {return Ok(NumericEffect::shift(0));}
             if op!="=" {return Ok(NumericEffect::Unknown);}
             let length=match &rhs.kind {
-                ExprKind::Call(function,args) if function=="resize" && args.len()==3 && scope.named(function,rhs.span)?.is_none()=>&args[1],
+                ExprKind::Call(function,args) if function=="resize" && args.len()==3 && scope.named(function,rhs.span)?.is_none()
+                    && scope.world.resolve(function,&scope.definition.module,&scope.definition.imports,true).is_none()=>&args[1],
                 ExprKind::Specialize(function,_,args) if function=="dataset" && !args.is_empty()=>&args[0],
                 ExprKind::Name(source) if source==name=>return Ok(NumericEffect::shift(0)),
                 _=>return Ok(NumericEffect::Unknown),

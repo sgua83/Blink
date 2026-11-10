@@ -1044,6 +1044,8 @@ native_function::Module由Builder、CheckedFunction和模块编译入口按值�
 
 源语言以返回类型、名称和参数定义函数。第一章的 `void seed`、`void scale` 与普通值函数共用定义与名称解析；`parallel` 显式表达数据域，`on cpu／gpu／compute` 声明可用目标。`execution.rs` 沿实际函数体和调用闭包推导 Invocation、Domain、Host 参与要求，它们是编译事实，不是用户另写的函数类别或运行时许可。
 
+调用选择沿原World／Declarations取得局部、本模块与唯一可见声明，既有owned_record_call及实际泛型实例继续确定原构造和函数。resize、take_last、own、into_inner的资源行为由原builtin_returned在普通调用选择之后处理；Scope::call的类型推导及原写效果／长度推导保持同一目标，普通同名函数不制造取尾输出或dataset增长关系。资源初始化、移动、F和Frame最后释放仍由原所有者承担，不新建符号表、试调用或第二份状态。多可见候选被当作无声明的独立缺口仍沿Issues C-053，不把本轮普通绑定优先写成歧义已修复。
+
 `never` 函数结果表示没有正常返回边；真实退出或持续执行沿原控制流交付，不生成普通值、不宣称输出初始化或设备完成。当前支持函数结果及其调用路径，一般数据类型组合仍未实现。
 
 CPU 主流程的普通调用沿当前 CPU 位置执行；`target(cpu, f(...))` 与 `target(gpu, f(...))` 选择本次实际位置。GPU 同步调用只等待本次真实提交，结果仍在 GPU，CPU 读取前显式 download。普通 CPU 调用通过 Call、调用帧与真实参数／返回 ABI 组织，元素与协作函数仍按其参与范围专门化。内部 Program、Stage 和 ExecutionPlan 继续表示算法产物及执行关系。

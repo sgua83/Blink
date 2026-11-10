@@ -97,14 +97,7 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             return Builder::dataset_constructor_type(self.world,self.definition,explicit,args.len(),span).map(|(ty,count)|Some(Ty::owned_dataset((ty).syntax(),count)));
         }
         if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? { return self.returned(ty, span); }
-        if explicit.is_none() && let ("own",[value,function])=(name,args) {
-            let function=Builder::user_owned_function(self.definition,function)?;
-            return self.ty(value,limit)?.map(|ty|Builder::user_owned_type(self.world,self.definition,&ty,function,span)).transpose();
-        }
         if name == "address_of" && explicit.is_none() { return Ok(Ty::builtin("address")); }
-        if explicit.is_none() && let ("resize",[data,_,_])|("take_last",[data,_])=(name,args) {
-            return Ok(self.ty(data,limit)?.and_then(|ty|ty.dataset.map(|element|Ty::owned_dataset(*element,None))));
-        }
         if name == "c_function" && explicit.is_none() {
             return callback::signature(self.world, self.definition, args, span).map(|(_, ty)| Some(ty));
         }
@@ -126,15 +119,24 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             syntax.arguments = explicit.unwrap_or_default().to_vec();
             return self.declared_type(&syntax, self.definition, span).map(Some);
         }
-        let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) else { return Ok(None); };
-        let types = args.iter().map(|arg| self.ty(arg, limit)).collect::<Result<Vec<_>>>()?;
-        let actuals = types.iter().map(|ty| generics::Actual {
-            ty: ty.as_ref().map(std::borrow::Cow::Borrowed),
-            count: ty.as_ref().and_then(|ty| ty.dataset.as_ref().and(ty.values.first().copied())),
-        }).collect::<Vec<_>>();
-        let instance = generics::specialize(self.world, &key, &actuals, explicit, (&self.definition.source, &self.definition.module, &self.definition.imports), span)?;
-        if matches!(instance.definition.function.result.name.as_str(), "void" | "never") { return Ok(None); }
-        self.declared_type(&instance.definition.function.result, &instance.definition, span).map(Some)
+        if let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
+            let types = args.iter().map(|arg| self.ty(arg, limit)).collect::<Result<Vec<_>>>()?;
+            let actuals = types.iter().map(|ty| generics::Actual {
+                ty: ty.as_ref().map(std::borrow::Cow::Borrowed),
+                count: ty.as_ref().and_then(|ty| ty.dataset.as_ref().and(ty.values.first().copied())),
+            }).collect::<Vec<_>>();
+            let instance = generics::specialize(self.world, &key, &actuals, explicit, (&self.definition.source, &self.definition.module, &self.definition.imports), span)?;
+            if matches!(instance.definition.function.result.name.as_str(), "void" | "never") { return Ok(None); }
+            return self.declared_type(&instance.definition.function.result, &instance.definition, span).map(Some);
+        }
+        if explicit.is_none() && let ("own",[value,function])=(name,args) {
+            let function=Builder::user_owned_function(self.definition,function)?;
+            return self.ty(value,limit)?.map(|ty|Builder::user_owned_type(self.world,self.definition,&ty,function,span)).transpose();
+        }
+        if explicit.is_none() && let ("resize",[data,_,_])|("take_last",[data,_])=(name,args) {
+            return Ok(self.ty(data,limit)?.and_then(|ty|ty.dataset.map(|element|Ty::owned_dataset(*element,None))));
+        }
+        Ok(None)
     }
     fn ty(&self, expr: &Expr, limit: usize) -> Result<Option<Ty>> {
         Ok(match &expr.kind {
