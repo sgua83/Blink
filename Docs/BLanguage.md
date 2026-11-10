@@ -4774,7 +4774,7 @@ CPU 标量与四元素 SSE2 共用自研整数倒数参数。二次幂以右移�
 ..\BLEngine\target\release\blengine.exe compute gpu ..\BLEngine\Programs\simulation\statistics.b step_and_total ..\BLEngine\Programs Saved\Compute Saved\bodies.bldata :1 -- 0.008333333 0.2
 ```
 
-`BLDATA v1` 为小端：8 字节 `BLDATA\0\0`，随后 u32 version=1、记录数、记录步长、执行步数，再跟完整记录字节。它保存指定编译布局下的值，类型和字段含义来自 `.h`；文件本身不能证明相同步长的数据具有相同业务类型。读取先核对magic／version与实际绑定，再借用原绑定Ty的size／align核对记录步长；匹配后才由原Dataset构造器分配记录载荷，错误步长不因文件声明的大记录数申请存储。合法文件继续按原read_exact读取完整逻辑字节并拒绝未声明尾部，末字填充不成为记录；执行绑定继续检查类型和形状。`simulate` 与通用入口共用 `Dataset::read_data/write_data`，不再各自实现一套写入协议。
+`BLDATA v1` 为小端：8 字节 `BLDATA\0\0`，随后 u32 version=1、记录数、记录步长、执行步数，再跟完整记录字节。它保存指定编译布局下的值，类型和字段含义来自 `.h`；文件本身不能证明相同步长的数据具有相同业务类型。读取先核对magic／version与实际绑定，再借用原绑定Ty的size／align核对记录步长；对磁盘文件，从同一已打开句柄取得的总字节数必须至少为24加记录数乘步长，否则在构造记录载荷前返回UnexpectedEof。Windows管道元数据的零长度不代表没有载荷，读取按实际句柄种类区分，其他可读来源仍沿同一read_exact消费。磁盘长度只是当次观察，不能替代实际读取：合法输入继续读取完整逻辑字节并拒绝未声明尾部，读取期间变化产生的真实I/O错误照常返回。零记录和零步长允许零载荷，末字填充不成为记录；不增加记录数上限，执行绑定继续检查类型和形状。`simulate`与通用入口共用`Dataset::read_data/write_data`。
 
 Blink文件运行入口为`brun [--gpu-timestamps] <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]`。默认GPU运行不创建／重置时间戳查询池，也不写入／读取时间戳；显式`brun --gpu-timestamps gpu ...`请求采集，此选项不用于CPU。成功执行但没有计时样本时输出`GPU_program_timestamps=not_collected`，不输出伪零；有样本时的`GPU_program_ms`只含设备程序和阶段依赖；CLI 的 `compute_elapsed_ms` 从程序编译结果与输入数据准备好之后开始，包含后端编译、执行和输出写盘，GPU 另含设备创建／上传／读回。两者不是相同口径，也不能与 CPU 原生运算时间直接相减计算加速比。
 

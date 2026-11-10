@@ -178,8 +178,35 @@ impl Dataset {
         if word(16) != blanguage::ir::align_up(ty.size, ty.align) {
             return Err(error("BLDATA 步长与编译布局不一致"));
         }
+        let length = word(16) as usize * word(12) as usize;
+        #[cfg(windows)]
+        let file_bytes = {
+            use std::os::windows::io::AsRawHandle;
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn GetFileType(file: *mut std::ffi::c_void) -> u32;
+            }
+            match unsafe { GetFileType(input.get_ref().as_raw_handle()) } {
+                1 => Some(input.get_ref().metadata()?.len()), // FILE_TYPE_DISK
+                0 => {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() != Some(0) { return Err(error.into()); }
+                    None // Valid FILE_TYPE_UNKNOWN has no disk length.
+                }
+                _ => None,
+            }
+        };
+        #[cfg(not(windows))]
+        let file_bytes = {
+            let metadata = input.get_ref().metadata()?;
+            metadata.is_file().then_some(metadata.len())
+        };
+        if file_bytes.is_some_and(|bytes| bytes < header.len() as u64 + length as u64) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof, "failed to fill whole buffer",
+            ).into());
+        }
         let mut data = Self::with_type(ty.clone(), word(12))?;
-        let length = data.stride as usize * data.count as usize;
         for (index, word) in data.words.iter_mut().enumerate() {
             let mut bytes = [0; 4];
             input.read_exact(&mut bytes[..(length - index * 4).min(4)])?;

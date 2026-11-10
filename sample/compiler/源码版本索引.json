@@ -568,7 +568,7 @@
     },
     {
       "path": "crates/blcompute/src/lib.rs",
-      "sha256": "1b95750dd78295acd84036b6065a2d1017fb6e32c94aef05de5173c2c50d83eb"
+      "sha256": "13e2b2f33fbd677d41b2298d20ffd43332bac40d72a879bca010c01ec3df7cf5"
     },
     {
       "path": "crates/blcompute/src/texture.rs",
@@ -740,8 +740,8 @@
     },
     {
       "path": "crates/blcompute/src/lib.rs",
-      "start_line": 217,
-      "end_line": 223,
+      "start_line": 244,
+      "end_line": 250,
       "sha256": "a75f34c8487a01473c826920fc47d0adb9dcef95a381b80010cfcb7602d66d53"
     },
     {
