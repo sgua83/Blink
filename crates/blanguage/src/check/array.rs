@@ -162,13 +162,15 @@ impl Builder<'_> {
             })
             .collect();
         for (name, value) in values {
-            let trigger = match &self.definition.syntax_origin {
-                crate::frontend::DefinitionSyntax::Source => self.definition.function.params.iter()
-                    .find(|parameter| parameter.name == name)
-                    .and_then(|parameter| self.source_at(parameter.span, SourceSyntax::Parameter))
+            let trigger = match &self.scope {
+                LexicalScope::Parallel{site,..} => site.clone().map(GenerationAnchor::Syntax),
+                _ => match self.scope.function().map(|instance| &instance.definition.syntax_origin) {
+                Some(crate::frontend::DefinitionSyntax::Source) => self.scope.parameters()
+                    .find(|parameter| parameter.name() == name)
+                    .and_then(|parameter| self.source_at(parameter.span(), SourceSyntax::Parameter))
                     .map(GenerationAnchor::Syntax),
-                crate::frontend::DefinitionSyntax::Generated(site) => site.clone().map(GenerationAnchor::Syntax),
-                crate::frontend::DefinitionSyntax::CompiledInterface => None,
+                Some(crate::frontend::DefinitionSyntax::CompiledInterface) | None => None,
+                },
             };
             let origin = Arc::new(GeneratedOrigin { reason: GenerationReason::ArrayParameterStore, trigger });
             let mut owner = self.materialize_array(value, Some(origin));
@@ -199,16 +201,19 @@ impl Builder<'_> {
         let Some(index) = index else {
             return Ok(None);
         };
-        self.array_index(place, index, expr.span).map(Some)
+        self.array_index(place, index, expr.span()).map(Some)
     }
-    pub(super) fn array_value_index(&mut self, value: Value, expr: &Expr) -> Result<Option<Value>> {
+    pub(super) fn array_value_index(&mut self,value:Value,expr:&Expr)->Result<Option<Value>> {
+        self.array_value_at(value,expr.span(),|builder|builder.expr(expr))
+    }
+    pub(super) fn array_value_at(&mut self,value:Value,span:Span,index:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
         let held = value.ty.contains_borrows().then(|| self.hold_binding(Binding::Value(value.clone())));
-        let evaluated = self.expr(expr);
+        let evaluated = index(self);
         if let Some(name) = held { self.env.remove(&name); }
         let Some(index) = evaluated? else {
             return Ok(None);
         };
-        self.require_same(&Ty::scalar(Scalar::U32), &index.ty, expr.span)?;
+        self.require_same(&Ty::scalar(Scalar::U32), &index.ty, span)?;
         let (ty, count) = value.ty.indexed_element().unwrap();
         if !self.index_in(
             &index,
@@ -216,7 +221,7 @@ impl Builder<'_> {
             count,
             None,
         ) {
-            return self.fail(expr.span, "B137", "固定值下标有效性无法静态证明");
+            return self.fail(span, "B137", "固定值下标有效性无法静态证明");
         }
         if let Some(bits) = &index.constant {
             let begin = bits[0] as usize * ty.components.len();
@@ -244,8 +249,8 @@ impl Builder<'_> {
             return Ok(Some(Value { ty, regs: vec![reg], proof, uniform, constant, literal: false }));
         }
         let place = self.materialize_array(value, None).place;
-        let place = self.array_index(place, index, expr.span)?;
-        let mut result = self.read_place(&place, expr.span, None)?;
+        let place = self.array_index(place, index, span)?;
+        let mut result = self.read_place(&place, span, None)?;
         result.proof = self.array_value_proof(&proof, &array, selected, &result.regs);
         result.uniform = uniform;
         result.constant = result.proof.known_value(&result.ty);

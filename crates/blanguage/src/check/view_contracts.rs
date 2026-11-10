@@ -1027,7 +1027,7 @@ impl Builder<'_> {
                     let borrows=borrows.at_call(arguments);
                     let initialized=initialized.iter().map(|fact|fact.at_call(arguments)).collect::<Vec<_>>();
                     let read=output_initialization_read(&borrows,&initialized,&path);
-                    Requirement::Initialized{borrow:borrows,read,code:"B229",span}.check(&self.definition.source)?;
+                    Requirement::Initialized{borrow:borrows,read,code:"B229",span}.check(self.scope.source())?;
                 }
                 continue;
             }

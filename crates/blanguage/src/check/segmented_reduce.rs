@@ -4,7 +4,7 @@ pub(super) fn compile(
     program: &mut Program,
     env: &BTreeMap<String, Root>,
     operator: CollectiveOperator,
-    args: &[Expr],
+    args: &Expressions,
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
@@ -18,13 +18,13 @@ pub(super) fn compile(
         );
     }
     let (source, source_word, source_access, prefix, ty) =
-        prefix::typed_field(program, env, &args[0], d, facts)?;
+        prefix::typed_field(program, env, &args.at(0), d, facts)?;
     let (heads, head_word, head_access, head_prefix) =
-        prefix::field(program, env, &args[1], d, facts, Scalar::Bool)?;
+        prefix::field(program, env, &args.at(1), d, facts, Scalar::Bool)?;
     let (target, target_word, target_access, target_ty) =
-        collective_value_field(program, env, &args[2], d)?;
+        collective_value_field(program, env, &args.at(2), d)?;
     let (count, count_word, count_access) =
-        collective_field(program, env, &args[3], d, Scalar::U32)?;
+        collective_field(program, env, &args.at(3), d, Scalar::U32)?;
     if !ty.is_numeric() || !operator.accepts(ty.components[0].0) || ty != target_ty {
         return d.source.fail(
             span,
@@ -59,7 +59,7 @@ pub(super) fn compile(
     }
     if program.buffers[count].count != Some(1) {
         return d.source.fail(
-            args[3].span,
+            args.at(3).span(),
             "B171",
             "分段归约计数必须为形状 1 的 u32 计数字段",
         );

@@ -4,7 +4,7 @@ use super::*;
 pub(super) fn clear(
     program: &mut Program,
     env: &BTreeMap<String, Root>,
-    args: &[Expr],
+    args: &Expressions,
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
@@ -15,8 +15,8 @@ pub(super) fn clear(
             .source
             .fail(span, "B220", "clear_prefix(输出, 计数字段) 需要两个参数");
     }
-    let (target, access) = compact::data(env, &args[0], d)?;
-    let (count, word, count_access) = collective_field(program, env, &args[1], d, Scalar::U32)?;
+    let (target, access) = compact::data(env, &args.at(0), d)?;
+    let (count, word, count_access) = collective_field(program, env, &args.at(1), d, Scalar::U32)?;
     if !matches!(access, Access::Write | Access::InOut)
         || !matches!(count_access, Access::Write | Access::InOut)
         || target == count
@@ -69,7 +69,7 @@ pub(super) fn clear(
 }
 
 impl Builder<'_> {
-    pub(super) fn append(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
+    pub(super) fn append(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
         if args.len() != 3 {
             return self.fail(
                 span,
@@ -77,14 +77,15 @@ impl Builder<'_> {
                 "append(输出, 计数字段, 完整记录值) 需要三个参数",
             );
         }
-        let ExprKind::Name(name) = &args[0].kind else {
-            return self.fail(args[0].span, "B221", "append 输出需要命名 dataset");
+        let argument=args.at(0);
+        let ExprKind::Name(name) = argument.kind() else {
+            return self.fail(args.at(0).span(), "B221", "append 输出需要命名 dataset");
         };
         let Some(Binding::Data(view)) = self.env.get(name).cloned() else {
-            return self.fail(args[0].span, "B221", "append 输出需要命名 dataset");
+            return self.fail(args.at(0).span(), "B221", "append 输出需要命名 dataset");
         };
         let target = view.binding;
-        let (binding, word, ty) = self.dataset_field(&args[1])?;
+        let (binding, word, ty) = self.dataset_field(&args.at(1))?;
         let count = PrefixCount { binding, word };
         if !matches!(self.view_access[&target], Access::Write | Access::InOut)
             || !(self.view_access[&binding] == Access::InOut
@@ -99,12 +100,12 @@ impl Builder<'_> {
                 "append 需要普通独占元素／tile 输入域之外的可写输出及独立 inout 形状 1 资源中的 u32 计数字段；两者不能别名",
             );
         }
-        let Some(value) = self.expr(&args[2])? else {
+        let Some(value) = self.expr(&args.at(2))? else {
             return Ok(None);
         };
-        self.require_same(&self.program.buffers[target].ty, &value.ty, args[2].span)?;
+        self.require_same(&self.program.buffers[target].ty, &value.ty, args.at(2).span())?;
         if value.ty.contains_views() {
-            return self.fail(args[2].span,"B185","append不能写出持久view载荷；原引用图须保持");
+            return self.fail(args.at(2).span(),"B185","append不能写出持久view载荷；原引用图须保持");
         }
         if self.element_domains.contains(&target) || self.element_domains.contains(&binding) {
             return self.fail(

@@ -361,18 +361,21 @@ impl Builder<'_> {
         let Some(place) = self.place(expr)? else {
             return Ok(None);
         };
+        self.mutable_place_value(place,access,expr.span()).map(Some)
+    }
+    pub(super) fn mutable_place_value(&mut self,place:Place,access:Access,span:Span)->Result<Place> {
         if place.ty().contains_views() && matches!(place.storage(), Place::Element { .. } | Place::ApplicationElement { .. }) {
-            return self.fail(expr.span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
+            return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
         }
-        self.require_owned_writable(&place, expr.span)?;
-        let positions = self.writable_storage(&place, expr.span, None)?;
+        self.require_owned_writable(&place, span)?;
+        let positions = self.writable_storage(&place, span, None)?;
         if positions.iter().copied().collect::<BTreeSet<_>>().len() != positions.len() {
-            return self.fail(expr.span, "B227", "独占借用位置不能包含重复分量");
+            return self.fail(span, "B227", "独占借用位置不能包含重复分量");
         }
         if access == Access::InOut {
-            self.require_initialized(&place, expr.span)?;
+            self.require_initialized(&place, span)?;
         }
-        Ok(Some(place))
+        Ok(place)
     }
     pub(super) fn require_owned_writable(&self,place:&Place,span:Span)->Result<()> {
         if self.env.values().any(|binding|matches!(binding,Binding::OwnedValue(value)if value.ownership==application::Ownership::Borrowed && value.place().is_some_and(|root|place.overlaps(&root)))) {

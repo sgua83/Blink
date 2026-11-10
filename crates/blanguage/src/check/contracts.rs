@@ -4,9 +4,10 @@ use super::*;
 pub(super) fn root_lengths(
     env: &BTreeMap<String, Root>,
     definition: &Definition,
+    contracts: impl Iterator<Item=FunctionContract>,
 ) -> Result<Vec<(usize, usize)>> {
     let mut relations = BTreeSet::new();
-    for contract in &definition.function.contracts {
+    for contract in contracts {
         let ContractPredicate::SameLength { left, right } = &contract.predicate else { continue; };
         if contract.kind != ContractKind::Requires {
             return definition.source.fail(contract.span, "B225", "same_length声明输入dataset的requires前提");
@@ -23,7 +24,7 @@ struct Length {
     proof: bounds::Proof,
 }
 fn length(
-    definition: &Definition,
+    definition: outputs::Contract<'_>,
     env: &BTreeMap<String, Binding>,
     name: &str,
     span: Span,
@@ -134,15 +135,15 @@ pub(super) struct Requirement {
 }
 
 fn select(
-    builder: &mut Builder<'_>, definition: &Definition, env: &BTreeMap<String, Binding>, path: &str, span: Span,
+    builder: &mut Builder<'_>, definition: outputs::Contract<'_>, env: &BTreeMap<String, Binding>, path: &str, span: Span,
 ) -> Result<Selection> {
     if path.contains("[*]"){return select_elements(builder,definition,env,path,span);}
     let root = path.split('.').next().unwrap();
     let value = match env.get(root) {
         Some(Binding::Value(value)) => value,
         Some(Binding::OwnedValue(value))
-            if definition.function.params.iter().any(|parameter|
-                parameter.name == root && parameter.access == Access::Value) => &value.value,
+            if definition.parameters().any(|parameter|
+                parameter.name() == root && parameter.access() == Access::Value) => &value.value,
         _ => return definition.source.fail(span, "B225", "值约束需要按值参数或其字段；不能读取原子位置或数据集元素"),
     };
     select_value(value, path, &definition.source, span)
@@ -282,10 +283,10 @@ fn field_path(mut ty:&Ty,path:&str,source:&Source,span:Span)->Result<Vec<usize>>
 // The source contract names the finite common-element input paths.
 // Materialize only those physical values in the original argument model;
 // caller-only descendant facts do not add or renumber formal input slots.
-pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definition,env:&mut BTreeMap<String,Binding>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>)->Result<BTreeSet<residency::Input>> {
+pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,env:&mut BTreeMap<String,Binding>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>)->Result<BTreeSet<residency::Input>> {
     let mut inputs=BTreeSet::new();
-    for(parameter,p)in definition.function.params.iter().enumerate(){
-        let Some(binding)=env.get_mut(&p.name)else{continue;};
+    for(parameter,p)in definition.parameters().enumerate(){
+        let Some(binding)=env.get_mut(p.name())else{continue;};
         let roots=match &*binding{
             Binding::ApplicationData(_)|Binding::DataReference(_)=>vec![Vec::new()],
             Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty),
@@ -293,13 +294,13 @@ pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definitio
         };
         for fields in roots{
             if let Some(data)=selected_data_mut(binding,std::slice::from_ref(&fields)){
-                if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),definition.function.span)?);}
+                if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),definition.span())?);}
                 inputs.insert(residency::Input{parameter,fields:fields.into_iter().map(residency::Part::Field).chain([residency::Part::Elements]).collect()});
             }
         }
     }
-    for contract in &definition.function.contracts{
-        let paths:Vec<&str>=match &contract.predicate{
+    for contract in definition.contracts(){
+        let paths:Vec<&str>=match &contract.predicate {
             ContractPredicate::Nonzero(path)|ContractPredicate::Nonempty(path)|ContractPredicate::Contiguous(path)=>vec![path],
             ContractPredicate::Index{value,resource}=>vec![value,resource],
             ContractPredicate::SameLength{left,right}=>vec![left,right],
@@ -311,7 +312,7 @@ pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definitio
             if !path.contains("[*]"){continue;}
             let parts=path.split("[*]").collect::<Vec<_>>();
             let(root,fields)=parts[0].split_once('.').unwrap_or((parts[0],""));
-            let parameter=definition.function.params.iter().position(|p|p.name==root).ok_or_else(||Diagnostic{source:definition.source.clone(),span:contract.span,code:"B225",message:"共同元素合同需要实际输入参数".into()})?;
+            let parameter=definition.parameters().position(|p|p.name()==root).ok_or_else(||Diagnostic{source:definition.source.clone(),span:contract.span,code:"B225",message:"共同元素合同需要实际输入参数".into()})?;
             let binding=env.get_mut(root).unwrap();
             let first=match &*binding{
                 Binding::OwnedValue(value)=>field_path(&value.value.ty,fields,&definition.source,contract.span)?,
@@ -322,7 +323,7 @@ pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definitio
             let Some(mut data)=selected_data_mut(binding,std::slice::from_ref(&first))else{return definition.source.fail(contract.span,"B225","[*]需要实际dataset字段");};
             let mut input=residency::Input{parameter,fields:first.into_iter().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
             for level in 0..parts.len()-1{
-                if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),definition.function.span)?);}
+                if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),definition.span())?);}
                 inputs.insert(input.clone());
                 if level+1==parts.len()-1{break;}
                 let logical=if level==0{projected_ty.as_ref().unwrap_or(&data.ty)}else{&data.ty};
@@ -334,22 +335,22 @@ pub(super) fn element_input_paths(builder:&mut Builder<'_>,definition:&Definitio
         }
     }
     for input in declared.into_iter().flat_map(BTreeMap::keys){
-        let Some(binding)=env.get_mut(&definition.function.params[input.parameter].name)else{continue;};
+        let Some(binding)=env.get_mut(&definition.parameter_name(input.parameter))else{continue;};
         let depth=input.depth();
         let mut paths=input.fields.split(|part|matches!(part,residency::Part::Elements)).take(depth)
             .map(|fields|fields.iter().filter_map(|part|match part{residency::Part::Field(field)=>Some(*field),_=>None}).collect::<Vec<_>>()).collect::<Vec<_>>();
         if let Binding::DataReference(reference)=&*binding && let Some(path)=paths.get_mut(1){path.splice(0..0,reference.projection.iter().copied());}
         for end in 1..=paths.len(){if let Some(data)=selected_data_mut(binding,&paths[..end]) && data.elements.known().is_none(){
-            data.elements=application::ElementFacts::Known(builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),definition.function.span)?);
+            data.elements=application::ElementFacts::Known(builder.element_model(&data.ty,&data.elements,(&data.residency,&[]),definition.span())?);
         }}
         inputs.insert(input.clone());
     }
     Ok(inputs)
 }
-fn select_elements(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,path:&str,span:Span)->Result<Selection> {
+fn select_elements(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,env:&BTreeMap<String,Binding>,path:&str,span:Span)->Result<Selection> {
     let parts=path.split("[*]").collect::<Vec<_>>();let first=parts[0];
     let(root,fields)=first.split_once('.').unwrap_or((first,""));let source=&definition.source;
-    if !definition.function.params.iter().any(|p|p.name==root&&matches!(p.access,Access::Value|Access::Read|Access::InOut)) {
+    if !definition.parameters().any(|p|p.name()==root&&matches!(p.access(),Access::Value|Access::Read|Access::InOut)) {
         return source.fail(span,"B225","共同元素约束需要读取实际普通CPU dataset输入");
     }
     let Some(binding)=env.get(root)else{return source.fail(span,"B225","共同元素约束需要实际dataset参数");};
@@ -414,7 +415,7 @@ pub(super) fn prove_c_inputs(builder: &Builder<'_>, contract: outputs::Contract<
             source: contract.source.clone(), span: at, code: "B225",
             message: "nonzero需要实际按值输入或其字段".into(),
         })?;
-        let selection = select_value(value, path, contract.source, at)?;
+        let selection = select_value(value, &path, contract.source, at)?;
         validate_nonzero_type(&selection.value.ty, contract.source, at)?;
         Ok(Requirement { predicate: Predicate::Nonzero(selection),
             description: format!("requires nonzero({path})") })
@@ -424,7 +425,7 @@ pub(super) fn prove_c_inputs(builder: &Builder<'_>, contract: outputs::Contract<
 
 fn resource(
     builder: &mut Builder<'_>,
-    definition: &Definition,
+    definition: outputs::Contract<'_>,
     env: &BTreeMap<String, Binding>,
     path: &str,
     span: Span,
@@ -499,7 +500,7 @@ enum Prefix {
     Application { count:String, word:u32, known:view::Borrow, required:view::Borrow },
     Domain(PrefixRelation),
 }
-fn prefix_requirement(builder:&Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,resources:&BTreeMap<ValueIdentity,bounds::Proof>,data:&str,count:&str,field:&str,span:Span)->Result<Prefix> {
+fn prefix_requirement(builder:&Builder<'_>,definition:outputs::Contract<'_>,env:&BTreeMap<String,Binding>,resources:&BTreeMap<ValueIdentity,bounds::Proof>,data:&str,count:&str,field:&str,span:Span)->Result<Prefix> {
     fn application(binding:&Binding)->Option<(&application::Data,&[usize])> {match binding {
         Binding::ApplicationData(data)=>Some((data,&[])),Binding::DataReference(data)=>Some((&data.data,&data.projection)),_=>None,
     }}
@@ -523,7 +524,7 @@ fn prefix_requirement(builder:&Builder<'_>,definition:&Definition,env:&BTreeMap<
                 return definition.source.fail(span,"B192","requires prefix需要可读独立形状1资源中的u32计数字段");
             }
             let word=offset+ty.components[components[0]].1;
-            let parameter=definition.function.params.iter().position(|p|p.name==data).unwrap();
+            let parameter=definition.parameters().position(|p|p.name()==data).unwrap();
             let required=resources[&ValueIdentity::ResourceParameter(parameter,0)].view_borrow(0);
             Ok(Prefix::Application{count:count.into(),word,known:count_reference.prefixes.get(&word).cloned().unwrap_or_default(),required})
         },
@@ -532,13 +533,14 @@ fn prefix_requirement(builder:&Builder<'_>,definition:&Definition,env:&BTreeMap<
 }
 pub(super) fn resolve(
     builder: &mut Builder<'_>,
-    definition: &Definition,
+    definition: outputs::Contract<'_>,
+    lexical: &LexicalScope,
     env: &BTreeMap<String, Binding>,
     resources: &BTreeMap<ValueIdentity,bounds::Proof>,
 ) -> Result<Vec<Requirement>> {
-    if !definition.function.c_abi { outputs::validate(builder.world, definition)?; }
+    definition.validate_source(builder.world)?;
     let mut result = Vec::new();
-    for contract in &definition.function.contracts {
+    for contract in definition.contracts() {
         if matches!(contract.predicate, ContractPredicate::Initialized { .. }) {
             continue;
         }
@@ -561,7 +563,7 @@ pub(super) fn resolve(
             ),
             ContractPredicate::Cleanup { value, condition } => {
                 let inputs=outputs::inputs(builder,definition,env)?;
-                let when=outputs::expression(builder,definition.into(),condition,&inputs,None,contract.span,Some(&Ty::scalar(Scalar::Bool)))?;
+                let when=outputs::expression(builder,definition,condition,&inputs,None,contract.span,Some(&Ty::scalar(Scalar::Bool)))?;
                 let(model,active)=cleanup_selection(builder,definition,env,value,contract.span)?;
                 let required=cleanup_condition(builder,model,active,contract.span)?;
                 (Predicate::Cleanup{value:value.clone(),when:bounds::Condition::of(&when),required},format!("cleanup({value})"))
@@ -574,7 +576,7 @@ pub(super) fn resolve(
             ContractPredicate::Range { value, intervals } => {
                 let selection = select(builder, definition, env, value, contract.span)?;
                 let scalar = bounds::range_scalar(&selection.value.ty, &definition.source, contract.span)?;
-                let constants = outputs::range_constants(builder.world, definition, Some(scalar), intervals, contract.span)?;
+                let constants = outputs::range_constants(builder.world,definition,lexical,Some(scalar),intervals,contract.span)?;
                 let intervals = bounds::numeric_intervals(scalar, constants.iter().map(|(a,b)| (a.bits[0],b.bits[0])), &definition.source, contract.span)?;
                 (Predicate::Range(selection, scalar, intervals), format!("range({value})"))
             }
@@ -623,7 +625,7 @@ pub(super) fn resolve(
         };
         result.push(Requirement {
             predicate,
-            description: format!("{} 的 requires {description}", definition.function.name),
+            description: match definition.name(){Some(name)=>format!("{name} 的 requires {description}"),None=>format!("requires {description}")},
         });
     }
     Ok(result)
@@ -692,11 +694,11 @@ pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: S
     }
     Ok(())
 }
-pub(super) fn assume(builder:&mut Builder<'_>,definition:&Definition,env:&mut BTreeMap<String,Binding>,requirements:&[Requirement])->Result<()> {
+pub(super) fn assume(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,env:&mut BTreeMap<String,Binding>,requirements:&[Requirement])->Result<()> {
     for requirement in requirements {
         if let Predicate::Cleanup{value,when,required}=&requirement.predicate{
             builder.path=when.clone().negate().logical(required.clone(),true).assume(&builder.path,true);
-            mark_cleanup_selection(builder,definition,env,value,when.clone(),definition.function.span)?;continue;
+            mark_cleanup_selection(builder,env,value,when.clone(),definition.span())?;continue;
         }
         if let Predicate::Index(_,_,Some((scope,nonempty)))=&requirement.predicate{
             builder.path=scope.clone().negate().logical(nonempty.clone(),true).assume(&builder.path,true);
@@ -741,17 +743,16 @@ fn assume_values(env:&mut BTreeMap<String,Binding>,requirement:&Requirement){
 
 fn reference(
     builder: &Builder<'_>,
-    definition: &Definition,
+    definition: outputs::Contract<'_>,
     env: &BTreeMap<String, Binding>,
     path: &str,
     span: Span,
 ) -> Result<Place> {
     let mut fields = path.split('.');
     let root = fields.next().unwrap();
-    if !definition.function.params.iter().any(|param| {
-        param.name == root
-            && matches!(param.access, Access::Write | Access::InOut)
-            && !param.ty.dataset
+    if !definition.parameters().any(|param| {
+        param.name() == root
+            && matches!(param.access(), Access::Write | Access::InOut)
     }) {
         return definition.source.fail(
             span,
@@ -766,7 +767,7 @@ fn reference(
     };
     let mut place = owner.place.clone();
     for field in fields {
-        let (ty, components) = member_type(place.ty(), field, &builder.definition.source, span)?;
+        let (ty, components) = member_type(place.ty(), field, builder.scope.source(), span)?;
         place = place.project(ty, &components);
     }
     Ok(place)
@@ -781,9 +782,10 @@ pub(super) fn contiguous_assumed(
     ty: &Ty,
     span: Span,
 ) -> Result<bool> {
-    let definition = &builder.definition;
-    let param = &definition.function.params[parameter];
-    for contract in &definition.function.contracts {
+    let Some(instance) = builder.scope.function() else { return Ok(false); };
+    let definition = &instance.definition;
+    let param=instance.parameter(builder.world,&definition.function.params().at(parameter))?;
+    for contract in instance.contracts() {
         let ContractPredicate::Contiguous(path) = &contract.predicate else {
             continue;
         };
@@ -794,14 +796,14 @@ pub(super) fn contiguous_assumed(
         if fields.next().unwrap() != param.name {
             continue;
         }
-        let mut selected = cooperative::parameter_type(builder.world, param, definition)?;
+        let mut selected = cooperative::parameter_type(builder.world,&param,(&definition.source,&definition.module,&definition.imports,definition.function.kind()),builder.program.target)?;
         let mut guaranteed = selected
             .components
             .iter()
             .map(|(_, offset)| *offset)
             .collect::<Vec<_>>();
         for field in fields {
-            let (next, components) = member_type(&selected, field, &builder.definition.source, span)?;
+            let (next, components) = member_type(&selected, field, builder.scope.source(), span)?;
             guaranteed = components.iter().map(|i| guaranteed[*i]).collect();
             selected = next;
         }
@@ -830,10 +832,10 @@ pub(super) fn contiguous_assumed(
 
 // The selected values are the original input snapshots and owned metadata.
 // Expanding a contract neither calls F nor moves or releases its argument.
-fn cleanup_selection(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,path:&str,span:Span)->Result<(returns::Returned,bounds::Condition)> {
+fn cleanup_selection(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,env:&BTreeMap<String,Binding>,path:&str,span:Span)->Result<(returns::Returned,bounds::Condition)> {
     use returns::Returned;
     let end=path.find(['.','[']).unwrap_or(path.len());let root=&path[..end];
-    if !definition.function.params.iter().any(|p|p.name==root&&matches!(p.access,Access::Value|Access::Read|Access::InOut)){return definition.source.fail(span,"B225","cleanup需要读取实际普通CPU输入");}
+    if !definition.parameters().any(|p|p.name()==root&&matches!(p.access(),Access::Value|Access::Read|Access::InOut)){return definition.source.fail(span,"B225","cleanup需要读取实际普通CPU输入");}
     let mut value=match env.get(root) {
         Some(Binding::OwnedValue(value))=>Returned::OwnedValue(value.clone()),
         Some(Binding::ApplicationData(data))=>Returned::Dataset(data.clone()),
@@ -864,7 +866,7 @@ fn cleanup_selection(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeM
     Ok((value,active))
 }
 
-fn nonempty_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,resource:&Resource,span:Span)->Result<bounds::Condition>{
+fn nonempty_condition(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,env:&BTreeMap<String,Binding>,resource:&Resource,span:Span)->Result<bounds::Condition>{
     let proof=match resource {
         Resource::Array(count)=>return Ok(bounds::Condition::constant(*count!=0)),
         Resource::Value(selection)=>{
@@ -877,7 +879,7 @@ fn nonempty_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BTree
     Ok(bounds::Condition::nonzero_proof(&proof,0))
 }
 
-fn requirement_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,requirement:&Requirement,span:Span)->Result<bounds::Condition>{
+fn requirement_condition(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,env:&BTreeMap<String,Binding>,requirement:&Requirement,span:Span)->Result<bounds::Condition>{
     if holds(builder,requirement,span)?{return Ok(bounds::Condition::constant(true));}
     Ok(match &requirement.predicate {
         Predicate::Nonzero(selection)=>bounds::Condition::nonzero_value(&selection.value),
@@ -906,9 +908,9 @@ fn cleanup_condition(builder:&mut Builder<'_>,value:returns::Returned,active:bou
             let key=owner.value.ty.cleanup.as_ref().unwrap();let definition=&builder.world.functions[key];
             let instance=generics::specialize(builder.world,key,&[generics::Actual::value(&owner.value.ty.arguments[0])],None,(&definition.source,&definition.module,&definition.imports),span)?;
             let payload=builder.unpack_record(&owner,0);let binding=match payload{Returned::Dataset(data)=>Binding::ApplicationData(data),Returned::OwnedValue(value)=>Binding::OwnedValue(value),Returned::Value(value)=>Binding::Value(*value),Returned::Unit=>Binding::Value(builder.returned_storage(&Returned::Unit))};
-            let env=BTreeMap::from([(instance.definition.function.params[0].name.clone(),binding)]);
-            for requirement in resolve(builder,&instance.definition,&env,&BTreeMap::new())? {
-                result=result.logical(requirement_condition(builder,&instance.definition,&env,&requirement,span)?,false);
+            let env=BTreeMap::from([(instance.definition.function.params().at(0).name().to_owned(),binding)]);
+            for requirement in resolve(builder,(&instance).into(),&LexicalScope::Function(instance.clone()),&env,&BTreeMap::new())? {
+                result=result.logical(requirement_condition(builder,(&instance).into(),&env,&requirement,span)?,false);
             }
             result=active.negate().logical(result,true);
         },
@@ -936,8 +938,8 @@ fn cleanup_element_condition(builder:&mut Builder<'_>,ty:&Ty,facts:application::
     use application::ElementFacts;
     Ok(match facts{
         ElementFacts::Known(model)=>cleanup_condition(builder,*model,active,span)?,
-        ElementFacts::Unknown=>if builder.world.cleanup_requirements(ty,&builder.definition.source,span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new())?{active.negate().logical(bounds::Condition::default(),true)}else{bounds::Condition::constant(true)},
-        ElementFacts::Input(when)=>if builder.world.cleanup_requirements(ty,&builder.definition.source,span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new())?{active.negate().logical(bounds::Condition::branch(when,bounds::Condition::constant(true),bounds::Condition::default()),true)}else{bounds::Condition::constant(true)},
+        ElementFacts::Unknown=>if builder.world.cleanup_requirements(ty,builder.scope.source(),span,builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new())?{active.negate().logical(bounds::Condition::default(),true)}else{bounds::Condition::constant(true)},
+        ElementFacts::Input(when)=>if builder.world.cleanup_requirements(ty,builder.scope.source(),span,builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new())?{active.negate().logical(bounds::Condition::branch(when,bounds::Condition::constant(true),bounds::Condition::default()),true)}else{bounds::Condition::constant(true)},
         ElementFacts::Cleanup(when)=>active.negate().logical(bounds::Condition::branch(when,bounds::Condition::constant(true),bounds::Condition::default()),true),
         ElementFacts::Common(a,b)=>cleanup_element_condition(builder,ty,*a,active.clone(),span)?.logical(cleanup_element_condition(builder,ty,*b,active,span)?,false),
         ElementFacts::Selected(when,a,b)=>bounds::Condition::branch(*when,cleanup_element_condition(builder,ty,*a,active.clone(),span)?,cleanup_element_condition(builder,ty,*b,active,span)?),
@@ -1003,16 +1005,16 @@ fn mark_cleanup_owner(builder:&mut Builder<'_>,owner:&mut owned_values::OwnedVal
             let instance=generics::specialize(builder.world,key,&[generics::Actual::value(&owner.value.ty.arguments[0])],None,(&definition.source,&definition.module,&definition.imports),span)?;
             let mut payload=builder.unpack_record(owner,0);
             let binding=match &payload{Returned::Dataset(data)=>Binding::ApplicationData(data.clone()),Returned::OwnedValue(value)=>Binding::OwnedValue(value.clone()),Returned::Value(value)=>Binding::Value((**value).clone()),Returned::Unit=>Binding::Value(builder.returned_storage(&Returned::Unit))};
-            let name=instance.definition.function.params[0].name.clone();let mut env=BTreeMap::from([(name.clone(),binding)]);
-            element_input_paths(builder,&instance.definition,&mut env,None)?;
-            let resources=instance.definition.function.params.iter().enumerate().filter_map(|(index,p)|match env.get(&p.name){
+            let name=instance.definition.function.params().at(0).name().to_owned();let mut env=BTreeMap::from([(name.clone(),binding)]);
+            element_input_paths(builder,(&instance).into(),&mut env,None)?;
+            let resources=instance.definition.function.params().iter().enumerate().filter_map(|(index,p)|match env.get(p.name()){
                 Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))),_=>None,
             }).collect();
-            let requirements=resolve(builder,&instance.definition,&env,&resources)?;let before=env.clone();
+            let requirements=resolve(builder,(&instance).into(),&LexicalScope::Function(instance.clone()),&env,&resources)?;let before=env.clone();
             for requirement in &requirements{assume_values(&mut env,requirement);}
             for(name,binding)in &mut env{cleanup_guarded_binding(binding,&before[name],&when);}
             for requirement in &requirements{if let Predicate::Cleanup{value,when:inner,..}=&requirement.predicate{
-                mark_cleanup_selection(builder,&instance.definition,&mut env,value,when.clone().logical(inner.clone(),false),span)?;
+                mark_cleanup_selection(builder,&mut env,value,when.clone().logical(inner.clone(),false),span)?;
             }}
             match(&mut payload,&env[&name]){
                 (Returned::Dataset(value),Binding::ApplicationData(updated))=>*value=updated.clone(),
@@ -1062,7 +1064,7 @@ fn mark_cleanup_path(builder:&mut Builder<'_>,value:&mut returns::Returned,path:
         Returned::Value(_)|Returned::Unit=>Ok(()),
     }
 }
-fn mark_cleanup_selection(builder:&mut Builder<'_>,_definition:&Definition,env:&mut BTreeMap<String,Binding>,path:&str,when:bounds::Condition,span:Span)->Result<()> {
+fn mark_cleanup_selection(builder:&mut Builder<'_>,env:&mut BTreeMap<String,Binding>,path:&str,when:bounds::Condition,span:Span)->Result<()> {
     let end=path.find(['.','[']).unwrap_or(path.len());let root=&path[..end];let rest=&path[end..];
     let binding=env.remove(root).unwrap();
     let binding=match binding{

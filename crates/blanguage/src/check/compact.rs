@@ -5,18 +5,18 @@ pub(super) fn data(
     expr: &Expr,
     d: &Definition,
 ) -> Result<(usize, Access)> {
-    if let ExprKind::Name(name) = &expr.kind {
+    if let ExprKind::Name(name) = expr.kind() {
         if let Some(Root::Data(binding, access)) = env.get(name) {
             return Ok((*binding, *access));
         }
     }
     d.source
-        .fail(expr.span, "B190", "集合输入／输出需要命名 dataset")
+        .fail(expr.span(), "B190", "集合输入／输出需要命名 dataset")
 }
 pub(super) fn compile(
     program: &mut Program,
     env: &BTreeMap<String, Root>,
-    args: &[Expr],
+    args: &Expressions,
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
@@ -29,15 +29,15 @@ pub(super) fn compile(
             "compact 需要输入、bool 谓词字段、输出和 u32 单值计数字段",
         );
     }
-    let (input, prefix) = prefix::input(program, env, &args[0], d, facts)?;
+    let (input, prefix) = prefix::input(program, env, &args.at(0), d, facts)?;
     let (source, read) = data(env, &input, d)?;
-    let (flags, flag_word, flags_read) = collective_field(program, env, &args[1], d, Scalar::Bool)?;
-    let (target, write) = data(env, &args[2], d)?;
+    let (flags, flag_word, flags_read) = collective_field(program, env, &args.at(1), d, Scalar::Bool)?;
+    let (target, write) = data(env, &args.at(2), d)?;
     if program.buffers[target].ty.contains_views() {
-        return d.source.fail(args[2].span,"B185","compact不能复制持久view载荷；原引用图须保持");
+        return d.source.fail(args.at(2).span(),"B185","compact不能复制持久view载荷；原引用图须保持");
     }
     let (count, count_word, count_write) =
-        collective_field(program, env, &args[3], d, Scalar::U32)?;
+        collective_field(program, env, &args.at(3), d, Scalar::U32)?;
     if !matches!(read, Access::Read | Access::InOut)
         || !(matches!(flags_read, Access::Read | Access::InOut)
             || flags_read == Access::Write && facts.initialized(program, flags, flag_word))
@@ -56,11 +56,11 @@ pub(super) fn compile(
     if program.buffers[source].ty != program.buffers[target].ty {
         return d
             .source
-            .fail(args[2].span, "B189", "compact 输入／输出的记录类型必须相同");
+            .fail(args.at(2).span(), "B189", "compact 输入／输出的记录类型必须相同");
     }
     if program.buffers[count].count != Some(1) {
         return d.source.fail(
-            args[3].span,
+            args.at(3).span(),
             "B171",
             "compact 计数输出必须为形状 1 的 u32 计数字段",
         );

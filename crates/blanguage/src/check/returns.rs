@@ -11,12 +11,15 @@ pub(super) enum Returned {
 }
 #[derive(Clone)]
 enum Expected {
+    Void,
+    Never,
     Value(Ty),
     Dataset { ty: Ty, count: Option<u32> },
 }
 impl Expected {
     fn scalars(&self) -> Vec<Scalar> {
         match self {
+            Self::Void | Self::Never => Vec::new(),
             Self::Value(ty) => ty.components.iter().map(|(scalar, _)| *scalar).collect(),
             Self::Dataset { .. } => vec![Scalar::U32, Scalar::U32],
         }
@@ -139,7 +142,8 @@ struct ReturnExit {
     initialized: Vec<address::InitializationEffect>,
 }
 pub(super) struct ReturnContext {
-    expected: Option<Arc<Expected>>,
+    instance: crate::generics::Instance,
+    expected: Arc<Expected>,
     scoped: bool,
     slots: Vec<usize>,
     exits: Vec<ReturnExit>,
@@ -148,7 +152,6 @@ pub(super) struct ReturnContext {
 // 外层函数体的原状态按值交接，不复制当前返回模型或资源树。
 struct BodyState {
     entry: usize,
-    definition: Arc<Definition>,
     scoped: bool,
     initial: BTreeSet<Position>,
     caller: Option<ReturnContext>,
@@ -168,57 +171,57 @@ impl ReturnContext {
         }
     }
 }
-fn early_returns(body: &[Stmt]) -> bool {
+fn early_returns(body: &Block) -> bool {
     propagates(body)
-        || body.iter().enumerate().any(|(i, s)| match &s.kind {
+        || body.iter().enumerate().any(|(i, s)| match s.kind() {
             StmtKind::Return(_) => i + 1 != body.len(),
             StmtKind::If(_, yes, no) => {
-                has_return(yes) || has_return(no)
+                has_return(&yes) || has_return(&no)
             }
-            StmtKind::Match(_, arms) => arms.iter().any(|arm|has_return(&arm.body)),
-            StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(b),
+            StmtKind::Match(_, arms) => arms.iter().any(|arm|has_return(&arm.body())),
+            StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(&b),
             _ => false,
         })
 }
-fn has_return(body: &[Stmt]) -> bool {
-    body.iter().any(|s| match &s.kind {
+fn has_return(body: &Block) -> bool {
+    body.iter().any(|s| match s.kind() {
         StmtKind::Return(_) => true,
-        StmtKind::If(_, y, n) => has_return(y) || has_return(n),
-        StmtKind::Match(_, arms) => arms.iter().any(|arm|has_return(&arm.body)),
-        StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(b),
+        StmtKind::If(_, y, n) => has_return(&y) || has_return(&n),
+        StmtKind::Match(_, arms) => arms.iter().any(|arm|has_return(&arm.body())),
+        StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(&b),
         _ => false,
     })
 }
-fn propagates(body: &[Stmt]) -> bool {
+fn propagates(body: &Block) -> bool {
     fn expr(e: &Expr) -> bool {
-        match &e.kind {
-            ExprKind::Call(name, args) => name == "try" || args.iter().any(expr),
-            ExprKind::Invoke(callee, args) => expr(callee) || args.iter().any(expr),
+        match e.kind() {
+            ExprKind::Call(name, args) => name == "try" || args.iter().any(|argument|expr(&argument)),
+            ExprKind::Invoke(callee, args) => expr(&callee) || args.iter().any(|argument|expr(&argument)),
             ExprKind::Specialize(_, _, args)
             | ExprKind::Cooperate(_, _, args)
-            | ExprKind::Construct(_, args) => args.iter().any(expr),
-            ExprKind::Target(_, e) | ExprKind::Member(e, _) | ExprKind::Unary(_, e) => expr(e),
-            ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => expr(a) || expr(b),
-            ExprKind::Select(c, a, b) => expr(c) || expr(a) || expr(b),
+            | ExprKind::Construct(_, args) => args.iter().any(|argument|expr(&argument)),
+            ExprKind::Target(_, e) | ExprKind::Member(e, _) | ExprKind::Unary(_, e) => expr(&e),
+            ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => expr(&a) || expr(&b),
+            ExprKind::Select(c, a, b) => expr(&c) || expr(&a) || expr(&b),
             _ => false,
         }
     }
-    body.iter().any(|s| match &s.kind {
+    body.iter().any(|s| match s.kind() {
         StmtKind::Let(_, _, e)
         | StmtKind::Expr(e)
         | StmtKind::Return(Some(e))
-        | StmtKind::Seek(_, e) => expr(e),
-        StmtKind::Assign(a, _, b) => expr(a) || expr(b),
+        | StmtKind::Seek(_, e) => expr(&e),
+        StmtKind::Assign(a, _, b) => expr(&a) || expr(&b),
         StmtKind::If(c, a, b) => {
-            expr(c) || propagates(a) || propagates(b)
+            expr(&c) || propagates(&a) || propagates(&b)
         }
-        StmtKind::Match(value, arms) => expr(value) || arms.iter().any(|arm|propagates(&arm.body)),
-        StmtKind::While(c, body) => expr(c) || propagates(body),
-        StmtKind::For(_, a, b, body) => expr(a) || b.as_ref().is_some_and(expr) || propagates(body),
+        StmtKind::Match(value, arms) => expr(&value) || arms.iter().any(|arm|propagates(&arm.body())),
+        StmtKind::While(c, body) => expr(&c) || propagates(&body),
+        StmtKind::For(_, a, b, body) => expr(&a) || b.as_ref().is_some_and(expr) || propagates(&body),
         StmtKind::Parallel(_, domain, body) => {
-            domain.count.as_ref().is_some_and(expr)
-                || domain.selection.as_ref().is_some_and(expr)
-                || propagates(body)
+            domain.count().as_ref().is_some_and(expr)
+                || domain.selection().as_ref().is_some_and(expr)
+                || propagates(&body)
         }
         _ => false,
     })
@@ -322,32 +325,23 @@ impl Builder<'_> {
                 "return 只能结束当前普通函数，不能退出 parallel 实例",
             );
         };
-        if self.definition.function.result.is_never() {
-            if let Some(expr) = expr {
-                self.evaluate_returned(expr, None)?;
-                if !self.flow.continues() {
-                    return Ok(());
-                }
-            }
-            return self.fail(span, "B228", "never 函数不能正常返回");
-        }
         let expected = context.expected.clone();
-        let value = match (expected.as_deref(), expr) {
-            (Some(Expected::Value(ty)), Some(expr)) => {
+        let value = match (expected.as_ref(), expr) {
+            (Expected::Value(ty), Some(expr)) => {
                 let result = self.evaluate_returned(expr,Some(ty))?;
                 if !self.flow.continues() {
                     return Ok(());
                 }
                 let mut value = result.ok_or_else(|| Diagnostic {
-                    source: self.definition.source.clone(),
+                    source: self.scope.source().clone(),
                     span,
                     code: "B228",
                     message: "返回需要值或拥有资源".into(),
                 })?;
-                self.check_returned_type(&mut value, ty, expr.span)?;
+                self.check_returned_type(&mut value, ty, expr.span())?;
                 Some(value)
             }
-            (Some(Expected::Dataset { ty, count }), Some(expr)) => {
+            (Expected::Dataset { ty, count }, Some(expr)) => {
                 let returned=self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone().syntax(),*count)))?;
                 if !self.flow.continues(){return Ok(());}
                 let Some(Returned::Dataset(mut data))=returned else{return self.fail(span,"B224","返回需要实际拥有的dataset")};
@@ -355,14 +349,23 @@ impl Builder<'_> {
                 data.count = *count;
                 Some(Returned::Dataset(data))
             }
-            (None, None) => None,
-            (Some(_), None) => return self.fail(span, "B228", "有返回值函数不能使用 return;"),
-            (None, Some(_)) => return self.fail(span, "B228", "void 函数不能返回普通值"),
+            (Expected::Void, None) => None,
+            (Expected::Never, expr) => {
+            if let Some(expr) = expr {
+                self.evaluate_returned(expr, None)?;
+                if !self.flow.continues() {
+                    return Ok(());
+                }
+            }
+            return self.fail(span, "B228", "never 函数不能正常返回");
+        },
+            (Expected::Value(_) | Expected::Dataset { .. }, None) => return self.fail(span, "B228", "有返回值函数不能使用 return;"),
+            (Expected::Void, Some(_)) => return self.fail(span, "B228", "void 函数不能返回普通值"),
         };
         self.finish_return(value, span)
     }
     pub(super) fn result_return_type(&self) -> Option<Ty> {
-        match self.return_context.as_ref()?.expected.as_deref()? {
+        match self.return_context.as_ref()?.expected.as_ref() {
             Expected::Value(ty) => Some(ty.clone()),
             _ => None,
         }
@@ -391,7 +394,7 @@ impl Builder<'_> {
         }
     }
     pub(super) fn defer_dataset_output(&mut self,data:&application::Data,positions:Vec<Position>,span:Span)->Result<bool> {
-        if data.access!=Access::Write||self.definition.execution!=crate::execution::Requirement::Invocation {
+        if data.access!=Access::Write||self.scope.execution()!=crate::execution::Requirement::Invocation {
             return self.defer_position_initialization(positions,"B229",span);
         }
         // The callee retains its own writes until the caller supplies the actual loan.
@@ -412,23 +415,23 @@ impl Builder<'_> {
             value.value.proof = bounds::Proof::returning(&value.value, &self.env, &self.path);
         }
         let borrowed=(||->Result<BTreeMap<String,Returned>> {
-            let mut borrowed=BTreeMap::new();let definition=self.definition.clone();
+            let mut borrowed=BTreeMap::new();let instance=self.return_context.as_ref().unwrap().instance.clone();let definition=&instance.definition;
             let inputs=self.return_context.as_ref().unwrap().inputs.clone();
             let returned=value.as_ref().map(|value|self.returned_storage(value));
-            for (index,param) in definition.function.params.iter().enumerate() {
-                if param.ty.dataset && matches!(param.access,Access::Write|Access::InOut) && let Some(Binding::ApplicationData(data))=self.env.get(&param.name).cloned() {
-                    if outputs::declared(&definition,index) {
-                        let guards=outputs::guards(self,&definition,index,&data.ty,&inputs,returned.as_ref())?;
+            for (index,param) in definition.function.params().iter().enumerate() {
+                if param.ty().dataset() && matches!(param.access(),Access::Write|Access::InOut) && let Some(Binding::ApplicationData(data))=self.env.get(param.name()).cloned() {
+                    if outputs::declared(&instance,index) {
+                        let guards=outputs::guards(self,&instance,index,&data.ty,&inputs,returned.as_ref())?;
                         self.check_data_output(&data,&guards,span)?;
                     }else if !self.application_initialized(&data)
                         && !self.defer_dataset_output(&data,data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),span)? {
-                        return self.fail(span,"B229",format!("返回前没有完整初始化独占 dataset 参数 {}",param.name));
+                        return self.fail(span,"B229",format!("返回前没有完整初始化独占 dataset 参数 {}",param.name()));
                     }
-                    borrowed.insert(param.name.clone(),Returned::Dataset(data));
+                    borrowed.insert(param.name().to_owned(),Returned::Dataset(data));
                 }
-                if param.ty.dataset&&param.access==Access::Write&&let Some(Binding::Data(view))=self.env.get(&param.name).cloned() {
+                if param.ty().dataset()&&param.access()==Access::Write&&let Some(Binding::Data(view))=self.env.get(param.name()).cloned() {
                     let place=self.dataset_element(&view,self.global_index,false);
-                    let guards=outputs::guards(self,&definition,index,place.ty(),&inputs,returned.as_ref())?;
+                    let guards=outputs::guards(self,&instance,index,place.ty(),&inputs,returned.as_ref())?;
                     let path=self.path.clone();
                     for(position,when)in self.positions(&place).into_iter().zip(guards) {
                         self.path=when.condition().assume(&path,true);
@@ -439,14 +442,14 @@ impl Builder<'_> {
                     }
                     self.path=path;
                 }
-                if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset && !param.ty.tile {
-                    let mut model=if outputs::declared(&definition,index) {
-                        let ty=self.env[&param.name].stored_place().unwrap().ty().clone();
-                        let guards=outputs::guards(self,&definition,index,&ty,&inputs,returned.as_ref())?;
-                        self.conditional_written_model(&param.name,&guards,span)?
-                    }else{self.written_model(&param.name,span)?};
+                if matches!(param.access(),Access::Write|Access::InOut) && !param.ty().dataset() && !param.ty().tile() {
+                    let mut model=if outputs::declared(&instance,index) {
+                        let ty=self.env[param.name()].stored_place().unwrap().ty().clone();
+                        let guards=outputs::guards(self,&instance,index,&ty,&inputs,returned.as_ref())?;
+                        self.conditional_written_model(&param.name(),&guards,span)?
+                    }else{self.written_model(&param.name(),span)?};
                     if let Some(value)=model.view_value_mut(){value.uniform&=self.control_uniform;value.proof.under_path(&value.ty,&self.path);}
-                    borrowed.insert(param.name.clone(),model);
+                    borrowed.insert(param.name().to_owned(),model);
                 }
             }
             Ok(borrowed)
@@ -480,9 +483,9 @@ impl Builder<'_> {
         self.release_application_data(Some(&keep),retained)?;
         if let Some(pending)=pending {self.env.remove(&pending);}
         let mut initialized=self.initialized.clone();
-        if self.definition.execution==crate::execution::Requirement::Invocation {
-            for parameter in &self.definition.function.params {
-                if parameter.ty.dataset&&parameter.access==Access::Write&&let Some(Binding::ApplicationData(data))=self.env.get(&parameter.name) {
+        if self.scope.execution()==crate::execution::Requirement::Invocation {
+            for parameter in self.scope.parameters() {
+                if parameter.bound(self.world)?.ty.dataset&&parameter.access()==Access::Write&&let Some(Binding::ApplicationData(data))=self.env.get(parameter.name()) {
                     initialized=initialized.iter().map(|position|Self::dataset_output_position(position,data)).collect();
                 }
             }
@@ -506,16 +509,16 @@ impl Builder<'_> {
         self.flow = Flow::RETURN;
         Ok(())
     }
-    pub(super) fn function_body(&mut self, body: &[Stmt]) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
-        let state = self.begin_function_body(body)?;
+    pub(super) fn function_body(&mut self, instance: &crate::generics::Instance, body: &Block) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
+        let state = self.begin_function_body(instance, body)?;
         let mut sequence = if self.residency_path().possible() { Flow::NEXT } else { Flow::STOP };
         for statement in body {
             if !sequence.continues() {
                 break;
             }
             self.flow = Flow::NEXT;
-            self.statement(statement)?;
-            self.view_uses.after(statement.span);
+            self.statement(&statement)?;
+            self.view_uses.after(statement.span());
             sequence = sequence.then(self.flow);
         }
         self.flow = sequence;
@@ -523,68 +526,70 @@ impl Builder<'_> {
     }
 
     #[inline(never)]
-    fn begin_function_body(&mut self, body: &[Stmt]) -> Result<Box<BodyState>> {
+    fn begin_function_body(&mut self, instance: &crate::generics::Instance, body: &Block) -> Result<Box<BodyState>> {
         let entry = self.registers.len();
-        let definition = self.definition.clone();
-        let name = &definition.function.result;
-        let expected = if (name.name == "void" && !name.dataset && !name.tile && !name.view)
-            || name.is_never()
-        {
-            None
+        let definition = &instance.definition;
+        let name = instance.bindings.type_name(self.world, &definition.function.result(),
+            (&definition.source, &definition.module, &definition.imports), definition.function.span())?;
+        let expected = if name.name == "void" && !name.dataset && !name.tile && !name.view {
+            Expected::Void
+        } else if name.is_never() {
+            Expected::Never
         } else {
             let ty = self.world.ty(
-                name,
+                &name,
                 &definition.source,
-                definition.function.span,
+                definition.function.span(),
                 &definition.module,
                 &definition.imports,
             )?;
             if ty.owns_resources()
-                && (definition.function.kind != FunctionKind::Value
-                    || definition.function.target != Target::Cpu)
+                && (definition.function.kind() != FunctionKind::Value
+                    || self.program.target != Target::Cpu)
             {
                 return self.fail(
-                    definition.function.span,
+                    definition.function.span(),
                     "B224",
                     "拥有结果由普通CPU函数返回；并行元素与通用拥有聚合尚未实现",
                 );
             }
-            Some(if name.dataset {
+            if name.dataset {
                 Expected::Dataset {
                     ty,
                     count: self.world.shape(
                         &name.count,
                         &definition.source,
-                        definition.function.span,
+                        definition.function.span(),
                         &definition.module,
                         &definition.imports,
                     )?,
                 }
             } else {
                 Expected::Value(ty)
-            })
+            }
         };
         let scoped = early_returns(body);
-        if scoped && definition.function.kind == FunctionKind::Cooperative {
+        if scoped && definition.function.kind() == FunctionKind::Cooperative {
             return self.fail(
-                definition.function.span,
+                definition.function.span(),
                 "B208",
                 "cooperative 提前返回的整块收敛语义尚未实现；协作函数保持末尾返回",
             );
         }
         let slots = if scoped {
             expected
-                .iter()
-                .flat_map(Expected::scalars)
+                .scalars()
+                .into_iter()
                 .map(|scalar| self.local_slots(&Ty::scalar(scalar)).0[0])
                 .collect()
         } else {
             Vec::new()
         };
         let initial = self.application_initialization_state();
-        let inputs=outputs::entry_inputs(self,&definition)?;
+        let inputs=outputs::entry_inputs(self,instance)?;
         let caller = self.return_context.replace(ReturnContext {
-            expected: expected.map(Arc::new),
+            instance: instance.clone(),
+            expected: Arc::new(expected),
             scoped,
             slots,
             exits: Vec::new(),
@@ -593,30 +598,31 @@ impl Builder<'_> {
         let flow = std::mem::replace(&mut self.flow, Flow::NEXT);
         let uniform = self.control_uniform;
         let code_start = self.code.len();
-        Ok(Box::new(BodyState { entry, definition, scoped, initial, caller, flow, uniform, code_start }))
+        Ok(Box::new(BodyState { entry, scoped, initial, caller, flow, uniform, code_start }))
     }
 
     #[inline(never)]
-    fn finish_function_body(&mut self, body: &[Stmt], state: Box<BodyState>) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
-        let BodyState { entry, definition, scoped, initial, caller, flow, uniform, code_start } = *state;
+    fn finish_function_body(&mut self, body: &Block, state: Box<BodyState>) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
+        let BodyState { entry, scoped, initial, caller, flow, uniform, code_start } = *state;
+        let instance = self.return_context.as_ref().unwrap().instance.clone();
+        let definition = &instance.definition;
         let sequence = self.flow;
-        let name = &definition.function.result;
-        if name.is_never() && sequence.continues() {
+        if matches!(self.return_context.as_ref().unwrap().expected.as_ref(), Expected::Never) && sequence.continues() {
             return self.fail(
-                definition.function.span,
+                definition.function.span(),
                 "B133",
                 "never 函数存在可以正常结束的路径",
             );
         }
         if sequence.continues() {
-            if self.return_context.as_ref().unwrap().expected.is_some() {
+            if matches!(self.return_context.as_ref().unwrap().expected.as_ref(), Expected::Value(_) | Expected::Dataset { .. }) {
                 return self.fail(
-                    definition.function.span,
+                    definition.function.span(),
                     if body.is_empty() { "B132" } else { "B133" },
                     "函数存在未返回普通值的继续路径",
                 );
             }
-            self.return_statement(None, definition.function.span)?;
+            self.return_statement(None, definition.function.span())?;
         }
         let context = self.return_context.take().unwrap();
         self.return_context = caller;
@@ -639,7 +645,7 @@ impl Builder<'_> {
         let Some(first) = exits.next() else {
             self.flow = Flow::STOP;
             self.path = bounds::Clause::impossible();
-            return Ok((None,vec![None;definition.function.params.len()]));
+            return Ok((None,vec![None;definition.function.params().len()]));
         };
         let mut path = first.path;
         let mut result = first.value;
@@ -649,7 +655,7 @@ impl Builder<'_> {
             context
                 .slots
                 .iter()
-                .zip(context.expected.iter().flat_map(|expected| expected.scalars()))
+                .zip(context.expected.scalars())
                 .map(|(slot, scalar)| {
                     let reg = self.reg(scalar);
                     self.emit(InstKind::LoadLocal(reg, *slot));
@@ -708,16 +714,16 @@ impl Builder<'_> {
         }
         // 出口已分别检查并合流；不能再用最后解析分支的环境重建输出。
         for(name,model)in &mut borrowed{native_function::rebind_model(model,written[name].clone());}
-        let output_models=definition.function.params.iter().map(|parameter|borrowed.get(&parameter.name).cloned()).collect();
+        let output_models=definition.function.params().iter().map(|parameter|borrowed.get(parameter.name()).cloned()).collect();
         let returned=result.as_ref().map(|value|{let mut value=self.returned_storage(value);value.regs=registers.clone();value});
         for(name,model)in borrowed {
             let binding=match model {
                 Returned::Dataset(data)=>Binding::ApplicationData(data),
                 mut model=>{
-                    let index=definition.function.params.iter().position(|parameter|parameter.name==name).unwrap();
+                    let index=definition.function.params().iter().position(|parameter|parameter.name()==name).unwrap();
                     let place=self.env[&name].stored_place().unwrap();
-                    let guards=outputs::guards(self,&definition,index,place.ty(),&context.inputs,returned.as_ref())?;
-                    if outputs::declared(&definition,index) && place.ty().owns_resources(){outputs::apply_ownership(&mut model,place.ty(),0,&guards);}
+                    let guards=outputs::guards(self,&instance,index,place.ty(),&context.inputs,returned.as_ref())?;
+                    if outputs::declared(&instance,index) && place.ty().owns_resources(){outputs::apply_ownership(&mut model,place.ty(),0,&guards);}
                     match model {
                         Returned::Value(value)=>{let Some(Binding::Owned(mut owner))=self.env.get(&name).cloned()else{unreachable!()};owner.proof=value.proof;owner.uniform=value.uniform;self.initialize_output(&owner.place,&guards);Binding::Owned(owner)}
                         Returned::OwnedValue(mut value)=>{self.initialize_output(&place,&guards);value.place=Some(place);Binding::OwnedValue(value)}

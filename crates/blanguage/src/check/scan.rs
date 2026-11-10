@@ -5,7 +5,7 @@ pub(super) fn compile(
     env: &BTreeMap<String, Root>,
     operator: CollectiveOperator,
     segmented: bool,
-    args: &[Expr],
+    args: &Expressions,
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
@@ -19,9 +19,9 @@ pub(super) fn compile(
         );
     }
     let (source, source_word, source_access, prefix, ty) =
-        prefix::typed_field(program, env, &args[0], d, facts)?;
+        prefix::typed_field(program, env, &args.at(0), d, facts)?;
     let (target, target_word, target_access, target_ty) =
-        collective_value_field(program, env, args.last().unwrap(), d)?;
+        collective_value_field(program, env, &args.last().unwrap(), d)?;
     if !ty.is_numeric() || !operator.accepts(ty.components[0].0) || ty != target_ty {
         return d.source.fail(
             span,
@@ -31,7 +31,7 @@ pub(super) fn compile(
     }
     let head_word = if segmented {
         let (heads, word, access, head_prefix) =
-            prefix::field(program, env, &args[1], d, facts, Scalar::Bool)?;
+            prefix::field(program, env, &args.at(1), d, facts, Scalar::Bool)?;
         if heads != source
             || !matches!(access, Access::Read | Access::InOut)
             || head_prefix.is_some_and(|p| Some(p) != prefix)

@@ -1,13 +1,13 @@
 //! 一次构建持有的解析输入；跨次复用仍由正式对象／映像拥有。
-use crate::{ast::{self, Diagnostic, Source, Span}, parser};
+use crate::{ast::{self, Diagnostic, Source, Span}, parser, syntax};
 use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::Arc};
 #[derive(Default)]
 pub(crate) struct Inputs {
-    files: BTreeMap<std::path::PathBuf, Option<Arc<ast::Module>>>,
-    interfaces: BTreeMap<String, BTreeMap<Arc<str>, Arc<ast::Module>>>,
+    files: BTreeMap<std::path::PathBuf, Option<Arc<syntax::Module>>>,
+    interfaces: BTreeMap<String, BTreeMap<Arc<str>, Arc<syntax::Module>>>,
 }
 impl Inputs {
-    fn file(&mut self, path: &Path, optional: bool) -> ast::Result<Option<Arc<ast::Module>>> {
+    fn file(&mut self, path: &Path, optional: bool) -> ast::Result<Option<Arc<syntax::Module>>> {
         if !self.files.contains_key(path) {
             let present = !optional || path.try_exists().map_err(|error| Diagnostic {
                 source: Source { path: path.into(), text: "".into() },
@@ -18,7 +18,7 @@ impl Inputs {
         }
         Ok(self.files[path].clone())
     }
-    pub(super) fn header(&mut self, path: &Path) -> ast::Result<Arc<ast::Module>> {
+    pub(super) fn header(&mut self, path: &Path) -> ast::Result<Arc<syntax::Module>> {
         let mut header = path.to_path_buf();
         header.set_extension("h");
         self.file(&header, false)?;
@@ -29,12 +29,12 @@ impl Inputs {
         visited: &mut BTreeSet<String>,
     ) -> ast::Result<()> {
         let interface = self.header(path)?;
-        if !visited.insert(interface.name.clone()) { return Ok(()); }
+        if !visited.insert(interface.name().to_owned()) { return Ok(()); }
         let mut implementation_path = path.to_path_buf();
         implementation_path.set_extension("b");
         let implementation = self.file(&implementation_path, true)?;
-        let imports = interface.imports.iter()
-            .chain(implementation.iter().flat_map(|module| &module.imports))
+        let imports = interface.imports()
+            .chain(implementation.iter().flat_map(|module| module.imports()))
             .collect::<BTreeSet<_>>();
         for name in imports {
             if !providers.contains(name) {
@@ -45,8 +45,8 @@ impl Inputs {
         Ok(())
     }
     pub(super) fn capture_interface(
-        &mut self, name: &str, text: &str, parsed: Option<&Arc<ast::Module>>,
-    ) -> ast::Result<Arc<ast::Module>> {
+        &mut self, name: &str, text: &str, parsed: Option<&Arc<syntax::Module>>,
+    ) -> ast::Result<Arc<syntax::Module>> {
         let interfaces = self.interfaces.entry(name.into()).or_default();
         if let Some(module) = interfaces.get(text) { return Ok(module.clone()); }
         let path = format!("<{name}>.h").into();
@@ -59,7 +59,7 @@ impl Inputs {
         interfaces.insert(module.source.text.clone(), module.clone());
         Ok(module)
     }
-    pub(crate) fn interface(&self, name: &str, text: &str) -> ast::Result<Arc<ast::Module>> {
+    pub(crate) fn interface(&self, name: &str, text: &str) -> ast::Result<Arc<syntax::Module>> {
         self.interfaces.get(name).and_then(|interfaces| interfaces.get(text)).cloned()
             .ok_or_else(|| Diagnostic {
                 source: Source { path: format!("<{name}>.h").into(), text: "".into() },
@@ -67,7 +67,7 @@ impl Inputs {
                 message: "接口不在本次已捕获的构建输入中".into(),
             })
     }
-    pub(crate) fn read(&self, path: &Path) -> ast::Result<Arc<ast::Module>> {
+    pub(crate) fn read(&self, path: &Path) -> ast::Result<Arc<syntax::Module>> {
         self.files.get(path).and_then(|module| module.clone()).ok_or_else(|| Diagnostic {
             source: Source { path: path.into(), text: "".into() },
             span: Span::default(), code: "B020",

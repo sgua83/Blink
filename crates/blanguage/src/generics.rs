@@ -2,129 +2,298 @@
 use crate::{World, ast::*, ir::Ty};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) fn is_open(types: &[TypeParameter], values: &[ValueParameter]) -> bool {
-    types.iter().any(|p| p.family.is_none()) || values.iter().any(|p| p.choices.is_none())
+pub(crate) fn is_open(types:&crate::syntax::List<crate::syntax::wire::TypeParameterNode>,values:&crate::syntax::List<crate::syntax::wire::ValueParameterNode>)->bool {
+    types.iter().any(|p|p.family().is_none())||values.iter().any(|p|p.choices().is_none())
 }
 pub(crate) fn key(base: &str, types: &[String]) -> String {
     format!("{base}<{}>", types.join(","))
 }
+#[derive(Default)]
+pub(crate) struct Bindings {
+    pub types:BTreeMap<String,TypeName>,
+    pub values:BTreeMap<String,u32>,
+}
+
+// A bound call reads the original instance; it does not rewrite its source node.
+pub(crate) enum TypeCall<'a> { Builtin(&'a str), Construct(&'a TypeName) }
+impl Bindings {
+    pub(crate) fn type_call(&self,name:&str)->Option<TypeCall<'_>> {
+        let actual=self.types.get(name)?;
+        Some(if actual.arguments.is_empty()&&Ty::builtin(&actual.name).is_some_and(|ty|ty.fields.is_empty()) {
+            TypeCall::Builtin(&actual.name)
+        }else{TypeCall::Construct(actual)})
+    }
+    pub(crate) fn type_name(
+        self: &std::sync::Arc<Self>, world: &World, source_type: &crate::syntax::Type,
+        context: (&Source, &str, &[String]), span: Span,
+    ) -> Result<TypeName> {
+        let (source, module, imports) = context;
+        validate_type_uses(source_type.clone(), self, source, span)?;
+        let arguments = self.arguments(world, &source_type.arguments(), context, span)?;
+        let count = source_type.count().map(|shape|
+            world.source_shape(&shape, self, source, span, module, imports).map(Shape::Literal)).transpose()?;
+        let mut result = if let Some(actual) = self.types.get(source_type.name()) {
+            actual.clone()
+        } else {
+            TypeName {
+                name: source_type.name().into(), canonical: source_type.canonical(), arguments,
+                dataset: false, view: false, tile: false, count: None,
+                contracts: source_type.contracts().map(|contracts|
+                    Box::new(contracts.iter().map(|predicate| bound_predicate(&predicate, &self.values)).collect())),
+            }
+        };
+        if source_type.dataset() || source_type.view() || source_type.tile() {
+            result.dataset = source_type.dataset();
+            result.view = source_type.view();
+            result.tile = source_type.tile();
+            result.count = count;
+        } else if !self.types.contains_key(source_type.name()) {
+            result.count = count;
+        }
+        Ok(result)
+    }
+    pub(crate) fn arguments(
+        self: &std::sync::Arc<Self>, world: &World,
+        arguments: &crate::syntax::List<crate::syntax::wire::ArgumentNode>,
+        context: (&Source, &str, &[String]), span: Span,
+    ) -> Result<Vec<GenericArgument>> {
+        let (source, module, imports) = context;
+        arguments.iter().map(|argument| match argument.kind() {
+            crate::syntax::ArgumentKind::Type(ty) => {
+                let mut argument = GenericArgument::Type(self.type_name(world, &ty, context, span)?);
+                crate::value_parameters::substitute_argument(&mut argument, &self.values, source)?;
+                Ok(argument)
+            }
+            crate::syntax::ArgumentKind::Value(shape) => {
+                Ok(GenericArgument::Value(Shape::Literal(world.source_shape(&shape, self, source, span, module, imports)?)))
+            }
+        }).collect()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Instance {
-    pub name: String,
-    pub definition: std::sync::Arc<crate::Definition>,
+    pub name:String,
+    pub definition:std::sync::Arc<crate::Definition>,
+    pub bindings:std::sync::Arc<Bindings>,
+}
+impl Instance {
+    pub(crate) fn parameter(&self, world:&World, parameter:&crate::syntax::Param)->Result<Param>{
+        let definition=&self.definition;
+        Ok(Param{name:parameter.name().into(),access:parameter.access(),span:parameter.span(),
+            ty:self.bindings.type_name(world,&parameter.ty(),
+                (&definition.source,&definition.module,&definition.imports),parameter.span())?})
+    }
+    pub(crate) fn parameters<'a>(&'a self,world:&'a World)->impl Iterator<Item=Result<Param>>+'a{
+        self.definition.function.params().into_iter().map(move|parameter|self.parameter(world,&parameter))
+    }
+    pub(crate) fn contracts(&self) -> impl Iterator<Item = FunctionContract> + '_ {
+        self.definition.function.contracts().iter()
+            .filter_map(|contract| bound_contract(contract, &self.bindings.values))
+    }
+}
+// Source clauses stay in B storage. These are the actual instance's semantic
+// contract values consumed by checking and the compiled module interface.
+fn bound_contract(contract: crate::syntax::Contract, values: &BTreeMap<String, u32>) -> Option<FunctionContract> {
+    let predicate = contract.predicate();
+    if contract.kind() == ContractKind::Requires
+        && let crate::syntax::PredicateKind::Nonzero(name) = predicate.kind()
+        && values.contains_key(name)
+    {
+        // instantiate has already checked this static requirement.
+        return None;
+    }
+    Some(FunctionContract { kind: contract.kind(),
+        predicate: bound_predicate(&predicate, values), span: contract.span() })
+}
+fn bound_predicate(predicate: &crate::syntax::Predicate, values: &BTreeMap<String, u32>) -> ContractPredicate {
+    use crate::syntax::PredicateKind as K;
+    match predicate.kind() {
+        K::Prefix { data, count, field } => ContractPredicate::Prefix {
+            data: data.into(), count: count.into(), field: field.into() },
+        K::Nonzero(value) => ContractPredicate::Nonzero(value.into()),
+        K::Nonempty(value) => ContractPredicate::Nonempty(value.into()),
+        K::Contiguous(value) => ContractPredicate::Contiguous(value.into()),
+        K::Memory(access) => ContractPredicate::Memory(access),
+        K::Index { value, resource } => ContractPredicate::Index { value: value.into(), resource: resource.into() },
+        K::Range { value, intervals } => ContractPredicate::Range { value: value.into(),
+            intervals: intervals.iter().map(|interval| (
+                bound_condition(interval.lower(), values),
+                bound_condition(interval.upper(), values))).collect() },
+        K::SameLength { left, right } => ContractPredicate::SameLength { left: left.into(), right: right.into() },
+        K::Initialized { value, condition } => ContractPredicate::Initialized {
+            value: value.into(), condition: bound_condition(condition, values) },
+        K::Cleanup { value, condition } => ContractPredicate::Cleanup {
+            value: value.into(), condition: bound_condition(condition, values) },
+    }
+}
+fn bound_condition(condition: crate::syntax::Condition, values: &BTreeMap<String, u32>) -> OutputCondition {
+    use crate::syntax::ConditionKind as K;
+    match condition.kind() {
+        K::Name(name) => match values.get(name) {
+            Some(value) => OutputCondition::StaticU32(*value),
+            None => OutputCondition::Name(name.into()),
+        },
+        K::Number(value) => OutputCondition::Number(value.into()),
+        K::StaticU32(value) => OutputCondition::StaticU32(value),
+        K::Bool(value) => OutputCondition::Bool(value),
+        K::Member(base, field) => OutputCondition::Member(Box::new(bound_condition(base, values)), field.into()),
+        K::Unary(op, value) => OutputCondition::Unary(op.into(), Box::new(bound_condition(value, values))),
+        K::Binary(op, left, right) => OutputCondition::Binary(op.into(),
+            Box::new(bound_condition(left, values)), Box::new(bound_condition(right, values))),
+    }
 }
 pub(crate) fn instantiate(
-    world: &World,
-    base: &str,
-    definition: &std::sync::Arc<crate::Definition>,
-    arguments: Vec<TypeName>,
-    values: &[u32],
-) -> Result<Instance> {
-    let function = &definition.function;
-    if function.kind != FunctionKind::Constant && function.body.is_some()
-        && let Some(inputs) = &world.build_declarations
-    {
+    world:&World,
+    base:&str,
+    definition:&std::sync::Arc<crate::Definition>,
+    arguments:Vec<TypeName>,
+    values:&[u32],
+)->Result<Instance> {
+    let function=&definition.function;
+    if function.kind()!=FunctionKind::Constant&&function.body().is_some()
+        &&let Some(inputs)=&world.build_declarations {
         inputs.borrow_mut().insert(crate::build::Declaration::Implementation(base.into()));
     }
-    if function.external.is_some() && let Some(inputs) = &world.build_declarations {
+    if function.external().is_some()&&let Some(inputs)=&world.build_declarations {
         inputs.borrow_mut().insert(crate::build::Declaration::External(base.into()));
     }
-    if function.types.is_empty() && function.values.is_empty() {
-        return Ok(Instance {
-            name: base.into(),
-            definition: definition.clone(),
-        });
+    if function.types().is_empty()&&function.values().is_empty() {
+        return Ok(Instance{name:base.into(),definition:definition.clone(),
+            bindings:std::sync::Arc::new(Bindings::default())});
     }
-    let mut names = arguments
-        .iter()
-        .map(|ty| {
-            if *ty == TypeName::named("void") {
-                return Ok("void".to_owned());
-            }
-            world
-                .ty(
-                    ty,
-                    &definition.source,
-                    function.span,
-                    &definition.module,
-                    &definition.imports,
-                )
-                .and_then(|actual| {
-                    Ok(if ty.dataset {Ty::owned_dataset((actual).syntax(),world.shape(&ty.count,&definition.source,function.span,&definition.module,&definition.imports)?).name}
-                       else {actual.name})
-                })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let replacements: BTreeMap<_, _> = function
-        .types
-        .iter()
-        .zip(arguments)
-        .map(|(p, t)| (p.name.clone(), t))
-        .collect();
-    let value_map: BTreeMap<_, _> = function
-        .values
-        .iter()
-        .zip(values)
-        .map(|(p, v)| (p.name.clone(), *v))
-        .collect();
-    let mut concrete = (**definition).clone();
-    let mut contracts = Vec::new();
-    for contract in &function.contracts {
-        if contract.kind == ContractKind::Requires
-            && let ContractPredicate::Nonzero(name) = &contract.predicate
-            && let Some(value) = value_map.get(name)
-        {
-            if *value == 0 {
-                return definition.source.fail(
-                    contract.span,
-                    "B226",
-                    format!("const 参数 {name}=0 不满足 requires nonzero({name})"),
-                );
-            }
-            continue;
+    let mut names=arguments.iter().map(|ty| {
+        if *ty==TypeName::named("void"){return Ok("void".to_owned());}
+        let actual=world.ty(ty,&definition.source,function.span(),&definition.module,&definition.imports)?;
+        Ok(if ty.dataset {
+            Ty::owned_dataset(actual.syntax(),world.shape(&ty.count,&definition.source,function.span(),&definition.module,&definition.imports)?).name
+        }else{actual.name})
+    }).collect::<Result<Vec<_>>>()?;
+    let types=function.types().iter().zip(arguments).map(|(parameter,ty)|(parameter.name().to_owned(),ty)).collect();
+    let value_map=function.values().iter().zip(values).map(|(parameter,value)|(parameter.name().to_owned(),*value)).collect();
+    let bindings=Bindings{types,values:value_map};
+    for contract in function.contracts().iter() {
+        if contract.kind()==ContractKind::Requires
+            &&let crate::syntax::PredicateKind::Nonzero(name)=contract.predicate().kind()
+            &&let Some(value)=bindings.values.get(name)
+            &&*value==0 {
+            return definition.source.fail(contract.span(),"B226",
+                format!("const 参数 {name}=0 不满足 requires nonzero({name})"));
         }
-        let mut contract=contract.clone();
-        if let ContractPredicate::Range { intervals, .. } = &mut contract.predicate {
-            for (lower, upper) in intervals {
-                crate::value_parameters::substitute_output_condition(lower, &value_map);
-                crate::value_parameters::substitute_output_condition(upper, &value_map);
-            }
-        }
-        if let ContractPredicate::Initialized{condition,..}|ContractPredicate::Cleanup{condition,..}=&mut contract.predicate{
-            crate::value_parameters::substitute_output_condition(condition,&value_map);
-        }
-        contracts.push(contract);
     }
-    concrete.function.contracts = contracts;
-    concrete.function.types.clear();
-    concrete.function.values.clear();
-    substitute_type(
-        &mut concrete.function.result,
-        &replacements,
-        &definition.source,
-        function.span,
-    )?;
-    crate::value_parameters::substitute_type(&mut concrete.function.result, &value_map,&definition.source)?;
-    for p in &mut concrete.function.params {
-        substitute_type(&mut p.ty, &replacements, &definition.source, p.span)?;
-        crate::value_parameters::substitute_type(&mut p.ty, &value_map,&definition.source)?;
+    validate_type_uses(function.result(),&bindings,&definition.source,function.span())?;
+    for parameter in function.params().iter(){
+        validate_type_uses(parameter.ty(),&bindings,&definition.source,parameter.span())?;
     }
-    if let Some(body) = &mut concrete.function.body {
-        substitute_block(body, &replacements, &value_map, &definition.source)?;
-    }
-    if function.c_abi { crate::check::external::check_declaration(world, &concrete)?; }
+    if let Some(body)=function.body(){validate_block_uses(body,&bindings,&definition.source)?;}
     names.extend(values.iter().map(u32::to_string));
-    world.check_interface_types(definition, &concrete.function, &replacements, &value_map)?;
-    Ok(Instance {
-        name: key(base, &names),
-        definition: std::sync::Arc::new(concrete),
-    })
+    let instance=Instance{name:key(base,&names),definition:definition.clone(),bindings:std::sync::Arc::new(bindings)};
+    if function.c_abi(){crate::check::external::check_declaration(world,&instance)?;}
+    world.check_interface_types(definition,&definition.function,&instance.bindings)?;
+    Ok(instance)
+}
+// Retain the original static-use rules while removing the AST writeback.
+// The actual type/value binding is read by the instance's semantic consumers.
+fn validate_type_uses(ty:crate::syntax::Type,bindings:&Bindings,source:&Source,span:Span)->Result<()> {
+    validate_argument_uses(ty.arguments(),bindings,source,span)?;
+    if let Some(actual)=bindings.types.get(ty.name()) {
+        if !ty.arguments().is_empty(){
+            return source.fail(span,"B232","类型参数已代表完整具体类型，不能再附加类型实参");
+        }
+        if (ty.dataset()||ty.view()||ty.tile())&&(actual.dataset||actual.view||actual.tile){
+            return source.fail(span,"B232","资源包装的元素需要普通存储类型，不能再次包装资源");
+        }
+    }
+    if let Some(shape)=ty.count(){validate_shape_uses(shape,bindings,source)?;}
+    Ok(())
+}
+fn validate_argument_uses(arguments:crate::syntax::List<crate::syntax::wire::ArgumentNode>,bindings:&Bindings,source:&Source,span:Span)->Result<()> {
+    for argument in arguments {
+        match argument.kind(){
+            crate::syntax::ArgumentKind::Type(ty)=>validate_type_uses(ty,bindings,source,span)?,
+            crate::syntax::ArgumentKind::Value(shape)=>validate_shape_uses(shape,bindings,source)?,
+        }
+    }
+    Ok(())
+}
+fn validate_shape_uses(shape:crate::syntax::Shape,bindings:&Bindings,source:&Source)->Result<()> {
+    if let crate::syntax::ShapeKind::Expression(expression)=shape.kind(){validate_expr_uses(expression,bindings,source)?;}
+    Ok(())
+}
+fn validate_reference_uses(name:&str,arguments:crate::syntax::List<crate::syntax::wire::ArgumentNode>,bindings:&Bindings,source:&Source,span:Span)->Result<()> {
+    if bindings.types.contains_key(name){return source.fail(span,"B232","类型参数已代表完整类型，不能再附加实参");}
+    if bindings.values.contains_key(name){return source.fail(span,"B235","const 参数不是可调用函数");}
+    validate_argument_uses(arguments,bindings,source,span)
+}
+fn validate_expressions(expressions:crate::syntax::List<crate::syntax::wire::ExprNode>,bindings:&Bindings,source:&Source)->Result<()> {
+    for expression in expressions{validate_expr_uses(expression,bindings,source)?;}Ok(())
+}
+pub(crate) fn validate_expr_uses(expression:crate::syntax::Expr,bindings:&Bindings,source:&Source)->Result<()> {
+    use crate::syntax::ExprKind as K;
+    match expression.kind(){
+        K::Invoke(callee,args)=>{validate_expr_uses(callee,bindings,source)?;validate_expressions(args,bindings,source)?;},
+        K::Construct(ty,args)=>{validate_type_uses(ty,bindings,source,expression.span())?;validate_expressions(args,bindings,source)?;},
+        K::Call(name,args)=>{
+            if bindings.values.contains_key(name){return source.fail(expression.span(),"B235","const 参数不是可调用函数");}
+            validate_expressions(args,bindings,source)?;
+        },
+        K::Specialize(name,explicit,args)|K::Cooperate(name,Some(explicit),args)=>{
+            validate_reference_uses(name,explicit,bindings,source,expression.span())?;validate_expressions(args,bindings,source)?;
+        },
+        K::FunctionRef(name,explicit)=>validate_reference_uses(name,explicit,bindings,source,expression.span())?,
+        K::Cooperate(name,None,args)=>{
+            if bindings.values.contains_key(name){return source.fail(expression.span(),"B235","const 参数不是可调用函数");}
+            validate_expressions(args,bindings,source)?;
+        },
+        K::Target(_,base)|K::Member(base,_)|K::Unary(_,base)=>validate_expr_uses(base,bindings,source)?,
+        K::Index(a,b)|K::Binary(_,a,b)=>{validate_expr_uses(a,bindings,source)?;validate_expr_uses(b,bindings,source)?;},
+        K::Select(a,b,c)=>{validate_expr_uses(a,bindings,source)?;validate_expr_uses(b,bindings,source)?;validate_expr_uses(c,bindings,source)?;},
+        K::Name(_)|K::Number(_)|K::StaticU32(_)|K::Bool(_)=>{},
+    }
+    Ok(())
+}
+fn validate_block_uses(body:crate::syntax::List<crate::syntax::wire::StmtNode>,bindings:&Bindings,source:&Source)->Result<()> {
+    use crate::syntax::StmtKind as K;
+    for statement in body {
+        let kind=statement.kind();
+        match &kind {
+            K::Declare(_,name)|K::Let(_,name,_)|K::For(name,_,_,_)|K::Parallel(name,_,_)
+                if bindings.values.contains_key(*name)=>{
+                return source.fail(statement.span(),"B235","局部绑定不能覆盖本函数的 const 参数");
+            },
+            _=>{},
+        }
+        match kind {
+            K::Declare(ty,_)=>validate_type_uses(ty,bindings,source,statement.span())?,
+            K::Let(annotation,_,expression)=>{
+                if let Some(ty)=annotation{validate_type_uses(ty,bindings,source,statement.span())?;}
+                validate_expr_uses(expression,bindings,source)?;
+            },
+            K::Assign(a,_,b)=>{validate_expr_uses(a,bindings,source)?;validate_expr_uses(b,bindings,source)?;},
+            K::Expr(e)|K::Seek(_,e)|K::Return(Some(e))=>validate_expr_uses(e,bindings,source)?,
+            K::If(c,a,b)=>{validate_expr_uses(c,bindings,source)?;validate_block_uses(a,bindings,source)?;validate_block_uses(b,bindings,source)?;},
+            K::Match(value,arms)=>{
+                validate_expr_uses(value,bindings,source)?;for arm in arms{validate_block_uses(arm.body(),bindings,source)?;}
+            },
+            K::While(c,body)=>{validate_expr_uses(c,bindings,source)?;validate_block_uses(body,bindings,source)?;},
+            K::For(_,a,b,body)=>{
+                validate_expr_uses(a,bindings,source)?;if let Some(b)=b{validate_expr_uses(b,bindings,source)?;}validate_block_uses(body,bindings,source)?;
+            },
+            K::Parallel(_,domain,body)=>{
+                if let Some(e)=domain.count(){validate_expr_uses(e,bindings,source)?;}
+                if let Some(e)=domain.selection(){validate_expr_uses(e,bindings,source)?;}
+                validate_block_uses(body,bindings,source)?;
+            },
+            K::Return(None)|K::Break|K::Continue|K::Phase=>{},
+        }
+    }
+    Ok(())
 }
 pub(crate) fn validate_declaration(definition: &crate::Definition) -> Result<()> {
     let f = &definition.function;
     crate::check::validate_signature(definition)?;
-    validate_parameters(&f.types, &f.name, &definition.source, f.span)?;
-    crate::value_parameters::validate(&f.values, &f.name, &f.params, &definition.source, f.span)
+    validate_parameters(&f.types(), f.name(), &definition.source, f.span())?;
+    crate::value_parameters::validate(&f.values(), f.name(), f.params().iter(), &definition.source, f.span())
 }
 pub(crate) fn instances(
     world: &World,
@@ -132,13 +301,13 @@ pub(crate) fn instances(
     definition: &std::sync::Arc<crate::Definition>,
 ) -> Result<Vec<Instance>> {
     let f = &definition.function;
-    let values = crate::value_parameters::combinations(&f.values);
+    let values = crate::value_parameters::combinations(&f.values());
     let mut result = Vec::new();
     for arguments in combinations(
         world,
-        &f.types,
+        &f.types(),
         &definition.source,
-        f.span,
+        f.span(),
         &definition.module,
         &definition.imports,
     )? {
@@ -155,15 +324,15 @@ pub(crate) fn instances(
     Ok(result)
 }
 pub(crate) fn validate_parameters(
-    types: &[TypeParameter],
+    types: &crate::syntax::List<crate::syntax::wire::TypeParameterNode>,
     owner: &str,
     source: &Source,
     span: Span,
 ) -> Result<()> {
     for parameter in types {
-        if Ty::builtin(&parameter.name).is_some()
+        if Ty::builtin(parameter.name()).is_some()
             || matches!(
-                parameter.name.as_str(),
+                parameter.name(),
                 "void"
                     | "never"
                     | "dataset"
@@ -174,7 +343,7 @@ pub(crate) fn validate_parameters(
                     | "acceleration"
                     | "texture2d" | "texture3d"
             )
-            || parameter.name == owner
+            || parameter.name() == owner
         {
             return source.fail(span, "B231", "类型参数不能覆盖内置类型或当前声明名");
         }
@@ -183,7 +352,7 @@ pub(crate) fn validate_parameters(
 }
 pub(crate) fn combinations(
     world: &World,
-    types: &[TypeParameter],
+    types: &crate::syntax::List<crate::syntax::wire::TypeParameterNode>,
     source: &Source,
     span: Span,
     module: &str,
@@ -191,12 +360,12 @@ pub(crate) fn combinations(
 ) -> Result<Vec<Vec<TypeName>>> {
     let mut result = vec![Vec::new()];
     for parameter in types {
-        let Some(family) = &parameter.family else {
+        let Some(family) = parameter.family() else {
             result.clear();
             continue;
         };
         let members =
-            world.family_members(family, source, span, module, imports, &mut BTreeSet::new())?;
+            world.family_members(&family, source, span, module, imports, &mut BTreeSet::new())?;
         result = result
             .into_iter()
             .flat_map(|prefix| {
@@ -337,77 +506,6 @@ pub(crate) fn substitute_expr(
             substitute_expr(c, types, values, source)?;
         }
         _ => {}
-    }
-    Ok(())
-}
-fn substitute_block(
-    body: &mut [Stmt],
-    types: &BTreeMap<String, TypeName>,
-    values: &BTreeMap<String, u32>,
-    source: &Source,
-) -> Result<()> {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::Declare(_, name)
-            | StmtKind::Let(_, name, _)
-            | StmtKind::For(name, _, _, _)
-            | StmtKind::Parallel(name, _, _)
-                if values.contains_key(name) =>
-            {
-                return source.fail(stmt.span, "B235", "局部绑定不能覆盖本函数的 const 参数");
-            }
-            _ => {}
-        }
-        match &mut stmt.kind {
-            StmtKind::Declare(ty, _) => {
-                substitute_type(ty, types, source, stmt.span)?;
-                crate::value_parameters::substitute_type(ty, values,source)?;
-            }
-            StmtKind::Let(annotation, _, expr) => {
-                if let Some(ty) = annotation {
-                    substitute_type(ty, types, source, stmt.span)?;
-                    crate::value_parameters::substitute_type(ty, values,source)?;
-                }
-                substitute_expr(expr, types, values, source)?;
-            }
-            StmtKind::Assign(a, _, b) => {
-                substitute_expr(a, types, values, source)?;
-                substitute_expr(b, types, values, source)?;
-            }
-            StmtKind::Expr(e) | StmtKind::Seek(_, e) | StmtKind::Return(Some(e)) => {
-                substitute_expr(e, types, values, source)?
-            }
-            StmtKind::If(c, a, b) => {
-                substitute_expr(c, types, values, source)?;
-                substitute_block(a, types, values, source)?;
-                substitute_block(b, types, values, source)?;
-            }
-            StmtKind::Match(value, arms) => {
-                substitute_expr(value, types, values, source)?;
-                for arm in arms { substitute_block(&mut arm.body, types, values, source)?; }
-            }
-            StmtKind::While(c, b) => {
-                substitute_expr(c, types, values, source)?;
-                substitute_block(b, types, values, source)?;
-            }
-            StmtKind::For(_, a, b, body) => {
-                substitute_expr(a, types, values, source)?;
-                if let Some(b) = b {
-                    substitute_expr(b, types, values, source)?;
-                }
-                substitute_block(body, types, values, source)?;
-            }
-            StmtKind::Parallel(_, domain, body) => {
-                if let Some(c) = &mut domain.count {
-                    substitute_expr(c, types, values, source)?;
-                }
-                if let Some(s) = &mut domain.selection {
-                    substitute_expr(s, types, values, source)?;
-                }
-                substitute_block(body, types, values, source)?;
-            }
-            _ => {}
-        }
     }
     Ok(())
 }

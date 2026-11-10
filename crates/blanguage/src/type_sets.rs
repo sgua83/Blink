@@ -2,7 +2,7 @@
 use crate::{World, ast::*, ir::Ty, resolve_name};
 use std::collections::{BTreeMap, BTreeSet};
 
-impl TypeFamily {
+impl crate::syntax::FamilyKind<'_> {
     pub(crate) fn builtin_members(&self) -> Option<&'static [&'static str]> {
         Some(match self {
             Self::Floating => &["f32", "float2", "float3", "float4", "f64"],
@@ -22,7 +22,7 @@ impl TypeFamily {
 impl World {
     pub(crate) fn family_accepts(
         &self,
-        family: &Option<TypeFamily>,
+        family: &Option<crate::syntax::TypeFamily>,
         actual: &Ty,
         source: &Source,
         span: Span,
@@ -40,17 +40,17 @@ impl World {
     }
     pub(crate) fn family_members(
         &self,
-        family: &TypeFamily,
+        family: &crate::syntax::TypeFamily,
         source: &Source,
         span: Span,
         module: &str,
         imports: &[String],
         stack: &mut BTreeSet<String>,
     ) -> Result<Vec<(TypeName, Ty)>> {
-        if let TypeFamily::Named(name) = family {
+        if let crate::syntax::FamilyKind::Named(name) = family.kind() {
             if let Some(inputs) = &self.build_declarations {
                 inputs.borrow_mut().insert(crate::build::Declaration::TypeSetName {
-                    name: name.clone(), module: module.into(), imports: imports.to_vec(),
+                    name: name.into(), module: module.into(), imports: imports.to_vec(),
                 });
             }
             let key = self.declarations.resolve_type_set(name, module, imports)
@@ -62,7 +62,7 @@ impl World {
             })?;
             self.set_members(&key, stack)
         } else {
-            Ok(family
+            Ok(family.kind()
                 .builtin_members()
                 .unwrap()
                 .iter()
@@ -79,27 +79,29 @@ impl World {
             inputs.borrow_mut().insert(crate::build::Declaration::TypeSet(key.into()));
         }
         let (set, source, module, imports) = &self.type_sets[key];
-        if set.members.is_empty() {
-            return source.fail(set.span, "B233", "类型集合至少需要一个具体成员类型");
+        if set.members().is_empty() {
+            return source.fail(set.span(), "B233", "类型集合至少需要一个具体成员类型");
         }
         let identity = format!("typeset {key}");
         if !stack.insert(identity.clone()) {
             return source.fail(
-                set.span,
+                set.span(),
                 "B233",
                 format!("类型集合与记录约束递归引用 {key}"),
             );
         }
         let mut members = BTreeMap::new();
-        for member in &set.members {
-            if member.dataset || member.view || member.tile {
+        let bindings=std::sync::Arc::new(crate::generics::Bindings::default());
+        for member in &set.members() {
+            if member.dataset() || member.view() || member.tile() {
                 return source.fail(
-                    set.span,
+                    set.span(),
                     "B233",
                     "类型集合成员必须是普通值类型，不能直接是资源包装",
                 );
             }
-            let ty = self.ty_inner(member, source, set.span, module, imports, stack)?;
+            let member=bindings.type_name(self,&member,(source,module,imports),set.span())?;
+            let ty = self.ty_inner(&member, source, set.span(), module, imports, stack)?;
             let name = ty.syntax();
             members.insert(ty.name.clone(), (name, ty));
         }

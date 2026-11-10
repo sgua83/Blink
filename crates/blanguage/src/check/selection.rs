@@ -35,20 +35,23 @@ impl Builder<'_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Result<Option<returns::Returned>> {
-        let Some(c) = self.temporary_scope(condition.span, |builder| Ok((builder.expr(condition)?, view::Borrow::default())))? else {
+        let Some(c) = self.temporary_scope(condition.span(), |builder| Ok((builder.expr(condition)?, view::Borrow::default())))? else {
             return Ok(None);
         };
-        self.require_bool(&c, condition.span)?;
+        self.require_bool(&c, condition.span())?;
         // 条件求值完成后才进入两臂合并，条件递归不保留合并阶段的局部状态。
-        self.selection_after_condition(c, yes, no, span, expected)
+        self.selection_after_condition(c,
+            (yes.span(), |builder| builder.evaluate_returned(yes, expected)),
+            (no.span(), |builder| builder.evaluate_returned(no, expected)),
+            |builder, names| expression_assignments(builder, yes, names), span)
     }
-    fn selection_after_condition(
+    pub(super) fn selection_after_condition(
         &mut self,
         c: Value,
-        yes: &Expr,
-        no: &Expr,
+        yes: (Span, impl FnOnce(&mut Self) -> Result<Option<returns::Returned>>),
+        no: (Span, impl FnOnce(&mut Self) -> Result<Option<returns::Returned>>),
+        modified: impl FnOnce(&Self, &mut BTreeSet<String>) -> Result<()>,
         span: Span,
-        expected: Option<&Ty>,
     ) -> Result<Option<returns::Returned>> {
         self.remember_loop_control(&c);
         let partition = Arc::new(bounds::Condition::of(&c));
@@ -64,7 +67,7 @@ impl Builder<'_> {
             self.cross_access.clone(),
         );
         let mut yes_modified = BTreeSet::new();
-        expression_assignments(self, yes, &mut yes_modified)?;
+        modified(self, &mut yes_modified)?;
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
         self.refine_bounds(&partition, true);
@@ -73,7 +76,7 @@ impl Builder<'_> {
             .return_context
             .as_ref()
             .map_or(0, |context| context.exit_count());
-        let (mut a_result,yes_owners)=self.selection_arm(yes,expected,&original)?;
+        let (mut a_result,yes_owners)=self.selection_arm(yes.0,&original,yes.1)?;
         let yes_exit = self
             .return_context
             .as_ref()
@@ -97,7 +100,7 @@ impl Builder<'_> {
         self.path = path;
         self.refine_bounds(&partition, false);
         self.flow = Flow::NEXT;
-        let (b_result,no_owners)=self.selection_arm(no,expected,&original)?;
+        let (b_result,no_owners)=self.selection_arm(no.0,&original,no.1)?;
         if self.flow.continues() && b_result.is_none() {
             return self.fail(span, "B228", "选择式需要值");
         }
@@ -264,9 +267,9 @@ impl Builder<'_> {
 }
 
 impl Builder<'_> {
-    fn selection_arm(&mut self,expr:&Expr,expected:Option<&Ty>,original:&BTreeSet<String>)->Result<(Option<returns::Returned>,Vec<Binding>)> {
-        self.temporary_scope(expr.span,|builder|{
-            let value=builder.evaluate_returned(expr,expected)?;
+    fn selection_arm(&mut self,span:Span,original:&BTreeSet<String>,lower:impl FnOnce(&mut Self)->Result<Option<returns::Returned>>)->Result<(Option<returns::Returned>,Vec<Binding>)> {
+        self.temporary_scope(span,|builder|{
+            let value=lower(builder)?;
             let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
             let borrow=retained.owners().restricted(&builder.path);
             let mut names=Vec::new();

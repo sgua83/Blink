@@ -74,7 +74,7 @@ impl Builder<'_> {
     pub(super) fn make_owned_record(
         &mut self,
         ty: Ty,
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
     ) -> Result<Option<Returned>> {
         if ty.has_variants() {return self.fail(span,"B269","带载荷变体通过声明的分支构造");}
@@ -88,14 +88,14 @@ impl Builder<'_> {
         let mut held = Vec::new();
         for (i, arg) in args.iter().enumerate() {
             let (_, field) = ty.aggregate_part(i);
-            let item = self.evaluate_returned(arg, Some(field))?;
+            let item = self.evaluate_returned(&arg, Some(field))?;
             if !self.flow.continues() {
                 self.abandon_arguments(&held);
                 return Ok(None);
             }
             let mut item = item.ok_or_else(|| Diagnostic {
-                source: self.definition.source.clone(),
-                span: arg.span,
+                source: self.scope.source().clone(),
+                span: arg.span(),
                 code: "B228",
                 message: "记录字段需要值或拥有资源".into(),
             })?;
@@ -111,7 +111,7 @@ impl Builder<'_> {
                     );
                 }
             }
-            self.check_returned_type(&mut item, field, arg.span)?;
+            self.check_returned_type(&mut item, field, arg.span())?;
             let binding = match &item {
                 Returned::Dataset(data) => Some(Binding::ApplicationData(data.clone())),
                 Returned::OwnedValue(value) => Some(Binding::OwnedValue(value.clone())),
@@ -149,22 +149,22 @@ impl Builder<'_> {
         }))))
     }
     pub(super) fn owned_projection(&self, expr: &Expr) -> Option<OwnedProjection> {
-        match &expr.kind {
+        match expr.kind() {
             ExprKind::Name(name) => {
                 let Binding::OwnedValue(owner) = self.env.get(name)? else {
                     return None;
                 };
                 Some(OwnedProjection {
-                    root: name.clone(),
+                    root: name.to_string(),
                     path: Vec::new(),
                     components: (0..owner.value.ty.components.len()).collect(),
                     ty: owner.value.ty.clone(),
                 })
             }
             ExprKind::Index(base, index) => {
-                let mut p = self.owned_projection(base)?;
-                let i = match &index.kind {
-                    ExprKind::StaticU32(value) => *value,
+                let mut p = self.owned_projection(&base)?;
+                let i = match index.kind() {
+                    ExprKind::StaticU32(value) => value,
                     ExprKind::Number(text) => text.parse::<u32>().ok()?,
                     ExprKind::Name(name) => match self.env.get(name)? {
                         Binding::Value(value) if value.ty == Ty::scalar(Scalar::U32) => {
@@ -196,7 +196,7 @@ impl Builder<'_> {
                 Some(p)
             }
             ExprKind::Member(base, name) => {
-                let mut p = self.owned_projection(base)?;
+                let mut p = self.owned_projection(&base)?;
                 let index = p.ty.fields.iter().position(|(field, _, _)| field == name)?;
                 let (_, offset, ty) = &p.ty.fields[index];
                 p.components = ty
@@ -253,21 +253,27 @@ impl Builder<'_> {
             other => Ok(other),
         }
     }
+    pub(super) fn application_named_reference(
+        &mut self, name: &str, span: Span,
+    ) -> Result<Option<application::DataReference>> {
+        if let Some(Binding::DataReference(data)) = self.env.get(name).cloned() {
+            self.application_available(&data.data, span)?;
+            return Ok(Some(data));
+        }
+        self.application_value(name, span).map(|data| data.map(application::DataReference::direct))
+    }
     pub(super) fn application_reference(
         &mut self,
         expr: &Expr,
     ) -> Result<Option<application::DataReference>> {
-        if let ExprKind::Name(name) = &expr.kind {
-            if let Some(Binding::DataReference(data))=self.env.get(name).cloned(){
-                self.application_available(&data.data,expr.span)?;return Ok(Some(data));
-            }
-            return self.application_value(name,expr.span).map(|data|data.map(application::DataReference::direct));
+        if let ExprKind::Name(name) = expr.kind() {
+            return self.application_named_reference(name, expr.span());
         }
-        if let ExprKind::Member(base,field)=&expr.kind {
-            if let Some(mut data)=self.application_reference(base)? {
+        if let ExprKind::Member(base,field)=expr.kind() {
+            if let Some(mut data)=self.application_reference(&base)? {
                 let(_,ty)=data.element_layout();
                 let Some(index)=ty.fields.iter().position(|(name,..)|name==field)else{
-                    return if field=="length"{Ok(None)}else{self.fail(expr.span,"B141","dataset字段不存在")};
+                    return if field=="length"{Ok(None)}else{self.fail(expr.span(),"B141","dataset字段不存在")};
                 };
                 data.projection.push(index);return Ok(Some(data));
             }
@@ -283,12 +289,12 @@ impl Builder<'_> {
             let Some(place) = self.place(expr)? else {
                 return Ok(None);
             };
-            return self.application_place_reference(place,expr.span).map(Some);
+            return self.application_place_reference(place,expr.span()).map(Some);
         };
-        let Returned::Dataset(data) = self.projected_owned(&p, expr.span)? else {
+        let Returned::Dataset(data) = self.projected_owned(&p, expr.span())? else {
             unreachable!()
         };
-        self.application_available(&data, expr.span)?;
+        self.application_available(&data, expr.span())?;
         let Binding::OwnedValue(root) = self.env.get_mut(&p.root).unwrap() else {
             unreachable!()
         };
@@ -304,30 +310,30 @@ impl Builder<'_> {
         &mut self,
         expr: &Expr,
         base: &Expr,
-        name: &String,
+        name: &str,
     ) -> Result<Option<Returned>> {
         if self
             .owned_element_type(expr)
             .is_some_and(|ty| ty.owns_resources())
         {
             let Some(place)=self.place(expr)?else{return Ok(None)};
-            return self.take_owned_place(place,expr.span).map(Some);
+            return self.take_owned_place(place,expr.span()).map(Some);
         }
         if let Some(p) = self.owned_projection(expr) {
-            return self.projected_owned(&p, expr.span).map(Some);
+            return self.projected_owned(&p, expr.span()).map(Some);
         }
         if let Some(data) = self.application_reference(base)? {
             return if name == "length" {
                 Ok(Some(Returned::value(data.length.clone())))
             } else {
-                self.fail(expr.span, "B141", "dataset只公开只读length")
+                self.fail(expr.span(), "B141", "dataset只公开只读length")
             };
         }
-        if self.owned_element_type(base).is_some_and(|ty|ty.has_variants()) {return self.fail(expr.span,"B269","变体载荷通过match使用");}
+        if self.owned_element_type(base).is_some_and(|ty|ty.has_variants()) {return self.fail(expr.span(),"B269","变体载荷通过match使用");}
         if !self.temporary_projection(base)
             && (self.is_place(expr)
                 || self.dataset_reference(base)?.is_some()
-                || matches!(&base.kind,ExprKind::Name(n) if matches!(self.env.get(n),Some(Binding::Tile(_)|Binding::Texture(_)))))
+                || matches!(base.kind(),ExprKind::Name(n) if matches!(self.env.get(n),Some(Binding::Tile(_)|Binding::Texture(_)))))
         {
             return self
                 .member_expr(base, name, expr)
@@ -346,7 +352,7 @@ impl Builder<'_> {
                     .iter()
                     .position(|(field, _, _)| field == name)
                 else {
-                    return self.fail(expr.span, "B141", "拥有值字段不存在");
+                    return self.fail(expr.span(), "B141", "拥有值字段不存在");
                 };
                 let item = self.unpack_record(&owner, i);
                 if owner.value.ty.aggregate_part(i).1.owns_resources() {
@@ -358,7 +364,7 @@ impl Builder<'_> {
                 }
                 let retained=item.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
                 if retained.empty() {
-                    self.drop_returned(Returned::OwnedValue(owner),&retained,expr.span)?;
+                    self.drop_returned(Returned::OwnedValue(owner),&retained,expr.span())?;
                 } else {
                     self.hold_binding(Binding::OwnedValue(owner));
                 }
@@ -366,16 +372,16 @@ impl Builder<'_> {
             }
             Some(Returned::Dataset(data)) => {
                 if name != "length" {
-                    return self.fail(expr.span, "B141", "dataset只公开只读length");
+                    return self.fail(expr.span(), "B141", "dataset只公开只读length");
                 }
                 let length = data.length.clone();
-                self.drop_returned(Returned::Dataset(data),&view::Borrow::default(),expr.span)?;
+                self.drop_returned(Returned::Dataset(data),&view::Borrow::default(),expr.span())?;
                 Ok(Some(Returned::value(length)))
             }
             Some(Returned::Value(value)) => self
-                .member_value(*value, name, expr.span)
+                .member_value(*value, name, expr.span())
                 .map(|v| Some(Returned::value(v))),
-            _ => self.fail(expr.span, "B228", "字段访问需要值"),
+            _ => self.fail(expr.span(), "B228", "字段访问需要值"),
         }
     }
 }
@@ -404,21 +410,21 @@ impl Binding {
 
 impl Builder<'_> {
     fn owned_expression_type(&self, expr: &Expr) -> Option<Ty> {
-        match &expr.kind {
+        match expr.kind() {
             ExprKind::Name(name) => match self.env.get(name)? {
                 Binding::OwnedValue(owner) => Some(owner.value.ty.clone()),
                 _ => None,
             },
             ExprKind::Member(base, field) => self
-                .owned_expression_type(base)?
+                .owned_expression_type(&base)?
                 .field(field)
                 .map(|(_, ty)| ty.clone()),
-            ExprKind::Index(base, _) => self.owned_expression_type(base)?.array.map(|ty| *ty),
+            ExprKind::Index(base, _) => self.owned_expression_type(&base)?.array.map(|ty| *ty),
             _ => None,
         }
     }
     pub(super) fn read_expression_type(&self,expr:&Expr)->Result<Option<Ty>> {
-        Ok(match &expr.kind {
+        Ok(match expr.kind() {
             ExprKind::Name(name)=>match self.env.get(name) {
                 Some(Binding::OwnedValue(value))=>Some(value.value.ty.clone()),
                 Some(Binding::Owned(owner))if matches!(owner.place.storage(),Place::ApplicationElement{..})=>Some(owner.place.ty().clone()),
@@ -427,15 +433,15 @@ impl Builder<'_> {
                 _=>None,
             },
             ExprKind::Member(base,field)=>{
-                let Some(ty)=self.read_expression_type(base)? else{return Ok(None);};
+                let Some(ty)=self.read_expression_type(&base)? else{return Ok(None);};
                 if let Some(reference)=&ty.dataset {
-                    let element=self.expected_storage(reference,expr.span)?;
+                    let element=self.expected_storage(reference,expr.span())?;
                     element.field(field).map(|(_,field)|Ty::owned_dataset(field.syntax(),ty.values.first().copied()))
                 }else{ty.field(field).map(|(_,ty)|ty.clone())}
             },
             ExprKind::Index(base,_)=>{
-                let Some(ty)=self.read_expression_type(base)? else{return Ok(None);};
-                if let Some(reference)=ty.dataset {Some(self.expected_storage(&reference,expr.span)?)}
+                let Some(ty)=self.read_expression_type(&base)? else{return Ok(None);};
+                if let Some(reference)=ty.dataset {Some(self.expected_storage(&reference,expr.span())?)}
                 else{ty.array.map(|element|*element)}
             },
             _=>None,
@@ -453,7 +459,7 @@ impl Builder<'_> {
     ) -> Result<Option<Returned>> {
         if self.owned_expression_type(base).is_some() {
             let Some(place)=self.place(expr)?else{return Ok(None)};
-            return self.take_owned_place(place,expr.span).map(Some);
+            return self.take_owned_place(place,expr.span()).map(Some);
         }
         let returned = self.evaluate_returned(base, None)?;
         if !self.flow.continues() {
@@ -468,10 +474,10 @@ impl Builder<'_> {
                 else {
                     return Ok(None);
                 };
-                let value=if place.ty().owns_resources(){self.take_owned_place(place,expr.span)?}
-                    else{Returned::value(self.read_place(&place,expr.span,None)?)};
+                let value=if place.ty().owns_resources(){self.take_owned_place(place,expr.span())?}
+                    else{Returned::value(self.read_place(&place,expr.span(),None)?)};
                 let stored=self.returned_storage(&value);
-                if stored.proof.typed_view_borrow(&stored.ty).empty(){self.finish_scoped_argument(&held,expr.span)?;}
+                if stored.proof.typed_view_borrow(&stored.ty).empty(){self.finish_scoped_argument(&held,expr.span())?;}
                 return Ok(Some(value));
             }
             Some(Returned::Value(value)) if value.ty.indexed_element().is_some() => {
@@ -484,14 +490,14 @@ impl Builder<'_> {
                     return Ok(None);
                 };
                 return self
-                    .read_place(&place, expr.span, None)
+                    .read_place(&place, expr.span(), None)
                     .map(|v| Some(Returned::value(v)));
             }
-            _ => return self.fail(expr.span, "B224", "拥有数组元素需要实际拥有数组值"),
+            _ => return self.fail(expr.span(), "B224", "拥有数组元素需要实际拥有数组值"),
         };
         let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();let held=self.hold_binding(Binding::OwnedValue(owner));
-        let Some(value)=self.expr(index)?else{return Ok(None)};let place=self.array_index(place,value,index.span)?;let item=self.take_owned_place(place,expr.span)?;
-        self.finish_scoped_argument(&held,expr.span)?;
+        let Some(value)=self.expr(index)?else{return Ok(None)};let place=self.array_index(place,value,index.span())?;let item=self.take_owned_place(place,expr.span())?;
+        self.finish_scoped_argument(&held,expr.span())?;
         Ok(Some(item))
     }
 }
@@ -522,8 +528,8 @@ impl Builder<'_> {
 
 impl Builder<'_> {
     pub(super) fn temporary_projection(&self, expr: &Expr) -> bool {
-        match &expr.kind {
-            ExprKind::Index(base, _) | ExprKind::Member(base, _) => self.temporary_projection(base),
+        match expr.kind() {
+            ExprKind::Index(base, _) | ExprKind::Member(base, _) => self.temporary_projection(&base),
             ExprKind::Specialize(name, _, _) if name == "unsafe_position" => false,
             ExprKind::Call(..)
             | ExprKind::Invoke(..)

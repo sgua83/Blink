@@ -8,120 +8,162 @@ use returns::Returned;
 
 #[derive(Clone, Copy)]
 enum Clauses<'a> {
-    Declaration(&'a Definition),
-    Signature(&'a [ContractPredicate], Span),
+    Declaration(&'a crate::generics::Instance),
+    Signature(&'a [Param], &'a [ContractPredicate], Span),
+    Native(&'a [Param], &'a [FunctionContract], &'a str, Span),
 }
-/// A borrowed view of the original declaration or bound function-value contract.
+/// Read source clauses with their real instance bindings, or a concrete cfn signature.
 #[derive(Clone, Copy)]
 pub(super) struct Contract<'a> {
     pub(super) source: &'a crate::Source,
-    module: &'a str,
-    imports: &'a [String],
+    pub(super) module: &'a str,
+    pub(super) imports: &'a [String],
     public: bool,
-    pub(super) parameters: &'a [Param],
     clauses: Clauses<'a>,
 }
-impl<'a> From<&'a Definition> for Contract<'a> {
-    fn from(definition: &'a Definition) -> Self {
-        Self { source: &definition.source, module: &definition.module,
-            imports: &definition.imports, public: definition.public,
-            parameters: &definition.function.params,
-            clauses: Clauses::Declaration(definition) }
+impl<'a> From<&'a crate::generics::Instance> for Contract<'a> {
+    fn from(instance: &'a crate::generics::Instance) -> Self {
+        let definition=&instance.definition;
+        Self { source:&definition.source, module:&definition.module,
+            imports:&definition.imports, public:definition.public,
+            clauses:Clauses::Declaration(instance) }
     }
-}
-impl<'a> From<&'a Arc<Definition>> for Contract<'a> {
-    fn from(definition: &'a Arc<Definition>) -> Self { definition.as_ref().into() }
 }
 impl<'a> Contract<'a> {
-    pub(super) fn signature(source: &'a crate::Source, module: &'a str, imports: &'a [String],
-        parameters: &'a [Param], outputs: &'a [ContractPredicate], span: Span) -> Self {
-        Self { source, module, imports, public: false, parameters,
-            clauses: Clauses::Signature(outputs, span) }
+    pub(super) fn signature(source:&'a crate::Source,module:&'a str,imports:&'a [String],
+        parameters:&'a [Param],outputs:&'a [ContractPredicate],span:Span)->Self {
+        Self { source,module,imports,public:false,clauses:Clauses::Signature(parameters,outputs,span) }
     }
-    pub(super) fn declaration_origin(self) -> Option<SourceDeclaration> {
-        match self.clauses { Clauses::Declaration(definition) => definition.declaration_origin(),
-            Clauses::Signature(..) => None }
+    pub(super) fn declaration_origin(self)->Option<SourceDeclaration>{
+        match self.clauses {
+            Clauses::Declaration(instance)=>instance.definition.declaration_origin(),
+            Clauses::Signature(..)|Clauses::Native(..)=>None,
+        }
     }
-    pub(super) fn external_memory(self)->Option<Access> {
-        external_memory((0..self.len()).filter_map(|index|match self.at(index) {
-            (ContractKind::Ensures,predicate,_)=>Some(predicate),
+    pub(super) fn native(scope:&'a LexicalScope,parameters:&'a [Param],contracts:&'a [FunctionContract],name:&'a str,span:Span)->Self {
+        Self{source:scope.source(),module:scope.module(),imports:scope.imports(),public:false,
+            clauses:Clauses::Native(parameters,contracts,name,span)}
+    }
+    pub(super) fn parameters(self)->impl Iterator<Item=ScopeParameter<'a>> {
+        let(declaration,bound)=match self.clauses {
+            Clauses::Declaration(instance)=>(Some(instance),None),
+            Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>(None,Some(parameters)),
+        };
+        declaration.into_iter().flat_map(|instance|instance.definition.function.params().into_iter()
+            .map(move|parameter|ScopeParameter::Declaration(instance,parameter)))
+            .chain(bound.into_iter().flat_map(|parameters|parameters.iter().map(ScopeParameter::Bound)))
+    }
+    pub(super) fn span(self)->Span {
+        match self.clauses {Clauses::Declaration(instance)=>instance.definition.function.span(),
+            Clauses::Signature(_,_,span)|Clauses::Native(_,_,_,span)=>span}
+    }
+    pub(super) fn name(self)->Option<&'a str> {
+        match self.clauses {Clauses::Declaration(instance)=>Some(instance.definition.function.name()),
+            Clauses::Native(_,_,name,_)=>Some(name),Clauses::Signature(..)=>None}
+    }
+    pub(super) fn validate_source(self,world:&World)->Result<()> {
+        if let Clauses::Declaration(instance)=self.clauses
+            && !instance.definition.function.c_abi(){validate(world,instance)?;}
+        Ok(())
+    }
+    pub(super) fn contracts(self)->impl Iterator<Item=FunctionContract>+'a {
+        let(declaration,signature,native)=match self.clauses {
+            Clauses::Declaration(instance)=>(Some(instance),None,None),
+            Clauses::Signature(_,clauses,span)=>(None,Some((clauses,span)),None),
+            Clauses::Native(_,clauses,..)=>(None,None,Some(clauses)),
+        };
+        declaration.into_iter().flat_map(|instance|instance.contracts())
+            .chain(signature.into_iter().flat_map(|(clauses,span)|clauses.iter().map(move|predicate|{
+                let kind=if matches!(predicate,ContractPredicate::Nonzero(_)){ContractKind::Requires}else{ContractKind::Ensures};
+                FunctionContract{kind,predicate:predicate.clone(),span}
+            }))).chain(native.into_iter().flat_map(|clauses|clauses.iter().cloned()))
+    }
+    pub(super) fn external_memory(self)->Option<Access>{
+        external_memory(self.contracts().filter_map(|contract|
+            (contract.kind==ContractKind::Ensures).then_some(contract.predicate)))
+    }
+    pub(super) fn nonzero_inputs(self)->impl Iterator<Item=(String,Span)>+'a {
+        self.contracts().filter_map(|contract|match (contract.kind,contract.predicate) {
+            (ContractKind::Requires,ContractPredicate::Nonzero(path))=>Some((path,contract.span)),
             _=>None,
-        }))
-    }
-    pub(super) fn nonzero_inputs(self) -> impl Iterator<Item = (&'a str, Span)> {
-        (0..self.len()).filter_map(move |index| match self.at(index) {
-            (ContractKind::Requires, ContractPredicate::Nonzero(path), span) => Some((path.as_str(), span)),
-            _ => None,
         })
     }
-    fn len(self) -> usize {
-        match self.clauses { Clauses::Declaration(definition) => definition.function.contracts.len(),
-            Clauses::Signature(clauses, _) => clauses.len() }
-    }
-    fn at(self, index: usize) -> (ContractKind, &'a ContractPredicate, Span) {
+    pub(super) fn parameter_name(self,index:usize)->String {
         match self.clauses {
-            Clauses::Declaration(definition) => {
-                let clause = &definition.function.contracts[index]; (clause.kind, &clause.predicate, clause.span)
-            }
-            Clauses::Signature(clauses, span) => {
-                let kind = if matches!(clauses[index], ContractPredicate::Nonzero(_)) {
-                    ContractKind::Requires
-                } else { ContractKind::Ensures };
-                (kind, &clauses[index], span)
-            },
+            Clauses::Declaration(instance)=>instance.definition.function.params().at(index).name().into(),
+            Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>parameters[index].name.clone(),
+        }
+    }
+    fn has_parameter(self,name:&str)->bool{
+        match self.clauses {
+            Clauses::Declaration(instance)=>instance.definition.function.params().iter().any(|parameter|parameter.name()==name),
+            Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>parameters.iter().any(|parameter|parameter.name==name),
+        }
+    }
+    fn parameter_type(self,world:&World,name:&str,span:Span)->Result<Option<TypeName>>{
+        match self.clauses {
+            Clauses::Declaration(instance)=>instance.definition.function.params().iter()
+                .find(|parameter|parameter.name()==name)
+                .map(|parameter|instance.bindings.type_name(world,&parameter.ty(),
+                    (self.source,self.module,self.imports),span)).transpose(),
+            Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>Ok(parameters.iter().find(|parameter|parameter.name==name).map(|parameter|parameter.ty.clone())),
         }
     }
 }
 
-pub(super) fn external_memory<'a>(predicates:impl IntoIterator<Item=&'a ContractPredicate>)->Option<Access> {
+pub(super) fn external_memory<P:std::borrow::Borrow<ContractPredicate>>(predicates:impl IntoIterator<Item=P>)->Option<Access> {
     let(mut reads,mut writes)=(true,true);
-    for predicate in predicates {if let ContractPredicate::Memory(access)=predicate {
+    for predicate in predicates {if let ContractPredicate::Memory(access)=predicate.borrow() {
         reads&=access.is_some_and(|access|access.reads());
         writes&=access.is_some_and(|access|access.writes());
     }}
     match(reads,writes){(true,true)=>Some(Access::InOut),(true,false)=>Some(Access::Read),(false,true)=>Some(Access::Write),(false,false)=>None}
 }
 
-pub(super) fn validate(world: &World, definition: &Definition) -> Result<()> {
-    if !definition.function.contracts.iter()
+pub(super) fn validate(world: &World, instance: &crate::generics::Instance) -> Result<()> {
+    let definition=&instance.definition;
+    if !instance.contracts()
         .any(|contract| matches!(contract.predicate, ContractPredicate::Initialized { .. })) {
         return Ok(());
     }
-    let parameters = definition.function.params.iter().map(|param| {
-        let ty = cooperative::parameter_type(world, param, definition)?;
+    let parameters = instance.parameters(world).map(|param| {
+        let param=param?;
+        let ty = cooperative::parameter_type(world,&param,(&definition.source,&definition.module,&definition.imports,definition.function.kind()),Target::Cpu)?;
         Ok(if param.ty.dataset {
-            Ty::owned_dataset((ty).syntax(), world.shape(&param.ty.count, &definition.source, param.span,
-                &definition.module, &definition.imports)?)
+            Ty::owned_dataset((ty).syntax(), world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)?)
         } else { ty })
     }).collect::<Result<Vec<_>>>()?;
-    let result = &definition.function.result;
+    let result = instance.bindings.type_name(world,&definition.function.result(),
+        (&definition.source,&definition.module,&definition.imports),definition.function.span())?;
     let result = if result.name == "void" || result.is_never() { None } else {
-        let ty = world.ty(result, &definition.source, definition.function.span,
+        let ty = world.ty(&result, &definition.source, definition.function.span(),
             &definition.module, &definition.imports)?;
         Some(if result.dataset {
             Ty::owned_dataset((ty).syntax(), world.shape(&result.count, &definition.source,
-                definition.function.span, &definition.module, &definition.imports)?)
+                definition.function.span(), &definition.module, &definition.imports)?)
         } else { ty })
     };
-    validate_named(world, definition, &parameters, result.as_ref())
+    validate_named(world, instance, &parameters, result.as_ref())
 }
-pub(super) fn validate_named(world: &World, definition: &Definition,
+pub(super) fn validate_named(world: &World, instance: &crate::generics::Instance,
     parameters: &[Ty], returned: Option<&Ty>,
 ) -> Result<()> {
-    let input = |name: &str| definition.function.params.iter().enumerate()
-        .find(|(_, param)| param.name == name)
-        .map(|(index, param)| (param.access, parameters[index].clone()));
-    for contract in &definition.function.contracts {
-        if definition.function.c_abi && contract.kind == ContractKind::Requires
+    let definition=&instance.definition;
+    let input = |name: &str| definition.function.params().iter().enumerate()
+        .find(|(_, param)| param.name() == name)
+        .map(|(index, param)| (param.access(), parameters[index].clone()));
+    for contract in instance.contracts() {
+        if definition.function.c_abi() && contract.kind == ContractKind::Requires
             && let ContractPredicate::Nonzero(path) = &contract.predicate {
             contracts::validate_nonzero_input(path, &input, &definition.source, contract.span)?;
             continue;
         }
         let ContractPredicate::Initialized { value, condition } = &contract.predicate else { continue; };
-        if contract.kind != ContractKind::Ensures || definition.function.kind != FunctionKind::Value {
+        if contract.kind != ContractKind::Ensures || definition.function.kind() != FunctionKind::Value {
             return definition.source.fail(contract.span, "B225", "initialized 是普通函数的 ensures 输出合同");
         }
-        let condition = normalize(world, definition.into(), &definition.function.result, condition, contract.span)?;
+        let condition = normalize(world, instance.into(), &instance.bindings.type_name(world,&definition.function.result(),
+            (&definition.source,&definition.module,&definition.imports),definition.function.span())?, condition, contract.span)?;
         validate_output(world,value, &condition, &input, returned, &definition.source, contract.span)?;
     }
     Ok(())
@@ -129,12 +171,12 @@ pub(super) fn validate_named(world: &World, definition: &Definition,
 
 pub(super) fn declared<'a>(definition: impl Into<Contract<'a>>, parameter: usize) -> bool {
     let definition = definition.into();
-    let name = &definition.parameters[parameter].name;
-    (0..definition.len()).any(|index| matches!(definition.at(index).1,
-        ContractPredicate::Initialized { value, .. } if value.split('.').next() == Some(name)))
+    let name = definition.parameter_name(parameter);
+    definition.contracts().any(|contract| matches!(contract.predicate,
+        ContractPredicate::Initialized { value, .. } if value.split('.').next() == Some(name.as_str())))
 }
 
-fn input_names(definition: &Definition) -> BTreeSet<String> {
+fn input_names(definition:Contract<'_>) -> BTreeSet<String> {
     fn visit(condition: &OutputCondition, names: &mut BTreeSet<String>) {
         match condition {
             OutputCondition::Name(name) if name != "returned" => {
@@ -151,7 +193,7 @@ fn input_names(definition: &Definition) -> BTreeSet<String> {
         }
     }
     let mut names = BTreeSet::new();
-    for contract in &definition.function.contracts {
+    for contract in definition.contracts() {
         if let ContractPredicate::Initialized { condition, .. }|ContractPredicate::Cleanup { condition, .. } = &contract.predicate {
             visit(condition, &mut names);
         }
@@ -160,26 +202,26 @@ fn input_names(definition: &Definition) -> BTreeSet<String> {
 }
 fn collect_inputs(
     builder: &mut Builder<'_>,
-    definition: &Definition,
+    definition: Contract<'_>,
     env: &BTreeMap<String, Binding>,
     names: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, Value>> {
     let mut inputs = BTreeMap::new();
-    for parameter in &definition.function.params {
-        if !names.contains(&parameter.name) {
+    for parameter in definition.parameters() {
+        if !names.contains(parameter.name()) {
             continue;
         }
-        let Some(binding) = env.get(&parameter.name) else {
+        let Some(binding) = env.get(parameter.name()) else {
             continue;
         };
         let value = match binding {
-            Binding::Value(value) if parameter.access == Access::Value => value.clone(),
-            Binding::OwnedValue(value) if parameter.access == Access::Value => value.value.clone(),
-            Binding::Owned(owner) if parameter.access == Access::Value => {
-                builder.read_place(&owner.place, parameter.span, None)?
+            Binding::Value(value) if parameter.access() == Access::Value => value.clone(),
+            Binding::OwnedValue(value) if parameter.access() == Access::Value => value.value.clone(),
+            Binding::Owned(owner) if parameter.access() == Access::Value => {
+                builder.read_place(&owner.place, parameter.span(), None)?
             }
             Binding::Data(data)=>{
-                inputs.insert(format!("{}.length",parameter.name),builder.data_length(data));
+                inputs.insert(format!("{}.length",parameter.name()),builder.data_length(data));
                 continue;
             }
             Binding::ApplicationData(data) => {
@@ -188,28 +230,29 @@ fn collect_inputs(
             Binding::DataReference(data)=>builder.returned_storage(&Returned::Dataset(data.data.clone())),
             _ => continue,
         };
-        inputs.insert(parameter.name.clone(), value);
+        inputs.insert(parameter.name().to_owned(), value);
     }
     Ok(inputs)
 }
-pub(super) fn inputs(
+pub(super) fn inputs<'a>(
     builder: &mut Builder<'_>,
-    definition: &Definition,
+    definition: impl Into<Contract<'a>>,
     env: &BTreeMap<String, Binding>,
 ) -> Result<BTreeMap<String, Value>> {
-    collect_inputs(builder, definition, env, &input_names(definition))
+    let definition=definition.into();
+    collect_inputs(builder,definition,env,&input_names(definition))
 }
 pub(super) fn entry_inputs(
     builder: &mut Builder<'_>,
-    definition: &Definition,
+    instance: &crate::generics::Instance,
 ) -> Result<BTreeMap<String, Value>> {
-    let names = input_names(definition);
+    let names = input_names(instance.into());
     // A mutable owned aggregate must retain the actual ABI input identities
     // before a field's first load or replacement. The original Proof owns them.
-    for parameter in &definition.function.params {
-        if parameter.access == Access::Value
-            && names.contains(&parameter.name)
-            && let Some(Binding::OwnedValue(value)) = builder.env.get_mut(&parameter.name)
+    for parameter in &instance.definition.function.params() {
+        if parameter.access() == Access::Value
+            && names.contains(parameter.name())
+            && let Some(Binding::OwnedValue(value)) = builder.env.get_mut(parameter.name())
         {
             value.value.proof = bounds::Proof::capture(&value.value);
         }
@@ -220,7 +263,7 @@ pub(super) fn entry_inputs(
         .filter(|(name, _)| names.contains(*name))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    collect_inputs(builder, definition, &env, &names)
+    collect_inputs(builder,instance.into(),&env,&names)
 }
 
 pub(super) fn expression(
@@ -232,14 +275,6 @@ pub(super) fn expression(
     span: Span,
     expected: Option<&Ty>,
 ) -> Result<Value> {
-    fn atom(values: &mut BTreeMap<String, Binding>, value: Value, span: Span) -> Expr {
-        let name = format!("\0output-condition:{}", values.len());
-        values.insert(name.clone(), Binding::Value(value));
-        Expr {
-            kind: ExprKind::Name(name),
-            span,
-        }
-    }
     fn path(
         builder: &mut Builder<'_>,
         definition: Contract<'_>,
@@ -258,7 +293,7 @@ pub(super) fn expression(
                 if let Some(value) = value {
                     return Ok(value.clone());
                 }
-                if name == "returned" || definition.parameters.iter().any(|p| p.name == *name)
+                if name == "returned" || definition.has_parameter(name)
                 {
                     return definition.source.fail(
                         span,
@@ -270,7 +305,7 @@ pub(super) fn expression(
                     .world
                     .resolve(name, &definition.module, &definition.imports, true).unique()
                     .filter(|key| {
-                        builder.world.functions[key].function.kind == FunctionKind::Constant
+                        builder.world.functions[key].function.kind() == FunctionKind::Constant
                     })
                     .ok_or_else(|| Diagnostic {
                         source: definition.source.clone(),
@@ -304,75 +339,61 @@ pub(super) fn expression(
             ),
         }
     }
-    fn convert(
-        builder: &mut Builder<'_>,
-        definition: Contract<'_>,
-        condition: &OutputCondition,
-        inputs: &BTreeMap<String, Value>,
-        returned: Option<&Value>,
-        values: &mut BTreeMap<String, Binding>,
-        span: Span,
-    ) -> Result<Expr> {
-        let kind = match condition {
-            OutputCondition::Name(_) => {
-                return Ok(atom(
-                    values,
-                    path(builder, definition, condition, inputs, returned, span)?,
-                    span,
-                ));
-            }
+    fn lower(
+        builder: &mut Builder<'_>, definition: Contract<'_>, condition: &OutputCondition,
+        inputs: &BTreeMap<String, Value>, returned: Option<&Value>, span: Span,
+    ) -> Result<Option<Value>> {
+        let mut value = match condition {
+            OutputCondition::Name(_) => Some(path(builder, definition, condition, inputs, returned, span)?),
             OutputCondition::Member(base, field) => {
-                if field=="length"&&let OutputCondition::Name(name)=base.as_ref()
-                    &&let Some(value)=inputs.get(&format!("{name}.length")) {return Ok(atom(values,value.clone(),span));}
-                let value = path(builder, definition, base, inputs, returned, span)?;
-                if value.ty.has_variants() {
-                    let Some(variant) = value.ty.variants.iter().find(|v| v.name == *field) else {
-                        return builder.fail(span, "B225", "输出条件使用声明的返回变体名称");
-                    };
-                    let discriminant = variant.discriminant;
-                    let tag = builder.value_component(&value, 0);
-                    let scalar = tag.ty.components[0].0;
-                    let expected = builder.constant(scalar, Bits::from(discriminant));
-                    ExprKind::Binary(
-                        "==".into(),
-                        Box::new(atom(values, tag, span)),
-                        Box::new(atom(values, expected, span)),
-                    )
+                if field == "length" && let OutputCondition::Name(name) = base.as_ref()
+                    && let Some(value) = inputs.get(&format!("{name}.length")) {
+                    Some(value.clone())
                 } else {
-                    return Ok(atom(
-                        values,
-                        path(builder, definition, condition, inputs, returned, span)?,
-                        span,
-                    ));
+                    let value = path(builder, definition, base, inputs, returned, span)?;
+                    if value.ty.has_variants() {
+                        let Some(variant) = value.ty.variants.iter().find(|variant| variant.name == *field) else {
+                            return builder.fail(span, "B225", "输出条件使用声明的返回变体名称");
+                        };
+                        let discriminant = variant.discriminant;
+                        let tag = builder.value_component(&value, 0);
+                        let scalar = tag.ty.components[0].0;
+                        let expected = builder.constant(scalar, Bits::from(discriminant));
+                        Some(builder.binary("==", tag, expected, span, None)?)
+                    } else {
+                        Some(path(builder, definition, condition, inputs, returned, span)?)
+                    }
                 }
             }
-            OutputCondition::Number(number) => ExprKind::Number(number.clone()),
-            OutputCondition::StaticU32(value) => ExprKind::StaticU32(*value),
-            OutputCondition::Constant(value) => {
-                return Ok(atom(
-                    values,
-                    builder.evaluated_constant(value.ty.clone(), value.bits.clone(), value.generated_origin.clone()),
-                    span,
-                ));
+            OutputCondition::Number(number) => builder.number_expression(number, span)?,
+            OutputCondition::StaticU32(value) => Some(builder.constant(Scalar::U32, Bits::from(*value))),
+            OutputCondition::Constant(value) => Some(builder.evaluated_constant(
+                value.ty.clone(), value.bits.clone(), value.generated_origin.clone())),
+            OutputCondition::Bool(value) => Some(builder.constant(Scalar::Bool, Bits::from(*value))),
+            OutputCondition::Unary(op, value) => {
+                if op == "-" && let OutputCondition::Number(number) = value.as_ref() {
+                    Some(builder.negative_number(number, span)?)
+                } else {
+                    let Some(value) = lower(builder, definition, value, inputs, returned, span)? else { return Ok(None); };
+                    Some(builder.unary_value(op, value, span)?)
+                }
             }
-            OutputCondition::Bool(value) => ExprKind::Bool(*value),
-            OutputCondition::Unary(op, value) => ExprKind::Unary(
-                op.clone(),
-                Box::new(convert(
-                    builder, definition, value, inputs, returned, values, span,
-                )?),
-            ),
-            OutputCondition::Binary(op, a, b) => ExprKind::Binary(
-                op.clone(),
-                Box::new(convert(
-                    builder, definition, a, inputs, returned, values, span,
-                )?),
-                Box::new(convert(
-                    builder, definition, b, inputs, returned, values, span,
-                )?),
-            ),
+            OutputCondition::Binary(op, left, right) => {
+                let Some(left) = lower(builder, definition, left, inputs, returned, span)? else { return Ok(None); };
+                if op == "&&" || op == "||" {
+                    builder.require_bool(&left, span)?;
+                    builder.short_circuit_value(op, left, span, |builder| {
+                        Ok(lower(builder, definition, right, inputs, returned, span)?
+                            .map(|value| returns::Returned::Value(Box::new(value))))
+                    }, |_, _| Ok(()), span)?
+                } else {
+                    let Some(right) = lower(builder, definition, right, inputs, returned, span)? else { return Ok(None); };
+                    Some(builder.binary(op, left, right, span, None)?)
+                }
+            }
         };
-        Ok(Expr { kind, span })
+        if let Some(value) = &mut value { builder.bound_value(value); }
+        Ok(value)
     }
     let declaration = definition.declaration_origin().map(Arc::new);
     let first = builder.code.len();
@@ -380,30 +401,18 @@ pub(super) fn expression(
     let previous_context = builder.source_context.clone();
     let previous_site = builder.source_site.take();
     match definition.clauses {
-        Clauses::Declaration(declaration) if !std::ptr::eq(declaration, builder.definition.as_ref()) => {
-            (builder.source_definition, builder.source_context) = declaration.syntax_context(None);
+        Clauses::Declaration(declaration) if !builder.scope.function().is_some_and(|instance| std::ptr::eq(declaration, instance)) => {
+            (builder.source_definition, builder.source_context) = declaration.definition.syntax_context(Some(&declaration.name));
         }
-        Clauses::Declaration(_) | Clauses::Signature(..) => {
+        Clauses::Declaration(_) | Clauses::Signature(..) | Clauses::Native(..) => {
             builder.source_definition = previous_definition.clone();
         }
     }
     builder.source_site = builder.source_at(span, SourceSyntax::Expression);
     let result = (|| {
-        let mut values = BTreeMap::new();
-        let expression = convert(
-            builder,
-            definition,
-            condition,
-            inputs,
-            returned,
-            &mut values,
-            span,
-        )?;
-        let outer = std::mem::replace(&mut builder.env, values);
-        let result = builder.expr_expected(&expression, expected);
-        builder.env = outer;
+        let result = lower(builder, definition, condition, inputs, returned, span);
         let value = result?.ok_or_else(|| Diagnostic {
-            source: builder.definition.source.clone(),
+            source: builder.scope.source().clone(),
             span,
             code: "B225",
             message: "输出条件必须产生bool值".into(),
@@ -435,15 +444,15 @@ pub(super) fn guards<'a>(
     returned: Option<&Value>,
 ) -> Result<Vec<Presence>> {
     let definition = definition.into();
-    let name = &definition.parameters[parameter].name;
+    let name = definition.parameter_name(parameter);
     let mut guards = vec![None::<Presence>; ty.components.len()];
-    for index in 0..definition.len() {
-        let (_, predicate, span) = definition.at(index);
+    for contract in definition.contracts() {
+        let (predicate, span) = (contract.predicate, contract.span);
         let ContractPredicate::Initialized { value, condition } = predicate else {
             continue;
         };
         let mut fields = value.split('.');
-        if fields.next() != Some(name) {
+        if fields.next() != Some(name.as_str()) {
             continue;
         }
         let mut selected = ty.clone();
@@ -456,7 +465,7 @@ pub(super) fn guards<'a>(
         let when = Presence::input(&expression(
             builder,
             definition,
-            condition,
+            &condition,
             inputs,
             returned,
             span,
@@ -478,16 +487,18 @@ pub(super) fn guards<'a>(
 
 pub(super) fn contract_predicates(
     builder: &mut Builder<'_>,
-    definition: &Definition,
+    instance: &crate::generics::Instance,
 ) -> Result<BTreeSet<(ContractKind, ContractPredicate)>> {
+    let definition = &instance.definition;
     let mut predicates = BTreeSet::new();
-    for contract in &definition.function.contracts {
-        let mut predicate = contract.predicate.clone();
+    for contract in instance.contracts() {
+        let mut predicate = contract.predicate;
         if let ContractPredicate::Initialized { condition, .. }|ContractPredicate::Cleanup { condition, .. } = &mut predicate {
-            *condition = normalize(builder.world, definition.into(), &definition.function.result, condition, contract.span)?;
+            *condition = normalize(builder.world, instance.into(), &instance.bindings.type_name(builder.world,&definition.function.result(),
+                (&definition.source,&definition.module,&definition.imports),definition.function.span())?, condition, contract.span)?;
         }
         if let ContractPredicate::Range { intervals, .. } = &mut predicate {
-            *intervals = range_constants(builder.world, definition, None, intervals, contract.span)?
+            *intervals = range_constants(builder.world,instance.into(),&LexicalScope::Function(instance.clone()),None,intervals,contract.span)?
                 .into_iter().map(|(lower, upper)| (OutputCondition::Constant(lower), OutputCondition::Constant(upper))).collect();
         }
         predicates.insert((contract.kind, predicate));
@@ -496,17 +507,17 @@ pub(super) fn contract_predicates(
 }
 
 pub(super) fn range_constants(
-    world: &World, definition: &Definition, scalar: Option<Scalar>,
+    world: &World, definition: Contract<'_>, lexical:&LexicalScope, scalar: Option<Scalar>,
     intervals: &[(OutputCondition, OutputCondition)], span: Span,
 ) -> Result<Vec<(OutputConstant, OutputConstant)>> {
-    let context = constant::constant_context(&definition.function.name);
-    let (source_definition, source_context) = definition.syntax_context(None);
-    let mut builder = Builder::from_checked(world, &Arc::new(definition.clone()), &context, 0, source_definition, source_context, BTreeSet::new());
+    let context=constant::constant_context(lexical.module());
+    let(source_definition,source_context)=lexical.syntax_context(None);
+    let mut builder=Builder::from_checked(world,lexical,&context,0,source_definition,source_context,BTreeSet::new());
     builder.in_function = true;
     let mut endpoint = |value: &OutputCondition| -> Result<OutputConstant> {
-        let value = bind_constants(world, definition.into(), value, span)?;
+        let value = bind_constants(world, definition, value, span)?;
         let first = builder.code.len();
-        let value = expression(&mut builder, definition.into(), &value, &BTreeMap::new(), None, span, None)?;
+        let value = expression(&mut builder, definition, &value, &BTreeMap::new(), None, span, None)?;
         if !value.ty.is_numeric() || value.ty.components.len() != 1
             || value.ty.components[0].0 == Scalar::Bool
             || scalar.is_some_and(|scalar| value.ty != Ty::scalar(scalar))
@@ -529,10 +540,10 @@ fn bind_constants(
 ) -> Result<OutputCondition> {
     Ok(match value {
         OutputCondition::Name(name)
-            if name != "returned" && !definition.parameters.iter().any(|p| p.name == *name) =>
+            if name != "returned" && !definition.has_parameter(name) =>
         {
             let key = world.resolve(name, definition.module, definition.imports, true).unique()
-                .filter(|key| world.functions[key].function.kind == FunctionKind::Constant)
+                .filter(|key| world.functions[key].function.kind() == FunctionKind::Constant)
                 .ok_or_else(|| Diagnostic {
                     source: definition.source.clone(), span, code: "B225",
                     message: format!("输出条件没有编译期常量 {name}"),
@@ -710,11 +721,11 @@ fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
         if name == "returned" && (returned.name == "void" || returned.is_never()) {
             return definition.source.fail(span, "B225", "无返回值的函数没有returned输入");
         }
-        let syntax = if name == "returned" { Some(returned) }
-            else { definition.parameters.iter().find(|p| p.name == name).map(|p| &p.ty) };
+        let syntax = if name == "returned" { Some(returned.clone()) }
+            else { definition.parameter_type(world,name,span)? };
         let syntax = syntax.ok_or_else(|| Diagnostic { source: definition.source.clone(), span, code: "B225",
             message: format!("输出条件没有输入{name}") })?;
-        world.output_path_type(syntax, &fields, definition.source, span, definition.module, definition.imports)
+        world.output_path_type(&syntax, &fields, definition.source, span, definition.module, definition.imports)
     };
     Ok(identity(&value, &path, definition.source, span)?.value)
 }

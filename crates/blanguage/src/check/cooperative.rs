@@ -95,41 +95,43 @@ impl Argument {
         a.iter().any(|h| b.contains(h))
     }
 }
-pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definition) -> Result<Ty> {
-    let mut name = param.ty.clone();
+pub(super) fn parameter_type(world: &World, param: &Param, context: (&Source,&str,&[String],FunctionKind), target: Target) -> Result<Ty> {
+    let(source,module,imports,kind)=context;
+    let declared=&param.ty;
+    let mut name = declared.clone();
     name.tile = false;
     let ty = world.ty(
         &name,
-        &definition.source,
+        source,
         param.span,
-        &definition.module,
-        &definition.imports,
+        module,
+        imports,
     )?;
     if ty.owns_resources()
-        && (param.ty.dataset && !matches!(param.access, Access::Value | Access::Read | Access::InOut)
-            || param.ty.tile
+        && (declared.dataset && !matches!(param.access, Access::Value | Access::Read | Access::InOut)
+            || declared.tile
             || !matches!(param.access, Access::Value | Access::Read | Access::Write | Access::InOut)
-            || definition.function.kind != FunctionKind::Value
-            || definition.function.target != Target::Cpu)
+            || kind != FunctionKind::Value
+            || target != Target::Cpu)
     {
-        return definition.source.fail(
+        return source.fail(
             param.span,
             "B224",
             "拥有聚合通过普通CPU函数按值交接或read／write／inout借用；其他访问与执行目标尚未实现",
         );
     }
-    if param.ty.tile && ty.contains_views() {
-        return definition.source.fail(
+    if declared.tile && ty.contains_views() {
+        return source.fail(
             param.span,
             "B207",
             "tile 借用只能包含普通值，不能包含资源 view",
         );
     }
     if param.access == Access::Atomic
-        && !param.ty.tile
+        && !declared.tile
         && ty.contains_views()
     {
-        return definition.source.fail(
+        return source.fail(
             param.span,
             "B223",
             "原子借用参数不能包含资源 view",
@@ -137,104 +139,151 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
     }
     Ok(ty)
 }
+#[derive(Clone,Copy)]
+pub(super) enum CallParameters<'a>{
+    Declaration(&'a Definition),
+    CFunction(&'a [Param]),
+}
+impl CallParameters<'_>{
+    pub(super) fn len(self)->usize{match self{
+        Self::Declaration(definition)=>definition.function.params().len(),
+        Self::CFunction(parameters)=>parameters.len(),
+    }}
+    pub(super) fn access(self,index:usize)->Access{match self{
+        Self::Declaration(definition)=>definition.function.params().at(index).access(),
+        Self::CFunction(parameters)=>parameters[index].access,
+    }}
+    pub(super) fn form(self,index:usize)->DeclaredArgumentForm{match self{
+        Self::Declaration(definition)=>declared_argument_form(&definition.function.params().at(index).ty()),
+        // The cfn producer has already checked its ordinary C ABI layout.
+        Self::CFunction(_)=>DeclaredArgumentForm::Ordinary,
+    }}
+    pub(super) fn expected(self,world:&World,caller:&LexicalScope,index:usize)->Result<Option<Ty>>{
+        match self{
+            Self::Declaration(definition)=>{
+                if !definition.function.types().is_empty()||!definition.function.values().is_empty(){return Ok(None);}
+                let parameter=definition.function.params().at(index);
+                // This declaration has no generic formals; its lexical names
+                // resolve in its own module, never through the caller's bindings.
+                let bindings=Arc::new(crate::generics::Bindings::default());
+                let syntax=bindings.type_name(world,&parameter.ty(),
+                    (&definition.source,&definition.module,&definition.imports),parameter.span())?;
+                world.ty(&syntax,&definition.source,parameter.span(),&definition.module,&definition.imports).map(Some)
+            }
+            Self::CFunction(parameters)=>{
+                let parameter=&parameters[index];
+                world.ty(&parameter.ty,caller.source(),parameter.span,caller.module(),caller.imports()).map(Some)
+            }
+        }
+    }
+    pub(super) fn declares_output(self,index:usize)->bool{
+        match self{
+            Self::Declaration(definition)=>{
+                let parameter=definition.function.params().at(index);
+                definition.function.contracts().iter().any(|contract|
+                    matches!(contract.predicate().kind(),crate::syntax::PredicateKind::Initialized{value,..}
+                        if value.split('.').next()==Some(parameter.name())))
+            }
+            Self::CFunction(_)=>false,
+        }
+    }
+}
+
 impl<'a> Builder<'a> {
     #[inline(never)]
-    pub(super) fn function_arguments(&mut self, key: &str, args: &[Expr], span: Span) -> Result<Option<Vec<Argument>>> {
+    pub(super) fn function_arguments(&mut self, key: &str, args: &Expressions, span: Span) -> Result<Option<Vec<Argument>>> {
         let callee = self.world.functions[key].clone();
-        self.call_arguments(&callee.function.params, Some(callee.as_ref()), args, span)
+        self.call_arguments(CallParameters::Declaration(&callee), args, span)
     }
     #[inline(never)]
-    pub(super) fn call_arguments(
-        &mut self,
-        parameters: &[Param],
-        definition: Option<&Definition>,
-        args: &[Expr],
-        span: Span,
-    ) -> Result<Option<Vec<Argument>>> {
-        if args.len() != parameters.len() {
-            return self.fail(span, "B162", "函数参数数量不匹配");
-        }
-        let mut arguments = Vec::new();
-        let mut held = Vec::new();
-        for (param, arg) in parameters.iter().zip(args) {
-            self.view_uses.before(arg.span);
-            arguments.push(
-                if param.ty.is_acceleration() {
-                    let ExprKind::Name(name) = &arg.kind else {
-                        return self.fail(arg.span, "B183", "acceleration 借用需要已有资源名称");
+    fn source_call_argument(&mut self,parameters:CallParameters<'_>,index:usize,arg:&Expr)->Result<Option<Argument>> {
+        let access=parameters.access(index);
+        let form=parameters.form(index);
+        Ok(Some(
+if form==DeclaredArgumentForm::Acceleration {
+                    let ExprKind::Name(name) = arg.kind() else {
+                        return self.fail(arg.span(), "B183", "acceleration 借用需要已有资源名称");
                     };
                     let Some(Binding::Acceleration(index)) = self.env.get(name) else {
-                        return self.fail(arg.span, "B183", "acceleration 借用需要已有资源名称");
+                        return self.fail(arg.span(), "B183", "acceleration 借用需要已有资源名称");
                     };
                     Argument::Acceleration(*index)
-                } else if param.ty.is_texture_resource() {
+                } else if form==DeclaredArgumentForm::Texture {
                     {
-                        let Some(texture) = self.texture_argument(arg)? else {
-                            self.abandon_arguments(&held);
-                            return Ok(None);
+                        let Some(texture) = self.texture_argument(&arg)? else {
+                                return Ok(None);
                         };
                         Argument::Texture(texture)
                     }
-                } else if param.ty.dataset && param.access == Access::Value {
-                    let returned = self.evaluate_returned(arg, None)?;
+                } else if form==DeclaredArgumentForm::Dataset && access == Access::Value {
+                    let returned = self.evaluate_returned(&arg, None)?;
                     if !self.flow.continues() {
-                        self.abandon_arguments(&held);
                         return Ok(None);
                     }
                     let Some(returns::Returned::Dataset(data)) = returned else {
-                        return self.fail(arg.span, "B224", "dataset 值参数需要拥有的数据集");
+                        return self.fail(arg.span(), "B224", "dataset 值参数需要拥有的数据集");
                     };
                     Argument::ApplicationData(data)
-                } else if param.ty.dataset {
-                    if let Some(data) = self.application_reference(arg)? {
+                } else if form==DeclaredArgumentForm::Dataset {
+                    if let Some(data) = self.application_reference(&arg)? {
                         Argument::BorrowedData(data)
-                    } else if let Some(view) = self.dataset_reference(arg)? {
+                    } else if let Some(view) = self.dataset_reference(&arg)? {
                         Argument::Dataset(view)
                     } else {
-                        let argument = self.scoped_argument(arg)?;
+                        let argument = self.scoped_argument(&arg)?;
                         if !self.flow.continues() {
-                            self.abandon_arguments(&held);
-                            return Ok(None);
+                                return Ok(None);
                         }
                         argument.unwrap()
                     }
-                } else if param.ty.tile {
-                    Argument::Tile(self.tile_view(arg)?)
-                } else if param.access == Access::Atomic {
+                } else if form==DeclaredArgumentForm::Tile {
+                    Argument::Tile(self.tile_view(&arg)?)
+                } else if access == Access::Atomic {
                     {
-                        let Some(place) = self.atomic_place(arg)? else {
-                            self.abandon_arguments(&held);
-                            return Ok(None);
+                        let Some(place) = self.atomic_place(&arg)? else {
+                                return Ok(None);
                         };
                         Argument::Atomic(place)
                     }
-                } else if matches!(param.access, Access::InOut | Access::Write) {
-                    let Some(argument)=self.mutable_argument(arg,param.access)?else{self.abandon_arguments(&held);return Ok(None);};
+                } else if matches!(access, Access::InOut | Access::Write) {
+                    let Some(argument)=self.mutable_argument(&arg,access)?else{return Ok(None);};
                     argument
                 } else {
-                    let expected = if definition.is_none_or(|d| d.function.types.is_empty() && d.function.values.is_empty()) {
-                        let context = definition.unwrap_or(self.definition.as_ref());
-                        Some(self.world.ty(&param.ty, &context.source, param.span, &context.module, &context.imports)?)
-                    } else { None };
-                    let argument=if param.access==Access::Read {self.read_argument(arg,expected.as_ref())?}
-                        else {self.evaluate_returned(arg,expected.as_ref())?.filter(|value|!matches!(value,returns::Returned::Unit)).map(Argument::resource)};
+                    let expected=parameters.expected(self.world,&self.scope,index)?;
+                    let argument=if access==Access::Read {self.read_argument(&arg,expected.as_ref())?}
+                        else {self.evaluate_returned(&arg,expected.as_ref())?.filter(|value|!matches!(value,returns::Returned::Unit)).map(Argument::resource)};
                     if !self.flow.continues() {
-                        self.abandon_arguments(&held);
                         return Ok(None);
                     }
-                    match argument {Some(argument)=>argument,None=>return self.fail(arg.span,"B228","函数实参需要值或拥有资源")}
-                },
-            );
-            if !self.flow.continues() {
-                self.abandon_arguments(&held);
-                return Ok(None);
-            }
-            if param.ty.dataset && (param.access==Access::Write || param.access==Access::InOut && definition.is_some_and(|d| outputs::declared(d,arguments.len()-1)))
+                    match argument {Some(argument)=>argument,None=>return self.fail(arg.span(),"B228","函数实参需要值或拥有资源")}
+                }
+        ))
+    }
+    pub(super) fn call_arguments(&mut self,parameters:CallParameters<'_>,args:&Expressions,span:Span)->Result<Option<Vec<Argument>>> {
+        self.call_arguments_from(parameters,args.len(),span,|index|args.at(index).span(),
+            |builder,index|builder.source_call_argument(parameters,index,&args.at(index)))
+    }
+    pub(super) fn call_arguments_from(&mut self,parameters:CallParameters<'_>,count:usize,span:Span,
+        argument_span:impl Fn(usize)->Span,
+        mut lower:impl FnMut(&mut Self,usize)->Result<Option<Argument>>)->Result<Option<Vec<Argument>>> {
+        if count != parameters.len() {return self.fail(span,"B162","函数参数数量不匹配");}
+        let mut arguments=Vec::new();
+        let mut held=Vec::new();
+        for parameter_index in 0..count {
+            let access=parameters.access(parameter_index);
+            let form=parameters.form(parameter_index);
+            let arg_span=argument_span(parameter_index);
+            self.view_uses.before(arg_span);
+            let argument=lower(self,parameter_index)?;
+            if !self.flow.continues() {self.abandon_arguments(&held);return Ok(None);}
+            let Some(argument)=argument else {self.abandon_arguments(&held);return Ok(None);};
+            arguments.push(argument);
+            if form==DeclaredArgumentForm::Dataset && (access==Access::Write || access==Access::InOut && parameters.declares_output(parameter_index))
                 && let Some(Argument::BorrowedData(data))=arguments.last_mut()
             {
-                self.prepare_data_output(&mut data.data,arg.span)?;
+                self.prepare_data_output(&mut data.data,arg_span)?;
             }
-            if let Some(name) = self.hold_argument(arguments.last_mut().unwrap(), param.access)? {
+            if let Some(name) = self.hold_argument(arguments.last_mut().unwrap(), access)? {
                 held.push((arguments.len() - 1, name));
             }
         }
@@ -242,8 +291,8 @@ impl<'a> Builder<'a> {
         // 拥有参数交给callee前，调用者仍将继续使用的外部view不能留指向这些资源。
         self.view_uses.after(span);
         let scoped=arguments.iter().filter_map(|argument|match argument{Argument::Scoped{owner,..}|Argument::OwnedReference{owner:Some(owner),..}=>Some(owner.as_str()),_=>None}).collect::<BTreeSet<_>>();
-        let transferred=parameters.iter().zip(&arguments).filter_map(|(parameter,argument)|{
-            if !parameter.access.writes(){return None;}
+        let transferred=(0..parameters.len()).zip(&arguments).filter_map(|(parameter,argument)|{
+            if !parameters.access(parameter).writes(){return None;}
             match argument{
                 Argument::OwnedReference{value,place,..}=>Some(view_liveness::Transfer::Owned{value,place:Some(place)}),
                 Argument::BorrowedData(reference)=>Some(view_liveness::Transfer::BorrowedData(reference)),
@@ -253,18 +302,18 @@ impl<'a> Builder<'a> {
         let mut retained=view::Borrow::default();
         for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(self,name,binding,&transferred)?);}}
         for argument in &arguments{if let Argument::Reference(owner)=argument{retained.union(&owner.proof.typed_view_borrow(owner.place.ty()));}}
-        for(param,argument)in parameters.iter().zip(&arguments){if param.access==Access::Value{
+        for(param,argument)in (0..parameters.len()).zip(&arguments){if parameters.access(param)==Access::Value{
             let resources=match argument{Argument::ApplicationData(data)=>vec![data],Argument::OwnedValue(value)=>value.resources(),_=>Vec::new()};
             for data in resources{self.check_view_requirement(view::Requirement::Unborrowed{resource:self.owned_resource_borrow(data),borrow:retained.clone(),ownership:true,span})?;}
         }}
         self.view_uses.invocation(span);
-        for (param, argument) in parameters.iter().zip(&arguments) {
-            if let Argument::OwnedReference{value,..}=argument && param.access.writes() {
+        for (param, argument) in (0..parameters.len()).zip(&arguments) {
+            if let Argument::OwnedReference{value,..}=argument && parameters.access(param).writes() {
                 for data in value.resources(){self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),ownership:true,span})?;}
-                if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.root.identity(),span,&[],&self.path)?;}}
+                if parameters.access(param)==Access::InOut{for data in value.resources(){self.application_handle_available(data.root.identity(),span,&[],&self.path)?;}}
             }
             if let Argument::BorrowedData(reference) = argument {
-                if param.access.writes() {
+                if parameters.access(param).writes() {
                     self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&reference.sources),borrow:retained.clone(),ownership:false,span})?;
                     for path in view::resource_paths(reference.element_layout().1){
                         let mut fields=reference.projection.clone();fields.extend(path);
@@ -285,7 +334,7 @@ impl<'a> Builder<'a> {
             }
             let handle = match argument {
                 Argument::ApplicationData(data) | Argument::Scoped { value:returns::Returned::Dataset(data), .. }
-                    if param.access != Access::Value =>
+                    if parameters.access(param) != Access::Value =>
                 {
                     Some(data.root.identity())
                 }
@@ -296,27 +345,29 @@ impl<'a> Builder<'a> {
                 _ => None,
             };
             if let Some(handle) = handle {
-                if param.access.writes() { self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&[handle]),borrow:retained.clone(),ownership:false,span})?; }
+                if parameters.access(param).writes() { self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&[handle]),borrow:retained.clone(),ownership:false,span})?; }
                 self.application_handle_available(handle, span, &[],&self.path)?;
             }
         }
-        self.check_argument_aliases(&parameters, &arguments, |index| args[index].span)?;
+        self.check_argument_aliases(|index|(parameters.access(index),parameters.form(index)==DeclaredArgumentForm::Dataset), &arguments, argument_span)?;
         Ok(Some(arguments))
     }
-    pub(super) fn check_argument_aliases(&self, parameters: &[Param], arguments: &[Argument], span: impl Fn(usize) -> Span) -> Result<()> {
-        for (index, (param, argument)) in parameters.iter().zip(arguments).enumerate()
+    pub(super) fn check_argument_aliases(&self, parameter: impl Fn(usize)->(Access,bool), arguments: &[Argument], span: impl Fn(usize) -> Span) -> Result<()> {
+        for (index, argument) in arguments.iter().enumerate()
         {
-            for (other, before) in parameters.iter().zip(arguments).take(index) {
-                if (matches!(param.access, Access::Write | Access::InOut)
-                    || matches!(other.access, Access::Write | Access::InOut)
-                    || (param.ty.dataset && param.access == Access::Value)
-                    || (other.ty.dataset && other.access == Access::Value)
-                    || (param.ty.dataset
-                        && other.ty.dataset
-                        && ((param.access == Access::Atomic && other.access != Access::Atomic)
-                            || (other.access == Access::Atomic && param.access != Access::Atomic)))
-                    || (param.access==Access::Value && matches!(argument, Argument::OwnedValue(_)))
-                    || (other.access==Access::Value && matches!(before, Argument::OwnedValue(_))))
+            let (access,dataset)=parameter(index);
+            for (other_index,before) in arguments.iter().take(index).enumerate() {
+                let (other_access,other_dataset)=parameter(other_index);
+                if (matches!(access, Access::Write | Access::InOut)
+                    || matches!(other_access, Access::Write | Access::InOut)
+                    || (dataset && access == Access::Value)
+                    || (other_dataset && other_access == Access::Value)
+                    || (dataset
+                        && other_dataset
+                        && ((access == Access::Atomic && other_access != Access::Atomic)
+                            || (other_access == Access::Atomic && access != Access::Atomic)))
+                    || (access==Access::Value && matches!(argument, Argument::OwnedValue(_)))
+                    || (other_access==Access::Value && matches!(before, Argument::OwnedValue(_))))
                     && argument.overlaps(before,self)
                 {
                     return self.fail(
@@ -334,7 +385,7 @@ impl<'a> Builder<'a> {
         instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
-        syntax: Option<&[Expr]>,
+        syntax: Option<&Expressions>,
     ) -> Result<Option<Value>> {
         let result = self.invoke_returned(instance, args, span, None, syntax)?;
         self.ordinary_return(result, span)
@@ -345,11 +396,11 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
         generated_origin: Option<Arc<GeneratedOrigin>>,
-        syntax: Option<&[Expr]>,
+        syntax: Option<&Expressions>,
     ) -> Result<Option<returns::Returned>> {
-        if instance.definition.function.external.is_some() {
+        if instance.definition.function.external().is_some() {
             return self
-                .external_call(&instance.definition, args, span, generated_origin)
+                .external_call(&instance, args, span, generated_origin)
                 .map(|v| v.map(returns::Returned::value));
         }
         if instance.definition.compiled.is_some()
@@ -362,12 +413,12 @@ impl<'a> Builder<'a> {
         }
         if instance.definition.execution == crate::execution::Requirement::Domain {
             if self.application.is_some() {
-                if instance.definition.function.target == Target::Cpu
-                    && !super::kernel_interface(self.world, &instance.definition)?
+                if instance.definition.function.target() == Target::Cpu
+                    && !super::kernel_interface(self.world, &instance)?
                 {
                     return self.native_function(instance, args, span, generated_origin, syntax);
                 }
-                return self.application_execute(instance, args, Target::Cpu, span, &[]);
+                return self.application_execute(DomainInput::Declaration(&instance), args, Target::Cpu, span, &[]);
             }
             return self.fail(
                 span,
@@ -375,13 +426,13 @@ impl<'a> Builder<'a> {
                 "整域执行需要发起位置，不能由元素实例或协作成员发起",
             );
         }
-        match instance.definition.function.kind {
+        match instance.definition.function.kind() {
             FunctionKind::Cooperative => {
                 self.fail(span, "B208", "cooperative 函数需要显式 cooperate 根块调用")
             }
             FunctionKind::Value => {
-                if instance.definition.function.target == Target::Cpu && self.program.target == Target::Cpu
-                    || self.application.is_some() && instance.definition.function.target != Target::Gpu
+                if instance.definition.function.target() == Target::Cpu && self.program.target == Target::Cpu
+                    || self.application.is_some() && instance.definition.function.target() != Target::Gpu
                 {
                     self.native_function(instance, args, span, generated_origin, syntax)
                 } else {
@@ -396,8 +447,8 @@ impl<'a> Builder<'a> {
     pub(super) fn cooperate(
         &mut self,
         name: &str,
-        explicit: Option<&[GenericArgument]>,
-        args: &[Expr],
+        explicit: Option<&crate::syntax::List<crate::syntax::wire::ArgumentNode>>,
+        args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
         if !self.is_cooperative_root() {
@@ -407,27 +458,29 @@ impl<'a> Builder<'a> {
             .world
             .resolve(
                 name,
-                &self.definition.module,
-                &self.definition.imports,
+                self.scope.module(),
+                self.scope.imports(),
                 true,
             ).unique()
             .ok_or_else(|| Diagnostic {
-                source: self.definition.source.clone(),
+                source: self.scope.source().clone(),
                 span,
                 code: "B158",
                 message: format!("未知协作函数 {name}"),
             })?;
         let callee = &self.world.functions[&key];
-        if callee.function.kind != FunctionKind::Cooperative {
+        if callee.function.kind() != FunctionKind::Cooperative {
             return self.fail(span, "B208", "cooperate 只能调用声明为 cooperative 的函数");
         }
-        if args.len() != callee.function.params.len() {
+        if args.len() != callee.function.params().len() {
             return self.fail(span, "B162", "cooperate 参数数量不匹配");
         }
         let Some(arguments) = self.function_arguments(&key, args, span)? else {
             return Ok(None);
         };
-        let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
+        let explicit=explicit.map(|arguments|self.scope.bindings().arguments(self.world,arguments,
+            (self.scope.source(),self.scope.module(),self.scope.imports()),span)).transpose()?;
+        let instance = self.specialized_arguments(key, &arguments, explicit.as_deref(), span)?;
         let result = self.inline_instance(instance, arguments, span, Some(args))?;
         self.ordinary_return(result, span)
     }
@@ -437,7 +490,7 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<Value>> {
-        if args.len() != self.world.functions[&key].function.params.len() {
+        if args.len() != self.world.functions[&key].function.params().len() {
             return self.fail(span, "B162", "函数参数数量不匹配");
         }
         let instance = self.specialized_function(key, &args, span)?;
@@ -449,45 +502,48 @@ impl<'a> Builder<'a> {
         instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
-        syntax: Option<&[Expr]>,
+        syntax: Option<&Expressions>,
     ) -> Result<Option<returns::Returned>> {
-        if instance.definition.function.target != Target::Compute
-            && instance.definition.function.target != self.program.target
+        if instance.definition.function.target() != Target::Compute
+            && instance.definition.function.target() != self.program.target
         {
             return self.fail(span, "B161", "函数设备能力与当前程序不相容");
         }
         if self.calls.contains(&instance.name) {
             if self.program.target != Target::Gpu
-                && instance.definition.function.kind == FunctionKind::Value
+                && instance.definition.function.kind() == FunctionKind::Value
             {
                 return self.native_function(instance, args, span, None, syntax);
             }
             return self.fail(span, "B160", "当前设备函数不允许递归调用");
         }
-        let key = instance.name;
+        let key = instance.name.clone();
         let callee = &instance.definition;
+        let result_name=instance.bindings.type_name(self.world,&callee.function.result(),
+            (&callee.source,&callee.module,&callee.imports),callee.function.span())?;
         let mut env = BTreeMap::new();
         let mut borrowed = Vec::new();
         let mut held = Vec::new();
-        for (parameter,(param, arg)) in callee.function.params.iter().zip(args).enumerate() {
+        for (parameter,(param, arg)) in instance.parameters(self.world).zip(args).enumerate() {
+            let param=param?;
             let arg=if let Argument::Scoped{value,owner}=arg {held.push(owner);Argument::resource(value)}else{arg};
             let arg=match arg {Argument::Value(value) if param.access==Access::Read=>Argument::Reference(self.materialize_array(value,None)),other=>other};
             if param.ty.is_acceleration() {
                 let Argument::Acceleration(index) = arg else {
                     return self.fail(span, "B183", "read acceleration 参数需要加速结构资源");
                 };
-                env.insert(param.name.clone(), Binding::Acceleration(index));
+                env.insert(param.name.to_owned(), Binding::Acceleration(index));
                 continue;
             }
             if param.ty.is_texture_resource() {
                 let Argument::Texture(index) = arg else {
                     return self.fail(span, "B239", "只读纹理参数需要相同维度的纹理资源");
                 };
-                self.texture_parameter(param, &index, callee, span)?;
-                env.insert(param.name.clone(), Binding::Texture(index));
+                self.texture_parameter(&param, &index,(&callee.source,&callee.module,&callee.imports),span)?;
+                env.insert(param.name.to_owned(), Binding::Texture(index));
                 continue;
             }
-            let ty = parameter_type(self.world, param, callee)?;
+            let ty = parameter_type(self.world,&param,(&callee.source,&callee.module,&callee.imports,callee.function.kind()),self.program.target)?;
             let binding = match (param.ty.dataset, param.ty.tile, arg) {
                 (true, false, Argument::Dataset(view)) => {
                     let binding = view.binding;
@@ -569,20 +625,21 @@ impl<'a> Builder<'a> {
                     );
                 }
             };
-            env.insert(param.name.clone(), binding);
+            env.insert(param.name.to_owned(), binding);
         }
-        let requirements = contracts::resolve(self, callee, &env,&BTreeMap::new())?;
+        let requirements = contracts::resolve(self,(&instance).into(),&LexicalScope::Function(instance.clone()),&env,&BTreeMap::new())?;
         contracts::prove(self, &requirements, span)?;
-        contracts::assume(self,callee,&mut env,&requirements)?;
+        contracts::assume(self,(&instance).into(),&mut env,&requirements)?;
         let old_env = std::mem::replace(&mut self.env, env);
         let old_mutable_names = std::mem::take(&mut self.mutable_names);
+        let callee_scope = LexicalScope::Function(instance.clone());
         assigned_names(
             self.world,
-            callee,
-            callee.function.body.as_ref().unwrap(),
+            &callee_scope,
+            callee.function.body().as_ref().unwrap(),
             &mut self.mutable_names,
         )?;
-        let old_definition = self.definition.clone();
+        let old_scope = self.scope.clone();
         let old_in_function = self.in_function;
         let old_cooperative = self.cooperative_root;
         let old_block = self.block_depth;
@@ -594,11 +651,11 @@ impl<'a> Builder<'a> {
         let old_source_context = std::mem::replace(&mut self.source_context, source_context);
         let old_source_definition = std::mem::replace(&mut self.source_definition, callee.source_origin().map(Arc::new));
         let old_source_site = self.source_site.take();
-        self.definition = callee.clone();
+        self.scope = callee_scope;
         self.in_function = true;
         self.block_depth = 0;
         self.loop_depth = 0;
-        self.cooperative_root = if callee.function.kind == FunctionKind::Cooperative {
+        self.cooperative_root = if callee.function.kind() == FunctionKind::Cooperative {
             Some(0)
         } else {
             None
@@ -606,28 +663,28 @@ impl<'a> Builder<'a> {
         self.calls.push(key);
         let local_initialization = self.env.values().all(|binding| matches!(binding,
             Binding::Value(value) if !value.ty.contains_borrows() && !value.ty.owns_resources()
-        )) && if callee.function.result.name == "void" || callee.function.result.is_never() {
+        )) && if result_name.name == "void" || result_name.is_never() {
             true
         } else {
-            let ty = self.expected_storage(&callee.function.result, callee.function.span)?;
+            let ty = self.expected_storage(&result_name, callee.function.span())?;
             !ty.contains_borrows() && !ty.owns_resources()
         };
         let caller_initialization = local_initialization.then(|| std::mem::take(&mut self.initialized));
         self.materialize_array_bindings();
-        let output_inputs=outputs::inputs(self,callee,&self.env.clone())?;
+        let output_inputs=outputs::inputs(self,&instance,&self.env.clone())?;
         // With no fact or resource inputs/outputs, private range paths end at this call.
         let local_bounds = self.env.values().all(|binding| matches!(binding,
             Binding::Value(value) if !value.ty.contains_borrows() && !value.ty.owns_resources()
                 && bounds::Proof::fact_components(&value.ty).next().is_none()
-        )) && if callee.function.result.name == "void" || callee.function.result.is_never() {
+        )) && if result_name.name == "void" || result_name.is_never() {
             true
         } else {
-            let ty = self.expected_storage(&callee.function.result, callee.function.span)?;
+            let ty = self.expected_storage(&result_name, callee.function.span())?;
             !ty.contains_borrows() && !ty.owns_resources()
                 && bounds::Proof::fact_components(&ty).next().is_none()
         };
         let caller_path = std::mem::take(&mut self.path);
-        let (mut result,_) = self.function_body(callee.function.body.as_ref().unwrap())?;
+        let (mut result,_) = self.function_body(&instance, callee.function.body().as_ref().unwrap())?;
         if let Some(initialized) = caller_initialization {
             self.initialized = initialized;
         }
@@ -644,7 +701,7 @@ impl<'a> Builder<'a> {
             let returned=result.as_ref().map(|value|self.returned_storage(value));
             let mut updates=Vec::new();
             for(index,_,place)in &borrowed {
-                updates.push((self.borrow_owned(place.clone()),outputs::guards(self,callee,*index,place.ty(),&output_inputs,returned.as_ref())?));
+                updates.push((self.borrow_owned(place.clone()),outputs::guards(self,&instance,*index,place.ty(),&output_inputs,returned.as_ref())?));
             }
             self.env = old_env;
             let fresh_scopes: BTreeSet<_> = borrowed
@@ -663,7 +720,7 @@ impl<'a> Builder<'a> {
             self.initialized
                 .retain(|p| !fresh_scopes.iter().any(|scope| p.uses_scope(*scope)));
             for ((index,_,place),(_,guards)) in borrowed.iter().zip(&updates) {
-                if outputs::declared(callee,*index){self.forget_output_initialization(place,span)?;}
+                if outputs::declared(&instance,*index){self.forget_output_initialization(place,span)?;}
                 self.initialize_output(place,guards);
             }
             for (owner,_) in updates {
@@ -673,7 +730,7 @@ impl<'a> Builder<'a> {
             self.env = old_env;
         }
         self.mutable_names = old_mutable_names;
-        self.definition = old_definition;
+        self.scope = old_scope;
         self.source_definition = old_source_definition;
         self.source_context = old_source_context;
         self.source_site = old_source_site;

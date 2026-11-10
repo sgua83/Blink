@@ -1,5 +1,6 @@
 use crate::{
-    ast::*,
+    ast::{Access,ContractKind,Diagnostic,ExternalName,FunctionKind,Result,Source,Span,Target,TypeFamily},
+    syntax::{self,wire,build::*},
     lexer::{self, Token},
 };
 
@@ -29,44 +30,70 @@ unsafe extern "C" {
     fn decode_link_string(source: *const u8, length: usize, output: *mut u8) -> LinkStringResult;
 }
 
-pub fn parse(source: Source) -> Result<Module> {
-    let tokens = lexer::lex(&source)?;
-    Parser {
-        source,
-        tokens,
-        at: 0,
-    }
-    .module()
+// A completed child is stored before it enters its parent. Construction drafts
+// contain lexical fields and B indices, never a second recursive syntax tree.
+macro_rules! store {
+    ($parser:expr,$method:ident,$value:expr) => {{
+        let value=$value;
+        let result=$parser.storage.$method(value);
+        $parser.storage_result(result)?
+    }};
 }
-pub(crate) fn entry(source: Source) -> Result<(String, Option<Vec<GenericArgument>>)> {
-    let tokens = lexer::lex(&source)?;
-    let mut parser = Parser {
-        source,
-        tokens,
-        at: 0,
-    };
-    let name = parser.type_name()?;
-    let arguments = if parser.peek() == "<" {
-        Some(parser.generic_arguments()?)
-    } else {
-        None
-    };
-    parser.expect("")?;
-    Ok((name, arguments))
+pub fn parse(source: Source) -> Result<syntax::Module> {
+    Parser::new(source)?.module()
 }
-pub(crate) fn type_query(source: Source) -> Result<TypeName> {
-    let tokens = lexer::lex(&source)?;
-    let mut parser = Parser { source, tokens, at: 0 };
-    let ty = parser.ty()?;
+pub(crate) fn entry(source: Source) -> Result<(String, Option<syntax::List<wire::ArgumentNode>>)> {
+    let mut parser=Parser::new(source)?;
+    let name=parser.type_name()?;
+    let arguments=if parser.peek()=="<" {Some(parser.generic_arguments()?)}else{None};
     parser.expect("")?;
-    Ok(ty)
+    let arguments=match arguments {
+        Some(values)=>{
+            let result=parser.storage.refs(&values);
+            let range=parser.storage_result(result)?;
+            Some(parser.storage.finish_list(range))
+        },
+        None=>None,
+    };
+    Ok((name,arguments))
+}
+pub(crate) fn type_query(source: Source) -> Result<syntax::Type> {
+    let mut parser=Parser::new(source)?;
+    let ty=parser.ty()?;
+    parser.expect("")?;
+    let ty=store!(parser,make_type,ty);
+    Ok(parser.storage.finish(ty.offset))
 }
 struct Parser {
-    source: Source,
-    tokens: Vec<Token>,
-    at: usize,
+    source:Source,
+    tokens:Vec<Token>,
+    at:usize,
+    storage:syntax::Builder,
 }
 impl Parser {
+    fn new(source:Source)->Result<Self> {
+        let tokens=lexer::lex(&source)?;
+        let storage=syntax::Builder::new(Some(source.clone())).map_err(|error|Diagnostic {
+            source:source.clone(),span:Span::default(),code:"B386",message:error.to_string(),
+        })?;
+        Ok(Self{source,tokens,at:0,storage})
+    }
+    fn storage_result<T>(&self,result:std::result::Result<T,syntax::StorageFailure>)->Result<T> {
+        result.map_err(|error|Diagnostic {source:self.source.clone(),span:Span::default(),code:"B386",message:error.to_string()})
+    }
+    fn expr_ref(&mut self,min:u8,type_argument:bool)->Result<wire::ExprRef> {
+        Ok(store!(self,make_expr,self.expr(min,type_argument)?))
+    }
+    fn stmt_ref(&mut self)->Result<wire::StmtRef> {
+        Ok(store!(self,make_stmt,self.stmt()?))
+    }
+    fn source_condition(&mut self,expression:Expr,message:&str)->Result<wire::ConditionRef> {
+        let span=expression.span;
+        store!(self,source_condition,expression).ok_or_else(||Diagnostic {
+            source:self.source.clone(),span,code:"B225",message:message.into(),
+        })
+    }
+
     fn peek(&self) -> &str {
         self.tokens[self.at].text(&self.source)
     }
@@ -165,7 +192,7 @@ impl Parser {
         }
         Ok(path)
     }
-    fn contract(&mut self) -> Result<FunctionContract> {
+    fn contract(&mut self) -> Result<Contract> {
         let span = self.span();
         let kind = if self.take("requires") {
             ContractKind::Requires
@@ -182,43 +209,40 @@ impl Parser {
                 let count = self.ident()?;
                 self.expect(".")?;
                 let field = self.qualified(".")?;
-                ContractPredicate::Prefix { data, count, field }
+                Predicate::Prefix { data, count, field }
             }
             "cleanup" => {
                 let value=self.contract_value_path()?;
                 let condition=if self.take(",") {
                     let expression=self.expr(0,false)?;
-                    OutputCondition::from_expr(&expression).ok_or_else(||Diagnostic{source:self.source.clone(),span:expression.span,code:"B225",message:"cleanup条件使用纯输入快照与资源长度".into()})?
-                }else{OutputCondition::Bool(true)};
-                ContractPredicate::Cleanup{value,condition}
+                    self.source_condition(expression,"cleanup条件使用纯输入快照与资源长度")?
+                }else{wire::ConditionRef{offset:store!(self,put_condition,&wire::ConditionNode::Bool(1))}};
+                Predicate::Cleanup{value,condition}
             },
-            "nonzero" => ContractPredicate::Nonzero(self.contract_value_path()?),
-            "nonempty" => ContractPredicate::Nonempty(self.contract_value_path()?),
-            "contiguous" => ContractPredicate::Contiguous(self.qualified(".")?),
+            "nonzero" => Predicate::Nonzero(self.contract_value_path()?),
+            "nonempty" => Predicate::Nonempty(self.contract_value_path()?),
+            "contiguous" => Predicate::Contiguous(self.qualified(".")?),
             "memory" => {
                 let access=if self.take("none"){None}
                     else if self.take("read"){Some(Access::Read)}
                     else if self.take("write"){Some(Access::Write)}
                     else if self.take("inout"){Some(Access::InOut)}
                     else{return self.source.fail(span,"B225","memory使用none、read、write或inout");};
-                ContractPredicate::Memory(access)
+                Predicate::Memory(access)
             },
             "initialized" => {
                 let value = self.qualified(".")?;
                 self.expect(",")?;
                 let expression = self.expr(0,false)?;
-                let condition = OutputCondition::from_expr(&expression).ok_or_else(|| Diagnostic {
-                    source: self.source.clone(), span: expression.span, code: "B225",
-                    message: "initialized 条件使用输入值、returned、字段、布尔和纯数值运算；不执行调用或存储访问".into(),
-                })?;
-                ContractPredicate::Initialized { value, condition }
+                let condition = self.source_condition(expression,"initialized 条件使用输入值、returned、字段、布尔和纯数值运算；不执行调用或存储访问")?;
+                Predicate::Initialized { value, condition }
             }
             "same_length" => {
                 let left = self.qualified(".")?;
                 self.expect(",")?;
                 let right = self.qualified(".")?;
                 let (left, right) = if left <= right { (left, right) } else { (right, left) };
-                ContractPredicate::SameLength { left, right }
+                Predicate::SameLength { left, right }
             }
             "range" => {
                 let value = self.contract_value_path()?;
@@ -227,18 +251,17 @@ impl Parser {
                     let lower = self.expr(0, false)?;
                     self.expect(",")?;
                     let upper = self.expr(0, false)?;
-                    let endpoint = |expression: &Expr| OutputCondition::from_expr(expression)
-                        .ok_or_else(|| Diagnostic { source: self.source.clone(), span: expression.span,
-                            code: "B225", message: "range端点使用类型化编译期常量及纯数值运算".into() });
-                    intervals.push((endpoint(&lower)?, endpoint(&upper)?));
+                    let lower=self.source_condition(lower,"range端点使用类型化编译期常量及纯数值运算")?;
+                    let upper=self.source_condition(upper,"range端点使用类型化编译期常量及纯数值运算")?;
+                    intervals.push((lower,upper));
                 }
-                ContractPredicate::Range { value, intervals }
+                Predicate::Range { value, intervals }
             }
             "index" => {
                 let value = self.contract_value_path()?;
                 self.expect(",")?;
                 let resource = self.contract_value_path()?;
-                ContractPredicate::Index { value, resource }
+                Predicate::Index { value, resource }
             }
             _ => {
                 return self.source.fail(
@@ -249,7 +272,7 @@ impl Parser {
             }
         };
         self.expect(")")?;
-        Ok(FunctionContract { kind, predicate, span })
+        Ok(Contract { kind, predicate, span })
     }
     fn function_clause(&self, at: usize) -> bool {
         self.tokens.get(at).is_some_and(|t| matches!(t.text(&self.source), "requires" | "ensures"))
@@ -268,25 +291,25 @@ impl Parser {
         }
         Some(at)
     }
-    fn function_contracts(&mut self) -> Result<Option<Box<Vec<ContractPredicate>>>> {
+    fn function_contracts(&mut self) -> Result<Option<Vec<wire::PredicateRef>>> {
         let mut contracts = Vec::new();
         while self.function_clause(self.at) {
             let contract = self.contract()?;
             if !matches!((&contract.kind, &contract.predicate),
-                (ContractKind::Requires, ContractPredicate::Nonzero(_))
-                | (ContractKind::Ensures, ContractPredicate::Initialized { .. } | ContractPredicate::Memory(_))) {
+                (ContractKind::Requires, Predicate::Nonzero(_))
+                | (ContractKind::Ensures, Predicate::Initialized { .. } | Predicate::Memory(_))) {
                 return self.source.fail(contract.span, "B225", "cfn合同使用requires nonzero、ensures initialized及ensures memory");
             }
-            contracts.push(contract.predicate);
+            contracts.push(store!(self,make_predicate,contract.predicate));
         }
-        Ok(if contracts.is_empty() { None } else { Some(Box::new(contracts)) })
+        Ok(if contracts.is_empty() { None } else { Some(contracts) })
     }
-    fn arguments(&mut self) -> Result<Vec<Expr>> {
+    fn arguments(&mut self) -> Result<Vec<wire::ExprRef>> {
         self.expect("(")?;
         let mut args = Vec::new();
         if !self.take(")") {
             loop {
-                args.push(self.expr(0,false)?);
+                args.push(self.expr_ref(0,false)?);
                 if self.take(")") { break; }
                 self.expect(",")?;
             }
@@ -343,7 +366,7 @@ impl Parser {
             ExprKind::Number(number) if number.parse::<u32>().is_ok()=>Shape::Literal(number.parse().unwrap()),
             ExprKind::StaticU32(value)=>Shape::Literal(*value),
             ExprKind::Name(name)=>Shape::Constant(name.clone()),
-            _=>Shape::Expression(Box::new(expression)),
+            _=>Shape::Expression(store!(self,make_expr,expression)),
         })
     }
     fn value_argument(&self)->bool {
@@ -359,18 +382,18 @@ impl Parser {
         self.tokens.get(at).is_some_and(|token|matches!(token.text(&self.source),
             "("|"+"|"-"|"*"|"/"|"%"|"&"|"|"|"^"|"<<"|"=="|"!="|"<="|">="|"&&"|"||"|"?"))
     }
-    fn generic_arguments(&mut self) -> Result<Vec<GenericArgument>> {
+    fn generic_arguments(&mut self) -> Result<Vec<wire::ArgumentRef>> {
         self.expect("<")?;
         let mut result = Vec::new();
         loop {
-            result.push(
+            let argument=
                 if self.value_argument()
                 {
                     GenericArgument::Value(self.shape_argument()?)
                 } else {
                     GenericArgument::Type(self.ty()?)
-                },
-            );
+                };
+            result.push(store!(self,make_argument,argument));
             if matches!(self.peek(), ">" | ">>") {
                 self.type_close()?;
                 break;
@@ -379,15 +402,15 @@ impl Parser {
         }
         Ok(result)
     }
-    fn parameters(&mut self) -> Result<(Vec<TypeParameter>, Vec<ValueParameter>)> {
-        let mut types: Vec<TypeParameter> = Vec::new();
-        let mut values: Vec<ValueParameter> = Vec::new();
+    fn parameters(&mut self) -> Result<(Vec<wire::TypeParameterRef>, Vec<wire::ValueParameterRef>)> {
+        let mut types: Vec<wire::TypeParameterRef> = Vec::new();
+        let mut values: Vec<wire::ValueParameterRef> = Vec::new();
         if self.take("<") {
             loop {
                 let span = self.span();
                 let is_value = self.take("const");
                 let name = self.ident()?;
-                if types.iter().any(|t| t.name == name) || values.iter().any(|v| v.name == name) {
+                if types.iter().any(|t| self.storage.read_text(self.storage.read::<wire::TypeParameterNode>(t.offset).name)==name) || values.iter().any(|v| self.storage.read_text(self.storage.read::<wire::ValueParameterNode>(v.offset).name)==name) {
                     return self.source.fail(span, "B231", "重复的泛型参数");
                 }
                 if is_value {
@@ -425,10 +448,10 @@ impl Parser {
                     }
                     choices.sort();
                     choices.dedup();
-                    values.push(ValueParameter {
+                    values.push(store!(self,make_value_parameter,ValueParameter {
                         name,
                         choices: restricted.then_some(choices),
-                    });
+                    }));
                 } else {
                     if !values.is_empty() {
                         return self
@@ -448,7 +471,7 @@ impl Parser {
                     } else {
                         None
                     };
-                    types.push(TypeParameter { name, family });
+                    types.push(store!(self,make_type_parameter,TypeParameter { name, family }));
                 }
                 if self.take(">") {
                     break;
@@ -504,7 +527,7 @@ impl Parser {
         let Some(at) = self.function_suffix_end(at) else { return false; };
         ident(at)
     }
-    fn module(mut self) -> Result<Module> {
+    fn module(mut self) -> Result<syntax::Module> {
         self.expect("module")?;
         let name = self.qualified(".")?;
         self.expect(";")?;
@@ -523,10 +546,10 @@ impl Parser {
                 let result = self.ty()?;
                 let name = self.ident()?;
                 self.expect("=")?;
-                let value = self.expr(0,false)?;
+                let value = self.expr_ref(0,false)?;
                 self.expect(";")?;
                 // const 初始化沿同一表达式与返回类型分析，不生成运行期函数入口。
-                functions.push(Function {
+                functions.push(store!(self,make_function,Function {
                     name,
                     types: Vec::new(),
                     values: Vec::new(),
@@ -535,14 +558,15 @@ impl Parser {
                     kind: FunctionKind::Constant,
                     target: Target::Compute,
                     contracts: Vec::new(),
-                    body: Some(vec![Stmt {
+                    body: Some(vec![store!(self,make_stmt,Stmt {
                         span,
                         kind: StmtKind::Return(Some(value)),
-                    }]),
+                    })]),
                     c_abi: false,
                     external: None,
+                    signature_end: self.tokens[self.at - 1].span.end,
                     span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
-                });
+                }));
                 continue;
             }
             if self.take("typeset") {
@@ -550,15 +574,15 @@ impl Parser {
                 self.expect("{")?;
                 let mut members = Vec::new();
                 while !self.take("}") {
-                    members.push(self.ty()?);
+                    members.push(store!(self,make_type,self.ty()?));
                     self.expect(";")?;
                 }
                 self.expect(";")?;
-                type_sets.push(TypeSet {
+                type_sets.push(store!(self,make_type_set,TypeSet {
                     name,
                     members,
                     span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
-                });
+                }));
                 continue;
             }
             if self.take("enum") {
@@ -578,7 +602,7 @@ impl Parser {
                         else { let ty = self.ty()?; self.expect(")")?; ty }
                     } else { TypeName::named("void") };
                     self.expect("=")?;
-                    let discriminant = self.expr(0,false)?;
+                    let discriminant = self.expr_ref(0,false)?;
                     self.expect(";")?;
                     variants.push(VariantDeclaration { name: member, payload, discriminant, span: at });
                 }
@@ -586,21 +610,23 @@ impl Parser {
                 if !payloads {
                     for variant in &variants {
                         let span = variant.span;
-                        functions.push(Function {
+                        functions.push(store!(self,make_function,Function {
                             name: format!("{name}::{}", variant.name),
                             types: Vec::new(), values: Vec::new(), params: Vec::new(),
                             result: TypeName::named(&name), kind: FunctionKind::Constant,
-                            target: Target::Compute, contracts: Vec::new(), c_abi: false, external: None, span,
-                            body: Some(vec![Stmt { span, kind: StmtKind::Return(Some(Expr {
-                                span, kind: ExprKind::Call(name.clone(), vec![variant.discriminant.clone()]),
-                            })) }]),
-                        });
+                            target: Target::Compute, contracts: Vec::new(), c_abi: false, external: None, signature_end: span.end, span,
+                            body: Some(vec![store!(self,make_stmt,Stmt { span, kind: StmtKind::Return(Some(store!(self,make_expr,Expr {
+                                span, kind: ExprKind::Call(name.clone(), vec![variant.discriminant]),
+                            }))) })]),
+                        }));
                     }
                     variants.clear();
                 }
-                records.push(Record { name, types, values, stride: None,
-                    enumeration: Some(representation), variants, fields: Vec::new(),
-                    span: Span { start: span.start, end: self.tokens[self.at - 1].span.end } });
+                let mut stored_variants=Vec::with_capacity(variants.len());
+                for variant in variants {stored_variants.push(store!(self,make_variant,variant));}
+                records.push(store!(self,make_record,Record { name, types, values, stride: None,
+                    enumeration: Some(representation), variants:stored_variants, fields: Vec::new(),
+                    span: Span { start: span.start, end: self.tokens[self.at - 1].span.end } }));
                 continue;
             }
             if self.take("struct") {
@@ -621,10 +647,10 @@ impl Parser {
                     let ty = self.ty()?;
                     let name = self.ident()?;
                     self.expect(";")?;
-                    fields.push(Field { name, ty, span });
+                    fields.push(store!(self,make_field,Field { name, ty, span }));
                 }
                 self.expect(";")?;
-                records.push(Record {
+                records.push(store!(self,make_record,Record {
                     name,
                     types,
                     values,
@@ -633,7 +659,7 @@ impl Parser {
                     variants: Vec::new(),
                     fields,
                     span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
-                });
+                }));
                 continue;
             }
             let c_abi = if self.take("extern") {
@@ -653,7 +679,7 @@ impl Parser {
             let name = self.ident()?;
             let (types, values) = self.parameters()?;
             self.expect("(")?;
-            let mut params = Vec::new();
+            let mut params:Vec<wire::ParamRef> = Vec::new();
             if !self.take(")") {
                 loop {
                     let span = self.span();
@@ -670,15 +696,15 @@ impl Parser {
                     };
                     let ty = self.ty()?;
                     let name = self.ident()?;
-                    if params.iter().any(|p: &Param| p.name == name) {
+                    if params.iter().any(|p| self.storage.read_text(self.storage.read::<wire::ParamNode>(p.offset).name)==name) {
                         return self.source.fail(span, "B100", format!("重复参数 {name}"));
                     }
-                    params.push(Param {
+                    params.push(store!(self,make_param,Param {
                         name,
                         ty,
                         access,
                         span,
-                    });
+                    }));
                     if self.take(")") {
                         break;
                     }
@@ -703,7 +729,7 @@ impl Parser {
             };
             let mut contracts = Vec::new();
             while matches!(self.peek(), "requires" | "ensures") {
-                contracts.push(self.contract()?);
+                contracts.push(store!(self,make_contract,self.contract()?));
             }
             let external = if c_abi && self.peek() == "from" {
                 if !types.is_empty() || !values.is_empty() {
@@ -724,12 +750,13 @@ impl Parser {
             } else {
                 None
             };
+            let signature_end = self.span().start;
             let body = if self.take(";") {
                 None
             } else {
                 Some(self.block()?)
             };
-            functions.push(Function {
+            functions.push(store!(self,make_function,Function {
                 name,
                 types,
                 values,
@@ -741,26 +768,27 @@ impl Parser {
                 body,
                 c_abi,
                 external,
+                signature_end,
                 span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
-            });
+            }));
         }
-        Ok(Module {
+        let module=store!(self,make_module,Module {
             name,
             imports,
             records,
             type_sets,
             functions,
-            source: self.source,
-        })
+        });
+        Ok(syntax::Module{source:self.source,root:self.storage.finish(module.offset)})
     }
-    fn block(&mut self) -> Result<Vec<Stmt>> {
+    fn block(&mut self) -> Result<Vec<wire::StmtRef>> {
         self.expect("{")?;
         let mut out = Vec::new();
         while !self.take("}") {
             if self.peek().is_empty() {
                 return self.source.fail(self.span(), "B013", "代码块没有结束");
             }
-            out.push(self.stmt()?);
+            out.push(self.stmt_ref()?);
         }
         Ok(out)
     }
@@ -783,7 +811,7 @@ impl Parser {
                 self.expect("(")?;
                 let dataset = self.ident()?;
                 self.expect(",")?;
-                let count = self.expr(0,false)?;
+                let count = self.expr_ref(0,false)?;
                 self.expect(")")?;
                 ParallelDomain {
                     dataset,
@@ -799,19 +827,19 @@ impl Parser {
             };
             if selected {
                 self.expect(",")?;
-                domain.selection = Some(self.expr(0,false)?);
+                domain.selection = Some(self.expr_ref(0,false)?);
                 self.expect(")")?;
             }
             self.expect(")")?;
             StmtKind::Parallel(name, domain, self.block()?)
         } else if self.take("if") {
             self.expect("(")?;
-            let c = self.expr(0,false)?;
+            let c = self.expr_ref(0,false)?;
             self.expect(")")?;
             let a = self.block()?;
             let b = if self.take("else") {
                 if self.peek() == "if" {
-                    vec![self.stmt()?]
+                    vec![self.stmt_ref()?]
                 } else {
                     self.block()?
                 }
@@ -821,28 +849,28 @@ impl Parser {
             StmtKind::If(c, a, b)
         } else if self.take("match") {
             self.expect("(")?;
-            let value = self.expr(0,false)?;
+            let value = self.expr_ref(0,false)?;
             self.expect(")")?;
             self.expect("{")?;
             let mut arms=Vec::new();
             while !self.take("}") {
                 let at=self.span();let variant=self.type_name()?;self.expect("(")?;
                 let binding=if self.take(")"){None}else{let name=self.ident()?;self.expect(")")?;Some(name)};
-                let body=self.block()?;arms.push(MatchArm {variant,binding,body,span:at});
+                let body=self.block()?;arms.push(store!(self,make_arm,MatchArm {variant,binding,body,span:at}));
             }
             StmtKind::Match(value,arms)
         } else if self.take("while") {
             self.expect("(")?;
-            let c = self.expr(0,false)?;
+            let c = self.expr_ref(0,false)?;
             self.expect(")")?;
             StmtKind::While(c, self.block()?)
         } else if self.take("for") {
             self.expect("(")?;
             let name = self.ident()?;
             self.expect("in")?;
-            let start = self.expr(0,false)?;
+            let start = self.expr_ref(0,false)?;
             let end = if self.take("..") {
-                Some(self.expr(0,false)?)
+                Some(self.expr_ref(0,false)?)
             } else {
                 None
             };
@@ -852,7 +880,7 @@ impl Parser {
             if self.take(";") {
                 StmtKind::Return(None)
             } else {
-                let e = self.expr(0,false)?;
+                let e = self.expr_ref(0,false)?;
                 self.expect(";")?;
                 StmtKind::Return(Some(e))
             }
@@ -869,14 +897,14 @@ impl Parser {
             self.expect("(")?;
             let name = self.ident()?;
             self.expect(",")?;
-            let position = self.expr(0,false)?;
+            let position = self.expr_ref(0,false)?;
             self.expect(")")?;
             self.expect(";")?;
             StmtKind::Seek(name, position)
         } else if self.take("let") {
             let name = self.ident()?;
             self.expect("=")?;
-            let e = self.expr(0,false)?;
+            let e = self.expr_ref(0,false)?;
             self.expect(";")?;
             StmtKind::Let(None, name, e)
         } else {
@@ -889,13 +917,13 @@ impl Parser {
                     StmtKind::Declare(ty, name)
                 } else {
                     self.expect("=")?;
-                    let e = self.expr(0,false)?;
+                    let e = self.expr_ref(0,false)?;
                     self.expect(";")?;
                     StmtKind::Let(Some(ty), name, e)
                 }
             } else {
                 self.at = save;
-                let lhs = self.expr(0,false)?;
+                let lhs = self.expr_ref(0,false)?;
                 if [
                     "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=",
                 ]
@@ -903,7 +931,7 @@ impl Parser {
                 {
                     let op = self.peek().to_owned();
                     self.at += 1;
-                    let rhs = self.expr(0,false)?;
+                    let rhs = self.expr_ref(0,false)?;
                     self.expect(";")?;
                     StmtKind::Assign(lhs, op, rhs)
                 } else {
@@ -914,13 +942,30 @@ impl Parser {
         };
         Ok(Stmt { kind, span })
     }
+    fn expr_number(&mut self,value:String,span:Span)->Result<wire::ExprRef> {
+        Ok(store!(self,make_expr,Expr{kind:ExprKind::Number(value),span}))
+    }
+    fn expression_path(&self,expression:&Expr)->Option<String> {
+        match &expression.kind {
+            ExprKind::Name(name)=>Some(name.clone()),
+            ExprKind::Member(base,name)=>Some(format!("{}.{name}",self.stored_path(*base)?)),
+            _=>None,
+        }
+    }
+    fn stored_path(&self,expression:wire::ExprRef)->Option<String> {
+        match self.storage.read::<wire::ExprNode>(expression.offset).kind {
+            wire::ExprKind::Name(name)=>Some(self.storage.read_text(name).into()),
+            wire::ExprKind::Member(member)=>Some(format!("{}.{}",self.stored_path(member.base)?,self.storage.read_text(member.field))),
+            _=>None,
+        }
+    }
     fn expr(&mut self, min: u8, type_argument: bool) -> Result<Expr> {
         let span = self.span();
         let mut lhs = if ["-", "+", "!", "~"].contains(&self.peek()) {
             let op = self.peek().to_owned();
             self.at += 1;
             Expr {
-                kind: ExprKind::Unary(op, Box::new(self.expr(12,type_argument)?)),
+                kind: ExprKind::Unary(op, self.expr_ref(12,type_argument)?),
                 span,
             }
         } else if self.peek() == "target" && self.tokens[self.at + 1].text(&self.source) == "(" {
@@ -935,10 +980,10 @@ impl Parser {
                 }
             };
             self.expect(",")?;
-            let call = self.expr(0,false)?;
+            let call = self.expr_ref(0,false)?;
             self.expect(")")?;
             Expr {
-                kind: ExprKind::Target(target, Box::new(call)),
+                kind: ExprKind::Target(target, call),
                 span,
             }
         } else if self.take("cooperate") {
@@ -1013,17 +1058,17 @@ impl Parser {
                 } else { c });
             }
             let mut ty = TypeName::named("array");
-            ty.arguments = vec![
-                GenericArgument::Type(TypeName::named("u8")),
-                GenericArgument::Value(Shape::Expression(Box::new(Expr {
-                    kind: ExprKind::Number(value.len().to_string()), span,
-                }))),
-            ];
-            let values = value.bytes().map(|byte| Expr {
-                kind: ExprKind::Construct(TypeName::named("u8"), vec![Expr {
-                    kind: ExprKind::Number(byte.to_string()), span,
-                }]), span,
-            }).collect();
+            let byte_type=store!(self,make_argument,GenericArgument::Type(TypeName::named("u8")));
+            let length=self.expr_number(value.len().to_string(),span)?;
+            let count=store!(self,make_argument,GenericArgument::Value(Shape::Expression(length)));
+            ty.arguments=vec![byte_type,count];
+            let mut values=Vec::with_capacity(value.len());
+            for byte in value.bytes() {
+                let number=self.expr_number(byte.to_string(),span)?;
+                values.push(store!(self,make_expr,Expr {
+                    kind:ExprKind::Construct(TypeName::named("u8"),vec![number]),span,
+                }));
+            }
             self.at += 1;
             Expr { kind: ExprKind::Construct(ty, values), span }
         } else if self
@@ -1046,14 +1091,7 @@ impl Parser {
         };
         loop {
             if self.take("::") {
-                fn path(e: &Expr) -> Option<String> {
-                    match &e.kind {
-                        ExprKind::Name(n) => Some(n.clone()),
-                        ExprKind::Member(base, n) => Some(format!("{}.{n}", path(base)?)),
-                        _ => None,
-                    }
-                }
-                let Some(mut name) = path(&lhs) else {
+                let Some(mut name) = self.expression_path(&lhs) else {
                     return self.source.fail(span, "B014", "命名空间限定需要命名路径");
                 };
                 name.push_str("::");
@@ -1067,16 +1105,16 @@ impl Parser {
             if self.take(".") {
                 let name = self.ident()?;
                 lhs = Expr {
-                    kind: ExprKind::Member(Box::new(lhs), name),
+                    kind: ExprKind::Member(store!(self,make_expr,lhs), name),
                     span,
                 };
                 continue;
             }
             if self.take("[") {
-                let index = self.expr(0,false)?;
+                let index = self.expr_ref(0,false)?;
                 self.expect("]")?;
                 lhs = Expr {
-                    kind: ExprKind::Index(Box::new(lhs), Box::new(index)),
+                    kind: ExprKind::Index(store!(self,make_expr,lhs), index),
                     span,
                 };
                 continue;
@@ -1105,7 +1143,7 @@ impl Parser {
                         ExprKind::FunctionRef(name, arguments) => {
                             ExprKind::Specialize(name, arguments, args)
                         }
-                        kind => ExprKind::Invoke(Box::new(Expr { kind, span }), args),
+                        kind => ExprKind::Invoke(store!(self,make_expr,Expr { kind, span }), args),
                     },
                     span,
                 };
@@ -1113,11 +1151,11 @@ impl Parser {
             }
             if self.peek() == "?" && min == 0 {
                 self.at += 1;
-                let a = self.expr(0,false)?;
+                let a = self.expr_ref(0,false)?;
                 self.expect(":")?;
-                let b = self.expr(0,type_argument)?;
+                let b = self.expr_ref(0,type_argument)?;
                 lhs = Expr {
-                    kind: ExprKind::Select(Box::new(lhs), Box::new(a), Box::new(b)),
+                    kind: ExprKind::Select(store!(self,make_expr,lhs), a, b),
                     span,
                 };
                 continue;
@@ -1141,9 +1179,9 @@ impl Parser {
             }
             let op = self.peek().to_owned();
             self.at += 1;
-            let rhs = self.expr(prec + 1,type_argument)?;
+            let rhs = self.expr_ref(prec + 1,type_argument)?;
             lhs = Expr {
-                kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
+                kind: ExprKind::Binary(op, store!(self,make_expr,lhs), rhs),
                 span,
             };
         }

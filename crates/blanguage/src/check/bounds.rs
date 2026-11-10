@@ -3,17 +3,17 @@ use super::*;
 mod floating;
 use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::ManuallyDrop, sync::Arc};
 
-pub(super) fn seeks(body: &[Stmt]) -> bool {
-    body.iter().any(|statement| match &statement.kind {
+pub(super) fn seeks(body: &Block) -> bool {
+    body.iter().any(|statement| match statement.kind() {
         StmtKind::Seek(..) => true,
-        StmtKind::If(_, yes, no) => seeks(yes) || seeks(no),
-        StmtKind::Match(_, arms) => arms.iter().any(|arm|seeks(&arm.body)),
+        StmtKind::If(_, yes, no) => seeks(&yes) || seeks(&no),
+        StmtKind::Match(_, arms) => arms.iter().any(|arm|seeks(&arm.body())),
         // Nested loops own their reentry; their seek cannot replace this cursor.
         _ => false,
     })
 }
-pub(super) fn for_cursor(begin: &Value, limit: &Value, body: &[Stmt]) -> Proof {
-    let minimum = if seeks(body) { 0 } else { begin.minimum() };
+pub(super) fn for_cursor(begin: &Value, limit: &Value, seeks: bool) -> Proof {
+    let minimum = if seeks { 0 } else { begin.minimum() };
     Proof::unsigned(minimum, limit.maximum().saturating_sub(1))
         .with_domains(indices_below(&limit.proof.domains(0), true))
 }

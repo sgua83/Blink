@@ -8,11 +8,11 @@ use std::{
 };
 
 #[derive(Clone)]
-pub(crate) enum DefinitionSyntax { Source, CompiledInterface, Generated(Option<Arc<ir::SourceSite>>) }
+pub(crate) enum DefinitionSyntax { Source, CompiledInterface }
 
 #[derive(Clone)]
 pub(crate) struct Definition {
-    pub(crate) function: Function,
+    pub(crate) function: crate::syntax::Function,
     pub(crate) syntax_origin: DefinitionSyntax,
     pub(crate) execution: execution::Requirement,
     pub(crate) source: Source,
@@ -23,32 +23,28 @@ pub(crate) struct Definition {
 }
 impl Definition {
     pub(crate) fn source_origin(&self) -> Option<ir::SourceOrigin> {
-        match (&self.syntax_origin, &self.function.body) {
+        match (&self.syntax_origin, &self.function.body()) {
             (DefinitionSyntax::Source, Some(_)) => Some(ir::SourceOrigin {
-                source: self.source.clone(), span: self.function.span,
-                module: self.module.clone(), definition: self.function.name.clone(),
+                source: self.source.clone(), span: self.function.span(),
+                module: self.module.clone(), definition: self.function.name().to_owned(),
             }),
             _ => None,
         }
     }
     pub(crate) fn declaration_origin(&self) -> Option<ir::SourceDeclaration> {
-        if self.function.body.is_some() { return None; }
+        if self.function.body().is_some() { return None; }
         let representation = match &self.syntax_origin {
             DefinitionSyntax::Source => ir::DeclarationRepresentation::Source,
             DefinitionSyntax::CompiledInterface => ir::DeclarationRepresentation::CompiledInterface,
-            DefinitionSyntax::Generated(_) => return None,
         };
-        Some(ir::SourceDeclaration { source: self.source.clone(), span: self.function.span,
-            module: self.module.clone(), declaration: self.function.name.clone(), representation })
+        Some(ir::SourceDeclaration { source: self.source.clone(), span: self.function.span(),
+            module: self.module.clone(), declaration: self.function.name().to_owned(), representation })
     }
     pub(crate) fn syntax_context(&self, instance: Option<&str>) -> (Option<Arc<ir::SourceOrigin>>, Arc<ir::SourceContext>) {
-        match &self.syntax_origin {
-            DefinitionSyntax::Generated(Some(site)) => (Some(site.origin.clone()), site.context.clone()),
-            DefinitionSyntax::Source | DefinitionSyntax::CompiledInterface | DefinitionSyntax::Generated(None) => (
-                self.source_origin().map(Arc::new),
-                Arc::new(ir::SourceContext { instance: instance.map(Arc::from), inlined_at: Box::default(), domain_path: Arc::from([]) }),
-            ),
-        }
+        (
+            self.source_origin().map(Arc::new),
+            Arc::new(ir::SourceContext{instance:instance.map(Arc::from),inlined_at:Box::default(),domain_path:Arc::from([])}),
+        )
     }
 }
 /// 仅由已完成模块／阶段证明的无前置条件程序构造；执行器不接受条件模板。
@@ -60,10 +56,10 @@ pub struct Compilation {
 }
 pub(crate) struct Declarations {
     pub(crate) sources: BTreeMap<String, Source>,
-    pub(crate) interfaces: BTreeMap<String, Arc<ast::Module>>,
-    pub(crate) records: BTreeMap<String, (Record, Source, String, Vec<String>)>,
+    pub(crate) interfaces: BTreeMap<String, Arc<crate::syntax::Module>>,
+    pub(crate) records: BTreeMap<String, (crate::syntax::Record, Source, String, Vec<String>)>,
     pub(crate) functions: BTreeMap<String, Arc<Definition>>,
-    pub(crate) type_sets: BTreeMap<String, (TypeSet, Source, String, Vec<String>)>,
+    pub(crate) type_sets: BTreeMap<String, (crate::syntax::TypeSet, Source, String, Vec<String>)>,
 }
 pub(crate) struct World {
     pub(crate) declarations: Arc<Declarations>,
@@ -90,7 +86,7 @@ impl World {
         }
         self.declarations.resolve(name, module, imports, functions)
     }
-    pub(crate) fn record(&self, key: &str) -> &(Record, Source, String, Vec<String>) {
+    pub(crate) fn record(&self, key: &str) -> &(crate::syntax::Record, Source, String, Vec<String>) {
         if let Some(inputs) = &self.build_declarations {
             inputs.borrow_mut().insert(build::Declaration::Record(key.into()));
         }
@@ -112,27 +108,27 @@ pub(crate) fn read(path: &Path) -> Result<Source> {
         text: text.into(),
     })
 }
-pub(crate) fn parse_input(path: &Path, inputs: Option<&build::Inputs>) -> Result<Arc<ast::Module>> {
+pub(crate) fn parse_input(path: &Path, inputs: Option<&build::Inputs>) -> Result<Arc<crate::syntax::Module>> {
     if let Some(inputs) = inputs { inputs.read(path) }
     else { parser::parse(read(path)?).map(Arc::new) }
 }
 pub(crate) fn contract_signature(f: &Function) -> BTreeSet<(ContractKind, &ContractPredicate)> {
     f.contracts.iter().map(|c| (c.kind, &c.predicate)).collect()
 }
-pub(crate) fn same_signature(a: &Function, b: &Function) -> bool {
-    a.kind == b.kind
-        && a.c_abi == b.c_abi
-        && a.external == b.external
-        && a.types == b.types
-        && a.values == b.values
-        && a.target == b.target
-        && contract_signature(a) == contract_signature(b)
-        && a.params.len() == b.params.len()
-        && a.params
-            .iter()
-            .zip(&b.params)
-            .all(|(a, b)| a.name == b.name && a.access == b.access)
+pub(crate) fn same_signature(a: &crate::syntax::Function, b: &crate::syntax::Function) -> bool {
+    let contracts=|function:&crate::syntax::Function|function.contracts().iter()
+        .map(|contract|(contract.kind(),contract.predicate())).collect::<BTreeSet<_>>();
+    a.kind()==b.kind()
+        && a.c_abi()==b.c_abi()
+        && a.external()==b.external()
+        && a.types()==b.types()
+        && a.values()==b.values()
+        && a.target()==b.target()
+        && contracts(a)==contracts(b)
+        && a.params().len()==b.params().len()
+        && a.params().iter().zip(b.params()).all(|(a,b)|a.name()==b.name()&&a.access()==b.access())
 }
+
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
     compile_module(path, module_root, true, None, &[])
 }
@@ -225,7 +221,9 @@ impl Compiler {
             let span = Span { start: 0, end: request.len() };
             let name = parser::type_query(source.clone())?;
             let (world, module) = read_world(path, root, None, &[], worker, None, None)?;
-            let imports = &world.interfaces[&module].imports;
+            let imports = &world.interfaces[&module].imports().map(str::to_owned).collect::<Vec<_>>();
+            let bindings=Arc::new(generics::Bindings::default());
+            let name=bindings.type_name(&world,&name,(&source,&module,imports),span)?;
             let value = world.ty(&name, &source, span, &module, imports)?;
             if name.dataset {
                 let count = world.shape(&name.count, &source, span, &module, imports)?;
@@ -240,7 +238,9 @@ impl Compiler {
             let span = Span { start: 0, end: request.len() };
             let name = parser::type_query(source.clone())?;
             let (world, module) = read_world(path, root, None, &[], worker, None, None)?;
-            let imports = &world.interfaces[&module].imports;
+            let imports = &world.interfaces[&module].imports().map(str::to_owned).collect::<Vec<_>>();
+            let bindings=Arc::new(generics::Bindings::default());
+            let name=bindings.type_name(&world,&name,(&source,&module,imports),span)?;
             let value = world.ty(&name, &source, span, &module, imports)?;
             let value = if name.dataset {
                 ir::Ty::owned_dataset(value.syntax(), world.shape(&name.count, &source, span, &module, imports)?)
@@ -306,7 +306,7 @@ pub(crate) fn compile_world(
         let definition = &world.functions[&key];
         if !definition.public
             || definition.module != entry
-            || definition.function.kind != FunctionKind::Value
+            || definition.function.kind() != FunctionKind::Value
         {
             return source.fail(
                 Span::default(),
@@ -314,27 +314,27 @@ pub(crate) fn compile_world(
                 "入口选择需要本模块对应种类的公开函数",
             );
         }
-        Some((key, arguments, kind))
+        Some((key, arguments, kind, source))
     } else {
         None
     };
     enum Job<'a> {
         Instance(generics::Instance, bool),
         Failed(Diagnostic),
-        Selected(&'a str, &'a Option<Vec<GenericArgument>>, EntryKind),
+        Selected(&'a str, &'a Option<crate::syntax::List<crate::syntax::wire::ArgumentNode>>, EntryKind, &'a Source),
     }
     enum Output {
         Programs(Vec<ir::Program>),
         Application(application::Application),
     }
-    let for_application = matches!(selected.as_ref(), Some((_, _, EntryKind::Application)));
+    let for_application = matches!(selected.as_ref(), Some((_, _, EntryKind::Application, _)));
     let mut jobs = Vec::new();
     let planned = (|| -> Result<()> {
         for (base, definition) in &world.functions {
-            if definition.compiled.is_some() || definition.function.kind == FunctionKind::Constant
-                || definition.function.external.is_some() { continue; }
+            if definition.compiled.is_some() || definition.function.kind() == FunctionKind::Constant
+                || definition.function.external().is_some() { continue; }
             generics::validate_declaration(definition)?;
-            if selected.as_ref().is_some_and(|(key, _, _)| key == base) {
+            if selected.as_ref().is_some_and(|(key, _, _, _)| key == base) {
                 continue;
             }
             let retained = selected.is_none() && definition.module == entry && definition.public;
@@ -345,8 +345,8 @@ pub(crate) fn compile_world(
     })();
     if let Err(error) = planned {
         jobs.push(Job::Failed(error));
-    } else if let Some((key, arguments, kind)) = &selected {
-        jobs.push(Job::Selected(key, arguments, *kind));
+    } else if let Some((key, arguments, kind, source)) = &selected {
+        jobs.push(Job::Selected(key, arguments, *kind, source));
     }
     let declarations = &world.declarations;
     let collect_declarations = world.build_declarations.is_some();
@@ -363,7 +363,7 @@ pub(crate) fn compile_world(
                 let name = &instance.name;
                 let d = &instance.definition;
                 if d.execution == execution::Requirement::Domain
-                    && (d.function.target != Target::Cpu || check::kernel_interface(world, d)?)
+                    && (d.function.target() != Target::Cpu || check::kernel_interface(world, &instance)?)
                 {
                     if for_application {
                         check::check_domain(world, &instance).map_err(|error| instance_error(error, name))?;
@@ -378,9 +378,14 @@ pub(crate) fn compile_world(
                     check::check_function(world, &instance).map_err(|error| instance_error(error, name))?;
                 }
             }
-            Job::Selected(key, arguments, kind) => {
+            Job::Selected(key, arguments, kind, source) => {
                 let definition = &world.functions[key];
-                let instance = check::generics::specialize(world, key, &[], arguments.as_deref(), (&definition.source, &definition.module, &definition.imports), definition.function.span)?;
+                let span=Span{start:0,end:source.text.len()};
+                let bindings=Arc::new(generics::Bindings::default());
+                let arguments=arguments.as_ref().map(|arguments|bindings.arguments(world,arguments,
+                    (source,&definition.module,&definition.imports),span)).transpose()?;
+                let instance = check::generics::specialize(world, key, &[], arguments.as_deref(),
+                    (source, &definition.module, &definition.imports), span)?;
                 if matches!(kind, EntryKind::Application) {
                     return check::compile_application(world, &instance).map(Output::Application);
                 }
@@ -417,13 +422,13 @@ pub(crate) fn compile_world(
     let open_generics: Vec<_> = world
         .records
         .iter()
-        .filter(|(_, (record, ..))| generics::is_open(&record.types, &record.values))
+        .filter(|(_, (record, ..))| generics::is_open(&record.types(), &record.values()))
         .map(|(name, _)| name.clone())
         .chain(
             world
                 .functions
                 .iter()
-                .filter(|(_, d)| generics::is_open(&d.function.types, &d.function.values))
+                .filter(|(_, d)| generics::is_open(&d.function.types(), &d.function.values()))
                 .map(|(name, _)| name.clone()),
         )
         .collect();
@@ -432,7 +437,7 @@ pub(crate) fn compile_world(
             d.module == entry
                 && d.public
                 && d.execution == execution::Requirement::Domain
-                && generics::is_open(&d.function.types, &d.function.values)
+                && generics::is_open(&d.function.types(), &d.function.values())
         }) {
             return world.sources[&entry].fail(
                 Span::default(),
@@ -480,16 +485,16 @@ pub(crate) fn read_world(
     if let Some(imported) = imported {
         for request in requests {
             let (_, arguments) = parser::entry(Source { path: "<module-export>".into(), text: request.clone().into() })?;
-            let mut arguments = arguments.unwrap_or_default();
+            let mut arguments=arguments.into_iter().flatten().collect::<Vec<_>>();
             while let Some(argument) = arguments.pop() {
-                if let GenericArgument::Type(ty) = argument {
-                    if let Some((owner, _)) = ty.name.split_once("::")
+                if let crate::syntax::ArgumentKind::Type(ty) = argument.kind() {
+                    if let Some((owner, _)) = ty.name().split_once("::")
                         && imported.modules.contains_key(owner)
                     {
                         load(&module_root.join(owner.replace('.', "/")).with_extension("b"), module_root,
                             &mut world, Some(imported), Some(owner), inputs)?;
                     }
-                    arguments.extend(ty.arguments);
+                    arguments.extend(ty.arguments());
                 }
             }
         }
@@ -500,19 +505,23 @@ pub(crate) fn read_world(
     }
     let mut world = World::new(Arc::new(world), worker.clone());
     for (key, definition) in &world.functions {
-        if definition.function.kind == FunctionKind::Constant {
+        if definition.function.kind() == FunctionKind::Constant {
             generics::validate_declaration(definition)?;
             check::constant_value(&world, key)?;
         }
     }
     for definition in world.functions.values().filter(|definition| {
-        definition.function.types.is_empty() && definition.function.values.is_empty()
+        definition.function.types().is_empty() && definition.function.values().is_empty()
     }) {
-        world.check_interface_types(definition, &definition.function, &BTreeMap::new(), &BTreeMap::new())?;
+        world.check_interface_types(definition, &definition.function, &Arc::new(generics::Bindings::default()))?;
     }
     validate_types(&world)?;
-    for definition in world.functions.values().filter(|definition| definition.function.c_abi) {
-        check::external::check_declaration(&world, definition)?;
+    for (key,definition) in world.functions.iter().filter(|(_,definition)|definition.function.c_abi()) {
+        check::external::validate_signature(definition)?;
+        if definition.function.types().is_empty()&&definition.function.values().is_empty(){
+            let instance=generics::instantiate(&world,key,definition,Vec::new(),&[])?;
+            check::external::check_declaration(&world,&instance)?;
+        }
     }
     world.build_declarations = build_declarations;
     Ok((world, entry))
@@ -522,11 +531,11 @@ pub(crate) fn validate_types(world: &World) -> Result<()> {
         world.set_members(name, &mut BTreeSet::new())?;
     }
     for (name, (record, source, module, imports)) in &world.records {
-        generics::validate_parameters(&record.types, &record.name, source, record.span)?;
-        value_parameters::validate(&record.values, &record.name, &[], source, record.span)?;
-        let values = value_parameters::combinations(&record.values);
+        generics::validate_parameters(&record.types(), &record.name(), source, record.span())?;
+        value_parameters::validate(&record.values(), record.name(), std::iter::empty::<crate::syntax::Param>(), source, record.span())?;
+        let values = value_parameters::combinations(&record.values());
         for arguments in
-            generics::combinations(&world, &record.types, source, record.span, module, imports)?
+            generics::combinations(&world, &record.types(), source, record.span(), module, imports)?
         {
             for values in &values {
                 let mut ty = TypeName::named(name);
@@ -540,7 +549,7 @@ pub(crate) fn validate_types(world: &World) -> Result<()> {
                             .map(|value| GenericArgument::Value(Shape::Literal(*value))),
                     )
                     .collect();
-                world.ty(&ty, source, record.span, module, imports)?;
+                world.ty(&ty, source, record.span(), module, imports)?;
             }
         }
     }
@@ -600,13 +609,13 @@ pub(crate) fn load(
         None
     };
     if let Some(module) = &implementation
-        && module.name != interface.name
+        && module.name() != interface.name()
     {
         return module
             .source
             .fail(Span::default(), "B022", ".h 与 .b 的模块名不一致");
     }
-    let name = interface.name.clone();
+    let name = interface.name().to_owned();
     let source = implementation
         .as_ref()
         .map_or(&interface.source, |module| &module.source);
@@ -617,11 +626,9 @@ pub(crate) fn load(
     world
         .interfaces
         .insert(name.clone(), Arc::clone(&interface));
-    let imports: Vec<_> = interface
-        .imports
-        .iter()
-        .chain(implementation.iter().flat_map(|module| &module.imports))
-        .cloned()
+    let imports: Vec<_> = interface.imports()
+        .chain(implementation.iter().flat_map(|module| module.imports()))
+        .map(str::to_owned)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -643,19 +650,15 @@ pub(crate) fn load(
             );
         }
     }
-    for (record, source) in interface
-        .records
-        .iter()
+    for (record, source) in interface.records().into_iter()
         .map(|r| (r, &interface.source))
         .chain(implementation.iter().flat_map(|module| {
-            module
-                .records
-                .iter()
+            module.records().into_iter()
                 .map(move |record| (record, &module.source))
         }))
     {
         if matches!(
-            record.name.as_str(),
+            record.name(),
             "acceleration"
                 | "dataset"
                 | "view"
@@ -665,13 +668,13 @@ pub(crate) fn load(
                 | "texture2d" | "texture3d"
                 | "void"
                 | "never"
-        ) || ir::Ty::builtin(&record.name).is_some()
+        ) || ir::Ty::builtin(&record.name()).is_some()
         {
-            return source.fail(record.span, "B184", "记录名称不能覆盖内置类型");
+            return source.fail(record.span(), "B184", "记录名称不能覆盖内置类型");
         }
-        let key = format!("{name}::{}", record.name);
+        let key = format!("{name}::{}", record.name());
         if world.records.contains_key(&key) {
-            return source.fail(record.span, "B025", format!("重复类型 {key}"));
+            return source.fail(record.span(), "B025", format!("重复类型 {key}"));
         }
         world.records.insert(
             key,
@@ -683,23 +686,19 @@ pub(crate) fn load(
             ),
         );
     }
-    for (set, source) in interface
-        .type_sets
-        .iter()
+    for (set, source) in interface.type_sets().into_iter()
         .map(|s| (s, &interface.source))
         .chain(implementation.iter().flat_map(|module| {
-            module
-                .type_sets
-                .iter()
+            module.type_sets().into_iter()
                 .map(move |set| (set, &module.source))
         }))
     {
-        let key = format!("{name}::{}", set.name);
+        let key = format!("{name}::{}", set.name());
         if world.records.contains_key(&key)
             || world.type_sets.contains_key(&key)
-            || ir::Ty::builtin(&set.name).is_some()
+            || ir::Ty::builtin(&set.name()).is_some()
             || matches!(
-                set.name.as_str(),
+                set.name(),
                 "void"
                     | "never"
                     | "dataset"
@@ -711,12 +710,12 @@ pub(crate) fn load(
                     | "texture2d" | "texture3d"
             )
             || matches!(
-                set.name.as_str(),
+                set.name(),
                 "numeric" | "floating" | "integer" | "scalar_numeric" | "scalar_integer"
             )
         {
             return source.fail(
-                set.span,
+                set.span(),
                 "B233",
                 format!("类型集合名称重复或覆盖已有类型 {key}"),
             );
@@ -726,15 +725,13 @@ pub(crate) fn load(
             (set.clone(), source.clone(), name.clone(), imports.clone()),
         );
     }
-    for f in interface
-        .functions
-        .iter()
-        .filter(|f| f.kind != FunctionKind::Constant && f.external.is_none())
+    for f in interface.functions().into_iter()
+        .filter(|f| f.kind() != FunctionKind::Constant && f.external().is_none())
     {
-        if f.body.is_some() {
+        if f.body().is_some() {
             return interface
                 .source
-                .fail(f.span, "B026", ".h 只声明接口，函数体放在 .b");
+                .fail(f.span(), "B026", ".h 只声明接口，函数体放在 .b");
         }
         if compiled.is_some() {
             continue;
@@ -742,51 +739,44 @@ pub(crate) fn load(
         let (body, body_source) = implementation
             .iter()
             .flat_map(|module| {
-                module
-                    .functions
-                    .iter()
+                module.functions().into_iter()
                     .map(move |function| (function, &module.source))
             })
-            .find(|(function, _)| function.name == f.name)
+            .find(|(function, _)| function.name() == f.name())
             .ok_or_else(|| Diagnostic {
                 source: interface.source.clone(),
-                span: f.span,
+                span: f.span(),
                 code: "B027",
-                message: format!("接口 {} 缺少 .b 实现", f.name),
+                message: format!("接口 {} 缺少 .b 实现", f.name()),
             })?;
-        if !same_signature(f, body) {
+        if !same_signature(&f, &body) {
             return body_source.fail(
-                body.span,
+                body.span(),
                 "B028",
                 format!(
                     "{} 的函数效果、类型参数、访问权限、类型、参数名、执行目标或前缀域约束与 .h 不一致",
-                    f.name
+                    f.name()
                 ),
             );
         }
     }
-    let declarations = &interface.functions;
-    for (f, source, public) in interface
-        .functions
-        .iter()
-        .filter(|f| f.kind == FunctionKind::Constant || f.external.is_some() || compiled.is_some())
+    let declarations = &interface.functions();
+    for (f, source, public) in interface.functions().into_iter()
+        .filter(|f| f.kind() == FunctionKind::Constant || f.external().is_some() || compiled.is_some())
         .map(|f| (f, &interface.source, true))
         .chain(implementation.iter().flat_map(|module| {
-            module.functions.iter().map(move |function| {
-                (
-                    function,
-                    &module.source,
-                    declarations.iter().any(|decl| decl.name == function.name),
-                )
+            module.functions().into_iter().map(move |function| {
+                let public=declarations.iter().any(|decl|decl.name()==function.name());
+                (function,&module.source,public)
             })
         }))
     {
-        if f.body.is_none() && f.external.is_none() && compiled.is_none() {
-            return source.fail(f.span, "B029", ".b 中的函数必须有实现");
+        if f.body().is_none() && f.external().is_none() && compiled.is_none() {
+            return source.fail(f.span(), "B029", ".b 中的函数必须有实现");
         }
-        let key = format!("{name}::{}", f.name);
+        let key = format!("{name}::{}", f.name());
         if world.functions.contains_key(&key) {
-            return source.fail(f.span, "B030", format!("值名称重复 {key}"));
+            return source.fail(f.span(), "B030", format!("值名称重复 {key}"));
         }
         world.functions.insert(
             key,
@@ -796,13 +786,13 @@ pub(crate) fn load(
                 execution: if let Some(compiled) = compiled {
                     compiled
                         .requirements
-                        .get(&format!("{name}::{}", f.name))
+                        .get(&format!("{name}::{}", f.name()))
                         .copied()
                         .ok_or_else(|| Diagnostic {
                             source: source.clone(),
-                            span: f.span,
+                            span: f.span(),
                             code: "B270",
-                            message: format!("已编译模块没有接口 {} 的参与要求", f.name),
+                            message: format!("已编译模块没有接口 {} 的参与要求", f.name()),
                         })?
                 } else {
                     execution::Requirement::Invocation
@@ -811,7 +801,7 @@ pub(crate) fn load(
                 module: name.clone(),
                 imports: imports.clone(),
                 public,
-                compiled: if f.kind != FunctionKind::Constant && f.external.is_none() {
+                compiled: if f.kind() != FunctionKind::Constant && f.external().is_none() {
                     compiled.map(|module| module.definitions.clone())
                 } else {
                     None
@@ -869,7 +859,7 @@ impl World {
                     let record = &self.record(&key).0;
                     syntax.name = key;
                     syntax.canonical = true;
-                    (record.types.len(), record.types.len() + record.values.len(), "B232")
+                    (record.types().len(), record.types().len() + record.values().len(), "B232")
                 }
             }
         };
@@ -946,7 +936,7 @@ impl World {
     pub(crate) fn cleanup_requirements(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<bool> {
         if !consumed.insert(ty.name.clone()) { return Ok(false); }
         if let Some(key) = &ty.cleanup {
-            return Ok(self.functions[key].function.contracts.iter().any(|contract| contract.kind == ContractKind::Requires));
+            return Ok(self.functions[key].function.contracts().iter().any(|contract| contract.kind() == ContractKind::Requires));
         }
         for nested in ty.fields.iter().map(|(_, _, ty)| ty.as_ref())
             .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
@@ -1065,16 +1055,21 @@ impl World {
             if function.dataset||function.tile||function.view||!function.arguments.is_empty(){return source.fail(span,"B224","释放函数由载荷推导泛型，声明处使用函数名称");}
             let cleanup=if function.canonical&&self.functions.contains_key(&function.name){function.name.clone()}else{self.resolve(&function.name,module,imports,true).unique().ok_or_else(||Diagnostic{source:source.clone(),span,code:"B158",message:format!("未知或未导出的释放函数 {}",function.name)})?};
             let f=&self.functions[&cleanup].function;
-            if f.kind!=FunctionKind::Value||f.target!=Target::Cpu||f.params.len()!=1||f.params[0].access!=Access::Value||f.result!=TypeName::named("void"){return source.fail(span,"B224","释放函数必须是接收一个按值载荷并返回void的普通on cpu函数");}
+            if f.kind()!=FunctionKind::Value||f.target()!=Target::Cpu||f.params().len()!=1||f.params().at(0).access()!=Access::Value{return source.fail(span,"B224","释放函数必须是接收一个按值载荷并返回void的普通on cpu函数");}
             let mut ty=self.ty_inner(payload,source,span,module,imports,stack)?;
             if payload.dataset {if ty.contains_views(){return source.fail(span,"B033","dataset元素不能保存view借用");}ty=ir::Ty::owned_dataset((ty).syntax(),self.shape(&payload.count,source,span,module,imports)?);}
             let owner=ir::Ty::owned(ty,cleanup.clone());let identity=format!("owned contract:{}",owner.name);
             if !stack.insert(identity.clone()){return source.fail(span,"B224","释放函数的载荷合同不能递归要求同一拥有包装");}
             let definition=&self.functions[&cleanup];
-            let instance=check::generics::specialize(self,&cleanup,&[check::generics::Actual::value(&owner.arguments[0])],None,(&definition.source,&definition.module,&definition.imports),definition.function.span).map_err(|error|Diagnostic{source:source.clone(),span,code:error.code,message:format!("释放函数 {}：{}",cleanup,error.message)})?;
-            let parameter=&instance.definition.function.params[0];
-            let mut expected=self.ty_inner(&parameter.ty,&instance.definition.source,parameter.span,&instance.definition.module,&instance.definition.imports,stack)?;
-            if parameter.ty.dataset{expected=ir::Ty::owned_dataset((expected).syntax(),self.shape(&parameter.ty.count,&instance.definition.source,parameter.span,&instance.definition.module,&instance.definition.imports)?);}
+            let instance=check::generics::specialize(self,&cleanup,&[check::generics::Actual::value(&owner.arguments[0])],None,(&definition.source,&definition.module,&definition.imports),definition.function.span()).map_err(|error|Diagnostic{source:source.clone(),span,code:error.code,message:format!("释放函数 {}：{}",cleanup,error.message)})?;
+            let result_name=instance.bindings.type_name(self,&instance.definition.function.result(),
+                (&instance.definition.source,&instance.definition.module,&instance.definition.imports),instance.definition.function.span())?;
+            if result_name!=TypeName::named("void"){return source.fail(span,"B224","释放函数必须返回void");}
+            let parameter=&instance.definition.function.params().at(0);
+            let parameter_name=instance.bindings.type_name(self,&parameter.ty(),
+                (&instance.definition.source,&instance.definition.module,&instance.definition.imports),parameter.span())?;
+            let mut expected=self.ty_inner(&parameter_name,&instance.definition.source,parameter.span(),&instance.definition.module,&instance.definition.imports,stack)?;
+            if parameter_name.dataset{expected=ir::Ty::owned_dataset((expected).syntax(),self.shape(&parameter_name.count,&instance.definition.source,parameter.span(),&instance.definition.module,&instance.definition.imports)?);}
             stack.remove(&identity);
             let payload=&owner.arguments[0];
             let compatible=if let(Some(expected),Some(actual))=(&expected.dataset,&payload.dataset){expected==actual}else{expected==*payload};
@@ -1191,20 +1186,20 @@ impl World {
             return source.fail(span, "B031", format!("未知或不明确的类型 {}", name.name));
         };
         let (record, s, m, i) = self.record(&key);
-        if record.types.len() + record.values.len() != name.arguments.len() {
+        if record.types().len() + record.values().len() != name.arguments.len() {
             return source.fail(
                 span,
                 "B232",
                 format!(
                     "类型 {key} 需要 {} 个类型及 const 实参，实际为 {}",
-                    record.types.len() + record.values.len(),
+                    record.types().len() + record.values().len(),
                     name.arguments.len()
                 ),
             );
         }
         let mut arguments = Vec::new();
         let mut replacements = BTreeMap::new();
-        for (parameter, arg) in record.types.iter().zip(&name.arguments) {
+        for (parameter, arg) in record.types().iter().zip(&name.arguments) {
             let GenericArgument::Type(arg) = arg else {
                 return source.fail(span, "B232", "此记录位置需要普通值类型");
             };
@@ -1218,22 +1213,22 @@ impl World {
                 if actual.contains_views() { return source.fail(span, "B033", "dataset元素不能保存view借用"); }
                 actual = ir::Ty::owned_dataset((actual).syntax(), self.shape(&arg.count, source, span, module, imports)?);
             }
-            if !self.family_accepts(&parameter.family, &actual, s, record.span, m, i, stack)? {
+            if !self.family_accepts(&parameter.family(), &actual, s, record.span(), m, i, stack)? {
                 return source.fail(
                     span,
                     "B232",
-                    format!("类型 {} 不属于 {} 的允许集合", actual.name, parameter.name),
+                    format!("类型 {} 不属于 {} 的允许集合", actual.name, parameter.name()),
                 );
             }
-            replacements.insert(parameter.name.clone(), actual.syntax());
+            replacements.insert(parameter.name().to_owned(), actual.syntax());
             arguments.push(actual);
         }
         let mut values = Vec::new();
         let mut value_map = BTreeMap::new();
         for (parameter, arg) in record
-            .values
+            .values()
             .iter()
-            .zip(&name.arguments[record.types.len()..])
+            .zip(&name.arguments[record.types().len()..])
         {
             let shape = arg.shape().ok_or_else(|| Diagnostic {
                 source: source.clone(),
@@ -1245,7 +1240,7 @@ impl World {
                 .shape(&Some(shape), source, span, module, imports)?
                 .unwrap();
             if parameter
-                .choices
+                .choices()
                 .as_ref()
                 .is_some_and(|choices| !choices.contains(&value))
             {
@@ -1254,13 +1249,14 @@ impl World {
                     "B235",
                     format!(
                         "记录 const 实参 {value} 不属于 {} 的允许值域",
-                        parameter.name
+                        parameter.name()
                     ),
                 );
             }
             values.push(value);
-            value_map.insert(parameter.name.clone(), value);
+            value_map.insert(parameter.name().to_owned(), value);
         }
+        let bindings = Arc::new(generics::Bindings { types: replacements, values: value_map });
         let key = if arguments.is_empty() && values.is_empty() {
             key
         } else {
@@ -1276,38 +1272,36 @@ impl World {
         if !stack.insert(key.clone()) {
             return source.fail(span, "B032", "结构体不能递归包含自身");
         }
-        if let Some(representation) = &record.enumeration {
-            let mut ty = self.ty_inner(representation, s, record.span, m, i, stack)?;
+        if let Some(representation) = &record.enumeration() {
+            let representation=bindings.type_name(self,representation,(s,m,i),record.span())?;
+            let mut ty = self.ty_inner(&representation, s, record.span(), m, i, stack)?;
             if !ty.is_numeric() || ty.components.len() != 1 || !ty.components[0].0.is_integer() {
-                return s.fail(record.span, "B268", "编号枚举的表示类型需要整数标量");
+                return s.fail(record.span(), "B268", "编号枚举的表示类型需要整数标量");
             }
-            if !record.variants.is_empty() {
+            if !record.variants().is_empty() {
                 if ty != ir::Ty::scalar(ir::Scalar::U32) && ty != ir::Ty::scalar(ir::Scalar::I32) {
-                    return s.fail(record.span, "B268", "带载荷变体的表示类型需要 u32 或 i32");
+                    return s.fail(record.span(), "B268", "带载荷变体的表示类型需要 u32 或 i32");
                 }
                 let representation = ty;
                 let mut alternatives = Vec::new();
                 let mut names = BTreeSet::new(); let mut tags = BTreeSet::new();
-                for variant in &record.variants {
-                    if !names.insert(variant.name.clone()) { return s.fail(variant.span, "B268", "同一变体名称不能重复"); }
-                    let mut expression = variant.discriminant.clone();
-                    generics::substitute_expr(&mut expression, &replacements, &value_map, s)?;
-                    let tag = check::variant_discriminant(self, &format!("{key}::{}",variant.name), s, m, i, &representation, &expression)?;
-                    if !tags.insert(tag) { return s.fail(variant.span, "B268", "带载荷变体的编号必须唯一，才能确定活动载荷"); }
-                    let mut syntax = variant.payload.clone();
-                    generics::substitute_type(&mut syntax, &replacements, s, variant.span)?;
-                    value_parameters::substitute_type(&mut syntax, &value_map,s)?;
-                    if syntax.tile { return s.fail(variant.span, "B269", "tile是执行域借用，不能作为变体载荷"); }
+                for variant in &record.variants() {
+                    if !names.insert(variant.name().to_owned()) { return s.fail(variant.span(), "B268", "同一变体名称不能重复"); }
+                    let expression = variant.discriminant();
+                    let tag = check::variant_discriminant(self, &format!("{key}::{}",variant.name()), s, m, i, &representation, &expression, &bindings)?;
+                    if !tags.insert(tag) { return s.fail(variant.span(), "B268", "带载荷变体的编号必须唯一，才能确定活动载荷"); }
+                    let syntax = bindings.type_name(self,&variant.payload(),(s,m,i),variant.span())?;
+                    if syntax.tile { return s.fail(variant.span(), "B269", "tile是执行域借用，不能作为变体载荷"); }
                     let mut payload = if syntax == TypeName::named("void") { ir::Ty::unit() }
-                        else { self.ty_inner(&syntax, s, variant.span, m, i, stack)? };
+                        else { self.ty_inner(&syntax, s, variant.span(), m, i, stack)? };
                     if syntax.dataset {
-                        if payload.contains_views() { return s.fail(variant.span, "B033", "dataset元素不能保存view借用"); }
-                        payload = ir::Ty::owned_dataset((payload).syntax(), self.shape(&syntax.count, s, variant.span, m, i)?);
+                        if payload.contains_views() { return s.fail(variant.span(), "B033", "dataset元素不能保存view借用"); }
+                        payload = ir::Ty::owned_dataset((payload).syntax(), self.shape(&syntax.count, s, variant.span(), m, i)?);
                     }
-                    alternatives.push(ir::Variant { name: variant.name.clone(), discriminant: tag, ty: Box::new(payload) });
+                    alternatives.push(ir::Variant { name: variant.name().to_owned(), discriminant: tag, ty: Box::new(payload) });
                 }
                 let ty = ir::Ty::variant(key.clone(), arguments, values, representation.components[0].0, alternatives)
-                    .ok_or_else(|| Diagnostic { source: s.clone(), span: record.span, code: "B238", message: "变体布局超过u32字节地址范围".into() })?;
+                    .ok_or_else(|| Diagnostic { source: s.clone(), span: record.span(), code: "B238", message: "变体布局超过u32字节地址范围".into() })?;
                 stack.remove(&key); return Ok(ty);
             }
             ty.name = key.clone();
@@ -1331,29 +1325,27 @@ impl World {
             dataset: None, cleanup: None, function: None,
         };
         let mut names = BTreeSet::new();
-        for field in &record.fields {
-            if !names.insert(field.name.clone()) {
-                return s.fail(field.span, "B034", format!("重复字段 {}", field.name));
+        for field in &record.fields() {
+            if !names.insert(field.name().to_owned()) {
+                return s.fail(field.span(), "B034", format!("重复字段 {}", field.name()));
             }
-            let mut field_type = field.ty.clone();
-            generics::substitute_type(&mut field_type, &replacements, s, field.span)?;
-            value_parameters::substitute_type(&mut field_type, &value_map,s)?;
+            let field_type = bindings.type_name(self,&field.ty(),(s,m,i),field.span())?;
             let f = if field_type.dataset {
                 let mut element=field_type.clone();element.dataset=false;element.count=None;
-                let reference=self.type_reference(&element,s,field.span,m,i)?;
-                ir::Ty::owned_dataset(reference,self.shape(&field_type.count,s,field.span,m,i)?)
-            } else { self.ty_inner(&field_type,s,field.span,m,i,stack)? };
+                let reference=self.type_reference(&element,s,field.span(),m,i)?;
+                ir::Ty::owned_dataset(reference,self.shape(&field_type.count,s,field.span(),m,i)?)
+            } else { self.ty_inner(&field_type,s,field.span(),m,i,stack)? };
             let offset = (ty.size as u64).div_ceil(f.align as u64) * f.align as u64;
             let end = offset + f.size as u64;
             if end > u32::MAX as u64 {
-                return s.fail(field.span, "B238", "记录布局超过 u32 字节地址范围");
+                return s.fail(field.span(), "B238", "记录布局超过 u32 字节地址范围");
             }
             let offset = offset as u32;
             ty.components
                 .extend(f.components.iter().map(|(s, o)| (*s, o + offset)));
             ty.size = end as u32;
             ty.align = ty.align.max(f.align);
-            ty.fields.push((field.name.clone(), offset, Box::new(f)));
+            ty.fields.push((field.name().to_owned(), offset, Box::new(f)));
         }
         let size = (ty.size as u64).div_ceil(ty.align as u64) * ty.align as u64;
         ty.size = u32::try_from(size).map_err(|_| Diagnostic {
@@ -1362,13 +1354,11 @@ impl World {
             code: "B238",
             message: "记录对齐后超过 u32 字节地址范围".into(),
         })?;
-        if let Some(shape) = &record.stride {
-            let mut shape=shape.clone();
-            value_parameters::substitute_shape(&mut shape,&value_map,s)?;
-            let stride=self.shape(&Some(shape),s,record.span,m,i)?.unwrap();
+        if let Some(shape) = &record.stride() {
+            let stride=self.source_shape(shape,&bindings,s,record.span(),m,i)?;
             if stride < ty.size || stride % ty.align != 0 {
                 return s.fail(
-                    record.span,
+                    record.span(),
                     "B241",
                     format!(
                         "记录 stride {stride} 必须容纳自然布局 {} 且是对齐 {} 的倍数",

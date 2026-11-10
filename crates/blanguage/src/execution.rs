@@ -1,4 +1,5 @@
 use crate::{Definition, Declarations, ast::*, build::Declaration};
+use crate::syntax::{Expr,ExprKind,StmtKind,Block};
 use std::{cell::RefCell, collections::{BTreeMap, BTreeSet}};
 
 /// 从定义推导的调用参与范围，不是源语言中的函数种类或运行期许可。
@@ -27,7 +28,7 @@ impl Body<'_> {
             });
         }
         if !world.resolve(name, &d.module, &d.imports, false).is_missing() {
-            self.local |= statement || d.function.target == Target::Cpu;
+            self.local |= statement || d.function.target() == Target::Cpu;
             return false;
         }
         if let Some(inputs) = self.inputs {
@@ -47,101 +48,101 @@ impl Body<'_> {
                 return true;
             }
             crate::frontend::NameResolution::Missing | crate::frontend::NameResolution::Ambiguous =>
-                self.local |= statement || d.function.target == Target::Cpu,
+                self.local |= statement || d.function.target() == Target::Cpu,
         }
         false
     }
     fn expr(&mut self, world: &Declarations, d: &Definition, e: &Expr, statement: bool) {
-        match &e.kind {
+        match e.kind() {
             ExprKind::Target(_, call) => {
                 self.host = true;
                 // target 已拥有发起位置，不把内部域调用传播成调用者的域参数。
-                if let ExprKind::Call(_, args) | ExprKind::Specialize(_, _, args) = &call.kind {
+                if let ExprKind::Call(_, args) | ExprKind::Specialize(_, _, args) = call.kind() {
                     for arg in args {
-                        self.expr(world, d, arg, false);
+                        self.expr(world, d, &arg, false);
                     }
                 }
             }
             ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => {
                 if !self.call(world, d, name, statement) {
                     for arg in args {
-                        self.expr(world, d, arg, false);
+                        self.expr(world, d, &arg, false);
                     }
                 }
             }
             ExprKind::Invoke(callee, args) => {
-                self.local |= statement || d.function.target == Target::Cpu;
-                self.expr(world, d, callee, false);
-                for arg in args { self.expr(world, d, arg, false); }
+                self.local |= statement || d.function.target() == Target::Cpu;
+                self.expr(world, d, &callee, false);
+                for arg in args { self.expr(world, d, &arg, false); }
             }
             ExprKind::Construct(_, args) | ExprKind::Cooperate(_, _, args) => {
-                self.local |= d.function.target == Target::Cpu;
+                self.local |= d.function.target() == Target::Cpu;
                 for arg in args {
-                    self.expr(world, d, arg, false);
+                    self.expr(world, d, &arg, false);
                 }
             }
             ExprKind::Member(e, _) | ExprKind::Unary(_, e) => {
-                self.local |= d.function.target == Target::Cpu;
-                self.expr(world, d, e, false);
+                self.local |= d.function.target() == Target::Cpu;
+                self.expr(world, d, &e, false);
             }
             ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {
-                self.local |= d.function.target == Target::Cpu;
-                self.expr(world, d, a, false);
-                self.expr(world, d, b, false);
+                self.local |= d.function.target() == Target::Cpu;
+                self.expr(world, d, &a, false);
+                self.expr(world, d, &b, false);
             }
             ExprKind::Select(a, b, c) => {
-                self.local |= d.function.target == Target::Cpu;
-                self.expr(world, d, a, false);
-                self.expr(world, d, b, false);
-                self.expr(world, d, c, false);
+                self.local |= d.function.target() == Target::Cpu;
+                self.expr(world, d, &a, false);
+                self.expr(world, d, &b, false);
+                self.expr(world, d, &c, false);
             }
             _ => {}
         }
     }
-    fn block(&mut self, world: &Declarations, d: &Definition, body: &[Stmt]) {
+    fn block(&mut self, world: &Declarations, d: &Definition, body: &Block) {
         for s in body {
-            match &s.kind {
+            match s.kind() {
                 StmtKind::Parallel(..) | StmtKind::Phase => self.domain = true,
-                StmtKind::Expr(e) => self.expr(world, d, e, true),
+                StmtKind::Expr(e) => self.expr(world, d, &e, true),
                 StmtKind::For(_, a, b, body) => {
                     // CPU 主流程保留普通循环；设备阶段的常量求值由原阶段编译器负责。
-                    self.local |= d.function.target == Target::Cpu;
-                    self.expr(world, d, a, false);
+                    self.local |= d.function.target() == Target::Cpu;
+                    self.expr(world, d, &a, false);
                     if let Some(b) = b {
-                        self.expr(world, d, b, false);
+                        self.expr(world, d, &b, false);
                     }
-                    self.block(world, d, body);
+                    self.block(world, d, &body);
                 }
                 StmtKind::If(e, a, b) => {
                     // 设备阶段可按原常量环境选择分支；是否真为静态bool
                     // 由阶段展开处判断。CPU主流程仍保留普通运行期控制。
-                    self.local |= d.function.target == Target::Cpu;
-                    self.expr(world, d, e, false);
-                    self.block(world, d, a);
-                    self.block(world, d, b);
+                    self.local |= d.function.target() == Target::Cpu;
+                    self.expr(world, d, &e, false);
+                    self.block(world, d, &a);
+                    self.block(world, d, &b);
                 }
                 StmtKind::Match(value, arms) => {
-                    self.local=true;self.expr(world,d,value,false);
-                    for arm in arms {self.block(world,d,&arm.body);}
+                    self.local=true;self.expr(world,d,&value,false);
+                    for arm in arms {self.block(world,d,&arm.body());}
                 }
                 StmtKind::While(e, b) => {
                     self.local = true;
-                    self.expr(world, d, e, false);
-                    self.block(world, d, b);
+                    self.expr(world, d, &e, false);
+                    self.block(world, d, &b);
                 }
                 StmtKind::Let(_, _, e) => {
                     // 设备阶段的值绑定由原阶段常量语义解释，声明本身不是宿主控制。
-                    self.local |= d.function.target == Target::Cpu;
-                    self.expr(world, d, e, false);
+                    self.local |= d.function.target() == Target::Cpu;
+                    self.expr(world, d, &e, false);
                 }
                 StmtKind::Assign(a, _, b) => {
                     self.local = true;
-                    self.expr(world, d, a, false);
-                    self.expr(world, d, b, false);
+                    self.expr(world, d, &a, false);
+                    self.expr(world, d, &b, false);
                 }
                 StmtKind::Return(Some(e)) | StmtKind::Seek(_, e) => {
                     self.local = true;
-                    self.expr(world, d, e, false);
+                    self.expr(world, d, &e, false);
                 }
                 StmtKind::Declare(..) | StmtKind::Break | StmtKind::Continue => self.local = true,
                 StmtKind::Return(None) => {}
@@ -160,8 +161,8 @@ pub(crate) fn infer(world: &mut Declarations, inputs: Option<&RefCell<BTreeSet<D
                 body.domain = d.execution == Requirement::Domain;
                 body.host = d.execution == Requirement::Host;
             }
-            if d.function.kind == FunctionKind::Value {
-                if let Some(stmts) = &d.function.body {
+            if d.function.kind() == FunctionKind::Value {
+                if let Some(stmts) = &d.function.body() {
                     body.block(world, d, stmts);
                 }
             }
@@ -192,8 +193,8 @@ pub(crate) fn infer(world: &mut Declarations, inputs: Option<&RefCell<BTreeSet<D
                 || body.statements.iter().any(|callee| !domains[callee])
                 || body.calls.iter().any(|callee| {
                     !domains[callee]
-                        && (world.functions[key].function.target == Target::Cpu
-                            || world.functions[callee].function.target == Target::Cpu)
+                        && (world.functions[key].function.target() == Target::Cpu
+                            || world.functions[callee].function.target() == Target::Cpu)
                 });
             (key.clone(), body.host || (domains[key] && local))
         })

@@ -12,16 +12,16 @@ impl Builder<'_> {
         (offset, ty)
     }
     pub(super) fn dataset_reference(&self, expr: &Expr) -> Result<Option<DatasetView>> {
-        match &expr.kind {
+        match expr.kind() {
             ExprKind::Name(name) => Ok(match self.env.get(name) {
                 Some(Binding::Data(view)) => Some(view.clone()),
                 _ => None,
             }),
             ExprKind::Member(base, field) => {
-                let Some(mut view) = self.dataset_reference(base)? else { return Ok(None); };
+                let Some(mut view) = self.dataset_reference(&base)? else { return Ok(None); };
                 let (_, ty) = self.dataset_layout(&view);
                 let Some(index) = ty.fields.iter().position(|(name, _, _)| name == field) else {
-                    return self.fail(expr.span, "B141", "dataset 字段不存在");
+                    return self.fail(expr.span(), "B141", "dataset 字段不存在");
                 };
                 view.projection.push(index);
                 Ok(Some(view))
@@ -38,49 +38,49 @@ impl Builder<'_> {
         }
     }
     pub(super) fn dataset_field(&self, expr: &Expr) -> Result<(usize, u32, Ty)> {
-        match &expr.kind {
+        match expr.kind() {
             ExprKind::Name(name) => {
                 let Some(Binding::Data(view)) = self.env.get(name) else {
-                    return self.fail(expr.span, "B200", "需要命名 dataset 或其字段");
+                    return self.fail(expr.span(), "B200", "需要命名 dataset 或其字段");
                 };
                 let (offset, ty) = self.dataset_layout(view);
                 Ok((view.binding, offset, ty.clone()))
             }
             ExprKind::Member(base, name) => {
-                let (binding, word, ty) = self.dataset_field(base)?;
+                let (binding, word, ty) = self.dataset_field(&base)?;
                 let Some((offset, field)) = ty.field(name) else {
-                    return self.fail(expr.span, "B141", "dataset 字段不存在");
+                    return self.fail(expr.span(), "B141", "dataset 字段不存在");
                 };
                 Ok((binding, word + offset, field.clone()))
             }
-            _ => self.fail(expr.span, "B200", "需要命名 dataset 或其字段"),
+            _ => self.fail(expr.span(), "B200", "需要命名 dataset 或其字段"),
         }
     }
     #[inline(never)]
     pub(super) fn record_expression(
         &mut self,
         name: &TypeName,
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
         let ty = self.world.ty(
             name,
-            &self.definition.source,
+            self.scope.source(),
             span,
-            &self.definition.module,
-            &self.definition.imports,
+            self.scope.module(),
+            self.scope.imports(),
         )?;
-        let mut values = Vec::new();
-        let mut held = Vec::new();
-        for (index, arg) in args.iter().enumerate() {
-            let expected = ty
-                .array
-                .as_deref()
-                .or_else(|| ty.fields.get(index).map(|(_, _, ty)| ty.as_ref()));
-            let Some(value) = self.expr_expected(arg, expected)? else {
-                return Ok(None);
-            };
-            if value.ty.contains_borrows() { held.push(self.hold_binding(Binding::Value(value.clone()))); }
+        self.record_values(ty,args.len(),span,|builder,index,expected|
+            builder.expr_expected(&args.at(index),expected))
+    }
+    pub(super) fn record_values(&mut self,ty:Ty,count:usize,span:Span,
+        mut argument:impl FnMut(&mut Self,usize,Option<&Ty>)->Result<Option<Value>>)->Result<Option<Value>> {
+        let mut values=Vec::new();
+        let mut held=Vec::new();
+        for index in 0..count {
+            let expected=ty.array.as_deref().or_else(||ty.fields.get(index).map(|(_,_,ty)|ty.as_ref()));
+            let Some(value)=argument(self,index,expected)? else{return Ok(None);};
+            if value.ty.contains_borrows(){held.push(self.hold_binding(Binding::Value(value.clone())));}
             values.push(value);
         }
         for name in held { self.env.remove(&name); }

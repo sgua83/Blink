@@ -27,67 +27,68 @@ impl TextureReference {
 pub(super) fn shape(
     world: &World,
     ty: &TypeName,
-    d: &Definition,
+    context: (&Source,&str,&[String]),
     span: Span,
 ) -> Result<Option<u32>> {
+    let(source,module,imports)=context;
     let Some(length) = ty.texture_array_shape() else {
         return Ok(None);
     };
     let count = world
-        .shape(&Some(length), &d.source, span, &d.module, &d.imports)?
+        .shape(&Some(length), source, span, module, imports)?
         .unwrap();
     if count == 0 {
-        return d.source.fail(span, "B239", "纹理资源数组长度必须为正");
+        return source.fail(span, "B239", "纹理资源数组长度必须为正");
     }
     Ok(Some(count))
 }
 impl Builder<'_> {
-    pub(super) fn texture_parameter(&self, param: &Param, resource: &TextureReference, definition: &Definition, span: Span) -> Result<()> {
+    pub(super) fn texture_parameter(&self, param: &Param, resource: &TextureReference, context:(&Source,&str,&[String]), span: Span) -> Result<()> {
         if param.access != Access::Read {
             return self.fail(span, "B239", "纹理只能只读借用");
         }
         if param.ty.texture_dimension() != Some(self.program.textures[resource.source.binding].dimension)
             || param.ty.texture_format().is_some_and(|format|
                 Some(format) != self.program.textures[resource.source.binding].format)
-            || resource.shape(self.program) != shape(self.world, &param.ty, definition, param.span)? {
+            || resource.shape(self.program) != shape(self.world,&param.ty,context,param.span)? {
             return self.fail(span, "B239", "纹理维度、格式或资源数组形状与借用参数不一致");
         }
         Ok(())
     }
     pub(super) fn texture_argument(&mut self, expr: &Expr) -> Result<Option<TextureReference>> {
-        if let ExprKind::Name(name) = &expr.kind
+        if let ExprKind::Name(name) = expr.kind()
             && let Some(Binding::Texture(resource)) = self.env.get(name)
         {
             return Ok(Some(resource.clone()));
         }
-        let selection = match &expr.kind {
-            ExprKind::Index(base, index) => Some((&**base, &**index, true)),
+        let selection = match expr.kind() {
+            ExprKind::Index(base, index) => Some((base, index, true)),
             ExprKind::Call(name, args) if name == "unsafe_read" => {
                 if args.len() != 2 {
                     return self.fail(
-                        expr.span,
+                        expr.span(),
                         "B239",
                         "unsafe_read(纹理数组, u32 下标) 需要两个参数",
                     );
                 }
-                Some((&args[0], &args[1], false))
+                Some((args.at(0), args.at(1), false))
             }
             _ => None,
         };
         if let Some((base, index, checked)) = selection {
-            let Some(mut resource) = self.texture_argument(base)? else {
+            let Some(mut resource) = self.texture_argument(&base)? else {
                 return Ok(None);
             };
             let Some(count) = resource.shape(self.program) else {
-                return self.fail(base.span, "B239", "纹理下标需要资源数组");
+                return self.fail(base.span(), "B239", "纹理下标需要资源数组");
             };
-            let Some(value) = self.expr(index)? else {
+            let Some(value) = self.expr(&index)? else {
                 return Ok(None);
             };
-            self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
+            self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span())?;
             if checked && !self.index_in(&value, IndexDomain::Fixed(count), count, None) {
                 return self.fail(
-                    index.span,
+                    index.span(),
                     "B137",
                     "纹理下标有效性无法静态证明；使用数组 length 或有界条件",
                 );
@@ -96,9 +97,9 @@ impl Builder<'_> {
             resource.uniform = value.uniform;
             return Ok(Some(resource));
         }
-        self.fail(expr.span, "B239", "需要已有的 read texture2d／texture3d 资源名称")
+        self.fail(expr.span(), "B239", "需要已有的 read texture2d／texture3d 资源名称")
     }
-    pub(super) fn texture_sample(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
+    pub(super) fn texture_sample(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
         if args.len() != 3 {
             return self.fail(
                 span,
@@ -106,27 +107,27 @@ impl Builder<'_> {
                 "texture_sample(texture, float2／float3 坐标, f32 lod) 需要三个参数",
             );
         }
-        let Some(texture) = self.texture_argument(&args[0])? else {
+        let Some(texture) = self.texture_argument(&args.at(0))? else {
             return Ok(None);
         };
         if texture.shape(self.program).is_some() {
             return self.fail(
-                args[0].span,
+                args.at(0).span(),
                 "B239",
                 "采样需要单张纹理；用下标选择资源数组元素",
             );
         }
         let uniform = texture.uniform;
-        let Some(coordinate) = self.expr(&args[1])? else {
+        let Some(coordinate) = self.expr(&args.at(1))? else {
             return Ok(None);
         };
-        let Some(lod) = self.expr(&args[2])? else {
+        let Some(lod) = self.expr(&args.at(2))? else {
             return Ok(None);
         };
         let binding = &self.program.textures[texture.source.binding];
         let dimension = binding.dimension;
-        self.require_same(&Ty::vector(Scalar::F32, dimension.components()), &coordinate.ty, args[1].span)?;
-        self.require_same(&Ty::scalar(Scalar::F32), &lod.ty, args[2].span)?;
+        self.require_same(&Ty::vector(Scalar::F32, dimension.components()), &coordinate.ty, args.at(1).span())?;
+        self.require_same(&Ty::scalar(Scalar::F32), &lod.ty, args.at(2).span())?;
         let proof = bounds::Proof::texture_sample(binding.format, &coordinate, &lod);
         let result = std::array::from_fn(|_| self.reg(Scalar::F32));
         self.emit(InstKind::TextureSample {

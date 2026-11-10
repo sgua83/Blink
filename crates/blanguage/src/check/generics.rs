@@ -58,13 +58,13 @@ impl Builder<'_> {
                 Argument::Reference(owner) => Actual::value(owner.place.ty()),
             })
             .collect();
-        specialize(self.world, &key, &types, explicit, (&self.definition.source, &self.definition.module, &self.definition.imports), span)
+        specialize(self.world, &key, &types, explicit, (self.scope.source(), self.scope.module(), self.scope.imports()), span)
     }
     pub(super) fn specialized_call(
         &mut self,
         name: &str,
         explicit: &[GenericArgument],
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
         if matches!(name, "Ok" | "Err") {
@@ -75,8 +75,8 @@ impl Builder<'_> {
                 .world
                 .resolve(
                     name,
-                    &self.definition.module,
-                    &self.definition.imports,
+                    self.scope.module(),
+                    self.scope.imports(),
                     false,
                 )
                 .is_missing()
@@ -86,10 +86,10 @@ impl Builder<'_> {
             return self.record_expression(&ty, args, span);
         }
         let key = self.world.resolve(
-            name, &self.definition.module, &self.definition.imports, true,
+            name, self.scope.module(), self.scope.imports(), true,
         ).unique();
         if key.is_none() && matches!(name, "size_of" | "align_of") {
-            let ([GenericArgument::Type(syntax)], []) = (explicit, args) else {
+            let ([GenericArgument::Type(syntax)], 0) = (explicit, args.len()) else {
                 return self.fail(span, "B153", format!("{name}<T>()需要一个明确类型且不接收值实参"));
             };
             let ty = self.expected_storage(syntax, span)?;
@@ -97,7 +97,7 @@ impl Builder<'_> {
             return Ok(Some(self.constant(Scalar::U64, Bits::from(bytes))));
         }
         let key = key.ok_or_else(|| Diagnostic {
-                source: self.definition.source.clone(),
+                source: self.scope.source().clone(),
                 span,
                 code: "B158",
                 message: format!("未知或未导出的泛型函数 {name}"),
@@ -121,13 +121,13 @@ pub(crate) fn specialize(
     let (source, module, imports) = caller;
     let callee = &world.functions[key];
     let f = &callee.function;
-    if f.types.is_empty() && f.values.is_empty() && explicit.is_none() {
+    if f.types().is_empty() && f.values().is_empty() && explicit.is_none() {
         return crate::generics::instantiate(world, key, callee, Vec::new(), &[]);
     }
     let (explicit_types, explicit_values) = if let Some(args) = explicit {
-        if args.len() == f.types.len() + f.values.len() && !args.is_empty() {
-            args.split_at(f.types.len())
-        } else if args.len() == f.values.len() && !f.values.is_empty() {
+        if args.len() == f.types().len() + f.values().len() && !args.is_empty() {
+            args.split_at(f.types().len())
+        } else if args.len() == f.values().len() && !f.values().is_empty() {
             (&[][..], args)
         } else {
             return source.fail(
@@ -141,7 +141,7 @@ pub(crate) fn specialize(
     };
     let mut types = Vec::new();
     let mut values = Vec::new();
-    for (index, parameter) in f.types.iter().enumerate() {
+    for (index, parameter) in f.types().iter().enumerate() {
         let actual = if let Some(arg) = explicit_types.get(index) {
             let GenericArgument::Type(ty) = arg else {
                 return source.fail(span, "B231", "此泛型位置需要普通值类型");
@@ -158,10 +158,10 @@ pub(crate) fn specialize(
                 actual=Ty::owned_dataset((actual).syntax(),world.shape(&ty.count,source,span,module,imports)?);
             }
             if !world.family_accepts(
-                &parameter.family,
+                &parameter.family(),
                 &actual,
                 &callee.source,
-                f.span,
+                f.span(),
                 &callee.module,
                 &callee.imports,
                 &mut BTreeSet::new(),
@@ -171,15 +171,15 @@ pub(crate) fn specialize(
                     "B231",
                     format!(
                         "类型 {} 不属于参数 {} 的允许集合",
-                        actual.name, parameter.name
+                        actual.name, parameter.name()
                     ),
                 );
             }
             actual
         } else {
             let mut inferred = None;
-            for (formal, actual) in f.params.iter().zip(actuals) {
-                if !formal.ty.mentions(&parameter.name) {
+            for (formal, actual) in f.params().iter().zip(actuals) {
+                if !type_mentions(&formal.ty(),parameter.name()) {
                     continue;
                 }
                 let actual = actual.ty.as_deref().ok_or_else(|| Diagnostic {
@@ -191,9 +191,9 @@ pub(crate) fn specialize(
                 infer_type(
                     world,
                     source,
-                    &formal.ty,
+                    &formal.ty(),
                     actual,
-                    parameter,
+                    &parameter,
                     callee,
                     span,
                     &mut inferred,
@@ -205,13 +205,13 @@ pub(crate) fn specialize(
                 code: "B231",
                 message: format!(
                     "无法推导类型参数 {}，请显式指定全部类型实参",
-                    parameter.name
+                    parameter.name()
                 ),
             })?
         };
         types.push(actual.syntax());
     }
-    for (index, parameter) in f.values.iter().enumerate() {
+    for (index, parameter) in f.values().iter().enumerate() {
         let value = if let Some(arg) = explicit_values.get(index) {
             let shape = arg.shape().ok_or_else(|| Diagnostic {
                 source: source.clone(),
@@ -224,15 +224,8 @@ pub(crate) fn specialize(
                 .unwrap()
         } else {
             let mut inferred = None;
-            for (formal, actual) in f.params.iter().zip(actuals) {
-                let shape = if formal.ty.is_texture_resource() {
-                    formal.ty.texture_array_shape()
-                } else if formal.ty.dataset {
-                    formal.ty.count.clone()
-                } else {
-                    None
-                };
-                if shape == Some(Shape::Constant(parameter.name.clone()))
+            for (formal, actual) in f.params().iter().zip(actuals) {
+                if resource_names_shape(&formal.ty(),parameter.name())
                     && let Some(value) = actual.count
                 {
                     merge_value(&mut inferred, value, source, span)?;
@@ -240,9 +233,9 @@ pub(crate) fn specialize(
                 if let Some(actual) = actual.ty.as_deref() {
                     infer_value(
                         world,
-                        &formal.ty,
+                        &formal.ty(),
                         actual,
-                        &parameter.name,
+                        &parameter.name(),
                         callee,
                         source,
                         span,
@@ -256,19 +249,19 @@ pub(crate) fn specialize(
                 code: "B235",
                 message: format!(
                     "const 参数 {} 无法从静态形状或名义类型推导，请显式指定",
-                    parameter.name
+                    parameter.name()
                 ),
             })?
         };
         if parameter
-            .choices
+            .choices()
             .as_ref()
             .is_some_and(|choices| !choices.contains(&value))
         {
             return source.fail(
                 span,
                 "B235",
-                format!("const 实参 {value} 不属于 {} 的允许值域", parameter.name),
+                format!("const 实参 {value} 不属于 {} 的允许值域", parameter.name()),
             );
         }
         values.push(value);
@@ -282,25 +275,45 @@ fn merge_value(inferred: &mut Option<u32>, value: u32, source: &Source, span: Sp
     *inferred = Some(value);
     Ok(())
 }
+fn type_mentions(ty:&crate::syntax::Type,name:&str)->bool{
+    ty.name()==name || ty.arguments().iter().any(|argument|
+        matches!(argument.kind(),crate::syntax::ArgumentKind::Type(ty)if type_mentions(&ty,name)))
+}
+fn argument_names_value(argument:&crate::syntax::Argument,name:&str)->bool{
+    match argument.kind(){
+        crate::syntax::ArgumentKind::Value(shape)=>matches!(shape.kind(),crate::syntax::ShapeKind::Constant(value)if value==name),
+        crate::syntax::ArgumentKind::Type(ty)=>ty.arguments().is_empty()&&!ty.dataset()&&!ty.view()&&!ty.tile()&&ty.name()==name,
+    }
+}
+fn resource_names_shape(ty:&crate::syntax::Type,name:&str)->bool{
+    if ty.dataset(){return ty.count().is_some_and(|shape|matches!(shape.kind(),crate::syntax::ShapeKind::Constant(value)if value==name));}
+    if ty.name()=="array"&&!ty.view()&&!ty.tile()&&ty.arguments().len()==2
+        &&let crate::syntax::ArgumentKind::Type(element)=ty.arguments().at(0).kind()
+        &&matches!(element.name(),"texture2d"|"texture3d")&&!element.dataset()&&!element.view()&&!element.tile(){
+        return argument_names_value(&ty.arguments().at(1),name);
+    }
+    false
+}
+
 fn infer_type(
     world: &World,
     source: &Source,
-    formal: &TypeName,
+    formal: &crate::syntax::Type,
     actual: &Ty,
-    parameter: &TypeParameter,
+    parameter: &crate::syntax::TypeParameter,
     callee: &Definition,
     span: Span,
     inferred: &mut Option<Ty>,
 ) -> Result<()> {
-    if !formal.mentions(&parameter.name) {
+    if !type_mentions(formal,parameter.name()) {
         return Ok(());
     }
     let resolved;
-    let actual = if formal.dataset && let Some(reference)=actual.dataset.as_deref() {
+    let actual = if formal.dataset() && let Some(reference)=actual.dataset.as_deref() {
         resolved=world.ty(reference,source,span,&callee.module,&callee.imports)?;
         &resolved
     } else { actual };
-    let actual = if formal.view {
+    let actual = if formal.view() {
         actual.view.as_deref().ok_or_else(|| Diagnostic {
             source: source.clone(),
             span,
@@ -310,12 +323,12 @@ fn infer_type(
     } else {
         actual
     };
-    if formal.name == parameter.name {
-        if !formal.arguments.is_empty() {
+    if formal.name() == parameter.name() {
+        if !formal.arguments().is_empty() {
             return source.fail(span, "B232", "类型参数已代表完整类型，不能再附加实参");
         }
         if !world.family_accepts(
-            &parameter.family,
+            &parameter.family(),
             actual,
             &callee.source,
             span,
@@ -328,7 +341,7 @@ fn infer_type(
                 "B231",
                 format!(
                     "类型 {} 不满足参数 {} 的普通值类型或有限集合约束",
-                    actual.name, parameter.name
+                    actual.name, parameter.name()
                 ),
             );
         }
@@ -345,22 +358,22 @@ fn infer_type(
         }
         return Ok(());
     }
-    if formal.name == "cfn" {
+    if formal.name() == "cfn" {
         let Some(function) = &actual.function else {
             return source.fail(span, "B263", "cfn类型推导需要相同函数签名种类");
         };
-        if formal.arguments.len() != function.parameters.len() + 1 {
+        if formal.arguments().len() != function.parameters.len() + 1 {
             return source.fail(span, "B263", "cfn类型推导需要相同参数数量");
         }
-        for (index, argument) in formal.arguments.iter().enumerate() {
-            let GenericArgument::Type(formal) = argument else {
+        for (index, argument) in formal.arguments().iter().enumerate() {
+            let crate::syntax::ArgumentKind::Type(formal) = argument.kind() else {
                 return source.fail(span, "B263", "cfn签名只接受类型");
             };
             let (formal, syntax) = if index == 0 {
                 (formal, &function.result)
             } else {
-                let access = if !formal.dataset && !formal.view && !formal.tile {
-                    match formal.name.as_str() {
+                let access = if !formal.dataset() && !formal.view() && !formal.tile() {
+                    match formal.name() {
                         "read" => Access::Read, "write" => Access::Write,
                         "inout" => Access::InOut, _ => Access::Value,
                     }
@@ -370,48 +383,48 @@ fn infer_type(
                     return source.fail(span, "B124", "cfn参数访问方式不匹配");
                 }
                 let formal = if access == Access::Value { formal } else {
-                    let [GenericArgument::Type(element)] = formal.arguments.as_slice() else {
+                    let (1,Some(crate::syntax::ArgumentKind::Type(element))) = (formal.arguments().len(),formal.arguments().first().map(|argument|argument.kind())) else {
                         return source.fail(span, "B263", "cfn位置参数使用read<T>／write<T>／inout<T>");
                     };
                     element
                 };
                 (formal, syntax)
             };
-            if formal.mentions(&parameter.name) {
+            if type_mentions(&formal,parameter.name()) {
                 let actual = if *syntax == TypeName::named("void") { Ty::unit() } else {
                     world.ty(syntax, source, span, &callee.module, &callee.imports)?
                 };
-                infer_type(world, source, formal, &actual, parameter, callee, span, inferred)?;
+                infer_type(world, source, &formal, &actual, parameter, callee, span, inferred)?;
             }
         }
         return Ok(());
     }
-    if formal.name == "result" {
-        if !actual.result || formal.arguments.len() != 2 {
+    if formal.name() == "result" {
+        if !actual.result || formal.arguments().len() != 2 {
             return source.fail(span, "B269", "结果类型推导需要相同结果种类");
         }
-        for (arg, ty) in formal.arguments.iter().zip(&actual.arguments) {
-            let GenericArgument::Type(arg) = arg else {
+        for (arg, ty) in formal.arguments().iter().zip(&actual.arguments) {
+            let crate::syntax::ArgumentKind::Type(arg) = arg.kind() else {
                 return source.fail(span, "B269", "结果实参需要类型");
             };
-            infer_type(world, source, arg, ty, parameter, callee, span, inferred)?;
+            infer_type(world, source, &arg, ty, parameter, callee, span, inferred)?;
         }
         return Ok(());
     }
-    if formal.name == "array" {
+    if formal.name() == "array" {
         let Some(element) = &actual.array else {
             return source.fail(span, "B238", "array 类型推导需要相同数组种类");
         };
-        let Some(GenericArgument::Type(formal_element)) = formal.arguments.first() else {
+        let Some(crate::syntax::ArgumentKind::Type(formal_element)) = formal.arguments().first().map(|argument|argument.kind()) else {
             return source.fail(span, "B238", "array 首参数需要值类型");
         };
-        if formal.arguments.len() != 2 {
+        if formal.arguments().len() != 2 {
             return source.fail(span, "B238", "array 需要元素类型和固定长度");
         }
         return infer_type(
             world,
             source,
-            formal_element,
+            &formal_element,
             element,
             parameter,
             callee,
@@ -420,12 +433,12 @@ fn infer_type(
         );
     }
     let base = world
-        .resolve(&formal.name, &callee.module, &callee.imports, false).unique()
+        .resolve(&formal.name(), &callee.module, &callee.imports, false).unique()
         .ok_or_else(|| Diagnostic {
             source: callee.source.clone(),
             span,
             code: "B031",
-            message: format!("未知或不明确的记录类型 {}", formal.name),
+            message: format!("未知或不明确的记录类型 {}", formal.name()),
         })?;
     let expected = crate::generics::key(
         &base,
@@ -437,20 +450,20 @@ fn infer_type(
             .collect::<Vec<_>>(),
     );
     if actual.name != expected
-        || formal.arguments.len() != actual.arguments.len() + actual.values.len()
+        || formal.arguments().len() != actual.arguments.len() + actual.values.len()
     {
         return source.fail(
             span,
             "B232",
-            format!("不能从 {} 推导记录 {} 的类型参数", actual.name, formal.name),
+            format!("不能从 {} 推导记录 {} 的类型参数", actual.name, formal.name()),
         );
     }
-    for (formal, actual) in formal.arguments.iter().zip(&actual.arguments) {
-        let GenericArgument::Type(formal) = formal else {
+    for (formal, actual) in formal.arguments().iter().zip(&actual.arguments) {
+        let crate::syntax::ArgumentKind::Type(formal) = formal.kind() else {
             return source.fail(span, "B232", "记录类型位置需要类型实参");
         };
         infer_type(
-            world, source, formal, actual, parameter, callee, span, inferred,
+            world, source, &formal, actual, parameter, callee, span, inferred,
         )?;
     }
     Ok(())
@@ -458,7 +471,7 @@ fn infer_type(
 
 fn infer_value(
     world: &World,
-    formal: &TypeName,
+    formal: &crate::syntax::Type,
     actual: &Ty,
     name: &str,
     callee: &Definition,
@@ -466,9 +479,9 @@ fn infer_value(
     span: Span,
     inferred: &mut Option<u32>,
 ) -> Result<()> {
-    if formal.dataset
+    if formal.dataset()
         && actual.dataset.is_some()
-        && formal.count == Some(Shape::Constant(name.into()))
+        && formal.count().is_some_and(|shape|matches!(shape.kind(),crate::syntax::ShapeKind::Constant(value)if value==name))
         && let Some(value) = actual.values.first()
     {
         if inferred.is_some_and(|before| before != *value) {
@@ -477,11 +490,11 @@ fn infer_value(
         *inferred = Some(*value);
     }
     let resolved;
-    let actual = if formal.dataset && let Some(reference)=actual.dataset.as_deref() {
+    let actual = if formal.dataset() && let Some(reference)=actual.dataset.as_deref() {
         resolved=world.ty(reference,source,span,&callee.module,&callee.imports)?;
         &resolved
     } else { actual };
-    let actual = if formal.view {
+    let actual = if formal.view() {
         let Some(actual) = actual.view.as_deref() else {
             return Ok(());
         };
@@ -489,25 +502,25 @@ fn infer_value(
     } else {
         actual
     };
-    if formal.arguments.is_empty() {
+    if formal.arguments().is_empty() {
         return Ok(());
     }
-    if formal.name == "cfn" {
+    if formal.name() == "cfn" {
         let Some(function) = &actual.function else {
             return source.fail(span, "B263", "cfn const推导需要同类函数签名");
         };
-        if formal.arguments.len() != function.parameters.len() + 1 {
+        if formal.arguments().len() != function.parameters.len() + 1 {
             return source.fail(span, "B263", "cfn const推导需要相同参数数量");
         }
-        for (index, argument) in formal.arguments.iter().enumerate() {
-            let GenericArgument::Type(formal) = argument else {
+        for (index, argument) in formal.arguments().iter().enumerate() {
+            let crate::syntax::ArgumentKind::Type(formal) = argument.kind() else {
                 return source.fail(span, "B263", "cfn签名只接受类型");
             };
             let (formal, syntax) = if index == 0 {
                 (formal, &function.result)
             } else {
-                let access = if !formal.dataset && !formal.view && !formal.tile {
-                    match formal.name.as_str() {
+                let access = if !formal.dataset() && !formal.view() && !formal.tile() {
+                    match formal.name() {
                         "read" => Access::Read, "write" => Access::Write,
                         "inout" => Access::InOut, _ => Access::Value,
                     }
@@ -517,7 +530,7 @@ fn infer_value(
                     return source.fail(span, "B124", "cfn参数访问方式不匹配");
                 }
                 let formal = if access == Access::Value { formal } else {
-                    let [GenericArgument::Type(element)] = formal.arguments.as_slice() else {
+                    let (1,Some(crate::syntax::ArgumentKind::Type(element))) = (formal.arguments().len(),formal.arguments().first().map(|argument|argument.kind())) else {
                         return source.fail(span, "B263", "cfn位置参数使用read<T>／write<T>／inout<T>");
                     };
                     element
@@ -528,33 +541,33 @@ fn infer_value(
                 continue;
             }
             let actual = world.ty(syntax, source, span, &callee.module, &callee.imports)?;
-            infer_value(world, formal, &actual, name, callee, source, span, inferred)?;
+            infer_value(world, &formal, &actual, name, callee, source, span, inferred)?;
         }
         return Ok(());
     }
-    if formal.name == "result" {
-        if !actual.result || formal.arguments.len() != 2 {
+    if formal.name() == "result" {
+        if !actual.result || formal.arguments().len() != 2 {
             return source.fail(span, "B269", "结果 const 推导需要相同结果种类");
         }
-        for (arg, ty) in formal.arguments.iter().zip(&actual.arguments) {
-            let GenericArgument::Type(arg) = arg else {
+        for (arg, ty) in formal.arguments().iter().zip(&actual.arguments) {
+            let crate::syntax::ArgumentKind::Type(arg) = arg.kind() else {
                 return source.fail(span, "B269", "结果实参需要类型");
             };
-            infer_value(world, arg, ty, name, callee, source, span, inferred)?;
+            infer_value(world, &arg, ty, name, callee, source, span, inferred)?;
         }
         return Ok(());
     }
-    if formal.name == "array" {
+    if formal.name() == "array" {
         let Some(element) = &actual.array else {
             return source.fail(span, "B238", "array 值推导需要相同数组种类");
         };
-        if formal.arguments.len() != 2 {
+        if formal.arguments().len() != 2 {
             return source.fail(span, "B238", "array 需要元素类型和固定长度");
         }
-        if let GenericArgument::Type(formal_element) = &formal.arguments[0] {
+        if let crate::syntax::ArgumentKind::Type(formal_element) = formal.arguments().at(0).kind() {
             infer_value(
                 world,
-                formal_element,
+                &formal_element,
                 element,
                 name,
                 callee,
@@ -563,7 +576,7 @@ fn infer_value(
                 inferred,
             )?;
         }
-        if formal.arguments[1].shape() == Some(Shape::Constant(name.into())) {
+        if argument_names_value(&formal.arguments().at(1),name) {
             let value = actual.values[0];
             if inferred.is_some_and(|previous| previous != value) {
                 return source.fail(span, "B235", "array 的重复长度推导不一致");
@@ -573,12 +586,12 @@ fn infer_value(
         return Ok(());
     }
     let base = world
-        .resolve(&formal.name, &callee.module, &callee.imports, false).unique()
+        .resolve(&formal.name(), &callee.module, &callee.imports, false).unique()
         .ok_or_else(|| Diagnostic {
             source: callee.source.clone(),
             span,
             code: "B031",
-            message: format!("未知记录 {}", formal.name),
+            message: format!("未知记录 {}", formal.name()),
         })?;
     let expected = crate::generics::key(
         &base,
@@ -590,20 +603,20 @@ fn infer_value(
             .collect::<Vec<_>>(),
     );
     if expected != actual.name
-        || formal.arguments.len() != actual.arguments.len() + actual.values.len()
+        || formal.arguments().len() != actual.arguments.len() + actual.values.len()
     {
         return source.fail(span, "B232", "无法从不同名义记录推导 const 参数");
     }
-    for (arg, ty) in formal.arguments.iter().zip(&actual.arguments) {
-        if let GenericArgument::Type(arg) = arg {
-            infer_value(world, arg, ty, name, callee, source, span, inferred)?;
+    for (arg, ty) in formal.arguments().iter().zip(&actual.arguments) {
+        if let crate::syntax::ArgumentKind::Type(arg) = arg.kind() {
+            infer_value(world, &arg, ty, name, callee, source, span, inferred)?;
         }
     }
-    for (arg, value) in formal.arguments[actual.arguments.len()..]
+    for (arg, value) in formal.arguments().slice(actual.arguments.len()..)
         .iter()
         .zip(&actual.values)
     {
-        if arg.shape() == Some(Shape::Constant(name.into())) {
+        if argument_names_value(&arg,name) {
             if let Some(previous) = *inferred {
                 if previous != *value {
                     return source.fail(

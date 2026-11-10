@@ -97,7 +97,7 @@ cd Blink
 cargo build --workspace --release
 ```
 
-Blink源码生产者的build.rs用上述独立种子bc逐模块生成无Frame B引导对象，再由同一次blink归档静态链接；种子保留在安装目录，新构建产物进入工程target。发行者沿本次Cargo真实OUT_DIR交付同源固定引导库；包内源码SDK由build-sdk.rs把固定库捕获到消费工程OUT_DIR供rustc链接，不再编译九个B引导模块。Rust编译其余语法构造、AST、检查、IR、后端与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
+Blink源码生产者的build.rs用上述独立种子bc逐模块生成无Frame B引导对象，再由同一次blink归档静态链接；种子保留在安装目录，新构建产物进入工程target。发行者沿本次Cargo真实OUT_DIR交付同源固定引导库；包内源码SDK由build-sdk.rs把固定库捕获到消费工程OUT_DIR供rustc链接，不再调用种子重编引导模块。源语法存储由B持有，Rust解析算法直接写入同一B存储；其余语法构造／解析算法、检查、IR、后端与执行框架仍由Rust实现；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
 
 先检查，再导出 CPU/GPU 代码：
 
@@ -265,7 +265,7 @@ B源语言通过size_of<T>()与align_of<T>()读取同一Ty的大小和对齐，�
 
 ```rust
         if key.is_none() && matches!(name, "size_of" | "align_of") {
-            let ([GenericArgument::Type(syntax)], []) = (explicit, args) else {
+            let ([GenericArgument::Type(syntax)], 0) = (explicit, args.len()) else {
                 return self.fail(span, "B153", format!("{name}<T>()需要一个明确类型且不接收值实参"));
             };
             let ty = self.expected_storage(syntax, span)?;
@@ -286,25 +286,30 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 实际写入位置及条件沿原函数正常出口交接。递归和完整for的待闭合事实保存在原Position／Function.uses中，来源与确定结果沿原调用关系统一收敛；读取、条件输出与转借都保留实际时点，不由后续写入补足。公开合同只含闭合位置与完整条件，不携带被调私有槽或循环表达。资源及指向该资源的地址可以共同返回；拥有字段或值移动仍使用原存储，缺少拥有者的地址不能逃逸。own静态F的真实后续读取参与原view_liveness，最后消费前不允许存储resize／迁移／释放，Frame／blcompute仍是唯一物理资源所有者。
 
-源码节选：`crates/blanguage/src/check/address.rs:969`。
+源码节选：`crates/blanguage/src/check/address.rs:970`。
 
 ```rust
-    pub(super) fn external_position(&mut self, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Place>> {
+    pub(super) fn external_position(&mut self,explicit:&[GenericArgument],args:&Expressions,span:Span)->Result<Option<Place>> {
+        self.external_position_value(explicit,args.len(),span,args.first().map(|arg|arg.span()).unwrap_or(span),
+            |builder|builder.expr(&args.at(0)))
+    }
+    pub(super) fn external_position_value(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
+        argument:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>> {
         if self.program.target != Target::Cpu {
             return self.fail(span, "B265", "unsafe_position只解释本进程CPU地址");
         }
-        let ([GenericArgument::Type(name)], [arg]) = (explicit, args) else {
+        let ([GenericArgument::Type(name)], 1) = (explicit, count) else {
             return self.fail(span, "B153", "unsafe_position<T>需要一个明确普通类型和一个address实参");
         };
-        let ty = self.world.ty(name, &self.definition.source, span, &self.definition.module, &self.definition.imports)?;
+        let ty = self.world.ty(name, self.scope.source(), span, self.scope.module(), self.scope.imports())?;
         if ty.owns_resources() {
             return self.fail(span, "B224", "外部地址位置不能创建Blink拥有资源");
         }
         if ty.contains_views() || ty.components.is_empty() {
             return self.fail(span, "B263", "外部地址位置需要非空普通值布局，不能解释Blink资源引用");
         }
-        let Some(mut value) = self.expr(arg)? else { return Ok(None); };
-        self.require_same(&Ty::builtin("address").unwrap(), &value.ty, arg.span)?;
+        let Some(mut value) = argument(self)? else { return Ok(None); };
+        self.require_same(&Ty::builtin("address").unwrap(), &value.ty, argument_span)?;
         let borrow=borrow_in_path(&self.current_address_borrow(&value.proof.view_borrow(0)),&self.path);
         self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:Layout::of(&ty),written:None,writable:false,initialized:false,span})?;
         let external=!borrow.pending()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|matches!(source,view::Source::External));
@@ -359,7 +364,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。类型、const与usize／isize别名保持原规范身份。普通.h／.b签名比较也直接使用World::type_reference：接口先经原泛型／const代入，再与实现消费同一类型身份；不另写按拼写递归的比较入口。标量同义名与同一名义引用的合法限定写法保持相同，真实类型、形状和函数值合同仍区分，记录引用不因签名比较提前展开布局。原TypeName已识别的纹理及加速结构直接交接资源引用身份，纹理格式标记不走普通名义类型解析；固定资源数组仍沿原array求值形状并递归同一资源身份，维度、格式和访问保持实际合同。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的非零输入前提与条件输出写在cfn签名后，使用argument0起的位置名；静态命名、外部和间接调用借用原合同的同一视图，实际已求值输入沿原Nonzero选择／prove满足前提，入口沿原resolve／assume取得事实；实际返回值与Proof／Position继续交接初始化。TypeName和CFunctionType的contracts向量保存同一份输入／输出元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量按原运算统一身份；浮点谓词已交接初始化，声明已按语义匹配。明确C ABI的B定义可形成直接原生入口；需执行上下文的回调与可保留代码／状态寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
 
-源码节选：`crates/blanguage/src/function_types.rs:104`。
+源码节选：`crates/blanguage/src/function_types.rs:101`。
 
 ```rust
     pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<Ty> {
@@ -396,19 +401,22 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
 
 函数值调用复用直接C调用的实参求值、read／write／inout借用、连续布局及返回投影。外部声明与函数值只提供各自真实目标和签名，共用c_call，不造一个不存在的DLL或Definition来转接。
 
-源码节选：`crates/blanguage/src/check/external.rs:266`。
+源码节选：`crates/blanguage/src/check/external.rs:270`。
 
 ```rust
-    pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
-        let parameters = d.function.params.iter().map(|param| {
-            let ty = value_type(self.world, d, &param.ty, param.span)?;
-            Ok(if param.access == Access::Value { CallParameter::value(ty) }
-                else { CallParameter::reference(ty, param.access) })
+    pub(super) fn external_call(&mut self, instance: &crate::generics::Instance, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
+        let d=&instance.definition;
+        let parameters = d.function.params().iter().map(|param| {
+            let ty = value_type(self.world, d, &instance.bindings.type_name(self.world,&param.ty(),
+                (&d.source,&d.module,&d.imports),param.span())?, param.span())?;
+            Ok(if param.access() == Access::Value { CallParameter::value(ty) }
+                else { CallParameter::reference(ty, param.access()) })
         }).collect::<Result<Vec<_>>>()?;
-        let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
-            else { Some(value_type(self.world, d, &d.function.result, d.function.span)?) };
-        self.c_call(CallTarget::External(d.function.external.clone().unwrap()), &parameters, args, result,
-            d.function.result.is_never(), Some(d.as_ref().into()), span, generated_origin)
+        let result_name=instance.bindings.type_name(self.world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())?;
+        let result = if result_name.name == "void" || result_name.is_never() { None }
+            else { Some(value_type(self.world, d, &result_name, d.function.span())?) };
+        self.c_call(CallTarget::External({let name=d.function.external().unwrap();ExternalName{library:name.library().into(),symbol:name.symbol().into()}}), &parameters, args, result,
+            result_name.is_never(), Some(instance.into()), span, generated_origin)
     }
 ```
 
@@ -527,7 +535,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 类型引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，validate_type_references沿函数签名、字段、变体、数组及dataset元素的同一引用闭包检查合法性。一次查询已经消费的同一具体类型不反复展开，未知、非法C签名或直接按值递归仍由原规则拒绝。stored_borrows与cleanup_requirements另按真实存储查询借用和静态F前提；签名或泛型实参中出现某种类型，不代表当前值存储了该类型的资源。
 
-源码节选：`crates/blanguage/src/frontend.rs:962`。
+源码节选：`crates/blanguage/src/frontend.rs:952`。
 
 ```rust
     pub(crate) fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
@@ -695,7 +703,7 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
 
 原OutputCondition只负责纯表达式组织；路径来自真实按值快照、资源长度与返回值，字段消费原member_type。dataset的存储类型使用原Ty::owned_dataset及真实count，initialized位置仍选择实际元素。根结果必须是bool；泛型类型及const沿原实例化闭合，不生成假函数或声明用执行IR。
 
-源码节选：`crates/blanguage/src/check/outputs.rs:745`。
+源码节选：`crates/blanguage/src/check/outputs.rs:756`。
 
 ```rust
 fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
@@ -940,17 +948,17 @@ C 结构体保存字段，Rust 的 `struct` 也如此。Rust 的 `enum` 还可�
 
 `Result<T,E>` 表示成功或错误：`Ok(value)` 与 `Err(error)`。函数调用后面的 `?` 表示成功就取出结果，失败就把错误交还上层。它不是重新尝试，也不是忽略错误。
 
-源码节选：`crates/blanguage/src/parser.rs:32`。
+源码节选：`crates/blanguage/src/parser.rs:33`。
 
 ```rust
-pub fn parse(source: Source) -> Result<Module> {
-    let tokens = lexer::lex(&source)?;
-    Parser {
-        source,
-        tokens,
-        at: 0,
-    }
-    .module()
+// A completed child is stored before it enters its parent. Construction drafts
+// contain lexical fields and B indices, never a second recursive syntax tree.
+macro_rules! store {
+    ($parser:expr,$method:ident,$value:expr) => {{
+        let value=$value;
+        let result=$parser.storage.$method(value);
+        $parser.storage_result(result)?
+    }};
 }
 ```
 
@@ -978,9 +986,10 @@ pub fn parse(source: Source) -> Result<Module> {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:136`。
+源码节选：`crates/blanguage/src/frontend.rs:131`。
 
 ```rust
+
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
     compile_module(path, module_root, true, None, &[])
 }
@@ -1014,7 +1023,7 @@ pub fn compile_entry_with_modules(
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:564`。
+源码节选：`crates/blanguage/src/frontend.rs:573`。
 
 ```rust
     if let Some(name) = import
@@ -1075,7 +1084,7 @@ impl Token {
 }
 ```
 
-这里没有把每个关键字编成独立枚举；解析器仍比较原文。AST需要长期持有独立名称或数字文字时，由Parser在实际构造处取得自己的String。
+这里没有把每个关键字编成独立枚举；解析器仍比较原文。Parser在实际构造处将需长期持有的名称和数字文字交入B模块的自有字节；源范围仍指向原不可变Source快照，不为每次读取复制文字。
 
 ### 5.2 一个扫描位置贯穿整个B循环
 
@@ -1127,9 +1136,9 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 源码生产者的build.rs默认调用已安装独立稳定发行的bc；后续代通过BLINK_BOOTSTRAP_SDK明确选择独立上一代SDK，原PublishRelease.ps1用-BootstrapSdk只向本轮Cargo交接实际输入，不改系统安装。选定的bc分别生成B词法、泛型前瞻与链接字符串解码、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子VERSION的原共享读句柄保持到全部编译与归档结束，新工具写工程target。发行者把同次构建的静态库交给源码SDK，并在包Cargo中声明build-sdk.rs作为消费入口；消费者持有本包VERSION读取同源固定库，写入自己的原OUT_DIR后链接，输入缺失直接交回I/O错误，不重新调用种子。compiler关闭时不读取引导库或生成编译器身份；installed不决定生产／消费角色。两个入口共用同一身份实现，以实际原生库、源码、有效Cargo配置及Rust工具链决定身份。编译器运行时直接调用已编入的B代码，原C ABI与运行资源职责保持。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。
 
-词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取由B接管；其余对象语义／合同及栈记录生成、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取，以及源语法节点／子项／文字的存储、增长与最后释放由B接管；其余对象语义／合同及栈记录生成、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
-语法存储的[当前接管设计](../Docs/Architecture.md#syntax-storage-boundary)尚未完成整体采用。B模块唯一持有源节点、模块内子项索引和自有文字，Source借用保留原字节范围，增长后按索引重新取得视图。声明表和各实例共享只读源定义；实例保留原instantiate已经产生的类型／const绑定，检查与IR生成按实际绑定解释源引用，删除Definition／Function深克隆及逐节点写回。必要的静态使用检查、作用域、错误位置及来源保持，实例实际代码／IR仍各自拥有。TypeName.canonical及规范化OutputConstant的Ty、bits、GeneratedOrigin属于原语义合同／IR，runtime codec继续恢复原语义值和编码，不附带编译器／种子依赖。只有真实新语法才写B结果；只为调用检查入口而构造的辅助Function／Return树退出。节点编号不代替结构比较，Expr的Span不参与原相等规则。语法、实例绑定与生成／语义结果各沿实际最后消费者释放，完整交接以原台账状态为准。
+语法存储按[现行职责](../Docs/Architecture.md#syntax-storage-boundary)由B模块持有，原解析、声明、实例和检查消费者直接读取同一存储。B模块唯一持有源节点、模块内子项索引和自有文字，Source借用保留原字节范围，增长后按索引重新取得视图。声明表和各实例共享只读源定义；实例保留原instantiate已经产生的类型／const绑定，检查与IR生成按实际绑定解释源引用，删除Definition／Function深克隆及逐节点写回。必要的静态使用检查、作用域、错误位置及来源保持，实例实际代码／IR仍各自拥有。TypeName.canonical及规范化OutputConstant的Ty、bits、GeneratedOrigin属于原语义合同／IR，runtime codec继续恢复原语义值和编码，不附带编译器／种子依赖。只有真实新语法才写B结果；只为调用检查入口而构造的辅助Function／Return树退出。节点编号不代替结构比较，Expr的Span不参与原相等规则。语法、实例绑定与生成／语义结果各沿实际最后消费者释放，完整交接以原台账状态为准。
 
 **自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
@@ -1147,15 +1156,39 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 6.2 解析器怎样知道在哪里
 
-源码节选：`crates/blanguage/src/parser.rs:64`。
+源码节选：`crates/blanguage/src/parser.rs:67`。
 
 ```rust
 struct Parser {
-    source: Source,
-    tokens: Vec<Token>,
-    at: usize,
+    source:Source,
+    tokens:Vec<Token>,
+    at:usize,
+    storage:syntax::Builder,
 }
 impl Parser {
+    fn new(source:Source)->Result<Self> {
+        let tokens=lexer::lex(&source)?;
+        let storage=syntax::Builder::new(Some(source.clone())).map_err(|error|Diagnostic {
+            source:source.clone(),span:Span::default(),code:"B386",message:error.to_string(),
+        })?;
+        Ok(Self{source,tokens,at:0,storage})
+    }
+    fn storage_result<T>(&self,result:std::result::Result<T,syntax::StorageFailure>)->Result<T> {
+        result.map_err(|error|Diagnostic {source:self.source.clone(),span:Span::default(),code:"B386",message:error.to_string()})
+    }
+    fn expr_ref(&mut self,min:u8,type_argument:bool)->Result<wire::ExprRef> {
+        Ok(store!(self,make_expr,self.expr(min,type_argument)?))
+    }
+    fn stmt_ref(&mut self)->Result<wire::StmtRef> {
+        Ok(store!(self,make_stmt,self.stmt()?))
+    }
+    fn source_condition(&mut self,expression:Expr,message:&str)->Result<wire::ConditionRef> {
+        let span=expression.span;
+        store!(self,source_condition,expression).ok_or_else(||Diagnostic {
+            source:self.source.clone(),span,code:"B225",message:message.into(),
+        })
+    }
+
     fn peek(&self) -> &str {
         self.tokens[self.at].text(&self.source)
     }
@@ -1178,7 +1211,7 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:1126`。
+源码节选：`crates/blanguage/src/parser.rs:1164`。
 
 ```rust
             let prec = match self.peek() {
@@ -1199,9 +1232,9 @@ impl Parser {
             }
             let op = self.peek().to_owned();
             self.at += 1;
-            let rhs = self.expr(prec + 1,type_argument)?;
+            let rhs = self.expr_ref(prec + 1,type_argument)?;
             lhs = Expr {
-                kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
+                kind: ExprKind::Binary(op, store!(self,make_expr,lhs), rhs),
                 span,
             };
         }
@@ -1273,6 +1306,73 @@ B返回成功长度，或不支持的转义、非ASCII／NUL、空结果这三�
 
 AST构造、普通Unicode文本解码和其余语法仍由各自现有实现处理，局部B接管不代表完整解析器或编译器自举已经完成。
 
+### 6.5 源节点、文字与最后消费者
+
+解析器只在构造期间持有必要的标量和子索引序列，完整源节点写入B拥有的模块。节点之间保存本模块内的类型化索引；Rust端的列表和节点视图不持第二棵树，切片只改变读取范围。缓冲增长可以改变物理地址，索引保持不变，构造结束后才公开只读视图。
+
+源码节选：`crates/blanguage/src/bootstrap/ast_storage.h:1`。
+
+```b
+module bootstrap.ast_storage;
+struct Span {u64 start;u64 end;};
+struct Slice {u64 offset;u64 count;};
+struct Text {u32 kind;Span range;};
+struct Optional<T> {u32 present;T value;};
+struct TypeRef {u64 offset;};
+struct ShapeRef {u64 offset;};
+struct ArgumentRef {u64 offset;};
+```
+
+源码节选：`crates/blanguage/src/bootstrap/ast_storage.b:33`。
+
+```b
+StorageIndex append<T>(address storage,read T value) on cpu {
+    StorageIndex slot=prepare(unsafe_position<Store>(storage).heap,
+        unsafe_position<Store>(storage).nodes,size_of<T>(),align_of<T>());
+    if(slot.error.kind!=0){return slot;}
+    unsafe_position<T>(at(unsafe_position<Store>(storage).nodes.data,slot.offset))=value;
+    unsafe_position<Store>(storage).nodes.length=slot.offset+size_of<T>();
+    return slot;
+```
+
+分配、增长、子项复制和释放都由这个B存储所有者直接调用系统ABI。Rust端的共享句柄只交接同一拥有者与Source快照，最后一个真实节点／列表／声明消费者结束后调用B释放入口，不经Rust转发系统分配参数，也不创建计算Frame。
+
+源码节选：`crates/blanguage/src/bootstrap/ast_storage.b:64`。
+
+```b
+extern "C" StorageError destroy(address storage) on cpu {
+    Store store=unsafe_position<Store>(storage);StorageError error=success();
+    if(store.nodes.capacity!=0u64){
+        if(HeapFree(store.heap,0,store.nodes.data)==0){error=StorageError(3,GetLastError());}
+    }
+    if(store.text.capacity!=0u64){
+        if(HeapFree(store.heap,0,store.text.data)==0){if(error.kind==0){error=StorageError(3,GetLastError());}}
+    }
+    if(HeapFree(store.heap,0,storage)==0){if(error.kind==0){error=StorageError(3,GetLastError());}}
+    return error;
+}
+```
+
+源码节选：`crates/blanguage/src/syntax.rs:19`。
+
+```rust
+struct Owner {raw:NonNull<c_void>,source:Option<Arc<str>>}
+// An Owner enters Arc only when its unique builder is consumed. All later
+// access is read-only; its source snapshot and B allocations outlive every view.
+unsafe impl Send for Owner {}
+unsafe impl Sync for Owner {}
+impl Owner {
+    fn view(&self)->wire::StorageView {unsafe{wire::view(self.raw.as_ptr())}}
+    fn row<T:Copy>(&self,offset:u64)->T {unsafe {
+        self.view().nodes.cast::<u8>().add(offset as usize).cast::<T>().read()
+    }}
+    fn array<T>(&self,range:wire::Slice)->&[T] {
+        if range.count==0 {return &[];}
+        unsafe {std::slice::from_raw_parts(self.view().nodes.cast::<u8>().add(range.offset as usize).cast::<T>(),range.count as usize)}
+```
+
+源树保存名称、数值拼写、正文及Span。实例绑定、规范化Ty、常量位模式和IR分别归原实际语义所有者；SDK中的TypeName／Shape／Expr保留其数据与编码职责，不被塞回B源节点。生成并行工作和元素释放直接使用原语义接口；只为进入检查入口而造出的辅助Function／Return树已经退出。节点身份与结构相等也分开：同一拥有者和索引识别同一源位置，跨存储相等仍比较实际结构，Expr的Span不参与原相等规则。
+
 ## 第七章 类型与布局：不只检查能不能相加
 
 ### 7.1 名字到类型，还要经过解析
@@ -1309,34 +1409,37 @@ Scalar明确描述各数值类型的实际大小与对齐：窄整数为一／�
 
 设记录包含 `float3 position` 和 `f32 energy`：position 的三个分量在偏移零、四、八；后续字段和最终 stride 按类型布局计算。不能把语言规则照搬成任意外部平台 C 结构体的默认布局，跨语言时使用生成接口更明确。
 
-### 7.3 泛型：在编译期换成具体形状
+### 7.3 泛型：共享源定义，按绑定形成具体实例
 
 “同一个函数能处理不同类型”有两种很不同的实现：运行时判断类型，或者编译前形成具体实例。Blink 当前主要采用后者。
 
-源码节选：`crates/blanguage/src/generics.rs:58`。
+源码节选：`crates/blanguage/src/generics.rs:11`。
 
 ```rust
-    let replacements: BTreeMap<_, _> = function
-        .types
-        .iter()
-        .zip(arguments)
-        .map(|(p, t)| (p.name.clone(), t))
-        .collect();
-    let value_map: BTreeMap<_, _> = function
-        .values
-        .iter()
-        .zip(values)
-        .map(|(p, v)| (p.name.clone(), *v))
-        .collect();
+#[derive(Default)]
+pub(crate) struct Bindings {
+    pub types:BTreeMap<String,TypeName>,
+    pub values:BTreeMap<String,u32>,
+}
+
+// A bound call reads the original instance; it does not rewrite its source node.
+pub(crate) enum TypeCall<'a> { Builtin(&'a str), Construct(&'a TypeName) }
+impl Bindings {
+    pub(crate) fn type_call(&self,name:&str)->Option<TypeCall<'_>> {
+        let actual=self.types.get(name)?;
+        Some(if actual.arguments.is_empty()&&Ty::builtin(&actual.name).is_some_and(|ty|ty.fields.is_empty()) {
+            TypeCall::Builtin(&actual.name)
+        }else{TypeCall::Construct(actual)})
+    }
 ```
 
-`replacements` 把类型参数映射到具体类型；`value_map` 把静态值参数映射到具体整数。随后替换函数签名、正文与条件，再进入原来的检查和代码生成路径。
+`Bindings.types`把类型形参映射到实际类型，`Bindings.values`保存实际const整数。每个实例引用同一B源定义，检查、调用、合同和IR生成按自己的绑定解释原名字，不复制正文或逐节点改写源树。`T(value)`沿原实例读取完整实际类型：builtin使用原值构造，记录、固定数组及拥有记录使用原类型构造和资源交接；类型预分析与写入分析读取同一目标。
 
 例如一个宽度为四的固定数组与宽度为八的固定数组，存储、循环形状或协作工作量可能不同。把宽度在编译期确定，后端就能计算实际布局；代价是可能产生多个实例，编译量与代码体积也会增加。
 
 ### 7.4 泛型实例化不等于任意语言能力已经齐备
 
-本版支持有限类型集合、具体类型和值参数、开放 u32 const 的具体实例等能力。一般关联类型、动态长度数组或所有符号约束不能因此推定为已完成。读 `generics.rs`、`value_parameters.rs`、`type_sets.rs` 时，应分别辨认“允许哪些实参”“怎样替换”“何时检查”。
+本版支持有限类型集合、具体类型和值参数、开放 u32 const 的具体实例等能力。一般关联类型、动态长度数组或所有符号约束不能因此推定为已完成。读 `generics.rs`、`value_parameters.rs`、`type_sets.rs` 时，应分别辨认“允许哪些实参”“怎样按实际绑定解释源引用”“何时检查”。
 
 **自己走一遍。** 把一个静态宽度从四改成八，需要修改 GPU 内存分配器里的固定字段偏移吗？不应如此。具体类型重新给出布局，后端与执行框架消费它，避免维护第二份权威布局。
 
@@ -1354,6 +1457,7 @@ Scalar明确描述各数值类型的实际大小与对齐：窄整数为一／�
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
 pub enum Access {
     Value,
     Read,
@@ -1381,14 +1485,14 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:4307`。
+源码节选：`crates/blanguage/src/check.rs:4512`。
 
 ```rust
         let binding = view.binding;
         let Some(i) = self.expr(index)? else {
             return Ok(None);
         };
-        self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span)?;
+        self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span())?;
         let current = i.regs[0] == self.global_index;
         let same_shape = self.program.same_length(binding, self.domain);
         if !self.index_in(
@@ -1399,7 +1503,7 @@ impl Access {
         ) && !(current && (binding == self.domain || same_shape))
         {
             return self.fail(
-                index.span,
+                index.span(),
                 "B137",
                 "索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束",
             );
@@ -1411,7 +1515,7 @@ impl Access {
                 .any(|(output, count)| *output == binding || count.binding == binding)
             {
                 return self.fail(
-                    index.span,
+                    index.span(),
                     "B221",
                     "append 的共享输出／计数不能在同一阶段借为普通独占元素",
                 );
@@ -1434,7 +1538,7 @@ CPU应用还可以用`dataset<T>(length,F)`逐项接收拥有元素。静态F在
 
 原B实参到ABI实参的关系直接归同一CallArgument。函数有返回结果且written、written_stage或written_data中有实际输出位置时，native_call才构造供原outputs::guards消费的临时output_value；没有输出位置的普通调用不提前投影这份返回Proof。真正返回模型仍由原translate_returned交接，实际输出的条件、初始化与资源借用保持原职责。原native_call的源码调用完成点只属于传入真实实参AST的原调用：实际IR调用与写回输出完成后，先推进该源码点，再结束参数临时拥有者。生成的静态F、dataset初始化及归约调用没有原调用AST，不因共用诊断span推进外层源码状态；各自实际调用、来源及资源释放继续原职责。源码完成点不由生成调用代替，函数退出及资源完成继续归原所有者。拥有值进入释放时，原入口沿实际拥有子树／位置及完整dataset拥有者取得该点仍留在caller的view借用；原递归只消费这份借用与本树尚未执行F的关系，资源叶不再重复查询caller的view借用，真实游标／位置借用仍沿原入口检查。借出dataset内容和结束整个dataset拥有者分别交接；整树F随实际拥有者进入原释放树，内容投影仍保留真实外部消费者。拥有值的原Transfer沿真实存储位置交接分量；尚未落存储的整份OwnedValue以原完整类型及全部SSA寄存器对应同一实际值，再交给已有omitted与retained_component结束自身借用。其他绑定、未交付字段及真实后续F仍保持原借用。旧内容的F和资源仍由原释放路径结束，新输出写回同一位置，共同Data.elements不承载调用期间的局部未初始化状态；未交付字段F、跨元素F及已保存外部地址继续参与借用检查。运行时下标的固定拥有数组沿原Position::Indexed与Presence选择条件交接实际分量；调用者借用的原来源边只在未交付该分量的条件下保留，所选旧树继续原F与资源释放。不能将所有候选元素同时视为已交付，也不能省略未交付字段、跨元素F或已保存的外部地址。普通值元素的cleanup在原model只产生空借用，data入口直接交回，不先查询转移归属；非清理读取、静态F及嵌套拥有资源继续沿真实消费者交接。资源叶只消费已交付的实际释放树；原位置写回和作用域出口在原拥有者处结束对应状态，不按合流Data.root身份横向改写其他绑定，未选中元素保持原拥有与最后释放。ArgumentOrigin区分隐式Frame和被调B参数的零基序号／名称；原调用的Expr切片仅沿现有路由临时借用，在原native_call生产处取得真实Expression位置及上下文，向量引用分量共享材料，零分量保留参数关系。生成调用没有原实参语法时位置为空，其他C／运行库／域包装默认没有本叶材料，不从调用位置或寄存器猜补。Frame裁剪、克隆和原重映射处理同一记录；不重求值、不保留AST、不改变必要编码或实际资源完成。详见[实参与CallArgument](../Docs/BLanguage.md#普通调用b实参与实际callargument的来源)。
 
-源码节选：`crates/blanguage/src/check/view_liveness.rs:143`。
+源码节选：`crates/blanguage/src/check/view_liveness.rs:144`。
 
 ```rust
         let mut omitted=BTreeMap::<usize,owned_presence::Presence>::new();
@@ -1452,7 +1556,7 @@ CPU应用还可以用`dataset<T>(length,F)`逐项接收拥有元素。静态F在
         }}
 ```
 
-源码节选：`crates/blanguage/src/check/view_liveness.rs:548`。
+源码节选：`crates/blanguage/src/check/view_liveness.rs:553`。
 
 ```rust
 fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usize,owned_presence::Presence>)->view::Borrow {
@@ -1460,7 +1564,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1349`。
+源码节选：`crates/blanguage/src/check/application.rs:1351`。
 
 ```rust
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1480,7 +1584,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 
 命名的match拥有载荷由owned_arm保留在原env绑定中，正常分支退出先调用既有drop_binding，待静态F、元素元数据读取和资源释放完成后才移出绑定。清理消费原拥有树及已求值位置，不让调用前已移动的旧来源代替正在清理的实际拥有者；实际已移出的字段与提前返回继续沿原出口处理，没有第二拥有表或释放路径。
 
-源码节选：`crates/blanguage/src/check/owned_values.rs:1059`。
+源码节选：`crates/blanguage/src/check/owned_values.rs:1070`。
 
 ```rust
     pub(super) fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
@@ -1499,7 +1603,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1412`。
+源码节选：`crates/blanguage/src/check/application.rs:1414`。
 
 ```rust
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1515,7 +1619,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:975`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1055`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1535,12 +1639,12 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 拥有类型中的静态F身份不自动把其requires变成值不变量。公开requires cleanup(value[,condition])沿原可读输入选择实际拥有子树、字段或dataset共同元素，按原Ty和generics专门化确定F，仅展开其真实公开前提。普通分量没有F义务；集合为空或变体不活动时，原长度及标签条件保留其适用范围。递归元素使用原ElementFacts的Input、Unknown、Known、Cleanup、Common与Selected表达当前有限事实：尚未展开的入口来源、未知内容、已知载荷、释放前提、共同保证及条件选择分别保留。实际读取复用bind_element_input逐层形成有限DatasetContent输入，原Function中的路径及分量描述完成后移交NativeContract；调用者按同一描述消费实参模型，obj／lib无需提供者实现。未改写入口子树整体经普通返回转交时，native_call在原Returned处按已有输入路径借用本次实参的Data.elements，并复用Residency::bind交接实际位置；二次调用不会把原输入来源改成另一个待恢复的输出。它只交接原有限模型，真实Unknown和已生成的返回事实保持，不增加运行时表或另一拥有者。两个嵌套拥有输入选支时，原stored_borrows查询按本次普通读取或清理用途沿名义类型继续；只有经过实际静态F才将其载荷中的借用计入潜在清理读取。原遍历键同时区分类型和用途，普通含view入口不因缺少展开而形成清理读者；真实F和普通内容读取的未知来源仍保留原限制。复杂拥有组合的条件合流查询成本仍见Issues C-027.30.6.2。没有内容模型不等于没有F义务，也不递归构造无限拥有树；没有额外F前提的类型不因入口未展开而被要求证明cleanup，实际写后的Unknown也不重新取得入口保证。条件只消费原纯输入快照，不读取调用或存储；合同不执行F、移动或释放资源，也不授予write／atomic已有内容事实。
 
-源码节选：`crates/blanguage/src/check/contracts.rs:562`。
+源码节选：`crates/blanguage/src/check/contracts.rs:564`。
 
 ```rust
             ContractPredicate::Cleanup { value, condition } => {
                 let inputs=outputs::inputs(builder,definition,env)?;
-                let when=outputs::expression(builder,definition.into(),condition,&inputs,None,contract.span,Some(&Ty::scalar(Scalar::Bool)))?;
+                let when=outputs::expression(builder,definition,condition,&inputs,None,contract.span,Some(&Ty::scalar(Scalar::Bool)))?;
                 let(model,active)=cleanup_selection(builder,definition,env,value,contract.span)?;
                 let required=cleanup_condition(builder,model,active,contract.span)?;
                 (Predicate::Cleanup{value:value.clone(),when:bounds::Condition::of(&when),required},format!("cleanup({value})"))
@@ -1549,17 +1653,18 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 调用者证明输入条件蕴含实际F前提；独立函数入口把同一关系交给原Condition／Proof，具体F调用仍消费原contracts::prove。function_parameters暂借原env形成合同，随后归还同一环境并沿原path假定已声明前提，不增加另一份合同状态。实际写入及移动继续改变原身份，旧快照不成为当前值的新许可；未证明的contiguous仍为未知。
 
-源码节选：`crates/blanguage/src/check.rs:1804`。
+源码节选：`crates/blanguage/src/check.rs:1866`。
 
 ```rust
-    let resources=d.function.params.iter().enumerate().filter_map(|(index,p)|match b.env.get(&p.name){
+    application::bind_parameter_elements(b,instance.into(),&element_paths);
+    let resources=d.function.params().iter().enumerate().filter_map(|(index,p)|match b.env.get(p.name()){
         Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))),_=>None,
     }).collect();
     let environment=std::mem::take(&mut b.env);
-    let requirements=contracts::resolve(b,d,&environment,&resources);b.env=environment;
+    let requirements=contracts::resolve(b,instance.into(),&LexicalScope::Function(instance.clone()),&environment,&resources);b.env=environment;
     let requirements=requirements?;
     let mut environment=std::mem::take(&mut b.env);
-    contracts::assume(b,d,&mut environment,&requirements)?;b.env=environment;
+    contracts::assume(b,instance.into(),&mut environment,&requirements)?;b.env=environment;
 ```
 
 sequence::push仅在原h／b声明cleanup(value, data.length == 4294967295)，使真实溢出路径清理未采用value时取得该条件下的F前提；原参数、结果、正文及错误返回责任保持，正常移交不要求提前释放。ContractPredicate沿现行BLCO88交接同源与模块声明，资源映像与ABI使用BLRI51。独立obj／lib消费相同实际合同，旧对象在原格式入口拒绝。
@@ -1572,15 +1677,15 @@ CPU借用描述符的原步长表示也由application_reference_value交接：�
 
 直接写`rows[i].values.length`、在原范围成立时索引、构造view或取得只读地址，同样进入原只读模型。application_reference从声明可见的字段取得实际Place，view_place则接收临时生产者已经求出的dataset字段位置；二者共用owned_records::application_place_reference。该入口按实际存储所有者恢复原资源：普通拥有槽使用原候选树，Frame字段使用application_owned_argument读取实际Data.elements及所选元数据，不先读取整个父记录，不复制、移动或重新拥有子dataset。类型查询只识别声明可见的位置，实际资源恢复统一消费这个Place。for的拥有记录元素游标由Binding::Owned持有原ApplicationElement位置。read_expression_type直接查询这个位置的Ty，read_aggregate的Name分派复用application_owned_argument，按实际资源来源与布局经materialize_element装载一次元数据；原OwnedValue::borrow／unpack_record交接共享子资源，直接子遍历与read dataset形参消费同一来源。它不建立新拥有绑定，不改变普通复制、移动和释放。原下标只求值一次。子元数据是实际位置的一次装载，不是env中的独立拥有资源；view、原生调用与地址转换直接消费原Data.root.proof的借用来源。
 
-源码节选：`crates/blanguage/src/check/owned_values.rs:463`。
+源码节选：`crates/blanguage/src/check/owned_values.rs:452`。
 
 ```rust
-        if let ExprKind::Name(name)=&expr.kind
+        if let ExprKind::Name(name)=expr.kind()
             && let Some(Binding::Owned(owner))=self.env.get(name).cloned()
             && matches!(owner.place.storage(),Place::ApplicationElement{..})
             && owner.place.ty().owns_resources() && owner.place.ty().dataset.is_none() {
-            let Returned::OwnedValue(mut value)=self.application_owned_argument(&owner.place,expr.span)? else{return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体")};
-            if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}
+            let Returned::OwnedValue(mut value)=self.application_owned_argument(&owner.place,expr.span())? else{return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体")};
+            if !value.available(){return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源");}
             self.prepare_owned_read(&Returned::OwnedValue(value.clone()));value.borrow();
             return Ok(Some((Returned::OwnedValue(value),None)));
         }
@@ -1608,37 +1713,37 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1793`。
+源码节选：`crates/blanguage/src/check/application.rs:1797`。
 
 ```rust
-    pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
+    pub(super) fn dataset_constructor_type(world:&World,scope:&LexicalScope,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
         if !(1..=2).contains(&explicit.len())||!(1..=2).contains(&arguments) {
-            return definition.source.fail(span,"B266","dataset<T>(length) 需要元素类型和一个 u32 长度");
+            return scope.source().fail(span,"B266","dataset<T>(length) 需要元素类型和一个 u32 长度");
         }
         let GenericArgument::Type(element) = &explicit[0] else {
-            return definition.source.fail(span, "B266", "dataset<T> 需要元素类型");
+            return scope.source().fail(span, "B266", "dataset<T> 需要元素类型");
         };
         if element.dataset {
-            return definition.source.fail(span,"B232","资源包装不能直接嵌套；子资源通过记录字段表达");
+            return scope.source().fail(span,"B232","资源包装不能直接嵌套；子资源通过记录字段表达");
         }
         if element.tile {
-            return definition.source.fail(
+            return scope.source().fail(
                 span,
                 "B266",
                 "dataset 的元素是普通值，不是另一份 dataset 或 tile 所有权",
             );
         }
-        let ty = world.ty(element,&definition.source,span,&definition.module,&definition.imports)?;
+        let ty = world.ty(element,scope.source(),span,scope.module(),scope.imports())?;
         let count = if let Some(argument) = explicit.get(1) {
             let Some(shape) = argument.shape() else {
-                return definition.source.fail(span, "B266", "dataset<T,N> 的 N 需要静态 u32 形状");
+                return scope.source().fail(span, "B266", "dataset<T,N> 的 N 需要静态 u32 形状");
             };
             world.shape(
                 &Some(shape),
-                &definition.source,
+                scope.source(),
                 span,
-                &definition.module,
-                &definition.imports,
+                scope.module(),
+                scope.imports(),
             )?
         } else {
             None
@@ -1647,11 +1752,11 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-源码节选：`crates/blanguage/src/check/effects/sources.rs:96`。
+源码节选：`crates/blanguage/src/check/effects/sources.rs:107`。
 
 ```rust
         if name=="dataset" && let Some(explicit)=explicit {
-            return Builder::dataset_constructor_type(self.world,self.definition,explicit,args.len(),span).map(|(ty,count)|Some(Ty::owned_dataset((ty).syntax(),count)));
+            return Builder::dataset_constructor_type(self.world,self.lexical,explicit,args.len(),span).map(|(ty,count)|Some(Ty::owned_dataset((ty).syntax(),count)));
         }
 ```
 
@@ -1659,7 +1764,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 原address_write_positions是内存位置投影的唯一入口。具体Origin内的资源即使含LoopInput，仍可按真实布局与word投影；顶层未形成位置的输入／调用、Unresolved或其他未知来源不被静默当作空写。原write_address_values与循环消费者直接消费同一结果，不能用递归pending标志代替实际写位置。初始化在该快照中保持未知。闭合普通B调用的实际写区统一由原Memory合同交接，非拥有write／inout权限不重复定义整值写区，typed written数值输出、初始化与拥有参数消费仍各归原调用合同。原Function::address_borrows在访问效果的公开投影处保留已知Resource／Dataset根，将不能绑定为公开输入的局部下标投影为该资源内未知下标；字段字节、条件和权限继续交接。原canonical的精确返回地址身份及初始化完成事实保持各自规则，不把可能访问范围当作精确身份或完整写入证明。dataset指针在预分析和实际调用中交接同一原Origin：实际Data、逻辑元素布局和字段字节由application统一构造，不改变机器句柄、长度、步长或ABI参数。预分析初始化保持未知；真实读输入只消费原初始化检查已经取得的事实，write输入继续原输出初始化分支。模块dataset出口先沿原输入关系过滤私有Data，再将输入资源位置归一为原Derived符号指针，嵌套调用及obj／lib保留真实写区；未知仍如实未知，不增加资源镜像、效果图、状态或运行时校验。命名元素继续使用已经求值的句柄、布局、索引和步长，其资源来源在Place生产处通过原data_borrow引用当前循环映射，与下标访问保持同一来源，不保存进入前的过期来源。未来读取缓存、同字段读前范围和独立数值缺口继续各原编号。下面的代码只形成编译期位置，不增加运行时表、资源镜像或释放链。
 
-源码节选：`crates/blanguage/src/check.rs:3827`。
+源码节选：`crates/blanguage/src/check.rs:4029`。
 
 ```rust
                 CursorSource::ApplicationData(mut data) => {
@@ -1704,7 +1809,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-源码节选：`crates/blanguage/src/check/effects.rs:281`。
+源码节选：`crates/blanguage/src/check/effects.rs:284`。
 
 ```rust
         for write in writes {
@@ -1733,30 +1838,31 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 显式可写dataset实参的contents输入沿原written_application_data取得无拥有资源的真实根，给原LoopWrites.storage交接该根未知字节区间；不再将这份已知存储写扩大为全部存储未知。iterator来源、未知位置及拥有内容仍按实际未知范围处理，原Call整体效果独立保留，不凭签名取消实际写。无拥有资源的元素／字段写由loop_write_projection沿written_application_data、member_type及固定数组分量映射取得实际根与Scalar投影。constant_index只使用未被全部可能写输入改变的原下标事实；声明布局给出步长和分量word／宽度，LoopWrites交接真实字节区间。ApplicationLoads既复用原allocate结果区分不同实际分配，也把同根已知读取与未来区间交给和StoreIndexed共用的byte_overlap；多个写区间分别保留，不把中间未写字节也当作覆盖。未知下标／布局仍是未知范围，未解析子dataset或拥有内容结束不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通静态CPU值调用在原Scope仍持有正文let等词法实参Ty／count时，以原generics选定实例；Write::External携带这个实际实例，循环归一在原入口条件及正文读取之前，通过native_declaration形成／导入同一Unit，再查询同一Module闭合view_access；原Module::declare保持实例只构造一次。原写输入按所有权传入、消费者按借用读取，不复制实例或离开作用域后用入口环境重新推导正文局部；没有另一实例表、调用图、IR求值或数值失效跳过路径。无拥有结果且合同实际只读时保留元素读取与局部数值。闭合写仅指向原ABI借用dataset输入、且原显式contents Position已经交接这些实参时，也不重复添加全局External；真实写仍由原Position和LoopWrites处理。元素无拥有内容／清理F的按值dataset输入也由同一typed根覆盖：原arguments先检查调用者保留view／地址与别名，原move_application_dataset交付唯一拥有并使旧绑定Moved，callee沿原最后消费者完成与释放链结束该存储。这份已转移存储的闭合写不再扩大为所有旧存储未知；没有正文未来AST根表、资源复制或第二释放链。普通已闭合B调用复用native_call_memory的Access、实际输入Proof和when，向同一LoopWrites交接真正写位置，不因存在隐藏地址或Memory条款而扩大为整次外部写。该投影只替代其覆盖的dataset内容写，显式Reference与实际拥有位置继续交给原消费者；不能因存在Memory而先删除未覆盖的标量写。component_projection同时投影已有类型和实际位置，Scope只读取已形成的值快照，不重新解释或求值实参、下标，也不复制IR或再造调用图。未生成的动态来源保留原未知，不能据不完整输入推定无写；资源拥有继续由原Position和唯一拥有者消费。原address_write_components由普通写入与循环共同查询，只撤回真实相交的局部、记录及数组分量；源码与已编译对象／归档消费相同合同。address按值形参没有inout标记不能证明无写；真正只读address函数和普通记录结果按实际合同保持组合能力。dataset的实际静态factory调用也参与同一交接。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。
 
-源码节选：`crates/blanguage/src/check/effects.rs:494`。
+源码节选：`crates/blanguage/src/check/effects.rs:499`。
 
 ```rust
                 Write::External{call,instance:Some(instance),arguments,syntax}=>{
                     self.native_declaration(&instance)?;
                     if self.functions.read_only(&instance.name) {
-                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if std::ptr::eq(*origin,call)));
+                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if origin.same_node(&call)));
                     }
                     let local=normalized.iter().filter_map(|write|match write {
-                        Write::Position{call:Some(origin),place,local_value:true,..}if std::ptr::eq(*origin,call)=>Some(*place),
+                        Write::Position{call:Some(origin),place,local_value:true,..}if origin.same_node(&call)=>Some(place.clone()),
                         _=>None,
                     }).collect::<Vec<_>>();
                     // Direct lexical storage stays a syntax position; other memory uses the closed contract.
                     let mut owned=Vec::new();
-                    for(parameter,arg)in instance.definition.function.params.iter().zip(syntax){
-                        if cooperative::parameter_type(self.world,parameter,&instance.definition)?.owns_resources(){owned.push(arg);}
+                    for(parameter,arg)in instance.parameters(self.world).zip(&syntax){
+                        let parameter=parameter?;
+                        if cooperative::parameter_type(self.world,&parameter,(&instance.definition.source,&instance.definition.module,&instance.definition.imports,instance.definition.function.kind()),self.program.target)?.owns_resources(){owned.push(arg);}
                     }
                     normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),place,..}
-                        if std::ptr::eq(*origin,call)&&!owned.iter().chain(local.iter()).any(|arg|std::ptr::eq(*arg,*place))));
-                    match self.native_call_memory(&instance.name,&arguments,|parameter|syntax.get(parameter).is_some_and(|arg|local.iter().any(|place|std::ptr::eq(*place,arg)))) {
+                        if origin.same_node(&call)&&!owned.iter().chain(local.iter()).any(|arg|arg.same_node(place))));
+                    match self.native_call_memory(&instance.name,&arguments,|parameter|syntax.get(parameter).is_some_and(|arg|local.iter().any(|place|place.same_node(&arg)))) {
                         Some(memory)=>{
                             normalized.extend(memory.into_iter().filter_map(|(borrow,_,_)|{
                                 let borrow=borrow.restricted(&self.path);
-                                borrow.active().then_some(Write::Memory{call,borrow})
+                                borrow.active().then_some(Write::Memory{call:call.clone(),borrow})
                             }));
                             continue;
                         },
@@ -1793,7 +1899,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
 
-源码节选：`crates/blanguage/src/check/native_function.rs:734`。
+源码节选：`crates/blanguage/src/check/native_function.rs:817`。
 
 ```rust
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
@@ -1806,7 +1912,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
                     value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&data,0,&data.ty,true).normalize());
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow:None, ty:value.ty,values:value.regs});
-                    env.insert(p.name.clone(),Binding::ApplicationData(data));
+                    env.insert(p.name.to_owned(),Binding::ApplicationData(data));
                 }
 ```
 
@@ -1824,7 +1930,7 @@ pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->addr
 }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:704`。
+源码节选：`crates/blanguage/src/check/native_function.rs:787`。
 
 ```rust
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
@@ -1882,27 +1988,29 @@ pub(super) struct LoopWrites {
 
 take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。存活性消费时点由实际调用者选择；assign_application_element保持after(rhs.span)，普通assign_owned_storage及take_last各选择自身原after(span)。共用函数只消费已求值载荷及当前ViewUses，不把Frame元素旧内容的清理切换到新内容的后续读取；check_returned_type只借用Builder，不重选存活性。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
 
-源码节选：`crates/blanguage/src/check/application.rs:1755`。
+源码节选：`crates/blanguage/src/check/application.rs:1757`。
 
 ```rust
-    pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
-        let [source,output]=args else{return self.fail(span,"B266","take_last(data,output)消费非空CPU dataset并交出唯一尾值");};
+    pub(super) fn take_last_application_dataset(&mut self,args:&Expressions,span:Span)->Result<Option<Data>> {
+        if args.len()!=2{return self.fail(span,"B266","take_last(data,output)消费非空CPU dataset并交出唯一尾值");}
+        let source=&args.at(0);
+        let output=&args.at(1);
         let Some(returns::Returned::Dataset(data))=self.evaluate_returned(source,None)? else {
             if !self.flow.continues(){return Ok(None);}
-            return self.fail(source.span,"B224","take_last需要一份拥有的dataset");
+            return self.fail(source.span(),"B224","take_last需要一份拥有的dataset");
         };
         let data=self.refresh_application_data(data,span)?;
-        if data.ownership!=Ownership::Owned{return self.fail(source.span,"B227","dataset借用不能交出尾元素或缩短存储");}
+        if data.ownership!=Ownership::Owned{return self.fail(source.span(),"B227","dataset借用不能交出尾元素或缩短存储");}
         self.require_application_initialized(&data,span)?;self.application_cpu(&data,span)?;
         let one=self.constant(Scalar::U32,1);let last=self.binary("-",data.length.clone(),one,span,None)?;
         if !self.index_in(&last,IndexDomain::ApplicationData(data.root.identity()),data.length.minimum(),None) {
-            return self.fail(source.span,"B137","take_last需要由原长度条件证明输入非空");
+            return self.fail(source.span(),"B137","take_last需要由原长度条件证明输入非空");
         }
         let held=self.hold_binding(Binding::ApplicationData(data.clone()));
         let destination=self.mutable_place(output,Access::Write)?;
         if !self.flow.continues(){return Ok(None);}
-        let Some(destination)=destination else{return self.fail(output.span,"B227","take_last输出需要同元素类型的可写位置");};
-        self.require_same(&data.ty,destination.ty(),output.span)?;
+        let Some(destination)=destination else{return self.fail(output.span(),"B227","take_last输出需要同元素类型的可写位置");};
+        self.require_same(&data.ty,destination.ty(),output.span())?;
         let place=Self::application_element(&data,&last,(last.minimum(),last.maximum()));
         let packed=self.read_storage_value(&place,span,None)?;
         let mut value=if data.ty.owns_resources(){self.materialize_element(&DataReference::direct(data.clone()),packed,&place)?}else{returns::Returned::value(packed)};
@@ -1949,13 +2057,18 @@ Returned::bind_outputs在Data.elements的绑定边界为无来源分量保留原
         let(place,owner)=if self.is_place(expr){
             let Some(place)=self.mutable_place(expr,access)?else{return Ok(None)};
             if place.ty().dataset.is_some(){
-                let data=self.application_place_reference(place,expr.span)?;
+                let data=self.application_place_reference(place,expr.span())?;
                 return Ok(Some(cooperative::Argument::BorrowedData(data)));
             }
             if !place.ty().owns_resources(){return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));}
             (place,None)
         }else{
             let result=self.evaluate_returned(expr,None)?;if !self.flow.continues(){return Ok(None);}
+            return self.mutable_returned_argument(result,access,expr.span());
+        };
+        self.owned_reference_argument(place,owner,access,expr.span())
+    }
+    pub(super) fn mutable_returned_argument(&mut self,result:Option<Returned>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
             let value=match result{
                 Some(Returned::Dataset(mut data))=>{
                     let owner=self.hold_binding(Binding::ApplicationData(data.clone()));
@@ -1963,15 +2076,19 @@ Returned::bind_outputs在Data.elements的绑定边界为无来源分量保留原
                     return Ok(Some(cooperative::Argument::Scoped{value:Returned::Dataset(data),owner}));
                 },
                 Some(Returned::OwnedValue(value))=>value,
-                _=>return self.fail(expr.span,"B224","独占临时参数需要实际拥有值或dataset"),
+                _=>return self.fail(span,"B224","独占临时参数需要实际拥有值或dataset"),
             };
-            let value=self.owned_value_binding(value,true);let place=value.place().unwrap();let owner=self.hold_binding(Binding::OwnedValue(value));(place,Some(owner))
-        };
-        let model=if matches!(place.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&place,expr.span)?}else{self.owned_place_model(&place)};
+            let value=self.owned_value_binding(value,true);
+            let place=value.place().unwrap();
+            let owner=self.hold_binding(Binding::OwnedValue(value));
+        self.owned_reference_argument(place,Some(owner),access,span)
+    }
+    fn owned_reference_argument(&mut self,place:Place,owner:Option<String>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
+        let model=if matches!(place.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&place,span)?}else{self.owned_place_model(&place)};
         let Returned::OwnedValue(mut value)=model else{unreachable!()};
-        if value.ownership==Ownership::Borrowed{return self.fail(expr.span,"B227","read聚合不能提升为独占借用");}
+        if value.ownership==Ownership::Borrowed{return self.fail(span,"B227","read聚合不能提升为独占借用");}
         self.prepare_owned_read(&Returned::OwnedValue(value.clone()));
-        if access==Access::InOut{if !value.all_available(){return self.fail(expr.span,"B227","inout聚合需要全部活动拥有资源");}self.load_owned_value(&mut value,expr.span)?;}
+        if access==Access::InOut{if !value.all_available(){return self.fail(span,"B227","inout聚合需要全部活动拥有资源");}self.load_owned_value(&mut value,span)?;}
         Ok(Some(cooperative::Argument::OwnedReference{value,place,owner}))
     }
 ```
@@ -2211,7 +2328,7 @@ compute的无游标dataset记录读取也由原ApplicationLoads直接查询Load�
 
 CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文使用的同一个游标绑定，再运行原loop_writes；循环IR、真实入口、条件与退出仍由原LoopContext交接。没有先造一份影子游标或把正文未知写扩成全存储写：
 
-源码节选：`crates/blanguage/src/check.rs:3886`。
+源码节选：`crates/blanguage/src/check.rs:4088`。
 
 ```rust
         self.env.insert(name.clone(), binding);
@@ -2222,7 +2339,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 原loop_write_projection从该ApplicationElement取得实际根、字段字节与已知下标，后续仍由同一写效果撤回Data.elements。别名按真实相交位置交接，未写字段及独立资源保持；不新增元素表、运行状态或第二效果图：
 
-源码节选：`crates/blanguage/src/check/effects.rs:417`。
+源码节选：`crates/blanguage/src/check/effects.rs:420`。
 
 ```rust
             ExprKind::Name(name)=>{
@@ -2241,7 +2358,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:3869`。
+源码节选：`crates/blanguage/src/check/application.rs:3859`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -2253,7 +2370,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 全局目标本身可以是借用输入，其真实根与长度和拥有资源进入同一element_owner_bindings。元素归属先使用原DataReference已经确定的唯一当前根；其余来源及真实嵌套关系，沿活动LoopContext已有映射查询各层作用域，不另造别名状态：
 
-源码节选：`crates/blanguage/src/check/application.rs:3484`。
+源码节选：`crates/blanguage/src/check/application.rs:3474`。
 
 ```rust
         let owner=view::resource_borrow(data);
@@ -2536,30 +2653,28 @@ pub enum ElementFact {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:495`。
+源码节选：`crates/blanguage/src/check.rs:546`。
 
 ```rust
-    program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
-    program.prefix_guarantees = prefix::relations(&program, &env, d, ContractKind::Ensures)?;
-    program.element_requirements = prefix::element_requirements(world, &program.buffers, &env, d)?;
+    program.length_requirements = contracts::root_lengths(&env, d, input.contracts().into_iter())?;
+    program.prefix_requirements = prefix::relations(&program, &env, d, input.contracts().into_iter(), ContractKind::Requires)?;
+    program.prefix_guarantees = prefix::relations(&program, &env, d, input.contracts().into_iter(), ContractKind::Ensures)?;
+    program.element_requirements = prefix::element_requirements(world, &program.buffers, &env, input.owner(), input.contracts().into_iter())?;
     program.element_requirements.extend_from_slice(element_inputs);
     program.element_requirements.sort();
     program.element_requirements.dedup();
     let mut facts = prefix::Facts::new(&program.prefix_requirements);
     facts.assume_elements(&program);
     let mut calls = Vec::new();
-    expand_program(
-        world,
-        instance,
-        &mut env,
-        &mut program,
-        &mut Vec::new(),
-        &mut false,
-        &mut facts,
-        &mut calls,
-        instance.definition.syntax_context(Some(&instance.name)).1.domain_path.clone(),
-        functions,
-    )?;
+    let path=input.syntax_context().1.domain_path.clone();
+    match input {
+        DomainInput::Declaration(instance)=>expand_program(
+            world,instance,&mut env,&mut program,&mut Vec::new(),&mut false,&mut facts,&mut calls,path,functions)?,
+        DomainInput::Parallel{statement,..}=>{
+            expand_stages(world,input,std::iter::once(statement.clone()),&mut env,&mut program,
+                &mut Vec::new(),&mut false,&mut facts,&mut calls,&path,functions)?;
+        }
+    }
     program.source_stages = program.stages.len();
     program.element_guarantees = program.element_outputs(facts.element_facts(&program));
     Ok(ExpandedDomain { program, calls, outputs: facts.outputs, elements: facts.elements })
@@ -2912,7 +3027,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         // the enclosing loop's exit, have received their operands.
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1878`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1958`。
 
 ```rust
             if !frame.contains(&name) {
@@ -4484,16 +4599,20 @@ B 的普通 CPU 应用已能通过明确的 `extern "C"` 声明调用 Windows x6
 
 c_function接受显式C ABI的声明或定义：不带from的B函数沿原具体实例取得代码地址，带from的外部声明直接交接原ExternalName的DLL符号；两者继续使用同一cfn签名、参数和结果合同。c_function(Name<T,...,N>)沿原静态引用完成具体实例绑定。模板的实际类型／u32 const、结果和输出条件先完成原替换，再检查真实C签名；DLL导入仍为固定符号。取址没有运行实参，不从接收变量猜模板参数。源码接口保存真实C标记；向量位置在这里是一份连续指针，普通B函数的分量地址规则仍归原ABI。具体声明装入时检查，模板的实际C合同在原实例生产处检查，正文继续原访问／初始化检查。地址进入原符号可达关系，Frame需求只随真实调用闭包传播；C入口若仍需Frame便不能按没有上下文的C ABI交付，不建立全局当前Frame或转发宿主。
 
-源码节选：`crates/blanguage/src/check/callback.rs:56`。
+源码节选：`crates/blanguage/src/check/callback.rs:66`。
 
 ```rust
-    pub(super) fn c_function_value(&mut self, args: &[Expr], span: Span) -> Result<Value> {
+    pub(super) fn c_function_value(&mut self, args: &Expressions, span: Span) -> Result<Value> {
+        self.c_function_from(span,|builder|signature(builder.world,&builder.scope,args,span))
+    }
+    pub(super) fn c_function_from(&mut self,span:Span,
+        signature:impl FnOnce(&mut Self)->Result<(crate::generics::Instance,Ty)>)->Result<Value> {
         if self.program.target != Target::Cpu || self.application.is_none() {
             return self.fail(span, "B265", "c_function在普通CPU应用或模块中取得C函数符号地址");
         }
-        let (instance, ty) = signature(self.world, &self.definition, args, span)?;
-        let target = if let Some(name) = &instance.definition.function.external {
-            CallTarget::External(name.clone())
+        let (instance, ty) = signature(self)?;
+        let target = if let Some(name) = &instance.definition.function.external() {
+            CallTarget::External(ExternalName{library:name.library().into(),symbol:name.symbol().into()})
         } else {
             self.native_declaration(&instance)?;
             CallTarget::Defined(instance.name)
@@ -4515,41 +4634,51 @@ c_function接受显式C ABI的声明或定义：不带from的B函数沿原具体
 源码节选：`crates/blanguage/src/check/callback.rs:18`。
 
 ```rust
-pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span: Span) -> Result<(crate::generics::Instance, Ty)> {
-    let [reference] = args else {
-        return caller.source.fail(span, "B153", "c_function需要一个明确的C ABI函数引用");
-    };
-    let (name, explicit) = match &reference.kind {
+pub(super) fn signature(world: &World, caller: &LexicalScope, args: &Expressions, span: Span) -> Result<(crate::generics::Instance, Ty)> {
+    if args.len()!=1 {
+        return caller.source().fail(span, "B153", "c_function需要一个明确的C ABI函数引用");
+    }
+    let reference=&args.at(0);
+    let (name, explicit) = match reference.kind() {
         ExprKind::Name(name) => (name, None),
-        ExprKind::FunctionRef(name, arguments) => (name, Some(arguments.as_slice())),
-        _ => return caller.source.fail(reference.span, "B153", "c_function需要C ABI函数名及具体类型／const实参"),
+        ExprKind::FunctionRef(name, arguments) => (name, Some(arguments)),
+        _ => return caller.source().fail(reference.span(), "B153", "c_function需要C ABI函数名及具体类型／const实参"),
     };
-    let Some(key) = world.resolve(name, &caller.module, &caller.imports, true).unique() else {
-        return caller.source.fail(span, "B158", format!("未知函数 {name}"));
+    signature_named(world,caller,name,span,reference.span(),||{
+        explicit.as_ref().map(|arguments|caller.bindings().arguments(world,arguments,
+            (caller.source(),caller.module(),caller.imports()),reference.span()).map(std::borrow::Cow::Owned)).transpose()
+    })
+}
+pub(super) fn signature_named<'a>(world:&World,caller:&LexicalScope,name:&str,span:Span,reference_span:Span,
+    arguments:impl FnOnce()->Result<Option<std::borrow::Cow<'a,[GenericArgument]>>>)->Result<(crate::generics::Instance,Ty)> {
+    let Some(key) = world.resolve(name, caller.module(), caller.imports(), true).unique() else {
+        return caller.source().fail(span, "B158", format!("未知函数 {name}"));
     };
     let definition = world.functions[&key].clone();
-    if !definition.function.c_abi {
-        return caller.source.fail(span, "B263", "c_function需要明确的extern C声明或定义，不自动改变普通B函数ABI");
+    if !definition.function.c_abi() {
+        return caller.source().fail(span, "B263", "c_function需要明确的extern C声明或定义，不自动改变普通B函数ABI");
     }
-    let instance = generics::specialize(world, &key, &[], explicit, (&caller.source, &caller.module, &caller.imports), reference.span)?;
+    let explicit=arguments()?;
+    let instance = generics::specialize(world, &key, &[], explicit.as_deref(), (caller.source(), caller.module(), caller.imports()), reference_span)?;
     let definition = &instance.definition;
     let f = &definition.function;
-    let contracts = f.contracts.iter().filter_map(|contract| {
+    let contracts = instance.contracts().filter_map(|contract| {
         match &contract.predicate {
             ContractPredicate::Nonzero(value) if contract.kind == ContractKind::Requires =>
-                Some(ContractPredicate::Nonzero(parameter_name(value, &f.params))),
+                Some(ContractPredicate::Nonzero(parameter_name(value, &f.params()))),
             ContractPredicate::Memory(access) if contract.kind==ContractKind::Ensures=>Some(ContractPredicate::Memory(*access)),
             ContractPredicate::Initialized { value, condition: when } =>
-                Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) }),
+                Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params()), condition: condition(when, &f.params()) }),
             _ => None,
         }
     }).collect();
     let syntax = CFunctionType {
-        result: f.result.clone(),
-        parameters: f.params.iter().map(|parameter| (parameter.access, parameter.ty.clone())).collect(),
+        result: instance.bindings.type_name(world,&f.result(),(&definition.source,&definition.module,&definition.imports),f.span())?,
+        parameters: f.params().iter().map(|parameter| Ok((parameter.access(),
+            instance.bindings.type_name(world,&parameter.ty(),(&definition.source,&definition.module,&definition.imports),parameter.span())?))).collect::<Result<_>>()?,
         contracts,
     }.syntax();
-    let ty = world.c_function_type(&syntax, &definition.source, f.span, &definition.module, &definition.imports)?;
+    let ty = world.c_function_type(&syntax, &definition.source, f.span(), &definition.module, &definition.imports)?;
     Ok((instance, ty))
 }
 ```
@@ -4625,7 +4754,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
 
 普通函数的实际输入在原声明入口形成：
 
-源码节选：`crates/blanguage/src/check.rs:1638`。
+源码节选：`crates/blanguage/src/check.rs:1701`。
 
 ```rust
         if p.ty.is_texture_resource() {
@@ -4634,7 +4763,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
             inputs.push(address);
             let mut resource = texture::TextureReference::binding(texture_index);
             resource.source.parameter = Some(address);
-            b.env.insert(p.name.clone(), Binding::Texture(resource));
+            b.env.insert(p.name.to_owned(), Binding::Texture(resource));
             texture_index += 1;
             continue;
         }

@@ -1,33 +1,34 @@
 //! 外部调用的 ABI 声明是信任边界；实参借用统一判定别名，ABI 只投影实际位置。
 use super::*;
 use cooperative::Argument;
-pub(super) fn validate_signature(d: &Definition) -> Result<()> {
+pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
     let f = &d.function;
-    if f.kind != FunctionKind::Value
-        || f.target != Target::Cpu
-        || (f.external.is_some() && f.body.is_some())
-        || (f.external.is_some() && (!f.types.is_empty() || !f.values.is_empty()))
-        || f.contracts.iter().any(|contract| !match &contract.predicate {
-            ContractPredicate::Initialized { .. } => contract.kind == ContractKind::Ensures,
-            ContractPredicate::Nonzero(_) => contract.kind == ContractKind::Requires,
-            ContractPredicate::Memory(_) => contract.kind == ContractKind::Ensures && f.external.is_some(),
+    if f.kind() != FunctionKind::Value
+        || f.target() != Target::Cpu
+        || (f.external().is_some() && f.body().is_some())
+        || (f.external().is_some() && (!f.types().is_empty() || !f.values().is_empty()))
+        || f.contracts().iter().any(|contract| !match contract.predicate().kind() {
+            crate::syntax::PredicateKind::Initialized { .. } => contract.kind() == ContractKind::Ensures,
+            crate::syntax::PredicateKind::Nonzero(_) => contract.kind() == ContractKind::Requires,
+            crate::syntax::PredicateKind::Memory(_) => contract.kind() == ContractKind::Ensures && f.external().is_some(),
             _ => false,
         })
-        || f.params.iter().any(|p| {
-            p.ty.dataset
-                || p.ty.tile
-                || p.ty.is_acceleration()
-                || p.ty.is_texture_resource()
-                || p.access == Access::Atomic
+        || f.params().iter().any(|p| {
+            p.ty().dataset()
+                || p.ty().tile()
+                || p.access() == Access::Atomic
         })
-        || f.result.dataset
-        || f.result.tile
+        || f.result().dataset()
+        || f.result().tile()
     {
-        return d.source.fail(f.span,"B263","extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输入可声明 requires nonzero，输出可声明 ensures initialized，不透明内存效果可声明 ensures memory");
+        return d.source.fail(f.span(),"B263","extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输入可声明 requires nonzero，输出可声明 ensures initialized，不透明内存效果可声明 ensures memory");
     }
     Ok(())
 }
 fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Result<Ty> {
+    if ty.dataset || ty.tile || ty.is_acceleration() || ty.is_texture_resource() {
+        return d.source.fail(span,"B263","extern C 参数与结果需要普通C签名，不能传递dataset、tile或设备资源");
+    }
     let ty = world.ty(ty, &d.source, span, &d.module, &d.imports)?;
     if ty.owns_resources() {
         return d.source.fail(
@@ -45,34 +46,37 @@ fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Resul
     }
     Ok(ty)
 }
-pub(crate) fn check_declaration(world: &World, d: &Definition) -> Result<()> {
+pub(crate) fn check_declaration(world: &World, instance: &crate::generics::Instance) -> Result<()> {
+    let d=&instance.definition;
     validate_signature(d)?;
-    if !d.function.types.is_empty() || !d.function.values.is_empty() { return Ok(()); }
-    let parameters = d.function.params.iter()
-        .map(|param| value_type(world, d, &param.ty, param.span))
-        .collect::<Result<Vec<_>>>()?;
-    let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
-        else { Some(value_type(world, d, &d.function.result, d.function.span)?) };
-    outputs::validate_named(world, d, &parameters, result.as_ref())
+    let parameters=d.function.params().iter().map(|param|{
+        let ty=instance.bindings.type_name(world,&param.ty(),(&d.source,&d.module,&d.imports),param.span())?;
+        value_type(world,d,&ty,param.span())
+    }).collect::<Result<Vec<_>>>()?;
+    let result_name=instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())?;
+    let result=if result_name.name=="void"||result_name.is_never(){None}
+        else{Some(value_type(world,d,&result_name,d.function.span())?)};
+    outputs::validate_named(world,instance,&parameters,result.as_ref())
 }
+
 impl Builder<'_> {
     pub(super) fn read_argument(&mut self, expr: &Expr, expected:Option<&Ty>) -> Result<Option<cooperative::Argument>> {
         use cooperative::Argument;
         if let Some(data)=self.application_reference(expr)?{
             return Ok(Some(Argument::BorrowedData(data)));
         }
-        fn root(expr: &Expr) -> Option<&String> {
-            match &expr.kind {
-                ExprKind::Name(name) => Some(name),
-                ExprKind::Member(base, _) | ExprKind::Index(base, _) => root(base),
+        fn root(expr: &Expr) -> Option<String> {
+            match expr.kind() {
+                ExprKind::Name(name) => Some(name.into()),
+                ExprKind::Member(base, _) | ExprKind::Index(base, _) => root(&base),
                 _ => None,
             }
         }
-        if (root(expr).is_some_and(|name| self.env.contains_key(name))
+        if (root(expr).is_some_and(|name| self.env.contains_key(&name))
             || self.is_place(expr) && !self.temporary_projection(expr))
             && !self.read_expression_type(expr)?.is_some_and(|ty|ty.owns_resources()) {
             if let Some(name) = root(expr)
-                && let Some(Binding::Value(value)) = self.env.get(name).cloned() {
+                && let Some(Binding::Value(value)) = self.env.get(&name).cloned() {
                 let mut owner = self.materialize_array(value,None);
                 owner.place = owner.place.read_only();
                 self.env.insert(name.clone(), Binding::Owned(owner));
@@ -82,10 +86,10 @@ impl Builder<'_> {
             };
             match place.storage() {
                 Place::Local(..) | Place::Reference { .. } | Place::ApplicationElement { .. } => {
-                    self.require_initialized(&place, expr.span)?
+                    self.require_initialized(&place, expr.span())?
                 }
                 Place::Element { binding, .. } if self.view_access[binding].writes() => {
-                    self.require_initialized(&place, expr.span)?
+                    self.require_initialized(&place, expr.span())?
                 }
                 _ => {}
             }
@@ -263,30 +267,40 @@ impl Builder<'_> {
         self.call_reference(place, access, expose_writes, span)
     }
     #[inline(never)]
-    pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
-        let parameters = d.function.params.iter().map(|param| {
-            let ty = value_type(self.world, d, &param.ty, param.span)?;
-            Ok(if param.access == Access::Value { CallParameter::value(ty) }
-                else { CallParameter::reference(ty, param.access) })
+    pub(super) fn external_call(&mut self, instance: &crate::generics::Instance, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
+        let d=&instance.definition;
+        let parameters = d.function.params().iter().map(|param| {
+            let ty = value_type(self.world, d, &instance.bindings.type_name(self.world,&param.ty(),
+                (&d.source,&d.module,&d.imports),param.span())?, param.span())?;
+            Ok(if param.access() == Access::Value { CallParameter::value(ty) }
+                else { CallParameter::reference(ty, param.access()) })
         }).collect::<Result<Vec<_>>>()?;
-        let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
-            else { Some(value_type(self.world, d, &d.function.result, d.function.span)?) };
-        self.c_call(CallTarget::External(d.function.external.clone().unwrap()), &parameters, args, result,
-            d.function.result.is_never(), Some(d.as_ref().into()), span, generated_origin)
+        let result_name=instance.bindings.type_name(self.world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())?;
+        let result = if result_name.name == "void" || result_name.is_never() { None }
+            else { Some(value_type(self.world, d, &result_name, d.function.span())?) };
+        self.c_call(CallTarget::External({let name=d.function.external().unwrap();ExternalName{library:name.library().into(),symbol:name.symbol().into()}}), &parameters, args, result,
+            result_name.is_never(), Some(instance.into()), span, generated_origin)
     }
-    pub(super) fn function_value_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Result<Option<returns::Returned>> {
+    pub(super) fn function_value_call(&mut self, callee_span: Span, args: &Expressions, span: Span,
+        lower: impl FnOnce(&mut Self) -> Result<Option<Value>>) -> Result<Option<returns::Returned>> {
+        self.function_value_arguments(callee_span,span,lower,|builder,parameters|
+            builder.call_arguments(cooperative::CallParameters::CFunction(parameters),args,span))
+    }
+    pub(super) fn function_value_arguments(&mut self,callee_span:Span,span:Span,
+        lower:impl FnOnce(&mut Self)->Result<Option<Value>>,
+        prepare:impl FnOnce(&mut Self,&[Param])->Result<Option<Vec<Argument>>>)->Result<Option<returns::Returned>> {
         if self.program.target != Target::Cpu {
             return self.fail(span, "B265", "原生C函数地址只能在CPU位置调用");
         }
-        let Some(value) = self.expr(callee)? else { return Ok(None); };
+        let Some(value) = lower(self)? else { return Ok(None); };
         let Some(function) = value.ty.function.as_deref() else {
-            return self.fail(callee.span, "B263", "间接调用目标需要cfn原生C签名值");
+            return self.fail(callee_span, "B263", "间接调用目标需要cfn原生C签名值");
         };
         if !value.is_nonzero() {
-            return self.fail(callee.span, "B137", "调用cfn需要已证明的非零目标；使用同签名空值比较或requires nonzero");
+            return self.fail(callee_span, "B137", "调用cfn需要已证明的非零目标；使用同签名空值比较或requires nonzero");
         }
         let (parameters, result, never) = self.world.c_function_signature(
-            function, &self.definition.source, span, &self.definition.module, &self.definition.imports)?;
+            function, self.scope.source(), span, self.scope.module(), self.scope.imports())?;
         let source_parameters = parameters.iter().enumerate().map(|(index, parameter)| {
             let (ty, access) = match &parameter.kind {
                 CallParameterKind::Value(ty) => (ty, Access::Value),
@@ -294,11 +308,11 @@ impl Builder<'_> {
             };
             Param { name: format!("argument{index}"), ty: ty.syntax(), access, span }
         }).collect::<Vec<_>>();
-        let Some(arguments) = self.call_arguments(&source_parameters, None, args, span)? else { return Ok(None); };
-        let definition = self.definition.clone();
+        let Some(arguments) = prepare(self,&source_parameters)? else { return Ok(None); };
+        let scope = self.scope.clone();
         let contract = if function.contracts.is_empty() { None } else {
-            Some(outputs::Contract::signature(&definition.source, &definition.module,
-                &definition.imports, &source_parameters, &function.contracts, span))
+            Some(outputs::Contract::signature(scope.source(), scope.module(),
+                scope.imports(), &source_parameters, &function.contracts, span))
         };
         self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, contract, span, None)
             .map(|value| value.map(returns::Returned::value))
@@ -324,7 +338,7 @@ impl Builder<'_> {
                 (CallParameterKind::Value(ty), Argument::Value(value)) => {
                     self.require_same(ty, &value.ty, span)?;
                     memory[0].0.union(&self.address_contents(&value.ty,&value.proof));
-                    if let Some(d) = definition { output_inputs.insert(d.parameters[index].name.clone(), value.clone()); }
+                    if let Some(d) = definition { output_inputs.insert(d.parameter_name(index), value.clone()); }
                     CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: ty.clone(), values: value.regs }
                 }
                 (CallParameterKind::Reference { ty, access }, Argument::Reference(owner)) => {

@@ -463,12 +463,12 @@ impl Builder<'_> {
     }
     pub(super) fn check_view_requirement(&mut self,requirement:Requirement)->Result<()> {
         if requirement.pending()||matches!(&requirement,Requirement::Initialized{..}|Requirement::Memory{..}) {
-            self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});
+            self.view_model.uses.push(view_contracts::Use{requirement,source:self.scope.source().clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});
             return Ok(());
         }
         if requirement.borrow().is_some_and(Borrow::empty){return Ok(());}
-        requirement.under_path(&self.path).check(&self.definition.source)?;
-        if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
+        requirement.under_path(&self.path).check(self.scope.source())?;
+        if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.scope.source().clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
         Ok(())
     }
     pub(super) fn require_view_available(&self, value: &Value, resources: &[&application::Data], span: Span) -> Result<()> {
@@ -506,14 +506,14 @@ impl Builder<'_> {
     }
     pub(super) fn require_view_return_proof(&mut self,proof:&bounds::Proof,owned:Borrow,span:Span)->Result<()> {
         let mut allowed=self.env.values().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Borrowed).flat_map(|data|std::iter::once(data.root.identity()).chain(data.root.proof.borrowed_views().into_iter().filter_map(|source|match source {Source::Data(id)=>Some(id),_=>None}))).collect::<BTreeSet<_>>();
-        for param in &self.definition.function.params {if matches!(param.access,Access::Write|Access::InOut) && let Some(Binding::OwnedValue(value))=self.env.get(&param.name){for data in value.resources(){if data.ownership!=application::Ownership::Moved{allowed.insert(data.root.identity());allowed.extend(data.root.proof.borrowed_views().into_iter().filter_map(|source|match source{Source::Data(id)=>Some(id),_=>None}));}}}}
-        for(index,param)in self.definition.function.params.iter().enumerate(){if param.access==Access::Read && let Some(Binding::OwnedValue(value))=self.env.get(&param.name){for resource in 0..resource_paths(&value.value.ty).len(){allowed.insert(ValueIdentity::ResourceParameter(index,resource));}}}
+        for param in self.scope.parameters() {if matches!(param.access(),Access::Write|Access::InOut) && let Some(Binding::OwnedValue(value))=self.env.get(param.name()){for data in value.resources(){if data.ownership!=application::Ownership::Moved{allowed.insert(data.root.identity());allowed.extend(data.root.proof.borrowed_views().into_iter().filter_map(|source|match source{Source::Data(id)=>Some(id),_=>None}));}}}}
+        for(index,param)in self.scope.parameters().enumerate(){if param.access()==Access::Read && let Some(Binding::OwnedValue(value))=self.env.get(param.name()){for resource in 0..resource_paths(&value.value.ty).len(){allowed.insert(ValueIdentity::ResourceParameter(index,resource));}}}
         self.check_view_requirement(Requirement::Return{borrow:proof.borrowed_view(),allowed,owned,span})
     }
     pub(super) fn create_application_view(
         &mut self,
         explicit: &[GenericArgument],
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
         if self.application.is_none() && self.program.target != Target::Cpu
@@ -528,12 +528,12 @@ impl Builder<'_> {
         name.view = true;
         let ty = self.world.ty(
             &name,
-            &self.definition.source,
+            self.scope.source(),
             span,
-            &self.definition.module,
-            &self.definition.imports,
+            self.scope.module(),
+            self.scope.imports(),
         )?;
-        let mut value = if let Some(data) = self.application_reference(&args[0])? {
+        let mut value = if let Some(data) = self.application_reference(&args.at(0))? {
         if !data.permits(Access::Read) {
             return self.fail(span, "B214", "原子dataset不能转换为普通只读view");
         }
@@ -566,13 +566,13 @@ impl Builder<'_> {
             constant: None,
         }
         } else {
-            let Some(value) = self.expr(&args[0])? else { return Ok(None); };
-            self.require_same(&ty, &value.ty, args[0].span)?;
+            let Some(value) = self.expr(&args.at(0))? else { return Ok(None); };
+            self.require_same(&ty, &value.ty, args.at(0).span())?;
             value
         };
         if args.len() == 3 {
             let held = self.hold_binding(Binding::Value(value.clone()));
-            let evaluated = args[1..].iter().map(|arg| self.expr(arg)).collect::<Result<Option<Vec<_>>>>();
+            let evaluated = args.slice(1..).iter().map(|arg| self.expr(&arg)).collect::<Result<Option<Vec<_>>>>();
             self.env.remove(&held);
             let Some(mut limits) = evaluated? else { return Ok(None); };
             let end = limits.pop().unwrap(); let start = limits.pop().unwrap();
@@ -636,13 +636,13 @@ impl Builder<'_> {
                 return Ok(None);
             };
             if place.ty().dataset.is_some() {
-                let data = self.application_place_reference(place, base.span)?;
+                let data = self.application_place_reference(place, base.span())?;
                 return self.application_index(data, index);
             }
             if place.ty().indexed_element().is_some() {
                 return self.array_place(place, index);
             }
-            self.read_place(&place, base.span, None)?
+            self.read_place(&place, base.span(), None)?
         } else {
             let returned = self.evaluate_returned(base, None)?;
             if !self.flow.continues() {
@@ -660,7 +660,7 @@ impl Builder<'_> {
                     return self.array_place(place, index);
                 }
                 returned => {
-                    let Some(value) = self.returned_expression(returned, base.span)? else {
+                    let Some(value) = self.returned_expression(returned, base.span())? else {
                         return Ok(None);
                     };
                     value
@@ -674,16 +674,20 @@ impl Builder<'_> {
         self.view_value_place(view, index)
     }
     pub(super) fn view_value_place(&mut self, view: Value, index: &Expr) -> Result<Option<Place>> {
+        self.view_value_at(view,index.span(),|builder|builder.expr(index))
+    }
+    pub(super) fn view_value_at(&mut self,view:Value,span:Span,
+        read_index:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>> {
         if view.ty.view.is_none() {
-            return self.fail(index.span, "B136", "索引需要 dataset、tile 或不可变 view");
+            return self.fail(span, "B136", "索引需要 dataset、tile 或不可变 view");
         }
         let held = self.hold_binding(Binding::Value(view.clone()));
-        let evaluated = self.expr(index);
+        let evaluated = read_index(self);
         self.env.remove(&held);
         let Some(value) = evaluated? else {
             return Ok(None);
         };
-        self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
+        self.require_same(&Ty::scalar(Scalar::U32), &value.ty, span)?;
         let length=Self::view_length(&view);
         if !self.index_in(
             &value,
@@ -692,7 +696,7 @@ impl Builder<'_> {
             Some(&length.proof),
         ) {
             return self.fail(
-                index.span,
+                span,
                 "B137",
                 "view 索引有效性无法静态证明；使用该引用值的长度条件或有界游标",
             );

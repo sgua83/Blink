@@ -1,22 +1,22 @@
 //! 稳定排序按不可变键建立唯一目标序号；源记录与容量尾部保持原值。
 use super::*;
-fn key<'a>(expr: &'a Expr, d: &Definition) -> Result<(&'a Expr, SortOrder)> {
-    if let ExprKind::Call(name, args) = &expr.kind
+fn key(expr: &Expr, d: &Definition) -> Result<(Expr, SortOrder)> {
+    if let ExprKind::Call(name, args) = expr.kind()
         && name == "descending"
     {
         if args.len() != 1 {
             return d
                 .source
-                .fail(expr.span, "B169", "descending 需要一个排序键字段");
+                .fail(expr.span(), "B169", "descending 需要一个排序键字段");
         }
-        return Ok((&args[0], SortOrder::Descending));
+        return Ok((args.at(0), SortOrder::Descending));
     }
-    Ok((expr, SortOrder::Ascending))
+    Ok((expr.clone(), SortOrder::Ascending))
 }
 pub(super) fn compile(
     program: &mut Program,
     env: &BTreeMap<String, Root>,
-    args: &[Expr],
+    args: &Expressions,
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
@@ -29,23 +29,23 @@ pub(super) fn compile(
             "stable_sort_by_key 需要按优先级排列的数值源键字段和输出 dataset",
         );
     }
-    let (first, _) = key(&args[0], d)?;
-    let (source, _, _, prefix, _) = prefix::typed_field(program, env, first, d, facts)?;
+    let (first, _) = key(&args.at(0), d)?;
+    let (source, _, _, prefix, _) = prefix::typed_field(program, env, &first, d, facts)?;
     let mut keys = Vec::new();
-    for arg in &args[..args.len() - 1] {
-        let (field, order) = key(arg, d)?;
+    for arg in &args.slice(..args.len() - 1) {
+        let (field, order) = key(&arg, d)?;
         let (binding, word, access, domain, ty) =
-            prefix::typed_field(program, env, field, d, facts)?;
+            prefix::typed_field(program, env, &field, d, facts)?;
         if binding != source || domain != prefix || !matches!(access, Access::Read | Access::InOut)
             || !env.values().any(|root| matches!(root, Root::Data(binding, Access::Read | Access::InOut) if *binding == source))
         {
             return d
                 .source
-                .fail(arg.span, "B170", "排序键必须来自同一 read 输入和同一有效域");
+                .fail(arg.span(), "B170", "排序键必须来自同一 read 输入和同一有效域");
         }
         if !ty.is_numeric() {
             return d.source.fail(
-                arg.span,
+                arg.span(),
                 "B175",
                 "排序键需要数值字段；bool、记录、数组和资源不能作为键",
             );
@@ -65,9 +65,9 @@ pub(super) fn compile(
         }
     }
     let output = args.last().unwrap();
-    let (target, write) = compact::data(env, output, d)?;
+    let (target, write) = compact::data(env, &output, d)?;
     if program.buffers[target].ty.contains_views() {
-        return d.source.fail(output.span,"B185","排序不能复制持久view载荷；原引用图须保持");
+        return d.source.fail(output.span(),"B185","排序不能复制持久view载荷；原引用图须保持");
     }
     if !write.writes() || source == target || prefix.is_some_and(|p| p.binding == target) {
         return d.source.fail(
@@ -79,7 +79,7 @@ pub(super) fn compile(
     if program.buffers[source].ty != program.buffers[target].ty {
         return d
             .source
-            .fail(output.span, "B189", "排序输入／输出的完整记录类型必须相同");
+            .fail(output.span(), "B189", "排序输入／输出的完整记录类型必须相同");
     }
     if let (Some(a), Some(b)) = (program.buffers[source].count, program.buffers[target].count) {
         if b < a {

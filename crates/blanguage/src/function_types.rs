@@ -12,28 +12,26 @@ fn ordinary(ty: &Ty, syntax: &TypeName, source: &Source, span: Span) -> crate::R
     Ok(())
 }
 impl World {
-    pub(crate) fn check_interface_types(&self, definition: &crate::Definition, actual: &Function,
-        types: &BTreeMap<String, TypeName>, values: &BTreeMap<String, u32>,
+    pub(crate) fn check_interface_types(&self, definition: &crate::Definition, actual: &crate::syntax::Function,
+        bindings: &std::sync::Arc<crate::generics::Bindings>,
     ) -> crate::Result<()> {
         if !definition.public || definition.compiled.is_some() { return Ok(()); }
         let interface = &self.interfaces[&definition.module];
-        let Some(declaration) = interface.functions.iter().find(|function| {
-            function.name == actual.name && function.kind != FunctionKind::Constant && function.external.is_none()
+        let Some(declaration) = interface.functions().iter().find(|function| {
+            function.name() == actual.name() && function.kind() != FunctionKind::Constant && function.external().is_none()
         }) else { return Ok(()); };
-        let bind = |name: &TypeName, source: &Source, span: Span| -> crate::Result<TypeName> {
-            let mut name = name.clone();
-            crate::generics::substitute_type(&mut name, types, source, span)?;
-            crate::value_parameters::substitute_type(&mut name, values,source)?;
+        let bind = |name: &crate::syntax::Type, source: &Source, span: Span| -> crate::Result<TypeName> {
+            let name=bindings.type_name(self,name,(source,&definition.module,&definition.imports),span)?;
             self.type_reference(&name, source, span, &definition.module, &definition.imports)
         };
-        let mut same = bind(&declaration.result, &interface.source, declaration.span)?
-            == self.type_reference(&actual.result, &definition.source, actual.span, &definition.module, &definition.imports)?;
-        for (declared, implemented) in declaration.params.iter().zip(&actual.params) {
-            same &= bind(&declared.ty, &interface.source, declared.span)?
-                == self.type_reference(&implemented.ty, &definition.source, implemented.span, &definition.module, &definition.imports)?;
+        let mut same = bind(&declaration.result(), &interface.source, declaration.span())?
+            == bind(&actual.result(), &definition.source, actual.span())?;
+        for (declared, implemented) in declaration.params().iter().zip(actual.params()) {
+            same &= bind(&declared.ty(), &interface.source, declared.span())?
+                == bind(&implemented.ty(), &definition.source, implemented.span())?;
         }
         if !same {
-            return definition.source.fail(actual.span, "B028", format!("{} 的实际类型或函数值合同与 .h 不一致", actual.name));
+            return definition.source.fail(actual.span(), "B028", format!("{} 的实际类型或函数值合同与 .h 不一致", actual.name()));
         }
         Ok(())
     }
@@ -67,26 +65,25 @@ impl World {
                 else { self.resolve(&name.name, module, imports, false).unique() };
             let Some(key) = key else { return source.fail(span, "B031", format!("未知类型 {}", name.name)); };
             let (record, record_source, record_module, record_imports) = self.record(&key);
-            if record.variants.iter().any(|variant| variant.name == *field) {
+            if record.variants().iter().any(|variant| variant.name() == *field) {
                 return if rest.is_empty() { Ok(Ty::scalar(Scalar::Bool)) }
                     else { source.fail(span, "B225", "变体条件没有后续字段") };
             }
-            let selected = record.fields.iter().find(|candidate| candidate.name == *field)
+            let selected = record.fields().iter().find(|candidate| candidate.name() == *field)
                 .ok_or_else(|| crate::Diagnostic { source: source.clone(), span, code: "B225",
                     message: format!("类型 {} 没有字段 {field}", name.name) })?;
-            let types = record.types.iter().zip(&name.arguments).map(|(parameter, argument)| {
+            let types = record.types().iter().zip(&name.arguments).map(|(parameter, argument)| {
                 let GenericArgument::Type(ty) = argument else {
                     return source.fail(span, "B232", "此记录参数需要类型实参");
                 };
-                Ok((parameter.name.clone(), ty.clone()))
+                Ok((parameter.name().to_owned(), ty.clone()))
             }).collect::<crate::Result<_>>()?;
-            let values = record.values.iter().zip(&name.arguments[record.types.len()..]).map(|(parameter, argument)| {
+            let values = record.values().iter().zip(&name.arguments[record.types().len()..]).map(|(parameter, argument)| {
                 let shape = argument.shape().unwrap();
-                Ok((parameter.name.clone(), self.shape(&Some(shape), source, span, module, imports)?.unwrap()))
+                Ok((parameter.name().to_owned(), self.shape(&Some(shape), source, span, module, imports)?.unwrap()))
             }).collect::<crate::Result<_>>()?;
-            let mut selected = selected.ty.clone();
-            crate::generics::substitute_type(&mut selected, &types, record_source, span)?;
-            crate::value_parameters::substitute_type(&mut selected, &values,record_source)?;
+            let bindings=std::sync::Arc::new(crate::generics::Bindings{types,values});
+            let selected=bindings.type_name(self,&selected.ty(),(record_source,record_module,record_imports),span)?;
             return self.output_path_type(&selected, rest, record_source, span, record_module, record_imports);
         }
         // A literal cannot numerically operate on an ordinary record. Decide
@@ -95,7 +92,7 @@ impl World {
         if let Some(key) = if name.canonical { self.records.contains_key(&name.name).then_some(name.name.clone()) }
             else { self.resolve(&name.name, module, imports, false).unique() } {
             let record = &self.record(&key).0;
-            if record.enumeration.is_none() {
+            if record.enumeration().is_none() {
                 return source.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");
             }
         }

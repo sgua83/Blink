@@ -12,23 +12,23 @@ pub(crate) fn substitute_output_condition(condition:&mut OutputCondition,values:
 }
 
 pub(crate) fn validate(
-    values: &[ValueParameter],
+    values: &crate::syntax::List<crate::syntax::wire::ValueParameterNode>,
     owner: &str,
-    params: &[Param],
+    params: impl Iterator<Item=crate::syntax::Param>+Clone,
     source: &Source,
     span: Span,
 ) -> Result<()> {
     for parameter in values {
-        if parameter.choices.as_ref().is_some_and(Vec::is_empty) {
+        if parameter.choices().is_some_and(<[u32]>::is_empty) {
             return source.fail(span, "B235", "const 参数至少需要一个允许的 u32 值");
         }
-        if Ty::builtin(&parameter.name).is_some()
-            || parameter.name == owner
+        if Ty::builtin(parameter.name()).is_some()
+            || parameter.name() == owner
             || matches!(
-                parameter.name.as_str(),
+                parameter.name(),
                 "void" | "dataset" | "tile" | "view" | "array" | "acceleration" | "texture2d" | "texture3d"
             )
-            || params.iter().any(|p| p.name == parameter.name)
+            || params.clone().any(|p| p.name() == parameter.name())
         {
             return source.fail(
                 span,
@@ -39,10 +39,10 @@ pub(crate) fn validate(
     }
     Ok(())
 }
-pub(crate) fn combinations(values: &[ValueParameter]) -> Vec<Vec<u32>> {
+pub(crate) fn combinations(values: &crate::syntax::List<crate::syntax::wire::ValueParameterNode>) -> Vec<Vec<u32>> {
     let mut result = vec![Vec::new()];
     for parameter in values {
-        let Some(choices) = &parameter.choices else {
+        let Some(choices) = parameter.choices() else {
             return Vec::new();
         };
         result = result

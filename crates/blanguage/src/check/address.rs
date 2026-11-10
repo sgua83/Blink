@@ -808,7 +808,7 @@ impl Builder<'_> {
             }
             Place::Reference{address:ReferenceAddress::External{identity,..},..}=>{words=external::reference_words(place,&self.locals).unwrap();Root::External(identity.clone())},
             Place::Reference{scope:Some(parameter),..}=>{
-                let ty=cooperative::parameter_type(self.world,&self.definition.function.params[*parameter],&self.definition)?;
+                let ty=cooperative::parameter_type(self.world,&self.scope.parameters().nth(*parameter).unwrap().bound(self.world)?,(&self.scope.function().unwrap().definition.source,&self.scope.function().unwrap().definition.module,&self.scope.function().unwrap().definition.imports,self.scope.function().unwrap().definition.function.kind()),self.program.target)?;
                 base=Layout::of(&ty);words=external::reference_words(place,&self.locals).unwrap();Root::Parameter(*parameter)
             }
             Place::ApplicationElement{resource,element_layout,words:actual,index_value,..}=>{
@@ -932,12 +932,13 @@ impl Builder<'_> {
         }else{let memory=[(written,Some(Access::Write),None)];self.write_address_values(&memory[0].0,&memory)?;}
         Ok(usage)
     }
-    pub(super) fn position_address(&mut self,args:&[Expr],span:Span)->Result<Option<Value>> {
+    pub(super) fn position_address(&mut self,args:&Expressions,span:Span)->Result<Option<Value>> {
         if self.program.target!=Target::Cpu{return self.fail(span,"B265","address_of只取得本进程CPU位置");}
-        let [arg]=args else{return self.fail(span,"B153","address_of需要一个实际位置");};
-        fn root_name(expr:&Expr)->Option<&String>{match &expr.kind{ExprKind::Name(name)=>Some(name),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root_name(base),_=>None}}
+        if args.len()!=1{return self.fail(span,"B153","address_of需要一个实际位置");}
+        let arg=&args.at(0);
+        fn root_name(expr:&Expr)->Option<String>{match expr.kind(){ExprKind::Name(name)=>Some(name.into()),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root_name(&base),_=>None}}
         if let Some(name)=root_name(arg)
-            && let Some(Binding::Value(value))=self.env.get(name).cloned() {
+            && let Some(Binding::Value(value))=self.env.get(&name).cloned() {
             let mut owner=self.materialize_array(value,None);owner.place=owner.place.read_only();self.env.insert(name.clone(),Binding::Owned(owner));
         }
         let Some(place)=self.place(arg)?else{return Ok(None);};
@@ -966,22 +967,27 @@ impl Builder<'_> {
         Ok(Some(Value{ty,regs:vec![dst],proof:proof.with_view_borrow(0,borrow),literal:false,uniform:false,constant:None}))
     }
 
-    pub(super) fn external_position(&mut self, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Place>> {
+    pub(super) fn external_position(&mut self,explicit:&[GenericArgument],args:&Expressions,span:Span)->Result<Option<Place>> {
+        self.external_position_value(explicit,args.len(),span,args.first().map(|arg|arg.span()).unwrap_or(span),
+            |builder|builder.expr(&args.at(0)))
+    }
+    pub(super) fn external_position_value(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
+        argument:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>> {
         if self.program.target != Target::Cpu {
             return self.fail(span, "B265", "unsafe_position只解释本进程CPU地址");
         }
-        let ([GenericArgument::Type(name)], [arg]) = (explicit, args) else {
+        let ([GenericArgument::Type(name)], 1) = (explicit, count) else {
             return self.fail(span, "B153", "unsafe_position<T>需要一个明确普通类型和一个address实参");
         };
-        let ty = self.world.ty(name, &self.definition.source, span, &self.definition.module, &self.definition.imports)?;
+        let ty = self.world.ty(name, self.scope.source(), span, self.scope.module(), self.scope.imports())?;
         if ty.owns_resources() {
             return self.fail(span, "B224", "外部地址位置不能创建Blink拥有资源");
         }
         if ty.contains_views() || ty.components.is_empty() {
             return self.fail(span, "B263", "外部地址位置需要非空普通值布局，不能解释Blink资源引用");
         }
-        let Some(mut value) = self.expr(arg)? else { return Ok(None); };
-        self.require_same(&Ty::builtin("address").unwrap(), &value.ty, arg.span)?;
+        let Some(mut value) = argument(self)? else { return Ok(None); };
+        self.require_same(&Ty::builtin("address").unwrap(), &value.ty, argument_span)?;
         let borrow=borrow_in_path(&self.current_address_borrow(&value.proof.view_borrow(0)),&self.path);
         self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:Layout::of(&ty),written:None,writable:false,initialized:false,span})?;
         let external=!borrow.pending()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|matches!(source,view::Source::External));

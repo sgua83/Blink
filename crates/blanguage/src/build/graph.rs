@@ -113,8 +113,8 @@ impl Compiler {
                 match provider {
                     Dependency::Unit(id) => {
                         let parsed = inputs.header(&prepared[*id].path)?;
-                        names.insert(parsed.name.clone());
-                        interfaces.push(inputs.capture_interface(&parsed.name, &parsed.source.text, Some(&parsed))?);
+                        names.insert(parsed.name().to_owned());
+                        interfaces.push(inputs.capture_interface(parsed.name(), &parsed.source.text, Some(&parsed))?);
                     }
                     Dependency::Object(object) => {
                         names.insert(object.name().into());
@@ -127,7 +127,7 @@ impl Compiler {
             let mut visited = BTreeSet::new();
             inputs.capture(&unit.path, &unit.root, &names, &mut visited)?;
             for interface in interfaces {
-                for import in &interface.imports {
+                for import in interface.imports() {
                     if !names.contains(import) {
                         inputs.capture(&unit.root.join(import.replace('.', "/")).with_extension("b"),
                             &unit.root, &names, &mut visited)?;

@@ -1,18 +1,13 @@
 //! 输入捕获与中间发布共享逻辑块；块内索引能力不能变成全局可写所有权。
 use super::*;
 impl Builder<'_> {
-    pub(super) fn tile_inputs(&mut self, body: &[Stmt]) -> Result<usize> {
+    pub(super) fn tile_inputs(&mut self, body: &Block) -> Result<usize> {
         let mut consumed = 0;
         for statement in body {
-            let StmtKind::Let(
-                annotation,
-                name,
-                Expr {
-                    kind: ExprKind::Call(call, args),
-                    ..
-                },
-            ) = &statement.kind
-            else {
+            let StmtKind::Let(annotation, name, expression) = statement.kind() else {
+                break;
+            };
+            let ExprKind::Call(call, args) = expression.kind() else {
                 break;
             };
             if call != "tile_input" {
@@ -20,23 +15,23 @@ impl Builder<'_> {
             }
             if annotation.is_some() || args.len() != 2 {
                 return self.fail(
-                    statement.span,
+                    statement.span(),
                     "B198",
                     "使用 let name = tile_input(dataset 或字段, 正整数宽度)",
                 );
             }
             if self.env.contains_key(name) {
-                return self.fail(statement.span, "B125", "tile 输入名称不能覆盖现有绑定");
+                return self.fail(statement.span(), "B125", "tile 输入名称不能覆盖现有绑定");
             }
-            let width = self.tile_width(&args[1])?;
-            let (source, word, ty) = self.dataset_field(&args[0])?;
+            let width = self.tile_width(&args.at(1))?;
+            let (source, word, ty) = self.dataset_field(&args.at(0))?;
             if !self.view_access[&source].reads()
                 || self.view_access[&source] == Access::Atomic
                 || ty.contains_views()
                 || ty.components.is_empty()
             {
                 return self.fail(
-                    args[0].span,
+                    args.at(0).span(),
                     "B200",
                     "tile 输入需要普通可读值，不能捕获 write／atomic 数据或资源 view",
                 );
@@ -46,7 +41,7 @@ impl Builder<'_> {
                 .zip(self.program.buffers[self.domain].count)
                 .is_some_and(|(a, b)| a < b)
             {
-                return self.fail(args[0].span, "B200", "tile 源容量不能小于阶段域容量");
+                return self.fail(args.at(0).span(), "B200", "tile 源容量不能小于阶段域容量");
             }
             if self.view_access[&source] == Access::InOut {
                 self.element_domains.insert(source);
@@ -78,7 +73,7 @@ impl Builder<'_> {
         &mut self,
         annotated: bool,
         name: &str,
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
         atomic: bool,
     ) -> Result<()> {
@@ -97,24 +92,24 @@ impl Builder<'_> {
                     "cooperative 函数继承借用块范围，发布不能指定固定宽度",
                 );
             }
-            TileWidth::Fixed(self.tile_width(&args[1])?)
+            TileWidth::Fixed(self.tile_width(&args.at(1))?)
         } else {
             self.tiles
                 .first()
                 .map(|t| t.width)
                 .ok_or_else(|| Diagnostic {
-                    source: self.definition.source.clone(),
+                    source: self.scope.source().clone(),
                     span,
                     code: "B209",
                     message: "省略发布宽度需要既有 tile 范围".into(),
                 })?
         };
-        let Some(mut value) = self.expr(&args[0])? else {
+        let Some(mut value) = self.expr(&args.at(0))? else {
             return Ok(());
         };
         if value.ty.contains_views() || value.ty.components.is_empty() {
             return self.fail(
-                args[0].span,
+                args.at(0).span(),
                 "B204",
                 "tile 发布需要普通值，不能发布资源 view 或能力句柄",
             );
@@ -143,9 +138,9 @@ impl Builder<'_> {
     }
     fn tile_width(&mut self, expr: &Expr) -> Result<u32> {
         let result = self.expr(expr)?;
-        let value = self.value_result(result, expr.span)?;
+        let value = self.value_result(result, expr.span())?;
         let Some(bits) = value.constant else {
-            return self.fail(expr.span, "B199", "tile 宽度需要编译期正 u32 值");
+            return self.fail(expr.span(), "B199", "tile 宽度需要编译期正 u32 值");
         };
         let width = bits[0] as u32;
         if value.ty != Ty::scalar(Scalar::U32)
@@ -156,7 +151,7 @@ impl Builder<'_> {
                 .is_some_and(|t| t.width != TileWidth::Fixed(width))
         {
             return self.fail(
-                expr.span,
+                expr.span(),
                 "B199",
                 "一个阶段的 tile 必须使用相同的非零 u32 宽度",
             );
@@ -166,7 +161,7 @@ impl Builder<'_> {
     pub(super) fn tile_collective(
         &mut self,
         op: TileOp,
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
     ) -> Result<Value> {
         if !self.is_cooperative_root() || args.len() != 1 {
@@ -178,10 +173,10 @@ impl Builder<'_> {
         }
         let TileView {
             tile, ty, words, length,
-        } = self.tile_view(&args[0])?;
+        } = self.tile_view(&args.at(0))?;
         if self.tiles[tile].access == Access::Atomic {
             return self.fail(
-                args[0].span,
+                args.at(0).span(),
                 "B214",
                 "atomic tile 需要先显式原子读取并发布不可变值，再参与集合运算",
             );
@@ -192,7 +187,7 @@ impl Builder<'_> {
         }
         if !ty.is_numeric() || !op.operator().accepts(ty.components[0].0) {
             return self.fail(
-                args[0].span,
+                args.at(0).span(),
                 "B206",
                 "tile 集合运算需要数值标量／向量或其字段，按位操作只接受整数；不接受 bool、记录或资源",
             );
@@ -219,14 +214,14 @@ impl Builder<'_> {
         })
     }
     pub(super) fn tile_view(&self, expr: &Expr) -> Result<TileView> {
-        match &expr.kind {
+        match expr.kind() {
             ExprKind::Name(name) => match self.env.get(name) {
                 Some(Binding::Tile(view)) => Ok(view.clone()),
-                _ => self.fail(expr.span, "B206", "需要输入／发布的 tile 或其字段借用"),
+                _ => self.fail(expr.span(), "B206", "需要输入／发布的 tile 或其字段借用"),
             },
             ExprKind::Member(base, field) => {
-                let view = self.tile_view(base)?;
-                let (ty, indices) = member_type(&view.ty, field, &self.definition.source, expr.span)?;
+                let view = self.tile_view(&base)?;
+                let (ty, indices) = member_type(&view.ty, field, self.scope.source(), expr.span())?;
                 Ok(TileView {
                     tile: view.tile,
                     ty,
@@ -234,7 +229,7 @@ impl Builder<'_> {
                     length: view.length,
                 })
             }
-            _ => self.fail(expr.span, "B206", "需要输入／发布的 tile 或其字段借用"),
+            _ => self.fail(expr.span(), "B206", "需要输入／发布的 tile 或其字段借用"),
         }
     }
     pub(super) fn bind_tile(&mut self, name: &str, tile: usize) {
@@ -260,7 +255,7 @@ impl Builder<'_> {
             self.block_depth == 1
         }
     }
-    pub(super) fn tile_barrier(&mut self, args: &[Expr], span: Span) -> Result<()> {
+    pub(super) fn tile_barrier(&mut self, args: &Expressions, span: Span) -> Result<()> {
         if !args.is_empty() || !self.is_cooperative_root() || self.tiles.is_empty() {
             return self.fail(
                 span,
@@ -340,7 +335,7 @@ impl Builder<'_> {
         let Some(value) = self.expr(index)? else {
             return Ok(None);
         };
-        self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
+        self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span())?;
         let minimum = match self.tiles[view.tile].width {
             TileWidth::Fixed(width) if self.prefix.is_none() => {
                 self.program.buffers[self.domain].count.map_or(1, |n| {
@@ -353,7 +348,7 @@ impl Builder<'_> {
         let bounded = self.index_in(&value, IndexDomain::Tile, minimum, None);
         if !bounded {
             return self.fail(
-                index.span,
+                index.span(),
                 "B201",
                 "tile 索引需要本块有界游标、lane、有效长度条件或在所有尾块内有效的常量",
             );

@@ -76,7 +76,7 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
             (Some(input), Some(declaration)) => {
                 hash::field(&mut bytes, &[1]);
                 hash::field(&mut bytes, &input.definitions[symbol]);
-                let span = declaration.function.span;
+                let span = declaration.function.span();
                 hash::field(&mut bytes, declaration.source.text[span.start..span.end].as_bytes());
                 match input.requirements.get(&symbol[..end]) {
                     Some(requirement) => hash::field(&mut bytes, &[1, match requirement {
@@ -107,20 +107,20 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
                 continue;
             }
             Declaration::Constant(key) => declarations.functions.get(key)
-                .filter(|definition| definition.function.kind == crate::ast::FunctionKind::Constant)
-                .map(|definition| (&definition.source, definition.function.span)),
+                .filter(|definition| definition.function.kind() == crate::ast::FunctionKind::Constant)
+                .map(|definition| (&definition.source, definition.function.span())),
             Declaration::Record(key) => declarations.records.get(key)
-                .map(|(record, source, ..)| (source, record.span)),
+                .map(|(record, source, ..)| (source, record.span())),
             Declaration::TypeSet(key) => declarations.type_sets.get(key)
-                .map(|(set, source, ..)| (source, set.span)),
+                .map(|(set, source, ..)| (source, set.span())),
             Declaration::External(key) => declarations.functions.get(key)
-                .filter(|definition| definition.function.external.is_some())
-                .map(|definition| (&definition.source, definition.function.span)),
+                .filter(|definition| definition.function.external().is_some())
+                .map(|definition| (&definition.source, definition.function.span())),
             Declaration::Implementation(key) => declarations.functions.get(key)
-                .filter(|definition| definition.function.body.is_some())
+                .filter(|definition| definition.function.body().is_some())
                 .map(|definition| {
                     hash::field(&mut bytes, &[definition.execution as u8]);
-                    (&definition.source, definition.function.span)
+                    (&definition.source, definition.function.span())
                 }),
         };
         match input {
@@ -143,12 +143,12 @@ fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, sour
     }
     let mut spans = declarations.functions.values()
         .filter(|definition| definition.source.path == source.path)
-        .map(|definition| definition.function.span).collect::<Vec<_>>();
+        .map(|definition| definition.function.span()).collect::<Vec<_>>();
     for (record, ..) in declarations.records.values().filter(|(_, owner, ..)| owner.path == source.path) {
-        spans.push(record.span);
+        spans.push(record.span());
     }
     for (set, ..) in declarations.type_sets.values().filter(|(_, owner, ..)| owner.path == source.path) {
-        spans.push(set.span);
+        spans.push(set.span());
     }
     let end = spans.iter().map(|span| span.start).min().unwrap_or(source.text.len());
     hash::field(bytes, source.text[..end].trim_end().as_bytes());
@@ -156,18 +156,12 @@ fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, sour
         // Every source declaration is checked, including unused open templates;
         // its implementation is consumed only by actual instances or body checks.
         for (name, definition) in declarations.functions.iter().filter(|(_, definition)| {
-            definition.source.path == source.path && definition.function.kind != crate::ast::FunctionKind::Constant
-                && definition.function.external.is_none()
+            definition.source.path == source.path && definition.function.kind() != crate::ast::FunctionKind::Constant
+                && definition.function.external().is_none()
         }) {
             let function = &definition.function;
-            let parameters = function.params.iter().map(|parameter|
-                (&parameter.name, &parameter.ty, parameter.access)).collect::<Vec<_>>();
-            let contracts = function.contracts.iter().map(|contract|
-                (contract.kind, &contract.predicate)).collect::<std::collections::BTreeSet<_>>();
-            let signature = format!("{:?}", (function.kind, function.c_abi, &function.types,
-                &function.values, &function.result, function.target, parameters, contracts));
             hash::field(bytes, name.as_bytes());
-            hash::field(bytes, signature.as_bytes());
+            hash::field(bytes, source.text[function.span().start..function.signature_end()].trim_end().as_bytes());
         }
     }
 }

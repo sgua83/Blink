@@ -240,7 +240,7 @@ impl Builder<'_> {
             ).map(|data| application::DataReference::direct(data.clone())).collect()
         };
         for data in resources {
-            let model=self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?;
+            let model=self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())?;
             let initial=self.returned_storage(&model);
             let context = self.loop_contexts.last().unwrap();
             let cursor = if source.is_some() { context.control_source.cursor.as_ref().unwrap() } else { index };
@@ -333,7 +333,7 @@ impl Builder<'_> {
         limit: &Value,
         index: ownership::ApplicationIndex,
         initial: bool,
-        body: &[Stmt],
+        body: &Block,
     ) {
         if initial || bounds::seeks(body) {
             return;
@@ -362,7 +362,7 @@ impl Builder<'_> {
 
     pub(super) fn defer_iteration_exit(
         &self,exit:&mut LoopState,begin:&Value,limit:&Value,outputs:&[(application::Data,Vec<u32>)],
-        index:ownership::ApplicationIndex,initial:bool,body:&[Stmt],
+        index:ownership::ApplicationIndex,initial:bool,body:&Block,
     ) {
         if initial||bounds::seeks(body){return;}
         let states=&self.loop_contexts.last().unwrap().continues;
@@ -381,26 +381,26 @@ impl Builder<'_> {
 
     fn initial_target(&self,expr:&Expr,shape:bool)->Option<bool>{
         use returns::Returned;use application::Ownership;
-        if let ExprKind::Name(name)=&expr.kind{if let Some(Binding::ApplicationData(data))=self.env.get(name){return Some(!self.resolve_ownership(&data.ownership,None).available());}}
+        if let ExprKind::Name(name)=expr.kind(){if let Some(Binding::ApplicationData(data))=self.env.get(name){return Some(!self.resolve_ownership(&data.ownership,None).available());}}
         if !self.owned_element_type(expr)?.owns_resources(){return Some(false);}
         let projection=self.owned_projection(expr)?;let Binding::OwnedValue(root)=&self.env[&projection.root]else{unreachable!()};let mut model=Returned::OwnedValue(root.clone());
         for index in projection.path{let Returned::OwnedValue(value)=model else{unreachable!()};model=value.payloads[index].as_deref().unwrap().clone();}
         self.resolve_owned_model(&mut model,None);Some(match model{Returned::Dataset(data)=>!data.ownership.available(),Returned::OwnedValue(value)=>if value.value.ty.has_variants(){value.ownership==Ownership::Moved||matches!(value.ownership,Ownership::Conditional(_))||shape&&value.incomplete()}else{!value.available()},_=>false})
     }
-    pub(super) fn application_initial_loop(&self,body:&[Stmt])->Result<bool>{
-        fn exits(body:&[Stmt],nested:bool)->bool{body.iter().any(|statement|match &statement.kind{
+    pub(super) fn application_initial_loop(&self,body:&Block)->Result<bool>{
+        fn exits(body:&Block,nested:bool)->bool{body.iter().any(|statement|match statement.kind(){
             StmtKind::Break=>!nested,StmtKind::Return(_)=>true,
-            StmtKind::If(_,yes,no)=>exits(yes,nested)||exits(no,nested),
-            StmtKind::Match(_,arms)=>arms.iter().any(|arm|exits(&arm.body,nested)),
-            StmtKind::While(_,body)|StmtKind::For(_,_,_,body)=>exits(body,true),
+            StmtKind::If(_,yes,no)=>exits(&yes,nested)||exits(&no,nested),
+            StmtKind::Match(_,arms)=>arms.iter().any(|arm|exits(&arm.body(),nested)),
+            StmtKind::While(_,body)|StmtKind::For(_,_,_,body)=>exits(&body,true),
             _=>false,
         })}
         // 资源出口先消费真实首轮；后续回边仍沿原构造进展及位置关系处理。
         if self.application.is_some()&&self.env.values().any(|binding|!binding.application_resources().is_empty())&&exits(body,false){return Ok(true);}
-        fn root(expr:&Expr)->Option<&str>{match &expr.kind{ExprKind::Name(name)=>Some(name),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root(base),_=>None}}
-        Ok(effects::value_writes(self,body)?.iter().any(|expr|match self.initial_target(expr,true){Some(value)=>value,None=>match root(expr).and_then(|name|self.env.get(name)){Some(Binding::OwnedValue(value))=>value.ownership==application::Ownership::Moved||value.incomplete(),Some(Binding::ApplicationData(data))=>data.ownership==application::Ownership::Moved,_=>false}}))
+        fn root(expr:&Expr)->Option<String>{match expr.kind(){ExprKind::Name(name)=>Some(name.into()),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root(&base),_=>None}}
+        Ok(effects::value_writes(self,body)?.iter().any(|expr|match self.initial_target(expr,true){Some(value)=>value,None=>match root(expr).and_then(|name|self.env.get(&name)){Some(Binding::OwnedValue(value))=>value.ownership==application::Ownership::Moved||value.incomplete(),Some(Binding::ApplicationData(data))=>data.ownership==application::Ownership::Moved,_=>false}}))
     }
-    pub(super) fn next_initial_loop(&self,body:&[Stmt])->Result<bool>{
+    pub(super) fn next_initial_loop(&self,body:&Block)->Result<bool>{
         if !self.application_initial_loop(body)?{return Ok(false);}
         if effects::value_writes(self,body)?.iter().any(|expr|self.initial_target(expr,false)==Some(true)){return Ok(true);}
         #[derive(PartialEq,Eq,PartialOrd,Ord)]enum Known{Owned(Vec<usize>),Payload(Vec<usize>),Boolean(usize,bool)}

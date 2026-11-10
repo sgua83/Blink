@@ -4,7 +4,7 @@ pub(super) fn compile(
     program: &mut Program,
     env: &BTreeMap<String, Root>,
     operator: CollectiveOperator,
-    args: &[Expr],
+    args: &Expressions,
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
@@ -14,9 +14,9 @@ pub(super) fn compile(
         return d.source.fail(span, "B169", "归约需要源数值字段和输出字段");
     }
     let (source, source_word, read, prefix, ty) =
-        prefix::typed_field(program, env, &args[0], d, facts)?;
+        prefix::typed_field(program, env, &args.at(0), d, facts)?;
     let (target, target_word, write, target_ty) =
-        collective_value_field(program, env, &args[1], d)?;
+        collective_value_field(program, env, &args.at(1), d)?;
     if !ty.is_numeric() || ty != target_ty || !operator.accepts(ty.components[0].0) {
         return d.source.fail(
             span,

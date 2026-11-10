@@ -53,6 +53,7 @@ impl Source {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
 pub enum Access {
     Value,
     Read,
@@ -69,6 +70,7 @@ impl Access {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
 pub enum Target {
     Compute,
     Cpu,
@@ -269,6 +271,7 @@ pub struct Param {
     pub span: Span,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
 pub enum ContractKind {
     Requires,
     Ensures,
@@ -410,6 +413,7 @@ pub struct ExternalName {
     pub symbol: String,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub enum FunctionKind {
     Value,
     Cooperative,

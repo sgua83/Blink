@@ -30,47 +30,47 @@ fn function(
     functions: &mut native_function::Module,
 ) -> Result<ValueCode> {
     let d = &owner.definition;
-    let (reference, captures) = match &expr.kind {
+    let (reference, captures) = match expr.kind() {
         ExprKind::Call(name, args) if name == "bind" => {
             let Some(reference) = args.first() else {
-                return d.source.fail(expr.span, "B212", "bind 需要静态值函数引用");
+                return d.source.fail(expr.span(), "B212", "bind 需要静态值函数引用");
             };
-            (reference, &args[1..])
+            (reference, Some(args.slice(1..)))
         }
-        _ => (expr, &[][..]),
+        _ => (expr.clone(), None),
     };
-    let (name, explicit) = match &reference.kind {
+    let (name, explicit) = match reference.kind() {
         ExprKind::Name(name) => (name, None),
-        ExprKind::FunctionRef(name, arguments) => (name, Some(arguments.as_slice())),
+        ExprKind::FunctionRef(name, arguments) => (name, Some(arguments)),
         _ => {
             return d.source.fail(
-                reference.span,
+                reference.span(),
                 "B212",
                 "集合需要静态函数引用，或 bind(静态函数引用, 统一值…)",
             );
         }
     };
     let Some(key) = world.resolve(name, &d.module, &d.imports, true).unique() else {
-        return d.source.fail(expr.span, "B158", "未知或未导出的集合值函数");
+        return d.source.fail(expr.span(), "B158", "未知或未导出的集合值函数");
     };
     let callee = &world.functions[&key];
     if callee.execution != crate::execution::Requirement::Invocation
-        || callee.function.kind != FunctionKind::Value
-        || callee.function.target != Target::Compute
-        || callee.function.params.len() != parameters.len() + captures.len()
+        || callee.function.kind() != FunctionKind::Value
+        || callee.function.target() != Target::Compute
+        || callee.function.params().len() != parameters.len() + captures.as_ref().map_or(0,|captures|captures.len())
         || callee
             .function
-            .params
+            .params()
             .iter()
-            .any(|p| p.access != Access::Value || p.ty.dataset || p.ty.tile || p.ty.view)
+            .any(|p| p.access() != Access::Value || p.ty().dataset() || p.ty().tile() || p.ty().view())
     {
         return d.source.fail(
-            expr.span,
+            expr.span(),
             "B212",
             "集合需要 compute 值函数：投影接收一个源值，单位元无元素参数，合并器接收两个结果值；bind 参数追加在元素参数之后",
         );
     }
-    let mut builder = Builder::new(world, d, program, 0, Some(&owner.name))?;
+    let mut builder = Builder::new(world, owner, program, 0, Some(&owner.name))?;
     builder.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*builder.source_context).clone() });
     builder.functions = std::mem::take(functions);
     builder.roots(env);
@@ -89,16 +89,16 @@ fn function(
         }));
     }
     builder.in_function = true;
-    for capture in captures {
-        let result = builder.expr(capture)?;
-        let value = builder.value_result(result, capture.span)?;
+    for capture in captures.iter().flat_map(|captures|captures.iter()) {
+        let result = builder.expr(&capture)?;
+        let value = builder.value_result(result, capture.span())?;
         if !value.uniform
             || value.ty.contains_views()
             || !builder.reads.is_empty()
             || !builder.writes.is_empty()
         {
             return d.source.fail(
-                capture.span,
+                capture.span(),
                 "B213",
                 "bind 只能捕获执行统一的普通值，不能捕获资源或读取数据集元素",
             );
@@ -106,21 +106,23 @@ fn function(
         args.push(cooperative::Argument::Value(value));
     }
     builder.in_function = false;
-    let instance = builder.specialized_arguments(key, &args, explicit, reference.span)?;
+    let explicit=explicit.as_ref().map(|arguments|owner.bindings.arguments(world,arguments,
+        (&d.source,&d.module,&d.imports),reference.span())).transpose()?;
+    let instance = builder.specialized_arguments(key, &args, explicit.as_deref(), reference.span())?;
     let source_site = |span| builder.source_definition.as_ref().map(|origin| Arc::new(SourceSite {
         origin: origin.clone(), context: builder.source_context.clone(), span, syntax: SourceSyntax::Expression,
     }));
     let entry_origin = Arc::new(ValueCodeEntry {
         definition: instance.definition.source_origin().map(Arc::new),
         instance: Arc::from(instance.name.as_str()),
-        reference: source_site(reference.span),
+        reference: source_site(reference.span()),
         capture_parameter_start: parameters.len(),
-        captures: captures.iter().map(|capture| source_site(capture.span)).collect(),
+        captures: captures.iter().flat_map(|captures|captures.iter()).map(|capture| source_site(capture.span())).collect(),
     });
-    let result = builder.invoke_returned(instance, args, reference.span, None, None)?;
-    let result = builder.ordinary_return(result, expr.span)?;
-    let result = builder.value_result(result, expr.span)?;
-    builder.require_same(ty, &result.ty, expr.span)?;
+    let result = builder.invoke_returned(instance, args, reference.span(), None, None)?;
+    let result = builder.ordinary_return(result, expr.span())?;
+    let result = builder.value_result(result, expr.span())?;
+    builder.require_same(ty, &result.ty, expr.span())?;
     *functions = std::mem::take(&mut builder.functions);
     let code = ValueCode {
         entry_origin: Some(entry_origin),
@@ -137,7 +139,7 @@ pub(super) fn compile(
     world: &World,
     program: &mut Program,
     env: &BTreeMap<String, Root>,
-    args: &[Expr],
+    args: &Expressions,
     owner: &crate::generics::Instance,
     span: Span,
     facts: &mut prefix::Facts,
@@ -161,10 +163,10 @@ pub(super) fn compile(
         );
     }
     let (source, source_word, read, prefix, source_ty) =
-        prefix::typed_field(program, env, &args[0], d, facts)?;
+        prefix::typed_field(program, env, &args.at(0), d, facts)?;
     let head_word = if segmented {
         let (heads, word, access, head_prefix) =
-            prefix::field(program, env, &args[1], d, facts, Scalar::Bool)?;
+            prefix::field(program, env, &args.at(1), d, facts, Scalar::Bool)?;
         if heads != source
             || !matches!(access, Access::Read | Access::InOut)
             || head_prefix.is_some_and(|p| Some(p) != prefix)
@@ -180,7 +182,7 @@ pub(super) fn compile(
         None
     };
     let (target, target_word, write, ty) =
-        collective_value_field(program, env, &args[1 + offset], d)?;
+        collective_value_field(program, env, &args.at(1 + offset), d)?;
     if !map && source_ty != ty || ty.contains_views() || source_ty.contains_views() {
         return d.source.fail(
             span,
@@ -211,7 +213,7 @@ pub(super) fn compile(
     }
     let count = if counted {
         let (binding, word, access) =
-            collective_field(program, env, &args[2 + offset], d, Scalar::U32)?;
+            collective_field(program, env, &args.at(2 + offset), d, Scalar::U32)?;
         if !access.writes()
             || binding == source
             || binding == target
@@ -252,7 +254,7 @@ pub(super) fn compile(
             env,
             owner,
             &domain_path,
-            &args[functions],
+            &args.at(functions),
             &ty,
             &[&source_ty],
             native_functions,
@@ -266,7 +268,7 @@ pub(super) fn compile(
         env,
         owner,
         &domain_path,
-        &args[functions + usize::from(map)],
+        &args.at(functions + usize::from(map)),
         &ty,
         &[],
         native_functions,
@@ -277,7 +279,7 @@ pub(super) fn compile(
         env,
         owner,
         &domain_path,
-        &args[functions + 1 + usize::from(map)],
+        &args.at(functions + 1 + usize::from(map)),
         &ty,
         &[&ty, &ty],
         native_functions,

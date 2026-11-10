@@ -80,7 +80,7 @@ impl DataPayload {
         if !self.ownership.loop_compatible(&other.ownership,inputs,path){return Ok(false);}
         let path=other.ownership.presence().condition().assume(path,true);
         if !path.possible(){return Ok(true);}
-        if !builder.residency.same(&self.residency,&other.residency,&builder.definition.source,span,&path){return Ok(false);}
+        if !builder.residency.same(&self.residency,&other.residency,builder.scope.source(),span,&path){return Ok(false);}
         // Only an existing element model introduces child resources to compare.
         // An unknown counterpart is projected by the same finite model owner.
         if matches!((&self.elements,&other.elements),
@@ -343,7 +343,7 @@ impl ApplicationLoads<'_, '_> {
                 let(mut word,mut field)=(0,&ty);
                 for at in fields{let(offset,next)=field.aggregate_part(*at);word+=offset;field=next;}
                 let Some(reference)=field.dataset.as_deref()else{return Ok(None);};
-                let element=self.0.world.ty(reference,&self.0.definition.source,self.0.definition.function.span,&self.0.definition.module,&self.0.definition.imports)?;
+                let element=self.0.world.ty(reference,&self.0.scope.source(),self.0.scope.span(),&self.0.scope.module(),&self.0.scope.imports())?;
                 let root=match location {
                     effects::StorageWrite::Descendants{root}=>{storage.push((effects::StorageWrite::Descendants{root},element,DataLayout::Declared));continue;},
                     effects::StorageWrite::Frame{root,..}=>root,
@@ -802,27 +802,29 @@ pub(crate) fn compile_application(
 ) -> Result<crate::application::Application> {
     let d = &instance.definition;
     validate_signature(d)?;
-    let result = if d.function.result.name == "void" || d.function.result.is_never() {
+    let result_name=instance.bindings.type_name(world,&d.function.result(),
+        (&d.source,&d.module,&d.imports),d.function.span())?;
+    let result = if result_name.name == "void" || result_name.is_never() {
         None
     } else {
         Some(world.ty(
-            &d.function.result,
+            &result_name,
             &d.source,
-            d.function.span,
+            d.function.span(),
             &d.module,
             &d.imports,
         )?)
     };
-    if d.function.kind != FunctionKind::Value
-        || d.function.external.is_some()
-        || d.function.target != Target::Cpu
-        || !d.function.params.is_empty()
+    if d.function.kind() != FunctionKind::Value
+        || d.function.external().is_some()
+        || d.function.target() != Target::Cpu
+        || !d.function.params().is_empty()
         || !result.is_some_and(|result| {
             [Ty::scalar(Scalar::U32), Ty::scalar(Scalar::I32)].contains(&result)
         })
     {
         return d.source.fail(
-            d.function.span,
+            d.function.span(),
             "B262",
             "应用入口需要无参数的 u32／i32 普通函数，显式 on cpu；返回值是进程退出码",
         );
@@ -845,16 +847,16 @@ pub(crate) fn compile_application(
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
-    let mut builder = Builder::new(world, d, &context, 0, Some(&instance.name))?;
+    let mut builder = Builder::new(world, instance, &context, 0, Some(&instance.name))?;
     let entry_anchor = GenerationAnchor::Definition {
         origin: d.source_origin().map(Arc::new), instance: Arc::from(instance.name.as_str()),
     };
     builder.application = Some(Context::default());
     builder.in_function = true;
-    let result = builder.native_function(instance.clone(), Vec::new(), d.function.span, Some(Arc::new(GeneratedOrigin {
+    let result = builder.native_function(instance.clone(), Vec::new(), d.function.span(), Some(Arc::new(GeneratedOrigin {
         reason: GenerationReason::ApplicationEntryCall, trigger: Some(entry_anchor.clone()),
     })), None)?;
-    let result = builder.ordinary_return(result, d.function.span)?.unwrap();
+    let result = builder.ordinary_return(result, d.function.span())?.unwrap();
     let app = builder.application.take().unwrap();
     let mut body = ValueCode {
         entry_origin: None,
@@ -1058,10 +1060,10 @@ impl Builder<'_> {
         access: Access,
     ) -> Result<Data> {
         if access == Access::Value {
-            self.application_frame(self.definition.function.span)?;
+            self.application_frame(self.scope.span())?;
         }
         let scalar = if access == Access::Value { Scalar::U32 }
-            else { Self::borrowed_dataset_parameter_type(access, self.definition.execution).components[0].0 };
+            else { Self::borrowed_dataset_parameter_type(access, self.scope.execution()).components[0].0 };
         let reg = self.reg(scalar);
         let mut handle = self.application_root(reg);
         if access==Access::Value{handle.proof=handle.proof.with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::ResourceParameter(parameter,0))]));}
@@ -1492,7 +1494,7 @@ impl Builder<'_> {
             for(future,value)in &bindings{
                 if future.starts_with('\0'){remaining.union(&user_owned::cleanup_borrow(builder,value,&BTreeSet::new())?);}
             }
-            builder.drop_binding(binding,&remaining,builder.definition.function.span)?;
+            builder.drop_binding(binding,&remaining,builder.scope.span())?;
             if name.starts_with('\0'){builder.env.remove(&name);}else{
                 match builder.env.get_mut(&name){
                     Some(Binding::OwnedValue(value))=>value.mark_moved(),
@@ -1527,20 +1529,20 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<()> {
         self.application_frame(span)?;
-        let definition = self.definition.clone();
+        let scope = &self.scope;
         let ty = self.world.ty(
             annotation,
-            &definition.source,
+            scope.source(),
             span,
-            &definition.module,
-            &definition.imports,
+            scope.module(),
+            scope.imports(),
         )?;
         let count = self.world.shape(
             &annotation.count,
-            &definition.source,
+            scope.source(),
             span,
-            &definition.module,
-            &definition.imports,
+            scope.module(),
+            scope.imports(),
         )?;
         let slots = self.local_slots(&Ty::owned_dataset((ty.clone()).syntax(), count)).0;
         let handle = self.reg(Scalar::U32);
@@ -1642,29 +1644,29 @@ impl Builder<'_> {
         Ok(Some(data))
     }
     #[inline(never)]
-    pub(super) fn resize_application_dataset(&mut self, args: &[Expr], span: Span) -> Result<Option<Data>> {
+    pub(super) fn resize_application_dataset(&mut self, args: &Expressions, span: Span) -> Result<Option<Data>> {
         if args.len() != 3 {
             return self.fail(span, "B266", "resize(data,length,fill) 消费拥有的 CPU dataset，以同型值初始化新增位置");
         }
-        let Some(returned) = self.evaluate_returned(&args[0], None)? else { return Ok(None); };
+        let Some(returned) = self.evaluate_returned(&args.at(0), None)? else { return Ok(None); };
         let returns::Returned::Dataset(data) = returned else {
-            return self.fail(args[0].span, "B224", "resize 需要一份拥有的 dataset");
+            return self.fail(args.at(0).span(), "B224", "resize 需要一份拥有的 dataset");
         };
         let data = self.refresh_application_data(data, span)?;
         if data.ownership != Ownership::Owned {
-            return self.fail(args[0].span, "B227", "dataset 借用不拥有调整存储长度的权利");
+            return self.fail(args.at(0).span(), "B227", "dataset 借用不拥有调整存储长度的权利");
         }
         self.require_application_initialized(&data, span)?;
         self.application_cpu(&data, span)?;
         let input=self.hold_binding(Binding::ApplicationData(data.clone()));
-        let Some(length) = self.expr(&args[1])? else { return Ok(None); };
-        self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args[1].span)?;
-        let Some(mut returned) = self.evaluate_returned(&args[2], Some(&data.ty))? else { return Ok(None); };
-        self.check_returned_type(&mut returned, &data.ty, args[2].span)?;
-        self.require_returned_initialized(&mut returned, args[2].span)?;
+        let Some(length) = self.expr(&args.at(1))? else { return Ok(None); };
+        self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args.at(1).span())?;
+        let Some(mut returned) = self.evaluate_returned(&args.at(2), Some(&data.ty))? else { return Ok(None); };
+        self.check_returned_type(&mut returned, &data.ty, args.at(2).span())?;
+        self.require_returned_initialized(&mut returned, args.at(2).span())?;
         let fill = self.returned_storage(&returned);
         if fill.ty.contains_views() {
-            return self.fail(args[2].span, "B224", "resize 填充值不能复制 view 借用图");
+            return self.fail(args.at(2).span(), "B224", "resize 填充值不能复制 view 借用图");
         }
         let mut retained = fill.proof.typed_view_borrow(&fill.ty);
         for borrow in view_contracts::resource_borrows(&returned) { retained.union(&borrow); }
@@ -1679,7 +1681,7 @@ impl Builder<'_> {
             let offset = length.proof.domains(0).into_iter().any(|domain|
                 matches!(domain, IndexDomain::Offset(base, 1) if sources.contains(&base)));
             if !exact && !offset {
-                return self.fail(args[1].span, "B224", "拥有填充值只能移动到已证明不回绕且恰好新增的一项，不能广播复制或截短拥有元素");
+                return self.fail(args.at(1).span(), "B224", "拥有填充值只能移动到已证明不回绕且恰好新增的一项，不能广播复制或截短拥有元素");
             }
         }
         let pending=match &returned {
@@ -1707,7 +1709,7 @@ impl Builder<'_> {
         let (slots, storage) = self.local_slots(&fill.ty);
         let origin = Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetResizeFill,
-            trigger: self.source_at(args[2].span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
+            trigger: self.source_at(args.at(2).span(), SourceSyntax::Expression).map(GenerationAnchor::Syntax),
         });
         for (slot, reg) in slots.into_iter().zip(fill.regs.iter().copied()) {
             self.code.push(Inst::generated(InstKind::StoreLocal(slot, reg), origin.clone()));
@@ -1752,24 +1754,26 @@ impl Builder<'_> {
         }))?;
         Ok(data)
     }
-    pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
-        let [source,output]=args else{return self.fail(span,"B266","take_last(data,output)消费非空CPU dataset并交出唯一尾值");};
+    pub(super) fn take_last_application_dataset(&mut self,args:&Expressions,span:Span)->Result<Option<Data>> {
+        if args.len()!=2{return self.fail(span,"B266","take_last(data,output)消费非空CPU dataset并交出唯一尾值");}
+        let source=&args.at(0);
+        let output=&args.at(1);
         let Some(returns::Returned::Dataset(data))=self.evaluate_returned(source,None)? else {
             if !self.flow.continues(){return Ok(None);}
-            return self.fail(source.span,"B224","take_last需要一份拥有的dataset");
+            return self.fail(source.span(),"B224","take_last需要一份拥有的dataset");
         };
         let data=self.refresh_application_data(data,span)?;
-        if data.ownership!=Ownership::Owned{return self.fail(source.span,"B227","dataset借用不能交出尾元素或缩短存储");}
+        if data.ownership!=Ownership::Owned{return self.fail(source.span(),"B227","dataset借用不能交出尾元素或缩短存储");}
         self.require_application_initialized(&data,span)?;self.application_cpu(&data,span)?;
         let one=self.constant(Scalar::U32,1);let last=self.binary("-",data.length.clone(),one,span,None)?;
         if !self.index_in(&last,IndexDomain::ApplicationData(data.root.identity()),data.length.minimum(),None) {
-            return self.fail(source.span,"B137","take_last需要由原长度条件证明输入非空");
+            return self.fail(source.span(),"B137","take_last需要由原长度条件证明输入非空");
         }
         let held=self.hold_binding(Binding::ApplicationData(data.clone()));
         let destination=self.mutable_place(output,Access::Write)?;
         if !self.flow.continues(){return Ok(None);}
-        let Some(destination)=destination else{return self.fail(output.span,"B227","take_last输出需要同元素类型的可写位置");};
-        self.require_same(&data.ty,destination.ty(),output.span)?;
+        let Some(destination)=destination else{return self.fail(output.span(),"B227","take_last输出需要同元素类型的可写位置");};
+        self.require_same(&data.ty,destination.ty(),output.span())?;
         let place=Self::application_element(&data,&last,(last.minimum(),last.maximum()));
         let packed=self.read_storage_value(&place,span,None)?;
         let mut value=if data.ty.owns_resources(){self.materialize_element(&DataReference::direct(data.clone()),packed,&place)?}else{returns::Returned::value(packed)};
@@ -1790,34 +1794,34 @@ impl Builder<'_> {
         let fill=argument(self.constant(Scalar::U64,0));
         self.resize_application_storage(data.root,data.ty,last,data.elements,fill,&[],span).map(Some)
     }
-    pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
+    pub(super) fn dataset_constructor_type(world:&World,scope:&LexicalScope,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
         if !(1..=2).contains(&explicit.len())||!(1..=2).contains(&arguments) {
-            return definition.source.fail(span,"B266","dataset<T>(length) 需要元素类型和一个 u32 长度");
+            return scope.source().fail(span,"B266","dataset<T>(length) 需要元素类型和一个 u32 长度");
         }
         let GenericArgument::Type(element) = &explicit[0] else {
-            return definition.source.fail(span, "B266", "dataset<T> 需要元素类型");
+            return scope.source().fail(span, "B266", "dataset<T> 需要元素类型");
         };
         if element.dataset {
-            return definition.source.fail(span,"B232","资源包装不能直接嵌套；子资源通过记录字段表达");
+            return scope.source().fail(span,"B232","资源包装不能直接嵌套；子资源通过记录字段表达");
         }
         if element.tile {
-            return definition.source.fail(
+            return scope.source().fail(
                 span,
                 "B266",
                 "dataset 的元素是普通值，不是另一份 dataset 或 tile 所有权",
             );
         }
-        let ty = world.ty(element,&definition.source,span,&definition.module,&definition.imports)?;
+        let ty = world.ty(element,scope.source(),span,scope.module(),scope.imports())?;
         let count = if let Some(argument) = explicit.get(1) {
             let Some(shape) = argument.shape() else {
-                return definition.source.fail(span, "B266", "dataset<T,N> 的 N 需要静态 u32 形状");
+                return scope.source().fail(span, "B266", "dataset<T,N> 的 N 需要静态 u32 形状");
             };
             world.shape(
                 &Some(shape),
-                &definition.source,
+                scope.source(),
                 span,
-                &definition.module,
-                &definition.imports,
+                scope.module(),
+                scope.imports(),
             )?
         } else {
             None
@@ -1827,7 +1831,7 @@ impl Builder<'_> {
     #[inline(never)]
     pub(super) fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
-        let ExprKind::Specialize(constructor, explicit, args) = &expr.kind else {
+        let ExprKind::Specialize(constructor, explicit, args) = expr.kind() else {
             return self.fail(
                 span,
                 "B266",
@@ -1841,12 +1845,13 @@ impl Builder<'_> {
                 "dataset<T>(length) 需要元素类型和一个 u32 长度",
             );
         }
-        let definition=self.definition.clone();
-        let(ty,count)=Self::dataset_constructor_type(self.world,&definition,explicit,args.len(),span)?;
-        let Some(mut length) = self.expr(&args[0])? else {
+        let explicit=self.scope.bindings().arguments(self.world,&explicit,
+            (self.scope.source(),self.scope.module(),self.scope.imports()),span)?;
+        let(ty,count)=Self::dataset_constructor_type(self.world,&self.scope,&explicit,args.len(),span)?;
+        let Some(mut length) = self.expr(&args.at(0))? else {
             return Ok(None);
         };
-        self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args[0].span)?;
+        self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args.at(0).span())?;
         if (ty.owns_resources() || ty.contains_views()) && length.maximum() != 0 && args.len() != 2 {
             return self.fail(span, "B224", "资源或view元素的非空dataset构造需要静态生成函数逐个交付实际值");
         }
@@ -1872,7 +1877,7 @@ impl Builder<'_> {
                 span,
                 Some(Arc::new(GeneratedOrigin {
                     reason: GenerationReason::DatasetAllocate,
-                    trigger: self.source_at(expr.span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
+                    trigger: self.source_at(expr.span(), SourceSyntax::Expression).map(GenerationAnchor::Syntax),
                 })),
             )?
             .unwrap();
@@ -1896,7 +1901,7 @@ impl Builder<'_> {
             layout: DataLayout::Declared,
         });
         if let Some(factory)=args.get(1) {
-            data.elements=match self.initialize_application_elements(&data,factory,span)?{Some(model)=>ElementFacts::Known(model),None=>ElementFacts::Unknown};
+            data.elements=match self.initialize_application_elements(&data,&factory,span)?{Some(model)=>ElementFacts::Known(model),None=>ElementFacts::Unknown};
             data.initialization=None;
         } else {
             let mut elements=self.unknown_element_model(&data.ty,(&data.residency,&[]))?;
@@ -1910,32 +1915,36 @@ impl Builder<'_> {
     }
     // Generate actual element storage with the original resource owner.
     fn initialize_application_elements(&mut self,data:&Data,factory:&Expr,span:Span)->Result<Option<Box<returns::Returned>>> {
-        let (name,explicit)=match &factory.kind {
-            ExprKind::Name(name)=>(name.as_str(),None),
-            ExprKind::FunctionRef(name,args)=>(name.as_str(),Some(args.as_slice())),
-            _=>return self.fail(factory.span,"B224","dataset生成函数需要明确静态函数引用"),
+        let (name,explicit)=match factory.kind() {
+            ExprKind::Name(name)=>(name,None),
+            ExprKind::FunctionRef(name,args)=>(name,Some(args)),
+            _=>return self.fail(factory.span(),"B224","dataset生成函数需要明确静态函数引用"),
         };
-        let key=self.world.resolve(name,&self.definition.module,&self.definition.imports,true).unique()
-            .ok_or_else(||Diagnostic{source:self.definition.source.clone(),span:factory.span,code:"B158",message:format!("未知生成函数 {name}")})?;
-        let trigger=self.source_at(factory.span,SourceSyntax::Expression);
+        let key=self.world.resolve(name,self.scope.module(),self.scope.imports(),true).unique()
+            .ok_or_else(||Diagnostic{source:self.scope.source().clone(),span:factory.span(),code:"B158",message:format!("未知生成函数 {name}")})?;
+        let trigger=self.source_at(factory.span(),SourceSyntax::Expression);
         let origin=|reason|Arc::new(GeneratedOrigin{reason,trigger:trigger.clone().map(GenerationAnchor::Syntax)});
         let cursor=origin(GenerationReason::DatasetInitializeCursor);
         let scalar=Ty::scalar(Scalar::U32);let zero=self.constant_with_origin(Scalar::U32,0,Some(cursor.clone()));let index_reg=self.reg(Scalar::U32);
-        let mut proof=bounds::for_cursor(&zero,&data.length,&[]);
+        let mut proof=bounds::for_cursor(&zero,&data.length,false);
         for identity in data.length.component_origins(0) { proof.mark_domain(0,IndexDomain::Upper(identity,1)); }
         let index=Value{ty:scalar.clone(),regs:vec![index_reg],proof,uniform:false,literal:false,constant:None};
         let arguments=vec![Argument::Value(index.clone())];
-        let instance=self.specialized_arguments(key,&arguments,explicit,factory.span)?;
+        let explicit=explicit.as_ref().map(|arguments|self.scope.bindings().arguments(self.world,arguments,
+            (self.scope.source(),self.scope.module(),self.scope.imports()),factory.span())).transpose()?;
+        let instance=self.specialized_arguments(key,&arguments,explicit.as_deref(),factory.span())?;
         let function=&instance.definition.function;
-        if function.kind!=FunctionKind::Value || function.target!=Target::Cpu || function.params.len()!=1 || function.params[0].access!=Access::Value {
-            return self.fail(factory.span,"B224","dataset生成函数接收一个按值u32下标并返回一个元素，使用普通on cpu函数");
+        if function.kind()!=FunctionKind::Value || function.target()!=Target::Cpu || function.params().len()!=1 || function.params().at(0).access()!=Access::Value {
+            return self.fail(factory.span(),"B224","dataset生成函数接收一个按值u32下标并返回一个元素，使用普通on cpu函数");
         }
         if data.length.maximum()==0 {
             let definition=&instance.definition;
-            let input=cooperative::parameter_type(self.world,&function.params[0],definition)?;
-            self.require_same(&scalar,&input,factory.span)?;
-            let output=self.world.ty(&function.result,&definition.source,function.span,&definition.module,&definition.imports)?;
-            self.require_same(&data.ty,&output,factory.span)?;
+            let input=cooperative::parameter_type(self.world,&instance.parameter(self.world,&function.params().at(0))?,(&definition.source,&definition.module,&definition.imports,definition.function.kind()),self.program.target)?;
+            self.require_same(&scalar,&input,factory.span())?;
+            let result_name=instance.bindings.type_name(self.world,&function.result(),
+                (&definition.source,&definition.module,&definition.imports),function.span())?;
+            let output=self.world.ty(&result_name,&definition.source,function.span(),&definition.module,&definition.imports)?;
+            self.require_same(&data.ty,&output,factory.span())?;
             return Ok(None);
         }
         let slot=self.local_slots(&scalar).0[0];self.code.push(Inst::generated(InstKind::StoreLocal(slot,zero.regs[0]),cursor));
@@ -2155,14 +2164,14 @@ impl Builder<'_> {
         data: DataReference,
         index: &Expr,
     ) -> Result<Option<Place>> {
-        self.application_cpu(&data, index.span)?;
+        self.application_cpu(&data, index.span())?;
         let held = self.hold_binding(Binding::DataReference(data.clone()));
         let value = self.expr(index)?;
         self.env.remove(&held);
         let Some(value) = value else {
             return Ok(None);
         };
-        self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
+        self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span())?;
         if !self.index_in(
             &value,
             IndexDomain::ApplicationData(data.root.identity()),
@@ -2170,7 +2179,7 @@ impl Builder<'_> {
             None,
         ) {
             return self.fail(
-                index.span,
+                index.span(),
                 "B137",
                 "dataset 索引需要由本资源的长度条件或有界游标证明",
             );
@@ -2510,9 +2519,9 @@ impl Builder<'_> {
                 "target 调用由 CPU 主流程发起，元素实例与协作成员不能选择发起位置",
             );
         }
-        let (name, explicit, args) = match &call.kind {
+        let (name, explicit, args) = match call.kind() {
             ExprKind::Call(name, args) => (name, None, args),
-            ExprKind::Specialize(name, explicit, args) => (name, Some(explicit.as_slice()), args),
+            ExprKind::Specialize(name, explicit, args) => (name, Some(explicit), args),
             _ => {
                 return self.fail(
                     span,
@@ -2528,12 +2537,12 @@ impl Builder<'_> {
             .world
             .resolve(
                 name,
-                &self.definition.module,
-                &self.definition.imports,
+                self.scope.module(),
+                self.scope.imports(),
                 true,
             ).unique()
             .ok_or_else(|| Diagnostic {
-                source: self.definition.source.clone(),
+                source: self.scope.source().clone(),
                 span,
                 code: "B158",
                 message: format!("未知或未导出的函数 {name}"),
@@ -2545,30 +2554,33 @@ impl Builder<'_> {
                 "当前 GPU target 消费整域函数；普通值调用的跨目标返回通道尚未实现",
             );
         }
-        let Some(arguments) = self.function_arguments(&key, args, span)? else {
+        let Some(arguments) = self.function_arguments(&key, &args, span)? else {
             return Ok(None);
         };
-        let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
-        self.application_execute(instance, arguments, target, span, &[])
+        let explicit=explicit.as_ref().map(|arguments|self.scope.bindings().arguments(self.world,arguments,
+            (self.scope.source(),self.scope.module(),self.scope.imports()),call.span())).transpose()?;
+        let instance = self.specialized_arguments(key, &arguments, explicit.as_deref(), span)?;
+        self.application_execute(DomainInput::Declaration(&instance), arguments, target, span, &[])
     }
     pub(super) fn application_execute(
         &mut self,
-        instance: crate::generics::Instance,
+        input: DomainInput<'_>,
         prepared: Vec<Argument>,
         target: Target,
         span: Span,
         element_inputs: &[ElementFact],
     ) -> Result<Option<returns::Returned>> {
         self.application_frame(span)?;
-        let callee = &instance.definition;
-        if callee.function.target != Target::Compute && callee.function.target != target {
+        let callee = &input.owner().definition;
+        let bound_parameters=input.parameters(self.world)?;
+        if input.target() != Target::Compute && input.target() != target {
             return self.fail(span, "B266", "函数声明的目标能力与本次调用位置不一致");
         }
         let mut data = Vec::new();
         let mut uniforms = Vec::new();
         let mut held = Vec::new();
         let mut textures = Vec::new();
-        for (parameter, value) in callee.function.params.iter().zip(prepared) {
+        for (parameter, value) in bound_parameters.iter().zip(prepared) {
             if parameter.ty.dataset {
                 let value = match value {
                     Argument::ApplicationData(data) => DataReference::direct(data),
@@ -2587,7 +2599,7 @@ impl Builder<'_> {
                 let path=self.residency_path();
                 if !self
                     .residency
-                    .require(&value.residency, target, &self.definition.source, span,&path)
+                    .require(&value.residency, target, self.scope.source(), span,&path)
                 {
                     return self.fail(
                         span,
@@ -2603,7 +2615,7 @@ impl Builder<'_> {
                 let Argument::Texture(resource) = value else {
                     return self.fail(span, "B239", "整域纹理参数需要实际只读纹理资源");
                 };
-                self.texture_parameter(parameter, &resource, callee, span)?;
+                self.texture_parameter(parameter, &resource,(&callee.source,&callee.module,&callee.imports),span)?;
                 let address = self.reg(Scalar::U64);
                 self.emit(InstKind::TextureBindingAddress { dst: address, texture: resource.source });
                 textures.push(CallArgument::Value { origin: None, dataset_borrow: None,
@@ -2618,7 +2630,7 @@ impl Builder<'_> {
         for value in &data {
             self.application_handle_available(value.root.identity(), span, &[],&self.path)?;
         }
-        let interface = self.prepare_domain(&instance, target, element_inputs)?;
+        let interface = self.prepare_domain(input, target, element_inputs)?;
         for &(left, right) in &interface.length_requirements {
             if !self.lengths_equal(&data[left].length, &data[right].length) {
                 return self.fail(span, "B226", "整域调用前未证明same_length数据集长度关系");
@@ -2687,7 +2699,7 @@ impl Builder<'_> {
         let mut data_arguments = data.iter();
         let mut uniforms = uniforms.into_iter();
         let mut textures = textures.into_iter();
-        for parameter in &callee.function.params {
+        for parameter in &bound_parameters {
             if parameter.ty.dataset {
                 let value = data_arguments.next().unwrap();
                 physical.push(self.application_domain_argument(value));
@@ -2697,7 +2709,7 @@ impl Builder<'_> {
                 physical.push(argument(uniforms.next().unwrap()));
             }
         }
-        self.call_domain(instance, target, physical);
+        self.call_domain(input.name(), target, physical);
         for relation in &interface.prefix_guarantees {
             let count=&data[relation.count.binding];
             let word=count.element_layout().0+relation.count.word;
@@ -2710,28 +2722,24 @@ impl Builder<'_> {
         Ok(Some(returns::Returned::Unit))
     }
     #[inline(never)]
-    pub(super) fn application_parallel(&mut self, statement: &Stmt) -> Result<()> {
+    pub(super) fn application_parallel(&mut self, statement: &Stmt, element:&str, domain:&ParallelDomain, body:&Block) -> Result<()> {
         if self.application.is_none() {
             return self.fail(
-                statement.span,
+                statement.span(),
                 "B131",
                 "并行域由主流程或整域函数发起；元素实例中的嵌套域尚未实现",
             );
         }
         let mut names = BTreeSet::new();
-        captured_names(std::slice::from_ref(statement), &mut names);
+        captured_names(statement, &mut names);
         let mut params = Vec::new();
         let mut args = Vec::new();
         for name in names {
-            let Some(binding) = self.env.get(&name).cloned() else {
+            let Some(binding) = self.env.get(&name) else {
                 continue;
             };
-            let expr = Expr {
-                kind: ExprKind::Name(name.clone()),
-                span: statement.span,
-            };
             let (ty, access, arg) = if matches!(binding, Binding::ApplicationData(_) | Binding::DataReference(_)) {
-                let data = self.application_reference(&expr)?.unwrap();
+                let data = self.application_named_reference(&name, statement.span())?.unwrap();
                 let access = if data.access == Access::Atomic {
                     Access::Atomic
                 } else if data.access == Access::Read {
@@ -2746,18 +2754,18 @@ impl Builder<'_> {
                 ty.count = data.count.map(Shape::Literal);
                 (ty, access, Argument::BorrowedData(data))
             } else {
-                let value = self.name_expr(&name, &expr)?;
+                let value = self.name_expr(&name, statement.span())?;
                 (value.ty.syntax(), Access::Value, Argument::Value(value))
             };
             params.push(Param {
                 name,
                 ty,
                 access,
-                span: statement.span,
+                span: statement.span(),
             });
             args.push(arg);
         }
-        self.check_argument_aliases(&params, &args, |_| statement.span)?;
+        self.check_argument_aliases(|index|(params[index].access,params[index].ty.dataset), &args, |_| statement.span())?;
         let mut contracts = Vec::new();
         fn count_fields(ty:&Ty,path:&str,offset:u32,out:&mut Vec<(String,u32)>) {
             for(field,at,ty)in &ty.fields {
@@ -2787,7 +2795,7 @@ impl Builder<'_> {
                     domains(&prefix::domain(data),data.element_layout().1,known,&self.path,&params[data_index].name,&mut Vec::new(),&mut names);
                     for name in names {
                         contracts.push(FunctionContract{kind:ContractKind::Requires,
-                            predicate:ContractPredicate::Prefix{data:name,count:params[count_index].name.clone(),field:field.clone()},span:statement.span});
+                            predicate:ContractPredicate::Prefix{data:name,count:params[count_index].name.clone(),field:field.clone()},span:statement.span()});
                     }
                 }
             }
@@ -2806,7 +2814,7 @@ impl Builder<'_> {
                         left: params[previous].name.clone(),
                         right: params[index].name.clone(),
                     },
-                    span: statement.span,
+                    span: statement.span(),
                 });
             } else {
                 groups.push(index);
@@ -2818,7 +2826,7 @@ impl Builder<'_> {
         let mut element_inputs = Vec::new();
         for (binding, (access, source)) in captured.iter().enumerate() {
             if !access.reads() || *access == Access::Atomic { continue; }
-            let elements=self.element_model(&source.ty,&source.elements,(&source.residency,&[]),statement.span)?;
+            let elements=self.element_model(&source.ty,&source.elements,(&source.residency,&[]),statement.span())?;
             let model = self.returned_storage(&elements);
             let (offset, ty) = source.element_layout();
             let components = ty.components.iter().map(|(scalar, word)|
@@ -2842,39 +2850,16 @@ impl Builder<'_> {
         let name = format!(
             "{}@parallel{}:{:?}",
             self.calls.last().unwrap(),
-            statement.span.start,
+            statement.span().start,
             params.iter().map(|p| (&p.ty, p.access)).collect::<Vec<_>>()
         );
-        let function = Function {
-            name: name.clone(),
-            types: Vec::new(),
-            values: Vec::new(),
-            params,
-            result: TypeName::named("void"),
-            kind: FunctionKind::Value,
-            target: Target::Cpu,
-            contracts,
-            body: Some(vec![statement.clone()]),
-            c_abi: false,
-            external: None,
-            span: statement.span,
-        };
-        let definition = Arc::new(Definition {
-            function,
-            syntax_origin: crate::frontend::DefinitionSyntax::Generated(self.source_at(statement.span, SourceSyntax::Statement)),
-            execution: crate::execution::Requirement::Domain,
-            source: self.definition.source.clone(),
-            module: self.definition.module.clone(),
-            imports: self.definition.imports.clone(),
-            public: false,
-            compiled: None,
-        });
+        let owner=self.scope.function().unwrap().clone();
+        let parameters=Arc::<[Param]>::from(params);
+        let site=self.source_at(statement.span(),SourceSyntax::Statement);
         self.application_execute(
-            crate::generics::Instance { name, definition },
-            args,
-            Target::Cpu,
-            statement.span,
-            &element_inputs,
+            DomainInput::Parallel{owner:&owner,name:&name,parameters:&parameters,contracts:&contracts,
+                statement,element,domain,body,site:&site},
+            args,Target::Cpu,statement.span(),&element_inputs,
         )?;
         Ok(())
     }
@@ -2882,7 +2867,7 @@ impl Builder<'_> {
         let path=self.residency_path();
         if !self
             .residency
-            .require(&data.residency, Target::Cpu, &self.definition.source, span,&path)
+            .require(&data.residency, Target::Cpu, self.scope.source(), span,&path)
         {
             return self.fail(
                 span,
@@ -2895,14 +2880,14 @@ impl Builder<'_> {
     pub(super) fn application_transfer(
         &mut self,
         name: &str,
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
         self.application_frame(span)?;
         if args.len() != 1 {
             return self.fail(span, "B266", "upload／download 需要一个拥有的 dataset 名称");
         }
-        let Some(data) = self.application_reference(&args[0])? else {
+        let Some(data) = self.application_reference(&args.at(0))? else {
             return self.fail(span, "B266", "upload／download 需要应用拥有的 dataset");
         };
         if data.ownership != Ownership::Owned {
@@ -2922,7 +2907,7 @@ impl Builder<'_> {
         let path=self.residency_path();
         if !self
             .residency
-            .require(&data.residency, source, &self.definition.source, span,&path)
+            .require(&data.residency, source, self.scope.source(), span,&path)
         {
             return self.fail(
                 span,
@@ -2953,20 +2938,25 @@ impl Builder<'_> {
         }
         Ok(None)
     }
-    pub(super) fn println(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
+    pub(super) fn println(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
+        self.println_value(args.len(),span,args.first().map(|a|a.span()).unwrap_or(span),
+            |builder|builder.expr(&args.at(0)))
+    }
+    pub(super) fn println_value(&mut self,count:usize,span:Span,argument_span:Span,
+        argument:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
         if self.program.target != Target::Cpu {
             return self.fail(span, "B260", "println 是 CPU 标准输出操作，要求显式 on cpu");
         }
-        if args.len() != 1 {
+        if count != 1 {
             return self.fail(span, "B261", "println 需要一个整数、f32、f64 或 bool 标量");
         }
-        let Some(value) = self.expr(&args[0])? else {
+        let Some(value) = argument(self)? else {
             return Ok(None);
         };
         if !value.ty.components.first().is_some_and(|(scalar, _)| value.ty == Ty::scalar(*scalar))
         {
             return self.fail(
-                args[0].span,
+                argument_span,
                 "B261",
                 "println 接受整数、浮点或 bool 标量",
             );
@@ -2988,121 +2978,121 @@ impl Builder<'_> {
 }
 
 // Only whole binding assignment needs mutable handle/length storage; payload writes do not.
-pub(super) fn rebound(body: &[Stmt], name: &str) -> bool {
-    fn root(expr: &Expr) -> Option<&str> {
-        match &expr.kind {
-            ExprKind::Name(name) => Some(name),
-            ExprKind::Member(base, _) => root(base),
-            _ => None,
+pub(super) fn rebound(body: &Block, name: &str) -> bool {
+    fn root(expr: &Expr, name: &str) -> bool {
+        match expr.kind() {
+            ExprKind::Name(root) => root == name,
+            ExprKind::Member(base, _) => root(&base, name),
+            _ => false,
         }
     }
-    body.iter().any(|s| match &s.kind {
-        StmtKind::Assign(lhs, _, _) => root(lhs) == Some(name),
+    body.iter().any(|s| match s.kind() {
+        StmtKind::Assign(lhs, _, _) => root(&lhs, name),
         StmtKind::If(_, yes, no) => {
-            rebound(yes, name) || rebound(no, name)
+            rebound(&yes, name) || rebound(&no, name)
         }
-        StmtKind::Match(_, arms) => arms.iter().any(|arm| rebound(&arm.body,name)),
-        StmtKind::For(_, _, _, body) | StmtKind::While(_, body) => rebound(body, name),
+        StmtKind::Match(_, arms) => arms.iter().any(|arm| rebound(&arm.body(),name)),
+        StmtKind::For(_, _, _, body) | StmtKind::While(_, body) => rebound(&body, name),
         _ => false,
     })
 }
 
-fn captured_names(body: &[Stmt], names: &mut BTreeSet<String>) {
+fn captured_names(statement: &Stmt, names: &mut BTreeSet<String>) {
     fn name(name: &str, bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
         if !bound.contains(name) {
             names.insert(name.to_owned());
         }
     }
     fn expr(e: &Expr, bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
-        match &e.kind {
+        match e.kind() {
             ExprKind::Name(n) => name(n, bound, names),
             ExprKind::Invoke(callee, args) => {
-                expr(callee, bound, names);
-                for arg in args { expr(arg, bound, names); }
+                expr(&callee, bound, names);
+                for arg in args { expr(&arg, bound, names); }
             }
             ExprKind::Call(callee, args) => {
                 name(callee, bound, names);
-                for arg in args { expr(arg, bound, names); }
+                for arg in args { expr(&arg, bound, names); }
             }
             ExprKind::Specialize(_, _, args)
             | ExprKind::Construct(_, args)
             | ExprKind::Cooperate(_, _, args) => {
                 for a in args {
-                    expr(a, bound, names);
+                    expr(&a, bound, names);
                 }
             }
             ExprKind::Target(_, e) | ExprKind::Unary(_, e) | ExprKind::Member(e, _) => {
-                expr(e, bound, names)
+                expr(&e, bound, names)
             }
             ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {
-                expr(a, bound, names);
-                expr(b, bound, names);
+                expr(&a, bound, names);
+                expr(&b, bound, names);
             }
             ExprKind::Select(a, b, c) => {
-                expr(a, bound, names);
-                expr(b, bound, names);
-                expr(c, bound, names);
+                expr(&a, bound, names);
+                expr(&b, bound, names);
+                expr(&c, bound, names);
             }
             _ => {}
         }
     }
-    fn block(body: &[Stmt], bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
+    fn block(body: impl IntoIterator<Item=Stmt>, bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
         let mut bound = bound.clone();
         for s in body {
-            match &s.kind {
+            match s.kind() {
                 StmtKind::Parallel(iterator, domain, body) => {
-                    name(&domain.dataset, &bound, names);
-                    if let Some(e) = &domain.count {
+                    name(&domain.dataset(), &bound, names);
+                    if let Some(e) = &domain.count() {
                         expr(e, &bound, names);
                     }
-                    if let Some(e) = &domain.selection {
+                    if let Some(e) = &domain.selection() {
                         expr(e, &bound, names);
                     }
                     let mut nested = bound.clone();
-                    nested.insert(iterator.clone());
-                    block(body, &nested, names);
+                    nested.insert(iterator.to_string());
+                    block(&body, &nested, names);
                 }
                 StmtKind::Let(_, local, e) => {
-                    expr(e, &bound, names);
-                    bound.insert(local.clone());
+                    expr(&e, &bound, names);
+                    bound.insert(local.to_string());
                 }
                 StmtKind::Declare(_, local) => {
-                    bound.insert(local.clone());
+                    bound.insert(local.to_string());
                 }
                 StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Seek(_, e) => {
-                    expr(e, &bound, names)
+                    expr(&e, &bound, names)
                 }
                 StmtKind::Assign(a, _, b) => {
-                    expr(a, &bound, names);
-                    expr(b, &bound, names);
+                    expr(&a, &bound, names);
+                    expr(&b, &bound, names);
                 }
                 StmtKind::If(e, a, b) => {
-                    expr(e, &bound, names);
-                    block(a, &bound, names);
-                    block(b, &bound, names);
+                    expr(&e, &bound, names);
+                    block(&a, &bound, names);
+                    block(&b, &bound, names);
                 }
                 StmtKind::Match(e, arms) => {
-                    expr(e,&bound,names);
-                    for arm in arms {let mut nested=bound.clone();nested.extend(arm.binding.iter().cloned());block(&arm.body,&nested,names);}
+                    expr(&e,&bound,names);
+                    for arm in arms {let mut nested=bound.clone();nested.extend(arm.binding().into_iter().map(str::to_owned));block(&arm.body(),&nested,names);}
                 }
                 StmtKind::While(e, body) => {
-                    expr(e, &bound, names);
-                    block(body, &bound, names);
+                    expr(&e, &bound, names);
+                    block(&body, &bound, names);
                 }
                 StmtKind::For(iterator, a, b, body) => {
-                    expr(a, &bound, names);
+                    expr(&a, &bound, names);
                     if let Some(b) = b {
-                        expr(b, &bound, names);
+                        expr(&b, &bound, names);
                     }
                     let mut nested = bound.clone();
-                    nested.insert(iterator.clone());
-                    block(body, &nested, names);
+                    nested.insert(iterator.to_string());
+                    block(&body, &nested, names);
                 }
                 _ => {}
             }
         }
     }
-    block(body, &BTreeSet::new(), names);
+    block(std::iter::once(statement.clone()), &BTreeSet::new(), names);
 }
 
 // 函数出口已要求完整拥有值；局部条件与Place一样不进入模块接口。
@@ -3204,7 +3194,7 @@ pub(super) fn canonical_element_inputs(builder:&Builder<'_>,bindings:&mut Elemen
         }
     }
 }
-pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,paths:&BTreeSet<residency::Input>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>)->(ElementBindings,view::Borrow) {
+pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,env:&BTreeMap<String,Binding>,paths:&BTreeSet<residency::Input>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>)->(ElementBindings,view::Borrow) {
     fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,parameter:usize,resource:usize,next:&mut usize,out:&mut ElementBindings,memory:&mut view::Borrow,reads:bool,input:&residency::Input,paths:&BTreeSet<residency::Input>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>){
         let identity=match declared{Some(declared)=>declared.get(input).copied(),None=>Some((resource,*next))};
         let model=data.elements.known().unwrap();
@@ -3241,8 +3231,8 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Defini
         }
     }
     let mut out=ElementBindings::new();let mut memory=view::Borrow::default();
-    for(parameter,p)in definition.function.params.iter().enumerate(){
-        if let Some(binding)=env.get(&p.name){
+    for(parameter,p)in definition.parameters().enumerate(){
+        if let Some(binding)=env.get(p.name()){
             for resource in 0..binding_element_count(binding){
                 if let Some(data)=binding_element_data(binding,resource){
                     let mut projected;
@@ -3259,7 +3249,7 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Defini
                     }else{data};
                     let fields=match binding{Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty)[resource].clone(),_=>Vec::new()};
                     let input=residency::Input{parameter,fields:fields.into_iter().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
-                    collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access!=Access::Write&&data.length.maximum()!=0,&input,paths,declared);
+                    collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access()!=Access::Write&&data.length.maximum()!=0,&input,paths,declared);
                 }
             }
         }
@@ -3283,13 +3273,13 @@ pub(super) fn bind_element_input(builder:&mut Builder<'_>,model:&mut returns::Re
             value.proof=value.proof.clone().view_parameters(&value.ty,&indices,|component|ValueIdentity::DatasetContent(parameter,resource,start+component));
         }
         *next=start+width;
-        if builder.definition.function.params[parameter].access!=Access::Write{
+        if builder.scope.parameters().nth(parameter).unwrap().access()!=Access::Write{
             for fields in view::resource_paths(&value.ty){if let Some(data)=model_data_mut(Some(model),&fields) && matches!(data.elements,ElementFacts::Unknown){data.elements=ElementFacts::Input(bounds::Condition::default());}}
         }
 }
-pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Definition,paths:&BTreeSet<residency::Input>){
-    for(parameter,p)in definition.function.params.iter().enumerate(){
-        if let Some(mut binding)=builder.env.remove(&p.name){
+pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,paths:&BTreeSet<residency::Input>){
+    for(parameter,p)in definition.parameters().enumerate(){
+        if let Some(mut binding)=builder.env.remove(p.name()){
             each_binding_data(&mut binding,&mut |resource,path,data|{
                 let root=residency::Input{parameter,fields:path.iter().copied().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
                 let mut next=0;let mut inputs=ElementBindings::new();
@@ -3301,12 +3291,12 @@ pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Defin
                     }}
                     let Some(elements)=selected.elements.known_mut()else{continue;};
                     bind_element_input(builder,elements,resource,&mut next,&mut inputs,input);
-                    if p.access!=Access::Write && selected.length.maximum()!=0 {
+                    if p.access()!=Access::Write && selected.length.maximum()!=0 {
                         residency::visit(elements,&mut input.clone(),&mut |data,input|data.residency=residency::Residency::input(input.model()));
                     }
                 }
             });
-            builder.env.insert(p.name.clone(),binding);
+            builder.env.insert(p.name().to_owned(),binding);
         }
     }
 }
@@ -3357,7 +3347,7 @@ impl Builder<'_> {
             for id in value.component_origins(0){out.insert(id,proof.clone());}
         }
         for (name,binding) in &self.env{
-            let parameter=self.definition.function.params.iter().any(|p|p.name==*name);
+            let parameter=self.scope.parameters().any(|p|p.name()==*name);
             let value=match binding{Binding::Value(value)=>Some(value),Binding::OwnedValue(value)=>Some(&value.value),_=>None};
             let captured=if let Some(value)=value{
                 Some((bounds::Proof::capture(value),if parameter{(0..value.regs.len()).collect()}else{view_contracts::components(&value.ty)}))
@@ -3486,20 +3476,20 @@ impl Builder<'_> {
         for owner in owners{for(path,complete,choice)in self.element_resource_scopes(resource,owner,context){paths.entry(path).and_modify(|(old,selection)|{*old|=complete;*selection=selection.clone().logical(choice.clone(),true);}).or_insert((complete,choice));}}
         paths.into_iter().map(|(path,(complete,choice))|(path,complete,choice)).collect()
     }
-    pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[&Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {
+    pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {
         let Some(mut place)=self.application_index(data.clone(),index)?else{return Ok(())};
         let mut paths=vec![data.projection.clone()];
-        for part in projection {match &part.kind {
+        for part in projection {match part.kind() {
             ExprKind::Member(_,field)=>{
                 let component=place.ty().fields.iter().position(|(name,..)|name==field).unwrap();
-                let(ty,components)=member_type(place.ty(),field,&self.definition.source,part.span)?;
+                let(ty,components)=member_type(place.ty(),field,self.scope.source(),part.span())?;
                 place=place.project(ty,&components);for path in &mut paths{path.push(component);}
             },
             ExprKind::Index(_,index)=>{
-                let held=self.hold_binding(Binding::DataReference(data.clone()));let value=self.expr(index)?;self.env.remove(&held);
+                let held=self.hold_binding(Binding::DataReference(data.clone()));let value=self.expr(&index)?;self.env.remove(&held);
                 let Some(value)=value else{return Ok(())};
                 let(minimum,maximum,count)=(value.minimum(),value.maximum(),place.ty().values[0]);
-                place=self.array_index(place,value,index.span)?;
+                place=self.array_index(place,value,index.span())?;
                 paths=paths.into_iter().flat_map(|path|(0..count).filter(move|i|*i>=minimum&&*i<=maximum).map(move|i|{let mut path=path.clone();path.push(i as usize);path})).collect();
             },
             _=>unreachable!(),
@@ -3512,9 +3502,9 @@ impl Builder<'_> {
         let held=self.hold_binding(Binding::DataReference(data.clone()));
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
         if !self.flow.continues(){return Ok(());}
-        let value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
+        let value=result.ok_or_else(||Diagnostic{source:self.scope.source().clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
         // RHS结束后的原消费者仍指向旧内容；被覆盖位置的后续读取属于新内容。
-        self.view_uses.after(rhs.span);
+        self.view_uses.after(rhs.span());
         self.store_owned_returned(place,old,value,span)
     }
     // These are the original already-evaluated metadata positions, not a second element table.
@@ -3654,7 +3644,7 @@ impl Builder<'_> {
         self.close_stored_resources(&mut model,&original,&bindings);Box::new(model)
     }
     pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value,place:&Place)->Result<returns::Returned>{
-        let mut model=*self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?;let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
+        let mut model=*self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())?;let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
         for field in &data.projection{
             let returns::Returned::OwnedValue(owner)=model else{unreachable!()};
             let(offset,ty)=owner.value.ty.aggregate_part(*field);
@@ -3884,7 +3874,7 @@ impl Builder<'_> {
                         inner.root=self.value_component(&updated,handle);inner.length=self.value_component(&updated,length);
                         inner.root.proof=std::mem::take(&mut inner.root.proof).with_identity(ValueIdentity::ElementComponent(handle)).with_view_borrow(0,borrow);
                         if components.contains(&handle)||components.contains(&length){
-                            let original=self.element_model(&inner.ty,&inner.elements,(&inner.residency,&[]),self.definition.function.span)?;
+                            let original=self.element_model(&inner.ty,&inner.elements,(&inner.residency,&[]),self.scope.span())?;
                             let mut elements=self.unknown_element_model(&inner.ty,(&inner.residency,&[]))?;
                             residency::visit(&mut elements,&mut residency::Input::new(0),&mut|data,input|{
                                 if let Some(source)=residency::model_location(&original,&input.fields){data.residency=source.residency.clone();}
@@ -3962,12 +3952,12 @@ impl Builder<'_> {
                     if reference.projection.is_empty()&&unique&&complete{
                         data.elements=model.clone().map(&mut |model|self.capture_element_model(data,&reference.projection,*model),&mut |when|when);continue;
                     }
-                    let incoming=self.element_model(reference.element_layout().1,&model,(&reference.residency,&reference.projection),self.definition.function.span)?;let model=incoming.as_ref();
+                    let incoming=self.element_model(reference.element_layout().1,&model,(&reference.residency,&reference.projection),self.scope.span())?;let model=incoming.as_ref();
                     let mut fresh=self.capture_element_model(data,&reference.projection,model.clone());
                     if reference.projection.is_empty()&&unique&&complete{data.elements=application::ElementFacts::Known(fresh);continue;}
                     // A real partial write supplies new facts; only its enclosing model is materialized.
                     // Invalidating absent facts above does not manufacture an unknown element tree.
-                    if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?);}
+                    if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())?);}
                     let stored=data.elements.known_mut().unwrap();
                     if !unique||!complete{
                         let incoming=fresh.clone();let previous=self.projected_element_model(stored,&reference.projection);
@@ -4003,7 +3993,7 @@ impl Builder<'_> {
             }}
             let mut scoped=owned.output_bound(&shifts);
             let Some(elements)=data.elements.known()else{
-                if builder.world.stored_borrows(&data.ty,&builder.definition.source,span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new(),false)? && !matches!(data.elements,ElementFacts::Input(_)){
+                if builder.world.stored_borrows(&data.ty,builder.scope.source(),span,builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),false)? && !matches!(data.elements,ElementFacts::Input(_)){
                     let proof=bounds::Proof::default().with_view_borrow(0,view::Borrow::source(view::Source::Unresolved));
                     builder.require_view_return_proof(&proof,scoped,span)?;
                 }
@@ -4251,7 +4241,7 @@ impl Builder<'_>{
     pub(super) fn expand_current_element_facts(&mut self,data:&mut Data)->Result<()> {
         match data.elements{
             ElementFacts::Input(_)|ElementFacts::Cleanup(_)|ElementFacts::Common(..)|ElementFacts::Selected(..)=>{
-                data.elements=ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.definition.function.span)?);
+                data.elements=ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())?);
             },
             ElementFacts::Unknown|ElementFacts::Known(_)=>{},
         }

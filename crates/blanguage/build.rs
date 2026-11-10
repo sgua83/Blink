@@ -15,7 +15,7 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={}", seed.join(name).display());
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("缺少OUT_DIR")?);
-    let modules = ["lexer", "parser", "archive", "coff", "metadata", "bindings", "coff_read", "metadata_read", "object_read"];
+    let modules = ["lexer", "parser", "archive", "coff", "metadata", "bindings", "coff_read", "metadata_read", "object_read", "ast_storage"];
     let objects: Vec<_> = modules.iter().map(|name| out.join(format!("blink_compiler_{name}.obj"))).collect();
     for (name, object) in modules.iter().zip(&objects) {
         let compiled = Command::new(seed.join("bin/bc.exe"))
@@ -27,7 +27,7 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     }
     let archive = out.join("blink_compiler_bootstrap.lib");
     let archived = Command::new(seed.join("bin/blink.exe"))
-        .arg("--archive").args(&objects).arg("-o").arg(&archive).status()?;
+        .arg("--host-archive").args(&objects).arg("-o").arg(&archive).status()?;
     if !archived.success() {
         return Err(format!("Blink种子{}归档B引导模块失败", seed.display()).into());
     }

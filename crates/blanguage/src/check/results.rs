@@ -5,8 +5,8 @@ impl Builder<'_> {
     #[inline(never)]
     pub(super) fn variant_constructor_type(&self,name:&str,explicit:Option<&[GenericArgument]>,expected:Option<&Ty>,span:Span)->Result<Option<(Ty,usize)>> {
         let Some((parent,member))=name.rsplit_once("::") else{return Ok(None)};
-        let Some(key)=self.world.resolve(parent,&self.definition.module,&self.definition.imports,false).unique() else{return Ok(None)};
-        if self.world.record(&key).0.variants.is_empty(){return Ok(None);}
+        let Some(key)=self.world.resolve(parent,self.scope.module(),self.scope.imports(),false).unique() else{return Ok(None)};
+        if self.world.record(&key).0.variants().is_empty(){return Ok(None);}
         let mut syntax=TypeName::named(parent);
         if let Some(arguments)=explicit {syntax.arguments=arguments.to_vec();}
         else if let Some(expected)=expected.filter(|ty|ty.name.split_once('<').map_or(ty.name.as_str(),|(root,_)|root)==key) {
@@ -22,24 +22,27 @@ impl Builder<'_> {
         e: &Expr,
         expected: Option<&Ty>,
     ) -> Result<Option<Value>> {
-        let constructor=match &e.kind {
-            ExprKind::Call(name,_)=>self.variant_constructor_type(name,None,expected,e.span)?,
-            ExprKind::Specialize(name,types,_)=>self.variant_constructor_type(name,Some(types),expected,e.span)?,
+        let constructor=match e.kind() {
+            ExprKind::Call(name,_)=>self.variant_constructor_type(name,None,expected,e.span())?,
+            ExprKind::Specialize(name,types,_)=>{
+                let types=self.scope.bindings().arguments(self.world,&types,(self.scope.source(),self.scope.module(),self.scope.imports()),e.span())?;
+                self.variant_constructor_type(name,Some(&types),expected,e.span())?
+            },
             _=>None,
         };
-        if constructor.is_some(){let value=self.evaluate_returned(e,expected)?;return self.ordinary_return(value,e.span);}
-        match &e.kind {
-            ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err") => {
+        if constructor.is_some(){let value=self.evaluate_returned(e,expected)?;return self.ordinary_return(value,e.span());}
+        match e.kind() {
+            ExprKind::Call(name, args) if matches!(name, "Ok" | "Err") => {
                 let Some(ty) = expected.filter(|ty| ty.result) else {
                     return self.fail(
-                        e.span,
+                        e.span(),
                         "B269",
                         "Ok／Err 需要已声明的 result<T,E> 上下文，或显式给出两个类型实参",
                     );
                 };
-                self.result_constructor(ty.clone(), name == "Ok", args, e.span)
+                self.result_constructor(ty.clone(), name == "Ok", &args, e.span())
             }
-            ExprKind::Select(c, yes, no) => self.selection_expected(c, yes, no, e.span, expected),
+            ExprKind::Select(c, yes, no) => self.selection_expected(&c, &yes, &no, e.span(), expected),
             _ => self.expr(e),
         }
     }
@@ -47,24 +50,28 @@ impl Builder<'_> {
         &mut self,
         ty: Ty,
         success: bool,
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
         self.value_variant_constructor(ty,usize::from(!success),args,span)
     }
     #[inline(never)]
-    pub(super) fn value_variant_constructor(&mut self,ty:Ty,index:usize,args:&[Expr],span:Span)->Result<Option<Value>> {
+    pub(super) fn value_variant_constructor(&mut self,ty:Ty,index:usize,args:&Expressions,span:Span)->Result<Option<Value>> {
+        self.variant_values(ty,index,args.len(),span,|builder,expected|builder.expr_expected(&args.at(0),Some(expected)))
+    }
+    pub(super) fn variant_values(&mut self,ty:Ty,index:usize,count:usize,span:Span,
+        argument:impl FnOnce(&mut Self,&Ty)->Result<Option<Value>>)->Result<Option<Value>> {
         let payload=(*ty.variants[index].ty).clone();
         let value = if payload.name == "void" {
-            if !args.is_empty() {
+            if count!=0 {
                 return self.fail(span, "B269", "void 结果分支不接受载荷");
             }
             None
         } else {
-            if args.len() != 1 {
+            if count != 1 {
                 return self.fail(span, "B269", "结果分支需要一个匹配类型的载荷");
             }
-            let Some(value) = self.expr_expected(&args[0], Some(&payload))? else {
+            let Some(value) = argument(self,&payload)? else {
                 return Ok(None);
             };
             self.require_same(&payload, &value.ty, span)?;
@@ -246,49 +253,49 @@ impl Builder<'_> {
         let expected=self.constant_with_origin(scalar,Bits::from(value.ty.variants[index].discriminant),origin.clone());
         self.binary("==",tag,expected,span,origin)
     }
-    pub(super) fn check_variant_patterns<'b>(
-        &self, ty: &Ty, arms: &'b [MatchArm], span: Span,
-    ) -> Result<Vec<&'b MatchArm>> {
+    pub(super) fn check_variant_patterns(
+        &self, ty: &Ty, arms: &MatchArms, span: Span,
+    ) -> Result<Vec<MatchArm>> {
         if !ty.has_variants() { return self.fail(span, "B269", "match需要带载荷变体或result值"); }
         let mut selected = vec![None; ty.variants.len()];
         for arm in arms {
-            let (owner, name) = arm.variant.rsplit_once("::").map_or((None, arm.variant.as_str()), |(owner, name)| (Some(owner), name));
+            let (owner, name) = arm.variant().rsplit_once("::").map_or((None, arm.variant()), |(owner, name)| (Some(owner), name));
             if let Some(owner) = owner {
                 let mut syntax = ty.syntax(); syntax.name = owner.into(); syntax.canonical = false;
-                let expected = self.expected_storage(&syntax, arm.span)?;
-                self.require_same(ty, &expected, arm.span)?;
+                let expected = self.expected_storage(&syntax, arm.span())?;
+                self.require_same(ty, &expected, arm.span())?;
             }
-            let Some(index) = ty.variants.iter().position(|v| v.name == name) else { return self.fail(arm.span,"B269",format!("{}没有变体分支{name}",ty.name)); };
-            if selected[index].replace(arm).is_some() { return self.fail(arm.span,"B269","同一变体分支不能重复"); }
+            let Some(index) = ty.variants.iter().position(|v| v.name == name) else { return self.fail(arm.span(),"B269",format!("{}没有变体分支{name}",ty.name)); };
+            if selected[index].replace(arm.clone()).is_some() { return self.fail(arm.span(),"B269","同一变体分支不能重复"); }
             let unit = ty.variants[index].ty.name == "void";
-            if arm.binding.is_none() && !unit { return self.fail(arm.span,"B269","有载荷分支需要名称或_模式"); }
-            if unit && arm.binding.as_ref().is_some_and(|name| name!="_") { return self.fail(arm.span,"B269","无载荷分支没有可绑定的数据"); }
+            if arm.binding().is_none() && !unit { return self.fail(arm.span(),"B269","有载荷分支需要名称或_模式"); }
+            if unit && arm.binding().is_some_and(|name| name!="_") { return self.fail(arm.span(),"B269","无载荷分支没有可绑定的数据"); }
         }
         if selected.iter().any(Option::is_none) { return self.fail(span,"B269","match必须处理声明的全部变体分支"); }
         Ok(selected.into_iter().map(Option::unwrap).collect())
     }
     pub(super) fn value_variant_arm(&mut self, value: &Value, index: usize, arm: &MatchArm) -> Result<()> {
         let payload = self.variant_payload(value,index);
-        if let Some(name) = arm.binding.as_ref().filter(|name| name.as_str()!="_") {
-            self.bind_local_value(name,payload.unwrap(),arm.span)?;
-            self.block(&arm.body)?; self.env.remove(name); Ok(())
-        } else { self.block(&arm.body) }
+        if let Some(name) = arm.binding().filter(|name| *name!="_") {
+            self.bind_local_value(name,payload.unwrap(),arm.span())?;
+            self.block(&arm.body())?; self.env.remove(name); Ok(())
+        } else { self.block(&arm.body()) }
     }
     pub(super) fn explicit_result(
         &mut self,
         name: &str,
         explicit: &[GenericArgument],
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
         let mut ty = TypeName::named("result");
         ty.arguments = explicit.to_vec();
         let ty = self.world.ty(
             &ty,
-            &self.definition.source,
+            self.scope.source(),
             span,
-            &self.definition.module,
-            &self.definition.imports,
+            self.scope.module(),
+            self.scope.imports(),
         )?;
         self.result_constructor(ty, name == "Ok", args, span)
     }

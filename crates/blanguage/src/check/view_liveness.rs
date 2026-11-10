@@ -89,23 +89,24 @@ pub(super) struct State {
 }
 impl State {
     #[inline(never)]
-    pub(super) fn new(world: &World, definition: &Definition) -> Self {
+    pub(super) fn new(world: &World, instance: &crate::generics::Instance) -> Self {
+        let definition = &instance.definition;
         let mut analysis = Analysis {
             world,
-            definition,
+            instance,
             points: BTreeMap::new(),
             outputs: Live::default(),
         };
-        for param in &definition.function.params {
-            if matches!(param.access, Access::Write | Access::InOut) {
+        for param in &definition.function.params() {
+            if matches!(param.access(), Access::Write | Access::InOut) {
                 analysis.outputs.read(Location {
-                    name: param.name.clone(),
+                    name: param.name().to_owned(),
                     path: Vec::new(),
                 });
             }
         }
         let current = analysis.block(
-            definition.function.body.as_ref().unwrap(),
+            definition.function.body().as_ref().unwrap(),
             analysis.outputs.clone(),
             None,
         );
@@ -231,33 +232,34 @@ struct Edges {
 }
 struct Analysis<'a> {
     world: &'a World,
-    definition: &'a Definition,
+    instance: &'a crate::generics::Instance,
     points: BTreeMap<Key, Point>,
     outputs: Live,
 }
 impl Analysis<'_> {
     fn literal_u32(&self,expr:&Expr)->Option<u32> {
-        match &expr.kind {
-            ExprKind::StaticU32(value)=>Some(*value),
-            ExprKind::Number(text)=>number(&self.definition.source,expr.span,text).ok().and_then(|(ty,value)|(ty==Ty::scalar(Scalar::U32)).then_some(value as u32)),
+        match expr.kind() {
+            ExprKind::StaticU32(value)=>Some(value),
+            ExprKind::Name(name)=>self.instance.bindings.values.get(name).copied(),
+            ExprKind::Number(text)=>number(&self.instance.definition.source,expr.span(),text).ok().and_then(|(ty,value)|(ty==Ty::scalar(Scalar::U32)).then_some(value as u32)),
             _=>None,
         }
     }
 
     fn location(&self, expr: &Expr) -> Option<Location> {
-        match &expr.kind {
+        match expr.kind() {
             ExprKind::Name(name) => Some(Location {
-                name: name.clone(),
+                name: name.to_string(),
                 path: Vec::new(),
             }),
             ExprKind::Member(base, field) => {
-                let mut location = self.location(base)?;
-                location.path.push(Step::Field(field.clone()));
+                let mut location = self.location(&base)?;
+                location.path.push(Step::Field(field.to_string()));
                 Some(location)
             }
             ExprKind::Index(base, index) => {
-                let mut location = self.location(base)?;
-                let index = self.literal_u32(index);
+                let mut location = self.location(&base)?;
+                let index = self.literal_u32(&index);
                 location.path.push(Step::Index(index));
                 Some(location)
             }
@@ -279,16 +281,16 @@ impl Analysis<'_> {
         );
     }
     fn address(&mut self, expr: &Expr, after: Live, edges: Option<&Edges>) -> Live {
-        let before = match &expr.kind {
+        let before = match expr.kind() {
             ExprKind::Name(_) => after.clone(),
-            ExprKind::Member(base, _) => self.address(base, after.clone(), edges),
+            ExprKind::Member(base, _) => self.address(&base, after.clone(), edges),
             ExprKind::Index(base, index) => {
-                let live = self.expression(index, after.clone(), edges);
-                self.address(base, live, edges)
+                let live = self.expression(&index, after.clone(), edges);
+                self.address(&base, live, edges)
             }
             _ => return self.expression(expr, after, edges),
         };
-        self.point(expr.span, before.clone(), after);
+        self.point(expr.span(), before.clone(), after);
         before
     }
     fn expression(&mut self, expr: &Expr, after: Live, edges: Option<&Edges>) -> Live {
@@ -297,7 +299,7 @@ impl Analysis<'_> {
             live.read(location);
             self.address(expr, live, edges)
         } else {
-            match &expr.kind {
+            match expr.kind() {
                 ExprKind::Call(name, args)
                 | ExprKind::Specialize(name, _, args)
                 | ExprKind::Cooperate(name, _, args) => {
@@ -305,31 +307,35 @@ impl Analysis<'_> {
                         .world
                         .resolve(
                             name,
-                            &self.definition.module,
-                            &self.definition.imports,
+                            &self.instance.definition.module,
+                            &self.instance.definition.imports,
                             true,
                         ).unique()
                         .and_then(|key| self.world.functions.get(&key));
-                    let params = function
-                        .map(|d| d.function.params.clone())
-                        .unwrap_or_default();
-                    let mut invocation = if function.is_some_and(|d| d.function.result.is_never()) {
+                    let params = function.map(|d| d.function.params());
+                    let mut invocation = if function.is_some_and(|d|{
+                        // Only the explicit declaration is a known terminator in
+                        // this source pass; concrete calls are checked by Instance.
+                        let result=d.function.result();
+                        result.name()=="never"&&result.arguments().is_empty()&&!result.dataset()
+                            &&!result.tile()&&!result.view()&&result.count().is_none()&&result.contracts().is_none()
+                    }) {
                         Live::default()
                     } else {
                         after.clone()
                     };
-                    for (param, arg) in params.iter().zip(args) {
-                        if !param.ty.dataset
-                            && param.access == Access::Write
-                            && let Some(place) = self.location(arg)
+                    for (param, arg) in params.iter().flat_map(|params|params.iter()).zip(&args) {
+                        if !param.ty().dataset()
+                            && param.access() == Access::Write
+                            && let Some(place) = self.location(&arg)
                         {
                             invocation.kill(&place);
                         }
                     }
-                    for (param, arg) in params.iter().zip(args) {
-                        if !param.ty.dataset
-                            && param.access == Access::InOut
-                            && let Some(place) = self.location(arg)
+                    for (param, arg) in params.iter().flat_map(|params|params.iter()).zip(&args) {
+                        if !param.ty().dataset()
+                            && param.access() == Access::InOut
+                            && let Some(place) = self.location(&arg)
                         {
                             invocation.read(place);
                         }
@@ -338,7 +344,7 @@ impl Analysis<'_> {
                         invocation.union(&self.outputs);
                     }
                     self.points.insert(
-                        key(expr.span),
+                        key(expr.span()),
                         Point {
                             before: Live::default(),
                             after: after.clone(),
@@ -348,71 +354,70 @@ impl Analysis<'_> {
                     let mut live = invocation;
                     for (index, arg) in args.iter().enumerate().rev() {
                         let place_only = name == "ordinal"
-                            || params
-                                .get(index)
-                                .is_some_and(|p| !p.ty.dataset && p.access == Access::Write);
+                            || params.as_ref().and_then(|params|params.get(index))
+                                .is_some_and(|p| !p.ty().dataset() && p.access() == Access::Write);
                         live = if place_only {
-                            self.address(arg, live, edges)
+                            self.address(&arg, live, edges)
                         } else {
-                            self.expression(arg, live, edges)
+                            self.expression(&arg, live, edges)
                         };
                     }
                     if function.is_none() {
-                        live.read(Location { name: name.clone(), path: Vec::new() });
+                        live.read(Location { name: name.to_string(), path: Vec::new() });
                     }
                     live
                 }
                 ExprKind::Invoke(callee, args) => {
-                    self.points.insert(key(expr.span), Point {
+                    self.points.insert(key(expr.span()), Point {
                         before: Live::default(), after: after.clone(), invocation: Some(after.clone()),
                     });
                     let mut live = after.clone();
-                    for arg in args.iter().rev() { live = self.expression(arg, live, edges); }
-                    self.expression(callee, live, edges)
+                    for arg in args.iter().rev() { live = self.expression(&arg, live, edges); }
+                    self.expression(&callee, live, edges)
                 }
                 ExprKind::Construct(_, args) => {
                     let mut live = after.clone();
                     for arg in args.iter().rev() {
-                        live = self.expression(arg, live, edges);
+                        live = self.expression(&arg, live, edges);
                     }
                     live
                 }
                 ExprKind::Target(_, expr)
                 | ExprKind::Unary(_, expr)
-                | ExprKind::Member(expr, _) => self.expression(expr, after.clone(), edges),
+                | ExprKind::Member(expr, _) => self.expression(&expr, after.clone(), edges),
                 ExprKind::Index(base, index) => {
-                    let live = self.expression(index, after.clone(), edges);
-                    self.expression(base, live, edges)
+                    let live = self.expression(&index, after.clone(), edges);
+                    self.expression(&base, live, edges)
                 }
-                ExprKind::Binary(op, left, right) if matches!(op.as_str(), "&&" | "||") => {
-                    let mut live = self.expression(right, after.clone(), edges);
+                ExprKind::Binary(op, left, right) if matches!(op, "&&" | "||") => {
+                    let mut live = self.expression(&right, after.clone(), edges);
                     live.union(&after);
-                    self.expression(left, live, edges)
+                    self.expression(&left, live, edges)
                 }
                 ExprKind::Binary(_, left, right) => {
-                    let live = self.expression(right, after.clone(), edges);
-                    self.expression(left, live, edges)
+                    let live = self.expression(&right, after.clone(), edges);
+                    self.expression(&left, live, edges)
                 }
                 ExprKind::Select(condition, yes, no) => {
-                    let mut live = self.expression(yes, after.clone(), edges);
-                    let other = self.expression(no, after.clone(), edges);
+                    let mut live = self.expression(&yes, after.clone(), edges);
+                    let other = self.expression(&no, after.clone(), edges);
                     live.union(&other);
-                    self.expression(condition, live, edges)
+                    self.expression(&condition, live, edges)
                 }
                 _ => after.clone(),
             }
         };
-        self.point(expr.span, before.clone(), after);
+        self.point(expr.span(), before.clone(), after);
         before
     }
-    fn block(&mut self, body: &[Stmt], mut live: Live, edges: Option<&Edges>) -> Live {
+    fn block(&mut self, body: &Block, mut live: Live, edges: Option<&Edges>) -> Live {
         for stmt in body.iter().rev() {
-            live = self.statement(stmt, live, edges);
+            live = self.statement(&stmt, live, edges);
         }
         live
     }
     fn statement(&mut self, stmt: &Stmt, after: Live, edges: Option<&Edges>) -> Live {
-        let before = match &stmt.kind {
+        let before = match stmt.kind() {
             StmtKind::Declare(_, name) => {
                 let mut live = after.clone();
                 live.kill_name(name);
@@ -421,25 +426,25 @@ impl Analysis<'_> {
             StmtKind::Let(_, name, expr) => {
                 let mut live = after.clone();
                 live.kill_name(name);
-                self.expression(expr, live, edges)
+                self.expression(&expr, live, edges)
             }
             StmtKind::Assign(place, op, expr) => {
                 let mut live = after.clone();
-                if let Some(place) = self.location(place) {
+                if let Some(place) = self.location(&place) {
                     live.kill(&place);
                 }
-                live = self.expression(expr, live, edges);
+                live = self.expression(&expr, live, edges);
                 if op != "=" {
-                    if let Some(place) = self.location(place) {
+                    if let Some(place) = self.location(&place) {
                         live.read(place);
                     }
                 }
-                self.address(place, live, edges)
+                self.address(&place, live, edges)
             }
-            StmtKind::Expr(expr) => self.expression(expr, after.clone(), edges),
+            StmtKind::Expr(expr) => self.expression(&expr, after.clone(), edges),
             StmtKind::Return(value) => {
                 if let Some(value) = value {
-                    self.expression(value, self.outputs.clone(), edges)
+                    self.expression(&value, self.outputs.clone(), edges)
                 } else {
                     self.outputs.clone()
                 }
@@ -447,14 +452,14 @@ impl Analysis<'_> {
             StmtKind::Break => edges.map(|e| e.broken.clone()).unwrap_or_default(),
             StmtKind::Continue => edges.map(|e| e.continued.clone()).unwrap_or_default(),
             StmtKind::Seek(_, expr) => self.expression(
-                expr,
+                &expr,
                 edges.map(|e| e.continued.clone()).unwrap_or_default(),
                 edges,
             ),
             StmtKind::If(condition, yes, no) => {
-                let a = self.block(yes, after.clone(), edges);
-                let b = self.block(no, after.clone(), edges);
-                let live = match condition.kind {
+                let a = self.block(&yes, after.clone(), edges);
+                let b = self.block(&no, after.clone(), edges);
+                let live = match condition.kind() {
                     ExprKind::Bool(true) => a,
                     ExprKind::Bool(false) => b,
                     _ => {
@@ -463,20 +468,20 @@ impl Analysis<'_> {
                         live
                     }
                 };
-                self.expression(condition, live, edges)
+                self.expression(&condition, live, edges)
             }
             StmtKind::Match(value, arms) => {
                 let mut live = Live::default();
                 for arm in arms {
-                    let mut branch = self.block(&arm.body, after.clone(), edges);
-                    if let Some(name) = &arm.binding {
+                    let mut branch = self.block(&arm.body(), after.clone(), edges);
+                    if let Some(name) = &arm.binding() {
                         branch.kill_name(name);
                     }
                     live.union(&branch);
                 }
-                self.expression(value, live, edges)
+                self.expression(&value, live, edges)
             }
-            StmtKind::While(condition, _) if matches!(condition.kind, ExprKind::Bool(false)) => self.expression(condition,after.clone(),edges),
+            StmtKind::While(condition, _) if matches!(condition.kind(), ExprKind::Bool(false)) => self.expression(&condition,after.clone(),edges),
             StmtKind::While(condition, body) => {
                 let mut head = after.clone();
                 loop {
@@ -484,19 +489,19 @@ impl Analysis<'_> {
                         broken: after.clone(),
                         continued: head.clone(),
                     };
-                    let mut live = self.block(body, head.clone(), Some(&exits));
-                    if !matches!(condition.kind, ExprKind::Bool(true)) {
+                    let mut live = self.block(&body, head.clone(), Some(&exits));
+                    if !matches!(condition.kind(), ExprKind::Bool(true)) {
                         live.union(&after);
                     }
-                    live = self.expression(condition, live, edges);
+                    live = self.expression(&condition, live, edges);
                     if live == head {
                         break live;
                     }
                     head = live;
                 }
             }
-            StmtKind::For(_,begin,Some(end),_) if self.literal_u32(begin).zip(self.literal_u32(end)).is_some_and(|(a,b)|a>=b)=>{
-                let live=self.expression(end,after.clone(),edges);self.expression(begin,live,edges)
+            StmtKind::For(_,begin,Some(end),_) if self.literal_u32(&begin).zip(self.literal_u32(&end)).is_some_and(|(a,b)|a>=b)=>{
+                let live=self.expression(&end,after.clone(),edges);self.expression(&begin,live,edges)
             }
             StmtKind::For(name, begin, end, body) => {
                 let mut head = after.clone();
@@ -505,7 +510,7 @@ impl Analysis<'_> {
                         broken: after.clone(),
                         continued: head.clone(),
                     };
-                    let mut live = self.block(body, head.clone(), Some(&exits));
+                    let mut live = self.block(&body, head.clone(), Some(&exits));
                     live.union(&after);
                     if live == head {
                         break;
@@ -514,28 +519,28 @@ impl Analysis<'_> {
                 }
                 head.kill_name(name);
                 if let Some(end) = end {
-                    head = self.expression(end, head, edges);
+                    head = self.expression(&end, head, edges);
                 }
-                self.expression(begin, head, edges)
+                self.expression(&begin, head, edges)
             }
             StmtKind::Parallel(name, domain, body) => {
-                let mut live = self.block(body, after.clone(), None);
+                let mut live = self.block(&body, after.clone(), None);
                 live.kill_name(name);
-                if let Some(selection) = &domain.selection {
+                if let Some(selection) = &domain.selection() {
                     live = self.expression(selection, live, edges);
                 }
-                if let Some(count) = &domain.count {
+                if let Some(count) = &domain.count() {
                     live = self.expression(count, live, edges);
                 }
                 live.read(Location {
-                    name: domain.dataset.clone(),
+                    name: domain.dataset().to_string(),
                     path: Vec::new(),
                 });
                 live
             }
             StmtKind::Phase => after.clone(),
         };
-        self.point(stmt.span, before.clone(), after);
+        self.point(stmt.span(), before.clone(), after);
         before
     }
 }
@@ -608,7 +613,7 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
         let out=match data.elements.known(){
             Some(elements)if path.is_empty()=>model(builder,elements,path,excluded,true,&omitted,Some(&bindings),&passed,transferred,cleanup)?,
             Some(elements)=>if let Some(step@Step::Index(_))=path.first(){model(builder,elements,&path[1..],&without(excluded,step),true,&omitted,Some(&bindings),&passed,transferred,cleanup)?}else{view::Borrow::default()},
-            None if builder.world.stored_borrows(&data.ty,&builder.definition.source,builder.definition.function.span,&builder.definition.module,&builder.definition.imports,&mut BTreeSet::new(),cleanup)?=>view::Borrow::source(view::Source::Unresolved),
+            None if builder.world.stored_borrows(&data.ty,builder.scope.source(),builder.scope.span(),builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),cleanup)?=>view::Borrow::source(view::Source::Unresolved),
             None=>view::Borrow::default(),
         };
         Ok(if let application::Ownership::Conditional(when)=&data.ownership{out.restricted(&when.condition().at_call(&bindings).assume(&bounds::Clause::default(),true))}else{out})

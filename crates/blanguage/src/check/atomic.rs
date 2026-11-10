@@ -15,11 +15,14 @@ impl Builder<'_> {
         let Some(place) = self.place(target)? else {
             return Ok(None);
         };
+        self.atomic_place_value(place,target.span())
+    }
+    pub(super) fn atomic_place_value(&mut self,place:Place,span:Span)->Result<Option<Place>> {
         if self.atomic_storage(&place) {
             Ok(Some(place))
         } else {
             self.fail(
-                target.span,
+                span,
                 "B214",
                 "原子借用需要显式 atomic dataset／tile 字段或已有原子参数",
             )
@@ -35,11 +38,11 @@ impl Builder<'_> {
         };
         let ty = place.ty();
         if ![Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64].into_iter().any(|s| *ty == Ty::scalar(s)) {
-            return self.fail(target.span, "B215", "原子目标只支持 u32/i32/u64/i64 标量字段");
+            return self.fail(target.span(), "B215", "原子目标只支持 u32/i32/u64/i64 标量字段");
         }
         let scalar = ty.components[0].0;
         let write=access.writes();
-        self.dataset_effect(&place,access,true,target.span)?;
+        self.dataset_effect(&place,access,true,target.span())?;
         let (base, offset, word) = match &place {
             Place::Indexed { base, offset, words, .. } => (&**base, Some(*offset), words[0]),
             Place::Element { words, .. } | Place::TileElement { words, .. }
@@ -52,7 +55,7 @@ impl Builder<'_> {
             Place::Element { binding, index, .. } => Some((IndexedSource::Data { binding: *binding, index: *index }, offset, word)),
             Place::TileElement { tile, index, .. } => Some((IndexedSource::Tile { tile: *tile, index: *index }, offset, word)),
             Place::Reference { .. } | Place::ApplicationElement { .. } if offset.is_some() => {
-                let (source, offset, word) = self.array_memory(base, offset.unwrap(), word, scalar, write, target.span)?;
+                let (source, offset, word) = self.array_memory(base, offset.unwrap(), word, scalar, write, target.span())?;
                 Some((source, Some(offset), word))
             }
             Place::Reference { address, .. } => {
@@ -61,7 +64,7 @@ impl Builder<'_> {
                 Some((IndexedSource::View { address, index, stride: ElementStride::Constant(0) }, None, word))
             }
             Place::ApplicationElement { handle, identity, index, stride, .. } => {
-                let (address, index, stride) = self.application_memory(*handle, *identity, *index, *stride, write, None, &[(scalar, word)], target.span)?;
+                let (address, index, stride) = self.application_memory(*handle, *identity, *index, *stride, write, None, &[(scalar, word)], target.span())?;
                 Some((IndexedSource::View { address, index, stride: ElementStride::Constant(u64::from(stride)) }, None, word))
             }
             _ => unreachable!(),
@@ -69,13 +72,13 @@ impl Builder<'_> {
         Ok(Some((place, location, scalar)))
     }
     fn atomic_order(&self, expr: &Expr) -> Result<MemoryOrder> {
-        if let ExprKind::Name(name) = &expr.kind
+        if let ExprKind::Name(name) = expr.kind()
             && let Some(order) = MemoryOrder::from_source(name)
         {
             return Ok(order);
         }
         self.fail(
-            expr.span,
+            expr.span(),
             "B216",
             "原子内存序需要显式 relaxed、acquire、release 或 acq_rel",
         )
@@ -84,7 +87,7 @@ impl Builder<'_> {
         let Some(value) = self.expr(expr)? else {
             return Ok(None);
         };
-        self.require_same(&Ty::scalar(scalar), &value.ty, expr.span)?;
+        self.require_same(&Ty::scalar(scalar), &value.ty, expr.span())?;
         Ok(Some(value))
     }
     fn atomic_effect(&mut self, place: &Place, atomic: Atomic, stored: Option<&Value>) {
@@ -104,20 +107,20 @@ impl Builder<'_> {
         }
         self.emit(InstKind::Atomic(atomic));
     }
-    pub(super) fn atomic_store(&mut self, args: &[Expr], span: Span) -> Result<()> {
+    pub(super) fn atomic_store(&mut self, args: &Expressions, span: Span) -> Result<()> {
         if args.len() != 3 {
             return self.fail(span, "B217", "atomic_store(目标, 值, 内存序) 需要三个参数");
         }
-        let Some((place, location, scalar)) = self.atomic_location(&args[0], Access::Write)? else {
+        let Some((place, location, scalar)) = self.atomic_location(&args.at(0), Access::Write)? else {
             return Ok(());
         };
-        let Some(value) = self.atomic_operand(&args[1], scalar)? else {
+        let Some(value) = self.atomic_operand(&args.at(1), scalar)? else {
             return Ok(());
         };
-        let order = self.atomic_order(&args[2])?;
+        let order = self.atomic_order(&args.at(2))?;
         if !matches!(order, MemoryOrder::Relaxed | MemoryOrder::Release) {
             return self.fail(
-                args[2].span,
+                args.at(2).span(),
                 "B216",
                 "atomic_store 的内存序只能是 relaxed 或 release",
             );
@@ -138,7 +141,7 @@ impl Builder<'_> {
     pub(super) fn atomic_value(
         &mut self,
         name: &str,
-        args: &[Expr],
+        args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
         let arity = match name {
@@ -155,7 +158,7 @@ impl Builder<'_> {
                 ),
             );
         }
-        let Some((place, location, scalar)) = self.atomic_location(&args[0], if name=="atomic_load"{Access::Read}else{Access::InOut})? else {
+        let Some((place, location, scalar)) = self.atomic_location(&args.at(0), if name=="atomic_load"{Access::Read}else{Access::InOut})? else {
             return Ok(None);
         };
         let order_at = if name == "atomic_compare_exchange" {
@@ -163,18 +166,18 @@ impl Builder<'_> {
         } else {
             arity - 1
         };
-        let order = self.atomic_order(&args[order_at])?;
+        let order = self.atomic_order(&args.at(order_at))?;
         let (op, stored) = if name == "atomic_load" {
             if !matches!(order, MemoryOrder::Relaxed | MemoryOrder::Acquire) {
                 return self.fail(
-                    args[order_at].span,
+                    args.at(order_at).span(),
                     "B216",
                     "atomic_load 的内存序只能是 relaxed 或 acquire",
                 );
             }
             (AtomicOp::Load, None)
         } else {
-            let Some(value) = self.atomic_operand(&args[1], scalar)? else {
+            let Some(value) = self.atomic_operand(&args.at(1), scalar)? else {
                 return Ok(None);
             };
             let operand = value.regs[0];
@@ -188,10 +191,10 @@ impl Builder<'_> {
                 "atomic_or" => (AtomicOp::Or(operand), None),
                 "atomic_xor" => (AtomicOp::Xor(operand), None),
                 "atomic_compare_exchange" => {
-                    let Some(desired) = self.atomic_operand(&args[2], scalar)? else {
+                    let Some(desired) = self.atomic_operand(&args.at(2), scalar)? else {
                         return Ok(None);
                     };
-                    let failure = self.atomic_order(&args[4])?;
+                    let failure = self.atomic_order(&args.at(4))?;
                     let permitted = match order {
                         MemoryOrder::Relaxed | MemoryOrder::Release => {
                             failure == MemoryOrder::Relaxed
@@ -202,7 +205,7 @@ impl Builder<'_> {
                     };
                     if !permitted {
                         return self.fail(
-                            args[4].span,
+                            args.at(4).span(),
                             "B216",
                             "比较交换失败序不得带 release，也不得强于成功序",
                         );

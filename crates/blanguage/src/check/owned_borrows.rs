@@ -35,13 +35,18 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         let(place,owner)=if self.is_place(expr){
             let Some(place)=self.mutable_place(expr,access)?else{return Ok(None)};
             if place.ty().dataset.is_some(){
-                let data=self.application_place_reference(place,expr.span)?;
+                let data=self.application_place_reference(place,expr.span())?;
                 return Ok(Some(cooperative::Argument::BorrowedData(data)));
             }
             if !place.ty().owns_resources(){return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));}
             (place,None)
         }else{
             let result=self.evaluate_returned(expr,None)?;if !self.flow.continues(){return Ok(None);}
+            return self.mutable_returned_argument(result,access,expr.span());
+        };
+        self.owned_reference_argument(place,owner,access,expr.span())
+    }
+    pub(super) fn mutable_returned_argument(&mut self,result:Option<Returned>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
             let value=match result{
                 Some(Returned::Dataset(mut data))=>{
                     let owner=self.hold_binding(Binding::ApplicationData(data.clone()));
@@ -49,15 +54,19 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
                     return Ok(Some(cooperative::Argument::Scoped{value:Returned::Dataset(data),owner}));
                 },
                 Some(Returned::OwnedValue(value))=>value,
-                _=>return self.fail(expr.span,"B224","独占临时参数需要实际拥有值或dataset"),
+                _=>return self.fail(span,"B224","独占临时参数需要实际拥有值或dataset"),
             };
-            let value=self.owned_value_binding(value,true);let place=value.place().unwrap();let owner=self.hold_binding(Binding::OwnedValue(value));(place,Some(owner))
-        };
-        let model=if matches!(place.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&place,expr.span)?}else{self.owned_place_model(&place)};
+            let value=self.owned_value_binding(value,true);
+            let place=value.place().unwrap();
+            let owner=self.hold_binding(Binding::OwnedValue(value));
+        self.owned_reference_argument(place,Some(owner),access,span)
+    }
+    fn owned_reference_argument(&mut self,place:Place,owner:Option<String>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
+        let model=if matches!(place.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&place,span)?}else{self.owned_place_model(&place)};
         let Returned::OwnedValue(mut value)=model else{unreachable!()};
-        if value.ownership==Ownership::Borrowed{return self.fail(expr.span,"B227","read聚合不能提升为独占借用");}
+        if value.ownership==Ownership::Borrowed{return self.fail(span,"B227","read聚合不能提升为独占借用");}
         self.prepare_owned_read(&Returned::OwnedValue(value.clone()));
-        if access==Access::InOut{if !value.all_available(){return self.fail(expr.span,"B227","inout聚合需要全部活动拥有资源");}self.load_owned_value(&mut value,expr.span)?;}
+        if access==Access::InOut{if !value.all_available(){return self.fail(span,"B227","inout聚合需要全部活动拥有资源");}self.load_owned_value(&mut value,span)?;}
         Ok(Some(cooperative::Argument::OwnedReference{value,place,owner}))
     }
     pub(super) fn assign_owned_place(&mut self,place:&Place,value:Returned)->Result<()>{
@@ -98,7 +107,7 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
     pub(super) fn assign_owned_storage(&mut self,place:Place,op:&str,rhs:&Expr,span:Span)->Result<()> {
         self.require_owned_writable(&place,span)?;self.writable_storage(&place,span,Some(bounds::Proof::default()))?;if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;if !self.flow.continues(){return Ok(());}
-        let value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
+        let value=result.ok_or_else(||Diagnostic{source:self.scope.source().clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
         self.view_uses.after(span);
         let old=if matches!(place.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&place,span)?}else{self.owned_place_model(&place)};
         self.store_owned_returned(place,old,value,span)

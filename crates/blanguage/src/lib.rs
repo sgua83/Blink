@@ -3,6 +3,8 @@
 pub mod application;
 pub mod ast;
 #[cfg(feature = "compiler")]
+mod syntax;
+#[cfg(feature = "compiler")]
 pub mod build;
 #[cfg(feature = "compiler")]
 pub mod compiler;

@@ -83,7 +83,7 @@ pub(super) fn resolve(
         domain,
         PrefixCount { binding, word },
         &d.source,
-        expr.span,
+        expr.span(),
     )
 }
 pub(super) fn prove(
@@ -124,19 +124,13 @@ pub(super) fn relation(
     };
     let mut domain_ty=&program.buffers[*domain].ty;let mut offset=0;let mut projected=false;
     for field in selected {let Some((_,at,ty))=domain_ty.fields.iter().find(|(name,..)|name==field)else{return d.source.fail(contract.span,"B192","prefix需要实际dataset字段投影");};offset+=*at;domain_ty=ty;projected=true;}
-    let mut fields=field.split('.');
-    let mut expr = Expr {
-        span: contract.span,
-        kind: ExprKind::Member(
-            Box::new(Expr {
-                span: contract.span,
-                kind: ExprKind::Name(count.clone()),
-            }),
-            fields.next().unwrap().to_owned(),
-        ),
+    let (binding, access, count_ty) = collective_root(program, env, count, d, contract.span)?;
+    let Some((word, ty)) = count_ty.field(field) else {
+        return d.source.fail(contract.span, "B174", "未知集合运算字段");
     };
-    for field in fields{expr=Expr{span:contract.span,kind:ExprKind::Member(Box::new(expr),field.into())};}
-    let (binding, word, access) = collective_field(program, env, &expr, d, Scalar::U32)?;
+    if ty != &Ty::scalar(Scalar::U32) {
+        return d.source.fail(contract.span, "B175", format!("集合运算字段需要 {:?}", Scalar::U32));
+    }
     if *domain == binding
         || program.buffers[binding].count != Some(1)
     {
@@ -162,23 +156,22 @@ pub(super) fn relations(
     program: &Program,
     env: &BTreeMap<String, Root>,
     d: &Definition,
+    contracts: impl Iterator<Item=FunctionContract>,
     kind: ContractKind,
 ) -> Result<Vec<PrefixRelation>> {
-    let mut result = d
-        .function
-        .contracts
-        .iter()
+    let mut result = contracts
         .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. } | ContractPredicate::Range { .. }))
-        .map(|c| relation(program, env, d, c))
+        .map(|c| relation(program, env, d, &c))
         .collect::<Result<Vec<_>>>()?;
     result.sort();
     result.dedup();
     Ok(result)
 }
 
-pub(super) fn element_requirements(world: &World, buffers: &[Buffer], env: &BTreeMap<String, Root>, d: &Definition) -> Result<Vec<ElementFact>> {
+pub(super) fn element_requirements(world: &World, buffers: &[Buffer], env: &BTreeMap<String, Root>, instance:&crate::generics::Instance, contracts:impl Iterator<Item=FunctionContract>) -> Result<Vec<ElementFact>> {
+    let d=&instance.definition;
     let mut requirements = Vec::new();
-    for contract in &d.function.contracts {
+    for contract in contracts {
         let value = match &contract.predicate {
             ContractPredicate::Index { value, .. } | ContractPredicate::Range { value, .. } => value,
             _ => continue,
@@ -216,7 +209,7 @@ pub(super) fn element_requirements(world: &World, buffers: &[Buffer], env: &BTre
             }
             ContractPredicate::Range { intervals, .. } => {
                 let scalar = bounds::range_scalar(&ty, &d.source, contract.span)?;
-                let constants = outputs::range_constants(world, d, Some(scalar), intervals, contract.span)?;
+                let constants = outputs::range_constants(world,instance.into(),&LexicalScope::Function(instance.clone()),Some(scalar),intervals,contract.span)?;
                 let intervals = bounds::numeric_intervals(scalar, constants.iter().map(|(a,b)| (a.bits[0],b.bits[0])), &d.source, contract.span)?;
                 requirements.extend(components.into_iter().map(|component| ElementFact::Range(ElementRange {
                     binding: *binding, offset: buffers[*binding].ty.components[component].1, scalar, intervals: intervals.clone(), known_bits:(0,0),
@@ -284,22 +277,23 @@ pub(super) fn input(
     d: &Definition,
     facts: &Facts,
 ) -> Result<(Expr, Option<PrefixCount>)> {
-    if let ExprKind::Call(name, args) = &expr.kind {
+    if let ExprKind::Call(name, args) = expr.kind() {
         if name == "prefix" {
             if args.len() != 2 {
                 return d
                     .source
-                    .fail(expr.span, "B194", "集合前缀域需要 dataset 和计数字段");
+                    .fail(expr.span(), "B194", "集合前缀域需要 dataset 和计数字段");
             }
-            if let ExprKind::Name(name) = &args[0].kind {
+            let value = args.at(0);
+            if let ExprKind::Name(name) = value.kind() {
                 if let Some(Root::Data(domain, _)) = env.get(name) {
-                    let count = resolve(program, env, *domain, &args[1], d, facts)?;
-                    return Ok((args[0].clone(), Some(count)));
+                    let count = resolve(program, env, *domain, &args.at(1), d, facts)?;
+                    return Ok((value.clone(), Some(count)));
                 }
             }
             return d
                 .source
-                .fail(args[0].span, "B194", "集合前缀域需要命名 dataset");
+                .fail(args.at(0).span(), "B194", "集合前缀域需要命名 dataset");
         }
     }
     Ok((expr.clone(), None))
@@ -316,42 +310,28 @@ pub(super) fn field(
     if ty != Ty::scalar(scalar) {
         return d
             .source
-            .fail(expr.span, "B175", format!("集合运算字段需要 {scalar:?}"));
+            .fail(expr.span(), "B175", format!("集合运算字段需要 {scalar:?}"));
     }
     Ok((binding, word, access, prefix))
 }
 pub(super) fn typed_field(
-    program: &Program,
-    env: &BTreeMap<String, Root>,
-    expr: &Expr,
-    d: &Definition,
-    facts: &Facts,
+    program: &Program, env: &BTreeMap<String, Root>, expr: &Expr, d: &Definition, facts: &Facts,
 ) -> Result<(usize, u32, Access, Option<PrefixCount>, Ty)> {
-    let mut fields = Vec::new();
-    let mut base = expr;
-    while let ExprKind::Member(parent, field) = &base.kind {
-        fields.push(field.clone());
-        base = parent;
+    if !matches!(expr.kind(), ExprKind::Member(..)) {
+        return d.source.fail(expr.span(), "B172", "集合输入需要 dataset.field 或 prefix(dataset,count.field).field");
     }
-    if fields.is_empty() {
-        return d.source.fail(
-            expr.span,
-            "B172",
-            "集合输入需要 dataset.field 或 prefix(dataset,count.field).field",
-        );
-    }
-    let (mut value, prefix) = input(program, env, base, d, facts)?;
-    for field in fields.into_iter().rev() {
-        value = Expr {
-            span: expr.span,
-            kind: ExprKind::Member(Box::new(value), field),
+    let (binding, word, access, ty, prefix) = collective_projection(expr, d, expr.span(), |base| {
+        let (value, prefix) = input(program, env, base, d, facts)?;
+        let ExprKind::Name(name) = value.kind() else {
+            return d.source.fail(expr.span(), "B172", "集合运算参数必须是命名数据集字段");
         };
-    }
-    let (binding, word, access, ty) = collective_value_field(program, env, &value, d)?;
+        let (binding, access, ty) = collective_root(program, env, name, d, expr.span())?;
+        Ok((binding, 0, access, ty, prefix))
+    })?;
     let access = if access == Access::Write
         && ty.components.iter().all(|(_, offset)| facts.initialized(program, binding, word + offset))
     { Access::InOut } else { access };
-    Ok((binding, word, access, prefix, ty))
+    Ok((binding, word, access, prefix, ty.clone()))
 }
 
 /// 集合阶段只读取源字段并写目标的真实分量；同一独占记录的不同字不发生别名。

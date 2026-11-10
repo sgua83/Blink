@@ -4,8 +4,10 @@ impl Builder<'_> {
     pub(super) fn subgroup(
         &mut self,
         name: &str,
-        args: &[Expr],
+        count: usize,
         span: Span,
+        argument: impl FnMut(&mut Self,usize)->Result<Option<Value>>,
+        argument_span: impl Fn(usize)->Span,
     ) -> Option<Result<Option<Value>>> {
         let op = match name {
             "subgroup_lane" => SubgroupOp::Lane,
@@ -33,13 +35,15 @@ impl Builder<'_> {
             "subgroup_exclusive_bit_xor" => SubgroupOp::ExclusiveBitXor,
             _ => return None,
         };
-        Some(self.subgroup_value(op, args, span))
+        Some(self.subgroup_value(op,count,span,argument,argument_span))
     }
     fn subgroup_value(
         &mut self,
         op: SubgroupOp,
-        args: &[Expr],
+        count: usize,
         span: Span,
+        mut lower: impl FnMut(&mut Self,usize)->Result<Option<Value>>,
+        argument_span: impl Fn(usize)->Span,
     ) -> Result<Option<Value>> {
         if self.program.target != Target::Gpu {
             return self.fail(
@@ -59,19 +63,19 @@ impl Builder<'_> {
                 | SubgroupOp::ShuffleUp
                 | SubgroupOp::ShuffleDown
         );
-        if args.len() != usize::from(!nullary) + usize::from(shuffle) {
+        if count != usize::from(!nullary) + usize::from(shuffle) {
             return self.fail(span, "B196", "subgroup 操作参数数量不符");
         }
-        let value = if let Some(expr) = args.first() {
-            let Some(value) = self.expr(expr)? else {
+        let value = if count>0 {
+            let Some(value) = lower(self,0)? else {
                 return Ok(None);
             };
             Some(value)
         } else {
             None
         };
-        let argument = if let Some(expr) = args.get(1) {
-            let Some(value) = self.expr(expr)? else {
+        let argument = if count>1 {
+            let Some(value) = lower(self,1)? else {
                 return Ok(None);
             };
             Some(value)
@@ -79,7 +83,7 @@ impl Builder<'_> {
             None
         };
         if let Some(argument) = &argument {
-            self.require_same(&Ty::scalar(Scalar::U32), &argument.ty, args[1].span)?;
+            self.require_same(&Ty::scalar(Scalar::U32), &argument.ty, argument_span(1))?;
         }
         let ty = match op {
             SubgroupOp::Elect => Ty::scalar(Scalar::Bool),
