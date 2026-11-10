@@ -1121,33 +1121,6 @@ fn view_outputs(contract:&Contract)->view_contracts::Interface {
     for(parameter,value)in contract.written.iter().enumerate(){if let Some(value)=value{for(resource,borrow)in view_contracts::resource_outputs(value){outputs.insert(view_contracts::Output::WrittenResource(parameter,resource),borrow);}}}
     view_contracts::Interface{outputs,access:contract.view_access.as_ref().unwrap().clone(),initialization:contract.initialization.clone().unwrap()}
 }
-// An unchanged owned input version carries the same descriptor length. A new
-// resize result has its own resource identity even when its Frame slot is reused.
-fn input_dataset_length(world:&World,definition:&Definition,parameters:&[CallParameter],borrow:&view::Borrow)->Result<Option<ValueIdentity>>{
-    let mut sources=borrow.sources.entries().filter(|(_,when)|when.possible()).map(|(source,_)|source);
-    let Some(view::Source::Data(ValueIdentity::ResourceParameter(wanted,0)))=sources.next()else{return Ok(None);};
-    if sources.next().is_some(){return Ok(None);}
-    let mut slot=1;
-    let mut start=match &parameters[0].kind{CallParameterKind::Value(ty)=>ty.components.len(),CallParameterKind::Reference{..}=>2};
-    for(index,param)in definition.function.params.iter().enumerate(){
-        if param.ty.is_acceleration(){continue;}
-        let parts=if param.ty.dataset||param.ty.tile||param.ty.is_texture_resource()||param.access==Access::Value{1}else{
-            let ty=cooperative::parameter_type(world,param,definition)?;
-            if param.access==Access::Read&&ty.owns_resources()||definition.function.c_abi{1}else{reference_parameters(&ty).len()}
-        };
-        for part in 0..parts{
-            match &parameters[slot].kind{
-                CallParameterKind::Value(ty)=>{
-                    if index==*wanted&&part==0&&param.access==Access::Value&&ty.dataset.is_some(){return Ok(Some(ValueIdentity::Register(start+1)));}
-                    start+=ty.components.len();
-                },
-                CallParameterKind::Reference{..}=>start+=2,
-            }
-            slot+=1;
-        }
-    }
-    Ok(None)
-}
 // Query the original code and call bindings; the returned Proof remains the owner.
 fn returned_input_aliases(module:&Module,name:&str)->Vec<(usize,usize)> {
     fn walk<'a>(code:&'a [Inst],visit:&mut impl FnMut(&'a Inst)->bool)->bool {
@@ -1298,9 +1271,6 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
                 view_contracts::Output::Written(parameter,component)=>if let Some(value)=contract.written[*parameter].as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(*component,borrow.clone());},
                 view_contracts::Output::ReturnedResource(resource)=>if let Some(value)=contract.returned.as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){
                     value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());
-                    if value.ownership==application::Ownership::Owned && let Some(length)=input_dataset_length(world,&unit.definition,&contract.parameters,borrow)?{
-                        value.length.proof.assume_same_length(&bounds::Proof::default().with_identity(length));
-                    }
                 },
                 view_contracts::Output::WrittenResource(parameter,resource)=>if let Some(value)=contract.written[*parameter].as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());},
             }
@@ -1346,8 +1316,17 @@ fn resolve_residencies(world:&World,module: &mut Module) -> Result<BTreeMap<Stri
         known.insert(name.clone(),unit.contract.residency.clone());
     }
     for(name,unit)in &mut module.units{let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
-        residency::check_calls(unit.residency.calls.iter().filter(|call|!call.arguments.values().all(unbound)),&known,&outputs)?;
         let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
+        let frame_width=application::pointer_type().components.len();
+        let pending=|id:&ValueIdentity|parameters.get(id).and_then(|proof|proof.known_identity(0)).is_some_and(|id|match id{
+            ValueIdentity::Register(index)=>index>=frame_width,
+            _=>true,
+        });
+        residency::check_calls(unit.residency.calls.iter().filter(|call|
+            !call.arguments.values().all(unbound)
+            && !call.bindings.values().any(|proof|proof.scalar_identities().iter().any(&pending))
+            && !bounds::Proof::condition(bounds::Condition::guard(call.path.clone())).scalar_identities().iter().any(&pending)
+        ),&known,&outputs)?;
         residency::check_loops(name,&unit.residency,&unit.contract.residency,&parameters,&outputs,&known,unit.definition.function.params.len())?;
         for written in &mut unit.contract.written{if let Some(value)=written{if !residency::resolve_returned(value,&outputs){*written=None;}}}
         if let Some(returned)=&mut unit.contract.returned{if !residency::resolve_returned(returned,&outputs){unit.contract.returned=None;}}

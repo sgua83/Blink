@@ -360,7 +360,7 @@ pub(super) fn infer(inputs:&Inputs,parameters:&BTreeMap<ValueIdentity,bounds::Pr
     let mut required=Requirements::new();
     for usage in &inputs.uses{match usage {
         Use::At{value,target,path,source,span}=>{
-            let value=evaluate(value,outputs).under(path);
+            let value=evaluate(value,outputs,path);
             if !value.absent()&&!consume(&mut required,&value,*target,path){return source.fail(*span,"B266","实际资源来源不满足本次条件CPU／GPU位置要求");}
         },
         Use::Same{before,after,path,source,span}=>{
@@ -368,7 +368,7 @@ pub(super) fn infer(inputs:&Inputs,parameters:&BTreeMap<ValueIdentity,bounds::Pr
                 let Residency::Origins(origins)=value else{return None};let mut origins=origins.iter();
                 match(origins.next(),origins.next()){(Some(Origin::Cpu),None)=>Some(Target::Cpu),(Some(Origin::Gpu),None)=>Some(Target::Gpu),_=>None}
             }
-            let before=evaluate(before,outputs);let after=evaluate(after,outputs);
+            let before=evaluate(before,outputs,path);let after=evaluate(after,outputs,path);
             if !before.absent()&&!after.absent()&&!equal_under(&before,&after,path,&mut|a,b,path|{
                 if let Some(target)=target(a){consume(&mut required,b,target,path)}
                 else if let Some(target)=target(b){consume(&mut required,a,target,path)}
@@ -462,7 +462,7 @@ fn bind_arguments(declared:&Arguments,actual:&Arguments,bindings:&BTreeMap<Value
     }}
     fn bind(value:&Residency,actual:&Arguments,outputs:&Outputs)->Residency{
         let value=match value.bind(actual){Some(value)=>value,None=>Residency::Absent};
-        if evaluate(&value,outputs).absent(){Residency::Absent}else{value}
+        if present(&value,outputs,&bounds::Clause::default(),&mut BTreeSet::new()){value}else{Residency::Absent}
     }
     let sources=declared.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(bindings,input.depth())))).collect::<Arguments>();
     let mut result=sources.iter().map(|(input,value)|(input.clone(),bind(value,actual,outputs))).collect::<Arguments>();
@@ -499,7 +499,7 @@ fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Opti
         for((input,target),guards)in &contract.required{let bindings=scoped_indices(&call.bindings,input.depth());for guard in guards{
             let path=guard.guard_at_call(&bindings).assume(&call.path,true);
             let selection=input.selection().into_iter().map(|(index,proof)|(index,proof.at_call(&bindings))).collect();
-            let Some(value)=argument_value(&call.arguments,input,&selection)else{continue};let value=evaluate(&value,outputs);
+            let Some(value)=argument_value(&call.arguments,input,&selection)else{continue};let value=evaluate(&value,outputs,&path);
             if !query_consume(&mut required,&mut deferred,wanted,&value,*target,&path){return source.fail(span,"B266",format!("函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
         }}
         for next in contract.calls.iter().rev(){
@@ -542,7 +542,7 @@ pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters
     let arguments=(0..parameter_count).map(|parameter|(Input::new(parameter),Residency::parameter(parameter))).collect::<Arguments>();
     let bindings=parameters.values().filter_map(|proof|proof.known_identity(0)).map(|id|(id,bounds::Proof::default().with_identity(id))).collect::<BTreeMap<_,_>>();
     for usage in &inputs.uses{if let Use::Same{before,after,source,span,..}=usage{
-        let mut wanted=BTreeSet::new();self::inputs(&evaluate(before,outputs),&mut wanted);self::inputs(&evaluate(after,outputs),&mut wanted);
+        let mut wanted=BTreeSet::new();self::inputs(&evaluate(before,outputs,&bounds::Clause::default()),&mut wanted);self::inputs(&evaluate(after,outputs,&bounds::Clause::default()),&mut wanted);
         for input in wanted{
             let input=input.at_call(parameters);
             let call=Call{function:name.into(),arguments:arguments.clone(),bindings:bindings.clone(),path:bounds::Clause::default(),source:None,span:Span::default()};
@@ -551,7 +551,7 @@ pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters
     }}
     let required=local(&required,parameters);
     for usage in &inputs.uses{if let Use::Same{before,after,path,source,span}=usage{
-        let before=evaluate(before,outputs);let after=evaluate(after,outputs);if before.absent()||after.absent(){continue;}
+        let before=evaluate(before,outputs,path);let after=evaluate(after,outputs,path);if before.absent()||after.absent(){continue;}
         if !equal_under(&refine(&before,&required),&refine(&after,&required),path,&mut|_,_,path|!path.overlaps(&bounds::Clause::default())){return source.fail(*span,"B266","循环真实回边没有在该路径归还入口相同的CPU／GPU存储位置");}
     }}Ok(())
 }
@@ -772,25 +772,50 @@ fn canonical_output(output:&Output,outputs:&Outputs)->Output{
     }
     output
 }
-fn evaluate(value:&Residency,outputs:&Outputs)->Residency{
-    fn resolve(value:&Residency,outputs:&Outputs,active:&mut BTreeSet<Output>)->Residency{match value{
-        Residency::Selected(when,a,b)=>Residency::conditional(when.as_ref().clone(),resolve(a,outputs,active),resolve(b,outputs,active)),
-        Residency::Absent=>Residency::Absent,
-        Residency::Origins(origins)=>{
-            if origins.is_empty(){return Residency::default();}
-            let mut result=Residency::Absent;
-            for origin in origins{match origin{
-                Origin::Output(output)=>{
-                    if !active.insert(output.clone()){continue;}
-                    if let Some(value)=output_source(output,outputs){result.join(&resolve(&value,outputs,active));}
-                    active.remove(output);
-                },
-                origin=>result.join(&Residency::Origins(BTreeSet::from([origin.clone()]))),
-            }}
-            result
-        },
-    }}
-    resolve(value,outputs,&mut BTreeSet::new())
+// Model presence needs one reachable producer, not every possible storage location.
+fn present(value:&Residency,outputs:&Outputs,path:&bounds::Clause,active:&mut BTreeSet<Output>)->bool{
+    if !path.possible(){return false;}
+    match value{
+        Residency::Absent=>false,
+        Residency::Selected(when,a,b)=>present(a,outputs,&when.assume(path,true),active)
+            ||present(b,outputs,&when.assume(path,false),active),
+        Residency::Origins(origins)=>origins.is_empty()||origins.iter().any(|origin|match origin{
+            Origin::Output(output)=>{
+                if !active.insert(output.clone()){return false;}
+                let found=output_source(output,outputs).is_some_and(|value|present(&value,outputs,path,active));
+                active.remove(output);
+                found
+            },
+            _=>true,
+        }),
+    }
+}
+
+fn evaluate(value:&Residency,outputs:&Outputs,path:&bounds::Clause)->Residency{
+    fn resolve(value:&Residency,outputs:&Outputs,path:&bounds::Clause,active:&mut BTreeSet<Output>)->Residency{
+        if !path.possible(){return Residency::Absent;}
+        match value{
+            Residency::Selected(when,a,b)=>match when.truth_in(path){
+                Some(true)=>resolve(a,outputs,path,active),
+                Some(false)=>resolve(b,outputs,path,active),
+                None=>Residency::conditional(when.as_ref().clone(),resolve(a,outputs,&when.assume(path,true),active),resolve(b,outputs,&when.assume(path,false),active)),
+            },
+            Residency::Absent=>Residency::Absent,
+            Residency::Origins(origins)=>{
+                if origins.is_empty(){return Residency::default();}
+                let mut result=Residency::Absent;
+                for origin in origins{match origin{
+                    Origin::Output(output)=>{
+                        if !active.insert(output.clone()){continue;}
+                        if let Some(value)=output_source(output,outputs){result.join(&resolve(&value,outputs,path,active));}
+                        active.remove(output);
+                    },
+                    origin=>result.join(&Residency::Origins(BTreeSet::from([origin.clone()]))),
+                }}result
+            },
+        }
+    }
+    resolve(value,outputs,path,&mut BTreeSet::new())
 }
 
 pub(super) fn output(value: &mut Returned, function: &str,kind:OutputKind, arguments: &Arguments,bindings:&BTreeMap<ValueIdentity,bounds::Proof>) {
@@ -850,24 +875,6 @@ pub(super) fn output_sources<'a>(
 }
 
 pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool {
-    // Model presence needs one reachable producer, not every possible storage location.
-    fn present(value:&Residency,outputs:&Outputs,path:&bounds::Clause,active:&mut BTreeSet<Output>)->bool{
-        if !path.possible(){return false;}
-        match value{
-            Residency::Absent=>false,
-            Residency::Selected(when,a,b)=>present(a,outputs,&when.assume(path,true),active)
-                ||present(b,outputs,&when.assume(path,false),active),
-            Residency::Origins(origins)=>origins.is_empty()||origins.iter().any(|origin|match origin{
-                Origin::Output(output)=>{
-                    if !active.insert(output.clone()){return false;}
-                    let found=output_source(output,outputs).is_some_and(|value|present(&value,outputs,path,active));
-                    active.remove(output);
-                    found
-                },
-                _=>true,
-            }),
-        }
-    }
     fn resolve(value: &mut Returned, outputs: &Outputs) -> bool {
         match value {
             Returned::Dataset(data) => {
