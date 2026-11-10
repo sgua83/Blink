@@ -429,7 +429,7 @@ program.run(&mut data, &values)?;
 
 vec![bodies,total] 创建一个 Rust 动态数组，类似 C++ 的 vector。data 按顺序放入两个数据集，分别对应 bodies 和 total。values 按顺序放入两个普通参数，分别对应 dt 和 strength；Value::F32 标明参数是 32 位浮点数。数据集和普通参数分别传递。
 
-CpuProgram::new 把 code 准备成 CPU 上可以执行的程序。run 执行这个 B 入口。返回后，data[0] 已保存新粒子状态，data[1] 已保存总动能。
+CpuProgram::new 把 code 准备成 CPU 上可以执行的程序。run 执行这个 B 入口。返回后，data[0] 已保存新粒子状态，data[1] 已保存总动能。集合的范围数量由本次输入划分确定，摘要物理字数另按真实结果布局交接；用户改用零尺寸普通记录作归约／扫描结果时，原必要执行与完成仍保留，其他输出字段和未覆盖的容量尾部保持。
 
 在这里，Rust 负责选文件、建立数据、填值、调用和打印；B 负责更新粒子并求和。这些操作现在可以在同一份完整代码中逐项找到。
 

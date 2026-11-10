@@ -952,10 +952,11 @@ impl CpuCode {
                     } else {
                         grain
                     };
+                    let range_count = (count as usize).div_ceil(grain);
                     let mut partials = if matches!(result, RangeResult::None) {
                         Vec::new()
                     } else {
-                        vec![0u32; (count as usize).div_ceil(grain) * result.words()]
+                        vec![0u32; range_count * result.words()]
                     };
                     let mut ranges = RangeWork {
                         frame: frame.map(|(definitions,offset,words,inputs)| (definitions,offset,words,inputs,input_domains.as_slice())),
@@ -970,7 +971,7 @@ impl CpuCode {
                         partials: partials.as_mut_ptr(),
                         errors: std::ptr::null_mut(),
                         range_parameters: std::ptr::null(),
-                        range_parameter_words: result.words().max(1),
+                        range_parameter_words: result.words(),
                     };
                     self.execute(&mut ranges)?;
                     if let blanguage::ir::Operation::Reduce(reduction) = &stage.operation {
@@ -1002,7 +1003,7 @@ impl CpuCode {
                                 let failure = unsafe {
                                     ranges.invoke(prefix.address,
                                         inputs.as_ptr(),
-                                        (partials.len() / result.words()) as u32,
+                                        range_count as u32,
                                         0,
                                         std::ptr::null_mut(),
                                     )
@@ -1019,7 +1020,7 @@ impl CpuCode {
                                     let failure = unsafe {
                                         ranges.invoke(next.address,
                                             inputs.as_ptr(),
-                                            (partials.len() / k) as u32,
+                                            range_count as u32,
                                             0,
                                             output.as_mut_ptr(),
                                         )

@@ -3969,7 +3969,7 @@ void bounds(read dataset<Vertex> vertices,
 
 `Record(field0,field1,...)` 按声明字段顺序构造记录，支持嵌套记录与向量；各字段类型必须完全相同，不将异构分量统一转成一个标量类型。需要数值转换时显式写 f32／u32／i32 构造。记录构造只组合已有值寄存器，不分配对象，不复制 ABI 填充。字段数量错误报 B157，类型错误报 B124；值来源与逐分量证明沿既有规则传递。
 
-`reduce(source.field,target.field,identity,combine)` 聚合相同普通值类型。identity 是无参数、返回 T 的函数，combine 是 `(T,T)->T` 的函数；标量、向量、混合f32／u32／i32／u64／i64／bool的记录都可使用。目标仍为形状 1 的独立可写数据集，只写目标字段的逻辑分量，其他字段及记录内／外填充保持。空域返回 identity。
+`reduce(source.field,target.field,identity,combine)` 聚合相同普通值类型。identity 是无参数、返回 T 的函数，combine 是 `(T,T)->T` 的函数；标量、向量、混合f32／u32／i32／u64／i64／bool的记录都可使用。目标仍为形状 1 的独立可写数据集，只写目标字段的逻辑分量，其他字段及记录内／外填充保持。空域返回 identity。零尺寸普通记录同样是合法T；其结果没有物理分量，其他字段与填充保持，仍按原单位元、投影及合并语义执行。
 
 `reduce_map(source.field,target.field,project,identity,combine)` 允许源 S 与结果 T 不同，project 的签名为 `(S)->T`。投影在主阶段处理有效源元素，直接进入累积／共享树；不物化 N 条 T 的中间数据集。递归摘要只合并 T，不再执行 project。输入可以是现有 `prefix(data,count.value).field`；前缀计数留在 GPU，原 Count 所有权与模块 requires／ensures 继续生效。返回记录中的普通 count 只是数值，不自动授予有效域或任意散写能力。
 
@@ -4090,7 +4090,7 @@ void chain(read dataset<Local> local,
 
 源可为已有证明的 `prefix(data,count.value).field`。操作直接产生相同 Count 对应的 `prefix(target,count.value)`，可供后续 parallel、集合或 requires／ensures 接口消费。没有新的 Count、计数读回或按实际数量动态分配；仍按容量预留递归层级和存储。
 
-CPU 首遍按范围产生局部独占结果及紧密 K-word 摘要；自研 x64 前缀函数原地扫描少量范围摘要，第二遍 x64 合并范围前缀与局部结果。三部分复用同一值 IR、寄存器分配及 Windows ABI，数学调用跨迭代值仍由活跃集持有；Rust 不解释用户合并器。GPU 复用既有 64 路扫描调度，以有序共享树上扫、根置单位元及下扫产生局部独占值，递归摘要与逐级传播保持 `combine(前置摘要,局部值)`。共享存储为 `64*K*4` 字节；没有真实输入的右子树不参与上扫。所有摘要与有效数量留在设备，临时资源沿原提交寿命释放。
+CPU 首遍按范围产生局部独占结果及紧密 K-word 摘要；自研 x64 前缀函数原地扫描少量范围摘要，第二遍 x64 合并范围前缀与局部结果。实际范围数量来自同一次输入划分，与每份摘要字数分别交接；T为零尺寸普通记录时K为0，摘要地址步长也为0，不生产虚拟数值分量，原有效位置、其他字段与容量尾部语义保持。三部分复用同一值 IR、寄存器分配及 Windows ABI，数学调用跨迭代值仍由活跃集持有；Rust 不解释用户合并器。GPU 复用既有 64 路扫描调度，以有序共享树上扫、根置单位元及下扫产生局部独占值，递归摘要与逐级传播保持 `combine(前置摘要,局部值)`。共享存储为 `64*K*4` 字节；没有真实输入的右子树不参与上扫。所有摘要与有效数量留在设备，临时资源沿原提交寿命释放。
 
 `bc build` 导出主、`.tail.spv`、`.add.spv`、必要的 `.root-add.spv`，以及 CPU 主、`.prefix.x64`、`.add.x64` 和各自数学 reloc。运行时直接消费编译产物对象，不依赖导出文件形成第二份状态。自定义分段扫描／归约见后文；完整泛型仍需实现。
 
