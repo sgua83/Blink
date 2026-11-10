@@ -24,7 +24,7 @@ B代码可用size_of<T>()／align_of<T>()取得原Ty值表示的usize编译期�
 
 原生Rust Value与模块C入口支持当前标量集合。共同Value为16字节、对齐8，标签位于偏移0、载荷位于偏移8，各活动载荷按真实宽度交接，填充不是值。当前对象／资源版本、完整标签及拒绝规则唯一见[语言规范](BLanguage.md#已编译模块的资源abi)。版本不更换Frame或复制所有权。
 
-Rust的`Dataset::set_scalar(index,path,value)`从Dataset原Ty、实际记录下标及活动变体取得单标量字段的位置与类型，再写入完整值。嵌套路径沿既有field_at规则；路径、活动分支、标量类型或下标不符返回真实错误，错误调用保持存储。其他字段、相邻记录及ABI填充保持。此可写入口与words_mut具有相同的view绑定失效边界，实际view仍按原with_views重新绑定；不保存第二份schema或引擎参数表。
+Rust的`Dataset::set_scalar(index,path,value)`从Dataset原Ty、实际记录下标及活动变体取得单标量字段的位置与类型，再写入完整值。嵌套路径沿既有field_at规则；路径、活动分支、标量类型或下标不符返回真实错误，错误调用保持存储。其他字段、相邻记录及ABI填充保持。该定点写入不交出任意可写payload，保持未改变的view描述、绑定及原来源，来源由最后真实消费者结束。words_mut取得原始可写存储时仍撤回旧view图，真实重绑定继续由原with_views交接实际来源；不保存第二份schema或引擎参数表。
 
 例如接口中有`struct Item { u64 identifier; i64 delta; };`，由该程序取得的相应Dataset可写：
 

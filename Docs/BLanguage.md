@@ -4808,7 +4808,7 @@ Rust SDK的`Dataset::layout() -> &Ty`借用同一存储的原类型；原`count(
 
 `view_bindings()`返回精确长度迭代器，每项`DatasetView { record: u32, offset: u32, source: &Dataset }`直接借用原Views的一条绑定及其真实来源。`offset`以字节计，相对本条记录起点；不是整个数组偏移，也不是来源内偏移。按原绑定顺序枚举，来源可继续调用这些接口，沿实际闭合图观察。多个字段／记录引用同源时，`source`是同一个Dataset；不同空Dataset不能按其空Vec指针合并。对象引用只在本次原借用有效期内比较，不作为持久资源ID或跨驻留身份。
 
-`view_source(record, field) -> Option<&Dataset>`使用原Ty活动字段路径和真实bindings二分查源，例如`pair.left`、`list[1]`、`Some.left`、`Ok.right`；字段名保留大小写。它只返回实际绑定的view来源，记录越界、未知／非view字段、非活动载荷及已撤回绑定均为None。原始header即使保存非零地址，也不被当作来源；原`words_mut`／`set_scalar`使绑定失效后，查询如实无来源。空view来源仍为Some，其count可以为零。
+`view_source(record, field) -> Option<&Dataset>`使用原Ty活动字段路径和真实bindings二分查源，例如`pair.left`、`list[1]`、`Some.left`、`Ok.right`；字段名保留大小写。它只返回实际绑定的view来源，记录越界、未知／非view字段、非活动载荷及已撤回绑定均为None。原始header即使保存非零地址，也不被当作来源；原`words_mut`撤回绑定后，查询如实无来源；`set_scalar`只更新原Ty选中的单标量字段，未改变的view绑定与来源继续可查。空view来源仍为Some，其count可以为零。
 
 ```rust
 let ty = data.layout();
@@ -5196,9 +5196,9 @@ C ABI create／run 返回 0 或 -1，并写调用方错误缓冲区；destroy �
 
 ### Rust Dataset的单标量字段写入
 
-`Dataset::set_scalar(index,path,Value)`按当前Dataset的Ty写入一条记录中的单标量ABI字段，支持Value的F32／U32／I32／Bool／U64／I64／F64。路径与field_offset共用声明来源，嵌套变体还消费当前记录的实际活动判别字；不能通过写未激活载荷冒充变体构造。记录下标、字段及标量类型必须匹配，失败交接真实错误并保持存储，宽值写完整8字节，其他字段与填充保持。
+`Dataset::set_scalar(index,path,Value)`按当前Dataset的Ty写入一条记录中的单标量ABI字段，支持Value当前定义的各标量类型并要求精确匹配。路径与field_offset共用声明来源，嵌套变体还消费当前记录的实际活动判别字；不能通过写未激活载荷冒充变体构造。记录下标、字段及标量类型必须匹配，失败交接真实错误并保持存储，宽值写完整8字节，其他字段与填充保持。
 
-此接口不复制布局、增加资源权限或管理引擎参数含义。与words_mut相同，取得这种可写存储会使已有view绑定失效，后续实际view仍须沿原with_views重新绑定。uniform参数继续沿同一个Value表示按逻辑分量传入，不能用Value数量推算物理存储字数。
+此接口不复制布局、增加资源权限或管理引擎参数含义。定点写入只消费原Ty选中的活动单标量字段，不取得任意可写payload；已有view描述、绑定及其原来源保持，由最后真实消费者结束其寿命。words_mut交出原始可写存储时仍撤回旧view图，真实图重绑定继续沿原with_views交接实际来源。uniform参数继续沿同一个Value表示按逻辑分量传入，不能用Value数量推算物理存储字数。
 
 ## 同索引独占多输出
 一个parallel以主数据集定义invocation域，同一个invocation可以读写其他普通可写数据集的当前index()元素。各根的read／write／inout权限保持，不授予其他元素的散写权；固定同形容量提供当前索引的范围事实，包含空域，但不会把不同资源判为同一资源。动态容量按已证明的范围条件访问。

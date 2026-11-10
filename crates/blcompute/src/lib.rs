@@ -264,7 +264,7 @@ impl Dataset {
             .map(|(offset, _)| offset)
             .ok_or_else(|| error(format!("未知字段 {name}")))
     }
-    /// 按声明布局写入记录的单标量字段；与words_mut一样使原view绑定失效。
+    /// 按声明布局写入记录的单标量字段，保持未改变的view绑定及其来源。
     pub fn set_scalar(&mut self, index: u32, name: &str, value: Value) -> Result<()> {
         if index >= self.count {
             return Err(error("数据集记录下标越界"));
@@ -278,7 +278,7 @@ impl Dataset {
         if ty.components.as_slice() != [(scalar, 0)] || ty.size != scalar.size() {
             return Err(error(format!("字段 {name} 的标量类型与值不匹配")));
         }
-        value.write_words(self.words_mut(), start + offset as usize);
+        value.write_words(&mut self.words, start + offset as usize);
         Ok(())
     }
 }

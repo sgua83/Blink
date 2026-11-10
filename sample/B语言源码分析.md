@@ -810,7 +810,7 @@ Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，�
 
 ### 2.5 从一个view字段追到原存储
 
-记录中的view header是机器寻址表示，真实所有权在原Views中。bindings保存原数据集的实际存储字偏移与source索引；sources持有冻结来源。不能读取header里的数字，再另建一张拥有图。
+记录中的view header是机器寻址表示，真实所有权在原Views中。bindings保存原数据集的实际存储字偏移与source索引；sources持有冻结来源。Dataset::set_scalar由原Ty::field_at选择当前活动的单标量字段，直接写原words中该字段的字节，未改变的绑定与来源保持到最后消费者结束。words_mut交出任意可写payload时仍沿Views::clear撤回原图；真实重绑定由with_views消费实际来源。不能读取header里的数字，再另建一张拥有图。
 
 源码节选：`crates/blcompute/src/views.rs:19`。
 

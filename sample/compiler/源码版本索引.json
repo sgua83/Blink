@@ -568,7 +568,7 @@
     },
     {
       "path": "crates/blcompute/src/lib.rs",
-      "sha256": "13e2b2f33fbd677d41b2298d20ffd43332bac40d72a879bca010c01ec3df7cf5"
+      "sha256": "d55e702dde9179addb1642d4acbb31672db6b339e1898994c7d7c23975697c7d"
     },
     {
       "path": "crates/blcompute/src/texture.rs",

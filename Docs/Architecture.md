@@ -1150,7 +1150,7 @@ AI由B字段／数组查看实际值→.3原Ty布局＋.20实际字节→结构�
 
 AI从dataset／view／字段追到存储、位置和最后消费者→`application.rs::Frame／run`、`lib.rs::Dataset`、原views／DomainBindings及GPU last_use。按资源／字段输出原拥有关系、借用来源、实际位置、布局和可取得的完成关系；同一物理存储的多个view不变成多份分配。
 
-CPU Rust SDK的`Dataset::layout()`借用原Ty，`view_bindings()`沿原Views的实际bindings／sources枚举`DatasetView { record, offset, source }`，`view_source(record, field)`沿原活动字段路径查到同一原Dataset。偏移是记录内字节，原count／stride／words／memory分别交付记录布局和直接存储；来源可继续查询。共享来源通过本次有效借用的同一对象辨认，不克隆Arc、解析原始地址重建来源或另造资源身份。不存在的记录／字段、未活动变体和已撤回绑定返回无来源；空来源仍是实际来源。CPU执行保持原同步生命周期，查询不新增执行提交或写许可。
+CPU Rust SDK的`Dataset::layout()`借用原Ty，`view_bindings()`沿原Views的实际bindings／sources枚举`DatasetView { record, offset, source }`，`view_source(record, field)`沿原活动字段路径查到同一原Dataset。偏移是记录内字节，原count／stride／words／memory分别交付记录布局和直接存储；来源可继续查询。共享来源通过本次有效借用的同一对象辨认，不克隆Arc、解析原始地址重建来源或另造资源身份。Dataset::set_scalar沿原Ty选择活动单标量字段，只写该字段字节，保持未改变的view绑定、原来源及最后消费者寿命；它不交出任意可写payload。words_mut仍在交出原始可写存储时撤回整份旧view图，真实重新绑定继续由with_views交接原来源。不存在的记录／字段、未活动变体和已撤回绑定返回无来源；空来源仍是实际来源。CPU执行保持原同步生命周期，查询不新增执行提交或写许可。
 
 GPU Rust SDK的`GpuDataset::layout()`／`stride()`借用原GpuStorage布局，`view_bindings()`从原Views交付`GpuDatasetView { record, offset, source }`；source为原Rc中同一个GpuDataset。`same_storage`只比较本次有效借用中的原GpuStorage，冻结别名不变成另一份分配；ReadDataset沿原对象Deref查询，原公开入口保持。offset是记录内字节，GPU查询不下载活动tag、构造字段路径或据静态变体猜来源。原来源可继续遍历并调用memory，完整GPU值读取仍须取得实际权限与完成范围。
 
