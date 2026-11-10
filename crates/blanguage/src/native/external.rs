@@ -1,4 +1,4 @@
-//! Windows x64 C ABI：参数先进入实际调用槽，避免设置参数寄存器时覆盖尚未消费的值。
+//! Windows x64普通B与C ABI：实际机器参数先进入调用槽，再交给参数寄存器。
 use super::operands::Operand;
 use super::*;
 use allocation::Location;
@@ -10,16 +10,18 @@ pub(super) struct Layout {
     target: Option<u64>,
 }
 pub(super) fn indirect(ty: &Ty) -> bool {
-    !matches!(align_up(ty.size, ty.align), 1 | 2 | 4 | 8)
+    !matches!(align_up(ty.size, ty.align), 0 | 1 | 2 | 4 | 8)
 }
 pub(super) fn floating(ty: &Ty) -> bool {
     *ty == Ty::scalar(Scalar::F32) || *ty == Ty::scalar(Scalar::F64)
 }
 impl Layout {
     pub(super) fn new(call: &Call) -> Self {
-        let hidden = call.result.as_ref().is_some_and(|ty| call.error.is_some() || indirect(ty));
+        let hidden = call.result.as_ref().is_some_and(|ty| ty.size != 0 && (call.error.is_some() || indirect(ty)));
+        let count = call.arguments.iter()
+            .filter(|arg| !matches!(arg, CallArgument::Value { ty, .. } if ty.size == 0)).count();
         let mut bytes =
-            ((call.arguments.len() + usize::from(hidden)).max(4) as u64 * 8).div_ceil(16) * 16;
+            ((count + usize::from(hidden)).max(4) as u64 * 8).div_ceil(16) * 16;
         let result = if hidden {
             let at = bytes;
             let ty = call.result.as_ref().unwrap();
@@ -127,8 +129,10 @@ impl Emitter<'_> {
             self.stack_address(at as u32);
             self.instruction(None, &[0x89], true, 0, Operand::memory(4, 0));
         }
-        for (i, arg) in call.arguments.iter().enumerate() {
-            let slot = (i + usize::from(layout.hidden)) as u32 * 8;
+        let arguments = call.arguments.iter().enumerate()
+            .filter(|(_, arg)| !matches!(arg, CallArgument::Value { ty, .. } if ty.size == 0));
+        for (slot, (i, arg)) in arguments.clone().enumerate() {
+            let slot = (slot + usize::from(layout.hidden)) as u32 * 8;
             match arg {
                 CallArgument::Reference { address, .. } => {
                     self.reference_address(address)?;
@@ -149,11 +153,8 @@ impl Emitter<'_> {
         if layout.hidden {
             self.instruction(None, &[0x8b], true, 1, Operand::memory(4, 0));
         }
-        for (i, arg) in call.arguments.iter().enumerate() {
-            let slot = i + usize::from(layout.hidden);
-            if slot >= 4 {
-                continue;
-            }
+        for (slot, (_, arg)) in arguments.enumerate().take(4 - usize::from(layout.hidden)) {
+            let slot = slot + usize::from(layout.hidden);
             let memory = Operand::memory(4, slot as u32 * 8);
             if let CallArgument::Value { ty, .. } = arg && floating(ty) {
                 self.instruction(Some(if ty == &Ty::scalar(Scalar::F64) { 0xf2 } else { 0xf3 }), &[0x0f, 0x10], false, slot as u8, memory);
@@ -172,7 +173,7 @@ impl Emitter<'_> {
             self.bytes(&[0x48, 0x85, 0xc0]);
             Some(self.jump(Some(0x85)))
         } else { None };
-        if let Some(ty) = &call.result {
+        if let Some(ty) = call.result.as_ref().filter(|ty| ty.size != 0) {
             if let Some(at) = layout.result {
                 for ((_, offset), reg) in ty.components.iter().zip(&call.values) {
                     self.read_scalar(*reg, 4, at as u32 + *offset);

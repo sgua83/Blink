@@ -109,6 +109,7 @@ fn emit_value(
         })
     }
     let scratch = scratch(&stage.code);
+    let result = result.filter(|ty| ty.size != 0);
     let hidden = result.is_some_and(|ty| fallible || indirect(ty));
     let result_pointer = hidden.then_some(layout.end.div_ceil(8) as u32 * 8);
     let bytes = (layout.end + if hidden { 8 } else { 0 }).div_ceil(16) * 16;
@@ -136,22 +137,24 @@ fn emit_value(
     };
     // Home every register argument before allocation, probing or input moves may overwrite it.
     // These are the Windows x64 caller-provided home slots, not another parameter copy owner.
-    for slot in 0..(parameters.len() + usize::from(hidden)).min(4) {
+    let parameters = parameters.iter().enumerate()
+        .filter(|(_, parameter)| !matches!(&parameter.kind, CallParameterKind::Value(ty) if ty.size == 0));
+    for (slot, value) in hidden.then_some(None).into_iter()
+        .chain(parameters.clone().map(Some)).take(4).enumerate()
+    {
         let start = e.code.len();
-        let value = if hidden && slot == 0 {
-            None
-        } else {
-            parameters.get(slot - usize::from(hidden))
-        };
         let memory = Operand::memory(4, 8 + slot as u32 * 8);
-        if let Some(CallParameterKind::Value(ty)) = value.map(|parameter| &parameter.kind) && floating(ty) {
+        if let Some(CallParameterKind::Value(ty)) = value.map(|(_, parameter)| &parameter.kind) && floating(ty) {
             e.instruction(Some(if ty == &Ty::scalar(Scalar::F64) { 0xf2 } else { 0xf3 }), &[0x0f, 0x11], false, slot as u8, memory);
         } else {
             e.instruction(None, &[0x89], true, [1, 2, 8, 9][slot], memory);
         }
-        e.abi_range(start, if hidden && slot == 0 { AbiRangeKind::HiddenResultHome { slot } }
-            else { AbiRangeKind::ParameterHome { slot, parameter_index: slot - usize::from(hidden),
-                origin: value.and_then(|parameter| parameter.origin.clone()) } });
+        e.abi_range(start, match value {
+            None => AbiRangeKind::HiddenResultHome { slot },
+            Some((index, parameter)) => AbiRangeKind::ParameterHome {
+                slot, parameter_index: index, origin: parameter.origin.clone(),
+            },
+        });
     }
     if scratch {
         let start = e.code.len();
@@ -172,30 +175,31 @@ fn emit_value(
         e.abi_range(start, AbiRangeKind::ResultAddressSave { stack_offset: at });
     }
     let mut inputs = body.inputs.iter();
-    for (i, parameter) in parameters.iter().enumerate() {
+    for (slot, (i, parameter)) in parameters.enumerate() {
         let start = e.code.len();
-        let slot = home + (i + usize::from(hidden)) as u32 * 8;
+        let slot = slot + usize::from(hidden);
+        let address = home + slot as u32 * 8;
         match &parameter.kind {
             CallParameterKind::Value(ty) => {
                 let base = if indirect(ty) {
-                    e.instruction(None, &[0x8b], true, 1, Operand::memory(4, slot));
+                    e.instruction(None, &[0x8b], true, 1, Operand::memory(4, address));
                     1
                 } else {
                     4
                 };
                 for (_, offset) in &ty.components {
                     let dst = *inputs.next().unwrap();
-                    e.read_scalar(dst, base, if base == 4 { slot + offset } else { *offset });
+                    e.read_scalar(dst, base, if base == 4 { address + offset } else { *offset });
                 }
             }
             CallParameterKind::Reference { .. } => {
                 for offset in [0, 4] {
                     let dst = *inputs.next().unwrap();
-                    e.read_scalar(dst, 4, slot + offset);
+                    e.read_scalar(dst, 4, address + offset);
                 }
             }
         }
-        e.abi_range(start, AbiRangeKind::ParameterInput { slot: i + usize::from(hidden),
+        e.abi_range(start, AbiRangeKind::ParameterInput { slot,
                 parameter_index: i, origin: parameter.origin.clone() });
     }
     // 最外退出属于本函数，嵌套Scope继续拥有各自的Exit。
