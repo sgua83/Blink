@@ -323,9 +323,7 @@ fn known(value:&Residency,target:Target,path:&bounds::Clause)->bool{
 fn insert(required:&mut Requirements,input:Input,target:Target,when:bounds::Condition)->bool{
     if !when.active(){return true;}
     if required.iter().any(|((other,place),guards)|*other==input&&*place!=target&&guards.iter().any(|guard|guard.overlaps(&when))){return false;}
-    let guards=required.entry((input,target)).or_default();
-    if guards.iter().any(|guard|guard.covers(&when)){return true;}
-    guards.retain(|guard|!when.covers(guard));guards.insert(when);true
+    required.entry((input,target)).or_default().insert(when);true
 }
 
 fn consume(required:&mut Requirements,value:&Residency,target:Target,path:&bounds::Clause)->bool{
@@ -425,7 +423,7 @@ fn query_key(call:&Call,wanted:Option<&Input>,outputs:&Outputs)->Vec<u8>{
     w.0
 }
 fn query_consume(required:&mut Requirements,deferred:&mut bool,wanted:Option<&Input>,value:&Residency,target:Target,path:&bounds::Clause)->bool{
-    if !path.possible(){return true;}
+    if !path.overlaps(&bounds::Clause::default()){return true;}
     match value{
         Residency::Absent=>true,
         Residency::Selected(when,a,b)=>query_consume(required,deferred,wanted,a,target,&when.assume(path,true))&&query_consume(required,deferred,wanted,b,target,&when.assume(path,false)),
@@ -489,7 +487,7 @@ fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Opti
     let mut work=vec![Work::Enter(call)];let mut active=BTreeSet::new();let mut required=Requirements::new();let mut deferred=false;
     while let Some(next)=work.pop(){
         let call=match next{Work::Enter(call)=>call,Work::Leave(key)=>{active.remove(&key);continue}};
-        if !call.path.possible(){continue;}
+        if !call.path.overlaps(&bounds::Clause::default()){continue;}
         let key=query_key(&call,wanted,outputs);
         if !active.insert(key.clone()){continue;}
         work.push(Work::Leave(key));
@@ -501,7 +499,7 @@ fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Opti
             if !query_consume(&mut required,&mut deferred,wanted,&value,*target,&path){return source.fail(span,"B266",format!("函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
         }}
         for next in contract.calls.iter().rev(){
-            let path=bounds::Condition::guard(next.path.clone()).guard_at_call(&call.bindings).assume(&call.path,true).canonical();
+            let path=bounds::Condition::guard(next.path.clone()).guard_at_call(&call.bindings).assume(&call.path,true);
             let arguments=bind_arguments(&next.arguments,&call.arguments,&call.bindings,outputs);
             let bindings=next.bindings.iter().map(|(id,proof)|(*id,proof.at_call(&call.bindings))).collect();
             work.push(Work::Enter(Call{function:next.function.clone(),arguments,bindings,path,source:None,span:Span::default()}));

@@ -232,7 +232,7 @@
     },
     {
       "path": "crates/blanguage/src/check/residency.rs",
-      "sha256": "24c172fb89d83b58f5b545517cb7354d560488de444a0c2259189c6a0a0bbc78"
+      "sha256": "5febea7f5c7f4a4becbd7fba981666712112bc7687d3a3283c86fa3d6b92d691"
     },
     {
       "path": "crates/blanguage/src/check/results.rs",
@@ -268,7 +268,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view.rs",
-      "sha256": "a37f5fddf79cea160391834cfe4916df3d5f5c03609d7568001295afe58fa077"
+      "sha256": "b2f42775793891ac2429c6e108d423b9dbed5f1daa212b293aee0b9e949836a7"
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",

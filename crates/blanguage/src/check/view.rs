@@ -20,7 +20,7 @@ impl<K:Ord+Clone> Edges<K>{
         // 新来源边直接持有原条件图；同一来源实际合流时才规整。
         self.0.entry(key).and_modify(|old|*old=bounds::Condition::guard(bounds::Clause::either(&old.assume(&bounds::Clause::default(),true),&when).canonical())).or_insert_with(||bounds::Condition::guard(when));
     }
-    pub fn union(&mut self,other:&Self){for(key,when)in &other.0{self.insert_when(key.clone(),when.assume(&bounds::Clause::default(),true));}}
+    pub fn union(&mut self,other:&Self){for(key,when)in &other.0{self.0.entry(key.clone()).and_modify(|old|*old=old.clone().logical(when.clone(),true)).or_insert_with(||when.clone());}}
     pub fn remove(&mut self,key:&K){self.0.remove(key);}
     pub fn contains(&self,key:&K)->bool{self.0.get(key).is_some_and(bounds::Condition::active)}
     pub fn is_empty(&self)->bool{self.0.is_empty()}
