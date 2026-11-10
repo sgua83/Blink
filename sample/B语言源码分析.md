@@ -458,7 +458,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
         };
 ```
 
-循环写入预分析借用`check/effects/sources.rs`中的原声明、词法绑定与泛型实例，取得本次函数值签名和完整实参类型；resize与take_last的返回仍是原元素类型、动态形状的拥有dataset，array<T,N>构造由原TypeName／World取得完整元素和长度。own(value,F)由user_owned::user_owned_function解析原静态F，user_owned_type沿原World产生完整owned<T,F>；make_user_owned与Scope::call共用这两个生产者，实际上下文、载荷求值、pack及释放仍归原消费者。原generics::specialize消费同一类型，不重新求值实参、不为预分析增加值流或类型表；写范围仍进入原effects消费者。数值回边分析消费同一份已收集的写入及其源调用，不重复生成写图，不按未知函数名一律清空其他位置的事实。
+循环写入预分析借用`check/effects/sources.rs`中的原声明、词法绑定与泛型实例，取得本次函数值签名和完整实参类型；resize与take_last的返回仍是原元素类型、动态形状的拥有dataset，array<T,N>构造由原TypeName／World取得完整元素和长度；view<T>构造沿同一元素TypeName的view属性交给原World，取得与实际构造相同的完整view类型，再交给原泛型推导。own(value,F)由user_owned::user_owned_function解析原静态F，user_owned_type沿原World产生完整owned<T,F>；make_user_owned与Scope::call共用这两个生产者，实际上下文、载荷求值、pack及释放仍归原消费者。原generics::specialize消费同一类型，不重新求值实参、不为预分析增加值流或类型表；写范围仍进入原effects消费者。数值回边分析消费同一份已收集的写入及其源调用，不重复生成写图，不按未知函数名一律清空其他位置的事实。
 
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
@@ -2092,7 +2092,7 @@ enum Fact {
 `Fact` 包含相等、索引域、最小值、最大值和非零。同文件的 `Proof` 按分量保存来源、条件、ScalarRanges、非零和索引域。整数范围可表达回绕后的多个区间。既有Clause规整移除同一整数身份的非严格Below与零距离Upper恒真项；同一Upper的Outside为恒假，不成为可达分支。原数值范围及Proof存储域保留，浮点谓词继续保持NaN语义。不回绕Offset同时发布原Below顺序，使不同正偏移仍可交接共同顺序。活动载荷按声明类型和逻辑分量消费当前路径事实，index／ordinal复用同一精化入口；数值快照、view来源与资源权限分别保持。
 
 
-公开位置访问经过输入投影后，沿同一Condition交接false与true两根。原Proof编码已经能按拓扑保存共享节点、去除结构重复并恢复两根，因此Condition直接借用这个编码；序列化不先枚举全部析取路径，也不把正支取出后重新制造补集。数学查询和同来源合流只在各自真实消费者处进行。
+公开位置访问经过输入投影后，沿同一Condition交接false与true两根。原Proof编码按拓扑保存共享节点、去除结构重复并恢复两根；两子结构索引已相同的合取／析取只交接该子索引，不再生产冗余逻辑父节点。来源状态比较与公开Condition共用这份结构身份，因此Condition直接借用这个编码；序列化不先枚举全部析取路径，也不把正支取出后重新制造补集。数学查询和同来源合流只在各自真实消费者处进行。
 
 已知裸地址的循环赋值沿Scope原输入快照的已有来源、目标布局及字段／固定数组字节投影，进入同一Memory失效；这个查询不执行表达式或发射IR，实际权限、初始化、布局与寿命仍归原位置入口。已知写不生产延后数值槽；dataset共同普通载荷仅在Memory位置尚不能投影时沿原LoopInput登记LoopValue(scope,input)，该数值输入撤回旧分量事实，入口与真实继续边由同一LoopState交接，原Module在Memory使用顺序和既有LoopDefinition数值固定点中闭合关系。逻辑输入不增加空IR寄存器。dataset真实元素读取沿原Dataset使用记录交接MemoryValue与LoopValue，保持实际资源、下标和全部共同候选；未知或真实相交写仍撤回数值，资源描述分量继续归原类型化拥有模型。对象合同使用BLCO88标识这一表示。相同版本的编译、对象导入、静态归档与链接消费同一图；非当前格式须重新编译。链接依然核对类型、布局、访问及函数事实，原地址、初始化、浮点／NaN和实际写入失效规则保持，运行时Frame与资源ABI并未增加条件表或状态。
 

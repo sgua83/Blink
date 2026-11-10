@@ -5034,11 +5034,15 @@ impl crate::module::codec::Encode for Proof {
                         EncodedClause::Either(indices[&a.key()], indices[&b.key()])
                     }
                 };
-                let index = *unique.entry(node.clone()).or_insert_with(|| {
-                    let index = nodes.len();
-                    nodes.push(node);
-                    index
-                });
+                // 结构子索引已经同一时，合取／析取没有新的关系需要编码。
+                let index = match node {
+                    EncodedClause::Both(a, b) | EncodedClause::Either(a, b) if a == b => a,
+                    node => *unique.entry(node.clone()).or_insert_with(|| {
+                        let index = nodes.len();
+                        nodes.push(node);
+                        index
+                    }),
+                };
                 indices.insert(clause.key(), index);
             }
             nodes.encode(w);

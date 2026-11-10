@@ -96,6 +96,11 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
         if name=="dataset" && let Some(explicit)=explicit {
             return Builder::dataset_constructor_type(self.world,self.definition,explicit,args.len(),span).map(|(ty,count)|Some(Ty::owned_dataset((ty).syntax(),count)));
         }
+        if name == "view" && let Some([GenericArgument::Type(element)]) = explicit {
+            let mut syntax = element.clone();
+            syntax.view = true;
+            return self.declared_type(&syntax, self.definition, span).map(Some);
+        }
         if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? { return self.returned(ty, span); }
         if name == "address_of" && explicit.is_none() { return Ok(Ty::builtin("address")); }
         if name == "c_function" && explicit.is_none() {
