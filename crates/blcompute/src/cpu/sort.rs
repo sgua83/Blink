@@ -28,8 +28,11 @@ impl Code {
     }
 }
 pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[BufferAddress], count: u32) -> Result<()> {
-    let mut a = words(count as usize * 2)?;
-    let mut b = words(count as usize * 2)?;
+    // 原生初始化／scatter在首次读取前完整写入；这里只持有容量，不形成未初始化值切片。
+    let mut a = Vec::<u32>::new();
+    a.try_reserve_exact(count as usize * 2)?;
+    let mut b = Vec::<u32>::new();
+    b.try_reserve_exact(count as usize * 2)?;
     let grain = (count as usize).div_ceil(host.workers * 4).max(1);
     let chunks = (count as usize).div_ceil(grain);
     let mut rows = words(chunks * 17)?;
