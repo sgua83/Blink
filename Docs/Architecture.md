@@ -372,7 +372,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-2"></a>
 
-**parallel语句到阶段。** 输入为真实parallel Stmt、原定义及实际Instance，CPU应用提取还输入原Builder在提取前已有的SourceSite；原expand_stages及application_parallel将其交给同一Stage与Map。覆盖原整域源码与应用提取两种路径，不把合成函数名当原定义。原DefinitionSyntax::Generated可持有提取前的不可变SourceSite；生成定义自己的source_origin仍为空，真实语句的Builder消费同一原定义／实例上下文。Stage复用operation_source，parallel为Statement，原集合调用仍为Expression；没有另一来源表。材料在原IR拥有，查询借用，最后消费者后释放；融合后当前原Stage单个保留字段不代表全部原parallel，多对多／消除来源仍由.7.3.2交接，不冻结优化或为材料保活指令。当前两条原生产路径已实现；原Stmt.span通常覆盖parallel关键字，不扩大为整条语句。生成程序名仍归原Program／FunctionBody，语法来源的实例仍为原真实调用者；阶段索引生成原因与域调用路径见下述已交接事实，Frame／参数操作及其他生成职责仍沿未完成叶项。[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-2)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
+**parallel语句到阶段。** 输入为真实parallel Stmt、原定义及实际Instance，CPU应用提取还输入原Builder在提取前已有的SourceSite；原expand_stages及application_parallel将其交给同一Stage与Map。覆盖原整域源码与应用提取两种路径，不把合成函数名当原定义。原DefinitionSyntax::Generated可持有提取前的不可变SourceSite；生成定义自己的source_origin仍为空，真实语句的Builder消费同一原定义／实例上下文。Stage复用operation_source，parallel为Statement，原集合调用仍为Expression；没有另一来源表。材料在原IR拥有，查询借用，最后消费者后释放；融合后单个operation_source仍只表示原先根；同域Map的全部实际输入根及各自已有材料由同一Stage.generated_origin的StageFusion交接，保存／恢复沿原可选来源消费者。其他阶段与结构重写的完整多对多关系仍由.7.3.2交接，不冻结优化或为材料保活指令。当前两条原生产路径已实现；原Stmt.span通常覆盖parallel关键字，不扩大为整条语句。生成程序名仍归原Program／FunctionBody，语法来源的实例仍为原真实调用者；阶段索引生成原因与域调用路径见下述已交接事实，Frame／参数操作及其他生成职责仍沿未完成叶项。[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-2)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
 
 <a id="tool-7-2-4-3"></a>
 
