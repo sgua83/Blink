@@ -1129,7 +1129,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取由B接管；其余对象语义／合同及栈记录生成、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
-语法存储的[当前接管设计](../Docs/Architecture.md#syntax-storage-boundary)仍未实现。B模块将唯一持有普通记录／变体节点、模块内子项索引和自有文字；Source借用保留原字节范围，增长后按索引重新取得视图。Parser之外的codec恢复、检查器生成表达式／函数和泛型实例也有真实生产，必须直接写入其对应B结果；只替换Parser或内存分配不构成完整交接。原TypeName.canonical的名义绑定必须保留，规范化OutputConstant的Ty、bits与GeneratedOrigin则归原语义合同／IR，不进入B源语法，也不另设句柄表。冻结模板只读，实例在自己的B结果改写；节点编号不能替代原结构比较或Expr忽略Span的相等规则。Rust声明／Definition持有同一B语法及原Source到最后消费者，不复制第二棵树，原必要模块编码保持。
+语法存储的[当前接管设计](../Docs/Architecture.md#syntax-storage-boundary)尚未完成整体采用。B模块唯一持有源节点、模块内子项索引和自有文字，Source借用保留原字节范围，增长后按索引重新取得视图。声明表和各实例共享只读源定义；实例保留原instantiate已经产生的类型／const绑定，检查与IR生成按实际绑定解释源引用，删除Definition／Function深克隆及逐节点写回。必要的静态使用检查、作用域、错误位置及来源保持，实例实际代码／IR仍各自拥有。TypeName.canonical及规范化OutputConstant的Ty、bits、GeneratedOrigin属于原语义合同／IR，runtime codec继续恢复原语义值和编码，不附带编译器／种子依赖。只有真实新语法才写B结果；只为调用检查入口而构造的辅助Function／Return树退出。节点编号不代替结构比较，Expr的Span不参与原相等规则。语法、实例绑定与生成／语义结果各沿实际最后消费者释放，完整交接以原台账状态为准。
 
 **自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
