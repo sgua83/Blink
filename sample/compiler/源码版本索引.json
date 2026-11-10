@@ -232,7 +232,7 @@
     },
     {
       "path": "crates/blanguage/src/check/residency.rs",
-      "sha256": "77ea3030bbd0c7f305a7cf7f34a70fa9cc41fd3e44d05b673fff03fe695dc7c3"
+      "sha256": "ab6317da0e2fd767239ef1333d2868c50ea4564f210346c3bbaf8362dd7c32cd"
     },
     {
       "path": "crates/blanguage/src/check/results.rs",
@@ -272,7 +272,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "sha256": "2237adc90fb823937df1638382a1deb282512c8ddc40dd74ff7a99e623bcd2d5"
+      "sha256": "ed193b30ff779ac614a854a48a0059f44f56aa1b33f5fea6cbf4baea905fdd77"
     },
     {
       "path": "crates/blanguage/src/check/view_liveness.rs",
@@ -992,8 +992,8 @@
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "start_line": 341,
-      "end_line": 354,
+      "start_line": 344,
+      "end_line": 357,
       "sha256": "0024c966be795ca686f1803d97ec6ae59f5e397fb887d4e580ed5543bd0945a9"
     },
     {

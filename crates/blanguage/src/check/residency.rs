@@ -322,7 +322,7 @@ fn known(value:&Residency,target:Target,path:&bounds::Clause)->bool{
 }
 fn insert(required:&mut Requirements,input:Input,target:Target,when:bounds::Condition)->bool{
     if !when.active(){return true;}
-    if required.iter().any(|((other,place),guards)|*other==input&&*place!=target&&guards.iter().any(|guard|guard.overlaps(&when))){return false;}
+    if required.iter().any(|((other,place),guards)|*other==input&&*place!=target&&guards.iter().any(|guard|guard.assume(&when.assume(&bounds::Clause::default(),true),true).overlaps(&bounds::Clause::default()))){return false;}
     required.entry((input,target)).or_default().insert(when);true
 }
 
@@ -409,7 +409,7 @@ fn query_value(value:&Residency,wanted:Option<&Input>,outputs:&Outputs,w:&mut cr
     }}
     let mut out=BTreeMap::new();terms(value,wanted,&bounds::Clause::default(),outputs,&mut out);
     out.len().encode(w);
-    for(origins,path)in out{origins.encode(w);bounds::Condition::guard(path.canonical()).encode(w);}
+    for(origins,path)in out{origins.encode(w);bounds::Condition::guard(path).encode(w);}
 }
 fn query_key(call:&Call,wanted:Option<&Input>,outputs:&Outputs)->Vec<u8>{
     use crate::module::codec::Encode;
@@ -432,7 +432,7 @@ fn query_consume(required:&mut Requirements,deferred:&mut bool,wanted:Option<&In
                 Origin::Cpu=>target==Target::Cpu||!path.overlaps(&bounds::Clause::default()),
                 Origin::Gpu=>target==Target::Gpu||!path.overlaps(&bounds::Clause::default()),
                 Origin::Input(input)=>{
-                    if !path.overlaps(&bounds::Clause::default()){return true;}
+                    if (*deferred && wanted!=Some(input))||(wanted.is_none()&&!path.overlaps(&bounds::Clause::default())){return true;}
                     *deferred=true;
                     wanted!=Some(input)||insert(required,input.clone(),target,bounds::Condition::guard(path.clone()))
                 },
@@ -486,9 +486,9 @@ fn bind_arguments(declared:&Arguments,actual:&Arguments,bindings:&BTreeMap<Value
     }
     result
 }
-fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Option<&Input>,source:&Source,span:Span)->Result<(Requirements,bool)>{
+fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Option<&Input>,source:&Source,span:Span,mut deferred:bool)->Result<(Requirements,bool)>{
     enum Work{Enter(Call),Leave(Vec<u8>)}
-    let mut work=vec![Work::Enter(call)];let mut active=BTreeSet::new();let mut required=Requirements::new();let mut deferred=false;
+    let mut work=vec![Work::Enter(call)];let mut active=BTreeSet::new();let mut required=Requirements::new();
     while let Some(next)=work.pop(){
         let call=match next{Work::Enter(call)=>call,Work::Leave(key)=>{active.remove(&key);continue}};
         if !call.path.possible(){continue;}
@@ -514,7 +514,7 @@ fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Opti
 pub(super) fn check_calls(inputs:&Inputs,known:&BTreeMap<String,Contract>,outputs:&Outputs)->Result<bool>{
     let mut deferred=false;
     for call in &inputs.calls{
-        deferred|=query(call.clone(),known,outputs,None,call.source.as_ref().unwrap(),call.span)?.1;
+        deferred=query(call.clone(),known,outputs,None,call.source.as_ref().unwrap(),call.span,deferred)?.1;
     }
     Ok(deferred)
 }
@@ -546,13 +546,13 @@ pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters
         for input in wanted{
             let input=input.at_call(parameters);
             let call=Call{function:name.into(),arguments:arguments.clone(),bindings:bindings.clone(),path:bounds::Clause::default(),source:None,span:Span::default()};
-            for(key,guards)in query(call,known,outputs,Some(&input),source,*span)?.0{required.entry(key).or_default().extend(guards);}
+            for(key,guards)in query(call,known,outputs,Some(&input),source,*span,false)?.0{required.entry(key).or_default().extend(guards);}
         }
     }}
     let required=local(&required,parameters);
     for usage in &inputs.uses{if let Use::Same{before,after,path,source,span}=usage{
         let before=evaluate(before,outputs);let after=evaluate(after,outputs);if before.absent()||after.absent(){continue;}
-        if !equal_under(&refine(&before,&required),&refine(&after,&required),path,&mut|_,_,_|false){return source.fail(*span,"B266","循环真实回边没有在该路径归还入口相同的CPU／GPU存储位置");}
+        if !equal_under(&refine(&before,&required),&refine(&after,&required),path,&mut|_,_,path|!path.overlaps(&bounds::Clause::default())){return source.fail(*span,"B266","循环真实回边没有在该路径归还入口相同的CPU／GPU存储位置");}
     }}Ok(())
 }
 pub(super) fn visit(

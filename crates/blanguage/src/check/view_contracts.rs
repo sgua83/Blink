@@ -275,8 +275,11 @@ impl Function {
                     if let address::Root::Resource{index,..}|address::Root::Dataset{index,..}=&mut origin.root {
                         *index=index.filter(|index|index.map(|id|self.parameters.get(&id).copied().filter(|id|self.input(*id))).is_some());
                     }
-                    if let address::Root::External(address::Identity::Storage(borrow))=&mut origin.root {
-                        *borrow=borrow.map_sources(|source|match source{Origin::Position(origin)if origin.has_local()=>Borrow::default(),source=>Borrow::source(source)});
+                    if let address::Root::Resource{borrow,..}|address::Root::External(address::Identity::Storage(borrow))=&mut origin.root {
+                        *borrow=borrow.map_sources(|source|match source{
+                            Origin::Data(id) if !self.parameters.get(&id).is_some_and(|id|self.input(*id))=>Borrow::default(),
+                            Origin::Position(origin)if origin.has_local()=>Borrow::default(),source=>Borrow::source(source)
+                        });
                         if !borrow.active(){return Borrow::default();}
                     }
                     canonical(Borrow::source(Origin::Position(Arc::new(origin))),self,None,&BTreeMap::new())
