@@ -124,8 +124,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let compiled = compiler.build_object(&path, &root, &imports, kind, &output)
             .map_err(|error| -> Box<dyn std::error::Error> { error })?;
         if let Some(path) = stack_report {
-            let path = std::path::absolute(path)?;
-            std::fs::create_dir_all(path.parent().unwrap())?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            #[cfg(windows)]
+            let _object_input = {
+                use std::os::windows::fs::OpenOptionsExt;
+                std::fs::OpenOptions::new().read(true).share_mode(1).open(&compiled.artifact)?
+            };
             std::fs::write(path, compiled.object.stack_report(stack_budget))?;
         }
         println!("object {} -> {}{}", compiled.object.name(), output.display(),

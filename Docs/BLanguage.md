@@ -1726,7 +1726,7 @@ CPU普通位置的跨对象借用现按逻辑分量／声明布局直接交接�
 
 ## CPU调用链的静态栈报告
 
-`bc -c`可同时写出本对象的报告；`blink --stack-report`从已编译应用、模块和归档解析实际选中的调用图，只生成报告。后者不链接PE、不读B实现、不调用Cargo／rustc；需要PE时仍单独使用原链接命令。例如承接上节的对象：
+`bc -c`可同时写出本对象的独立报告。Windows入口在原报告写出期间只读持有已发布的COFF，实际同文件的报告写入由系统在截断前拒绝，包括同路径、大小写别名及硬链接；原对象继续可消费，错误返回时不报告本次整体成功。独立新报告与既有报告更新保持；报告目的地直接交给原文件入口，目录创建只消费实际存在的父路径关系。`blink --stack-report`从已编译应用、模块和归档解析实际选中的调用图，只生成报告。后者不链接PE、不读B实现、不调用Cargo／rustc；需要PE时仍单独使用原链接命令。例如承接上节的对象：
 
 ```powershell
 .\target\release\bc.exe -c sample/beginner/modules.b -I sample --import target/modules/math.obj -o target/modules/app.obj --stack-report target/modules/unit-stack.txt
