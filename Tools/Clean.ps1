@@ -112,9 +112,9 @@ $rows = @(
         $removed = $false
         if ($PSCmdlet.ShouldProcess($entry.Path, 'Remove selected generated intermediates')) {
             if ($item -is [IO.DirectoryInfo]) {
-                Remove-Item -LiteralPath $item.FullName -Recurse
+                $item.Delete($true)
             } else {
-                Remove-Item -LiteralPath $item.FullName
+                $item.Delete()
             }
             $removed = $true
         }
