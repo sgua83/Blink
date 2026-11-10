@@ -713,6 +713,13 @@ impl ReferenceAddress {
         })
     }
 }
+fn resource_metadata(ty:&Ty,resources:Vec<Vec<usize>>)->Vec<std::ops::Range<u32>> {
+    resources.into_iter().map(|fields|{
+        let(mut offset,mut ty)=(0,ty);
+        for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
+        offset..offset+ty.size
+    }).collect()
+}
 impl Builder<'_> {
     pub(super) fn address_write_positions(&self,borrow:&view::Borrow)->Option<Vec<Position>> {
         self.address_write_regions(borrow).map(|regions|regions.into_iter().map(|region|region.position).collect())
@@ -743,8 +750,10 @@ impl Builder<'_> {
             .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
         for data in data {self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown)?;}
         for binding in self.env.values_mut() {
+            let metadata=match &*binding{Binding::OwnedValue(owner)=>resource_metadata(&owner.value.ty,view::resource_paths(&owner.value.ty).into_iter().filter(|fields|view::owned_data_at(owner,fields).is_some()).collect()),_=>Vec::new()};
             if let Some((proof,uniform,owner))=binding.proof_storage() {
-                proof.forget_value(&(0..owner.ty().components.len()).collect::<Vec<_>>(),owner.ty().components.len());
+                let components=owner.ty().components.iter().enumerate().filter_map(|(i,(_,word))|(!metadata.iter().any(|range|range.contains(word))).then_some(i)).collect::<Vec<_>>();
+                proof.forget_value(&components,owner.ty().components.len());
                 *proof=std::mem::take(proof).with_external_borrows(owner.ty());
                 *uniform=false;
                 if let Binding::OwnedValue(owner)=binding {owner.value.constant=None;}
@@ -874,11 +883,7 @@ impl Builder<'_> {
         let owners=self.env.iter().filter_map(|(name,binding)|binding.stored_place().map(|place|(name.clone(),self.positions(&place)))).collect::<Vec<_>>();
         let mut snapshots=Vec::new();
         let mut capture=|proof:&mut bounds::Proof,uniform:&mut bool,ty:&Ty,mut positions:Vec<(usize,Position)>,resources:Vec<Vec<usize>>|{
-            let metadata=resources.into_iter().map(|fields|{
-                let(mut offset,mut ty)=(0,ty);
-                for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
-                offset..offset+ty.size
-            }).collect::<Vec<_>>();
+            let metadata=resource_metadata(ty,resources);
             positions.retain(|(component,_)|!metadata.iter().any(|range|range.contains(&ty.components[*component].1)));
             let width=ty.components.len();let previous=proof.clone();proof.forget_value(&positions.iter().map(|(component,_)|*component).collect::<Vec<_>>(),width);
             for(component,position)in positions {
