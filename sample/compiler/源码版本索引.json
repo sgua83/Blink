@@ -232,7 +232,7 @@
     },
     {
       "path": "crates/blanguage/src/check/residency.rs",
-      "sha256": "868cc730fb9fa72d4f70797adb4174960bf39415aff7e5cfd4a940c6f32cdd79"
+      "sha256": "24c172fb89d83b58f5b545517cb7354d560488de444a0c2259189c6a0a0bbc78"
     },
     {
       "path": "crates/blanguage/src/check/results.rs",

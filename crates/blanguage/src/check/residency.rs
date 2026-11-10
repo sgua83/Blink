@@ -420,7 +420,6 @@ fn query_key(call:&Call,wanted:Option<&Input>,outputs:&Outputs)->Vec<u8>{
         id.encode(&mut w);let identity=proof.known_identity(0).filter(|_|proof.origins.len()==1);identity.encode(&mut w);
         if identity.is_none(){proof.encode(&mut w);}
     }
-    bounds::Condition::guard(call.path.canonical()).encode(&mut w);
     call.arguments.len().encode(&mut w);
     for(input,value)in &call.arguments{input.encode(&mut w);query_value(value,wanted,outputs,&mut w);}
     w.0
