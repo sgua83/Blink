@@ -794,8 +794,7 @@ impl Builder<'_> {
                 // This range has no application caller whose later closure could consume the call.
                 // Consume the already closed imported contract with its actual CPU inputs now.
                 let (known,outputs,_)=residency_contracts(self.world,&self.functions)?;
-                let inputs=residency::Inputs{calls:vec![call],..Default::default()};
-                if residency::check_calls(&inputs,&known,&outputs)? {
+                if residency::check_calls(std::iter::once(&call),&known,&outputs)? {
                     return self.fail(span,"B270","CPU范围尚不能交接该已编译函数所需的条件存储位置");
                 }
             } else {
@@ -1235,6 +1234,12 @@ fn residency_contracts(world:&World,module:&Module)->Result<(BTreeMap<String,res
 }
 // 每个原函数持有自身Uses／Calls；调用者消费实际实参，不穷举递归后代。
 fn resolve_residencies(world:&World,module: &mut Module) -> Result<BTreeMap<String,Vec<u8>>> {
+    // Definition inputs retain their requirements in the existing call contract.
+    fn unbound(value:&residency::Residency)->bool{match value{
+        residency::Residency::Absent=>true,
+        residency::Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|matches!(origin,residency::Origin::Input(_))),
+        residency::Residency::Selected(_,a,b)=>unbound(a)&&unbound(b),
+    }}
     resolve_views(world,module,None)?;
     let (mut known,outputs,imports)=residency_contracts(world,module)?;
     for(name,unit)in &mut module.units{let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
@@ -1243,7 +1248,7 @@ fn resolve_residencies(world:&World,module: &mut Module) -> Result<BTreeMap<Stri
         known.insert(name.clone(),unit.contract.residency.clone());
     }
     for(name,unit)in &mut module.units{let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
-        residency::check_calls(&unit.residency,&known,&outputs)?;
+        residency::check_calls(unit.residency.calls.iter().filter(|call|!call.arguments.values().all(unbound)),&known,&outputs)?;
         let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
         residency::check_loops(name,&unit.residency,&unit.contract.residency,&parameters,&outputs,&known,unit.definition.function.params.len())?;
         for written in &mut unit.contract.written{if let Some(value)=written{if !residency::resolve_returned(value,&outputs){*written=None;}}}

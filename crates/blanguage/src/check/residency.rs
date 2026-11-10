@@ -511,9 +511,9 @@ fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Opti
     }
     Ok((required,deferred))
 }
-pub(super) fn check_calls(inputs:&Inputs,known:&BTreeMap<String,Contract>,outputs:&Outputs)->Result<bool>{
+pub(super) fn check_calls<'a>(calls:impl Iterator<Item=&'a Call>,known:&BTreeMap<String,Contract>,outputs:&Outputs)->Result<bool>{
     let mut deferred=false;
-    for call in &inputs.calls{
+    for call in calls{
         deferred=query(call.clone(),known,outputs,None,call.source.as_ref().unwrap(),call.span,deferred)?.1;
     }
     Ok(deferred)
@@ -850,10 +850,28 @@ pub(super) fn output_sources<'a>(
 }
 
 pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool {
+    // Model presence needs one reachable producer, not every possible storage location.
+    fn present(value:&Residency,outputs:&Outputs,path:&bounds::Clause,active:&mut BTreeSet<Output>)->bool{
+        if !path.possible(){return false;}
+        match value{
+            Residency::Absent=>false,
+            Residency::Selected(when,a,b)=>present(a,outputs,&when.assume(path,true),active)
+                ||present(b,outputs,&when.assume(path,false),active),
+            Residency::Origins(origins)=>origins.is_empty()||origins.iter().any(|origin|match origin{
+                Origin::Output(output)=>{
+                    if !active.insert(output.clone()){return false;}
+                    let found=output_source(output,outputs).is_some_and(|value|present(&value,outputs,path,active));
+                    active.remove(output);
+                    found
+                },
+                _=>true,
+            }),
+        }
+    }
     fn resolve(value: &mut Returned, outputs: &Outputs) -> bool {
         match value {
             Returned::Dataset(data) => {
-                let present=!evaluate(&data.residency,outputs).absent();
+                let present=present(&data.residency,outputs,&bounds::Clause::default(),&mut BTreeSet::new());
                 if present && data.length.maximum()!=0 && let Some(elements)=data.elements.known_mut(){resolve(elements,outputs);}
                 present
             }
