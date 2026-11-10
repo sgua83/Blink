@@ -423,18 +423,22 @@ fn query_key(call:&Call,wanted:Option<&Input>,outputs:&Outputs)->Vec<u8>{
     w.0
 }
 fn query_consume(required:&mut Requirements,deferred:&mut bool,wanted:Option<&Input>,value:&Residency,target:Target,path:&bounds::Clause)->bool{
-    if !path.overlaps(&bounds::Clause::default()){return true;}
     match value{
         Residency::Absent=>true,
         Residency::Selected(when,a,b)=>query_consume(required,deferred,wanted,a,target,&when.assume(path,true))&&query_consume(required,deferred,wanted,b,target,&when.assume(path,false)),
-        Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|match origin{
-            Origin::Cpu=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,
-            Origin::Input(input)=>{
-                *deferred=true;
-                wanted!=Some(input)||insert(required,input.clone(),target,bounds::Condition::guard(path.clone()))
-            },
-            Origin::Output(_)=>false,
-        }),
+        Residency::Origins(origins)=>{
+            if origins.is_empty(){return !path.overlaps(&bounds::Clause::default());}
+            origins.iter().all(|origin|match origin{
+                Origin::Cpu=>target==Target::Cpu||!path.overlaps(&bounds::Clause::default()),
+                Origin::Gpu=>target==Target::Gpu||!path.overlaps(&bounds::Clause::default()),
+                Origin::Input(input)=>{
+                    if !path.overlaps(&bounds::Clause::default()){return true;}
+                    *deferred=true;
+                    wanted!=Some(input)||insert(required,input.clone(),target,bounds::Condition::guard(path.clone()))
+                },
+                Origin::Output(_)=>!path.overlaps(&bounds::Clause::default()),
+            })
+        },
     }
 }
 // 声明中的Input映射还引用实参已有的后代模型，不把父位置当作完整子树。
@@ -487,7 +491,7 @@ fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Opti
     let mut work=vec![Work::Enter(call)];let mut active=BTreeSet::new();let mut required=Requirements::new();let mut deferred=false;
     while let Some(next)=work.pop(){
         let call=match next{Work::Enter(call)=>call,Work::Leave(key)=>{active.remove(&key);continue}};
-        if !call.path.overlaps(&bounds::Clause::default()){continue;}
+        if !call.path.possible(){continue;}
         let key=query_key(&call,wanted,outputs);
         if !active.insert(key.clone()){continue;}
         work.push(Work::Leave(key));

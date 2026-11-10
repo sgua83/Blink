@@ -3745,6 +3745,7 @@ impl<'a> Builder<'a> {
             span,
             initial,
             nonempty,
+            &begin,
         )?;
         if self.flow.continues() {
             self.complete_application_writes(|builder,data| writes.unknown_storage
@@ -3761,6 +3762,7 @@ impl<'a> Builder<'a> {
         span: Span,
         initial: bool,
         nonempty: bool,
+        original_begin: &Value,
     ) -> Result<effects::LoopWrites> {
         self.flow = Flow::NEXT;
         let ForLoop {
@@ -3811,7 +3813,7 @@ impl<'a> Builder<'a> {
             ..cursor.clone()
         };
         if !bounds::seeks(body) {
-            self.refine_bounds(&Arc::new(bounds::Condition::comparison(Comparison::LessEqual, &begin, &cursor)), true);
+            self.refine_bounds(&Arc::new(bounds::Condition::comparison(Comparison::LessEqual, original_begin, &cursor)), true);
         }
         let binding = if let Some(domain) = data {
             match domain {
@@ -3935,7 +3937,7 @@ impl<'a> Builder<'a> {
                     cursor.begin = next.unwrap();
                     let initial=builder.next_initial_loop(body)?;
                     let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
-                    builder.for_loop(cursor, body, span, initial, nonempty).map(|_| ())
+                    builder.for_loop(cursor, body, span, initial, nonempty, original_begin).map(|_| ())
                 })?;
             code = expanded;
             body_flow = body_flow.union(flow);
