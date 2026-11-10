@@ -849,6 +849,9 @@ impl World {
         }
         let mut syntax = name.clone();
         syntax.canonical = false;
+        if syntax.is_texture() || syntax.is_acceleration() {
+            return Ok(syntax);
+        }
         let (types, count, code) = match name.name.as_str() {
             "array" => (1, 2, "B238"),
             "result" => (2, 2, "B269"),
