@@ -1181,13 +1181,18 @@ pub fn emit_pass(
 fn emit_shader(
     program: &Program, stage_index: usize, pass: Pass,
 ) -> Result<(Vec<u32>, u64), &'static str> {
-    if program.buffers.iter().any(|b| {
-        b.stride > PAGE_BYTES
-            || b.ty
-                .view_fields()
-                .iter()
-                .any(|(_, ty)| ty.size > PAGE_BYTES)
-    }) {
+    fn oversized_view(ty: &Ty) -> bool {
+        if ty.has_variants() {
+            ty.variants.iter().any(|variant| oversized_view(&variant.ty))
+        } else if let Some(element) = &ty.view {
+            element.size > PAGE_BYTES
+        } else if let Some(element) = &ty.array {
+            ty.values[0] != 0 && oversized_view(element)
+        } else {
+            ty.fields.iter().any(|(_, _, field)| oversized_view(field))
+        }
+    }
+    if program.buffers.iter().any(|b| b.stride > PAGE_BYTES || oversized_view(&b.ty)) {
         return Err("GPU 页寻址要求单条记录能容纳于一个物理页");
     }
     let stage = &program.stages[stage_index];

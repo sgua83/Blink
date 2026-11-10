@@ -524,7 +524,7 @@
     },
     {
       "path": "crates/blanguage/src/spirv/codegen.rs",
-      "sha256": "c48a7309c47e7046cc2c14e72296f0d1b06f6856cad79b792bfa93868e329487"
+      "sha256": "d31c19be8acb99c0931782a6fcf6b425228aa93bdb65c50f152c874210ca8964"
     },
     {
       "path": "crates/blanguage/src/spirv/image.rs",
