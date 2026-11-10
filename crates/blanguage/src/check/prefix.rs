@@ -381,14 +381,14 @@ pub(super) fn common(a: &view::Borrow, b: &view::Borrow) -> view::Borrow {
     let mut out=view::Borrow::default();
     for (source,when) in a.sources.entries() {
         if b.sources.contains(source) {
-            out.sources.insert_when(source.clone(),bounds::Clause::both(&when,&b.sources.when(source)));
+            out.sources.insert_when(source.clone(),bounds::Clause::both(&when,&b.sources.when(source).assume(&bounds::Clause::default(),true)));
         }
     }
     for (input,when) in a.inputs.entries() {
-        if b.inputs.contains(input) { out.inputs.insert_when(*input,bounds::Clause::both(&when,&b.inputs.when(input))); }
+        if b.inputs.contains(input) { out.inputs.insert_when(*input,bounds::Clause::both(&when,&b.inputs.when(input).assume(&bounds::Clause::default(),true))); }
     }
     for (call,when) in a.calls.entries() {
-        if b.calls.contains(call) { out.calls.insert_when(call.clone(),bounds::Clause::both(&when,&b.calls.when(call))); }
+        if b.calls.contains(call) { out.calls.insert_when(call.clone(),bounds::Clause::both(&when,&b.calls.when(call).assume(&bounds::Clause::default(),true))); }
     }
     out
 }
@@ -414,8 +414,8 @@ pub(super) fn covers(known: &view::Borrow, required: &view::Borrow, path: &bound
         let available=known.sources.entries().filter(|(candidate,_)|source_covers(candidate,source,path))
             .fold(bounds::Clause::impossible(),|all,(_,when)|bounds::Clause::either(&all,&when));
         implied(available,when,path)
-    }) && required.inputs.entries().all(|(input,when)|implied(known.inputs.when(input),when,path))
-      && required.calls.entries().all(|(call,when)|implied(known.calls.when(call),when,path))
+    }) && required.inputs.entries().all(|(input,when)|implied(known.inputs.when(input).assume(&bounds::Clause::default(),true),when,path))
+      && required.calls.entries().all(|(call,when)|implied(known.calls.when(call).assume(&bounds::Clause::default(),true),when,path))
 }
 
 

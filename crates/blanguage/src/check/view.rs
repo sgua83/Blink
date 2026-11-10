@@ -27,7 +27,7 @@ impl<K:Ord+Clone> Edges<K>{
     pub fn iter(&self)->std::collections::btree_map::Keys<'_,K,bounds::Condition>{self.0.keys()}
     pub fn entries(&self)->impl Iterator<Item=(&K,bounds::Clause)>{self.0.iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
     pub fn into_entries(self)->impl Iterator<Item=(K,bounds::Clause)>{self.0.into_iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
-    pub fn when(&self,key:&K)->bounds::Clause{self.0.get(key).map(|when|when.assume(&bounds::Clause::default(),true)).unwrap_or_else(bounds::Clause::impossible)}
+    pub fn when(&self,key:&K)->bounds::Condition{self.0.get(key).cloned().unwrap_or_else(||bounds::Condition::constant(false))}
     fn restricted(&self,path:&bounds::Clause)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.assume(path,true));}result}
     fn guards_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.guard_at_call(bindings).assume(&bounds::Clause::default(),true));}result}
     fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.output_bound(bindings).assume(&bounds::Clause::default(),true));}result}
@@ -318,7 +318,7 @@ impl Requirement {
         match self {
             Self::Return{borrow,span,..} if borrow.has_local()=>source.fail(*span,"B227","地址不能返回或输出当前函数的局部存储"),
             Self::Unborrowed{resource,borrow,ownership,span} if (if *ownership{borrow.owners()}else{borrow.resources()}).sources.entries().any(|(source,when)|matches!(source,Source::Data(_)|Source::Element{..})&&resource.resources().overlaps_source(source,&when))=>source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放"),
-            Self::Return{borrow,allowed,owned,span} if !owned.pending()&&borrow.owners().sources.entries().any(|(source,when)|matches!(source,Source::Data(id)if !allowed.contains(id)&&when.overlaps(&bounds::Condition::guard(owned.owners().sources.when(source)).assume(&bounds::Clause::default(),false))))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
+            Self::Return{borrow,allowed,owned,span} if !owned.pending()&&borrow.owners().sources.entries().any(|(source,when)|matches!(source,Source::Data(id)if !allowed.contains(id)&&when.overlaps(&owned.owners().sources.when(source).assume(&bounds::Clause::default(),false))))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
             _=>Ok(()),
         }
     }
@@ -356,8 +356,8 @@ impl Source {
                 if fields!=other_fields{return false;}
                 if let(Some(a),Some(b))=(index,other_index){if !bounds::Condition::index_equal(*a,*b).assume(path,true).possible(){return false;}}
                 parent.sources.entries().any(|(source,when)|other.overlaps_source(source,&bounds::Clause::both(path,&when)))
-                    ||parent.inputs.entries().any(|(input,when)|bounds::Clause::both(path,&when).overlaps(&other.inputs.when(input)))
-                    ||parent.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&other.calls.when(call)))
+                    ||parent.inputs.entries().any(|(input,when)|bounds::Clause::both(path,&when).overlaps(&other.inputs.when(input).assume(&bounds::Clause::default(),true)))
+                    ||parent.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&other.calls.when(call).assume(&bounds::Clause::default(),true)))
             },
             // Different input views can still borrow the same external resource.
             (Self::Parameter(a,_),Self::Parameter(b,_))=>a==b,
@@ -488,7 +488,7 @@ impl Builder<'_> {
                             ownership=>ownership.available(),
                         };
                         let actual=resource_borrow(data).restricted(&builder.path);
-                        present&&!when.overlaps(&bounds::Condition::guard(actual.sources.when(source)).assume(&bounds::Clause::default(),false))
+                        present&&!when.overlaps(&actual.sources.when(source).assume(&bounds::Clause::default(),false))
                     });
                     if held{continue;}
                 }

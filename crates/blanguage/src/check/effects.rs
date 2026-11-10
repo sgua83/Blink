@@ -1354,8 +1354,12 @@ impl Builder<'_> {
             fn overlaps(a:&view::Borrow,b:&view::Borrow,path:&bounds::Clause)->bool {
                 a.unresolved()||b.unresolved()
                     ||a.sources.entries().any(|(source,when)|b.overlaps_source(source,&bounds::Clause::both(path,&when)))
-                    ||a.inputs.entries().any(|(input,when)|bounds::Clause::both(path,&when).overlaps(&b.inputs.when(input)))
-                    ||a.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&b.calls.when(call)))
+                    ||a.inputs.iter().any(|input|{
+                        let when=a.inputs.when(input).logical(b.inputs.when(input),false);
+                        when!=bounds::Condition::constant(false)
+                            &&(when==bounds::Condition::constant(true)||when.assume(&bounds::Clause::default(),true).overlaps(path))
+                    })
+                    ||a.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&b.calls.when(call).assume(&bounds::Clause::default(),true)))
             }
             fn ancestors(resource:&view::Borrow,write:&DataProjection<'_>,path:&bounds::Clause)->bool {
                 resource.sources.entries().any(|(source,when)|{
@@ -1636,14 +1640,14 @@ impl Builder<'_> {
             let guard=match self.env.get(name){Some(Binding::Owned(value))=>&value.proof,Some(Binding::OwnedValue(value))=>&value.value.proof,Some(Binding::ApplicationData(data))=>&data.length.proof,_=>continue};
             for(component,(scalar,_))in components.iter().enumerate(){if *scalar==Scalar::U32{
                 let target=match &owner{Some(owner)=>LoopPlace::Stored(owner.clone(),component),None=>LoopPlace::Length};
-                candidates.push((name.clone(),target,proof.project(&[component],components.len()),guard.project(&[component],components.len())));
+                candidates.push((name.clone(),target,proof.project(&[component],components.len()),Some(guard.project(&[component],components.len()))));
             }}
         }
         for projection in elements {
             for component in projection.value.1.iter().flatten().copied().collect::<BTreeSet<_>>(){
                 if candidates.iter().any(|(_,target,_,_)|matches!(target,LoopPlace::Element(other,at)if *at==component&&other.base==projection.base&&other.resource==projection.resource&&other.index==projection.index)){continue;}
                 let input=self.loop_element_proof(&projection,component,initial,&entry_path)?;
-                let guard=self.loop_element_proof(&projection,component,header,&self.path.clone())?;
+                let guard=if projection.base.components[component].0==Scalar::U32{Some(self.loop_element_proof(&projection,component,header,&self.path.clone())?)}else{None};
                 let selected=DataProjection{data:None,resource:projection.resource.clone(),base:projection.base.clone(),access:projection.access,index:projection.index,value:projection.value.clone()};
                 candidates.push((String::new(),LoopPlace::Element(selected,component),input,guard));
             }
@@ -1655,8 +1659,8 @@ impl Builder<'_> {
             if let Some(condition)=condition&&matches!(self.numeric_expression_effect(condition,&name,&target,&writes)?,NumericEffect::Unknown){continue;}
             if let LoopPlace::Element(element,component)=&target {
                 self.retain_loop_element(element,*component,&empty,header,(&entry_path,initial),&|_|input.clone())?;
-                if element.base.components[*component].0!=Scalar::U32{continue;}
             }
+            let Some(guard)=guard else{continue;};
             if let Some(identity)=input.known_identity(0){let mut domains=input.domains(0);domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);}
             let mut scope=Scope::current(self);scope.writes=Some(&self.loop_contexts.last().unwrap().writes);
             let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,&writes,!bounds::seeks(body),&mut scope,&bounds::Clause::default(),None,&mut None)?;

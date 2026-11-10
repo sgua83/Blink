@@ -3392,8 +3392,12 @@ impl Builder<'_> {
         fn collect(builder:&Builder<'_>,borrow:&view::Borrow,owner:&view::Borrow,path:&bounds::Clause,env:&BTreeMap<String,Binding>)->Vec<(Vec<Vec<usize>>,bool,bounds::Condition)> {
             let mut paths=Vec::new();let selected=borrow.restricted(path);let root=owner.restricted(path);
             let shared=selected.sources.entries().any(|(source,when)|matches!(source,view::Source::Data(_)|view::Source::Parameter(..)|view::Source::Element{..})&&root.overlaps_source(source,&when))
-                ||selected.calls.entries().any(|(call,when)|when.overlaps(&root.calls.when(call)))
-                ||selected.inputs.entries().any(|(input,when)|when.overlaps(&root.inputs.when(input)));
+                ||selected.calls.entries().any(|(call,when)|when.overlaps(&root.calls.when(call).assume(&bounds::Clause::default(),true)))
+                ||borrow.inputs.iter().any(|input|{
+                    let when=borrow.inputs.when(input).logical(owner.inputs.when(input),false);
+                    when!=bounds::Condition::constant(false)
+                        &&(when==bounds::Condition::constant(true)||when.assume(&bounds::Clause::default(),true).overlaps(path))
+                });
             if shared{paths.push((Vec::new(),selected==root,bounds::Condition::constant(true)));}
             for(source,when)in borrow.sources.entries(){
                 let truth=bounds::Condition::guard(when).truth_in(path);
