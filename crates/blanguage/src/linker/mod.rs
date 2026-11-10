@@ -116,7 +116,7 @@ fn resolve_symbol(
         let provider = provider.ok_or_else(|| format!("未定义模块符号 {name}"))?;
         let next = objects.len();
         define(&provider, next, defined)?;
-        let target = defined[name];
+        let target = *defined.get(name).ok_or_else(|| format!("静态库目录选中的模块 {} 未定义请求符号 {name}", provider.name))?;
         objects.push(Source::Owned(provider));
         target
     };

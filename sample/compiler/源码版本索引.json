@@ -352,7 +352,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/mod.rs",
-      "sha256": "5dec8d3baf936e4671f704f252f7dc99622b6f3a6c2f09632a3182df77aed6b3"
+      "sha256": "334dd6a2d143dd281772b5054fdbe256b7a9de3c26ad4da7689d3dd820d235d3"
     },
     {
       "path": "crates/blanguage/src/linker/msvc.rs",

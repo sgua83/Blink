@@ -4449,7 +4449,7 @@ extern "C" MetadataLayout layout(MetadataInput input) on cpu;
 extern "C" void encode(MetadataInput input,address output) on cpu;
 ```
 
-COFF静态归档的格式由crates/blanguage/src/bootstrap/archive.h／.b读写，原static_library.rs负责输入I/O、COFF对象身份、唯一Library目录容器及Vec输出存储。B布局阶段给出两个链接成员、长名称及对象成员的位置和总字节数，写出阶段直接填同一输出，原对象字节保持；符号按UTF-8字节名称与原成员顺序排序，同名选择原首成员。读取阶段借用同一文件字节，先确定第二链接成员与长名称表，再解释目录索引和实际成员；B直接把名字、对象体及符号的字节范围交给本次Rust C ABI接收函数，Rust转换UTF-8并填原Library容器，不再解析格式。接收错误沿本次调用返回，部分构造仍由原Rust拥有链释放。字节、上下文及真实接收函数保持到同步调用结束，B不保存地址；接口中的requires nonzero只声明函数地址非零，不证明外部代码和存储寿命。按符号选择及一次抽取继续沿原Rust所有者，成员COFF本体由原解码者解释；没有第二目录或Frame，不把格式迁移等同整个链接器已经用B实现。
+COFF静态归档的格式由crates/blanguage/src/bootstrap/archive.h／.b读写，原static_library.rs负责输入I/O、COFF对象身份、唯一Library目录容器及Vec输出存储。B布局阶段给出两个链接成员、长名称及对象成员的位置和总字节数，写出阶段直接填同一输出，原对象字节保持；符号按UTF-8字节名称与原成员顺序排序，同名选择原首成员。读取阶段借用同一文件字节，先确定第二链接成员与长名称表，再解释目录索引和实际成员；B直接把名字、对象体及符号的字节范围交给本次Rust C ABI接收函数，Rust转换UTF-8并填原Library容器，不再解析格式。接收错误沿本次调用返回，部分构造仍由原Rust拥有链释放。字节、上下文及真实接收函数保持到同步调用结束，B不保存地址；接口中的requires nonzero只声明函数地址非零，不证明外部代码和存储寿命。按符号选择及一次抽取继续沿原Rust所有者，成员COFF本体由原解码者解释。目录命中只交出候选，真实定义仍归成员Object；原linker::resolve_symbol调用define交入本次符号表，再直接消费同一表的请求符号查找结果。成员没有该定义时，原Result交回请求名与实际模块名，链接和栈报告在写产物前结束；原选择顺序、重复定义错误及实际合同比较保持，不扫描未消费成员或改选其他库。没有第二目录或Frame，不把格式迁移等同整个链接器已经用B实现。
 
 原生宿主静态输入由crates/blanguage/src/linker/imports.rs的host_archive组织；原msvc路径复用同一member生成者。普通--archive继续保存B接口模块，--host-archive保持原模块字节并附原生IAT成员，输入I/O、唯一成员存储与同一B归档编码分别复用原所有者。实际DLL／函数身份确定导入槽与COFF组名；导入槽在关联节之前，描述符、查找表、名称与终止材料随其COMDAT一起由宿主真实引用选择。原生IAT不生成假B模块元数据；object/coff.rs的encode_build只为B对象附原元数据、输入捕获及执行归档，encode_native直接交原生节与符号，两者共用同一encode_sections及原B物理编码。该整理删除msvc原来的独立IAT构造及假模块包装，算法仍是原Rust链接职责，不冒称B已接管整个链接器；普通C ABI及实际Frame需求、稳定种子采用与两代自举分别按原台账确认。
 
