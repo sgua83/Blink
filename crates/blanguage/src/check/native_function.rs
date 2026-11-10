@@ -1148,6 +1148,92 @@ fn input_dataset_length(world:&World,definition:&Definition,parameters:&[CallPar
     }
     Ok(None)
 }
+// Query the original code and call bindings; the returned Proof remains the owner.
+fn returned_input_aliases(module:&Module,name:&str)->Vec<(usize,usize)> {
+    fn walk<'a>(code:&'a [Inst],visit:&mut impl FnMut(&'a Inst)->bool)->bool {
+        code.iter().all(|inst|visit(inst)&&match &inst.kind {
+            InstKind::Scope(body)|InstKind::Cleanup{body,..}=>walk(body,visit),
+            InstKind::If{yes,no,..}=>walk(yes,visit)&&walk(no,visit),
+            InstKind::Loop{condition,body,..}=>walk(condition,visit)&&walk(body,visit),
+            _=>true,
+        })
+    }
+    fn part(model:&Returned,component:usize)->Option<(&Value,usize)> {
+        match model {
+            Returned::Value(value)=>Some((value,component)),
+            Returned::OwnedValue(value)=>Some((&value.value,component)),
+            Returned::Dataset(value)=>match component{0=>Some((&value.root,0)),1=>Some((&value.length,0)),_=>None},
+            Returned::Unit=>None,
+        }
+    }
+    fn output(module:&Module,name:&str,component:usize,input:usize,active:&mut BTreeSet<(String,Reg,Reg)>)->bool {
+        let Some(unit)=module.units.get(name).and_then(Option::as_ref)else{return false;};
+        if let Some(function)=&unit.function {
+            let(Some(value),Some(input))=(function.body.outputs.get(component),function.body.inputs.get(input))else{return false;};
+            same(module,name,*value,*input,active)
+        }else{
+            unit.contract.returned.as_ref().and_then(|model|part(model,component))
+                .is_some_and(|(value,component)|value.component_origins(component).contains(&ValueIdentity::Register(input)))
+        }
+    }
+    fn same(module:&Module,name:&str,value:Reg,input:Reg,active:&mut BTreeSet<(String,Reg,Reg)>)->bool {
+        if value==input{return true;}
+        let unit=module.units[name].as_ref().unwrap();
+        let function=unit.function.as_ref().unwrap();
+        let body=&function.body;
+        if body.registers[value]!=body.registers[input]{return false;}
+        let key=(name.to_owned(),value,input);
+        if !active.insert(key.clone()){return true;}
+        let mut producer=None;
+        walk(&body.code,&mut|inst|{
+            let found=match &inst.kind {
+                InstKind::LoadLocal(dst,_)|InstKind::Cast{dst,..}|InstKind::Select{dst,..}=>*dst==value,
+                InstKind::Call(call)=>call.values.contains(&value),
+                _=>false,
+            };
+            if found{producer=Some(inst);}!found
+        });
+        let result=match producer.map(|inst|&inst.kind) {
+            Some(InstKind::LoadLocal(_,slot))=>{
+                let mut stored=false;
+                let same=walk(&body.code,&mut|inst|match &inst.kind {
+                    InstKind::StoreLocal(target,value)if target==slot=>{stored=true;same(module,name,*value,input,active)},
+                    _=>!inst.local_writes().contains(slot),
+                });
+                stored&&same
+            },
+            Some(InstKind::Cast{dst,src})=>body.registers[*dst]==body.registers[*src]&&same(module,name,*src,input,active),
+            Some(InstKind::Select{a,b,..})=>same(module,name,*a,input,active)&&same(module,name,*b,input,active),
+            Some(InstKind::Call(call))=>{
+                if let CallTarget::Defined(callee)=&call.target {
+                    let context=call.memory_use.and_then(|memory|unit.view_model.calls.iter().find(|context|context.memory==memory));
+                    let component=call.values.iter().position(|reg|*reg==value).unwrap();
+                    let callee_unit=module.units.get(callee).and_then(Option::as_ref);
+                    context.zip(callee_unit).is_some_and(|(context,callee_unit)|{
+                        (0..callee_unit.contract.inputs.len()).any(|parameter|{
+                            context.arguments.get(&ValueIdentity::Register(parameter)).is_some_and(|proof|{
+                                proof.origins.first().is_some_and(|origins|origins.iter().any(|id|match id{
+                                    ValueIdentity::Register(reg)=>same(module,name,*reg,input,active),
+                                    _=>false,
+                                }))&&output(module,callee,component,parameter,active)
+                            })
+                        })
+                    })
+                }else{false}
+            },
+            _=>false,
+        };
+        active.remove(&key);result
+    }
+    let unit=module.units[name].as_ref().unwrap();
+    let Some(function)=&unit.function else{return Vec::new();};
+    (0..function.body.outputs.len()).flat_map(|component|{
+        (0..function.body.inputs.len()).filter_map(move|input|{
+            output(module,name,component,input,&mut BTreeSet::new()).then_some((component,input))
+        })
+    }).collect()
+}
+
 fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> {
     fn scalar_values(value:&mut Value,bindings:&BTreeMap<ValueIdentity,bounds::Proof>){
         value.proof=value.proof.substitute_values(bindings);
@@ -1182,6 +1268,7 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
     }
     let outputs=view_contracts::solve(&functions,closed,|function,id|module.owns_input(function,id))?;
     for (name,memory)in &outputs.memory {
+        let aliases=returned_input_aliases(module,name);
         let unit=module.units.get_mut(name).unwrap().as_mut().unwrap();
         let contract=&mut unit.contract;
         let interface=&outputs.interfaces[name];
@@ -1194,6 +1281,17 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             for model in contract.returned.iter_mut().chain(contract.written.iter_mut().flatten()){returned_values(model,values);}
         }
 
+        if let Some(model)=&mut contract.returned{for(component,input)in aliases{
+            let(value,component)=match model{
+                Returned::Value(value)=>(value.as_mut(),component),
+                Returned::OwnedValue(value)=>(&mut value.value,component),
+                Returned::Dataset(value)=>if component==0{(&mut value.root,0)}else{(&mut value.length,0)},
+                Returned::Unit=>unreachable!(),
+            };
+            value.proof.origins.resize_with(value.regs.len(),Vec::new);
+            let origins=&mut value.proof.origins[component];let id=ValueIdentity::Register(input);
+            if !origins.contains(&id){origins.push(id);}
+        }}
         for (output,borrow)in &interface.outputs {
             match output {
                 view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(*component,borrow.clone());},
