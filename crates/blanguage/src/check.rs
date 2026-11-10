@@ -3584,7 +3584,14 @@ impl<'a> Builder<'a> {
         let mut possible=!c.constant.as_ref().is_some_and(|bits|bits[0]==0);
         if possible {
             self.refine_bounds(&partition,true);
-            if !initial {possible=self.retain_loop_bounds(Some(condition),body,&environment,&mut condition_env)?;}
+            if !initial {
+                for(name,(low,high))in std::mem::take(&mut self.loop_contexts.last_mut().unwrap().writes.body_bounds) {
+                    if let Some(Binding::Owned(owner))=self.env.get_mut(&name){
+                        owner.proof.retain_loop_bounds(&bounds::Proof::unsigned(low,high),0,true,true);
+                    }
+                }
+                possible=self.retain_loop_bounds(Some(condition),body,&environment,&mut condition_env)?;
+            }
         }
         if !possible {
             self.env=condition_env;self.path=condition_path;

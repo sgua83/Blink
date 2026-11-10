@@ -48,6 +48,7 @@ pub(super) struct LoopWrites {
     pub storage: Vec<StorageWrite>,
     pub unknown_storage: bool,
     pub external: bool,
+    pub body_bounds: Vec<(String, (u32, u32))>,
 }
 
 impl Builder<'_> {
@@ -275,6 +276,7 @@ impl Builder<'_> {
         writes: &[Write<'_>],
         borrowed_data: Option<ValueIdentity>,
         effect: &LoopWrites,
+        condition: Option<&Expr>,
     ) -> Result<()> {
         for write in writes {
             let changed=match write {
@@ -322,6 +324,9 @@ impl Builder<'_> {
         let mut modified: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         for (name, binding) in &self.env {
             if let Some(owner) = binding.stored_place() {
+                if condition.is_some() && matches!(binding, Binding::Owned(_))
+                    && owner.ty() == &Ty::scalar(Scalar::U32)
+                    && matches!(owner.storage(), Place::Local(..) | Place::Reference { .. }) { continue; }
                 for write in writes {
                     let components = match write {
                         Write::Move{..}=>Vec::new(),
@@ -621,18 +626,22 @@ impl Builder<'_> {
         }
         let writes=self.normalize_writes(writes)?;
         let mut effect=self.project_loop_writes(&writes)?;
-        let writes=if !effect.external && self.env.values().any(|binding|matches!(binding,Binding::Owned(owner) if *owner.place.ty()==Ty::scalar(Scalar::Bool))) {
+        let body_bounds=if !initial && let Some(condition)=condition {
+            self.prepare_loop_scalar_headers(condition,body,&writes,&effect)?
+        }else{Vec::new()};
+        let writes=if !effect.external && self.env.values().any(|binding|matches!(binding,Binding::Owned(owner) if *owner.place.ty()==Ty::scalar(Scalar::Bool) || condition.is_some() && *owner.place.ty()==Ty::scalar(Scalar::U32))) {
             let mut selected=Vec::new();
             {
                 let mut scope=Scope::current(self);scope.writes=Some(&effect);
-                scope.writes_statements(body,&mut|write|{selected.push(write);Ok(())})?;
+                scope.writes_statements(body,body,&mut|write|{selected.push(write);Ok(())})?;
                 if let Some(condition)=condition {scope.writes_expression(condition,&mut|write|{selected.push(write);Ok(())},None,Access::Value)?;}
             }
             let writes=self.normalize_writes(selected)?;
             effect=self.project_loop_writes(&writes)?;
             writes
         }else{writes};
-        if !initial {self.invalidate_writes(&writes,borrowed_data,&effect)?;}
+        effect.body_bounds=body_bounds;
+        if !initial {self.invalidate_writes(&writes,borrowed_data,&effect,condition)?;}
         Ok(effect)
     }
 }
@@ -978,7 +987,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         }
         Ok(truth)
     }
-    fn writes_statements(&mut self, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)->Result<()>) -> Result<()> {
+    fn writes_statements(&mut self, code: &'e [Stmt], root: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)->Result<()>) -> Result<()> {
         let outer = self.bindings.len();
         for (statement_at,statement) in code.iter().enumerate() {
             match &statement.kind {
@@ -1000,28 +1009,28 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         if known==Some(!truth){continue;}
                         if let Some(condition)=condition.as_ref().filter(|_|known.is_none()){
                             let condition=if truth{condition.clone()}else{condition.clone().negate()};
-                            self.writes_statements(body,&mut|mut write|{
+                            self.writes_statements(body,root,&mut|mut write|{
                                 if let Write::Position{call:None,when,..}=&mut write{
                                     *when=Some(match when.take(){Some(previous)=>previous.logical(condition.clone(),false),None=>condition.clone()});
                                 }
                                 write.restrict_move(&condition);writes(write)
                             })?;
-                        }else if known.is_some(){self.writes_statements(body,writes)?;}
-                        else{self.writes_statements(body,&mut|mut write|{write.restrict_move(&bounds::Condition::default());writes(write)})?;}
+                        }else if known.is_some(){self.writes_statements(body,root,writes)?;}
+                        else{self.writes_statements(body,root,&mut|mut write|{write.restrict_move(&bounds::Condition::default());writes(write)})?;}
                     }
                 }
                 StmtKind::Match(value, arms) => {
                     self.writes_expression(value,writes,None,Access::Value)?;
                     for arm in arms {
                         if let Some(name) = &arm.binding { self.bindings.push((name, Local::Payload(value, &arm.variant))); }
-                        self.writes_statements(&arm.body,&mut|mut write|{write.restrict_move(&bounds::Condition::default());writes(write)})?;
+                        self.writes_statements(&arm.body,root,&mut|mut write|{write.restrict_move(&bounds::Condition::default());writes(write)})?;
                         if arm.binding.is_some() { self.bindings.pop(); }
                     }
                 }
                 StmtKind::While(expr, body) => {
                     let mut future=Vec::new();
                     self.writes_expression(expr,&mut|write|{future.push(write);Ok(())},None,Access::Value)?;
-                    self.writes_statements(body,&mut|write|{future.push(write);Ok(())})?;
+                    self.writes_statements(body,root,&mut|write|{future.push(write);Ok(())})?;
                     if let Some(builder)=self.builder {
                         let scope=Scope{bindings:self.bindings.clone(),writes:self.writes,..Scope::current(builder)};
                         let mut retained=Vec::new();
@@ -1033,9 +1042,8 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                             let target=builder.env.get(*name).and_then(Binding::stored_place).map_or(LoopPlace::Local,|place|LoopPlace::Stored(place,0));
                             let mut prefix_scope=Scope{bindings:scope.bindings[..=binding_at].to_vec(),writes:scope.writes,..Scope::current(builder)};
                             let mut prefix=None;
-                            builder.numeric_loop_paths(*after,Some(NumericEffect::shift(0)),&mut None,name,&target,&future,false,&mut prefix_scope,&bounds::Clause::default(),Some(expr),&mut prefix)?;
-                            let Some(NumericEffect::Shift{low,high,..})=prefix else{continue;};
-                            let input=if low==0&&high==0{input}else{input.unsigned_shifted(low,high)};
+                            builder.numeric_loop_paths(*after,Some(NumericEffect::Assign(input)),&mut None,name,&target,&future,false,&mut prefix_scope,&bounds::Clause::default(),Some(expr),&mut prefix)?;
+                            let Some(NumericEffect::Assign(input))=prefix else{continue;};
                             let before=builder.numeric_expression_effect(expr,name,&target,&future)?;
                             if !matches!(before,NumericEffect::Shift{low:0,high:0,..}){continue;}
                             let guard=scope.input_snapshot(expr,scope.bindings.len(),Access::Value,None,Some(name))?
@@ -1045,6 +1053,28 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                             let mut continues=None;
                             let next=builder.numeric_loop_paths(body,Some(before),&mut continues,name,&target,&future,false,&mut numeric_scope,&bounds::Clause::default(),None,&mut None)?;
                             retained.push((*name,input,guard,join_numeric_paths(next,continues)));
+                        }
+                        if scope.writes.is_some() && builder.loop_contexts.last().is_some_and(|context|context.control_source.cursor.is_none()) {
+                            for(name,binding)in &builder.env {
+                                if scope.bindings.iter().any(|(bound,_)|*bound==name.as_str()){continue;}
+                                let Binding::Owned(owner)=binding else{continue;};
+                                if owner.place.ty()!=&Ty::scalar(Scalar::U32)
+                                    || !matches!(owner.place.storage(),Place::Local(..)|Place::Reference{..}) {continue;}
+                                let target=LoopPlace::Stored(owner.place.clone(),0);
+                                let mut point_scope=Scope{bindings:Vec::new(),writes:scope.writes,..Scope::current(builder)};
+                                let mut input=None;
+                                builder.numeric_loop_paths(root,Some(NumericEffect::Assign(owner.proof.clone())),&mut None,name,&target,&future,false,&mut point_scope,&bounds::Clause::default(),Some(expr),&mut input)?;
+                                let Some(NumericEffect::Assign(input))=input else{continue;};
+                                let before=builder.numeric_expression_effect(expr,name,&target,&future)?;
+                                if !matches!(before,NumericEffect::Shift{low:0,high:0,..}){continue;}
+                                let guard=scope.input_snapshot(expr,scope.bindings.len(),Access::Value,None,Some(name))?
+                                    .and_then(|(_,proof,_)|proof.component_condition(0).cloned())
+                                    .map(|condition|bounds::scoped_proof(&Ty::scalar(Scalar::U32),bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0)),&condition.assume(&bounds::Clause::default(),true),&BTreeMap::new())).unwrap_or_default();
+                                let mut numeric_scope=Scope{bindings:scope.bindings.clone(),writes:scope.writes,..Scope::current(builder)};
+                                let mut continues=None;
+                                let next=builder.numeric_loop_paths(body,Some(before),&mut continues,name,&target,&future,false,&mut numeric_scope,&bounds::Clause::default(),None,&mut None)?;
+                                retained.push((name.as_str(),input,guard,join_numeric_paths(next,continues)));
+                            }
                         }
                         let iterations=retained.iter().filter_map(|(_,input,guard,effect)|match effect{None=>Some(1),Some(effect)=>effect.iteration_bound(input,guard)}).min();
                         for at in 0..future.len(){
@@ -1108,7 +1138,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     }
                     let builder=self.builder;
                     self.bindings.push((name, if end.is_some() { Local::Range } else { Local::Element(start) }));
-                    self.writes_statements(body, &mut |mut write| {
+                    self.writes_statements(body,root, &mut |mut write| {
                         write.restrict_move(&bounds::Condition::default());
                         if let Write::Position{place,call:None,when,..}=&mut write
                             && let (Some(builder),Some(range))=(builder,range.as_ref()) {
@@ -1127,7 +1157,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     if let Some(count) = &domain.count { self.writes_expression(count,writes,None,Access::Value)?; }
                     if let Some(selection) = &domain.selection { self.writes_expression(selection,writes,None,Access::Value)?; }
                     self.bindings.push((name, Local::NamedElement(&domain.dataset)));
-                    self.writes_statements(body,&mut|mut write|{write.restrict_move(&bounds::Condition::default());writes(write)})?;self.bindings.pop();
+                    self.writes_statements(body,root,&mut|mut write|{write.restrict_move(&bounds::Condition::default());writes(write)})?;self.bindings.pop();
                 }
                 _ => {}
             }
@@ -1140,7 +1170,7 @@ fn expression_writes<'e>(builder: &Builder<'_>, expr: &'e Expr, writes: &mut dyn
     Scope::current(builder).writes_expression(expr,writes,None,Access::Value).map(|_| ())
 }
 fn statement_writes<'e>(builder: &Builder<'_>, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)->Result<()>) -> Result<()> {
-    Scope::current(builder).writes_statements(code, writes)
+    Scope::current(builder).writes_statements(code, code, writes)
 }
 pub(super) fn value_writes<'e>(builder: &Builder<'_>, body: &'e [Stmt]) -> Result<Vec<&'e Expr>> {
     let mut values = Vec::new();
@@ -1158,7 +1188,7 @@ pub(super) fn expression_assignments(builder: &Builder<'_>, expr: &Expr, names: 
     })
 }
 pub(super) fn assigned_names(world: &World, definition: &Definition, code: &[Stmt], names: &mut BTreeSet<String>) -> Result<()> {
-    Scope::declared(world, definition).writes_statements(code, &mut |write| {
+    Scope::declared(world, definition).writes_statements(code, code, &mut |write| {
         if let Write::Position{contents:false,place,..}=write
             && let Some(root)=assigned_root(place) {names.insert(root.to_owned());}
         Ok(())
@@ -1225,12 +1255,21 @@ pub(super) fn modified_owners(
 }
 
 
-// 同一位置写效果：位移、独立赋值，以及由同一c-x和恒等组成的有限反向关系。
+fn loop_breaks(body:&[Stmt])->bool {
+    body.iter().any(|statement|match &statement.kind {
+        StmtKind::Break=>true,
+        StmtKind::If(_,yes,no)=>loop_breaks(yes)||loop_breaks(no),
+        StmtKind::Match(_,arms)=>arms.iter().any(|arm|loop_breaks(&arm.body)),
+        _=>false,
+    })
+}
+// 同一位置的变换及已证明不回绕的输入／输出顺序，仍由原数值效果交接。
 enum LoopPlace { Stored(Place, usize), Local, Length, Element(DataProjection<'static>, usize) }
 
 #[derive(Clone)]
 enum NumericEffect {
     Unknown,
+    Ordered { lower: bool, upper: bool },
     Assign(bounds::Proof),
     Reflect(u32),
     Shift { low: i128, high: i128, least: i128, most: i128 },
@@ -1259,11 +1298,31 @@ impl NumericEffect {
         Some(((body_low as u32,body_high as u32),(header_low as u32,header_high as u32)))
     }
 
+    fn retained(&self,proof:&mut bounds::Proof,guard:&bounds::Proof,bounded:bool)->(bool,bool) {
+        match self {
+            Self::Shift{low,high,least,most}=>{
+                let(lower,upper)=(*low>=0,*high<=0);
+                let low=guard.unsigned_minimum(0).max(if lower{proof.unsigned_minimum(0)}else{0});
+                let high=guard.unsigned_maximum(0).min(if upper{proof.unsigned_maximum(0)}else{u32::MAX});
+                if bounded||i128::from(low)+least>=0&&i128::from(high)+most<=i128::from(u32::MAX){(lower,upper)}else{(false,false)}
+            },
+            Self::Reflect(amount)=>{let reflected=proof.unsigned_reflected(*amount);proof.join(&reflected,1,None);(true,true)},
+            Self::Assign(repeated)=>{proof.join(repeated,1,None);(true,true)},
+            Self::Ordered{lower,upper}=>(*lower,*upper),
+            Self::Unknown=>(false,false),
+        }
+    }
     fn shift(amount: i128) -> Self { Self::Shift { low: amount, high: amount, least: amount.min(0), most: amount.max(0) } }
     fn then(self, next: Self) -> Self {
         match (&self,&next) {
             (_,Self::Assign(_))=>return next,
-            (Self::Assign(_)|Self::Reflect(_),Self::Shift{low:0,high:0,least:0,most:0})=>return self,
+            (Self::Assign(_)|Self::Reflect(_)|Self::Ordered{..},Self::Shift{low:0,high:0,least:0,most:0})=>return self,
+            (Self::Shift{low:0,high:0,least:0,most:0},Self::Ordered{..})=>return next,
+            (Self::Assign(value),Self::Ordered{lower,upper})=>{
+                let mut proof=bounds::Proof::default();proof.retain_loop_bounds(value,0,*lower,*upper);return Self::Assign(proof);
+            },
+            (Self::Ordered{lower:a,upper:b},Self::Ordered{lower:c,upper:d})=>return if (*a&&*c)||(*b&&*d){Self::Ordered{lower:*a&&*c,upper:*b&&*d}}else{Self::Unknown},
+            (Self::Assign(value),Self::Shift{low,high,..})=>return Self::Assign(value.unsigned_shifted(*low,*high)),
             (Self::Shift{low:0,high:0,least:0,most:0},Self::Reflect(_))=>return next,
             (Self::Reflect(a),Self::Reflect(b)) if a==b=>return self,
             _=>{},
@@ -1275,6 +1334,9 @@ impl NumericEffect {
     fn join(self, other: Self) -> Self {
         match (self,other) {
             (Self::Assign(mut a),Self::Assign(b))=>{a.join(&b,1,None);Self::Assign(a)},
+            (Self::Ordered{lower:a,upper:b},Self::Ordered{lower:c,upper:d})=>if (a&&c)||(b&&d){Self::Ordered{lower:a&&c,upper:b&&d}}else{Self::Unknown},
+            (a@Self::Ordered{..},Self::Shift{low:0,high:0,least:0,most:0})
+            |(Self::Shift{low:0,high:0,least:0,most:0},a@Self::Ordered{..})=>a,
             (Self::Reflect(a),Self::Reflect(b)) if a==b=>Self::Reflect(a),
             (a@Self::Reflect(_),Self::Shift{low:0,high:0,least:0,most:0})
             |(Self::Shift{low:0,high:0,least:0,most:0},a@Self::Reflect(_))=>a,
@@ -1601,14 +1663,34 @@ impl Builder<'_> {
                 StmtKind::Continue=>{*continues=join_numeric_paths(continues.take(),Some(before));None},
                 StmtKind::Break|StmtKind::Return(_)=>None,
                 StmtKind::While(_,body)|StmtKind::For(_,_,_,body)|StmtKind::Parallel(_,_,body)=>{
-                    let mut effect=NumericEffect::shift(0);
+                    let mut changed=false;
                     for write in writes.iter().filter(|write|contains_statement(statement,match write {
                         Write::External{call,..}|Write::Memory{call,..}|Write::Generator(call)=>call,
                         Write::Position{call,place,..}=>call.unwrap_or(place),
                         Write::Move{place,..}=>place,
                     })) {
-                        if self.numeric_write(write,name,target,writes)? {effect=NumericEffect::Unknown;break;}
+                        if self.numeric_write(write,name,target,writes)? {changed=true;break;}
                     }
+                    let effect=if !changed {NumericEffect::shift(0)}else if let StmtKind::While(condition,nested)=&statement.kind
+                        &&scope.named(name,condition.span)?==Some(Ty::scalar(Scalar::U32))
+                        &&!loop_breaks(nested)&&!bounds::seeks(nested)
+                        &&matches!(self.numeric_expression_effect(condition,name,target,writes)?,NumericEffect::Shift{low:0,high:0,least:0,most:0}) {
+                        let guard=scope.input_snapshot(condition,scope.bindings.len(),Access::Value,None,Some(name))?
+                            .and_then(|(_,proof,_)|proof.component_condition(0).cloned())
+                            .map(|condition|bounds::scoped_proof(&Ty::scalar(Scalar::U32),bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0)),&condition.assume(&bounds::Clause::default(),true),&BTreeMap::new())).unwrap_or_default();
+                        let mut nested_scope=Scope{bindings:scope.bindings.clone(),writes:scope.writes,..Scope::current(self)};
+                        let mut nested_continues=None;
+                        let nested_next=self.numeric_loop_paths(nested,Some(NumericEffect::shift(0)),&mut nested_continues,name,target,writes,absolute,&mut nested_scope,path,None,&mut None)?;
+                        let relation=match join_numeric_paths(nested_next,nested_continues) {
+                            None=>Some((true,true)),
+                            Some(NumericEffect::Ordered{lower,upper})=>Some((lower,upper)),
+                            Some(NumericEffect::Shift{low,high,least,most})
+                                if i128::from(guard.unsigned_minimum(0))+least>=0&&i128::from(guard.unsigned_maximum(0))+most<=i128::from(u32::MAX)=>Some((low>=0,high<=0)),
+                            Some(NumericEffect::Assign(value))=>Some((value.unsigned_minimum(0)>=guard.unsigned_maximum(0),value.unsigned_maximum(0)<=guard.unsigned_minimum(0))),
+                            _=>None,
+                        };
+                        match relation{Some((lower,upper))if lower||upper=>NumericEffect::Ordered{lower,upper},_=>NumericEffect::Unknown}
+                    }else{NumericEffect::Unknown};
                     if point.is_some_and(|point|contains_statement(statement,point)) {
                         if let StmtKind::For(local,start,end,_)=&statement.kind{scope.bindings.push((local,if end.is_some(){Local::Range}else{Local::Element(start)}));}
                         if let StmtKind::Parallel(local,domain,_)=&statement.kind{scope.bindings.push((local,Local::NamedElement(&domain.dataset)));}
@@ -1622,6 +1704,53 @@ impl Builder<'_> {
         }
         scope.bindings.truncate(outer);
         Ok(next)
+    }
+    fn prepare_loop_scalar_headers(&mut self,condition:&Expr,body:&[Stmt],writes:&[Write<'_>],effect:&LoopWrites)->Result<Vec<(String,(u32,u32))>> {
+        let candidates=self.env.iter().filter_map(|(name,binding)|match binding {
+            Binding::Owned(owner)if owner.place.ty()==&Ty::scalar(Scalar::U32)
+                &&matches!(owner.place.storage(),Place::Local(..)|Place::Reference{..})=>Some((name.clone(),owner.place.clone(),owner.proof.clone())),
+            _=>None,
+        }).collect::<Vec<_>>();
+        let mut retained=Vec::new();
+        for(name,owner,input)in candidates {
+            let target=LoopPlace::Stored(owner,0);let mut changed=false;
+            for write in writes{if self.numeric_write(write,&name,&target,writes)?{changed=true;break;}}
+            if !changed{continue;}
+            let mut scope=Scope::current(self);scope.writes=Some(effect);
+            let pure=matches!(self.numeric_expression_effect(condition,&name,&target,writes)?,NumericEffect::Shift{low:0,high:0,least:0,most:0});
+            let guard=if pure {scope.input_snapshot(condition,0,Access::Value,None,Some(&name))?
+                .and_then(|(_,proof,_)|proof.component_condition(0).cloned())
+                .map(|condition|bounds::scoped_proof(&Ty::scalar(Scalar::U32),bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0)),&condition.assume(&bounds::Clause::default(),true),&BTreeMap::new())).unwrap_or_default()}else{bounds::Proof::default()};
+            let mut continues=None;
+            let next=if pure{self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,writes,!bounds::seeks(body),&mut scope,&bounds::Clause::default(),None,&mut None)?}else{Some(NumericEffect::Unknown)};
+            retained.push((name,input,guard,join_numeric_paths(next,continues)));
+        }
+        let iterations=retained.iter().filter_map(|(_,input,guard,effect)|effect.as_ref().and_then(|effect|effect.iteration_bound(input,guard))).min();
+        let mut body_bounds=Vec::new();
+        for(name,mut input,guard,transfer)in retained {
+            let bounded=iterations.and_then(|iterations|transfer.as_ref()?.bounded_ranges(&input,iterations));
+            let identity=matches!(transfer,None|Some(NumericEffect::Shift{low:0,high:0,least:0,most:0}));
+            let(lower,upper)=transfer.as_ref().map_or((true,true),|transfer|transfer.retained(&mut input,&guard,bounded.is_some()));
+            if let Some(Binding::Owned(owner))=self.env.get_mut(&name) {
+            owner.uniform=false;
+            if !identity {
+                owner.proof.forget_value(&[0],1);
+                let context=self.loop_contexts.last_mut().unwrap();
+                if context.view_scope.is_some()&&context.entry.env.contains_key(&name)
+                    &&let Place::Local(_,slots,..)=owner.place.storage()
+                    &&!effect.locals.contains(&slots[0]) {
+                    let id=context.value_input(&name,None,0,Scalar::U32);
+                    owner.proof=std::mem::take(&mut owner.proof).with_component_identity(0,id);
+                }
+                owner.proof.retain_loop_bounds(&input,0,lower,upper);
+            }
+            if let Some((body,header))=bounded {
+                owner.proof.retain_loop_bounds(&bounds::Proof::unsigned(header.0,header.1),0,true,true);
+                body_bounds.push((name,body));
+            }
+            }
+        }
+        Ok(body_bounds)
     }
     pub(super) fn retain_loop_bounds(&mut self, condition:Option<&Expr>, body:&[Stmt], initial:&BTreeMap<String,Binding>, header:&mut BTreeMap<String,Binding>)->Result<bool> {
         let mut writes=Vec::new();statement_writes(self,body,&mut|write|{writes.push(write);Ok(())})?;if let Some(condition)=condition {expression_writes(self,condition,&mut|write|{writes.push(write);Ok(())})?;}
@@ -1638,7 +1767,11 @@ impl Builder<'_> {
         let mut candidates=Vec::new();
         for(name,binding)in initial {
             let length;let(owner,proof)=match binding {
-                Binding::Owned(owner)=>(Some(owner.place.clone()),&owner.proof),
+                Binding::Owned(owner)=>{
+                    if condition.is_some()&&owner.place.ty()==&Ty::scalar(Scalar::U32)
+                        &&matches!(owner.place.storage(),Place::Local(..)|Place::Reference{..}) {continue;}
+                    (Some(owner.place.clone()),&owner.proof)
+                },
                 Binding::OwnedValue(owner)=>{let Some(place)=owner.place()else{continue};(Some(place),&owner.value.proof)},
                 Binding::ApplicationData(data)=>{length=bounds::Proof::capture(&data.length);(None,&length)},_=>continue,
             };
@@ -1675,18 +1808,7 @@ impl Builder<'_> {
         let iterations=retained.iter().filter_map(|(_,_,input,guard,effect)|effect.as_ref().and_then(|effect|effect.iteration_bound(input,guard))).min();
         for(name,target,mut proof,guard,effect)in retained {
             let bounded=iterations.and_then(|iterations|effect.as_ref()?.bounded_ranges(&proof,iterations));
-            let(lower,upper)=match effect {
-                None=>(true,true),
-                Some(NumericEffect::Shift{low,high,least,most})=>{
-                    let(lower,upper)=(low>=0,high<=0);
-                    let low=guard.unsigned_minimum(0).max(if lower{proof.unsigned_minimum(0)}else{0});
-                    let high=guard.unsigned_maximum(0).min(if upper{proof.unsigned_maximum(0)}else{u32::MAX});
-                    if bounded.is_some()||i128::from(low)+least>=0&&i128::from(high)+most<=i128::from(u32::MAX){(lower,upper)}else{(false,false)}
-                },
-                Some(NumericEffect::Reflect(amount))=>{let reflected=proof.unsigned_reflected(amount);proof.join(&reflected,1,None);(true,true)},
-                Some(NumericEffect::Assign(repeated))=>{proof.join(&repeated,1,None);(true,true)},
-                Some(NumericEffect::Unknown)=>continue,
-            };
+            let(lower,upper)=effect.as_ref().map_or((true,true),|effect|effect.retained(&mut proof,&guard,bounded.is_some()));
             if !lower&&!upper&&bounded.is_none(){continue;}
             if let LoopPlace::Element(target,component)=target {
                 if target.index.is_none(){continue;}
