@@ -308,7 +308,7 @@ impl Analysis<'_> {
                             &self.definition.module,
                             &self.definition.imports,
                             true,
-                        )
+                        ).unique()
                         .and_then(|key| self.world.functions.get(&key));
                     let params = function
                         .map(|d| d.function.params.clone())

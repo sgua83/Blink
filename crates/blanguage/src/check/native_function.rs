@@ -1865,7 +1865,7 @@ pub(crate) fn compile_module(
         };
         let (name, arguments) = crate::parser::entry(source.clone())?;
         let key = world
-            .resolve(&name, entry, &[], true)
+            .resolve(&name, entry, &[], true).unique()
             .filter(|key| world.functions[key].module == entry && world.functions[key].public)
             .ok_or_else(|| Diagnostic {
                 source: source.clone(),

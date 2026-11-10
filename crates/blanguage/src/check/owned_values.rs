@@ -806,23 +806,29 @@ impl Builder<'_> {
                 if let Some(value) = self.owned_record_call(name, args, expr)? {
                     return Ok(value);
                 }
-                if let Some(key) = self.world.resolve(
+                match self.world.resolve(
                     name,
                     &self.definition.module,
                     &self.definition.imports,
                     true,
                 ) {
-                    let explicit = if let ExprKind::Specialize(_, args, _) = &expr.kind {
-                        Some(args.as_slice())
-                    } else {
-                        None
-                    };
-                    let Some(arguments) = self.function_arguments(&key, args, expr.span)? else {
-                        return Ok(None);
-                    };
-                    let instance =
-                        self.specialized_arguments(key, &arguments, explicit, expr.span)?;
-                    return self.invoke_returned(instance, arguments, expr.span, None, Some(args));
+                    crate::frontend::NameResolution::Unique(key) => {
+                        let explicit = if let ExprKind::Specialize(_, args, _) = &expr.kind {
+                            Some(args.as_slice())
+                        } else {
+                            None
+                        };
+                        let Some(arguments) = self.function_arguments(&key, args, expr.span)? else {
+                            return Ok(None);
+                        };
+                        let instance =
+                            self.specialized_arguments(key, &arguments, explicit, expr.span)?;
+                        return self.invoke_returned(instance, arguments, expr.span, None, Some(args));
+                    }
+                    crate::frontend::NameResolution::Ambiguous => {
+                        return self.fail(expr.span, "B158", format!("函数名称 {name} 有多个可见声明，须使用模块限定名"));
+                    }
+                    crate::frontend::NameResolution::Missing => {}
                 }
             }
             _ => {}
@@ -904,7 +910,7 @@ impl Builder<'_> {
     }
     #[inline(never)]
     fn owned_record_call(&mut self, name: &str, args: &[Expr], expr: &Expr) -> Result<Option<Option<Returned>>> {
-        if matches!(name,"array"|"owned") || self.world.resolve(name,&self.definition.module,&self.definition.imports,false).is_some() {
+        if matches!(name,"array"|"owned") || !self.world.resolve(name,&self.definition.module,&self.definition.imports,false).is_missing() {
             let mut syntax = TypeName::named(name);
             if let ExprKind::Specialize(_,explicit,_) = &expr.kind { syntax.arguments = explicit.clone(); }
             let ty = self.expected_storage(&syntax,expr.span)?;

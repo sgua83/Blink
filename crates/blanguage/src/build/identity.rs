@@ -94,12 +94,12 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
     for entry in used {
         hash::field(&mut bytes, &entry.bytes());
         let input = match entry {
-            Declaration::ValueName { name, module, imports } => {
-                hash::field(&mut bytes, &declarations.resolve(name, module, imports, true).bytes());
-                continue;
-            }
-            Declaration::RecordName { name, module, imports } => {
-                hash::field(&mut bytes, &declarations.resolve(name, module, imports, false).bytes());
+            Declaration::ValueName { name, module, imports } | Declaration::RecordName { name, module, imports } => {
+                match declarations.resolve(name, module, imports, matches!(entry, Declaration::ValueName { .. })) {
+                    crate::frontend::NameResolution::Missing => hash::field(&mut bytes, &None::<String>.bytes()),
+                    crate::frontend::NameResolution::Unique(name) => hash::field(&mut bytes, &Some(name).bytes()),
+                    crate::frontend::NameResolution::Ambiguous => hash::field(&mut bytes, &[2]),
+                }
                 continue;
             }
             Declaration::TypeSetName { name, module, imports } => {

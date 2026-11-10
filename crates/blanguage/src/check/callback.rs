@@ -24,7 +24,7 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
         ExprKind::FunctionRef(name, arguments) => (name, Some(arguments.as_slice())),
         _ => return caller.source.fail(reference.span, "B153", "c_function需要C ABI函数名及具体类型／const实参"),
     };
-    let Some(key) = world.resolve(name, &caller.module, &caller.imports, true) else {
+    let Some(key) = world.resolve(name, &caller.module, &caller.imports, true).unique() else {
         return caller.source.fail(span, "B158", format!("未知函数 {name}"));
     };
     let definition = world.functions[&key].clone();

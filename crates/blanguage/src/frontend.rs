@@ -79,7 +79,7 @@ impl World {
     pub(crate) fn new(declarations: Arc<Declarations>, worker: compiler::Worker) -> Self {
         Self { declarations, worker, evaluating_constants: RefCell::new(BTreeSet::new()), build_declarations: None }
     }
-    pub(crate) fn resolve(&self, name: &str, module: &str, imports: &[String], functions: bool) -> Option<String> {
+    pub(crate) fn resolve(&self, name: &str, module: &str, imports: &[String], functions: bool) -> NameResolution {
         if let Some(inputs) = &self.build_declarations {
             let query = if functions {
                 build::Declaration::ValueName { name: name.into(), module: module.into(), imports: imports.to_vec() }
@@ -296,7 +296,7 @@ pub(crate) fn compile_world(
         };
         let (name, arguments) = parser::entry(source.clone())?;
         let key = world
-            .resolve(&name, &entry, &[], true)
+            .resolve(&name, &entry, &[], true).unique()
             .ok_or_else(|| Diagnostic {
                 source: source.clone(),
                 span: Span::default(),
@@ -828,7 +828,7 @@ impl Declarations {
         module: &str,
         imports: &[String],
         functions: bool,
-    ) -> Option<String> {
+    ) -> NameResolution {
         resolve_name(name, module, imports, |n| {
             if functions {
                 self.functions.get(n).is_some_and(|d| {
@@ -864,7 +864,7 @@ impl World {
                 } else {
                     let key = if name.canonical {
                         self.records.get_key_value(&name.name).map(|(key, _)| key.clone())
-                    } else { self.resolve(&name.name, module, imports, false) };
+                    } else { self.resolve(&name.name, module, imports, false).unique() };
                     let Some(key) = key else { return source.fail(span, "B031", format!("未知或不明确的类型 {}", name.name)); };
                     let record = &self.record(&key).0;
                     syntax.name = key;
@@ -886,7 +886,7 @@ impl World {
                     return source.fail(span, "B224", "释放函数由载荷推导泛型，声明处使用函数名称");
                 }
                 let key = if function.canonical && self.functions.contains_key(&function.name) { Some(function.name.clone()) }
-                    else { self.resolve(&function.name, module, imports, true) };
+                    else { self.resolve(&function.name, module, imports, true).unique() };
                 let Some(key) = key else { return source.fail(span, "B158", format!("未知或未导出的释放函数 {}", function.name)); };
                 let mut function = TypeName::named(key);
                 function.canonical = true;
@@ -1063,7 +1063,7 @@ impl World {
             if name.arguments.len()!=2{return source.fail(span,"B224","owned<T,F>需要载荷类型与静态释放函数");}
             let (GenericArgument::Type(payload),GenericArgument::Type(function))=(&name.arguments[0],&name.arguments[1])else{return source.fail(span,"B224","owned<T,F>需要载荷类型与静态释放函数");};
             if function.dataset||function.tile||function.view||!function.arguments.is_empty(){return source.fail(span,"B224","释放函数由载荷推导泛型，声明处使用函数名称");}
-            let cleanup=if function.canonical&&self.functions.contains_key(&function.name){function.name.clone()}else{self.resolve(&function.name,module,imports,true).ok_or_else(||Diagnostic{source:source.clone(),span,code:"B158",message:format!("未知或未导出的释放函数 {}",function.name)})?};
+            let cleanup=if function.canonical&&self.functions.contains_key(&function.name){function.name.clone()}else{self.resolve(&function.name,module,imports,true).unique().ok_or_else(||Diagnostic{source:source.clone(),span,code:"B158",message:format!("未知或未导出的释放函数 {}",function.name)})?};
             let f=&self.functions[&cleanup].function;
             if f.kind!=FunctionKind::Value||f.target!=Target::Cpu||f.params.len()!=1||f.params[0].access!=Access::Value||f.result!=TypeName::named("void"){return source.fail(span,"B224","释放函数必须是接收一个按值载荷并返回void的普通on cpu函数");}
             let mut ty=self.ty_inner(payload,source,span,module,imports,stack)?;
@@ -1185,7 +1185,7 @@ impl World {
                 .get_key_value(&name.name)
                 .map(|(key, _)| key.clone())
         } else {
-            self.resolve(&name.name, module, imports, false)
+            self.resolve(&name.name, module, imports, false).unique()
         };
         let Some(key) = key else {
             return source.fail(span, "B031", format!("未知或不明确的类型 {}", name.name));
@@ -1391,27 +1391,42 @@ pub(crate) fn type_visible(source: &Source, owner: &str, module: &str, imports: 
             .is_some_and(|extension| extension == "h")
             && imports.iter().any(|import| import == owner))
 }
+/// 可见声明查询的事实；局部绑定及实际调用诊断仍由原消费者负责。
+pub(crate) enum NameResolution {
+    Missing,
+    Unique(String),
+    Ambiguous,
+}
+impl NameResolution {
+    pub(crate) fn unique(self) -> Option<String> {
+        match self {
+            Self::Unique(name) => Some(name),
+            Self::Missing | Self::Ambiguous => None,
+        }
+    }
+    pub(crate) fn is_missing(&self) -> bool { matches!(self, Self::Missing) }
+}
 pub(crate) fn resolve_name(
     name: &str,
     module: &str,
     imports: &[String],
     exists: impl Fn(&str) -> bool,
-) -> Option<String> {
+) -> NameResolution {
     if name.contains("::") && exists(name) {
-        return Some(name.into());
+        return NameResolution::Unique(name.into());
     }
     let local = format!("{module}::{name}");
     if exists(&local) {
-        return Some(local);
+        return NameResolution::Unique(local);
     }
-    let candidates: Vec<_> = imports
+    let mut candidates = imports
         .iter()
         .map(|m| format!("{m}::{name}"))
-        .filter(|n| exists(n))
-        .collect();
-    if candidates.len() == 1 {
-        Some(candidates[0].clone())
+        .filter(|n| exists(n));
+    let Some(first) = candidates.next() else { return NameResolution::Missing; };
+    if candidates.any(|candidate| candidate != first) {
+        NameResolution::Ambiguous
     } else {
-        None
+        NameResolution::Unique(first)
     }
 }

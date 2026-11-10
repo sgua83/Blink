@@ -71,7 +71,7 @@ impl Builder<'_> {
             return self.explicit_result(name, explicit, args, span);
         }
         if matches!(name, "array" | "owned")
-            || self
+            || !self
                 .world
                 .resolve(
                     name,
@@ -79,7 +79,7 @@ impl Builder<'_> {
                     &self.definition.imports,
                     false,
                 )
-                .is_some()
+                .is_missing()
         {
             let mut ty = TypeName::named(name);
             ty.arguments = explicit.to_vec();
@@ -87,7 +87,7 @@ impl Builder<'_> {
         }
         let key = self.world.resolve(
             name, &self.definition.module, &self.definition.imports, true,
-        );
+        ).unique();
         if key.is_none() && matches!(name, "size_of" | "align_of") {
             let ([GenericArgument::Type(syntax)], []) = (explicit, args) else {
                 return self.fail(span, "B153", format!("{name}<T>()需要一个明确类型且不接收值实参"));
@@ -420,7 +420,7 @@ fn infer_type(
         );
     }
     let base = world
-        .resolve(&formal.name, &callee.module, &callee.imports, false)
+        .resolve(&formal.name, &callee.module, &callee.imports, false).unique()
         .ok_or_else(|| Diagnostic {
             source: callee.source.clone(),
             span,
@@ -573,7 +573,7 @@ fn infer_value(
         return Ok(());
     }
     let base = world
-        .resolve(&formal.name, &callee.module, &callee.imports, false)
+        .resolve(&formal.name, &callee.module, &callee.imports, false).unique()
         .ok_or_else(|| Diagnostic {
             source: callee.source.clone(),
             span,

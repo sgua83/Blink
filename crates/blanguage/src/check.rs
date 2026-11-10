@@ -927,7 +927,7 @@ fn expand_stages(
                 span: call_span,
                 ..
             }) if name == "clear_prefix"
-                && world.resolve(name, &d.module, &d.imports, true).is_none() =>
+                && world.resolve(name, &d.module, &d.imports, true).is_missing() =>
             {
                 let output = append::clear(program, env, args, d, statement.span, facts,
                     operation_source(instance, *call_span, SourceSyntax::Expression, domain_path))?;
@@ -939,7 +939,7 @@ fn expand_stages(
                 span: call_span,
                 ..
             }) if name == "stable_sort_by_key"
-                && world.resolve(name, &d.module, &d.imports, true).is_none() =>
+                && world.resolve(name, &d.module, &d.imports, true).is_missing() =>
             {
                 sort::compile(program, env, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression, domain_path))?;
                 *boundary = false;
@@ -949,7 +949,7 @@ fn expand_stages(
                 span: call_span,
                 ..
             }) if name == "compact"
-                && world.resolve(name, &d.module, &d.imports, true).is_none() =>
+                && world.resolve(name, &d.module, &d.imports, true).is_missing() =>
             {
                 compact::compile(program, env, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression, domain_path))?;
                 *boundary = false;
@@ -969,7 +969,7 @@ fn expand_stages(
                     None
                 };
                 let callee_key = world.resolve(name, &d.module, &d.imports, true);
-                if callee_key.is_none() {
+                if callee_key.is_missing() {
                     if let Some(operator) = CollectiveOperator::from_reduction_source(name)
                         .filter(|_| explicit.is_none())
                     {
@@ -1049,7 +1049,7 @@ fn expand_stages(
                         break 'call;
                     }
                 }
-                let Some(key) = callee_key else {
+                let Some(key) = callee_key.unique() else {
                     return d
                         .source
                         .fail(statement.span, "B109", format!("未知计算程序 {name}"));
@@ -1354,7 +1354,7 @@ fn stage_root(
             if let Some(root) = env.get(n) {
                 Ok(root.clone().reference_literal(operation_source(instance, arg.span, SourceSyntax::Expression, domain_path)))
             } else if let Some(key) = world
-                .resolve(n, &d.module, &d.imports, true)
+                .resolve(n, &d.module, &d.imports, true).unique()
                 .filter(|key| world.functions[key].function.kind == FunctionKind::Constant)
             {
                 let (ty, words, origin) = constant::evaluate(world, &key, &[])?;
@@ -3256,7 +3256,7 @@ impl<'a> Builder<'a> {
         ) {
             return self.atomic_value(name, args, span);
         }
-        if self
+        if !self
             .world
             .resolve(
                 name,
@@ -3264,7 +3264,7 @@ impl<'a> Builder<'a> {
                 &self.definition.imports,
                 false,
             )
-            .is_some()
+            .is_missing()
         {
             return self.record_expression(&TypeName::named(name), args, span);
         }
@@ -4743,7 +4743,7 @@ impl<'a> Builder<'a> {
                         &self.definition.module,
                         &self.definition.imports,
                         true,
-                    )
+                    ).unique()
                     .filter(|key| self.world.functions[key].function.kind == FunctionKind::Constant)
                     .ok_or_else(|| Diagnostic {
                         source: self.definition.source.clone(),

@@ -50,7 +50,7 @@ fn function(
             );
         }
     };
-    let Some(key) = world.resolve(name, &d.module, &d.imports, true) else {
+    let Some(key) = world.resolve(name, &d.module, &d.imports, true).unique() else {
         return d.source.fail(expr.span, "B158", "未知或未导出的集合值函数");
     };
     let callee = &world.functions[&key];

@@ -821,7 +821,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             ExprKind::Specialize(name,types,args)=>(name.as_str(),Some(types.as_slice()),args),
             _=>return Ok(None),
         };
-        let Some(key)=self.world.resolve(name,&self.definition.module,&self.definition.imports,true)else{return Ok(None);};
+        let Some(key)=self.world.resolve(name,&self.definition.module,&self.definition.imports,true).unique()else{return Ok(None);};
         let function=&self.world.functions[&key].function;
         if function.c_abi||function.kind!=FunctionKind::Value||function.target!=Target::Cpu{return Ok(None);}
         let types=args.iter().map(|arg|self.expression(arg)).collect::<Result<Vec<_>>>()?;
@@ -838,7 +838,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             ExprKind::FunctionRef(name,types)=>(name.as_str(),Some(types.as_slice())),
             _=>return Ok(None),
         };
-        let Some(key)=self.world.resolve(name,&self.definition.module,&self.definition.imports,true)else{return Ok(None);};
+        let Some(key)=self.world.resolve(name,&self.definition.module,&self.definition.imports,true).unique()else{return Ok(None);};
         let actual=generics::Actual{ty:Some(std::borrow::Cow::Owned(Ty::scalar(Scalar::U32))),count:None};
         generics::specialize(self.world,&key,&[actual],explicit,
             (&self.definition.source,&self.definition.module,&self.definition.imports),factory.span).map(Some)
@@ -882,7 +882,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 }
                 let value_arguments=matches!(name.as_str(),"own"|"into_inner"|"try"|"Ok"|"Err")
                     ||Ty::builtin(name).is_some()||name=="array"
-                    ||self.world.resolve(name,&self.definition.module,&self.definition.imports,false).is_some();
+                    ||!self.world.resolve(name,&self.definition.module,&self.definition.imports,false).is_missing();
                 // Intrinsics read positions; actual value constructors and declared parameters consume values.
                 let mut accesses=vec![if value_arguments{Access::Value}else{Access::Read};args.len()];
                 let local = if matches!(expr.kind, ExprKind::Call(..)) { self.named(name, expr.span)? } else { None };
@@ -892,8 +892,9 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 }
                 else {
                     let record = matches!(expr.kind, ExprKind::Specialize(..))
-                        && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some();
-                    if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
+                        && !self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_missing();
+                    if !record { match self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
+                        crate::frontend::NameResolution::Unique(key) => {
                         let instance=if self.builder.is_some(){self.call_instance(expr)?}else{None};
                         let covered=self.world.functions[&key].function.external.is_some()
                             && !outputs::Contract::from(self.world.functions[&key].as_ref()).external_memory().is_some_and(|access|access.writes());
@@ -906,9 +907,14 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                             }
                         }
                         if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(&instance.definition,args)?,None=>BTreeMap::new()};writes(Write::External{call:expr,instance,arguments,syntax:args})?;}
-                    } else if !record && name=="take_last" && let [_,place]=args.as_slice() {
-                        writes(Write::Position{place,call:Some(expr),contents:false,iterator:None,when:None,local_value:false})?;
-                    }
+                        }
+                        crate::frontend::NameResolution::Missing => {
+                            if name=="take_last" && let [_,place]=args.as_slice() {
+                                writes(Write::Position{place,call:Some(expr),contents:false,iterator:None,when:None,local_value:false})?;
+                            }
+                        }
+                        crate::frontend::NameResolution::Ambiguous => {}
+                    } }
                 }
                 if name=="dataset" && matches!(&expr.kind,ExprKind::Specialize(..))
                     && let [length,factory]=args.as_slice() {
@@ -1485,7 +1491,7 @@ impl Builder<'_> {
             if op!="=" {return Ok(NumericEffect::Unknown);}
             let length=match &rhs.kind {
                 ExprKind::Call(function,args) if function=="resize" && args.len()==3 && scope.named(function,rhs.span)?.is_none()
-                    && scope.world.resolve(function,&scope.definition.module,&scope.definition.imports,true).is_none()=>&args[1],
+                    && scope.world.resolve(function,&scope.definition.module,&scope.definition.imports,true).is_missing()=>&args[1],
                 ExprKind::Specialize(function,_,args) if function=="dataset" && !args.is_empty()=>&args[0],
                 ExprKind::Name(source) if source==name=>return Ok(NumericEffect::shift(0)),
                 _=>return Ok(NumericEffect::Unknown),

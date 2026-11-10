@@ -64,7 +64,7 @@ impl World {
                     else { source.fail(span, "B225", "变体条件没有后续字段") };
             }
             let key = if name.canonical { self.records.get_key_value(&name.name).map(|(key, _)| key.clone()) }
-                else { self.resolve(&name.name, module, imports, false) };
+                else { self.resolve(&name.name, module, imports, false).unique() };
             let Some(key) = key else { return source.fail(span, "B031", format!("未知类型 {}", name.name)); };
             let (record, record_source, record_module, record_imports) = self.record(&key);
             if record.variants.iter().any(|variant| variant.name == *field) {
@@ -93,7 +93,7 @@ impl World {
         // that existing type error from its declaration, without expanding a
         // recursive callback just to discover the record's machine layout.
         if let Some(key) = if name.canonical { self.records.contains_key(&name.name).then_some(name.name.clone()) }
-            else { self.resolve(&name.name, module, imports, false) } {
+            else { self.resolve(&name.name, module, imports, false).unique() } {
             let record = &self.record(&key).0;
             if record.enumeration.is_none() {
                 return source.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");

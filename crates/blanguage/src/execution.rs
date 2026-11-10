@@ -26,7 +26,7 @@ impl Body<'_> {
                 name: name.into(), module: d.module.clone(), imports: d.imports.clone(),
             });
         }
-        if world.resolve(name, &d.module, &d.imports, false).is_some() {
+        if !world.resolve(name, &d.module, &d.imports, false).is_missing() {
             self.local |= statement || d.function.target == Target::Cpu;
             return false;
         }
@@ -35,19 +35,19 @@ impl Body<'_> {
                 name: name.into(), module: d.module.clone(), imports: d.imports.clone(),
             });
         }
-        if let Some(key) = world.resolve(name, &d.module, &d.imports, true) {
-            self.calls.insert(key.clone());
-            if statement {
-                self.statements.insert(key);
+        match world.resolve(name, &d.module, &d.imports, true) {
+            crate::frontend::NameResolution::Unique(key) => {
+                self.calls.insert(key.clone());
+                if statement { self.statements.insert(key); }
             }
-        } else if matches!(name, "dataset" | "upload" | "download") {
-            self.host = true;
-        } else if crate::check::stage_intrinsic(name) {
-            self.domain = true;
-            // 集合入口的字段／前缀参数由域展开解释，不在CPU主机求值。
-            return true;
-        } else {
-            self.local |= statement || d.function.target == Target::Cpu;
+            crate::frontend::NameResolution::Missing if matches!(name, "dataset" | "upload" | "download") => self.host = true,
+            crate::frontend::NameResolution::Missing if crate::check::stage_intrinsic(name) => {
+                self.domain = true;
+                // 集合参数由原域展开解释，不在CPU主机求值。
+                return true;
+            }
+            crate::frontend::NameResolution::Missing | crate::frontend::NameResolution::Ambiguous =>
+                self.local |= statement || d.function.target == Target::Cpu,
         }
         false
     }

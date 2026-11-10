@@ -1042,7 +1042,7 @@ native_function::Module由Builder、CheckedFunction和模块编译入口按值�
 
 ### 4.4 统一函数怎样落到不同执行范围
 
-源语言以返回类型、名称和参数定义函数。第一章的 `void seed`、`void scale` 与普通值函数共用定义与名称解析；`parallel` 显式表达数据域，`on cpu／gpu／compute` 声明可用目标。`execution.rs` 沿实际函数体和调用闭包推导 Invocation、Domain、Host 参与要求，它们是编译事实，不是用户另写的函数类别或运行时许可。
+源语言以返回类型、名称和参数定义函数。第一章的 `void seed`、`void scale` 与普通值函数共用定义与名称解析；`parallel` 显式表达数据域，`on cpu／gpu／compute` 声明可用目标。`execution.rs` 沿实际函数体和调用闭包推导 Invocation、Domain、Host 参与要求，它们是编译事实，不是用户另写的函数类别或运行时许可。frontend的原名称查询以NameResolution保留Missing、Unique与Ambiguous，只在本次查询中交接；resolve_name按原可见性消费候选，取得唯一名称时直接移动它，不生产候选Vec再克隆。实际普通调用对歧义报告错误，内建选择只接受Missing；记录构造等存在性分类直接判断非Missing，不把unique投影失败当作无声明；预分析保留词法上下文职责，原build中普通函数及记录名的引用摘要同样区分缺失与歧义，不改变对象或执行ABI。
 
 调用选择沿原World／Declarations取得局部、本模块与唯一可见声明，既有owned_record_call及实际泛型实例继续确定原构造和函数。resize、take_last、own、into_inner的资源行为由原builtin_returned在普通调用选择之后处理；Scope::call的类型推导及原写效果／长度推导保持同一目标，普通同名函数不制造取尾输出或dataset增长关系。资源初始化、移动、F和Frame最后释放仍由原所有者承担，不新建符号表、试调用或第二份状态。多可见候选被当作无声明的独立缺口仍沿Issues C-053，不把本轮普通绑定优先写成歧义已修复。
 
@@ -1478,7 +1478,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 
 命名的match拥有载荷由owned_arm保留在原env绑定中，正常分支退出先调用既有drop_binding，待静态F、元素元数据读取和资源释放完成后才移出绑定。清理消费原拥有树及已求值位置，不让调用前已移动的旧来源代替正在清理的实际拥有者；实际已移出的字段与提前返回继续沿原出口处理，没有第二拥有表或释放路径。
 
-源码节选：`crates/blanguage/src/check/owned_values.rs:1053`。
+源码节选：`crates/blanguage/src/check/owned_values.rs:1059`。
 
 ```rust
     pub(super) fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
@@ -4521,7 +4521,7 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
         ExprKind::FunctionRef(name, arguments) => (name, Some(arguments.as_slice())),
         _ => return caller.source.fail(reference.span, "B153", "c_function需要C ABI函数名及具体类型／const实参"),
     };
-    let Some(key) = world.resolve(name, &caller.module, &caller.imports, true) else {
+    let Some(key) = world.resolve(name, &caller.module, &caller.imports, true).unique() else {
         return caller.source.fail(span, "B158", format!("未知函数 {name}"));
     };
     let definition = world.functions[&key].clone();

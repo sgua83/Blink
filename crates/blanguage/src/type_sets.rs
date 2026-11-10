@@ -114,6 +114,6 @@ impl crate::Declarations {
             self.type_sets.get(key).is_some_and(|(_, source, owner, _)| {
                 crate::type_visible(source, owner, module, imports)
             })
-        })
+        }).unique()
     }
 }

@@ -268,7 +268,7 @@ pub(super) fn expression(
                 }
                 let key = builder
                     .world
-                    .resolve(name, &definition.module, &definition.imports, true)
+                    .resolve(name, &definition.module, &definition.imports, true).unique()
                     .filter(|key| {
                         builder.world.functions[key].function.kind == FunctionKind::Constant
                     })
@@ -531,7 +531,7 @@ fn bind_constants(
         OutputCondition::Name(name)
             if name != "returned" && !definition.parameters.iter().any(|p| p.name == *name) =>
         {
-            let key = world.resolve(name, definition.module, definition.imports, true)
+            let key = world.resolve(name, definition.module, definition.imports, true).unique()
                 .filter(|key| world.functions[key].function.kind == FunctionKind::Constant)
                 .ok_or_else(|| Diagnostic {
                     source: definition.source.clone(), span, code: "B225",

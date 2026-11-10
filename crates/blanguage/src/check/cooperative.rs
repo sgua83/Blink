@@ -410,7 +410,7 @@ impl<'a> Builder<'a> {
                 &self.definition.module,
                 &self.definition.imports,
                 true,
-            )
+            ).unique()
             .ok_or_else(|| Diagnostic {
                 source: self.definition.source.clone(),
                 span,

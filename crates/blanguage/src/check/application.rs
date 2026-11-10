@@ -1915,7 +1915,7 @@ impl Builder<'_> {
             ExprKind::FunctionRef(name,args)=>(name.as_str(),Some(args.as_slice())),
             _=>return self.fail(factory.span,"B224","dataset生成函数需要明确静态函数引用"),
         };
-        let key=self.world.resolve(name,&self.definition.module,&self.definition.imports,true)
+        let key=self.world.resolve(name,&self.definition.module,&self.definition.imports,true).unique()
             .ok_or_else(||Diagnostic{source:self.definition.source.clone(),span:factory.span,code:"B158",message:format!("未知生成函数 {name}")})?;
         let trigger=self.source_at(factory.span,SourceSyntax::Expression);
         let origin=|reason|Arc::new(GeneratedOrigin{reason,trigger:trigger.clone().map(GenerationAnchor::Syntax)});
@@ -2531,7 +2531,7 @@ impl Builder<'_> {
                 &self.definition.module,
                 &self.definition.imports,
                 true,
-            )
+            ).unique()
             .ok_or_else(|| Diagnostic {
                 source: self.definition.source.clone(),
                 span,

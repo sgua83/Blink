@@ -193,7 +193,7 @@ impl World {
             },
             Some(Shape::Constant(name)) => {
                 let key = self
-                    .resolve(name, module, imports, true)
+                    .resolve(name, module, imports, true).unique()
                     .filter(|key| self.functions[key].function.kind == FunctionKind::Constant)
                     .ok_or_else(|| Diagnostic {
                         source: source.clone(),

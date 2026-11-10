@@ -65,7 +65,7 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
         if let Some(param) = self.definition.function.params.iter().find(|param| param.name == name) {
             return self.declared_type(&param.ty, self.definition, param.span).map(Some);
         }
-        if let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true)
+        if let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true).unique()
             && self.world.functions[&key].function.kind == FunctionKind::Constant {
             let definition = &self.world.functions[&key];
             return self.declared_type(&definition.function.result, definition, span).map(Some);
@@ -111,28 +111,32 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             return self.declared_type(ty, self.definition, span).map(Some);
         }
         if explicit.is_some() && matches!(name, "size_of" | "align_of")
-            && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_none()
-            && self.world.resolve(name, &self.definition.module, &self.definition.imports, true).is_none() {
+            && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_missing()
+            && self.world.resolve(name, &self.definition.module, &self.definition.imports, true).is_missing() {
             return Ok(Some(Ty::scalar(Scalar::U64)));
         }
         if name == "try" && let [value] = args {
             return Ok(self.ty(value, limit)?.and_then(|ty| ty.variants.first().map(|variant| *variant.ty.clone())));
         }
         if Ty::builtin(name).is_some() || matches!(name, "array" | "cfn")
-            || self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some() {
+            || !self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_missing() {
             let mut syntax = TypeName::named(name);
             syntax.arguments = explicit.unwrap_or_default().to_vec();
             return self.declared_type(&syntax, self.definition, span).map(Some);
         }
-        if let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
-            let types = args.iter().map(|arg| self.ty(arg, limit)).collect::<Result<Vec<_>>>()?;
-            let actuals = types.iter().map(|ty| generics::Actual {
-                ty: ty.as_ref().map(std::borrow::Cow::Borrowed),
-                count: ty.as_ref().and_then(|ty| ty.dataset.as_ref().and(ty.values.first().copied())),
-            }).collect::<Vec<_>>();
-            let instance = generics::specialize(self.world, &key, &actuals, explicit, (&self.definition.source, &self.definition.module, &self.definition.imports), span)?;
-            if matches!(instance.definition.function.result.name.as_str(), "void" | "never") { return Ok(None); }
-            return self.declared_type(&instance.definition.function.result, &instance.definition, span).map(Some);
+        match self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
+            crate::frontend::NameResolution::Unique(key) => {
+                let types = args.iter().map(|arg| self.ty(arg, limit)).collect::<Result<Vec<_>>>()?;
+                let actuals = types.iter().map(|ty| generics::Actual {
+                    ty: ty.as_ref().map(std::borrow::Cow::Borrowed),
+                    count: ty.as_ref().and_then(|ty| ty.dataset.as_ref().and(ty.values.first().copied())),
+                }).collect::<Vec<_>>();
+                let instance = generics::specialize(self.world, &key, &actuals, explicit, (&self.definition.source, &self.definition.module, &self.definition.imports), span)?;
+                if matches!(instance.definition.function.result.name.as_str(), "void" | "never") { return Ok(None); }
+                return self.declared_type(&instance.definition.function.result, &instance.definition, span).map(Some);
+            }
+            crate::frontend::NameResolution::Ambiguous => return Ok(None),
+            crate::frontend::NameResolution::Missing => {}
         }
         if explicit.is_none() && let ("own",[value,function])=(name,args) {
             let function=Builder::user_owned_function(self.definition,function)?;
