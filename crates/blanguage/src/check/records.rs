@@ -120,23 +120,26 @@ impl Builder<'_> {
             for value in &values {
                 self.require_same(element, &value.ty, span)?;
             }
-            let values = if values.len() == 1 {
-                vec![values[0].clone(); count]
-            } else {
-                values
-            };
-            if values.len() != count {
+            if values.len() != 1 && values.len() != count {
                 return self.fail(span, "B157", "array 构造需要全部元素，或一个填充值");
+            }
+            if ty.components.is_empty() {
+                let uniform = count == 0 || values.iter().all(|value| value.uniform);
+                let constant = (count == 0 || values.iter().all(|value| value.constant.is_some()))
+                    .then(Vec::new);
+                return Ok(Some(Value {
+                    proof: bounds::Proof::default(), literal: false, ty, regs: Vec::new(), uniform, constant,
+                }));
             }
             let mut proof = bounds::Proof::default();
             let uniform = values.iter().all(|v| v.uniform);
             let mut regs = Vec::new();
             let mut constant = Some(Vec::new());
-            for value in values {
-                proof.append(&value);
-                regs.extend(value.regs);
-                constant = constant.zip(value.constant).map(|(mut a, b)| {
-                    a.extend(b);
+            for value in values.iter().cycle().take(count) {
+                proof.append(value);
+                regs.extend(value.regs.iter().copied());
+                constant = constant.zip(value.constant.as_ref()).map(|(mut a, b)| {
+                    a.extend(b.iter().copied());
                     a
                 });
             }

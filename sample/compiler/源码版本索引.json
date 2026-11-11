@@ -296,7 +296,7 @@
     },
     {
       "path": "crates/blanguage/src/check/records.rs",
-      "sha256": "fce00510613b58ec5f60b683448338169e03d966f35392d87965c7030ba74ba1"
+      "sha256": "0750190c2495733dffbe927239905fab6ec333dbe4f34f07c2930cc2342d1e1c"
     },
     {
       "path": "crates/blanguage/src/check/reduce.rs",
