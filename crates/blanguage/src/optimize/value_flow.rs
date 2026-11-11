@@ -443,7 +443,7 @@ pub(super) fn with_prelude(
     let mut entry = Values::default();
     let mut reuses = Reuses::new();
     entry.block(prelude, registers, &mut reuses);
-    let mut aliases = entry.clone();
+    let mut aliases = Values { aliases: entry.aliases.clone(), ..Values::default() };
     for body in bodies.iter_mut() {
         let mut values = entry.clone();
         values.block(body, registers, &mut reuses);

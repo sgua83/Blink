@@ -588,7 +588,7 @@
     },
     {
       "path": "crates/blanguage/src/optimize/value_flow.rs",
-      "sha256": "38653636cfd91d8f581162cba544de353ffddf5c3e9bb6f83f5135a1cf894b32"
+      "sha256": "414142ba4f8f822e88439ff5a0a597e1b82310f81a97b6759921d0fcd75bfe14"
     },
     {
       "path": "crates/blanguage/src/parser.rs",
