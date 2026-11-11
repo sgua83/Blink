@@ -471,7 +471,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1938`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1894`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -496,7 +496,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:3118`。
+源码节选：`crates/blanguage/src/check/bounds.rs:3121`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -515,7 +515,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1926`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1882`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -2389,7 +2389,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1284`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1240`。
 
 ```rust
         self.nonzero = (0..width)
@@ -2402,7 +2402,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1460`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1416`。
 
 ```rust
     pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
@@ -2482,11 +2482,11 @@ F32／F64乘法沿同一四角交接结果：F32仍消费精确的F64端点积�
 
 ### 9.6 共享条件图怎样结束寿命
 
-一个条件可能被多个路径和结果共同引用。Clause 用 Arc 持有原条件节点；动态选择关系和后续检查共享同一张 DAG，查询结束后，仍有消费者的节点必须继续保留。这些引用共同持有编译状态，保持同一张条件图的节点身份。来源边沿原Edges::guards_at_call绑定调用输入时，已有Condition先由原at_call投影真实两根，本接点只消费正根；原insert_when负责最终边的guard与两个根。不为立即只取正根的交接再生产一个临时补集。一般条件的两根不必互补，私有布尔、未知／不可能来源、存储版本及最后消费者仍沿原投影和来源边交接。
+一个条件可能被多个路径和结果共同引用。Clause 用 Arc 持有原条件节点；动态选择关系和后续检查共享同一张 DAG，查询结束后，仍有消费者的节点必须继续保留。这些引用共同持有编译状态，保持同一张条件图的节点身份。Proof::call_identity／call_domain／call_common_bits／call_fact复用原输入及Fact转换，Clause::at_calls沿原ordered共享查询一次交接所有实际根；private_numeric的原required查询仍把必要数值界映回同一条件图。真实Proof继续处理数值／资源及最后非零消费；Condition::at_call直接取得原真假两根，退出没有数值消费者的临时Proof。来源边沿原Edges::guards_at_call绑定调用输入时，已有Condition先由原at_call投影真实两根，本接点只消费正根；原insert_when负责最终边的guard与两个根。不为立即只取正根的交接再生产一个临时补集。一般条件的两根不必互补，私有布尔、未知／不可能来源、存储版本及最后消费者仍沿原投影和来源边交接。
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2060`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2016`。
 
 ```rust
 impl Drop for Clause {
