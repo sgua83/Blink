@@ -85,4 +85,4 @@ CPU 与两个串行实现逐项相同；当前 GPU 分形边界的 f32 迭代计
 cargo run --release --manifest-path sample/interop/Cargo.toml
 ```
 
-native.rs 在源码中以 `let use_gpu = false;` 选择 CPU；改为 true 后走显式设备、上传、提交与下载路径。两种选择均应输出 [3.0, 5.0, 7.0, 9.0]。native.rs 直接消费既有 blanguage、blcompute；Rust 没有被改成只能调用 C ABI。关于数据布局、同步完成、部署、支持类型及 B 反向调用的当前边界，见 [原生集成文档](../../Docs/NativeInterop.md)。
+native.rs 在源码中以 `let use_gpu = false;` 选择 CPU；改为 true 后走显式设备、上传、提交与下载路径。两种选择均应输出 [3.0, 5.0, 7.0, 9.0]。native.rs 直接消费既有 blanguage、blcompute；Rust 没有被改成只能调用 C ABI。关于数据布局、同步完成、部署、支持类型及 B 反向调用的当前边界，见 [原生集成文档](../../Open/Docs/NativeInterop.md)。

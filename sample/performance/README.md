@@ -4,7 +4,7 @@
 
 ## 编译与执行
 
-先安装[稳定 Blink 种子与构建前提](../../Docs/GettingStarted.md#从-main-构建研发工具)。使用 Windows x64 的 Visual Studio 开发者 PowerShell，确认 `cl`、`lib`、`cargo` 可用。在 Blink 项目根目录运行：
+先安装[稳定 Blink 种子与构建前提](../../Open/Docs/GettingStarted.md#从-main-构建研发工具)。使用 Windows x64 的 Visual Studio 开发者 PowerShell，确认 `cl`、`lib`、`cargo` 可用。在 Blink 项目根目录运行：
 
 ```powershell
 cargo build --release `

@@ -1,6 +1,6 @@
 # 独立应用入门示例
 
-先按[安装指南](../../Docs/GettingStarted.md)安装稳定 Blink 种子、Rust MSVC 和 Windows C++ 构建工具，再从源码构建 Blink；或直接用安装目录中的正式工具编译以下应用。
+先按[安装指南](../../Open/Docs/GettingStarted.md)安装稳定 Blink 种子、Rust MSVC 和 Windows C++ 构建工具，再从源码构建 Blink；或直接用安装目录中的正式工具编译以下应用。
 
 ```powershell
 cargo build --workspace --release

@@ -1638,7 +1638,7 @@ cl /nologo /utf-8 /EHsc `
 
 输出为 3 5 7 9。编译 B 的是 bc，编译 C++ 调用方的是 cl。Rust 和 C++ 都可以作为正式调用方；Rust 仍可直接使用原生 crate。
 
-B 的普通 CPU 应用已支持通过 extern "C" 声明调用 Windows x64 DLL 的 C 导出；Rust 与 C++ 可以各自按 C ABI 导出函数。普通值、位置借用与连续布局合同有明确边界，不直接导入语言对象或普通 Rust ABI。完整范围见 Docs/NativeInterop.md。
+B 的普通 CPU 应用已支持通过 extern "C" 声明调用 Windows x64 DLL 的 C 导出；Rust 与 C++ 可以各自按 C ABI 导出函数。普通值、位置借用与连续布局合同有明确边界，不直接导入语言对象或普通 Rust ABI。完整范围见 Open/Docs/NativeInterop.md。
 
 ### 14.4　把只需准备一次的东西留下来
 

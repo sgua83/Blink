@@ -1136,11 +1136,11 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 5.4 稳定种子怎样参与正式构建
 
-源码生产者的build.rs默认调用已安装独立稳定发行的bc；后续代通过BLINK_BOOTSTRAP_SDK明确选择独立上一代SDK，原PublishRelease.ps1用-BootstrapSdk只向本轮Cargo交接实际输入，不改系统安装。选定的bc分别生成B词法、泛型前瞻与链接字符串解码、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子VERSION的原共享读句柄保持到全部编译与归档结束，新工具写工程target。发行者把同次构建的静态库交给源码SDK，并在包Cargo中声明build-sdk.rs作为消费入口；消费者持有本包VERSION读取同源固定库，写入自己的原OUT_DIR后链接，输入缺失直接交回I/O错误，不重新调用种子。compiler关闭时不读取引导库或生成编译器身份；installed不决定生产／消费角色。两个入口共用同一身份实现，以实际原生库、源码、有效Cargo配置及Rust工具链决定身份。编译器运行时直接调用已编入的B代码，原C ABI与运行资源职责保持。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。
+源码生产者的build.rs默认调用已安装独立稳定发行的bc；后续代通过BLINK_BOOTSTRAP_SDK明确选择独立上一代SDK，原内部研发资料用-BootstrapSdk只向本轮Cargo交接实际输入，不改系统安装。选定的bc分别生成B词法、泛型前瞻与链接字符串解码、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子VERSION的原共享读句柄保持到全部编译与归档结束，新工具写工程target。发行者把同次构建的静态库交给源码SDK，并在包Cargo中声明build-sdk.rs作为消费入口；消费者持有本包VERSION读取同源固定库，写入自己的原OUT_DIR后链接，输入缺失直接交回I/O错误，不重新调用种子。compiler关闭时不读取引导库或生成编译器身份；installed不决定生产／消费角色。两个入口共用同一身份实现，以实际原生库、源码、有效Cargo配置及Rust工具链决定身份。编译器运行时直接调用已编入的B代码，原C ABI与运行资源职责保持。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。
 
 词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取、独立普通应用PE格式布局与字节写出、已选COFF节的分组／对齐／符号／栈／重定位地址及载荷组合，以及源语法节点／子项／文字的存储、增长与最后释放由B接管；其余对象语义／合同及栈记录生成、独立链接的符号选择／合同检查、共享机器重定位及宿主／执行运行库／DLL路径、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
-语法存储按[现行职责](../Docs/Architecture.md#syntax-storage-boundary)由B模块持有，原解析、声明、实例和检查消费者直接读取同一存储。B模块唯一持有源节点、模块内子项索引和自有文字，Source借用保留原字节范围，增长后按索引重新取得视图。声明表和各实例共享只读源定义；实例保留原instantiate已经产生的类型／const绑定，检查与IR生成按实际绑定解释源引用，删除Definition／Function深克隆及逐节点写回。必要的静态使用检查、作用域、错误位置及来源保持，实例实际代码／IR仍各自拥有。TypeName.canonical及规范化OutputConstant的Ty、bits、GeneratedOrigin属于原语义合同／IR，runtime codec继续恢复原语义值和编码，不附带编译器／种子依赖。只有真实新语法才写B结果；只为调用检查入口而构造的辅助Function／Return树退出。阶段名称和for范围沿原输入根、同一实例的u32 const绑定及模块const解释，直接交接原Root和名称来源；共享源节点不改写，运行期范围与未知名称保持原诊断。节点编号不代替结构比较，Expr的Span不参与原相等规则。语法、实例绑定与生成／语义结果各沿实际最后消费者释放，完整交接以原台账状态为准。
+语法存储按现行职责由B模块持有，原解析、声明、实例和检查消费者直接读取同一存储。B模块唯一持有源节点、模块内子项索引和自有文字，Source借用保留原字节范围，增长后按索引重新取得视图。声明表和各实例共享只读源定义；实例保留原instantiate已经产生的类型／const绑定，检查与IR生成按实际绑定解释源引用，删除Definition／Function深克隆及逐节点写回。必要的静态使用检查、作用域、错误位置及来源保持，实例实际代码／IR仍各自拥有。TypeName.canonical及规范化OutputConstant的Ty、bits、GeneratedOrigin属于原语义合同／IR，runtime codec继续恢复原语义值和编码，不附带编译器／种子依赖。只有真实新语法才写B结果；只为调用检查入口而构造的辅助Function／Return树退出。阶段名称和for范围沿原输入根、同一实例的u32 const绑定及模块const解释，直接交接原Root和名称来源；共享源节点不改写，运行期范围与未知名称保持原诊断。节点编号不代替结构比较，Expr的Span不参与原相等规则。语法、实例绑定与生成／语义结果各沿实际最后消费者释放，完整交接以原台账状态为准。
 
 **自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
@@ -1538,7 +1538,7 @@ CPU应用还可以用`dataset<T>(length,F)`逐项接收拥有元素。静态F在
 
 普通函数接收dataset时，元素的子资源位置来自实际输入。DataPayload::loop_compatible沿同一Data的ownership、Residency及elements递归交接实际生命周期，OwnedValue、ApplicationData和DataReference复用这一资源树查询。Use::At与已知一侧CPU／GPU的Use::Same沿原infer生产输入要求；equal_under的同一条件比较同时服务原输入要求生产与最终位置查询。canonical、local及调用采用复用scoped_indices按原资源深度绑定ElementIndex，保存真实选择；数值／借用失效继续重建其值模型，资源位置沿原拥有树交接，实际拥有赋值仍交接新位置。原位置合同用Field与Elements区分字段和共同元素，沿同一Data.elements遍历参数、实参和返回闭包；Elements不是元素零。记录、固定数组和活动变体中的子资源分别交接，空集合及非活动载荷不产生虚构来源，未知也不能当作CPU。原静态F、显式传输及真正的内容读取消费相应位置，Frame仍是唯一物理资源所有者；对象／归档保存的是同一编译合同，没有新增机器参数或运行时拥有表。普通只读借用的内部机器参数为32字节、对齐8：root:u64在偏移0、length:u32在8、stride:u64在16、offset:u32在24。原DataPayload.root的Scalar区分真实地址和Frame句柄；元数据与真实载荷消费相同来源。应用通过Frame::storage_address纯查询当前地址，CPU范围直接消费原绑定；GPU驻留数据只取length不等待或下载，读取载荷仍需原CPU位置合同。GPU设备地址不能被CPU解引用，借用和派生view仍保持到最后真实消费者。CPU范围消费已闭合被调函数的CPU／GPU位置合同；明确on cpu的同源普通函数在CPU范围沿原native_declaration／native_call编译和调用，Compute共享函数保持原内联选择；CPU范围中的已有view可按原长度关系复制或切片，非零起点使用真实64位步长；不要求额外application上下文，存储与最后消费者仍由原拥有者持有。view构造从原借用描述符取得真实步长，切片和装载消费同一表示，不再由域接口推断元素连续性。普通位置的requires contiguous仍由原合同负责；完整Frame资源操作仍沿原独立缺口推进。
 
-原B实参到ABI实参的关系直接归同一CallArgument。函数有返回结果且written、written_stage或written_data中有实际输出位置时，native_call才构造供原outputs::guards消费的临时output_value；没有输出位置的普通调用不提前投影这份返回Proof。真正返回模型仍由原translate_returned交接，实际输出的条件、初始化与资源借用保持原职责。原native_call的源码调用完成点只属于传入真实实参AST的原调用：实际IR调用与写回输出完成后，先推进该源码点，再结束参数临时拥有者。生成的静态F、dataset初始化及归约调用没有原调用AST，不因共用诊断span推进外层源码状态；各自实际调用、来源及资源释放继续原职责。源码完成点不由生成调用代替，函数退出及资源完成继续归原所有者。拥有值进入释放时，原入口沿实际拥有子树／位置及完整dataset拥有者取得该点仍留在caller的view借用；原递归只消费这份借用与本树尚未执行F的关系，资源叶不再重复查询caller的view借用，真实游标／位置借用仍沿原入口检查。借出dataset内容和结束整个dataset拥有者分别交接；整树F随实际拥有者进入原释放树，内容投影仍保留真实外部消费者。拥有值的原Transfer沿真实存储位置交接分量；尚未落存储的整份OwnedValue以原完整类型及全部SSA寄存器对应同一实际值，再交给已有omitted与retained_component结束自身借用。其他绑定、未交付字段及真实后续F仍保持原借用。旧内容的F和资源仍由原释放路径结束，新输出写回同一位置，共同Data.elements不承载调用期间的局部未初始化状态；未交付字段F、跨元素F及已保存外部地址继续参与借用检查。运行时下标的固定拥有数组沿原Position::Indexed与Presence选择条件交接实际分量；调用者借用的原来源边只在未交付该分量的条件下保留，所选旧树继续原F与资源释放。不能将所有候选元素同时视为已交付，也不能省略未交付字段、跨元素F或已保存的外部地址。普通值元素的cleanup在原model只产生空借用，data入口直接交回，不先查询转移归属；非清理读取、静态F及嵌套拥有资源继续沿真实消费者交接。资源叶只消费已交付的实际释放树；原位置写回和作用域出口在原拥有者处结束对应状态，不按合流Data.root身份横向改写其他绑定，未选中元素保持原拥有与最后释放。ArgumentOrigin区分隐式Frame和被调B参数的零基序号／名称；原调用的Expr切片仅沿现有路由临时借用，在原native_call生产处取得真实Expression位置及上下文，向量引用分量共享材料，零分量保留参数关系。生成调用没有原实参语法时位置为空，其他C／运行库／域包装默认没有本叶材料，不从调用位置或寄存器猜补。Frame裁剪、克隆和原重映射处理同一记录；不重求值、不保留AST、不改变必要编码或实际资源完成。详见[实参与CallArgument](../Docs/BLanguage.md#普通调用b实参与实际callargument的来源)。
+原B实参到ABI实参的关系直接归同一CallArgument。函数有返回结果且written、written_stage或written_data中有实际输出位置时，native_call才构造供原outputs::guards消费的临时output_value；没有输出位置的普通调用不提前投影这份返回Proof。真正返回模型仍由原translate_returned交接，实际输出的条件、初始化与资源借用保持原职责。原native_call的源码调用完成点只属于传入真实实参AST的原调用：实际IR调用与写回输出完成后，先推进该源码点，再结束参数临时拥有者。生成的静态F、dataset初始化及归约调用没有原调用AST，不因共用诊断span推进外层源码状态；各自实际调用、来源及资源释放继续原职责。源码完成点不由生成调用代替，函数退出及资源完成继续归原所有者。拥有值进入释放时，原入口沿实际拥有子树／位置及完整dataset拥有者取得该点仍留在caller的view借用；原递归只消费这份借用与本树尚未执行F的关系，资源叶不再重复查询caller的view借用，真实游标／位置借用仍沿原入口检查。借出dataset内容和结束整个dataset拥有者分别交接；整树F随实际拥有者进入原释放树，内容投影仍保留真实外部消费者。拥有值的原Transfer沿真实存储位置交接分量；尚未落存储的整份OwnedValue以原完整类型及全部SSA寄存器对应同一实际值，再交给已有omitted与retained_component结束自身借用。其他绑定、未交付字段及真实后续F仍保持原借用。旧内容的F和资源仍由原释放路径结束，新输出写回同一位置，共同Data.elements不承载调用期间的局部未初始化状态；未交付字段F、跨元素F及已保存外部地址继续参与借用检查。运行时下标的固定拥有数组沿原Position::Indexed与Presence选择条件交接实际分量；调用者借用的原来源边只在未交付该分量的条件下保留，所选旧树继续原F与资源释放。不能将所有候选元素同时视为已交付，也不能省略未交付字段、跨元素F或已保存的外部地址。普通值元素的cleanup在原model只产生空借用，data入口直接交回，不先查询转移归属；非清理读取、静态F及嵌套拥有资源继续沿真实消费者交接。资源叶只消费已交付的实际释放树；原位置写回和作用域出口在原拥有者处结束对应状态，不按合流Data.root身份横向改写其他绑定，未选中元素保持原拥有与最后释放。ArgumentOrigin区分隐式Frame和被调B参数的零基序号／名称；原调用的Expr切片仅沿现有路由临时借用，在原native_call生产处取得真实Expression位置及上下文，向量引用分量共享材料，零分量保留参数关系。生成调用没有原实参语法时位置为空，其他C／运行库／域包装默认没有本叶材料，不从调用位置或寄存器猜补。Frame裁剪、克隆和原重映射处理同一记录；不重求值、不保留AST、不改变必要编码或实际资源完成。详见[实参与CallArgument](../Open/Docs/BLanguage.md#普通调用b实参与实际callargument的来源)。
 
 源码节选：`crates/blanguage/src/check/view_liveness.rs:144`。
 
@@ -1631,9 +1631,9 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
         };
 ```
 
-普通函数的CallParameter沿同一原记录携带compiler专用参数来源，实际种类由CallParameterKind表达；隐式Frame与真实形参分开，Source形参保留声明序号、名称、实际实例与原Parameter起点，合成形参只借用原生成触发。FunctionBody::parameter_inputs按真实种类只读分段原inputs，向量引用展开共享来源，零分量为空输入；Frame省略直接移除同一参数和输入。参数JSON增加origin及input_registers，原codec只编码种类与类型／访问，运行编码和代码不承载来源。这里只说明逻辑IR输入，最终机器寄存器／栈仍归后端映射。详见[形参与IR输入](../Docs/BLanguage.md#普通函数形参与ir输入的来源)。
+普通函数的CallParameter沿同一原记录携带compiler专用参数来源，实际种类由CallParameterKind表达；隐式Frame与真实形参分开，Source形参保留声明序号、名称、实际实例与原Parameter起点，合成形参只借用原生成触发。FunctionBody::parameter_inputs按真实种类只读分段原inputs，向量引用展开共享来源，零分量为空输入；Frame省略直接移除同一参数和输入。参数JSON增加origin及input_registers，原codec只编码种类与类型／访问，运行编码和代码不承载来源。这里只说明逻辑IR输入，最终机器寄存器／栈仍归后端映射。详见[形参与IR输入](../Open/Docs/BLanguage.md#普通函数形参与ir输入的来源)。
 
-值形参中的固定数组和含数组聚合在原array.rs::materialize_array_bindings接收物化职责，再由共用materialize_array逐分量写入原local slots形成新Local；materialize_array_bindings在按值参数实际绑定处调用现有read_only形成ReadOnlyLocal。存储分配与绑定权限分别由原生产者负责。ArrayParameterStore只分类这些原StoreLocal；表达式、局部绑定、取址、普通／外部实参与拥有／view暂存仍用同一算法并保持原来源。真实参数的Param.span通过Parameter语法锚点保留原定义、特化及内联上下文，当前范围只是起始令牌；合成参数只借用已有生成触发。零长值及被优化消除的存储不因观察补回，必要运行编码、ABI和最后资源消费者保持。详见[数组形参物化来源](../Docs/BLanguage.md#数组形参物化storelocal的生成来源)。
+值形参中的固定数组和含数组聚合在原array.rs::materialize_array_bindings接收物化职责，再由共用materialize_array逐分量写入原local slots形成新Local；materialize_array_bindings在按值参数实际绑定处调用现有read_only形成ReadOnlyLocal。存储分配与绑定权限分别由原生产者负责。ArrayParameterStore只分类这些原StoreLocal；表达式、局部绑定、取址、普通／外部实参与拥有／view暂存仍用同一算法并保持原来源。真实参数的Param.span通过Parameter语法锚点保留原定义、特化及内联上下文，当前范围只是起始令牌；合成参数只借用已有生成触发。零长值及被优化消除的存储不因观察补回，必要运行编码、ABI和最后资源消费者保持。详见[数组形参物化来源](../Open/Docs/BLanguage.md#数组形参物化storelocal的生成来源)。
 
 check/application.rs中的DataPayload.elements只描述所有已初始化元素共同成立的Returned／Proof。unknown_element_model和template_returned只读原Ty／Returned／Proof，按字段、固定数组及变体的字节位置投影同一资源树，不把逻辑分量编号交给真实寄存器表，也不发射载荷转换。模板描述物理值和拥有形状，不制造CPU或GPU位置事实；真实分配、形参及已编译调用的实际来源分别交给原Data和驻留合同。不透明写使相交内容事实失效后，未知后代仍保持未知，不能由CPU控制位置推定它位于CPU；后续访问继续消费原CPU／GPU位置要求。变体以u32字打包时，一个字不等于其中的窄字段，两个字也不等于一个宽值；只有相同布局与标量的数值事实才直接保留，view来源继续交接。真实活动载荷仍由原variant_payload在取得实际SSA值后解码。局部元素及祖先身份在每份模型自身作用域中重绑定，共同合同使用声明DatasetContent输入身份，不表示不同元素的数值相等；实际装载按本次已生成寄存器实例化所选分量的共同数值身份，保留共同范围／非零条件及原资源／view借用来源。不同下标的数值比较与分支消费各自真实值。元素写入、函数返回及独立对象／归档把同一事实交给真实消费者。地址字段的后续显式读取与实际静态F共同约束来源寿命，原位置的初始化和CPU调用内存效果继续沿原合同交接。真正的拥有形参在入口捕获本次机器输入的父值数值来源，整体返回继续交接该快照，不从返回模型旧寄存器重建未知来源。它不是每个运行时元素另建的拥有对象或释放表。
 
@@ -1675,7 +1675,7 @@ sequence::push仅在原h／b声明cleanup(value, data.length == 4294967295)，�
 
 返回子资源view或地址时，原Borrow源图的Element节点记录父来源、原类型资源字段路径和已求值的实际元素Operand；Parameter在原身份之外保存共同输入族的祖先选择，普通输入不带元素投影。Borrow::select_elements只实例化这些模型索引，源快照不由目标序数重新解释。Borrow.resources取得实际子资源；Borrow.owners同时沿父拥有关系取得最后消费者依赖。普通载荷写入由writable_storage将原Place::ApplicationElement.resource直接交给require_view_unborrowed，沿同一Borrow与原Requirement::Unborrowed检查实际子资源；低层application_address仍消费其既有identity到data_borrow关系。拥有交接／覆盖／传输／释放继续消费各自对应关系，活动子view不会冻结无关的父head字段，也不会让父存储提前释放。stored_element_borrow沿原element_owner_bindings、bind_element_resource_borrows及element_scope_bindings逐层把所选view的ElementComponent／ElementParent借用经Borrow::at_call交接到真实父资源；不将局部身份视为函数全局资源，也不整体过滤内部借用。普通载荷写和子资源覆盖因此消费同一活动来源。普通inout返回子view时，resource_borrow直接消费真实根已有的借用，不把物理装载寄存器重复加入资源来源；finish_return沿实际Dataset／OwnedValue输出调用原owned_resource_borrow收集完整拥有子树。Borrowed写回根以原输入身份命名，其存储副本沿同一bindings交接；真实拥有输出仍用原输出位置。capture_element_model收口时，close_stored_resources沿本次原元素绑定重定位EC／EP，再保留原物理来源；进入子dataset时使用同一element_scope_bindings，不把父层名字套到子层。Source::Projection只记录当前dataset元素的字段投影，Source::Element表示进入真正子dataset；Borrow::element消费同层Projection并组合字段，跨dataset仍保留嵌套Element。application_reference_value交出真实投影，element_input_bindings选择同一实参字段模型，因此返回view、写回模型、兄弟字段写和父释放消费同一真实路径。原条件、循环、记录／数组和源码缺席模块交接这同一来源，返回的只读地址不能升级写权限。父拥有资源可与其子view一并放入拥有聚合返回；局部父资源若没有一并交付，引用不能逃逸。这些关系只在原编译期图和对象合同中交接，不增加运行时拥有表、资源副本或第二释放链。
 
-CPU借用描述符的原步长表示也由application_reference_value交接：布局步长为U32而参数需要U64时，原Cast只拓宽数值表示，不改变实际字节步长。该指令用DatasetBorrowStrideCast交接生成来源，触发复用原SourceSite；已经U64的跨函数转交继续直传。view步长由application_stride_parts用同一生成原因交接低／高U32，24字节view保留原地址、长度和完整64位步长；CPU寻址与切片不按元素Ty重建固定步长。Projection根Proof、storage_address、字段偏移与stride的Proof／constant／uniform各保持原职责，来源材料只归原IR及按需快照，不进入必要运行编码，也不为观察保活转换。接口细节见[CPU借用描述符步长来源](../Docs/BLanguage.md#cpu借用描述符步长cast的生成来源)。
+CPU借用描述符的原步长表示也由application_reference_value交接：布局步长为U32而参数需要U64时，原Cast只拓宽数值表示，不改变实际字节步长。该指令用DatasetBorrowStrideCast交接生成来源，触发复用原SourceSite；已经U64的跨函数转交继续直传。view步长由application_stride_parts用同一生成原因交接低／高U32，24字节view保留原地址、长度和完整64位步长；CPU寻址与切片不按元素Ty重建固定步长。Projection根Proof、storage_address、字段偏移与stride的Proof／constant／uniform各保持原职责，来源材料只归原IR及按需快照，不进入必要运行编码，也不为观察保活转换。接口细节见[CPU借用描述符步长来源](../Open/Docs/BLanguage.md#cpu借用描述符步长cast的生成来源)。
 
 直接写`rows[i].values.length`、在原范围成立时索引、构造view或取得只读地址，同样进入原只读模型。application_reference从声明可见的字段取得实际Place，view_place则接收临时生产者已经求出的dataset字段位置；二者共用owned_records::application_place_reference。该入口按实际存储所有者恢复原资源：普通拥有槽使用原候选树，Frame字段使用application_owned_argument读取实际Data.elements及所选元数据，不先读取整个父记录，不复制、移动或重新拥有子dataset。类型查询只识别声明可见的位置，实际资源恢复统一消费这个Place。for的拥有记录元素游标由Binding::Owned持有原ApplicationElement位置。read_expression_type直接查询这个位置的Ty，read_aggregate的Name分派复用application_owned_argument，按实际资源来源与布局经materialize_element装载一次元数据；原OwnedValue::borrow／unpack_record交接共享子资源，直接子遍历与read dataset形参消费同一来源。它不建立新拥有绑定，不改变普通复制、移动和释放。原下标只求值一次。子元数据是实际位置的一次装载，不是env中的独立拥有资源；view、原生调用与地址转换直接消费原Data.root.proof的借用来源。
 
@@ -3138,19 +3138,19 @@ impl ReductionKernel {
 
 观察写入要回到原指令和布局。StoreLocalIndexed已有base／len逻辑存储范围、index动态字节偏移寄存器、word静态字节偏移及value标量类型；它们与locals声明共同说明实际寻址，不能把完整逻辑范围当作一次实际写宽度。优化器locals缓存中的关系被删除，是内部分析维护，不能因此推定内存已改变或初始化丢失；把同一次缓存维护逐轮包进来源链，会重复描述内部实现。AI直接读取原访问和控制事实，临时分析状态沿原活跃所有者观察；真正消失、合并或替换的程序操作继续保留来源，两类职责分别处理。
 
-指针写与原子操作同样沿原IR查询。普通函数的地址合同收敛后，原apply_memory回填Pointer.aliases，现有JSON直接编码Local的逻辑base／len或Data绑定；优化器使用的正是这些别名，不另保存一份失效历史。原Atomic还保留操作、标量类型与内存序：Load不写，比较交换可能失败，清除分析缓存不能冒充已写内存。公开指令内容在Inst.kind及来源查询中，JSON由所属ValueCode／Stage／FunctionBody等容器提供；构造中尚未回填的空别名、静态Reg编号与未采集的运行地址／值分别理解。完整接口与边界见[语言规范](../Docs/BLanguage.md#指针与原子访问的既有别名事实)。
+指针写与原子操作同样沿原IR查询。普通函数的地址合同收敛后，原apply_memory回填Pointer.aliases，现有JSON直接编码Local的逻辑base／len或Data绑定；优化器使用的正是这些别名，不另保存一份失效历史。原Atomic还保留操作、标量类型与内存序：Load不写，比较交换可能失败，清除分析缓存不能冒充已写内存。公开指令内容在Inst.kind及来源查询中，JSON由所属ValueCode／Stage／FunctionBody等容器提供；构造中尚未回填的空别名、静态Reg编号与未采集的运行地址／值分别理解。完整接口与边界见[语言规范](../Open/Docs/BLanguage.md#指针与原子访问的既有别名事实)。
 
-原生调用要同时查看Reference参数和Call.memory。前者给出原类型、访问及底层存储／字节投影，后者给出按值地址等额外内存影响；原Call::locals(true)消费两类可写Local范围，Read本身不成为局部写。普通函数合同闭合过程中，apply_memory沿同一memory_use重填Call.memory；失败清理等实际消费者结束后，由原模块最后交接撤去该编号，原SDK及JSON直接交接，不再保存一份缓存删除清单。静态范围、实际内存写入、外部实现信任及运行完成分别理解；完整字段及生命周期见[规范](../Docs/BLanguage.md#原生调用的既有局部访问事实)。
+原生调用要同时查看Reference参数和Call.memory。前者给出原类型、访问及底层存储／字节投影，后者给出按值地址等额外内存影响；原Call::locals(true)消费两类可写Local范围，Read本身不成为局部写。普通函数合同闭合过程中，apply_memory沿同一memory_use重填Call.memory；失败清理等实际消费者结束后，由原模块最后交接撤去该编号，原SDK及JSON直接交接，不再保存一份缓存删除清单。静态范围、实际内存写入、外部实现信任及运行完成分别理解；完整字段及生命周期见[规范](../Open/Docs/BLanguage.md#原生调用的既有局部访问事实)。
 
-循环查询保留原condition代码、test逻辑寄存器和body代码，循环体为零次也不表示条件没有执行。Break／Continue作用于最近Loop，Exit只结束最近Scope；原嵌套结构与真实写操作、调用效果、指针别名共同给AI提供事实。原值流在入口沿同一visit／local_writes汇总可能写，停止沿用旧局部值；这是一轮临时分析，不另存written或缓存清理历史，也不能把某次迭代的值当循环后结果。真正消失／替换的操作来源及运行现场仍分别交接，详见[规范](../Docs/BLanguage.md#循环的既有控制与可能局部写事实)。
+循环查询保留原condition代码、test逻辑寄存器和body代码，循环体为零次也不表示条件没有执行。Break／Continue作用于最近Loop，Exit只结束最近Scope；原嵌套结构与真实写操作、调用效果、指针别名共同给AI提供事实。原值流在入口沿同一visit／local_writes汇总可能写，停止沿用旧局部值；这是一轮临时分析，不另存written或缓存清理历史，也不能把某次迭代的值当循环后结果。真正消失／替换的操作来源及运行现场仍分别交接，详见[规范](../Open/Docs/BLanguage.md#循环的既有控制与可能局部写事实)。
 
-控制合流要区分“没有继续路径”和“路径继续但没有共同已知值”。原Flow将普通继续、break、continue和Scope退出分开，当前merge只保留各类路径共同的同一SSA；实际If／Scope／Loop与读写仍在原IR，真正读取替代仍沿LocalReadForward及原输入锚点。两条分支写不同定义后保留LoadLocal是正常结果，不能强选一条来源。临时合流表不另存历史；结束迭代也须与实际删除剩余操作区分，原代码有break并不证明发生删除。当前真实消费没有该事件，不增加空来源；真正程序删改仍按实际生产者交接。字段及边界见[规范](../Docs/BLanguage.md#控制合流与实际读取替代)。
+控制合流要区分“没有继续路径”和“路径继续但没有共同已知值”。原Flow将普通继续、break、continue和Scope退出分开，当前merge只保留各类路径共同的同一SSA；实际If／Scope／Loop与读写仍在原IR，真正读取替代仍沿LocalReadForward及原输入锚点。两条分支写不同定义后保留LoadLocal是正常结果，不能强选一条来源。临时合流表不另存历史；结束迭代也须与实际删除剩余操作区分，原代码有break并不证明发生删除。当前真实消费没有该事件，不增加空来源；真正程序删改仍按实际生产者交接。字段及边界见[规范](../Open/Docs/BLanguage.md#控制合流与实际读取替代)。
 
 有些普通值操作最终没有任何消费者。原dce沿同一needed集合删除它们，原ValueCode或Stage用UnusedOperations／EliminatedOperations保留这次删除来源；EliminatedOperation::ValueResults交接原OperationOrigin和当时结果的Scalar列表，整数除法另用可选integer_division_results交接被删除的商／余数角色，普通值为null。不保存旧指令、操作数、常量位模式或Reg。Both全部删除有两个角色，单商或单余数只有实际角色；只删一个结果时仍归保留Inst上的IntegerDivisionResultPrune，不重复记成整条操作删除。单条IR操作可以有多个结果，一条源语句也可能产生多条操作；不能将这份材料的数量当作运行次数或性能收益。原生成根与入口保持，下一轮只记录新删除，原Frame前缀移除继续沿保留根调整输入来源引用。没有材料时仍须区分未采集与未发生，不从优化后的代码反推完整历史。
 
 没有结果的私有写与被删除的值分别表达。原StoreLocal的目标Local不在needed时，同一EliminatedOperation用DirectPrivateWrite记录原写来源和输入Scalar；ValueResults继续表达普通值及商余结果。两种操作复用原UnusedOperations／EliminatedOperations根，JSON的operations逐项区分eliminated_private_write与eliminated_value。直接写的result_types()为None，一个U64逻辑分量也不是四字节。槽号和Reg会随原压缩消失，不写成永久身份，不为来源保活旧IR、私有存储或值；实际运行地址仍由原运行观察职责负责。索引私有写用同一枚举的IndexedPrivateWrite，分别保留原逻辑范围长度component_count、原字节偏移项的index_type、静态byte_offset、写入Scalar及原来源。临时base／Local／Reg不做永久身份：array<Pair,3>可能有六个逻辑分量，写U64字段仍只写八字节，其字段偏移可以是八；范围长度不是数组元素数或固定四字节字。该记录沿同一ValueCode／Stage及空Map后的Program交接，原needed与求值不变，当前布局、运行地址和实际索引值不由删除来源猜补。
 
-这些事实直接从原bc ir普通函数、应用及程序查询取得，SDK和JSON消费同一根。普通指令的无代码事实、被删除的私有写、整数结果裁剪与整个Stage消失分别属于各自生产点；整个空Map阶段被原optimize移除时，Program.generated_origin以EmptyMapRemoval接收其原语句来源及已有生成材料；全部阶段消失仍能从原Program查询这次删除，不为保存来源保活空阶段。code为空与运行时集合为空分别理解，source_stages继续记录原展开数量。查询与生命周期见[规范](../Docs/BLanguage.md#未消费普通值结果的删除来源)和[架构](../Docs/Architecture.md#tool-7-3-1-5)。
+这些事实直接从原bc ir普通函数、应用及程序查询取得，SDK和JSON消费同一根。普通指令的无代码事实、被删除的私有写、整数结果裁剪与整个Stage消失分别属于各自生产点；整个空Map阶段被原optimize移除时，Program.generated_origin以EmptyMapRemoval接收其原语句来源及已有生成材料；全部阶段消失仍能从原Program查询这次删除，不为保存来源保活空阶段。code为空与运行时集合为空分别理解，source_stages继续记录原展开数量。查询与生命周期见[规范](../Open/Docs/BLanguage.md#未消费普通值结果的删除来源)和内部研发资料（不公开）。
 ### 11.4 选择表达式不是总能两边都先算
 
 `condition ? a/b : 0` 只有选中除法时才应求除法，未选分支可能包含无效访问或不允许提前执行的计算。编译器保留必要控制流，再只对确实安全的操作简化为选择；这与第九章的路径事实相连。
@@ -4684,7 +4684,7 @@ extern "C" ResourcePlan prepare(ResourceInput input) on cpu {
 
 应用链接以唯一实际入口为根，沿机器符号选择显式模块与按库顺序抽取的成员，再沿实际函数节和重定位继续。每个函数的机器代码与内部字面量在同一个 COMDAT 节；pdata／xdata 以标准 COFF 关联随这个函数保留。递归和共享打印／导入跳板按原节身份闭合，未调用函数不把缺失依赖或 DLL 导入带进应用；真正需要的定义须有匹配合同，显式重复仍拒绝。
 
-模块资源包装只在真实调用后进入执行库导出，原工厂及本地类型／程序索引保持；没有资源包装消费者的模块不带入自己的资源 archive。需要的模块资源映像仍完整交给原 Frame，不重排条目。对象栈声明仍是原上界，本项不替代函数级最小栈分析。对象元数据交接真实类型合同、COFF辅助符号与节关联；对象、模块资源与执行映像的现行兼容身份统一见[语言规范“已编译模块的资源ABI”](../Docs/BLanguage.md#已编译模块的资源abi)；签名使用名义TypeName编码，真实不匹配由各自格式入口拒绝。入口和符号选择归原链接器，物理节、重定位、合同与资源仍由原所有者交接；SDK单对象算法 DLL 也使用同一链接入口。
+模块资源包装只在真实调用后进入执行库导出，原工厂及本地类型／程序索引保持；没有资源包装消费者的模块不带入自己的资源 archive。需要的模块资源映像仍完整交给原 Frame，不重排条目。对象栈声明仍是原上界，本项不替代函数级最小栈分析。对象元数据交接真实类型合同、COFF辅助符号与节关联；对象、模块资源与执行映像的现行兼容身份统一见[语言规范“已编译模块的资源ABI”](../Open/Docs/BLanguage.md#已编译模块的资源abi)；签名使用名义TypeName编码，真实不匹配由各自格式入口拒绝。入口和符号选择归原链接器，物理节、重定位、合同与资源仍由原所有者交接；SDK单对象算法 DLL 也使用同一链接入口。
 
 DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有装载与驱动准备成本；消费者不需要 B 源码或 Rust 工具链。编译、链接、装载、数据传输与一次算法执行的成本应分别记录。
 
@@ -4738,7 +4738,7 @@ DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有�
 
 算法DLL的run同步完成并复制结果后返回，handle由配套destroy释放。调用期保持宿主数组有效及写入独占，不保留宿主栈地址。
 
-共同Frame的allocate／resize／run／upload／download沿原Result交回拥有错误：空指针成功，有结果时第一参数output只在成功初始化；非空错误由原运行库解释，调用者通过blink_error_message借用文本，最终用blink_error_destroy恰好消费一次；需要合并时，blink_error_join在所有文本借用结束后消费两个独立错误并交回一个，原primary分配保留合并文本。错误不借用Frame，Frame结束后仍可读取；创建Frame的回调只服务原创建入口，完整C签名见[NativeInterop](../Docs/NativeInterop.md#共同frame-c-abi的错误与所有权)。
+共同Frame的allocate／resize／run／upload／download沿原Result交回拥有错误：空指针成功，有结果时第一参数output只在成功初始化；非空错误由原运行库解释，调用者通过blink_error_message借用文本，最终用blink_error_destroy恰好消费一次；需要合并时，blink_error_join在所有文本借用结束后消费两个独立错误并交回一个，原primary分配保留合并文本。错误不借用Frame，Frame结束后仍可读取；创建Frame的回调只服务原创建入口，完整C签名见[NativeInterop](../Open/Docs/NativeInterop.md#共同frame-c-abi的错误与所有权)。
 
 普通B函数沿原Module分别闭合Frame需求与fallible。需要Frame的纯释放函数也可以不会失败；只有实际可失败的B调用交回拥有错误，存在业务结果时使用第一个机器output指针，即使是u32或f64；void没有业务输出指针。Frame如需要位于该指针之后，原参数仍按真实次序交接。无失败函数保持原值／位置和结果ABI，外部C声明也保持原签名。FunctionBody.fallible、Call.error及Raise说明实际函数返回，不把最近Scope的Exit改成函数退出；生成检查继承原Call的来源，最后由同一原生发射器交付。对象和归档按实际合同交接，调用方不读取提供者B实现，也不为无失败调用生成错误分支。
 
@@ -5085,9 +5085,9 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 正文按当前语言规则与正式工具入口编写；软件版本见工程根VERSION，具体运行与交付历史保存在P4双台账。
 
 - [Blink 开源工程](https://github.com/sgua83/Blink)：源码、学习资料与正式 PDF。
-- [语言规则](../Docs/BLanguage.md)：语法、类型、访问和集合操作的正式说明。
-- [架构说明](../Docs/Architecture.md)：编译器与执行框架的职责和所有权。
-- [问题与实现状态](../Docs/Issues.md)：现有能力、原生运行记录与未完成事项。
+- [语言规则](../Open/Docs/BLanguage.md)：语法、类型、访问和集合操作的正式说明。
+- 内部研发资料（不公开）：编译器与执行框架的职责和所有权。
+- 内部研发资料（不公开）：现有能力、原生运行记录与未完成事项。
 - [Microsoft x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)：参数、寄存器与栈规则。
 - [Khronos SPIR-V 规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)：二进制格式、类型、控制流和执行环境。
 - [Khronos Vulkan 同步示例](https://docs.vulkan.org/guide/latest/synchronization_examples.html)：执行依赖与内存可见性的典型关系。

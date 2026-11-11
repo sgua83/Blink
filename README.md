@@ -127,7 +127,7 @@ u32 main() on cpu {
 
 </details>
 
-[逐行上手指南](Docs/GettingStarted.md#快速开始)解释文件、输出与 GPU 要求。这些例子使用内建操作，全部计算逻辑均在这里可见。
+[逐行上手指南](Open/Docs/GettingStarted.md#快速开始)解释文件、输出与 GPU 要求。这些例子使用内建操作，全部计算逻辑均在这里可见。
 
 <a id="快速开始"></a>
 
@@ -143,7 +143,7 @@ u32 main() on cpu {
 .\target\hello.exe
 ```
 
-程序输出 `3`。这些独立例子使用正式工具 **0.14.1.1** 核验，不需要克隆仓库或导入自定义教学模块。后续并行例子保存对应的两份文件，同样编译 `parallel.b` 或 `gpu.b` 即可；CPU 入门无需 GPU。[完整指南](Docs/GettingStarted.md#快速开始)说明 GPU 能力要求与生成 DLL 的交付方式。
+程序输出 `3`。这些独立例子使用正式工具 **0.14.1.1** 核验，不需要克隆仓库或导入自定义教学模块。后续并行例子保存对应的两份文件，同样编译 `parallel.b` 或 `gpu.b` 即可；CPU 入门无需 GPU。[完整指南](Open/Docs/GettingStarted.md#快速开始)说明 GPU 能力要求与生成 DLL 的交付方式。
 
 <a id="工具与原生集成"></a>
 
@@ -153,11 +153,11 @@ u32 main() on cpu {
 
 | 你的工程 | 接入方式 | 从这里开始 |
 |---|---|---|
-| C | 生成的 C ABI 头文件与 DLL | [四个数的完整调用](Docs/GettingStarted.md#first-dll) |
+| C | 生成的 C ABI 头文件与 DLL | [四个数的完整调用](Open/Docs/GettingStarted.md#first-dll) |
 | C++ | 生成的包装、RAII 和代码内 `Backend` 选择 | [C++ 宿主源码](https://github.com/sgua83/Blink/blob/cde16596f1532894a77490799783cdcf471ef172/sample/interop/map.cpp) |
 | Rust | 生成的绑定，或直接使用原生 Rust API | [DLL 宿主源码](https://github.com/sgua83/Blink/blob/cde16596f1532894a77490799783cdcf471ef172/sample/interop/map.rs) · [原生 API](sample/interop/README.md#rust-原生-api) |
 
-普通宿主在代码中选择 CPU／GPU。支持类型、同步完成、资源寿命与部署要求见[正式版 ABI 文档](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md)；主线的新能力见[现行集成文档](Docs/NativeInterop.md)。B 也支持[通过 C ABI 调用外部 DLL](sample/extern/README.md)。
+普通宿主在代码中选择 CPU／GPU。支持类型、同步完成、资源寿命与部署要求见[正式版 ABI 文档](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md)；主线的新能力见[现行集成文档](Open/Docs/NativeInterop.md)。B 也支持[通过 C ABI 调用外部 DLL](sample/extern/README.md)。
 
 <a id="三大核心特点"></a>
 <a id="能力与发展方向"></a>
@@ -168,15 +168,15 @@ u32 main() on cpu {
 |---|---|---|
 | **原生并行** | 用数据域、访问权限和集合运算表达独立工作与必要协作 | 已有单机多核 CPU 与 GPU 执行；并行域、归约、扫描、显式原子与块内协作 |
 | **同源 CPU／GPU** | 适用的计算共享一份算法，显式选择目标和数据传输 | 自研原生 x64／SPIR-V 后端；具体 GPU 能力由程序与驱动决定 |
-| **原生域编译与域运行** | 将所选机器的资源用于原生编译与分片计算，编译域和运行域可独立选择 | **设计中，尚未实现**；[计算域方案](Docs/ComputeDomain.md) |
+| **原生域编译与域运行** | 将所选机器的资源用于原生编译与分片计算，编译域和运行域可独立选择 | **设计中，尚未实现**；内部研发资料（不公开） |
 
-普通函数、条件和循环保持原生执行；并行域及域协作由源算法和访问合同表达，三大特性不要求整个程序进入通用自动任务DAG。编译器实施合法优化，架构师和AI仍可通过B算法、布局、分块及通信实现控制关键成本；完整明确机器方案和域内多机能力仍待实现。职责与实现边界见[架构](Docs/Architecture.md#native-execution-boundary)。
+普通函数、条件和循环保持原生执行；并行域及域协作由源算法和访问合同表达，三大特性不要求整个程序进入通用自动任务DAG。编译器实施合法优化，架构师和AI仍可通过B算法、布局、分块及通信实现控制关键成本；完整明确机器方案和域内多机能力仍待实现。职责与实现边界见内部研发资料（不公开）。
 
 <a id="面向-ai-的工具与系统研发"></a>
 
-B 以数据、函数、模块和执行域组织程序，不采用面向对象。B 也寓意 **Base**：长期希望成为 AI 超算时代的基础语言。面向 AI 的编译与观察接口持续完善，已有工具及未完成边界见[工具指南](Docs/GettingStarted.md#面向-ai-的工具与系统研发)与[架构](Docs/Architecture.md)。
+B 以数据、函数、模块和执行域组织程序，不采用面向对象。B 也寓意 **Base**：长期希望成为 AI 超算时代的基础语言。面向 AI 的编译与观察接口持续完善，已有工具及能力范围见[工具指南](Open/Docs/GettingStarted.md#面向-ai-的工具与系统研发)。
 
-当前平台为 Windows x64；其他平台、完整模块能力和稳定热更新仍有未完成范围。GPU 需要匹配程序能力的 Vulkan 驱动，无需 Vulkan SDK。[语言规范](Docs/BLanguage.md)记录精确支持范围，[能力与发展方向](Docs/GettingStarted.md#能力与发展方向)提供详细说明。
+当前平台为 Windows x64；其他平台、完整模块能力和稳定热更新仍有未完成范围。GPU 需要匹配程序能力的 Vulkan 驱动，无需 Vulkan SDK。[语言规范](Open/Docs/BLanguage.md)记录精确支持范围，[能力与发展方向](Open/Docs/GettingStarted.md#能力与发展方向)提供详细说明。
 
 <a id="parallel-programming"></a>
 <a id="map"></a>
@@ -195,15 +195,15 @@ B 以数据、函数、模块和执行域组织程序，不采用面向对象。
 | 深入编译器、IR、CPU／GPU 后端和执行框架 | [《B 语言源码分析》](https://github.com/sgua83/Blink/wiki/Book-B-Source-Analysis) |
 | 从实际引擎案例理解场景、光照和资源交接 | [《BLEngine 源码分析》](https://github.com/sgua83/Blink/wiki/Book-BLEngine-Source-Analysis) |
 
-[前三章导读](Docs/ParallelPrimer.md)完整保留入门正文、图示和既有性能测量记录，并可继续阅读完整书稿；[上手与工具指南](Docs/GettingStarted.md)承接安装、源码构建、集成和 AI 查询说明。另有[独立应用示例](sample/applications/README.md)、[B 标准库](library/README.md)与[语言规范](Docs/BLanguage.md)。
+[前三章导读](Open/Docs/ParallelPrimer.md)完整保留入门正文、图示和既有性能测量记录，并可继续阅读完整书稿；[上手与工具指南](Open/Docs/GettingStarted.md)承接安装、源码构建、集成和 AI 查询说明。另有[独立应用示例](sample/applications/README.md)、[B 标准库](library/README.md)与[语言规范](Open/Docs/BLanguage.md)。
 
-书籍正文目前以中文为主。[English book index](https://github.com/sgua83/Blink/wiki/Blink-Books-English)与[英文入门三章](Docs/ParallelPrimer.en.md)也可直接阅读。Wiki 跟随 main；现有 PDF 是快照，新 PDF 在周日正式发行时从固定书稿统一生成。**BLEngine 尚未开源**，此处提供其案例书稿与阅读资料。
+书籍正文目前以中文为主。[English book index](https://github.com/sgua83/Blink/wiki/Blink-Books-English)与[英文入门三章](Open/Docs/ParallelPrimer.en.md)也可直接阅读。Wiki 跟随 main；现有 PDF 是快照，新 PDF 在周日正式发行时从固定书稿统一生成。**BLEngine 尚未开源**，此处提供其案例书稿与阅读资料。
 
 <a id="从-main-构建研发工具"></a>
 
 ### 想研究编译器或从源码构建？
 
-先安装稳定 Blink 种子，再按[主线构建指南](Docs/GettingStarted.md#从-main-构建研发工具)构建研发工具。默认构建直接消费 `%ProgramFiles%/Blink` 中的稳定输入；发行版本、主线版本与产物兼容边界分别记录于[版本说明](Docs/Versioning.md)。
+先安装稳定 Blink 种子，再按[主线构建指南](Open/Docs/GettingStarted.md#从-main-构建研发工具)构建研发工具。默认构建直接消费 `%ProgramFiles%/Blink` 中的稳定输入；已发布版本见[Releases](https://github.com/sgua83/Blink/releases)。
 
 <a id="feedback"></a>
 <a id="反馈与技术交流"></a>
@@ -213,8 +213,12 @@ B 以数据、函数、模块和执行域组织程序，不采用面向对象。
 
 - **使用问题、经验和技术讨论：** [GitHub Discussions](https://github.com/sgua83/Blink/discussions)。
 - **可复现缺陷与功能建议：** [GitHub Issues](https://github.com/sgua83/Blink/issues) · [新建反馈](https://github.com/sgua83/Blink/issues/new)。请附最小源码、工具版本、所用源码提交、完整命令、CPU／GPU／驱动信息与原始错误；性能问题同时说明输入规模、构建档位和计时／传输范围。
-- **贡献代码或文档：** 先在 Issue／Discussion 协作，阅读[工程约定](AGENTS.md)及[贡献与发布流程](Tools/README.md)。P4 是研发权威，GitHub 是单向镜像，维护者从主线集成交付。
+- **贡献代码或文档：** 先在 Issue／Discussion 协作，阅读内部研发资料（不公开）及内部研发资料（不公开）。P4 是研发权威，GitHub 是单向镜像，维护者从主线集成交付。
 
 ## 许可证
 
 [MIT](LICENSE)。
+
+## 插件与源码范围
+
+基础语言、编译器和单机运行库的源码位于crates与library，公开规范及教程位于Open。域编译、域运算和域维护底座按独立闭源插件包研发，公开分发目录为[Plugins](Plugins/README.md)。各包采用Binaries/<平台>-<架构>布局，域插件当前尚无可用二进制。

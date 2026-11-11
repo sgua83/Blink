@@ -54,7 +54,7 @@ target/release/bc.exe -c library/blink/sequence.b -I library --module --instance
 target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 ```
 
-实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。当前对象与资源ABI版本见[语言规范](../Docs/BLanguage.md#已编译模块的资源abi)；缺失实例拒绝，链接不重读B源码。拥有元素的完整库操作、递归容器、持久view图、完整字符串、借用字符切片和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。
+实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。当前对象与资源ABI版本见[语言规范](../Open/Docs/BLanguage.md#已编译模块的资源abi)；缺失实例拒绝，链接不重读B源码。拥有元素的完整库操作、递归容器、持久view图、完整字符串、借用字符切片和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。
 
 ## blink.unicode
 
@@ -501,7 +501,7 @@ WriteError::System(WriteSystemError{completed,code})保留此前成功完成的�
 
 FILE_SHARE_READ允许其他读者，不允许新增冲突的写／删除访问；共享关系保持到该原handle关闭，安装替换同样由真实OS共享结果决定。多个独立读句柄须各自结束后才允许相应替换。SDK会话中仍有Compilation、Module或后续代码生成消费者时应继续持有原输入，不能只以一个函数／工作返回推断整次SDK使用已结束。
 
-调用者可用已有owned<T,F>移动／返回实际拥有者，F按原释放合同直接结束原handle；若需显式可失败结束，先以into_inner接回原handle，再交回CloseHandle的真实结果及尚未释放的原身份。取消包装的静态释放不等于OS已关闭，复制不透明身份也不取得另一次关闭权。退出、业务Err／try和并发读取者仍沿实际消费者及原所有者交接；库不增加SDK专用包装或安装状态。owned的具体合同见[CPU用户拥有值与静态释放](../Docs/BLanguage.md#cpu用户拥有值与静态释放c-02031)，原平台共享说明见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)。
+调用者可用已有owned<T,F>移动／返回实际拥有者，F按原释放合同直接结束原handle；若需显式可失败结束，先以into_inner接回原handle，再交回CloseHandle的真实结果及尚未释放的原身份。取消包装的静态释放不等于OS已关闭，复制不透明身份也不取得另一次关闭权。退出、业务Err／try和并发读取者仍沿实际消费者及原所有者交接；库不增加SDK专用包装或安装状态。owned的具体合同见[CPU用户拥有值与静态释放](../Open/Docs/BLanguage.md#cpu用户拥有值与静态释放c-02031)，原平台共享说明见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)。
 
 ### 文件重命名、替换与删除
 

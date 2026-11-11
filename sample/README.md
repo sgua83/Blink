@@ -4,7 +4,7 @@
 
 从 [《并行编程的艺术》](并行编程的艺术.md) 开始阅读。前半部分用小例子学习数据域、独占写、归约、扫描、筛选流水线和块内协作；后半部分摘读 BLEngine 的真实实现，把理论连接到实际计算。
 
-中文版 PDF：[手机阅读版](pdf/并行编程的艺术-B语言-手机阅读版.pdf) · [标准版](pdf/并行编程的艺术-B语言.pdf)。书稿、配图与来源索引随实现实时更新；标准版与手机版PDF仅在每周日正式发版打包时集中生成。日常阅读最新内容以MD为准，现存pdf目录保留既有快照。周发行集中生成的四本标准版／手机版合集从对应[GitHub Release](https://github.com/sgua83/Blink/releases)的Blink-Books.zip下载，书稿与PDF各自说明版本。
+中文版 PDF：[标准版与手机版 PDF 合集（发行资产）](https://github.com/sgua83/Blink/releases/latest)。书稿、配图与来源索引随实现实时更新；标准版与手机版PDF仅在每周日正式发版打包时集中生成。日常阅读最新内容以MD为准，公开源码树不提供既有PDF快照下载，PDF以发行资产为准。周发行集中生成的四本标准版／手机版合集从对应[GitHub Release](https://github.com/sgua83/Blink/releases)的Blink-Books.zip下载，书稿与PDF各自说明版本。
 
 | 模块 | 主题 |
 |---|---|
@@ -18,18 +18,18 @@
 
 [性能示例](performance/README.md) 提供同算法的优化 C++ 串行对照和 B CPU／GPU 原生执行，覆盖 13 组计算。性能数据统一来自 Release 正式构建，附有P4台账中的运行历史。各章同时给出手算输入和用于体现效率优势的大规模输入，报告墙钟耗时、加速比与 GPU 数据往返成本。
 
-正式中文版PDF由周发行入口生成并作为同次发行资产交付；`pdf`中的既有文件不是实时书稿。性能原始结果随配套示例提供，发布产物与排版中间文件归实际target/dist，不随日常书稿提交。
+正式中文版PDF由周发行入口生成并作为同次发行资产交付；公开源码树不提供既有PDF快照，PDF内容以对应发行版本为准。性能原始结果随配套示例提供，发布产物与排版中间文件归实际target/dist，不随日常书稿提交。
 
 书中各个常规案例附完整应用的构建／运行命令及结果；模块运行器仅在明确说明理由的后端隔离测试中出现；`figures` 保存正文使用的执行示意与运行记录。模块名 `lessons.map` 是示例命名空间，不是标准库 map。
 
 ## 第二本：《Blink 和 Rust 混合编程》
 
-[书稿](Blink和Rust混合编程.md) · [配套项目](hybrid/README.md) · [手机 PDF](pdf/Blink和Rust混合编程-手机阅读版.pdf) · [标准 PDF](pdf/Blink和Rust混合编程.pdf)。从三个完整源码文件和两条编译命令开始，先跑通四个数的 Rust/B 调用；再逐步进入粒子、连续计算、共享模型、场景和材质图像。
+[书稿](Blink和Rust混合编程.md) · [配套项目](hybrid/README.md) · [标准版与手机版 PDF 合集（发行资产）](https://github.com/sgua83/Blink/releases/latest)。从三个完整源码文件和两条编译命令开始，先跑通四个数的 Rust/B 调用；再逐步进入粒子、连续计算、共享模型、场景和材质图像。
 
 ## 第三本：《BLEngine 源码分析》
 
-[书稿](BLEngine源码分析.md) · [阅读场景与命令](engine/README.md) · [手机 PDF](pdf/BLEngine源码分析-手机阅读版.pdf) · [标准 PDF](pdf/BLEngine源码分析.pdf)。正文按现行语法、接口及真实职责编写；源码位置索引只保留当前条目，具体运行和交付历史归P4双台账。
+[书稿](BLEngine源码分析.md) · [阅读场景与命令](engine/README.md) · [标准版与手机版 PDF 合集（发行资产）](https://github.com/sgua83/Blink/releases/latest)。正文按现行语法、接口及真实职责编写；源码位置索引只保留当前条目，具体运行和交付历史归P4双台账。
 
 ## 编译器与执行框架：《B 语言源码分析》
 
-[书稿](B语言源码分析.md) · [源码版本与阅读资料](compiler/README.md) · [手机 PDF](pdf/B语言源码分析-手机阅读版.pdf) · [标准 PDF](pdf/B语言源码分析.pdf)。正文按现行语法、接口及真实职责编写；源码位置索引只保留当前条目，具体运行和交付历史归P4双台账。
+[书稿](B语言源码分析.md) · [源码版本与阅读资料](compiler/README.md) · [标准版与手机版 PDF 合集（发行资产）](https://github.com/sgua83/Blink/releases/latest)。正文按现行语法、接口及真实职责编写；源码位置索引只保留当前条目，具体运行和交付历史归P4双台账。

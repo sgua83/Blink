@@ -1,17 +1,10 @@
-target/
+# Directory boundaries only. Internal details are not listed here.
+/Closed/
+/Docs/
+/Tools/
+/target/
 /Saved/
 /Local/
-/.p4config
 /.p4root/
-/*.p4form
-/.env
-/.env.*
-/auth.json
 /secrets/
-*.spv
-*.x64
-*.reloc
-*.layout
-*.layout.json
-/Docs/Issues.md
-/Docs/FixedIssues.md
+/sample/pdf/

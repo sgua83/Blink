@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/blanguage", "crates/blcompute", "crates/blink-installer"]
+exclude = ["Closed"]
 resolver = "3"
 
 [profile.release]

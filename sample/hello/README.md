@@ -1,6 +1,6 @@
 # 完整的最小程序 / Complete minimal programs
 
-[中文入门](../../Docs/GettingStarted.md) · [English guide](../../Docs/GettingStarted.en.md)
+[中文入门](../../Open/Docs/GettingStarted.md) · [English guide](../../Open/Docs/GettingStarted.en.md)
 
 每组 `.h`／`.b` 都是完整独立程序，不依赖自定义模块；文件名和 `module` 名必须对应。
 Each header/source pair is a complete application with no custom imports. Keep its filenames and module name aligned.
