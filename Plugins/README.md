@@ -8,7 +8,7 @@ Blink language sources and the single-machine runtime are open source in crates 
 | [DomainCompute](DomainCompute/README.md) | Distributed native execution | Closed source | Planned |
 | [DomainFoundation](DomainFoundation/README.md) | Domain and node hosts, administration and supervision | Closed source | Planned |
 
-Closed plugin directories contain public documentation and released binaries. Platform artifacts use Binaries/<os>-<architecture>. Windows x64 is the current base toolchain target. Domain plugin binaries have not been released.
+Closed plugin directories contain public documentation and released binaries. Platform artifacts use `Binaries/<os>-<architecture>`. Distribution terms accompany each released closed package. Windows x64 is the current base toolchain target. Domain plugin binaries have not been released.
 
 | Target directory | Native artifacts | Support |
 |---|---|---|

@@ -215,7 +215,7 @@ Install a stable Blink seed first, then follow the [main build guide](Open/Docs/
 
 ## License
 
-[MIT](LICENSE).
+The base language, compiler, standard library and single-machine runtime are open source under the [MIT License](LICENSE). Closed plugin distribution terms will accompany their released binaries.
 
 ## Plugins and source availability
 
