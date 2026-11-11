@@ -1,4 +1,4 @@
-module bootstrap.integer_fold;
+module bootstrap.scalar_fold;
 
 u64 truncate(u64 bits, u32 width) on cpu {
     return bits & (18446744073709551615u64 >> u64(64 - width));
@@ -15,6 +15,9 @@ extern "C" u64 unary(UnaryOperation operation, u32 width, u64 bits) on cpu {
     }
     if (operation == UnaryOperation::LogicalNot) {
         return u64(bits == 0u64);
+    }
+    if (operation == UnaryOperation::FloatNegate) {
+        return bits ^ (1u64 << u64(width - 1));
     }
     return truncate(~bits, width);
 }
@@ -63,6 +66,58 @@ extern "C" u64 binary(BinaryOperation operation, u32 width, u32 signed, u64 left
         }
     }
     return truncate(bits, width);
+}
+
+typeset ScalarFloat { f32; f64; };
+
+T float_arithmetic<T: ScalarFloat>(BinaryOperation operation, T left, T right) on cpu {
+    if (operation == BinaryOperation::Add) {
+        return left + right;
+    }
+    if (operation == BinaryOperation::Subtract) {
+        return left - right;
+    }
+    if (operation == BinaryOperation::Multiply) {
+        return left * right;
+    }
+    return left / right;
+}
+
+bool float_compare<T: ScalarFloat>(BinaryOperation operation, T left, T right) on cpu {
+    if (operation == BinaryOperation::Equal) {
+        return left == right;
+    }
+    if (operation == BinaryOperation::NotEqual) {
+        return left != right;
+    }
+    if (operation == BinaryOperation::Less) {
+        return left < right;
+    }
+    if (operation == BinaryOperation::Greater) {
+        return left > right;
+    }
+    if (operation == BinaryOperation::LessEqual) {
+        return left <= right;
+    }
+    return left >= right;
+}
+
+extern "C" u64 float_binary(BinaryOperation operation, u32 width, u64 left, u64 right) on cpu {
+    bool compare = u32(operation) >= u32(BinaryOperation::Equal);
+    if (width == 64) {
+        f64 a = bitcast_f64(left);
+        f64 b = bitcast_f64(right);
+        if (compare) {
+            return u64(float_compare(operation, a, b));
+        }
+        return bitcast_u64(float_arithmetic(operation, a, b));
+    }
+    f32 a = bitcast_f32(u32(left));
+    f32 b = bitcast_f32(u32(right));
+    if (compare) {
+        return u64(float_compare(operation, a, b));
+    }
+    return u64(bitcast_u32(float_arithmetic(operation, a, b)));
 }
 
 extern "C" u64 divide_unsigned(u64 left, u64 right, u32 remainder) on cpu requires nonzero(right) {

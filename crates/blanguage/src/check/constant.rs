@@ -239,17 +239,19 @@ impl World {
     }
 }
 #[repr(u32)]
-enum IntegerUnary {
+enum FoldUnary {
     Negate,
     LogicalNot,
     BitNot,
+    FloatNegate,
 }
 
 #[repr(u32)]
-enum IntegerBinary {
+enum FoldBinary {
     Add,
     Subtract,
     Multiply,
+    Divide,
     And,
     Or,
     Xor,
@@ -265,25 +267,27 @@ enum IntegerBinary {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.integer_fold::unary"]
-    fn fold_integer_unary(operation: IntegerUnary, width: u32, bits: Bits) -> Bits;
-    #[link_name = "bootstrap.integer_fold::binary"]
-    fn fold_integer_binary(operation: IntegerBinary, width: u32, signed: u32, left: Bits, right: Bits) -> Bits;
-    #[link_name = "bootstrap.integer_fold::divide_unsigned"]
+    #[link_name = "bootstrap.scalar_fold::unary"]
+    fn fold_unary(operation: FoldUnary, width: u32, bits: Bits) -> Bits;
+    #[link_name = "bootstrap.scalar_fold::binary"]
+    fn fold_integer_binary(operation: FoldBinary, width: u32, signed: u32, left: Bits, right: Bits) -> Bits;
+    #[link_name = "bootstrap.scalar_fold::float_binary"]
+    fn fold_float_binary(operation: FoldBinary, width: u32, left: Bits, right: Bits) -> Bits;
+    #[link_name = "bootstrap.scalar_fold::divide_unsigned"]
     fn divide_unsigned(left: u64, right: u64, remainder: u32) -> u64;
-    #[link_name = "bootstrap.integer_fold::divide_signed"]
+    #[link_name = "bootstrap.scalar_fold::divide_signed"]
     fn divide_signed(left: i64, right: i64, remainder: u32) -> i64;
 }
 
 pub(super) fn unary(operation: UnaryOp, scalar: Scalar, bits: Bits) -> Bits {
     let operation = match operation {
-        UnaryOp::FloatNegate => return bits ^ (1 << (scalar.bit_width() - 1)),
+        UnaryOp::FloatNegate => FoldUnary::FloatNegate,
         UnaryOp::Bitcast => return bits,
-        UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => IntegerUnary::Negate,
-        UnaryOp::LogicalNot => IntegerUnary::LogicalNot,
-        UnaryOp::BitNot => IntegerUnary::BitNot,
+        UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => FoldUnary::Negate,
+        UnaryOp::LogicalNot => FoldUnary::LogicalNot,
+        UnaryOp::BitNot => FoldUnary::BitNot,
     };
-    unsafe { fold_integer_unary(operation, scalar.bit_width(), bits) }
+    unsafe { fold_unary(operation, scalar.bit_width(), bits) }
 }
 pub(super) fn cast(from: Scalar, into: Scalar, bits: Bits) -> Option<Bits> {
     if from == into {
@@ -335,51 +339,34 @@ pub(super) fn divide(scalar: Scalar, a: Bits, divisor: NonZeroU64, remainder: bo
     scalar.truncate(bits)
 }
 pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: Bits, b: Bits) -> Option<Bits> {
-    if scalar == Scalar::F64 {
-        let (a,b) = (f64::from_bits(a),f64::from_bits(b));
-        return Some(match op {
-            BinaryOp::FAdd => (a+b).to_bits(), BinaryOp::FSub => (a-b).to_bits(),
-            BinaryOp::FMul => (a*b).to_bits(), BinaryOp::FDiv => (a/b).to_bits(),
-            BinaryOp::Compare(c) => Bits::from(match c {
-                Comparison::Equal => a==b, Comparison::NotEqual => a!=b,
-                Comparison::Less => a<b, Comparison::Greater => a>b,
-                Comparison::LessEqual => a<=b, Comparison::GreaterEqual => a>=b,
-            }),
-            _ => return None,
-        });
-    }
-    if scalar == Scalar::F32 {
-        let (a, b) = (f32::from_bits(a as u32), f32::from_bits(b as u32));
-        return Some(Bits::from(match op {
-            BinaryOp::FAdd => (a + b).to_bits(),
-            BinaryOp::FSub => (a - b).to_bits(),
-            BinaryOp::FMul => (a * b).to_bits(),
-            BinaryOp::FDiv => (a / b).to_bits(),
-            BinaryOp::Compare(c) => return binary(BinaryOp::Compare(c), Scalar::F64, (a as f64).to_bits(), (b as f64).to_bits()),
-            _ => return None,
-        }));
-    }
-    let operation = match op {
-        BinaryOp::IAdd => IntegerBinary::Add,
-        BinaryOp::ISub => IntegerBinary::Subtract,
-        BinaryOp::IMul => IntegerBinary::Multiply,
-        BinaryOp::And => IntegerBinary::And,
-        BinaryOp::Or => IntegerBinary::Or,
-        BinaryOp::Xor => IntegerBinary::Xor,
-        BinaryOp::ShiftLeft => IntegerBinary::ShiftLeft,
-        BinaryOp::ShiftRightLogical => IntegerBinary::ShiftRight,
-        BinaryOp::ShiftRightArithmetic => IntegerBinary::ShiftRightSigned,
-        BinaryOp::Compare(comparison) => match comparison {
-            Comparison::Equal => IntegerBinary::Equal,
-            Comparison::NotEqual => IntegerBinary::NotEqual,
-            Comparison::Less => IntegerBinary::Less,
-            Comparison::Greater => IntegerBinary::Greater,
-            Comparison::LessEqual => IntegerBinary::LessEqual,
-            Comparison::GreaterEqual => IntegerBinary::GreaterEqual,
+    let floating = scalar.is_float();
+    let operation = match (op, floating) {
+        (BinaryOp::IAdd, false) | (BinaryOp::FAdd, true) => FoldBinary::Add,
+        (BinaryOp::ISub, false) | (BinaryOp::FSub, true) => FoldBinary::Subtract,
+        (BinaryOp::IMul, false) | (BinaryOp::FMul, true) => FoldBinary::Multiply,
+        (BinaryOp::FDiv, true) => FoldBinary::Divide,
+        (BinaryOp::And, false) => FoldBinary::And,
+        (BinaryOp::Or, false) => FoldBinary::Or,
+        (BinaryOp::Xor, false) => FoldBinary::Xor,
+        (BinaryOp::ShiftLeft, false) => FoldBinary::ShiftLeft,
+        (BinaryOp::ShiftRightLogical, false) => FoldBinary::ShiftRight,
+        (BinaryOp::ShiftRightArithmetic, false) => FoldBinary::ShiftRightSigned,
+        (BinaryOp::Compare(comparison), _) => match comparison {
+            Comparison::Equal => FoldBinary::Equal,
+            Comparison::NotEqual => FoldBinary::NotEqual,
+            Comparison::Less => FoldBinary::Less,
+            Comparison::Greater => FoldBinary::Greater,
+            Comparison::LessEqual => FoldBinary::LessEqual,
+            Comparison::GreaterEqual => FoldBinary::GreaterEqual,
         },
-        BinaryOp::FAdd | BinaryOp::FSub | BinaryOp::FMul | BinaryOp::FDiv => return None,
+        _ => return None,
     };
-    Some(unsafe { fold_integer_binary(operation, scalar.bit_width(), u32::from(scalar.is_signed()), a, b) })
+    let width = scalar.bit_width();
+    Some(if floating {
+        unsafe { fold_float_binary(operation, width, a, b) }
+    } else {
+        unsafe { fold_integer_binary(operation, width, u32::from(scalar.is_signed()), a, b) }
+    })
 }
 
 // 编号与形状共享原整数表达式、类型及常量求值所有者。

@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "3a3cb4a4d9288c9bacdb926a17304f0a6390c120971bdafd78334f00d8b68c13"
+      "sha256": "4c6a5468451f1ec4ba007ef4b27bd9c666de919de4c4147cfe25e230f43ef3fd"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -69,14 +69,6 @@
     {
       "path": "crates/blanguage/src/bootstrap/combine.h",
       "sha256": "aa6306c5ca98a1e489cf81bac3e30279c77e830abbcad7117fff2ac528962681"
-    },
-    {
-      "path": "crates/blanguage/src/bootstrap/integer_fold.b",
-      "sha256": "f26cad18591b1bc9a0f6eeacf2e72740bfaba567baecb81f2de3e532b4441430"
-    },
-    {
-      "path": "crates/blanguage/src/bootstrap/integer_fold.h",
-      "sha256": "5573c188351f75975d4a48ddf56c2bacdeddd5797d258aa0b37d5369af394e4e"
     },
     {
       "path": "crates/blanguage/src/bootstrap/lexer.b",
@@ -151,6 +143,14 @@
       "sha256": "e67ab3ddfe950c0f266cbbfc9235295af094a1a01b476427e3b0a2aad88127c4"
     },
     {
+      "path": "crates/blanguage/src/bootstrap/scalar_fold.b",
+      "sha256": "8675622c441d20e7531dc0ce1c53a2b4e14d1d3f970296056b954f2152cde226"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/scalar_fold.h",
+      "sha256": "246a83a2f1373aaa14ad50c4791548e69b92cbad68c660941c4ab60b6d06302f"
+    },
+    {
       "path": "crates/blanguage/src/bootstrap/type_layout.b",
       "sha256": "657fc7be42ca6d744c6be4a9fbb3b47eb2499214796d6f762a57facaca86758d"
     },
@@ -220,7 +220,7 @@
     },
     {
       "path": "crates/blanguage/src/check/constant.rs",
-      "sha256": "3c6baaadbdc46f0dd8d2c023edb2867c50adb1e5c8e87f44507ac5569d7bd283"
+      "sha256": "2c312863466a9f5538805ed297665e748a198375c737e7835dd53997f8df4c20"
     },
     {
       "path": "crates/blanguage/src/check/contracts.rs",
