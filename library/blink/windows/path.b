@@ -1,4 +1,5 @@
 module blink.windows.path;
+import blink.windows.system;
 import blink.windows.error;
 import blink.sequence;
 
@@ -6,7 +7,6 @@ const handle INVALID_HANDLE_VALUE=unsafe_handle(18446744073709551615u64);
 
 extern "C" handle CreateFileW(address path,u32 access,u32 sharing,address security,
     u32 creation,u32 flags,handle template_file) on cpu from "KERNEL32.dll";
-extern "C" i32 CloseHandle(handle handle) on cpu from "KERNEL32.dll";
 
 result<bool,ExistsError> try_exists(address path) on cpu {
     handle file=CreateFileW(path,0,7,address(),3,33554432,handle());

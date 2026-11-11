@@ -114,7 +114,7 @@ target/release/blink.exe --archive target/unicode.obj target/sequence.obj -o tar
 
 ## blink.windows.system
 
-`blink.windows.system`是Windows x64的原生系统信息接口。它只有一份`.h`，公开普通记录`SystemInfo`和`extern "C" void GetNativeSystemInfo(write SystemInfo info) on cpu`；直接调用Kernel32的同名函数，没有B转发实现或常驻服务。记录未初始化时可作为这个完整write输出；同步返回后记录仍由原B调用者持有。
+`blink.windows.system`是Windows x64系统信息及共用内核对象接口，只有一份`.h`。普通记录`SystemInfo`和`extern "C" void GetNativeSystemInfo(write SystemInfo info) on cpu`直接交接原Kernel32输出，没有B转发实现或常驻服务。记录未初始化时可作为这个完整write输出；同步返回后记录仍由原B调用者持有。
 
 ```b
 import blink.windows.system;
@@ -146,6 +146,27 @@ println(info.number_of_processors);
 完整B程序与构建命令见[系统信息应用](../sample/applications/README.md#读取windows系统信息)。当前验证目标为Windows x64；模块接口不表示其他64位平台或完整Windows系统库已经交付。正式源码发行包沿既有library目录包含此模块。
 
 原生合同来源：[SYSTEM_INFO](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-system_info)、[GetNativeSystemInfo](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getnativesysteminfo)。
+
+共用`WaitForSingleObject(handle object,u32 milliseconds)`和`CloseHandle(handle object)`也直接声明在本模块；使用者显式`import blink.windows.system;`，不经进程命令行模块取得它们。前者返回原u32等待状态，`INFINITE=0xffffffff`，`WAIT_OBJECT_0=0`、`WAIT_ABANDONED=0x80`、`WAIT_TIMEOUT=0x102`、`WAIT_FAILED=0xffffffff`；零毫秒只观察本次状态，超时不停止原工作，失败后立即保存`GetLastError()`。WAIT_OBJECT_0表示原对象已发信号，进程／线程对象才据此解释真实结束；互斥量、信号量等对象保持各自的原状态与获取语义。等待尚未返回时不能关闭所用句柄。
+
+`CloseHandle`返回原i32 BOOL，零时由调用者立即保存原OS错误；每份实际拥有的合法内核句柄在最后消费者结束后关闭一次，复制handle数值不产生另一拥有者。关闭进程／线程句柄不终止工作。搜索句柄、注册表键、socket等使用其匹配的原API，不交给本函数。共用`STILL_ACTIVE=259`供进程／线程退出查询使用；它在尚未结束时是活动状态，在已真实结束后也可以是应用的有效退出码，不从这个数值单独推断寿命。平台合同：[WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)、[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
+
+## blink.windows.thread
+
+本模块只有`.h`，四个入口直接调用Windows x64 Kernel32，不通过Rust转发或任务服务；与共用等待／关闭一起使用时显式导入`blink.windows.thread`和`blink.windows.system`。
+
+| 入口 | 原生输入、返回及输出 |
+|---|---|
+| `CreateThread(address attributes,usize stack_bytes,cfn<u32,address> start,address parameter,u32 flags,address thread_id)` | 返回原线程handle，NULL表示失败并立即读取GetLastError；start须非零，匹配`DWORD (LPVOID)`的B `extern "C"`入口以`c_function`取得地址。SIZE_T保持64位，零stack_bytes使用原默认栈；attributes和thread_id可为零原地址，非零thread_id指向可写u32。 |
+| `GetCurrentThreadId()` | 返回调用线程的原u32 ID；声明`ensures memory(read)`，读取线程身份而不改写B内存，不表示不同线程调用返回相同值。 |
+| `GetThreadId(handle thread)` | 返回原u32 ID，零表示失败并立即读取GetLastError；ID不能代替handle或拥有权。 |
+| `GetExitCodeThread(handle thread,write u32 code)` | 返回原i32 BOOL，仅非零初始化code；完整u32退出码保持，不以i32截断。 |
+
+线程可能在CreateThread返回前已开始执行，创建成功只交回实际句柄和可选ID；不表示入口已完成或结果可读。parameter是可被OS保留的原始地址，NULL是否有效由实际入口决定，不是只持续到创建函数返回的typed借用。调用者保持参数指向的实际存储、入口代码及其资源到最后真实线程消费者结束；共享数据的访问与顺序仍按原程序和系统同步语义负责，B不会从原始地址自动建立跨任务借用。
+
+对线程handle实际WaitForSingleObject返回WAIT_OBJECT_0后，才按已结束工作消费原存储和退出码；GetExitCodeThread失败时输出不可读，259及大于i32上限的值在真实结束后均保持实际退出码。随后消费原CloseHandle状态，一次关闭此拥有者的句柄。该直接系统ABI可用于具有明确存储与代码寿命的B C入口，不代表普通B任务的类型化输入／结果、异步借用、取消或编译器并行算法已经迁移；缺口沿原C-020.4.1及C-032。
+
+原生合同：[CreateThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createthread)、[GetCurrentThreadId](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadid)、[GetThreadId](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadid)、[GetExitCodeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodethread)。
 
 ## blink.windows.time
 
@@ -313,9 +334,7 @@ GetStdHandle(u32 standard_handle)直接返回当前进程表中的标准handle�
 | 入口 | 返回及输出 |
 |---|---|
 | `CreateProcessW` | i32 BOOL，非零时初始化`ProcessInformation`；零时立即读取`blink.windows.error::GetLastError()` |
-| `WaitForSingleObject` | 原u32等待状态；进程`WAIT_OBJECT_0`表示已结束，`WAIT_TIMEOUT`保持原工作，`WAIT_FAILED`后立即保存OS错误 |
 | `GetExitCodeProcess` | i32 BOOL，非零时初始化write u32退出状态；失败时输出不可读 |
-| `CloseHandle` | 原i32 BOOL，调用者消费实际关闭结果；失败后立即保存OS错误 |
 | `SetHandleInformation` | 原i32 BOOL，按mask修改原句柄flags；HANDLE_FLAG_INHERIT为继承位，设置和清除都保持原拥有权 |
 
 `StartupInfo`按基础STARTUPINFOW布局保存cb、三个UTF-16地址、八个u32、两个u16、reserved2地址及三个标准句柄；Windows x64大小104、对齐8，std_input／std_output／std_error偏移80／88／96。cb由`u32(size_of<StartupInfo>())`取得，其余字段按实际标志初始化，保留字段遵守OS合同。`ProcessInformation`为24字节、对齐8，process／thread两个句柄偏移0／8，process_id／thread_id两个u32偏移16／20。read／write沿同一声明位置与C指针ABI，不复制OS对象。
@@ -324,7 +343,7 @@ application、可写command_line、可选安全属性、environment与directory�
 
 成功创建只交回原进程／主线程句柄与ID，不表示初始化或业务已成功，也不隐式等待。两个句柄各有一份实际关闭责任；数值复制不产生新拥有者。调用方保持句柄到最后等待／查询／用户结束，再各关闭一次；`CloseHandle`本身不终止对应进程或线程。可按原`owned<T,F>`组合明确静态释放，但库不提供丢失CloseHandle结果的自动关闭包装，不增加状态表、后台监控或释放链。
 
-`INFINITE`为0xffffffff，零等待立即观察本次状态；原等待函数亦可服务其他合法可等待对象，`WAIT_ABANDONED`等原状态不改写为进程完成。退出查询在进程未结束时可返回`STILL_ACTIVE`（259），真实等待完成后查询到259则仍是该进程的真实退出码。完整u32状态不截断，不把非零业务退出码改成创建失败，不以魔数循环判断进程寿命。等待期间不得关闭对应句柄。平台依据：[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)、[等待](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)、[退出查询](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess)及[关闭句柄](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
+共用等待／关闭及INFINITE／WAIT_*／STILL_ACTIVE常量归[blink.windows.system](#blinkwindowssystem)，使用者显式导入该模块；process不重复声明。`INFINITE`为0xffffffff，零等待立即观察本次状态；原等待函数亦可服务其他合法可等待对象，`WAIT_ABANDONED`等原状态不改写为进程完成。退出查询在进程未结束时可返回`STILL_ACTIVE`（259），真实等待完成后查询到259则仍是该进程的真实退出码。完整u32状态不截断，不把非零业务退出码改成创建失败，不以魔数循环判断进程寿命。等待期间不得关闭对应句柄。平台依据：[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)、[等待](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)、[退出查询](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess)及[关闭句柄](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
 
 已编译消费者须提供实际模块依赖：process.obj／lib交付本模块的完整接口和普通B函数，依赖它的模块与应用分别用`--import`导入，并把对应对象／归档交给blink链接；不能只交桥接模块而漏掉其process依赖。基础记录只能交给基础创建接口；扩展结构及选择性继承由下节的准确入口交接，不向基础记录交付扩展启动标志。更高层命令构造、I/O捕获、异步任务及编译器实际迁移仍按原具体Issues推进。
 
@@ -456,7 +475,7 @@ WriteError::System(WriteSystemError{completed,code})保留此前成功完成的�
 
 源dataset只读借用，字节不经文本校验；在同步调用返回前不得修改、resize、迁移或释放载荷。已打开文件的句柄由同一调用保持到真实写入结束，关闭只执行一次；关闭失败由结果交回真实身份，不隐藏再关或复制拥有权。输出不承诺事务、原子替换、失败恢复或磁盘持久化；部分写入和截断不会自动撤销，最终产物发布仍归原消费者。
 
-底层CreateFileW、ReadFile、WriteFile、CloseHandle及SetFileInformationByHandle直接使用Windows C ABI。文件对象、CreateFileW模板及CloseError.handle均为不透明handle，名称、数据、security与overlapped仍为address；模板空值用handle()。模块公开常量INVALID_HANDLE_VALUE以unsafe_handle解释SDK的完整64位失败哨兵，直接比较同型身份，不从文件对象抽取地址位。返回的原句柄可直接赋给blink.windows.process的StartupInfo.std_input／std_output／std_error并用于其SetHandleInformation；复制身份不改变原拥有者或关闭职责。ReadFile／WriteFile的计数为原write u32输出；直接原生调用者按实际同步／异步模式负责缓冲、句柄、位置及最后完成，不能把原生缓冲地址与对象句柄当成自动建立的异步B借用。普通库入口仅以零overlapped作同步I/O。平台合同见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)、[WriteFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-writefile)及[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
+底层CreateFileW、ReadFile、WriteFile及SetFileInformationByHandle直接使用Windows C ABI；共用CloseHandle由blink.windows.system唯一声明，file.b显式导入，直接原生调用者同样导入system。文件对象、CreateFileW模板及CloseError.handle均为不透明handle，名称、数据、security与overlapped仍为address；模板空值用handle()。模块公开常量INVALID_HANDLE_VALUE以unsafe_handle解释SDK的完整64位失败哨兵，直接比较同型身份，不从文件对象抽取地址位。返回的原句柄可直接赋给blink.windows.process的StartupInfo.std_input／std_output／std_error并用于其SetHandleInformation；复制身份不改变原拥有者或关闭职责。ReadFile／WriteFile的计数为原write u32输出；直接原生调用者按实际同步／异步模式负责缓冲、句柄、位置及最后完成，不能把原生缓冲地址与对象句柄当成自动建立的异步B借用。普通库入口仅以零overlapped作同步I/O。平台合同见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)、[WriteFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-writefile)及[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
 
 ### 保持共享读输入
 
@@ -506,7 +525,7 @@ target/release/blink.exe --archive target/file.obj -o target/file.lib
 
 原CreateFileW返回／模板、CloseHandle及GetFinalPathNameByHandleW直接使用不透明handle；空模板为handle()，INVALID_HANDLE_VALUE以unsafe_handle解释完整64位平台哨兵，同型直接比较，不取得地址位。文件句柄、错误载荷及最后关闭沿同一原身份交接，不作为B内存view；名称、security及实际字符缓冲仍为address。实现通过一次零desired-access的CreateFileW元数据打开，允许读／写／删除共享，以FILE_FLAG_BACKUP_SEMANTICS打开目录且不使用FILE_FLAG_OPEN_REPARSE_POINT。打开成功后关闭本次原句柄再交回Ok(true)；不要求内容可读，不保存路径缓存、存在性镜像或目录状态，也不保证后续读取时目标仍未改变。只有原OS错误2／3交接为真实不存在；非法名称、访问失败、链接环等其他结果均保留原错误，不能被压成false。
 
-`ExistsError::Query(u32)`保留打开失败后立即取得的原GetLastError。关闭失败交回`ExistsError::Close(ExistsCloseError)`，其中handle字段为正式不透明handle、本次原句柄身份保持，code是原OS错误；结果不宣称该句柄已释放，不自动再次关闭或重新查询。正常结果不把任何句柄或路径借用留给调用者。公开接口不依赖文件内容、Unicode或序列模块，查询所需的C ABI声明留在私有实现。
+`ExistsError::Query(u32)`保留打开失败后立即取得的原GetLastError。关闭失败交回`ExistsError::Close(ExistsCloseError)`，其中handle字段为正式不透明handle、本次原句柄身份保持，code是原OS错误；结果不宣称该句柄已释放，不自动再次关闭或重新查询。正常结果不把任何句柄或路径借用留给调用者。公开接口不依赖文件内容、Unicode或序列模块，CreateFileW等路径查询专用C ABI声明留在私有实现，共用CloseHandle由实现显式导入blink.windows.system，不在path重复声明。
 
 模块以`import blink.windows.path;`及`-I library`装入，也可将path.b编译为模块并归档；仅消费try_exists的调用方只需path.lib，无需提供者.h／.b、文件内容库、序列代码或运行库sidecar。绝对路径的实际代码依赖见下节。当前Rust编译器Inputs::file尚未采用；规范路径接口见下节，扩展名词法替换见后节，路径组合接口见后节。平台调用见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，当前真实消费者语义见[Path::try_exists](https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists)。
 

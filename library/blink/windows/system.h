@@ -16,3 +16,16 @@ struct SystemInfo {
 
 extern "C" void GetNativeSystemInfo(write SystemInfo info) on cpu
     from "KERNEL32.dll";
+
+const u32 INFINITE=0xffffffff;
+const u32 WAIT_OBJECT_0=0;
+const u32 WAIT_ABANDONED=0x00000080;
+const u32 WAIT_TIMEOUT=0x00000102;
+const u32 WAIT_FAILED=0xffffffff;
+const u32 STILL_ACTIVE=259;
+
+extern "C" u32 WaitForSingleObject(handle object,u32 milliseconds) on cpu
+    from "KERNEL32.dll";
+
+extern "C" i32 CloseHandle(handle object) on cpu
+    from "KERNEL32.dll";

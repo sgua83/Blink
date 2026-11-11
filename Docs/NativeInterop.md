@@ -292,6 +292,14 @@ compiler Rust SDK可用`spirv::module_json(&[u32])`取得原模块全部指令�
 
 本次同步write借用只在OS调用期间有效，输出仍归原B位置；系统报告的最小／最大应用地址不是新分配的资源。数量和掩码的处理器组语义遵守原Windows合同。其他系统结构、地址保留／释放、回调及引擎业务采用按各自真实接口继续建设，不把这个具体模块视为完整Windows SDK。
 
+共用WaitForSingleObject／CloseHandle和INFINITE／WAIT_*／STILL_ACTIVE常量由同一纯.h blink.windows.system声明，进程、线程和文件消费者显式导入system。等待的原u32结果按真实对象解释，关闭的i32 BOOL及即时OS错误保持；不为等待／关闭带入命令行或文本实现，也不复制原声明。等待尚未完成时保持该句柄，最后真实消费者结束后关闭一次；专用句柄使用其原匹配API。
+
+## Windows原生线程入口与最后完成
+
+blink.windows.thread直接以CreateThread的原六参数ABI交接address、64位usize、非零cfn<u32,address>、address、u32和可空thread_id地址，返回原handle；B extern C工作函数以c_function取得原入口。线程可在创建返回前开始，返回句柄不证明完成，原parameter存储和入口代码持续到实际线程结束，不能伪装成创建函数的同步typed借用。GetCurrentThreadId读取原当前u32身份，按memory(read)保持B存储；GetThreadId保留原u32结果及失败OS错误；GetExitCodeThread仅在BOOL非零初始化write u32。
+
+调用者沿system原等待状态确认线程结束后消费真实结果和完整u32退出码；259及大于i32上限的退出码不被当成未结束或截断，关闭不终止工作。四声明仅提供真实系统ABI，普通B任务拥有／结果、跨任务借用和取消仍为原C-020.4.1缺口，编译器并行职责采用仍沿C-032。完整接口、外部存储寿命及平台合同见[线程标准库](../library/README.md#blinkwindowsthread)。
+
 ## Windows子进程的原生位置与完成
 
 `blink.windows.process`的StartupInfo对应基础STARTUPINFOW：大小104、对齐8；ProcessInformation大小24、对齐8，两个handle后接两个u32 ID。CreateProcessW的startup是read位置，info是write位置，只有原i32 BOOL非零才交付已初始化输出；GetExitCodeProcess同样只在非零BOOL后交付u32 code。创建的十个参数沿原Windows x64寄存器／栈和连续记录指针ABI传递，不通过Rust或另一进程服务。具体字段及输入寿命见[标准库](../library/README.md#windows原生子进程)。

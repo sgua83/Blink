@@ -38,12 +38,6 @@ struct ProcessInformation {
 const u32 CREATE_UNICODE_ENVIRONMENT=0x00000400;
 const u32 CREATE_NO_WINDOW=0x08000000;
 const u32 STARTF_USESTDHANDLES=0x00000100;
-const u32 INFINITE=0xffffffff;
-const u32 WAIT_OBJECT_0=0;
-const u32 WAIT_ABANDONED=0x00000080;
-const u32 WAIT_TIMEOUT=0x00000102;
-const u32 WAIT_FAILED=0xffffffff;
-const u32 STILL_ACTIVE=259;
 
 const u32 STD_INPUT_HANDLE=0xfffffff6;
 const u32 STD_OUTPUT_HANDLE=0xfffffff5;
@@ -59,14 +53,8 @@ extern "C" i32 CreateProcessW(
 ) on cpu ensures initialized(info,returned != 0)
     from "KERNEL32.dll";
 
-extern "C" u32 WaitForSingleObject(handle object,u32 milliseconds) on cpu
-    from "KERNEL32.dll";
-
 extern "C" i32 GetExitCodeProcess(handle process,write u32 code) on cpu
     ensures initialized(code,returned != 0)
-    from "KERNEL32.dll";
-
-extern "C" i32 CloseHandle(handle object) on cpu
     from "KERNEL32.dll";
 
 const u32 HANDLE_FLAG_INHERIT=0x00000001;

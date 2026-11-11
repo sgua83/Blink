@@ -1,4 +1,5 @@
 module blink.windows.file;
+import blink.windows.system;
 import blink.windows.error;
 
 result<dataset<u8>,ReadError> read_bytes(handle file) on cpu {

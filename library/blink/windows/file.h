@@ -11,7 +11,6 @@ extern "C" i32 ReadFile(handle file,address buffer,u32 capacity,write u32 receiv
     address overlapped) on cpu from "KERNEL32.dll";
 extern "C" i32 WriteFile(handle file,address buffer,u32 bytes,write u32 written,
     address overlapped) on cpu from "KERNEL32.dll";
-extern "C" i32 CloseHandle(handle handle) on cpu from "KERNEL32.dll";
 
 enum ReadError : u32 {
     System(u32) = 1;
