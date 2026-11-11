@@ -208,7 +208,7 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
     u64 at=first(forest,forest.imports);
     while(at!=0u64){
         BindingNode node=node_at(forest,at);
-        u64 length=16u64+digits(node.key.first.length)+node.key.first.length+node.key.second.length;
+        u64 length=import_name_size(node.key.first,node.key.second);
         symbol_put(work,count,symbol(BindingBytes(unsafe_address(0u64),length),0u64,0u64,1u64,1u64,0u64,0u64,3u64,at));
         node.value=row;node_put(forest,at,node);count+=1u64;row+=1u64;names+=length;
         
@@ -241,6 +241,13 @@ void decimal(address output,u64 at,u64 value) on cpu {
     u64 remaining=value;u64 count=digits(value);
     while(count>0u64){count-=1u64;unsafe_position<u8>(unsafe_address(address_bits(output)+at+count))=u8(48+u32(remaining%10u64));remaining/=10u64;}
 }
+extern "C" u64 import_name_size(BindingBytes dll,BindingBytes name) on cpu {return 16u64+digits(dll.length)+dll.length+name.length;}
+extern "C" void import_name(BindingBytes dll,BindingBytes name,address output) on cpu {
+    // "__blink_import$<dll byte length>$<dll><name>"
+    literal(output,0u64,6875710655180201823u64,8u64);literal(output,8u64,10261134006316393u64,7u64);
+    decimal(output,15u64,dll.length);u64 begin=15u64+digits(dll.length);
+    literal(output,begin,36u64,1u64);copy(output,begin+1u64,dll);copy(output,begin+1u64+dll.length,name);
+}
 extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan,address names) on cpu {
     BindingForest forest=BindingForest(work.nodes,0u64,0u64,0u64);
     u64 at=0u64;u64 i=0u64;
@@ -255,10 +262,7 @@ extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan
                 decimal(names,at+17u64+input.name.length,value.source);
             }else{
                 BindingKey key=node_at(forest,value.source).key;
-                // "__blink_import$<dll byte length>$<dll><name>"
-                literal(names,at,6875710655180201823u64,8u64);literal(names,at+8u64,10261134006316393u64,7u64);
-                decimal(names,at+15u64,key.first.length);u64 begin=at+15u64+digits(key.first.length);
-                literal(names,begin,36u64,1u64);copy(names,begin+1u64,key.first);copy(names,begin+1u64+key.first.length,key.second);
+                import_name(key.first,key.second,unsafe_address(address_bits(names)+at));
             }
             symbol_put(work,i,value);at+=value.name_length;
         }

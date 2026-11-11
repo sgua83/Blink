@@ -21,3 +21,5 @@ struct BindingWork {address symbols;address nodes;address relocations;};
 struct BindingPlan {u64 symbols;u64 names;u64 relocations;u32 error;};
 extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu;
 extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan,address names) on cpu;
+extern "C" u64 import_name_size(BindingBytes dll,BindingBytes name) on cpu;
+extern "C" void import_name(BindingBytes dll,BindingBytes name,address output) on cpu;

@@ -1,7 +1,22 @@
 //! 链接期资源基址和工厂地址；只有静态数据与标准重定位，没有运行期注册表。
 use super::Result;
 use crate::object::{Archive, Kind, Object, Relocation, Section, Symbol, Target};
-pub(super) fn import_symbol(dll: &str, name: &str) -> String { format!("__blink_import${}${dll}{name}", dll.len()) }
+#[derive(Clone,Copy)]
+#[repr(C)]
+pub(super) struct ImportBytes {bytes:*const u8,length:u64}
+impl ImportBytes {pub(super) fn new(text:&str)->Self{Self{bytes:text.as_ptr(),length:text.len() as u64}}}
+unsafe extern "C" {
+    #[link_name="bootstrap.bindings::import_name_size"]
+    fn binding_import_name_size(dll:ImportBytes,name:ImportBytes)->u64;
+    #[link_name="bootstrap.bindings::import_name"]
+    fn binding_import_name(dll:ImportBytes,name:ImportBytes,output:*mut u8);
+}
+pub(super) fn import_symbol(dll:&str,name:&str)->String {
+    let dll=ImportBytes::new(dll);let name=ImportBytes::new(name);
+    let length=unsafe{binding_import_name_size(dll,name)} as usize;
+    let mut output=Vec::with_capacity(length);
+    unsafe{binding_import_name(dll,name,output.as_mut_ptr());output.set_len(length);String::from_utf8_unchecked(output)}
+}
 pub(super) fn resources(archives: &[&Archive], mut types: u32, mut programs: u32, runtime: &[String], local_imports: &std::collections::BTreeMap<String, String>, root_abi: Option<&[u8]>) -> Result<Option<Object>> {
     let modules = archives
         .iter()

@@ -1,71 +1,62 @@
-//! 原生宿主导入材料；实际导入槽通过COFF关联拥有其静态数据。
+//! 原生宿主导入材料；B生成实际IAT及关联，Rust持有最终COFF容器。
 use super::Result;
-use crate::object::{self, Import, Kind, LibraryMember, Relocation, Section, Symbol, Target};
-use std::{collections::BTreeSet, path::Path};
+use crate::object::{self,Import,Kind,LibraryMember,Relocation,Section,Symbol,Target};
+use super::resources::ImportBytes;
+use std::{collections::BTreeSet,path::Path};
 
-pub(super) fn member(import: &Import) -> Result<(LibraryMember, String)> {
-    let mut sections = [".idata$2", ".idata$3", ".idata$4", ".idata$5", ".idata$6", ".rdata"]
-        .into_iter().enumerate().map(|(index, name)| Section {
-            name: name.into(), bytes: Vec::new(),
-            flags: (if index == 5 { 0x40000040 } else { 0xc0000040 })
-                | match index { 0 | 1 => 0x00300000, 2 | 3 | 5 => 0x00400000, _ => 0x00200000 },
-            relocations: Vec::new(), associated: Vec::new(), layout: None,
-        }).collect::<Vec<_>>();
-    let slot = super::resources::import_symbol(&import.dll, &import.name);
-    let mut symbols = Vec::new();
-    let root = if import.dll == crate::application::RUNTIME_LIBRARY {
-        sections[5].bytes.extend([0; 8]);
-        symbols.push(Symbol {
-            name: slot, section: 5, value: 0, contract: Vec::new(), function: false,
-        });
-        sections[5].relocations.push(Relocation {
-            offset: 0, kind: 1, target: Target::Symbol(import.name.clone()),
-        });
-        5
-    } else {
-        sections[1].bytes.resize(20, 0);
-        sections[0].bytes.resize(20, 0);
-        sections[4].bytes.extend(import.dll.as_bytes());
-        sections[4].bytes.push(0);
-        for (field, section) in [(0, 2), (12, 4), (16, 3)] {
-            sections[0].relocations.push(Relocation {
-                offset: field, kind: 3, target: Target::Section(section, 0),
-            });
-        }
-        if sections[4].bytes.len() % 2 != 0 { sections[4].bytes.push(0); }
-        let hint = sections[4].bytes.len();
-        sections[4].bytes.extend([0, 0]);
-        sections[4].bytes.extend(import.name.as_bytes());
-        sections[4].bytes.push(0);
-        symbols.push(Symbol {
-            name: slot, section: 3, value: 0, contract: Vec::new(), function: false,
-        });
-        for section in [2, 3] {
-            sections[section].bytes.extend(u64::try_from(hint)?.to_le_bytes());
-            sections[section].relocations.push(Relocation {
-                offset: 0, kind: 3, target: Target::Section(4, 0),
-            });
-            sections[section].bytes.extend([0; 8]);
-        }
-        3
-    };
-    let symbol = &symbols[0].name;
-    let name = format!("@blink.imports@{symbol}");
-    // Native host selection happens after this producer. The actual slot owns
-    // the entire import contribution; the owning COMDAT precedes its children.
-    sections.swap(0, root);
-    let section_index = |index| if index == 0 { root } else if index == root { 0 } else { index };
-    for section in &mut sections {
-        section.flags |= 0x1000;
-        for relocation in &mut section.relocations {
-            if let Target::Section(index, _) = &mut relocation.target { *index = section_index(*index); }
-        }
+#[derive(Clone,Copy)]
+#[repr(C)]
+struct NativeImportSection {name:u64,length:u64,flags:u64,owner:u64,bytes:*mut u8}
+#[derive(Clone,Copy)]
+#[repr(C)]
+struct NativeImportRelocation {section:u64,offset:u64,kind:u64,target:u64,target_section:u64,value:u64}
+#[derive(Clone,Copy)]
+#[repr(C)]
+struct NativeImportInput {dll:ImportBytes,name:ImportBytes,runtime:ImportBytes}
+#[derive(Clone,Copy)]
+#[repr(C)]
+struct NativeImportOutput {sections:*mut NativeImportSection,relocations:*mut NativeImportRelocation,slot:*mut u8,stem:*mut u8,member:*mut u8}
+#[derive(Clone,Copy)]
+#[repr(C)]
+struct NativeImportPlan {slot:u64,stem:u64,member:u64,hint:u64,relocations:u64,root:u64,error:u64}
+unsafe extern "C" {
+    #[link_name="bootstrap.native_import::plan_import"]
+    fn plan_import(input:NativeImportInput,output:NativeImportOutput)->NativeImportPlan;
+    #[link_name="bootstrap.native_import::encode_import"]
+    fn encode_import(input:NativeImportInput,output:NativeImportOutput,plan:NativeImportPlan);
+}
+pub(super) fn member(import:&Import)->Result<(LibraryMember,String)> {
+    let input=NativeImportInput{dll:ImportBytes::new(&import.dll),name:ImportBytes::new(&import.name),runtime:ImportBytes::new(crate::application::RUNTIME_LIBRARY)};
+    let mut rows=[NativeImportSection{name:0,length:0,flags:0,owner:0,bytes:std::ptr::null_mut()};6];
+    let mut relocations=[NativeImportRelocation{section:0,offset:0,kind:0,target:0,target_section:0,value:0};5];
+    let mut output=NativeImportOutput{sections:rows.as_mut_ptr(),relocations:relocations.as_mut_ptr(),slot:std::ptr::null_mut(),stem:std::ptr::null_mut(),member:std::ptr::null_mut()};
+    let plan=unsafe{plan_import(input,output)};
+    match plan.error{0=>{},1=>return Err("原生导入材料超出COFF格式范围".into()),code=>return Err(format!("原生导入布局失败 {code}").into())}
+    let names=[".idata$2",".idata$3",".idata$4",".idata$5",".idata$6",".rdata"];
+    let mut sections:Vec<_>=rows.iter_mut().map(|row|->Result<Section>{
+        let mut bytes=Vec::with_capacity(usize::try_from(row.length)?);row.bytes=bytes.as_mut_ptr();
+        Ok(Section{name:names[usize::try_from(row.name)?].into(),bytes,flags:u32::try_from(row.flags)?,
+            relocations:Vec::new(),associated:Vec::new(),layout:None})
+    }).collect::<Result<_>>()?;
+    let mut slot=Vec::with_capacity(usize::try_from(plan.slot)?);let mut stem=Vec::with_capacity(usize::try_from(plan.stem)?);let mut member=Vec::with_capacity(usize::try_from(plan.member)?);
+    output.slot=slot.as_mut_ptr();output.stem=stem.as_mut_ptr();output.member=member.as_mut_ptr();
+    unsafe{encode_import(input,output,plan);}
+    // B initializes the actual final buffers. Inputs and all allocations remain
+    // owned here until encoding and the same COFF consumer both finish.
+    for(section,row)in sections.iter_mut().zip(&rows){unsafe{section.bytes.set_len(usize::try_from(row.length)?);}}
+    unsafe{slot.set_len(usize::try_from(plan.slot)?);stem.set_len(usize::try_from(plan.stem)?);member.set_len(usize::try_from(plan.member)?);}
+    let slot=unsafe{String::from_utf8_unchecked(slot)};let stem=unsafe{String::from_utf8_unchecked(stem)};let member=unsafe{String::from_utf8_unchecked(member)};
+    for row in &relocations[..usize::try_from(plan.relocations)?]{
+        let target=match row.target{
+            0=>Target::Section(usize::try_from(row.target_section)?,u32::try_from(row.value)?),
+            1=>Target::Symbol(import.name.clone()),code=>return Err(format!("未知原生导入目标 {code}").into()),
+        };
+        sections[usize::try_from(row.section)?].relocations.push(Relocation{offset:usize::try_from(row.offset)?,kind:u16::try_from(row.kind)?,target});
     }
-    for symbol in &mut symbols { symbol.section = section_index(symbol.section); }
-    sections[0].associated = (1..sections.len()).collect();
-    let bytes = object::encode_native(&name, &sections, &symbols)?;
-    let symbol = symbols.pop().unwrap().name;
-    Ok((LibraryMember { name: format!("{name}.obj"), bytes }, symbol))
+    for(index,row)in rows.iter().enumerate(){if row.owner!=0{sections[usize::try_from(row.owner-1)?].associated.push(index);}}
+    let symbol=Symbol{name:slot,section:0,value:0,contract:Vec::new(),function:false};
+    let bytes=object::encode_native(&stem,&sections,std::slice::from_ref(&symbol))?;
+    Ok((LibraryMember{name:member,bytes},symbol.name))
 }
 
 /// 保存已编译模块及其原生导入材料，供C／C++／Rust静态宿主链接。

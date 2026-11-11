@@ -1,0 +1,11 @@
+module bootstrap.native_import;
+import bootstrap.bindings;
+const u64 IMPORT_SECTION_BYTES=40u64;
+const u64 IMPORT_RELOCATION_BYTES=48u64;
+struct NativeImportInput {BindingBytes dll;BindingBytes name;BindingBytes runtime;};
+struct NativeImportSection {u64 name;u64 length;u64 flags;u64 owner;address bytes;};
+struct NativeImportRelocation {u64 section;u64 offset;u64 kind;u64 target;u64 target_section;u64 value;};
+struct NativeImportOutput {address sections;address relocations;address slot;address stem;address member;};
+struct NativeImportPlan {u64 slot;u64 stem;u64 member;u64 hint;u64 relocations;u64 root;u64 error;};
+extern "C" NativeImportPlan plan_import(NativeImportInput input,NativeImportOutput output) on cpu;
+extern "C" void encode_import(NativeImportInput input,NativeImportOutput output,NativeImportPlan plan) on cpu;
