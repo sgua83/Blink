@@ -95,6 +95,23 @@ pub(super) struct Use { pub requirement:Requirement, pub source:crate::Source, p
 
 #[derive(Clone)]
 pub(super) enum ControlInput {Value{name:String,contents:Option<Vec<usize>>,component:usize},Length{name:String,path:Vec<usize>}}
+impl ControlInput {
+    fn project(&self, producer: &flow::LoopState) -> Option<bounds::Proof> {
+        match self {
+            Self::Value { name, contents: None, component } => producer.env.get(name)
+                .and_then(binding_value)
+                .map(|(ty, proof)| proof.project(&[*component], ty.components.len())),
+            Self::Value { name, contents: Some(path), component } => producer.env.get(name)
+                .and_then(|binding| view::data_at(binding, path))
+                .and_then(|data| data.elements.known())
+                .and_then(returns::Returned::view_value)
+                .map(|value| bounds::Proof::capture(value).project(&[*component], value.ty.components.len())),
+            Self::Length { name, path } => producer.env.get(name)
+                .and_then(|binding| view::data_at(binding, path))
+                .map(|data| bounds::Proof::capture(&data.length)),
+        }
+    }
+}
 #[derive(Clone,Default)]
 pub(super) struct LoopControl {
     pub cursor:Option<Value>,
@@ -127,22 +144,23 @@ impl LoopControl {
         }
         Self{cursor,test:Some(condition),inputs}
     }
-    pub(super) fn bindings(&self,producer:&flow::LoopState)->BTreeMap<ValueIdentity,bounds::Proof> {
-        let mut values=BTreeMap::new();
-        for(id,input)in &self.inputs {
-            let proof=match input {
-                ControlInput::Value{name,contents:None,component}=>producer.env.get(name).and_then(binding_value)
-                    .map(|(ty,proof)|proof.project(&[*component],ty.components.len())),
-                ControlInput::Value{name,contents:Some(path),component}=>producer.env.get(name).and_then(|binding|view::data_at(binding,path))
-                    .and_then(|data|data.elements.known()).and_then(returns::Returned::view_value)
-                    .map(|value|bounds::Proof::capture(value).project(&[*component],value.ty.components.len())),
-                ControlInput::Length{name,path}=>producer.env.get(name).and_then(|binding|view::data_at(binding,path))
-                    .map(|data|bounds::Proof::capture(&data.length)),
-            };
-            if let Some(proof)=proof{values.insert(*id,proof);}
+    pub(super) fn bindings(&self, producer: &flow::LoopState) -> BTreeMap<ValueIdentity, bounds::Proof> {
+        let mut values = self.inputs.iter().filter_map(|(&id, input)| {
+            input.project(producer).map(|proof| (id, proof))
+        }).collect::<BTreeMap<_, _>>();
+        if let (Some(cursor), Some(next)) = (&self.cursor, &producer.cursor) {
+            values.insert(cursor.identity(), bounds::Proof::capture(next));
         }
-        if let(Some(cursor),Some(next))=(&self.cursor,&producer.cursor){values.insert(cursor.identity(),bounds::Proof::capture(next));}
         values
+    }
+
+    fn binding(&self, id: ValueIdentity, producer: &flow::LoopState) -> Option<bounds::Proof> {
+        if let (Some(cursor), Some(next)) = (&self.cursor, &producer.cursor)
+            && cursor.identity() == id
+        {
+            return Some(bounds::Proof::capture(next));
+        }
+        self.inputs.get(&id)?.project(producer)
     }
 }
 pub(super) struct LoopResource {
@@ -1196,11 +1214,11 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
         }
         for definition in function.loops.values() {
             let Some((id,_))=definition.value else{continue;};
-            let entry=definition.control.bindings(&definition.states[0]);
-            let mut proof=entry[&id].substitute_values(&resolved);
+            let mut proof = definition.control.binding(id, &definition.states[0])
+                .unwrap().substitute_values(&resolved);
             if resolved.contains_key(&id) {for state in &definition.states[1..] {
-                let values=definition.control.bindings(state);
-                let incoming=values[&id].substitute_values(&resolved);
+                let incoming = definition.control.binding(id, state)
+                    .unwrap().substitute_values(&resolved);
                 proof.join(&incoming,1,None);
             }}
             resolved.insert(id,proof);

@@ -320,7 +320,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "sha256": "f9659d6575e6f00b16b77f5a670056d18aa5dd56bf746f91a5e22b009f62e1db"
+      "sha256": "1c00216290bcbabe473c2e1608dddbbd834cfba1f1dfb48cfe692297030744fa"
     },
     {
       "path": "crates/blanguage/src/check/view_liveness.rs",
@@ -1076,8 +1076,8 @@
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "start_line": 378,
-      "end_line": 391,
+      "start_line": 396,
+      "end_line": 409,
       "sha256": "0024c966be795ca686f1803d97ec6ae59f5e397fb887d4e580ed5543bd0945a9"
     },
     {
