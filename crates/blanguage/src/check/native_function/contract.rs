@@ -1,5 +1,5 @@
-//! The sole public contract projection. Checking keeps its original shared
-//! facts; this temporary value is consumed by the original encoder.
+//! The sole public contract projection. Checking retains its shared facts;
+//! only normalized fields need temporary copies for the original encoder.
 use super::*;
 use crate::module::codec::Encode;
 
@@ -86,14 +86,19 @@ pub(super) fn encode(original:&Contract,writer:&mut crate::module::codec::Writer
         }
     }
     for value in original.returned.iter().chain(original.written.iter().flatten()){describe(value,&mut normal);}
-    let mut public=original.clone();
-    for value in public.returned.iter_mut().chain(public.written.iter_mut().flatten()){model(value,&mut normal);}
-    public.residency.normalize_contract(&mut normal);
-    if let Some(access)=&mut public.view_access{accesses(access,&mut normal);}
-    if let Some(values)=&mut public.initialization{initialization(values,&mut normal);}
-    if let Some(domain)=&mut public.domain{for proof in domain.elements.values_mut(){normal.proof(proof);}}
-    public.parameters.encode(writer);public.result.encode(writer);public.inputs.encode(writer);public.element_inputs.encode(writer);
-    public.returned.encode(writer);public.written.encode(writer);public.requires.encode(writer);
-    public.target.encode(writer);public.frame.encode(writer);public.fallible.encode(writer);public.domain.encode(writer);
-    public.residency.encode(writer);public.view_access.as_ref().unwrap().encode(writer);public.initialization.as_ref().unwrap().encode(writer);
+    let mut returned=original.returned.clone();
+    let mut written=original.written.clone();
+    let mut residency=original.residency.clone();
+    let mut view_access=original.view_access.clone();
+    let mut initialized=original.initialization.clone();
+    let mut domain=original.domain.clone();
+    for value in returned.iter_mut().chain(written.iter_mut().flatten()){model(value,&mut normal);}
+    residency.normalize_contract(&mut normal);
+    if let Some(access)=&mut view_access{accesses(access,&mut normal);}
+    if let Some(values)=&mut initialized{initialization(values,&mut normal);}
+    if let Some(domain)=&mut domain{for proof in domain.elements.values_mut(){normal.proof(proof);}}
+    original.parameters.encode(writer);original.result.encode(writer);original.inputs.encode(writer);original.element_inputs.encode(writer);
+    returned.encode(writer);written.encode(writer);original.requires.encode(writer);
+    original.target.encode(writer);original.frame.encode(writer);original.fallible.encode(writer);domain.encode(writer);
+    residency.encode(writer);view_access.as_ref().unwrap().encode(writer);initialized.as_ref().unwrap().encode(writer);
 }
