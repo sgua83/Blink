@@ -478,7 +478,7 @@ impl Builder<'_> {
             self.emit(instruction.kind);
             regs.push(dst);
         }
-        let (proof, uniform) = self.read_owned_proof(place, &regs, &reads)?;
+        let (proof, uniform, _) = self.read_owned_proof(place, &regs, &reads)?;
         Ok(Value {
             proof,
             literal: false,

@@ -43,6 +43,7 @@ pub(super) struct Origin {
     pub initialized: Arc<[bool]>,
 }
 // A queried byte interval in one original scalar position; no stored memory state.
+#[derive(Clone)]
 pub(super) struct MemoryRegion { pub position:Position, pub word:u32, pub offset:u32, pub size:u32 }
 // One original loop input and its actual projections name the same logical storage.
 // Its byte layout does not depend on closing the source/lifetime relation.
@@ -164,9 +165,9 @@ impl Origin {
             };
             result.union(&value.restricted(&when));
         }
-        if !borrow.inputs.is_empty()||!borrow.calls.is_empty() {
+        if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||!borrow.reads.is_empty() {
             let mut value=self.clone();
-            value.root=Root::Derived(view::Borrow {inputs:borrow.inputs.clone(),calls:borrow.calls.clone(),..view::Borrow::default()});
+            value.root=Root::Derived(view::Borrow {inputs:borrow.inputs.clone(),calls:borrow.calls.clone(),reads:borrow.reads.clone(),..view::Borrow::default()});
             result.sources.insert(view::Source::Position(Arc::new(value)));
         }
         result
@@ -206,7 +207,7 @@ impl Origin {
     pub fn memory_positions(&self,path:&bounds::Clause)->Option<Vec<Position>> {
         self.memory_regions(path).map(|regions|regions.into_iter().map(|region|region.position).collect())
     }
-    fn memory_regions(&self,path:&bounds::Clause)->Option<Vec<MemoryRegion>> {
+    pub(super) fn memory_regions(&self,path:&bounds::Clause)->Option<Vec<MemoryRegion>> {
         let borrow=match &self.root {
             Root::External(Identity::Storage(borrow))|Root::Derived(borrow)=>borrow,
             Root::Resource{borrow,..}|Root::Dataset{borrow,..}=>return Some(self.layout.parts.iter().zip(self.words.iter()).map(|((scalar,word),at)|MemoryRegion{position:Position::Borrowed(Arc::new(borrow.clone()),self.base.clone(),*at),word:*word,offset:0,size:scalar.size()}).collect()),
@@ -345,6 +346,8 @@ impl crate::module::codec::Decode for Identity {
 
 #[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum MemoryTarget { Value(Reg), Call(usize) }
+#[derive(Clone,Copy,PartialEq,Eq)]
+pub(super) enum Capture { Read, Write }
 // External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
 #[derive(Default)]
 pub(super) struct MemoryEffect {external:Option<Access>,known:Vec<(Arc<Origin>,bounds::Clause,Access,Option<bounds::Proof>)>}
@@ -580,7 +583,7 @@ pub(super) fn borrow_in_path(borrow:&view::Borrow,path:&bounds::Clause)->view::B
         }
         result
     }
-    view::Borrow{sources:edges(&borrow.sources,path),inputs:edges(&borrow.inputs,path),calls:edges(&borrow.calls,path)}
+    view::Borrow{sources:edges(&borrow.sources,path),inputs:edges(&borrow.inputs,path),calls:edges(&borrow.calls,path),reads:edges(&borrow.reads,path)}
 }
 pub(super) fn initialization_effects(initialized:&BTreeSet<Position>,path:&bounds::Clause)->Vec<InitializationEffect> {
     fn visit(position:&Position,when:bounds::Condition,result:&mut Vec<InitializationEffect>) {
@@ -647,7 +650,7 @@ fn dataset_positions(borrow:&view::Borrow,index:Option<bounds::Operand>,layout:&
         if result.as_ref().is_some_and(|known|*known!=positions){return None;}
         result=Some(positions);
     }
-    if !borrow.inputs.is_empty()||!borrow.calls.is_empty(){return None;}
+    if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||!borrow.reads.is_empty(){return None;}
     result
 }
 pub(super) fn borrowed_positions(borrow:&view::Borrow,layout:&Layout,words:&[u32])->Vec<Position> {
@@ -725,7 +728,7 @@ impl Builder<'_> {
         self.address_write_regions(borrow).map(|regions|regions.into_iter().map(|region|region.position).collect())
     }
     fn address_write_regions(&self,borrow:&view::Borrow)->Option<Vec<MemoryRegion>> {
-        if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||borrow.unresolved(){return None;}
+        if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||!borrow.reads.is_empty()||borrow.unresolved(){return None;}
         let mut positions=Vec::new();
         for(source,when)in borrow.sources.entries().filter(|(_,when)|when.possible()) {
             match source {
@@ -879,26 +882,35 @@ impl Builder<'_> {
         }
         borrow
     }
-    pub(super) fn defer_address_values(&mut self,memory:usize)->Vec<view_contracts::ValueSnapshot> {
+    pub(super) fn capture_address_values(&mut self,memory:usize,capture_kind:Capture)->Vec<view_contracts::ValueSnapshot> {
         let owners=self.env.iter().filter_map(|(name,binding)|binding.stored_place().map(|place|(name.clone(),self.positions(&place)))).collect::<Vec<_>>();
         let mut snapshots=Vec::new();
         let mut capture=|proof:&mut bounds::Proof,uniform:&mut bool,ty:&Ty,mut positions:Vec<(usize,Position)>,resources:Vec<Vec<usize>>|{
             let metadata=resource_metadata(ty,resources);
             positions.retain(|(component,_)|!metadata.iter().any(|range|range.contains(&ty.components[*component].1)));
-            let width=ty.components.len();let previous=proof.clone();proof.forget_value(&positions.iter().map(|(component,_)|*component).collect::<Vec<_>>(),width);
+            let fields=ty.borrow_fields().into_iter().filter(|(_,field)|field.is_address()).map(|(at,_)|ty.components.iter().position(|(_,word)|*word==at).unwrap()).collect::<BTreeSet<_>>();
+            if capture_kind==Capture::Read{positions.retain(|(component,_)|fields.contains(component));}
+            let width=ty.components.len();let previous=proof.clone();
+            if capture_kind==Capture::Write{proof.forget_value(&positions.iter().map(|(component,_)|*component).collect::<Vec<_>>(),width);}
             for(component,position)in positions {
-                let identity=ValueIdentity::MemoryValue(memory,snapshots.len());
-                snapshots.push(view_contracts::ValueSnapshot{position,scalar:ty.components[component].0,proof:previous.project(&[component],width)});
-                *proof=std::mem::take(proof).with_component_identity(component,identity);
+                let index=snapshots.len();let identity=ValueIdentity::MemoryValue(memory,index);
+                let initial=Arc::new(previous.project(&[component],width));
+                snapshots.push(view_contracts::ValueSnapshot{position:position.clone(),scalar:ty.components[component].0,proof:initial.clone()});
+                if capture_kind==Capture::Write{
+                    *proof=std::mem::take(proof).with_component_identity(component,identity);
+                    if fields.contains(&component){
+                        *proof=std::mem::take(proof).with_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Snapshot{memory,component:index,position,initial}]),..view::Borrow::default()});
+                    }
+                }
             }
-            *uniform=false;
+            if capture_kind==Capture::Write{*uniform=false;}
         };
         for(name,positions)in owners {
             let binding=self.env.get_mut(&name).unwrap();
             let resources=match &*binding{Binding::OwnedValue(owner)=>view::resource_paths(&owner.value.ty).into_iter().filter(|fields|view::owned_data_at(owner,fields).is_some()).collect(),_=>Vec::new()};
             let Some((proof,uniform,owner))=binding.proof_storage()else{continue;};
             capture(proof,uniform,owner.ty(),positions.into_iter().enumerate().collect(),resources);
-            if let Binding::OwnedValue(owner)=binding{owner.value.constant=None;}
+            if capture_kind==Capture::Write && let Binding::OwnedValue(owner)=binding{owner.value.constant=None;}
         }
         for binding in self.env.values_mut(){application::each_binding_data(binding,&mut|_,_,data|{
             let source=view::resource_borrow(data);let fields=view::resource_paths(&data.ty);
@@ -919,7 +931,7 @@ impl Builder<'_> {
                 let resources=view::resource_paths(&selected.ty).into_iter().filter(|fields|application::model_data(selected.elements.known(),fields).is_some()).collect();
                 if let Some(value)=selected.elements.known_mut().and_then(returns::Returned::view_value_mut){
                     let positions=value.ty.components.iter().enumerate().map(|(component,(_,word))|(component,Position::Borrowed(borrow.clone(),layout.clone(),*word))).collect();
-                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions,resources);value.constant=None;value.proof=bounds::Proof::capture(value);
+                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions,resources);if capture_kind==Capture::Write{value.constant=None;value.proof=bounds::Proof::capture(value);}
                 }
             }
         });}
@@ -929,10 +941,10 @@ impl Builder<'_> {
         let usage=self.view_model.uses.len();let mut written=view::Borrow::default();
         for(borrow,access)in memory{
             if access.is_some_and(|access|access.writes()){written.union(&borrow);}
-            self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,access,written:None,snapshots:None,span})?;
+            self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,access,written:None,snapshots:None,span,address_fields:Arc::from([])})?;
         }
         if written.pending()&&self.address_write_positions(&written).is_none(){
-            let snapshots=self.defer_address_values(usage);
+            let snapshots=self.capture_address_values(usage,address::Capture::Write);
             if let view::Requirement::Memory{snapshots:target,..}=&mut self.view_model.uses[usage].requirement{*target=Some(snapshots.into());}
         }else{let memory=[(written,Some(Access::Write),None)];self.write_address_values(&memory[0].0,&memory)?;}
         Ok(usage)

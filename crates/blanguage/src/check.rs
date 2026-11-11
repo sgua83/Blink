@@ -2534,9 +2534,11 @@ impl<'a> Builder<'a> {
             Place::Reference {
                 ty, address, words, ..
             } => {
+                let mut content_read=None;
                 if let Some((target,borrow))=self.reference_memory(p,span)? {
                     self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:address::Layout::of(ty),written:None,writable:false,initialized:true,span})?;
-                    self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Read),written:None,snapshots:None,span})?;
+                    content_read=Some((self.view_model.uses.len(),Arc::new(borrow.clone())));
+                    self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Read),written:None,snapshots:None,span,address_fields:Arc::from([])})?;
                 }else{self.require_initialized(p, span)?;}
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 let mut regs = Vec::new();
@@ -2551,7 +2553,16 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (mut proof, uniform) = self.read_owned_proof(p, &regs, &[])?;
+                let (mut proof, uniform, known) = self.read_owned_proof(p, &regs, &[])?;
+                if !known && matches!(address,ReferenceAddress::Borrowed{..}) && let Some((memory,borrow))=content_read {
+                    let snapshots:Arc<[view_contracts::ValueSnapshot]>=self.capture_address_values(memory,address::Capture::Read).into();
+                    if let view::Requirement::Memory{snapshots:captured,..}=&mut self.view_model.uses[memory].requirement{*captured=Some(snapshots.clone());}
+                    for (word,field) in ty.borrow_fields(){
+                        if !field.is_address(){continue;}
+                        let component=ty.components.iter().position(|(_,at)|*at==word).unwrap();
+                        proof=proof.with_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Value{memory,word,borrow:borrow.clone(),snapshots:snapshots.clone()}]),..view::Borrow::default()});
+                    }
+                }
                 if matches!(address, ReferenceAddress::External { .. }) {
                     proof = proof.with_external_borrows(ty);
                 }
@@ -2577,7 +2588,7 @@ impl<'a> Builder<'a> {
                 let reads=self.dataset_effect(p,Access::Read,false,span)?;
                 let mut value = self
                     .read_application_place(ty, *handle, *identity, *index, *stride, words, span, element_read_origin)?;
-                let (proof, uniform) = self.read_owned_proof(p, &value.regs, &reads)?;
+                let (proof, uniform, _) = self.read_owned_proof(p, &value.regs, &reads)?;
                 value.constant = proof.known_value(ty);
                 value.proof = proof;
                 value.uniform = uniform;
@@ -2604,7 +2615,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs, &[])?;
+                let (proof, uniform, _) = self.read_owned_proof(p, &regs, &[])?;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2640,7 +2651,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs, &[])?;
+                let (proof, uniform, _) = self.read_owned_proof(p, &regs, &[])?;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2660,7 +2671,7 @@ impl<'a> Builder<'a> {
                     self.emit(InstKind::LoadLocal(r, *slot));
                     regs.push(r);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs, &[])?;
+                let (proof, uniform, _) = self.read_owned_proof(p, &regs, &[])?;
                 let constant = proof.known_value(ty);
                 Ok(Value {
                     proof,
@@ -2720,11 +2731,12 @@ impl<'a> Builder<'a> {
         self.require_view_available(&value, &[], span)?;
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
+        let stored=bounds::Proof::capture(&value);
         let written=if matches!(p,Place::Reference{..}){self.path_proof(ty,bounds::Proof::capture(&value)).numeric_facts()}else{bounds::Proof::default()};
         if let Some((target,borrow))=self.reference_memory(p,span)? {
             let memory=self.view_model.uses.len();
-            let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory).into())}else{self.write_address_values(&borrow,&[(borrow.clone(),Some(Access::Write),Some(written.clone()))])?;None};
-            self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Write),written:Some(written.clone()),snapshots,span})?;
+            let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.capture_address_values(memory,address::Capture::Write).into())}else{self.write_address_values(&borrow,&[(borrow.clone(),Some(Access::Write),Some(written.clone()))])?;None};
+            self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Write),written:Some(stored.clone()),snapshots,span,address_fields:p.ty().borrow_fields().into_iter().filter(|(_,field)|field.is_address()).map(|(word,_)|word).collect()})?;
         }
         match p {
             Place::AtomicParameter(_)

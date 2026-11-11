@@ -550,7 +550,7 @@ impl Builder<'_> {
     pub(super) fn read_storage_value(&mut self,place:&Place,span:Span,element_read_origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
         let ty=place.ty().clone();let mut regs=Vec::new();
         for(index,(scalar,_))in ty.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[index]),span,element_read_origin.clone())?.regs[0]);}
-        let(proof,uniform)=self.read_owned_proof(place, &regs, &[])?;
+        let (proof, uniform, _)=self.read_owned_proof(place, &regs, &[])?;
         Ok(Value{ty,regs,proof,uniform,literal:false,constant:None})
     }
     pub(super) fn write_storage_value(&mut self,place:&Place,value:&Value,span:Span,local_origin:Option<Arc<GeneratedOrigin>>)->Result<()> {
@@ -1163,7 +1163,7 @@ impl Builder<'_> {
         if let cooperative::Argument::Reference(owner)=argument {
             if access.reads() {
                 let regs=owner.place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect::<Vec<_>>();
-                (owner.proof,owner.uniform)=self.read_owned_proof(&owner.place, &regs, &[])?;
+                let (proof,uniform,_)=self.read_owned_proof(&owner.place,&regs,&[])?;owner.proof=proof;owner.uniform=uniform;
             } else {owner.proof=bounds::Proof::default();}
         }
         let binding = match argument {

@@ -36,7 +36,7 @@ impl Module {
                 view_contracts::Access::Memory{access,..}=>!access.writes(),
                 view_contracts::Access::Position{position,..}=>position.written.is_none(),
                 view_contracts::Access::Dataset{access,..}=>!access.writes(),
-                view_contracts::Access::Initialized{..}=>true,
+                view_contracts::Access::Initialized{..}|view_contracts::Access::Stored{..}=>true,
             }))
     }
     fn reference_read_only(&self,name:&str)->bool {
@@ -81,7 +81,7 @@ impl Module {
                 view_contracts::Access::Resource{..}=>false,
                 view_contracts::Access::Memory{access,borrows,..}=>!access.writes()||references(borrows),
                 view_contracts::Access::Dataset{access,..}=>!access.writes(),
-                view_contracts::Access::Initialized{..}=>true,
+                view_contracts::Access::Initialized{..}|view_contracts::Access::Stored{..}=>true,
                 view_contracts::Access::Position{position,borrows,..}=>position.written.is_none()||references(borrows),
             }))
     }
@@ -900,19 +900,29 @@ impl Builder<'_> {
             let access=self.functions.units[name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();
             self.native_dataset_access(&access,&view_arguments,span)?
         }else{Vec::new()};
+        let content_context=self.functions.units[name].as_ref().is_some_and(|unit|{
+            unit.contract.returned.iter().chain(unit.contract.written.iter().flatten())
+                .filter_map(Returned::view_value).any(|value|value.proof.borrowed_view().content_inputs())
+                ||unit.contract.view_access.as_ref().is_some_and(|access|access.iter().any(view_contracts::Access::content_context))
+        });
         let memory_use=self.view_model.uses.len();
         let(borrow,snapshots)=match closed_memory {
             Some(mut memory)=>{
                 let borrow=memory.iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(borrow);result}).restricted(&self.path);
-                let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){Some(self.defer_address_values(memory_use).into())}else{
+                let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){
+                    Some(self.capture_address_values(memory_use,address::Capture::Write).into())
+                }else if content_context{
+                    let kind=if memory.iter().any(|(_,access,_)|access.is_some_and(Access::writes)){address::Capture::Write}else{address::Capture::Read};
+                    Some(self.capture_address_values(memory_use,kind).into())
+                }else{
                     for(source,_,_)in &mut memory{*source=source.restricted(&self.path);}
                     self.write_address_values(&borrow,&memory)?;None
                 };
                 (borrow,snapshots)
             },
-            None=>(memory_borrow,Some(self.defer_address_values(memory_use).into())),
+            None=>(memory_borrow,Some(self.capture_address_values(memory_use,address::Capture::Write).into())),
         };
-        self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(memory_use),borrow,access:Some(Access::InOut),written:None,snapshots,span})?;
+        self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(memory_use),borrow,access:Some(Access::InOut),written:None,snapshots:snapshots.clone(),span,address_fields:Arc::from([])})?;
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
         for argument in &mut arguments {
             if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {borrow.call=self.view_model.calls.len();}
@@ -976,7 +986,7 @@ impl Builder<'_> {
             semantic+=regs.len();written_registers.insert(*index,regs);
         }
         view_arguments.extend(bindings.clone());
-        let view_call=Some(self.view_model.call(name,memory_use,view_arguments.clone(),address::initialization_effects(&self.initialized,&bounds::Clause::default()),self.path.clone(),self.scope.source().clone(),span));
+        let view_call=Some(self.view_model.call(name,memory_use,view_arguments.clone(),snapshots,address::initialization_effects(&self.initialized,&bounds::Clause::default()),self.path.clone(),self.scope.source().clone(),span));
         if result_name.is_never() {
             self.flow = Flow::STOP;
             return Ok(None);
@@ -1076,7 +1086,7 @@ impl Builder<'_> {
             for component in view_contracts::components(&value.ty){
                 let actual=value.proof.view_borrow(component);
                 let resolved=self.view_model.result(call,view_contracts::Output::Returned(component));
-                if actual.empty()||actual.pending()||actual.unresolved(){value.proof=value.proof.clone().with_view_borrow(component,resolved);}
+                if actual.content_inputs()||actual.empty()||actual.pending()||actual.unresolved(){value.proof=value.proof.clone().with_view_borrow(component,resolved);}
             }
         }
         if let Some(model)=&mut model {

@@ -4828,7 +4828,7 @@ impl Builder<'_> {
             _ => None,
         }
     }
-    pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg], reads: &[(usize,usize)]) -> Result<(Proof, bool)> {
+    pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg], reads: &[(usize,usize)]) -> Result<(Proof, bool, bool)> {
         let (snapshots,common)=match place {
             Place::ApplicationElement{..}=>{
                 let snapshots=regs.iter().map(|reg|self.application_read_snapshot(*reg)).collect::<Vec<_>>();
@@ -4855,6 +4855,12 @@ impl Builder<'_> {
             stored = Some((proof.project(&components, width), *uniform));
             break;
         }
+        let mut known=stored.is_some();
+        let mut projected=|this:&mut Self|{
+            let proof=this.projected_owned_proof(place,Some(regs));
+            known|=proof.is_some();
+            proof.unwrap_or_default()
+        };
         let (mut proof, uniform) = match place {
             Place::ApplicationElement { .. } => {
                 let mut proof = match (stored, common) {
@@ -4863,7 +4869,7 @@ impl Builder<'_> {
                         proof
                     }
                     (Some((proof, _)), None) | (None, Some(proof)) => proof,
-                    (None, None) => self.projected_owned_proof(place, Some(regs)).unwrap_or_default(),
+                    (None, None) => projected(self),
                 };
                 proof.origins.resize_with(regs.len(), Vec::new);
                 for (origins, snapshot) in proof.origins.iter_mut().zip(snapshots) {
@@ -4876,7 +4882,7 @@ impl Builder<'_> {
             Place::Element { binding, words, .. } => {
                 let (mut proof, uniform) = match stored {
                     Some(stored) => stored,
-                    None => (self.projected_owned_proof(place, Some(regs)).unwrap_or_default(), false),
+                    None => (projected(self), false),
                 };
                 if let Some(common) = self.common_element_proof((*binding, 0), words, self.memory_regions.get(binding).map(|(_, writes)| writes)) {
                     proof.constrain_common_ranges(&common, regs.len());
@@ -4891,7 +4897,7 @@ impl Builder<'_> {
             }
             _ => match stored {
                 Some(stored) => stored,
-                None => (self.projected_owned_proof(place, Some(regs)).unwrap_or_default(), false),
+                None => (projected(self), false),
             },
         };
         if let Place::TileElement { tile, words, .. } = place
@@ -4899,7 +4905,7 @@ impl Builder<'_> {
         {
             proof.constrain_common_ranges(&common, regs.len());
         }
-        Ok((proof, uniform))
+        Ok((proof, uniform, known))
     }
     pub(super) fn update_application_contents(&mut self, data: &application::DataReference, changed: &[u32], update: application::ElementUpdate<'_>)->Result<()> {
         self.update_application_elements(&data.sources,&view::resource_borrow(&data.data),changed,update)?;

@@ -491,6 +491,8 @@ impl Builder<'_> {
             }
         }
         let initialized=address::initialization_effects(&initialized,&self.path);
+        let memory=self.view_model.uses.len();
+        self.require_return_borrow(view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Returned{memory}]),..view::Borrow::default()},owned,span)?;
         let context = self.return_context.as_mut().unwrap();
         if context.scoped {
             if let Some(value) = &value {
