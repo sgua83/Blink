@@ -409,14 +409,14 @@ if form==DeclaredArgumentForm::Acceleration {
             if self.application.is_none() && self.program.target != Target::Cpu {
                 return self.fail(span, "B161", "已编译普通CPU模块调用需要CPU执行目标");
             }
-            return self.native_function(instance, args, span, generated_origin, syntax);
+            return self.native_function(instance, args, span, generated_origin, syntax, None);
         }
         if instance.definition.execution == crate::execution::Requirement::Domain {
             if self.application_entry() {
                 if instance.definition.function.target() == Target::Cpu
                     && !super::kernel_interface(self.world, &instance)?
                 {
-                    return self.native_function(instance, args, span, generated_origin, syntax);
+                    return self.native_function(instance, args, span, generated_origin, syntax, None);
                 }
                 return self.application_execute(DomainInput::Declaration(&instance), args, Target::Cpu, span, &[]);
             }
@@ -434,7 +434,7 @@ if form==DeclaredArgumentForm::Acceleration {
                 if instance.definition.function.target() == Target::Cpu && self.program.target == Target::Cpu
                     || self.application_entry() && instance.definition.function.target() != Target::Gpu
                 {
-                    self.native_function(instance, args, span, generated_origin, syntax)
+                    self.native_function(instance, args, span, generated_origin, syntax, None)
                 } else {
                     self.inline_instance(instance, args, span, syntax)
                 }
@@ -513,7 +513,7 @@ if form==DeclaredArgumentForm::Acceleration {
             if self.program.target != Target::Gpu
                 && instance.definition.function.kind() == FunctionKind::Value
             {
-                return self.native_function(instance, args, span, None, syntax);
+                return self.native_function(instance, args, span, None, syntax, None);
             }
             return self.fail(span, "B160", "当前设备函数不允许递归调用");
         }

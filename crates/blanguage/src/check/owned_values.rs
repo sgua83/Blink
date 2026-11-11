@@ -176,7 +176,7 @@ impl OwnedValuePayload {
         }
     }
     pub(super) fn mark_moved(&mut self) {
-        if self.value.ty.has_variants() || self.value.ty.cleanup.is_some() {
+        if self.value.ty.has_variants() || self.value.ty.cleanup.is_some() || self.value.ty.task_result().is_some() {
             self.ownership = Ownership::Moved;
             return;
         }
@@ -386,7 +386,7 @@ impl Builder<'_> {
                     Ok(Some(Box::new(self.template_returned(field, available)?)))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let ownership=if value.ty.cleanup.is_some() && !available {Ownership::Moved}else{Ownership::Owned};
+            let ownership=if (value.ty.cleanup.is_some() || value.ty.task_result().is_some()) && !available {Ownership::Moved}else{Ownership::Owned};
             Returned::OwnedValue(Box::new(OwnedValuePayload {
                 value,
                 payloads,
@@ -739,6 +739,9 @@ impl Builder<'_> {
         self.view_uses.before(expr.span());
         self.require_returned_projection(expr)?;
         if let ExprKind::Call(name,args)=expr.kind(){
+            if matches!(name,"start_task"|"wait_task") {
+                return self.task_call(name,&args,expr.span());
+            }
             let bindings=self.scope.bindings().clone();
             if let Some(target)=bindings.type_call(name){
                 return match target{
@@ -905,6 +908,7 @@ impl Builder<'_> {
     #[inline(never)]
     fn construct_record_returned(&mut self,name:&TypeName,args:&Expressions,span:Span)->Result<Option<Returned>> {
         let ty=self.expected_storage(name,span)?;
+        if ty.task_result().is_some(){return self.fail(span,"B224","任务只能从start_task取得");}
         if ty.owns_resources(){return self.make_owned_record(ty,args,span);}
         self.record_values(ty,args.len(),span,|builder,index,expected|
             builder.expr_expected(&args.at(index),expected)).map(|value|value.map(Returned::value))
@@ -1103,6 +1107,11 @@ impl Builder<'_> {
                 self.application_drop(&data,retained,span)?;
             }
             Returned::OwnedValue(mut result) if result.ownership == Ownership::Owned => {
+                if result.value.ty.task_result().is_some(){
+                    self.load_owned_value(&mut result,span)?;
+                    let value=self.wait_task_value(result.value,span)?;
+                    return self.drop_owned_tree(value,retained,span);
+                }
                 if result.value.ty.cleanup.is_some(){return self.drop_user_owned(result,retained,span);}
 
                 if !result.value.ty.has_variants() {

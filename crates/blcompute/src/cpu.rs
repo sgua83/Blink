@@ -109,7 +109,20 @@ unsafe extern "system" fn execute_ranges(
         }
     }
 }
-struct WorkHandle(*mut c_void);
+pub(crate) struct WorkHandle(*mut c_void);
+impl WorkHandle {
+    /// The context stays valid until the submitted callbacks and this handle end.
+    pub(crate) unsafe fn new(
+        entry: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void), context: *mut c_void,
+    ) -> std::io::Result<Self> {
+        let work = unsafe { CreateThreadpoolWork(entry, context, std::ptr::null()) };
+        if work.is_null() { Err(std::io::Error::last_os_error()) } else { Ok(Self(work)) }
+    }
+
+    pub(crate) unsafe fn submit(&self) {
+        unsafe { SubmitThreadpoolWork(self.0) };
+    }
+}
 impl Drop for WorkHandle {
     fn drop(&mut self) {
         unsafe {
@@ -1132,21 +1145,9 @@ impl CpuCode {
     fn execute(&self, ranges: &mut RangeWork<'_>) -> Result<()> {
         let mut errors = vec![std::ptr::null_mut(); ranges.count.div_ceil(ranges.grain)];
         ranges.errors = errors.as_mut_ptr();
-        let work = unsafe {
-            CreateThreadpoolWork(
-                execute_ranges,
-                (ranges as *mut RangeWork).cast(),
-                std::ptr::null(),
-            )
-        };
-        if work.is_null() {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let handle = WorkHandle(work);
+        let handle = unsafe { WorkHandle::new(execute_ranges, (ranges as *mut RangeWork).cast()) }?;
         for _ in 0..self.workers.min(ranges.count) {
-            unsafe {
-                SubmitThreadpoolWork(work);
-            }
+            unsafe { handle.submit() };
         }
         drop(handle);
         unsafe {crate::application::take_errors(errors)}

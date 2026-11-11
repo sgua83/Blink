@@ -144,6 +144,17 @@ impl crate::module::codec::Decode for Contract {
     }
 }
 
+pub(crate) fn compiled_task_signature(bytes:&[u8]) -> std::result::Result<(Vec<CallParameter>,Option<Ty>,bool),&'static str> {
+    use crate::module::codec::Decode;
+    let mut contract=Contract::from_bytes(bytes).map_err(|_|"invalid compiled ordinary worker contract")?;
+    if !contract.frame
+        && matches!(contract.parameters.first().map(|parameter|&parameter.kind),Some(CallParameterKind::Value(ty)) if ty.name=="__blink_frame")
+    {
+        contract.parameters.remove(0);
+    }
+    Ok((contract.parameters,contract.result,contract.fallible))
+}
+
 pub(super) struct Unit {
     context: Option<CheckedContext>,
     function: Option<FunctionBody>,
@@ -491,6 +502,7 @@ impl Builder<'_> {
         span: Span,
         generated_origin: Option<Arc<GeneratedOrigin>>,
         syntax: Option<&Expressions>,
+        launch: Option<Value>,
     ) -> Result<Option<Returned>> {
         if instance.definition.function.target() == Target::Gpu {
             return self.fail(span, "B161", "普通 CPU 调用不能改变函数声明的实际目标");
@@ -501,16 +513,10 @@ impl Builder<'_> {
         let result=instance.bindings.type_name(self.world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())?;
         let lexical=LexicalScope::Function(instance.clone());
         self.native_call(&instance.name,CallSignature{parameters:&parameters,result:&result,contract:(&instance).into(),
-            lexical:&lexical,kind:d.function.kind(),execution:d.execution,c_abi:d.function.c_abi()},args,span,generated_origin,syntax)
+            lexical:&lexical,kind:d.function.kind(),execution:d.execution,c_abi:d.function.c_abi()},args,span,generated_origin,syntax,launch)
     }
-    pub(super) fn native_element_drop(&mut self, value: Returned, retained: &view::Borrow, span: Span, origin: Arc<GeneratedOrigin>) -> Result<()> {
-        let ty = self.returned_storage(&value).ty;
-        let resources = match &value {
-            Returned::Dataset(data) => vec![data],
-            Returned::OwnedValue(value) => value.resources(),
-            _ => Vec::new(),
-        };
-        for data in resources { self.application_movable(data, retained, span)?; }
+    fn declare_owned_cleanup(&mut self,ty:&Ty,span:Span)
+        -> Result<(String,Arc<[Param]>,LexicalScope,[FunctionContract;1])> {
         let name = crate::generics::key(&format!("{}::@dataset_element_drop", self.scope.module()), std::slice::from_ref(&ty.name));
         let parameters:Arc<[Param]>=Arc::from([Param{name:"value".into(),ty:ty.syntax(),access:Access::Value,span}]);
         let contracts=[FunctionContract{kind:ContractKind::Requires,
@@ -522,13 +528,28 @@ impl Builder<'_> {
         };
         let contract=outputs::Contract::native(&lexical,&parameters,&contracts,&name,span);
         if self.functions.declare(&name){
-            self.functions=element_drop_declaration(self.world,&name,&ty,&lexical,&parameters,contract,
+            self.functions=element_drop_declaration(self.world,&name,ty,&lexical,&parameters,contract,
                 std::mem::take(&mut self.functions),span)?;
         }
+        Ok((name,parameters,lexical,contracts))
+    }
+    pub(super) fn task_cleanup(&mut self,ty:&Ty,span:Span) -> Result<String> {
+        self.declare_owned_cleanup(ty,span).map(|(name,_,_,_)|name)
+    }
+    pub(super) fn native_element_drop(&mut self, value: Returned, retained: &view::Borrow, span: Span, origin: Arc<GeneratedOrigin>) -> Result<()> {
+        let ty = self.returned_storage(&value).ty;
+        let resources = match &value {
+            Returned::Dataset(data) => vec![data],
+            Returned::OwnedValue(value) => value.resources(),
+            _ => Vec::new(),
+        };
+        for data in resources { self.application_movable(data, retained, span)?; }
+        let (name,parameters,lexical,contracts)=self.declare_owned_cleanup(&ty,span)?;
+        let contract=outputs::Contract::native(&lexical,&parameters,&contracts,&name,span);
         let result=TypeName::named("void");
         self.native_call(&name,CallSignature{parameters:&parameters,result:&result,contract,lexical:&lexical,
             kind:FunctionKind::Value,execution:crate::execution::Requirement::Invocation,c_abi:false},
-            vec![Argument::resource(value)],span,Some(origin),None)?;
+            vec![Argument::resource(value)],span,Some(origin),None,None)?;
         Ok(())
     }
     fn native_dataset_shape(&self,param:&Param,definition:outputs::Contract<'_>,count:Option<u32>,span:Span)->Result<()>{
@@ -567,6 +588,7 @@ impl Builder<'_> {
         span: Span,
         generated_origin: Option<Arc<GeneratedOrigin>>,
         syntax: Option<&Expressions>,
+        launch: Option<Value>,
     ) -> Result<Option<Returned>> {
         let d=signature.contract;
         let bound_parameters=signature.parameters;
@@ -896,6 +918,11 @@ impl Builder<'_> {
         } else {
             Some(owned_values::storage_type(self.world,result_name,(d.source,d.module,d.imports),d.span())?)
         };
+        if let Some(packet)=launch {
+            let started=self.emit_task_start(name,packet,result.unwrap_or_else(Ty::unit),span)?;
+            for owner in preparing { self.env.remove(&owner); }
+            return Ok(started);
+        }
         let values = result
             .iter()
             .flat_map(|ty| &ty.components)

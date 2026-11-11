@@ -25,6 +25,8 @@ mod native {
     pub(crate) fn resource_symbol(name:&str)->Option<*const ()>{
         Some(match name{
             "blink_allocate"=>blink_allocate as *const (),
+            "blink_task_start"=>blink_task_start as *const (),
+            "blink_task_wait"=>blink_task_wait as *const (),
             "blink_resize"=>blink_resize as *const (),
             "blink_run"=>blink_run as *const (),
             "blink_complete_field"=>blink_complete_field as *const (),
@@ -40,10 +42,28 @@ mod native {
             _=>return None,
         })
     }
+    use super::super::task::{self, Entry};
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_task_start(
+        output: *mut u8, frame: *mut Frame, input: *const u8, worker: Entry, cleanup: Option<Entry>, index: u32,
+    ) -> *mut c_void {
+        finish(unsafe { task::start(&mut *frame,index as usize,worker,cleanup,input,output) }, |_| {})
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_task_wait(frame: *mut Frame, owner: *mut c_void, output: *mut u8) -> *mut c_void {
+        unsafe { task::wait(&mut *frame,owner,output) }
+    }
+
+    pub(in crate::application) fn into_error(error: Box<dyn std::error::Error + Send + Sync>) -> *mut c_void {
+        Box::into_raw(Box::new(NativeError { message: error.to_string() })).cast()
+    }
+
     fn finish<T>(result: crate::Result<T>, output: impl FnOnce(T)) -> *mut c_void {
         match result {
             Ok(value) => { output(value); std::ptr::null_mut() }
-            Err(error) => Box::into_raw(Box::new(NativeError { message: error.to_string() })).cast(),
+            Err(error) => into_error(error),
         }
     }
     /// # Safety
@@ -182,3 +202,6 @@ mod native {
 pub(crate) use native::take_errors;
 #[cfg(windows)]
 pub(crate) use native::resource_symbol;
+
+#[cfg(windows)]
+pub(super) use native::{blink_error_join, into_error};

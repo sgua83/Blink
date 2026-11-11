@@ -65,12 +65,20 @@ impl Module {
             .map_err(|error| std::io::Error::other(error.to_string()).into())
     }
     pub(crate) fn compile_in(&self, worker: &crate::compiler::Worker) -> codec::Result<Object> {
+        use std::borrow::Cow;
+        let mut functions = Cow::Borrowed(self.functions.as_slice());
+        let mut resources = self.resources.as_ref().map(Cow::Borrowed);
+        let has_tasks = self.resources.as_ref().is_some_and(|resources| resources.task_starts);
+        if has_tasks {
+            crate::application::bind_tasks(&self.name, None, &self.functions, functions.to_mut(),
+                &self.imports, resources.as_mut().map(Cow::to_mut)).map_err(std::io::Error::other)?;
+        }
         let mut code = crate::parallel::try_map(
-            worker, self.functions.iter().collect(), |_| (),
+            worker, functions.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)),
         ).map_err(|error| std::io::Error::other(error.to_string()))?;
         let (archive, resource_code, resource_imports) =
-            crate::application::compile_resources(&self.name, self.resources.as_ref(), false, worker)?;
+            crate::application::compile_resources(&self.name, resources.as_deref(), false, worker, has_tasks)?;
         let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
         code.extend(resource_code);
         let mut imports = self.imports.clone();

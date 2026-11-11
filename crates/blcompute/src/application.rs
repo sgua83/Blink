@@ -11,6 +11,7 @@ use blanguage::{
 };
 
 mod abi;
+mod task;
 #[cfg(windows)]
 pub(crate) use abi::{take_errors,resource_symbol};
 pub use blanguage::resource::DatasetBinding;

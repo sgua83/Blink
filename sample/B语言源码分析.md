@@ -187,7 +187,7 @@ brun先接收精确的`cpu`／`gpu`后端，其他值直接交回参数错误；
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:319`。
+源码节选：`crates/blanguage/src/ir.rs:341`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -535,7 +535,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 类型引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，validate_type_references沿函数签名、字段、变体、数组及dataset元素的同一引用闭包检查合法性。一次查询已经消费的同一具体类型不反复展开，未知、非法C签名或直接按值递归仍由原规则拒绝。stored_borrows与cleanup_requirements另按真实存储查询借用和静态F前提；签名或泛型实参中出现某种类型，不代表当前值存储了该类型的资源。
 
-源码节选：`crates/blanguage/src/frontend.rs:952`。
+源码节选：`crates/blanguage/src/frontend.rs:953`。
 
 ```rust
     pub(crate) fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
@@ -812,6 +812,8 @@ pub struct Dataset {
 
 Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。run先从仍在原槽中的实际类型、记录数及字段offset调用共同arguments；数量错误在物理别名下标查询前交回。接收同时产生本次执行所需的参数字，直接交给原CPU／GPU执行主体，不在projected内部入口重复编码。独立CPU／GPU调用仍由其原输入拥有者完成一次接收。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。Completion的阻塞等待与非阻塞查询只把实际0／DEVICE_LOST记录为原终态；查询NOT_READY仍为false且未知。其他等待／查询错误原样交回，不记录终止，保留同一执行资源，调用者下一次显式观察仍读取原fence，不自动重试。原Execution::wait／is_complete确认同一缓存0或DEVICE_LOST后，先沿原release_known释放本次命令、scratch、绑定参数与依赖持有，再原样返回原Result；设备丢失继续是错误，原输入及观察者的所有权保持。GpuDataset或Structure明确交出原存储时，Execution::discard／discard_structure复用同一已缓存0／DEVICE_LOST终态直接drop DatasetStorage／StructureStorage；未确认终止仍交原discarded／discarded_structures。ReadDataset、AS及其BLAS来源共享的原Rc保持其他真实拥有者，最后拥有者退出前不销毁底层资源；结构自身构建完成不冒充后来查询结束，不新增等待或释放链。未确认终止的错误不提前释放在途资源。
 
+普通 CPU 任务把拥有的参数和结果沿两侧 Frame 交接。`crates/blanguage/src/application.rs` 依据普通工作函数的实际签名发射调用，独立工作对象的签名来自既有对象合同。`crates/blcompute/src/application/task.rs` 先取得原 Windows 工作池的工作项，再把拥有数据移入工作 Frame。移交复用原分配，只重绑两侧句柄槽。显式等待与任务的作用域清理共享同一个完成点。结果接收失败时，工作 Frame 仍持有该结果并执行原 B 清理。此入口支持按值拥有的 CPU 数据，数据集元素中的地址与 view 也受跨任务借用边界限制。
+
 Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节、GPU来源按第十九章直接借用原绑定；Frame当前数据根见2.6，程序根见2.7；其他宿主容器及B／C实际入口仍有独立未完成范围。
 
 **自己走一遍。** `stride=32`、字段偏移十二、下标三，字段距数组起点多远？`3×32+12=108` 字节。若把 stride 错当作字段大小四，读到的就会是另一条记录或另一个字段。
@@ -855,7 +857,7 @@ pub(crate) struct Views<Source> {
 
 Frame已经持有原数据和有效域关系，观察不需要再建一张根表。data直接交回同一DomainBindings的共享借用；datasets交回同一原Vec，保持原槽索引与None空槽，ResidentData的Cpu／Gpu就是实际原存储。通过这些借用继续读原布局或来源，不load程序、创建设备或隐式传输。
 
-源码节选：`crates/blcompute/src/application.rs:147`。
+源码节选：`crates/blcompute/src/application.rs:148`。
 
 ```rust
     pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
@@ -903,7 +905,7 @@ domain_relations共享借用同一原Vec，len是当前有效关系数，capacit
 
 Frame的数据与程序定义分别由实际所有者持有。programs借用原模块的同一Vec<ProgramSlot>，Cpu项是已经绑定的CpuTemplate，Gpu项是原只读SPIR-V映像；程序号仍为原目录索引。CPU代码在Frame创建的模块装入阶段一次绑定，run只借用，不再来回取出／归还程序。
 
-源码节选：`crates/blcompute/src/application.rs:151`。
+源码节选：`crates/blcompute/src/application.rs:152`。
 
 ```rust
     pub fn programs(&self) -> &Vec<ProgramSlot> {
@@ -913,7 +915,7 @@ Frame的数据与程序定义分别由实际所有者持有。programs借用原�
 
 len／capacity乘实际size_of::<ProgramSlot>()只计这个定义容器。Frame::gpu_programs另借用本Frame实际Vec<Option<GpuTemplate>>，同一索引对应本设备实例，CPU位置没有GPU实例；其len／capacity只计本机槽容器。两种查询分别沿原定义所有者和本设备实例所有者，没有第二程序目录、观察副本或新身份。GPU定义及设备程序共享同一原ExecutionPlan，SPIR-V和布局不因每个实例复制。
 
-源码节选：`crates/blcompute/src/application.rs:37`。
+源码节选：`crates/blcompute/src/application.rs:38`。
 
 ```rust
 pub enum ProgramSlot {
@@ -1383,7 +1385,7 @@ impl Owner {
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:302`。
+源码节选：`crates/blanguage/src/ir.rs:324`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -1564,7 +1566,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1352`。
+源码节选：`crates/blanguage/src/check/application.rs:1475`。
 
 ```rust
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1584,7 +1586,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 
 命名的match拥有载荷由owned_arm保留在原env绑定中，正常分支退出先调用既有drop_binding，待静态F、元素元数据读取和资源释放完成后才移出绑定。清理消费原拥有树及已求值位置，不让调用前已移动的旧来源代替正在清理的实际拥有者；实际已移出的字段与提前返回继续沿原出口处理，没有第二拥有表或释放路径。
 
-源码节选：`crates/blanguage/src/check/owned_values.rs:1070`。
+源码节选：`crates/blanguage/src/check/owned_values.rs:1074`。
 
 ```rust
     pub(super) fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
@@ -1603,7 +1605,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/application.rs:1415`。
+源码节选：`crates/blanguage/src/check/application.rs:1538`。
 
 ```rust
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
@@ -1619,7 +1621,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1071`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1098`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1713,7 +1715,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1798`。
+源码节选：`crates/blanguage/src/check/application.rs:1921`。
 
 ```rust
     pub(super) fn dataset_constructor_type(world:&World,scope:&LexicalScope,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
@@ -1902,7 +1904,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
 
-源码节选：`crates/blanguage/src/check/native_function.rs:824`。
+源码节选：`crates/blanguage/src/check/native_function.rs:846`。
 
 ```rust
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
@@ -1933,7 +1935,7 @@ pub(super) fn dataset_origin(data:&Data,field:u32,ty:&Ty,initialized:bool)->addr
 }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:794`。
+源码节选：`crates/blanguage/src/check/native_function.rs:816`。
 
 ```rust
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
@@ -1991,7 +1993,7 @@ pub(super) struct LoopWrites {
 
 take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。存活性消费时点由实际调用者选择；assign_application_element保持after(rhs.span)，普通assign_owned_storage及take_last各选择自身原after(span)。共用函数只消费已求值载荷及当前ViewUses，不把Frame元素旧内容的清理切换到新内容的后续读取；check_returned_type只借用Builder，不重选存活性。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
 
-源码节选：`crates/blanguage/src/check/application.rs:1758`。
+源码节选：`crates/blanguage/src/check/application.rs:1881`。
 
 ```rust
     pub(super) fn take_last_application_dataset(&mut self,args:&Expressions,span:Span)->Result<Option<Data>> {
@@ -2362,7 +2364,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 共同模型的regs是元素槽号，不能当成外层真实IR寄存器。每次写回沿原capture_element_model已经使用的规则补齐ElementComponent身份；即使赋值或合流撤回了旧来源，后续路径细化也只消费当前元素身份，不会把槽四误读成旁边另一个数组长度的寄存器四。这里没有新的身份表或寄存器：
 
-源码节选：`crates/blanguage/src/check/application.rs:3878`。
+源码节选：`crates/blanguage/src/check/application.rs:4001`。
 
 ```rust
                 updated.proof.origins.resize_with(updated.regs.len(),Vec::new);
@@ -2374,7 +2376,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 全局目标本身可以是借用输入，其真实根与长度和拥有资源进入同一element_owner_bindings。元素归属先使用原DataReference已经确定的唯一当前根；其余来源及真实嵌套关系，沿活动LoopContext已有映射查询各层作用域，不另造别名状态：
 
-源码节选：`crates/blanguage/src/check/application.rs:3475`。
+源码节选：`crates/blanguage/src/check/application.rs:3598`。
 
 ```rust
         let owner=view::resource_borrow(data);
@@ -2543,7 +2545,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:1016`。
+源码节选：`crates/blanguage/src/ir.rs:1038`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -2557,7 +2559,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:1039`。
+源码节选：`crates/blanguage/src/ir.rs:1061`。
 
 ```rust
     Load {
@@ -2589,7 +2591,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1246`。
+源码节选：`crates/blanguage/src/ir.rs:1268`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -3050,7 +3052,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         // the enclosing loop's exit, have received their operands.
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:2091`。
+源码节选：`crates/blanguage/src/check/native_function.rs:2118`。
 
 ```rust
             if !frame.contains(&name) {
@@ -3185,7 +3187,7 @@ IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1082`。
+源码节选：`crates/blanguage/src/ir.rs:1104`。
 
 ```rust
     If {
@@ -3484,7 +3486,7 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
 
 算法DLL中的CPU入口由原COFF链接进最终PE。Windows加载器完成代码、依赖和展开节的装入，CpuProgram只借用匹配范围ABI的地址；销毁一个程序不释放整个DLL的代码。宿主须保持DLL及其依赖，直到最后一个真实CPU工作和程序消费者结束，随后才可卸载。
 
-源码节选：`crates/blcompute/src/cpu.rs:589`。
+源码节选：`crates/blcompute/src/cpu.rs:602`。
 
 ```rust
     /// 借用所属原生模块的已链接代码；执行布局仍由同一编译产物交接。
@@ -3500,7 +3502,7 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
 
 SDK直接装入CPU映像时，代码尚未属于已链接PE，下面的VM装入仍由原执行框架负责。两种来源共用实际阶段与调度表示，代码各自归其真实所有者。
 
-源码节选：`crates/blcompute/src/cpu.rs:291`。
+源码节选：`crates/blcompute/src/cpu.rs:304`。
 
 ```rust
     fn new<P>(image: &blanguage::native::ProgramImage<P>) -> Result<(Option<std::sync::Arc<Self>>, std::collections::BTreeMap<usize, *mut c_void>, Vec<blanguage::resource::ModuleFactory>)> {
@@ -3553,7 +3555,7 @@ SDK直接装入CPU映像时，代码尚未属于已链接PE，下面的VM装入�
 
 SDK的这次VM分配从创建起由Executable中的Allocation持有。指令、四字节对齐的展开字节和RuntimeFunction表放在同一次分配中；表中的起点、末端和展开位置相对这份内存。原映像只被借用，解析后的地址写入本次实际分配；Library持有本次装入的DLL引用。已链接算法入口没有这份Allocation，其代码归所属DLL。
 
-源码节选：`crates/blcompute/src/cpu.rs:392`。
+源码节选：`crates/blcompute/src/cpu.rs:405`。
 
 ```rust
         allocation._libraries = libraries.into_values().collect();
@@ -3619,7 +3621,7 @@ CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对�
 
 从实际Frame可经programs原槽、Loaded(Program::Cpu)取得同一CpuTemplate；2.7的根与layout借用不触发装入，原Image没有运行库VM。`CpuProgram::code_memory()`与`CpuTemplate::code_memory()`按需查看这些原代码入口。它们遍历同一阶段拥有者中的主代码、集合续段、Scan前缀及排序代码；每个入口只读取当前Windows VM区段，原OS错误直接交还调用者。
 
-源码节选：`crates/blcompute/src/cpu.rs:270`。
+源码节选：`crates/blcompute/src/cpu.rs:283`。
 
 ```rust
     fn memory(&self, stage: usize) -> Result<CpuCodeMemory> {
@@ -3651,7 +3653,7 @@ CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对�
 
 应用Frame从资源声明接收原Vec<Ty>，数据分配继续按该表的原类型号取得布局。观察同一表时，原拥有者只交出共享借用：
 
-源码节选：`crates/blcompute/src/application.rs:159`。
+源码节选：`crates/blcompute/src/application.rs:160`。
 
 ```rust
     pub fn types(&self) -> &Vec<Ty> {

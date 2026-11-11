@@ -846,6 +846,7 @@ impl World {
             "array" => (1, 2, "B238"),
             "result" => (2, 2, "B269"),
             "owned" => (1, 2, "B224"),
+            "task" | "task_start_error" => (1, 1, "B224"),
             "void" | "never" => (0, 0, "B228"),
             _ => {
                 if let Some(builtin) = ir::Ty::builtin(&name.name) {
@@ -1048,6 +1049,22 @@ impl World {
                 variants: Vec::new(),
                 dataset: None, cleanup: None, function: None,
             });
+        }
+        if matches!(name.name.as_str(),"task"|"task_start_error") {
+            let [GenericArgument::Type(payload)] = name.arguments.as_slice() else {
+                return source.fail(span,"B224","任务类型需要一个类型实参");
+            };
+            let mut ty=self.ty_inner(payload,source,span,module,imports,stack)?;
+            if payload.dataset {
+                ty=ir::Ty::owned_dataset(ty.syntax(),self.shape(&payload.count,source,span,module,imports)?);
+            }
+            return if name.name=="task" {
+                Ok(ir::Ty::task(ty))
+            } else {
+                ir::Ty::task_start_error(ty).ok_or_else(||Diagnostic{
+                    source:source.clone(),span,code:"B224",message:"任务错误载荷布局过大".into(),
+                })
+            };
         }
         if name.name == "owned" {
             if name.arguments.len()!=2{return source.fail(span,"B224","owned<T,F>需要载荷类型与静态释放函数");}

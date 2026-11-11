@@ -856,7 +856,7 @@ pub(crate) fn compile_application(
     builder.in_function = true;
     let result = builder.native_function(instance.clone(), Vec::new(), d.function.span(), Some(Arc::new(GeneratedOrigin {
         reason: GenerationReason::ApplicationEntryCall, trigger: Some(entry_anchor.clone()),
-    })), None)?;
+    })), None, None)?;
     let result = builder.ordinary_return(result, d.function.span())?.unwrap();
     let app = builder.application.take().unwrap();
     let mut body = ValueCode {
@@ -945,7 +945,7 @@ fn declarations(
             }
         });
     }
-    crate::application::Resources { types, programs, completions }
+    crate::application::Resources { types, programs, completions, task_starts: names.contains("blink_task_start") }
 }
 pub(super) fn module_resources(
     functions: &mut [FunctionBody],
@@ -1293,6 +1293,129 @@ impl Builder<'_> {
         };
         Ok(frame)
     }
+    pub(super) fn task_call(
+        &mut self, name:&str, args:&Expressions, span:Span,
+    ) -> Result<Option<returns::Returned>> {
+        use returns::Returned;
+        if !self.application_entry() || self.program.target != Target::Cpu {
+            return self.fail(span,"B224","任务启动和等待属于普通CPU函数");
+        }
+        if name=="wait_task" {
+            if args.len()!=1 { return self.fail(span,"B157","wait_task需要一个实际拥有任务"); }
+            let Some(owner)=self.evaluate_returned(&args.at(0),None)? else {return Ok(None);};
+            let Returned::OwnedValue(owner)=owner else {
+                return self.fail(span,"B224","wait_task需要一个实际拥有任务");
+            };
+            if owner.value.ty.task_result().is_none() {
+                return self.fail(span,"B224","wait_task需要一个实际拥有任务");
+            }
+            return self.wait_task_value(owner.value,span).map(Some);
+        }
+        if args.len()!=2 { return self.fail(span,"B157","start_task需要静态普通CPU函数及拥有参数包"); }
+        let worker=args.at(0);
+        let worker=Self::user_owned_function(self.scope.source(),&worker)?;
+        let crate::frontend::NameResolution::Unique(key)=self.world.resolve(
+            worker,self.scope.module(),self.scope.imports(),true,
+        ) else { return self.fail(span,"B157","找不到实际工作函数"); };
+        let Some(mut input)=self.evaluate_returned(&args.at(1),None)? else { return Ok(None); };
+        let mut datasets=Vec::new();
+        residency::visit(&mut input,&mut residency::Input::new(0),&mut |data,_| datasets.push(data.clone()));
+        for data in datasets {
+            self.require_application_initialized(&data,span)?;
+            self.application_cpu(&data,span)?;
+        }
+        let packed=self.returned_storage(&input);
+        if packed.ty.contains_borrows() {
+            return self.fail(span,"B224","按值任务参数不能携带跨任务借用");
+        }
+        let parameters=(0..packed.ty.fields.len()).map(|i| {
+            let field=if let Returned::OwnedValue(owner)=&input {
+                self.unpack_record(owner,i)
+            } else {
+                Returned::value(self.record_component(&packed,i))
+            };
+            cooperative::Argument::resource(field)
+        }).collect::<Vec<_>>();
+        let worker=self.specialized_function(key,&parameters,span)?;
+        let f=&worker.definition.function;
+        if f.kind()!=FunctionKind::Value || f.target()!=Target::Cpu || f.c_abi()
+            || f.params().iter().any(|param|param.access()!=Access::Value) {
+            return self.fail(span,"B224","工作必须是按值调用的普通CPU函数");
+        }
+        self.native_function(worker,parameters,span,None,None,Some(packed))
+    }
+
+    pub(super) fn emit_task_start(&mut self,worker:&str,packed:Value,result:Ty,span:Span)
+        -> Result<Option<returns::Returned>> {
+        if result.contains_borrows() {
+            return self.fail(span,"B224","按值任务结果不能携带跨任务借用");
+        }
+        let cleanup=if result.owns_resources() { Some(self.task_cleanup(&result,span)?) } else { None };
+        let error_ty=Ty::task_start_error(packed.ty.clone()).ok_or_else(||Diagnostic{
+            source:self.scope.source().clone(),span,code:"B224",message:"任务错误载荷布局过大".into(),
+        })?;
+        let result=Ty::result(Ty::task(result),error_ty).ok_or_else(||Diagnostic{
+            source:self.scope.source().clone(),span,code:"B224",message:"任务结果布局过大".into(),
+        })?;
+        let entry=self.reg(Scalar::U64);
+        self.emit(InstKind::FunctionAddress(entry,CallTarget::Defined(worker.into())));
+        let entry=Value { ty:Ty::scalar(Scalar::U64),regs:vec![entry],
+            proof:bounds::Proof::default(),uniform:false,literal:false,constant:None };
+        let cleanup_reg=self.reg(Scalar::U64);
+        if let Some(cleanup)=cleanup {
+            self.emit(InstKind::FunctionAddress(cleanup_reg,CallTarget::Defined(cleanup)));
+        } else {
+            self.emit(InstKind::Constant(cleanup_reg,Scalar::U64,0));
+        }
+        let cleanup=Value { ty:Ty::scalar(Scalar::U64),regs:vec![cleanup_reg],
+            proof:bounds::Proof::default(),uniform:false,literal:false,constant:None };
+        let (slots,storage)=self.local_slots(&packed.ty);
+        for (slot,reg) in slots.into_iter().zip(packed.regs) { self.emit(InstKind::StoreLocal(slot,reg)); }
+        let input=CallArgument::Reference { origin:None,ty:packed.ty,access:Access::Read,
+            address:CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:None,word:0} };
+        let frame=argument(self.application_frame(span)?);
+        let values:Vec<_>=result.components.iter().map(|(s,_)|self.reg(*s)).collect();
+        let error=self.reg(Scalar::U64);
+        let call=runtime_call("task_start",vec![frame,input,argument(entry),argument(cleanup)],
+            Some(result.clone()),values.clone(),Some(error),self.failure_continuation(Vec::new()));
+        self.emit(call.kind);
+        let value=Value{ty:result,regs:values,proof:bounds::Proof::default(),uniform:false,literal:false,constant:None};
+        self.task_value(value).map(Some)
+    }
+
+    pub(super) fn wait_task_value(&mut self,mut owner:Value,span:Span) -> Result<returns::Returned> {
+        let result=owner.ty.task_result().unwrap().clone();
+        owner.ty=Ty::scalar(Scalar::U64);
+        let (slots,storage)=self.local_slots(&result);
+        let output=CallArgument::Reference { origin:None,ty:result.clone(),access:Access::Write,
+            address:CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:None,word:0} };
+        let frame=argument(self.application_frame(span)?);
+        let error=self.reg(Scalar::U64);
+        let mut call=runtime_call("task_wait",vec![frame,argument(owner),output],
+            None,Vec::new(),Some(error),self.failure_continuation(Vec::new()));
+        if let InstKind::Call(call)=&mut call.kind {
+            call.memory.push(ir::MemoryAccess{alias:ir::MemoryAlias::Local{base:storage.start,len:storage.len()},access:Access::Write});
+        }
+        self.emit(call.kind);
+        if result.size==0 { return Ok(returns::Returned::Unit); }
+        let mut regs=Vec::new();
+        for (slot,(scalar,_)) in slots.into_iter().zip(&result.components) {
+            let reg=self.reg(*scalar);
+            self.emit(InstKind::LoadLocal(reg,slot));
+            regs.push(reg);
+        }
+        self.task_value(Value{ty:result,regs,proof:bounds::Proof::default(),uniform:false,literal:false,constant:None})
+    }
+
+    fn task_value(&mut self,value:Value) -> Result<returns::Returned> {
+        use returns::Returned;
+        let mut value=if value.ty.owns_resources() { Returned::OwnedValue(self.incoming_owned_value(value)?) }
+            else { Returned::value(value) };
+        residency::visit(&mut value,&mut residency::Input::new(0),
+            &mut |data,_| data.residency=residency::Residency::cpu());
+        Ok(value)
+    }
+
     fn application_call(
         &mut self,
         name: &str,

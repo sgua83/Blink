@@ -23,7 +23,7 @@ mod effects;
 pub(crate) mod external;
 mod native_function;
 mod residency;
-pub(crate) use native_function::{check_domain, compile_module as compile_native_module};
+pub(crate) use native_function::{check_domain, compile_module as compile_native_module, compiled_task_signature};
 mod flow;
 pub(crate) mod generics;
 mod matrix;

@@ -205,14 +205,36 @@ impl Ty {
             .collect();
         ty
     }
+    pub(crate) fn task_result(&self) -> Option<&Self> {
+        if self.name.starts_with("task<") { self.arguments.first() } else { None }
+    }
+    pub(crate) fn task(result: Self) -> Self {
+        let mut ty=Self::scalar(Scalar::U64);
+        ty.name=format!("task<{}>",result.name);
+        ty.arguments.push(result);
+        ty
+    }
+    pub(crate) fn task_start_error(input: Self) -> Option<Self> {
+        let mut ty=Self::unit();
+        let at=align_up(4,input.align);
+        ty.name=format!("task_start_error<{}>",input.name);
+        ty.align=input.align.max(4);
+        ty.size=at.checked_add(input.size)?.checked_next_multiple_of(ty.align)?;
+        ty.components.push((Scalar::U32,0));
+        ty.components.extend(input.components.iter().map(|(scalar,offset)|(*scalar,at+offset)));
+        ty.fields=vec![("code".into(),0,Box::new(Self::scalar(Scalar::U32))),
+            ("input".into(),at,Box::new(input.clone()))];
+        ty.arguments.push(input);
+        Some(ty)
+    }
     pub fn owns_resources(&self) -> bool {
-        self.cleanup.is_some() || self.dataset.is_some()
+        self.task_result().is_some() || self.cleanup.is_some() || self.dataset.is_some()
             || self.variants.iter().any(|v| v.ty.owns_resources())
             || self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.owns_resources())
             || self.fields.iter().any(|(_, _, ty)| ty.owns_resources())
     }
     pub(crate) fn contains_cleanup(&self)->bool {
-        self.cleanup.is_some()||self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.contains_cleanup())||self.fields.iter().any(|(_,_,ty)|ty.contains_cleanup())||self.variants.iter().any(|variant|variant.ty.contains_cleanup())
+        self.task_result().is_some()||self.cleanup.is_some()||self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.contains_cleanup())||self.fields.iter().any(|(_,_,ty)|ty.contains_cleanup())||self.variants.iter().any(|variant|variant.ty.contains_cleanup())
     }
     pub(crate) fn aggregate_len(&self) -> usize {
         if self.array.is_some() {
@@ -278,7 +300,7 @@ impl Ty {
     }
     pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
     pub(crate) fn zero_valid(&self)->bool {
-        if self.cleanup.is_some() || self.dataset.is_some() || self.view.is_some(){return false;}
+        if self.task_result().is_some() || self.cleanup.is_some() || self.dataset.is_some() || self.view.is_some(){return false;}
         if self.has_variants(){return self.variants.iter().any(|variant|variant.discriminant==0 && variant.ty.zero_valid());}
         self.array.as_deref().is_none_or(|ty| self.values[0] == 0 || ty.zero_valid()) && self.fields.iter().all(|(_,_,ty)|ty.zero_valid())
     }
@@ -483,7 +505,7 @@ impl Ty {
             || self.array.as_ref().is_some_and(|t| self.values[0] != 0 && t.contains_views())
             || self.fields.iter().any(|(_, _, t)| t.contains_views())
     }
-    pub(crate) fn contains_borrows(&self) -> bool {
+    pub fn contains_borrows(&self) -> bool {
         self.is_address()
             || self.view.is_some()
             || self.variants.iter().any(|v| v.ty.contains_borrows())
