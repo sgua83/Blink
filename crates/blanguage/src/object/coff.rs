@@ -704,6 +704,9 @@ fn decode_object(reader: &Reader<'_>, native: Option<&str>) -> Result<Object> {
         for i in 0..table.count {
             let r = unsafe { read_relocation(input, table.offset, i) };
             r.error.check()?;
+            if let Some(kind)=crate::native::CoffRelocationKind::of(r.kind as u16){
+                kind.range(sections[row.mapped-1].bytes.len(),r.offset)?;
+            }
             let s = symbols.get(r.symbol).and_then(Option::as_ref)
                 .ok_or("COFF 重定位符号越界")?;
             let value = unsafe { object_resolve_target(rows, ReadBytes::new(s.0.as_bytes()), i64::from(s.1), u64::from(s.2)) };
