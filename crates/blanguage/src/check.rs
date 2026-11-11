@@ -4042,7 +4042,7 @@ impl<'a> Builder<'a> {
             match domain {
                 CursorSource::ApplicationData(mut data) => {
                     // The cursor uses the same current loop resource as indexed access.
-                    data.data.root.proof=data.data.root.proof.clone().with_view_borrow(0,self.data_borrow(&data.sources));
+                    data.data.root.proof=data.data.root.proof.clone().with_view_borrow(0,data.root.proof.view_borrow(0).joined(self.data_borrow(&data.sources)));
                     let input=if !initial&&!bounds::seeks(body){self.application_cursor_input(&data,&body_cursor)?}else{bounds::Proof::default()};
                     Binding::Owned(OwnedBinding {
                         place: data.element(
