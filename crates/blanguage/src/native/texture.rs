@@ -402,7 +402,7 @@ impl Emitter<'_> {
             self.load(parameter);
             self.bytes(&[0x49, 0x89, 0xc7]);
         } else {
-            let offset = (self.program.buffers.len() + self.program.texture_offset(texture.binding)) as u64 * u64::from(BUFFER_BYTES);
+            let offset = (self.buffers.len() + self.textures[..texture.binding].iter().map(|binding| binding.elements() as usize).sum::<usize>()) as u64 * u64::from(BUFFER_BYTES);
             if offset > i32::MAX as u64 {
                 self.bytes(&[0x49, 0xbf]);
                 self.bytes(&offset.to_le_bytes());

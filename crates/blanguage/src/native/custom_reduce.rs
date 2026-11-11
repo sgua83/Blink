@@ -168,10 +168,10 @@ pub(super) fn emit(
     let fields = r.ty.components.len();
     let summary = k + usize::from(head_word.is_some()) + usize::from(counted);
     let mut stage = kernel.stage;
-    let mut program = program.clone();
-    let private = program.buffers.len();
+    let mut buffers = program.buffers.clone();
+    let private = buffers.len();
     if apply || finish {
-        program.buffers.push(Buffer {
+        buffers.push(Buffer {
             name: String::from("<range>"),
             access: Access::Read,
             ty: Ty::vector(Scalar::U32, summary),
@@ -180,10 +180,10 @@ pub(super) fn emit(
         });
     }
     if packed {
-        program.buffers[r.fields.source].stride = summary as u32 * 4;
+        buffers[r.fields.source].stride = summary as u32 * 4;
     }
     if prefix {
-        program.buffers[r.fields.target].stride = summary as u32 * 4;
+        buffers[r.fields.target].stride = summary as u32 * 4;
     }
     let mut combine = stage.code.split_off(kernel.project_end);
     let project = stage.code.split_off(kernel.initialize_end);
@@ -520,7 +520,8 @@ pub(super) fn emit(
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
-        program: &program,
+        buffers: &buffers,
+        textures: &program.textures,
         breaks: Vec::new(),
         exits: vec![Vec::new()],
         continues: Vec::new(),

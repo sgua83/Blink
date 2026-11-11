@@ -43,26 +43,6 @@ fn emit_value(
         element_guarantees: Vec::new(),
         cross_access: Vec::new(),
     };
-    let program = Program {
-        name: String::new(),
-        #[cfg(feature = "compiler")]
-        source_origin: None,
-        #[cfg(feature = "compiler")]
-        generated_origin: None,
-        target: crate::ast::Target::Cpu,
-        buffers: Vec::new(),
-        accelerations: Vec::new(),
-        textures: Vec::new(),
-        uniforms: Vec::new(),
-        uniform_bytes: 0,
-        native_frame: None,
-        resources: None,
-        source_stages: 0,
-        stages: Vec::new(),
-        functions: std::sync::Arc::from([]),
-        prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: Default::default(),
-    };
     texture::lower(&mut stage);
     reads::place(&mut stage.code, &stage.writes);
     let mut graph = allocation::Graph::with_live(
@@ -128,7 +108,8 @@ fn emit_value(
         }),
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
-        program: &program,
+        buffers: &[],
+        textures: &[],
         breaks: Vec::new(),
         exits: Vec::new(),
         continues: Vec::new(),

@@ -3272,7 +3272,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:165`。
+源码节选：`crates/blanguage/src/native/codegen.rs:166`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -3349,9 +3349,11 @@ pub(super) enum Location {
 
 ### 14.3 Emitter 把结果写成真实字节
 
+CPU指令发射器只借用本次实际缓冲布局与纹理布局，当前Stage另由原阶段所有者交接；普通函数使用空布局，自定义集合只复制并修改本次摘要／范围需要的缓冲布局，纹理仍借原程序，不为发射构造空Program或复制完整Program。布局借用随本次发射结束，不延长原IR、代码或运行资源寿命。
+
 native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，关闭compiler的执行SDK不编入Compiler、编译预算、优化器及自定义归约lowering；运行摘要与共有布局仍由原定义交接。Ty::syntax与CFunctionType::syntax只在compiler角色把共有类型重建为源码TypeName，供原World、泛型与检查消费；运行角色保留实际布局、Access及签名／合同身份，不包含这两个源码转换入口。应用根与算法DLL的原archive::compile为执行框架生成独立Cargo单元，对blanguage／blcompute依赖明确关闭默认特性；根包装只消费共同资源ABI、原类型／执行布局与已编译映像。发行包交接工具及源码SDK，不将workspace编译器特性统一后的静态库当作无compiler运行库采用。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:182`。
+源码节选：`crates/blanguage/src/native/codegen.rs:183`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -3461,7 +3463,7 @@ COFF机器区间反查直接消费这些原字段：[`object::source_facts`](../
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:738`。
+源码节选：`crates/blanguage/src/native/codegen.rs:739`。
 
 ```rust
     let stage = &lowered;
@@ -4940,7 +4942,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
             self.load(parameter);
             self.bytes(&[0x49, 0x89, 0xc7]);
         } else {
-            let offset = (self.program.buffers.len() + self.program.texture_offset(texture.binding)) as u64 * u64::from(BUFFER_BYTES);
+            let offset = (self.buffers.len() + self.textures[..texture.binding].iter().map(|binding| binding.elements() as usize).sum::<usize>()) as u64 * u64::from(BUFFER_BYTES);
             if offset > i32::MAX as u64 {
                 self.bytes(&[0x49, 0xbf]);
                 self.bytes(&offset.to_le_bytes());

@@ -816,7 +816,7 @@ impl Emitter<'_> {
                         PacketPlace::Register(r) => r,
                         _ => 0,
                     };
-                    let done = if !sparse && !broadcast && self.program.buffers[*binding].stride == 4 {
+                    let done = if !sparse && !broadcast && self.buffers[*binding].stride == 4 {
                         self.instruction(None, &[0x83], true, 7,
                             Operand::memory(12, *binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
                         self.bytes(&[4]);
@@ -849,7 +849,7 @@ impl Emitter<'_> {
                             1
                         }
                     };
-                    let done = if !sparse && self.program.buffers[*binding].stride == 4 {
+                    let done = if !sparse && self.buffers[*binding].stride == 4 {
                         self.instruction(None, &[0x83], true, 7,
                             Operand::memory(12, *binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
                         self.bytes(&[4]);
