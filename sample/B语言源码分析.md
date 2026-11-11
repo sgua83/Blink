@@ -12,7 +12,7 @@
 
 遇到必要知识，我们先用能手算的例子说明，再进入源码。例如，先看乘法为什么应先于加法组成语法树，再看解析函数；先理解“两个值还要同时用，所以不能占同一个寄存器”，再看寄存器分配；先区分“工作已提交”和“工作已完成”，再看 GPU 资源释放。
 
-本版按 **Blink P4 CL19111／v0.14.177.162** 阅读实现，对应[公开源码快照](https://github.com/sgua83/Blink/tree/74a2b47a109b4516c21c99590e68c9118ab9ac11)。源码节选逐段核对，仅为排版去除共同缩进；行范围和文件 SHA256 记录在 `compiler/源码版本索引.json`。手算、伪代码与示意图用于解释；历史运行图另注明当时的输入和日期。
+书稿的公开阅读快照为 **Blink P4 CL19111／v0.14.177.162**，对应[公开源码快照](https://github.com/sgua83/Blink/tree/74a2b47a109b4516c21c99590e68c9118ab9ac11)。现行源码节选随实现更新，仅为排版去除共同缩进；当前行范围和文件 SHA256 记录在 `compiler/源码版本索引.json`。手算、伪代码与示意图用于解释；历史运行图另注明当时的输入和日期。
 
 当前实现包括自研前端、并行中间表示、Windows x64／SPIR-V 后端及 CPU／Vulkan 执行框架，也能把普通 CPU 应用编译为目标文件，再由独立链接器生成可执行程序。普通 CPU 原生调用、递归与有限独立模块已有实现；完整模块／资源契约、其他目标调用、一般异步应用、基础库与跨平台能力仍分别开放。
 
@@ -322,10 +322,9 @@ pub fn parse(source: Source) -> Result<syntax::Module> {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:157`。
+源码节选：`crates/blanguage/src/frontend.rs:142`。
 
 ```rust
-
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
     compile_module(path, module_root, true, None, &[])
 }
@@ -359,7 +358,7 @@ pub fn compile_entry_with_modules(
 
 A 导入 B、B 又导入 A 可以形成合法的函数引用。装载器先确认模块身份，再检查声明、类型和实现；导入成环与无法形成有限布局的按值递归不是同一种问题。
 
-源码节选：`crates/blanguage/src/frontend.rs:598`。
+源码节选：`crates/blanguage/src/frontend.rs:582`。
 
 ```rust
 if let Some(name) = import
@@ -740,7 +739,7 @@ Scalar明确描述各数值类型的实际大小与对齐：窄整数为一／�
 
 “同一个函数能处理不同类型”有两种很不同的实现：运行时判断类型，或者编译前形成具体实例。Blink 当前主要采用后者。
 
-源码节选：`crates/blanguage/src/generics.rs:11`。
+源码节选：`crates/blanguage/src/generics.rs:42`。
 
 ```rust
 #[derive(Default)]
@@ -762,7 +761,7 @@ impl Bindings {
 
 `Bindings.types` 把类型形参映射到实际类型，`Bindings.values` 保存 const 整数实参。实例按这些绑定读取同一份源定义，形成自己的类型、合同和 IR，而不是为每一组实参重写一棵语法树。
 
-有限类型集合和 const 取值可以形成多个具体组合。当前 B 模块遍历这些组合，检查器按每一组实际绑定解释源定义；开放形参则等到实际调用给出实参。源码共享与实例独立分析是两层关系。
+有限类型集合和 const 取值可以形成多个具体组合。五种内置数值类型族共用 B 的有序成员表。约束检查直接比较已绑定的规范名称，有限实例按同一顺序取得类型实参；命名集合由原声明和实际类型求值交出名义成员。B 遍历这些类型和 const 的组合，检查器按实际绑定解释同一份源定义。开放形参由实际调用给出实参。
 
 例如一个宽度为四的固定数组与宽度为八的固定数组，存储、循环形状或协作工作量可能不同。把宽度在编译期确定，后端就能计算实际布局；代价是可能产生多个实例，编译量与代码体积也会增加。
 
@@ -2242,6 +2241,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 | `lib.rs`、`frontend.rs` | 公开接口、模块装载、接口核对与 Compilation |
 | `lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |
 | `generics.rs`、`value_parameters.rs`、`type_sets.rs` | 具体类型、静态值与类型集合怎样形成实例 |
+| `bootstrap/type_families.h`、`bootstrap/type_families.b` | 内置数值类型族如何交接有序成员，供约束检查和实例展开使用 |
 | `check.rs` | 参数、资源、函数、表达式与 parallel 怎样形成 IR |
 | `check/ownership.rs`、`view.rs` | 位置身份、字段借用与只读来源怎样传递 |
 | `check/bounds.rs`、`flow.rs`、`returns.rs` | 条件、写入和合流怎样影响事实与控制流 |
@@ -2290,7 +2290,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 
 ## 附录 D 版本与进一步阅读
 
-本版代码说明与索引按 Blink P4 CL19111 固定；历史运行图来自 2026-10-27 的 CL13553。页大小、工作组宽度、向量化范围和平台支持均按本版具体实现解释，不作为永久语言限制。
+现行代码说明以源码及索引为准。历史运行图来自 2026-10-27 的 CL13553。页大小、工作组宽度、向量化范围和平台支持均按本版具体实现解释，不作为永久语言限制。
 
 - [Blink 开源工程](https://github.com/sgua83/Blink)：源码、学习资料与正式 PDF。
 - [语言规则](../Open/Docs/BLanguage.md)：语法、类型、访问和集合操作的正式说明。

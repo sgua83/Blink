@@ -381,10 +381,10 @@ pub(crate) fn for_each_combination(
     let mut domains = Vec::with_capacity(types.len());
     for parameter in types {
         let members = match parameter.family() {
-            Some(family) => world.family_members(&family, source, span, module, imports, &mut BTreeSet::new())?,
+            Some(family) => world.family_arguments(&family, source, span, module, imports, &mut BTreeSet::new())?,
             None => Vec::new(),
         };
-        domains.push(members.into_iter().map(|(name, _)| name).collect::<Vec<_>>());
+        domains.push(members);
     }
     let sizes: Vec<_> = domains.iter().map(|domain| domain.len() as u64).collect();
     values.instance_combinations(&sizes).try_for_each(|indices, row| {

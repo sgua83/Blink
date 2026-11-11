@@ -316,6 +316,42 @@ impl Shape {pub fn kind(&self)->ShapeKind<'_>{match self.row(){wire::ShapeNode::
 #[derive(PartialEq,Eq,PartialOrd,Ord)]
 pub(crate) enum FamilyKind<'a>{Numeric,Floating,Integer,ScalarNumeric,ScalarInteger,Named(&'a str)}
 impl TypeFamily {pub fn kind(&self)->FamilyKind<'_>{match self.row(){wire::TypeFamilyNode::Numeric=>FamilyKind::Numeric,wire::TypeFamilyNode::Floating=>FamilyKind::Floating,wire::TypeFamilyNode::Integer=>FamilyKind::Integer,wire::TypeFamilyNode::ScalarNumeric=>FamilyKind::ScalarNumeric,wire::TypeFamilyNode::ScalarInteger=>FamilyKind::ScalarInteger,wire::TypeFamilyNode::Named(v)=>FamilyKind::Named(self.owner.text(v))}}}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BuiltinFamilyName {
+    bytes: [u8; 6],
+    length: u32,
+}
+
+pub(crate) struct BuiltinFamilyNames {
+    names: [std::mem::MaybeUninit<BuiltinFamilyName>; 19],
+    len: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.type_families::builtin_members"]
+    fn builtin_family_members(family: *const wire::TypeFamilyNode, output: *mut BuiltinFamilyName) -> u32;
+}
+
+impl TypeFamily {
+    pub(crate) fn builtin_names(&self) -> BuiltinFamilyNames {
+        let mut names = [std::mem::MaybeUninit::uninit(); 19];
+        // B writes one row per selected name, with at most 19 rows in total.
+        let len = unsafe { builtin_family_members(&self.row(), names.as_mut_ptr().cast()) } as usize;
+        BuiltinFamilyNames { names, len }
+    }
+}
+
+impl BuiltinFamilyNames {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &str> {
+        self.names[..self.len].iter().map(|name| {
+            // The B table initializes the selected rows with ASCII spellings.
+            let name = unsafe { name.assume_init_ref() };
+            unsafe { std::str::from_utf8_unchecked(&name.bytes[..name.length as usize]) }
+        })
+    }
+}
 #[derive(PartialEq,Eq,PartialOrd,Ord)]
 pub(crate) enum ExprKind<'a>{
     Number(&'a str),StaticU32(u32),Bool(bool),Name(&'a str),
