@@ -126,6 +126,12 @@ pub(crate) struct Contract {
     view_access:Option<BTreeSet<view_contracts::Access>>,
     initialization:Option<Vec<address::Initialization>>,
 }
+impl Contract {
+    fn residency_dependencies(&self) -> BTreeSet<String> {
+        residency::dependencies(&self.residency, self.returned.iter().chain(self.written.iter().flatten()))
+    }
+}
+
 impl crate::module::codec::Encode for Contract {
     fn encode(&self,w:&mut crate::module::codec::Writer){
         contract::encode(self,w);
@@ -1411,8 +1417,7 @@ fn residency_contracts(world:&World,module:&Module)->Result<(BTreeMap<String,res
     let mut imports=BTreeMap::new();let mut pending=contracts.keys().cloned().collect::<Vec<_>>();
     while let Some(name)=pending.pop(){
         let contract=&contracts[&name];
-        let calls=residency::dependencies(&contract.residency,contract.returned.iter().chain(contract.written.iter().flatten()));
-        for callee in calls{
+        for callee in contract.residency_dependencies(){
             if contracts.contains_key(&callee){continue;}
             let (definition,bytes)=world.functions.values().find_map(|definition|definition.compiled.as_ref().and_then(|definitions|definitions.get(&callee)).map(|bytes|(definition,bytes)))
                 .ok_or_else(||Diagnostic{source:module.units.values().find_map(|unit|unit.as_ref()).unwrap().source.clone(),span:Span::default(),code:"B270",message:format!("已编译模块没有位置合同定义 {callee}")})?;
@@ -1988,7 +1993,7 @@ fn resolve_range_views(
 fn finalize(
     world:&World,
     mut module: Module,
-    mut reachable: BTreeSet<String>,
+    entries: BTreeSet<String>,
     mut root: Option<(&mut ValueCode,&view_contracts::Function)>,
     owner: Option<&str>,
     programs: &mut [(&mut Program, &mut BTreeMap<usize, RangeContext>)],
@@ -2003,6 +2008,7 @@ fn finalize(
         .chain(pending_programs.iter_mut().map(|pending|
             (&mut pending.program, &pending.scopes, pending.deferred_source.as_deref())))
         .collect::<Vec<_>>();
+    let mut reachable = entries.clone();
     for (program, _, _) in programs.iter() { reachable.extend(program_dependencies(program)); }
     let mut units = module
         .units
@@ -2089,6 +2095,19 @@ fn finalize(
     drop(programs);
     resources.programs = pending_programs.into_iter().map(|pending| (pending.target, pending.program)).collect();
     units.retain(|name, _| reachable.contains(name));
+    let mut exported_contracts = entries;
+    if let Some(owner) = owner {
+        // The object keeps every native symbol. Only imported contracts need these bytes.
+        let mut pending = exported_contracts.iter().cloned().collect::<Vec<_>>();
+        while let Some(name) = pending.pop() {
+            for dependency in units[&name].contract.residency_dependencies() {
+                let local = units.get(&dependency).is_some_and(|unit| unit.function.is_some() && unit.module == owner);
+                if local && exported_contracts.insert(dependency.clone()) {
+                    pending.push(dependency);
+                }
+            }
+        }
+    }
     let unframed = units.iter()
         .filter(|(name, unit)| unit.function.is_some() && !frame.contains(*name))
         .map(|(name, _)| name.clone()).collect::<BTreeSet<_>>();
@@ -2123,7 +2142,12 @@ fn finalize(
             crate::optimize::value_code(&mut function.body);
             result.functions.push(function);
             if owner.is_some() {
-                result.exports.insert(name, unit.contract.bytes());
+                let contract = if exported_contracts.contains(&name) {
+                    unit.contract.bytes()
+                } else {
+                    Vec::new()
+                };
+                result.exports.insert(name, contract);
             }
         }
     }

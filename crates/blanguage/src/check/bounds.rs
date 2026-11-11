@@ -1204,20 +1204,14 @@ impl Proof {
         }
     }
     pub(super) fn join(&mut self,other:&Self,width:usize,branch:Option<&Value>){let choice=branch.map(Condition::of);self.join_condition(other,width,choice.as_ref());}
-    pub(super) fn join_condition(&mut self,other:&Self,width:usize,branch:Option<&Condition>){
-        if !self.addresses.is_empty()||!other.addresses.is_empty(){self.addresses=(0..width).map(|i|address::Identity::selected(branch,self.addresses.get(i).and_then(Option::as_ref),other.addresses.get(i).and_then(Option::as_ref))).collect();}
+    pub(super) fn join_condition(&mut self, other: &Self, width: usize, branch: Option<&Condition>) {
         let conditions = (0..width)
             .map(|i| {
                 if self.component_condition(i).is_none() && other.component_condition(i).is_none() {
                     return None;
                 }
-                let condition=|proof:&Self|match proof.component_condition(i){
-                    Some(value)=>value.clone(),
-                    None if proof.nonzero.get(i)==Some(&true)=>Condition::constant(true),
-                    None=>Condition::default(),
-                };
-                let a=condition(self);
-                let b=condition(other);
+                let a = self.condition_for_join(i);
+                let b = other.condition_for_join(i);
                 Some(Box::new(if let Some(c) = branch {
                     Condition::branch(c.clone(), a, b)
                 } else {
@@ -1225,6 +1219,34 @@ impl Proof {
                 }))
             })
             .collect();
+        self.join_fields(other, width, branch);
+        self.conditions = conditions;
+    }
+
+    pub(super) fn condition_for_join(&self, component: usize) -> Condition {
+        match self.component_condition(component) {
+            Some(condition) => condition.clone(),
+            None if self.nonzero.get(component) == Some(&true) => Condition::constant(true),
+            None => Condition::default(),
+        }
+    }
+
+    pub(super) fn carried_loop_condition(&self) -> Option<view::LoopInput> {
+        if self.component_condition(0).is_some() {
+            return None;
+        }
+        match self.origins.first()?.as_slice() {
+            [ValueIdentity::LoopValue(level, index)] => Some(view::LoopInput { level: *level, index: *index }),
+            _ => None,
+        }
+    }
+
+    pub(super) fn set_loop_condition(&mut self, condition: Option<Condition>) {
+        self.conditions = vec![condition.map(Box::new)];
+    }
+
+    pub(super) fn join_fields(&mut self, other: &Self, width: usize, branch: Option<&Condition>) {
+        if !self.addresses.is_empty()||!other.addresses.is_empty(){self.addresses=(0..width).map(|i|address::Identity::selected(branch,self.addresses.get(i).and_then(Option::as_ref),other.addresses.get(i).and_then(Option::as_ref))).collect();}
         self.views=(0..width).map(|i|if let Some(choice)=branch{view::Borrow::selected(choice,&self.view_borrow(i),&other.view_borrow(i))}else{self.view_borrow(i).joined(other.view_borrow(i))}).collect();
         self.domains = (0..width).map(|i| {
             let a=self.domains(i);let b=other.domains(i);
@@ -1260,7 +1282,6 @@ impl Proof {
         self.ranges = (0..width)
             .map(|i| self.range_set(i).union(&other.range_set(i)))
             .collect();
-        self.conditions = conditions;
     }
     pub(super) fn project(&self, components: &[usize], width: usize) -> Self {
         if components.iter().copied().eq(0..width) {
@@ -3067,7 +3088,7 @@ impl Condition {
             _ => None,
         }
     }
-    fn common(a: Self, b: Self) -> Self {
+    pub(super) fn common(a: Self, b: Self) -> Self {
         let [af, at] = a.cases;
         let [bf, bt] = b.cases;
         Self {
@@ -5162,27 +5183,43 @@ impl crate::module::codec::Decode for Proof {
 }
 crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,scalar,lower),3=>Maximum(value,scalar,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,scalar),7=>Outside(value,domain),8=>Zero(value),9=>NotEqual(a,b),10=>Predicate(predicate,truth)});
 
-pub(super) fn scoped_proof(ty: &Ty, mut proof: Proof, path: &Clause, env: &BTreeMap<String, Binding>) -> Proof {
-    let environment=environment_facts(env);
-    if let Some(facts) = path.required_in(&environment) {
-        proof.extend_equalities(&equality_roots(&facts));
-        for component in 0..ty.components.len() {
-            for domain in proof.domains(component) {
-                if let IndexDomain::CommonRange(id,from,low,extended,to)=domain
-                    && [from,low,extended,to].into_iter().all(Scalar::is_integer)
-                    && let Some(bits)=KnownBits::facts(from,id,[&environment,&facts]) {
-                    let bits=bits.cast(low).cast(extended).cast(to);
-                    if bits.mask!=0{proof.mark_domain(component,bits.domain());}
+pub(super) fn scoped_proof(ty: &Ty, proof: Proof, path: &Clause, env: &BTreeMap<String, Binding>) -> Proof {
+    proof_scope(path, env)(ty, proof)
+}
+
+pub(super) fn proof_scope(path: &Clause, env: &BTreeMap<String, Binding>) -> impl Fn(&Ty, Proof) -> Proof + use<> {
+    let environment = environment_facts(env);
+    let scope = path.required_in(&environment).map(|facts| {
+        let equalities = equality_roots(&facts);
+        (facts, equalities)
+    });
+
+    move |ty, mut proof| {
+        if let Some((facts, equalities)) = &scope {
+            proof.extend_equalities(equalities);
+            for component in 0..ty.components.len() {
+                for domain in proof.domains(component) {
+                    if let IndexDomain::CommonRange(id, from, low, extended, to) = domain
+                        && [from, low, extended, to].into_iter().all(Scalar::is_integer)
+                        && let Some(bits) = KnownBits::facts(from, id, [&environment, facts])
+                    {
+                        let bits = bits.cast(low).cast(extended).cast(to);
+                        if bits.mask != 0 {
+                            proof.mark_domain(component, bits.domain());
+                        }
+                    }
                 }
-            }
-            for fact in &facts {
-                if fact.identity().is_some_and(|identity| proof.origins.get(component).is_some_and(|origins|origins.contains(&identity))) {
-                    proof.refine(ty, component, *fact);
+                for fact in facts {
+                    if fact.identity().is_some_and(|identity| {
+                        proof.origins.get(component).is_some_and(|origins| origins.contains(&identity))
+                    }) {
+                        proof.refine(ty, component, *fact);
+                    }
                 }
             }
         }
+        proof
     }
-    proof
 }
 
 fn common_range_domain(domain: IndexDomain) -> bool {

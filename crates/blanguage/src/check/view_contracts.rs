@@ -514,14 +514,39 @@ fn content_word(origin:&address::Origin,word:u32)->Option<(usize,u32)>{
 fn content_position(origin:&address::Origin,word:u32)->Option<Position>{
     origin.position_at(word).filter(|position|!matches!(position,Position::Initialized))
 }
-fn assign_content(previous:Borrow,incoming:Borrow,when:&bounds::Clause,complete:bool)->Borrow{
-    if complete{
-        let unchanged=bounds::Condition::execution(when).assume(&bounds::Clause::default(),false);
-        previous.restricted(&unchanged).joined(incoming.restricted(when))
-    }else{previous.joined(incoming.restricted(when))}
+#[derive(Default)]
+struct ContentAtRead {
+    writes: Borrow,
+    earlier: Option<bounds::Clause>,
 }
-fn apply_content_write(previous:Borrow,query:Option<(&address::Origin,u32)>,position:Option<&Position>,
-    target:&address::Origin,word:u32,incoming:Borrow,when:&bounds::Clause)->Borrow {
+
+impl ContentAtRead {
+    fn write(&mut self, incoming: &Borrow, when: &bounds::Clause, complete: bool) {
+        let visible = self.earlier.as_ref().map_or_else(
+            || when.clone(),
+            |earlier| bounds::Clause::both(earlier, when),
+        );
+        self.writes.union(&incoming.restricted(&visible));
+        if complete {
+            let unchanged = bounds::Condition::execution(when).assume(&bounds::Clause::default(), false);
+            self.earlier = Some(match self.earlier.take() {
+                Some(earlier) => bounds::Clause::both(&earlier, &unchanged),
+                None => unchanged,
+            });
+        }
+    }
+
+    fn with_initial(self, initial: Borrow) -> Borrow {
+        let initial = match self.earlier {
+            Some(earlier) => initial.restricted(&earlier),
+            None => initial,
+        };
+        initial.joined(self.writes)
+    }
+}
+
+fn apply_content_write(result:&mut ContentAtRead,query:Option<(&address::Origin,u32)>,position:Option<&Position>,
+    target:&address::Origin,word:u32,incoming:&Borrow,when:&bounds::Clause) {
     let complete=query.is_some_and(|(origin,at)|origin.base==target.base&&same_content_storage(&origin.root,&target.root)
         &&content_word(origin,at).zip(content_word(target,word)).is_some_and(|((_,a),(_,b))|a==b))
         ||position.zip(content_position(target,word).as_ref()).is_some_and(|(a,b)|a==b);
@@ -530,69 +555,186 @@ fn apply_content_write(previous:Borrow,query:Option<(&address::Origin,u32)>,posi
         let borrow=Borrow::source(Origin::Position(Arc::new(target.clone()))).restricted(when);
         address::MemoryEffect::of(&borrow,super::Access::Write,None).written_bytes(position,Scalar::U64,None)!=0
     });
-    if affected{assign_content(previous,incoming,when,complete)}else{previous}
+    if affected {result.write(incoming, when, complete);}
 }
-fn content_event(mut value:Borrow,query:Option<(&address::Origin,u32)>,position:Option<&Position>,
-    memory:usize,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
-    let usage=&function.uses[memory];
-    let Requirement::Memory{borrow,access,written,address_fields,..}=&usage.requirement else{return value;};
-    if let Some(call)=function.calls.iter().find(|call|call.memory==memory){
-        for access in &known[&call.function].interface.access{
-            let Access::Stored{borrows,word,value:stored,when}=access else{continue;};
-            let when=when.guard_at_call(&call.arguments).assume(&usage.path,true);
-            let target=evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments),function,state,known,expand_loops);
-            let stored=evaluate(&call_content_sources(stored,call,&call.arguments).at_call(&call.arguments),function,state,known,expand_loops);
-            for(source,selected)in target.sources.entries(){
-                if let Origin::Position(origin)=source {
-                    value=apply_content_write(value,query,position,origin,*word,stored.clone(),&bounds::Clause::both(&when,&selected));
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LoopSources {
+    Symbolic,
+    Carried,
+    Resolved,
+}
+
+struct BorrowEvaluation<'a>{
+    function:&'a Function,state:&'a State,known:&'a States,expand_loops:bool,
+    values:BTreeMap<(LoopSources,ContentRead),Borrow>,
+}
+impl BorrowEvaluation<'_>{
+    fn content_event(&mut self,result:&mut ContentAtRead,query:Option<(&address::Origin,u32)>,position:Option<&Position>,memory:usize){
+        let(function,known)=(self.function,self.known);
+        let usage=&function.uses[memory];
+        let Requirement::Memory{borrow,access,written,address_fields,..}=&usage.requirement else{return;};
+        if let Some(call)=function.calls.iter().find(|call|call.memory==memory){
+            for access in known[&call.function].interface.access.iter().rev(){
+                let Access::Stored{borrows,word,value:stored,when}=access else{continue;};
+                let when=when.guard_at_call(&call.arguments).assume(&usage.path,true);
+                let target=self.evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments));
+                let stored=self.evaluate(&call_content_sources(stored,call,&call.arguments).at_call(&call.arguments));
+                for(source,selected)in target.sources.entries().rev(){
+                    if let Origin::Position(origin)=source {
+                        apply_content_write(result,query,position,origin,*word,&stored,&bounds::Clause::both(&when,&selected));
+                    }
                 }
             }
+            return;
         }
-        return value;
-    }
-    if !access.is_some_and(super::Access::writes){return value;}
-    let targets=evaluate(borrow,function,state,known,expand_loops);
-    for(source,selected)in targets.sources.entries(){
-        let when=bounds::Clause::both(&usage.path,&selected);
-        if !when.possible(){continue;}
-        match source {
-            Origin::Position(origin)=>{
-                if let Some(written)=written {
-                    for word in address_fields.iter(){
-                        if let Some((component,_))=content_word(origin,*word){
-                            let stored=evaluate(&written.view_borrow(component),function,state,known,expand_loops);
-                            value=apply_content_write(value,query,position,origin,*word,stored,&when);
+        if !access.is_some_and(super::Access::writes){return;}
+        let targets=self.evaluate(borrow);
+        for(source,selected)in targets.sources.entries().rev(){
+            let when=bounds::Clause::both(&usage.path,&selected);
+            if !when.possible(){continue;}
+            match source {
+                Origin::Position(origin)=>{
+                    if let Some(written)=written {
+                        for word in address_fields.iter().rev(){
+                            if let Some((component,_))=content_word(origin,*word){
+                                let stored=self.evaluate(&written.view_borrow(component));
+                                apply_content_write(result,query,position,origin,*word,&stored,&when);
+                            }
+                        }
+                    }else{
+                        let effect=address::MemoryEffect::of(&Borrow::source(source.clone()).restricted(&when),super::Access::Write,None);
+                        if position.is_some_and(|position|effect.written_bytes(position,Scalar::U64,None)!=0){
+                            result.write(&Borrow::source(Origin::External),&when,false);
                         }
                     }
-                }else{
-                    let effect=address::MemoryEffect::of(&Borrow::source(source.clone()).restricted(&when),super::Access::Write,None);
-                    if position.is_some_and(|position|effect.written_bytes(position,Scalar::U64,None)!=0){
-                        value=value.joined(Borrow::source(Origin::External).restricted(&when));
-                    }
-                }
-            },
-            Origin::External=>value=value.joined(Borrow::source(Origin::External).restricted(&when)),
-            _=>{},
-        }
-    }
-    value
-}
-fn content_before(origin:&address::Origin,word:u32,memory:usize,snapshots:Option<&[ValueSnapshot]>,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow{
-    let position=content_position(origin,word);
-    if let Some(snapshots)=snapshots{
-        let mut captured=None;
-        for snapshot in snapshots.iter(){
-            if snapshot.scalar==Scalar::U64 && position.as_ref()==Some(&snapshot.position){
-                let value=evaluate(&snapshot.proof.view_borrow(0),function,state,known,expand_loops);
-                if let Some(old)=&mut captured{Borrow::union(old,&value);}else{captured=Some(value);}
+                },
+                Origin::External=>result.write(&Borrow::source(Origin::External),&when,false),
+                _=>{},
             }
         }
-        if let Some(value)=captured{return value;}
     }
-    let mut value=input_contents(origin,word);
-    for at in 0..memory{value=content_event(value,Some((origin,word)),position.as_ref(),at,function,state,known,expand_loops);}
-    value
+
+    fn content_before(&mut self,origin:&address::Origin,word:u32,memory:usize,snapshots:Option<&[ValueSnapshot]>)->Borrow{
+
+        let position=content_position(origin,word);
+        if let Some(snapshots)=snapshots{
+            let mut captured=None;
+            for snapshot in snapshots.iter(){
+                if snapshot.scalar==Scalar::U64 && position.as_ref()==Some(&snapshot.position){
+                    let value=self.evaluate(&snapshot.proof.view_borrow(0));
+                    if let Some(old)=&mut captured{Borrow::union(old,&value);}else{captured=Some(value);}
+                }
+            }
+            if let Some(value)=captured{return value;}
+        }
+        let mut result=ContentAtRead::default();
+        for at in (0..memory).rev(){self.content_event(&mut result,Some((origin,word)),position.as_ref(),at);}
+        result.with_initial(input_contents(origin,word))
+    }
+
+    fn stored_candidates(&mut self)->BTreeSet<(Arc<address::Origin>,u32)>{
+        let(function,known)=(self.function,self.known);
+        let mut result=BTreeSet::new();
+        for(memory,usage)in function.uses.iter().enumerate(){
+            let Requirement::Memory{borrow,written,address_fields,..}=&usage.requirement else{continue;};
+            if let Some(call)=function.calls.iter().find(|call|call.memory==memory){
+                for access in &known[&call.function].interface.access{
+                    let Access::Stored{borrows,word,when,..}=access else{continue;};
+                    let path=when.guard_at_call(&call.arguments).assume(&usage.path,true);
+                    let target=self.evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments)).restricted(&path);
+                    for(source,when)in target.sources.entries(){if when.possible()&&let Origin::Position(origin)=source{result.insert((origin.clone(),*word));}}
+                }
+            }else if written.is_some(){
+                let target=self.evaluate(borrow).restricted(&usage.path);
+                for(source,when)in target.sources.entries(){if when.possible()&&let Origin::Position(origin)=source{
+                    for word in address_fields.iter(){result.insert((origin.clone(),*word));}
+                }}
+            }
+        }
+        result
+    }
+
+    fn stored_at_exit(&mut self,memory:usize)->Vec<(Arc<address::Origin>,u32,Borrow)>{
+        let function=self.function;
+        let exposed=exposed_resources(function,function.resource_names.keys().map(|output|(output,self.evaluate(&function.outputs[output]))));
+        self.stored_candidates().into_iter().filter_map(|(origin,word)|{
+            let target=stored_target(&origin,function,&exposed);
+            if !target.active(){return None;}
+            let value=self.content_before(&origin,word,memory,None).restricted(&function.uses[memory].path);
+            Some((origin,word,value))
+        }).collect()
+    }
+
+    fn content_read(&mut self,read:&ContentRead,sources:LoopSources)->Borrow{
+        let key=(sources,read.clone());
+        if let Some(value)=self.values.get(&key){return value.clone();}
+        let function=self.function;
+        let value=match read {
+            ContentRead::Returned{memory}=>{
+                let mut value=Borrow::default();
+                for(_,_,stored)in self.stored_at_exit(*memory){value.union(&stored);}
+                value
+            },
+            ContentRead::Value{memory,word,borrow,snapshots}=>{
+                let targets=self.evaluate(borrow);
+                let mut value=Borrow::default();
+                for(source,when)in targets.sources.entries(){
+                    if let Origin::Position(origin)=source{
+                        value.union(&self.content_before(origin,*word,*memory,Some(snapshots)).restricted(&when));
+                    }
+                }
+                value.restricted(&function.uses[*memory].path)
+            },
+            ContentRead::Snapshot{memory,position,initial,..}=>{
+                let value=self.evaluate_sources(&initial.view_borrow(0),sources);
+                let mut result=ContentAtRead::default();
+                self.content_event(&mut result,None,Some(position),*memory);
+                result.with_initial(value).restricted(&function.uses[*memory].path)
+            },
+            ContentRead::Call{memory,origin,word,snapshots}=>{
+                let targets=self.evaluate(&Borrow::source(Origin::Position(origin.clone())));
+                let mut value=Borrow::default();
+                for(source,when)in targets.sources.entries(){
+                    if let Origin::Position(origin)=source{
+                        value.union(&self.content_before(origin,*word,*memory,snapshots.as_deref()).restricted(&when));
+                    }
+                }
+                value.restricted(&function.uses[*memory].path)
+            },
+        };
+        self.values.insert(key,value.clone());
+        value
+    }
+
+    fn evaluate(&mut self,borrow:&Borrow)->Borrow{
+        let sources=if self.expand_loops{LoopSources::Resolved}else{LoopSources::Symbolic};
+        self.evaluate_sources(borrow,sources)
+    }
+
+    fn evaluate_sources(&mut self,borrow:&Borrow,sources:LoopSources)->Borrow{
+        let(function,state,known)=(self.function,self.state,self.known);
+        let mut value=Borrow{..Borrow::default()};
+        for(source,when)in borrow.sources.entries() {
+            let resolved=match source {
+                Origin::Element{parent,fields,index}=>Borrow::element(self.evaluate(parent),fields.clone(),*index),
+                Origin::Projection{parent,fields}=>Borrow::projection(self.evaluate(parent),fields.clone()),
+                Origin::Position(origin)=>origin.map_borrows(|root|self.evaluate(root)).normalize(),
+                Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(origin.map_borrows(|root|self.evaluate(root))),word:*word}),
+                source=>Borrow::source(source.clone()),
+            };
+            value.union(&resolved.restricted(&when));
+        }
+        for(input,when)in borrow.inputs.entries(){if matches!(sources,LoopSources::Resolved){value.union(&state.loops[input].restricted(&when));}else{value.inputs.insert_when(*input,when.clone());}}
+        for(read,when)in borrow.reads.entries(){value.union(&self.content_read(read,sources).restricted(&when));}
+        for(result,when)in borrow.calls.entries(){
+            let call=&function.calls[result.call];
+            let Some(output)=known[&call.function].interface.outputs.get(&result.output)else {value.sources.insert_when(Origin::Unresolved,when.clone());continue;};
+            let actual=call_content_sources(output,call,&call.arguments).at_call(&call.arguments);
+            value.union(&self.evaluate(&actual).restricted(&when));
+        }value
+    }
 }
+
 // Select storage that survives this function; private stack slots and unreturned
 // owned resources have no caller-side stored output.
 fn stored_target(origin:&address::Origin,function:&Function,exposed:&BTreeMap<Origin,Borrow>)->Borrow{
@@ -610,90 +752,10 @@ fn stored_target(origin:&address::Origin,function:&Function,exposed:&BTreeMap<Or
     if matches!(&origin.root,address::Root::Resource{borrow,..}|address::Root::Dataset{borrow,..}|address::Root::Derived(borrow)|address::Root::External(address::Identity::Storage(borrow)) if !borrow.active()){return Borrow::default();}
     canonical(Borrow::source(Origin::Position(Arc::new(origin))),function,None,exposed)
 }
-fn stored_candidates(function:&Function,state:&State,known:&States,expand_loops:bool)->BTreeSet<(Arc<address::Origin>,u32)>{
-    let mut result=BTreeSet::new();
-    for(memory,usage)in function.uses.iter().enumerate(){
-        let Requirement::Memory{borrow,written,address_fields,..}=&usage.requirement else{continue;};
-        if let Some(call)=function.calls.iter().find(|call|call.memory==memory){
-            for access in &known[&call.function].interface.access{
-                let Access::Stored{borrows,word,when,..}=access else{continue;};
-                let path=when.guard_at_call(&call.arguments).assume(&usage.path,true);
-                let target=evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments),function,state,known,expand_loops).restricted(&path);
-                for(source,when)in target.sources.entries(){if when.possible()&&let Origin::Position(origin)=source{result.insert((origin.clone(),*word));}}
-            }
-        }else if written.is_some(){
-            let target=evaluate(borrow,function,state,known,expand_loops).restricted(&usage.path);
-            for(source,when)in target.sources.entries(){if when.possible()&&let Origin::Position(origin)=source{
-                for word in address_fields.iter(){result.insert((origin.clone(),*word));}
-            }}
-        }
-    }
-    result
-}
-fn stored_at_exit(memory:usize,function:&Function,state:&State,known:&States,expand_loops:bool)->Vec<(Arc<address::Origin>,u32,Borrow)>{
-    let exposed=exposed_resources(function,function.resource_names.keys().map(|output|(output,evaluate(&function.outputs[output],function,state,known,expand_loops))));
-    stored_candidates(function,state,known,expand_loops).into_iter().filter_map(|(origin,word)|{
-        let target=stored_target(&origin,function,&exposed);
-        if !target.active(){return None;}
-        let value=content_before(&origin,word,memory,None,function,state,known,expand_loops).restricted(&function.uses[memory].path);
-        Some((origin,word,value))
-    }).collect()
-}
-fn content_read(read:&ContentRead,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow{
-    match read {
-        ContentRead::Returned{memory}=>{
-            let mut value=Borrow::default();
-            for(_,_,stored)in stored_at_exit(*memory,function,state,known,expand_loops){value.union(&stored);}
-            value
-        },
-        ContentRead::Value{memory,word,borrow,snapshots}=>{
-            let targets=evaluate(borrow,function,state,known,expand_loops);
-            let mut value=Borrow::default();
-            for(source,when)in targets.sources.entries(){
-                if let Origin::Position(origin)=source{
-                    value.union(&content_before(origin,*word,*memory,Some(snapshots),function,state,known,expand_loops).restricted(&when));
-                }
-            }
-            value.restricted(&function.uses[*memory].path)
-        },
-        ContentRead::Snapshot{memory,position,initial,..}=>{
-            let value=evaluate(&initial.view_borrow(0),function,state,known,expand_loops);
-            content_event(value,None,Some(position),*memory,function,state,known,expand_loops).restricted(&function.uses[*memory].path)
-        },
-        ContentRead::Call{memory,origin,word,snapshots}=>{
-            let targets=evaluate(&Borrow::source(Origin::Position(origin.clone())),function,state,known,expand_loops);
-            let mut value=Borrow::default();
-            for(source,when)in targets.sources.entries(){
-                if let Origin::Position(origin)=source{
-                    value.union(&content_before(origin,*word,*memory,snapshots.as_deref(),function,state,known,expand_loops).restricted(&when));
-                }
-            }
-            value.restricted(&function.uses[*memory].path)
-        },
-    }
+fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
+    BorrowEvaluation{function,state,known,expand_loops,values:BTreeMap::new()}.evaluate(borrow)
 }
 
-fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
-    let mut value=Borrow{..Borrow::default()};
-    for(source,when)in borrow.sources.entries() {
-        let resolved=match source {
-            Origin::Element{parent,fields,index}=>Borrow::element(evaluate(parent,function,state,known,expand_loops),fields.clone(),*index),
-            Origin::Projection{parent,fields}=>Borrow::projection(evaluate(parent,function,state,known,expand_loops),fields.clone()),
-            Origin::Position(origin)=>origin.map_borrows(|root|evaluate(root,function,state,known,expand_loops)).normalize(),
-            Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(origin.map_borrows(|root|evaluate(root,function,state,known,expand_loops))),word:*word}),
-            source=>Borrow::source(source.clone()),
-        };
-        value.union(&resolved.restricted(&when));
-    }
-    for(input,when)in borrow.inputs.entries(){if expand_loops{value.union(&state.loops[input].restricted(&when));}else{value.inputs.insert_when(*input,when.clone());}}
-    for(read,when)in borrow.reads.entries(){value.union(&content_read(read,function,state,known,expand_loops).restricted(&when));}
-    for(result,when)in borrow.calls.entries(){
-        let call=&function.calls[result.call];
-        let Some(output)=known[&call.function].interface.outputs.get(&result.output)else {value.sources.insert_when(Origin::Unresolved,when.clone());continue;};
-        let actual=call_content_sources(output,call,&call.arguments).at_call(&call.arguments);
-        value.union(&evaluate(&actual,function,state,known,expand_loops).restricted(&when));
-    }value
-}
 fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds::Operand>{
     index.and_then(|index|index.map(|id|match id{ValueIdentity::ElementIndex(_)=>Some(id),_=>function.parameters.get(&id).copied().filter(|id|function.input(*id))}))
 }
@@ -1109,13 +1171,14 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
     }
 }
 
-fn stored_outputs(function:&Function,state:&State,known:&States,exposed:&BTreeMap<Origin,Borrow>)->BTreeSet<Access>{
+fn stored_outputs(evaluation:&mut BorrowEvaluation<'_>,exposed:&BTreeMap<Origin,Borrow>)->BTreeSet<Access>{
+    let function=evaluation.function;
     let mut stored:BTreeMap<(Borrow,u32),Borrow>=BTreeMap::new();
     for usage in &function.uses{
         let Requirement::Return{borrow,..}=&usage.requirement else{continue;};
         for(read,_)in borrow.reads.entries(){
             let ContentRead::Returned{memory}=read else{continue;};
-            for(origin,word,value)in stored_at_exit(*memory,function,state,known,true){
+            for(origin,word,value)in evaluation.stored_at_exit(*memory){
                 let target=stored_target(&origin,function,exposed);
                 stored.entry((target,word)).or_default().union(&canonical(value,function,None,exposed));
             }
@@ -1123,14 +1186,46 @@ fn stored_outputs(function:&Function,state:&State,known:&States,exposed:&BTreeMa
     }
     stored.into_iter().map(|((borrows,word),value)|Access::Stored{borrows,word,value,when:bounds::Condition::constant(true)}).collect()
 }
+fn close_loop_sources(mut pending: BTreeMap<LoopInput, Borrow>) -> BTreeMap<LoopInput, Borrow> {
+    let mut definitions = Vec::with_capacity(pending.len());
+    while let Some((input, mut value)) = pending.pop_first() {
+        // A conditionally forwarded copy of this slot adds no source to the slot.
+        value.inputs.remove(&input);
+        for consumer in pending.values_mut() {
+            if let Some(path) = consumer.inputs.remove(&input) {
+                consumer.union(&value.restricted(&path));
+            }
+        }
+        definitions.push((input, value));
+    }
+
+    let mut closed: BTreeMap<LoopInput, Borrow> = BTreeMap::new();
+    for (input, mut value) in definitions.into_iter().rev() {
+        for (source, path) in std::mem::take(&mut value.inputs).into_entries() {
+            value.union(&closed[&source].restricted(&path));
+        }
+        closed.insert(input, value);
+    }
+    closed
+}
+
 fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTreeSet<(String,Output)>){
     loop{
         let mut next=known.clone();
         for(name,function)in functions{
             let state=&known[name];let result=next.get_mut(name).unwrap();
-            for input in state.loops.keys(){let value=evaluate(&function.loops[input].borrow,function,state,known,true);result.loops.insert(*input,if function.independent.contains(input){value.resources()}else{value});}
+            let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,values:BTreeMap::new()};
+            result.loops = close_loop_sources(state.loops.keys().map(|input| {
+                let definition = &function.loops[input].borrow;
+                let value = if function.independent.contains(input) {
+                    evaluation.evaluate(definition).resources()
+                } else {
+                    evaluation.evaluate_sources(definition, LoopSources::Carried)
+                };
+                (*input, value)
+            }).collect());
             let physical=function.outputs.iter().map(|(output,definition)|{
-                let value=evaluate(definition,function,state,known,true);
+                let value=evaluation.evaluate(definition);
                 let value=if function.resource_names.contains_key(output){value.resources()}else{value};
                 (output.clone(),value)
             }).collect::<Outputs>();
@@ -1141,11 +1236,91 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
                 if unknown.contains(&(name.clone(),output.clone())){value.sources.insert(Origin::Unresolved);}
                 result.interface.outputs.insert(output.clone(),value);
             }
-            result.interface.access=stored_outputs(function,state,known,&exposed);
+            result.interface.access=stored_outputs(&mut evaluation,&exposed);
         }
         if *known==next{break;}*known=next;
     }
 }
+struct LoopConditions {
+    carried: Vec<LoopInput>,
+    terms: Vec<bounds::Condition>,
+}
+impl LoopConditions {
+    fn include(&mut self, source: &bounds::Proof, value: &bounds::Proof) {
+        if value.component_condition(0).is_some()
+            && let Some(input) = source.carried_loop_condition()
+        {
+            self.carried.push(input);
+        } else {
+            self.terms.push(value.condition_for_join(0));
+        }
+    }
+
+    fn collect(
+        &mut self,
+        id: ValueIdentity,
+        definition: &LoopDefinition,
+        source: &bounds::Proof,
+        mut proof: bounds::Proof,
+        values: &BTreeMap<ValueIdentity, bounds::Proof>,
+    ) -> (bounds::Proof, bool) {
+        let mut explicit = proof.component_condition(0).is_some();
+        if explicit {
+            self.include(source, &proof);
+        }
+        if values.contains_key(&id) {
+            for state in &definition.states[1..] {
+                let source = definition.control.binding(id, state).unwrap();
+                let incoming = source.substitute_values(values);
+                let conditioned = incoming.component_condition(0).is_some();
+                if explicit || conditioned {
+                    if !explicit {
+                        self.terms.push(proof.condition_for_join(0));
+                    }
+                    self.include(&source, &incoming);
+                    explicit = true;
+                }
+                proof.join_fields(&incoming, 1, None);
+            }
+        }
+        (proof, explicit)
+    }
+}
+
+fn solve_loop_value(
+    function: &Function,
+    input: LoopInput,
+    id: ValueIdentity,
+    definition: &LoopDefinition,
+    values: &BTreeMap<ValueIdentity, bounds::Proof>,
+) -> bounds::Proof {
+    let source = definition.control.binding(id, &definition.states[0]).unwrap();
+    let proof = source.substitute_values(values);
+    if definition.states.len() == 1 || !values.contains_key(&id) {
+        return proof;
+    }
+
+    let mut conditions = LoopConditions { carried: Vec::new(), terms: Vec::new() };
+    let (mut proof, _) = conditions.collect(id, definition, &source, proof, values);
+    // Close the original carry edges before building the two disjunctions.
+    let mut visited = BTreeSet::from([input]);
+    while let Some(input) = conditions.carried.pop() {
+        if !visited.insert(input) {
+            continue;
+        }
+        let id = ValueIdentity::LoopValue(input.level, input.index);
+        let definition = &function.loops[&input];
+        let source = definition.control.binding(id, &definition.states[0]).unwrap();
+        let value = source.substitute_values(values);
+        let (value, explicit) = conditions.collect(id, definition, &source, value, values);
+        if !explicit {
+            conditions.terms.push(value.condition_for_join(0));
+        }
+    }
+    proof.set_loop_condition(conditions.terms.into_iter().reduce(bounds::Condition::common));
+    proof
+}
+
 pub(super) struct Solved {pub interfaces:BTreeMap<String,Interface>,pub memory:BTreeMap<String,BTreeMap<address::MemoryTarget,address::MemoryEffect>>,pub values:BTreeMap<String,BTreeMap<ValueIdentity,bounds::Proof>>}
 pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String,Interface>,owns_input:impl Fn(&str,ValueIdentity)->bool)->Result<Solved>{
     let loops=used_loops(functions,&closed);
@@ -1203,25 +1378,23 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                     }
                 }
             }
-            if let Some(snapshots)=snapshots{for(component,snapshot)in snapshots.iter().enumerate(){
-                let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluate(borrow,function,&known[name],&known,true).substitute_values(&resolved)),layout.clone(),*word),position=>position.clone()};
-                let index=snapshot.index.and_then(|index|match index{bounds::Operand::Value(id)if resolved.contains_key(&id)=>index.at_call(&resolved),index=>Some(index)});
-                let proof=snapshot.proof.substitute_values(&resolved);let path=usage.path.substitute_values(&resolved);
-                let proof=effect.written_value(&position,snapshot.scalar,index,&bounds::scoped_proof(&Ty::scalar(snapshot.scalar),proof,&path,&BTreeMap::new()));
-                let identity=ValueIdentity::MemoryValue(memory,component);resolved.insert(identity,proof.with_identity(identity));
-            }}
+            if let Some(snapshots)=snapshots && !snapshots.is_empty() {
+                let path = usage.path.substitute_values(&resolved);
+                let scope = bounds::proof_scope(&path, &BTreeMap::new());
+                for(component,snapshot)in snapshots.iter().enumerate(){
+                    let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluate(borrow,function,&known[name],&known,true).substitute_values(&resolved)),layout.clone(),*word),position=>position.clone()};
+                    let index=snapshot.index.and_then(|index|match index{bounds::Operand::Value(id)if resolved.contains_key(&id)=>index.at_call(&resolved),index=>Some(index)});
+                    let proof=snapshot.proof.substitute_values(&resolved);
+                    let proof=effect.written_value(&position,snapshot.scalar,index,&scope(&Ty::scalar(snapshot.scalar), proof));
+                    let identity=ValueIdentity::MemoryValue(memory,component);resolved.insert(identity,proof.with_identity(identity));
+                }
+            }
             values.entry(*target).or_default().union(effect);
         }
-        for definition in function.loops.values() {
-            let Some((id,_))=definition.value else{continue;};
-            let mut proof = definition.control.binding(id, &definition.states[0])
-                .unwrap().substitute_values(&resolved);
-            if resolved.contains_key(&id) {for state in &definition.states[1..] {
-                let incoming = definition.control.binding(id, state)
-                    .unwrap().substitute_values(&resolved);
-                proof.join(&incoming,1,None);
-            }}
-            resolved.insert(id,proof);
+        for (input, definition) in &function.loops {
+            let Some((id, _)) = definition.value else { continue; };
+            let proof = solve_loop_value(function, *input, id, definition, &resolved);
+            resolved.insert(id, proof);
         }
         if previous.is_none_or(|previous|resolved==previous){break;}
         }

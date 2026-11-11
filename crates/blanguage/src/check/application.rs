@@ -1407,10 +1407,12 @@ impl Builder<'_> {
         self.task_value(Value{ty:result,regs,proof:bounds::Proof::default(),uniform:false,literal:false,constant:None})
     }
 
-    fn task_value(&mut self,value:Value) -> Result<returns::Returned> {
+    fn task_value(&mut self,mut value:Value) -> Result<returns::Returned> {
         use returns::Returned;
-        let mut value=if value.ty.owns_resources() { Returned::OwnedValue(self.incoming_owned_value(value)?) }
-            else { Returned::value(value) };
+        let mut value=if value.ty.owns_resources() {
+            value.proof=bounds::Proof::capture(&value);
+            self.template_returned(value,true)?
+        } else { Returned::value(value) };
         residency::visit(&mut value,&mut residency::Input::new(0),
             &mut |data,_| data.residency=residency::Residency::cpu());
         Ok(value)

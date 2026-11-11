@@ -21,11 +21,13 @@ impl<K:Ord+Clone> Edges<K>{
         self.0.entry(key).and_modify(|old|*old=bounds::Condition::guard(bounds::Clause::either(&old.assume(&bounds::Clause::default(),true),&when).canonical())).or_insert_with(||bounds::Condition::guard(when));
     }
     pub fn union(&mut self,other:&Self){for(key,when)in &other.0{self.0.entry(key.clone()).and_modify(|old|*old=old.clone().logical(when.clone(),true)).or_insert_with(||when.clone());}}
-    pub fn remove(&mut self,key:&K){self.0.remove(key);}
+    pub fn remove(&mut self, key: &K) -> Option<bounds::Clause> {
+        self.0.remove(key).map(|when| when.assume(&bounds::Clause::default(), true))
+    }
     pub fn contains(&self,key:&K)->bool{self.0.get(key).is_some_and(bounds::Condition::active)}
     pub fn is_empty(&self)->bool{self.0.is_empty()}
     pub fn iter(&self)->std::collections::btree_map::Keys<'_,K,bounds::Condition>{self.0.keys()}
-    pub fn entries(&self)->impl Iterator<Item=(&K,bounds::Clause)>{self.0.iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
+    pub fn entries(&self)->impl DoubleEndedIterator<Item=(&K,bounds::Clause)>{self.0.iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
     pub fn into_entries(self)->impl Iterator<Item=(K,bounds::Clause)>{self.0.into_iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
     pub fn when(&self,key:&K)->bounds::Condition{self.0.get(key).cloned().unwrap_or_else(||bounds::Condition::constant(false))}
     fn restricted(&self,path:&bounds::Clause)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.assume(path,true));}result}

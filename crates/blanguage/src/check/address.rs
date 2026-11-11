@@ -231,7 +231,7 @@ impl Origin {
         }
         Some(regions)
     }
-    pub fn map_borrows(&self, map: impl Fn(&view::Borrow)->view::Borrow) -> Self {
+    pub fn map_borrows(&self, map: impl FnOnce(&view::Borrow)->view::Borrow) -> Self {
         let mut value=self.clone();
         match &mut value.root {
             Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} | Root::External(Identity::Storage(borrow)) => *borrow=map(borrow),
