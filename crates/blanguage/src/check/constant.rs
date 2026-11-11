@@ -266,7 +266,41 @@ enum FoldBinary {
     GreaterEqual,
 }
 
+#[repr(u32)]
+enum ScalarKind {
+    Unsigned,
+    Signed,
+    Float,
+    Boolean,
+}
+
+#[repr(C)]
+struct ScalarEncoding {
+    kind: ScalarKind,
+    width: u32,
+}
+
+impl From<Scalar> for ScalarEncoding {
+    fn from(scalar: Scalar) -> Self {
+        let kind = match scalar {
+            Scalar::Bool => ScalarKind::Boolean,
+            Scalar::F32 | Scalar::F64 => ScalarKind::Float,
+            Scalar::I8 | Scalar::I16 | Scalar::I32 | Scalar::I64 => ScalarKind::Signed,
+            Scalar::U8 | Scalar::U16 | Scalar::U32 | Scalar::U64 => ScalarKind::Unsigned,
+        };
+        Self { kind, width: scalar.bit_width() }
+    }
+}
+
+#[repr(C)]
+struct FoldedCast {
+    bits: Bits,
+    present: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.scalar_fold::cast"]
+    fn fold_cast(source: ScalarEncoding, target: ScalarEncoding, bits: Bits) -> FoldedCast;
     #[link_name = "bootstrap.scalar_fold::unary"]
     fn fold_unary(operation: FoldUnary, width: u32, bits: Bits) -> Bits;
     #[link_name = "bootstrap.scalar_fold::binary"]
@@ -293,39 +327,8 @@ pub(super) fn cast(from: Scalar, into: Scalar, bits: Bits) -> Option<Bits> {
     if from == into {
         return Some(into.truncate(bits));
     }
-    if into == Scalar::Bool {
-        return Some(Bits::from(match from {
-            Scalar::F32 => f32::from_bits(bits as u32) != 0.0,
-            Scalar::F64 => f64::from_bits(bits) != 0.0,
-            _ => bits != 0,
-        }));
-    }
-    if into.is_float() {
-        let value = match from {
-            Scalar::F32 => f32::from_bits(bits as u32) as f64,
-            Scalar::F64 => f64::from_bits(bits),
-            _ if from.is_signed() => from.signed(bits) as f64,
-            _ => bits as f64,
-        };
-        // Integer-to-f32 rounds directly to f32, avoiding a double rounding through f64.
-        return Some(if into == Scalar::F64 { value.to_bits() } else {
-            (match from {
-                Scalar::F32 | Scalar::F64 => value as f32,
-                _ if from.is_signed() => from.signed(bits) as f32,
-                _ => bits as f32,
-            }).to_bits() as Bits
-        });
-    }
-    if from.is_float() {
-        let value = if from == Scalar::F64 { f64::from_bits(bits) } else { f32::from_bits(bits as u32) as f64 };
-        let maximum = (1u128 << (into.size() * 8 - u32::from(into.is_signed()))) as f64;
-        let minimum = if into.is_signed() { -maximum } else { 0.0 };
-        if !(minimum..maximum).contains(&value) {
-            return None;
-        }
-        return Some(into.truncate(if into.is_signed() { value as i64 as Bits } else { value as Bits }));
-    }
-    Some(into.truncate(if from.is_signed() { from.signed(bits) as Bits } else { bits }))
+    let result = unsafe { fold_cast(from.into(), into.into(), bits) };
+    (result.present != 0).then_some(result.bits)
 }
 pub(super) fn divide(scalar: Scalar, a: Bits, divisor: NonZeroU64, remainder: bool) -> Bits {
     let b = divisor.get();

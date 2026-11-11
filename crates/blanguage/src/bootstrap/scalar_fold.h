@@ -16,3 +16,19 @@ extern "C" u64 binary(BinaryOperation operation, u32 width, u32 signed, u64 left
 extern "C" u64 float_binary(BinaryOperation operation, u32 width, u64 left, u64 right) on cpu;
 extern "C" u64 divide_unsigned(u64 left, u64 right, u32 remainder) on cpu requires nonzero(right);
 extern "C" i64 divide_signed(i64 left, i64 right, u32 remainder) on cpu requires nonzero(right);
+
+enum ScalarKind : u32 {
+    Unsigned = 0; Signed = 1; Float = 2; Boolean = 3;
+};
+
+struct ScalarEncoding {
+    ScalarKind kind;
+    u32 width;
+};
+
+struct FoldedCast {
+    u64 bits;
+    u32 present;
+};
+
+extern "C" FoldedCast cast(ScalarEncoding source, ScalarEncoding target, u64 bits) on cpu;

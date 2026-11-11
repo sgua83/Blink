@@ -144,11 +144,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/scalar_fold.b",
-      "sha256": "8675622c441d20e7531dc0ce1c53a2b4e14d1d3f970296056b954f2152cde226"
+      "sha256": "b0fd4cc9b0ca8da2833edcce38094fc18d6b6bb83c3ed1e7e80838a1ed552239"
     },
     {
       "path": "crates/blanguage/src/bootstrap/scalar_fold.h",
-      "sha256": "246a83a2f1373aaa14ad50c4791548e69b92cbad68c660941c4ab60b6d06302f"
+      "sha256": "6f3ad657ef6c1699243213130157dc8134daab21f3745485608b48936c6fcaf9"
     },
     {
       "path": "crates/blanguage/src/bootstrap/type_layout.b",
@@ -220,7 +220,7 @@
     },
     {
       "path": "crates/blanguage/src/check/constant.rs",
-      "sha256": "2c312863466a9f5538805ed297665e748a198375c737e7835dd53997f8df4c20"
+      "sha256": "11326d6dfa6bbd576cfc3df3343fe33989f00e4290c2fd114848e4dceac18ce9"
     },
     {
       "path": "crates/blanguage/src/check/contracts.rs",
