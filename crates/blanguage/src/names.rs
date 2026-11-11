@@ -78,7 +78,7 @@ pub(crate) fn function_pairs(
         .map(|(ordinal, function)| FunctionName { name: Bytes::new(function.name()), ordinal: ordinal as u64 })
         .collect::<Vec<_>>();
     // The two lists retain the source storage through this synchronous call.
-    // Declaration rows receive implementation indices. Implementation rows receive visibility.
+    // Each row receives the first matching index in the other list, or the length of that list.
     let mut pairs = vec![0; names.len()];
     unsafe {
         pair_functions(names.as_mut_ptr(), declarations.len() as u64, implementations.len() as u64, pairs.as_mut_ptr());

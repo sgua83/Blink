@@ -379,7 +379,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。类型、const与usize／isize别名保持原规范身份。普通.h／.b签名比较也直接使用World::type_reference：接口先经原泛型／const代入，再与实现消费同一类型身份；不另写按拼写递归的比较入口。标量同义名与同一名义引用的合法限定写法保持相同，真实类型、形状和函数值合同仍区分，记录引用不因签名比较提前展开布局。原TypeName已识别的纹理及加速结构直接交接资源引用身份，纹理格式标记不走普通名义类型解析；固定资源数组仍沿原array求值形状并递归同一资源身份，维度、格式和访问保持实际合同。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的非零输入前提与条件输出写在cfn签名后，使用argument0起的位置名；静态命名、外部和间接调用借用原合同的同一视图，实际已求值输入沿原Nonzero选择／prove满足前提，入口沿原resolve／assume取得事实；实际返回值与Proof／Position继续交接初始化。TypeName和CFunctionType的contracts向量保存同一份输入／输出元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量按原运算统一身份；浮点谓词已交接初始化，声明已按语义匹配。明确C ABI的B定义可形成直接原生入口；需执行上下文的回调与可保留代码／状态寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
 
-源码节选：`crates/blanguage/src/function_types.rs:101`。
+源码节选：`crates/blanguage/src/function_types.rs:99`。
 
 ```rust
     pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<Ty> {
@@ -550,7 +550,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 类型引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，validate_type_references沿函数签名、字段、变体、数组及dataset元素的同一引用闭包检查合法性。一次查询已经消费的同一具体类型不反复展开，未知、非法C签名或直接按值递归仍由原规则拒绝。stored_borrows与cleanup_requirements另按真实存储查询借用和静态F前提；签名或泛型实参中出现某种类型，不代表当前值存储了该类型的资源。
 
-源码节选：`crates/blanguage/src/frontend.rs:970`。
+源码节选：`crates/blanguage/src/frontend.rs:973`。
 
 ```rust
     pub(crate) fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
@@ -1003,7 +1003,7 @@ macro_rules! store {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:157`。
+源码节选：`crates/blanguage/src/frontend.rs:158`。
 
 ```rust
 
@@ -1040,7 +1040,7 @@ pub fn compile_entry_with_modules(
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:598`。
+源码节选：`crates/blanguage/src/frontend.rs:599`。
 
 ```rust
     if let Some(name) = import
@@ -1070,7 +1070,7 @@ native_function::Module由Builder、CheckedFunction和模块编译入口按值�
 
 源语言以返回类型、名称和参数定义函数。第一章的 `void seed`、`void scale` 与普通值函数共用定义与名称解析；`parallel` 显式表达数据域，`on cpu／gpu／compute` 声明可用目标。`execution.rs` 沿实际函数体和调用闭包推导 Invocation、Domain、Host 参与要求，它们是编译事实，不是用户另写的函数类别或运行时许可。B的名称查询以原NameResolution交接Missing、Unique与Ambiguous。bootstrap/names.b执行限定名、本模块优先、直接导入及可见性和歧义判定，普通值／记录／类型集合共用同一算法。Rust的names.rs只借用原声明键、所属模块和公开属性，持有本次唯一候选缓冲，并在同步调用内复制实际命中的键作为原结果；无需为每个候选分配名称或另建目录。原构建依赖继续记录本次查询及其结果。实际普通调用对歧义报告错误，内建选择只接受Missing；记录构造等存在性分类直接判断非Missing，不把unique投影失败当作无声明；预分析保留词法上下文职责，原build中普通函数及记录名的引用摘要同样区分缺失与歧义，不改变对象或执行ABI。
 
-接口与实现的函数配对沿原名称字节和声明位置由B一次完成。接口行交出首个同名实现的位置，实现行交出是否在接口中声明。原装入器按声明顺序消费配对，核对函数体、签名和注册诊断，并在实际声明上保存可见性。已编译接口继续提供自己的公开声明和参与合同。
+B按原名称字节对接口与实现一次配对，并保留两边的首个同名位置。装入器按声明顺序核对函数体和签名，从配对取得可见性，并把接口节点交给同一函数定义。普通函数和泛型实例通过该节点核对实际类型。已编译接口继续提供自己的公开声明和参与合同。
 
 调用选择沿原World／Declarations取得局部、本模块与唯一可见声明，既有owned_record_call及实际泛型实例继续确定原构造和函数。resize、take_last、own、into_inner的资源行为由原builtin_returned在普通调用选择之后处理；Scope::call的类型推导及原写效果／长度推导保持同一目标，普通同名函数不制造取尾输出或dataset增长关系。资源初始化、移动、F和Frame最后释放仍由原所有者承担，不新建符号表、试调用或第二份状态。多可见候选被当作无声明的独立缺口仍沿Issues C-053，不把本轮普通绑定优先写成歧义已修复。
 

@@ -12,14 +12,12 @@ fn ordinary(ty: &Ty, syntax: &TypeName, source: &Source, span: Span) -> crate::R
     Ok(())
 }
 impl World {
-    pub(crate) fn check_interface_types(&self, definition: &crate::Definition, actual: &crate::syntax::Function,
+    pub(crate) fn check_interface_types(&self, definition: &crate::Definition,
         bindings: &std::sync::Arc<crate::generics::Bindings>,
     ) -> crate::Result<()> {
-        if !definition.public || definition.compiled.is_some() { return Ok(()); }
+        let Some(declaration) = &definition.interface_declaration else { return Ok(()); };
+        let actual = &definition.function;
         let interface = &self.interfaces[&definition.module];
-        let Some(declaration) = interface.functions().iter().find(|function| {
-            function.name() == actual.name() && function.kind() != FunctionKind::Constant && function.external().is_none()
-        }) else { return Ok(()); };
         let bind = |name: &crate::syntax::Type, source: &Source, span: Span| -> crate::Result<TypeName> {
             let name=bindings.type_name(self,name,(source,&definition.module,&definition.imports),span)?;
             self.type_reference(&name, source, span, &definition.module, &definition.imports)

@@ -116,12 +116,12 @@ extern "C" void pair_functions(address names, u64 declarations, u64 implementati
         FunctionName initial = unsafe_position<FunctionName>(row_at<FunctionName>(names, first));
         u64 end = first;
         u64 earliest = count;
-        u64 public = 0u64;
+        u64 declaration = declarations;
         while (end < count) {
             FunctionName current = unsafe_position<FunctionName>(row_at<FunctionName>(names, end));
             if (!equal(initial.name, current.name)) { break; }
             if (current.ordinal < declarations) {
-                public = 1u64;
+                if (current.ordinal < declaration) { declaration = current.ordinal; }
             } else if (current.ordinal < earliest) {
                 earliest = current.ordinal;
             }
@@ -130,7 +130,7 @@ extern "C" void pair_functions(address names, u64 declarations, u64 implementati
         u64 at = first;
         while (at < end) {
             u64 ordinal = unsafe_position<FunctionName>(row_at<FunctionName>(names, at)).ordinal;
-            u64 result = public;
+            u64 result = declaration;
             if (ordinal < declarations) { result = earliest - declarations; }
             unsafe_position<u64>(row_at<u64>(output, ordinal)) = result;
             at += 1u64;

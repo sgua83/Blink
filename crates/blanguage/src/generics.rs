@@ -189,7 +189,7 @@ pub(crate) fn instantiate(
     names.extend(values.iter().map(u32::to_string));
     let instance=Instance{name:key(base,&names),definition:definition.clone(),bindings:std::sync::Arc::new(bindings)};
     if function.c_abi(){crate::check::external::check_declaration(world,&instance)?;}
-    world.check_interface_types(definition,&definition.function,&instance.bindings)?;
+    world.check_interface_types(definition,&instance.bindings)?;
     Ok(instance)
 }
 // Retain the original static-use rules while removing the AST writeback.

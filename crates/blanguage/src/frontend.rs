@@ -42,6 +42,7 @@ pub(crate) struct EvaluatedConstant {
 #[derive(Clone)]
 pub(crate) struct Definition {
     pub(crate) function: crate::syntax::Function,
+    pub(crate) interface_declaration: Option<crate::syntax::Function>,
     pub(crate) syntax_origin: DefinitionSyntax,
     pub(crate) execution: execution::Requirement,
     pub(crate) source: Source,
@@ -543,7 +544,7 @@ pub(crate) fn read_world(
     for definition in world.functions.values().filter(|definition| {
         definition.function.types().is_empty() && definition.function.values().is_empty()
     }) {
-        world.check_interface_types(definition, &definition.function, &Arc::new(generics::Bindings::default()))?;
+        world.check_interface_types(definition, &Arc::new(generics::Bindings::default()))?;
     }
     validate_types(&world)?;
     for (key,definition) in world.functions.iter().filter(|(_,definition)|definition.function.c_abi()) {
@@ -777,13 +778,14 @@ pub(crate) fn load(
     }
     let declaration_count = declarations.len();
     let pairs = pairs.as_deref();
-    for (f, source, public) in declarations.into_iter()
+    for (f, source, public, interface_declaration) in declarations.iter()
         .filter(|f| f.kind() == FunctionKind::Constant || f.external().is_some() || compiled.is_some())
-        .map(|f| (f, &interface.source, true))
+        .map(|f| (f, &interface.source, true, None))
         .chain(implementation.iter().zip(implementations).flat_map(|(module, functions)| {
+            let declarations = &declarations;
             functions.into_iter().enumerate().map(move |(index, function)| {
-                let public = pairs.is_some_and(|pairs| pairs[declaration_count + index] != 0);
-                (function, &module.source, public)
+                let declaration = pairs.and_then(|pairs| declarations.get(pairs[declaration_count + index] as usize));
+                (function, &module.source, declaration.is_some(), declaration)
             })
         }))
     {
@@ -799,6 +801,7 @@ pub(crate) fn load(
             Arc::new(Definition {
                 constant: OnceLock::new(),
                 function: f.clone(),
+                interface_declaration,
                 syntax_origin: if compiled.is_some() { DefinitionSyntax::CompiledInterface } else { DefinitionSyntax::Source },
                 execution: if let Some(compiled) = compiled {
                     compiled
