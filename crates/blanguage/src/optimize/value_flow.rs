@@ -296,6 +296,9 @@ impl Values {
                     let mut n = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
                     let mut branches = y.block(yes, registers, reuses);
                     branches.join(n.block(no, registers, reuses));
+                    // 已复用的 SSA 定义也可能由外层受原分支条件控制的清理消费。
+                    self.aliases.extend(y.aliases);
+                    self.aliases.extend(n.aliases);
                     // 已退出的分支不流入普通继续点；各出口只交付共同的同一 SSA 值。
                     continuing = self.resume(&mut flow, branches);
                 }
@@ -329,6 +332,7 @@ impl Values {
                         // 已写槽仍保留在原循环携带状态，不把某次迭代的定义交给循环后。
                         merge(&mut loop_flow.exits, body_flow.exits);
                     }
+                    self.aliases.extend(cycle.aliases);
                     continuing = self.resume(&mut flow, loop_flow);
                 }
                 InstKind::Call(call) => {
