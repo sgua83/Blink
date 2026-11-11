@@ -4298,6 +4298,9 @@ impl Builder<'_> {
     ) -> Proof {
         let (element, count) = array.indexed_element().unwrap();
         let width = element.components.len();
+        if width == 0 {
+            return Proof::default();
+        }
         let choices: Vec<_> = (0..count as usize)
             .map(|i| ((i * width..(i + 1) * width).collect(), Clause::selection(index, i)))
             .collect();
