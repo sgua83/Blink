@@ -165,7 +165,7 @@ println(info.number_of_processors);
 
 ## blink.windows.thread
 
-本模块只有`.h`，四个入口直接调用Windows x64 Kernel32，不通过Rust转发或任务服务；与共用等待／关闭一起使用时显式导入`blink.windows.thread`和`blink.windows.system`。
+本模块只有`.h`，各入口直接调用Windows x64 Kernel32，不通过Rust转发或任务服务；与共用等待／关闭一起使用时显式导入`blink.windows.thread`和`blink.windows.system`。
 
 | 入口 | 原生输入、返回及输出 |
 |---|---|
@@ -179,6 +179,12 @@ println(info.number_of_processors);
 对线程handle实际WaitForSingleObject返回WAIT_OBJECT_0后，才按已结束工作消费原存储和退出码；GetExitCodeThread失败时输出不可读，259及大于i32上限的值在真实结束后均保持实际退出码。随后消费原CloseHandle状态，一次关闭此拥有者的句柄。该直接系统ABI可用于具有明确存储与代码寿命的B C入口，不代表普通B任务的类型化输入／结果、异步借用、取消或编译器并行算法已经迁移；缺口沿原C-020.4.1及C-032。
 
 原生合同：[CreateThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createthread)、[GetCurrentThreadId](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadid)、[GetThreadId](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadid)、[GetExitCodeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodethread)。
+
+### Windows工作线程处理器组绑定
+
+`GroupAffinity`使用Windows x64的`GROUP_AFFINITY`布局，大小16、对齐8。`usize mask`的各位对应组内的逻辑处理器号，`u16 group`指定处理器组，`array<u16,3> reserved`填零。编译工作线程由实际调用者从已有许可选定CPU，设置该组及对应的单一位。
+
+`GetCurrentThread()`返回指代调用线程的伪句柄，按使用它的线程解释，无需关闭。`SetThreadGroupAffinity(handle thread,read GroupAffinity affinity,address previous)`要求句柄具有`THREAD_SET_INFORMATION`权限，直接调用Kernel32设置线程在指定组内的处理器亲和性。previous为零时省略旧设置，非零时指向同步调用期间有效、可写且对齐的`GroupAffinity`存储，成功后读取。原i32 BOOL为零表示失败，立即调用`blink.windows.error::GetLastError`读取原错误。实际线程的执行和结束沿已有线程句柄交接。[当前线程伪句柄](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthread)、[亲和性布局](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-group_affinity)、[处理器组绑定](https://learn.microsoft.com/en-us/windows/win32/api/processtopologyapi/nf-processtopologyapi-setthreadgroupaffinity)。
 
 ## blink.windows.time
 

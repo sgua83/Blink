@@ -302,7 +302,9 @@ Windows x64独占SRWLock由同一blink.windows.system纯.h交接，实际记录�
 
 blink.windows.thread直接以CreateThread的原六参数ABI交接address、64位usize、非零cfn<u32,address>、address、u32和可空thread_id地址，返回原handle；B extern C工作函数以c_function取得原入口。线程可在创建返回前开始，返回句柄不证明完成，原parameter存储和入口代码持续到实际线程结束，不能伪装成创建函数的同步typed借用。GetCurrentThreadId读取原当前u32身份，按memory(read)保持B存储；GetThreadId保留原u32结果及失败OS错误；GetExitCodeThread仅在BOOL非零初始化write u32。
 
-调用者沿system原等待状态确认线程结束后消费真实结果和完整u32退出码；259及大于i32上限的退出码不被当成未结束或截断，关闭不终止工作。四声明仅提供真实系统ABI，普通B任务拥有／结果、跨任务借用和取消仍为原C-020.4.1缺口，编译器并行职责采用仍沿C-032。完整接口、外部存储寿命及平台合同见[线程标准库](../library/README.md#blinkwindowsthread)。
+调用者沿system原等待状态确认线程结束后消费真实结果和完整u32退出码；259及大于i32上限的退出码不被当成未结束或截断，关闭不终止工作。这些声明直接交接真实系统ABI，普通B任务拥有／结果、跨任务借用和取消仍为原C-020.4.1缺口，编译器并行职责采用仍沿C-032。完整接口、外部存储寿命及平台合同见[线程标准库](../library/README.md#blinkwindowsthread)。
+
+GetCurrentThread交回只指代使用线程的伪句柄。SetThreadGroupAffinity以read GroupAffinity交接原记录，Windows x64大小16、对齐8，usize掩码、u16组号及三个保留u16的偏移为0、8、10。可选previous为零或指向由调用者提供的实际可写记录，原BOOL非零后读取，失败保留Win32错误。CPU选择和实际线程的结束分别沿原许可和真实等待交接。完整合同见[线程标准库](../library/README.md#windows工作线程处理器组绑定)。
 
 ## Windows子进程的原生位置与完成
 
