@@ -267,6 +267,9 @@ impl Builder<'_> {
             );
         }
         self.observe_bounds(&index);
+        if element.components.is_empty() {
+            return Ok(place.project(element, &[]));
+        }
         if let Some(bits) = &index.constant {
             let first = bits[0] as usize * element.components.len();
             let components: Vec<_> = (first..first + element.components.len()).collect();
