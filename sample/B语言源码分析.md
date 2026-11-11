@@ -257,7 +257,7 @@ pub struct Ty {
 }
 ```
 
-`size` 是类型内容占用，`align` 是对齐，`components` 把值分解为标量及偏移，`fields` 保留记录字段。`view` 与 `array` 分别保存已有引用元素和内联数组布局；`dataset`保存已绑定的TypeName元素引用，描述值仍为8字节、对齐4。Node记录通过dataset<Node>拥有子节点时，Node布局不会继续内联另一份Node；真正访问元素才由原World解析同一名义类型。直接按值内联自身仍没有有限布局。
+`size` 是类型内容占用，`align` 是对齐，`components` 把值分解为标量及偏移，`fields` 保留记录字段。已绑定字段的大小与对齐按声明顺序交给B的`bootstrap/record_layout.b`，计算字段偏移、结束字节和自然记录大小。显式stride沿原const绑定求值，B根据自然大小与对齐判定，最终字段和步长由同一Ty交给原生代码和布局查询。`view` 与 `array` 分别保存已有引用元素和内联数组布局；`dataset`保存已绑定的TypeName元素引用，描述值仍为8字节、对齐4。Node记录通过dataset<Node>拥有子节点时，Node布局不会继续内联另一份Node；真正访问元素才由原World解析同一名义类型。直接按值内联自身仍没有有限布局。
 
 B源语言通过size_of<T>()与align_of<T>()读取同一Ty的大小和对齐，结果是usize编译期常量。原expected_storage完成具体类型及dataset包装，泛型／const闭合后仍沿原类型服务；查询不构造对象、不执行owned释放，也不生成运行时节点或布局表。dataset查询其描述值，view查询其引用值，owned保持载荷布局，实际存储仍归Frame／blcompute。float3的大小12、对齐16与array<float3,2>的大小32各保留原语义。
 
@@ -535,7 +535,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 类型引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，validate_type_references沿函数签名、字段、变体、数组及dataset元素的同一引用闭包检查合法性。一次查询已经消费的同一具体类型不反复展开，未知、非法C签名或直接按值递归仍由原规则拒绝。stored_borrows与cleanup_requirements另按真实存储查询借用和静态F前提；签名或泛型实参中出现某种类型，不代表当前值存储了该类型的资源。
 
-源码节选：`crates/blanguage/src/frontend.rs:953`。
+源码节选：`crates/blanguage/src/frontend.rs:969`。
 
 ```rust
     pub(crate) fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
@@ -988,7 +988,7 @@ macro_rules! store {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:131`。
+源码节选：`crates/blanguage/src/frontend.rs:147`。
 
 ```rust
 
@@ -1025,7 +1025,7 @@ pub fn compile_entry_with_modules(
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:573`。
+源码节选：`crates/blanguage/src/frontend.rs:589`。
 
 ```rust
     if let Some(name) = import
@@ -1138,7 +1138,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 源码生产者的build.rs默认调用已安装独立稳定发行的bc；后续代通过BLINK_BOOTSTRAP_SDK明确选择独立上一代SDK，原内部研发资料用-BootstrapSdk只向本轮Cargo交接实际输入，不改系统安装。选定的bc分别生成B词法、泛型前瞻与链接字符串解码、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子VERSION的原共享读句柄保持到全部编译与归档结束，新工具写工程target。发行者把同次构建的静态库交给源码SDK，并在包Cargo中声明build-sdk.rs作为消费入口；消费者持有本包VERSION读取同源固定库，写入自己的原OUT_DIR后链接，输入缺失直接交回I/O错误，不重新调用种子。compiler关闭时不读取引导库或生成编译器身份；installed不决定生产／消费角色。两个入口共用同一身份实现，以实际原生库、源码、有效Cargo配置及Rust工具链决定身份。编译器运行时直接调用已编入的B代码，原C ABI与运行资源职责保持。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。
 
-词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取、独立普通应用PE格式布局与字节写出、已选COFF节的分组／对齐／符号／栈／重定位地址及载荷组合，源语法节点／子项／文字的存储、增长与最后释放，以及名称与可见性查询由B接管；其余对象语义／合同及栈记录生成、独立链接的符号选择／合同检查、共享机器重定位及宿主／执行运行库／DLL路径、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取、独立普通应用PE格式布局与字节写出、已选COFF节的分组／对齐／符号／栈／重定位地址及载荷组合，源语法节点／子项／文字的存储、增长与最后释放，以及名称与可见性查询、记录字节布局由B接管；其余对象语义／合同及栈记录生成、独立链接的符号选择／合同检查、共享机器重定位及宿主／执行运行库／DLL路径、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 语法存储按现行职责由B模块持有，原解析、声明、实例和检查消费者直接读取同一存储。B模块唯一持有源节点、模块内子项索引和自有文字，Source借用保留原字节范围，增长后按索引重新取得视图。声明表和各实例共享只读源定义；实例保留原instantiate已经产生的类型／const绑定，检查与IR生成按实际绑定解释源引用，删除Definition／Function深克隆及逐节点写回。必要的静态使用检查、作用域、错误位置及来源保持，实例实际代码／IR仍各自拥有。TypeName.canonical及规范化OutputConstant的Ty、bits、GeneratedOrigin属于原语义合同／IR，runtime codec继续恢复原语义值和编码，不附带编译器／种子依赖。只有真实新语法才写B结果；只为调用检查入口而构造的辅助Function／Return树退出。阶段名称和for范围沿原输入根、同一实例的u32 const绑定及模块const解释，直接交接原Root和名称来源；共享源节点不改写，运行期范围与未知名称保持原诊断。节点编号不代替结构比较，Expr的Span不参与原相等规则。语法、实例绑定与生成／语义结果各沿实际最后消费者释放，完整交接以原台账状态为准。
 
@@ -5033,6 +5033,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 | `crates/blanguage/src/main.rs` | 命令行怎样选择检查、代码导出与目标文件编译 |
 | `lib.rs`、`frontend.rs` | 公开入口及源码装载、接口核对、具体入口选择与 Compilation |
 | `bootstrap/names.h`、`bootstrap/names.b`、`names.rs` | 模块名称与可见性查询；借用原声明存储，交接缺失、唯一完整名或歧义 |
+| `bootstrap/record_layout.h`、`bootstrap/record_layout.b` | 记录字段偏移、自然大小与显式stride |
 | `bootstrap/lexer.h／.b`、`bootstrap/parser.h／.b`、`lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |
 | `generics.rs`、`value_parameters.rs`、`type_sets.rs` | 具体类型、静态值与类型集合怎样形成实例 |
 | `check.rs` | 参数、资源、函数、表达式与 parallel 怎样形成 IR |

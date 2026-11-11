@@ -7,6 +7,22 @@ use std::{
     sync::Arc,
 };
 
+#[repr(C)]
+struct FieldPlacement {
+    offset: u64,
+    end: u64,
+    alignment: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.record_layout::place"]
+    fn place_field(size: u32, alignment: u32, field_size: u32, field_alignment: u32) -> FieldPlacement;
+    #[link_name = "bootstrap.record_layout::natural_size"]
+    fn natural_record_size(size: u32, alignment: u32) -> u64;
+    #[link_name = "bootstrap.record_layout::accepts_stride"]
+    fn accepts_record_stride(size: u32, alignment: u32, stride: u32) -> bool;
+}
+
 #[derive(Clone)]
 pub(crate) enum DefinitionSyntax { Source, CompiledInterface }
 
@@ -1352,19 +1368,19 @@ impl World {
                 let reference=self.type_reference(&element,s,field.span(),m,i)?;
                 ir::Ty::owned_dataset(reference,self.shape(&field_type.count,s,field.span(),m,i)?)
             } else { self.ty_inner(&field_type,s,field.span(),m,i,stack)? };
-            let offset = (ty.size as u64).div_ceil(f.align as u64) * f.align as u64;
-            let end = offset + f.size as u64;
-            if end > u32::MAX as u64 {
+            // Bound field types carry nonzero alignment.
+            let placement = unsafe { place_field(ty.size, ty.align, f.size, f.align) };
+            let Ok(size) = u32::try_from(placement.end) else {
                 return s.fail(field.span(), "B238", "记录布局超过 u32 字节地址范围");
-            }
-            let offset = offset as u32;
+            };
+            let offset = placement.offset as u32;
             ty.components
                 .extend(f.components.iter().map(|(s, o)| (*s, o + offset)));
-            ty.size = end as u32;
-            ty.align = ty.align.max(f.align);
+            ty.size = size;
+            ty.align = placement.alignment;
             ty.fields.push((field.name().to_owned(), offset, Box::new(f)));
         }
-        let size = (ty.size as u64).div_ceil(ty.align as u64) * ty.align as u64;
+        let size = unsafe { natural_record_size(ty.size, ty.align) };
         ty.size = u32::try_from(size).map_err(|_| Diagnostic {
             source: source.clone(),
             span,
@@ -1373,7 +1389,7 @@ impl World {
         })?;
         if let Some(shape) = &record.stride() {
             let stride=self.source_shape(shape,&bindings,s,record.span(),m,i)?;
-            if stride < ty.size || stride % ty.align != 0 {
+            if !unsafe { accepts_record_stride(ty.size, ty.align, stride) } {
                 return s.fail(
                     record.span(),
                     "B241",
