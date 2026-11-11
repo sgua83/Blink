@@ -550,7 +550,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 类型引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，validate_type_references沿函数签名、字段、变体、数组及dataset元素的同一引用闭包检查合法性。一次查询已经消费的同一具体类型不反复展开，未知、非法C签名或直接按值递归仍由原规则拒绝。stored_borrows与cleanup_requirements另按真实存储查询借用和静态F前提；签名或泛型实参中出现某种类型，不代表当前值存储了该类型的资源。
 
-源码节选：`crates/blanguage/src/frontend.rs:983`。
+源码节选：`crates/blanguage/src/frontend.rs:972`。
 
 ```rust
     pub(crate) fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
@@ -1003,7 +1003,7 @@ macro_rules! store {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:161`。
+源码节选：`crates/blanguage/src/frontend.rs:157`。
 
 ```rust
 
@@ -1040,7 +1040,7 @@ pub fn compile_entry_with_modules(
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:602`。
+源码节选：`crates/blanguage/src/frontend.rs:598`。
 
 ```rust
     if let Some(name) = import
@@ -1060,7 +1060,7 @@ A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布�
 
 **自己走一遍。** A和B都导入C会复制一份C吗？不会，同一来源表保持模块身份。若记录按值包含自身，为什么仍须拒绝？那是无法形成有限布局的类型递归，归类型布局所有者处理。
 
-源码捕获、编译上下文与产物各自有唯一所有者。Compiler及其clone共享活动CPU预算，独立实例／函数／阶段按真实依赖并行；build_graph固定本次B源码输入。入口映像与COFF按声明及实现依赖复用；无关实现变化保持产物，实际依赖变化重新编译。缓存命中不证明冷编译成本降低。
+源码捕获、编译上下文与产物各自有唯一所有者。Compiler及其clone共享活动CPU预算，独立实例／函数／阶段按真实依赖并行；build_graph固定本次B源码输入。B沿接口和可选实现的原语法借用名称字节，按区分大小写的字节顺序归并直接导入。构建图把该列表和源码对一同固定，装入器与本模块各声明共享同一结果。单独装入沿同一B算法产生直接导入。已编译对象继续从自己的公开接口交接导入，实际文件读取、导入路径、声明装入及依赖身份由原入口负责。入口映像与COFF按声明及实现依赖复用；无关实现变化保持产物，实际依赖变化重新编译。缓存命中不证明冷编译成本降低。
 
 native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，唯一持有同一编译的类型／program目录；原finalize同时处理这些program，经Finalized把目录移交应用／模块产物。application::Context只缓存本函数Frame参数寄存器；普通函数独立形成Context，调用者留在原Builder，declaration、domain与CheckedFunction返回不再搬运它。真实Frame、设备与完成仍归blcompute；已链接范围沿原目录和RangeWork实际入口取得私有Frame；源码闭合SDK从同一Finalized取得资源包，由原ProgramImage、缓存及算法DLL交接到一次代码绑定，实例继续复用原Frame。源码完整交付、已编译obj／lib输入及原错误消费分别沿C-027.35.4.2.2.3.2.2.2.2.1／.2与C-020.5.2.4.2.2.2.2。
 
@@ -1153,7 +1153,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 源码生产者的build.rs默认调用已安装独立稳定发行的bc；后续代通过BLINK_BOOTSTRAP_SDK明确选择独立上一代SDK，原内部研发资料用-BootstrapSdk只向本轮Cargo交接实际输入，不改系统安装。选定的bc分别生成B词法、泛型前瞻与链接字符串解码、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成、语法存储、名称解析、类型布局和标量常量运算及数值转换等引导模块的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子VERSION的原共享读句柄保持到全部编译与归档结束，新工具写工程target。发行者把同次构建的静态库交给源码SDK，并在包Cargo中声明build-sdk.rs作为消费入口；消费者持有本包VERSION读取同源固定库，写入自己的原OUT_DIR后链接，输入缺失直接交回I/O错误，不重新调用种子。compiler关闭时不读取引导库或生成编译器身份；installed不决定生产／消费角色。两个入口共用同一身份实现，以实际原生库、源码、有效Cargo配置及Rust工具链决定身份。编译器运行时直接调用已编入的B代码，原C ABI与运行资源职责保持。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。
 
-词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取、独立普通应用PE格式布局与字节写出、已选COFF节的分组／对齐／符号／栈／重定位地址及载荷组合，源语法节点／子项／文字的存储、增长与最后释放，以及名称与可见性查询、记录、固定数组及带载荷变体与result的字节布局、有限类型与const实参组合和已知标量的常量运算及数值转换由B接管；其余对象语义／合同及栈记录生成、独立链接的符号选择／合同检查、共享机器重定位及宿主／执行运行库／DLL路径、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取、独立普通应用PE格式布局与字节写出、已选COFF节的分组／对齐／符号／栈／重定位地址及载荷组合，源语法节点／子项／文字的存储、增长与最后释放，以及直接导入归并、名称与可见性查询、记录、固定数组及带载荷变体与result的字节布局、有限类型与const实参组合和已知标量的常量运算及数值转换由B接管；其余对象语义／合同及栈记录生成、独立链接的符号选择／合同检查、共享机器重定位及宿主／执行运行库／DLL路径、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 语法存储按现行职责由B模块持有，原解析、声明、实例和检查消费者直接读取同一存储。B模块唯一持有源节点、模块内子项索引和自有文字，Source借用保留原字节范围，增长后按索引重新取得视图。声明表和各实例共享只读源定义；实例保留原instantiate已经产生的类型／const绑定，检查与IR生成按实际绑定解释源引用，删除Definition／Function深克隆及逐节点写回。必要的静态使用检查、作用域、错误位置及来源保持，实例实际代码／IR仍各自拥有。TypeName.canonical及规范化OutputConstant的Ty、bits、GeneratedOrigin属于原语义合同／IR，runtime codec继续恢复原语义值和编码，不附带编译器／种子依赖。只有真实新语法才写B结果；只为调用检查入口而构造的辅助Function／Return树退出。阶段名称和for范围沿原输入根、同一实例的u32 const绑定及模块const解释，直接交接原Root和名称来源；共享源节点不改写，运行期范围与未知名称保持原诊断。节点编号不代替结构比较，Expr的Span不参与原相等规则。语法、实例绑定与生成／语义结果各沿实际最后消费者释放，完整交接以原台账状态为准。
 
@@ -5055,7 +5055,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 | `bootstrap/pe.h／.b`、`linker/pe.rs` | 已选对象怎样直接生成PE布局、导入与基址重定位目录，机器补丁如何复用原所有者 |
 | `crates/blanguage/src/main.rs` | 命令行怎样选择检查、代码导出与目标文件编译 |
 | `lib.rs`、`frontend.rs` | 公开入口及源码装载、接口核对、具体入口选择与 Compilation |
-| `bootstrap/names.h`、`bootstrap/names.b`、`names.rs` | 模块名称与可见性查询；借用原声明存储，交接缺失、唯一完整名或歧义 |
+| `bootstrap/names.h`、`bootstrap/names.b`、`names.rs` | 直接导入的排序去重，以及名称与可见性查询；借用原声明存储，交接缺失、唯一完整名或歧义 |
 | `bootstrap/type_layout.h`、`bootstrap/type_layout.b` | 记录字段偏移、自然大小与显式stride，固定数组步长和大小，以及带载荷变体和result的对齐与大小 |
 | `bootstrap/scalar_fold.h／.b`、`check/constant.rs` | 已选整数／浮点操作、数值转换、位宽与位模式怎样交给原Constant与Proof消费者 |
 | `bootstrap/lexer.h／.b`、`bootstrap/parser.h／.b`、`lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |

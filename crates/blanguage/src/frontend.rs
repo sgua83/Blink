@@ -46,7 +46,7 @@ pub(crate) struct Definition {
     pub(crate) execution: execution::Requirement,
     pub(crate) source: Source,
     pub(crate) module: String,
-    pub(crate) imports: Vec<String>,
+    pub(crate) imports: Arc<[String]>,
     pub(crate) public: bool,
     pub(crate) compiled: Option<Arc<BTreeMap<String, Vec<u8>>>>,
     pub(crate) constant: OnceLock<Arc<EvaluatedConstant>>,
@@ -87,9 +87,9 @@ pub struct Compilation {
 pub(crate) struct Declarations {
     pub(crate) sources: BTreeMap<String, Source>,
     pub(crate) interfaces: BTreeMap<String, Arc<crate::syntax::Module>>,
-    pub(crate) records: BTreeMap<String, (crate::syntax::Record, Source, String, Vec<String>)>,
+    pub(crate) records: BTreeMap<String, (crate::syntax::Record, Source, String, Arc<[String]>)>,
     pub(crate) functions: BTreeMap<String, Arc<Definition>>,
-    pub(crate) type_sets: BTreeMap<String, (crate::syntax::TypeSet, Source, String, Vec<String>)>,
+    pub(crate) type_sets: BTreeMap<String, (crate::syntax::TypeSet, Source, String, Arc<[String]>)>,
 }
 pub(crate) struct World {
     pub(crate) declarations: Arc<Declarations>,
@@ -116,7 +116,7 @@ impl World {
         }
         self.declarations.resolve(name, module, imports, functions)
     }
-    pub(crate) fn record(&self, key: &str) -> &(crate::syntax::Record, Source, String, Vec<String>) {
+    pub(crate) fn record(&self, key: &str) -> &(crate::syntax::Record, Source, String, Arc<[String]>) {
         if let Some(inputs) = &self.build_declarations {
             inputs.borrow_mut().insert(build::Declaration::Record(key.into()));
         }
@@ -137,10 +137,6 @@ pub(crate) fn read(path: &Path) -> Result<Source> {
         path: path.into(),
         text: text.into(),
     })
-}
-pub(crate) fn parse_input(path: &Path, inputs: Option<&build::Inputs>) -> Result<Arc<crate::syntax::Module>> {
-    if let Some(inputs) = inputs { inputs.read(path) }
-    else { parser::parse(read(path)?).map(Arc::new) }
 }
 pub(crate) fn contract_signature(f: &Function) -> BTreeSet<(ContractKind, &ContractPredicate)> {
     f.contracts.iter().map(|c| (c.kind, &c.predicate)).collect()
@@ -605,37 +601,32 @@ pub(crate) fn load(
         return Ok(name.to_owned());
     }
     let compiled = imported.and_then(|imports| import.and_then(|name| imports.modules.get(name)));
-    let interface = if let Some(compiled) = compiled {
-        if let Some(inputs) = inputs { inputs.interface(import.unwrap(), &compiled.header)? }
+    let (interface, implementation, captured_imports) = if let Some(compiled) = compiled {
+        let name = import.unwrap();
+        let interface = if let Some(inputs) = inputs { inputs.interface(name, &compiled.header)? }
         else { Arc::new(parser::parse(Source {
-            path: PathBuf::from(format!("<{}>.h", import.unwrap())),
+            path: PathBuf::from(format!("<{name}>.h")),
             text: compiled.header.clone().into(),
-        })?) }
-    } else {
-        let mut header_path = path.to_path_buf();
-        header_path.set_extension("h");
-        parse_input(&header_path, inputs)?
-    };
-    let mut implementation_path = path.to_path_buf();
-    implementation_path.set_extension("b");
-    let present = if compiled.is_some() {
-        false
+        })?) };
+        (interface, None, None)
     } else if let Some(inputs) = inputs {
-        inputs.present(&implementation_path)
+        let (interface, implementation, imports) = inputs.source(path)?;
+        (interface, implementation, Some(imports))
     } else {
-        implementation_path
-            .try_exists()
-            .map_err(|error| Diagnostic {
-                source: interface.source.clone(),
-                span: Span::default(),
-                code: "B020",
-                message: format!("无法访问实现源 {}：{error}", implementation_path.display()),
-            })?
-    };
-    let implementation = if present {
-        Some(parse_input(&implementation_path, inputs)?)
-    } else {
-        None
+        let interface = Arc::new(parser::parse(read(&path.with_extension("h"))?)?);
+        let implementation_path = path.with_extension("b");
+        let present = implementation_path.try_exists().map_err(|error| Diagnostic {
+            source: interface.source.clone(),
+            span: Span::default(),
+            code: "B020",
+            message: format!("无法访问实现源 {}：{error}", implementation_path.display()),
+        })?;
+        let implementation = if present {
+            Some(Arc::new(parser::parse(read(&implementation_path)?)?))
+        } else {
+            None
+        };
+        (interface, implementation, None)
     };
     if let Some(module) = &implementation
         && module.name() != interface.name()
@@ -655,13 +646,11 @@ pub(crate) fn load(
     world
         .interfaces
         .insert(name.clone(), Arc::clone(&interface));
-    let imports: Vec<_> = interface.imports()
-        .chain(implementation.iter().flat_map(|module| module.imports()))
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    for import in &imports {
+    let imports = match captured_imports {
+        Some(imports) => imports,
+        None => crate::names::module_imports(&interface, implementation.as_deref()),
+    };
+    for import in imports.iter() {
         let import_path: PathBuf = root.join(import.replace('.', "/")).with_extension("b");
         let actual = load(
             &import_path,

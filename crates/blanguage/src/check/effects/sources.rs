@@ -70,7 +70,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         if let Some(key) = self.world.resolve(name, self.lexical.module(), self.lexical.imports(), true).unique() {
             let definition = &self.world.functions[&key];
             if definition.function.kind() == FunctionKind::Constant {
-                let context = (&definition.source, definition.module.as_str(), definition.imports.as_slice());
+                let context = (&definition.source, definition.module.as_str(), definition.imports.as_ref());
                 let span = definition.function.span();
                 let bindings = Arc::new(crate::generics::Bindings::default());
                 let ty = bindings.type_name(self.world, &definition.function.result(), context, span)?;
@@ -151,7 +151,7 @@ impl<'b, 'w> Scope<'b, 'w> {
                 }).collect::<Vec<_>>();
                 let instance = generics::specialize(self.world, &key, &actuals, explicit, (self.lexical.source(), self.lexical.module(), self.lexical.imports()), span)?;
                 let definition=&instance.definition;
-                let context=(&definition.source,definition.module.as_str(),definition.imports.as_slice());
+                let context=(&definition.source,definition.module.as_str(),definition.imports.as_ref());
                 let result=instance.bindings.type_name(self.world,&definition.function.result(),context,span)?;
                 if result.name=="void"||result.is_never(){return Ok(None);}
                 return self.declared_type(&result,context,span).map(Some);

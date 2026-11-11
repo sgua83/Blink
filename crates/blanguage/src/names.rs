@@ -16,6 +16,8 @@ struct Hit { name:Bytes, owner:Bytes, public:u64, present:u64 }
 struct Resolution { name:Bytes, count:u64 }
 pub(crate) struct Declaration<'a> { pub name:&'a str, pub owner:&'a str, pub public:bool }
 unsafe extern "C" {
+    #[link_name = "bootstrap.names::order_imports"]
+    fn order_imports(names: *mut Bytes, count: u64) -> u64;
     #[link_name="bootstrap.names::resolve"]
     fn choose(name:Bytes,module:Bytes,imports:*const Bytes,count:u64,candidate:*mut u8,context:*const c_void,
         lookup:unsafe extern "C" fn(*const c_void,Bytes)->Hit)->Resolution;
@@ -39,4 +41,19 @@ pub(crate) fn resolve<'a,F:Fn(&str)->Option<Declaration<'a>>>(name:&str,module:&
         1=>NameResolution::Unique(unsafe{result.name.text()}.to_owned()),
         _=>NameResolution::Ambiguous,
     }
+}
+
+
+pub(crate) fn module_imports(
+    interface: &crate::syntax::Module,
+    implementation: Option<&crate::syntax::Module>,
+) -> std::sync::Arc<[String]> {
+    let mut names = interface.imports()
+        .chain(implementation.into_iter().flat_map(crate::syntax::Module::imports))
+        .map(Bytes::new)
+        .collect::<Vec<_>>();
+    // B rearranges borrowed descriptors in this call. Both syntax owners stay live.
+    let count = unsafe { order_imports(names.as_mut_ptr(), names.len() as u64) };
+    names.truncate(count as usize);
+    names.into_iter().map(|name| unsafe { name.text() }.to_owned()).collect()
 }

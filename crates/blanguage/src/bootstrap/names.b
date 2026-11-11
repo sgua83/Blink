@@ -37,3 +37,64 @@ extern "C" NameResult resolve(NameBytes name,NameBytes module,address imports,u6
     }
     return NameResult(first,found);
 }
+
+bool before(NameBytes left, NameBytes right) on cpu {
+    u64 at = 0u64;
+    while (at < left.length && at < right.length) {
+        u8 a = byte_at(left, at);
+        u8 b = byte_at(right, at);
+        if (a != b) { return a < b; }
+        at += 1u64;
+    }
+    return left.length < right.length;
+}
+
+void put_import(address names, u64 index, NameBytes name) on cpu {
+    unsafe_position<NameBytes>(unsafe_address(address_bits(names) + index * size_of<NameBytes>())) = name;
+}
+
+void sift_import(address names, u64 start, u64 count) on cpu {
+    NameBytes name = import_at(names, start);
+    u64 root = start;
+    while (root < count / 2u64) {
+        u64 child = 2u64 * root + 1u64;
+        if (child + 1u64 < count && before(import_at(names, child), import_at(names, child + 1u64))) {
+            child += 1u64;
+        }
+        NameBytes next = import_at(names, child);
+        if (!before(name, next)) { break; }
+        put_import(names, root, next);
+        root = child;
+    }
+    put_import(names, root, name);
+}
+
+extern "C" u64 order_imports(address names, u64 count) on cpu {
+    u64 root = count / 2u64;
+    while (root != 0u64) {
+        root -= 1u64;
+        sift_import(names, root, count);
+    }
+    u64 end = count;
+    while (end > 1u64) {
+        end -= 1u64;
+        NameBytes first = import_at(names, 0u64);
+        put_import(names, 0u64, import_at(names, end));
+        put_import(names, end, first);
+        sift_import(names, 0u64, end);
+    }
+
+    u64 unique = 0u64;
+    u64 at = 0u64;
+    NameBytes previous = empty();
+    while (at < count) {
+        NameBytes name = import_at(names, at);
+        if (unique == 0u64 || !equal(name, previous)) {
+            put_import(names, unique, name);
+            previous = name;
+            unique += 1u64;
+        }
+        at += 1u64;
+    }
+    return unique;
+}
