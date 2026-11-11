@@ -1859,7 +1859,7 @@ bc inputs与原Rust构建输入查询直接读取实际COFF／BLBI记录，在�
 
 ## 普通 CPU 应用、函数与链接
 
-compile_application 将无参数 u32／i32 main 编译为普通 x64 入口，退出码交给 ExitProcess。object::emit 在编译阶段生成启动、输出辅助函数、导入跳板及展开信息，object::coff交接已生成的对象语义及原始字段，B的bootstrap.bindings选择符号并绑定COFF重定位，bootstrap.metadata写出元数据，bootstrap.coff写出标准AMD64 COFF字节。`bc -c` 到对象为止，独立 blink 排列已编译节、解析符号／导入／重定位并产生 Windows x64 PE32+。
+compile_application 将无参数 u32／i32 main 编译为普通 x64 入口，退出码交给 ExitProcess。object::emit 在编译阶段生成启动、输出辅助函数、导入跳板及展开信息，object::coff交接已生成的对象语义及原始字段，B的bootstrap.bindings选择符号并绑定COFF重定位，bootstrap.metadata写出元数据，bootstrap.coff写出标准AMD64 COFF字节。`bc -c` 到对象为止，独立 blink 排列已编译节、解析符号／导入／重定位并产生 Windows x64 PE32+。 独立普通应用的PE格式拥有导入分组、lookup／IAT、名称、节RVA／文件偏移、基址重定位页目录和最终字节布局；原已选Object提供同一次名称、节字节及重定位，最终输出只分配一份。格式生产沿原自举静态接口由B接管时，Rust容器只交接本次固定布局借用，不再额外拥有节载荷副本和导入字节镜像；本项当前仍由Rust生成，B实施及真实状态沿C-032.2.16。PE与原始VM的机器重定位算术继续共用原coff_relocate，格式只交接本节实际补丁位置及相对同一映像基址的source／target；不新增宿主回调、另一份重定位算法或运行库依赖。
 
 普通 CPU 函数拥有独立 FunctionBody 和原生符号，自递归／互递归通过真实调用帧衔接。native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，同时唯一持有本次编译的类型／program资源目录；原finalize统一处理函数与目录中的program，再经Finalized把同一目录移交应用／模块产物。application::Context只持有本函数的Frame参数寄存器，每个普通函数独立形成，调用者Context始终归原Builder；声明、整域构建和CheckedFunction返回不再搬运Context。真实运行期Frame、设备、存储及完成不进入编译目录。已链接CPU范围引用原运行目录；源码闭合SDK由Program／ProgramImage持有同一次编译移交的真实资源包，装入只绑定一次代码与标准C入口，RangeWork继续拥有各次实例私有Frame。SDK编译阶段的已编译接口、算法DLL调用以及原始CPU COFF代码与资源目录装入已支持；单入口缓存由原build消费当前编译后输入并复用根编译，图Entry沿原依赖、源码捕获与同一借用选择交接；接口编译、静态链接与实际原始VM装入分别保持职责。
 
