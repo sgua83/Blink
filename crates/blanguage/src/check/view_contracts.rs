@@ -51,6 +51,9 @@ pub(super) enum Access {
     Stored {borrows:Borrow,word:u32,value:Borrow,when:bounds::Condition},
 }
 impl Access {
+    pub(super) fn when_mut(&mut self)->&mut bounds::Condition {match self {
+        Self::Resource{when,..}|Self::Position{when,..}|Self::Memory{when,..}|Self::Dataset{when,..}|Self::Initialized{when,..}|Self::Stored{when,..}=>when,
+    }}
     pub(super) fn content_context(&self)->bool{match self{
         Self::Resource{resources,borrows,..}=>resources.content_inputs()||borrows.content_inputs(),
         Self::Position{borrows,..}|Self::Memory{borrows,..}|Self::Dataset{borrows,..}|Self::Initialized{borrows,..}=>borrows.content_inputs(),
@@ -1003,23 +1006,29 @@ fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut Sta
     }
 }
 fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_input:&impl Fn(&str,ValueIdentity)->bool) {
+    fn insert(accesses:&mut BTreeMap<Access,bounds::Condition>,mut access:Access) {
+        let when=std::mem::replace(access.when_mut(),bounds::Condition::constant(true));
+        accesses.entry(access).and_modify(|old|{if *old!=when{*old=normalized_condition(old.clone().logical(when.clone(),true));}}).or_insert(when);
+    }
+
     loop {
         let mut next=known.clone();
         for(name,function)in functions {
             let state=&known[name];
             let parameters=residency::input_parameters(&function.parameters,function.input_width);
-            let mut access=state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})).cloned().collect::<BTreeSet<_>>();
+            let mut access=BTreeMap::new();
+            for value in state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})) {insert(&mut access,value.clone());}
             for usage in &function.uses {
                 if let Requirement::Initialized{read,code,..}=&usage.requirement {
                     let read=resolved_read(read,&usage.path,function,state,known);
                     if *code=="B229" {
-                        if let Some(value)=function.initialization_access(&read,bounds::Condition::guard(usage.path.clone())){access.insert(value);}
+                        if let Some(value)=function.initialization_access(&read,bounds::Condition::guard(usage.path.clone())){insert(&mut access,value);}
                         continue;
                     }
                     for(source,when)in read.borrow().sources.entries() {
                         if let Origin::Position(origin)=source {
                             if let Some(value)=function.address_access(Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),written:None,writable:false,initialized:true}},
-                                bounds::Condition::guard(usage.path.clone()).logical(bounds::Condition::guard(when),false)){access.insert(value);}
+                                bounds::Condition::guard(usage.path.clone()).logical(bounds::Condition::guard(when),false)){insert(&mut access,value);}
                         }
                     }
                     continue;
@@ -1037,7 +1046,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,*access,*atomic,bounds::Condition::guard(usage.path.clone()),&|id|owns_input(name,id)),
                     _=>None,
                 };
-                if let Some(value)=value{access.insert(value);}
+                if let Some(value)=value{insert(&mut access,value);}
             }
             for call in &function.calls {for requirement in &known[&call.function].interface.access {
                 let value=access_at_call(requirement,call,&call.path,function,state,known);
@@ -1056,9 +1065,11 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     Access::Resource{resources,borrows,ownership,when}=>function.access(resources,borrows,ownership,when),
                     Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,when,&|id|owns_input(name,id)),
                 };
-                if let Some(value)=value{access.insert(value);}
+                if let Some(value)=value{insert(&mut access,value);}
             }}
-            next.get_mut(name).unwrap().interface.access=access;
+            next.get_mut(name).unwrap().interface.access=access.into_iter().map(|(mut access,when)| {
+                *access.when_mut()=when;access
+            }).collect();
         }
         if *known==next{break;}*known=next;
     }

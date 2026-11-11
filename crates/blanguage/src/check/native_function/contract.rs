@@ -66,8 +66,7 @@ fn accesses(values:&mut BTreeSet<view_contracts::Access>,normal:&mut bounds::Nor
         grouped.entry(access).and_modify(|old|*old=normal.union(old,&when)).or_insert_with(||normal.condition(&when));
     }
     for(mut access,condition)in grouped {
-        let when=match &mut access{Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..}|Access::Stored{when,..}=>when};
-        *when=condition;values.insert(access);
+        *access.when_mut()=condition;values.insert(access);
     }
 }
 pub(super) fn encode(original:&Contract,writer:&mut crate::module::codec::Writer) {
