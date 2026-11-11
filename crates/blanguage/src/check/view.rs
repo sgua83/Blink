@@ -30,7 +30,7 @@ impl<K:Ord+Clone> Edges<K>{
     pub fn when(&self,key:&K)->bounds::Condition{self.0.get(key).cloned().unwrap_or_else(||bounds::Condition::constant(false))}
     fn restricted(&self,path:&bounds::Clause)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.assume(path,true));}result}
     fn guards_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.at_call(bindings).assume(&bounds::Clause::default(),true));}result}
-    fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.output_bound(bindings).assume(&bounds::Clause::default(),true));}result}
+    fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.assume(&bounds::Clause::default(),true).output_bound(bindings));}result}
 }
 impl<K:Ord+Clone,const N:usize> From<[K;N]> for Edges<K>{fn from(values:[K;N])->Self{values.into_iter().collect()}}
 impl<K:Ord+Clone> FromIterator<K> for Edges<K>{fn from_iter<T:IntoIterator<Item=K>>(values:T)->Self{let mut result=Self::default();for value in values{result.insert(value);}result}}
