@@ -4609,7 +4609,7 @@ extern "C" void encode(MetadataInput input,address output) on cpu;
 
 COFF静态归档的格式由crates/blanguage/src/bootstrap/archive.h／.b读写，原static_library.rs负责输入I/O、COFF对象身份、唯一Library目录容器及Vec输出存储。B布局阶段给出两个链接成员、长名称及对象成员的位置和总字节数，写出阶段直接填同一输出，原对象字节保持；符号按UTF-8字节名称与原成员顺序排序，同名选择原首成员。读取阶段借用同一文件字节，先确定第二链接成员与长名称表，再解释目录索引和实际成员；B直接把名字、对象体及符号的字节范围交给本次Rust C ABI接收函数，Rust转换UTF-8并填原Library容器，不再解析格式。接收错误沿本次调用返回，部分构造仍由原Rust拥有链释放。字节、上下文及真实接收函数保持到同步调用结束，B不保存地址；接口中的requires nonzero只声明函数地址非零，不证明外部代码和存储寿命。按符号选择及一次抽取继续沿原Rust所有者，成员COFF本体由原解码者解释。目录命中只交出候选，真实定义仍归成员Object；原linker::resolve_symbol调用define交入本次符号表，再直接消费同一表的请求符号查找结果。成员没有该定义时，原Result交回请求名与实际模块名，链接和栈报告在写产物前结束；原选择顺序、重复定义错误及实际合同比较保持，不扫描未消费成员或改选其他库。没有第二目录或Frame，不把格式迁移等同整个链接器已经用B实现。
 
-原生宿主静态输入由crates/blanguage/src/linker/imports.rs的host_archive组织，原msvc路径复用同一B native_import成员生成者。普通--archive保存B接口模块，--host-archive保持原模块字节并附原生IAT成员；输入I/O、唯一成员存储与同一B归档编码沿原所有者交接。B借同一DLL／函数字节及运行库身份，准备六个节的精确长度、标志、重定位和根／子关联，再直接写最终名字与载荷。普通DLL的IAT槽和运行库地址槽分别作为根，根先于全部关联节；描述符、lookup、hint／名称及终止材料随COMDAT一起由宿主真实引用选择，未调用导入不带入DLL。Rust只持有最终Section／Symbol与字节存储，同步编码结束前输入和输出保持，B不保存地址或创建Frame。原Rust成员算法及重复名称格式已退出。encode_native沿同一标准COFF生产者写原生节与符号，不附假B接口、模块元数据或执行归档。资源工厂、实际宿主进程／DLL交接、链接符号选择及合同比较仍由原Rust职责承担；不能把这一格式生成接管写成整个链接器或两代自举已经完成。
+原生宿主静态输入由crates/blanguage/src/linker/imports.rs的host_archive组织，原msvc路径复用同一B native_import成员生成者。普通--archive保存B接口模块，--host-archive保持原模块字节并附原生IAT成员；输入I/O、唯一成员存储与同一B归档编码沿原所有者交接。B借同一DLL／函数字节及运行库身份，准备六个节的精确长度、标志、重定位和根／子关联，再直接写最终名字与载荷。普通DLL的IAT槽和运行库地址槽分别作为根，根先于全部关联节；描述符、lookup、hint／名称及终止材料随COMDAT一起由宿主真实引用选择，未调用导入不带入DLL。Rust只持有最终Section／Symbol与字节存储，同步编码结束前输入和输出保持，B不保存地址或创建Frame。原Rust成员算法及重复名称格式已退出。encode_native沿同一标准COFF生产者写原生节与符号，不附假B接口、模块元数据或执行归档。资源工厂实现、实际宿主进程／DLL交接、链接符号选择及合同比较仍由原Rust职责承担；链接期工厂表、基址及地址槽生成沿下面的B资源绑定职责。不能把格式与绑定生成接管写成整个链接器或两代自举已经完成。
 
 源码节选：`crates/blanguage/src/bootstrap/native_import.h:1`。
 
@@ -4625,6 +4625,58 @@ struct NativeImportOutput {address sections;address relocations;address slot;add
 struct NativeImportPlan {u64 slot;u64 stem;u64 member;u64 hint;u64 relocations;u64 root;u64 error;};
 extern "C" NativeImportPlan plan_import(NativeImportInput input,NativeImportOutput output) on cpu;
 extern "C" void encode_import(NativeImportInput input,NativeImportOutput output,NativeImportPlan plan) on cpu;
+```
+
+链接期资源绑定由bootstrap/native_resources.h／.b生成。输入是本次已选模块的真实资源ABI、prefix及类型／程序数量，连同根目录的起始基址、局部地址槽和实际运行库符号。B保持原模块顺序，确认相同ABI与唯一prefix，按实际数量累计type_base／program_base，生成工厂表、类型／程序基址、局部地址槽与运行库间接跳板的字节和重定位位置；原静态成品与原始CPU映像共用这一生成者。prefix排序索引只服务本次重复判定，身份仍按UTF-8字节区分，错误按原输入次序交回。B直接写最终名字和.rdata／.text，Rust只持有原Object、最终符号／imports及字节容器，源模块、代码与最终分配保持到同步消费结束。这里不创建Frame、不拥有运行资源或复制资源目录；真正工厂实现、类型／program恢复和最后执行完成仍归原所有者，资源ABI没有因迁移改变。
+
+源码节选：`crates/blanguage/src/bootstrap/native_resources.h:1`。
+
+```b
+module bootstrap.native_resources;
+import bootstrap.bindings;
+const u64 MODULE_BYTES=136u64;
+const u64 LOCAL_BYTES=40u64;
+const u64 RUNTIME_BYTES=32u64;
+struct ResourceModule {
+    BindingBytes prefix;BindingBytes abi;u64 types;u64 programs;u64 type_value;u64 program_value;
+    u64 factory_offset;u64 type_offset;u64 program_offset;BindingBytes factory;BindingBytes type_name;BindingBytes program_name;
+};
+struct ResourceLocal {BindingBytes slot;BindingBytes name;u64 value;};
+struct ResourceRuntime {BindingBytes name;u64 value;u64 relocation;};
+struct ResourceInput {
+    address modules;u64 module_count;address locals;u64 local_count;address runtime;u64 runtime_count;
+    BindingBytes root_abi;u64 has_root_abi;u64 types;u64 programs;address order;
+};
+struct ResourceOutput {address data;address text;};
+struct ResourcePlan {u64 data;u64 text;u64 data_flags;u64 text_flags;u64 error;u64 at;};
+extern "C" ResourcePlan prepare(ResourceInput input) on cpu;
+extern "C" void encode(ResourceInput input,ResourceOutput output,ResourcePlan plan) on cpu;
+```
+
+下面的准备阶段只计算本轮最终位置和必要名字长度，写出阶段直接消费同一行；原ABI及宽度错误不经运行时保护或第二次资源查找。
+
+源码节选：`crates/blanguage/src/bootstrap/native_resources.b:37`。
+
+```b
+extern "C" ResourcePlan prepare(ResourceInput input) on cpu {
+    if(input.module_count==0u64){return invalid(0u64,0u64);}
+    sort(input);BindingBytes abi=input.root_abi;if(input.has_root_abi==0u64){abi=module_at(input,0u64).abi;}
+    u64 i=0u64;
+    while(i<input.module_count){ResourceModule row=module_at(input,i);
+        if(compare(row.abi,abi)!=0){return invalid(1u64,i);}if(first(input,row.prefix)!=i){return invalid(2u64,i);}i+=1u64;
+    }
+    u64 types=input.types;u64 programs=input.programs;u64 at=8u64+8u64*input.module_count;i=0u64;
+    while(i<input.module_count){
+        ResourceModule row=module_at(input,i);if(at+4u64>4294967295u64){return invalid(5u64,i);}
+        row.type_value=types;row.program_value=programs;row.factory_offset=8u64+8u64*i;row.type_offset=at;row.program_offset=at+4u64;
+        row.factory=BindingBytes(unsafe_address(0u64),row.prefix.length+10u64);row.type_name=BindingBytes(unsafe_address(0u64),row.prefix.length+10u64);row.program_name=BindingBytes(unsafe_address(0u64),row.prefix.length+13u64);
+        types+=row.types;if(types>4294967295u64){return invalid(3u64,i);}programs+=row.programs;if(programs>4294967295u64){return invalid(4u64,i);}
+        module_put(input,i,row);at+=8u64;i+=1u64;
+    }
+    i=0u64;while(i<input.local_count){ResourceLocal row=local_at(input,i);if(at>4294967295u64){return invalid(5u64,input.module_count+i);}row.value=at;local_put(input,i,row);at+=8u64;i+=1u64;}
+    u64 text=0u64;i=0u64;while(i<input.runtime_count){ResourceRuntime row=runtime_at(input,i);if(text>4294967295u64){return invalid(5u64,input.module_count+input.local_count+i);}row.value=text;row.relocation=text+2u64;runtime_put(input,i,row);text+=6u64;i+=1u64;}
+    return ResourcePlan(at,text,1077936192u64,1615855648u64,0u64,0u64);
+}
 ```
 
 应用链接以唯一实际入口为根，沿机器符号选择显式模块与按库顺序抽取的成员，再沿实际函数节和重定位继续。每个函数的机器代码与内部字面量在同一个 COMDAT 节；pdata／xdata 以标准 COFF 关联随这个函数保留。递归和共享打印／导入跳板按原节身份闭合，未调用函数不把缺失依赖或 DLL 导入带进应用；真正需要的定义须有匹配合同，显式重复仍拒绝。
