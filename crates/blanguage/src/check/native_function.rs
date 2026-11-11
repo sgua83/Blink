@@ -1410,10 +1410,12 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
     }
     Ok(())
 }
-// 查询沿原已编译定义取得实际callee合同；不为私有符号重建源码定义。
+// Borrow current contracts; own decoded dependencies from compiled definitions,
+// including private callees without reconstructing their source declarations.
 fn residency_contracts(world:&World,module:&Module)->Result<(BTreeMap<String,residency::Contract>,residency::Outputs,BTreeMap<String,Vec<u8>>)> {
     use crate::module::codec::Decode;
-    let mut contracts=module.units.iter().filter_map(|(name,unit)|unit.as_ref().map(|unit|(name.clone(),unit.contract.clone()))).collect::<BTreeMap<_,_>>();
+    use std::borrow::Cow;
+    let mut contracts=module.units.iter().filter_map(|(name,unit)|unit.as_ref().map(|unit|(name.clone(),Cow::Borrowed(&unit.contract)))).collect::<BTreeMap<_,_>>();
     let mut imports=BTreeMap::new();let mut pending=contracts.keys().cloned().collect::<Vec<_>>();
     while let Some(name)=pending.pop(){
         let contract=&contracts[&name];
@@ -1422,11 +1424,11 @@ fn residency_contracts(world:&World,module:&Module)->Result<(BTreeMap<String,res
             let (definition,bytes)=world.functions.values().find_map(|definition|definition.compiled.as_ref().and_then(|definitions|definitions.get(&callee)).map(|bytes|(definition,bytes)))
                 .ok_or_else(||Diagnostic{source:module.units.values().find_map(|unit|unit.as_ref()).unwrap().source.clone(),span:Span::default(),code:"B270",message:format!("已编译模块没有位置合同定义 {callee}")})?;
             let contract=Contract::from_bytes(bytes).map_err(|error|Diagnostic{source:definition.source.clone(),span:definition.function.span(),code:"B270",message:format!("模块函数接口错误：{error}")})?;
-            contracts.insert(callee.clone(),contract);imports.insert(callee.clone(),bytes.clone());pending.push(callee);
+            contracts.insert(callee.clone(),Cow::Owned(contract));imports.insert(callee.clone(),bytes.clone());pending.push(callee);
         }
     }
     let outputs=residency::output_sources(contracts.iter().map(|(name,contract)|(name.as_str(),contract.returned.as_ref(),contract.written.as_slice())));
-    Ok((contracts.into_iter().map(|(name,contract)|(name,contract.residency)).collect(),outputs,imports))
+    Ok((contracts.into_iter().map(|(name,contract)|(name,match contract{Cow::Borrowed(contract)=>contract.residency.clone(),Cow::Owned(contract)=>contract.residency})).collect(),outputs,imports))
 }
 // 每个原函数持有自身Uses／Calls；调用者消费实际实参，不穷举递归后代。
 fn resolve_residencies(world:&World,module: &mut Module) -> Result<BTreeMap<String,Vec<u8>>> {
