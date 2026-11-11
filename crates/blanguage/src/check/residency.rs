@@ -153,7 +153,7 @@ impl Residency {
     }
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{match self{
         Self::Selected(when,a,b)=>Self::conditional(when.at_call(bindings),a.at_call(bindings),b.at_call(bindings)),
-        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.at_call(bindings)),Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(bindings,input.depth())))).collect();output.bindings=output.bindings.iter().map(|(input,value)|(*input,value.at_call(bindings))).collect();Origin::Output(output)},_=>origin.clone()}).collect()),
+        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.at_call(bindings)),Origin::Output(output)=>Origin::Output(Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:output.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(bindings,input.depth())))).collect(),bindings:output.bindings.iter().map(|(input,value)|(*input,value.at_call(bindings))).collect()}),_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
     }}
     // 合并重复来源而保留其成立域；Absent 不被提升为真实资源来源。
@@ -174,7 +174,7 @@ impl Residency {
     }}
     pub(super) fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{match self{
         Self::Selected(when,a,b)=>Self::conditional(when.output_bound(bindings),a.output_bound(bindings),b.output_bound(bindings)),
-        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.output_bound(bindings)),Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.output_bound(&scoped_names(bindings,input.depth())))).collect();output.bindings=output.bindings.iter().map(|(input,value)|(*input,value.output_bound(bindings))).collect();Origin::Output(output)},_=>origin.clone()}).collect()),
+        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.output_bound(bindings)),Origin::Output(output)=>Origin::Output(Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:output.arguments.iter().map(|(input,value)|(input.clone(),value.output_bound(&scoped_names(bindings,input.depth())))).collect(),bindings:output.bindings.iter().map(|(input,value)|(*input,value.output_bound(bindings))).collect()}),_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
     }}
     pub(super) fn element_indices(&self,indices:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{
@@ -185,10 +185,11 @@ impl Residency {
             Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{
                 Origin::Input(input)=>Origin::Input(input.element_indices(indices)),
                 Origin::Output(output)=>{
-                    let mut output=output.clone();
-                    output.arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.element_indices(&scoped_indices(indices,input.depth())))).collect();
-                    output.bindings=output.bindings.iter().map(|(id,proof)|(*id,proof.substitute_values(indices))).collect();
-                    Origin::Output(output)
+                    Origin::Output(Output {
+                        function: output.function.clone(), kind: output.kind.clone(), fields: output.fields.clone(),
+                        arguments: output.arguments.iter().map(|(input,value)|(input.clone(),value.element_indices(&scoped_indices(indices,input.depth())))).collect(),
+                        bindings: output.bindings.iter().map(|(id,proof)|(*id,proof.substitute_values(indices))).collect(),
+                    })
                 },
                 other=>other.clone(),
             }).collect()),
@@ -222,7 +223,7 @@ impl Residency {
         let mut result=Self::Absent;
         for origin in origins{match origin{
             Origin::Input(input)=>{if let Some(value)=argument_value(arguments,input,&input.selection()){result.join(&value);}},
-            Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().filter_map(|(input,value)|value.bind(arguments).map(|value|(input.clone(),value))).collect();result.join(&Self::Origins(BTreeSet::from([Origin::Output(output)])));},
+            Origin::Output(output)=>{let output=Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:output.arguments.iter().filter_map(|(input,value)|value.bind(arguments).map(|value|(input.clone(),value))).collect(),bindings:output.bindings.clone()};result.join(&Self::Origins(BTreeSet::from([Origin::Output(output)])));},
             origin=>result.join(&Self::Origins(BTreeSet::from([origin.clone()]))),
         }}
         (!result.absent()).then_some(result)
