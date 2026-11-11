@@ -471,7 +471,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1927`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1939`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -496,7 +496,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:3154`。
+源码节选：`crates/blanguage/src/check/bounds.rs:3166`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -515,7 +515,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1915`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1927`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -2195,7 +2195,7 @@ CPU以`view<T>(source,start,end)`借用半开元素区间。原入口依序求�
 
 同样，整数除法要知道除数不为零。这里的知识不是无限强的数学证明器，而是沿当前路径维护的有限事实。
 
-值事实的capture直接从原Value按实际寄存器构造ranges、nonzero、origins与conditions各一次；domains、views及稀疏数值地址关系按原样交接，不先复制随后被覆盖的四组字段。捕获结果是本次唯一Proof，来源、范围、已知位、条件、借用与地址各归原事实所有者，不增加快照、缓存或第二套状态。
+值事实的capture、函数返回与输出身份绑定各直接构造自己的唯一Proof：capture从原Value按实际寄存器构造ranges、nonzero、origins与conditions各一次，domains、views及稀疏数值地址关系按原样交接；returning从原Value重建conditions后沿原环境与路径合取；output_bound从原数值地址关系绑定实际输出身份，其余来源、域、借用及条件继续沿原变换。各接点只复制仍需保留的字段，不先复制随后被重建覆盖的字段；来源、范围、已知位、条件、借用与地址各归原事实所有者，不增加快照、缓存或第二套状态。
 
 源码节选：`crates/blanguage/src/check/bounds.rs:24`。
 
@@ -2395,7 +2395,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1279`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1286`。
 
 ```rust
         self.nonzero = (0..width)
@@ -2408,7 +2408,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1449`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1456`。
 
 ```rust
     pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
@@ -2492,7 +2492,7 @@ F32／F64乘法沿同一四角交接结果：F32仍消费精确的F64端点积�
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2049`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2061`。
 
 ```rust
 impl Drop for Clause {

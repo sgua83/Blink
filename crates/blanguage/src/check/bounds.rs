@@ -726,8 +726,15 @@ impl Proof {
         }}aliases
     }
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
-        let mut proof=self.clone();
-        proof.addresses=self.addresses.iter().map(|value|value.as_ref().map(|value|value.output_bound(bindings))).collect();
+        let mut proof = Self {
+            origins: self.origins.clone(),
+            conditions: self.conditions.clone(),
+            ranges: self.ranges.clone(),
+            nonzero: self.nonzero.clone(),
+            domains: self.domains.clone(),
+            views: self.views.clone(),
+            addresses: self.addresses.iter().map(|value| value.as_ref().map(|value| value.output_bound(bindings))).collect(),
+        };
         for sources in &mut proof.views {
             *sources=sources.output_bound(bindings);
         }
@@ -1559,10 +1566,15 @@ impl Proof {
         environment: &BTreeMap<String, Binding>,
         path: &Clause,
     ) -> Self {
-        let mut proof = value.proof.clone();
-        proof.conditions = (0..value.regs.len())
-            .map(|i| Self::value_condition(value, i))
-            .collect();
+        let mut proof = Self {
+            origins: value.proof.origins.clone(),
+            ranges: value.proof.ranges.clone(),
+            nonzero: value.proof.nonzero.clone(),
+            domains: value.proof.domains.clone(),
+            views: value.proof.views.clone(),
+            addresses: value.proof.addresses.clone(),
+            conditions: (0..value.regs.len()).map(|i| Self::value_condition(value, i)).collect(),
+        };
         if proof.conditions.iter().any(Option::is_some) {
             let facts = Clause::facts(environment_facts(environment));
             for condition in proof.conditions.iter_mut().flatten() {
