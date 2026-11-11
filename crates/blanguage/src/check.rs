@@ -347,8 +347,15 @@ struct DomainCall {
     element_after: Vec<ElementFact>,
     source: Option<Arc<SourceSite>>,
 }
+struct RangeContext {
+    output_scopes: usize,
+    view_model: view_contracts::Function,
+    residency: residency::Inputs,
+}
+
 struct ExpandedDomain {
     program: Program,
+    scopes: BTreeMap<usize, RangeContext>,
     calls: Vec<DomainCall>,
     outputs: Vec<crate::module::domain::Output>,
     elements: BTreeMap<usize, bounds::Proof>,
@@ -366,7 +373,7 @@ pub(crate) fn compile_program(
             "跨对象域使用原生模块或应用入口编译；单个内核映像不包含其他模块的实现",
         );
     }
-    native_function::finish_program(world, functions, expanded.program)
+    native_function::finish_program(world, functions, expanded.program, expanded.scopes)
 }
 #[derive(Clone, Copy)]
 enum DomainInput<'a> {
@@ -554,17 +561,18 @@ fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_f
     facts.assume_elements(&program);
     let mut calls = Vec::new();
     let path=input.syntax_context().1.domain_path.clone();
+    let mut scopes = BTreeMap::new();
     match input {
         DomainInput::Declaration(instance)=>expand_program(
-            world,instance,&mut env,&mut program,&mut Vec::new(),&mut false,&mut facts,&mut calls,path,functions)?,
+            world,instance,&mut env,&mut program,&mut Vec::new(),&mut false,&mut facts,&mut calls,path,functions,&mut scopes)?,
         DomainInput::Parallel{statement,..}=>{
             expand_stages(world,input,std::iter::once(statement.clone()),&mut env,&mut program,
-                &mut Vec::new(),&mut false,&mut facts,&mut calls,&path,functions)?;
+                &mut Vec::new(),&mut false,&mut facts,&mut calls,&path,functions,&mut scopes)?;
         }
     }
     program.source_stages = program.stages.len();
     program.element_guarantees = program.element_outputs(facts.element_facts(&program));
-    Ok(ExpandedDomain { program, calls, outputs: facts.outputs, elements: facts.elements })
+    Ok(ExpandedDomain { program, scopes, calls, outputs: facts.outputs, elements: facts.elements })
 }
 fn expand_program(
     world: &World,
@@ -577,6 +585,7 @@ fn expand_program(
     calls: &mut Vec<DomainCall>,
     domain_path: Arc<[DomainSite]>,
     functions: &mut native_function::Module,
+    scopes: &mut BTreeMap<usize, RangeContext>,
 ) -> Result<()> {
     let d = &instance.definition;
     let key = format!("{}::{}", d.module, d.function.name());
@@ -601,6 +610,7 @@ fn expand_program(
         calls,
         &domain_path,
         functions,
+        scopes,
     )?;
     for contract in instance.contracts()
         .filter(|c| c.kind == ContractKind::Ensures)
@@ -634,6 +644,7 @@ fn expand_stages(
     calls: &mut Vec<DomainCall>,
     domain_path: &Arc<[DomainSite]>,
     functions: &mut native_function::Module,
+    scopes: &mut BTreeMap<usize, RangeContext>,
 ) -> Result<bool> {
     let instance=input.owner();
     let d = &instance.definition;
@@ -669,7 +680,7 @@ fn expand_stages(
                 let selected = if words[0] == 0 { no } else { yes };
                 let mut child = env.clone();
                 let first_call = calls.len();
-                let returned = expand_stages(world, input, selected.iter(), &mut child, program, stack, boundary, facts, calls, domain_path, functions)?;
+                let returned = expand_stages(world, input, selected.iter(), &mut child, program, stack, boundary, facts, calls, domain_path, functions, scopes)?;
                 program.generated_origin = Some(Arc::new(GeneratedOrigin {
                     reason: GenerationReason::StageIfSelection,
                     trigger: Some(GenerationAnchor::StageIfSelection {
@@ -724,7 +735,7 @@ fn expand_stages(
                         Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)], None),
                     );
                     returned = expand_stages(
-                        world, input, body.iter(), &mut child, program, stack, boundary, facts, calls, domain_path, functions,
+                        world, input, body.iter(), &mut child, program, stack, boundary, facts, calls, domain_path, functions, scopes,
                     )?;
                     iterations.push(StageForIteration {
                         index, returned,
@@ -792,6 +803,10 @@ fn expand_stages(
                     })
                     .transpose()?;
                 let mut b = Builder::domain(world, input, program, *domain)?;
+                if program.target == Target::Cpu {
+                    let frame = vec![b.reg(Scalar::U32), b.reg(Scalar::U32)];
+                    b.application = Some(application::Context { frame: Some(frame), range: true });
+                }
                 b.element_facts = Some(&facts.elements);
                 b.prefix_facts = Some(&facts.scopes.last().unwrap().0);
                 b.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*b.source_context).clone() });
@@ -898,6 +913,22 @@ fn expand_stages(
                     b.reads.insert(selection.binding);
                     b.cross_access.insert(selection.binding);
                 }
+                let range_frame = b.application.as_ref().and_then(|context| context.frame.as_ref())
+                    .filter(|frame| {
+                        let mut used = false;
+                        crate::optimize::visit(&b.code, &mut |inst| {
+                            used |= !inst.all_operands(&mut |reg| !frame.contains(&reg));
+                        });
+                        used
+                    })
+                    .map(|frame| {
+                        let offset = program.native_frame.unwrap_or_else(|| ir::align_up(program.uniform_bytes, 8));
+                        b.code.splice(0..0, [
+                            Inst::new(InstKind::Uniform(frame[0], offset)),
+                            Inst::new(InstKind::Uniform(frame[1], offset + 4)),
+                        ]);
+                        offset
+                    });
                 let memory_regions = std::mem::take(&mut b.memory_regions);
                 let write_regions = memory_regions.iter()
                     .filter_map(|(&binding, (_, written))| (!written.is_empty())
@@ -923,6 +954,23 @@ fn expand_stages(
                     element_guarantees: Vec::new(),
                     cross_access: b.cross_access.into_iter().collect(),
                 };
+                let mut scoped = range_frame.is_some();
+                crate::optimize::visit(&stage.code, &mut |inst| {
+                    scoped |= matches!(&inst.kind,
+                        InstKind::Call(Call { failure: Some(FailureContinuation::Scope(_)), .. })
+                        | InstKind::Cleanup { failure: Some(_), .. });
+                });
+                if scoped {
+                    scopes.insert(program.stages.len(), RangeContext {
+                        output_scopes: b.output_scopes,
+                        view_model: b.view_model,
+                        residency: b.residency,
+                    });
+                }
+                if let Some(offset) = range_frame {
+                    program.native_frame = Some(offset);
+                    program.uniform_bytes = offset + 8;
+                }
                 for (&binding, written) in &stage.write_regions {
                     let output = if access[&binding] == Access::Atomic {
                         facts.elements.get(&binding).map(|old| {
@@ -1320,7 +1368,7 @@ fn expand_stages(
                         } else {
                             facts.enter(&required);
                             expand_program(
-                                world, &instance, &mut child, program, stack, boundary, facts, calls, child_path, functions,
+                                world, &instance, &mut child, program, stack, boundary, facts, calls, child_path, functions, scopes,
                             )?;
                             facts.leave();
                         }
@@ -2239,6 +2287,9 @@ impl<'a> Builder<'a> {
             prefix: None,
         }
     }
+    fn application_entry(&self) -> bool {
+        self.application.as_ref().is_some_and(|context| !context.range)
+    }
     fn failure_scope(&self,consumed:Vec<Place>)->Option<Box<FailureScope>> {
         let owns=self.env.values().any(|binding|match binding {
             Binding::ApplicationData(data)=>data.ownership.may_own(),
@@ -2459,7 +2510,7 @@ impl<'a> Builder<'a> {
             StmtKind::Return(value) => self.return_statement(value.as_ref(), s.span())?,
             StmtKind::Parallel(element,domain,body) => return self.application_parallel(s,element,&domain,&body),
             StmtKind::Phase => {
-                if self.application.is_none() {
+                if !self.application_entry() {
                     return self.fail(s.span(), "B163", "phase 需要整域同步位置，不能位于元素实例中");
                 }
             }

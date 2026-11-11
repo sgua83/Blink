@@ -1788,6 +1788,8 @@ Rust SDK的Frame操作通过原Result交回错误。直接CpuTemplate::from_imag
 
 CPU整域调用中的纹理参数继续是原只读BufferAddress列表地址；单项／数组形状、维度、格式及参数次序随原module/domain接口交接。blink_run第五参数为每组列表首地址的连续数组，数量与各组长度来自本次Program的TextureBinding；普通统一值与DatasetBinding保持各自布局。Frame::run与CpuTemplate同步借用实际描述、mip及像素，原调用者和代码所有者保持至全部CPU工作完成，Frame不保存另一份纹理拥有者、登记或释放链。Rust调用者可用cpu::CpuTextures::new借用原TextureInput，再由bindings取得带生命周期的CpuTextureBinding；真实C ABI调用者承担有效地址、布局和整个同步消费者期间的寿命，非空不代替这些责任。GPU图像不能作为CPU描述，GPU整域输入仍待C-003.2.3.1.2.2；B拥有纹理构造亦未由这项只读借用实现。
 
+CPU并行范围可接收普通CPU函数返回的拥有dataset，并在该范围内读取、移动和结束该资源。返回句柄、载荷、静态释放函数及正常／失败出口使用本次范围的同一私有Frame。后续可失败调用失败时，先结束实际仍拥有的范围值，再沿原范围错误结果交回调用者。跨任务转移拥有结果及范围内发起子域仍沿对应未完成能力。
+
 所有CPU范围及集合延续入口使用同一RangeEntry：void* entry(const BufferAddress* buffers, const u32* uniforms, u32 end, u32 begin, u32* output)。五参数次序和Windows x64位置固定，返回空指针成功，非空为同一运行库交回、由调用者唯一拥有的原错误。output按当前StageCode的RangeResult::Values字数持有仅在成功时可采用的算法输出，计数同样写一个u32；None时不解引用output。框架等待全部CPU工作真正结束后沿原错误结果槽消费所有返回值，多个独立错误由原error_join合并后交给原Result；失败跳过结果合成及后续阶段，已经发生的写入不回滚，拥有输入仍按原run_owned错误交回。同步集合前缀／归约尾沿同一原调用者先消费错误再采用输出。已链接范围需要资源时，ExecutionPlan.native_frame给出原uniform块中的隐藏Frame地址偏移，该地址只在同一次入口有效；本次私有Frame引用原不可变定义／代码并独占局部存储，原普通函数F和资源退出完成后才结束。源码闭合SDK映像同时交接真实资源包，由原装入器一次绑定代码与标准C入口；其源码／算法DLL完整交付及独立obj／lib输入分别见C-027.35.4.2.2.3.2.2.2.2.1／.2；源码闭合SDK消费原资源错误并保持宿主存活，已链接算法DLL消费原模块错误，原始SDK的已编译提供者沿同一拥有者归还真实私有分配及F错误，普通拥有结果等范围仍各原编号，不能把未完成的B266用例计作成功。
 
 普通on compute／on gpu函数可借用write或inout dataset，并沿原源码在相应CPU／GPU元素阶段展开。write没有旧内容的读取许可，正常返回须按原initialized合同交出本次实际当前位置及字段；空写、未满足条件的缺写不能形成无条件输出。实际展开保持原当前位置、共享读取及同次独占借用约束，不授予任意非原子散写权限。GPU侧直接使用原元素存储、位置与Stage，不使用CPU的Frame／实际地址参数ABI；完整设备普通调用、递归及其模块支持继续各按真实缺口记录。

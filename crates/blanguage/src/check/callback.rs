@@ -68,7 +68,7 @@ impl Builder<'_> {
     }
     pub(super) fn c_function_from(&mut self,span:Span,
         signature:impl FnOnce(&mut Self)->Result<(crate::generics::Instance,Ty)>)->Result<Value> {
-        if self.program.target != Target::Cpu || self.application.is_none() {
+        if self.program.target != Target::Cpu || !self.application_entry() {
             return self.fail(span, "B265", "c_function在普通CPU应用或模块中取得C函数符号地址");
         }
         let (instance, ty) = signature(self)?;

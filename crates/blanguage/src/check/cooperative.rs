@@ -412,7 +412,7 @@ if form==DeclaredArgumentForm::Acceleration {
             return self.native_function(instance, args, span, generated_origin, syntax);
         }
         if instance.definition.execution == crate::execution::Requirement::Domain {
-            if self.application.is_some() {
+            if self.application_entry() {
                 if instance.definition.function.target() == Target::Cpu
                     && !super::kernel_interface(self.world, &instance)?
                 {
@@ -432,7 +432,7 @@ if form==DeclaredArgumentForm::Acceleration {
             }
             FunctionKind::Value => {
                 if instance.definition.function.target() == Target::Cpu && self.program.target == Target::Cpu
-                    || self.application.is_some() && instance.definition.function.target() != Target::Gpu
+                    || self.application_entry() && instance.definition.function.target() != Target::Gpu
                 {
                     self.native_function(instance, args, span, generated_origin, syntax)
                 } else {

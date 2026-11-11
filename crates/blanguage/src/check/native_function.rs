@@ -27,7 +27,15 @@ pub(super) fn reference_parameters(ty: &Ty) -> Vec<Ty> {
 pub(super) struct Module {
     pub(super) units: BTreeMap<String, Option<Unit>>,
     pub(super) resources: crate::application::Resources,
+    programs: Vec<Option<PendingProgram>>,
 }
+struct PendingProgram {
+    target: Target,
+    program: Program,
+    scopes: BTreeMap<usize, RangeContext>,
+    deferred_source: Option<std::path::PathBuf>,
+}
+
 impl Module {
     pub(super) fn read_only(&self,name:&str)->bool {
         self.units.get(name).and_then(Option::as_ref).and_then(|unit|unit.contract.view_access.as_ref()).is_some_and(|access|
@@ -398,7 +406,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let mut functions = declaration(world, instance, Module::default())?;
-    lower_module_failures(world,&mut functions)?;
+    lower_module_failures(world,&mut functions,&mut [])?;
     resolve_residencies(world,&mut functions).map(|_|())
 }
 fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&LexicalScope,
@@ -570,7 +578,7 @@ impl Builder<'_> {
         // The interface retains its canonical Frame input slots even when its actual ABI omits Frame.
         // These absent compile-time facts do not create registers or machine arguments.
         let mut actual = vec![None; application::pointer_type().components.len()];
-        if implicit && self.application.is_some() {
+        if implicit && self.application_entry() {
             let frame = self.application_frame(span)?;
             actual = frame.regs.iter()
                 .map(|reg| Some(bounds::Proof::default().with_identity(ValueIdentity::Register(*reg))))
@@ -872,7 +880,7 @@ impl Builder<'_> {
                 source: Some(self.scope.source().clone()),
                 span,
             };
-            if self.application.is_none() {
+            if !self.application_entry() {
                 // This range has no application caller whose later closure could consume the call.
                 // Consume the already closed imported contract with its actual CPU inputs now.
                 let (known,outputs,_)=residency_contracts(self.world,&self.functions)?;
@@ -894,7 +902,7 @@ impl Builder<'_> {
             .map(|(scalar, _)| self.reg(*scalar))
             .collect::<Vec<_>>();
         let views_closed=self.functions.units[name].as_ref().is_some_and(|unit|unit.contract.view_access.is_some());
-        let memory=if self.application.is_none(){
+        let memory=if !self.application_entry(){
             let access=self.functions.units[name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();
             self.native_dataset_access(&access,&view_arguments,span)?
         }else{Vec::new()};
@@ -1612,22 +1620,29 @@ fn failure_effects(module:&mut Module) {
         if !changed{break;}
     }
 }
+struct FailureContext<'a> {
+    program: &'a Program,
+    output_scopes: &'a mut usize,
+    view_model: &'a mut view_contracts::Function,
+    residency: &'a mut residency::Inputs,
+    range: bool,
+}
+
 fn failure_scope(
     world:&World,scope:FailureScope,error:Reg,registers:&mut Vec<Scalar>,
-    locals:&mut BTreeMap<usize,Ty>,unit:&mut Unit,module:&mut Module,existing:Option<usize>,
+    locals:&mut BTreeMap<usize,Ty>,context:&mut FailureContext<'_>,module:&mut Module,existing:Option<usize>,
 )->Result<Vec<Inst>> {
-    let program=unit.context.as_ref().unwrap().program.clone();
-    let mut b=Builder::from_checked(world,&scope.scope,&program,scope.domain,
+    let mut b=Builder::from_checked(world,&scope.scope,context.program,scope.domain,
         scope.source_definition,scope.source_context,scope.mutable_names);
-    b.application=Some(application::Context{frame:scope.frame});
+    b.application=Some(application::Context { frame: scope.frame, range: context.range });
     b.env=scope.env;b.path=scope.path;b.initialized=scope.initialized;
     b.control_uniform=scope.control_uniform;b.calls=scope.calls;
     b.source_site=scope.source_site;b.in_function=true;
     b.registers=std::mem::take(registers);b.locals=std::mem::take(locals);
-    b.output_scopes=unit.context.as_ref().unwrap().output_scopes;
+    b.output_scopes=*context.output_scopes;
     b.functions=std::mem::take(module);
-    b.view_model=std::mem::take(&mut unit.view_model);
-    b.residency=std::mem::take(&mut unit.residency);
+    b.view_model=std::mem::take(context.view_model);
+    b.residency=std::mem::take(context.residency);
     let initialization=b.view_model.initialization.len();
     let slot=match existing{Some(slot)=>slot,None=>{let slot=b.local_slots(&Ty::scalar(Scalar::U64)).0[0];b.emit(InstKind::StoreLocal(slot,error));slot}};
     b.pending_error=Some(PendingError::Exit(slot));
@@ -1650,18 +1665,19 @@ fn failure_scope(
             let id=ValueIdentity::MemoryValue(memory,component);b.view_model.parameters.insert(id,id);
         }
     }
-    unit.context.as_mut().unwrap().output_scopes=b.output_scopes;
-    unit.view_model=b.view_model;unit.residency=b.residency;
+    *context.output_scopes=b.output_scopes;
+    *context.view_model=b.view_model;
+    *context.residency=b.residency;
     *registers=b.registers;*locals=b.locals;*module=b.functions;
     Ok(b.code)
 }
 fn lower_failure_calls(
-    world:&World,body:&mut ValueCode,mut unit:Option<&mut Unit>,
+    world:&World,body:&mut ValueCode,mut context:Option<FailureContext<'_>>,
     known:&BTreeSet<String>,mut module:Option<&mut Module>,
 )->Result<(bool,bool)> {
     fn block(
         world:&World,code:&mut Vec<Inst>,registers:&mut Vec<Scalar>,locals:&mut BTreeMap<usize,Ty>,
-        unit:&mut Option<&mut Unit>,known:&BTreeSet<String>,module:&mut Option<&mut Module>,
+        context:&mut Option<FailureContext<'_>>,known:&BTreeSet<String>,module:&mut Option<&mut Module>,
     )->Result<(bool,bool)> {
         let mut out=Vec::new();let mut changed=false;let mut scoped=false;
         for mut inst in std::mem::take(code) {
@@ -1687,7 +1703,7 @@ fn lower_failure_calls(
                 let yes=match failure {
                     Some(scope)=>{
                         scoped=true;
-                        failure_scope(world,*scope,error,registers,locals,unit.as_deref_mut().unwrap(),module.as_deref_mut().unwrap(),Some(slot))?
+                        failure_scope(world,*scope,error,registers,locals,context.as_mut().unwrap(),module.as_deref_mut().unwrap(),Some(slot))?
                     }
                     None=>vec![generated(InstKind::Raise(error))],
                 };
@@ -1695,15 +1711,15 @@ fn lower_failure_calls(
                 changed=true;continue;
             }
             let nested=match &mut inst.kind {
-                InstKind::Scope(body)=>block(world,body,registers,locals,unit,known,module)?,
+                InstKind::Scope(body)=>block(world,body,registers,locals,context,known,module)?,
                 InstKind::If{yes,no,..}=>{
-                    let a=block(world,yes,registers,locals,unit,known,module)?;
-                    let b=block(world,no,registers,locals,unit,known,module)?;
+                    let a=block(world,yes,registers,locals,context,known,module)?;
+                    let b=block(world,no,registers,locals,context,known,module)?;
                     (a.0||b.0,a.1||b.1)
                 }
                 InstKind::Loop{condition,body,..}=>{
-                    let a=block(world,condition,registers,locals,unit,known,module)?;
-                    let b=block(world,body,registers,locals,unit,known,module)?;
+                    let a=block(world,condition,registers,locals,context,known,module)?;
+                    let b=block(world,body,registers,locals,context,known,module)?;
                     (a.0||b.0,a.1||b.1)
                 }
                 _=>(false,false),
@@ -1724,7 +1740,7 @@ fn lower_failure_calls(
                     FailureContinuation::Return=>vec![generated(InstKind::Raise(error))],
                     FailureContinuation::Scope(scope)=>{
                         scoped=true;
-                        failure_scope(world,*scope,error,registers,locals,unit.as_deref_mut().unwrap(),module.as_deref_mut().unwrap(),None)?
+                        failure_scope(world,*scope,error,registers,locals,context.as_mut().unwrap(),module.as_deref_mut().unwrap(),None)?
                     }
                     FailureContinuation::Cleanup(slot)=>{
                         let previous=registers.len();registers.push(Scalar::U64);
@@ -1754,9 +1770,46 @@ fn lower_failure_calls(
         }
         *code=out;Ok((changed,scoped))
     }
-    block(world,&mut body.code,&mut body.registers,&mut body.locals,&mut unit,known,&mut module)
+    block(world,&mut body.code,&mut body.registers,&mut body.locals,&mut context,known,&mut module)
 }
-fn lower_module_failures(world:&World,module:&mut Module)->Result<()> {
+fn lower_range_failures(
+    world: &World, program: &mut Program, scopes: &mut BTreeMap<usize, RangeContext>,
+    known: &BTreeSet<String>, module: &mut Module,
+) -> Result<(bool, bool)> {
+    let mut changed = false;
+    let mut scoped = false;
+    let mut stages = std::mem::take(&mut program.stages);
+    for (&index, scope) in scopes {
+        let stage = &mut stages[index];
+        let mut body = ValueCode {
+            entry_origin: None, generated_origin: None,
+            registers: std::mem::take(&mut stage.registers),
+            locals: std::mem::take(&mut stage.locals),
+            code: std::mem::take(&mut stage.code),
+            inputs: Vec::new(), outputs: Vec::new(),
+        };
+        let owner = FailureContext {
+            program,
+            output_scopes: &mut scope.output_scopes,
+            view_model: &mut scope.view_model,
+            residency: &mut scope.residency,
+            range: true,
+        };
+        let result = lower_failure_calls(world, &mut body, Some(owner), known, Some(module))?;
+        changed |= result.0;
+        scoped |= result.1;
+        stage.registers = body.registers;
+        stage.locals = body.locals;
+        stage.code = body.code;
+    }
+    program.stages = stages;
+    Ok((changed, scoped))
+}
+
+fn lower_module_failures(
+    world: &World, module: &mut Module,
+    programs: &mut [(&mut Program, &mut BTreeMap<usize, RangeContext>)],
+) -> Result<()> {
     loop {
         resolve_views(world,module,None)?;
         failure_effects(module);
@@ -1766,10 +1819,29 @@ fn lower_module_failures(world:&World,module:&mut Module)->Result<()> {
         for name in names {
             let mut unit=module.units.get_mut(&name).unwrap().take().unwrap();
             if let Some(mut function)=unit.function.take() {
-                let result=lower_failure_calls(world,&mut function.body,Some(&mut unit),&known,Some(&mut *module))?;
+                let owner = unit.context.as_mut().map(|context| FailureContext {
+                    program: &context.program,
+                    output_scopes: &mut context.output_scopes,
+                    view_model: &mut unit.view_model,
+                    residency: &mut unit.residency,
+                    range: false,
+                });
+                let result=lower_failure_calls(world,&mut function.body,owner,&known,Some(&mut *module))?;
                 changed|=result.0;scoped|=result.1;unit.function=Some(function);
             }
             *module.units.get_mut(&name).unwrap()=Some(unit);
+        }
+        for (program, scopes) in programs.iter_mut() {
+            let result = lower_range_failures(world, program, scopes, &known, module)?;
+            changed |= result.0;
+            scoped |= result.1;
+        }
+        for index in 0..module.programs.len() {
+            let mut pending = module.programs[index].take().unwrap();
+            let result = lower_range_failures(world, &mut pending.program, &mut pending.scopes, &known, module)?;
+            changed |= result.0;
+            scoped |= result.1;
+            module.programs[index] = Some(pending);
         }
         if scoped {
             for unit in module.units.values_mut() {
@@ -1792,41 +1864,66 @@ fn lower_module_failures(world:&World,module:&mut Module)->Result<()> {
         unit.context=None;
         *module.units.get_mut(&name).unwrap()=Some(unit);
     }
+    for (program, scopes) in programs.iter_mut() {
+        resolve_range_views(module, program, scopes)?;
+    }
+    for index in 0..module.programs.len() {
+        let mut pending = module.programs[index].take().unwrap();
+        resolve_range_views(module, &mut pending.program, &pending.scopes)?;
+        module.programs[index] = Some(pending);
+    }
     Ok(())
 }
+
 fn bind_range_body(
-    world:&World,body:&mut ValueCode,framed:&BTreeSet<String>,fallible:&BTreeSet<String>,offset:Option<u32>,
-)->Result<()> {
+    world: &World, body: &mut ValueCode, framed: &BTreeSet<String>, fallible: &BTreeSet<String>,
+    offset: Option<u32>, scoped: bool,
+) -> Result<()> {
     let mut uses=false;
     calls(&mut body.code,&mut |call|uses|=matches!(&call.target,CallTarget::Defined(name)if framed.contains(name)));
     if uses {
-        let first=body.registers.len();body.registers.extend([Scalar::U32,Scalar::U32]);
-        let frame=vec![first,first+1];let offset=offset.unwrap();
+        let offset = offset.unwrap();
+        let frame = match body.code.as_slice() {
+            [Inst { kind: InstKind::Uniform(low, first), .. },
+             Inst { kind: InstKind::Uniform(high, second), .. }, ..]
+                if *first == offset && *second == offset + 4 => vec![*low, *high],
+            _ => {
+                let first = body.registers.len();
+                body.registers.extend([Scalar::U32, Scalar::U32]);
+                body.code.splice(0..0, [
+                    Inst::new(InstKind::Uniform(first, offset)),
+                    Inst::new(InstKind::Uniform(first + 1, offset + 4)),
+                ]);
+                vec![first, first + 1]
+            }
+        };
         calls(&mut body.code,&mut |call|{
             if matches!(&call.target,CallTarget::Defined(name)if framed.contains(name)) {
                 call.arguments.insert(0,CallArgument::Value{origin:Some(Arc::new(ArgumentOrigin::Frame)),dataset_borrow:None,ty:application::pointer_type(),values:frame.clone()});
             }
         });
-        let code=std::mem::take(&mut body.code);
-        body.code=vec![Inst::new(InstKind::Uniform(first,offset)),Inst::new(InstKind::Uniform(first+1,offset+4))];
-        body.code.extend(code);
     }
-    lower_failure_calls(world,body,None,fallible,None)?;
+    if !scoped {
+        lower_failure_calls(world, body, None, fallible, None)?;
+    }
     calls(&mut body.code,&mut |call|call.failure=None);
     Ok(())
 }
-fn bind_range_program(world:&World,program:&mut Program,framed:&BTreeSet<String>,fallible:&BTreeSet<String>,needs_frame:bool)->Result<()> {
-    if needs_frame {
+fn bind_range_program(
+    world: &World, program: &mut Program, framed: &BTreeSet<String>, fallible: &BTreeSet<String>,
+    needs_frame: bool, scopes: &BTreeMap<usize, RangeContext>,
+) -> Result<()> {
+    if needs_frame && program.native_frame.is_none() {
         let offset=ir::align_up(program.uniform_bytes,8);
         program.native_frame=Some(offset);program.uniform_bytes=offset+8;
     }
-    for stage in &mut program.stages {
+    for (index, stage) in program.stages.iter_mut().enumerate() {
         let mut body=ValueCode{
             entry_origin:None,generated_origin:None,
             registers:std::mem::take(&mut stage.registers),locals:std::mem::take(&mut stage.locals),
             code:std::mem::take(&mut stage.code),inputs:Vec::new(),outputs:Vec::new(),
         };
-        bind_range_body(world,&mut body,framed,fallible,program.native_frame)?;
+        bind_range_body(world, &mut body, framed, fallible, program.native_frame, scopes.contains_key(&index))?;
         stage.registers=body.registers;stage.locals=body.locals;stage.code=body.code;
         let values=match &mut stage.operation{
             Operation::CustomReduce(value)=>Some(value),
@@ -1836,27 +1933,50 @@ fn bind_range_program(world:&World,program:&mut Program,framed:&BTreeSet<String>
         };
         if let Some(values)=values {
             for body in values.project.iter_mut().chain([&mut values.identity,&mut values.combine]){
-                bind_range_body(world,body,framed,fallible,program.native_frame)?;
+                bind_range_body(world, body, framed, fallible, program.native_frame, false)?;
             }
         }
     }
     Ok(())
 }
+fn resolve_range_views(
+    module: &Module, program: &mut Program, scopes: &BTreeMap<usize, RangeContext>,
+) -> Result<()> {
+    if scopes.is_empty() { return Ok(()); }
+    let closed = module.units.iter().map(|(name, unit)|
+        (name.clone(), view_outputs(&unit.as_ref().unwrap().contract)))
+        .collect::<BTreeMap<_, _>>();
+    let names = scopes.keys().map(|&index| (format!("{}@range{index}", program.name), index))
+        .collect::<BTreeMap<_, _>>();
+    let functions = names.iter().map(|(name, index)| (name.clone(), &scopes[index].view_model))
+        .collect::<BTreeMap<_, _>>();
+    let solved = view_contracts::solve(&functions, closed, |_, _| false)?;
+    for (name, memory) in &solved.memory {
+        let stage = &mut program.stages[names[name]];
+        address::apply_memory(&mut stage.code, memory, &stage.locals);
+    }
+    Ok(())
+}
+
 fn finalize(
     world:&World,
     mut module: Module,
     mut reachable: BTreeSet<String>,
     mut root: Option<(&mut ValueCode,&view_contracts::Function)>,
     owner: Option<&str>,
-    programs: &mut [&mut Program],
+    programs: &mut [(&mut Program, &mut BTreeMap<usize, RangeContext>)],
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
-    lower_module_failures(world,&mut module)?;
+    lower_module_failures(world,&mut module,programs)?;
     let residency_imports=resolve_residencies(world,&mut module)?;
     let mut resources = std::mem::take(&mut module.resources);
-    let mut programs = programs.iter_mut().map(|program| &mut **program)
-        .chain(resources.programs.iter_mut().map(|(_, program)| program)).collect::<Vec<_>>();
-    for program in programs.iter() { reachable.extend(program_dependencies(program)); }
+    let mut pending_programs = std::mem::take(&mut module.programs)
+        .into_iter().map(Option::unwrap).collect::<Vec<_>>();
+    let mut programs = programs.iter_mut().map(|(program, scopes)| (&mut **program, &**scopes, None))
+        .chain(pending_programs.iter_mut().map(|pending|
+            (&mut pending.program, &pending.scopes, pending.deferred_source.as_deref())))
+        .collect::<Vec<_>>();
+    for (program, _, _) in programs.iter() { reachable.extend(program_dependencies(program)); }
     let mut units = module
         .units
         .into_iter()
@@ -1922,7 +2042,7 @@ fn finalize(
             imports.insert(name.clone(), unit.contract.bytes());
         }
     }
-    for program in &mut programs {
+    for (program, scopes, source) in &mut programs {
         let names = program_dependencies(program);
         for name in &names {
             if frame.contains(name) && program.target()!=Target::Cpu {
@@ -1931,11 +2051,16 @@ fn finalize(
             }
         }
         let needs_frame=names.iter().any(|name|frame.contains(name));
-        bind_range_program(world,program,&frame,&fallible,needs_frame)?;
+        bind_range_program(world, program, &frame, &fallible, needs_frame, scopes)?;
+        if let Some(source) = source {
+            crate::optimize::optimize(program, &world.worker)
+                .map_err(|error| crate::compiler::diagnostic(source, error))?;
+        }
         program.imports = names.into_iter().filter_map(|name|
             imports.get(&name).map(|contract| (name, contract.clone()))).collect();
     }
     drop(programs);
+    resources.programs = pending_programs.into_iter().map(|pending| (pending.target, pending.program)).collect();
     units.retain(|name, _| reachable.contains(name));
     let unframed = units.iter()
         .filter(|(name, unit)| unit.function.is_some() && !frame.contains(*name))
@@ -1981,8 +2106,11 @@ pub(super) fn finish(world:&World, module: Module, root: &mut ValueCode, model:&
     let roots = dependencies(root);
     finalize(world, module, roots, Some((root,model)), None, &mut [])
 }
-pub(super) fn finish_program(world:&World, module: Module, mut program: Program) -> Result<Program> {
-    let mut finalized = finalize(world, module, BTreeSet::new(), None, None, &mut [&mut program])?;
+pub(super) fn finish_program(
+    world: &World, module: Module, mut program: Program,
+    mut scopes: BTreeMap<usize, RangeContext>,
+) -> Result<Program> {
+    let mut finalized = finalize(world, module, BTreeSet::new(), None, None, &mut [(&mut program, &mut scopes)])?;
     for function in &mut finalized.functions {
         application::lower_sdk_resources(&mut function.body,&finalized.resources);
     }
@@ -2193,6 +2321,7 @@ fn build_domain(
     let bound_parameters=input.parameters(world)?;
     let expanded = expand_domain(world, input, functions, element_inputs)?;
     let mut signature = expanded.program;
+    let mut scopes = expanded.scopes;
     if !signature.accelerations.is_empty() || target == Target::Gpu && !signature.textures.is_empty() {
         return d.source.fail(
             input.span(),
@@ -2276,6 +2405,8 @@ fn build_domain(
             entry_context.as_ref(),
             &signature,
             &stages[start..call.stage],
+            &mut scopes,
+            start,
             &required,
             &call.before,
             &element_required,
@@ -2359,6 +2490,8 @@ fn build_domain(
         entry_context.as_ref(),
         &signature,
         &stages[start..],
+        &mut scopes,
+        start,
         &required,
         &signature.prefix_guarantees,
         &element_required,
@@ -2438,6 +2571,8 @@ fn emit_domain_part(
     generation: Option<&GenerationAnchor>,
     signature: &Program,
     stages: &[Stage],
+    scopes: &mut BTreeMap<usize, RangeContext>,
+    start: usize,
     required: &[PrefixRelation],
     guaranteed: &[PrefixRelation],
     element_required: &[ElementFact],
@@ -2468,9 +2603,18 @@ fn emit_domain_part(
     program.prefix_guarantees = guaranteed.to_vec();
     program.element_requirements = element_required.to_vec();
     program.element_guarantees = program.element_outputs(element_guaranteed.to_vec());
-    crate::optimize::optimize(&mut program, worker).map_err(|error| crate::compiler::diagnostic(source, error))?;
-    let index = functions.resources.programs.len();
-    functions.resources.programs.push((target, program));
+    let scopes = (start..start + stages.len())
+        .filter_map(|index| scopes.remove(&index).map(|scope| (index - start, scope)))
+        .collect::<BTreeMap<_, _>>();
+    let deferred_source = if !scopes.is_empty() {
+        Some(source.to_path_buf())
+    } else {
+        crate::optimize::optimize(&mut program, worker)
+            .map_err(|error| crate::compiler::diagnostic(source, error))?;
+        None
+    };
+    let index = functions.programs.len();
+    functions.programs.push(Some(PendingProgram { target, program, scopes, deferred_source }));
     let mut arguments = vec![frame.clone()];
     arguments.extend(data.iter().flat_map(|regs| *regs).map(|reg| CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
         dataset_borrow:None, ty: Ty::scalar(Scalar::U32),

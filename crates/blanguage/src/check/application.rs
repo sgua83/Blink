@@ -4,6 +4,7 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Context {
     pub frame: Option<Vec<Reg>>,
+    pub range: bool,
 }
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Ownership {
@@ -2512,7 +2513,7 @@ impl Builder<'_> {
         call: &Expr,
         span: Span,
     ) -> Result<Option<returns::Returned>> {
-        if self.application.is_none() {
+        if !self.application_entry() {
             return self.fail(
                 span,
                 "B266",
@@ -2723,7 +2724,7 @@ impl Builder<'_> {
     }
     #[inline(never)]
     pub(super) fn application_parallel(&mut self, statement: &Stmt, element:&str, domain:&ParallelDomain, body:&Block) -> Result<()> {
-        if self.application.is_none() {
+        if !self.application_entry() {
             return self.fail(
                 statement.span(),
                 "B131",
