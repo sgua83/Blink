@@ -2370,7 +2370,7 @@ impl Clause {
     // 同一资源来源的路径按事实合取去重，保留每个来源实际成立的完整条件。
     pub(super) fn canonical(&self)->Self{
         fn insert(terms:&mut BTreeSet<Facts>,facts:Facts)->bool{
-            if terms.iter().any(|old|old.is_subset(&facts)||!Clause::facts(facts.clone()).overlaps(&Clause::facts(old.clone()).negate())){return false;}
+            if terms.iter().any(|old|old.is_subset(&facts))||terms.iter().any(|old|!Clause::facts(facts.clone()).overlaps(&Clause::facts(old.clone()).negate())){return false;}
             terms.retain(|old|!facts.is_subset(old)&&Clause::facts(old.clone()).overlaps(&Clause::facts(facts.clone()).negate()));terms.insert(facts)
         }
         fn facts(value:&Facts)->Option<Facts>{

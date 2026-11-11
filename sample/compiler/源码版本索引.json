@@ -176,7 +176,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "d21a6408ddc4b9cf06ba1eca4829121f442606a45010cd82e91be0ccbc398c61"
+      "sha256": "d4046f047be2af1e0cbc37831de69f375d9224f774933649299de98749697a8f"
     },
     {
       "path": "crates/blanguage/src/check/bounds/contract.rs",
