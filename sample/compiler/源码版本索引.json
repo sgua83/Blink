@@ -156,7 +156,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "5d6a4e6954afb8b3849300b691bac1cdb3131b7fce64ce9a7a19b662462c3ae9"
+      "sha256": "eab0238d8bdc8a8e5bc8275fa5d815677810680ece98a0f12dd665bd95a460bc"
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
@@ -212,7 +212,7 @@
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "sha256": "de8c38c7f36abfe874d4b5d916e03e521f30a171a1ccf8dfd8c90e95736b28bb"
+      "sha256": "8e09421526e897a82b8bc98cee4a26eb74a36f84d229ec02609877e46fd9f4a7"
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
@@ -950,8 +950,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 4525,
-      "end_line": 4562,
+      "start_line": 4527,
+      "end_line": 4564,
       "sha256": "bf983a5767d1d7d3d24dba01026280deda55eeeceb75828ec5c0575b3b82640b"
     },
     {
@@ -998,8 +998,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 1866,
-      "end_line": 1874,
+      "start_line": 1868,
+      "end_line": 1876,
       "sha256": "21762500df2e7415ab1e492f6cf929c23015c490d4373145740df58b2f0f9c48"
     },
     {
@@ -1028,8 +1028,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 4041,
-      "end_line": 4059,
+      "start_line": 4043,
+      "end_line": 4061,
       "sha256": "222afc84992e5fada46caa94ed3b638c7d7f534b539ca6666ca4b662a458ae08"
     },
     {
@@ -1148,8 +1148,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 4101,
-      "end_line": 4104,
+      "start_line": 4103,
+      "end_line": 4106,
       "sha256": "7455a96f8a8aaccca92ec4fec69f286b9503411a4ca854a6a12226afcfbc3ab2"
     },
     {
@@ -1580,8 +1580,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 1701,
-      "end_line": 1710,
+      "start_line": 1703,
+      "end_line": 1712,
       "sha256": "7630fba9e928fac5649e41dd4f3abf67b1110187bf8d4057bf61efb021f984b4"
     },
     {

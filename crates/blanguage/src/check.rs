@@ -1393,6 +1393,8 @@ fn stage_root(
         ExprKind::Name(n) => {
             if let Some(root) = env.get(n) {
                 Ok(root.clone().reference_literal(operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path)))
+            } else if let Some(value) = instance.bindings.values.get(n) {
+                Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(*value)], None).reference_literal(operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path)))
             } else if let Some(key) = world
                 .resolve(n, &d.module, &d.imports, true).unique()
                 .filter(|key| world.functions[key].function.kind() == FunctionKind::Constant)

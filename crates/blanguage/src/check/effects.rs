@@ -865,7 +865,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         };
         let Some(key)=self.world.resolve(name,self.lexical.module(),self.lexical.imports(),true).unique()else{return Ok(None);};
         let function=&self.world.functions[&key].function;
-        if function.c_abi()||function.kind()!=FunctionKind::Value||function.target()!=Target::Cpu{return Ok(None);}
+        if function.c_abi()||function.kind()!=FunctionKind::Value||function.target()==Target::Gpu{return Ok(None);}
         let types=args.iter().map(|arg|self.expression(&arg)).collect::<Result<Vec<_>>>()?;
         let actuals=types.iter().map(|ty|generics::Actual{
             ty:ty.as_ref().map(std::borrow::Cow::Borrowed),
