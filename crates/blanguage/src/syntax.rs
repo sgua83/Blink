@@ -245,33 +245,38 @@ optional_list!(TypeNode,contracts,PredicateNode);
 optional_list!(FunctionNode,body,StmtNode);
 impl Type {pub fn canonical(&self)->bool{self.row().canonical!=0} pub fn dataset(&self)->bool{self.row().dataset!=0} pub fn view(&self)->bool{self.row().view!=0} pub fn tile(&self)->bool{self.row().tile!=0}}
 impl ValueParameter {pub fn choices(&self)->Option<&[u32]>{let value=self.row().choices;(value.present!=0).then(||self.owner.array(value.value))}}
-pub(crate) struct ValueCombinations<'a> {
+pub(crate) struct InstanceCombinations<'a> {
     parameters: &'a List<wire::ValueParameterNode>,
+    type_sizes: &'a [u64],
     indices: Vec<u64>,
-    row: Vec<u32>,
+    values: Vec<u32>,
 }
 
 impl List<wire::ValueParameterNode> {
-    pub fn value_combinations(&self) -> ValueCombinations<'_> {
-        ValueCombinations {
+    pub fn instance_combinations<'a>(&'a self, type_sizes: &'a [u64]) -> InstanceCombinations<'a> {
+        InstanceCombinations {
             parameters: self,
-            indices: vec![0; self.len()],
-            row: vec![0; self.len()],
+            type_sizes,
+            indices: vec![0; type_sizes.len() + self.len()],
+            values: vec![0; self.len()],
         }
     }
 }
 
-impl ValueCombinations<'_> {
-    pub fn try_for_each(&mut self, mut consume: impl FnMut(&[u32]) -> crate::Result<()>) -> crate::Result<()> {
-        let nodes = self.parameters.owner.view().nodes;
-        let parameters = self.parameters.value;
+impl InstanceCombinations<'_> {
+    pub fn try_for_each(&mut self, mut consume: impl FnMut(&[u64], &[u32]) -> crate::Result<()>) -> crate::Result<()> {
+        let domains = wire::InstanceDomains {
+            nodes: self.parameters.owner.view().nodes,
+            parameters: self.parameters.value,
+            type_sizes: self.type_sizes.as_ptr(),
+            type_count: self.type_sizes.len() as u64,
+        };
+        let row = wire::InstanceRow { indices: self.indices.as_mut_ptr(), values: self.values.as_mut_ptr() };
         let mut first = 1;
-        // The sealed store outlives the call. B writes only the two
-        // caller-owned arrays, each with one entry per parameter.
-        while unsafe {
-            wire::advance_value_domain(nodes, parameters, self.indices.as_mut_ptr(), self.row.as_mut_ptr(), first) != 0
-        } {
-            consume(&self.row)?;
+        // The sealed syntax store and the domain lengths stay live. B
+        // writes one index per axis and one value per const parameter.
+        while unsafe { wire::advance_instance_domain(domains, row, first) } != 0 {
+            consume(&self.indices[..self.type_sizes.len()], &self.values)?;
             first = 0;
         }
         Ok(())

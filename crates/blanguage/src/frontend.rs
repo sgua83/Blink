@@ -567,26 +567,20 @@ pub(crate) fn validate_types(world: &World) -> Result<()> {
     for (name, (record, source, module, imports)) in &world.records {
         generics::validate_parameters(&record.types(), &record.name(), source, record.span())?;
         value_parameters::validate(&record.values(), record.name(), std::iter::empty::<crate::syntax::Param>(), source, record.span())?;
-        let parameters = record.values();
-        let mut values = parameters.value_combinations();
-        for arguments in
-            generics::combinations(&world, &record.types(), source, record.span(), module, imports)?
-        {
-            values.try_for_each(|row| {
+        generics::for_each_combination(
+            world,
+            &record.types(),
+            &record.values(),
+            (source, record.span(), module, imports),
+            |arguments, row| {
                 let mut ty = TypeName::named(name);
-                ty.arguments = arguments
-                    .iter()
-                    .cloned()
-                    .map(GenericArgument::Type)
-                    .chain(
-                        row.iter()
-                            .map(|value| GenericArgument::Value(Shape::Literal(*value))),
-                    )
+                ty.arguments = arguments.into_iter().map(GenericArgument::Type)
+                    .chain(row.iter().map(|&value| GenericArgument::Value(Shape::Literal(value))))
                     .collect();
                 world.ty(&ty, source, record.span(), module, imports)?;
                 Ok(())
-            })?;
-        }
+            },
+        )?;
     }
 
     Ok(())

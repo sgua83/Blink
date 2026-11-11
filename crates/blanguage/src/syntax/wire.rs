@@ -258,12 +258,26 @@ pub struct StorageView{pub nodes:*mut c_void, pub node_bytes:u64, pub text:*mut 
 #[repr(C)]
 #[derive(Clone,Copy)]
 pub struct StorageCondition{pub value:ConditionRef, pub present:u32, pub error:StorageError,}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct InstanceDomains {
+    pub nodes: *const c_void,
+    pub parameters: Slice,
+    pub type_sizes: *const u64,
+    pub type_count: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct InstanceRow {
+    pub indices: *mut u64,
+    pub values: *mut u32,
+}
 unsafe extern "C" {
 #[link_name="bootstrap.ast_storage::create"] pub fn create(source:*mut c_void,length:u64)->StorageCreate;
 #[link_name="bootstrap.ast_storage::destroy"] pub fn destroy(storage:*mut c_void)->StorageError;
 #[link_name="bootstrap.ast_storage::view"] pub fn view(storage:*mut c_void)->StorageView;
-#[link_name="bootstrap.value_domain::advance"]
-pub fn advance_value_domain(nodes:*const c_void, parameters:Slice, indices:*mut u64, row:*mut u32, first:u32)->u32;
+#[link_name="bootstrap.instance_domain::advance"]
+pub fn advance_instance_domain(domains:InstanceDomains, row:InstanceRow, first:u32)->u32;
 #[link_name="bootstrap.ast_storage::indices"] pub fn indices(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
 #[link_name="bootstrap.ast_storage::choices"] pub fn choices(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
 #[link_name="bootstrap.ast_storage::texts"] pub fn texts(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;

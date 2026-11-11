@@ -301,28 +301,17 @@ pub(crate) fn instances(
     definition: &std::sync::Arc<crate::Definition>,
 ) -> Result<Vec<Instance>> {
     let f = &definition.function;
-    let parameters = f.values();
-    let mut values = parameters.value_combinations();
     let mut result = Vec::new();
-    for arguments in combinations(
+    for_each_combination(
         world,
         &f.types(),
-        &definition.source,
-        f.span(),
-        &definition.module,
-        &definition.imports,
-    )? {
-        values.try_for_each(|row| {
-            result.push(instantiate(
-                world,
-                base,
-                definition,
-                arguments.clone(),
-                row,
-            )?);
+        &f.values(),
+        (&definition.source, f.span(), &definition.module, &definition.imports),
+        |arguments, values| {
+            result.push(instantiate(world, base, definition, arguments, values)?);
             Ok(())
-        })?;
-    }
+        },
+    )?;
     Ok(result)
 }
 pub(crate) fn validate_parameters(
@@ -352,34 +341,28 @@ pub(crate) fn validate_parameters(
     }
     Ok(())
 }
-pub(crate) fn combinations(
+pub(crate) fn for_each_combination(
     world: &World,
     types: &crate::syntax::List<crate::syntax::wire::TypeParameterNode>,
-    source: &Source,
-    span: Span,
-    module: &str,
-    imports: &[String],
-) -> Result<Vec<Vec<TypeName>>> {
-    let mut result = vec![Vec::new()];
+    values: &crate::syntax::List<crate::syntax::wire::ValueParameterNode>,
+    (source, span, module, imports): (&Source, Span, &str, &[String]),
+    mut consume: impl FnMut(Vec<TypeName>, &[u32]) -> Result<()>,
+) -> Result<()> {
+    let mut domains = Vec::with_capacity(types.len());
     for parameter in types {
-        let Some(family) = parameter.family() else {
-            result.clear();
-            continue;
+        let members = match parameter.family() {
+            Some(family) => world.family_members(&family, source, span, module, imports, &mut BTreeSet::new())?,
+            None => Vec::new(),
         };
-        let members =
-            world.family_members(&family, source, span, module, imports, &mut BTreeSet::new())?;
-        result = result
-            .into_iter()
-            .flat_map(|prefix| {
-                members.iter().map(move |(name, _)| {
-                    let mut args = prefix.clone();
-                    args.push(name.clone());
-                    args
-                })
-            })
-            .collect();
+        domains.push(members.into_iter().map(|(name, _)| name).collect::<Vec<_>>());
     }
-    Ok(result)
+    let sizes: Vec<_> = domains.iter().map(|domain| domain.len() as u64).collect();
+    values.instance_combinations(&sizes).try_for_each(|indices, row| {
+        let arguments = domains.iter().zip(indices)
+            .map(|(domain, &index)| domain[index as usize].clone())
+            .collect();
+        consume(arguments, row)
+    })
 }
 pub(crate) fn substitute_type(
     ty: &mut TypeName,
