@@ -262,6 +262,38 @@ pub(super) struct Contract {
     pub required:Requirements,
     pub calls:Vec<Call>,
 }
+impl Contract {
+    pub(super) fn normalize_contract(&mut self,normal:&mut bounds::Normalizer) {
+        for conditions in self.required.values_mut() {
+            let mut result=normal.condition(&bounds::Condition::constant(false));
+            for condition in std::mem::take(conditions){result=normal.union(&result,&condition);}
+            conditions.insert(result);
+        }
+        for call in &mut self.calls {
+            for value in call.arguments.values_mut(){value.normalize_contract(normal);}
+            for value in call.bindings.values_mut(){normal.proof(value);}
+            call.path=normal.clause(&call.path);
+        }
+    }
+}
+impl Residency {
+    pub(super) fn normalize_contract(&mut self,normal:&mut bounds::Normalizer) {
+        match self {
+            Self::Absent=>{},
+            Self::Selected(when,yes,no)=>{**when=normal.condition(when);yes.normalize_contract(normal);no.normalize_contract(normal);},
+            Self::Origins(origins)=>{
+                let previous=std::mem::take(origins);
+                for mut origin in previous {
+                    if let Origin::Output(output)=&mut origin {
+                        for value in output.arguments.values_mut(){value.normalize_contract(normal);}
+                        for value in output.bindings.values_mut(){normal.proof(value);}
+                    }
+                    origins.insert(origin);
+                }
+            },
+        }
+    }
+}
 impl crate::module::codec::Encode for Contract {
     fn encode(&self,w:&mut crate::module::codec::Writer){
         self.required.len().encode(w);

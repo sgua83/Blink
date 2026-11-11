@@ -120,13 +120,10 @@ pub(crate) struct Contract {
 }
 impl crate::module::codec::Encode for Contract {
     fn encode(&self,w:&mut crate::module::codec::Writer){
-        self.parameters.encode(w);self.result.encode(w);self.inputs.encode(w);self.element_inputs.encode(w);
-        self.returned.encode(w);self.written.encode(w);self.requires.encode(w);
-        self.target.encode(w);self.frame.encode(w);self.fallible.encode(w);self.domain.encode(w);
-        self.residency.encode(w);
-        self.view_access.as_ref().unwrap().encode(w);self.initialization.as_ref().unwrap().encode(w);
+        contract::encode(self,w);
     }
 }
+mod contract;
 impl crate::module::codec::Decode for Contract {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
         use crate::module::codec::Decode;

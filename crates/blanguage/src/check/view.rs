@@ -49,6 +49,20 @@ pub(super) struct Borrow{
     pub calls:Edges<view_contracts::CallResult>,
     pub reads:Edges<view_contracts::ContentRead>,
 }
+impl Borrow {
+    pub(super) fn normalize_contract(&mut self,normal:&mut bounds::Normalizer) {
+        let sources=std::mem::take(&mut self.sources.0);
+        for(mut source,when)in sources {
+            match &mut source {
+                Source::Position(origin)|Source::Contents{origin,..}=>normal.origin(Arc::make_mut(origin)),
+                Source::Element{parent,..}|Source::Projection{parent,..}=>parent.normalize_contract(normal),
+                _=>{},
+            }
+            let when=normal.condition(&when);
+            self.sources.0.entry(source).and_modify(|previous|*previous=normal.union(previous,&when)).or_insert(when);
+        }
+    }
+}
 impl Borrow{
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         let mut result=Self{inputs:self.inputs.substitute_values(values),calls:self.calls.substitute_values(values),reads:self.reads.substitute_values(values),..Self::default()};

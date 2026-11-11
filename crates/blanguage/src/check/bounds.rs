@@ -1,6 +1,8 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 use super::*;
 mod floating;
+mod contract;
+pub(super) use contract::Normalizer;
 use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::ManuallyDrop, sync::Arc};
 
 pub(super) fn seeks(body: &Block) -> bool {
@@ -1719,6 +1721,15 @@ fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
         .collect()
 }
 impl Fact {
+    // Unsigned endpoint aliases describe the same value, including identities
+    // retained by a lossless widening. Keep one rule for checking and export.
+    fn numeric_alias(self)->Self {
+        match self {
+            Self::Minimum(id,scalar,1)if scalar.is_integer()&&!scalar.is_signed()=>Self::NonZero(id),
+            Self::Maximum(id,scalar,0)if scalar.is_integer()&&!scalar.is_signed()=>Self::Zero(id),
+            other=>other,
+        }
+    }
     fn map(self,identity:&impl Fn(ValueIdentity)->ValueIdentity)->Self {
         match self {
             Self::Equal(a,b)=>Self::equal(identity(a),identity(b)),
@@ -2364,8 +2375,8 @@ impl Clause {
             if contradictory(value){return None;}
             let lower=minimums(value);
             let mut next=value.iter().filter(|fact|!matches!(fact,Fact::Below(a,b,false,scalar)if a==b&&scalar.is_integer())&&!matches!(fact,Fact::Index(id,IndexDomain::Upper(limit,0))if id==limit)&&!matches!(fact,Fact::Minimum(..)|Fact::Maximum(..))&&!matches!(fact,Fact::NonZero(id)if lower.iter().any(|((other,scalar),n)|other==id&&*n>1&&scalar.is_integer()&&!scalar.is_signed()))).copied().collect::<Facts>();
-            next.extend(lower.into_iter().filter(|((id,scalar),n)|*n!=0&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|if n==1&&scalar.is_integer()&&!scalar.is_signed(){Fact::NonZero(id)}else{Fact::Minimum(id, scalar, n)}));
-            next.extend(maximums(value).into_iter().filter(|((id,scalar),n)|*n!=scalar.bit_mask()&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|if n==0&&scalar.is_integer()&&!scalar.is_signed(){Fact::Zero(id)}else{Fact::Maximum(id, scalar, n)}));
+            next.extend(lower.into_iter().filter(|((id,scalar),n)|*n!=0&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|Fact::Minimum(id,scalar,n).numeric_alias()));
+            next.extend(maximums(value).into_iter().filter(|((id,scalar),n)|*n!=scalar.bit_mask()&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|Fact::Maximum(id,scalar,n).numeric_alias()));
             Some(next)
         }
         let mut values:BTreeMap<usize,BTreeSet<Facts>>=BTreeMap::new();
