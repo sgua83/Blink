@@ -540,6 +540,8 @@ impl Builder<'_> {
                 _=>continue,
             };
             let path=when.guard_at_call(arguments).assume(&bounds::Clause::default(),true);
+            if !path.possible(){continue;}
+            if borrows.content_inputs(){return None;}
             let borrow=borrows.guards_at_call(arguments).map_sources(|source|match &source {
                 view::Source::Position(origin)if matches!(&origin.root,address::Root::Parameter(parameter)if project(*parameter))=>view::Borrow::default(),
                 _=>source.at_call(arguments),
@@ -891,8 +893,7 @@ impl Builder<'_> {
             .flat_map(|ty| &ty.components)
             .map(|(scalar, _)| self.reg(*scalar))
             .collect::<Vec<_>>();
-        let closed_memory=self.native_call_memory(name,&view_arguments,|_|false);
-        let views_closed=closed_memory.is_some();
+        let views_closed=self.functions.units[name].as_ref().is_some_and(|unit|unit.contract.view_access.is_some());
         let memory=if self.application.is_none(){
             let access=self.functions.units[name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();
             self.native_dataset_access(&access,&view_arguments,span)?
@@ -903,14 +904,14 @@ impl Builder<'_> {
                 ||unit.contract.view_access.as_ref().is_some_and(|access|access.iter().any(view_contracts::Access::content_context))
         });
         let memory_use=self.view_model.uses.len();
-        let(borrow,snapshots)=match closed_memory {
+        let(borrow,snapshots)=if content_context {
+            let kind=if self.functions.read_only(name){address::Capture::Read}else{address::Capture::Write};
+            (memory_borrow,Some(self.capture_address_values(memory_use,kind).into()))
+        }else{match self.native_call_memory(name,&view_arguments,|_|false) {
             Some(mut memory)=>{
                 let borrow=memory.iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(borrow);result}).restricted(&self.path);
                 let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){
                     Some(self.capture_address_values(memory_use,address::Capture::Write).into())
-                }else if content_context{
-                    let kind=if memory.iter().any(|(_,access,_)|access.is_some_and(Access::writes)){address::Capture::Write}else{address::Capture::Read};
-                    Some(self.capture_address_values(memory_use,kind).into())
                 }else{
                     for(source,_,_)in &mut memory{*source=source.restricted(&self.path);}
                     self.write_address_values(&borrow,&memory)?;None
@@ -918,7 +919,7 @@ impl Builder<'_> {
                 (borrow,snapshots)
             },
             None=>(memory_borrow,Some(self.capture_address_values(memory_use,address::Capture::Write).into())),
-        };
+        }};
         self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(memory_use),borrow,access:Some(Access::InOut),written:None,snapshots:snapshots.clone(),span,address_fields:Arc::from([])})?;
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
         for argument in &mut arguments {

@@ -98,7 +98,8 @@ impl Origin {
     pub fn symbolic_input(&self)->bool {
         match &self.root {
             Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().any(|source|match source {
-                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..)|ValueIdentity::DatasetContent(..),_)=>true,
+                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..)|ValueIdentity::DatasetContent(..),_)
+                |view::Source::Contents{..}=>true,
                 view::Source::Position(origin)=>origin.symbolic_input(),
                 _=>false,
             }),
@@ -109,7 +110,7 @@ impl Origin {
         match &self.root {
             Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().all(|source|match source {
                 view::Source::Position(origin)=>origin.layout==self.base&&origin.layout_valid(),
-                view::Source::External|view::Source::Parameter(..)|view::Source::Inactive=>true,
+                view::Source::External|view::Source::Parameter(..)|view::Source::Contents{..}|view::Source::Inactive=>true,
                 _=>false,
             }),
             _=>true,
