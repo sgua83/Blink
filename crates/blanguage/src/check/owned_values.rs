@@ -176,7 +176,7 @@ impl OwnedValuePayload {
         }
     }
     pub(super) fn mark_moved(&mut self) {
-        if self.value.ty.has_variants() || self.value.ty.cleanup.is_some() || self.value.ty.task_result().is_some() {
+        if self.value.ty.has_owned_presence() {
             self.ownership = Ownership::Moved;
             return;
         }

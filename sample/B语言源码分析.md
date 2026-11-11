@@ -187,7 +187,7 @@ brun先接收精确的`cpu`／`gpu`后端，其他值直接交回参数错误；
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:341`。
+源码节选：`crates/blanguage/src/ir.rs:345`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -1385,7 +1385,7 @@ impl Owner {
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:324`。
+源码节选：`crates/blanguage/src/ir.rs:328`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -2124,6 +2124,8 @@ assign_owned_proof同时消费直接ApplicationElement和动态Indexed.locations
     }
 ```
 
+拥有记录中的 `task<T>` 字段持有自己的拥有状态。字段移出时，`Ty::has_owned_presence` 让原拥有树在这一层结束旧字段的拥有与初始化，同时将任务交给新拥有者。显式等待消费该拥有者，记录清理只处理仍然拥有的字段。再次取出同一个已移动的任务字段会报 B227。
+
 try提前交付Err时，外层赋值或调用已经取消，临时位置与实参借用没有未来消费者。finish_return先检查返回值、write输出及真实借用，再从原argument绑定中结束非拥有临时值；原ApplicationData和OwnedValue中仍有拥有权的临时值继续交给release_application_data，按原顺序调用静态F和释放资源。正常继续的右值仍保持借用，错误返回也不免除输出初始化或允许局部view逃逸。它修正原临时消费者的结束时机，不增加取消协议、状态或释放表。
 
 
@@ -2545,7 +2547,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:1038`。
+源码节选：`crates/blanguage/src/ir.rs:1042`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -2559,7 +2561,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:1061`。
+源码节选：`crates/blanguage/src/ir.rs:1065`。
 
 ```rust
     Load {
@@ -2591,7 +2593,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1268`。
+源码节选：`crates/blanguage/src/ir.rs:1272`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -3187,7 +3189,7 @@ IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1104`。
+源码节选：`crates/blanguage/src/ir.rs:1108`。
 
 ```rust
     If {

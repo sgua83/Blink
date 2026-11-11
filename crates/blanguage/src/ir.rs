@@ -227,6 +227,10 @@ impl Ty {
         ty.arguments.push(input);
         Some(ty)
     }
+    // A variant, a user-owned value and a task have presence on the value itself.
+    pub(crate) fn has_owned_presence(&self) -> bool {
+        self.has_variants() || self.cleanup.is_some() || self.task_result().is_some()
+    }
     pub fn owns_resources(&self) -> bool {
         self.task_result().is_some() || self.cleanup.is_some() || self.dataset.is_some()
             || self.variants.iter().any(|v| v.ty.owns_resources())

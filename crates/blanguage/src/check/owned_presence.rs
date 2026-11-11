@@ -144,10 +144,10 @@ impl Builder<'_>{
     pub(super) fn owned_possible(&self,value:&Presence)->bool{self.condition_truth(&value.condition(),None)!=Some(false)}
     pub(super) fn resolve_ownership(&self,value:&Ownership,assuming:Option<&Presence>)->Ownership{match value{Ownership::Conditional(when)=>match self.condition_truth(&when.condition(),assuming.map(Presence::condition).as_ref()){Some(true)=>Ownership::Owned,Some(false)=>Ownership::Moved,None=>value.clone()},_=>value.clone()}}
     pub(super) fn resolve_owned_model(&self,value:&mut Returned,assuming:Option<&Presence>){match value{Returned::Dataset(data)=>{data.ownership=self.resolve_ownership(&data.ownership,assuming);data.residency=self.resolve_owned_residency(&data.residency,assuming);data.initialization=data.initialization.as_ref().map(|scope|self.resolve_owned_initialization(scope,assuming));},Returned::OwnedValue(value)=>{value.ownership=self.resolve_ownership(&value.ownership,assuming);for payload in value.payloads.iter_mut().flatten(){self.resolve_owned_model(payload,assuming);}},_=>{}}}
-    pub(super) fn prepare_owned_read(&mut self,value:&Returned){match value{Returned::Dataset(data)if data.ownership.available()=>{if let Some(place)=&data.place{self.initialize(place);}},Returned::OwnedValue(value)=>{if value.value.ty.has_variants()||value.value.ty.cleanup.is_some(){if value.ownership.available(){if let Some(place)=value.place(){self.initialize(&place);}}}else{for i in 0..value.value.ty.aggregate_len(){if value.value.ty.aggregate_part(i).1.owns_resources(){let child=self.unpack_record(value,i);self.prepare_owned_read(&child);}}}},_=>{}}}
+    pub(super) fn prepare_owned_read(&mut self,value:&Returned){match value{Returned::Dataset(data)if data.ownership.available()=>{if let Some(place)=&data.place{self.initialize(place);}},Returned::OwnedValue(value)=>{if value.value.ty.has_owned_presence(){if value.ownership.available(){if let Some(place)=value.place(){self.initialize(&place);}}}else{for i in 0..value.value.ty.aggregate_len(){if value.value.ty.aggregate_part(i).1.owns_resources(){let child=self.unpack_record(value,i);self.prepare_owned_read(&child);}}}},_=>{}}}
     pub(super) fn forget_owned_metadata(&mut self,value:&Returned){
         fn intersects(position:&Position,changed:&BTreeSet<Position>)->bool{changed.contains(position)||matches!(position,Position::Indexed(choices,_)if choices.iter().any(|choice|intersects(choice,changed)))}
-        match value{Returned::Dataset(data)=>{if let Some(place)=&data.place{let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}},Returned::OwnedValue(value)=>{if value.value.ty.has_variants()||value.value.ty.cleanup.is_some(){if let Some(place)=value.place(){let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}}else{for i in 0..value.value.ty.aggregate_len(){if value.value.ty.aggregate_part(i).1.owns_resources(){let child=self.unpack_record(value,i);self.forget_owned_metadata(&child);}}}},_=>{}}
+        match value{Returned::Dataset(data)=>{if let Some(place)=&data.place{let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}},Returned::OwnedValue(value)=>{if value.value.ty.has_owned_presence(){if let Some(place)=value.place(){let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}}else{for i in 0..value.value.ty.aggregate_len(){if value.value.ty.aggregate_part(i).1.owns_resources(){let child=self.unpack_record(value,i);self.forget_owned_metadata(&child);}}}},_=>{}}
     }
     fn presence_register(&mut self,value:&Presence,span:Span,origin:Option<&Arc<GeneratedOrigin>>)->Result<Reg>{
         match value{
@@ -197,7 +197,7 @@ impl Builder<'_>{
 
 impl owned_values::OwnedValuePayload {
     pub(super) fn restrict_owned(&mut self,when:&Presence){
-        if self.value.ty.has_variants()||self.value.ty.cleanup.is_some(){self.ownership=self.ownership.restricted(when);}
+        if self.value.ty.has_owned_presence(){self.ownership=self.ownership.restricted(when);}
         else{for payload in self.payloads.iter_mut().flatten(){payload.restrict_owned(when);}}
     }
 }

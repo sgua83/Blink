@@ -1960,7 +1960,7 @@ impl Builder<'_> {
             if (0..ty.components.len()).all(|component|components.contains(&component)){
                 model.restrict_owned(when);qualify(model,&when.condition());return;
             }
-            let Returned::OwnedValue(value)=model else{return;};if ty.has_variants()||ty.cleanup.is_some(){return;}
+            let Returned::OwnedValue(value)=model else{return;};if ty.has_owned_presence(){return;}
             for(field,child)in value.payloads.iter_mut().enumerate(){let Some(child)=child.as_deref_mut()else{continue;};let(offset,child_ty)=ty.aggregate_part(field);
                 let selected=child_ty.components.iter().enumerate().filter_map(|(part,(scalar,word))|ty.components.iter().position(|item|item==&(*scalar,offset+word)).filter(|at|components.contains(at)).map(|_|part)).collect::<BTreeSet<_>>();
                 if !selected.is_empty(){restrict(child,child_ty,&selected,when);}

@@ -877,7 +877,7 @@ pub(super) fn apply_ownership(model: &mut Returned, ty: &Ty, offset: u32, guards
             data.ownership = Ownership::Owned.restricted(&resource_guard(ty, offset, guards))
         }
         Returned::OwnedValue(value) => {
-            if value.value.ty.has_variants() || value.value.ty.cleanup.is_some() {
+            if value.value.ty.has_owned_presence() {
                 value.ownership = Ownership::Owned.restricted(&resource_guard(ty, offset, guards));
             }
             for (index, payload) in value.payloads.iter_mut().enumerate() {
