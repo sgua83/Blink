@@ -14,12 +14,20 @@ struct FieldPlacement {
     alignment: u32,
 }
 
+#[repr(C)]
+struct ArrayLayout {
+    size: u64,
+    stride: u64,
+}
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.record_layout::place"]
+    #[link_name = "bootstrap.type_layout::fixed_array"]
+    fn fixed_array_layout(element_size: u32, alignment: u32, count: u32) -> ArrayLayout;
+    #[link_name = "bootstrap.type_layout::place"]
     fn place_field(size: u32, alignment: u32, field_size: u32, field_alignment: u32) -> FieldPlacement;
-    #[link_name = "bootstrap.record_layout::natural_size"]
+    #[link_name = "bootstrap.type_layout::natural_size"]
     fn natural_record_size(size: u32, alignment: u32) -> u64;
-    #[link_name = "bootstrap.record_layout::accepts_stride"]
+    #[link_name = "bootstrap.type_layout::accepts_stride"]
     fn accepts_record_stride(size: u32, alignment: u32, stride: u32) -> bool;
 }
 
@@ -1172,27 +1180,32 @@ impl World {
             let count = self
                 .shape(&Some(length), source, span, module, imports)?
                 .unwrap();
-            let stride = ir::align_up(element.size, element.align);
-            let size = stride.checked_mul(count).ok_or_else(|| Diagnostic {
+            // Bound element types carry nonzero alignment.
+            let layout = unsafe { fixed_array_layout(element.size, element.align, count) };
+            let size = u32::try_from(layout.size).map_err(|_| Diagnostic {
                 source: source.clone(),
                 span,
                 code: "B238",
                 message: "array 布局超过 u32 字节地址范围".into(),
             })?;
+            let components = if element.components.is_empty() {
+                Vec::new()
+            } else {
+                // The checked extent bounds the stride for every present element.
+                let stride = layout.stride as u32;
+                (0..count).flat_map(|index| {
+                    element.components.iter().map(move |&(scalar, offset)| {
+                        (scalar, index * stride + offset)
+                    })
+                }).collect()
+            };
             return Ok(ir::Ty {
                 name: format!("array<{},{}>", element.name, count),
                 arguments: Vec::new(),
                 values: vec![count],
                 size,
                 align: element.align,
-                components: (0..count)
-                    .flat_map(|i| {
-                        element
-                            .components
-                            .iter()
-                            .map(move |(s, o)| (*s, i * stride + o))
-                    })
-                    .collect(),
+                components,
                 fields: Vec::new(),
                 view: None,
                 array: Some(Box::new(element)),

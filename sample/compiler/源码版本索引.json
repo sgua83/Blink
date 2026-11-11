@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "9358c6aa2ddece580660825b29b4251d0fe9673d75b4af663cd958b6a6bd90d8"
+      "sha256": "86cdeb71eeaf09c3e639fde5776a0c84f3751f0be093ae6c96b209f72b83f092"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -143,12 +143,12 @@
       "sha256": "e67ab3ddfe950c0f266cbbfc9235295af094a1a01b476427e3b0a2aad88127c4"
     },
     {
-      "path": "crates/blanguage/src/bootstrap/record_layout.b",
-      "sha256": "2df9920d7c85cbff8f9ee84be7ca5a045d2880c3e482598b8c1bffd8f4a87d32"
+      "path": "crates/blanguage/src/bootstrap/type_layout.b",
+      "sha256": "657fc7be42ca6d744c6be4a9fbb3b47eb2499214796d6f762a57facaca86758d"
     },
     {
-      "path": "crates/blanguage/src/bootstrap/record_layout.h",
-      "sha256": "72283ef2aae69b7b3c31f97714e919d3eea15ece144e92cb95b8769bdc811cd9"
+      "path": "crates/blanguage/src/bootstrap/type_layout.h",
+      "sha256": "107d0f9040dc34e067a59b89bccc489840013dbb5a18a664f1e3eb62f86f72da"
     },
     {
       "path": "crates/blanguage/src/build/compiler_identity.rs",
@@ -364,7 +364,7 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "sha256": "39371e16f1fd04d469b5fdd17e57e8d4847681b05f099953393feae07b9b1f8d"
+      "sha256": "8255f969ec4e7bccb5d3ff5717408a3e488779741be273f319ab68bd48f3f295"
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
@@ -796,8 +796,8 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "start_line": 969,
-      "end_line": 991,
+      "start_line": 977,
+      "end_line": 999,
       "sha256": "fcf6d7210877680f28b8bebe8628aa262c39d58e5730df95a3e9af499261af5f"
     },
     {
@@ -886,14 +886,14 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "start_line": 147,
-      "end_line": 172,
+      "start_line": 155,
+      "end_line": 180,
       "sha256": "07f8e80f4d6d4a5e5c4461f406ef8e031a0284ccfcc7b8b55c180013641312ac"
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "start_line": 589,
-      "end_line": 593,
+      "start_line": 597,
+      "end_line": 601,
       "sha256": "4c845d3cd92964253598c59e627bcacceaddda18432951e9e9fe9a495a2cf323"
     },
     {

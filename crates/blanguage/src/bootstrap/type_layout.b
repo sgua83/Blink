@@ -1,4 +1,4 @@
-module bootstrap.record_layout;
+module bootstrap.type_layout;
 
 extern "C" u64 natural_size(u32 size, u32 alignment) on cpu requires nonzero(alignment) {
     u32 remainder = size % alignment;
@@ -21,4 +21,10 @@ extern "C" FieldPlacement place(u32 size, u32 alignment, u32 field_size, u32 fie
 extern "C" bool accepts_stride(u32 size, u32 alignment, u32 stride)
     on cpu requires nonzero(alignment) {
     return stride >= size && stride % alignment == 0;
+}
+
+extern "C" ArrayLayout fixed_array(u32 element_size, u32 alignment, u32 count)
+    on cpu requires nonzero(alignment) {
+    u64 stride = natural_size(element_size, alignment);
+    return ArrayLayout(stride * u64(count), stride);
 }
