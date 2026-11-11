@@ -867,7 +867,7 @@ Frame已经持有原数据和有效域关系，观察不需要再建一张根表
 
 datasets还保留这份原容器的len和capacity，不复制槽、生成统计表或改写拥有者。对非零尺寸D，两者乘`size_of::<D>()`分别得到已初始化槽跨度和原Vec可用槽容量；D内部的dataset载荷另由其原memory查询，不能与槽字节混算。len包含None空槽，容量尾部仍未初始化；零尺寸D的槽字节为零，Vec的usize::MAX容量也不代表实际字节分配。这些值不表示分配器账单、OS页或整个Frame内存。
 
-源码节选：`crates/blcompute/src/bindings.rs:109`。
+源码节选：`crates/blcompute/src/bindings.rs:119`。
 
 ```rust
     pub fn datasets(&self) -> &Vec<D> {
@@ -4235,7 +4235,7 @@ CPU 对各领取范围生成原生计算，得到部分结果，再按该操作�
 
 输出缓冲能容纳一百万条，不表示本次真的写了一百万条。筛选以后可能只有二十万条有效记录。后续程序应消费有效前缀，尾部容量仍存在，却不是算法结果。
 
-IR 的 PrefixCount 与 PrefixRelation 将数据和计数的对应保存下来。DomainBindings 继续持有这些关系。一个任意 u32 数字并不能自动证明另一缓冲的前多少条有效。
+IR 的 PrefixCount 与 PrefixRelation 将数据和计数的对应保存下来，DomainBindings 持有真实关系。借用关系映射须保留原消费者；关系已经按值交出时，合并、分区分发和 Frame 完成回交直接重绑索引，让原区间存储继续随关系移动。分区之前的共享重排仍处理真实别名及其必要副本，不能把一个移动接点扩大成全流程零复制。一个任意 u32 数字并不能自动证明另一缓冲的前多少条有效。
 
 ### 23.4 GPU 已知的数量不必马上告诉 CPU
 

@@ -53,6 +53,16 @@ impl DomainRelation {
             Self::Element(range) => Self::Element(ElementRange { binding: binding(range.binding)?, ..range.clone() }),
         })
     }
+    /// 已移出的关系仅重绑索引；原区间存储随同一关系移动。
+    pub(crate) fn into_mapped(self, binding: impl Fn(usize) -> Option<usize>) -> Option<Self> {
+        Some(match self {
+            Self::Prefix { domain, offset, bytes, count } => Self::Prefix {
+                domain: binding(domain)?, offset, bytes,
+                count: PrefixCount { binding: binding(count.binding)?, word: count.word },
+            },
+            Self::Element(range) => Self::Element(ElementRange { binding: binding(range.binding)?, ..range }),
+        })
+    }
     pub(crate) fn written(&self, binding: usize, start: u64, end: u64) -> bool {
         let (owner, offset, bytes) = match self {
             Self::Prefix { count, .. } => (count.binding, count.word, 4),
@@ -102,7 +112,7 @@ impl<D> DomainBindings<D> {
     pub(crate) fn append(&mut self, other: Self) {
         let offset = self.datasets.len();
         self.datasets.extend(other.datasets);
-        self.domains.extend(other.domains.into_iter().map(|r| r.mapped(|binding| Some(binding + offset)).unwrap()));
+        self.domains.extend(other.domains.into_iter().map(|r| r.into_mapped(|binding| Some(binding + offset)).unwrap()));
     }
     /// 共享借用原数据槽Vec，len包含已初始化空槽，capacity以D槽数计。
     /// 槽容量不包含元素内部拥有的载荷、分配器开销或OS页；零尺寸D不占槽字节。
@@ -169,7 +179,7 @@ impl<D> DomainBindings<D> {
         }
         for r in self.domains {
             let part = positions[r.domain()].0;
-            if let Some(relation) = r.mapped(|binding| {
+            if let Some(relation) = r.into_mapped(|binding| {
                 let (owner, local) = positions[binding]; (owner == part).then_some(local)
             }) {
                 parts[part].domains.push(relation);

@@ -466,7 +466,7 @@ impl Frame {
         }
         self.data
             .domains
-            .extend(domains.into_iter().map(|r| r.mapped(|binding| Some(selected[binding] as usize)).unwrap()));
+            .extend(domains.into_iter().map(|r| r.into_mapped(|binding| Some(selected[binding] as usize)).unwrap()));
         self.data.domains.sort();
         self.data.domains.dedup();
         result
