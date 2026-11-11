@@ -3,7 +3,7 @@ extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
 extern "C" address HeapReAlloc(handle heap,u32 flags,address data,usize bytes) on cpu from "KERNEL32.dll";
 extern "C" i32 HeapFree(handle heap,u32 flags,address data) on cpu from "KERNEL32.dll";
-extern "C" u32 GetLastError() on cpu from "KERNEL32.dll";
+extern "C" u32 GetLastError() on cpu ensures memory(read) from "KERNEL32.dll";
 struct Buffer {address data;u64 length;u64 capacity;};
 struct Store {handle heap;address source;u64 source_bytes;Buffer nodes;Buffer text;};
 StorageError success() on cpu {return StorageError(0,0);}

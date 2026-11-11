@@ -32,7 +32,7 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/ast_storage.b",
-      "sha256": "a9ee08e372570cf84a540a8a57952b893bb56a67f60dcce29e3b5cf0234f6b3e"
+      "sha256": "b4c9a7d89cba8cf77f92d8e91822382bead1469f37f4f444a3b496d221799031"
     },
     {
       "path": "crates/blanguage/src/bootstrap/ast_storage.h",

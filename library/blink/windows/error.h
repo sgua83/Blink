@@ -1,6 +1,6 @@
 module blink.windows.error;
 
-extern "C" u32 GetLastError() on cpu
+extern "C" u32 GetLastError() on cpu ensures memory(read)
     from "KERNEL32.dll";
 
 extern "C" void SetLastError(u32 code) on cpu

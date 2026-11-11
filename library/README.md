@@ -184,7 +184,7 @@ Windows x64的`blink.windows.error`只有`error.h`，通过`-I library`装入，
 
 | 函数 | 原生合同 |
 |---|---|
-| `u32 GetLastError()` | 读取本调用线程的32位last-error原值 |
+| `u32 GetLastError()` | 读取本调用线程的32位last-error原值；B声明以`ensures memory(read)`交接只读不透明访问 |
 | `void SetLastError(u32 code)` | 将本调用线程的last-error设为code，没有返回值 |
 
 错误槽由Windows按线程持有；B模块不缓存、不复制为全局状态，也不包装系统调用。不同线程的错误码互不覆盖。只有原API文档说明的返回条件才赋予该值本次调用的错误意义；有些成功调用也会改写它，未声明设置错误的函数不能据此判断成功或失败。

@@ -510,7 +510,7 @@ Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的�
 
 ## Windows线程错误码的原生交接
 
-`blink.windows.error`以纯`.h`直接声明Kernel32的`u32 GetLastError()`与`void SetLastError(u32 code)`，Windows DWORD按完整32位无符号值交接。唯一可变错误槽属于原OS线程，库不创建全局last-error、宿主转发或清除策略；读取得到的普通u32快照由原调用者保存和使用。
+`blink.windows.error`以纯`.h`直接声明Kernel32的`u32 GetLastError()`与`void SetLastError(u32 code)`，Windows DWORD按完整32位无符号值交接。GetLastError的B声明以`ensures memory(read)`交接真实只读的不透明访问；它读取当前OS线程错误槽，不承诺固定返回、纯函数或取消调用。SetLastError保留原声明效果并真实改变该槽，后续读取取得改变后的值。唯一可变错误槽属于原OS线程，库不创建全局last-error、宿主转发或清除策略；读取得到的普通u32快照由原调用者保存和使用。
 
 调用者只在原API规定的返回条件下立即读取，必须先于打印、释放或其他可能改写线程错误的调用。清零同样由真实API合同决定，不自动包住所有系统入口。模块不提供错误字符串或通用错误对象，不替应用退出进程；完整用法与官方合同见[标准库错误码接口](../library/README.md#blinkwindowserror)。B接口可用和BLEngine原Rust错误处理已迁移分别记录。
 
