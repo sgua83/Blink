@@ -1,13 +1,18 @@
 <#
 .SYNOPSIS
-Remove explicitly selected generated files from Saved or Cargo build output.
+Remove intermediate build output and temporary compiled files.
 .DESCRIPTION
-Select paths only after their batch succeeded and the last consumer ended.
-Keep unfinished investigations and reusable caches with their original owners.
-Cargo metadata owns the build output location; no directory name is inferred.
+Without Path, clear Cargo build output and temporary compiled files under Saved.
+This complete cleanup includes reusable caches and development binaries.
+Finish active consumers first. Keep source, logs, installed tools and dist assets.
+Pass Path to select literal generated files instead of the complete cleanup.
 .PARAMETER Path
 Literal workspace-relative generated paths. No automatic age or suffix selection.
 Preview and result paths use the same workspace-relative paths.
+.EXAMPLE
+./Tools/Clean.ps1 -WhatIf
+.EXAMPLE
+./Tools/Clean.ps1
 .EXAMPLE
 ./Tools/Clean.ps1 -Path Saved/Development/Finished/Output -WhatIf
 .EXAMPLE
@@ -15,7 +20,6 @@ Preview and result paths use the same workspace-relative paths.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [Parameter(Mandatory = $true)]
     [AllowEmptyCollection()]
     [string[]]$Path,
     [string]$Root = (Split-Path -Parent $PSScriptRoot)
@@ -23,11 +27,72 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $workspace = (Get-Item -LiteralPath $Root).FullName
+$workspaceBoundary = $workspace.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 $saved = [IO.Path]::GetFullPath((Join-Path $workspace 'Saved'))
 $boundary = $saved.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 $cargoTarget = $null
 $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($workspace))
 $freeBefore = $drive.AvailableFreeSpace
+
+if (-not $PSBoundParameters.ContainsKey('Path')) {
+    Push-Location $workspace
+    try {
+        $metadata = & cargo metadata --no-deps --format-version 1 --manifest-path (Join-Path $workspace 'Cargo.toml')
+        if ($LASTEXITCODE -ne 0) { throw "Cargo metadata failed with exit code $LASTEXITCODE" }
+        $cargoTarget = [IO.Path]::GetFullPath(($metadata | ConvertFrom-Json).target_directory)
+    } finally { Pop-Location }
+    if (-not $cargoTarget.StartsWith($workspaceBoundary, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Cargo build output is outside this workspace.'
+    }
+    $nativeWorkspace = $workspace
+    if ([IO.Path]::DirectorySeparatorChar -eq '\' -and -not $nativeWorkspace.StartsWith('\\?\')) {
+        $nativeWorkspace = if ($nativeWorkspace.StartsWith('\\')) { '\\?\UNC\' + $nativeWorkspace.Substring(2) } else { '\\?\' + $nativeWorkspace }
+    }
+    $nativeBoundary = $nativeWorkspace.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $discovered = [Collections.Generic.List[string]]::new()
+    $buildOutputs = [Collections.Generic.List[IO.DirectoryInfo]]::new()
+    $nativeTarget = $nativeBoundary + $cargoTarget.Substring($workspaceBoundary.Length)
+    if ([IO.Directory]::Exists($nativeTarget)) { $buildOutputs.Add([IO.DirectoryInfo]::new($nativeTarget)) }
+    $compiledExtensions = [Collections.Generic.HashSet[string]]::new([string[]]@(
+        '.obj', '.o', '.lib', '.a', '.rlib', '.rmeta', '.pdb', '.exe', '.dll',
+        '.exp', '.ilk', '.pch', '.res', '.tmp', '.rsp', '.spv', '.blbi', '.blri'
+    ), [StringComparer]::OrdinalIgnoreCase)
+    $pending = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
+    $nativeSaved = $nativeBoundary + 'Saved'
+    if ([IO.Directory]::Exists($nativeSaved)) { $pending.Push([IO.DirectoryInfo]::new($nativeSaved)) }
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Reparse point redirects cleanup discovery: $($directory.FullName.Substring($nativeBoundary.Length))"
+        }
+        $prefix = $directory.FullName.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        if ([IO.File]::Exists($prefix + 'CACHEDIR.TAG') -or [IO.File]::Exists($prefix + '.rustc_info.json')) {
+            $buildOutputs.Add($directory)
+            continue
+        }
+        foreach ($entry in $directory.EnumerateFileSystemInfos()) {
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Reparse point redirects cleanup discovery: $($entry.FullName.Substring($nativeBoundary.Length))"
+            }
+            if ($entry -is [IO.DirectoryInfo]) {
+                $pending.Push($entry)
+            } elseif ($compiledExtensions.Contains($entry.Extension)) {
+                $discovered.Add($entry.FullName.Substring($nativeBoundary.Length).Replace('\', '/'))
+            }
+        }
+    }
+    foreach ($directory in $buildOutputs) {
+        $dist = $directory.FullName.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar + 'dist'
+        if ([IO.Directory]::Exists($dist)) {
+            foreach ($entry in $directory.EnumerateFileSystemInfos()) {
+                if ($entry.Name -ne 'dist') { $discovered.Add($entry.FullName.Substring($nativeBoundary.Length).Replace('\', '/')) }
+            }
+        } else {
+            $discovered.Add($directory.FullName.Substring($nativeBoundary.Length).Replace('\', '/'))
+        }
+    }
+    $Path = $discovered.ToArray()
+}
 
 # Generated output boundaries must not be redirected by reparse points.
 function Measure-SelectedItem([IO.FileSystemInfo]$Item, [string]$Relative) {
@@ -57,6 +122,9 @@ $selected = @(
             throw "Path must be relative to the workspace: $relative"
         }
         $absolute = [IO.Path]::GetFullPath((Join-Path $workspace $relative))
+        if (-not $absolute.StartsWith($workspaceBoundary, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Path is outside this workspace: $relative"
+        }
         if (-not $absolute.StartsWith($boundary, [StringComparison]::OrdinalIgnoreCase)) {
             if ($null -eq $cargoTarget) {
                 Push-Location $workspace
