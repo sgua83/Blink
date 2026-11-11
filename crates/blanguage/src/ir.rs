@@ -526,6 +526,9 @@ impl Ty {
             ).collect();
         }
         if let Some(element) = &self.array {
+            if self.values[0] == 0 || !element.contains_borrows() {
+                return Vec::new();
+            }
             let stride = align_up(element.size, element.align);
             return (0..self.values[0]).flat_map(|i|
                 element.borrow_fields().into_iter().map(move |(at, ty)| (i * stride + at, ty))

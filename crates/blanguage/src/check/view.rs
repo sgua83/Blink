@@ -473,6 +473,7 @@ impl Binding {
 }
 pub(super) fn resource_paths(ty:&Ty)->Vec<Vec<usize>> {
     fn visit(ty:&Ty,path:&mut Vec<usize>,result:&mut Vec<Vec<usize>>) {
+        if !ty.owns_resources(){return;}
         if ty.dataset.is_some(){result.push(path.clone());return;}
         if ty.has_variants(){for(index,variant)in ty.variants.iter().enumerate(){path.push(index);visit(&variant.ty,path,result);path.pop();}}
         else{for index in 0..ty.aggregate_len(){let(_,field)=ty.aggregate_part(index);path.push(index);visit(field,path,result);path.pop();}}

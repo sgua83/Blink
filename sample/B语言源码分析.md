@@ -257,7 +257,7 @@ pub struct Ty {
 }
 ```
 
-`size` 是类型内容占用，`align` 是对齐，`components` 把值分解为标量及偏移，`fields` 保留记录字段。已绑定字段的大小与对齐按声明顺序交给B的`bootstrap/type_layout.b`，计算字段偏移、结束字节和自然记录大小。显式stride沿原const绑定求值，B根据自然大小与对齐判定，最终字段和步长由同一Ty交给原生代码和布局查询。固定数组沿同一B布局模块计算步长与总大小。零分量元素保留原元素类型、数量及对齐，直接生成空标量坐标表。`view` 与 `array` 分别保存已有引用元素和内联数组布局；`dataset`保存已绑定的TypeName元素引用，描述值仍为8字节、对齐4。Node记录通过dataset<Node>拥有子节点时，Node布局不会继续内联另一份Node；真正访问元素才由原World解析同一名义类型。直接按值内联自身仍没有有限布局。
+`size` 是类型内容占用，`align` 是对齐，`components` 把值分解为标量及偏移，`fields` 保留记录字段。已绑定字段的大小与对齐按声明顺序交给B的`bootstrap/type_layout.b`，计算字段偏移、结束字节和自然记录大小。显式stride沿原const绑定求值，B根据自然大小与对齐判定，最终字段和步长由同一Ty交给原生代码和布局查询。固定数组沿同一B布局模块计算步长与总大小。零分量元素保留原元素类型、数量及对齐，直接生成空标量坐标表。借用字段查询只交接值本体内实际address／view位置，不追随引用的子存储。固定数组逻辑长度为零或元素类型没有借用叶时，直接交接空字段结果，不按逻辑数量重复展开空查询；真实借用字段继续按原元素及字段顺序交接。资源路径查询同样在原类型不拥有资源时直接交回空结果，不按数组数量重复寻找不存在的资源；真实dataset路径继续按原变体、字段及元素顺序交接，原模型和最后释放保持。`view` 与 `array` 分别保存已有引用元素和内联数组布局；`dataset`保存已绑定的TypeName元素引用，描述值仍为8字节、对齐4。Node记录通过dataset<Node>拥有子节点时，Node布局不会继续内联另一份Node；真正访问元素才由原World解析同一名义类型。直接按值内联自身仍没有有限布局。
 
 B源语言通过size_of<T>()与align_of<T>()读取同一Ty的大小和对齐，结果是usize编译期常量。原expected_storage完成具体类型及dataset包装，泛型／const闭合后仍沿原类型服务；查询不构造对象、不执行owned释放，也不生成运行时节点或布局表。dataset查询其描述值，view查询其引用值，owned保持载荷布局，实际存储仍归Frame／blcompute。float3的大小12、对齐16与array<float3,2>的大小32各保留原语义。
 
@@ -2547,7 +2547,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:1042`。
+源码节选：`crates/blanguage/src/ir.rs:1045`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -2561,7 +2561,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:1065`。
+源码节选：`crates/blanguage/src/ir.rs:1068`。
 
 ```rust
     Load {
@@ -2593,7 +2593,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1272`。
+源码节选：`crates/blanguage/src/ir.rs:1275`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -3189,7 +3189,7 @@ IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1108`。
+源码节选：`crates/blanguage/src/ir.rs:1111`。
 
 ```rust
     If {
