@@ -788,12 +788,11 @@ impl Proof {
             });
             (id, proof)
         }).collect();
-        let mut proof=self.at_call(&bindings);
-        proof.views=self.views.iter().map(|borrow|borrow.substitute_values(values)).collect();
-        for(component,address)in self.addresses.iter().enumerate(){
-            if let Some(address)=address{
-                proof.addresses.resize_with(proof.addresses.len().max(component+1),||None);
-                proof.addresses[component]=Some(address.substitute_values(values));
+        let views = self.views.iter().map(|borrow| borrow.substitute_values(values)).collect();
+        let mut proof = self.project_call(&bindings, views, vec![None; self.addresses.len()]);
+        for (slot, address) in proof.addresses.iter_mut().zip(&self.addresses) {
+            if let Some(address) = address {
+                *slot = Some(address.substitute_values(values));
             }
         }
         proof
@@ -965,9 +964,20 @@ impl Proof {
         Clause::facts(translated.into_iter().collect())
     }
     pub(super) fn at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        let mut translated = self.clone();
-        translated.views = self.views.iter().map(|borrow|borrow.at_call(bindings)).collect();
-        translated.addresses=self.addresses.iter().map(|value|value.as_ref().map(|value|value.at_call(bindings))).collect();
+        let views = self.views.iter().map(|borrow| borrow.at_call(bindings)).collect();
+        let addresses = self.addresses.iter().map(|value| {
+            value.as_ref().map(|value| value.at_call(bindings))
+        }).collect();
+        self.project_call(bindings, views, addresses)
+    }
+
+    fn project_call(
+        &self,
+        bindings: &BTreeMap<ValueIdentity, Proof>,
+        views: Vec<view::Borrow>,
+        addresses: Vec<Option<address::Identity>>,
+    ) -> Self {
+        let mut translated = Self { views, addresses, ..self.numeric_facts() };
         for (i, origins) in self.origins.iter().enumerate() {
             let values = origins
                 .iter()
