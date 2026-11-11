@@ -1304,11 +1304,8 @@ impl World {
         } else {
             generics::key(
                 &key,
-                &arguments
-                    .iter()
-                    .map(|t| t.name.clone())
-                    .chain(values.iter().map(u32::to_string))
-                    .collect::<Vec<_>>(),
+                arguments.iter().map(|ty| ty.name.as_str()),
+                &values,
             )
         };
         if !stack.insert(key.clone()) {

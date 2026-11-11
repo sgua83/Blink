@@ -523,7 +523,7 @@ impl Builder<'_> {
     }
     fn declare_owned_cleanup(&mut self,ty:&Ty,span:Span)
         -> Result<(String,Arc<[Param]>,LexicalScope,[FunctionContract;1])> {
-        let name = crate::generics::key(&format!("{}::@dataset_element_drop", self.scope.module()), std::slice::from_ref(&ty.name));
+        let name = crate::generics::key(&format!("{}::@dataset_element_drop", self.scope.module()), std::iter::once(ty.name.as_str()), &[]);
         let parameters:Arc<[Param]>=Arc::from([Param{name:"value".into(),ty:ty.syntax(),access:Access::Value,span}]);
         let contracts=[FunctionContract{kind:ContractKind::Requires,
             predicate:ContractPredicate::Cleanup{value:"value".into(),condition:OutputCondition::Bool(true)},span}];

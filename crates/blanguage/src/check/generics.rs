@@ -442,12 +442,8 @@ fn infer_type(
         })?;
     let expected = crate::generics::key(
         &base,
-        &actual
-            .arguments
-            .iter()
-            .map(|t| t.name.clone())
-            .chain(actual.values.iter().map(u32::to_string))
-            .collect::<Vec<_>>(),
+        actual.arguments.iter().map(|ty| ty.name.as_str()),
+        &actual.values,
     );
     if actual.name != expected
         || formal.arguments().len() != actual.arguments.len() + actual.values.len()
@@ -595,12 +591,8 @@ fn infer_value(
         })?;
     let expected = crate::generics::key(
         &base,
-        &actual
-            .arguments
-            .iter()
-            .map(|ty| ty.name.clone())
-            .chain(actual.values.iter().map(u32::to_string))
-            .collect::<Vec<_>>(),
+        actual.arguments.iter().map(|ty| ty.name.as_str()),
+        &actual.values,
     );
     if expected != actual.name
         || formal.arguments().len() != actual.arguments.len() + actual.values.len()

@@ -52,3 +52,75 @@ extern "C" u32 advance(InstanceDomains domains, InstanceRow row, u32 first) on c
     }
     return 0;
 }
+
+u64 decimal_size(u32 value) on cpu {
+    u32 remaining = value;
+    u64 count = 1u64;
+    while (remaining >= 10) {
+        remaining /= 10;
+        count += 1u64;
+    }
+    return count;
+}
+
+extern "C" u64 key_size(InstanceName name) on cpu {
+    u64 size = name.base.length + 2u64;
+    u64 count = name.type_count + name.value_count;
+    if (count != 0u64) { size += count - 1u64; }
+    u64 index = 0u64;
+    while (index < name.type_count) {
+        NameBytes text = unsafe_position<NameBytes>(at(name.types, index * size_of<NameBytes>()));
+        size += text.length;
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < name.value_count) {
+        size += decimal_size(unsafe_position<u32>(at(name.values, index * size_of<u32>())));
+        index += 1u64;
+    }
+    return size;
+}
+
+void copy_name(NameBytes text, address output, u64 offset) on cpu {
+    u64 index = 0u64;
+    while (index < text.length) {
+        unsafe_position<u8>(at(output, offset + index)) = unsafe_position<u8>(at(text.bytes, index));
+        index += 1u64;
+    }
+}
+
+extern "C" void write_key(InstanceName name, address output) on cpu {
+    copy_name(name.base, output, 0u64);
+    u64 offset = name.base.length;
+    unsafe_position<u8>(at(output, offset)) = u8(60);
+    offset += 1u64;
+    u64 index = 0u64;
+    while (index < name.type_count) {
+        if (index != 0u64) {
+            unsafe_position<u8>(at(output, offset)) = u8(44);
+            offset += 1u64;
+        }
+        NameBytes text = unsafe_position<NameBytes>(at(name.types, index * size_of<NameBytes>()));
+        copy_name(text, output, offset);
+        offset += text.length;
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < name.value_count) {
+        if (name.type_count != 0u64 || index != 0u64) {
+            unsafe_position<u8>(at(output, offset)) = u8(44);
+            offset += 1u64;
+        }
+        u32 value = unsafe_position<u32>(at(name.values, index * size_of<u32>()));
+        u64 end = offset + decimal_size(value);
+        u64 cursor = end;
+        while (cursor > offset) {
+            cursor -= 1u64;
+            unsafe_position<u8>(at(output, cursor)) = u8(48 + value % 10);
+            value /= 10;
+        }
+        offset = end;
+        index += 1u64;
+    }
+    unsafe_position<u8>(at(output, offset)) = u8(62);
+}

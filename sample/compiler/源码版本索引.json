@@ -72,11 +72,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/instance_domain.b",
-      "sha256": "e0e468491212d8e3d14ec5cd8e3e97e626fa641867c99bbe809a148406c00aef"
+      "sha256": "5b6f14b593ebb706665eb6d6ff11347faa27f84b415f837dc0bb35ba1aa08084"
     },
     {
       "path": "crates/blanguage/src/bootstrap/instance_domain.h",
-      "sha256": "eb29ca8945961974d172b35689fbfcb60e03b49c216b4e60f10328f161f386b3"
+      "sha256": "85b1d4a98e5e455b209efeb1c77a9f46a44dac53a1612fe6c3e22e056eca64e6"
     },
     {
       "path": "crates/blanguage/src/bootstrap/lexer.b",
@@ -264,11 +264,11 @@
     },
     {
       "path": "crates/blanguage/src/check/generics.rs",
-      "sha256": "3465f24c17a9c35145f3f242801a1166d551bd3dab3953423e6179ef91413cc3"
+      "sha256": "5e5cf6e2e0c6a5b4b3afe1add9311833b5d80aa3661c2f99c1f77d00d5ea3608"
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "e3c5c0abf640694a903a599a5f6751450e4182e1f5696502760446dfaca4ff77"
+      "sha256": "b71585fbc442268ee16b5b2720f97eabf6baafb0ba16dce82f8ef7257a2bb19c"
     },
     {
       "path": "crates/blanguage/src/check/native_function/contract.rs",
@@ -384,7 +384,7 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "sha256": "624fb56ad79d99375f232595bf053ce78d04a0a74176f6b6632b2710fd0788bd"
+      "sha256": "4423604e8ba6dd6a669fe42d5194d133d10f85cdb0e7664e46a9d946429d07aa"
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
@@ -392,7 +392,7 @@
     },
     {
       "path": "crates/blanguage/src/generics.rs",
-      "sha256": "fbda03aea58fb8ea86220f801a1bf8c60b6eb701c38baa06e0c7a9af543246f8"
+      "sha256": "7421c53af91726d0dabc4829a6d137c421e4feb2afbb6a8d6e12d0538ea129ab"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
@@ -990,8 +990,8 @@
     },
     {
       "path": "crates/blanguage/src/generics.rs",
-      "start_line": 11,
-      "end_line": 25,
+      "start_line": 42,
+      "end_line": 56,
       "sha256": "6c4537e74f756e3dac6487c536776afb5a26904bbabf9bb5bfeaa85fe8fa7298"
     },
     {

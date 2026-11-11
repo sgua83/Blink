@@ -5,8 +5,39 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) fn is_open(types:&crate::syntax::List<crate::syntax::wire::TypeParameterNode>,values:&crate::syntax::List<crate::syntax::wire::ValueParameterNode>)->bool {
     types.iter().any(|p|p.family().is_none())||values.iter().any(|p|p.choices().is_none())
 }
-pub(crate) fn key(base: &str, types: &[String]) -> String {
-    format!("{base}<{}>", types.join(","))
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NameBytes { bytes: *const u8, length: u64 }
+impl NameBytes {
+    fn new(text: &str) -> Self { Self { bytes: text.as_ptr(), length: text.len() as u64 } }
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct InstanceName {
+    base: NameBytes,
+    types: *const NameBytes,
+    type_count: u64,
+    values: *const u32,
+    value_count: u64,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.instance_domain::key_size"]
+    fn instance_key_size(name: InstanceName) -> u64;
+    #[link_name = "bootstrap.instance_domain::write_key"]
+    fn write_instance_key(name: InstanceName, output: *mut u8);
+}
+pub(crate) fn key<'a>(base: &str, types: impl IntoIterator<Item = &'a str>, values: &[u32]) -> String {
+    let types = types.into_iter().map(NameBytes::new).collect::<Vec<_>>();
+    let name = InstanceName { base: NameBytes::new(base), types: types.as_ptr(), type_count: types.len() as u64,
+        values: values.as_ptr(), value_count: values.len() as u64 };
+    // B initializes the final UTF-8 bytes; all borrowed input stays live through both calls.
+    let length = unsafe { instance_key_size(name) } as usize;
+    let mut bytes = Vec::with_capacity(length);
+    unsafe {
+        write_instance_key(name, bytes.as_mut_ptr());
+        bytes.set_len(length);
+        String::from_utf8_unchecked(bytes)
+    }
 }
 #[derive(Default)]
 pub(crate) struct Bindings {
@@ -162,7 +193,7 @@ pub(crate) fn instantiate(
         return Ok(Instance{name:base.into(),definition:definition.clone(),
             bindings:std::sync::Arc::new(Bindings::default())});
     }
-    let mut names=arguments.iter().map(|ty| {
+    let names=arguments.iter().map(|ty| {
         if *ty==TypeName::named("void"){return Ok("void".to_owned());}
         let actual=world.ty(ty,&definition.source,function.span(),&definition.module,&definition.imports)?;
         Ok(if ty.dataset {
@@ -186,8 +217,7 @@ pub(crate) fn instantiate(
         validate_type_uses(parameter.ty(),&bindings,&definition.source,parameter.span())?;
     }
     if let Some(body)=function.body(){validate_block_uses(body,&bindings,&definition.source)?;}
-    names.extend(values.iter().map(u32::to_string));
-    let instance=Instance{name:key(base,&names),definition:definition.clone(),bindings:std::sync::Arc::new(bindings)};
+    let instance=Instance{name:key(base,names.iter().map(String::as_str),values),definition:definition.clone(),bindings:std::sync::Arc::new(bindings)};
     if function.c_abi(){crate::check::external::check_declaration(world,&instance)?;}
     world.check_interface_types(definition,&instance.bindings)?;
     Ok(instance)
