@@ -25,6 +25,8 @@ mod json;
 #[cfg(feature = "compiler")]
 mod lexer;
 #[cfg(feature = "compiler")]
+mod names;
+#[cfg(feature = "compiler")]
 pub mod linker;
 #[cfg(feature = "compiler")]
 pub mod module;

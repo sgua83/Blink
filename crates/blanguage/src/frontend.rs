@@ -819,14 +819,14 @@ impl Declarations {
         imports: &[String],
         functions: bool,
     ) -> NameResolution {
-        resolve_name(name, module, imports, |n| {
+        crate::names::resolve(name,module,imports,|name| {
             if functions {
-                self.functions.get(n).is_some_and(|d| {
-                    d.module == module || (d.public && imports.contains(&d.module))
+                self.functions.get_key_value(name).map(|(key,declaration)|crate::names::Declaration {
+                    name:key,owner:&declaration.module,public:declaration.public,
                 })
             } else {
-                self.records.get(n).is_some_and(|(_, source, owner, _)| {
-                    type_visible(source, owner, module, imports)
+                self.records.get_key_value(name).map(|(key,(_,source,owner,_))|crate::names::Declaration {
+                    name:key,owner,public:source.path.extension().is_some_and(|extension|extension=="h"),
                 })
             }
         })
@@ -1390,14 +1390,6 @@ impl World {
     }
 }
 
-pub(crate) fn type_visible(source: &Source, owner: &str, module: &str, imports: &[String]) -> bool {
-    owner == module
-        || (source
-            .path
-            .extension()
-            .is_some_and(|extension| extension == "h")
-            && imports.iter().any(|import| import == owner))
-}
 /// 可见声明查询的事实；局部绑定及实际调用诊断仍由原消费者负责。
 pub(crate) enum NameResolution {
     Missing,
@@ -1413,27 +1405,4 @@ impl NameResolution {
     }
     pub(crate) fn is_missing(&self) -> bool { matches!(self, Self::Missing) }
 }
-pub(crate) fn resolve_name(
-    name: &str,
-    module: &str,
-    imports: &[String],
-    exists: impl Fn(&str) -> bool,
-) -> NameResolution {
-    if name.contains("::") && exists(name) {
-        return NameResolution::Unique(name.into());
-    }
-    let local = format!("{module}::{name}");
-    if exists(&local) {
-        return NameResolution::Unique(local);
-    }
-    let mut candidates = imports
-        .iter()
-        .map(|m| format!("{m}::{name}"))
-        .filter(|n| exists(n));
-    let Some(first) = candidates.next() else { return NameResolution::Missing; };
-    if candidates.any(|candidate| candidate != first) {
-        NameResolution::Ambiguous
-    } else {
-        NameResolution::Unique(first)
-    }
-}
+

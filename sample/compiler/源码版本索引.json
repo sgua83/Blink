@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "0919e94d466227fec61257a5b6c0766ddbc897064737882d5342edee81183736"
+      "sha256": "23aa133e297a6978ebb7a7afa4b0163fa41be4cc9d64422cf0c3f0414c8641d7"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -93,6 +93,14 @@
     {
       "path": "crates/blanguage/src/bootstrap/metadata_read.h",
       "sha256": "a96a3f1cd7b2a883b1b99c7e8cb4f6a2a83f19cca1c4690f247eeb876e8ec2d2"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/names.b",
+      "sha256": "84da7baaa0d3b60ae83b56404bc32f772b4afca6297c6731cb42e722a1df4655"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/names.h",
+      "sha256": "ced80edad58bbdfb1d8876823707945d839ca7ddb9a5ce78349127572edc43f0"
     },
     {
       "path": "crates/blanguage/src/bootstrap/native_import.b",
@@ -348,7 +356,7 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "sha256": "fe14f44f2215a71134e3ec901e8a9f7c7fbd3d813970221dc7ad317c5924eecd"
+      "sha256": "62ff9e30eb024ac9c2f23c506b2fd847ed63ba530b1a7c763df1642e18edc188"
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
@@ -388,7 +396,7 @@
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "sha256": "301ed31eb3707d357f4e014c4c9e991d38f25cf98530d9ca7588d210aa16b068"
+      "sha256": "aa6763f72e96c98057c137965206acb7605bba2cdf7b90d9707fadc7673d538e"
     },
     {
       "path": "crates/blanguage/src/linker/combine.rs",
@@ -425,6 +433,10 @@
     {
       "path": "crates/blanguage/src/module/mod.rs",
       "sha256": "d73eaef1ccf94dc5a8f928639fdffb2a37552e4a18601dcc1e0c05b97ff2c7af"
+    },
+    {
+      "path": "crates/blanguage/src/names.rs",
+      "sha256": "892db1b4e8bc74ed32fc55b612ab6018af7ac5df0f8d6747245dd5c4425774f0"
     },
     {
       "path": "crates/blanguage/src/native.rs",
@@ -563,10 +575,6 @@
       "sha256": "e983d7c28a8cb9984568bf62ddcba3686c573cae9eadfaa75903d3a3d0c2ef3b"
     },
     {
-      "path": "crates/blanguage/src/task.rs.in",
-      "sha256": "f28ee3d2a0a77759f7e1db5abba2af692aab160fd3942db9c69c9dcbf3dc6649"
-    },
-    {
       "path": "crates/blanguage/src/resource/module_image.rs",
       "sha256": "603de66802116105960a9d00c7555343601d0105715396b457886d2719507a52"
     },
@@ -609,6 +617,14 @@
     {
       "path": "crates/blanguage/src/syntax/wire.rs",
       "sha256": "3eb70f24bad1e4c6fd8b56ed9ae2df7ddf7a1dd0ef4a0c6e655e2a4fa4e9a18f"
+    },
+    {
+      "path": "crates/blanguage/src/task.rs.in",
+      "sha256": "f28ee3d2a0a77759f7e1db5abba2af692aab160fd3942db9c69c9dcbf3dc6649"
+    },
+    {
+      "path": "crates/blanguage/src/type_sets.rs",
+      "sha256": "608613a5e82fd12e886989a79bcc23ccd3342e92a5c761d845d53ae640ef0bab"
     },
     {
       "path": "crates/blcompute/src/application.rs",

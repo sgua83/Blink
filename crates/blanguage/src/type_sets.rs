@@ -1,5 +1,5 @@
 //! 类型集合属于编译期模块定义；按完整名义类型解析并去重，不生成运行时类型对象。
-use crate::{World, ast::*, ir::Ty, resolve_name};
+use crate::{World, ast::*, ir::Ty};
 use std::collections::{BTreeMap, BTreeSet};
 
 impl crate::syntax::FamilyKind<'_> {
@@ -112,9 +112,9 @@ impl World {
 
 impl crate::Declarations {
     pub(crate) fn resolve_type_set(&self, name: &str, module: &str, imports: &[String]) -> Option<String> {
-        resolve_name(name, module, imports, |key| {
-            self.type_sets.get(key).is_some_and(|(_, source, owner, _)| {
-                crate::type_visible(source, owner, module, imports)
+        crate::names::resolve(name,module,imports,|name| {
+            self.type_sets.get_key_value(name).map(|(key,(_,source,owner,_))|crate::names::Declaration {
+                name:key,owner,public:source.path.extension().is_some_and(|extension|extension=="h"),
             })
         }).unique()
     }
