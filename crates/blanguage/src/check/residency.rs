@@ -880,22 +880,23 @@ pub(super) fn output_sources<'a>(
 ) -> Outputs {
     fn collect<'a>(
         value: &'a Returned,
+        kind: &OutputKind,
         fields: &mut Vec<Part>,
-        values: &mut BTreeMap<Vec<Part>, &'a Residency>,
+        values: &mut BTreeMap<(OutputKind,Vec<Part>), &'a Residency>,
     ) {
         match value {
             Returned::Dataset(data) => {
-                values.insert(fields.clone(), &data.residency);
+                values.insert((kind.clone(),fields.clone()), &data.residency);
                 fields.push(Part::Elements);
-                if data.length.maximum()==0{values.insert(fields.clone(),&Residency::Absent);}
-                else if let Some(elements)=data.elements.known(){collect(elements,fields,values);}
+                if data.length.maximum()==0{values.insert((kind.clone(),fields.clone()),&Residency::Absent);}
+                else if let Some(elements)=data.elements.known(){collect(elements,kind,fields,values);}
                 fields.pop();
             }
             Returned::OwnedValue(value) => {
                 for (field, payload) in value.payloads.iter().enumerate() {
                     if let Some(payload) = payload {
                         fields.push(Part::Field(field));
-                        collect(payload, fields, values);
+                        collect(payload, kind, fields, values);
                         fields.pop();
                     }
                 }
@@ -903,18 +904,19 @@ pub(super) fn output_sources<'a>(
             _ => {}
         }
     }
-    let equations = units
+    units
         .map(|(name, value,written)| {
             let mut values = BTreeMap::new();
             if let Some(value) = value {
-                collect(value, &mut Vec::new(), &mut values);
+                collect(value, &OutputKind::Returned, &mut Vec::new(), &mut values);
             }
-            let mut all=values.into_iter().map(|(fields,value)|((OutputKind::Returned,fields),value)).collect::<BTreeMap<_,_>>();
-            for(index,value)in written.iter().enumerate(){if let Some(value)=value{let mut fields=BTreeMap::new();collect(value,&mut Vec::new(),&mut fields);all.extend(fields.into_iter().map(|(fields,value)|((OutputKind::Written(index),fields),value)));}}
-            (name.to_owned(), all)
+            for(index,value)in written.iter().enumerate(){if let Some(value)=value{
+                collect(value,&OutputKind::Written(index),&mut Vec::new(),&mut values);
+            }}
+            let values=values.into_iter().map(|(fields,value)|(fields,(*value).clone())).collect();
+            (name.to_owned(), values)
         })
-        .collect::<BTreeMap<_, _>>();
-    equations.into_iter().map(|(name,values)|(name,values.into_iter().map(|(fields,value)|(fields,(*value).clone())).collect())).collect()
+        .collect()
 }
 
 pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool {
