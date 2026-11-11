@@ -289,7 +289,7 @@ pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
                 if let Some(payload) = payload {
                     let (offset, ty) = if value.value.ty.has_variants() {
                         (
-                            ir::align_up(4, value.value.ty.align),
+                            value.value.ty.variant_payload_offset(),
                             value.value.ty.variants[index].ty.as_ref(),
                         )
                     } else {

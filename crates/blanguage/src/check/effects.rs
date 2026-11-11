@@ -374,7 +374,7 @@ impl Builder<'_> {
                     let value=data.elements.known()?.view_value()?;
                     let metadata=view::resource_paths(&value.ty).into_iter().filter(|fields|application::model_data(data.elements.known(),fields).is_some()).map(|fields|{
                         let(mut offset,mut ty)=(0,&value.ty);
-                        for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
+                        for field in fields{let(at,next)=if ty.has_variants(){(ty.variant_payload_offset(),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
                         offset..offset+ty.size
                     }).collect::<Vec<_>>();
                     let components=value.ty.components.iter().enumerate().filter_map(|(component,(scalar,word))|(!metadata.iter().any(|range|range.contains(word))).then_some((component,*scalar))).collect::<Vec<_>>();

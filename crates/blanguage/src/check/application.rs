@@ -3780,7 +3780,7 @@ impl Builder<'_> {
         }
         for fields in view::resource_paths(&value.ty){if let Some(resource)=model_data(Some(&model),&fields){
             let(mut offset,mut ty)=(0,&value.ty);
-            for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
+            for field in fields{let(at,next)=if ty.has_variants(){(ty.variant_payload_offset(),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
             let component=value.ty.components.iter().position(|(_,word)|*word==offset).unwrap();
             for source in resource.root.component_origins(0){
                 let proof=bindings.entry(source).or_default();

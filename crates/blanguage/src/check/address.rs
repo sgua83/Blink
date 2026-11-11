@@ -734,7 +734,7 @@ impl ReferenceAddress {
 fn resource_metadata(ty:&Ty,resources:Vec<Vec<usize>>)->Vec<std::ops::Range<u32>> {
     resources.into_iter().map(|fields|{
         let(mut offset,mut ty)=(0,ty);
-        for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
+        for field in fields{let(at,next)=if ty.has_variants(){(ty.variant_payload_offset(),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
         offset..offset+ty.size
     }).collect()
 }

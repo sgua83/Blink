@@ -144,6 +144,19 @@ pub struct CFunctionType {
     pub parameters: Vec<(crate::ast::Access, crate::ast::TypeName)>,
     pub contracts: Vec<crate::ast::ContractPredicate>,
 }
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct VariantLayout {
+    size: u64,
+    alignment: u32,
+}
+
+#[cfg(feature = "compiler")]
+unsafe extern "C" {
+    #[link_name = "bootstrap.type_layout::tagged_variant"]
+    fn tagged_variant_layout(payload_size: u32, payload_alignment: u32) -> VariantLayout;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ty {
     pub name: String,
@@ -281,6 +294,7 @@ impl Ty {
             dataset: Some(Box::new(element)), cleanup: None, function: None,
         }
     }
+    #[cfg(feature = "compiler")]
     pub fn result(ok: Self, error: Self) -> Option<Self> {
         let name = format!("result<{},{}>", ok.name, error.name);
         let arguments = vec![ok.clone(), error.clone()];
@@ -290,19 +304,26 @@ impl Ty {
         ];
         Self::variant(name, arguments, Vec::new(), Scalar::Bool, variants).map(|mut ty| { ty.result = true; ty })
     }
+    #[cfg(feature = "compiler")]
     pub fn variant(name: String, arguments: Vec<Self>, values: Vec<u32>, tag: Scalar, variants: Vec<Variant>) -> Option<Self> {
-        let align = variants.iter().map(|v| v.ty.align).max().unwrap_or(4).max(4);
-        let payload = variants.iter().map(|v| v.ty.size).max().unwrap_or(0);
-        let offset = align_up(4, align);
-        let size = u32::try_from((u64::from(offset) + u64::from(payload)).div_ceil(u64::from(align)) * u64::from(align)).ok()?;
+        let (payload_size, payload_alignment) = variants.iter().fold((0, 0), |(size, align), variant| {
+            (size.max(variant.ty.size), align.max(variant.ty.align))
+        });
+        let layout = unsafe { tagged_variant_layout(payload_size, payload_alignment) };
+        let size = u32::try_from(layout.size).ok()?;
+        let align = layout.alignment;
         Some(Self {
             name, arguments, values, size, align,
-            components: std::iter::once((tag, 0)).chain((offset..size).step_by(4).map(|at| (Scalar::U32, at))).collect(),
+            components: std::iter::once((tag, 0)).chain((align..size).step_by(4).map(|at| (Scalar::U32, at))).collect(),
             fields: Vec::new(), view: None, array: None, enumeration: false, result: false,
             variants, dataset: None, cleanup: None, function: None,
         })
     }
     pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
+    pub(crate) fn variant_payload_offset(&self) -> u32 {
+        // The four-byte tag occupies the first aligned block.
+        self.align
+    }
     pub(crate) fn zero_valid(&self)->bool {
         if self.task_result().is_some() || self.cleanup.is_some() || self.dataset.is_some() || self.view.is_some(){return false;}
         if self.has_variants(){return self.variants.iter().any(|variant|variant.discriminant==0 && variant.ty.zero_valid());}
@@ -520,7 +541,7 @@ impl Ty {
     pub(crate) fn borrow_fields(&self) -> Vec<(u32, &Ty)> {
         if self.view.is_some() || self.is_address() { return vec![(0, self)]; }
         if self.has_variants() {
-            let payload = align_up(4, self.align);
+            let payload = self.variant_payload_offset();
             return self.variants.iter().flat_map(|v|
                 v.ty.borrow_fields().into_iter().map(move |(at, ty)| (payload + at, ty))
             ).collect();
@@ -541,7 +562,7 @@ impl Ty {
     /// 全部可能的view字段，仅用于类型能力；重叠载荷不同时活动。
     pub fn view_fields(&self) -> Vec<(u32, &Ty)> {
         if self.has_variants() {
-            let payload=align_up(4,self.align);
+            let payload=self.variant_payload_offset();
             return self.variants.iter().flat_map(|variant|variant.ty.view_fields().into_iter().map(move |(at,ty)|(payload+at,ty))).collect();
         }
         if let Some(element) = &self.view {
@@ -575,7 +596,7 @@ impl Ty {
             else if ty.has_variants(){
                 let tag=words[base as usize/4];
                 let variant=ty.variants.iter().find(|variant|variant.discriminant==tag).ok_or_else(||format!("{}的活动变体编号{}没有声明的载荷",ty.name,tag))?;
-                visit(&variant.ty,base+align_up(4,ty.align),words,field)?;
+                visit(&variant.ty,base+ty.variant_payload_offset(),words,field)?;
             }else if let Some(element)=&ty.array {
                 let stride=align_up(element.size,element.align);
                 for i in 0..ty.values[0]{visit(element,base+i*stride,words,field)?;}
@@ -604,7 +625,7 @@ impl Ty {
                 if ty.has_variants(){
                     let variant=ty.variants.iter().find(|variant|variant.name==name)?;
                     if let Some(words)=words && words.get(offset as usize/4).copied()!=Some(variant.discriminant){return None;}
-                    offset+=align_up(4,ty.align);ty=&variant.ty;
+                    offset+=ty.variant_payload_offset();ty=&variant.ty;
                 }else{
                     let (_, at, field) = ty.fields.iter().find(|(n, _, _)| n == name)?;
                     offset += at;

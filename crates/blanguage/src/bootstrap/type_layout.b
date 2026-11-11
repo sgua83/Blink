@@ -28,3 +28,11 @@ extern "C" ArrayLayout fixed_array(u32 element_size, u32 alignment, u32 count)
     u64 stride = natural_size(element_size, alignment);
     return ArrayLayout(stride * u64(count), stride);
 }
+
+extern "C" VariantLayout tagged_variant(u32 payload_size, u32 payload_alignment) on cpu {
+    u32 alignment = 4;
+    if (payload_alignment > alignment) {
+        alignment = payload_alignment;
+    }
+    return VariantLayout(u64(alignment) + natural_size(payload_size, alignment), alignment);
+}

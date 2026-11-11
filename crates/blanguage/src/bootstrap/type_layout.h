@@ -19,3 +19,10 @@ struct ArrayLayout {
 
 extern "C" ArrayLayout fixed_array(u32 element_size, u32 alignment, u32 count)
     on cpu requires nonzero(alignment);
+
+struct VariantLayout {
+    u64 size;
+    u32 alignment;
+};
+
+extern "C" VariantLayout tagged_variant(u32 payload_size, u32 payload_alignment) on cpu;

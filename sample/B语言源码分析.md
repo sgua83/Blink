@@ -187,7 +187,7 @@ brun先接收精确的`cpu`／`gpu`后端，其他值直接交回参数错误；
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:345`。
+源码节选：`crates/blanguage/src/ir.rs:366`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -237,6 +237,19 @@ pub struct CFunctionType {
     pub parameters: Vec<(crate::ast::Access, crate::ast::TypeName)>,
     pub contracts: Vec<crate::ast::ContractPredicate>,
 }
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct VariantLayout {
+    size: u64,
+    alignment: u32,
+}
+
+#[cfg(feature = "compiler")]
+unsafe extern "C" {
+    #[link_name = "bootstrap.type_layout::tagged_variant"]
+    fn tagged_variant_layout(payload_size: u32, payload_alignment: u32) -> VariantLayout;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ty {
     pub name: String,
@@ -258,6 +271,8 @@ pub struct Ty {
 ```
 
 `size` 是类型内容占用，`align` 是对齐，`components` 把值分解为标量及偏移，`fields` 保留记录字段。已绑定字段的大小与对齐按声明顺序交给B的`bootstrap/type_layout.b`，计算字段偏移、结束字节和自然记录大小。显式stride沿原const绑定求值，B根据自然大小与对齐判定，最终字段和步长由同一Ty交给原生代码和布局查询。固定数组沿同一B布局模块计算步长与总大小。零分量元素保留原元素类型、数量及对齐，直接生成空标量坐标表。普通值固定数组的构造在原参数全部求值、类型和数量检查后，直接借用已有参数值装配实际寄存器、Proof及常量分量，不先按逻辑数量复制Value、Ty或参数容器。单个填充值只求值一次；逐项构造仍从左到右求值全部实参。没有结果分量时只交接原类型及原uniform／constant信息，不重复追加空结果；N=0仍求值和检查填充值。拥有构造、借用来源及最后资源释放继续由原所有者负责。数组下标仍先求值并完成原类型及有效性检查；选中元素没有逻辑分量时，直接按原类型、基底和访问权限交接空位置投影，不生成没有载荷消费者的索引偏移、地址、装载或写入。下标的副作用、越界诊断和真实资源生命周期保持。动态临时数组索引已完成原下标有效性检查后，由原materialize_array物化实际存储并捕获一次输入Proof；同一OwnedBinding的place交给原位置／读取入口，proof交给原选择事实入口，不对同一值再次完整捕获。向量不经该数组物化，保留自身的一次捕获。选择只为实际结果分量形成所选Proof。零分量元素直接交回空Proof并保留原路径，不构造没有结果消费者的逐元素候选及条件并图；数组与下标的真实求值、副作用、类型、边界、权限和资源寿命保持。借用字段查询只交接值本体内实际address／view位置，不追随引用的子存储。固定数组逻辑长度为零或元素类型没有借用叶时，直接交接空字段结果，不按逻辑数量重复展开空查询；真实借用字段继续按原元素及字段顺序交接。资源路径查询同样在原类型不拥有资源时直接交回空结果，不按数组数量重复寻找不存在的资源；真实dataset路径继续按原变体、字段及元素顺序交接，原模型和最后释放保持。`view` 与 `array` 分别保存已有引用元素和内联数组布局；`dataset`保存已绑定的TypeName元素引用，描述值仍为8字节、对齐4。Node记录通过dataset<Node>拥有子节点时，Node布局不会继续内联另一份Node；真正访问元素才由原World解析同一名义类型。直接按值内联自身仍没有有限布局。
+
+带载荷变体与result共用B类型布局模块。编译器将已绑定各分支的最大载荷大小和对齐交给B。B从四字节判别字和载荷对齐确定整个类型的对齐，并为最大载荷计算自然尾部大小。判别字位于零偏移，所有分支的载荷从同一对齐位置开始。Ty保存总大小、对齐和实际分量，构造、模式提取、字段查询及资源访问沿同一Ty读取载荷位置。布局生成在compiler功能内完成，运行库直接消费已生成的Ty和对象中的布局。
 
 B源语言通过size_of<T>()与align_of<T>()读取同一Ty的大小和对齐，结果是usize编译期常量。原expected_storage完成具体类型及dataset包装，泛型／const闭合后仍沿原类型服务；查询不构造对象、不执行owned释放，也不生成运行时节点或布局表。dataset查询其描述值，view查询其引用值，owned保持载荷布局，实际存储仍归Frame／blcompute。float3的大小12、对齐16与array<float3,2>的大小32各保留原语义。
 
@@ -1138,7 +1153,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 源码生产者的build.rs默认调用已安装独立稳定发行的bc；后续代通过BLINK_BOOTSTRAP_SDK明确选择独立上一代SDK，原内部研发资料用-BootstrapSdk只向本轮Cargo交接实际输入，不改系统安装。选定的bc分别生成B词法、泛型前瞻与链接字符串解码、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成、语法存储、名称解析、类型布局和标量常量运算及数值转换等引导模块的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子VERSION的原共享读句柄保持到全部编译与归档结束，新工具写工程target。发行者把同次构建的静态库交给源码SDK，并在包Cargo中声明build-sdk.rs作为消费入口；消费者持有本包VERSION读取同源固定库，写入自己的原OUT_DIR后链接，输入缺失直接交回I/O错误，不重新调用种子。compiler关闭时不读取引导库或生成编译器身份；installed不决定生产／消费角色。两个入口共用同一身份实现，以实际原生库、源码、有效Cargo配置及Rust工具链决定身份。编译器运行时直接调用已编入的B代码，原C ABI与运行资源职责保持。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。
 
-词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取、独立普通应用PE格式布局与字节写出、已选COFF节的分组／对齐／符号／栈／重定位地址及载荷组合，源语法节点／子项／文字的存储、增长与最后释放，以及名称与可见性查询、记录与固定数组字节布局、有限类型与const实参组合和已知标量的常量运算及数值转换由B接管；其余对象语义／合同及栈记录生成、独立链接的符号选择／合同检查、共享机器重定位及宿主／执行运行库／DLL路径、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取、独立普通应用PE格式布局与字节写出、已选COFF节的分组／对齐／符号／栈／重定位地址及载荷组合，源语法节点／子项／文字的存储、增长与最后释放，以及名称与可见性查询、记录、固定数组及带载荷变体与result的字节布局、有限类型与const实参组合和已知标量的常量运算及数值转换由B接管；其余对象语义／合同及栈记录生成、独立链接的符号选择／合同检查、共享机器重定位及宿主／执行运行库／DLL路径、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 语法存储按现行职责由B模块持有，原解析、声明、实例和检查消费者直接读取同一存储。B模块唯一持有源节点、模块内子项索引和自有文字，Source借用保留原字节范围，增长后按索引重新取得视图。声明表和各实例共享只读源定义；实例保留原instantiate已经产生的类型／const绑定，检查与IR生成按实际绑定解释源引用，删除Definition／Function深克隆及逐节点写回。必要的静态使用检查、作用域、错误位置及来源保持，实例实际代码／IR仍各自拥有。TypeName.canonical及规范化OutputConstant的Ty、bits、GeneratedOrigin属于原语义合同／IR，runtime codec继续恢复原语义值和编码，不附带编译器／种子依赖。只有真实新语法才写B结果；只为调用检查入口而构造的辅助Function／Return树退出。阶段名称和for范围沿原输入根、同一实例的u32 const绑定及模块const解释，直接交接原Root和名称来源；共享源节点不改写，运行期范围与未知名称保持原诊断。节点编号不代替结构比较，Expr的Span不参与原相等规则。语法、实例绑定与生成／语义结果各沿实际最后消费者释放，完整交接以原台账状态为准。
 
@@ -1385,7 +1400,7 @@ impl Owner {
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:328`。
+源码节选：`crates/blanguage/src/ir.rs:349`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -2551,7 +2566,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:1045`。
+源码节选：`crates/blanguage/src/ir.rs:1066`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -2565,7 +2580,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:1068`。
+源码节选：`crates/blanguage/src/ir.rs:1089`。
 
 ```rust
     Load {
@@ -2597,7 +2612,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1275`。
+源码节选：`crates/blanguage/src/ir.rs:1296`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -3193,7 +3208,7 @@ IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1111`。
+源码节选：`crates/blanguage/src/ir.rs:1132`。
 
 ```rust
     If {
@@ -5041,7 +5056,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 | `crates/blanguage/src/main.rs` | 命令行怎样选择检查、代码导出与目标文件编译 |
 | `lib.rs`、`frontend.rs` | 公开入口及源码装载、接口核对、具体入口选择与 Compilation |
 | `bootstrap/names.h`、`bootstrap/names.b`、`names.rs` | 模块名称与可见性查询；借用原声明存储，交接缺失、唯一完整名或歧义 |
-| `bootstrap/type_layout.h`、`bootstrap/type_layout.b` | 记录字段偏移、自然大小与显式stride，以及固定数组步长和大小 |
+| `bootstrap/type_layout.h`、`bootstrap/type_layout.b` | 记录字段偏移、自然大小与显式stride，固定数组步长和大小，以及带载荷变体和result的对齐与大小 |
 | `bootstrap/scalar_fold.h／.b`、`check/constant.rs` | 已选整数／浮点操作、数值转换、位宽与位模式怎样交给原Constant与Proof消费者 |
 | `bootstrap/lexer.h／.b`、`bootstrap/parser.h／.b`、`lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |
 | `generics.rs`、`value_parameters.rs`、`type_sets.rs` | 具体类型、静态值与类型集合怎样形成实例 |

@@ -628,7 +628,7 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
             }else{view::Borrow::default()}
         }else if stored{projected(&value.value,path,excluded,bindings.unwrap(),omitted,passed)}else{view::Borrow::default()};
         let payload_omitted=|index:usize|{
-            let(offset,ty)=if value.value.ty.has_variants(){(ir::align_up(4,value.value.ty.align),value.value.ty.variants[index].ty.as_ref())}else{value.value.ty.aggregate_part(index)};
+            let(offset,ty)=if value.value.ty.has_variants(){(value.value.ty.variant_payload_offset(),value.value.ty.variants[index].ty.as_ref())}else{value.value.ty.aggregate_part(index)};
             ty.components.iter().enumerate().filter_map(|(index,(_,word))|{
                 let component=value.value.ty.components.iter().position(|(_,at)|*at==offset+word).unwrap();
                 omitted.get(&component).map(|when|(index,when.clone()))

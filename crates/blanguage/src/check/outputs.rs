@@ -883,7 +883,7 @@ pub(super) fn apply_ownership(model: &mut Returned, ty: &Ty, offset: u32, guards
             for (index, payload) in value.payloads.iter_mut().enumerate() {
                 if let Some(payload) = payload {
                     let at = if value.value.ty.has_variants() {
-                        ir::align_up(4, value.value.ty.align)
+                        value.value.ty.variant_payload_offset()
                     } else {
                         value.value.ty.aggregate_part(index).0
                     };
@@ -1199,7 +1199,7 @@ impl Builder<'_> {
                     for (index, payload) in value.payloads.iter().enumerate() {
                         if let Some(payload) = payload {
                             let at = if value.value.ty.has_variants() {
-                                ir::align_up(4, value.value.ty.align)
+                                value.value.ty.variant_payload_offset()
                             } else {
                                 value.value.ty.aggregate_part(index).0
                             };

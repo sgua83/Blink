@@ -111,7 +111,7 @@ impl OwnedValuePayload {
                 return;
             }
             for(index,payload)in value.payloads.iter().enumerate(){if let Some(Returned::OwnedValue(child))=payload.as_deref(){
-                let at=if value.value.ty.has_variants(){ir::align_up(4,value.value.ty.align)}else{value.value.ty.aggregate_part(index).0};
+                let at=if value.value.ty.has_variants(){value.value.ty.variant_payload_offset()}else{value.value.ty.aggregate_part(index).0};
                 visit(child,root,offset+at,&path,omitted,into,map);
             }}
         }

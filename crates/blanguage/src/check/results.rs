@@ -186,7 +186,7 @@ impl Builder<'_> {
             bits[0] = Bits::from(ty.variants[index].discriminant);
         }
         if let Some(payload) = payload {
-            let offset = ir::align_up(4, ty.align);
+            let offset = ty.variant_payload_offset();
             for (component, (scalar, position)) in ty.components.iter().enumerate().skip(1) {
                 let word = self.result_word(&payload, position - offset, *scalar);
                 value.regs[component] = word.regs[0];
@@ -201,7 +201,7 @@ impl Builder<'_> {
             value.uniform = payload.uniform;
         }
         value.proof.retain_view_borrows(&ty);
-        let offset=ir::align_up(4,ty.align);
+        let offset=ty.variant_payload_offset();
         let active=view_contracts::components(&ty.variants[index].ty).into_iter().map(|component|ty.components.iter().position(|(_,at)|*at==offset+ty.variants[index].ty.components[component].1).unwrap()).collect::<BTreeSet<_>>();
         for component in view_contracts::components(&ty).difference(&active){value.proof=value.proof.clone().with_view_sources(*component,BTreeSet::from([view::Source::Inactive]));}
         value.literal = false;
@@ -215,7 +215,7 @@ impl Builder<'_> {
         if ty.name == "void" {
             return None;
         }
-        let offset = ir::align_up(4, value.ty.align);
+        let offset = value.ty.variant_payload_offset();
         let mut proof = bounds::Proof::default();
         let mut regs = Vec::new();
         let mut constant = Some(Vec::new());

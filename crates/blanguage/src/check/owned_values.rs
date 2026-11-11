@@ -405,7 +405,7 @@ impl Builder<'_> {
             }
             for index in 0..value.ty.variants.len() {
                 let ty = &value.ty.variants[index].ty;
-                let offset = ir::align_up(4, value.ty.align);
+                let offset = value.ty.variant_payload_offset();
                 let components: Vec<_> = ty.components.iter().map(|(_,at)| {
                     value.ty.components.iter().position(|(scalar,word)| *word <= offset + at && offset + at < word + scalar.size()).unwrap()
                 }).collect();
