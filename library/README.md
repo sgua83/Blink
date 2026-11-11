@@ -114,7 +114,7 @@ target/release/blink.exe --archive target/unicode.obj target/sequence.obj -o tar
 
 ## blink.windows.system
 
-`blink.windows.system`是Windows x64系统信息及共用内核对象接口，只有一份`.h`。普通记录`SystemInfo`和`extern "C" void GetNativeSystemInfo(write SystemInfo info) on cpu`直接交接原Kernel32输出，没有B转发实现或常驻服务。记录未初始化时可作为这个完整write输出；同步返回后记录仍由原B调用者持有。
+`blink.windows.system`是Windows x64系统信息、共用句柄及独占同步接口，只有一份`.h`。普通记录`SystemInfo`和`extern "C" void GetNativeSystemInfo(write SystemInfo info) on cpu`直接交接原Kernel32输出，没有B转发实现或常驻服务。记录未初始化时可作为这个完整write输出；同步返回后记录仍由原B调用者持有。
 
 ```b
 import blink.windows.system;
@@ -150,6 +150,12 @@ println(info.number_of_processors);
 共用`WaitForSingleObject(handle object,u32 milliseconds)`和`CloseHandle(handle object)`也直接声明在本模块；使用者显式`import blink.windows.system;`，不经进程命令行模块取得它们。前者返回原u32等待状态，`INFINITE=0xffffffff`，`WAIT_OBJECT_0=0`、`WAIT_ABANDONED=0x80`、`WAIT_TIMEOUT=0x102`、`WAIT_FAILED=0xffffffff`；零毫秒只观察本次状态，超时不停止原工作，失败后立即保存`GetLastError()`。WAIT_OBJECT_0表示原对象已发信号，进程／线程对象才据此解释真实结束；互斥量、信号量等对象保持各自的原状态与获取语义。等待尚未返回时不能关闭所用句柄。
 
 `CloseHandle`返回原i32 BOOL，零时由调用者立即保存原OS错误；每份实际拥有的合法内核句柄在最后消费者结束后关闭一次，复制handle数值不产生另一拥有者。关闭进程／线程句柄不终止工作。搜索句柄、注册表键、socket等使用其匹配的原API，不交给本函数。共用`STILL_ACTIVE=259`供进程／线程退出查询使用；它在尚未结束时是活动状态，在已真实结束后也可以是应用的有效退出码，不从这个数值单独推断寿命。平台合同：[WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)、[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
+
+### Windows原生独占锁
+
+`SRWLock`按Windows x64 `SRWLOCK`原布局保存一个不透明address状态，大小8、对齐8。调用者持有实际存储，以`InitializeSRWLock(write SRWLock lock)`在共享前同步完整初始化。原`AcquireSRWLockExclusive(address lock)`和`ReleaseSRWLockExclusive(address lock)`接收这个实际存储的地址并返回void；获取会等待当前持有者释放，释放必须由取得它的同一线程执行。使用期间锁存储保持固定，不复制、移动、读写内部状态或递归取得。锁不是handle，不交给WaitForSingleObject或CloseHandle；已解锁且无等待／使用者后由原存储所有者结束其寿命，无独立销毁入口。
+
+需要独占同一任务队列的读取、取项与截止位置时，调用者在一个获取／释放区间内完成实际队列操作，释放后再执行工作；失败更新截止位置仍由同一锁保护。共享地址保持至最后线程消费者结束，锁与队列同属原调用者，工作结果与线程等待分别交接。原声明不把地址解释成同步独占B借用，不自动加锁、承诺公平顺序或提供通用B任务拥有／异步借用；编译器采用继续沿原C-032.2.17。平台合同：[SRW锁](https://learn.microsoft.com/en-us/windows/win32/sync/slim-reader-writer--srw--locks)、[初始化](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-initializesrwlock)、[释放](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-releasesrwlockexclusive)。
 
 ## blink.windows.thread
 

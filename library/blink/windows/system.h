@@ -29,3 +29,12 @@ extern "C" u32 WaitForSingleObject(handle object,u32 milliseconds) on cpu
 
 extern "C" i32 CloseHandle(handle object) on cpu
     from "KERNEL32.dll";
+
+struct SRWLock { address state; };
+
+extern "C" void InitializeSRWLock(write SRWLock lock) on cpu
+    from "KERNEL32.dll";
+extern "C" void AcquireSRWLockExclusive(address lock) on cpu
+    from "KERNEL32.dll";
+extern "C" void ReleaseSRWLockExclusive(address lock) on cpu
+    from "KERNEL32.dll";

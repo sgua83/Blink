@@ -294,6 +294,8 @@ compiler Rust SDK可用`spirv::module_json(&[u32])`取得原模块全部指令�
 
 共用WaitForSingleObject／CloseHandle和INFINITE／WAIT_*／STILL_ACTIVE常量由同一纯.h blink.windows.system声明，进程、线程和文件消费者显式导入system。等待的原u32结果按真实对象解释，关闭的i32 BOOL及即时OS错误保持；不为等待／关闭带入命令行或文本实现，也不复制原声明。等待尚未完成时保持该句柄，最后真实消费者结束后关闭一次；专用句柄使用其原匹配API。
 
+Windows x64独占SRWLock由同一blink.windows.system纯.h交接，实际记录为一个address、大小8／对齐8；InitializeSRWLock的完整write只在原存储共享前使用。AcquireSRWLockExclusive／ReleaseSRWLockExclusive消费同一个实际地址，原持有线程负责释放，调用方保持存储到最后等待者与使用者结束。这个地址边界允许实际系统共享，不冒充同步独占typed借用，不复制锁的内部状态、持有表或第二释放链。原队列保护及平台合同见[标准库](../library/README.md#windows原生独占锁)，普通B任务仍按原台账建设。
+
 ## Windows原生线程入口与最后完成
 
 blink.windows.thread直接以CreateThread的原六参数ABI交接address、64位usize、非零cfn<u32,address>、address、u32和可空thread_id地址，返回原handle；B extern C工作函数以c_function取得原入口。线程可在创建返回前开始，返回句柄不证明完成，原parameter存储和入口代码持续到实际线程结束，不能伪装成创建函数的同步typed借用。GetCurrentThreadId读取原当前u32身份，按memory(read)保持B存储；GetThreadId保留原u32结果及失败OS错误；GetExitCodeThread仅在BOOL非零初始化write u32。
