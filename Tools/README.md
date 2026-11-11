@@ -95,12 +95,12 @@ BLSupervisor system-exec <实际节点> "<该节点实际下载路径> --quiet"
 
 ## 中间构建文件清理
 
-在实际源码工作区运行现有Tools/Clean.ps1。默认进行完整中间构建清理，包括本工程Cargo metadata声明的target_directory、Saved内带Cargo缓存标记的独立构建目录，以及Saved内的临时对象、静态库、开发／测试EXE与DLL、PDB、链接／编译暂存和已编译执行映像。该完整模式包含可重建的依赖、对象、增量及SDK构建缓存；后续构建按真实输入重新生成。调用前让本工程编译、链接及原生消费者正常结束，脚本不终止进程或服务。
+可从任意当前目录调用项目内的Tools/Clean.ps1。默认进行完整中间构建清理，包括本工程Cargo metadata声明的target_directory、Saved内带Cargo缓存标记的独立构建目录，以及Saved内的临时对象、静态库、开发／测试EXE与DLL、PDB、链接／编译暂存和已编译执行映像。该完整模式包含可重建的依赖、对象、增量及SDK构建缓存；后续构建按真实输入重新生成。调用前让本工程编译、链接及原生消费者正常结束，脚本不终止进程或服务。
 
     ./Tools/Clean.ps1 -WhatIf
     ./Tools/Clean.ps1
 
-默认完整模式只处理本工程内的构建输出；实际工程根来自脚本目录，也可用-Root明确指定。Cargo构建目录下的dist由正式发行所有者持有，保留其全部内容；已安装的稳定工具／SDK不属于工作区清理。Saved里混合保存的B／h、Rust与脚本源、Cargo输入、原始数据、日志／测量和记录保留。临时编译文件按.obj／.o／.lib／.a／.rlib／.rmeta／.pdb／.exe／.dll／.exp／.ilk／.pch／.res／.tmp／.rsp／.spv／.blbi／.blri选择，不按日期或大小推测失效。Saved内Cargo缓存直接依据原生产者已有CACHEDIR.TAG或.rustc_info.json辨认，不维护另一份缓存或任务状态。完整清理明确包含旧失败的中间二进制；需要继续定位的源码和原诊断仍保留，后续消费者重新构建。
+清理根固定为脚本所在Tools目录的父目录，默认发现和显式选择都以该项目根解析相对路径。Cargo构建目录下的dist由正式发行所有者持有，保留其全部内容；已安装的稳定工具／SDK不属于工作区清理。Saved里混合保存的B／h、Rust与脚本源、Cargo输入、原始数据、日志／测量和记录保留。临时编译文件按.obj／.o／.lib／.a／.rlib／.rmeta／.pdb／.exe／.dll／.exp／.ilk／.pch／.res／.tmp／.rsp／.spv／.blbi／.blri选择，不按日期或大小推测失效。Saved内Cargo缓存直接依据原生产者已有CACHEDIR.TAG或.rustc_info.json辨认，不维护另一份缓存或任务状态。完整清理明确包含旧失败的中间二进制；需要继续定位的源码和原诊断仍保留，后续消费者重新构建。
 
 只清理指定批次时显式传-Path，继续按真实完成范围及最后消费者选择精确文件或目录，不自动扩展到其他缓存。路径必须位于本工程Saved子目录，或Cargo metadata声明的构建目录及其子目录；仅清理Saved时不依赖Cargo启动。显式空集合继续为零选择、零删除和空Paths，不读取Cargo metadata。默认发现及显式Path都不得超出本项目目录；工程外的Cargo目标不进入清理，即使环境或配置将Cargo输出设到工程外也直接拒绝。
 

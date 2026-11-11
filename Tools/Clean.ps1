@@ -6,6 +6,7 @@ Without Path, clear Cargo build output and temporary compiled files under Saved.
 This complete cleanup includes reusable caches and development binaries.
 Finish active consumers first. Keep source, logs, installed tools and dist assets.
 Pass Path to select literal generated files instead of the complete cleanup.
+Paths are always relative to the project containing this script.
 .PARAMETER Path
 Literal workspace-relative generated paths. No automatic age or suffix selection.
 Preview and result paths use the same workspace-relative paths.
@@ -21,12 +22,11 @@ Preview and result paths use the same workspace-relative paths.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [AllowEmptyCollection()]
-    [string[]]$Path,
-    [string]$Root = (Split-Path -Parent $PSScriptRoot)
+    [string[]]$Path
 )
 
 $ErrorActionPreference = 'Stop'
-$workspace = (Get-Item -LiteralPath $Root).FullName
+$workspace = Split-Path -Parent $PSScriptRoot
 $workspaceBoundary = $workspace.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 $saved = [IO.Path]::GetFullPath((Join-Path $workspace 'Saved'))
 $boundary = $saved.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
