@@ -1436,20 +1436,15 @@ impl Proof {
         proof
     }
     pub(super) fn capture(value: &Value) -> Self {
-        let mut proof = value.proof.clone();
-        proof.ranges = (0..value.regs.len()).map(|i| {
-            value.component_ranges(i)
-        }).collect();
-        proof.nonzero = (0..value.regs.len())
-            .map(|i| value.component_nonzero(i))
-            .collect();
-        proof.origins = (0..value.regs.len())
-            .map(|i| value.component_origins(i))
-            .collect();
-        proof.conditions = (0..value.regs.len())
-            .map(|i| Self::value_condition(value, i))
-            .collect();
-        proof
+        Self {
+            domains: value.proof.domains.clone(),
+            views: value.proof.views.clone(),
+            addresses: value.proof.addresses.clone(),
+            ranges: (0..value.regs.len()).map(|i| value.component_ranges(i)).collect(),
+            nonzero: (0..value.regs.len()).map(|i| value.component_nonzero(i)).collect(),
+            origins: (0..value.regs.len()).map(|i| value.component_origins(i)).collect(),
+            conditions: (0..value.regs.len()).map(|i| Self::value_condition(value, i)).collect(),
+        }
     }
     pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
         let mut proof=Self::capture(a);let mut other=Self::capture(b);
