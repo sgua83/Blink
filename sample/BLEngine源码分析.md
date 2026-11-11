@@ -290,7 +290,7 @@ BLRay camera_ray(BLCamera camera, float2 ndc) on compute {
 
 `src/window.rs` 的 `BLNavigation` 保存导航的 yaw、pitch、distance。方向键和滚轮改变这些输入；`src/viewer.rs` 每次绘制把它们交给 `BLCameraPrograms::orbit`。Rust 收集输入，B 计算相机，不在窗口消息中重新实现三维数学。
 
-源码：`Programs/scene/camera.b:18`。
+源码：`Programs/scene/camera.b:27`。
 
 ```b
 void orbit(write dataset<BLCamera,1> cameras,
@@ -484,7 +484,7 @@ void prepare(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform>
 
 `BLMesh::read_obj` 分别读取位置、法线和 UV。每个面角以 `(位置索引,UV索引,法线索引)` 作为键查找或建立顶点，这正是接缝能保留下来的原因。源码中的关键行是：
 
-局部节选，外围未列出：`src/geometry.rs:137`。
+局部节选，外围未列出：`src/geometry.rs:146`。
 
 ```rust
 let key = (pi, ti, ni);
@@ -688,7 +688,7 @@ f32 microfacet_distribution(float3 normal,float3 half_vector,f32 a2) on compute 
 
 面光的世界位置加上 `[-1,1]` 范围的两条半边得到采样点。若两半边长度各为一且垂直，完整面积是四，不是一。源码中 `area_pdf` 的系数四来自这个定义：
 
-源码：`Programs/lighting/lights.b:37`。
+源码：`Programs/lighting/lights.b:88`。
 
 ```b
 density=area_pdf(light,direction,distance_squared);
@@ -737,7 +737,7 @@ bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLight
 
 ### 13.2 随机数从像素和维度得到
 
-源码：`Programs/sampling/random.b:17`。
+源码：`Programs/sampling/random.b:23`。
 
 ```b
     BLRandomStream stream=sample_stream(address,dimension);
@@ -824,7 +824,7 @@ surface clear dielectric 0 0 vacuum glass 0 1 1 0 0
 
 `stella.surface::surface_at` 用真实几何法线判断当前处在边界哪侧，再交付目标介质；`surface_medium` 只有在路径穿过几何边界时切换编号：
 
-源码：`Programs/stella/surface.b:103`。
+源码：`Programs/stella/surface.b:126`。
 
 ```b
 u32 surface_medium(BLStellaSurface surface,float3 direction) on compute {
