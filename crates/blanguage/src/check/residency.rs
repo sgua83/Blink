@@ -656,11 +656,21 @@ fn argument_data(arguments:&mut Arguments,input:&Input,data:&application::Data){
         arguments.insert(contents,Residency::Absent);
     }
 }
-pub(super) fn argument(arguments: &mut Arguments, parameter: usize, value: &mut application::Data) {
-    argument_data(arguments,&Input::new(parameter),value);
-    if value.length.maximum()!=0 && let Some(elements)=value.elements.known_mut(){
-        visit(elements,&mut Input{parameter,fields:vec![Part::Elements]},&mut |data,input| {
-            argument_data(arguments,input,data);
+pub(super) fn argument(arguments: &mut Arguments, parameter: usize, value: &mut application::Data, projection: &[usize]) {
+    argument_data(arguments, &Input::new(parameter), value);
+    if value.length.maximum() == 0 {
+        return;
+    }
+    let mut elements = value.elements.known_mut();
+    for &field in projection {
+        elements = match elements {
+            Some(Returned::OwnedValue(value)) => value.payloads[field].as_deref_mut(),
+            _ => None,
+        };
+    }
+    if let Some(elements) = elements {
+        visit(elements, &mut Input { parameter, fields: vec![Part::Elements] }, &mut |data, input| {
+            argument_data(arguments, input, data);
         });
     }
 }

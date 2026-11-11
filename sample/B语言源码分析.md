@@ -1904,13 +1904,13 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。
+预分析初始化未知，真实读参数在原require_application_reference_initialized完成后交接事实，write参数继续原输出位置／初始化分支。residency::argument保留实际父存储的驻留，再按DataReference投影从原共同元素模型选择子树，用形参的Elements路径交接子资源驻留；按值参数传空字段路径，遍历整个元素模型。
 
 源码节选：`crates/blanguage/src/check/native_function.rs:852`。
 
 ```rust
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
-                    residency::argument(&mut locations,index,&mut data);
+                    residency::argument(&mut locations,index,&mut data,&[]);
                     self.require_same(&ty,&data.ty,span)?;
                     self.require_application_initialized(&data,span)?;
                     self.native_dataset_shape(p,d,data.count,span)?;

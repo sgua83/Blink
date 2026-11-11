@@ -797,7 +797,7 @@ impl Builder<'_> {
                     env.insert(p.name.to_owned(),Binding::Data(view));
                 }
                 Argument::BorrowedData(mut reference) if p.ty.dataset=>{
-                    residency::argument(&mut locations,index,&mut reference.data);
+                    residency::argument(&mut locations,index,&mut reference.data,&reference.projection);
                     self.require_same(&ty,reference.element_layout().1,span)?;
                     if !matches!(p.access,Access::Read|Access::Write|Access::InOut|Access::Atomic){
                         return self.fail(span,"B224","CPU dataset借用需要read／write／inout／atomic");
@@ -850,7 +850,7 @@ impl Builder<'_> {
                     env.insert(p.name.to_owned(),Binding::DataReference(reference));
                 }
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
-                    residency::argument(&mut locations,index,&mut data);
+                    residency::argument(&mut locations,index,&mut data,&[]);
                     self.require_same(&ty,&data.ty,span)?;
                     self.require_application_initialized(&data,span)?;
                     self.native_dataset_shape(p,d,data.count,span)?;
