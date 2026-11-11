@@ -301,7 +301,8 @@ pub(crate) fn instances(
     definition: &std::sync::Arc<crate::Definition>,
 ) -> Result<Vec<Instance>> {
     let f = &definition.function;
-    let values = crate::value_parameters::combinations(&f.values());
+    let parameters = f.values();
+    let mut values = parameters.value_combinations();
     let mut result = Vec::new();
     for arguments in combinations(
         world,
@@ -311,15 +312,16 @@ pub(crate) fn instances(
         &definition.module,
         &definition.imports,
     )? {
-        for values in &values {
+        values.try_for_each(|row| {
             result.push(instantiate(
                 world,
                 base,
                 definition,
                 arguments.clone(),
-                values,
+                row,
             )?);
-        }
+            Ok(())
+        })?;
     }
     Ok(result)
 }

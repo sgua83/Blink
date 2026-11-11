@@ -39,25 +39,6 @@ pub(crate) fn validate(
     }
     Ok(())
 }
-pub(crate) fn combinations(values: &crate::syntax::List<crate::syntax::wire::ValueParameterNode>) -> Vec<Vec<u32>> {
-    let mut result = vec![Vec::new()];
-    for parameter in values {
-        let Some(choices) = parameter.choices() else {
-            return Vec::new();
-        };
-        result = result
-            .into_iter()
-            .flat_map(|prefix| {
-                choices.iter().map(move |value| {
-                    let mut args = prefix.clone();
-                    args.push(*value);
-                    args
-                })
-            })
-            .collect();
-    }
-    result
-}
 pub(crate) fn substitute_shape(shape: &mut Shape, values: &BTreeMap<String,u32>, source:&Source)->Result<()> {
     match shape {
         Shape::Constant(name)=>if let Some(value)=values.get(name){*shape=Shape::Literal(*value);},

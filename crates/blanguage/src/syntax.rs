@@ -245,6 +245,39 @@ optional_list!(TypeNode,contracts,PredicateNode);
 optional_list!(FunctionNode,body,StmtNode);
 impl Type {pub fn canonical(&self)->bool{self.row().canonical!=0} pub fn dataset(&self)->bool{self.row().dataset!=0} pub fn view(&self)->bool{self.row().view!=0} pub fn tile(&self)->bool{self.row().tile!=0}}
 impl ValueParameter {pub fn choices(&self)->Option<&[u32]>{let value=self.row().choices;(value.present!=0).then(||self.owner.array(value.value))}}
+pub(crate) struct ValueCombinations<'a> {
+    parameters: &'a List<wire::ValueParameterNode>,
+    indices: Vec<u64>,
+    row: Vec<u32>,
+}
+
+impl List<wire::ValueParameterNode> {
+    pub fn value_combinations(&self) -> ValueCombinations<'_> {
+        ValueCombinations {
+            parameters: self,
+            indices: vec![0; self.len()],
+            row: vec![0; self.len()],
+        }
+    }
+}
+
+impl ValueCombinations<'_> {
+    pub fn try_for_each(&mut self, mut consume: impl FnMut(&[u32]) -> crate::Result<()>) -> crate::Result<()> {
+        let nodes = self.parameters.owner.view().nodes;
+        let parameters = self.parameters.value;
+        let mut first = 1;
+        // The sealed store outlives the call. B writes only the two
+        // caller-owned arrays, each with one entry per parameter.
+        while unsafe {
+            wire::advance_value_domain(nodes, parameters, self.indices.as_mut_ptr(), self.row.as_mut_ptr(), first) != 0
+        } {
+            consume(&self.row)?;
+            first = 0;
+        }
+        Ok(())
+    }
+}
+
 impl MatchArm {pub fn binding(&self)->Option<&str>{let value=self.row().binding;(value.present!=0).then(||self.owner.text(value.value))}}
 impl Param {pub fn access(&self)->crate::ast::Access{self.row().access}}
 impl Contract {pub fn kind(&self)->crate::ast::ContractKind{self.row().kind}}
