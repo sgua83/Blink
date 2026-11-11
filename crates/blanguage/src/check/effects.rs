@@ -277,11 +277,14 @@ impl Builder<'_> {
         borrowed_data: Option<ValueIdentity>,
         effect: &LoopWrites,
         condition: Option<&Expr>,
+        cursor: Option<&str>,
     ) -> Result<()> {
         for write in writes {
             let changed=match write {
                 Write::Move{..}=>continue,
-                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{self.write_address_values(borrow,&[(borrow.clone(),Some(Access::Write),None)])?;continue;},
+                Write::Memory{borrow,..}if self.address_write_positions(borrow).is_some()=>{
+                    let effect=address::MemoryEffect::of(borrow,Access::Write,None);self.update_address_elements(borrow,&effect)?;continue;
+                },
                 Write::External{..}|Write::Generator(_)|Write::Memory{..}=>{
                     let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
                         data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
@@ -328,9 +331,23 @@ impl Builder<'_> {
                     && owner.ty() == &Ty::scalar(Scalar::U32)
                     && matches!(owner.storage(), Place::Local(..) | Place::Reference { .. }) { continue; }
                 for write in writes {
+                    if cursor==Some(name.as_str())
+                        &&let Place::ApplicationElement{identity,index_value,element_layout,..}=owner.storage()
+                        &&let Write::Position{place,contents:false,..}=write
+                        &&let Some((written,_,_))=self.loop_write_projection(place,&|index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))?
+                        &&written.data.is_some_and(|data|data.root.identity()==*identity)
+                        &&address::Layout::of(&written.base)==*element_layout
+                        &&written.index.is_some_and(|index|bounds::Condition::index_equal(index,*index_value).truth_in(&self.path)==Some(true)){continue;}
                     let components = match write {
                         Write::Move{..}=>Vec::new(),
                         Write::External{..}|Write::Generator(_)=>vec![(0..owner.ty().components.len()).collect()],
+                        Write::Memory{borrow,..}if cursor==Some(name.as_str())
+                            &&matches!(owner.storage(),Place::ApplicationElement{..})&&self.address_write_positions(borrow).is_some()=>{
+                            let effect=address::MemoryEffect::of(borrow,Access::Write,None);let(positions,index)=self.value_memory_location(&owner);
+                            vec![positions.iter().zip(&owner.ty().components).enumerate().filter_map(|(component,(position,(scalar,_)))|{
+                                (effect.outside_element_bytes(position,*scalar,index)!=0).then_some(component)
+                            }).collect()]
+                        },
                         Write::Memory{borrow,..}=>vec![self.memory_write_components(borrow,&owner)],
                         Write::Position{place,contents,iterator,..}=>{
                             let projection=if *contents {self.application_write_projection(place,&owner)}
@@ -644,7 +661,10 @@ impl Builder<'_> {
             writes
         }else{writes};
         effect.body_bounds=body_bounds;
-        if !initial {self.invalidate_writes(&writes,borrowed_data,&effect,condition)?;}
+        if !initial {
+            let cursor=if condition.is_none()&&!bounds::seeks(body){self.loop_contexts.last().and_then(|context|context.iterator.as_ref()).map(|(name,_)|name.clone())}else{None};
+            self.invalidate_writes(&writes,borrowed_data,&effect,condition,cursor.as_deref())?;
+        }
         Ok(effect)
     }
 }

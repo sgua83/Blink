@@ -375,11 +375,21 @@ impl MemoryEffect {
         self.known.extend(other.known);
         if let Some(access)=other.external{self.external=Some(match self.external{Some(old)if old!=access=>Access::InOut,_=>access});}
     }
+    fn same_element(origin:&Origin,when:&bounds::Clause,position:&Position,index:Option<bounds::Operand>)->Option<bool> {
+        let (Some(index),Position::Borrowed(borrow,layout,_))=(index,position)else{return None;};
+        let(Root::Resource{borrow:source,index:Some(written)}|Root::Dataset{borrow:source,index:Some(written)})=&origin.root else{return None;};
+        if origin.base!=*layout||!same_loop_resource(source,borrow){return None;}
+        bounds::Condition::index_equal(*written,index).truth_in(when)
+    }
+    // The loop owner uses this query only for a forward cursor's preceding iterations.
+    pub(super) fn outside_element_bytes(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
+        if self.external.is_some_and(|access|access.writes()){return ((1u16<<scalar.size())-1)as u8;}
+        self.known.iter().filter(|(_,_,access,_)|access.writes()).fold(0,|bytes,(origin,when,_,_)|{
+            bytes|if Self::same_element(origin,when,position,index)==Some(true){0}else{Self::origin_written_bytes(origin,when,position,scalar,index)}
+        })
+    }
     fn origin_written_bytes(origin:&Origin,when:&bounds::Clause,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
-        if let (Some(index),Position::Borrowed(borrow,layout,_))=(index,position)
-            &&let Root::Resource{borrow:source,index:Some(written)}|Root::Dataset{borrow:source,index:Some(written)}=&origin.root
-            &&origin.base==*layout&&same_loop_resource(source,borrow)
-            &&bounds::Condition::index_equal(*written,index).truth_in(when)==Some(false){return 0;}
+        if Self::same_element(origin,when,position,index)==Some(false){return 0;}
         let all=((1u16<<scalar.size())-1) as u8;
         let known=||origin.memory_regions(when).map(|regions|regions.iter().fold(0,|bytes,region|bytes|region.written_bytes(position,scalar))).unwrap_or(all);
         match position{
@@ -770,6 +780,21 @@ impl Builder<'_> {
         self.positions(place).iter().enumerate().filter_map(|(i,position)|positions.iter().any(|written|
             owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()
     }
+    pub(super) fn update_address_elements(&mut self,borrow:&view::Borrow,effect:&MemoryEffect)->Result<()> {
+        let data=borrow.sources.entries().filter(|(_,when)|when.possible()).filter_map(|(source,when)|{
+            let view::Source::Position(origin)=source else{return None;};
+            if !origin.writable{return None;}
+            match &origin.root {
+                Root::Resource{borrow:resource,index}|Root::Dataset{borrow:resource,index}=>Some((resource.restricted(&when),origin.words.to_vec(),index.map(|index|{
+                    let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)
+                }))),
+                Root::External(Identity::Storage(resource))=>Some((resource.resources().restricted(&when),resource.sources.iter().filter_map(|source|match source{view::Source::Position(parent)=>Some(parent.words.iter().copied()),_=>None}).flatten().collect(),None)),
+                _=>None,
+            }
+        }).collect::<Vec<_>>();
+        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Bytes{effect,index})?;}
+        Ok(())
+    }
     pub(super) fn write_address_values(&mut self,borrow:&view::Borrow,memory:&[(view::Borrow,Option<Access>,Option<bounds::Proof>)])->Result<()> {
         let borrow=self.current_address_borrow(borrow);let mut effect=MemoryEffect::default();
         for(source,access,written)in memory{if let Some(access)=access.filter(|access|access.writes()){
@@ -790,18 +815,7 @@ impl Builder<'_> {
             }
         }
         },Some(_)=>{
-        let data=borrow.sources.entries().filter(|(_,when)|when.possible()).filter_map(|(source,when)|{
-            let view::Source::Position(origin)=source else{return None;};
-            if !origin.writable{return None;}
-            match &origin.root {
-                Root::Resource{borrow:resource,index}|Root::Dataset{borrow:resource,index}=>Some((resource.restricted(&when),origin.words.to_vec(),index.map(|index|{
-                    let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)
-                }))),
-                Root::External(Identity::Storage(resource))=>Some((resource.resources().restricted(&when),resource.sources.iter().filter_map(|source|match source{view::Source::Position(parent)=>Some(parent.words.iter().copied()),_=>None}).flatten().collect(),None)),
-                _=>None,
-            }
-        }).collect::<Vec<_>>();
-        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Bytes{effect:&effect,index})?;}
+        self.update_address_elements(&borrow,&effect)?;
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
             let(positions,index)=self.value_memory_location(&place);

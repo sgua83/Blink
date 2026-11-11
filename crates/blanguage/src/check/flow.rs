@@ -64,7 +64,7 @@ pub(super) struct LoopContext {
     initial: bool,
     initialization: bool,
     continues: Vec<LoopState>,
-    iterator: Option<(String, Value)>,
+    pub(super) iterator: Option<(String, Value)>,
     pub(super) control_source: view_contracts::LoopControl,
     controls: BTreeMap<Reg,Value>,
     pub(super) view_inputs: Vec<view::InputSlot>,

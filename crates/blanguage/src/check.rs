@@ -4041,6 +4041,7 @@ impl<'a> Builder<'a> {
                 CursorSource::ApplicationData(mut data) => {
                     // The cursor uses the same current loop resource as indexed access.
                     data.data.root.proof=data.data.root.proof.clone().with_view_borrow(0,self.data_borrow(&data.sources));
+                    let input=if !initial&&!bounds::seeks(body){self.application_cursor_input(&data,&body_cursor)?}else{bounds::Proof::default()};
                     Binding::Owned(OwnedBinding {
                         place: data.element(
                             &cursor,
@@ -4051,7 +4052,7 @@ impl<'a> Builder<'a> {
                                     .min(data.length.maximum().saturating_sub(1)),
                             ),
                         ),
-                        proof: bounds::Proof::default(),
+                        proof: input,
                         uniform: false,
                         initialization: None,
                     })

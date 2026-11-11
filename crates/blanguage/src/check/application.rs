@@ -3712,6 +3712,24 @@ impl Builder<'_> {
         bind_model(&mut model,&indices,0);self.resolve_owned_model(&mut model,None);
         Ok(model)
     }
+    pub(super) fn application_cursor_input(&mut self,data:&DataReference,index:&Value)->Result<bounds::Proof> {
+        let model=self.element_model(&data.data.ty,&data.data.elements,(&data.data.residency,&[]),self.scope.span())?;
+        let value=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(&data.data);
+        for(component,(scalar,_))in value.ty.components.iter().enumerate(){
+            let input=bounds::Proof::default().with_identity(ValueIdentity::Register(self.reg(*scalar)));
+            bindings.insert(ValueIdentity::ElementComponent(component),input.clone());
+            for source in value.component_origins(component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){bindings.insert(source,input.clone());}
+        }
+        bindings.insert(ValueIdentity::ElementIndex(0),bounds::Proof::capture(index));
+        let components=data.words().iter().map(|word|data.data.ty.components.iter().position(|(_,at)|at==word).unwrap()).collect::<Vec<_>>();
+        let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings).numeric_facts();
+        for(output,component)in components.iter().enumerate(){
+            for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
+                let scalar=value.ty.components[*component].0;proof.mark_domain(output,IndexDomain::CommonRange(source,scalar,scalar,scalar,scalar));
+            }
+        }
+        Ok(proof)
+    }
     pub(super) fn application_element_proof(&mut self,place:&Place,regs:&[Reg],reads:&[(usize,usize)])->Result<Option<bounds::Proof>>{
         let Place::ApplicationElement{sources,resource:borrow,words,..}=place else{return Ok(None)};let mut result=None;
         let mut projections:Vec<Vec<view_contracts::ElementRead>>=Vec::new();let mut pending=false;
