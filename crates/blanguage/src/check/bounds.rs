@@ -779,8 +779,15 @@ impl Proof {
         ids.into_inner()
     }
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,Proof>)->Self {
-        let mut bindings=self.scalar_identities().into_iter().map(|id|(id,Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(id,Vec::new()))))).collect::<BTreeMap<_,_>>();
-        bindings.extend(values.iter().map(|(id,proof)|(*id,proof.clone())));
+        let bindings = self.scalar_identities().into_iter().map(|id| {
+            let proof = values.get(&id).cloned().unwrap_or_else(|| {
+                Proof::default().with_identity(id).with_view_borrow(
+                    0,
+                    view::Borrow::source(view::Source::Parameter(id, Vec::new())),
+                )
+            });
+            (id, proof)
+        }).collect();
         let mut proof=self.at_call(&bindings);
         proof.views=self.views.iter().map(|borrow|borrow.substitute_values(values)).collect();
         for(component,address)in self.addresses.iter().enumerate(){
