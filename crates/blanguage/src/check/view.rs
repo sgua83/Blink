@@ -181,11 +181,22 @@ impl Borrow{
         }
         query(self,&bounds::Clause::default())
     }
-    pub fn has_local(&self)->bool {self.sources.entries().any(|(source,when)|when.possible()&&match source{
-        Source::Position(origin)=>origin.map_borrows(|parent|parent.restricted(&when)).has_local(),
-        Source::Element{parent,..}|Source::Projection{parent,..}=>parent.restricted(&when).has_local(),
-        _=>false,
-    })}
+    pub fn has_local(&self)->bool {
+        fn query(value:&Borrow,path:&bounds::Clause)->bool {
+            value.sources.entries().any(|(source,when)|{
+                let when=bounds::Clause::both(path,&when);
+                when.possible()&&match source {
+                    Source::Position(origin)=>match &origin.root {
+                        address::Root::Derived(parent)|address::Root::Dataset{borrow:parent,..}=>query(parent,&when),
+                        _=>origin.has_local(),
+                    },
+                    Source::Element{parent,..}|Source::Projection{parent,..}=>query(parent,&when),
+                    _=>false,
+                }
+            })
+        }
+        query(self,&bounds::Clause::default())
+    }
     pub fn resources(&self)->Self {
         self.map_sources(|source|match source {
             Source::Position(origin)=>origin.resources(),
