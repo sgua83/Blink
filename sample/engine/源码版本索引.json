@@ -1,18 +1,19 @@
 {
   "title": "BLEngine源码分析",
   "encoding": "UTF-8 without BOM",
+  "source_change": 19121,
   "source_files": [
     {
       "path": "Programs/geometry/normals.b",
-      "sha256": "d7ef09cf69034d3cf7811ec8a77e3deb95785717db98bd3f403bd36055601e3c"
+      "sha256": "94dc950cf705dc1106abbaf29ddf77d8791fb15a818aae720366cfa278ff15a8"
     },
     {
       "path": "Programs/lighting/lights.b",
-      "sha256": "9ee3c7cef366394a095620105540f6f95a73fa017d7d7c5391111dbea25baf98"
+      "sha256": "0d2da0ea85906e0bef4d7b9041539024b82b7211e57124d6fb72d62236bedfe9"
     },
     {
       "path": "Programs/material/dielectric.b",
-      "sha256": "a80de193d4bad2efaf046ab76dde691e033f200d3ea4f50a1487446a37b36329"
+      "sha256": "87d0f1591845a24539d9e1fec918dcb08bc818decac6fd30489b7f4be0ea59b5"
     },
     {
       "path": "Programs/material/maps.b",
@@ -32,7 +33,7 @@
     },
     {
       "path": "Programs/render/frame.b",
-      "sha256": "e0d049460a533d283704fc917e1cbf64f4817f049edca2a45d49596fe1860544"
+      "sha256": "27600eab664572421fe33dc8a16c79d8c1ae31d27de1439b5e018198e729a9e5"
     },
     {
       "path": "Programs/render/instance.h",
@@ -44,11 +45,11 @@
     },
     {
       "path": "Programs/sampling/random.b",
-      "sha256": "81fad07eedc5861bfe40a6a2e2efb69f709e272217ed035f0a2ad0731a26de53"
+      "sha256": "83850455287d7f80b97ad9e674dc29ea5d066710578db752d4d2ef28fd0e0474"
     },
     {
       "path": "Programs/scene/camera.b",
-      "sha256": "5540ddfad0ec048b5a0f50bdff4b90e91673f0a63d3594cfba32bd4cb04fadd3"
+      "sha256": "889a592ff9ddee464a5e12b4ccb97bf26652a3a0dbecf61b1639361e24e3e904"
     },
     {
       "path": "Programs/scene/components.b",
@@ -68,7 +69,7 @@
     },
     {
       "path": "Programs/scene/query.b",
-      "sha256": "95ac2fbbcda943c2585e04d4a1cb478c301e5c1ee905b42c4acb61c76b66fec8"
+      "sha256": "054ce81857c0ab5602a4d9047d8b36920df8db73443701d7395e2da1fa402b98"
     },
     {
       "path": "Programs/simulation/bodies.b",
@@ -80,27 +81,27 @@
     },
     {
       "path": "Programs/stella/lighting.b",
-      "sha256": "d1889c596630839b1b3e9315e05303d60f707aca81ffeb714fc6039c03cad419"
+      "sha256": "7323144e7578433b34f19999bf4e09d1904ccf93f74eacb5639afe152ee36648"
     },
     {
       "path": "Programs/stella/surface.b",
-      "sha256": "9ce1df13f43229dec00bbcd6620eb3187ca131fdf984af81b68d2ae031210ef5"
+      "sha256": "0a819f32057041ca078a1392ed8a17131bec4d43e56f923f10653712ef2ccb2f"
     },
     {
       "path": "Programs/stella/transport.b",
-      "sha256": "958c18d3bb56c2351ea97e3de61ae918cf75c507a00489e435a598c749123b01"
+      "sha256": "76afba6cac78e9955de62ee907d9a01274298846ec981b5936c0f1fe9452abbd"
     },
     {
       "path": "Programs/stella/visibility.b",
-      "sha256": "bbbe0fedb67e78c8514ba54246283d18d01e4b9245d658133192f4b46e9bd59d"
+      "sha256": "aadbddc000cdb0e87f22c582708aed36804b7fc593c4ccf57abe151aab3e4d28"
     },
     {
       "path": "Programs/stella/volume.b",
-      "sha256": "3604a75cc5e648a01b21fd5392607e1441d9cc8dbb098c97d48887614c8c4c61"
+      "sha256": "e4725ce2f96205c97ebe33771ebbfaf5adedcaad5b588d8898bc5ebcb1d898af"
     },
     {
       "path": "src/geometry.rs",
-      "sha256": "26e600b0e69e0f5eea5c600af7f53a5be9181882b36f75dba0b407aaef3dacd0"
+      "sha256": "51259dbd3b3972afeae41f3ce4704576b6ae539687c742445ce3a36632b9f48c"
     },
     {
       "path": "src/math.rs",
@@ -108,7 +109,7 @@
     },
     {
       "path": "src/output.rs",
-      "sha256": "aa3499a067bed540c4aa5f2604f47ff65a0eca4ec8f0732143a0c8416018ea01"
+      "sha256": "eb796843cf8fc5fc09dc7b5fb4dfd0c683249dc02643c2665908b0a8eb2f9633"
     },
     {
       "path": "src/window.rs",
@@ -120,211 +121,206 @@
       "path": "src/math.rs",
       "start_line": 16,
       "end_line": 18,
-      "sha256": "42ee185a5af726c51836b5cc24571cb66ac0c94056ffe15c2ea2cd05ca2482ec"
+      "sha256": "f5130faa703d550b1c13a333121da8062daa2cc308edd1eecd379d87f9d7ad1b"
     },
     {
       "path": "src/math.rs",
       "start_line": 19,
       "end_line": 25,
-      "sha256": "a0685132f2943c2ad96211f9ac983e093a326e501720f3c45f6dea3536b6a954"
+      "sha256": "5b186cf6edac6a6680c854a4d9d6a4cfd091336b46b832c449dc0bbdcfb654d1"
     },
     {
       "path": "Programs/math/transform.b",
       "start_line": 4,
       "end_line": 4,
-      "sha256": "8a7e324ccf7e19ed4ec9a8e058a2ed1d8039ba903785c4b6b8133bef7dc64db3"
+      "sha256": "16d13ccd007dd9131037ce5c39117a739504e7d93ddfd2fc51551f9e792f99c0"
     },
     {
       "path": "Programs/math/transform.b",
       "start_line": 7,
       "end_line": 10,
-      "sha256": "5109e2fff768d20bc4a48a8a2de4fd1b3546e99d37d866eda1322acc4f707066"
+      "sha256": "eb169a84ad3f90ed3d1e3eac811f10207f09b6855b816aecac6d84b3edb5ba10"
     },
     {
       "path": "Programs/math/transform.b",
       "start_line": 20,
       "end_line": 22,
-      "sha256": "76a5a2fa1236422925bab3bf78858584a86236e08c8eb485b3d4b9b56cece790"
+      "sha256": "6af8f2eaad27d7936b288555c02a20ca10ca02d8ad906aa63f8dc9a74c99fbac"
     },
     {
       "path": "Programs/geometry/normals.b",
       "start_line": 2,
       "end_line": 4,
-      "sha256": "85c962fb0f10dcddb200e4cc3e678771dfb6ca0942530ae01528ce9371bef23e"
+      "sha256": "6a0ec706a412c003d4115169b9b1d2b1799c54f2adafc6f7307b2e2c2376e297"
     },
     {
       "path": "Programs/stella/surface.b",
       "start_line": 17,
       "end_line": 22,
-      "sha256": "4be49ee68e0168d24253fabf901a560cf4b99beee54a45ab95473af2439f2595"
+      "sha256": "f8b80b5600a018d7771ec4dd87035f28f4350adb859db32e70326c83e0a68bdd"
     },
     {
       "path": "Programs/scene/camera.b",
       "start_line": 3,
       "end_line": 7,
-      "sha256": "f549b9580f8a361f0a745f584488552e5932d698d7d20bbb6d182445850fd34a"
+      "sha256": "af57367642a676ef470497e7d791c618379509dc8e3fe3cc43ad00714b4b668a"
     },
     {
       "path": "Programs/stella/visibility.b",
       "start_line": 6,
       "end_line": 10,
-      "sha256": "593e25715ce66cc8b45831d63ad2520337dda168c4b4b6dce791966d06520121"
+      "sha256": "886a1e6131e162d28c57819af537ba1200ac03f64829d7bdd22d4797201f3e1b"
     },
     {
       "path": "Programs/scene/camera.b",
       "start_line": 8,
       "end_line": 13,
-      "sha256": "67d7b294295c1ce78418564aa0361416fa15849c75a446ceea7d52d2e70781e5"
+      "sha256": "cc89c7f610a38d1bd2f35fee5af981cf06a410deca2f2211e2bd18139e55045b"
     },
     {
       "path": "Programs/scene/camera.b",
-      "start_line": 18,
-      "end_line": 29,
-      "sha256": "74358654955f5538ca1e88d18eff309817e31d182b1059114dfc21615a283818"
+      "start_line": 27,
+      "end_line": 38,
+      "sha256": "419e0bd8e1e78c74d727f8cc19c5d214a2f297ef7b542b5736e65b65f5612a6e"
     },
     {
       "path": "Programs/scene/query.b",
       "start_line": 2,
       "end_line": 14,
-      "sha256": "24aa183cf841554d6a792f238e651a990116c65ec426b87835eea56b12b40103"
+      "sha256": "83e3751c02681fd26e9f19500936b9aa5c5907cd9267c233962d1f095eef234a"
     },
     {
       "path": "Programs/scene/hierarchy.b",
       "start_line": 9,
       "end_line": 21,
-      "sha256": "e408a4fb546ea15ab65543b8e1aece00fead4d47aa2f0becb42780af4f52be1e"
+      "sha256": "b034c02a1b48c9e086cd4cf4dea5e51db42c243586efc3c38ebbfb2ec3e24237"
     },
     {
       "path": "Programs/scene/components.b",
       "start_line": 29,
       "end_line": 35,
-      "sha256": "0876dd3a5433a578910138e76d6556fe9fac2d824b30fa856a60dad27be6383f"
+      "sha256": "96b58b0957bfa00ee60c5ef196cfb58be6dd0fd9790f315198e4529870278cae"
     },
     {
       "path": "Programs/scene/device.b",
       "start_line": 9,
       "end_line": 13,
-      "sha256": "d40d60cab149eec8e205347af5fda356efb7a15b557d82d939ba088473ce9f92"
+      "sha256": "5d0d615de0881263b41501f758de699ae45b42af15945650f045d173c0089cda"
     },
     {
       "path": "src/geometry.rs",
-      "start_line": 137,
-      "end_line": 151,
-      "sha256": "0965fa99ca382fbf668b9cc72d139e3a23b92e99111d1d95168176741db722c4"
+      "start_line": 146,
+      "end_line": 160,
+      "sha256": "c1032f51b765057fa5aadcced3d0527252df8a5f05c48681ced0c2a402c521b2"
     },
     {
       "path": "Programs/render/instance.h",
       "start_line": 1,
       "end_line": 19,
-      "sha256": "4872477742e53c737de5fb6b8ac711f2d6822ae39bb1259c8d622626ee03a08e"
+      "sha256": "e959bbcc228890da96e1e4f681d43663201c3a1143dc1a345bfc83bf48724d08"
     },
     {
       "path": "Programs/stella/surface.b",
-      "start_line": 43,
-      "end_line": 46,
-      "sha256": "c5949049d8fa7594434b7c73fefff40f6443d51e4cd5d24de4f2409a52902404"
+      "start_line": 42,
+      "end_line": 50,
+      "sha256": "b5d0fcc8905fe61daeba215cceb075193e920ad8b2a1a68ab91c23be9cda0428"
     },
     {
       "path": "Programs/material/maps.b",
       "start_line": 8,
       "end_line": 17,
-      "sha256": "74ad3a5601fabb6131c2668463b7627ffe913e289cfe2af4b711a85c21a4e9b6"
+      "sha256": "61dca0898d4f939758ca5fe516e8c1454cb459a45514fa4563577a46ef224374"
     },
     {
       "path": "Programs/material/microfacet.b",
       "start_line": 2,
       "end_line": 9,
-      "sha256": "c4dbb05843cc678754c5fe642d2cc2f476a38d6426f53ec1ca64ade32d6fa5df"
+      "sha256": "22d8ff00d1198ac0abaae55c60d72f50004588b489b88f8c369c38a4555ddb76"
     },
     {
       "path": "Programs/lighting/lights.b",
-      "start_line": 40,
-      "end_line": 41,
-      "sha256": "36e97a7cb5d6f290ec6d0d4a10004a1aa28f2d1b1db6f0290fc802a8ffa2cb03"
+      "start_line": 88,
+      "end_line": 89,
+      "sha256": "715152b6f5a502e819dcaed52889388d264b99914916f0c3324ac887acb9dc82"
     },
     {
       "path": "Programs/stella/lighting.b",
-      "start_line": 80,
-      "end_line": 86,
-      "sha256": "e4fa1e262df6c25e971b83ccaadb1613b66941458d1564889bbf63f86e9fac1f"
+      "start_line": 81,
+      "end_line": 87,
+      "sha256": "34f387d427cd9c43abfb7d2876605d984631463de9e3328132d02fa22d6f504a"
     },
     {
       "path": "Programs/sampling/random.b",
-      "start_line": 17,
-      "end_line": 20,
-      "sha256": "07b5854a68b0fe842736abb5e80e9621c2049ef80f1ed94ba2302e4feb2c5d94"
+      "start_line": 23,
+      "end_line": 26,
+      "sha256": "e35eb48f16184e3323b7b5fd6a4146b3954d207c169cafeadadc9999abcbf394"
     },
     {
       "path": "Programs/sampling/mis.b",
       "start_line": 2,
       "end_line": 11,
-      "sha256": "8a83ece6cd68b3f0741ab3b1d6f1aaf199917f58247f3e5d87e1c0383fb1970a"
+      "sha256": "8a6fd1f868e928fb72b087263a372e892939d4fc0468b6f16509afb3f33308a3"
     },
     {
       "path": "Programs/material/dielectric.b",
       "start_line": 11,
       "end_line": 20,
-      "sha256": "2f2fa9ecec07e20ac91e20b644fa757fc792f12d0150be790dc4991541e6df04"
+      "sha256": "34cd0cea802b7577a4f6dfae33baceb7f32e817115f14d6bfe1f5400eda63b7b"
     },
     {
       "path": "Programs/stella/surface.b",
-      "start_line": 113,
-      "end_line": 116,
-      "sha256": "d54901bd7e9b8d85c1f29b9bc5e784febc13a5ae04389f9e743fc04a311c4310"
+      "start_line": 126,
+      "end_line": 129,
+      "sha256": "d519d7b0365506e7c717df99c8394efc2a246de78432b5832271e4c470979d95"
     },
     {
       "path": "Programs/material/medium.b",
       "start_line": 7,
       "end_line": 11,
-      "sha256": "329af27171bad8b46903f0fe05d3db70f4973387abe3f6cef0211b64f343ad0e"
+      "sha256": "ef41494a7e9a4147a3cbf85f855dfe64d8eaac4a3f223d37c178a751deb04e0f"
     },
     {
       "path": "Programs/stella/volume.b",
       "start_line": 2,
       "end_line": 11,
-      "sha256": "6b5b15494a76c0d76dd87aa9f08e90903f3ea9d9b67c384083739dd56575aa5a"
+      "sha256": "591a6f2a2eb8fd5c6b3d4068bbe0b06cbdc0bbf5a0f7a251db40677dd73cfdd6"
     },
     {
       "path": "Programs/stella/transport.b",
-      "start_line": 67,
-      "end_line": 72,
-      "sha256": "988026b73359b217fd6cb3451a4acc9c2bf559307431c349ff96d024588cdada"
-    },
-    {
-      "path": "Programs/render/frame.b",
-      "start_line": 26,
-      "end_line": 28,
-      "sha256": "7b31923c2cebbb10ce9ac6f9eca4ce2639c251eb02da6bca1a054ce4ab7f7f2c"
+      "start_line": 92,
+      "end_line": 99,
+      "sha256": "b8c0d7433be8bb9f08c4963d7557ab6b6dbb82538a95897e58c7efce7327844c"
     },
     {
       "path": "src/output.rs",
-      "start_line": 286,
-      "end_line": 291,
-      "sha256": "7f37b619845b3732ce109eb7087fb38a4814acf896a62a12f2a9e16a57b5aa5c"
+      "start_line": 323,
+      "end_line": 331,
+      "sha256": "f44800b21f058bdf243415e2c0d3d0ed3a34ff4d660b5772f6cf86817a5f918e"
     },
     {
       "path": "src/window.rs",
       "start_line": 354,
       "end_line": 366,
-      "sha256": "390183d8ddb3a803b0ca56a0188d411b9fc91b542751d1d00b14e110a40c95ae"
+      "sha256": "00e34054ec52183ec4567175331be2a1783c0c3988065a97ce1dc1c7f6cb3e0f"
     },
     {
       "path": "Programs/simulation/bodies.b",
       "start_line": 3,
       "end_line": 6,
-      "sha256": "a96746863e67d984bfa5ba8faf60319ce9b7b363640c5cc5204b400b4085142f"
+      "sha256": "068810c94d5f0ff719be10ee5bbcf84bdea99168fd08e2f157f922ecb5d91817"
     },
     {
       "path": "Programs/simulation/statistics.b",
       "start_line": 7,
       "end_line": 10,
-      "sha256": "722166b370d726d0959965c49046954b6a97c7cfdf1961b4ed4b43c6212d6db2"
+      "sha256": "1865ba7177c49de8b6d83eea73df2feff7ec55e8444f26a12f03092ef5d2a5ac"
     },
     {
       "path": "Programs/scene/pick.b",
       "start_line": 36,
       "end_line": 39,
-      "sha256": "c1149cb7e843af88097b05237d87dc9f8b7b8357ace5c3e8d50e932ee71e464c"
+      "sha256": "5fef8784c0201bdec079959407032e3fed96b1a384442f3d56aaa530325c6326"
     }
-  ]
+  ],
+  "language_source_change": 19111
 }

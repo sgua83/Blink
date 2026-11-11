@@ -195,7 +195,7 @@ Use the **[Wiki learning hub](https://github.com/sgua83/Blink/wiki)** to choose 
 
 The [English first three chapters](Open/Docs/ParallelPrimer.en.md) retain the complete introduction, diagrams, and performance methodology. The [installation and tool guide](Open/Docs/GettingStarted.en.md) covers full setup, source builds, integration, and AI queries. Also explore [standalone applications](sample/applications/README.md), the [B standard library](library/README.md), and the [language reference](Open/Docs/BLanguage.md).
 
-Complete books are currently primarily in Chinese. The Wiki follows main; existing PDFs are snapshots, and new PDFs are generated from fixed manuscripts during the Sunday formal release. **BLEngine is not yet open source**; its case-study book and reading notes are available here.
+Complete books are currently primarily in Chinese. The four books and their PDFs change only at the owner's explicit request. The Wiki index provides individual standard and mobile PDF downloads. **BLEngine is not yet open source**; its case-study book and reading notes are available here.
 
 <a id="build-development-tools-from-main"></a>
 

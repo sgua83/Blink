@@ -10,9 +10,9 @@
 
 本书从向量开始。先用能手算的数字解释坐标和变换，再进入相机、裁剪、场景树和几何资产；随后沿真实命中进入材质、阴影、反射、折射与介质，最后回到 GPU 执行、资源寿命和窗口。读者可以依照这个顺序学习，也可以通过目录和源码索引回到某个具体函数。
 
-本文沿当前BLEngine和Blink源码的真实职责阅读；节选的现行文件及行号见engine/源码版本索引.json。该索引只对应现行源码，不把旧运行结果作为当前产品验证。
+本版引擎代码按 **BLEngine P4 CL19121** 核对，语言接口按 **Blink P4 CL19111** 核对。源码节选与索引固定在这些输入。书中保留的运行图和性能数值来自 2026-10-27 的 BLEngine CL13541／Blink CL13553 Release 记录，按当时场景与设备解释，不视为本轮重新测量。
 
-Blink 语言简称 B 语言，B 也寓意 Base。开源项目地址为 https://github.com/sgua83/Blink 。Blink 拥有语言、编译器与通用 CPU/GPU 执行框架；BLEngine 在其上实现引擎。当前 BLEngine 源码由独立 P4 工程管理，尚未随 Blink 仓库完整公开；本仓库提供书稿、获准摘录的源码和阅读场景，不能把下载 Blink 等同于取得完整引擎。
+Blink 是一门原生并行编程语言，简称 B 语言，B 也寓意 Base。开源项目地址为 https://github.com/sgua83/Blink 。Blink 拥有语言、编译器与通用 CPU/GPU 执行框架；BLEngine 在其上实现引擎。当前 BLEngine 源码由独立 P4 工程管理，尚未随 Blink 仓库完整公开；本仓库提供书稿、获准摘录的源码和阅读场景，不能把下载 Blink 等同于取得完整引擎。
 
 引擎有两类主要源码。`Programs` 中的 B 代码表达相机、变换、模拟、材质和光传输等计算；`src` 中的 Rust 代码负责场景对象、文件、实际设备资源、执行交接与原生窗口。B 不是附在 Rust 后面的几段着色脚本，Rust 也不是逐像素解释 B 的循环。两者共同构成原生程序。
 
@@ -32,12 +32,12 @@ Blink 语言简称 B 语言，B 也寓意 Base。开源项目地址为 https://g
 
 ### 1.2 点积：判断两个方向有多接近
 
-源码节选：`src/math.rs:16`。
+源码：`src/math.rs:16`。
 
 ```rust
-    pub fn dot(self, b: Self) -> f32 {
-        self.x * b.x + self.y * b.y + self.z * b.z
-    }
+pub fn dot(self, b: Self) -> f32 {
+    self.x * b.x + self.y * b.y + self.z * b.z
+}
 ```
 
 取 `a=(1,0,0)`，`b=(0,1,0)`，点积为零，两方向垂直；取 `b=(1,0,0)`，点积为一，两方向相同；取 `b=(-1,0,0)`，结果为负，两方向相反。
@@ -46,16 +46,16 @@ Blink 语言简称 B 语言，B 也寓意 Base。开源项目地址为 https://g
 
 ### 1.3 叉积：由一张平面找出垂直方向
 
-源码节选：`src/math.rs:19`。
+源码：`src/math.rs:19`。
 
 ```rust
-    pub fn cross(self, b: Self) -> Self {
-        Self::new(
-            self.y * b.z - self.z * b.y,
-            self.z * b.x - self.x * b.z,
-            self.x * b.y - self.y * b.x,
-        )
-    }
+pub fn cross(self, b: Self) -> Self {
+    Self::new(
+        self.y * b.z - self.z * b.y,
+        self.z * b.x - self.x * b.z,
+        self.x * b.y - self.y * b.x,
+    )
+}
 ```
 
 三角形有三点 `a=(0,0,0)`、`b=(2,0,0)`、`c=(0,1,0)`。两条边为 `b-a` 和 `c-a`，叉积是 `(0,0,2)`。它垂直于三角形，长度是平行四边形面积二；三角形面积因此是一。
@@ -123,7 +123,7 @@ z' = m20*x + m21*y + m22*z + tz
 
 `Programs/math/transform.b` 给出了很短的组合函数：
 
-源码节选：`Programs/math/transform.b:4`。
+源码：`Programs/math/transform.b:4`。
 
 ```b
 T compose<T: BLSquareMatrix>(T first, T second) { return second * first; }
@@ -135,7 +135,7 @@ T compose<T: BLSquareMatrix>(T first, T second) { return second * first; }
 
 ### 2.4 点的 w 是一，方向的 w 是零
 
-源码节选：`Programs/math/transform.b:7`。
+源码：`Programs/math/transform.b:7`。
 
 ```b
 float3 transform_point(float4x4 world_from_local, float3 position) {
@@ -154,7 +154,7 @@ float3 transform_point(float4x4 world_from_local, float3 position) {
 
 把法线的 x 分量反而缩小为一半，得到 `(.5,-1,0)`，与 `(2,1,0)` 点积仍为零。这正是逆矩阵再转置的效果。
 
-源码节选：`Programs/math/transform.b:20`。
+源码：`Programs/math/transform.b:20`。
 
 ```b
 float3 transform_normal(float3x3 world_from_local, float3 normal) {
@@ -164,7 +164,7 @@ float3 transform_normal(float3x3 world_from_local, float3 normal) {
 
 实际网格命中已经携带 `world_to_object`，它就是世界矩阵的逆。`Programs/geometry/normals.b` 直接转置其线性部分，避免另算并保存第二份法线矩阵。
 
-源码节选：`Programs/geometry/normals.b:2`。
+源码：`Programs/geometry/normals.b:2`。
 
 ```b
 float3x3 mesh_normal_basis(float3x4 world_to_object) on compute {
@@ -198,7 +198,7 @@ float3x3 mesh_normal_basis(float3x4 world_to_object) on compute {
 
 `stella.surface::surface_uv` 的实现与这个算式完全一致：
 
-源码节选：`Programs/stella/surface.b:17`。
+源码：`Programs/stella/surface.b:17`。
 
 ```b
 float2 surface_uv(BLShadingInstance instance, u32 primitive, float2 barycentric) on compute {
@@ -223,7 +223,7 @@ float2 surface_uv(BLShadingInstance instance, u32 primitive, float2 barycentric)
 
 相机有眼睛位置 `eye`、观察目标 `target` 和一个参考向上方向 `up`。先求 `forward=normalize(target-eye)`，再用叉积求 `right`，最后重新构造与前二者垂直的 `up`。
 
-源码节选：`Programs/scene/camera.b:3`。
+源码：`Programs/scene/camera.b:3`。
 
 ```b
 BLCamera camera_basis(float3 eye, float3 target, float3 up, f32 span, u32 projection, f32 near, f32 far, u32 medium) on compute {
@@ -241,7 +241,7 @@ BLCamera camera_basis(float3 eye, float3 target, float3 up, f32 span, u32 projec
 
 图像的左上角是像素 `(0,0)`，三维相机的“上”却通常取正方向。`stella.visibility::pixel_ray` 在像素中心取样，横向映射到 `[-1,1]`，纵向反过来映射到 `[1,-1]`；横向还乘宽高比，防止宽屏把物体压扁。
 
-源码节选：`Programs/stella/visibility.b:6`。
+源码：`Programs/stella/visibility.b:6`。
 
 ```b
 BLRay pixel_ray<const W:u32,const H:u32,const S:u32>(read dataset<BLCamera> cameras,u32 pixel,u32 layer) on compute {
@@ -255,7 +255,7 @@ BLRay pixel_ray<const W:u32,const H:u32,const S:u32>(read dataset<BLCamera> came
 
 ### 4.3 透视与正交只差一处，却产生两种空间感觉
 
-源码节选：`Programs/scene/camera.b:8`。
+源码：`Programs/scene/camera.b:8`。
 
 ```b
 BLRay camera_ray(BLCamera camera, float2 ndc) on compute {
@@ -290,7 +290,7 @@ BLRay camera_ray(BLCamera camera, float2 ndc) on compute {
 
 `src/window.rs` 的 `BLNavigation` 保存导航的 yaw、pitch、distance。方向键和滚轮改变这些输入；`src/viewer.rs` 每次绘制把它们交给 `BLCameraPrograms::orbit`。Rust 收集输入，B 计算相机，不在窗口消息中重新实现三维数学。
 
-源码节选：`Programs/scene/camera.b:18`。
+源码：`Programs/scene/camera.b:18`。
 
 ```b
 void orbit(write dataset<BLCamera,1> cameras,
@@ -352,9 +352,9 @@ p(t) = origin + t * direction
 
 网格查询的核心可从更短的通用入口看清：
 
-源码节选：`Programs/scene/query.b:2`。
+源码：`Programs/scene/query.b:2`。
 
-```b
+```c
 BLMeshHit mesh_intersect(BLMeshRay ray,read dataset<BLInstance> instances,read acceleration scene,u32 base) on gpu {
     RayHit hit=trace_closest(scene,ray.origin,ray.near,ray.direction,ray.far);
     if(!hit.exists){
@@ -365,7 +365,7 @@ BLMeshHit mesh_intersect(BLMeshRay ray,read dataset<BLInstance> instances,read a
     float3 normal=mesh_geometric_normal(basis,hit.vertex1-hit.vertex0,hit.vertex2-hit.vertex0);
     float3 local=hit.vertex0*(1.0-hit.barycentric.x-hit.barycentric.y)+
         hit.vertex1*hit.barycentric.x+hit.vertex2*hit.barycentric.y;
-    return BLMeshHit(ray.origin+ray.direction*hit.distance,hit.distance,normal,hit.primitive,
+    return BLMeshHit(hit.object_to_world*float4(local,1.0),hit.distance,normal,hit.primitive,
         hit.barycentric,unsafe_read(instances,instance).identity,instance,true,unsafe_read(instances,instance).geometry,local);
 }
 ```
@@ -396,7 +396,7 @@ BLEngine 可以给独立 overlay 空间使用另一台相机和另一份顶层�
 
 ### 7.2 世界矩阵怎样算
 
-源码节选：`Programs/scene/hierarchy.b:9`。
+源码：`Programs/scene/hierarchy.b:9`。
 
 ```b
 void resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransform> worlds) on compute {
@@ -438,7 +438,7 @@ void resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransform>
 
 场景保存的是本地节点组件，不再额外保存一份可独立修改的世界相机和世界灯光。`BLScenePrograms::evaluate` 把源数据打包交给 `scene.components::evaluate`：先求世界矩阵，再分别变换相机和灯。
 
-源码节选：`Programs/scene/components.b:29`。
+源码：`Programs/scene/components.b:29`。
 
 ```b
 void evaluate(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
@@ -462,7 +462,7 @@ void evaluate(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform
 
 普通 `placements/evaluate` 入口在原生 CPU B 中求值，把最终矩阵交给实例构建。`place_hierarchy_device` 则上传源节点，让 GPU B 求世界矩阵，再按真实可绘节点 gather 到设备实例记录。
 
-源码节选：`Programs/scene/device.b:9`。
+源码：`Programs/scene/device.b:9`。
 
 ```b
 void prepare(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
@@ -487,21 +487,21 @@ void prepare(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform>
 局部节选，外围未列出：`src/geometry.rs:137`。
 
 ```rust
-                        let key = (pi, ti, ni);
-                        let index = if let Some(index) = lookup.get(&key) {
-                            *index
-                        } else {
-                            let normal = ni
-                                .map(|i| normals[i])
-                                .ok_or_else(|| error("正式几何输入必须包含生成器法线"))?;
-                            let uv = ti.map(|i| uvs[i]);
-                            let index = u32::try_from(vertices.len())?;
-                            vertices.push(BLVertex {
-                                position: positions[pi],
-                                normal,
-                                uv,
-                            });
-                            lookup.insert(key, index);
+let key = (pi, ti, ni);
+let index = if let Some(index) = lookup.get(&key) {
+    *index
+} else {
+    let normal = ni
+        .map(|i| normals[i])
+        .ok_or_else(|| error("正式几何输入必须包含生成器法线"))?;
+    let uv = ti.map(|i| uvs[i]);
+    let index = u32::try_from(vertices.len())?;
+    vertices.push(BLVertex {
+        position: positions[pi],
+        normal,
+        uv,
+    });
+    lookup.insert(key, index);
 ```
 
 输入必须提供正式三角化和法线。当前读取器不自动剖分任意多边形，不凭空生成缺失法线，不读取 MTL 来推测完整材质。文件转换保留原精度几何，坐标单位换算放在实例矩阵中。
@@ -551,7 +551,7 @@ BLGpuScene 把原位置、索引与实例变换交给 Blink 的原生 AS 接口�
 
 查询身份记录 BLInstance 与着色记录分开。当前 `BLShadingInstance` 保存真实属性 view、tint、几何／属性来源身份，以及网格光使用的位置与索引：
 
-源码节选：`Programs/render/instance.h:1`。
+源码：`Programs/render/instance.h:1`。
 
 ```b
 module render.instance;
@@ -614,13 +614,18 @@ ground floor
 
 `stella.surface::surface_at` 先从实例取得三角形和材质组，再通过实例槽位表取得 surface。需要纹理坐标时，用重心插值原 UV；随后执行 `uv*scale+offset`，采样颜色，再乘实例 tint。
 
-局部节选，外围未列出：`Programs/stella/surface.b:43`。
+局部节选，外围未列出：`Programs/stella/surface.b:42`。
 
-```b
-    BLSurface surface=unsafe_read(surfaces,material);
-    float2 uv=surface_coordinates(hit,surface,instances);
-    float3 color=(texture_sample(unsafe_read(textures,surface.texture),uv,surface.lod).xyz*surface.color_scale+surface.color_bias)*tint;
-    f32 roughness=surface.roughness;
+```c
+float2 uv=surface_coordinates(hit,surface,instances);
+if(surface.normal_mapped){
+    float3 edge_u=float3(1.0,0.0,0.0);
+    float3 edge_v=float3(0.0,1.0,0.0);
+    float2 uv_u=float2(1.0,0.0);
+    float2 uv_v=float2(0.0,1.0);
+    if(hit.kind==2 || hit.kind==3){
+        edge_u=hit.edge_u;edge_v=hit.edge_v;
+        if(surface.coordinates==2){uv_u=edge_u.xy;uv_v=edge_v.xy;}
 ```
 
 `uses_uv` 不是用来掩盖错误资产，而是表示该材质是否真的消费 UV。纹理材质缺失原 UV，资产入口应报告；常量色材质没有这个需求，不必为了凑字段制造无用数据。
@@ -631,7 +636,7 @@ ground floor
 
 `material.maps::normal_map` 用三角形边和 UV 边求出切线方向，把它与法线正交化，处理 UV 镜像朝向，再组合纹理方向。随后 `surface_at` 用实际命中的逆转置基变到世界空间。
 
-源码节选：`Programs/material/maps.b:8`。
+源码：`Programs/material/maps.b:8`。
 
 ```b
 float3 normal_map(float3 normal,float3 edge_u,float3 edge_v,float2 uv_u,float2 uv_v,float3 encoded,f32 strength) on compute {
@@ -654,9 +659,9 @@ float3 normal_map(float3 normal,float3 edge_u,float3 edge_v,float2 uv_u,float2 u
 
 `material.microfacet::microfacet_distribution` 实现 GGX 分布，当前 `alpha=roughness²`，分布使用 `a2=alpha²`。不要把粗糙度、alpha 和 a2 当成同一个参数。
 
-源码节选：`Programs/material/microfacet.b:2`。
+源码：`Programs/material/microfacet.b:2`。
 
-```b
+```c
 f32 microfacet_distribution(float3 normal,float3 half_vector,f32 a2) on compute {
     f32 nh=max(dot(normal,half_vector),0.0);
     float3 tangent=cross(normal,half_vector);
@@ -666,8 +671,6 @@ f32 microfacet_distribution(float3 normal,float3 half_vector,f32 a2) on compute 
     return (a2/denominator)/(3.14159265359*denominator);
 }
 ```
-
-实现先除一次denominator，再除另一因子，避免中间平方先下溢而使可表示结果失真；这是计算次序安排，没有把分母钳成经验阈值。
 
 完整不透明响应还包含 Fresnel 和 Smith 遮蔽项，位于 `material.surface::surface_response`。这些量分别描述界面反射比例、微表面朝向分布和微表面彼此挡住的影响。只保留一个“高光幂次”无法说明当前源码。
 
@@ -685,11 +688,11 @@ f32 microfacet_distribution(float3 normal,float3 half_vector,f32 a2) on compute 
 
 面光的世界位置加上 `[-1,1]` 范围的两条半边得到采样点。若两半边长度各为一且垂直，完整面积是四，不是一。源码中 `area_pdf` 的系数四来自这个定义：
 
-源码节选：`Programs/lighting/lights.b:40`。
+源码：`Programs/lighting/lights.b:37`。
 
 ```b
-        density=area_pdf(light,direction,distance_squared);
-        if (density==0.0) { return BLLightSample(direction,float3(0.0),target,true,false,0.0,0); }
+density=area_pdf(light,direction,distance_squared);
+if (density==0.0) { return BLLightSample(direction,float3(0.0),target,true,false,0.0,0); }
 ```
 
 `distance_squared/projected_area` 把按面积选点的概率换成按观察方向立体角计算的密度。距离越远，同一块灯占据的角度越小，这个密度就越大。
@@ -702,9 +705,9 @@ f32 microfacet_distribution(float3 normal,float3 half_vector,f32 a2) on compute 
 
 `stella.lighting::light_occluded` 对局部灯把最大距离限制到真实目标；`stella.visibility::occluded` 检查可选地面、其他解析面光与网格 `trace_any`。阴影只需回答有没有遮挡，通常不必拿回最近三角形的全部属性。
 
-源码节选：`Programs/stella/lighting.b:80`。
+源码：`Programs/stella/lighting.b:81`。
 
-```b
+```c
 bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLightSample sample,f32 near,f32 far,
     float3 origin,bool floor_present,f32 ground_z,u32 target_light,view<BLAreaNode> areas) on gpu {
     f32 maximum=far;
@@ -734,7 +737,7 @@ bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLight
 
 ### 13.2 随机数从像素和维度得到
 
-源码节选：`Programs/sampling/random.b:17`。
+源码：`Programs/sampling/random.b:17`。
 
 ```b
     BLRandomStream stream=sample_stream(address,dimension);
@@ -757,7 +760,7 @@ bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLight
 
 直接选灯容易找到小灯；按材质选方向容易找到窄反射。只用一种方法，某些场景会很难采到关键贡献。MIS 把两种方法按各自概率密度加权，避免对同一类路径重复计算完整能量。
 
-源码节选：`Programs/sampling/mis.b:2`。
+源码：`Programs/sampling/mis.b:2`。
 
 ```b
 f32 power_weight(f32 sampled_density,f32 other_density) on compute {
@@ -792,7 +795,7 @@ f32 power_weight(f32 sampled_density,f32 other_density) on compute {
 
 两介质相对折射率在当前实现中记为 `eta=目标IOR/当前IOR`。Snell 定律给出透射正弦为入射正弦除以 eta；若平方后大于或等于一，就没有可行的折射方向，产生全反射。
 
-源码节选：`Programs/material/dielectric.b:11`。
+源码：`Programs/material/dielectric.b:11`。
 
 ```b
 BLDielectricBoundary dielectric_boundary(float3 normal,float3 outgoing,f32 eta) on compute {
@@ -821,7 +824,7 @@ surface clear dielectric 0 0 vacuum glass 0 1 1 0 0
 
 `stella.surface::surface_at` 用真实几何法线判断当前处在边界哪侧，再交付目标介质；`surface_medium` 只有在路径穿过几何边界时切换编号：
 
-源码节选：`Programs/stella/surface.b:113`。
+源码：`Programs/stella/surface.b:103`。
 
 ```b
 u32 surface_medium(BLStellaSurface surface,float3 direction) on compute {
@@ -848,7 +851,7 @@ u32 surface_medium(BLStellaSurface surface,float3 direction) on compute {
 
 若纯吸收系数为 `.5`，走一单位透过约 `.607`，走两单位约 `.368`。这自然产生厚处更深、薄处更透的区别；固定乘一个表面颜色做不到这一点。
 
-源码节选：`Programs/material/medium.b:7`。
+源码：`Programs/material/medium.b:7`。
 
 ```b
 float3 medium_transmittance(BLMedium medium,f32 distance,bool infinite) on compute {
@@ -866,11 +869,11 @@ float3 medium_transmittance(BLMedium medium,f32 distance,bool infinite) on compu
 
 `material.medium::medium_sample` 以 RGB 消光的均匀混合提出距离：选一个通道，计算 `s=-log(1-u)/rate`。若发生散射，权重为 `Tr*sigma_s/PDF`；否则用生存概率补偿到达表面的权重。纯吸收没有必要随机造一次碰撞，直接计算确定性透过率。
 
-源码节选：`Programs/stella/volume.b:2`。
+源码：`Programs/stella/volume.b:2`。
 
-```b
-BLStellaSegment sample_segment(BLStellaHit geometry,BLRay ray,BLMedium medium,float2 random,bool overlay) on compute {
-    BLMediumSample sample=medium_sample(medium,geometry.distance,geometry.kind==0,random);
+```c
+BLStellaSegment sample_segment(BLStellaHit geometry,BLRay ray,BLMedium medium,float2 random,bool overlay,bool infinite) on compute {
+    BLMediumSample sample=medium_sample(medium,geometry.distance,infinite,random);
     BLStellaHit hit=geometry;
     if(sample.scattered){
         u32 kind=6;
@@ -897,32 +900,6 @@ BLStellaSegment sample_segment(BLStellaHit geometry,BLRay ray,BLMedium medium,fl
 
 ### 16.1 一个像素的工作不只是一条主光线
 
-世界缓存调度中的浮点优先级落入整数桶时，范围许可来自实际生产链。语言编译器沿B内部整数转换、有限算术、正有限对数及显式clamp交接桶界；完整parallel的共同字段数值范围沿原阶段效果与模块合同交给源码、独立对象／归档及B应用，真实写区失效并交回结果。语言侧普通值resize复用原填充值和保留前缀模型，实际成功后把已有共同数值交给后续独立CPU执行，take_last剩余前缀同样交接。同长度／缩小不混入未写填值，原Frame保留未写数值，增长撤回旧完整保证；fill仍完整求值。共同模型按原有限元素事实交接，递归dataset通过名义元素引用解析；实际深读沿原函数合同交接有限输入路径与分量；未改写入口子树整体返回时，沿同一Returned交接本次实参已有的元素模型及实际位置，普通函数组合和源码缺席obj／lib保持同义。尚未展开的入口与写后未知分别保持，已知载荷、释放前提和条件选择不展开为无限拥有树。两个嵌套拥有输入选支时，未采用方仍由原拥有链清理。拥有dataset元素的按值读取直接转移所选唯一拥有树，基对象与下标各求值一次；局部剩余拥有状态留在原Data.elements／Presence，真实补回恢复完整性，完整参数／返回仍要求全部活动元素完整。临时父集合只在其最后真实消费者结束后释放。for／while的回边、continue、break、零次与自然出口交接各自剩余元素，最后静态F和CPU／GPU子资源沿原释放链结束；局部空位不进入普通集合ABI。最后清理按实际ElementFacts交接：Known／Common／Selected在原元素装载处沿drop_owned_tree结束仍拥有的子树；Unknown／Input／Cleanup由native_element_drop形成普通类型化清理callee，沿原Module.units保留同型递归调用回边。callee按原cleanup合同执行F、逆序子资源清理及同一Frame释放，不按未知数据深度无限内联，也不把局部移出状态交给完整拥有参数。元素存活查询只为实际静态F可能读取的借用保留清理关系，普通含view入口未展开本身不构成清理读取。复杂组合的条件合流查询成本仍见Issues C-027.30.6.2。父层与叶元素的实际索引沿原绑定传递，选中字段修复不改写兄弟元素；一般循环不变量仍按Issues具体缺口处理。共同模型只保留各候选独立成立的索引界，不能用空集合中并不存在的元素作见证；真实求值结果可消费本路径实际参数／局部数值及迭代索引的界，函数返回值与字面值一致，条件分支的Upper沿原Below事实查询。resize成功完成同时传递已证明数值上界的实际快照与界距，只保留数字，原目标之后变更或释放不会改写该保证；只读参数的填值复用原求值快照，模块包装与源码SDK原生代码共用同一字段描述及C入口。CPU遍历及GPU交接已闭合；独立读前推导精度和可信外部SDK／Frame入口已经实现；Stella原消费者仍见Issues C-021.1.4.5.2.4.3。GPU独立执行沿原DomainBindings交接同一字段合同：成功提交后的字段数值随原GpuDataset.last_use／Execution及真实依赖使用，后续GPU提交沿原队列接续，CPU读取沿原wait／download。纯区间和本次实际目标数量形成的Index保存在同一ElementRange；传输、冻结共享与绑定重排移动原关系，真实写、可写暴露、替换及释放撤回受影响字段。普通B显式target(gpu,...)及Frame字段投影使用同一合同，正常返回才交回完成；前提拒绝保持未开始的原状态，元数据查询不证明GPU已经完成。语言交付与引擎实际采用分别记录。CPU顺序游标直接改写记录字段时，原循环效果按实际位置撤回相交事实，其他字段和独立资源保持。嵌套CPU游标保留原Data及Proof所持本次捕获资源的实际Borrow与父Element路径，现有当前循环命名来源沿同一集合交接；命名列表不能替代完整派生来源，空命名列表不表示没有资源。索引、字段、真实写入及最后消费者仍由原所有者解释，不增加运行期模型或检查。嵌套循环的Position写沿原元数据交接明确Frame字节范围；子下标未定或子根尚未发射时，原写摘要保留真实已知Frame的严格拥有后代范围，读取与CPU完成选择共用该范围。父及祖先描述不被后代写覆盖，实际描述改写、重绑定和真正未知写仍撤回旧事实；不增加Frame状态、装载缓存或根表。这不代表一般循环及不同动态元素的数值前提已经完成。整数字段读取保留实际选择条件，完整字节非零查询沿已有组件条件与当前路径求解；不同元素的写入按真实下标区分，实际相同或可能重叠位置的零值仍不取得非零许可。除法与返回值拆字使用同一查询。未来直接写的稳定采用条件由原Scope交给共同元素更新，元素选择与完整覆盖使用同一条件；没有被采用的写保持原数值事实，实际写和可变／未知条件仍按真实效果处理。条件仅在原编译分析期间存活，不增设运行时状态、恢复快照或另一个值模型。同一数值归纳沿原If真／假路径交接已提供的稳定关系，外层条件已经成立时，后继修复不混入本路径不可能执行的分支；原bool快照及已有整数等式使用同一职责。实际可变值、引用／外部写及跳过修复的continue仍按真实效果处理；原Scope对稳定u32的<、<=、>、>=沿同一input_snapshot交接真实可选Operand及Proof，由原Condition分别形成真假case的必要事实。值间关系只由真实已命名两侧进入原Below及constrain_proofs，真实常量继续使用原Minimum／Maximum；只有一侧具备数值身份时，已命名侧直接消费另一侧原Proof的类型／数值范围，未知值间关系保持未知，不伪造寄存器、值或常量。真假case各自交接必要界，不能以单侧必要界互求补集；没有完整操作数的相等比较保持未知，不创建第二数值模型。数值If继续消费同一Clause；真正可变或未知来源仍保留可能分支。原顺序事实的矛盾查询直接消费实际方向与严格性：相反方向至少一侧严格时互斥，两侧均非严格仍允许相等；同一关系在原contradictory与cross_conflict处理，不向生产者补写冗余弱关系，也不新增求解器或值模型。原Proof的分支条件合流同时消费本分量已有Condition与nonzero事实：已有条件及其关系原样交接；没有Condition且该分量已确定非零时，以确定真条件参与同一分支合流；其余保持未知。两侧都没有条件时沿原共有数值事实合流，不额外形成条件图。实际写入继续由原所有者失效，不从入口或header恢复旧事实；循环未进入条件写分支时，原非零值的关系可继续沿返回合同交给实际调用者。未来写查询中的dataset.length按原描述符的长度分量取得只读u32数值快照，保留原Proof的已知或未知关系，不把内建元数据送入普通字段查找；它不提供可写位置，也不从元素共同模型补造具体读取的数值身份。原数值Scope只借用本轮已计算的LoopWrites；已有局部拥有者按实际槽保留未写分量的原Proof，已写分量、未提供未来写范围、非本地位置或未知外部写继续未知。普通不可变Value仍沿原数值事实交接，比较入口不再按整个根的可写标记拒绝，Bool与其他分量复用同一快照职责；不从旧Data.length或共同元素模型恢复数值，不生成额外读取、身份或状态。原数值If沿同一次LoopPlace::Element目标和当前Clause解释资源字段条件：实际容器、父选择及字段相对本目标的元素或祖先域确定，且原未来写不改其地址和真实字段字节时，使用已有ElementComponent／ElementParent形式名字；值和范围仍未知，该名字只在本次目标域内存活，不是共同DatasetContent的具体读取，也不生成Reg或运行状态。原资源域查询与真实Frame字节重叠由同一所有者复用；未知别名、地址或相关字节被写、外部写及无法确定的选择保持未知，不因Reg编号不同推断无别名。闭合普通调用的可写Memory沿原Origin的资源、元素下标、layout／words与Scalar字节，经原拥有者交接实际Frame或严格后代，与直接Position共用原存储投影；常量下标及声明布局保留字段字节，动态下标或未知布局仍是整个已知Frame，归属不明仍未知。逻辑位置的字节关系与源／寿命是否闭合分别消费：有实际下标的Resource／Dataset与被查询位置只含同一个原LoopInput名、无源或调用边时，原MemoryRegion使用相对字节判断实际覆盖，不再因整体pending把兄弟字段一并视为写入；不同输入、混合来源、未决调用、无下标view及外部未知地址保持原未知关系，生命周期与可用性检查保持原职责。范围for的原start／end输入在未来直接字段写摘要中交出原元素选择条件：不可写游标直接作为dataset下标时，原loop_write_projection沿同一次位置递归携带既有Condition，嵌套dataset按真实目标元素域推进，数组槽不增加元素域；原Write::Position.when由共同元素更新直接消费，未被该范围选中的父或叶元素保留原事实。范围界限使用原稳定输入快照，seek按原语义撤回下界；可变或未知界限、表达式下标、调用Memory与while局部仍按真实已知关系处理，不把入口初值当作全部迭代。该选择只在原编译分析期间存活，不改变对象编码、资源ABI或运行状态；变化父while的关联计数与额外父清理仍见Issues C-020.1.3.2.1.2.2.13.4.1.10.1。原数值归纳在同一次LoopContext查询内消费各候选已经交出的Shift、入口与真实guard必要范围；每轮确定向guard外推进且原前缀不发生u32回绕时，原摘要给出共同迭代上界，再约束同一拥有者的Proof。正文进入值与条件头／退出值分别按实际迭代位置交接，不把正文最后一次进入前的上界施加到退出后；break及真实回边继续由原循环状态处理。共同次数为零时，原while空循环出口保留条件本身的求值与副作用，正文不形成执行；不把未知写、无进展或可回绕的循环猜成有限循环。沿原候选摘要一次计算，不增加数值身份、持久计数器、Scope字段、图表、回边状态、AST遍历或第二模型，资源／字节／ABI保持原职责。未来while直接条件同样沿原数值所有者交接：Scope在本次while的原写查询中只收集一次Write，以同一临时集合交接；原numeric_loop_paths在已有表达式效果、分支、continue及真实嵌套影响中，额外交出指定真实下标读取点之前的NumericEffect。已证明该点与本次真条件仍是同一数值时，原必要谓词使用现有ElementIndex相对当前Data.elements表达，经原loop_write_projection按真实dataset层级交给Write::Position.when；已有实际Operand保留，不伪造SSA、物理槽或地址。原路径实际不经过该写时交出不可达条件；未知、实际改写或受嵌套重入影响的值不复用旧谓词。整圈数值查询继续消费原回边结果，读点查询不改变它；Scope写回调不承担执行顺序或回边分析。词法声明只借用原AST，随本次查询存活，不复制资源模型、执行图、拥有者或运行状态。带初始化的词法声明沿原Local借用显式类型（若有）、原初始化表达式及其后续源码切片，Scope不执行或复制源码。原numeric_loop_paths在真实while头取得声明到入口的NumericEffect；净零Shift保留原Proof，其余实际Shift由bounds::Proof的原u32数值范围所有者交出入口Proof，原ScalarRanges按类型及既有nonzero取可达值，integer_result_range／arithmetic_ranges交接加减的低32位及绕回两侧区间，不把循环回边的数学不绕回前提套到单次入口。该过程不创建Value、寄存器、SSA／物理槽或另一份数值状态；Assign／Reflect及未知前缀不借旧初值，条件求值的实际修改关系仍由原表达式效果处理。原iteration_bound／bounded_ranges继续消费必要条件及回边、continue或无回边的单次体，给出共同次数与相应体域，再按实际dataset层级投影原Write::Position.when；实际写点仍查询同一原数值遍历。条件块内／跨条件块的新鲜声明与嵌套重入沿原借用来源交接，不复用失效初值，不增加AST解释器、Scope状态表或运行状态。初始化后的赋值及其条件合流与祖先已拥有标量入口仍分别见Issues C-020.1.3.2.1.2.2.13.4.1.10.1.1.2.2.2、C-020.1.3.2.1.2.2.13.4.1.10.1.1.2.3；形式数值谓词不提供写引用的物理存储。原Scope::local_value_write按真实词法声明、普通非拥有值和原布局投影交接独立局部位置；直接赋值与write／inout调用共用该查询，记录字段、固定数组元素、地址及函数值按各自普通存储处理。普通B闭合调用中，直接Root::Parameter存储写在预分析时投影回对应的原Write::Position，由该原位置描述这份直接写；其他形式内容中的地址／借用、资源元素、外部及不能闭合的内存效果继续由原Memory交接。拥有结果及Element／NamedElement不被当成独立局部普通存储。实际调用仍使用本次求值取得的物理位置及同一合同，不生成未来SSA／物理槽、来源身份、状态表或第二执行器。不增加模型副本、位置身份、ABI、表或运行状态。普通前向游标的逐次读前数值由原当前绑定持有，循环头的未来写与当前语句的实际写分别按其生命周期消费；整份共同元素模型仍按真实写更新。跨调用数值输入／输出与未来Memory读取投影的剩余范围分别见Issues C-021.1.4.5.4.2.2／C-021.1.4.5.4.3.2.2，不以本字节查询或一次游标输入的结果泛称全部循环／清理能力。不增加数值表、AST遍历或运行状态。直接赋值和嵌套循环共用原词法Scope已声明的局部分类，纯值计数器的更新不扩大为元素写；真实元素别名和资源写继续按原存储位置处理，不增加运行状态或另一份局部表。元素名与循环的数值下标分别交接，初始轮及继续边保留完整元素位置；把其中一个字段借给普通函数后，记录名仍表示原记录，离开循环后才结束该局部绑定。普通B函数的闭合合同确认无实际写或拥有消费时，write／inout权限不再单独撤回标量、记录及dataset事实，源码与独立obj／lib保持一致；真实写、外部和间接调用继续按原合同处理。闭合普通B的Memory给出已知资源／字段时，共同模型只撤回实际写分量，其他资源保持，源码缺席的obj／lib仍消费同一真实内存合同；失败清理的编译闭合不抹掉实际读取或写入，读取缓存的保守范围不扩大模型写范围。下标实参、字段列及拥有记录内dataset复用原位置和字节投影，循环来源待闭合不扩大为全局写；真正未知仍按未知处理，不生成运行时范围表。闭合普通B的引用及dataset调用沿同一实际Memory写区，非拥有参数权限不重复撤回整值事实；dataset指针的实际根、元素布局和字段字节在预分析与真实调用中一致，模块出口保留输入位置，私有Data不成为外部写区。实际按值dataset仍传递Frame句柄与长度；在原完整初始化检查后，实际Data、元素布局及字节位置同时交给原输入Proof，闭合Memory因此按真实资源撤回数值事实。这个位置是编译期存储关系，不把句柄改成原生地址，不增加机器参数、Frame字段、资源副本或释放者。同上下文的地址身份替换保留Local／Buffer的原固定位置；真正重绑的参数、资源、派生、外部及dataset根继续消费原实参映射并撤去旧形参位置。写区和初始化复用真实存储所有者，不跨模块发布局部槽，不改变机器参数、ABI或释放职责。dataset及拥有字段中的实际元素地址沿原InputSlot::Value引用Data.elements的对应分量，与普通值共享原LoopInput；资源句柄由Data槽交接；循环写预分析撤回旧数值事实时保留原LoopInput借用来源，独立拥有Data的循环源沿原Borrow.resources保留带成立条件的物理资源身份，借用Data及普通地址／view源继续交接实际位置与布局，不把元素内容或位置层当作拥有句柄。首次真实游标读取在原数值身份初始化接点同时取得已有共同来源，后续游标赋值保持本次精确来源，不合并已被覆盖的旧地址。循环出口可直接消费已闭合的Value来源；仍待求解的来源和资源存储版本继续原循环图。循环传地址后的真实写入会撤回相交位置的旧数值，写零后不能继续取得非零许可；原循环出口先将每条回边的原值别名交给同一出口值，再合流数值范围与原零次／重复分支；实际改变的值不成为相等身份，延后MemoryValue沿原Clause求解。普通for及其continue保持未写兄弟字段的事实；条件合流只为两侧均存在且不同的值身份建立输出名；缺少既有身份时不提前命名，实际读取沿原位置取得当前共同事实与借用来源，赋值继续交接其真实新值。复合continue保留实际指针写的原存储别名和后续真实读取。循环入口仍由原LoopWrites交接可能写的位置，尚未读取的地址不能由语法名称推断为不相交。间接影响的本地数值由原循环输入槽命名，入口与真实回边仍由同一LoopState持有，沿原Memory与这些生产者求解当前事实；同一数值效果消费本地存储分量与拥有dataset的长度赋值；resize及dataset构造的确定长度参数沿原独立赋值、分支和真实继续边合流，只保留入口与回边共同保证的数值界，数值界不恢复旧资源身份或冻结为类型count。对同一u32存储位置及循环中不变的常量，`x=c-x`沿原整数运算按回绕语义形成覆盖入口值与反向值的循环范围，原下标和非零消费者直接使用。同一反向与不变路径的顺序、分支及继续边沿同一数值效果合流。dataset绑定的元数据写直接交给原LoopWrites本地槽集合；自然出口按同一写槽选择实际重绑定的dataset，沿原LoopState把入口与真实继续边的长度和共同元素模型交给原Proof及Returned模型；根借用保留原LoopInput的来源，数值模型交接不再次合并根条件。元素归属消费原DataReference交接的实际根；仅有一个来源且就是当前Data根时，直接取得已确定的完整根作用域，多来源、别根和真实嵌套按各自实际关系处理。原Edges保留同一输入边的完整正负Condition；同来源union直接沿原Condition::logical(any=true)合流两根，空来源持有原完整条件，不先拆正根再重建负支；真正Clause入口insert_when继续其原职责。元素归属与循环写影响先合取同名LoopInput的两侧条件，结果完整等于常量true或false时直接消费该关系，只有非确定关系才查询本次path。正根仍有前提而负根Impossible不能当作恒真。普通正分量消费者继续取得原正Clause，原负分量消费者直接使用已持有的负根。selected／root的完整性、Source／Call关系、实际下标及字节范围仍归原消费者，不由确定输入关系授予资源权限。循环数值保持分析只为实际U32归纳消费者生产头证明；其他分量继续交接原初值及零次恢复，真实读取／投影在原绑定处取得其需要的输入名称与合同，不依赖未使用头证明的重复建模。返回元素检查在原元素作用域投影已有拥有集合，不重复并入已由输出汇总或父层交入的当前根。闭合普通CPU及compute值调用复用原Module所持同一实际实例合同，逐项交接真实写访问自身条件、Access与written Proof；compute可用目标声明不把已闭合调用改成未知外部写。原合同的CPU兼容分析不选择本次执行设备，实际调用继续原native／inline及CPU／GPU路径；没有对应闭合合同的外部、间接及GPU专用效果仍由原所有者解释，不按函数外形假定纯。写预分析按当前路径逐项生成原Write::Memory，不先形成无人消费的总Borrow；真实调用按原顺序归并写来源后统一限制本次调用路径，保留MemoryTarget::Call的必要总写关系。真实写值消费前，各条访问仍按同一路径限制；原write_address_values直接借用调用点已有的总写Borrow，只映射当前初始化，不重新归并来源。逐条MemoryEffect继续解释实际字节与written Proof；未知、已知空写、pending、快照与存储版本按原语义处理。拥有状态、实际驻留及长度的uniform／constant事实仍按原数据职责合流，零次执行和break沿原条件处理，普通完整遍历继续由原完成生产者交付。非零使用消费闭合后的实际事实，写零撤回旧非零，未写分量保留当前不变量；break退出不作为下一轮生产者。条件沿现有规范编码比较，不因等价DAG的形状制造数值变更。完整借用与内存安全目标及剩余缺口仍见Issues C-036.5，不将局部能力视作完整保证。实际内存使用统一拥有延后数值事实，普通B调用、C调用与原生写入沿原Memory／MemoryValue求解；形成地址不提前登记InOut，已闭合写区只撤回相交字段，真实读写和最后资源消费者保持。循环内创建／resize后按值移交普通拥有dataset的原消费者保持独立资源数值事实，具体已完成范围见FixedIssues C-021.1.4.5.4.3.2.5.2；真正未知效果仍按原Memory处理，不能仅凭拥有参数省略可能写入。输出值、初始化、拥有消费及最后释放仍沿原合同，快照不证明初始化；原机器参数和资源格式不因此改变。普通CPU循环结束后，原循环写集合把仍成立的共同字段范围交给同一Frame完成入口；原明确Frame、严格拥有后代范围、本地槽和真正未知存储共同选择潜在写的Frame绑定，CPU位置可来自明确cpu或原Inputs::uses中相同位置在当前路径已成立的Use::At要求。查询不增加或复制要求，不改变位置；没有已成立CPU事实的参数和GPU输入不当作CPU。闭合无写引用按原合同及返回来源形成只读地址，不引入额外完成。只处理原拥有者中可用的CPU存储，实际字段写仍即时撤回旧事实。break只表示控制流退出，不证明完整覆盖；已知旧值与新值共同满足的范围可以交接。return与错误退出不执行后续完成。完整普通数据游标从零覆盖且无本层seek时，原每条正常回边已有的共同数值现在交给同一Data.elements：静态区间和仍成立的u32数值上界共同保留，循环内局部数值身份不逃逸；空域仍按全称语义解释。当前游标的共同末值还须合入原IR中非当前下标写的最终可能值，不能用当轮末写抹去后来各轮对先前元素的修改；动态步长／偏移与普通引用调用按真实存储位置及闭合写效果解释，查询不增加IR、寄存器、存储表或运行保护。显式下标从零遍历到入口同长边界时，实际写右值的数值沿原Clause及原IR存储交到自然出口的同一共同模型；每条正常继续边都须覆盖该字段，其他下标的重叠写也计入跨轮最终可能值。原内存效果解释调用和别名写，未知效果不补造数值；不会生成逐元素检查、另一个数值表或额外执行。普通write／inout dataset形参的共同数值沿原ReturnExit／written交回调用者Data.elements，普通数值元素与拥有元素使用同一模型链；源码缺席的对象／归档及转发调用保留该输出。字段列按实际投影更新，未写兄弟字段保持；共同区间、非零和索引不等式不表示不同元素值相等；完整遍历在原出口绑定后仍有真实共同输入来源时，同一来源随数值模型保存，普通调用代入其实际数值与算术关系，迭代内局部身份不逃逸。U64借用地址与U32 Frame根在原模型中各保留真实宽度，公开dataset布局和机器参数保持。嵌套CPU循环对仍存活外层游标字段的纯覆盖，沿原条件IR、entry、真实继续边与自然出口交接；零次分支按入口事实求值，循环头读取的新值和回边值保持各自时点。完整遍历消费路径约束后的原Proof，原存储／干扰查询递归嵌套Loop，其他下标的真实写仍影响全体结果。私有字段完成调用只更新Frame元数据，不作为载荷写。条件通过地址写兄弟字段的数值精度仍见原Issues对应叶项。普通引用写在实际完整循环结束后，沿原LoopWrites及已成立的CPU驻留要求交给同一Frame；部分路径不制造全体完成。普通dataset调用正常返回后，已有written共同保证由真实调用者沿同一完成C入口交给原Frame；字段列的实际前缀偏移与字段相对偏移共同解释，Host借用保留动态offset，U64原始地址转借不取得Frame。静态模块包装与源码SDK交接同一字段描述、原已求值数值和实际偏移，公共C接口及BLCO89／BLRI51保持；只读效果不生成重复完成，失败不进入正常完成。普通CPU函数的requires prefix(data,count.field)沿原Count存储交接已生产前缀：固定形状1的可读u32计数字段持有实际数据及投影的静态事实，数值复制不继承；真实字段写／未知写撤回对应事实，兄弟字段保持。拥有移动、返回、条件与循环沿原Data模型交接，生成并行域携带实际字段区域，子区域不能提升为父资源。运行时继续消费同一DomainBindings，声明本身不产生关系。静态Data.elements与运行Frame接收仍分别表达；共同输入可为按值或read临时算术实参：完整写入count+3后，可由容量count+4或(count+3)+1的后续独立消费者使用。原完成入口直接消费共同模型中已求值的真实u32寄存器来源，逻辑元素槽不充当机器值，存储不重读。循环头读前事实仍见C-021.1.4.5.4.2。普通B引用的声明权限与Frame可写暴露分别交接：原函数合同已闭合为无实际写，且返回地址及保留原数值存储关系的地址位模式均无可写来源外泄时，引用沿原地址入口只形成读区，不撤回已有字段保证。判定直接查询原Contract.view_access与Returned.proof的views／addresses，包括聚合字段及原返回拥有树中的dataset元素载荷；不建立另一份效果、来源或运行状态。声明Access、原子权限、初始化／借用规则及机器Reference ABI不变。真实写、可写地址或位模式返回、尚未闭合及外部未知调用保留原可写暴露和Frame撤回；普通写后的真实完成继续沿原完成入口，不为只读调用追加完成。静态模型与独立原生输入收到的实际完成分别判断。普通前向游标在写当前字段之前消费本次原数值输入，原实际写和共同元素模型继续更新；未来读取缓存精度及跨调用数值关系仍见Issues C-021.1.4.5.4.3.2.2／C-021.1.4.5.4.2.2，持久外部字段仍归原C-021.1.4.5.2。语言研发、稳定SDK和引擎采用分别成立，本局部交接不证明完整世界缓存或默认Stella已经采用。
-
-实际元素读取若依赖尚未闭合的MemoryValue，由本次既有Dataset读取记录持有原元素Proof及同一次已求值下标／资源绑定；原uses顺序先解析此前Memory值，再投影本次实际选择，交接本次读取自己的数值身份。所有可能的元素模型共同合流，不能只保留待解候选。它不追加旧调用快照，不重走调用链；真实或未知相交写撤回不再共同成立的旧事实，读取前已捕获的普通SSA值保持独立。 实际赋值的可能写入数值沿原位置合同交接。可定位且同标量完整覆盖时，原共同数值更新合流旧值与全部可能写入值，只保留共同成立的范围、非零或Bool条件；原值与所有可能写入值均为false时，新读取仍可得false。可能写入不表示必写或最终确定值，不授予初始化、权限、借用或寿命，也不保留旧完整值身份。未知写、不能按同标量完整对应的写及部分字节写继续按原实际覆盖撤回受影响事实并保留仍有效的未写位。直接写、闭合调用、延后MemoryValue及无提供者源码的obj／lib使用同一合同与原数值更新，不增加快照、数值表、内存图或运行时状态。整数局部或dataset元素只被部分字节覆盖时，编译器按原Origin的实际写区撤去旧完整值身份、地址和条件，在同一Proof.domains保留未写整数位；重复覆盖、截断及扩宽沿实际类型位语义处理。直接写、闭合调用和延后Memory读取共用这一字节关系，共同元素模型仍合流未写元素及可能新值。完整覆盖与未知写不继承旧位事实，位事实不授予初始化、借用或资源寿命。当前按Windows x64布局实现，独立obj／lib以BLCO89交接；条件赋值沿同一Clause保存两侧关系，原共同事实查询保留共同整数位；后继部分写消费当时路径及此前已解快照，再撤去真实写字节。最终非零查询使用原数值上下文，obj／lib沿同一合同消费；整数转换沿原CommonRange保留来源类型、截断、扩展及目标类型；实际非零查询由同一scoped_proof读取原环境和本次路径中的来源位事实，按这条真实转换链投影到目标位宽。已知位与范围继续属于原Proof.domains，符号扩展沿实际符号位处理；目标可能为零或来源未知时不取得新的非零事实，不恢复旧值身份、地址、初始化或资源寿命。
-
-普通B的非循环元素赋值在实际存储、初始化及原Data.elements更新后，将本次受影响的真实Frame资源交回原字段完成入口，只发布同一模型已成立的共同数值和必要长度快照。只改一个元素时继续消费原共同模型，不把局部值推广为全体；未写兄弟字段保持原语义。原for循环在正常出口批量交接，赋值入口不在迭代体逐次全域发布；此处自动交接的实际范围不代替其他循环内部／出口的完成能力。数值发布不恢复被计数字段改写撤回的Prefix，失败右值不进入实际store及写完成。后继CPU／GPU范围沿原资源关系消费，不在消费入口补写、不扫描载荷，不增加ABI字段、Frame或状态表。
-
-可信外部字段沿原生SDK的unsafe DomainBindings::produced_element和unsafe Frame::complete_field交接。前者按值消费ElementRange并并入同一原domains；后者从原Ty取得Scalar，与blink_complete_field共同接收ElementInterval数组、u32严格上界数组及原始固定位known_mask／known_value两个u64，两数组仅同步借用。实际字段值必须满足数值区间、固定位及全部严格上界的交集；固定位仅用于整数，value只含mask内该Scalar有效位，未知位不产生保证。提供者须担保实际字节、完整初始化、字段布局、真实完成／原执行依赖及寿命；声明不读取载荷、不完成写或等待，普通安全输入没有自动字段保证。写、可写地址、替换、取出裸数据和释放沿原失效。Stella原函数体及无源obj／lib的独立CPU／GPU路径已完成原生核对，记录归FixedIssues原.4.3.1；实际引擎跨轮采用仍见Issues C-021.1.4.5.2.4.3.2。
-
-共同字段的逻辑索引在实际读取时，同时消费原目标声明形状、已有same_length长度Proof和当前路径上已成立的长度上界，形成同一个数值Proof；例如目标长度为二时，字段乘八加七可索引十六项表。未知长度不猜成常量，真实写分量先沿原memory_regions撤回，空集合的全称前提不创造机器值。该静态推导复用原data_index_proof／Proof::element_facts，不增加运行检查、元数据或公共ABI。同一次完整parallel写入同长度的其他普通可写dataset时，当前元素的数值模型沿原Place与Proof更新，不依赖源码命名的迭代缓冲；真实写字段由原Stage.element_guarantees和prefix::Facts交接。稳定排序只重排完整记录；完整等长输出沿同一Facts与Stage.element_guarantees接收源记录已有的共同数值和逻辑目标。前缀或更大输出保留未写尾部，输出共同事实因此合入原目标事实；未知尾部不取得源范围。该完成沿原模块合同和ExecutionPlan交给DomainBindings，不携带单元素值身份、路径或借用，也不增加运行检查。没有输入前提的独立排序入口不能从任意外部字节取得字段保证。输入tile在阶段正文前捕获；其读取按原输入绑定、捕获字段字节基址和所选分量消费同一阶段入口element_facts。普通dataset读取继续按原memory_regions撤回当前相交写；后续源写不改变已捕获字节，新源值也不为旧捕获签发保证。CheckedTile的原来源持有实际元素描述：输入及协作参数持原Ty，发布来源持本次已求值Value，类型直接从该来源取得，不再分离保存Ty，也不另存Proof缓存或事实表。不可变发布读取按实际字段／分量投影原Value，经既有capture及element_facts交出共同数值、已知位和逻辑数据目标；值身份与局部路径不跨元素，不表示不同lane的值相等。原子tile可能已被真实写入，读取不继承初始化值保证。后续局部改写不重新求值或改变已发布值；降低后仍只交原Tile／TilePublish及原公共执行／资源ABI。
-
-同一已求值整数来源的加、减和常量乘法比较，由原Clause共有事实查询消费已有Computed整数式、Scalar、Below及数值上下界；本次查询内按同一来源消元，并把成立的整数界留在原Facts供实际索引及分支读取。u8／i8至u64／i64分别使用原机器整数的位宽、有序编码和零位置；只在当前来源范围内不发生回绕的每一步运算才作为数学整数等式展开。会回绕、不同来源或非仿射运算继续保留原机器值，不把它们拒绝为非法B程序。旧值快照与当前改写值分别命名，等价身份沿原事实交接；局部系数及查询中间材料在本次查询结束释放，不增加公共表达式格式、持久缓存、运行状态、范围钳制或新的条件图。分支入口的原required_in已推得的整数Minimum／Maximum／Zero／NonZero，相对本次输入环境新增的部分并入该分支原path，沿原路径合流交给后继读取；同一份查询结果继续精化原Value，不新增查询、逐Bool重扫、来源快照或持久状态。真实改写继续使用新值身份，已取出的旧值快照沿原身份解释。动态选择式在原分量槽合流读取形成实际结果寄存器后，复用原条件partition及两侧已有Proof::output_aliases，把真实继续侧的分量数值与结果身份关系并入同一path；后继条件沿该原路径取得被选值的范围。两侧来源或条件随后改写不改变已取出的选择结果，结果自身改写沿新值身份；常量选择及无继续值沿原控制流处理。不增加数值查询、寄存器、条件图、公开合同格式或运行时指令。整数按位&／|／^在原observe_integer_binary消费两份已求值Proof，按实际Scalar的已知零／一位形成结果KnownBits，交给原Proof.domains及同次path事实；没有已知位的部分保持未知。&只有两侧均为一的位才必为一，任一已知零位必为零；|消费任一已知一及两侧共同零位，^只消费两侧都已知的位。原非零消费者可使用确定位中的一，普通记录、向量分量、转换、合流及对象合同沿同一Proof交接；真实改写或截断撤去不再成立的位，数值事实不授予初始化、访问、借用或寿命。区间包络仍由原算术所有者交付。原Proof::holds_range与ElementRange::within复用Scalar::covers_range，判断已有数值区间与原始固定位的交集是否满足所需区间并集及固定位；在前提区间的每个空隙和所需位的相反值中，只要仍有符合已有位的机器值就不能满足前提。固定零／一位按实际Scalar的有符号偏置进入数值次序，越过最高冲突位并回到低位的必要模式，不逐机器值枚举；64位端点之后的位置由本次局部宽整数表示，浮点继续原数值区间包含。同一ElementRange以binding、实际字节offset与Scalar命名字段，同时保存有序intervals及原始known_bits(mask,value)，含义为两者交集；不能把区间包络中的洞当作实际值。原Proof的element_ranges／element_guarantees交给Stage输入与输出，prefix沿同一字段假定及证明；BLCO89对象与BLRI51执行映像编码同一描述。完成的原生产者将该字段事实交给DomainBindings，投影、只读别名及重绑定保持原存储关系；同字段多个保证用原ElementRange::intersect求交，实际写仍按原字节范围撤回，未知及部分写不冒充完整保证。运行绑定的require用同一包含运算，不读载荷推定事实、不增加资源副本、拥有表、图或缓存。普通CPU完整写后，原ElementCompletion保存同一intervals与known_bits，既有SDK直接下降和对象资源代码生成各在blink_complete_field末尾交出known_mask／known_value两个u64；原Frame::complete_field将两者与已有区间及u32上界快照共同交回同一ElementRange。固定位只适用于原整数Scalar，未知位不产生该位保证；这些数值事实均不授予初始化、访问或寿命。本字段描述不等于任意条件编码、多层来源或原24行不同路径集合均已形成，剩余仍沿原父项C-021.1.4.4.3.6.2.1.1.3。整数商仍沿原Computed关系把商与除数的实际类型化范围反推给原被除数：无符号按floor，有符号按向零截断，零商包含两侧余数范围；动态除数只消费当前已知数值范围，正负部分分别取原像并合流。实际MIN除以负一产生原位宽低位结果，原像保留该MIN输入，不把回绕分支当不可达。所有原像均与原Scalar机器域及既有来源范围相交，只精化同一已求值来源，不改除法指令、常量折叠、非零除数许可或数据布局。公开条件投影在原Proof::at_call识别确要退出本次命名作用域的Below／Computed数值关系，在私有约束仍可取得时按原条件根去重，消费现有Clause共同事实查询，将成立的Minimum／Maximum沿原fact映射直接交到同一公开条件。完整绑定的普通调用继续原图翻译，不增加私有数值消元；原分支、析取及其余关系仍由原图交接，不把某个分支的范围冒充所有返回路径。Bool直接返回比较、取反及记录分量按同一实际结果解释，不要求业务先分支再返回常量；旧值快照、实际改写值与不同来源继续分别命名。私有算术身份与内部图不导出，不增加表达式格式、第二合同、持久状态、运行检查或数据拥有者。提供者本次编译出的同一合同可由源码、无提供者h／b的obj及标准lib消费；已丢失相关信息的旧对象须重编提供者，不能靠调用方猜回原实现。BLCO89／BLRI51及实际运算／资源完成保持。已发布整数值的非零位置由原生产点Value交到整数tile_reduce_sum：原整数观察事实同时保留当次已求值结果的纯数值界，发布Value沿既有条件引用原生产路径；消费点后续局部改写和源写不改变旧发布值。固定块宽的真实lane沿原Computed表达式交接全局index对块宽取模，与任意有界输入及普通块内索引许可分别解释。求和只查询同一发布分量的非零条件及真实坐标范围，对lane的常量模余数允许区间用整周期与尾段直接计算位置数上界；多个约束取已成立的共同上界，不枚举lane或扫描载荷。该数量与原有效长度和逐值数值包络共同形成数学整数总和界，再按原位宽解释模回绕，结果仍只归原Proof.ranges。记录投影和重排按实际分量取原条件；普通跨元素读取继续去掉局部身份及条件，不能把稀疏值广播后的所有位置当作原稀疏集合。未知坐标、未知参数宽度和未提供非零关系时保留原逐值求和范围，不伪造紧界；F32规则、归约指令与顺序、同步、资源和公共格式保持。查询临时材料随本次分析结束，不新增环境快照、发布Proof副本、计数表或持久状态。
-
-机器整数移位在原算术结果Proof中交接KnownBits。左移按原Scalar位宽截断并保留实际补零位，无符号右移按逻辑补零；有符号右移只在原符号位已知时交接相应的高位填充值。位移量沿原shift_counts按同一机器位宽解释，零位移及位宽倍数不误作非零移位。每个允许位移闭区间以倍增的位交集计算其全部位移共同成立的位，多段再求共同位；计算量随位宽的对数变化，不逐输入数字或逐位移值枚举，也不新增数值阈值。
-
-来源仍是同一已求值操作数的范围和已有位事实，结果只归原Proof／KnownBits；一次移位运算捕获一份原输入Proof供各分量消费，临时材料在原算术结束后释放。实际改写不沿旧身份取得新值保证，符号未知的填充位保持未知。源调用与无实现源码的obj／lib沿原公开数值合同交接这些位，BLCO89／BLRI51及原运行资源ABI保持；位事实推导本身不生成运行检查。CPU范围降低器的立即数及变量位移量均按同一Scalar位宽解释；窄变量在原count寄存器交出实际低位，32／64位沿原硬件语义，SPIR-V沿原位宽掩码。按位组合与移位在原KnownBits中共同交接；原条件编码集合与多层来源继续沿Issues C-021.1.4.4.3.6.2.1.1.3，移位位事实不自动成为整个字段的精确编码集合。受原窄位移缺陷影响的CPU计算映像须重新生成，公共格式与ABI不因此改版。
-
-数值输入合同使用`requires range(value,lower,upper,...)`：每对端点表示同类型数值闭区间，区间取并集，多条前提分别满足，重叠／相邻区间沿原ScalarRanges合并；`range(value)`表示空集合。value可为普通B按值参数及记录字段／向量分量、普通CPU共同元素路径或整域`data[*].field`；整域沿原普通read／inout字段选择，不假定原子并发输入的共同值。端点使用现有数值字面量、可见模块const及其字段／纯一元二元运算，复用原Builder完整编译期求值，与所选分量标量类型精确匹配；不执行调用或载荷访问，窄整数及i32／i64等类型可由接口中的类型化const给出。浮点闭区间采用数值次序，正负零都属于含零区间，NaN不能作为端点且不属于任何浮点区间，倒置端点拒绝。空dataset全称满足前提，不产生元素、目标非空或访问许可。
-
-普通调用在原Selection／Proof检查已有值集合是所声明集合的子集，callee在同一参数／共同元素模型假定该前提；完整写入及实际相交改写继续沿原事实生产和失效规则，不把输入声明当作输出保证。整域直接生成原ElementFact::Range，由原Program／ExecutionPlan和DomainBindings.require消费已有元数据；普通Vec字节、into_datasets后可改写存储或某批合法样本都不取得输入担保，不增加逐元素扫描、运行检查、资源、拥有表或第二合同。端点在原对象合同中保存类型化常量，无提供者h／b的独立obj／lib不回读实现求值；BLCO89保存Range声明编码，旧对象沿原格式边界拒绝并重编，BLRI51与原资源C ABI保持。外部C／cfn不因本项取得数值range前提。声明不自动生产合法编码或确定资源格式；真实编码生产、通用消费者核对及剩余数值能力分别见Issues C-021.1.4.4.3.6.2／.4.2／.4.3，正式引擎合同与SDK采用由真实消费者接入。
-
-同一编码的允许区间集合可供原整数表达式的关联推导消费。已有两个f32上界在乘法处需要共同基值时，原Builder沿仍存活的Proof、参数环境和原Clause共同事实取得相同已求值来源；原IntegerQuery按原ValueIdentity／Computed／Operand工作栈遍历，每个共享表达式只入序一次。对源集合的每个已有闭区间，两侧使用同一片段，沿原arithmetic_ranges及Scalar的实际位宽、位运算和回绕解释原整数运算，再与已有数值界相交；全部片段都成立才交出严格小于关系，不枚举编码值、lane或运行载荷。
-
-该关系在原FloatingBound合并处把非负仿射上界中的x按x≤d−1改写为原d上界，继续消费原转换、除法及四则运算误差和向外舍入；无符号整数到f32的Cast在非负加法处可形成针对自身来源的上界。实际B算法和机器指令不因推导插入检查或改变运算顺序。数值范围不证明不同元素或已改写快照相等，缺少同源事实时不取得这项新关联；相同类型、字段名或dataset归属不能替代值身份。查询中间材料随本次分析释放，不复制IR、另建表达式图、持久关系／范围缓存或运行拥有者。原Proof及公开数值合同交接已推出的范围，无提供者h／b的obj／lib沿原对象合同消费；BLCO89、BLRI51与资源ABI保持。真实编码的合法集合与格式由原提供者声明，编译推导不能从某批样本签发它们。
-
-普通tile读取与整数tile_reduce_sum共享这一来源数值查询；求和逐分量消费整个允许输入集合的数值包络与当前有效长度的已知范围，在数学整数中形成总和界，再由原整数模区间算法解释真实位宽及有符号回绕。不能按互不相交输入片段分别假定所有元素取同一片段，也不把某一元素的身份、路径或借用传给总和。结果只在原Proof.ranges中交接，现有模块合同及原索引消费者直接使用；u32逐值在0至1且有效长度至多W时取得0至W；当同一已发布值的真实非零位置还给出数量上界K时，整数求和进一步与非零逐值贡献的总和界相交，不把普通输入的有界数值当作逐lane坐标。F32／F64 tile_reduce_sum复用同一来源与Proof.ranges，将有限输入集合的包络及有效长度上界N交给原浮点区间所有者。原finite与集合输入共用finite_ranges及次正规数解释；最多N−1次非单位元加法的舍入因子(1+ε)^(N−1)按指数位以原有向端点乘法计算；ε为F32的2^-23或F64的2^-52，最小正规数与最大有限值同样消费实际Scalar，覆盖实际线性／树形顺序及允许的次正规清零，不能直接用理想实数的输入界乘长度替代。单元素保留单位元范围，非负／非正输入保留真实符号；结果向外舍入并包含两种零的位模式。只有能建立所有中间加法有限时才交出有限结果区间，不能由最终相消推定中间不溢出；未知、NaN／无穷或无法建立中间有限性的输入保持未知，不限制合法程序或增加运行保护。其他归约／exclusive扫描及尚无共同输入事实的协作参数继续按原Issues对应缺口推进。原IR、CPU／GPU归约顺序、指令、同步及Frame资源所有者保持；不增加运行检查、事实表、发布缓存、格式标签或ABI。分支、重叠及未知写继续沿原模型合流／撤回，prefix、稀疏选择和不同长度的部分覆盖不冒充全体保证；部分整数原子store／exchange、compare_exchange的desired及min／max候选，沿原写效果与未写元素可能保留的旧共同值求并；已知范围或相同逻辑目标可交接后继CPU／GPU，未知写或未闭合的其他RMW撤回。该摘要不作为atomic_load或RMW返回值的稳定读事实，不表示全体命中或完整初始化；原内存序、实际字节、完成和资源拥有者保持。
-
 主光线找到眼睛看见的第一个事件；阴影连接回答光源是否可达；散射后的下一段继续寻找反射、折射或介质中的后续贡献。这些线段共同形成一条路径。
 
 `BLStellaPath` 保存当前位置与方向、路径编号、吞吐、采样密度、事件、空间层、当前介质和最近命中。当前帧把它作为单个工作项的局部状态，而不是为全屏每一次中间操作分配一个永久数据集。
@@ -931,19 +908,21 @@ BLStellaSegment sample_segment(BLStellaHit geometry,BLRay ray,BLMedium medium,fl
 
 *图 16-1：每次到达事件都可连接光源；继续方向来自表面或相函数。透射改变介质，反射保留所在侧。*
 
-### 16.2 integrate 的主干
+### 16.2 路径状态的主循环
 
-`Programs/stella/transport.b::integrate` 为每个内部像素建立主命中与采样地址，再由 path_radiance 累计路径贡献。当前主循环按真实事件和俄罗斯轮盘推进，下面保留初始化及循环主干：
+`Programs/stella/transport.b::path_radiance` 用 `BLTransportState` 保存路径和累计辐亮度。每次 `transport_step` 处理一个真实路径事件，更新贡献、介质、采样地址和是否继续；主循环一直推进到路径结束：
 
-局部节选，外围未列出：`Programs/stella/transport.b:67`。
+局部节选，外围未列出：`Programs/stella/transport.b:92`。
 
-```b
+```c
     BLTransportState state=transport_begin(initial,initial_address,unsafe_read(media,initial.medium).ior);
     while(state.active){
-        state=transport_step<N,G>(state,instances,surfaces,lights,distribution,candidates,cells,directions,guiding_cells,settings,media,
+        state=transport_step<N,G,Component>(state,instances,surfaces,lights,distribution,candidates,cells,directions,guiding_cells,settings,media,
             environment,emitters,mesh_lights,mesh_domains,scene,overlay_scene,textures,floor_present,ground_z,ground,overlay_start,
-            sample_round,roulette_start,maximum_survival,sampling,fill,include_initial_emission);
+            sample_round,roulette_start,maximum_survival,sampling,include_initial_emission);
     }
+    return BLRadianceComponents(state.radiance,state.diffuse);
+}
 ```
 
 `scatter_hit` 根据事件选择表面散射或体散射；`traverse_path` 查询下一次最近命中，并比较介质自由程；`hit_radiance` 处理环境、可见面光、体事件和普通表面照明。每一层的工作都有明确输入，而不是由一个巨大函数隐式保存全世界状态。
@@ -969,12 +948,12 @@ BLStellaSegment sample_segment(BLStellaHit geometry,BLRay ray,BLMedium medium,fl
 程序体节选：`Programs/render/frame.b:26`。
 
 ```b
-    radiance<N,W,H,S,DC,IC,Start,V,Shared,G>(pixels,display,instances,overlays,surfaces,cameras,lights,lighting,media,visible,distribution,candidates,candidate_round,cells,directions,guiding_cells,environment,emitters,mesh_lights,mesh_domains,
-        parameters,scene,overlay_scene,textures);
-    resolve<W,H,S,DC,IC>(pixels,display,overlays);
+radiance<N,W,H,S,DC,IC,Start,V,Shared,G>(pixels,display,instances,overlays,surfaces,cameras,lights,lighting,media,visible,distribution,candidates,candidate_round,cells,directions,guiding_cells,environment,emitters,mesh_lights,mesh_domains,
+    scene,overlay_scene,textures,flags,ground_z,ground,overlay_start,seed,sample_low,sample_high,direct_samples,mesh_samples,maximum_survival);
+resolve<W,H,S,DC,IC>(pixels,display,overlays);
 ```
 
-第一段由radiance组织integrate，计算可见性、材质、直接光与后续输运的线性辐亮度；resolve消费内部图像和叠加输入，合成为显示图像。这是当前两段设备程序的组织，不是说引擎只有两件事情。
+第一段 `integrate` 为内部图像计算线性辐亮度，包含可见性、材质、直接光、后续输运和屏幕矩形合成；第二段 `resolve` 把内部图像变成显示图像。这是当前两段设备程序的组织，不是说引擎只有两件事情。
 
 数学意义上的求交、着色、散射等阶段，在第一段工作项内部通过函数和循环完成。它们没有必要各保存一张跨全屏中间图。源码章节的逻辑层次与 GPU dispatch 的数量应当分开理解。
 
@@ -1004,11 +983,11 @@ resolve 对平均值执行 `radiance/(radiance+1)`，再取约为 `1/2.2` 的幂
 
 ### 18.1 并行的是数据域，不是主机回调
 
-语言侧执行映像沿原ProgramLayout的DeviceRequirements交接f32／f64实际保留模式需求，BLRI51保存同一合同，GPU装入据此消费真实设备能力。程序数值需求归语言编译与运行库，场景和渲染算法仍归引擎；语言运行库在逻辑设备创建前，按程序已声明特性、计算队列及必要扩展确定默认物理设备；保留独显优先次序、同类沿驱动顺序，全部候选保留，显式选择仍保持原真实句柄。推送常量容量直接使用程序uniform_bytes的最大值，在创建前匹配候选已有物理属性，装入继续消费确定设备的容量；纹理描述符也在同一遍历按原数组元素合计、多程序取最大值，匹配候选已有stage／set的sampler和sampled image容量；装入在该调用内共用一次纹理总数。GPU设备创建借用实际将装入映像的ExecutionPlan，默认、显式物理设备与呈现入口共用该交接。阶段workgroup_width及发射后的shared_bytes分别按各阶段、各独立程序取最大值，直接匹配候选已有maxComputeWorkGroupInvocations／maxComputeWorkGroupSize[0]及maxComputeSharedMemorySize；不相加独立程序的宽度或共享存储。后续装入继续核对已确定设备的实际容量。同一创建遍历复用每个程序的texture_count，将实际普通及辅助storage binding数量与纹理数组元素总数求和，再按独立程序取最大组合数，直接匹配候选已有maxPerStageResources。combined image sampler每个数组元素计一项，AS不进入该项；不能将不同程序各自最大的storage与texture数量拼成不存在的布局。同一程序遍历只求一次普通buffers＋auxiliary_buffers的storage描述符数量，供该程序组合总数及独立storage最大值共用；多程序取最大storage数，在创建前同时匹配候选已有maxPerStageDescriptorStorageBuffers与maxDescriptorSetStorageBuffers。装入已有设备时在原入口一次求storage数，核对同样两项容量，并供组合资源总数复用。AS绑定数直接来自各程序accelerations，多程序取最大值；原AS物理属性并入创建前已有subgroup／float／sorting查询链，同次匹配maxPerStageDescriptorAccelerationStructures和maxDescriptorSetAccelerationStructures，再把同一属性移交原RayDevice。装入沿该设备已有属性核对相同两项容量，不再另查一次AS属性；没有改变原AS构建、完成和资源释放。语言运行库交付与引擎实际采用分别确认。
+执行框架在真实设备上核对程序的数值与 Vulkan 功能要求。语言负责表达计算，场景与几何属于引擎，设备存储和完成点由实际资源所有者持有。
 
 以相机产生的内部像素为例，`parallel(pixel in pixels)` 为每个像素分配工作，`index()` 给出它在数据域中的编号。每个工作项写自己的 pixel，读取共享场景、材质和图像。
 
-Rust 不逐像素调用函数。其准备入口共享Compiler，通过构建图和build_entry取得或复用最终编译映像，再装入CPU代码／GPU管线，建立真实存储与绑定，再把整个计算域交给后端。CPU 后端生成原生 x64，GPU 后端生成 SPIR-V。`on compute` 的通用计算可以走 CPU 或 GPU；需要 acceleration 的 `on gpu` 程序使用 GPU 能力，不能据此假定整套渲染器也有同样的 CPU 路径。
+Rust 不逐像素调用函数。它调用 `compile_entry` 取得选定入口的可执行程序，建立真实存储与绑定，再把整个计算域交给后端。CPU 后端生成原生 x64，GPU 后端生成 SPIR-V。`on compute` 的通用计算可以走 CPU 或 GPU；需要 acceleration 的 `on gpu` 程序使用 GPU 能力，不能据此假定整套渲染器也有同样的 CPU 路径。
 
 ### 18.2 常量参数与每次输入有什么区别
 
@@ -1018,22 +997,25 @@ Rust 不逐像素调用函数。其准备入口共享Compiler，通过构建图�
 
 ### 18.3 阶段之间必须看到前一段的结果
 
-frame 中 integrate 写 pixels，resolve 读 pixels。B 编译结果保存这些读写关系，执行框架在实际设备提交中组织阶段和内存可见性。只靠 CPU 先后调用两次函数，并不能自动证明 GPU 已完成前一份写入。
+光传输阶段写入线性颜色，显示转换阶段读取这些结果。B 编译结果保存这些读写关系，执行框架在实际设备提交中组织阶段和内存可见性。只靠 CPU 先后调用两次函数，并不能自动证明 GPU 已完成前一份写入。
 
-当前 `BLRenderOutput::submit` 的设备交接如下，draw 在同一提交接口上明确等待：
+`BLRenderOutput` 从真实输入创建绑定，再取得设备提交的完成观察。下面只列交接片段，外围场景准备和结果使用未列出：
 
-局部节选，外围未列出：`src/output.rs:286`。
+局部节选，外围未列出：`src/output.rs:323`。
 
 ```rust
-        let mut bindings = inputs.frame_bindings(
-            scene, pixels, display, overlays, cameras, visible, parameters,
-        );
-        input.bindings(inputs, scene, self, &mut bindings)?;
-        let submitted = self.program.submit(bindings, &[])?;
-        let (bindings, _, completion) = submitted.detach();
+let mut bindings = inputs.frame_bindings(
+    materials, lighting, scene, pixels, display, overlays, cameras, visible, parameters,
+);
+input.bindings(lighting.source(), scene, self, &mut bindings)?;
+if let Some(lut) = lut {
+    bindings.datasets.push(lut.binding());
+}
+let submitted = self.program.submit(bindings, &[])?;
+let (bindings, _, completion) = submitted.detach();
 ```
 
-`Bindings` 汇合本次真正使用的数据集、加速结构和纹理。语言 SDK 的 TextureInput::{D2,D3} 可以交接相应原纹理，维度由计算入口合同消费；普通CPU纹理函数在源码／obj／lib中同样借用这些原资源描述，沿原调用及最后消费者保持存储；显式on cpu整域函数及其无源obj／lib也可沿原Frame同步借用这些纹理，原调用方保持到最后CPU消费者结束；GPU整域输入及GPU独立普通调用仍按语言台账建设。这些是语言资源接口，不能据此认定本书引擎代码已经采用新接口、接入Filmic LUT或完成效果验证。submit 交给设备；detach 交出绑定与独立完成观察，实际存储仍由最后使用关系持有。BLRenderSubmission 可以稍后等待，原场景来源无需被搬出再归还。显示或 CPU 读取须消费相应依赖，提交返回不能代替 GPU 完成。
+`Bindings` 汇合本次实际使用的数据集、加速结构和纹理。`submit` 交给设备，`detach` 交出绑定与独立完成观察；真实存储仍由最后使用关系持有。显示、读回或复用都必须消费相应完成依赖，提交返回不等于 GPU 已经完成。
 
 ### 18.4 布局由编译结果给出
 
@@ -1092,19 +1074,19 @@ Blink 的 `ExecutionResources` 分别持有计算、传输和 AS 构建需要的
 局部节选，外围未列出：`src/window.rs:354`。
 
 ```rust
-                let got = PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, 1);
-                // PeekMessage会先派发非队列消息，其输入也交给原目标窗口的消费者。
-                self.deliver(None, &mut input)?;
-                if got == 0 {
-                    break;
-                }
-                if message.message == 0x12 {
-                    self.class.quit.set(true);
-                    break;
-                }
-                DispatchMessageW(&message);
-                if !self.deliver(Some(BLWindowId(message.window)), &mut input)? {
-                    TranslateMessage(&message);
+let got = PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, 1);
+// PeekMessage会先派发非队列消息，其输入也交给原目标窗口的消费者。
+self.deliver(None, &mut input)?;
+if got == 0 {
+    break;
+}
+if message.message == 0x12 {
+    self.class.quit.set(true);
+    break;
+}
+DispatchMessageW(&message);
+if !self.deliver(Some(BLWindowId(message.window)), &mut input)? {
+    TranslateMessage(&message);
 ```
 
 消费者处理某个窗口的按键，不应让另一个窗口丢失文字转换。Win32 还可能在调用中重入窗口过程，因此跨原生调用不能一直持有对同一状态的独占可变借用。这些是平台资源和回调的真实约束，不是三维算法。
@@ -1125,7 +1107,7 @@ Blink 的 `ExecutionResources` 分别持有计算、传输和 AS 构建需要的
 
 源码使用线程 DPI 上下文处理实际窗口和呈现边界，避免宿主进程的设置影响像素尺寸。当前阅读场景仍明确为 4K 输出、8K 内部采样。DPI 处理不代表支持任意动态 extent，也不应通过缩小目标绕过渲染规格。
 
-当前有多窗口、原生输入和呈现，动态调整窗口尺寸、OutOfDate 重建和完整异步视图仍未完成。本章按源码分析窗口机制，离屏输出与交互窗口的实际验证分别记录。
+当前有多窗口、原生输入和呈现，动态调整窗口尺寸、OutOfDate 重建和完整异步视图仍未完成。本章按源码分析窗口机制，配套历史运行记录是离屏帧与多相机导出，不作为窗口交互验证。
 
 ## 第二十一章 模拟：计算更新和渲染更新为什么要分开
 
@@ -1133,7 +1115,7 @@ Blink 的 `ExecutionResources` 分别持有计算、传输和 AS 构建需要的
 
 `Programs/simulation/bodies` 保存位置、速度与能量。每步先由位置计算加速度，更新速度，再用新速度更新位置：
 
-源码节选：`Programs/simulation/bodies.b:3`。
+源码：`Programs/simulation/bodies.b:3`。
 
 ```b
 void integrate_body<T: floating, const Power: u32 in {1, 2, 3}>(inout BLBody<T, Power> body, f32 dt, f32 strength) on compute {
@@ -1150,7 +1132,7 @@ void integrate_body<T: floating, const Power: u32 in {1, 2, 3}>(inout BLBody<T, 
 
 每个 body 读写自己的状态，所以位置和速度更新可以并行。总动能却依赖所有 body，必须归约：
 
-源码节选：`Programs/simulation/statistics.b:7`。
+源码：`Programs/simulation/statistics.b:7`。
 
 ```b
 void step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BLTotal, 1> total, f32 dt, f32 strength) on compute {
@@ -1167,6 +1149,11 @@ void step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BLTot
 
 同一源码与输入、同一初值、一千二百个时间步，Release 原生运行如下。CPU 路径为原生多核 B，GPU 路径使状态驻留设备并在一次提交内推进。
 
+| 口径 | CPU | GPU |
+|---|---|---|
+| 程序内部执行计时 | 969.513 ms，CPU 墙钟 | 114.373 ms，GPU 设备时间 |
+| total_ms，同一命令计时范围 | 985.348 ms | 270.554 ms |
+| 总动能输出 | 63477.54 | 63477.547 |
 
 `total_ms` 包含各后端准备、执行、必要传输和输出写入，不包含共同的初值创建。按这一同口径范围，GPU 约为 CPU 的 **3.64 倍**。上行内部计时分别属于 CPU 墙钟和 GPU 时间戳，不能拿它替换同口径端到端加速比。
 
@@ -1202,7 +1189,7 @@ void step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BLTot
 
 软件宇宙当前 `scene.pick` 使用节点球和标签矩形做命中，再通过归约选择最近结果：
 
-源码节选：`Programs/scene/pick.b:36`。
+源码：`Programs/scene/pick.b:36`。
 
 ```b
 void pick<const W:u32,const H:u32>(read dataset<BLNode> nodes, write dataset<BLResult,1> result,
@@ -1274,10 +1261,15 @@ Copy-Item `
 
 ### 23.3 真正执行的结果
 
+![原生运行记录](figures/engine-book-run.svg)
+
+*图 23-1：2026-10-27 原始 Release 日志排印，非终端截屏。GPU 两段时间分别来自 integrate 与 resolve；完整原始记录见 engine/运行记录.txt。*
+
+实际设备为 AMD Radeon RX 9070 GRE。输出是 `3840×2160`，内部为 `7680×4320`。原记录中一次 frame 的 GPU 程序跨度为 **227.346 ms**，两段时间为 **225.6618、1.4352 ms**；绘制、读回和写文件合计 **304.961 ms**。此范围不含前面的场景加载、源程序编译及资源准备，也不是窗口产品帧率。
 
 ![主相机完整帧](figures/engine-frame.png)
 
-*图 23-2：当前源码原生 PPM 转换的完整 4K 输出。两个物体共用一个立方体模型；左侧使用棋盘表面，右侧选择蓝色表面。PDF 按页面缩放展示，配套 PNG 保留原分辨率。*
+*图 23-2：2026-10-27 原始 PPM 转换的完整 4K 输出。两个物体共用一个立方体模型；左侧使用棋盘表面，右侧选择蓝色表面。PDF 按页面缩放展示，配套 PNG 保留原分辨率。*
 
 模型只有十二个三角形，这份画面用于观察关系与代码结果，不是超高精度字形、天然玉石或大型场景的品质与性能证明。
 
@@ -1290,13 +1282,13 @@ Copy-Item `
   Saved/Scene/views
 ```
 
-场景只加载一次，相机依次绘制到同一输出，文件名为camera-<节点下标>.ppm；设备程序、读回与文件输出分别计时。
+场景只加载一次，相机依次绘制到同一输出，文件名为 `camera-<节点下标>.ppm`。本场景相机下标为三和四。两视图 GPU 程序跨度之和为 **474.113 ms**，绘制、读回与文件写入共 **593.670 ms**。
 
 ![侧相机完整帧](figures/engine-side.png)
 
 *图 23-3：相同世界从第二台相机观察，模型、材质和灯光没有为这张图另建一套。*
 
-还可以执行 `blengine.exe view` 建立单窗口，或执行 `view-views` 为多相机建立多个窗口。这些入口的当前行为以真实源码和实际运行分别确认，离屏输出不代替窗口验证。
+还可以执行 `blengine.exe view` 建立单窗口，或执行 `view-views` 为多相机建立多个窗口。配套历史记录没有执行这两条交互入口；其行为分析来自源码，不据此声称已完成窗口运行验证。
 
 ### 23.5 运行模拟并读取计时
 
@@ -1365,7 +1357,7 @@ Copy-Item `
 
 *图 24-1：离线转换、世界准备、每次绘制、保存呈现属于不同时间尺度。不能把所有步骤都算成每帧必须重复。*
 
-沿 `main → viewer::render_file → load` 进入：读取资产、B 求值组件、编译 frame、建立材质图像、按实际缺少资产取得几何、建立 BLAS/TLAS。随后创建输出，B 计算相机，`draw_to → output.draw` 提交 integrate 与 resolve。完成后 save 下载显示图像；窗口路径则把显示数据交给交换链。
+沿 `main → viewer::render_file → load` 进入：读取资产、B 求值组件、编译 frame、建立材质图像、按实际缺少资产取得几何、建立 BLAS/TLAS。随后创建输出，B 计算相机，`draw_to → output.draw` 按实际生产消费关系提交 Stella 采样与显示转换。完成后 save 下载显示图像；窗口路径则把显示数据交给交换链。
 
 这条链解释了为什么设备时间戳不包含全部启动成本，也解释了为什么同一个世界、多次相机绘制不应每次都重新读模型和复制 BLAS。
 
@@ -1390,7 +1382,7 @@ Copy-Item `
 | 体积 | 均匀吸收、自由程、HG 散射 | 异质密度场、自动区域、完整玉石外观 |
 | 图像与后处理 | 空间超采样、色调映射、gamma 近似、矩形合成 | 运动矢量、时序重建、完整透明和后处理图 |
 | 模拟与物理 | 粒子中心力场、积分、能量归约 | 刚体、接触约束、连续碰撞、软体与流体系统 |
-| 平台与运行 | Windows x64、Vulkan、原生多窗口与输入 | 动态 extent、完整异步多视图及其他平台适配 |
+| 平台与运行 | Windows x64、Vulkan、原生多窗口与输入 | 通用视图重建、多设备与其他平台适配 |
 | 编辑器消费 | DLL 显示输入、真实字形、宇宙与标签适配 | BLEditor 全部功能与最终效果恢复 |
 | 动画与骨骼 | 当前无完整实现 | 轨道、混合、骨架、蒙皮、姿态与运动对应 |
 | 音频与网络 | 当前无对应运行子系统 | 混音、空间声、连接协议、状态同步等 |
@@ -1420,202 +1412,38 @@ Copy-Item `
 
 ## 附录 A 源码节选与版本定位
 
-正文节选对应当前源码，位置见现行源码索引；修订和原生运行历史只在P4双台账记录。
+本版引擎节选固定在 **BLEngine CL19121**，语言接口固定在 **Blink CL19111**。下表列出正文实际引用的引擎源码；文件 SHA256 与逐段行范围保存在 `engine/源码版本索引.json`。历史运行命令与画面仍以 `engine/运行记录.txt` 的原始版本为准。
 
-| 源码路径 | 定位 |
+| 源码路径 | 修订／最后修改 |
 |---|---|
-| `Cargo.lock` | 当前源码 |
-| `Cargo.toml` | 当前源码 |
-| `Programs/geometry/normals.b` | 当前源码 |
-| `Programs/geometry/normals.h` | 当前源码 |
-| `Programs/geometry/primitives.b` | 当前源码 |
-| `Programs/geometry/primitives.h` | 当前源码 |
-| `Programs/image/mean.b` | 当前源码 |
-| `Programs/image/mean.h` | 当前源码 |
-| `Programs/image/texture.b` | 当前源码 |
-| `Programs/image/texture.h` | 当前源码 |
-| `Programs/lighting/area.b` | 当前源码 |
-| `Programs/lighting/area.h` | 当前源码 |
-| `Programs/lighting/directional.b` | 当前源码 |
-| `Programs/lighting/directional.h` | 当前源码 |
-| `Programs/lighting/distribution.b` | 当前源码 |
-| `Programs/lighting/distribution.h` | 当前源码 |
-| `Programs/lighting/environment.b` | 当前源码 |
-| `Programs/lighting/environment.h` | 当前源码 |
-| `Programs/lighting/environment_field.b` | 当前源码 |
-| `Programs/lighting/environment_field.h` | 当前源码 |
-| `Programs/lighting/field.b` | 当前源码 |
-| `Programs/lighting/field.h` | 当前源码 |
-| `Programs/lighting/guiding.b` | 当前源码 |
-| `Programs/lighting/guiding.h` | 当前源码 |
-| `Programs/lighting/harmonics.b` | 当前源码 |
-| `Programs/lighting/harmonics.h` | 当前源码 |
-| `Programs/lighting/lights.b` | 当前源码 |
-| `Programs/lighting/lights.h` | 当前源码 |
-| `Programs/lighting/mesh.b` | 当前源码 |
-| `Programs/lighting/mesh.h` | 当前源码 |
-| `Programs/material/conductor.b` | 当前源码 |
-| `Programs/material/conductor.h` | 当前源码 |
-| `Programs/material/dielectric.b` | 当前源码 |
-| `Programs/material/dielectric.h` | 当前源码 |
-| `Programs/material/energy.b` | 当前源码 |
-| `Programs/material/energy.h` | 当前源码 |
-| `Programs/material/maps.b` | 当前源码 |
-| `Programs/material/maps.h` | 当前源码 |
-| `Programs/material/medium.b` | 当前源码 |
-| `Programs/material/medium.h` | 当前源码 |
-| `Programs/material/microfacet.b` | 当前源码 |
-| `Programs/material/microfacet.h` | 当前源码 |
-| `Programs/material/opaque.b` | 当前源码 |
-| `Programs/material/opaque.h` | 当前源码 |
-| `Programs/material/palette.h` | 当前源码 |
-| `Programs/material/phase.b` | 当前源码 |
-| `Programs/material/phase.h` | 当前源码 |
-| `Programs/material/scattering.h` | 当前源码 |
-| `Programs/material/surface.b` | 当前源码 |
-| `Programs/material/surface.h` | 当前源码 |
-| `Programs/material/textured.b` | 当前源码 |
-| `Programs/material/textured.h` | 当前源码 |
-| `Programs/math/angles.b` | 当前源码 |
-| `Programs/math/angles.h` | 当前源码 |
-| `Programs/math/field.b` | 当前源码 |
-| `Programs/math/field.h` | 当前源码 |
-| `Programs/math/scalar.b` | 当前源码 |
-| `Programs/math/scalar.h` | 当前源码 |
-| `Programs/math/transform.b` | 当前源码 |
-| `Programs/math/transform.h` | 当前源码 |
-| `Programs/render/composite.b` | 当前源码 |
-| `Programs/render/composite.h` | 当前源码 |
-| `Programs/render/frame.b` | 当前源码 |
-| `Programs/render/frame.h` | 当前源码 |
-| `Programs/render/instance.h` | 当前源码 |
-| `Programs/render/parameters.h` | 当前源码 |
-| `Programs/render/probe_frame.b` | 当前源码 |
-| `Programs/render/probe_frame.h` | 当前源码 |
-| `Programs/render/receiver_frame.b` | 当前源码 |
-| `Programs/render/receiver_frame.h` | 当前源码 |
-| `Programs/render/receiver_history.b` | 当前源码 |
-| `Programs/render/receiver_history.h` | 当前源码 |
-| `Programs/render/resolve.b` | 当前源码 |
-| `Programs/render/resolve.h` | 当前源码 |
-| `Programs/sampling/counter.b` | 当前源码 |
-| `Programs/sampling/counter.h` | 当前源码 |
-| `Programs/sampling/direction.b` | 当前源码 |
-| `Programs/sampling/direction.h` | 当前源码 |
-| `Programs/sampling/frame.b` | 当前源码 |
-| `Programs/sampling/frame.h` | 当前源码 |
-| `Programs/sampling/mis.b` | 当前源码 |
-| `Programs/sampling/mis.h` | 当前源码 |
-| `Programs/sampling/random.b` | 当前源码 |
-| `Programs/sampling/random.h` | 当前源码 |
-| `Programs/sampling/reservoir.b` | 当前源码 |
-| `Programs/sampling/reservoir.h` | 当前源码 |
-| `Programs/scene/camera.b` | 当前源码 |
-| `Programs/scene/camera.h` | 当前源码 |
-| `Programs/scene/components.b` | 当前源码 |
-| `Programs/scene/components.h` | 当前源码 |
-| `Programs/scene/device.b` | 当前源码 |
-| `Programs/scene/device.h` | 当前源码 |
-| `Programs/scene/hierarchy.b` | 当前源码 |
-| `Programs/scene/hierarchy.h` | 当前源码 |
-| `Programs/scene/instance.h` | 当前源码 |
-| `Programs/scene/labels.b` | 当前源码 |
-| `Programs/scene/labels.h` | 当前源码 |
-| `Programs/scene/motion.b` | 当前源码 |
-| `Programs/scene/motion.h` | 当前源码 |
-| `Programs/scene/pick.b` | 当前源码 |
-| `Programs/scene/pick.h` | 当前源码 |
-| `Programs/scene/query.b` | 当前源码 |
-| `Programs/scene/query.h` | 当前源码 |
-| `Programs/scene/surface.b` | 当前源码 |
-| `Programs/scene/surface.h` | 当前源码 |
-| `Programs/scene/transforms.h` | 当前源码 |
-| `Programs/scene/universe.b` | 当前源码 |
-| `Programs/scene/universe.h` | 当前源码 |
-| `Programs/simulation/bodies.b` | 当前源码 |
-| `Programs/simulation/bodies.h` | 当前源码 |
-| `Programs/simulation/statistics.b` | 当前源码 |
-| `Programs/simulation/statistics.h` | 当前源码 |
-| `Programs/spatial/bounds.b` | 当前源码 |
-| `Programs/spatial/bounds.h` | 当前源码 |
-| `Programs/spatial/keys.b` | 当前源码 |
-| `Programs/spatial/keys.h` | 当前源码 |
-| `Programs/stella/cached_transport.b` | 当前源码 |
-| `Programs/stella/cached_transport.h` | 当前源码 |
-| `Programs/stella/guiding.b` | 当前源码 |
-| `Programs/stella/guiding.h` | 当前源码 |
-| `Programs/stella/history.b` | 当前源码 |
-| `Programs/stella/history.h` | 当前源码 |
-| `Programs/stella/lighting.b` | 当前源码 |
-| `Programs/stella/lighting.h` | 当前源码 |
-| `Programs/stella/probe_volume.b` | 当前源码 |
-| `Programs/stella/probe_volume.h` | 当前源码 |
-| `Programs/stella/probes.b` | 当前源码 |
-| `Programs/stella/probes.h` | 当前源码 |
-| `Programs/stella/receiver_sampling.b` | 当前源码 |
-| `Programs/stella/receiver_sampling.h` | 当前源码 |
-| `Programs/stella/receiver_shading.b` | 当前源码 |
-| `Programs/stella/receiver_shading.h` | 当前源码 |
-| `Programs/stella/receiver_statistics.b` | 当前源码 |
-| `Programs/stella/receiver_statistics.h` | 当前源码 |
-| `Programs/stella/receiver_transport.b` | 当前源码 |
-| `Programs/stella/receiver_transport.h` | 当前源码 |
-| `Programs/stella/receivers.b` | 当前源码 |
-| `Programs/stella/receivers.h` | 当前源码 |
-| `Programs/stella/reproject.b` | 当前源码 |
-| `Programs/stella/reproject.h` | 当前源码 |
-| `Programs/stella/scattering.b` | 当前源码 |
-| `Programs/stella/scattering.h` | 当前源码 |
-| `Programs/stella/surface.b` | 当前源码 |
-| `Programs/stella/surface.h` | 当前源码 |
-| `Programs/stella/termination.b` | 当前源码 |
-| `Programs/stella/termination.h` | 当前源码 |
-| `Programs/stella/transport.b` | 当前源码 |
-| `Programs/stella/transport.h` | 当前源码 |
-| `Programs/stella/traversal.b` | 当前源码 |
-| `Programs/stella/traversal.h` | 当前源码 |
-| `Programs/stella/visibility.b` | 当前源码 |
-| `Programs/stella/visibility.h` | 当前源码 |
-| `Programs/stella/volume.b` | 当前源码 |
-| `Programs/stella/volume.h` | 当前源码 |
-| `src/clipboard.rs` | 当前源码 |
-| `src/components.rs` | 当前源码 |
-| `src/editor.rs` | 当前源码 |
-| `src/environment.rs` | 当前源码 |
-| `src/geometry.rs` | 当前源码 |
-| `src/geometry_io.rs` | 当前源码 |
-| `src/gpu_scene.rs` | 当前源码 |
-| `src/guiding.rs` | 当前源码 |
-| `src/hdr.rs` | 当前源码 |
-| `src/hierarchy.rs` | 当前源码 |
-| `src/history.rs` | 当前源码 |
-| `src/identity.rs` | 当前源码 |
-| `src/image.rs` | 当前源码 |
-| `src/json.rs` | 当前源码 |
-| `src/labels.rs` | 当前源码 |
-| `src/lib.rs` | 当前源码 |
-| `src/lighting.rs` | 当前源码 |
-| `src/main.rs` | 当前源码 |
-| `src/material.rs` | 当前源码 |
-| `src/math.rs` | 当前源码 |
-| `src/mesh_lighting.rs` | 当前源码 |
-| `src/motion.rs` | 当前源码 |
-| `src/output.rs` | 当前源码 |
-| `src/primitives.rs` | 当前源码 |
-| `src/probes.rs` | 当前源码 |
-| `src/receiver_statistics.rs` | 当前源码 |
-| `src/receivers.rs` | 当前源码 |
-| `src/render.rs` | 当前源码 |
-| `src/scene.rs` | 当前源码 |
-| `src/scene_asset.rs` | 当前源码 |
-| `src/surface.rs` | 当前源码 |
-| `src/texture_import.rs` | 当前源码 |
-| `src/universe.rs` | 当前源码 |
-| `src/view.rs` | 当前源码 |
-| `src/viewer.rs` | 当前源码 |
-| `src/visibility.rs` | 当前源码 |
-| `src/wic.rs` | 当前源码 |
-| `src/window.rs` | 当前源码 |
+| `Programs/geometry/normals.b` | #2，CL18827 |
+| `Programs/lighting/lights.b` | #10，CL18827 |
+| `Programs/material/dielectric.b` | #3，CL15384 |
+| `Programs/material/maps.b` | #1，CL13026 |
+| `Programs/material/medium.b` | #2，CL13013 |
+| `Programs/material/microfacet.b` | #2，CL13573 |
+| `Programs/math/transform.b` | #2，CL12904 |
+| `Programs/render/frame.b` | #36，CL18827 |
+| `Programs/render/instance.h` | #4，CL13521 |
+| `Programs/sampling/mis.b` | #1，CL12997 |
+| `Programs/sampling/random.b` | #3，CL18827 |
+| `Programs/scene/camera.b` | #5，CL14644 |
+| `Programs/scene/components.b` | #3，CL13483 |
+| `Programs/scene/device.b` | #3，CL13483 |
+| `Programs/scene/hierarchy.b` | #2，CL13483 |
+| `Programs/scene/pick.b` | #5，CL13483 |
+| `Programs/scene/query.b` | #5，CL14621 |
+| `Programs/simulation/bodies.b` | #10，CL13483 |
+| `Programs/simulation/statistics.b` | #5，CL13483 |
+| `Programs/stella/lighting.b` | #41，CL18827 |
+| `Programs/stella/surface.b` | #20，CL18827 |
+| `Programs/stella/transport.b` | #35，CL18827 |
+| `Programs/stella/visibility.b` | #12，CL14621 |
+| `Programs/stella/volume.b` | #5，CL14801 |
+| `src/geometry.rs` | #5，CL18827 |
+| `src/math.rs` | #2，CL12904 |
+| `src/output.rs` | #43，CL18827 |
+| `src/window.rs` | #7，CL13152 |
 
 ## 附录 B 阅读练习与答案
 
@@ -1637,6 +1465,6 @@ Copy-Item `
 
 BLEngine 源码节选遵守 MIT License，版权和完整许可见 `engine/BLEngine-LICENSE.txt`。数学推导、执行图与解释服务于源码阅读；示意图不冒充产品运行截图。
 
-`engine/assets` 提供正式阅读输入。P4双台账保留实际构建、命令、输出和图像历史。主视图与侧视图由真实完整 PPM 转换，未拼接或重新绘制模型。
+`engine/assets` 提供正式阅读输入。`engine/运行记录.txt` 保留 2026-10-27 Release 构建路径、设备、命令、原始输出与图像哈希。正文运行卡片按这些日志排印，主视图与侧视图由真实完整 PPM 转换，未拼接或重新绘制模型。
 
 本书的 Markdown 与两种中文版 PDF 同步保存在项目 sample 目录。手机阅读版采用单栏、大字号与纵向图示；标准版保留适合桌面阅读和打印的页面宽度。

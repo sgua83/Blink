@@ -10,14 +10,14 @@
 2. 按[中文快速开始](../../README.md#快速开始)或 [English quick start](../../README.en.md#quick-start) 准备构建工具、取得示例并运行第一个 CPU 程序，再阅读代码内选择 GPU 的示例。
 3. 若要从源码构建研发工具，先安装可独立取得的稳定 Blink 种子，再执行书稿中的 Cargo 构建。默认构建脚本直接消费 `%ProgramFiles%/Blink` 内的 `bc`、`blink` 与 `VERSION`；书稿会在构建命令之前说明前提。
 
-Wiki 跟随开发版 main，可能包含正式发行尚未具备的能力。各书原始源码链接和书籍目录标明对应快照，安装的正式版与 main 分别记录。
+书籍按各书注明的源码快照阅读，历史性能记录保留当时版本；四本书仅按用户明确要求更新，与每周软件发行分开。
 
 ## B 语言书籍 / Blink books
 
 | 你的目标 | 从哪里开始 | 在线正文 |
 |---|---|---|
 | 从 C／C++ 进入 CPU／GPU 原生并行，理解数据域、归约、扫描与协作，并学习 C／C++ 集成 | 《并行编程的艺术》 | [在线阅读](../并行编程的艺术.md) |
-| 把 B 算法作为动态库接入 Rust，理解数据布局、调用和连续计算 | 《Blink 和 Rust 混合编程》 | [在线阅读](../Blink和Rust混合编程.md) |
+| 把用 B 语言编写的程序作为动态库接入 Rust，理解数据布局、调用和连续计算 | 《Blink 和 Rust 混合编程》 | [在线阅读](../Blink和Rust混合编程.md) |
 | 阅读编译器、类型与访问分析、IR、CPU／GPU 后端和执行框架 | 《B 语言源码分析》 | [在线阅读](../B语言源码分析.md) |
 | 通过引擎案例学习场景、几何、光照与资源交接 | 《BLEngine 源码分析》 | [在线阅读](../BLEngine源码分析.md) |
 
@@ -25,7 +25,14 @@ Wiki 跟随开发版 main，可能包含正式发行尚未具备的能力。各�
 
 ## PDF 下载
 
-标准版与手机阅读版请从 [正式发行资产](https://github.com/sgua83/Blink/releases/latest) 下载 `Blink-Books.zip` 合集；选择其他版本时使用该版本的 Release 页面及实际资产。公开源码树不提供旧 PDF 快照下载。PDF 只在正式发行打包时从同次固定的四本书稿生成，版本随该次发行；最新开发内容以在线 Markdown 为准。
+每本 PDF 均可直接下载：
+
+| 书籍 | 标准版 | 手机阅读版 |
+|---|---|---|
+| 并行编程的艺术 | [PDF](https://raw.githubusercontent.com/sgua83/Blink/main/sample/pdf/%E5%B9%B6%E8%A1%8C%E7%BC%96%E7%A8%8B%E7%9A%84%E8%89%BA%E6%9C%AF-B%E8%AF%AD%E8%A8%80.pdf) | [PDF](https://raw.githubusercontent.com/sgua83/Blink/main/sample/pdf/%E5%B9%B6%E8%A1%8C%E7%BC%96%E7%A8%8B%E7%9A%84%E8%89%BA%E6%9C%AF-B%E8%AF%AD%E8%A8%80-%E6%89%8B%E6%9C%BA%E9%98%85%E8%AF%BB%E7%89%88.pdf) |
+| Blink 和 Rust 混合编程 | [PDF](https://raw.githubusercontent.com/sgua83/Blink/main/sample/pdf/Blink%E5%92%8CRust%E6%B7%B7%E5%90%88%E7%BC%96%E7%A8%8B.pdf) | [PDF](https://raw.githubusercontent.com/sgua83/Blink/main/sample/pdf/Blink%E5%92%8CRust%E6%B7%B7%E5%90%88%E7%BC%96%E7%A8%8B-%E6%89%8B%E6%9C%BA%E9%98%85%E8%AF%BB%E7%89%88.pdf) |
+| B 语言源码分析 | [PDF](https://raw.githubusercontent.com/sgua83/Blink/main/sample/pdf/B%E8%AF%AD%E8%A8%80%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90.pdf) | [PDF](https://raw.githubusercontent.com/sgua83/Blink/main/sample/pdf/B%E8%AF%AD%E8%A8%80%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90-%E6%89%8B%E6%9C%BA%E9%98%85%E8%AF%BB%E7%89%88.pdf) |
+| BLEngine 源码分析 | [PDF](https://raw.githubusercontent.com/sgua83/Blink/main/sample/pdf/BLEngine%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90.pdf) | [PDF](https://raw.githubusercontent.com/sgua83/Blink/main/sample/pdf/BLEngine%E6%BA%90%E7%A0%81%E5%88%86%E6%9E%90-%E6%89%8B%E6%9C%BA%E9%98%85%E8%AF%BB%E7%89%88.pdf) |
 
 ## 提问与交流
 

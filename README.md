@@ -197,7 +197,7 @@ B 以数据、函数、模块和执行域组织程序，不采用面向对象。
 
 [前三章导读](Open/Docs/ParallelPrimer.md)完整保留入门正文、图示和既有性能测量记录，并可继续阅读完整书稿；[上手与工具指南](Open/Docs/GettingStarted.md)承接安装、源码构建、集成和 AI 查询说明。另有[独立应用示例](sample/applications/README.md)、[B 标准库](library/README.md)与[语言规范](Open/Docs/BLanguage.md)。
 
-书籍正文目前以中文为主。[English book index](https://github.com/sgua83/Blink/wiki/Blink-Books-English)与[英文入门三章](Open/Docs/ParallelPrimer.en.md)也可直接阅读。Wiki 跟随 main；现有 PDF 是快照，新 PDF 在周日正式发行时从固定书稿统一生成。**BLEngine 尚未开源**，此处提供其案例书稿与阅读资料。
+书籍正文目前以中文为主。[English book index](https://github.com/sgua83/Blink/wiki/Blink-Books-English)与[英文入门三章](Open/Docs/ParallelPrimer.en.md)也可直接阅读。四本书的 Markdown 与 PDF 仅按用户明确要求更新；Wiki 目录可逐本下载标准版与手机版 PDF。**BLEngine 尚未开源**，此处提供其案例书稿与阅读资料。
 
 <a id="从-main-构建研发工具"></a>
 
