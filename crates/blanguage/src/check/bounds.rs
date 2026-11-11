@@ -2949,7 +2949,8 @@ impl Condition {
         };
         Self::guard(Clause::facts(facts))
     }
-    pub(super) fn index_below((a,a_proof):(Operand,&Proof),(b,b_proof):(Operand,&Proof),strict:bool)->Self {
+    pub(super) fn index_below((a,a_proof):(impl Into<Option<Operand>>,&Proof),(b,b_proof):(impl Into<Option<Operand>>,&Proof),strict:bool)->Self {
+        let(a,b)=(a.into(),b.into());
         let mut possible=if strict{
             [a_proof.unsigned_maximum(0)>=b_proof.unsigned_minimum(0),a_proof.unsigned_minimum(0)<b_proof.unsigned_maximum(0)]
         }else{
@@ -2957,18 +2958,23 @@ impl Condition {
         };
         let mut facts=[Facts::new(),Facts::new()];
         match(a,b){
-            (Operand::Constant(_,a),Operand::Constant(_,b))=>return Self::constant(if strict{a<b}else{a<=b}),
-            (Operand::Constant(..),Operand::Value(_))=>return Self::index_below((b,b_proof),(a,a_proof),!strict).negate(),
-            (Operand::Value(a),Operand::Constant(_,b))=>{
+            (Some(Operand::Constant(_,a)),Some(Operand::Constant(_,b)))=>return Self::constant(if strict{a<b}else{a<=b}),
+            (Some(Operand::Constant(..)),Some(Operand::Value(_)))|(None,Some(Operand::Value(_)))=>return Self::index_below((b,b_proof),(a,a_proof),!strict).negate(),
+            (Some(Operand::Value(a)),Some(Operand::Constant(_,b)))=>{
                 let b=b as u32;
                 if let Some(lower)=b.checked_add(u32::from(!strict)){facts[0].insert(Fact::Minimum(a,Scalar::U32,Bits::from(lower)));}else{possible[0]=false;}
                 if let Some(upper)=b.checked_sub(u32::from(strict)){facts[1].insert(Fact::Maximum(a,Scalar::U32,Bits::from(upper)));}else{possible[1]=false;}
             },
-            (Operand::Value(a),Operand::Value(b))=>{
+            (Some(Operand::Value(a)),Some(Operand::Value(b)))=>{
                 if a==b{return Self::constant(!strict);}
                 constrain_proofs(&mut facts[0],(b,b_proof),(a,a_proof),!strict,Scalar::U32);
                 constrain_proofs(&mut facts[1],(a,a_proof),(b,b_proof),strict,Scalar::U32);
             },
+            (Some(Operand::Value(a)),None)=>{
+                if let Some(lower)=b_proof.unsigned_minimum(0).checked_add(u32::from(!strict)){facts[0].insert(Fact::Minimum(a,Scalar::U32,Bits::from(lower)));}else{possible[0]=false;}
+                if let Some(upper)=b_proof.unsigned_maximum(0).checked_sub(u32::from(strict)){facts[1].insert(Fact::Maximum(a,Scalar::U32,Bits::from(upper)));}else{possible[1]=false;}
+            },
+            _=>{},
         }
         Self{cases:std::array::from_fn(|i|if possible[i]{Clause::facts(std::mem::take(&mut facts[i]))}else{Clause::impossible()})}
     }

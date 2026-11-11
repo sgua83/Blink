@@ -756,14 +756,15 @@ impl<'b, 'w> Scope<'b, 'w> {
                 let(Some((left,a,_)),Some((right,b,_)))=(self.input_snapshot(&a,limit,Access::Value,element,ordinal)?,self.input_snapshot(&b,limit,Access::Value,element,ordinal)?)else{return Ok(None);};
                 if left!=Ty::scalar(Scalar::U32)||right!=left{return Ok(None);}
                 let operand=|proof:&bounds::Proof|proof.known_value(&left).map(|bits|bounds::Operand::Constant(Scalar::U32,bits[0])).or_else(||proof.known_identity(0).map(bounds::Operand::Value));
-                let(Some(left),Some(right))=(operand(&a),operand(&b))else{return Ok(None);};
-                let condition=match op{
-                    "<"=>bounds::Condition::index_below((left,&a),(right,&b),true),
-                    "<="=>bounds::Condition::index_below((left,&a),(right,&b),false),
-                    ">"=>bounds::Condition::index_below((right,&b),(left,&a),true),
-                    ">="=>bounds::Condition::index_below((right,&b),(left,&a),false),
-                    "!="=>bounds::Condition::index_equal(left,right).negate(),
-                    _=>bounds::Condition::index_equal(left,right),
+                let(left,right)=(operand(&a),operand(&b));
+                let condition=match(op,left,right){
+                    ("<",left,right)=>bounds::Condition::index_below((left,&a),(right,&b),true),
+                    ("<=",left,right)=>bounds::Condition::index_below((left,&a),(right,&b),false),
+                    (">",left,right)=>bounds::Condition::index_below((right,&b),(left,&a),true),
+                    (">=",left,right)=>bounds::Condition::index_below((right,&b),(left,&a),false),
+                    ("!=",Some(left),Some(right))=>bounds::Condition::index_equal(left,right).negate(),
+                    ("==",Some(left),Some(right))=>bounds::Condition::index_equal(left,right),
+                    _=>bounds::Condition::default(),
                 };
                 return Ok(Some((Ty::scalar(Scalar::Bool),bounds::Proof::condition(condition),view::Borrow::default())));
             },
