@@ -7,3 +7,10 @@ extern "C" NameResult resolve(NameBytes name,NameBytes module,address imports,u6
     address candidate,address context,cfn<NameHit,address,NameBytes> lookup) on cpu requires nonzero(lookup);
 
 extern "C" u64 order_imports(address names, u64 count) on cpu;
+
+struct FunctionName {
+    NameBytes name;
+    u64 ordinal;
+};
+
+extern "C" void pair_functions(address names, u64 declarations, u64 implementations, address output) on cpu;

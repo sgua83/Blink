@@ -49,40 +49,49 @@ bool before(NameBytes left, NameBytes right) on cpu {
     return left.length < right.length;
 }
 
-void put_import(address names, u64 index, NameBytes name) on cpu {
-    unsafe_position<NameBytes>(unsafe_address(address_bits(names) + index * size_of<NameBytes>())) = name;
+address row_at<T>(address rows, u64 index) on cpu {
+    return unsafe_address(address_bits(rows) + index * size_of<T>());
 }
 
-void sift_import(address names, u64 start, u64 count) on cpu {
-    NameBytes name = import_at(names, start);
+// NameBytes and FunctionName both start with the name used as the sort key.
+void sift_name<T>(address rows, u64 start, u64 count) on cpu {
+    T value = unsafe_position<T>(row_at<T>(rows, start));
+    NameBytes name = unsafe_position<NameBytes>(row_at<T>(rows, start));
     u64 root = start;
     while (root < count / 2u64) {
         u64 child = 2u64 * root + 1u64;
-        if (child + 1u64 < count && before(import_at(names, child), import_at(names, child + 1u64))) {
+        if (child + 1u64 < count && before(
+            unsafe_position<NameBytes>(row_at<T>(rows, child)),
+            unsafe_position<NameBytes>(row_at<T>(rows, child + 1u64)))) {
             child += 1u64;
         }
-        NameBytes next = import_at(names, child);
-        if (!before(name, next)) { break; }
-        put_import(names, root, next);
+        address next = row_at<T>(rows, child);
+        if (!before(name, unsafe_position<NameBytes>(next))) { break; }
+        unsafe_position<T>(row_at<T>(rows, root)) = unsafe_position<T>(next);
         root = child;
     }
-    put_import(names, root, name);
+    unsafe_position<T>(row_at<T>(rows, root)) = value;
 }
 
-extern "C" u64 order_imports(address names, u64 count) on cpu {
+void sort_names<T>(address rows, u64 count) on cpu {
     u64 root = count / 2u64;
     while (root != 0u64) {
         root -= 1u64;
-        sift_import(names, root, count);
+        sift_name<T>(rows, root, count);
     }
     u64 end = count;
     while (end > 1u64) {
         end -= 1u64;
-        NameBytes first = import_at(names, 0u64);
-        put_import(names, 0u64, import_at(names, end));
-        put_import(names, end, first);
-        sift_import(names, 0u64, end);
+        address last = row_at<T>(rows, end);
+        T first = unsafe_position<T>(rows);
+        unsafe_position<T>(rows) = unsafe_position<T>(last);
+        unsafe_position<T>(last) = first;
+        sift_name<T>(rows, 0u64, end);
     }
+}
+
+extern "C" u64 order_imports(address names, u64 count) on cpu {
+    sort_names<NameBytes>(names, count);
 
     u64 unique = 0u64;
     u64 at = 0u64;
@@ -90,11 +99,42 @@ extern "C" u64 order_imports(address names, u64 count) on cpu {
     while (at < count) {
         NameBytes name = import_at(names, at);
         if (unique == 0u64 || !equal(name, previous)) {
-            put_import(names, unique, name);
+            unsafe_position<NameBytes>(row_at<NameBytes>(names, unique)) = name;
             previous = name;
             unique += 1u64;
         }
         at += 1u64;
     }
     return unique;
+}
+
+extern "C" void pair_functions(address names, u64 declarations, u64 implementations, address output) on cpu {
+    u64 count = declarations + implementations;
+    sort_names<FunctionName>(names, count);
+    u64 first = 0u64;
+    while (first < count) {
+        FunctionName initial = unsafe_position<FunctionName>(row_at<FunctionName>(names, first));
+        u64 end = first;
+        u64 earliest = count;
+        u64 public = 0u64;
+        while (end < count) {
+            FunctionName current = unsafe_position<FunctionName>(row_at<FunctionName>(names, end));
+            if (!equal(initial.name, current.name)) { break; }
+            if (current.ordinal < declarations) {
+                public = 1u64;
+            } else if (current.ordinal < earliest) {
+                earliest = current.ordinal;
+            }
+            end += 1u64;
+        }
+        u64 at = first;
+        while (at < end) {
+            u64 ordinal = unsafe_position<FunctionName>(row_at<FunctionName>(names, at)).ordinal;
+            u64 result = public;
+            if (ordinal < declarations) { result = earliest - declarations; }
+            unsafe_position<u64>(row_at<u64>(output, ordinal)) = result;
+            at += 1u64;
+        }
+        first = end;
+    }
 }

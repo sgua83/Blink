@@ -743,8 +743,11 @@ pub(crate) fn load(
             (set.clone(), source.clone(), name.clone(), imports.clone()),
         );
     }
-    for f in interface.functions().into_iter()
-        .filter(|f| f.kind() != FunctionKind::Constant && f.external().is_none())
+    let declarations = interface.functions();
+    let implementations = implementation.as_ref().map(|module| module.functions());
+    let pairs = crate::names::function_pairs(&declarations, implementations.as_ref());
+    for (index, f) in declarations.iter().enumerate()
+        .filter(|(_, f)| f.kind() != FunctionKind::Constant && f.external().is_none())
     {
         if f.body().is_some() {
             return interface
@@ -754,13 +757,7 @@ pub(crate) fn load(
         if compiled.is_some() {
             continue;
         }
-        let (body, body_source) = implementation
-            .iter()
-            .flat_map(|module| {
-                module.functions().into_iter()
-                    .map(move |function| (function, &module.source))
-            })
-            .find(|(function, _)| function.name() == f.name())
+        let body = pairs.as_ref().and_then(|pairs| implementations.as_ref().unwrap().get(pairs[index] as usize))
             .ok_or_else(|| Diagnostic {
                 source: interface.source.clone(),
                 span: f.span(),
@@ -768,7 +765,7 @@ pub(crate) fn load(
                 message: format!("接口 {} 缺少 .b 实现", f.name()),
             })?;
         if !same_signature(&f, &body) {
-            return body_source.fail(
+            return implementation.as_ref().unwrap().source.fail(
                 body.span(),
                 "B028",
                 format!(
@@ -778,14 +775,15 @@ pub(crate) fn load(
             );
         }
     }
-    let declarations = &interface.functions();
-    for (f, source, public) in interface.functions().into_iter()
+    let declaration_count = declarations.len();
+    let pairs = pairs.as_deref();
+    for (f, source, public) in declarations.into_iter()
         .filter(|f| f.kind() == FunctionKind::Constant || f.external().is_some() || compiled.is_some())
         .map(|f| (f, &interface.source, true))
-        .chain(implementation.iter().flat_map(|module| {
-            module.functions().into_iter().map(move |function| {
-                let public=declarations.iter().any(|decl|decl.name()==function.name());
-                (function,&module.source,public)
+        .chain(implementation.iter().zip(implementations).flat_map(|(module, functions)| {
+            functions.into_iter().enumerate().map(move |(index, function)| {
+                let public = pairs.is_some_and(|pairs| pairs[declaration_count + index] != 0);
+                (function, &module.source, public)
             })
         }))
     {

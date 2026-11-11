@@ -1,5 +1,5 @@
 //! B chooses names and visibility; the original declaration maps keep their storage.
-use crate::frontend::NameResolution;
+use crate::{frontend::NameResolution, syntax::{List, wire::FunctionNode}};
 use std::ffi::c_void;
 #[derive(Clone,Copy)]
 #[repr(C)]
@@ -11,6 +11,11 @@ impl Bytes {
     }
 }
 #[repr(C)]
+struct FunctionName {
+    name: Bytes,
+    ordinal: u64,
+}
+#[repr(C)]
 struct Hit { name:Bytes, owner:Bytes, public:u64, present:u64 }
 #[repr(C)]
 struct Resolution { name:Bytes, count:u64 }
@@ -18,6 +23,8 @@ pub(crate) struct Declaration<'a> { pub name:&'a str, pub owner:&'a str, pub pub
 unsafe extern "C" {
     #[link_name = "bootstrap.names::order_imports"]
     fn order_imports(names: *mut Bytes, count: u64) -> u64;
+    #[link_name = "bootstrap.names::pair_functions"]
+    fn pair_functions(names: *mut FunctionName, declarations: u64, implementations: u64, output: *mut u64);
     #[link_name="bootstrap.names::resolve"]
     fn choose(name:Bytes,module:Bytes,imports:*const Bytes,count:u64,candidate:*mut u8,context:*const c_void,
         lookup:unsafe extern "C" fn(*const c_void,Bytes)->Hit)->Resolution;
@@ -56,4 +63,25 @@ pub(crate) fn module_imports(
     let count = unsafe { order_imports(names.as_mut_ptr(), names.len() as u64) };
     names.truncate(count as usize);
     names.into_iter().map(|name| unsafe { name.text() }.to_owned()).collect()
+}
+
+
+pub(crate) fn function_pairs(
+    declarations: &List<FunctionNode>,
+    implementations: Option<&List<FunctionNode>>,
+) -> Option<Vec<u64>> {
+    let implementations = implementations?;
+    if declarations.is_empty() || implementations.is_empty() {
+        return None;
+    }
+    let mut names = declarations.iter().chain(implementations.iter()).enumerate()
+        .map(|(ordinal, function)| FunctionName { name: Bytes::new(function.name()), ordinal: ordinal as u64 })
+        .collect::<Vec<_>>();
+    // The two lists retain the source storage through this synchronous call.
+    // Declaration rows receive implementation indices. Implementation rows receive visibility.
+    let mut pairs = vec![0; names.len()];
+    unsafe {
+        pair_functions(names.as_mut_ptr(), declarations.len() as u64, implementations.len() as u64, pairs.as_mut_ptr());
+    }
+    Some(pairs)
 }
