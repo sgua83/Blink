@@ -237,18 +237,18 @@ impl Builder<'_> {
                     .map(|b| components.iter().map(|i| b[*i]).collect()),
             }));
         }
-        let proof = bounds::Proof::capture(&value);
         let array = value.ty.clone();
         let selected = ownership::ApplicationIndex::of(&index);
         let uniform = value.uniform && index.uniform;
         if array.array.is_none() {
+            let proof = bounds::Proof::capture(&value);
             let choices: Vec<_> = value.regs.iter().enumerate().map(|(i, r)| (i as u32, *r)).collect();
             let reg = self.select_component(index.regs[0], ty.components[0].0, &choices);
             let proof = self.array_value_proof(&proof, &array, selected, &[reg]);
             let constant = proof.known_value(&ty);
             return Ok(Some(Value { ty, regs: vec![reg], proof, uniform, constant, literal: false }));
         }
-        let place = self.materialize_array(value, None).place;
+        let OwnedBinding { place, proof, .. } = self.materialize_array(value, None);
         let place = self.array_index(place, index, span)?;
         let mut result = self.read_place(&place, span, None)?;
         result.proof = self.array_value_proof(&proof, &array, selected, &result.regs);
