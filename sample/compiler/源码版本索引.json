@@ -584,7 +584,7 @@
     },
     {
       "path": "crates/blanguage/src/optimize/invariant.rs",
-      "sha256": "2e41e20e8017c987bc22b3fca552cb72b1ccea0c29d6fb502d3e2732b17f8ebe"
+      "sha256": "eef7961ebd6cfa31fffbd3f58451c77e9fdb65795201a6ba57383857cc27f3c8"
     },
     {
       "path": "crates/blanguage/src/optimize/value_flow.rs",
@@ -1328,8 +1328,8 @@
     },
     {
       "path": "crates/blanguage/src/optimize/invariant.rs",
-      "start_line": 51,
-      "end_line": 67,
+      "start_line": 49,
+      "end_line": 65,
       "sha256": "8f231a3adf3d838a4670112e492a794e819c2b24c17f17833b7a4a342ce06f2d"
     },
     {

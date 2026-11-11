@@ -2,7 +2,7 @@
 use super::*;
 
 fn extract(code: &mut Vec<Inst>, entry: &mut Vec<Inst>, uniform: &mut BTreeSet<Reg>, partition: ReductionPartition) {
-    code.retain(|inst| {
+    entry.extend(code.extract_if(.., |inst| {
         let operation = match &inst.kind {
             InstKind::Constant(..) => Some(ReductionUniformOperation::Constant),
             InstKind::Uniform(..) => Some(ReductionUniformOperation::Uniform),
@@ -19,19 +19,17 @@ fn extract(code: &mut Vec<Inst>, entry: &mut Vec<Inst>, uniform: &mut BTreeSet<R
             let mut uniform_operand_count = 0;
             if inst.all_operands(&mut |reg| { uniform_operand_count += 1; uniform.contains(&reg) }) {
                 uniform.extend(inst.results());
-                let mut extracted = inst.clone();
-                extracted.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
                     reason: GenerationReason::ReductionUniformExtract,
                     trigger: Some(GenerationAnchor::ReductionUniformExtract {
                         retained: OperationOrigin::from_instruction(inst), partition, operation, uniform_operand_count,
                     }),
                 }));
-                entry.push(extracted);
-                return false;
+                return true;
             }
         }
-        true
-    });
+        false
+    }));
 }
 
 pub(crate) fn prepare_reduction(kernel: &mut ReductionKernel) {

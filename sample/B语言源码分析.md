@@ -3072,7 +3072,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 
 归约在后端降层时还会组合单位元、投影和合并函数。内核保留原Stage.operation中的值函数及其来源，Stage.code则已经是本次降层代码；原六角色向量和分区末尾描述它们实际如何接在一起。ReductionKernel::ir_json直接编码这些已有事实，AI无需从Stage JSON缺失的字段猜映射，也不增加一份拥有表。末尾是code的零基排他指令下标，向量是内核逻辑Reg；原输入来源的序号仍指向原ValueCode.inputs，不能把两套编号混成物理寄存器。调用者选择的project／identity、实际空分区和未采集的新传播事件分别理解，不把原函数仍有材料写成它又执行了一次。
 
-统一纯值提取还保留这次移动本身的事实。原extract在同一纯操作匹配及all_operands统一性判断成功时，把Inst移到本内核入口，用ReductionUniformExtract交接retained原来源、提取前的Identity／Project／Combine分区、实际准许类别及uniform_operand_count。这个数量是当时操作数访问次数，种子可以为零，同一Reg重复访问也分别计；它不是性能收益或运行次数。原source_site独立保持，后续公共入口CSE沿原来源复用，可以从保留操作反查多个真实分区的提取，不从最终位置猜原角色。分支／循环内及非统一运算仍按原控制留在原处，查询不重跑编译或内核生成，不新增另一SSA图或uniform表。
+统一纯值提取还保留这次移动本身的事实。原extract以extract_if沿原顺序遍历，在同一纯操作匹配及all_operands统一性判断成功时，直接把本内核code中的原Inst及其Math.args移入entry；未选指令保留在原Vec及原顺序。在同一Inst上用ReductionUniformExtract交接retained原来源、提取前的Identity／Project／Combine分区、实际准许类别及uniform_operand_count。这个数量是当时操作数访问次数，种子可以为零，同一Reg重复访问也分别计；它不是性能收益或运行次数。原source_site独立保持，后续公共入口CSE沿原来源复用，可以从保留操作反查多个真实分区的提取，不从最终位置猜原角色。分支／循环内及非统一运算仍按原控制留在原处，查询不重跑编译或内核生成，不新增另一SSA图或uniform表。
 
 检查期的一元常量计算也在原生产点交接来源。unary_expr按原operators::unary、constant::unary完成计算后，只给这次constant_value新建的各Constant加UnaryConstantFold：真实运算与Scalar、输入／结果位模式、从零计的逻辑分量序号及总数。直接source_site保持，锚点expression共享同一原语法；后续原CSE／DCE及空Map删除继续携带这份事实，不为解释而保活操作或保存旧IR。环绕、窄位截断、浮点负零和NaN符号位均沿原规则。
 
@@ -3120,7 +3120,7 @@ impl ReductionKernel {
 
 同一读取还可能在后续降层才被消除。例如，循环内对local的写只出现在函数提前返回的路径，DCE删除这份无消费写；下一次值传播才知道循环后local仍是输入。原值函数仍保留先前阶段的读取，不能把新事实写回它，冒充原阶段已优化。原with_prelude在真实Inst来源交接后，将剩余真实输入读取交给本次kernel.stage.generated_origin。ReductionInputForward用left／right／source角色和零基逻辑分量引用原内核列表，不增加永久Reg表；无投影时source与right相同，合并读取仍归Right。u64的一项逻辑分量与物理存储字分别理解，缺少语法的真实生成读取仍保留空来源。
 
-源码节选：`crates/blanguage/src/optimize/invariant.rs:51`。
+源码节选：`crates/blanguage/src/optimize/invariant.rs:49`。
 
 ```rust
     let (binding, inputs) = value_flow::with_prelude(
