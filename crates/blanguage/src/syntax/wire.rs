@@ -256,6 +256,13 @@ pub struct StorageText{pub value:Text, pub error:StorageError,}
 #[derive(Clone,Copy)]
 pub struct StorageView{pub nodes:*mut c_void, pub node_bytes:u64, pub text:*mut c_void, pub text_bytes:u64, pub source:*mut c_void, pub source_bytes:u64,}
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SignatureNode {
+    pub storage: StorageView,
+    pub offset: u64,
+}
+
+#[repr(C)]
 #[derive(Clone,Copy)]
 pub struct StorageCondition{pub value:ConditionRef, pub present:u32, pub error:StorageError,}
 #[repr(C)]
@@ -271,6 +278,14 @@ pub struct InstanceDomains {
 pub struct InstanceRow {
     pub indices: *mut u64,
     pub values: *mut u32,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.signatures::compare_condition"]
+    pub fn compare_condition(left: SignatureNode, right: SignatureNode) -> i32;
+    #[link_name = "bootstrap.signatures::compare_predicate"]
+    pub fn compare_predicate(left: SignatureNode, right: SignatureNode) -> i32;
+    #[link_name = "bootstrap.signatures::same_signature"]
+    pub fn same_signature(left: SignatureNode, right: SignatureNode, left_contracts: *mut u64, right_contracts: *mut u64) -> bool;
 }
 unsafe extern "C" {
 #[link_name="bootstrap.ast_storage::create"] pub fn create(source:*mut c_void,length:u64)->StorageCreate;

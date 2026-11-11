@@ -139,23 +139,6 @@ pub(crate) fn read(path: &Path) -> Result<Source> {
         text: text.into(),
     })
 }
-pub(crate) fn contract_signature(f: &Function) -> BTreeSet<(ContractKind, &ContractPredicate)> {
-    f.contracts.iter().map(|c| (c.kind, &c.predicate)).collect()
-}
-pub(crate) fn same_signature(a: &crate::syntax::Function, b: &crate::syntax::Function) -> bool {
-    let contracts=|function:&crate::syntax::Function|function.contracts().iter()
-        .map(|contract|(contract.kind(),contract.predicate())).collect::<BTreeSet<_>>();
-    a.kind()==b.kind()
-        && a.c_abi()==b.c_abi()
-        && a.external()==b.external()
-        && a.types()==b.types()
-        && a.values()==b.values()
-        && a.target()==b.target()
-        && contracts(a)==contracts(b)
-        && a.params().len()==b.params().len()
-        && a.params().iter().zip(b.params()).all(|(a,b)|a.name()==b.name()&&a.access()==b.access())
-}
-
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
     compile_module(path, module_root, true, None, &[])
 }
@@ -765,7 +748,7 @@ pub(crate) fn load(
                 code: "B027",
                 message: format!("接口 {} 缺少 .b 实现", f.name()),
             })?;
-        if !same_signature(&f, &body) {
+        if !f.same_signature(&body) {
             return implementation.as_ref().unwrap().source.fail(
                 body.span(),
                 "B028",

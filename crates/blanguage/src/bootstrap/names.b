@@ -1,7 +1,7 @@
 module bootstrap.names;
 NameBytes empty() on cpu {return NameBytes(unsafe_address(0u64),0u64);}
 u8 byte_at(NameBytes value,u64 at) on cpu {return unsafe_position<u8>(unsafe_address(address_bits(value.bytes)+at));}
-NameBytes import_at(address imports,u64 at) on cpu {return unsafe_position<NameBytes>(unsafe_address(address_bits(imports)+at*16u64));}
+NameBytes import_at(address imports,u64 at) on cpu {return unsafe_position<NameBytes>(row_at<NameBytes>(imports,at));}
 bool equal(NameBytes a,NameBytes b) on cpu {
     if(a.length!=b.length){return false;}
     u64 at=0u64;while(at<a.length){if(byte_at(a,at)!=byte_at(b,at)){return false;}at+=1u64;}return true;
@@ -38,46 +38,33 @@ extern "C" NameResult resolve(NameBytes name,NameBytes module,address imports,u6
     return NameResult(first,found);
 }
 
-bool before(NameBytes left, NameBytes right) on cpu {
-    u64 at = 0u64;
-    while (at < left.length && at < right.length) {
-        u8 a = byte_at(left, at);
-        u8 b = byte_at(right, at);
-        if (a != b) { return a < b; }
-        at += 1u64;
-    }
-    return left.length < right.length;
-}
-
 address row_at<T>(address rows, u64 index) on cpu {
     return unsafe_address(address_bits(rows) + index * size_of<T>());
 }
 
-// NameBytes and FunctionName both start with the name used as the sort key.
-void sift_name<T>(address rows, u64 start, u64 count) on cpu {
+void sift_rows<T>(address rows, u64 start, u64 count, address context,
+    cfn<bool,address,address,address> less) on cpu requires nonzero(less) {
     T value = unsafe_position<T>(row_at<T>(rows, start));
-    NameBytes name = unsafe_position<NameBytes>(row_at<T>(rows, start));
     u64 root = start;
     while (root < count / 2u64) {
         u64 child = 2u64 * root + 1u64;
-        if (child + 1u64 < count && before(
-            unsafe_position<NameBytes>(row_at<T>(rows, child)),
-            unsafe_position<NameBytes>(row_at<T>(rows, child + 1u64)))) {
+        if (child + 1u64 < count && less(row_at<T>(rows, child), row_at<T>(rows, child + 1u64), context)) {
             child += 1u64;
         }
         address next = row_at<T>(rows, child);
-        if (!before(name, unsafe_position<NameBytes>(next))) { break; }
+        if (!less(address_of(value), next, context)) { break; }
         unsafe_position<T>(row_at<T>(rows, root)) = unsafe_position<T>(next);
         root = child;
     }
     unsafe_position<T>(row_at<T>(rows, root)) = value;
 }
 
-void sort_names<T>(address rows, u64 count) on cpu {
+void sort_rows<T>(address rows, u64 count, address context,
+    cfn<bool,address,address,address> less) on cpu requires nonzero(less) {
     u64 root = count / 2u64;
     while (root != 0u64) {
         root -= 1u64;
-        sift_name<T>(rows, root, count);
+        sift_rows<T>(rows, root, count, context, less);
     }
     u64 end = count;
     while (end > 1u64) {
@@ -86,12 +73,30 @@ void sort_names<T>(address rows, u64 count) on cpu {
         T first = unsafe_position<T>(rows);
         unsafe_position<T>(rows) = unsafe_position<T>(last);
         unsafe_position<T>(last) = first;
-        sift_name<T>(rows, 0u64, end);
+        sift_rows<T>(rows, 0u64, end, context, less);
     }
 }
 
+i32 compare_name(NameBytes left, NameBytes right) on cpu {
+    u64 at = 0u64;
+    while (at < left.length && at < right.length) {
+        u8 a = byte_at(left, at);
+        u8 b = byte_at(right, at);
+        if (a < b) { return i32(-1); }
+        if (a > b) { return i32(1); }
+        at += 1u64;
+    }
+    if (left.length < right.length) { return i32(-1); }
+    if (left.length > right.length) { return i32(1); }
+    return i32(0);
+}
+
+extern "C" bool name_before(address left, address right, address context) on cpu {
+    return compare_name(unsafe_position<NameBytes>(left), unsafe_position<NameBytes>(right)) < i32(0);
+}
+
 extern "C" u64 order_imports(address names, u64 count) on cpu {
-    sort_names<NameBytes>(names, count);
+    sort_rows<NameBytes>(names, count, address(), c_function(name_before));
 
     u64 unique = 0u64;
     u64 at = 0u64;
@@ -110,7 +115,7 @@ extern "C" u64 order_imports(address names, u64 count) on cpu {
 
 extern "C" void pair_functions(address names, u64 declarations, u64 implementations, address output) on cpu {
     u64 count = declarations + implementations;
-    sort_names<FunctionName>(names, count);
+    sort_rows<FunctionName>(names, count, address(), c_function(name_before));
     u64 first = 0u64;
     while (first < count) {
         FunctionName initial = unsafe_position<FunctionName>(row_at<FunctionName>(names, first));

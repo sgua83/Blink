@@ -112,6 +112,9 @@ impl<T> fmt::Debug for Node<T> {
 }
 impl<T:Copy> Node<T> {
     fn row(&self)->T {self.owner.row(self.offset)}
+    fn signature_node(&self) -> wire::SignatureNode {
+        wire::SignatureNode { storage: self.owner.view(), offset: self.offset }
+    }
     fn child<U>(&self,offset:u64)->Node<U> {Node{owner:self.owner.clone(),offset,marker:PhantomData}}
     fn list<U>(&self,value:wire::Slice)->List<U> {List{owner:self.owner.clone(),value,marker:PhantomData}}
 }
@@ -287,6 +290,16 @@ impl MatchArm {pub fn binding(&self)->Option<&str>{let value=self.row().binding;
 impl Param {pub fn access(&self)->crate::ast::Access{self.row().access}}
 impl Contract {pub fn kind(&self)->crate::ast::ContractKind{self.row().kind}}
 impl Function {pub fn signature_end(&self)->usize{self.row().signature_end as usize} pub fn kind(&self)->crate::ast::FunctionKind{self.row().kind} pub fn target(&self)->crate::ast::Target{self.row().target} pub fn c_abi(&self)->bool{self.row().c_abi!=0}}
+impl Function {
+    pub(crate) fn same_signature(&self, other: &Self) -> bool {
+        let mut left = Vec::<u64>::with_capacity(self.row().contracts.count as usize);
+        let mut right = Vec::<u64>::with_capacity(other.row().contracts.count as usize);
+        // B initializes and sorts these scratch offsets while both source owners stay live.
+        unsafe {
+            wire::same_signature(self.signature_node(), other.signature_node(), left.as_mut_ptr(), right.as_mut_ptr())
+        }
+    }
+}
 impl Module {
     pub fn name(&self)->&str {self.root.owner.text(self.root.row().name)}
     pub fn imports(&self)->impl ExactSizeIterator<Item=&str>{self.root.owner.array::<wire::Text>(self.root.row().imports).iter().map(|&text|self.root.owner.text(text))}
@@ -332,7 +345,6 @@ impl Expr {pub fn kind(&self)->ExprKind<'_>{
         W::Select(v)=>ExprKind::Select(self.child(v.condition.offset),self.child(v.yes.offset),self.child(v.no.offset))
     }
 }}
-#[derive(PartialEq,Eq,PartialOrd,Ord)]
 pub(crate) enum ConditionKind<'a>{Name(&'a str),Number(&'a str),Bool(bool),Member(Condition,&'a str),Unary(&'a str,Condition),Binary(&'a str,Condition,Condition),StaticU32(u32)}
 impl Condition {pub fn kind(&self)->ConditionKind<'_>{match self.row(){
     wire::ConditionNode::Name(v)=>ConditionKind::Name(self.owner.text(v)),wire::ConditionNode::Number(v)=>ConditionKind::Number(self.owner.text(v)),
@@ -341,7 +353,6 @@ impl Condition {pub fn kind(&self)->ConditionKind<'_>{match self.row(){
     wire::ConditionNode::Unary(v)=>ConditionKind::Unary(self.owner.text(v.operation),self.child(v.value.offset)),
     wire::ConditionNode::Binary(v)=>ConditionKind::Binary(self.owner.text(v.operation),self.child(v.left.offset),self.child(v.right.offset))
 }}}
-#[derive(PartialEq,Eq,PartialOrd,Ord)]
 pub(crate) enum PredicateKind<'a>{
     Prefix{data:&'a str,count:&'a str,field:&'a str},Nonzero(&'a str),Nonempty(&'a str),Contiguous(&'a str),
     Memory(Option<crate::ast::Access>),Index{value:&'a str,resource:&'a str},Range{value:&'a str,intervals:List<wire::IntervalNode>},
@@ -409,12 +420,15 @@ impl Structural for wire::TypeNode {
 impl Structural for wire::ShapeNode {fn compare(a:&Shape,b:&Shape)->std::cmp::Ordering{a.kind().cmp(&b.kind())}}
 impl Structural for wire::ArgumentNode {fn compare(a:&Argument,b:&Argument)->std::cmp::Ordering{a.kind().cmp(&b.kind())}}
 impl Structural for wire::ExprNode {fn compare(a:&Expr,b:&Expr)->std::cmp::Ordering{a.kind().cmp(&b.kind())}}
-impl Structural for wire::ConditionNode {fn compare(a:&Condition,b:&Condition)->std::cmp::Ordering{a.kind().cmp(&b.kind())}}
-// PredicateKind has the original semantic declaration order. The C ABI tags
-// are the original codec order, which is different and is not an ordering key.
-impl Structural for wire::PredicateNode {fn compare(a:&Predicate,b:&Predicate)->std::cmp::Ordering{a.kind().cmp(&b.kind())}}
-impl Structural for wire::IntervalNode {
-    fn compare(a:&Interval,b:&Interval)->std::cmp::Ordering{a.lower().cmp(&b.lower()).then_with(||a.upper().cmp(&b.upper()))}
+impl Structural for wire::ConditionNode {
+    fn compare(a: &Condition, b: &Condition) -> std::cmp::Ordering {
+        (unsafe { wire::compare_condition(a.signature_node(), b.signature_node()) }).cmp(&0)
+    }
+}
+impl Structural for wire::PredicateNode {
+    fn compare(a: &Predicate, b: &Predicate) -> std::cmp::Ordering {
+        (unsafe { wire::compare_predicate(a.signature_node(), b.signature_node()) }).cmp(&0)
+    }
 }
 impl Structural for wire::TypeFamilyNode {fn compare(a:&TypeFamily,b:&TypeFamily)->std::cmp::Ordering{a.kind().cmp(&b.kind())}}
 impl Structural for wire::TypeParameterNode {
