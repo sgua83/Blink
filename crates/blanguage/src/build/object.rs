@@ -97,7 +97,7 @@ pub(super) fn compile<'a>(
         }
     };
     let native = if object.archive.is_some() { Some(crate::object::native_inputs(runtime)?) } else { None };
-    let declarations = world.build_declarations.as_ref().unwrap().borrow().iter().cloned().collect::<Vec<_>>();
+    let declarations = super::used_declarations(&world);
     let imports = identity::references(definitions, imported, object.imports.keys().map(String::as_str), &declarations);
     let stored = identity::Inputs { source, imports, native, declarations }.encode();
     let bytes = object.build_bytes(&stored).map_err(error)?;

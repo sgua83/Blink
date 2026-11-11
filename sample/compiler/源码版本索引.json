@@ -172,7 +172,7 @@
     },
     {
       "path": "crates/blanguage/src/build/mod.rs",
-      "sha256": "dd37014aa1c2377f07491ae0629dc46c063d78409a9bf1e11fdd04b70e2c3f4c"
+      "sha256": "cae0296e9b0dc51a52438bd40e2b28f499a0496eb592a3bfee5d5c300b265cf5"
     },
     {
       "path": "crates/blanguage/src/build/observations.rs",
@@ -220,7 +220,7 @@
     },
     {
       "path": "crates/blanguage/src/check/constant.rs",
-      "sha256": "11326d6dfa6bbd576cfc3df3343fe33989f00e4290c2fd114848e4dceac18ce9"
+      "sha256": "168948a18d597f03bffcfa5ca952e55dddf6b277f53d1a64e7cbd14058efe64b"
     },
     {
       "path": "crates/blanguage/src/check/contracts.rs",
@@ -228,7 +228,7 @@
     },
     {
       "path": "crates/blanguage/src/check/cooperative.rs",
-      "sha256": "7ee3df4767e21715a627695a71a01051b755a10bda75d41048aa28dee2adc3cb"
+      "sha256": "dbb918a79d73e0e386c14c0d11a9e68c792bac849dc4f4d222f4303065f4082c"
     },
     {
       "path": "crates/blanguage/src/check/custom_reduce.rs",
@@ -372,7 +372,7 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "sha256": "8255f969ec4e7bccb5d3ff5717408a3e488779741be273f319ab68bd48f3f295"
+      "sha256": "15dfcad1f59fd9d3b82cb0e9af5f42e340d07b881a823e6458d12c80908ee22c"
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
@@ -804,8 +804,8 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "start_line": 977,
-      "end_line": 999,
+      "start_line": 988,
+      "end_line": 1010,
       "sha256": "fcf6d7210877680f28b8bebe8628aa262c39d58e5730df95a3e9af499261af5f"
     },
     {
@@ -894,14 +894,14 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "start_line": 155,
-      "end_line": 180,
+      "start_line": 161,
+      "end_line": 186,
       "sha256": "07f8e80f4d6d4a5e5c4461f406ef8e031a0284ccfcc7b8b55c180013641312ac"
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "start_line": 597,
-      "end_line": 601,
+      "start_line": 607,
+      "end_line": 611,
       "sha256": "4c845d3cd92964253598c59e627bcacceaddda18432951e9e9fe9a495a2cf323"
     },
     {

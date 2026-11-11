@@ -4,7 +4,7 @@ use std::{
     fmt::Write,
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 #[repr(C)]
@@ -34,6 +34,11 @@ unsafe extern "C" {
 #[derive(Clone)]
 pub(crate) enum DefinitionSyntax { Source, CompiledInterface }
 
+pub(crate) struct EvaluatedConstant {
+    pub(crate) value: (ir::Ty, Vec<ir::Bits>, Option<Arc<ir::GeneratedOrigin>>),
+    pub(crate) inputs: BTreeSet<build::Declaration>,
+}
+
 #[derive(Clone)]
 pub(crate) struct Definition {
     pub(crate) function: crate::syntax::Function,
@@ -44,6 +49,7 @@ pub(crate) struct Definition {
     pub(crate) imports: Vec<String>,
     pub(crate) public: bool,
     pub(crate) compiled: Option<Arc<BTreeMap<String, Vec<u8>>>>,
+    pub(crate) constant: OnceLock<Arc<EvaluatedConstant>>,
 }
 impl Definition {
     pub(crate) fn source_origin(&self) -> Option<ir::SourceOrigin> {
@@ -528,12 +534,16 @@ pub(crate) fn read_world(
         generics::validate_declaration(definition)?;
     }
     let mut world = World::new(Arc::new(world), worker.clone());
+    if build_declarations.is_some() {
+        world.build_declarations = Some(RefCell::new(BTreeSet::new()));
+    }
     for (key, definition) in &world.functions {
         if definition.function.kind() == FunctionKind::Constant {
             generics::validate_declaration(definition)?;
             check::constant_value(&world, key)?;
         }
     }
+    world.build_declarations = None;
     for definition in world.functions.values().filter(|definition| {
         definition.function.types().is_empty() && definition.function.values().is_empty()
     }) {
@@ -805,6 +815,7 @@ pub(crate) fn load(
         world.functions.insert(
             key,
             Arc::new(Definition {
+                constant: OnceLock::new(),
                 function: f.clone(),
                 syntax_origin: if compiled.is_some() { DefinitionSyntax::CompiledInterface } else { DefinitionSyntax::Source },
                 execution: if let Some(compiled) = compiled {

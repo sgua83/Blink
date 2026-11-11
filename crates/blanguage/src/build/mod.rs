@@ -140,7 +140,7 @@ fn compile_in(
         types: Vec::new(),
         images: compiled_images,
     };
-    let declarations = world.build_declarations.as_ref().unwrap().borrow().iter().cloned().collect::<Vec<_>>();
+    let declarations = used_declarations(&world);
     let imports_identity = references(&world.declarations, imported, &image, &declarations);
     if imported.is_some() { link_inputs(&mut image, dependencies, borrowed, &imports)?; }
     let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
@@ -149,6 +149,24 @@ fn compile_in(
     write_artifact(&artifact, &identity, &encoded)?;
     Ok(images(image, artifact, false))
 }
+fn used_declarations(world: &crate::frontend::World) -> Vec<Declaration> {
+    let mut used = world.build_declarations.as_ref().unwrap().take();
+    let mut constants = used.iter().filter_map(|declaration| match declaration {
+        Declaration::Constant(key) => Some(key.clone()),
+        _ => None,
+    }).collect::<Vec<_>>();
+    while let Some(key) = constants.pop() {
+        if let Some(value) = world.functions[&key].constant.get() {
+            for dependency in &value.inputs {
+                if used.insert(dependency.clone()) && let Declaration::Constant(key) = dependency {
+                    constants.push(key.clone());
+                }
+            }
+        }
+    }
+    used.into_iter().collect()
+}
+
 fn references(
     declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
     image: &resource::Module, used: &[Declaration],

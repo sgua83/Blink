@@ -535,7 +535,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 类型引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，validate_type_references沿函数签名、字段、变体、数组及dataset元素的同一引用闭包检查合法性。一次查询已经消费的同一具体类型不反复展开，未知、非法C签名或直接按值递归仍由原规则拒绝。stored_borrows与cleanup_requirements另按真实存储查询借用和静态F前提；签名或泛型实参中出现某种类型，不代表当前值存储了该类型的资源。
 
-源码节选：`crates/blanguage/src/frontend.rs:977`。
+源码节选：`crates/blanguage/src/frontend.rs:988`。
 
 ```rust
     pub(crate) fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
@@ -988,7 +988,7 @@ macro_rules! store {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:155`。
+源码节选：`crates/blanguage/src/frontend.rs:161`。
 
 ```rust
 
@@ -1025,7 +1025,7 @@ pub fn compile_entry_with_modules(
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:597`。
+源码节选：`crates/blanguage/src/frontend.rs:607`。
 
 ```rust
     if let Some(name) = import
@@ -3076,7 +3076,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 
 负数字面量由原negative_number直接定型，i32／i64最小值不能伪装成同型正数取负；单目加号没有实际运算，不制造折叠事件。模块const普通读取、阶段Root::Literal及输出契约沿下述实际结果交接；形状／编号整数求值的最终结果仍有独立来源缺口，不能因临时Builder有材料就宣称完成。材料仅compiler，查询沿原IR所有者与最后消费者，不进入运行编码；详细接口与真实缺口见语言规范及Architecture对应职责。
 
-模块const普通读取由原evaluate在临时Builder结束前取得已有变换的OperationOrigin，随原Ty／Bits返回ModuleConstantEvaluation；module_constant及具名输出条件的常量读取共用evaluated_constant，以原构造器建立相同结果及直接source_site，让各真实分量共享该材料。其constant保持实际常量全名，definition只在已有真实源码定义时存在，operations描述整个该次求值，不是每个结果的完整因果图。相邻分量若共享同一语法和变换材料，只交接一份，避免记录／向量常量的嵌套别名反复复制同一事实；没有另一追踪表或保存旧IR。嵌套常量、原DCE及空Map根继续交接既有事实，必要对象编码和运行资源不带这些材料。具名B／外部C条件的直接常量读取保留原空calls，普通读取保留原self.calls，求值上下文没有交换；签名绑定继续用原OutputConstant持有Ty／Bits，并在compiler配置共享可选generated_origin；字段／数组长度／变体选择及数值转换保留输入常量的求值材料，identity对已有类型化值直接克隆。PartialEq／Eq、排序、合同去重与codec仍只消费原Ty／Bits，来源不制造新签名身份；new构造与对象解码的来源为空，runtime-only配置没有该字段。条件convert共用evaluated_constant把既有材料交给原Constant及后续retained来源，不重求值或建表，也不把该材料当作投影／转换自身的完整因果图。阶段Root::Literal继续持有原Ty／Bits，并共享可选求值材料。stage_root具名模块const直接接收原evaluate；临时stage_expression取得本次新增Constant已有材料及结果实际引用的入口Constant材料，无关预装载不进入该次结果。非空事实形成StageConstantEvaluation，保存实际expression及operations；相邻共享事实与原模块const共用收集，不存Reg／来源表。Builder::roots共用evaluated_constant交给同一值IR，CSE／DCE和空Map根继续持有，不保活指令、阶段或临时Builder。这不是逐结果分量的完整因果图或全部输入谱系；整域调用现在直接接收Root已有求值材料，DomainCallLiteral原因保持，锚点分别共享原call语法与evaluation，原单源查询仍只解释调用；两成员各自以null表达材料缺失，统一表示不重求值或增运行参数。阶段if在所选body成功展开后，以StageIfSelection把原condition、实际value、已有evaluation、阶段早退returned及本次新增Stage／DomainCall的OperationOrigin交给原Program根；retained保留此前根及内层选择，空分支和无阶段早退也不丢选择。仅保存原来源，不存旧IR或未选body；阶段融合后的最终来源仍归原独立职责。整域FunctionBody的DomainEntry锚点以context保留原入口Definition／Syntax或null，以expansion共享完整展开根；单源查询只沿context。物理片段不继承完整展开根，DomainPartCall也只取入口context，避免把全域选择写给每段。空body及仅调用已编译域仍可从原入口取得实际选择，材料到最后IR消费者释放，不增运行参数、控制图或资源寿命。阶段for的原bound闭包各求值一次，以StageForBound保留原边界Expression、实际u32及已有evaluation；同一Program根的StageForExpansion交接原statement、counter、first／last、iterations及循环前retained。StageForIteration按实际index交接阶段早退、新Stage／DomainCall来源与本次body.expansion；原根在展开所有者内按作用域移动，之前迭代的根不会重复进入后续迭代。空／反向范围没有迭代，空body不造Stage，早退后不造后续迭代；内层if／for各归其真实迭代，最终机器映射仍沿原独立任务。整域入口复用DomainEntry.expansion，物理片段不继承全域根，不增运行状态、IR副本或调用链。整数结果仍按原形状／变体编号任务推进，Root持有不能代替这些实际消费者。stage_root的整值Name及stage_expression的整值Name成功结果以同一Root::reference_literal共享StageConstantReference：reference为本次真实读取，retained保留原求值／绑定材料。直接Constant.source_site仍按原生成职责保持，绑定沿generated_origin进入原CSE／DCE／空Map根、DomainCallLiteral.evaluation及if／for材料；普通引用不等于算术折叠。临时Builder同时接收原展开domain_path，SourceContext的定义、实例与inline关系保持，常量自身求值仍使用原定义上下文。别名结果可通过原StageConstantEvaluation.operations持有已有绑定，既不另加Root字段／来源表，也不保存旧IR或承诺所有复合表达式的输入谱系。
+模块const在声明作用域用一个临时Builder直接检查初始化体和结果类型。原evaluate在Builder结束前将实际OperationOrigin随Ty／Bits交给原Definition。常量定义持有本次World唯一的已检查结果，普通引用、合同、阶段及形状都消费它。对象与入口映像从采用的常量展开原直接构建输入，原名称、类型、实现和跨模块常量均参与增量身份；module_constant及具名输出条件的常量读取共用evaluated_constant，以原构造器建立相同结果及直接source_site，让各真实分量共享该材料。其constant保持实际常量全名，definition只在已有真实源码定义时存在，operations描述整个该次求值，不是每个结果的完整因果图。相邻分量若共享同一语法和变换材料，只交接一份，避免记录／向量常量的嵌套别名反复复制同一事实；没有另一追踪表或保存旧IR。嵌套常量、原DCE及空Map根继续交接既有事实，必要对象编码和运行资源不带这些材料。具名B／外部C条件与普通读取消费同一已检查声明；签名绑定继续用原OutputConstant持有Ty／Bits，并在compiler配置共享可选generated_origin；字段／数组长度／变体选择及数值转换保留输入常量的求值材料，identity对已有类型化值直接克隆。PartialEq／Eq、排序、合同去重与codec仍只消费原Ty／Bits，来源不制造新签名身份；new构造与对象解码的来源为空，runtime-only配置没有该字段。条件convert共用evaluated_constant把既有材料交给原Constant及后续retained来源，不重求值或建表，也不把该材料当作投影／转换自身的完整因果图。阶段Root::Literal继续持有原Ty／Bits，并共享可选求值材料。stage_root具名模块const直接接收原evaluate；临时stage_expression取得本次新增Constant已有材料及结果实际引用的入口Constant材料，无关预装载不进入该次结果。非空事实形成StageConstantEvaluation，保存实际expression及operations；相邻共享事实与原模块const共用收集，不存Reg／来源表。Builder::roots共用evaluated_constant交给同一值IR，CSE／DCE和空Map根继续持有，不保活指令、阶段或临时Builder。这不是逐结果分量的完整因果图或全部输入谱系；整域调用现在直接接收Root已有求值材料，DomainCallLiteral原因保持，锚点分别共享原call语法与evaluation，原单源查询仍只解释调用；两成员各自以null表达材料缺失，统一表示不重求值或增运行参数。阶段if在所选body成功展开后，以StageIfSelection把原condition、实际value、已有evaluation、阶段早退returned及本次新增Stage／DomainCall的OperationOrigin交给原Program根；retained保留此前根及内层选择，空分支和无阶段早退也不丢选择。仅保存原来源，不存旧IR或未选body；阶段融合后的最终来源仍归原独立职责。整域FunctionBody的DomainEntry锚点以context保留原入口Definition／Syntax或null，以expansion共享完整展开根；单源查询只沿context。物理片段不继承完整展开根，DomainPartCall也只取入口context，避免把全域选择写给每段。空body及仅调用已编译域仍可从原入口取得实际选择，材料到最后IR消费者释放，不增运行参数、控制图或资源寿命。阶段for的原bound闭包各求值一次，以StageForBound保留原边界Expression、实际u32及已有evaluation；同一Program根的StageForExpansion交接原statement、counter、first／last、iterations及循环前retained。StageForIteration按实际index交接阶段早退、新Stage／DomainCall来源与本次body.expansion；原根在展开所有者内按作用域移动，之前迭代的根不会重复进入后续迭代。空／反向范围没有迭代，空body不造Stage，早退后不造后续迭代；内层if／for各归其真实迭代，最终机器映射仍沿原独立任务。整域入口复用DomainEntry.expansion，物理片段不继承全域根，不增运行状态、IR副本或调用链。整数结果仍按原形状／变体编号任务推进，Root持有不能代替这些实际消费者。stage_root的整值Name及stage_expression的整值Name成功结果以同一Root::reference_literal共享StageConstantReference：reference为本次真实读取，retained保留原求值／绑定材料。直接Constant.source_site仍按原生成职责保持，绑定沿generated_origin进入原CSE／DCE／空Map根、DomainCallLiteral.evaluation及if／for材料；普通引用不等于算术折叠。临时Builder同时接收原展开domain_path，SourceContext的定义、实例与inline关系保持，常量自身求值仍使用原定义上下文。别名结果可通过原StageConstantEvaluation.operations持有已有绑定，既不另加Root字段／来源表，也不保存旧IR或承诺所有复合表达式的输入谱系。
 
 二元常量计算在原binary中区分两个真实生产路径：constant::binary完成已许可的普通运算，constant::divide完成原除数规则已许可的整数商余；两侧实际Value.constant及原计算成功共同决定是否产生BinaryConstantFold，不把之后的比较命题known_value混为同一事实。原结果Constant保持原寄存器、Scalar／Bits、source_site、literal和Proof；每个逻辑分量共享原触发表达式及操作拼写，记录有效输入／输出Scalar、两侧与结果位模式、输入广播下标／数量和输出下标／数量。原生成材料进入retained，生成步骤没有直接语法时expression仍为null，不从运算或范围补造源身份。来源沿原IR及CSE／DCE／空Map根和原模块／阶段结果接点继续共享，不留旧IR或另建求值／来源图；静态事实不等于实际指令数、运行次数或性能收益。形状／编号与Proof比较继续原独立任务。
 

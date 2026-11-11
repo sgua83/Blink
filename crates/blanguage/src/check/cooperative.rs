@@ -484,19 +484,6 @@ if form==DeclaredArgumentForm::Acceleration {
         let result = self.inline_instance(instance, arguments, span, Some(args))?;
         self.ordinary_return(result, span)
     }
-    pub(super) fn inline_function(
-        &mut self,
-        key: String,
-        args: Vec<Argument>,
-        span: Span,
-    ) -> Result<Option<Value>> {
-        if args.len() != self.world.functions[&key].function.params().len() {
-            return self.fail(span, "B162", "函数参数数量不匹配");
-        }
-        let instance = self.specialized_function(key, &args, span)?;
-        let result = self.inline_instance(instance, args, span, None)?;
-        self.ordinary_return(result, span)
-    }
     pub(super) fn inline_instance(
         &mut self,
         instance: crate::generics::Instance,

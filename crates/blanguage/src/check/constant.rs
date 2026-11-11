@@ -122,6 +122,12 @@ Program {
 }
 pub(super) fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>, Option<Arc<GeneratedOrigin>>)> {
     let definition = &world.functions[key];
+    if let Some(constant) = definition.constant.get() {
+        if let Some(inputs) = &world.build_declarations {
+            inputs.borrow_mut().insert(crate::build::Declaration::Constant(key.into()));
+        }
+        return Ok(constant.value.clone());
+    }
     if !world.evaluating_constants.borrow_mut().insert(key.into()) {
         return definition.source.fail(
             definition.function.span(),
@@ -129,8 +135,8 @@ pub(super) fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty
             format!("编译期值与类型递归依赖 {key}"),
         );
     }
+    let parent_inputs = world.build_declarations.as_ref().map(|inputs| inputs.take());
     let result = (|| {
-        let definition = &world.functions[key];
         let instance = crate::generics::instantiate(world, key, definition, Vec::new(), &[])?;
         let ty=instance.bindings.type_name(world,&definition.function.result(),
             (&definition.source,&definition.module,&definition.imports),definition.function.span())?;
@@ -141,13 +147,17 @@ pub(super) fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty
                 "const 需要普通值类型，不能持有资源或 void",
             );
         }
-        let context=constant_context(key);
-        let mut builder = Builder::new(world, &instance, &context, 0, None)?;
+        let context = constant_context(key);
+        let scope = LexicalScope::Function(instance.clone());
+        let (source_definition, source_context) = definition.syntax_context(Some(key));
+        let mut builder = Builder::from_checked(world, &scope, &context, 0,
+            source_definition, source_context, BTreeSet::new());
         builder.in_function = true;
-        builder.calls = calls.to_vec();
-        let value = builder
-            .inline_function(key.into(), Vec::new(), definition.function.span())?
-            .unwrap();
+        builder.calls.extend_from_slice(calls);
+        builder.calls.push(key.into());
+        let body = definition.function.body().unwrap();
+        let (returned, _) = builder.function_body(&instance, &body)?;
+        let value = builder.ordinary_return(returned, definition.function.span())?.unwrap();
         if value.ty.contains_views()
             || value.constant.is_none()
             || builder
@@ -171,10 +181,19 @@ pub(super) fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty
         Ok((value.ty, value.constant.unwrap(), origin))
     })();
     world.evaluating_constants.borrow_mut().remove(key);
-    if result.is_ok() && let Some(inputs) = &world.build_declarations {
+    let mut used = BTreeSet::new();
+    if let (Some(inputs), Some(parent)) = (&world.build_declarations, parent_inputs) {
+        used = inputs.replace(parent);
+    }
+    let value = result?;
+    let constant = definition.constant.get_or_init(|| Arc::new(crate::frontend::EvaluatedConstant {
+        value,
+        inputs: used,
+    }));
+    if let Some(inputs) = &world.build_declarations {
         inputs.borrow_mut().insert(crate::build::Declaration::Constant(key.into()));
     }
-    result
+    Ok(constant.value.clone())
 }
 impl World {
 
