@@ -314,7 +314,7 @@ pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> 
     let (objects, libraries) = read_inputs(inputs)?;
     let (mut objects, _) = prepare(objects, libraries)?;
     let reserve = match objects[0].kind { Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes)), _ => None };
-    let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects)?.0 };
+    let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects,None)? };
     Ok(crate::object::stack::report(&object, budget, reserve))
 }
 fn link_objects(objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
@@ -329,7 +329,7 @@ fn link_objects(objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>
         Kind::Module { .. } => unreachable!(),
         Kind::Application { .. } => {
             if archives.is_empty() {
-                let (object, _, _) = combine::objects(objects)?;
+                let object = combine::objects(objects,None)?;
                 std::fs::write(&output, pe::link(&object)?)?;
             } else {
                 msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, false)?;

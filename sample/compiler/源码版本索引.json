@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "6287b7e6fcc33f9550cdb473b3ad3acba508d1a33faef4fc2c531868ac080ee1"
+      "sha256": "5a94bc24e918d72ecda96ec55eebca8105931001552750520e4b0f69d00d0277"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -61,6 +61,14 @@
     {
       "path": "crates/blanguage/src/bootstrap/coff_read.h",
       "sha256": "c413844e111fd78150101cff86229f1f564ff9ca98774445df536f7378c73857"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/combine.b",
+      "sha256": "d744f2f2c2435c651b80c0324d994f9545df8eceeab420b24de6cd4d62a3fab4"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/combine.h",
+      "sha256": "aa6306c5ca98a1e489cf81bac3e30279c77e830abbcad7117fff2ac528962681"
     },
     {
       "path": "crates/blanguage/src/bootstrap/lexer.b",
@@ -368,7 +376,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/combine.rs",
-      "sha256": "ee1b0f80e82e066c0fbda87b5efaedd2a2a614d37cc8c44f749b4313652f2515"
+      "sha256": "c1c1104e56fd48646b5d3ac6482ad0ba8ff22f5f7c14286aca5cdab98b5088d5"
     },
     {
       "path": "crates/blanguage/src/linker/imports.rs",
@@ -376,7 +384,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/mod.rs",
-      "sha256": "334dd6a2d143dd281772b5054fdbe256b7a9de3c26ad4da7689d3dd820d235d3"
+      "sha256": "b91ae9a5c3944831fcabb5525a86fd901b167d7265572809c38df10a29db89f9"
     },
     {
       "path": "crates/blanguage/src/linker/msvc.rs",
@@ -384,7 +392,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/native.rs",
-      "sha256": "0a8a09f72946be1bf5683b13f38d57d256ab3d54fab598b946bcafb0d7ac985d"
+      "sha256": "7a900c685269ae03289ae4ee3a9ec5870694aec13031e6a6696d3fe2abfe4d0f"
     },
     {
       "path": "crates/blanguage/src/linker/pe.rs",
@@ -1571,6 +1579,12 @@
       "start_line": 115,
       "end_line": 132,
       "sha256": "e1c779da9451f890ad84f177f7ddded77ae196756bdda1951729d6c08d3006aa"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/combine.b",
+      "start_line": 58,
+      "end_line": 67,
+      "sha256": "a2a98f45483c4ca9135f3a681e08d5a27590b4f11494fb99ee7e6f0be1042d11"
     }
   ]
 }

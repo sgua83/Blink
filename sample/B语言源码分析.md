@@ -1136,7 +1136,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 源码生产者的build.rs默认调用已安装独立稳定发行的bc；后续代通过BLINK_BOOTSTRAP_SDK明确选择独立上一代SDK，原PublishRelease.ps1用-BootstrapSdk只向本轮Cargo交接实际输入，不改系统安装。选定的bc分别生成B词法、泛型前瞻与链接字符串解码、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子VERSION的原共享读句柄保持到全部编译与归档结束，新工具写工程target。发行者把同次构建的静态库交给源码SDK，并在包Cargo中声明build-sdk.rs作为消费入口；消费者持有本包VERSION读取同源固定库，写入自己的原OUT_DIR后链接，输入缺失直接交回I/O错误，不重新调用种子。compiler关闭时不读取引导库或生成编译器身份；installed不决定生产／消费角色。两个入口共用同一身份实现，以实际原生库、源码、有效Cargo配置及Rust工具链决定身份。编译器运行时直接调用已编入的B代码，原C ABI与运行资源职责保持。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。
 
-词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取、独立普通应用PE格式布局与字节写出，以及源语法节点／子项／文字的存储、增长与最后释放由B接管；其余对象语义／合同及栈记录生成、独立链接的符号选择／合同检查／节组合、共享机器重定位及宿主／执行运行库／DLL路径、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、C ABI／PE链接字符串解码、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成与读取、独立普通应用PE格式布局与字节写出、已选COFF节的分组／对齐／符号／栈／重定位地址及载荷组合，以及源语法节点／子项／文字的存储、增长与最后释放由B接管；其余对象语义／合同及栈记录生成、独立链接的符号选择／合同检查、共享机器重定位及宿主／执行运行库／DLL路径、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录容器、成员抽取、其余语法构造／解析算法、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 语法存储按[现行职责](../Docs/Architecture.md#syntax-storage-boundary)由B模块持有，原解析、声明、实例和检查消费者直接读取同一存储。B模块唯一持有源节点、模块内子项索引和自有文字，Source借用保留原字节范围，增长后按索引重新取得视图。声明表和各实例共享只读源定义；实例保留原instantiate已经产生的类型／const绑定，检查与IR生成按实际绑定解释源引用，删除Definition／Function深克隆及逐节点写回。必要的静态使用检查、作用域、错误位置及来源保持，实例实际代码／IR仍各自拥有。TypeName.canonical及规范化OutputConstant的Ty、bits、GeneratedOrigin属于原语义合同／IR，runtime codec继续恢复原语义值和编码，不附带编译器／种子依赖。只有真实新语法才写B结果；只为调用检查入口而构造的辅助Function／Return树退出。节点编号不代替结构比较，Expr的Span不参与原相等规则。语法、实例绑定与生成／语义结果各沿实际最后消费者释放，完整交接以原台账状态为准。
 
@@ -4601,9 +4601,28 @@ COFF静态归档的格式由crates/blanguage/src/bootstrap/archive.h／.b读写�
 
 DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有装载与驱动准备成本；消费者不需要 B 源码或 Rust 工具链。编译、链接、装载、数据传输与一次算法执行的成本应分别记录。
 
+已选COFF节的组合由bootstrap/combine.h／.b生成。B按原名字与去COMDAT后的flags确定分组，组序取原对象中的首次出现；每个原节按同一次机器对齐进入组，.text间隙填0x90、其他间隙填0。以下B代码直接产生组号、起点、最终长度和实际间隙；符号、栈函数、引用调用以及Section／Symbol重定位目标都消费这些位置，Import保持原身份。源节范围仍在原对象读入成立，组合后的更大缓冲不扩大它。
+
+分组只排序一份临时索引，随后同一存储用于名字排序、最后定义选择及重定位查找。Rust保留原Object至B将载荷和间隙写进最终合并节，字节完成后才交接Vec长度；原分组树、嵌套positions及Rust地址计算退出。原始CPU映像的实际调用方持有最终符号容器，普通PE和栈报告不生产这份无消费者镜像；这里的符号容器和归档列表均指本次调用的进程内数据结构；实际obj／lib输入、COFF符号、展开信息及按需调试产物仍沿各自职责与原消费者交接。原归档随原对象保持到最后真实消费者结束，不再移动进一个无人使用的返回列表。B只借用同步定宽记录和实际字节，不保留地址或增加拥有／释放链。
+
+源码节选：`crates/blanguage/src/bootstrap/combine.b:58`。
+
+```b
+        i=object.section_start;
+        while(i<object.section_start+object.section_count){
+            CombineSection row=section_at(input,i);CombineSection first=section_at(input,row.owner);
+            u64 group=first.group;if(row.owner==i){group=result.groups;result.groups+=1u64;}
+            u64 exponent=(row.flags>>20u64)&15u64;if(exponent>0u64){exponent-=1u64;}u64 alignment=1u64<<exponent;
+            u64 begin=(first.size+alignment-1u64)&(0u64-alignment);if(begin>4294967295u64){return invalid(1u64,i);}
+            row.group=group;row.begin=begin;row.padding=begin-first.size;
+            if(row.owner==i){row.size=begin+row.byte_length;}else{first.size=begin+row.byte_length;section_put(input,row.owner,first);}
+            section_put(input,i,row);i+=1u64;
+        }
+```
+
 不需嵌入执行运行库的独立普通应用，其PE格式由bootstrap/pe.h／.b实际生成。原链接选择及节组合仍把同一个Object交给格式入口；B按DLL／函数名字节顺序原地排序、合并重复导入，确定lookup／IAT、名称、节RVA、文件偏移、.reloc页目录以及PE32+头，直接写入同一个最终Vec。原Object保留名字与载荷，Rust只分配临时固定布局记录和最终输出，不再复制一套Section载荷、导入字节和目标表；B不分配或保留任何输入。
 
-下段B算法把每次真实重定位解释成原source／target；绝对地址按4096字节页取得基址重定位项，再按页和原序号原地排序。机器补丁的8／4／4字节读写仍由PE与原始CPU映像共用的原coff_relocate承担，直接修改最终输出的实际节切片；B没有回调Rust，也没有复制另一份机器算法。B生成的stack_reserve同时由PE头和原栈报告消费。布局、编码与最终机器补丁全部结束后，原Rust调用方按正常寿命释放本次临时元数据；符号选择、合同比较、归档抽取、组合及宿主／执行运行库／DLL路径仍是原Rust职责，完整链接器与两代自举继续沿原台账推进。
+下段B算法把每次真实重定位解释成原source／target；绝对地址按4096字节页取得基址重定位项，再按页和原序号原地排序。机器补丁的8／4／4字节读写仍由PE与原始CPU映像共用的原coff_relocate承担，直接修改最终输出的实际节切片；B没有回调Rust，也没有复制另一份机器算法。B生成的stack_reserve同时由PE头和原栈报告消费。布局、编码与最终机器补丁全部结束后，原Rust调用方按正常寿命释放本次临时元数据；符号选择、合同比较、归档抽取及宿主／执行运行库／DLL路径仍是原Rust职责，完整链接器与两代自举继续沿原台账推进。
 
 源码节选：`crates/blanguage/src/bootstrap/pe.b:115`。
 
@@ -4922,6 +4941,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 
 | 源码位置 | 主要阅读问题 |
 |---|---|
+| `bootstrap/combine.h／.b`、`linker/combine.rs` | 已选COFF节怎样分组、对齐并交接符号／栈／重定位及最终载荷 |
 | `bootstrap/pe.h／.b`、`linker/pe.rs` | 已选对象怎样直接生成PE布局、导入与基址重定位目录，机器补丁如何复用原所有者 |
 | `crates/blanguage/src/main.rs` | 命令行怎样选择检查、代码导出与目标文件编译 |
 | `lib.rs`、`frontend.rs` | 公开入口及源码装载、接口核对、具体入口选择与 Compilation |

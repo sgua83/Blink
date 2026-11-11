@@ -7,7 +7,8 @@ pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], r
     objects.extend(borrowed.iter().copied().map(super::Source::Borrowed));
     let objects = select(objects, libraries, Roots::Symbols(roots, types, programs))?;
     if objects.is_empty() { return Ok(None); }
-    let (object, _, symbols) = combine::objects(objects)?;
+    let mut symbols = BTreeMap::new();
+    let object = combine::objects(objects,Some(&mut symbols))?;
     for name in symbols.keys() {
         if local.contains(name.as_str()) { return Err(format!("重复定义模块符号 {name}").into()); }
     }
