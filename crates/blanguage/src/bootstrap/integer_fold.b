@@ -1,0 +1,80 @@
+module bootstrap.integer_fold;
+
+u64 truncate(u64 bits, u32 width) on cpu {
+    return bits & (18446744073709551615u64 >> u64(64 - width));
+}
+
+i64 signed_value(u64 bits, u32 width) on cpu {
+    u32 padding = 64 - width;
+    return i64(bits << u64(padding)) >> i64(padding);
+}
+
+extern "C" u64 unary(UnaryOperation operation, u32 width, u64 bits) on cpu {
+    if (operation == UnaryOperation::Negate) {
+        return truncate(0u64 - bits, width);
+    }
+    if (operation == UnaryOperation::LogicalNot) {
+        return u64(bits == 0u64);
+    }
+    return truncate(~bits, width);
+}
+
+extern "C" u64 binary(BinaryOperation operation, u32 width, u32 signed, u64 left, u64 right) on cpu {
+    u64 shift = right & u64(width - 1);
+    u64 bits;
+    if (operation == BinaryOperation::Add) {
+        bits = left + right;
+    } else if (operation == BinaryOperation::Subtract) {
+        bits = left - right;
+    } else if (operation == BinaryOperation::Multiply) {
+        bits = left * right;
+    } else if (operation == BinaryOperation::And) {
+        bits = left & right;
+    } else if (operation == BinaryOperation::Or) {
+        bits = left | right;
+    } else if (operation == BinaryOperation::Xor) {
+        bits = left ^ right;
+    } else if (operation == BinaryOperation::ShiftLeft) {
+        bits = left << shift;
+    } else if (operation == BinaryOperation::ShiftRight) {
+        bits = left >> shift;
+    } else if (operation == BinaryOperation::ShiftRightSigned) {
+        bits = u64(signed_value(left, width) >> i64(shift));
+    } else {
+        u64 ordered_left = left;
+        u64 ordered_right = right;
+        if (signed != 0) {
+            u64 bias = 1u64 << u64(width - 1);
+            ordered_left = truncate(left, width) ^ bias;
+            ordered_right = truncate(right, width) ^ bias;
+        }
+        if (operation == BinaryOperation::Equal) {
+            bits = u64(ordered_left == ordered_right);
+        } else if (operation == BinaryOperation::NotEqual) {
+            bits = u64(ordered_left != ordered_right);
+        } else if (operation == BinaryOperation::Less) {
+            bits = u64(ordered_left < ordered_right);
+        } else if (operation == BinaryOperation::Greater) {
+            bits = u64(ordered_left > ordered_right);
+        } else if (operation == BinaryOperation::LessEqual) {
+            bits = u64(ordered_left <= ordered_right);
+        } else {
+            bits = u64(ordered_left >= ordered_right);
+        }
+    }
+    return truncate(bits, width);
+}
+
+extern "C" u64 divide_unsigned(u64 left, u64 right, u32 remainder) on cpu requires nonzero(right) {
+    if (remainder != 0) {
+        return left % right;
+    }
+    return left / right;
+}
+
+extern "C" i64 divide_signed(i64 left, i64 right, u32 remainder) on cpu requires nonzero(right) {
+    if (remainder != 0) {
+        return left % right;
+    }
+    return left / right;
+}

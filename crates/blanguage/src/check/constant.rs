@@ -238,14 +238,52 @@ impl World {
         }
     }
 }
+#[repr(u32)]
+enum IntegerUnary {
+    Negate,
+    LogicalNot,
+    BitNot,
+}
+
+#[repr(u32)]
+enum IntegerBinary {
+    Add,
+    Subtract,
+    Multiply,
+    And,
+    Or,
+    Xor,
+    ShiftLeft,
+    ShiftRight,
+    ShiftRightSigned,
+    Equal,
+    NotEqual,
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.integer_fold::unary"]
+    fn fold_integer_unary(operation: IntegerUnary, width: u32, bits: Bits) -> Bits;
+    #[link_name = "bootstrap.integer_fold::binary"]
+    fn fold_integer_binary(operation: IntegerBinary, width: u32, signed: u32, left: Bits, right: Bits) -> Bits;
+    #[link_name = "bootstrap.integer_fold::divide_unsigned"]
+    fn divide_unsigned(left: u64, right: u64, remainder: u32) -> u64;
+    #[link_name = "bootstrap.integer_fold::divide_signed"]
+    fn divide_signed(left: i64, right: i64, remainder: u32) -> i64;
+}
+
 pub(super) fn unary(operation: UnaryOp, scalar: Scalar, bits: Bits) -> Bits {
-    match operation {
-        UnaryOp::FloatNegate => bits ^ (1 << (scalar.bit_width() - 1)),
-        UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => scalar.truncate(0u64.wrapping_sub(bits)),
-        UnaryOp::LogicalNot => Bits::from(bits == 0),
-        UnaryOp::BitNot => scalar.truncate(!bits),
-        UnaryOp::Bitcast => bits,
-    }
+    let operation = match operation {
+        UnaryOp::FloatNegate => return bits ^ (1 << (scalar.bit_width() - 1)),
+        UnaryOp::Bitcast => return bits,
+        UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => IntegerUnary::Negate,
+        UnaryOp::LogicalNot => IntegerUnary::LogicalNot,
+        UnaryOp::BitNot => IntegerUnary::BitNot,
+    };
+    unsafe { fold_integer_unary(operation, scalar.bit_width(), bits) }
 }
 pub(super) fn cast(from: Scalar, into: Scalar, bits: Bits) -> Option<Bits> {
     if from == into {
@@ -287,16 +325,12 @@ pub(super) fn cast(from: Scalar, into: Scalar, bits: Bits) -> Option<Bits> {
 }
 pub(super) fn divide(scalar: Scalar, a: Bits, divisor: NonZeroU64, remainder: bool) -> Bits {
     let b = divisor.get();
+    let remainder = u32::from(remainder);
+    // The original nonzero divisor has the bit width of this scalar.
     let bits = if scalar.is_signed() {
-        if remainder {
-            scalar.signed(a).wrapping_rem(scalar.signed(b)) as Bits
-        } else {
-            scalar.signed(a).wrapping_div(scalar.signed(b)) as Bits
-        }
-    } else if remainder {
-        a % b
+        unsafe { divide_signed(scalar.signed(a), scalar.signed(b), remainder) as Bits }
     } else {
-        a / b
+        unsafe { divide_unsigned(a, b, remainder) }
     };
     scalar.truncate(bits)
 }
@@ -325,35 +359,27 @@ pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: Bits, b: Bits) -> Option<B
             _ => return None,
         }));
     }
-    let shift = (b & (Bits::from(scalar.size()) * 8 - 1)) as u32;
-    let bits = match op {
-        BinaryOp::IAdd => a.wrapping_add(b),
-        BinaryOp::ISub => a.wrapping_sub(b),
-        BinaryOp::IMul => a.wrapping_mul(b),
-        BinaryOp::And => a & b,
-        BinaryOp::Or => a | b,
-        BinaryOp::Xor => a ^ b,
-        BinaryOp::ShiftLeft => a.wrapping_shl(shift),
-        BinaryOp::ShiftRightLogical => a.wrapping_shr(shift),
-        BinaryOp::ShiftRightArithmetic => scalar.signed(a).wrapping_shr(shift) as Bits,
-        BinaryOp::Compare(c) => {
-            let ordering = if scalar.is_signed() {
-                scalar.signed(a).cmp(&scalar.signed(b))
-            } else {
-                a.cmp(&b)
-            };
-            Bits::from(match c {
-                Comparison::Equal => ordering.is_eq(),
-                Comparison::NotEqual => !ordering.is_eq(),
-                Comparison::Less => ordering.is_lt(),
-                Comparison::Greater => ordering.is_gt(),
-                Comparison::LessEqual => !ordering.is_gt(),
-                Comparison::GreaterEqual => !ordering.is_lt(),
-            })
-        }
+    let operation = match op {
+        BinaryOp::IAdd => IntegerBinary::Add,
+        BinaryOp::ISub => IntegerBinary::Subtract,
+        BinaryOp::IMul => IntegerBinary::Multiply,
+        BinaryOp::And => IntegerBinary::And,
+        BinaryOp::Or => IntegerBinary::Or,
+        BinaryOp::Xor => IntegerBinary::Xor,
+        BinaryOp::ShiftLeft => IntegerBinary::ShiftLeft,
+        BinaryOp::ShiftRightLogical => IntegerBinary::ShiftRight,
+        BinaryOp::ShiftRightArithmetic => IntegerBinary::ShiftRightSigned,
+        BinaryOp::Compare(comparison) => match comparison {
+            Comparison::Equal => IntegerBinary::Equal,
+            Comparison::NotEqual => IntegerBinary::NotEqual,
+            Comparison::Less => IntegerBinary::Less,
+            Comparison::Greater => IntegerBinary::Greater,
+            Comparison::LessEqual => IntegerBinary::LessEqual,
+            Comparison::GreaterEqual => IntegerBinary::GreaterEqual,
+        },
         BinaryOp::FAdd | BinaryOp::FSub | BinaryOp::FMul | BinaryOp::FDiv => return None,
     };
-    Some(scalar.truncate(bits))
+    Some(unsafe { fold_integer_binary(operation, scalar.bit_width(), u32::from(scalar.is_signed()), a, b) })
 }
 
 // 编号与形状共享原整数表达式、类型及常量求值所有者。
