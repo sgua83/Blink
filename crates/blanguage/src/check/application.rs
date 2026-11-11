@@ -707,15 +707,15 @@ impl ApplicationLoads<'_, '_> {
 }
 impl Builder<'_> {
     pub(super) fn application_condition_writes(&self,code:&[Inst],place:&Place,component:usize)->bool {
-        let mut positions=place.data_positions();if positions.is_empty(){positions=self.positions(place);}
+        let(positions,index)=self.value_memory_location(place);
         let position=positions.get(component);
-        fn writes(loads:&ApplicationLoads<'_, '_>,code:&[Inst],position:Option<&Position>,scalar:Scalar)->bool {
+        fn writes(loads:&ApplicationLoads<'_, '_>,code:&[Inst],position:Option<&Position>,scalar:Scalar,index:Option<bounds::Operand>)->bool {
             code.iter().any(|inst|match &inst.kind {
-                InstKind::If{yes,no,..}=>writes(loads,yes,position,scalar)||writes(loads,no,position,scalar),
-                InstKind::Loop{condition,body,..}=>writes(loads,condition,position,scalar)||writes(loads,body,position,scalar),
-                InstKind::Scope(body)|InstKind::Cleanup{body,..}=>writes(loads,body,position,scalar),
+                InstKind::If{yes,no,..}=>writes(loads,yes,position,scalar,index)||writes(loads,no,position,scalar,index),
+                InstKind::Loop{condition,body,..}=>writes(loads,condition,position,scalar,index)||writes(loads,body,position,scalar,index),
+                InstKind::Scope(body)|InstKind::Cleanup{body,..}=>writes(loads,body,position,scalar,index),
                 InstKind::Call(call)=>{
-                    let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut,None).written_bytes(position,scalar)!=0);
+                    let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut,None).written_bytes(position,scalar,index)!=0);
                     position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().contains(slot)))
                         ||loads.call_memory_writes(call,affected)
                         ||call.memory_use.is_some_and(|first|loads.0.view_model.uses.iter().skip(first+1)
@@ -726,7 +726,7 @@ impl Builder<'_> {
                 _=>position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().contains(slot))),
             })
         }
-        writes(&ApplicationLoads(self),code,position,place.ty().components[component].0)
+        writes(&ApplicationLoads(self),code,position,place.ty().components[component].0,index)
     }
     pub(super) fn application_iteration_interference<'s>(&self, data: &DataReference, index: &Value, proof: &mut bounds::Proof, states: impl Iterator<Item=&'s flow::LoopState>+Clone, controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) {
         let loads = ApplicationLoads(self);
@@ -3802,7 +3802,7 @@ impl Builder<'_> {
                 let byte_writes=if let ElementUpdate::Bytes{effect,..}=&update {
                     let borrow=Arc::new(resource.clone());let layout=address::Layout::of(&data.ty);
                     data.ty.components.iter().enumerate().filter_map(|(component,(scalar,word))|{
-                        let position=Position::Borrowed(borrow.clone(),layout.clone(),*word);let bytes=effect.written_bytes(&position,*scalar);
+                        let position=Position::Borrowed(borrow.clone(),layout.clone(),*word);let bytes=effect.written_bytes(&position,*scalar,None);
                         (bytes!=0).then_some((component,bytes))
                     }).collect::<Vec<_>>()
                 }else{Vec::new()};
@@ -3837,7 +3837,7 @@ impl Builder<'_> {
                     let borrow=Arc::new(resource.clone());let layout=address::Layout::of(&data.ty);
                     for(target,(component,_))in byte_writes.iter().enumerate(){
                         let(scalar,word)=data.ty.components[*component];let position=Position::Borrowed(borrow.clone(),layout.clone(),word);
-                        proof.assign(&[target],components.len(),effect.written_value(&position,scalar,&previous.project(&[*component],old.regs.len())));
+                        proof.assign(&[target],components.len(),effect.written_value(&position,scalar,None,&previous.project(&[*component],old.regs.len())));
                     }
                     proof
                 }else{bounds::Proof::default()};

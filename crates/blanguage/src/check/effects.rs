@@ -179,9 +179,6 @@ impl Builder<'_> {
             _ => Ok(None),
         }
     }
-    fn loop_memory_components(&self,borrow:&view::Borrow,owner:&Place)->Vec<usize> {
-        match self.address_write_positions(borrow){Some(positions)=>self.address_write_components(&positions,owner),None=>(0..owner.ty().components.len()).collect()}
-    }
     fn constant_index(&self, index: &Expr, writes: &[Write]) -> Result<Option<u32>> {
         Ok(match index.kind() {
             ExprKind::StaticU32(value) => Some(value),
@@ -194,7 +191,7 @@ impl Builder<'_> {
                     .iter()
                     .any(|write| match write {
                         Write::External{..}|Write::Generator(_)=>true,
-                        Write::Memory{borrow,..}=>self.env.get(name).and_then(Binding::stored_place).is_some_and(|owner|!self.loop_memory_components(borrow,&owner).is_empty()),
+                        Write::Memory{borrow,..}=>self.env.get(name).and_then(Binding::stored_place).is_some_and(|owner|!self.memory_write_components(borrow,&owner).is_empty()),
                         Write::Position{contents:false,place,..}=>assigned_root(&place).as_deref()==Some(name)||address_write(place),
                         _=>false,
                     }) =>
@@ -334,7 +331,7 @@ impl Builder<'_> {
                     let components = match write {
                         Write::Move{..}=>Vec::new(),
                         Write::External{..}|Write::Generator(_)=>vec![(0..owner.ty().components.len()).collect()],
-                        Write::Memory{borrow,..}=>vec![self.loop_memory_components(borrow,&owner)],
+                        Write::Memory{borrow,..}=>vec![self.memory_write_components(borrow,&owner)],
                         Write::Position{place,contents,iterator,..}=>{
                             let projection=if *contents {self.application_write_projection(place,&owner)}
                                 else {self.written_projection(&place,&name,&owner,iterator.as_ref().map(|(name,index)|(name.as_str(),index)),writes)?};
@@ -1549,14 +1546,14 @@ impl Builder<'_> {
                 }
             }
             let(scalar,word)=target.base.components[*component];let origin=address::Origin{root:address::Root::Resource{borrow:target.resource.clone(),index:target.index},layout:address::Layout{size:scalar.size(),align:scalar.size(),parts:vec![(scalar,0)].into()},base:address::Layout::of(&target.base),words:vec![word].into(),positions:Arc::from([]),writable:true,initialized:vec![false].into()};
-            let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin)));let changed=self.loop_memory_components(&borrow,&owner);
+            let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin)));let changed=self.memory_write_components(&borrow,&owner);
             return Ok(parts.iter().flatten().any(|component|changed.contains(component)));
         }
         let LoopPlace::Stored(owner,component)=target else {
             return Ok(matches!(write,Write::Position{contents:false,place,..}if matches!(place.kind(),ExprKind::Name(bound)if bound==name)));
         };
         let component=*component;
-        if let Write::Memory{borrow,..}=write{return Ok(self.loop_memory_components(borrow,owner).contains(&component));}
+        if let Write::Memory{borrow,..}=write{return Ok(self.memory_write_components(borrow,owner).contains(&component));}
         let Write::Position{place,contents,iterator,..}=write else{return Ok(true);};
         let projection = if *contents { self.application_write_projection(place, owner) }
             else { self.written_projection(place, name, owner, iterator.as_ref().map(|(name,index)|(name.as_str(),index)), writes)? };

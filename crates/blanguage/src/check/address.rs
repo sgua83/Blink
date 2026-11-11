@@ -48,7 +48,7 @@ pub(super) struct MemoryRegion { pub position:Position, pub word:u32, pub offset
 // One original loop input and its actual projections name the same logical storage.
 // Its byte layout does not depend on closing the source/lifetime relation.
 fn same_loop_resource(a:&view::Borrow,b:&view::Borrow)->bool {
-    if !a.calls.is_empty()||!b.calls.is_empty(){return false;}
+    if !a.calls.is_empty()||!b.calls.is_empty()||!a.reads.is_empty()||!b.reads.is_empty(){return false;}
     if !a.sources.is_empty()||!b.sources.is_empty(){
         if !a.inputs.is_empty()||!b.inputs.is_empty(){return false;}
         let mut a=a.sources.iter();let mut b=b.sources.iter();
@@ -375,7 +375,11 @@ impl MemoryEffect {
         self.known.extend(other.known);
         if let Some(access)=other.external{self.external=Some(match self.external{Some(old)if old!=access=>Access::InOut,_=>access});}
     }
-    fn origin_written_bytes(origin:&Origin,when:&bounds::Clause,position:&Position,scalar:Scalar)->u8 {
+    fn origin_written_bytes(origin:&Origin,when:&bounds::Clause,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
+        if let (Some(index),Position::Borrowed(borrow,layout,_))=(index,position)
+            &&let Root::Resource{borrow:source,index:Some(written)}|Root::Dataset{borrow:source,index:Some(written)}=&origin.root
+            &&origin.base==*layout&&same_loop_resource(source,borrow)
+            &&bounds::Condition::index_equal(*written,index).truth_in(when)==Some(false){return 0;}
         let all=((1u16<<scalar.size())-1) as u8;
         let known=||origin.memory_regions(when).map(|regions|regions.iter().fold(0,|bytes,region|bytes|region.written_bytes(position,scalar))).unwrap_or(all);
         match position{
@@ -385,24 +389,24 @@ impl MemoryEffect {
             Position::Borrowed(borrow,_,_) if matches!(&origin.root,
                 Root::Resource{borrow:source,index:Some(_)}|Root::Dataset{borrow:source,index:Some(_)}if same_loop_resource(source,borrow))
                 ||!borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>known(),
-            Position::Both(a,b)|Position::Conditional(_,a,b)=>Self::origin_written_bytes(origin,when,a,scalar)|Self::origin_written_bytes(origin,when,b,scalar),
-            Position::Indexed(positions,_)=>positions.iter().fold(0,|bytes,position|bytes|Self::origin_written_bytes(origin,when,position,scalar)),
+            Position::Both(a,b)|Position::Conditional(_,a,b)=>Self::origin_written_bytes(origin,when,a,scalar,index)|Self::origin_written_bytes(origin,when,b,scalar,index),
+            Position::Indexed(positions,_)=>positions.iter().fold(0,|bytes,position|bytes|Self::origin_written_bytes(origin,when,position,scalar,index)),
             _=>all,
         }
     }
-    pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar)->u8 {
+    pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
         if self.external.is_some_and(|access|access.writes()){return ((1u16<<scalar.size())-1) as u8;}
-        self.known.iter().filter(|(_,_,access,_)|access.writes()).fold(0,|bytes,(origin,when,_,_)|bytes|Self::origin_written_bytes(origin,when,position,scalar))
+        self.known.iter().filter(|(_,_,access,_)|access.writes()).fold(0,|bytes,(origin,when,_,_)|bytes|Self::origin_written_bytes(origin,when,position,scalar,index))
     }
     // A possible write joins its value with the old value; it is never a must-write guarantee.
-    pub(super) fn written_value(&self,position:&Position,scalar:Scalar,previous:&bounds::Proof)->bounds::Proof {
-        if self.written_bytes(position,scalar)==0{return previous.clone();}
+    pub(super) fn written_value(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>,previous:&bounds::Proof)->bounds::Proof {
+        if self.written_bytes(position,scalar,index)==0{return previous.clone();}
         let previous=previous.numeric_facts().at_call(&BTreeMap::new());let mut result=previous.clone();
         if self.external.is_some_and(|access|access.writes()){return bounds::Proof::default();}
         let all=((1u16<<scalar.size())-1) as u8;
         for(origin,when,access,written)in &self.known {
             if !access.writes(){continue;}
-            let bytes=Self::origin_written_bytes(origin,when,position,scalar);if bytes==0{continue;}
+            let bytes=Self::origin_written_bytes(origin,when,position,scalar,index);if bytes==0{continue;}
             let incoming=written.as_ref().and_then(|proof|{
                 let regions=origin.memory_regions(when)?;let mut incoming=None;
                 for region in regions.iter().filter(|region|region.written_bytes(position,scalar)!=0){
@@ -739,6 +743,29 @@ impl Builder<'_> {
         }
         Some(positions)
     }
+    // Numeric reads name physical storage, independently of initialization markers.
+    pub(super) fn value_memory_location(&self,place:&Place)->(Vec<Position>,Option<bounds::Operand>) {
+        if let Place::ApplicationElement{resource,index_value,..}=place.storage() {
+            fn resource_position(position:Position,resource:&Arc<view::Borrow>)->Position {
+                match position {
+                    Position::Borrowed(_,layout,word)=>Position::Borrowed(resource.clone(),layout,word),
+                    Position::Both(a,b)=>Position::both(resource_position(a.as_ref().clone(),resource),resource_position(b.as_ref().clone(),resource)),
+                    Position::Conditional(when,a,b)=>Position::selected(when.as_ref().clone(),resource_position(a.as_ref().clone(),resource),resource_position(b.as_ref().clone(),resource)),
+                    Position::Indexed(positions,index)=>Position::Indexed(positions.iter().cloned().map(|position|resource_position(position,resource)).collect(),index),
+                    position=>position,
+                }
+            }
+            let resource=Arc::new(resource.clone());
+            (place.data_positions().into_iter().map(|position|resource_position(position,&resource)).collect(),Some(*index_value))
+        }else{(self.positions(place),None)}
+    }
+    pub(super) fn memory_write_components(&self,borrow:&view::Borrow,place:&Place)->Vec<usize> {
+        if self.address_write_positions(borrow).is_none(){return (0..place.ty().components.len()).collect();}
+        let effect=MemoryEffect::of(borrow,Access::Write,None);let(positions,index)=self.value_memory_location(place);
+        positions.iter().zip(&place.ty().components).enumerate().filter_map(|(component,(position,(scalar,_)))|{
+            (effect.written_bytes(position,*scalar,index)!=0).then_some(component)
+        }).collect()
+    }
     pub(super) fn address_write_components(&self,positions:&[Position],place:&Place)->Vec<usize> {
         self.positions(place).iter().enumerate().filter_map(|(i,position)|positions.iter().any(|written|
             owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()
@@ -777,22 +804,23 @@ impl Builder<'_> {
         for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Bytes{effect:&effect,index})?;}
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
-            let components=self.positions(&place).iter().zip(place.ty().components.iter()).enumerate().filter_map(|(component,(position,(scalar,_)))|{
-                let bytes=effect.written_bytes(position,*scalar);(bytes!=0).then_some((component,position.clone()))
+            let(positions,index)=self.value_memory_location(&place);
+            let components=positions.iter().zip(place.ty().components.iter()).enumerate().filter_map(|(component,(position,(scalar,_)))|{
+                let bytes=effect.written_bytes(position,*scalar,index);(bytes!=0).then_some((component,position.clone(),index))
             }).collect::<Vec<_>>();
             (!components.is_empty()).then(||(name.clone(),components))
         }).collect::<BTreeMap<_,_>>();
         for(name,written)in selected {
-            let components=written.iter().map(|(component,_)|*component).collect::<Vec<_>>();
+            let components=written.iter().map(|(component,_,_)|*component).collect::<Vec<_>>();
             match self.env.get_mut(&name).unwrap(){
                 Binding::Owned(owner)=>{
                     let ty=owner.place.ty();let mut ranges=bounds::Proof::default();
-                    for(component,position)in &written{ranges.assign(&[*component],ty.components.len(),effect.written_value(position,ty.components[*component].0,&owner.proof.project(&[*component],ty.components.len())));}
+                    for(component,position,index)in &written{ranges.assign(&[*component],ty.components.len(),effect.written_value(position,ty.components[*component].0,*index,&owner.proof.project(&[*component],ty.components.len())));}
                     owner.uniform=false;owner.proof.forget_value(&components,ty.components.len());owner.proof.constrain_common_ranges(&ranges,ty.components.len());
                 },
                 Binding::OwnedValue(owner)=>{
                     let ty=&owner.value.ty;let mut ranges=bounds::Proof::default();
-                    for(component,position)in &written{ranges.assign(&[*component],ty.components.len(),effect.written_value(position,ty.components[*component].0,&owner.value.proof.project(&[*component],ty.components.len())));}
+                    for(component,position,index)in &written{ranges.assign(&[*component],ty.components.len(),effect.written_value(position,ty.components[*component].0,*index,&owner.value.proof.project(&[*component],ty.components.len())));}
                     owner.invalidate_components(&components,None);owner.value.proof.constrain_common_ranges(&ranges,owner.value.ty.components.len());
                 },
                 _=>{},
@@ -883,9 +911,9 @@ impl Builder<'_> {
         borrow
     }
     pub(super) fn capture_address_values(&mut self,memory:usize,capture_kind:Capture)->Vec<view_contracts::ValueSnapshot> {
-        let owners=self.env.iter().filter_map(|(name,binding)|binding.stored_place().map(|place|(name.clone(),self.positions(&place)))).collect::<Vec<_>>();
+        let owners=self.env.iter().filter_map(|(name,binding)|binding.stored_place().map(|place|{let(positions,index)=self.value_memory_location(&place);(name.clone(),positions,index)})).collect::<Vec<_>>();
         let mut snapshots=Vec::new();
-        let mut capture=|proof:&mut bounds::Proof,uniform:&mut bool,ty:&Ty,mut positions:Vec<(usize,Position)>,resources:Vec<Vec<usize>>|{
+        let mut capture=|proof:&mut bounds::Proof,uniform:&mut bool,ty:&Ty,mut positions:Vec<(usize,Position)>,index:Option<bounds::Operand>,resources:Vec<Vec<usize>>|{
             let metadata=resource_metadata(ty,resources);
             positions.retain(|(component,_)|!metadata.iter().any(|range|range.contains(&ty.components[*component].1)));
             let fields=ty.borrow_fields().into_iter().filter(|(_,field)|field.is_address()).map(|(at,_)|ty.components.iter().position(|(_,word)|*word==at).unwrap()).collect::<BTreeSet<_>>();
@@ -893,23 +921,23 @@ impl Builder<'_> {
             let width=ty.components.len();let previous=proof.clone();
             if capture_kind==Capture::Write{proof.forget_value(&positions.iter().map(|(component,_)|*component).collect::<Vec<_>>(),width);}
             for(component,position)in positions {
-                let index=snapshots.len();let identity=ValueIdentity::MemoryValue(memory,index);
+                let snapshot=snapshots.len();let identity=ValueIdentity::MemoryValue(memory,snapshot);
                 let initial=Arc::new(previous.project(&[component],width));
-                snapshots.push(view_contracts::ValueSnapshot{position:position.clone(),scalar:ty.components[component].0,proof:initial.clone()});
+                snapshots.push(view_contracts::ValueSnapshot{position:position.clone(),index,scalar:ty.components[component].0,proof:initial.clone()});
                 if capture_kind==Capture::Write{
                     *proof=std::mem::take(proof).with_component_identity(component,identity);
                     if fields.contains(&component){
-                        *proof=std::mem::take(proof).with_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Snapshot{memory,component:index,position,initial}]),..view::Borrow::default()});
+                        *proof=std::mem::take(proof).with_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Snapshot{memory,component:snapshot,position,initial}]),..view::Borrow::default()});
                     }
                 }
             }
             if capture_kind==Capture::Write{*uniform=false;}
         };
-        for(name,positions)in owners {
+        for(name,positions,index)in owners {
             let binding=self.env.get_mut(&name).unwrap();
             let resources=match &*binding{Binding::OwnedValue(owner)=>view::resource_paths(&owner.value.ty).into_iter().filter(|fields|view::owned_data_at(owner,fields).is_some()).collect(),_=>Vec::new()};
             let Some((proof,uniform,owner))=binding.proof_storage()else{continue;};
-            capture(proof,uniform,owner.ty(),positions.into_iter().enumerate().collect(),resources);
+            capture(proof,uniform,owner.ty(),positions.into_iter().enumerate().collect(),index,resources);
             if capture_kind==Capture::Write && let Binding::OwnedValue(owner)=binding{owner.value.constant=None;}
         }
         for binding in self.env.values_mut(){application::each_binding_data(binding,&mut|_,_,data|{
@@ -931,7 +959,7 @@ impl Builder<'_> {
                 let resources=view::resource_paths(&selected.ty).into_iter().filter(|fields|application::model_data(selected.elements.known(),fields).is_some()).collect();
                 if let Some(value)=selected.elements.known_mut().and_then(returns::Returned::view_value_mut){
                     let positions=value.ty.components.iter().enumerate().map(|(component,(_,word))|(component,Position::Borrowed(borrow.clone(),layout.clone(),*word))).collect();
-                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions,resources);if capture_kind==Capture::Write{value.constant=None;value.proof=bounds::Proof::capture(value);}
+                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions,None,resources);if capture_kind==Capture::Write{value.constant=None;value.proof=bounds::Proof::capture(value);}
                 }
             }
         });}

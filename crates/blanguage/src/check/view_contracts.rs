@@ -74,7 +74,7 @@ impl Access {
 crate::module::codec::variants!(Access {0=>Resource{resources,borrows,ownership,when},1=>Position{borrows,when,position},2=>Memory{borrows,when,access},3=>Dataset{borrows,when,index,access,atomic},4=>Initialized{borrows,initialized,when},5=>Stored{borrows,word,value,when}});
 #[derive(Clone,Default,PartialEq,Eq)]
 pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub initialization:Vec<address::Initialization>}
-pub(super) struct ValueSnapshot { pub position:Position, pub scalar:Scalar, pub proof:Arc<bounds::Proof> }
+pub(super) struct ValueSnapshot { pub position:Position, pub index:Option<bounds::Operand>, pub scalar:Scalar, pub proof:Arc<bounds::Proof> }
 // The original element model and the inputs selected by this read, after earlier Memory values close.
 pub(super) struct ElementRead { pub scalar:Scalar, pub proof:bounds::Proof, pub bindings:Arc<BTreeMap<ValueIdentity,bounds::Proof>> }
 pub(super) struct Call {
@@ -507,7 +507,7 @@ fn apply_content_write(previous:Borrow,query:Option<(&address::Origin,u32)>,posi
 
     let affected=complete||position.is_some_and(|position|{
         let borrow=Borrow::source(Origin::Position(Arc::new(target.clone()))).restricted(when);
-        address::MemoryEffect::of(&borrow,super::Access::Write,None).written_bytes(position,Scalar::U64)!=0
+        address::MemoryEffect::of(&borrow,super::Access::Write,None).written_bytes(position,Scalar::U64,None)!=0
     });
     if affected{assign_content(previous,incoming,when,complete)}else{previous}
 }
@@ -545,7 +545,7 @@ fn content_event(mut value:Borrow,query:Option<(&address::Origin,u32)>,position:
                     }
                 }else{
                     let effect=address::MemoryEffect::of(&Borrow::source(source.clone()).restricted(&when),super::Access::Write,None);
-                    if position.is_some_and(|position|effect.written_bytes(position,Scalar::U64)!=0){
+                    if position.is_some_and(|position|effect.written_bytes(position,Scalar::U64,None)!=0){
                         value=value.joined(Borrow::source(Origin::External).restricted(&when));
                     }
                 }
@@ -1159,9 +1159,10 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                 }
             }
             if let Some(snapshots)=snapshots{for(component,snapshot)in snapshots.iter().enumerate(){
-                let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluate(borrow,function,&known[name],&known,true)),layout.clone(),*word),position=>position.clone()};
+                let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluate(borrow,function,&known[name],&known,true).substitute_values(&resolved)),layout.clone(),*word),position=>position.clone()};
+                let index=snapshot.index.and_then(|index|match index{bounds::Operand::Value(id)if resolved.contains_key(&id)=>index.at_call(&resolved),index=>Some(index)});
                 let proof=snapshot.proof.substitute_values(&resolved);let path=usage.path.substitute_values(&resolved);
-                let proof=effect.written_value(&position,snapshot.scalar,&bounds::scoped_proof(&Ty::scalar(snapshot.scalar),proof,&path,&BTreeMap::new()));
+                let proof=effect.written_value(&position,snapshot.scalar,index,&bounds::scoped_proof(&Ty::scalar(snapshot.scalar),proof,&path,&BTreeMap::new()));
                 let identity=ValueIdentity::MemoryValue(memory,component);resolved.insert(identity,proof.with_identity(identity));
             }}
             values.entry(*target).or_default().union(effect);
