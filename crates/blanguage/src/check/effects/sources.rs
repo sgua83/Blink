@@ -67,9 +67,15 @@ impl<'b, 'w> Scope<'b, 'w> {
         if let Some(param) = self.lexical.parameters().find(|param| param.name() == name) {
             return self.declared_type(&param.bound(self.world)?.ty,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),param.span()).map(Some);
         }
-        if let Some(key) = self.world.resolve(name, self.lexical.module(), self.lexical.imports(), true).unique()
-            && self.world.functions[&key].function.kind() == FunctionKind::Constant {
-            return constant_value(self.world,&key).map(|(ty,_)|Some(ty));
+        if let Some(key) = self.world.resolve(name, self.lexical.module(), self.lexical.imports(), true).unique() {
+            let definition = &self.world.functions[&key];
+            if definition.function.kind() == FunctionKind::Constant {
+                let context = (&definition.source, definition.module.as_str(), definition.imports.as_slice());
+                let span = definition.function.span();
+                let bindings = Arc::new(crate::generics::Bindings::default());
+                let ty = bindings.type_name(self.world, &definition.function.result(), context, span)?;
+                return self.declared_type(&ty, context, span).map(Some);
+            }
         }
         Ok(None)
     }

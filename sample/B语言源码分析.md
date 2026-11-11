@@ -466,7 +466,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
         };
 ```
 
-循环写入预分析借用`check/effects/sources.rs`中的原声明、词法绑定与泛型实例，取得本次函数值签名和完整实参类型；resize与take_last的返回仍是原元素类型、动态形状的拥有dataset，array<T,N>构造由原TypeName／World取得完整元素和长度；view<T>构造沿同一元素TypeName的view属性交给原World，取得与实际构造相同的完整view类型，再交给原泛型推导。own(value,F)由user_owned::user_owned_function解析原静态F，user_owned_type沿原World产生完整owned<T,F>；make_user_owned与Scope::call共用这两个生产者，实际上下文、载荷求值、pack及释放仍归原消费者。原generics::specialize消费同一类型，不重新求值实参、不为预分析增加值流或类型表；写范围仍进入原effects消费者。数值回边分析消费同一份已收集的写入及其源调用，不重复生成写图，不按未知函数名一律清空其他位置的事实。普通while的U32局部／引用头事实在原loop_writes内先由NumericEffect／Proof生产，再供未来写选择及IR条件读取，原正文入口不再为同一标量重算。NumericEffect沿实际赋值Proof组合点值，无写分支保留入口；嵌套while在实际条件阻止回绕时保留顺序关系，Scope沿原源片段读取真实祖先拥有者及各轮头事实。LoopWrites的body_bounds只是本次分析到正文入口的一次静态输出；条件为真后while_loop取走区间，交给正文即释放，不复制资源或保存运行轮次。for游标、元素及其他分量继续原实际消费者，break／seek和真实条件写按原效果交接。
+循环写入预分析借用`check/effects/sources.rs`中的原声明、词法绑定与泛型实例，取得本次函数值签名和完整实参类型；模块const按声明所属模块及其导入解析类型，形状表达式沿原入口求值，初始化与位模式由原常量求值交接。resize与take_last的返回仍是原元素类型、动态形状的拥有dataset，array<T,N>构造由原TypeName／World取得完整元素和长度；view<T>构造沿同一元素TypeName的view属性交给原World，取得与实际构造相同的完整view类型，再交给原泛型推导。own(value,F)由user_owned::user_owned_function解析原静态F，user_owned_type沿原World产生完整owned<T,F>；make_user_owned与Scope::call共用这两个生产者，实际上下文、载荷求值、pack及释放仍归原消费者。原generics::specialize消费同一类型，不重新求值实参、不为预分析增加值流或类型表；写范围仍进入原effects消费者。数值回边分析消费同一份已收集的写入及其源调用，不重复生成写图，不按未知函数名一律清空其他位置的事实。普通while的U32局部／引用头事实在原loop_writes内先由NumericEffect／Proof生产，再供未来写选择及IR条件读取，原正文入口不再为同一标量重算。NumericEffect沿实际赋值Proof组合点值，无写分支保留入口；嵌套while在实际条件阻止回绕时保留顺序关系，Scope沿原源片段读取真实祖先拥有者及各轮头事实。LoopWrites的body_bounds只是本次分析到正文入口的一次静态输出；条件为真后while_loop取走区间，交给正文即释放，不复制资源或保存运行轮次。for游标、元素及其他分量继续原实际消费者，break／seek和真实条件写按原效果交接。
 
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
@@ -1754,7 +1754,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-源码节选：`crates/blanguage/src/check/effects/sources.rs:107`。
+源码节选：`crates/blanguage/src/check/effects/sources.rs:113`。
 
 ```rust
         if name=="dataset" && let Some(explicit)=explicit {
