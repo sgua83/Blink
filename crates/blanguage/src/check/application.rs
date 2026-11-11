@@ -2124,23 +2124,52 @@ impl Builder<'_> {
         Ok(Some(elements))
     }
     pub(super) fn complete_application_writes(&mut self, written: impl Fn(&Self,&Data) -> bool, span: Span) -> Result<()> {
-        let path=self.residency_path();
-        let data = self.env.values().flat_map(Binding::application_resources).filter(|data| {
+        let path = self.residency_path();
+        let eligible = |data: &Data| {
             data.root.ty == Ty::scalar(Scalar::U32)
+                && data.elements.known().is_some()
                 && self.resolve_ownership(&data.ownership, None).available()
-                && self.residency.known_at(&data.residency,Target::Cpu,&path)
-                && written(self,data)
-        }).cloned().collect::<Vec<_>>();
+                && self.residency.known_at(&data.residency, Target::Cpu, &path)
+                && written(self, data)
+        };
+        let mut completed = BTreeSet::new();
+        let mut writes = Vec::new();
+        for (name, binding) in &self.env {
+            if let Binding::DataReference(reference) = binding {
+                if eligible(&reference.data) && completed.insert(reference.root.identity()) {
+                    writes.push((name.clone(), Vec::new(), reference.data.clone()));
+                }
+                continue;
+            }
+            for (fields, resource, _) in view::data_paths(binding) {
+                if eligible(resource) && completed.insert(resource.root.identity()) {
+                    writes.push((name.clone(), fields, resource.clone()));
+                }
+            }
+        }
         let origin = Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetWriteComplete,
             trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
         });
-        let mut completed = BTreeSet::new();
-        for data in data {
-            if completed.insert(data.root.identity()) {
-                let data = self.refresh_application_data(data, span)?;
-                self.complete_application_elements(&DataReference::direct(data.clone()), data.elements.known(), &[], span, origin.clone())?;
+        for (name, fields, mut data) in writes {
+            if let Binding::OwnedValue(owner) = &self.env[&name] {
+                let mut resource = returns::Returned::OwnedValue(owner.clone());
+                for field in fields {
+                    let returns::Returned::OwnedValue(mut owner) = resource else { unreachable!() };
+                    resource = if owner.value.ty.has_variants() {
+                        self.load_owned_value(&mut owner, span)?;
+                        self.unpack_variant(&owner, field)?
+                    } else {
+                        self.unpack_record(&owner, field)
+                    };
+                }
+                let returns::Returned::Dataset(projected) = resource else { unreachable!() };
+                data.place = projected.place;
+                data.root.regs = projected.root.regs;
+                data.length.regs = projected.length.regs;
             }
+            let data = self.refresh_application_data(data, span)?;
+            self.complete_application_elements(&DataReference::direct(data.clone()), data.elements.known(), &[], span, origin.clone())?;
         }
         Ok(())
     }
