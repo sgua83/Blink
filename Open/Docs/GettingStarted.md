@@ -191,7 +191,7 @@ cargo build --workspace --release
 
 后续命令均在 Blink 根目录执行。CPU 入门无需 GPU；GPU 版本需要满足程序能力要求的 Vulkan 驱动，无需 Vulkan SDK。当前 f32 示例还要求 `DenormPreserve` 与 `SignedZeroInfNanPreserve`，能力不足会明确报错。
 
-正式发行计划于每周日北京时间 **21:00（UTC+8）启动**构建和发布，完成时间取决于构建与上传，实际已发布版本以 [Releases](https://github.com/sgua83/Blink/releases)为准。新版覆盖安装，只保留当前版，原研发根和 target 不改；同一安装程序支持管理员 `--quiet` 部署。发布、安装与稳定种子的输入／输出边界见内部研发资料（不公开）和内部研发资料（不公开）。`bc --version`、`blink --version`、`brun --version`显示各自构建时的版本。
+正式发行计划于每周日北京时间 **21:00（UTC+8）启动**构建和发布，完成时间取决于构建与上传，实际已发布版本以 [Releases](https://github.com/sgua83/Blink/releases)为准。新版覆盖安装，只保留当前版，原研发根和 target 不改；同一安装程序支持管理员 `--quiet` 部署。`bc --version`、`blink --version`、`brun --version`显示各自构建时的版本。
 
 ## 工具与原生集成
 
@@ -214,9 +214,9 @@ cargo build --workspace --release
 
 ### 面向 AI 的工具与系统研发
 
-编译、调试、观察与基础量化工具以AI为唯一直接使用者，架构师通过AI掌握真实代码、数据和执行。长期支持AI编写观察／分析程序、在数据附近计算、表达明确机器方案并组合真实输入实验；优化策略、调试信息和采集独立，AI负责分析与选择。总原则、逐项职责及当前基础见内部研发资料（不公开）；这些方向仍在研发，不代表已有完整调试／实验工具，也不增加自动瓶颈判断、评分或另一运行状态权威。
+编译、调试、观察与基础量化工具以AI为唯一直接使用者，架构师通过AI掌握真实代码、数据和执行。长期支持AI编写观察／分析程序、在数据附近计算、表达明确机器方案并组合真实输入实验；优化策略、调试信息和采集独立，AI负责分析与选择。这些方向仍在研发，不代表已有完整调试／实验工具，也不增加自动瓶颈判断、评分或另一运行状态权威。
 
-B按真实职责推进编译器及调试／观察主体的自举与接管，并建设完整系统程序所需的接口与库。正常系统ABI声明和有职责的B库封装应复用，必要独立Rust支持可保留；不以百分之百B、源码比例或B外壳计完成。边界和当前状态见内部研发资料（不公开）。
+B按真实职责推进编译器及调试／观察主体的自举与接管，并建设完整系统程序所需的接口与库。正常系统ABI声明和有职责的B库封装应复用，必要独立Rust支持可保留；不以百分之百B、源码比例或B外壳计完成。
 
 可选CPU栈报告由`bc -c ... --stack-report <文件>`或`blink --stack-report <已编译输入>... -o <文件>`生成，展示实际帧、调用链上界及递归／外部／间接未知范围；可声明真实调用前预算，仅作报告。PE容量与真实线程剩余容量分别说明，工具不限制递归或改写执行。命令与范围见[静态栈报告](BLanguage.md#cpu调用链的静态栈报告)。
 
@@ -245,7 +245,7 @@ AI可用`bc spirv <module.spv>`或compiler SDK的`spirv::module_json`只读取�
 
 普通CPU应用可直接移动、补回固定拥有数组的动态位置，并沿实际分支、for／while和返回释放仍拥有的资源。 动态拥有元素可由`dataset<T>(length,F)`静态逐项构造，完整序列移动／返回与最后元素释放沿同一拥有树；能力及字段借用／追加／取出等剩余范围见[拥有元素序列](BLanguage.md#cpu-owned-dataset-elements)。普通CPU函数可用`requires nonzero(rows[*].value)`交接共同非零前提，也可用`requires nonempty(rows[*].value.values)`交接已初始化元素的共同子资源非空前提，同一元素的`requires index(rows[*].value.index,rows[*].value.values)`还可交接实际索引与子资源关系；范围见[共同值](BLanguage.md#common-element-nonzero)、[共同资源](BLanguage.md#common-element-nonempty)和[索引关系](BLanguage.md#common-element-index)。returned与write／inout的条件CPU／GPU输出位置可经普通函数、对象和归档交接，条件输入按实际使用路径交接，循环提前退出的跨函数输出位置也沿真实出口关系交接；当前对象与资源ABI见[唯一版本说明](BLanguage.md#已编译模块的资源abi)，精确范围见[语言规范](BLanguage.md#跨函数模块的条件资源输出位置)。
 
-B 语言 **不采用面向对象**，以数据、函数、模块和执行域组织程序。长期设计同时重视顶级效率与机器控制、可检查的接口，以及人、AI 代码生成工具和上层编译器的共同使用。当前子集、原生运行与性能结果分别记录于[语言规范](BLanguage.md)和内部研发资料（不公开）。
+B 语言 **不采用面向对象**，以数据、函数、模块和执行域组织程序。长期设计同时重视顶级效率与机器控制、可检查的接口，以及人、AI 代码生成工具和上层编译器的共同使用。当前语言规则和支持范围见[语言规范](BLanguage.md)。
 
 ## 学习与文档
 
@@ -258,7 +258,7 @@ B 语言 **不采用面向对象**，以数据、函数、模块和执行域组�
 | [《B 语言源码分析》](../../sample/B语言源码分析.md) | 阅读编译器、IR、后端及执行框架；[版本与阅读资料](../../sample/compiler/README.md)；[标准版与手机版 PDF 合集（发行资产）](https://github.com/sgua83/Blink/releases/latest) |
 | [《BLEngine 源码分析》](../../sample/BLEngine源码分析.md) | 首个消费者如何使用语言、场景与光照；[阅读资料](../../sample/engine/README.md)；[标准版与手机版 PDF 合集（发行资产）](https://github.com/sgua83/Blink/releases/latest) |
 | [B标准库](../../library/README.md) | 普通值动态序列、严格UTF-8／UTF-16编解码、整段转换与拥有切片，以及Windows系统信息、计时、线程错误码、原始命令行、环境读写、UTF-8文件输入、路径存在性、绝对路径、规范路径身份、扩展名替换及路径组合 |
-| [语言规范](BLanguage.md) · 内部研发资料（不公开） · 内部研发资料（不公开） | 当前规则、长期边界和后续设计 |
+| [语言规范](BLanguage.md) | 当前规则与支持范围 |
 
 技术文档与书籍目前以中文为主；英文首页提供相同的入门路径和能力说明。上表为 main 的现行书稿与配套示例；基础应用已按前述正式工具版本验证。上表 PDF 入口指向正式发行资产，PDF 版本随该次发行；在线 Markdown 随 main 更新；标准版与手机版 PDF 在周日正式发行时从同次固定书稿统一生成，合集见对应 [Release](https://github.com/sgua83/Blink/releases) 的 `Blink-Books.zip` 资产。BLEngine 是独立消费者，尚未开源；本仓库提供其案例书稿与阅读资料，不提供引擎源码。
 

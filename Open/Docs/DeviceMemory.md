@@ -25,7 +25,7 @@
 
 一个Block可被多个buffer／数据对象共享，冻结别名还可能重复引用同一buffer。跨对象分析须在相关原所有者仍存活的同一观察范围内，区分逻辑根、buffer、绑定区间与按device／memory识别的分配对象；不能逐项累加`allocation_bytes`当独占显存，也不能把这些句柄保存为长期身份。查询结果是当时元数据，原所有者结束后句柄可以复用，不授予地址访问或延长代码／数据寿命。
 
-本查询不覆盖view引用的子图、实例持有的BLAS／TLAS、纹理、管线、临时传输／scratch或整逻辑设备的全部内存，也不证明物理驻留。最后真实GPU消费者完成前由原GpuDataset／Execution持有存储；Range及最后Block沿原释放链结束，报告没有第二份所有权或常驻统计。完整资源根和AI／B／C观察入口仍沿内部研发资料（不公开）及原台账推进。
+本查询不覆盖view引用的子图、实例持有的BLAS／TLAS、纹理、管线、临时传输／scratch或整逻辑设备的全部内存，也不证明物理驻留。最后真实GPU消费者完成前由原GpuDataset／Execution持有存储；Range及最后Block沿原释放链结束，报告没有第二份所有权或常驻统计。完整资源根和AI／B／C观察入口仍待实现。
 
 标准字段分别依据[VkMemoryAllocateInfo](https://docs.vulkan.org/refpages/latest/refpages/source/VkMemoryAllocateInfo.html)与[VkMemoryRequirements](https://docs.vulkan.org/refpages/latest/refpages/source/VkMemoryRequirements.html)，原分配对象大小与资源需求不可互换。
 

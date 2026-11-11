@@ -191,7 +191,7 @@ cargo build --workspace --release
 
 Run all subsequent commands from the Blink root. CPU examples need no GPU. GPU examples need a Vulkan driver supporting each program's requirements, without a separate Vulkan SDK. The f32 example currently requires `DenormPreserve` and `SignedZeroInfNanPreserve`; unsupported devices receive an explicit error.
 
-Formal release builds and publication are scheduled to **start every Sunday at 21:00 Beijing time (UTC+8)**. Completion depends on building and uploading; [Releases](https://github.com/sgua83/Blink/releases) records what is actually published. New installations replace the current version; development roots and target directories remain unchanged. The same installer supports administrator `--quiet` deployment. See 内部研发资料（不公开） and 内部研发资料（不公开） for installation and seed input/output boundaries. `bc --version`, `blink --version`, and `brun --version` report each tool's build-time version.
+Formal release builds and publication are scheduled to **start every Sunday at 21:00 Beijing time (UTC+8)**. Completion depends on building and uploading; [Releases](https://github.com/sgua83/Blink/releases) records what is actually published. New installations replace the current version; development roots and target directories remain unchanged. The same installer supports administrator `--quiet` deployment. `bc --version`, `blink --version`, and `brun --version` report each tool's build-time version.
 
 ## Tools and native integration
 
@@ -212,9 +212,9 @@ Write standalone applications in the B language, or compile compute functions wr
 
 ### AI-facing tools and systems development
 
-Compilation, debugging, inspection, and basic measurement tools serve AI as their sole direct user; architects use AI to inspect actual code, data, and execution. The long-term design lets AI write observation and analysis programs, compute near the data, express concrete machine implementations, and combine experiments on real inputs. Optimization, debug information, and runtime collection are independent choices; analysis and implementation selection remain with AI or the user. See the 内部研发资料（不公开） for current foundations and planned capabilities. Complete debugging and experiment interfaces are not yet delivered; the design adds no automatic bottleneck judgments, scoring, or second authority over runtime state.
+Compilation, debugging, inspection, and basic measurement tools serve AI as their sole direct user; architects use AI to inspect actual code, data, and execution. The long-term design lets AI write observation and analysis programs, compute near the data, express concrete machine implementations, and combine experiments on real inputs. Optimization, debug information, and runtime collection are independent choices; analysis and implementation selection remain with AI or the user. Complete debugging and experiment interfaces are not yet delivered; the design adds no automatic bottleneck judgments, scoring, or second authority over runtime state.
 
-B develops self-hosting compiler and debugging/inspection responsibilities alongside the interfaces and libraries required for complete systems programs. System ABI declarations and meaningful B library wrappers are valid capabilities; independent native support may remain in Rust. Completion is based on actual ownership and rebuilding, rather than a source percentage or a B shell around the original implementation. See the 内部研发资料（不公开） for boundaries and current status.
+B develops self-hosting compiler and debugging/inspection responsibilities alongside the interfaces and libraries required for complete systems programs. System ABI declarations and meaningful B library wrappers are valid capabilities; independent native support may remain in Rust. Completion is based on actual ownership and rebuilding, rather than a source percentage or a B shell around the original implementation.
 
 AI can inspect an artifact's stored build request and source identities with `bc inputs <compiled.obj|entry.blbi>`. This JSON query neither reads current B sources nor recompiles the artifact. See [build input inspection](BLanguage.md#实际构建输入查询) for fields and identity scope; this command does not imply that complete debugging tools are available.
 
@@ -245,7 +245,7 @@ CPU applications can construct datasets of owning elements with `dataset<T>(leng
 
 CPU applications can also move and refill dynamically indexed positions in fixed owning arrays, releasing the resources still owned along actual branches, loops, and returns. Conditional CPU/GPU output locations for returned values and write/inout parameters can cross ordinary functions, compiled objects, and archives; conditional inputs follow the actual use path, including loop early exits. See the [compiled-module resource ABI](BLanguage.md#已编译模块的资源abi) and [conditional resource outputs](BLanguage.md#跨函数模块的条件资源输出位置).
 
-The B language **does not adopt object-oriented programming**. Programs are organized around data, functions, modules, and execution domains. The design values top-tier efficiency, direct control over machine execution, checkable interfaces, and use by people, AI code generators, and higher-level compilers. Current rules, native runs, and performance results are recorded separately in the [language reference](BLanguage.md) and 内部研发资料（不公开）.
+The B language **does not adopt object-oriented programming**. Programs are organized around data, functions, modules, and execution domains. The design values top-tier efficiency, direct control over machine execution, checkable interfaces, and use by people, AI code generators, and higher-level compilers. The [language reference](BLanguage.md) describes the current rules and supported features.
 
 ## Learn and explore
 
@@ -258,7 +258,7 @@ The B language **does not adopt object-oriented programming**. Programs are orga
 | [B Language Source Analysis](../../sample/B语言源码分析.md) | Compiler, IR, backends, and execution framework; [version and reading notes](../../sample/compiler/README.md); [standard and mobile PDF bundle — Release assets](https://github.com/sgua83/Blink/releases/latest) |
 | [BLEngine Source Analysis](../../sample/BLEngine源码分析.md) | How the first consumer uses the language, scenes, and lighting; [reading notes](../../sample/engine/README.md); [standard and mobile PDF bundle — Release assets](https://github.com/sgua83/Blink/releases/latest) |
 | [B standard library](../../library/README.md) | Dynamic value sequences, strict UTF-8/UTF-16 codecs, whole-text conversions and owned slices, plus Windows system information, timing, thread error codes, raw command lines, environment access, UTF-8 file input, path existence, absolute and canonical path identities, extension replacement, and path composition |
-| [Language reference](BLanguage.md) · 内部研发资料（不公开） · 内部研发资料（不公开） | Current rules, long-term boundaries, and future design |
+| [Language reference](BLanguage.md) | Current rules and supported features |
 
 Technical documentation and books are currently primarily in Chinese. Both README editions provide the same starting points and capability descriptions. The table follows main and its companion examples; basic applications have been verified with the formal tools stated above. The table links to the formal Release assets; PDF versions follow that release, while online Markdown follows main. Standard and mobile PDFs are generated from the fixed manuscripts during the Sunday formal release; look for `Blink-Books.zip` in the corresponding [Release assets](https://github.com/sgua83/Blink/releases). BLEngine is an independent consumer and is not yet open source; this repository provides its case-study book and reading notes, rather than the engine source.
 

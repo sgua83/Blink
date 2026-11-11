@@ -5,13 +5,13 @@ Blink（简称 B）是一门自研原生并行计算语言。`.h` 声明模块�
 B也寓意Base。Blink希望像C语言为上一个计算时代所做的那样，成为AI超算时代的基础语言。本文描述当前已实现规则；软件版本见根VERSION，长期目标、实现、原生结果与性能分别记录。
 
 
-编译、调试、观察和基础量化工具以AI为唯一直接使用者，架构师通过AI分析；长期支持AI用普通B函数编写观察／分析程序、在数据附近处理所选事实、表达明确机器方案并组合真实输入实验。原检查器与资源所有者约束访问、效果、ABI和最后完成，优化策略、调试信息与采集独立。总原则及逐项职责统一见内部研发资料（不公开），未完成工具沿C-021.7.9、机器表达沿C-024.1.10至.21，数值、设备／域与版本仍沿原编号；这些长期方向尚未形成观察程序或机器方案的正式语法与执行命令；已交付的基础查询见下述对应规则。既有导出、栈报告、GPU计时与完成接口不代表这些设计已交付，实际支持以对应现行规则和原生结果为准。
+编译、调试、观察和基础量化工具以AI为唯一直接使用者，架构师通过AI分析；长期支持AI用普通B函数编写观察／分析程序、在数据附近处理所选事实、表达明确机器方案并组合真实输入实验。原检查器与资源所有者约束访问、效果、ABI和最后完成，优化策略、调试信息与采集独立。这些长期方向尚未形成观察程序或机器方案的正式语法与执行命令；已交付的基础查询见下述对应规则。既有导出、栈报告、GPU计时与完成接口不代表这些设计已交付，实际支持以对应现行规则和原生结果为准。
 
-长期目标与确定的语言边界见 内部研发资料（不公开）。B 不采用面向对象，不设计类继承、虚函数、对象类型驱动的运行时动态派发、通用类型擦除动态对象或反射驱动调用，以数据、函数、模块和执行域组织程序。普通B通过组合、编译期泛型与特化、模块接口复用，目的是尽量在编译期发现类型、调用、访问、副作用及生命周期问题，减少依赖运行时绑定和调用者约定的关系。必要动态性集中在真实外部ABI、模块装载／执行版本及资源调度边界；动态输入、容器、显式变体和普通任务仍属完整通用能力，不要求全部数值或调度预先固定。编译器可控的原生并行与调度、跨机一致语义和稳定热更新是长期核心目标，本规范不将这些目标描述为当前已实现能力。
+B 不采用面向对象，不设计类继承、虚函数、对象类型驱动的运行时动态派发、通用类型擦除动态对象或反射驱动调用，以数据、函数、模块和执行域组织程序。普通B通过组合、编译期泛型与特化、模块接口复用，目的是尽量在编译期发现类型、调用、访问、副作用及生命周期问题，减少依赖运行时绑定和调用者约定的关系。必要动态性集中在真实外部ABI、模块装载／执行版本及资源调度边界；动态输入、容器、显式变体和普通任务仍属完整通用能力，不要求全部数值或调度预先固定。编译器可控的原生并行与调度、跨机一致语义和稳定热更新是长期核心目标，本规范不将这些目标描述为当前已实现能力。
 
 B应具备独立编写完整系统程序的能力。正确的系统ABI声明，以及承担类型／编码／错误／资源管理的B系统库属于实际能力；已有Windows接口可以直接沿原生ABI调用系统DLL，后续其他64位平台仍须分别实现。独立且必要的原生支持可以保留Rust，B外壳或相同参数的重复转发不代表B接管。编译器主体自举、调试／观察主体实际接管、保留的Rust支持与完整工具链脱离Rust分别报告，不以百分之百B或源码比例判完成；具体边界统一见Architecture及NativeInterop，当前实现状态保持如实记录。
 
-内存安全是核心目标，完整目标和编译器／库的责任统一见内部研发资料（不公开）。本文各节只说明已实现的类型、初始化、索引、借用、并行访问及显式外部边界规则；当前仍有具体未闭合能力和实现缺陷，不宣称完整内存安全或无泄漏已经交付，现行缺口沿Issues原编号及C-036记录。
+内存安全是核心目标。本文各节只说明已实现的类型、初始化、索引、借用、并行访问及显式外部边界规则；当前仍有具体未闭合能力和实现缺陷，不宣称完整内存安全或无泄漏已经交付。
 
 ## 确定的CPU运行目标：仅64位
 
@@ -128,7 +128,7 @@ B 与 C 一致，关键字和标识符区分大小写。`value`、`Value`、`VAL
 
 当前参与要求在装入的定义／调用闭包中推导，纯域组合沿实际调用及被调闭合参与合同保持Domain，与实现来自源码、对象或归档无关；on cpu本身及被调方已编译都不产生Host要求。真正的分配、普通CPU局部求值／控制及Host调用仍沿原推导保持Host。已编译子域由原DomainCall处理，保持原目标及前缀／资源合同，不要求重读B正文。已编译整域模块导出当前支持的参与要求和初始化效果，调用者消费产物接口。CPU应用普通原生调用／递归及有限独立模块按后文规则实现；完整效果／资源阶段、其他目标普通调用、选择性内联与完整泛型分发仍待实现。Program／Stage／ExecutionPlan、compile_entry和--program保留实际算法产物职责。
 
-普通条件、循环和调用保持各自语义；当前parallel及target不表示任意顺序程序会自动变为通用任务DAG。编译器内部依赖／事实图与现有执行计划各有职责。域内分片、参与入口、远端数据引用及完整明确机器方案仍为待实现设计，不构成新的现有语法；共同边界见内部研发资料（不公开），域方案见内部研发资料（不公开）。
+普通条件、循环和调用保持各自语义；当前parallel及target不表示任意顺序程序会自动变为通用任务DAG。编译器内部依赖／事实图与现有执行计划各有职责。域内分片、参与入口、远端数据引用及完整明确机器方案仍为待实现设计，不构成新的现有语法。
 
 ## 只有接口的模块
 `.h` 是接口事实源；仅含数据类型、类型集合、常量或外部声明的模块不需要空 `.b`。实现文件实际存在时才参与加载，私有声明仍只在本模块可见。普通函数声明必须有真实匹配函数体；缺失实现报 B027，接口内普通函数体报 B026，模块名不一致报 B022，实际实现文件不可读取报 B020。不会以空实现对象代替文件，也不忽略真实 I/O 错误。
@@ -306,13 +306,13 @@ compiler角色的NativeCode.sources以CodeSources::Emitted可选持有operation_
 
 NativeCode::code_json在原输出中增加operation_ranges：None为null，已采集但没有操作为[]，每项提供start_byte、end_byte、byte_length、includes_nested_operations及origin（原OperationOrigin JSON）。偏移相对该映像字节零，单位为字节且范围为半开；机器反汇编仍来自同一最终bytes。序列按操作发射完成顺序交接，实际嵌套操作先于包含它的父操作，范围可以包含／重叠；这不是前端IR编号、独立指令数或动态执行次数，不能求和计成本。零长度明确表示该原操作没有发射字节，其位置只是游标，不能当作可设置断点的指令地址。origin两项均为空仍表示真实范围的来源未知，与整份材料未保留分别表达。
 
-并行主入口复用同一范围容器：标量尾部及不采用SIMD的实际IR由原block记录；SIMD临时Step直接借用对应原Inst，packet_block发射后在同一Emitter记录范围。Plan的执行kind、向量化条件、地址专用Index移除与机器字节保持；Step借用随临时计划结束，最终材料只持有原OperationOrigin。已移除的SIMD步骤没有发射范围，不伪造零指令；同一原操作可在SIMD及标量尾部各有实际范围。并行生成外层范围边界／选择／索引推进、四lane收集及帧包装沿原FunctionAbi交接，不把它们套成业务语句；tile包装及内部生成分别沿原实际发射者描述，职责见内部研发资料（不公开）。
+并行主入口复用同一范围容器：标量尾部及不采用SIMD的实际IR由原block记录；SIMD临时Step直接借用对应原Inst，packet_block发射后在同一Emitter记录范围。Plan的执行kind、向量化条件、地址专用Index移除与机器字节保持；Step借用随临时计划结束，最终材料只持有原OperationOrigin。已移除的SIMD步骤没有发射范围，不伪造零指令；同一原操作可在SIMD及标量尾部各有实际范围。并行生成外层范围边界／选择／索引推进、四lane收集及帧包装沿原FunctionAbi交接，不把它们套成业务语句；tile包装及内部生成分别沿原实际发射者描述。
 
-自定义集合的原custom_reduce::emit将初始化、循环体及末尾真实Inst依次交给原block，与普通函数／并行代码共用operation_range。Reduce／ReduceTail、Scan／ScanPrefix／ScanAdd、SegmentReduce／SegmentPrefix／SegmentFinish均保留实际范围，分段扫描复用原Scan路径；现有值核的语法及生成关系保持，原生成Inst无来源时仍为未知。最终材料只持有原OperationOrigin，临时kernel／Stage／IR不因观察延寿。真实IR范围不代替机器原语、帧／范围循环和摘要输出的完整生成职责，其他内建集合来源继续内部研发资料（不公开）。BLCR7／BLCF10字段编码与执行ABI保持，原材料没有采集的范围不能由新版本查询补造。
+自定义集合的原custom_reduce::emit将初始化、循环体及末尾真实Inst依次交给原block，与普通函数／并行代码共用operation_range。Reduce／ReduceTail、Scan／ScanPrefix／ScanAdd、SegmentReduce／SegmentPrefix／SegmentFinish均保留实际范围，分段扫描复用原Scan路径；现有值核的语法及生成关系保持，原生成Inst无来源时仍为未知。最终材料只持有原OperationOrigin，临时kernel／Stage／IR不因观察延寿。真实IR范围不代替机器原语、帧／范围循环和摘要输出的完整生成职责，其余内建集合的机器来源仍待补齐。BLCR7／BLCF10字段编码与执行ABI保持，原材料没有采集的范围不能由新版本查询补造。
 
-tile_publish与tile_atomic经原Builder::emit交接当前声明语句及实际定义／实例／内联上下文到TilePublish，不绕过该原来源生产者构造空Inst。CPU tile发布和tile集合的原Inst在phase计划中直接借用，临时计划不复制另一套指令类别／载荷；原活跃性沿同一live_before与Inst.results处理。实际publish_values／tile_collective生成前后复用已有operation_range交接整条原IR的真实范围及OperationOrigin，普通block仍走同一机制；源定义、语法、实例、内联及生成关系按原指令保留，未知不猜造。原IR范围不是每个共享片段、单位元、循环或填充的独立生成描述，发布内部地址、加载、移位与存储已沿内部研发资料（不公开）交接；集合位置、单位元、独占写出、累积回边及归约填充也沿内部研发资料（不公开）交接。IR借用随阶段消费结束，最终材料只留不可变来源；CPU指令、GPU SPIR-V生成、原phase／liveness／布局／完成保持，格式沿现行BLCR7／BLCF10。恢复只交接所供材料已有记录，不因新查询端而补造范围。
+tile_publish与tile_atomic经原Builder::emit交接当前声明语句及实际定义／实例／内联上下文到TilePublish，不绕过该原来源生产者构造空Inst。CPU tile发布和tile集合的原Inst在phase计划中直接借用，临时计划不复制另一套指令类别／载荷；原活跃性沿同一live_before与Inst.results处理。实际publish_values／tile_collective生成前后复用已有operation_range交接整条原IR的真实范围及OperationOrigin，普通block仍走同一机制；源定义、语法、实例、内联及生成关系按原指令保留，未知不猜造。原IR范围不是每个共享片段、单位元、循环或填充的独立生成描述，已交接的机器来源包括发布内部地址、加载、移位、存储、集合位置、单位元、独占写出、累积回边和归约填充。IR借用随阶段消费结束，最终材料只留不可变来源；CPU指令、GPU SPIR-V生成、原phase／liveness／布局／完成保持，格式沿现行BLCR7／BLCF10。恢复只交接所供材料已有记录，不因新查询端而补造范围。
 
-当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量分别由原ABI与尾部材料交接，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存来源，compiler角色恢复执行映像时sources为Unavailable；BLCR7将已保存的操作来源恢复为同一sources中的只读SavedSources；BLCF10沿原COFF布局保存／恢复这些已有操作范围及原OperationOrigin，不自动重编。字段、职责及剩余边界见内部研发资料（不公开）。
+当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量分别由原ABI与尾部材料交接，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；CPU纹理降低的新指令沿原采样共享来源与cpu_texture_sample生成职责，普通函数的同次操作范围已交接该材料。执行编码不保存来源，compiler角色恢复执行映像时sources为Unavailable；BLCR7将已保存的操作来源恢复为同一sources中的只读SavedSources；BLCF10沿原COFF布局保存／恢复这些已有操作范围及原OperationOrigin，不自动重编。
 
 ### 普通CPU函数ABI参数的实际发射来源
 
@@ -328,7 +328,7 @@ code_json的function_abi未保留时为null；已采集但没有当前已交接A
 
 共同末尾机器返回由AbiRangeKind::FunctionReturn交接，JSON kind为function_return，只记录原emit_value在结果与栈恢复后实际发射RET的范围；function_end继续来自同一原主函数末端，不含尾部辅助或字面量。职责只说明这条真实机器返回，不伪造源码return、不解释为成功、失败或最后资源消费者完成；源内提前return形成的原Scope／Exit仍随operation_ranges交接，不创建另一退出目标、图或清理链。
 
-原可失败函数成功出口的状态清零由AbiRangeKind::FallibleSuccessStatus交接，JSON kind为fallible_success_status；范围只包含原emit_value在fallible分支发射的RAX置零指令，表示没有拥有错误，不是业务结果或共同机器返回。无失败函数不生成此职责。真实错误值装载和原退出跳转继续沿Raise的operation_ranges及其原触发来源表达，不重复生成ABI标签、退出目标或来源图；失败跳转绕过成功状态清零，原错误和清理语义保持。当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出、可失败成功状态及共同机器返回，不能把未命中范围的字节自动归类。必要执行编码不保存来源，compiler角色执行解码后sources为Unavailable；BLCR7恢复原ABI只读事实；BLCF10沿同一Object／Section显式保存与恢复原ABI事实，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见内部研发资料（不公开）。
+原可失败函数成功出口的状态清零由AbiRangeKind::FallibleSuccessStatus交接，JSON kind为fallible_success_status；范围只包含原emit_value在fallible分支发射的RAX置零指令，表示没有拥有错误，不是业务结果或共同机器返回。无失败函数不生成此职责。真实错误值装载和原退出跳转继续沿Raise的operation_ranges及其原触发来源表达，不重复生成ABI标签、退出目标或来源图；失败跳转绕过成功状态清零，原错误和清理语义保持。当前已交接参数home、输入搬移、栈维护、帧内结果地址保存、结果输出、可失败成功状态及共同机器返回，不能把未命中范围的字节自动归类。必要执行编码不保存来源，compiler角色执行解码后sources为Unavailable；BLCR7恢复原ABI只读事实；BLCF10沿同一Object／Section显式保存与恢复原ABI事实，不自动重编或从执行字节补造。
 
 ### 原生尾部目标及真实rel32字段
 
@@ -338,7 +338,7 @@ code_json的tail_references未保留时为null，已采集但没有相应引用�
 
 普通函数的使用来源由字段所属的原operation_ranges及function_abi范围说明；多个父子范围如实保留，不强选唯一语句。字面量数据只说明实际存储，原值来自源字面量还是编译期生成仍由原IR说明；仅凭池中位模式不能猜源数值类型或最初声明，确切值与合同继续由原IR查询。探栈调用可沿原FrameAllocate范围理解生成职责；辅助代码和调用代码分别说明。其他CPU并行／SIMD／集合入口复用同一finish交接物理引用，并不因此已有其完整源码关系，原未交接来源保持未知。
 
-材料从原finish局部容器移动至同一NativeCode，原字面量references Vec直接转移；不持有Emitter、Frame、字面量拥有表或运行资源，随最后代码事实消费者结束释放。必要执行编码不保存tail_references，compiler角色执行解码后为None；BLCR7保存／恢复同一可选引用；COFF原Function Layout按值接收同一可选引用，并沿BLCF10保存／恢复，查询不自动重编或从指令补造。必要执行编码、执行ABI与实际字节不变，职责见内部研发资料（不公开）。
+材料从原finish局部容器移动至同一NativeCode，原字面量references Vec直接转移；不持有Emitter、Frame、字面量拥有表或运行资源，随最后代码事实消费者结束释放。必要执行编码不保存tail_references，compiler角色执行解码后为None；BLCR7保存／恢复同一可选引用；COFF原Function Layout按值接收同一可选引用，并沿BLCF10保存／恢复，查询不自动重编或从指令补造。必要执行编码、执行ABI与实际字节不变。
 
 ### IR操作的语法来源
 
@@ -352,7 +352,7 @@ Builder在实际语句、表达式、返回值表达式和位置处理期间交�
 
 条件输出的字节范围属于原合同定义。原Contract::Declaration借用Definition，直接取得同一原合同列表及语法上下文；outputs::expression在convert及builder.expr期间成对使用合同span与其来源。相同Definition保留已有实例／内联／域上下文，跨定义采用原定义能提供的上下文，未传具体Instance不猜补；已绑定Signature沿原真实调用处span／source保留调用位置上下文。求值完成或返回错误后，原Builder的来源定义、上下文、语法点和原env恢复，其他调用／值／Proof保持。
 
-外部声明或已编译提供者缺少真实实现来源时保持null，不能把声明的索引解释成调用者源码，亦不在位置查询截断或改写越界范围。真实普通B定义的条件仍保留其SourceSite，不通过清空全部来源消除错配。外部具名声明自身沿下述SourceDeclaration交接，声明与提供者实现分开，详见内部研发资料（不公开）。
+外部声明或已编译提供者缺少真实实现来源时保持null，不能把声明的索引解释成调用者源码，亦不在位置查询截断或改写越界范围。真实普通B定义的条件仍保留其SourceSite，不通过清空全部来源消除错配。外部具名声明自身沿下述SourceDeclaration交接，声明与提供者实现分开。
 
 
 #### 实际实例与内联展开点
@@ -471,7 +471,7 @@ Inst::new继续构造没有来源材料的普通节点；原直接发射、原�
 
 合并节点没有唯一直接语法来源，其source_site()为空；该多输入锚点的syntax()／origin()／instance()及外层trigger()均为空，不任取一路代表完整变换。两路SourceSite保留自己的真实定义快照、实际实例、inlined_at及domain_path。当前解析器对二元除法／余数Expr.span通常只覆盖左操作数起始token，例如value，不扩大为整段value/divisor或value%divisor；查询使用真实UTF8字节范围及原快照，不重读之后改写或移走的磁盘源码。
 
-材料归原Inst并随原IR／Stage克隆、模块和SDK编译结果在最后消费者后释放，只共享来源，不保留旧输入Inst／IR、AST／World、运行状态或额外图。后续DCE把Both裁为单结果时，IntegerDivisionResultPrune.retained保持此前的配对来源；整条删除时，原EliminatedOperation将来源交给ValueCode／Stage及空Map后的Program。保留来源不保活旧指令，也不声称仍有两个输出。配对条件、寄存器／结果、数值和控制边界不变，compiler之外没有本类型／材料，必要对象与运行编码不变。其他复用、重写／消除及机器范围仍按原叶推进，不把本项当作完整优化历史。见内部研发资料（不公开）和内部研发资料（不公开）。
+材料归原Inst并随原IR／Stage克隆、模块和SDK编译结果在最后消费者后释放，只共享来源，不保留旧输入Inst／IR、AST／World、运行状态或额外图。后续DCE把Both裁为单结果时，IntegerDivisionResultPrune.retained保持此前的配对来源；整条删除时，原EliminatedOperation将来源交给ValueCode／Stage及空Map后的Program。保留来源不保活旧指令，也不声称仍有两个输出。配对条件、寄存器／结果、数值和控制边界不变，compiler之外没有本类型／材料，必要对象与运行编码不变。其他复用、重写／消除及机器范围仍按原叶推进，不把本项当作完整优化历史。
 
 #### 相同表达式结果复用的来源
 
@@ -481,7 +481,7 @@ ExpressionReuse::result()取得实际被复用的结果角色ReuseResult::Value�
 
 原source_site仍表示保留操作自己的直接来源，不是全部复用点。多输入的trigger()及锚点syntax()／origin()／instance()为空，各路从retained和reused取得；这里锚点origin()和ExpressionReuse::origin()各有其上述明确语义。原实例、内联、域路径及源字节范围随各自SourceSite保持，多个删除点可归到同一保留结果，不强制一一映射。getter和JSON均沿已持有的快照查询，不重读后续改写或移走的文件。
 
-本次值流调用只以原SSA号暂存尚待交接的材料，沿原完整IR以及归约公共入口／各原函数体归到真实保留Inst后释放；不会随Values克隆另一表达式权威，不让兄弟函数体复用未执行的定义。永久材料没有寄存器号、旧输入Inst／IR、AST／World、运行状态或另一图。来源随原Inst／Stage／ValueCode及模块／SDK编译结果共享，最后IR消费者后释放，不拥有运行资源。compiler以外没有这些类型、代码或材料，必要对象／运行编码和ABI保持；原别名键、配对／裁剪、控制、数值及完成不变。后续DCE照常删除，删除历史、结构及机器映射仍按原独立职责推进，不为观察保活或把本项当作完整优化时间线。见内部研发资料（不公开）及内部研发资料（不公开）。
+本次值流调用只以原SSA号暂存尚待交接的材料，沿原完整IR以及归约公共入口／各原函数体归到真实保留Inst后释放；不会随Values克隆另一表达式权威，不让兄弟函数体复用未执行的定义。永久材料没有寄存器号、旧输入Inst／IR、AST／World、运行状态或另一图。来源随原Inst／Stage／ValueCode及模块／SDK编译结果共享，最后IR消费者后释放，不拥有运行资源。compiler以外没有这些类型、代码或材料，必要对象／运行编码和ABI保持；原别名键、配对／裁剪、控制、数值及完成不变。后续DCE照常删除，删除历史、结构及机器映射仍按原独立职责推进，不为观察保活或把本项当作完整优化时间线。
 
 #### 局部读取到实际定义与输入的来源
 
@@ -493,7 +493,7 @@ ExpressionReuse::result()取得实际被复用的结果角色ReuseResult::Value�
 
 CPU函数在原Frame判定前后可以再次优化。原finalize实际移除Frame参数及inputs前缀时，同步调整本输入引用并移除已不存在输入的材料；使用原不可变共享语义保持旧快照，不以来源保留无消费Frame。普通无Frame标量的实际输入索引可以为0，保留Frame时普通值可位于实际前缀之后；以真实列表为准，不从参数名字或旧编号猜测。根generated_origin出现本理由仅说明发生了输入读取替代，不把普通源函数说成合成函数或应用入口。
 
-两类锚点的单源trigger()、syntax()／origin()／instance()均为空，各路从明确成员取得；原读SourceSite及GeneratedOrigin共享已有定义、实例、内联／域路径及真实字节范围，缺失为null。查询不重读后续改写或移走的文件，不保存旧Inst／IR、AST／World、运行拥有表或第二状态图；同一次值流仅用原SSA键暂存待交接材料，交回原拥有者后释放。材料随原Inst／ValueCode／Stage、模块及SDK编译结果在最后IR消费者后释放，compiler以外没有这些类型／代码，必要对象／运行编码及ABI保持。归约降层新增输入读取来源按后节交接，写失效及控制合流的完整事实仍沿.3.4至.3.8实施；无材料不证明没有发生传播，静态替代不证明已运行，不把前两叶当作全部局部值历史。见内部研发资料（不公开）、内部研发资料（不公开）和内部研发资料（不公开）。
+两类锚点的单源trigger()、syntax()／origin()／instance()均为空，各路从明确成员取得；原读SourceSite及GeneratedOrigin共享已有定义、实例、内联／域路径及真实字节范围，缺失为null。查询不重读后续改写或移走的文件，不保存旧Inst／IR、AST／World、运行拥有表或第二状态图；同一次值流仅用原SSA键暂存待交接材料，交回原拥有者后释放。材料随原Inst／ValueCode／Stage、模块及SDK编译结果在最后IR消费者后释放，compiler以外没有这些类型／代码，必要对象／运行编码及ABI保持。归约降层新增输入读取来源按后节交接，写失效及控制合流的完整事实仍沿.3.4至.3.8实施；无材料不证明没有发生传播，静态替代不证明已运行，不把前两叶当作全部局部值历史。
 
 #### 索引Store写入值到保留指令的读取来源
 
@@ -503,7 +503,7 @@ CPU函数在原Frame判定前后可以再次优化。原finalize实际移除Fram
 
 JSON根reason和锚点kind均为indexed_store_read_forward，锚点含result_index_base=0、retained和reads；各项kind为indexed_store_read_forward_input，字段为result_index、result_count、result、store和read。多源锚点的单源trigger()／syntax()／origin()／instance()为空，各路从对应成员读取；未知来源仍为null。Source及既有生成链不可变共享，后续优化可以沿原材料继续交接，不保活DCE操作，不保存旧IR、AST／World、运行状态或第二张内存表。
 
-此项覆盖写入值由保留Inst定义的范围；先前Load定义的复用按后节交接。普通CPU函数的资源参数使用LoadIndexed／StoreIndexed地址访问，不能据此推定发生原Values.memory中Load／Store的输入转交。归约输出Store由native/custom_reduce在kernel值流之后生成，不重新进入此前的输入读取归集；当前正式路径没有已确认的两类Store值到输入事件。已有LocalInputForward及ReductionInputForward继续表达各自真实局部读取；不新增预设输入锚点，也不把当前构造方式写成语言限制。没有此材料不证明不存在读取替代，更不证明运行时地址、数值、次数或完成。材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无这些类型／代码，必要对象／运行编码及ABI保持。新增公共枚举分支属于compiler SDK源码接口演化，软件版本与执行ABI分别表达。见内部研发资料（不公开）、内部研发资料（不公开）及内部研发资料（不公开）。
+此项覆盖写入值由保留Inst定义的范围；先前Load定义的复用按后节交接。普通CPU函数的资源参数使用LoadIndexed／StoreIndexed地址访问，不能据此推定发生原Values.memory中Load／Store的输入转交。归约输出Store由native/custom_reduce在kernel值流之后生成，不重新进入此前的输入读取归集；当前正式路径没有已确认的两类Store值到输入事件。已有LocalInputForward及ReductionInputForward继续表达各自真实局部读取；不新增预设输入锚点，也不把当前构造方式写成语言限制。没有此材料不证明不存在读取替代，更不证明运行时地址、数值、次数或完成。材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无这些类型／代码，必要对象／运行编码及ABI保持。新增公共枚举分支属于compiler SDK源码接口演化，软件版本与执行ABI分别表达。
 
 #### 先前索引Load的读取复用来源
 
@@ -513,7 +513,7 @@ JSON根reason和锚点kind均为indexed_store_read_forward，锚点含result_ind
 
 JSON根reason及锚点kind均为indexed_read_reuse，锚点含retained和reused；每个成员沿原operation_origin编码SourceSite及已有GeneratedOrigin，缺失材料仍为null。SDK通过anchor()取得多源成员，单源trigger()／syntax()／origin()／instance()为空。来源及实际实例、内联／域路径和字节范围不可变共享；查询只消费既有材料，不重读磁盘或保存旧IR／AST／World。这里记录本次交接时的保留Load，后续变换仍可把它作为既有来源交接，不能因材料仍在而断言最终仍有该Load或已经运行；DCE不为来源保活操作。
 
-当前simulation.bodies的integrate／step入口可查询到position读取的复用；能量函数内同一数值的复用不自动等于再次读取dataset，本次energy入口没有该材料。compiler以外无这些类型／代码，必要执行编码及资源ABI不变；公共枚举增加变体按原版本规则处理。材料沿原Inst／Stage／ValueCode及最后IR消费者释放，不拥有运行资源或新增调度／完成／释放链。见内部研发资料（不公开）及内部研发资料（不公开）。
+当前simulation.bodies的integrate／step入口可查询到position读取的复用；能量函数内同一数值的复用不自动等于再次读取dataset，本次energy入口没有该材料。compiler以外无这些类型／代码，必要执行编码及资源ABI不变；公共枚举增加变体按原版本规则处理。材料沿原Inst／Stage／ValueCode及最后IR消费者释放，不拥有运行资源或新增调度／完成／释放链。
 
 #### 未消费普通值结果的删除来源
 
@@ -523,7 +523,7 @@ operations中每个EliminatedOperation代表本次dce真正删除的一条IR操�
 
 GeneratedOrigin的JSON reason为unused_operations，锚点kind为eliminated_operations，字段为retained及operations；ValueResults的kind为eliminated_value，字段为result_types、integer_division_results及origin，类型拼写与本次IR寄存器类型相同。普通值的integer_division_results为null，整数除法删除时为原商／余数角色数组，见下节。多源单一trigger()／syntax()／origin()／instance()为空，各来源从明确成员读取；未知来源仍为null。Frame输入前缀真正移除时，原remove_input_prefix沿保留根继续调整LocalInputForward输入引用，旧共享快照和已取得删除来源保持；不改原Frame判断或ABI。
 
-材料仅compiler，沿原ValueCode／Stage及编译／模块／SDK快照在最后IR消费者后释放，不保活操作、槽位或阶段，不持有AST／World、运行资源或另一活跃性表，不进入必要对象／执行编码。整个空Map阶段移除后的来源由原Program沿C-021.7.9.7.3.2.2继续交接；没有材料不证明操作未发生删除。SDK新增公开枚举／类型属于compiler源码接口演化，软件版本与执行ABI分别表达。实际入口继续使用bc ir的普通函数、应用和程序查询，不增另一调试命令。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料仅compiler，沿原ValueCode／Stage及编译／模块／SDK快照在最后IR消费者后释放，不保活操作、槽位或阶段，不持有AST／World、运行资源或另一活跃性表，不进入必要对象／执行编码。整个空Map阶段移除后的来源由原Program沿C-021.7.9.7.3.2.2继续交接；没有材料不证明操作未发生删除。SDK新增公开枚举／类型属于compiler源码接口演化，软件版本与执行ABI分别表达。实际入口继续使用bc ir的普通函数、应用和程序查询，不增另一调试命令。
 
 已有实际查询入口：
 
@@ -542,7 +542,7 @@ JSON根reason与锚点kind均为integer_division_result_prune，字段为retaine
 
 商余结果全部不再需要时，原操作照常删除，来源沿原EliminatedOperation::ValueResults进入同一ValueCode／Stage.generated_origin的UnusedOperations／EliminatedOperations；整个空Map随后沿EmptyMapRemoval交给Program。EliminatedOperation::integer_division_results()返回可选的原IntegerDivisionOp切片，JSON同名字段为quotient／remainder角色数组；Both有两个成员，单结果只有实际角色。result_types与该角色列表都按删除前原Inst::results／outputs顺序解释逻辑分量。普通值删除的该字段为null，来源未知与角色种类分别表达，不伪造定义或增加另一删除材料链。实际查询沿原bc ir的--module、--program及--entry选择原根，SDK直接借用原Inst、ValueCode、Stage或Program，不增加专用命令。
 
-上述来源仅compiler，沿原IR／模块／SDK快照在最后实际消费者后释放；必要执行编码、资源ABI、借用、调度和完成不变，不为材料保活结果。输入／输出角色是本次变换的静态事实，不是运行次数、设备指令数或性能收益；已有范围继续开放，不按本批输入限定整数宽度或合法表达。新增公开枚举分支属于compiler SDK源码接口演化，按原软件版本规则处理。见内部研发资料（不公开）及内部研发资料（不公开）。
+上述来源仅compiler，沿原IR／模块／SDK快照在最后实际消费者后释放；必要执行编码、资源ABI、借用、调度和完成不变，不为材料保活结果。输入／输出角色是本次变换的静态事实，不是运行次数、设备指令数或性能收益；已有范围继续开放，不按本批输入限定整数宽度或合法表达。新增公开枚举分支属于compiler SDK源码接口演化，按原软件版本规则处理。
 
 #### 未消费直接私有槽写的删除来源
 
@@ -552,7 +552,7 @@ JSON根reason与锚点kind均为integer_division_result_prune，字段为retaine
 
 一条直接槽写是一个实际Scalar逻辑分量，其字节宽度由Scalar决定，不固定为四字节。原Local／Reg只服务当次IR，压缩重映射后可能不存在；材料不保存这些临时编号，不据此声称仍有物理位置、原存储身份、运行地址／值、执行次数或性能收益。静态来源不等同于运行采集，未知来源仍为null。此类型仅compiler，最后真实IR消费者后释放，不保留旧Inst／IR、值、声明布局、槽映射、活跃性表或运行资源，不改变原许可、数值和完成。
 
-现有bc ir --module／--entry／--program查询与只读SDK消费同一事实；例如bootstrap/archive.b的layout、bootstrap/bindings.b各普通值函数以及applications/datasets.b应用入口。公共类型、枚举分支和JSON根字段的调整属于compiler接口演化，按原软件major规则处理；执行ABI独立。索引私有范围写由IndexedPrivateWrite明确区分，字段及语义见同名节，不能从直接写材料推定索引范围。直接写沿同一通用接收支持ValueCode、保留Stage及空Map后的Program；具体已验证范围与未知事实沿各自原台账记录。职责及实际验证范围见内部研发资料（不公开）及内部研发资料（不公开）。
+现有bc ir --module／--entry／--program查询与只读SDK消费同一事实；例如bootstrap/archive.b的layout、bootstrap/bindings.b各普通值函数以及applications/datasets.b应用入口。公共类型、枚举分支和JSON根字段的调整属于compiler接口演化，按原软件major规则处理；执行ABI独立。索引私有范围写由IndexedPrivateWrite明确区分，字段及语义见同名节，不能从直接写材料推定索引范围。直接写沿同一通用接收支持ValueCode、保留Stage及空Map后的Program；具体已验证范围与未知事实沿各自原台账记录。
 
 #### 索引私有写删除的来源
 
@@ -562,7 +562,7 @@ JSON根reason与锚点kind均为integer_division_result_prune，字段为retaine
 
 逻辑范围、实际写宽度与字段字节位置分开。例如array<u32,4>可对应component_count=4、byte_offset=0、scalar=U32；含u32 tag和u64 amount的Pair按现行布局组成array<Pair,3>时，写amount可对应component_count=6、byte_offset=8、scalar=U64，一次写八字节不等于六个数组元素或六个四字节字。材料记录删除时原局部范围的长度，不保留临时起点base／Local／Reg、不与压缩后的同号槽重新绑定，不能将已删除范围冒充当前存储身份。原声明布局及运行地址观察仍由各自原所有者负责，不复制旧IR、值、布局、槽表或活跃性图。
 
-仅发生删除时记录，原needed判断、RHS可观察求值、数值、控制、访问及完成不变；有实际读取而保留的写不产生本删除事件。材料仅compiler，随原IR／模块／SDK快照及最后真实消费者释放，不保活指令、私有存储、阶段或运行资源，不进入必要执行编码；没有材料不证明未发生，未知原来源仍为null。现有bc ir --module／--program／--entry与SDK查询消费同一真实根，公共枚举分支按原软件major规则演化。职责及状态见内部研发资料（不公开）和内部研发资料（不公开）。
+仅发生删除时记录，原needed判断、RHS可观察求值、数值、控制、访问及完成不变；有实际读取而保留的写不产生本删除事件。材料仅compiler，随原IR／模块／SDK快照及最后真实消费者释放，不保活指令、私有存储、阶段或运行资源，不进入必要执行编码；没有材料不证明未发生，未知原来源仍为null。现有bc ir --module／--program／--entry与SDK查询消费同一真实根，公共枚举分支按原软件major规则演化。
 
 #### 归约统一纯值提取的来源
 
@@ -572,7 +572,7 @@ JSON reason及锚点kind为reduction_uniform_extract，字段为retained、parti
 
 原extract不递归穿过Scope／If／Loop，不将非统一数据或资源载荷访问提到入口。未选的identity、未选／不存在的project没有本分区事件；原operation中的值函数仍可能保留，不能从存在推定本次参与。后续with_prelude沿原复用／合并来源保持已经发生的提取，分区角色不根据最终保留节点反推；多源单一trigger()／syntax()／origin()／instance()为空，已取得事实从明确成员读取，缺失来源仍为null。
 
-SDK／ReductionKernel::ir_json查询同一本次实际内核，分区末尾、invariants与六角色向量继续由原字段交接，不为查询重新生成内核或调用编译／后端。提取后的入口位置与提取前的分区分别解释，逻辑Reg不等于物理寄存器；入口执行次数由原CPU／GPU调用与提交决定，不宣称整个集合全局只执行一次。材料只compiler，随原Inst／内核及最后真实IR消费者释放，不持有运行资源、不保活指令、不进入必要执行编码。公共枚举演化按原major软件版本规则，完整机器映射与运行测量另沿原职责。见内部研发资料（不公开）及内部研发资料（不公开）。
+SDK／ReductionKernel::ir_json查询同一本次实际内核，分区末尾、invariants与六角色向量继续由原字段交接，不为查询重新生成内核或调用编译／后端。提取后的入口位置与提取前的分区分别解释，逻辑Reg不等于物理寄存器；入口执行次数由原CPU／GPU调用与提交决定，不宣称整个集合全局只执行一次。材料只compiler，随原Inst／内核及最后真实IR消费者释放，不持有运行资源、不保活指令、不进入必要执行编码。公共枚举演化按原major软件版本规则，完整机器映射与运行测量另沿原职责。
 
 
 #### 普通一元常量计算的来源
@@ -583,7 +583,7 @@ JSON的reason与锚点kind均为unary_constant_fold；operation按原UnaryOp拼�
 
 实际运算包括FloatNegate、SignedNegate、UnsignedNegate、LogicalNot与BitNot，仍消费原位宽截断、环绕和浮点符号位规则，不重新解释源码或另作求值。单目加号只交回已验证原值，没有新运算事件。Unary(-,Number)由negative_number完成负字面量定型，特别是i32／i64最小值，不虚构同型正输入或普通SignedNegate；其原Constant及SourceSite、源码快照保留最终类型、位模式与原表达式。
 
-后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；阶段Literal的值IR接收沿后文交接，形状／变体编号仍各有来源缺口，见内部研发资料（不公开）；不能把临时Builder中的材料当作最终能力。见内部研发资料（不公开）。
+后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；阶段Literal的值IR接收沿后文交接，形状／变体编号仍各有来源缺口；不能把临时Builder中的材料当作最终能力。
 
 
 
@@ -595,7 +595,7 @@ module_constant与具名条件输出的常量读取共用evaluated_constant，�
 
 JSON reason及锚点kind均为module_constant_evaluation，definition为真实原source_definition或null，constant为实际完整常量名，operations是已有operation_origin数组，成员保留原语法及generated_origin。anchor().origin()借用可用原定义，instance()返回实际常量全名；单源syntax()／trigger()为空，不能用常量定义冒充一条用户表达式。源码常量保存原不可变来源；已编译接口缺失提供者定义时仍为null，保留实际常量名和实际取得的运算事实，不把接口求值当作提供者实现源码或IR。
 
-材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。具名B函数与外部C声明的直接条件输出，以及签名绑定的类型化OutputConstant及其物化，沿下两节交接；阶段Literal的值IR接收沿后文交接，形状／变体编号仍有各自缺口，见内部研发资料（不公开）。本节不承诺保存所有未消费临时求值的完整编译历史，见内部研发资料（不公开）。
+材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。具名B函数与外部C声明的直接条件输出，以及签名绑定的类型化OutputConstant及其物化，沿下两节交接；阶段Literal的值IR接收沿后文交接，形状／变体编号仍有各自缺口。本节不承诺保存所有未消费临时求值的完整编译历史。
 
 
 
@@ -605,7 +605,7 @@ JSON reason及锚点kind均为module_constant_evaluation，definition为真实�
 
 新事实沿已有module_constant_evaluation编码；它解释实际常量求值，不冒充条件自身全部运算、运行执行或逐结果因果图。原公开条件引用常量的可见性、数值／Proof、条件输出许可与初始化判断保持。真实源码与已编译接口的未知范围沿原定义合同，不从当前读取点猜补提供者来源；后续CSE／DCE及空Map根沿同一OperationOrigin持有材料，不保活操作或建立第二合同状态。
 
-此路径仅compiler，最后IR消费者后释放，不进入必要对象／执行编码或拥有运行资源。函数指针签名先绑定为OutputConstant，其独立交接见下节；不能用直接Name分支替代该结果所有者，见内部研发资料（不公开）。
+此路径仅compiler，最后IR消费者后释放，不进入必要对象／执行编码或拥有运行资源。函数指针签名先绑定为OutputConstant，其独立交接见下节；不能用直接Name分支替代该结果所有者。
 
 #### 绑定输出契约的类型化常量来源
 
@@ -615,7 +615,7 @@ OutputConstant继续用ty与bits表示原合同数值；在compiler配置另有�
 
 OutputConstant的PartialEq／Eq、PartialOrd／Ord及原合同去重仍只消费ty与bits；来源不同不产生新函数签名或改变数值／Proof身份。必要对象编码仍只写原ty与bits，解码恢复同一数值并使generated_origin为空；runtime-only配置没有该字段。对象／缓存材料不因本字段增加版本或调试数据，不能把未编码来源写成跨对象保留能力。
 
-实际输出条件的convert消费已绑定Constant时，共用Builder::evaluated_constant，把同一材料交给原Constant指令；直接source_site保持实际条件位置。已有ContractCondition或原复用／删除来源通过retained继续持有它，不为观察保活操作，也不增加运行指令。材料沿原签名／类型化结果及IR所有者，在最后编译／查询消费者结束后释放，不保留AST／World、临时IR或运行资源。见内部研发资料（不公开）及内部研发资料（不公开）。
+实际输出条件的convert消费已绑定Constant时，共用Builder::evaluated_constant，把同一材料交给原Constant指令；直接source_site保持实际条件位置。已有ContractCondition或原复用／删除来源通过retained继续持有它，不为观察保活操作，也不增加运行指令。材料沿原签名／类型化结果及IR所有者，在最后编译／查询消费者结束后释放，不保留AST／World、临时IR或运行资源。
 
 
 
@@ -625,7 +625,7 @@ OutputConstant的PartialEq／Eq、PartialOrd／Ord及原合同去重仍只消费
 
 GenerationAnchor::BinaryConstantFold与JSON kind binary_constant_fold提供：expression（借用该Constant原SourceSite，可为null）、operation（该次binary实际接收的运算拼写）、scalar（原转换后的共同输入标量）、result_scalar（实际输出标量）、left_bits／right_bits／result_bits（十六进制原始位模式字符串）、left_component_index／left_component_count、right_component_index／right_component_count、component_index／component_count，以及retained（原结果已有GeneratedOrigin或null）。component_index_base为0；输入下标记录实际标量广播或逐分量选择，输出下标描述本次平坦逻辑分量，不是寄存器身份。比较输出为Bool，整数/或%按有效Scalar解释商余、符号及位宽，不增加另一运算编码。expression只是该次原计算点已有语法触发，运算可能来自原实现分解；不据范围反推操作、不扩大源码范围，也不为已有生成步骤补造直接源语法。
 
-单源trigger()、syntax()／origin()／instance()只解释expression，原生成职责从retained读取；材料仅compiler，随原Inst、CSE／DCE／空Map根、模块及查询快照到最后IR消费者。模块／阶段常量的实际结果及其原接收者共用同一事实，不重新求值或保留旧IR、AST／World，不增加状态表、必要编码、运行指令或保活。材料描述这次实际常量计算，不声称完整输入谱系、运行次数、最终ISA或实测收益。形状／编号整数结果和Proof比较来源仍沿各自独立编号推进。见内部研发资料（不公开）。
+单源trigger()、syntax()／origin()／instance()只解释expression，原生成职责从retained读取；材料仅compiler，随原Inst、CSE／DCE／空Map根、模块及查询快照到最后IR消费者。模块／阶段常量的实际结果及其原接收者共用同一事实，不重新求值或保留旧IR、AST／World，不增加状态表、必要编码、运行指令或保活。材料描述这次实际常量计算，不声称完整输入谱系、运行次数、最终ISA或实测收益。形状／编号整数结果和Proof比较来源仍沿各自独立编号推进。
 
 #### 数值转换常量折叠的来源
 
@@ -633,13 +633,13 @@ GenerationAnchor::BinaryConstantFold与JSON kind binary_constant_fold提供：ex
 
 GenerationAnchor::CastConstantFold及JSON kind cast_constant_fold分别提供expression（原Constant的SourceSite或null）、source_scalar、target_scalar、input_bits／result_bits（十六进制字符串）、component_index／component_count。component_index_base为0，index是原结果平坦逻辑分量下标，count是整个结果分量数；它们不是寄存器身份、转换次数或存储字数量。源类型按该分量实际Scalar读取，混合记录不能以首字段类型解释所有分量。单源trigger()与syntax()／origin()／instance()只借用原expression，不补造／扩大范围。
 
-原literal、Proof、source_site、Scalar／Bits、寄存器、布局与运行期转换语义保持。材料只归compiler的原Inst、CSE／DCE／空Map根、模块／阶段常量实际结果及查询快照，到最后IR消费者后释放；不保留旧IR、AST／World、完整输入谱系或运行资源，不增加求值器、来源表、状态、必要编码、运行指令或保活。静态转换记录不等于运行次数、最终ISA或实测收益。见内部研发资料（不公开）。
+原literal、Proof、source_site、Scalar／Bits、寄存器、布局与运行期转换语义保持。材料只归compiler的原Inst、CSE／DCE／空Map根、模块／阶段常量实际结果及查询快照，到最后IR消费者后释放；不保留旧IR、AST／World、完整输入谱系或运行资源，不增加求值器、来源表、状态、必要编码、运行指令或保活。静态转换记录不等于运行次数、最终ISA或实测收益。
 
 #### 位重解释常量折叠的来源
 
 原Builder::bitcast只在已检查输入持有完整Value.constant时，以同一位模式物化目标Scalar的Constant。各结果附加GenerationReason::BitcastConstantFold；GenerationAnchor::BitcastConstantFold及JSON kind bitcast_constant_fold交接expression（原Constant的SourceSite或null）、source_scalar／target_scalar、bits（十六进制字符串）及component_index／component_count，component_index_base为0。bits是源与目标共同的原始位模式，不是宿主浮点读数；分量是平坦逻辑位置与总数，不是寄存器身份或运行次数。源／目标方向来自原实际bitcast，不按bits相等把它误写成恒等数值转换。
 
-动态输入仍发射原UnaryOp::Bitcast；原位宽、向量许可、数量／类型诊断、literal、Proof、source_site与布局保持。单源查询只借用已有expression，不补造未知来源。材料仅compiler，随原Inst、CSE／DCE／空Map根、模块／阶段实际结果与查询快照到最后IR消费者；不保留旧IR、AST／World、完整输入谱系或运行资源，不增加求值、状态表、必要编码、运行指令或保活。数值转换与最终机器映射各沿原职责，见内部研发资料（不公开）。
+动态输入仍发射原UnaryOp::Bitcast；原位宽、向量许可、数量／类型诊断、literal、Proof、source_site与布局保持。单源查询只借用已有expression，不补造未知来源。材料仅compiler，随原Inst、CSE／DCE／空Map根、模块／阶段实际结果与查询快照到最后IR消费者；不保留旧IR、AST／World、完整输入谱系或运行资源，不增加求值、状态表、必要编码、运行指令或保活。数值转换与最终机器映射各沿原职责。
 
 #### 整数min／max已知结果的来源
 
@@ -647,7 +647,7 @@ GenerationAnchor::CastConstantFold及JSON kind cast_constant_fold分别提供exp
 
 GenerationAnchor::MinmaxKnownValue及JSON kind minmax_known_value提供expression（原Constant的SourceSite或null）、operation、scalar、left_ranges／right_ranges、left_constant_present／right_constant_present、same_value、result_bits及basis（singleton_range／zero_condition）。区间为包含端点的原始标量位模式，按Scalar实际数值次序排列，不使用内部符号偏置编码。constant_present只报告整个原Value.constant存在与否，不冒充逐元素输入谱系。两侧component_index／component_count及结果component_index／component_count描述真实广播，component_index_base为0。
 
-这些材料只解释本次实际结果和有效局部前提，不保留Proof／条件图或完整输入谱系。单源查询只借用已有expression，未知为null；原literal、Proof、类型／精度、source_site、布局及运行语义保持。材料沿原compiler Inst、CSE／DCE／空Map根、模块／阶段实际结果及查询快照到最后IR消费者，不保留旧IR、AST／World或运行资源，不增加求值器、状态表、必要执行编码、运行指令或保活。见内部研发资料（不公开）。
+这些材料只解释本次实际结果和有效局部前提，不保留Proof／条件图或完整输入谱系。单源查询只借用已有expression，未知为null；原literal、Proof、类型／精度、source_site、布局及运行语义保持。材料沿原compiler Inst、CSE／DCE／空Map根、模块／阶段实际结果及查询快照到最后IR消费者，不保留旧IR、AST／World或运行资源，不增加求值器、状态表、必要执行编码、运行指令或保活。
 
 #### 比较命题已知值的来源
 
@@ -655,7 +655,7 @@ GenerationAnchor::MinmaxKnownValue及JSON kind minmax_known_value提供expressio
 
 GenerationAnchor::ComparisonKnownValue及JSON kind comparison_known_value提供expression（原Constant的SourceSite或null）、operation、scalar、result_bits、false_possible／true_possible、left_ranges／right_ranges、left_constant_present／right_constant_present、same_value、两侧与结果的component_index／component_count，以及retained原生成材料。result_bits为原Bool位模式；可达性来自同次原条件查询。component_index_base为0，constant_present只报告整个原Value.constant是否存在。区间端点包含且以原始Scalar位模式表示，interval_order为整数scalar_numeric、浮点float_bit_order，Bool区间及其次序为null。浮点位序不是NaN数值次序，不能用其端点重写原谓词或把!(a<b)改成a>=b。
 
-这些材料是本次局部前提快照，不是完整输入谱系或证明图；单源查询只解释原expression，原生成职责从retained读取。写入／生命周期变化后的原Proof范围、literal、类型、转换、source_site、布局与运行语义保持。材料沿原compiler Inst、CSE／DCE／空Map根、模块／阶段实际结果与查询快照到最后IR消费者，不保留旧IR、AST／World、Proof／Clause图或运行资源，不增加重复求解、状态表、必要编码、运行指令或保活。见内部研发资料（不公开）。
+这些材料是本次局部前提快照，不是完整输入谱系或证明图；单源查询只解释原expression，原生成职责从retained读取。写入／生命周期变化后的原Proof范围、literal、类型、转换、source_site、布局与运行语义保持。材料沿原compiler Inst、CSE／DCE／空Map根、模块／阶段实际结果与查询快照到最后IR消费者，不保留旧IR、AST／World、Proof／Clause图或运行资源，不增加重复求解、状态表、必要编码、运行指令或保活。
 
 #### 阶段常量结果到实际值IR的来源
 
@@ -667,7 +667,7 @@ JSON reason和锚点kind为stage_constant_evaluation；expression是实际临时
 
 Builder::roots共用evaluated_constant，把同一材料交给实际Constant及已有source_site，原Value数值、Proof、literal、初始化、位置、布局和阶段选择保持。原CSE／DCE及空Map移除根按原OperationOrigin继续持有，不为查询保活操作或阶段；材料由原Root及实际IR／Stage／Program拥有，到最后编译／查询消费者后释放，不保留临时Inst、AST／World或运行资源。
 
-本节完成具名const／临时表达式结果及值IR接收三个独立接点。整域调用的DomainCallLiteral现按原调用生成职责同时接收已有求值材料；阶段if的实际选择及阶段for的范围／迭代结果已按后文交给原Program及整域入口，不能以Root已持有材料代替这些实际消费者。具名阶段常量整值Name读取通过下述StageConstantReference交接原语法及已有材料，无折叠也有真实绑定；不因此制造算术折叠或承诺完整子表达式输入谱系。阶段选择不等于运行分支执行，编译期展开不等于运行次数。见内部研发资料（不公开）；具名阶段常量读取绑定见内部研发资料（不公开）。
+本节完成具名const／临时表达式结果及值IR接收三个独立接点。整域调用的DomainCallLiteral现按原调用生成职责同时接收已有求值材料；阶段if的实际选择及阶段for的范围／迭代结果已按后文交给原Program及整域入口，不能以Root已持有材料代替这些实际消费者。具名阶段常量整值Name读取通过下述StageConstantReference交接原语法及已有材料，无折叠也有真实绑定；不因此制造算术折叠或承诺完整子表达式输入谱系。阶段选择不等于运行分支执行，编译期展开不等于运行次数。
 
 #### 具名声明、调用及条件IR的来源
 
@@ -679,7 +679,7 @@ SourceDeclaration::ir_json为kind=source_declaration，module／declaration及re
 
 outputs::expression只给本次convert／expr真实新发射的Inst附加GenerationReason::ContractCondition及GenerationAnchor::ContractCondition { declaration, span, retained }。JSON reason／锚点kind均为contract_condition，含declaration、retained及原条款span的同单位范围／行列，范围只用相应声明Source解释。真实常量求值沿retained保留；这是派生关系，不伪造成原用户表达式。若条件只复用bool输入／返回值而没有新Inst，不造假节点，实际Call的声明引用仍保存原合同来源。
 
-上述多角色锚点的单源trigger()／syntax()／origin()／instance()均为空，各声明从anchor()的明确成员读取；空单源查询不代表没有来源。材料仅compiler，沿原Inst及已有CSE／DCE／根保存到最后IR消费者，不保活操作、旧IR、AST／World或运行资源，不增加源码登记、条件图或状态表，不进入必要对象／执行编码。调用、非零、访问、初始化、签名、值及资源完成仍消费原合同。公开枚举新增变体按现行版本规则处理，源ABI和资源ABI分别记录，见内部研发资料（不公开）。
+上述多角色锚点的单源trigger()／syntax()／origin()／instance()均为空，各声明从anchor()的明确成员读取；空单源查询不代表没有来源。材料仅compiler，沿原Inst及已有CSE／DCE／根保存到最后IR消费者，不保活操作、旧IR、AST／World或运行资源，不增加源码登记、条件图或状态表，不进入必要对象／执行编码。调用、非零、访问、初始化、签名、值及资源完成仍消费原合同。公开枚举新增变体按现行版本规则处理，源ABI和资源ABI分别记录。
 
 
 #### 空Map阶段移除的来源
@@ -688,14 +688,14 @@ outputs::expression只给本次convert／expr真实新发射的Inst附加Generat
 
 JSON根reason及锚点kind均为empty_map_removal，锚点有retained和stages；每项是原operation_origin，其中source_site对应被移除Map的原语句，generated_origin保留该阶段此前已形成的删除等材料。列表按本次真实移除顺序，不保存旧Stage、指令、Reg、阶段序号、运行地址或另一映射表，不是运行时间线。source_stages保持原优化前展开数量，stages列表只含实际保留阶段；全部阶段被移除时，Program仍可持有真实删除材料。代码为空、运行时数据集为空及空输入下仍须产出单位元的集合分别理解；原语义、阶段边界、数值、调度和完成不改变，不为观察保活空阶段。
 
-多源单一trigger()／syntax()／origin()／instance()为空，各接点从明确成员读取，未知来源字段保持null。新一轮没有移除不制造事件，旧根及Source快照不可变共享；查询不重新编译、不读取后续改写的源文件，不持有AST／World或运行资源。材料随原Program／模块／SDK快照及最后IR消费者释放，compiler以外没有该字段／类型／getter，必要执行编码及资源ABI保持。新增公开枚举分支按原compiler SDK版本规则演化；当前范围见内部研发资料（不公开）及内部研发资料（不公开）。
+多源单一trigger()／syntax()／origin()／instance()为空，各接点从明确成员读取，未知来源字段保持null。新一轮没有移除不制造事件，旧根及Source快照不可变共享；查询不重新编译、不读取后续改写的源文件，不持有AST／World或运行资源。材料随原Program／模块／SDK快照及最后IR消费者释放，compiler以外没有该字段／类型／getter，必要执行编码及资源ABI保持。新增公开枚举分支按原compiler SDK版本规则演化。
 #### 降层归约内核的角色与分区查询
 
 compiler SDK的CustomReduction::kernel(stage,project,identity)按本次选择产生原ReductionKernel；ReductionKernel::ir_json()只序列化这个实际结果，kind为reduction_kernel_ir。stage为原Stage::ir_json()，invariant_end、initialize_end和project_end为stage.code中的零基排他指令下标；依次划分公共入口、单位元、投影和合并四段，空段允许相邻末尾相等。invariants直接列出原prepare_reduction提取的逻辑Reg，不推定执行次数或最终机器存储。
 
 source、projected、initial、left、right和result直接消费同一内核的六角色列表，元素引用本次stage.registers。它们已经过原值流binding；projected／initial／result是相应输出，不是另一份外部输入表。stage.operation仍含原源算法及project／identity／combine ValueCode，stage.code则是本次降层的代码，两者阶段不同。已选project的实际输入与source逐分量对应；未选project时source沿right，combine输入按left后right分量对应。原InputReadForward.input_index继续引用原ValueCode.inputs，来源沿该ValueCode.generated_origin取得；不把原函数Reg直接当内核Reg。调用者保留本次project／identity选择，operation中出现某个原函数不证明它参与本次执行，关闭identity时initial为空，关闭project时不补造投影调用。
 
-查询不重新编译、优化、发射或运行，不重读源文件、不新增保存的Reg映射、拥有表或运行材料；生命周期沿原内核及共享来源到最后实际IR消费者。二次传播新读取事件由降层后的Stage另行交接，原值函数材料保持原阶段，统一提取变换原因也不由invariants列表代替。见内部研发资料（不公开）及内部研发资料（不公开）。
+查询不重新编译、优化、发射或运行，不重读源文件、不新增保存的Reg映射、拥有表或运行材料；生命周期沿原内核及共享来源到最后实际IR消费者。二次传播新读取事件由降层后的Stage另行交接，原值函数材料保持原阶段，统一提取变换原因也不由invariants列表代替。
 
 #### 归约二次值传播的真实输入读取来源
 
@@ -703,7 +703,7 @@ source、projected、initial、left、right和result直接消费同一内核的�
 
 compiler SDK的ReductionInputReadForward::role()返回ReductionInputRole::Source／Left／Right，component_index()返回同一ReductionKernel.source／left／right列表中的零基逻辑分量序号，reads()借用原OperationOrigin列表，ir_json()输出kind=reduction_input_read_forward、role（source／left／right）、component_index及reads。锚点JSON为kind=reduction_input_forward、component_index_base=0、retained和inputs；根GeneratedOrigin.reason为local_read_forward。u64仍是一项逻辑分量，不拆成物理字编号。原合并输入先沿left／right消费；未选project时source与right相同，不重复来源或标成投影读取。无新事件不创建根，initial／projected／result不变成伪造外部输入。
 
-新来源在原Inst结果交接后由同一次值流剩余事实直接形成，不重新优化、求值或扫描源码，也不新增保存的Reg映射、输入拥有表、IR副本或运行材料。单源trigger()及锚点syntax()／origin()／instance()为空，各实际读取从明确成员取得；编译器生成读取没有SourceSite时原样为空，不能删除该真实事件或补造语法。根与原来源共享不可变快照，随原Kernel／Stage在最后实际IR消费者后释放，普通原Inst／ValueCode及Frame前缀来源保持各自合同。见内部研发资料（不公开）及内部研发资料（不公开）。
+新来源在原Inst结果交接后由同一次值流剩余事实直接形成，不重新优化、求值或扫描源码，也不新增保存的Reg映射、输入拥有表、IR副本或运行材料。单源trigger()及锚点syntax()／origin()／instance()为空，各实际读取从明确成员取得；编译器生成读取没有SourceSite时原样为空，不能删除该真实事件或补造语法。根与原来源共享不可变快照，随原Kernel／Stage在最后实际IR消费者后释放，普通原Inst／ValueCode及Frame前缀来源保持各自合同。
 
 #### 局部索引写的现有IR事实与单位
 
@@ -721,7 +721,7 @@ Inst通过公开kind字段及来源查询交接原指令；所属ValueCode::ir_j
 
 LoadLocalIndexed共享这些地址含义，dst为读取目标寄存器，其Scalar决定读取宽度。Native及SPIR-V按原声明位置、动态index字节偏移和word选择实际标量地址；逻辑存储范围、可能别名范围和实际写宽度分别表达。例如u64字段的word可为8，u64本身仍只占一个逻辑分量。静态IR不证明该操作已执行，也不交付未采集的实际地址或内存值。
 
-当前原值流保守地在动态写点停止沿用相应底层范围内的先前局部值关系；该临时分析处理不等于写入全部分量，不等于初始化失效，不成为永久优化许可或语言限制。不同分析算法可演进，工具不要求把每轮缓存增删保存到来源链。确实消失、合并或替换的程序操作仍按实际生产者保留来源；临时状态的按需观察沿原所有者和真实存活期，未实现观察能力继续按原台账推进。见内部研发资料（不公开）。
+当前原值流保守地在动态写点停止沿用相应底层范围内的先前局部值关系；该临时分析处理不等于写入全部分量，不等于初始化失效，不成为永久优化许可或语言限制。不同分析算法可演进，工具不要求把每轮缓存增删保存到来源链。确实消失、合并或替换的程序操作仍按实际生产者保留来源；临时状态的按需观察沿原所有者和真实存活期，未实现观察能力继续按原台账推进。
 
 #### 指针与原子访问的既有别名事实
 
@@ -729,7 +729,7 @@ IndexedSource::Pointer的aliases与address、index、stride由原IR直接持有�
 
 普通函数的原地址合同收敛后，check/address.rs::apply_memory将同一分析结果交回原Pointer.aliases，并递归处理原控制结构。未知外部影响按原分析保守覆盖局部声明，不据此推定所有局部已写；查询者须区分已交接的编译结果与构造中的中间IR，不能拿早期空列表作为无别名证明。这里说明当前生产／消费接点，不固定临时分析算法或建立另一份别名权威。
 
-StoreIndexed直接交接source、offset、word、value。Atomic直接交接target、scalar、offset、word、operation、order及可选result；CompareExchange另在operation中保留expected、desired和failure内存序。AtomicOp::Load不写，Store不读，其余读改写可能写，比较交换是否成功须由实际运行判断。原值流按这些访问语义消费别名：原子Load不会触发局部写失效，数据读取缓存另行清除也不能解释成局部写。已有字段和所属ValueCode／Stage／FunctionBody查询足以表达本叶静态访问事实，不增加逐轮缓存维护来源；原IR、共享来源及返回查询值各按真实消费者释放。实际运行地址／值和可编程观察仍属后续运行工具能力，未实现不冒称已交付。见内部研发资料（不公开）。
+StoreIndexed直接交接source、offset、word、value。Atomic直接交接target、scalar、offset、word、operation、order及可选result；CompareExchange另在operation中保留expected、desired和failure内存序。AtomicOp::Load不写，Store不读，其余读改写可能写，比较交换是否成功须由实际运行判断。原值流按这些访问语义消费别名：原子Load不会触发局部写失效，数据读取缓存另行清除也不能解释成局部写。已有字段和所属ValueCode／Stage／FunctionBody查询足以表达本叶静态访问事实，不增加逐轮缓存维护来源；原IR、共享来源及返回查询值各按真实消费者释放。实际运行地址／值和可编程观察仍属后续运行工具能力，未实现不冒称已交付。
 
 #### 原生调用的既有局部访问事实
 
@@ -737,7 +737,7 @@ Call.arguments中的Reference直接保留ty、access及address；CallReference.s
 
 Call.memory独立交接各MemoryAccess的alias与access，JSON为memory数组内的kind=memory_access、alias、access。不能只看Reference实参而漏掉按值地址背后的影响；普通函数合同闭合过程中，原apply_memory沿同一memory_use重填同一Call.memory；失败清理等实际闭合消费者结束后，由原模块最后交接撤去该编号。memory_use仅是原构造／分析阶段的关联编号，完成交接后可为空，不作为稳定调用身份或另一份运行状态。查询须以本次实际阶段为准，未交接的中间空结果不证明无影响。
 
-内部Call::locals(true)收集两类可写Local范围：Reference的真实访问与地址别名，以及memory中的真实可写效果。值流据此停止沿用旧局部值；Read效果本身不撤销局部知识，Data绑定另按原数据存储规则处理。保守范围不证明运行覆盖全部分量、初始化失效或外部代码可信。当前SDK公开字段及所属ValueCode／Stage／FunctionBody的JSON已提供这些原事实，不保存逐轮locals.remove历史；原IR及查询结果按最后实际消费者释放，不接管代码或运行资源。调用合同生产的独立缺口、运行时地址／值、实际完成及B可编程观察入口仍分别负责，见内部研发资料（不公开）。
+内部Call::locals(true)收集两类可写Local范围：Reference的真实访问与地址别名，以及memory中的真实可写效果。值流据此停止沿用旧局部值；Read效果本身不撤销局部知识，Data绑定另按原数据存储规则处理。保守范围不证明运行覆盖全部分量、初始化失效或外部代码可信。当前SDK公开字段及所属ValueCode／Stage／FunctionBody的JSON已提供这些原事实，不保存逐轮locals.remove历史；原IR及查询结果按最后实际消费者释放，不接管代码或运行资源。调用合同生产的独立缺口、运行时地址／值、实际完成及B可编程观察入口仍分别负责。
 
 #### 循环的既有控制与可能局部写事实
 
@@ -745,7 +745,7 @@ Call.memory独立交接各MemoryAccess的alias与access，JSON为memory数组内
 
 Break离开最近的Loop，Continue转到该Loop的下一次检查；Exit只离开最近的Scope，不是通用的循环退出或整个并行实例终止。现有JSON以Break／Continue／Scope／Exit及实际嵌套结构表达，作用范围由原结构解释，不另建目标图。写事实沿同一原操作查询：StoreLocal给出逻辑槽，StoreLocalIndexed给出底层逻辑范围及字节寻址，StoreIndexed与可能写的Atomic给出原别名，Call同时给出引用访问和memory效果。类型／布局、可能范围、实际一次写宽度及运行命中分别理解；原子Load和只读调用效果不能当作局部写。
 
-当前Values::block对同一Loop的condition与body沿原visit／Inst::local_writes汇总可能写，并停止沿用对应入口旧值。该保守分析不证明循环必运行，也不固定为语言的永久优化范围；written及locals是原分析存活期内的临时状态，不保存为逐轮来源历史。SDK公开字段及原ValueCode／Stage／FunctionBody的JSON提供同一原IR，查询结果随实际消费者释放，不持有运行资源或复制控制权威。真实删除／替换来源、合流、按需分析现场观察、B可编程入口及运行时状态继续按各原任务交接，不由本节静态查询代替；最终IR也不冒称保存了此前全部内部分析过程。见内部研发资料（不公开）。
+当前Values::block对同一Loop的condition与body沿原visit／Inst::local_writes汇总可能写，并停止沿用对应入口旧值。该保守分析不证明循环必运行，也不固定为语言的永久优化范围；written及locals是原分析存活期内的临时状态，不保存为逐轮来源历史。SDK公开字段及原ValueCode／Stage／FunctionBody的JSON提供同一原IR，查询结果随实际消费者释放，不持有运行资源或复制控制权威。真实删除／替换来源、合流、按需分析现场观察、B可编程入口及运行时状态继续按各原任务交接，不由本节静态查询代替；最终IR也不冒称保存了此前全部内部分析过程。
 
 #### 控制合流与实际读取替代
 
@@ -753,7 +753,7 @@ Break离开最近的Loop，Continue转到该Loop的下一次检查；Exit只离�
 
 当前内部Flow区分next、breaks、continues、exits四类出口，各类只合入仍到达该出口的路径。merge沿原别名root保留共同的同一局部值；None表示没有该类路径，Some空映射表示有路径而没有共同已知值。Scope将自身Exit接回继续点，Loop消费自身回边与break并保留外层Scope退出；退出分支不参与普通继续，单次迭代定义也不成为循环后值。这是当前分析语义说明，不导出另一份Flow对象、稳定槽值表或历史查询格式；现有SDK／JSON直接交接原控制和真实读写／替代材料，分析算法可以演进。
 
-最终IR不保存此前每轮临时知识，也不代替真实删除／重排来源。原block在无继续路径后结束迭代，不等于已经删去后续IR；当前真实模块及正式CPU／GPU示例的观察中，该处没有剩余操作，不新增专门来源记录。原语句生成已经按其Flow停止，有限观察不成为未来合法IR的限制；真正发生的程序删改仍按原结构变换交接，完整来源能力未由本项调查代替。原IR和查询值由实际消费者持有至结束，不拥有代码或运行资源；按需分析现场、B可编程入口及运行状态仍按原工具范围推进。见内部研发资料（不公开）及内部研发资料（不公开）。
+最终IR不保存此前每轮临时知识，也不代替真实删除／重排来源。原block在无继续路径后结束迭代，不等于已经删去后续IR；当前真实模块及正式CPU／GPU示例的观察中，该处没有剩余操作，不新增专门来源记录。原语句生成已经按其Flow停止，有限观察不成为未来合法IR的限制；真正发生的程序删改仍按原结构变换交接，完整来源能力未由本项调查代替。原IR和查询值由实际消费者持有至结束，不拥有代码或运行资源；按需分析现场、B可编程入口及运行状态仍按原工具范围推进。
 
 #### 应用入口与根Frame的生成来源
 
@@ -769,7 +769,7 @@ Frame失败分支与正常路径保持原代码／原语义，静态生成材料
 
 allocate是由B构造生成的运行库包装Call，source_site为null；实际B触发位于generated_origin.trigger。长度表达式、可选factory的已有语法来源和真实普通函数体不因同属构造而改成分配步骤。原类型索引、长度参数、Frame参数、返回句柄与原Data保持；零长度仍沿原构造规则发射其真实allocate，不因观察删除分配，已消除分支与没有原分配的未初始化声明则不补造操作。application_declare只建立原未初始化编译模型，不发射原生初始化；新绑定与重新赋值槽位沿相应节分别交接；生成函数初始化沿下一节的原factory触发交接。
 
-材料只由原Inst编译期持有并随最后IR消费者释放，不拥有Frame或延长实际存储寿命。静态Call不表示分配已运行或已经成功，运行失败仍沿原执行边界；没有增加运行时采集、条件、注册表、Builder状态或释放链。address的原请求常量及Call按下文Frame地址来源交接，不携带分配分类；storage_address按下文存储地址查询来源交接；upload／download仍保持原source_site，各自完整生成来源由原叶交付。优化重写／消除及机器范围继续沿原.7.3／.7.4推进，不为观察保活操作。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只由原Inst编译期持有并随最后IR消费者释放，不拥有Frame或延长实际存储寿命。静态Call不表示分配已运行或已经成功，运行失败仍沿原执行边界；没有增加运行时采集、条件、注册表、Builder状态或释放链。address的原请求常量及Call按下文Frame地址来源交接，不携带分配分类；storage_address按下文存储地址查询来源交接；upload／download仍保持原source_site，各自完整生成来源由原叶交付。优化重写／消除及机器范围继续沿原.7.3／.7.4推进，不为观察保活操作。
 
 #### dataset生成函数初始化来源
 
@@ -781,7 +781,7 @@ DatasetInitializeCursor标明原准备零值与实际起始StoreLocal，Conditio
 
 零长度类型检查保留原规则；原准备零常量可以先被发射，但原值优化可以删除它，返回IR中不因此留下游标或调用。动态长度在运行时为零仍可有静态Loop／Call／StoreIndexed，不能凭静态材料声称它们运行过。现有值优化还会合并重复零offset或一常量；保留下来的原节点继续携带材料，被删除或新构造节点的完整多来源及消除交接仍归.7.3。当前返回IR的缺失材料不是已交付消除记录，也不为观察保活常量、循环或资源。
 
-原Data／Returned／Place／Frame继续初始化和拥有元素的唯一交接，父投影与完成／释放不变；来源只归编译期原Inst共享且最后IR消费者后释放，不持有World／AST或运行资源，不增加Builder状态、运行期拥有表、记录器、调度或释放链。查询不重读后续磁盘文件，只有显式查询承担摘要、行列和JSON成本。见内部研发资料（不公开）及内部研发资料（不公开）。
+原Data／Returned／Place／Frame继续初始化和拥有元素的唯一交接，父投影与完成／释放不变；来源只归编译期原Inst共享且最后IR消费者后释放，不持有World／AST或运行资源，不增加Builder状态、运行期拥有表、记录器、调度或释放链。查询不重读后续磁盘文件，只有显式查询承担摘要、行列和JSON成本。
 
 #### dataset新绑定的局部槽位来源
 
@@ -791,7 +791,7 @@ DatasetInitializeCursor标明原准备零值与实际起始StoreLocal，Conditio
 
 没有原mutable槽位写入时，不增加槽位、寄存器或生成材料；application_declare只建原未初始化编译模型。重新赋值的原槽位写入、其他类型的StoreLocal、RHS分配／初始化、原释放／移动分别保持，不借用新绑定理由。原Data、Place、Proof／initialize、rebound选择及Frame最后消费者不变；局部数据描述写入不是复制底层资源或取得另一份拥有。材料只归编译期原Inst共享，最后IR消费者后释放，不新增Builder状态、资源／绑定表、运行期采集、AST／World保留或释放链。
 
-原值优化可以删除未使用、被覆盖或已经传播替代的槽位写入；返回IR只保留其实际存在的来源，不为观察保活写入、固定rebound策略或冻结优化。材料缺失不能直接断定原代码没有建立绑定，完整重写／消除记录和机器位置仍归.7.3／.7.4及.11。见内部研发资料（不公开）及内部研发资料（不公开）。
+原值优化可以删除未使用、被覆盖或已经传播替代的槽位写入；返回IR只保留其实际存在的来源，不为观察保活写入、固定rebound策略或冻结优化。材料缺失不能直接断定原代码没有建立绑定，完整重写／消除记录和机器位置仍归.7.3／.7.4及.11。
 
 #### dataset重新赋值的槽位写入来源
 
@@ -799,7 +799,7 @@ DatasetInitializeCursor标明原准备零值与实际起始StoreLocal，Conditio
 
 未初始化声明后的首次赋值、移动后补回、自赋值、拥有形参及资源返回的赋值仍沿原语义；是否实际保留Local写入由原优化决定。application_declare本身不造初始化，新绑定另用DatasetBindSlots，RHS分配／初始化和旧资源释放不借用重新赋值理由。普通值、拥有聚合与元素替换没有该可选材料，其他Place保持原发射职责；不复制访问检查或建立另一份资源赋值实现。
 
-这些槽位描述原局部数据表示，不是运行时栈地址、底层存储复制或另一份拥有。材料只归compiler功能下的原Inst共享并在最后IR消费者后结束，不增加Builder状态、拥有表、采集、隐式同步或释放链。原优化可消除被传播、覆盖或未使用的写入；静态来源不证明赋值已经实际执行，返回IR不冒充完整重写／消除历史或机器位置，完整能力仍归.7.3／.7.4及.11。见内部研发资料（不公开）和内部研发资料（不公开）。
+这些槽位描述原局部数据表示，不是运行时栈地址、底层存储复制或另一份拥有。材料只归compiler功能下的原Inst共享并在最后IR消费者后结束，不增加Builder状态、拥有表、采集、隐式同步或释放链。原优化可消除被传播、覆盖或未使用的写入；静态来源不证明赋值已经实际执行，返回IR不冒充完整重写／消除历史或机器位置，完整能力仍归.7.3／.7.4及.11。
 
 #### dataset最终存储释放的生成来源
 
@@ -809,7 +809,7 @@ DatasetInitializeCursor标明原准备零值与实际起始StoreLocal，Conditio
 
 原移动、返回保留资源、覆盖旧资源、CPU／GPU位置、拥有元素逆序清理及前后Ownership状态不改。原Data／Frame继续负责唯一存储和最后真实消费者，分类不增加release，不把运行库Call当作已经完成的运行事件。普通B或外部库中同名release函数不按名字分类；FrameDestroy、分配／初始化、新绑定及重新赋值仍是不同生成职责。拥有元素逆序清理循环来源见下节；用户静态F调用、条件拥有及活动变体清理选择的完整生成来源仍归.2.4.5.3.3至.5，原地址访问包装归.5.5，不能以本节代表完整清理来源。
 
-材料只由compiler功能下的原Inst不可变共享，并在最后IR消费者后结束，不持有运行资源、AST／World或新增Builder状态、拥有表、清理图、调度和释放链；关闭compiler时不进入运行期字段或必要执行编码。原优化仍按实际行为保留／改写IR，完整优化与机器映射另归原叶，不为来源保活代码。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只由compiler功能下的原Inst不可变共享，并在最后IR消费者后结束，不持有运行资源、AST／World或新增Builder状态、拥有表、清理图、调度和释放链；关闭compiler时不进入运行期字段或必要执行编码。原优化仍按实际行为保留／改写IR，完整优化与机器映射另归原叶，不为来源保活代码。
 
 #### dataset拥有元素逆序清理循环的生成来源
 
@@ -819,7 +819,7 @@ DatasetInitializeCursor标明原准备零值与实际起始StoreLocal，Conditio
 
 原循环仍从实际length逆序处理元素。Known／Common／Selected在实际装载处绑定局部选择，由原drop_owned_tree结束仍拥有的子树，局部空位不进入普通完整拥有参数。Unknown／Input／Cleanup经原native_element_drop及Module.units形成普通类型化清理callee，按原cleanup合同执行实际F、逆序子资源结束及同一Frame释放；同型后代保留静态调用回边，不按未知数据深度继续内联。当前元素结束后再更新原游标。嵌套拥有元素产生自己的原循环及材料；静态F函数体和调用、条件拥有及活动变体选择不整体改标清理循环。原长度确定为零时不创建游标、循环或读取；原优化可合并重复零／一常量或删除未消费字段，返回IR只保留实际节点，不伪造所有声明分量都已经读取，不为观察保活。生成来源不是循环已执行、析构已调用或最后设备消费者已完成的运行证据。
 
-Data／Frame仍是唯一实际资源所有者，原CPU／GPU位置、资源ABI及最后消费者保持；材料只归compiler原Inst不可变共享，最后IR消费者后结束，不新增Builder状态、拥有表、资源副本、调度或第二清理链。完整消除／多来源与机器位置仍沿.7.3／.7.4，用户静态F、条件拥有及活动变体来源见以下各节。见内部研发资料（不公开）及内部研发资料（不公开）。
+Data／Frame仍是唯一实际资源所有者，原CPU／GPU位置、资源ABI及最后消费者保持；材料只归compiler原Inst不可变共享，最后IR消费者后结束，不新增Builder状态、拥有表、资源副本、调度或第二清理链。完整消除／多来源与机器位置仍沿.7.3／.7.4，用户静态F、条件拥有及活动变体来源见以下各节。
 
 #### 用户拥有值静态析构调用的生成来源
 
@@ -827,7 +827,7 @@ Data／Frame仍是唯一实际资源所有者，原CPU／GPU位置、资源ABI�
 
 触发可能是return、覆盖位置、外围语法，也可能没有材料，不将其解释为F声明或精确作用域出口。F函数体保留实际源码来源，外部或已编译接口不伪造函数体；普通用户直接调用同一函数不按函数名标成析构。移动、into_inner及其他没有原析构Call的路径不补造节点，原优化继续按真实语义进行，完整消除和多来源仍归.7.3。
 
-材料仅在compiler功能下由原Inst不可变共享，最后IR消费者后结束，关闭compiler没有这些字段或运行期登记。载荷、CPU／GPU资源及代码寿命仍沿原唯一所有者和最后真实消费者；不为观察延长变量／资源寿命，不修改必要ABI和执行编码。静态调用来源不证明析构已执行、外部API关闭成功或完整内存安全。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料仅在compiler功能下由原Inst不可变共享，最后IR消费者后结束，关闭compiler没有这些字段或运行期登记。载荷、CPU／GPU资源及代码寿命仍沿原唯一所有者和最后真实消费者；不为观察延长变量／资源寿命，不修改必要ABI和执行编码。静态调用来源不证明析构已执行、外部API关闭成功或完整内存安全。
 
 #### 条件拥有清理分支与条件准备的生成来源
 
@@ -835,7 +835,7 @@ Data／Frame仍是唯一实际资源所有者，原CPU／GPU位置、资源ABI�
 
 Presence::Input直接使用原已有寄存器，不新增读取。All／None和静态Selected只沿原常量规则，动态Selected沿原下标及常量产生比较，Not沿原一元操作；Both／Either保留原短路If、布尔槽位写入与LoadLocal，不改为提前计算两边。短路准备中的If属于conditional_drop_condition，不能据此算作外层清理If。原固定分支直接构造的StoreLocal原本没有普通source_site；它仍没有用户操作来源，可独立携带真实清理触发。生成节点的source_site为null，触发位于generated_origin.trigger，原定义、实例、内联／域路径及字节范围保持；原触发缺失为null，不用函数范围或邻近语句猜出口。
 
-condition_truth确定条件时沿原路径跳过或执行body，没有实际If或条件准备时不造节点。原path及initialized临时保存／恢复、实际寄存器／槽位、Proof、借用、CPU／GPU资源及最后真实消费者保持。材料仅compiler下由原Inst不可变共享，最后IR消费者后结束，不增加Builder状态、运行时拥有标记、第二状态权威或释放链，不进入必要ABI／执行编码，不为观察保活代码和变量。完整消除／多来源仍沿.7.3，静态材料不证明运行时已经释放、设备完成或完整内存安全。见内部研发资料（不公开）及内部研发资料（不公开）。
+condition_truth确定条件时沿原路径跳过或执行body，没有实际If或条件准备时不造节点。原path及initialized临时保存／恢复、实际寄存器／槽位、Proof、借用、CPU／GPU资源及最后真实消费者保持。材料仅compiler下由原Inst不可变共享，最后IR消费者后结束，不增加Builder状态、运行时拥有标记、第二状态权威或释放链，不进入必要ABI／执行编码，不为观察保活代码和变量。完整消除／多来源仍沿.7.3，静态材料不证明运行时已经释放、设备完成或完整内存安全。
 
 #### 活动变体清理选择的生成来源
 
@@ -843,19 +843,19 @@ condition_truth确定条件时沿原路径跳过或执行body，没有实际If�
 
 原判别分量通过result_word复用已有值，没有原读取操作时不新增读取。已知载荷存在性沿原布尔常量规则，动态判别沿声明编号常量及原binary比较；常量折叠复用constant_value及constant_with_origin，原数值类型、运算选择、Proof和已知值规则保持。原通用调用只适配显式无生成材料，其他数值程序不因此改标。最后一个载荷沿原unpack_variant直接交接，原已确定条件沿原分支执行，没有原If时不补造选择；原优化仍可复用常量或删除未消费材料，不保活节点。
 
-原payload装载／解码、条件拥有、静态F和最终release各保留自己的来源，普通match及try判别不整体标成清理。生成节点的source_site为null，trigger为原触发或null，定义、实际实例、内联／域路径及字节范围保持，不将return／覆盖位置或缺失材料猜成变体声明或精确作用域出口。材料仅compiler原Inst不可变共享，最后IR消费者后结束；关闭compiler没有这些字段，不进入必要ABI或执行编码。原活动载荷、布局、参数、借用、静态F顺序及最后真实CPU／GPU消费者保持，不增加Builder状态、拥有表、变体登记、另一个判别算法或释放链。静态来源不是释放已执行、设备完成或完整内存安全证明；完整消除及机器映射仍沿原编号。见内部研发资料（不公开）及内部研发资料（不公开）。
+原payload装载／解码、条件拥有、静态F和最终release各保留自己的来源，普通match及try判别不整体标成清理。生成节点的source_site为null，trigger为原触发或null，定义、实际实例、内联／域路径及字节范围保持，不将return／覆盖位置或缺失材料猜成变体声明或精确作用域出口。材料仅compiler原Inst不可变共享，最后IR消费者后结束；关闭compiler没有这些字段，不进入必要ABI或执行编码。原活动载荷、布局、参数、借用、静态F顺序及最后真实CPU／GPU消费者保持，不增加Builder状态、拥有表、变体登记、另一个判别算法或释放链。静态来源不是释放已执行、设备完成或完整内存安全证明；完整消除及机器映射仍沿原编号。
 
 #### resize填充值暂存的生成来源
 
 resize_application_dataset在原第三实参已经求值、检查并取得returned_storage后，只为原local_slots及实际StoreLocal交接DatasetResizeFill，JSON reason为dataset_resize_fill。各逻辑分量保留原槽位及寄存器，共享一份不可变GeneratedOrigin；source_site为null，可选Syntax触发由原第三实参Expr.span及当前定义／实际实例／内联与域路径构成。普通调用或构造的Span可能只覆盖原标识符，按取得的范围交接，不猜补完整参数列表；触发缺失为null，不用resize根定义替代填充值来源。
 
-填充值自身的用户计算保持原语法来源；实际resize Call、dataset句柄／长度绑定及清理各保留自己的职责。原宽标量、向量、记录、拥有载荷及字段布局、求值次数和顺序、静态模型、借用与Frame的实际存储版本继续交接。零分量填充值没有StoreLocal，不为观察增加伪操作；零字节引用按原本地范围与x64调用帧处理。材料只由compiler功能下的原Inst及FunctionBody／模块持有，最后IR消费者后结束，不进入必要ABI／执行编码或保持运行资源。它不证明实际扩容、分配成功或GPU完成；扩容Call由下文独立交接来源，优化消除及机器关系沿原编号继续。见内部研发资料（不公开）和内部研发资料（不公开）。
+填充值自身的用户计算保持原语法来源；实际resize Call、dataset句柄／长度绑定及清理各保留自己的职责。原宽标量、向量、记录、拥有载荷及字段布局、求值次数和顺序、静态模型、借用与Frame的实际存储版本继续交接。零分量填充值没有StoreLocal，不为观察增加伪操作；零字节引用按原本地范围与x64调用帧处理。材料只由compiler功能下的原Inst及FunctionBody／模块持有，最后IR消费者后结束，不进入必要ABI／执行编码或保持运行资源。它不证明实际扩容、分配成功或GPU完成；扩容Call由下文独立交接来源，优化消除及机器关系沿原编号继续。
 
 #### 原生resize调用的生成来源
 
 resize_application_dataset与take_last_application_dataset沿resize_application_storage发射同一blink_resize调用；原错误与仅成功采用的输出分别交接，原新SSA身份保持；仅该实际Call取得DatasetResizeCall，JSON reason为dataset_resize_call。节点source_site为null，可选Syntax触发取原resize表达式Span及当前定义／实际实例，inlined_at与domain_path沿同一快照保持。当前Span是原resize标识符，不扩大成未取得的完整参数列表；没有源定义时保持无触发，不从填充值或根函数猜调用位置。普通用户函数即使名字包含resize也不据此改标。
 
-原Frame／根句柄、请求长度及只读fill暂存引用继续交接，静态模型、返回及新存储版本没有额外指令时不伪造步骤。填充值计算及DatasetResizeFill、数据绑定和清理仍保留自己的来源；零宽值也只标记实际Call，不补造StoreLocal，静态未执行路径没有本项材料。生成材料只归compiler下的原Inst及FunctionBody／模块，最后IR消费者后释放，不进入必要ABI／执行编码，不增加Frame、存储或释放链，不证明运行已扩容成功或设备已完成。完整变换及机器映射继续独立交付；见内部研发资料（不公开）与内部研发资料（不公开）。
+原Frame／根句柄、请求长度及只读fill暂存引用继续交接，静态模型、返回及新存储版本没有额外指令时不伪造步骤。填充值计算及DatasetResizeFill、数据绑定和清理仍保留自己的来源；零宽值也只标记实际Call，不补造StoreLocal，静态未执行路径没有本项材料。生成材料只归compiler下的原Inst及FunctionBody／模块，最后IR消费者后释放，不进入必要ABI／执行编码，不增加Frame、存储或释放链，不证明运行已扩容成功或设备已完成。完整变换及机器映射继续独立交付。
 
 #### Frame地址请求的生成来源
 
@@ -863,7 +863,7 @@ application_address在既有可用性、借用及CPU位置检查后，沿原cons
 
 Frame、handle、offset、bytes、stride、count、双U32地址结果、读写权限、布局、检查及最后消费者按原合同保持。标记只属于该实际生产者，不按符号字符串给普通用户函数分类；storage_address、根地址表示、索引乘加、读／写区及投影准备仍归各自叶项，原ViewLoad／StoreIndexed与既有初始化／清理职责保持。后续优化照常合并／消除常量，没有保留下来的指令不补造材料，不因此保活变量或冻结优化。完整来源变换与机器指令映射仍按原编号推进。
 
-材料仅在compiler角色的原Inst及FunctionBody／模块中持有，原SDK／CLI来源快照消费者结束后释放；不进入必要执行编码、不拥有运行地址或资源、不增加调用、Frame、状态表、采集或释放链。静态地址Call不证明已经运行、地址此刻有效或GPU已完成。见内部研发资料（不公开）和内部研发资料（不公开）。
+材料仅在compiler角色的原Inst及FunctionBody／模块中持有，原SDK／CLI来源快照消费者结束后释放；不进入必要执行编码、不拥有运行地址或资源、不增加调用、Frame、状态表、采集或释放链。静态地址Call不证明已经运行、地址此刻有效或GPU已完成。
 
 #### 存储地址查询的生成来源
 
@@ -871,7 +871,7 @@ application_reference_value在原资源句柄必须进入地址型借用ABI时�
 
 原Frame／根输入、U64结果、错误、view借用Proof及资源最后消费者保持；已经是U64根时直接复用，不产生或虚构查询。原字段布局准备、stride拓宽和参数槽位打包各沿其原叶交付，Frame地址请求的DatasetAddress也保持独立职责；本项不增加取址、权限、布局或范围检查，不改原真实读写和运行生命周期。静态查询不证明调用已运行、地址此刻有效或设备已完成。
 
-材料仅由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束；不进入必要执行编码、不保活变量、不拥有内存，不新增Frame、地址表、运行采集、释放链或包装函数。完整优化来源与机器映射继续归原编号。见内部研发资料（不公开）和内部研发资料（不公开）。
+材料仅由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束；不进入必要执行编码、不保活变量、不拥有内存，不新增Frame、地址表、运行采集、释放链或包装函数。完整优化来源与机器映射继续归原编号。
 
 #### 根地址表示准备的生成来源
 
@@ -879,7 +879,7 @@ application_root_address为同一原根地址保留两条真实路径：U64根�
 
 原CPU位置检查、根表示选择、64位位型、寄存器和返回地址保持；不新增寻址、转换、检查或运行调用。寄存器分配、模型和证明没有发射指令时不伪造节点。Frame地址Call及其bytes常量仍是DatasetAddress，storage_address仍是DatasetStorageAddress；后续索引乘加、字段布局、读写区及投影准备各归原叶，不能把整个地址流程统一改标根准备。常量折叠、去重及消除继续按原语义，消失的节点不补造，不为观察保活变量或冻结优化；完整变换来源及机器映射继续归原编号。
 
-材料只由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者；本项不取得内存所有权，不增加地址权威、运行状态表、采集、Frame或释放链。静态表示转换不是实际访问成功、地址此刻有效或设备已完成的证据。见内部研发资料（不公开）和内部研发资料（不公开）。
+材料只由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者；本项不取得内存所有权，不增加地址权威、运行状态表、采集、Frame或释放链。静态表示转换不是实际访问成功、地址此刻有效或设备已完成的证据。
 
 #### 索引与步长寻址的生成来源
 
@@ -887,7 +887,7 @@ offset_application_address仍消费原双U32地址、index、stride及offset，�
 
 原拓宽闭包曾直接Inst::new而未保存source_site，这不表示实际Builder上下文未知；当前已知触发沿同一生产者交接，缺失仍明确缺失。原宽度、地址位型、算术顺序、寄存器与返回保持，index／stride／offset的数值及单位仍由原调用者交付；不重算布局、不扩大权限、不增加算术、索引检查、地址表或运行链。根地址准备、Frame地址请求、存储地址查询及真实ViewLoad／StoreIndexed各保持自己的生成或源码职责，不能把整个访问流程统一改标寻址。
 
-原常量折叠、去重和消除继续按实际语义；没有保留的节点不补造，不为观察保活变量或冻结优化，完整变换来源与机器映射继续归原编号。材料只由compiler角色的原Inst及FunctionBody／模块持有，沿SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码、不拥有存储，不增加Frame、采集或释放链。静态地址算术不证明实际访问、地址有效或设备完成。见内部研发资料（不公开）和内部研发资料（不公开）。
+原常量折叠、去重和消除继续按实际语义；没有保留的节点不补造，不为观察保活变量或冻结优化，完整变换来源与机器映射继续归原编号。材料只由compiler角色的原Inst及FunctionBody／模块持有，沿SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码、不拥有存储，不增加Frame、采集或释放链。静态地址算术不证明实际访问、地址有效或设备完成。
 
 #### CPU写区地址准备的生成来源
 
@@ -895,7 +895,7 @@ application_memory的原句柄写分支仍以index、DataStride、可选relative
 
 普通写、数组相对位置和实际外部C ABI位置借用沿同一原准备交接；初始化Store仍保留DatasetInitializeWrite及其原factory触发，本准备不替换它。每个分量的实际字节宽度及Frame请求按原语义保持，不能因返回同一根地址删除必要逐分量请求。原数值宽度、单位、求值顺序、布局、权限和最后消费者保持，不增加写区、复制、同步、检查、Frame、状态表或运行链。已是U64根的路径及公共返回／读区准备归原其他叶，不整体改标本项；原StoreIndexed、Frame地址Call及根／索引准备各保留自己的职责。
 
-没有实际分量或未进入该分支时不虚构准备，原常量折叠、去重和消除继续生效，不为观察保活指令或冻结优化；完整变换来源与机器映射仍归原编号。材料只由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码、不拥有存储或运行地址。静态写区计算不证明实际写入、地址有效或设备完成。见内部研发资料（不公开）和内部研发资料（不公开）。
+没有实际分量或未进入该分支时不虚构准备，原常量折叠、去重和消除继续生效，不为观察保活指令或冻结优化；完整变换来源与机器映射仍归原编号。材料只由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码、不拥有存储或运行地址。静态写区计算不证明实际写入、地址有效或设备完成。
 
 #### CPU访问布局与读区准备的生成来源
 
@@ -903,7 +903,7 @@ application_memory只为原地址型U64根分支的声明步长／零字段、�
 
 节点source_site为空，可选Syntax直接借用原发射时的当前SourceSite，语法种类、范围、定义／特化实例和inlined_at／domain_path保持；未知为null，不从资源根或邻近语句猜补。原Frame地址Call、根地址表示、索引／步长寻址和句柄写区准备仍保留各自来源；真实ViewLoad及已有DatasetDropElementRead、StoreIndexed及初始化写不改标。仅取length、没有实际载荷读取或无分量值时不为观察生成读区请求。
 
-材料只由compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI快照持有，最后实际IR／来源消费者结束后释放；不进入必要执行编码、不保活变量或阻止原优化合并／删除常量。真实地址、布局、权限、运行存储及完成继续由原Ty／Data、Frame和最后实际消费者持有，不新增读回、访问、检查、状态表、同步或释放链。静态准备事实不证明已读取、地址仍有效或GPU完成；完整优化来源及机器映射继续沿原编号。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只由compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI快照持有，最后实际IR／来源消费者结束后释放；不进入必要执行编码、不保活变量或阻止原优化合并／删除常量。真实地址、布局、权限、运行存储及完成继续由原Ty／Data、Frame和最后实际消费者持有，不新增读回、访问、检查、状态表、同步或释放链。静态准备事实不证明已读取、地址仍有效或GPU完成；完整优化来源及机器映射继续沿原编号。
 
 #### 字段布局寻址准备的生成来源
 
@@ -911,7 +911,7 @@ application_reference_offset在原DataReference／DataLayout上准备的声明�
 
 节点source_site为空，可选Syntax直接借用各原发射接点的当前SourceSite，语法种类、实际范围、定义／特化实例及inlined_at／domain_path保持；缺失触发为null，不从字段名、类型声明、资源根或邻近位置猜补。原字段字节单位、宽度、对齐、uniform及Proof保持。根／寻址／Frame地址调用、读写准备、资源参数接收／打包以及投影零索引各保留自身职责，真实ViewLoad／StoreIndexed不改标；本材料不解释为运行布局、地址有效性或设备完成证明。
 
-生成材料只归compiler角色的原Builder／Inst与FunctionBody／模块及SDK／CLI来源快照，在最后实际IR消费者后结束；不进入必要执行编码，不拥有存储或创建第二布局表、地址图、状态、读回、同步、释放链。原常量合并／消除和指令优化照常进行，不保活变量或固定保留节点数；完整变换及机器映射继续沿原编号。见内部研发资料（不公开）及内部研发资料（不公开）。
+生成材料只归compiler角色的原Builder／Inst与FunctionBody／模块及SDK／CLI来源快照，在最后实际IR消费者后结束；不进入必要执行编码，不拥有存储或创建第二布局表、地址图、状态、读回、同步、释放链。原常量合并／消除和指令优化照常进行，不保活变量或固定保留节点数；完整变换及机器映射继续沿原编号。
 
 #### 投影地址选择准备的生成来源
 
@@ -921,7 +921,7 @@ application_projection_address只为自身原实际U32零常量交接DatasetProj
 
 节点source_site为空，可选Syntax直接借用原零常量发射时的当前SourceSite，语法种类、实际范围、定义／特化实例及inlined_at／domain_path保持；未知为null，不从资源根、字段名或邻近位置猜补。原优化照常合并／消除零常量，只有实际保留的节点才在最终IR出现，不为观察保活；多条被合并来源及被消除关系继续沿原优化来源叶项交付，不能用一个剩余节点补猜全部历史。
 
-材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI来源快照，最后实际IR消费者后释放；不进入必要执行编码，不拥有运行存储、地址或view，不增加地址图、状态、查询、调用层、读回、同步或释放链。静态准备不证明运行读取、地址有效或GPU完成。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI来源快照，最后实际IR消费者后释放；不进入必要执行编码，不拥有运行存储、地址或view，不增加地址图、状态、查询、调用层、读回、同步或释放链。静态准备不证明运行读取、地址有效或GPU完成。
 
 #### CPU与GPU资源传输的生成来源
 
@@ -929,7 +929,7 @@ application_transfer在原upload／download分支、所有权／活动借用／�
 
 节点source_site为空，可选Syntax直接借用原传输Call发射时的当前SourceSite，语法范围、定义／特化实例及inlined_at／domain_path保持；未知触发为null，不按资源名或邻近指令猜补。原编译拒绝及运行错误仍由原检查和Frame交接，不因来源放宽访问、改变借用或增加传输、读回、同步。
 
-材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；不进入必要执行编码，不延长运行存储寿命，不强制节点保留。真实存储、传输、依赖、最后消费者和释放继续归原Frame／blcompute；静态来源不证明已经上传、下载或GPU完成。完整优化来源与机器映射继续沿原编号。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；不进入必要执行编码，不延长运行存储寿命，不强制节点保留。真实存储、传输、依赖、最后消费者和释放继续归原Frame／blcompute；静态来源不证明已经上传、下载或GPU完成。完整优化来源与机器映射继续沿原编号。
 
 #### 应用发起整域计算的生成来源
 
@@ -937,7 +937,7 @@ call_domain只为原application_execute交付Frame及实际参数后发射的Def
 
 节点source_site为空，可选Syntax直接借用原Call发射时的当前SourceSite，原语法范围、定义／特化实例及inlined_at／domain_path保持；未知为null，不扩大为没有取得的target参数列表或整条parallel。参数组装、初始化模型及已有寄存器直传没有独立Inst时不虚构节点；已有字段偏移准备保留DatasetFieldLayout，不随本Call重标。原domain_at／build_domain及分段提交的内部来源另归对应叶项，本项不把根调用材料扩成整个被调包装的来源。
 
-材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI来源快照，最后实际IR消费者后释放；不进入必要执行编码、不保活变量，不持有World／AST或运行资源。真实计算、提交、依赖、存储及最后消费者仍归原Frame／blcompute，静态Call不证明已经执行或GPU完成；不增加调用、调度、同步、状态或释放链。完整优化／机器映射继续沿原编号。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI来源快照，最后实际IR消费者后释放；不进入必要执行编码、不保活变量，不持有World／AST或运行资源。真实计算、提交、依赖、存储及最后消费者仍归原Frame／blcompute，静态Call不证明已经执行或GPU完成；不增加调用、调度、同步、状态或释放链。完整优化／机器映射继续沿原编号。
 
 #### 整域包装入口的生成来源
 
@@ -945,7 +945,7 @@ call_domain只为原application_execute交付Frame及实际参数后发射的Def
 
 锚点统一为GenerationAnchor::DomainEntry { context, expansion }，JSON kind为domain_entry。context消费原DefinitionSyntax与实际Instance：Source采用Definition锚点，definition为原d.source_origin快照，instance为原Instance.name，不从最终domain符号拆解；Generated已有SourceSite时共享Syntax，保留原语法、定义／实例、内联／域路径及实际范围；CompiledInterface或未知上下文为null。expansion共享原完整Program.generated_origin，缺少展开材料时为null。trigger()及syntax()／origin()／instance()只沿context，不能用展开中的某个条件替代入口语法。实际已编译实现仍沿原domain_at装入，不重读其实现或因缺少源码生成另一份包装IR。FunctionBody.source_origin继续只记录真实原定义，Generated入口不因此获得虚假源码身份。
 
-材料只归compiler角色的原ValueCode／FunctionBody／模块及SDK／CLI快照，在最后实际IR消费者后释放；原body克隆共享不可变来源，不持有World／AST、执行资源或第二登记表。关闭compiler角色不包含该类型／字段，必要执行编码、B语法、C ABI与资源完成保持。空指令body仍可以具有真实生成入口；原优化照常，不保活变量或节点。内部原Call／字面量准备／分段提交来源各归原职责，真实CPU／GPU计算及最后完成仍归Frame／blcompute，静态入口不证明已运行。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只归compiler角色的原ValueCode／FunctionBody／模块及SDK／CLI快照，在最后实际IR消费者后释放；原body克隆共享不可变来源，不持有World／AST、执行资源或第二登记表。关闭compiler角色不包含该类型／字段，必要执行编码、B语法、C ABI与资源完成保持。空指令body仍可以具有真实生成入口；原优化照常，不保活变量或节点。内部原Call／字面量准备／分段提交来源各归原职责，真实CPU／GPU计算及最后完成仍归Frame／blcompute，静态入口不证明已运行。
 
 #### 阶段整值Name的绑定来源
 
@@ -953,13 +953,13 @@ stage_root从原env或模块const取得Literal时，用同一Root::reference_lit
 
 expand_stages将原domain_path经原stage_root／stage_expression参数交给临时Builder.source_context，定义、实际实例与inline关系保持。阶段表达式及其原操作据此保存实际域路径；模块const的求值仍拥有自身定义上下文。根级为空，嵌套域只使用原DomainSite序列，不从最终函数名推导调用路径或复制图。
 
-Builder::roots仍以原evaluated_constant形成相同Constant、Scalar／Bits及寄存器，新绑定材料和原求值材料一起进入同一Inst及原CSE／DCE／空Map根；直接source_site按原生成职责保持，原绑定来源从generated_origin查询。DomainCallLiteral.evaluation、阶段if及for边界复用原Root材料交接，不新增消费者或另一来源字段。临时求值的实际结果可经原StageConstantEvaluation.operations持有输入已有绑定，不伪造额外算术或完整逐输入因果图。材料仅compiler，随原Root／IR／模块及快照到最后消费者，不保活操作、保存旧Builder／IR／World／AST、增加必要编码、运行状态或资源寿命。见内部研发资料（不公开）。
+Builder::roots仍以原evaluated_constant形成相同Constant、Scalar／Bits及寄存器，新绑定材料和原求值材料一起进入同一Inst及原CSE／DCE／空Map根；直接source_site按原生成职责保持，原绑定来源从generated_origin查询。DomainCallLiteral.evaluation、阶段if及for边界复用原Root材料交接，不新增消费者或另一来源字段。临时求值的实际结果可经原StageConstantEvaluation.operations持有输入已有绑定，不伪造额外算术或完整逐输入因果图。材料仅compiler，随原Root／IR／模块及快照到最后消费者，不保活操作、保存旧Builder／IR／World／AST、增加必要编码、运行状态或资源寿命。
 
 #### 阶段if选择的生成来源
 
 expand_stages在原bool检查和唯一所选body成功展开后，把StageIfSelection交给同一Program.generated_origin。GenerationAnchor::StageIfSelection及JSON kind stage_if_selection分别提供condition（原Expression SourceSite）、value（本次bool）、evaluation（原Root可选求值GeneratedOrigin）、returned（该次阶段展开是否早退）、stages／calls（本次实际新增Stage及DomainCall的OperationOrigin）与retained（此前Program根，含递归内层选择）。stages按实际展开顺序共享原operation_source及generated_origin，calls按实际生成顺序共享原call.source而不造求值事件；二者不是最终融合阶段编号或运行次数，未选分支没有产生这些结果。单源查询只解释condition，evaluation和retained独立读取。空分支、无新阶段或阶段return仍有选择事实；失败不形成成功记录，不制造指令、复制IR、保活阶段或改变原初始化／返回语义。
 
-原Program查询持有完整选择材料；原生整域FunctionBody通过DomainEntry.expansion共享同一根，空body及仅调用已编译域也能查询。物理片段Program不继承完整展开根，其自身优化只记录实际片段；DomainPartCall继续仅使用入口context，不能把全域选择写到每段。材料为compiler数据，随原IR及快照到最后消费者，不进入必要对象／执行编码、拥有运行资源或增加状态表。最终融合来源及机器映射仍沿原任务推进，完整展开须查询原Program或整域FunctionBody，单片段查询不代表全域。见内部研发资料（不公开）。
+原Program查询持有完整选择材料；原生整域FunctionBody通过DomainEntry.expansion共享同一根，空body及仅调用已编译域也能查询。物理片段Program不继承完整展开根，其自身优化只记录实际片段；DomainPartCall继续仅使用入口context，不能把全域选择写到每段。材料为compiler数据，随原IR及快照到最后消费者，不进入必要对象／执行编码、拥有运行资源或增加状态表。最终融合来源及机器映射仍沿原任务推进，完整展开须查询原Program或整域FunctionBody，单片段查询不代表全域。
 
 #### 阶段for展开的生成来源
 
@@ -969,7 +969,7 @@ expand_stages在原bool检查和唯一所选body成功展开后，把StageIfSele
 
 StageForIteration同样从原ir公开导出，index()／returned()给出该次实际下标和阶段早退，stages()／calls()分别借用本次新增Stage的operation_source／generated_origin及DomainCall的source所形成OperationOrigin，expansion()为本次body的原展开根；JSON kind为stage_for_iteration，字段同名。循环前根直接交给循环retained，各次body根移入自身iteration.expansion，不让此前迭代的材料重复进入后续迭代。内层if／for、域路径及其原求值材料保留明确归属，不存Stage／Call IR、寄存器、旧Builder或另一控制图。空body有实际迭代而没有Stage；提前return只保留实际已经展开的迭代，失败不交接成功结果。
 
-材料沿原Program、DomainEntry.expansion及同一模块／快照到最后IR消费者，物理片段继续只持有自身事实；不新增入口、运行参数、状态、必要编码或资源寿命。迭代记录解释编译展开，不是运行次数、最后融合的Stage身份、设备完成或性能读数；原优化不为观察保活。见内部研发资料（不公开）。
+材料沿原Program、DomainEntry.expansion及同一模块／快照到最后IR消费者，物理片段继续只持有自身事实；不新增入口、运行参数、状态、必要编码或资源寿命。迭代记录解释编译展开，不是运行次数、最后融合的Stage身份、设备完成或性能读数；原优化不为观察保活。
 
 #### 整域调用字面量实参的生成来源
 
@@ -979,7 +979,7 @@ build_domain只在原Root::Literal分支为逐分量准备的Constant共享Domai
 
 原GeneratedOrigin::trigger()及锚点syntax()／origin()／instance()仍只借用call；调用语法、原定义／实际实例及内联／域路径保持。evaluation表示本次Literal结果已有的StageConstantReference及其retained中的ModuleConstantEvaluation、StageConstantEvaluation等事实，不替代调用触发，也不从调用范围猜补求值表达式；没有调用语法时相关单源查询为空，求值事实仍从evaluation取得。每个实际Root的准备Constant继续共享一个原生成材料，Scalar／Bits／分量／寄存器及CallArgument顺序不变。真实已编译域Call仍使用同一原source_site，入口body、其他准备及分段运行Call保持自身职责；不改调用、求值顺序、精度、布局或参数ABI，不为Data／Uniform直传造值准备。
 
-材料只归compiler角色的原Inst／FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；原优化照常，不保活常量，不进入必要执行编码，不持有World／AST或运行资源。真实计算、Frame存储、依赖及最后完成沿原所有者，不把静态常量准备当作实际执行；不增加值表、图、调度器、同步或释放链。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只归compiler角色的原Inst／FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；原优化照常，不保活常量，不进入必要执行编码，不持有World／AST或运行资源。真实计算、Frame存储、依赖及最后完成沿原所有者，不把静态常量准备当作实际执行；不增加值表、图、调度器、同步或释放链。
 
 #### 域分段运行Call的生成来源
 
@@ -987,7 +987,7 @@ build_domain只在原Root::Literal分支为逐分量准备的Constant共享Domai
 
 来源描述主机CPU包装的分段发起职责，CPU／GPU域目标、实际Stage子区间及前缀要求／保证仍归原Program与Module资源目录中的程序引用；各Stage原来源保持，入口上下文不代替逐Stage／指令映射，也不表示GPU最终ISA。空Stage区间仍直接返回，不为观察制造Call或程序；真实已编译域Call仍保留自身call.source及域路径。
 
-材料只归compiler角色的原Inst／FunctionBody／模块与SDK／CLI快照，最后真实IR消费者后释放；不进入必要执行编码、不保活变量或节点，不持有World／AST或运行资源。Frame／blcompute继续承担原存储、依赖、执行与最后完成；静态Call不证明计算已运行。原优化、资源所有权及错误保持，不增加调度、图、同步、第二状态或释放链。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只归compiler角色的原Inst／FunctionBody／模块与SDK／CLI快照，最后真实IR消费者后释放；不进入必要执行编码、不保活变量或节点，不持有World／AST或运行资源。Frame／blcompute继续承担原存储、依赖、执行与最后完成；静态Call不证明计算已运行。原优化、资源所有权及错误保持，不增加调度、图、同步、第二状态或释放链。
 
 #### Stage Dataset调用实参准备的生成来源
 
@@ -995,7 +995,7 @@ native_call只在原Argument::Dataset分支的零索引Constant、PositionAddres
 
 原Scalar／Bits、零索引、真实DatasetView绑定、字段字节偏移、声明步长、位置与根Proof、Access、形状、参数顺序及ABI保持。该生产者对应CPU阶段对已编译函数的实际调用；源码函数内联及GPU路径各自沿原生产者，不按函数名或表示名称改标。read／atomic／inout原许可及真实检查保持，不以来源分类放宽CPU／GPU目标或写入权限。
 
-材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，在最后真实IR消费者后释放；不进入必要执行编码、不保活变量或节点，不持有World／AST或运行资源。真实存储、借用、依赖和最后完成仍沿Frame／blcompute及实际消费者；静态准备不证明调用已运行。原优化、错误与合法动态输入保持，不增加参数／状态表、图、调度、同步或释放链。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，在最后真实IR消费者后释放；不进入必要执行编码、不保活变量或节点，不持有World／AST或运行资源。真实存储、借用、依赖和最后完成仍沿Frame／blcompute及实际消费者；静态准备不证明调用已运行。原优化、错误与合法动态输入保持，不增加参数／状态表、图、调度、同步或释放链。
 
 #### CPU借用描述符步长Cast的生成来源
 
@@ -1003,7 +1003,7 @@ application_reference_value只在原descriptor需要U64步长而实际布局步�
 
 节点source_site为空，Syntax直接借用原发射时SourceSite，原语法、定义／实际实例及内联／域路径保持；未知为null，触发仅为已取得的原范围。storage_address、Projection根Proof、原字段布局、普通数值或其他寻址Cast不因共享语法触发而改标。原Call、根／长度／字段偏移、参数顺序、访问许可、借用、ABI与错误保持；步长表示拓宽不改变实际字节步长或复制数据。
 
-材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块及SDK／CLI快照，最后真实IR消费者后释放，不进入必要执行编码、不持有World／AST或运行资源。Frame及真实最后消费者继续负责存储、依赖和完成；不建立参数／状态表、图、调度、同步或释放链。原优化继续折叠／消除，不为来源强制保活变量或Cast，完整变换与机器映射仍归原编号。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块及SDK／CLI快照，最后真实IR消费者后释放，不进入必要执行编码、不持有World／AST或运行资源。Frame及真实最后消费者继续负责存储、依赖和完成；不建立参数／状态表、图、调度、同步或释放链。原优化继续折叠／消除，不为来源强制保活变量或Cast，完整变换与机器映射仍归原编号。
 
 #### 普通函数形参与IR输入的来源
 
@@ -1013,7 +1013,7 @@ function_parameters从原Definition、形参声明顺序及当前实际函数实
 
 CallParameter::origin()只借用同一不可变材料，ParameterOrigin::ir_json()序列化该事实。FunctionBody::parameter_inputs()按原参数顺序返回借用的(CallParameter, inputs切片)，值的宽度取真实Ty.components，引用为原两个U32地址分量；函数IR的每个parameters条目同样输出origin及input_registers。一个B向量引用可以对应多个实际参数并共享来源，零分量值保留原参数身份且输入为空；Frame省略时材料和输入随原记录一起移除，不保留假槽位。切片直接取原ValueCode.inputs，不另存参数槽位表或改变输入编号。
 
-这里是逻辑IR ABI关系，最终Windows寄存器、栈、隐藏机器输入与指令映射仍由原后端来源任务交付。必要运行编码不带这些材料，参数、类型、实际值、借用、Frame及最后消费者的原权威保持；材料沿原FunctionBody／模块、SDK／CLI快照共享，在最后IR消费者后释放，不保留AST／World、不拥有运行资源、不保活变量或指令，不建立状态、图、调度或释放链。完整优化的Release仍按原规则执行。见内部研发资料（不公开）与内部研发资料（不公开）。
+这里是逻辑IR ABI关系，最终Windows寄存器、栈、隐藏机器输入与指令映射仍由原后端来源任务交付。必要运行编码不带这些材料，参数、类型、实际值、借用、Frame及最后消费者的原权威保持；材料沿原FunctionBody／模块、SDK／CLI快照共享，在最后IR消费者后释放，不保留AST／World、不拥有运行资源、不保活变量或指令，不建立状态、图、调度或释放链。完整优化的Release仍按原规则执行。
 
 #### 普通调用B实参与实际CallArgument的来源
 
@@ -1023,7 +1023,7 @@ compiler角色的原CallArgument值／引用变体直接持有可选共享Argume
 
 没有原实参语法的根入口、生成的dataset初始化／释放及自定义值核参数明确不提供Expr列表；如果形成B原生调用，已知参数序号／名称仍可交接，site为null，不将null推断成某个源码表达式或特定生成原因，原Inst.generated_origin继续说明已知生成职责。C调用、运行库及域包装等其余原构造默认origin为null，不按类型名、符号名或最终寄存器猜补。提供者源码／头文件缺席的已编译调用仍从原公开接口确定参数次序／名称，已取得的site归调用者自身源码，不伪造提供者实现；实际形参声明／输入关系仍见上节。
 
-材料只由原CallArgument／Call／Inst、FunctionBody／ValueCode、模块及SDK／CLI快照持有；克隆与原寄存器／局部重映射保留同一不可变事实，最后真实IR消费者后释放，不保留Expr／AST／World、不拥有运行值或资源。关闭compiler不包含该字段／类型／接口／JSON字段，必要对象／执行编码不增加观察材料；对象及资源映像版本由各自真实编码合同决定，观察字段不独立升级或冻结格式。原求值顺序、类型、布局、借用、Scoped资源结束、Frame、数值效果与最后消费者不因观察改变，不增加参数表、状态、图、调度、同步或释放链，不为来源保活指令。见内部研发资料（不公开）和内部研发资料（不公开）。
+材料只由原CallArgument／Call／Inst、FunctionBody／ValueCode、模块及SDK／CLI快照持有；克隆与原寄存器／局部重映射保留同一不可变事实，最后真实IR消费者后释放，不保留Expr／AST／World、不拥有运行值或资源。关闭compiler不包含该字段／类型／接口／JSON字段，必要对象／执行编码不增加观察材料；对象及资源映像版本由各自真实编码合同决定，观察字段不独立升级或冻结格式。原求值顺序、类型、布局、借用、Scoped资源结束、Frame、数值效果与最后消费者不因观察改变，不增加参数表、状态、图、调度、同步或释放链，不为来源保活指令。
 
 #### 数组形参物化StoreLocal的生成来源
 
@@ -1033,7 +1033,7 @@ Source定义按同一原B参数身份取得Param.span，由原Builder.source_at�
 
 materialize_array共用算法只接收可选来源，表达式、局部绑定、取址、外部／普通实参、拥有／view暂存继续原来源；不能因包含数组就全改标为形参，也不能按最终寄存器号猜原参数。来源不改变参数ABI，不代替B参数到实际输入槽的关系。已编译消费者未保留提供者原IR时不重建或伪造实现；原提供者编译结果及消费者自己的真实IR分别查询。
 
-材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，在最后真实IR消费者后释放；不保留AST／World、不进入必要执行编码、不持有运行资源，不建立参数／状态表、图、调度、同步或释放链。Frame及真实消费者继续负责原资源、借用与最后完成，完整变换及机器来源另归原编号。见内部研发资料（不公开）及内部研发资料（不公开）。
+材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，在最后真实IR消费者后释放；不保留AST／World、不进入必要执行编码、不持有运行资源，不建立参数／状态表、图、调度、同步或释放链。Frame及真实消费者继续负责原资源、借用与最后完成，完整变换及机器来源另归原编号。
 
 #### 集合值核的入口与捕获来源
 
@@ -1126,7 +1126,7 @@ FunctionAbi按序为可选Definition、可选实例字符串、u64范围数量�
 
 ParallelRangePart为u32类别：0=enter（u32 local_frame_bytes），1=scalar_bounds，2=scalar_selection（u64 binding_index、u32 field_offset_bytes），3=scalar_advance，4=scalar_back_edge，5=exit（u32 local_frame_bytes），6=packet_bounds，7=packet_collect（u64 binding_index、u32 field_offset_bytes），8=packet_advance，9=packet_back_edge，10=packet_tail，11=tile_input_boundary（u32 width），12=tile_input_copy（u64 binding_index、u32 source_offset_bytes、u32 storage_offset_bytes、u32 unit_bytes），13=tile_base（u32 storage_offset_bytes），14=tile_phase_enter、15=tile_phase_advance（均为u64 phase_index），16=tile_private_pointer（u64 phase_index、bool restore），17=tile_private（u64 phase_index、bool restore、bool local、u64 slot_index、u32 storage_offset_bytes、Scalar），18=tile_publish_pointer（u64 tile_index），19=tile_publish_load（u64 tile_index、u32 value_offset_bytes、u64 value_register_index、Scalar），20=tile_publish_shift（同19后加u32 part_index），21=tile_publish_store（同20后加u32 storage_offset_bytes、u32 unit_bytes），22=tile_collective（u64 tile_index、u32 value_offset_bytes、u64 result_register_index、Scalar、TileOp、TileCollectivePart）。无附加字段的part只写类别。查询kind为parallel_range，part使用上述名称，stage_origin使用OperationOrigin形状；局部帧参数不等同全部stack_bytes。范围ABI的FunctionAbi.definition／instance为null，stage_origin不能解释成每条生成控制指令的业务语法或选择条件位置。事实只覆盖实际生成段，内部IR仍归operation_ranges；tile输入快照、阶段控制、私有流以及发布内部生成段已交接，集合核内部五处生成职责也已交接。发布value_offset_bytes相对原Publication记录，IR值身份不是机器寄存器；part_index零起，每段对应原值的四字节片段，storage_offset_bytes为原共享流首lane相对RSP的真实栈位置，unit_bytes为实际写宽。只给真实存储生成tile_publish_store，不按类型补写未使用字段；零长度tile_publish_load没有对应机器指令，实际语法由原operation_ranges交接。原始ABI编码借用原字段逐条写入，与恢复事实共用一张职责标签表，不建立整组FunctionAbi／来源副本。BLCR7与BLCF10共同采用新增标签；旧BLCR1至6、BLCF1至9材料明确不支持，应由匹配生成端重新保存观察材料，查询不重编。TileOp为原IR运算的u32编码：0=ReduceSum、1=ScanExclusiveSum、2=ReduceMin、3=ReduceMax、4=ScanExclusiveMin、5=ScanExclusiveMax、6=ReduceBitAnd、7=ReduceBitOr、8=ReduceBitXor、9=ScanExclusiveBitAnd、10=ScanExclusiveBitOr、11=ScanExclusiveBitXor；JSON tile_operation复用原IR名称。TileCollectivePart为u32子类：0=Setup（依次u32 input_offset_bytes、output_offset_bytes、length_offset_bytes、plane_stride_bytes），1=Identity（u64原始bits，JSON identity_bits为十六进制字符串），2=ScanOutput（无额外字段），3=Accumulate（u32 input_high_delta_bytes、u64 loop_start_byte），4=Fill（u32 length_offset_bytes、u64 loop_start_byte）。JSON part分别为tile_collective_setup、tile_collective_identity、tile_collective_scan_output、tile_collective_accumulate和tile_collective_fill，并共同保留同一tile／原值字节／结果寄存器／Scalar／TileOp。输入、结果和长度偏移相对本函数RSP；循环目标相对本函数字节0，输入高平面偏移仅64位消费。独占扫描只写此前累积结果并推进，再执行当前元素累积；归约则在累积完成后填满当前实际长度。私有结果流每lane写一个u32，64位额外写相隔plane_stride_bytes的高平面，不能把逻辑u8／u16误读成一／二字节私有流写。空结果不补记录，来源与运行完成分别解释。必要执行编码BLRI51、语言对象BLCO89及其机器ABI不变；Rust公开来源职责枚举新增变体按不兼容版本交付。
 
-tile_input_boundary是原块入口对齐与实际长度建立；width是本次原逻辑块宽。tile_input_copy是原单片段的指针准备和有效lane复制循环；source_offset_bytes相对原绑定每条源记录，storage_offset_bytes相对范围入口完成后的RSP，unit_bytes为每lane实际复制的1／2／4字节单元，目标相邻lane按原四字节流步长。64位值按原输入word拆分，不以片段标签冒称完整源类型；多个捕获共享同一原片段时只记录那次实际发射，无消费者片段没有复制范围。实际源stride和有效长度仍由原输入表／长度槽消费，观察不新增布局或运行值。tile_input的Stage上下文与普通parallel_range相同，不伪造捕获语法或B形参，私有流和阶段等其余职责见内部研发资料（不公开）。
+tile_input_boundary是原块入口对齐与实际长度建立；width是本次原逻辑块宽。tile_input_copy是原单片段的指针准备和有效lane复制循环；source_offset_bytes相对原绑定每条源记录，storage_offset_bytes相对范围入口完成后的RSP，unit_bytes为每lane实际复制的1／2／4字节单元，目标相邻lane按原四字节流步长。64位值按原输入word拆分，不以片段标签冒称完整源类型；多个捕获共享同一原片段时只记录那次实际发射，无消费者片段没有复制范围。实际源stride和有效长度仍由原输入表／长度槽消费，观察不新增布局或运行值。tile_input的Stage上下文与普通parallel_range相同，不伪造捕获语法或B形参。
 
 tile_base是原块基址的实际保存；tile_phase_enter是phase入口的原基址重装，tile_phase_advance覆盖原lane推进、相对块基址的差值、实际长度比较及回边。phase_index从零开始，只解释同一Stage的原计划顺序。tile_private_pointer按restore的true／false分别查询为tile_private_restore_pointer／tile_private_save_pointer；tile_private按方向分别为tile_private_restore／tile_private_save。私有槽JSON的slot_kind为local或register，对应编码bool local的true／false，slot_index为该原IR槽索引，register不是机器GPR，local不是运行地址；Scalar复用前述Print的原u32 Scalar编码，JSON用原Scalar.name的类型名称。storage_offset_bytes是原私有流首lane相对RSP的字节位移，实际地址加4×lane；64位高平面再加width×4，其余类型仍用原u32流，Scalar描述逻辑类型。空槽集合只有原地址准备，不能补造槽记录。原偏移查询一次供机器与事实，阶段、私有流、输入及用户IR范围分别描述，不包住未交接的发布／集合生成段；Stage上下文不等于精确业务源位置，IR槽与phase序号也不是跨版本稳定身份。
 
@@ -3197,7 +3197,7 @@ GPU 的坐标与权重按 [Vulkan Sampling](https://docs.vulkan.org/spec/latest/
 
 范围分析与精度约定分别处理：理想线性过滤是非负、权重和为1的归一texel组合，实际CPU lerp及GPU过滤仍有舍入。普通UNORM的共同外界消费Vulkan着色器外最低约十万分之一精度，只取更宽的epsilon=10^-4，沿当前三轴加mip至多4维16项计算；一条贡献的权重、texel、累加和转换至多25个舍入因素，形成[0,U]。CPU四级lerp及仿射解码包含于同一更宽界，sRGB额外曲线仍用[0,2]。原数值所有者向上计算端点，并向F32外舍入，正负零都保留；不钳制结果、不增加设备条件，也不把这个保守界当作允许实际实现降低精度。相同原输入只改变编译期事实，具体返回精度、采样指令及资源仍遵守原合同。
 
-同一算法、格式和输入不承诺 CPU／GPU 或不同设备逐位一致；允许差异仅来自上述实际格式与目标规范，不是任意误差许可。完整结果误差还与所选相邻 texel 的值、局部变化、mip 内容和实际运算有关，不能由某一个编码间隔或精度位数推得通用常数。当前没有跨目标严格一致的采样模式；未解决的原生过滤偏差仍见 内部研发资料（不公开），不能仅以“硬件精度”认定其合法。真实材质效果由消费者核对，不以本数值合同承诺天然材质视觉等价。
+同一算法、格式和输入不承诺 CPU／GPU 或不同设备逐位一致；允许差异仅来自上述实际格式与目标规范，不是任意误差许可。完整结果误差还与所选相邻 texel 的值、局部变化、mip 内容和实际运算有关，不能由某一个编码间隔或精度位数推得通用常数。当前没有跨目标严格一致的采样模式；已知原生过滤偏差仍待解决，不能仅以“硬件精度”认定其合法。真实材质效果由消费者核对，不以本数值合同承诺天然材质视觉等价。
 
 ### 原生纹理接口与寿命
 
@@ -3227,7 +3227,7 @@ BLTEX v3体资产的8字节magic仍为`BLTEX\0\0\0`，接小端u32的version=3�
 
 CPU mip交接至原staging并成功提交后可退出，staging及原图像保持到真实消费者结束；克隆不产生第二份image。`Device::download_texture3d(&Texture<3>)`从实际图像完整复制并同步等待，恢复原采样布局，返回独立CPU `Texture3D`且保留格式、每级宽高深与三轴寻址。复制按[VkBufferImageCopy](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferImageCopy.html)的真实三维extent紧密寻址，R8等格式的逐级staging起点保留4字节对齐，文件无此填充。另一逻辑Device的图像仍明确拒绝。二维／三维的传输和元数据接口在Rust类型上区分，原 `vulkan::Bindings::textures` 通过 TextureInput 接收混合维度列表，沿同一上传依赖和最后消费者持有图像。
 
-体资产、原生传输、计算入口的 texture3d／float3 采样、CPU三线性与SPIR-V三维图像绑定沿上述同一资源交接。普通CPU纹理函数与obj／lib消费原只读描述借用；CPU整域函数及无源obj／lib也沿原Frame同步借用这些原描述；GPU整域输入、GPU独立普通调用和NVIDIA原生过滤偏差分别见 内部研发资料（不公开）。BLEngine实际Filmic LUT、效果与性能由引擎消费者交付，不由普通函数、传输或单设备成功推断全部能力完成。
+体资产、原生传输、计算入口的 texture3d／float3 采样、CPU三线性与SPIR-V三维图像绑定沿上述同一资源交接。普通CPU纹理函数与obj／lib消费原只读描述借用；CPU整域函数及无源obj／lib也沿原Frame同步借用这些原描述；GPU整域输入和GPU独立普通调用仍待实现，NVIDIA原生过滤偏差仍待解决。BLEngine实际Filmic LUT、效果与性能由引擎消费者交付，不由普通函数、传输或单设备成功推断全部能力完成。
 
 ### 固定纹理资源数组与逐元素选择
 
@@ -3778,7 +3778,7 @@ void local_histogram(inout dataset<Cell> cells) on compute {
 }
 ```
 
-共享元素只通过前述11种atomic操作访问：CPU与GPU原生映射均接受u32／i32／u64／i64标量字段。GPU64位tile必须在真实逻辑设备创建时声明shaderSharedInt64Atomics；64位dataset使用独立shaderBufferInt64Atomics，同一程序实际使用两类目标时分别满足，普通64位存储不要求原子特性。已核验的AMD驱动32.0.21036.18仍存在64位Workgroup OpAtomicLoad降成32位读取的问题，完整当前缺口见内部研发资料（不公开）的C-020.2.5.3.1；设备报告支持不替代实际正确性。嵌套记录与向量可选择具体标量；普通读取／赋值／复合赋值和直接 tile 集合读取均报 B214，其他原子目标类型报 B215。需要进入只读集合时，先在同步后显式 atomic_load，再 tile_publish 该普通值。它仍不是裸地址，不能逃逸为普通值、全局资源或函数返回的 tile；局部的有界索引、lane、length、游标与字段映射复用原检查器，不授予全局写入或前缀域能力。
+共享元素只通过前述11种atomic操作访问：CPU与GPU原生映射均接受u32／i32／u64／i64标量字段。GPU64位tile必须在真实逻辑设备创建时声明shaderSharedInt64Atomics；64位dataset使用独立shaderBufferInt64Atomics，同一程序实际使用两类目标时分别满足，普通64位存储不要求原子特性。已核验的AMD驱动32.0.21036.18仍存在64位Workgroup OpAtomicLoad降成32位读取的问题；设备报告支持不替代实际正确性。嵌套记录与向量可选择具体标量；普通读取／赋值／复合赋值和直接 tile 集合读取均报 B214，其他原子目标类型报 B215。需要进入只读集合时，先在同步后显式 atomic_load，再 tile_publish 该普通值。它仍不是裸地址，不能逃逸为普通值、全局资源或函数返回的 tile；局部的有界索引、lane、length、游标与字段映射复用原检查器，不授予全局写入或前缀域能力。
 
 `tile_barrier();` 只允许位于已有 tile 范围的 parallel／cooperative 根块，不接收参数、不返回值。不允许放在分支、循环或普通值函数内，即便分支条件暂时是常量；非法位置／参数报 B219，作为表达式报 B218。有效尾 invocation 执行源码，无效尾 invocation 不访问记录或共享元素，但 GPU 中它们同样经过全部整块屏障。当前支持的是静态根块阶段，不是循环内动态 barrier、跨 workgroup 屏障或调度公平性承诺。
 
@@ -4238,7 +4238,7 @@ void selected_energy(read dataset<Light> input,
 
 输入的逻辑顺序定义前缀包含哪些元素，浮点结合顺序由实现决定。CPU 范围内使用 SSE 标量加法，范围结果由同一执行框架合并再原生传播；GPU 使用既有 64 路 Blelloch 树、递归摘要及前缀传播。CPU叶范围函数保存和恢复其实际使用的非易失步长寄存器，各分量按真实源／目标布局共同遍历记录，其他字段与填充保持。浮点摘要和整数摘要共用物理页与原有提交所有权，不增加宿主中间读回或逐元素任务。
 
-GPU 主扫描、递归扫描、摘要传播与最终记录传播均声明既有 `DenormPreserve 32` 和 `SignedZeroInfNanPreserve 32`，并沿用设备能力绑定。求和直接生成 SPIR-V `OpFAdd`，不转换为整数加法或调用外部 Shader 编译器。CPU／GPU 不承诺逐位相同、固定误差界、NaN 载荷一致或中间结果不会溢出；次正规数、无穷和 NaN 继续参与真实运算，不截断、替换或滤除。对严重消减或精确分布有要求的算法仍须处理数值稳定性，编译成功不意味着这些数学条件成立。实际误差见 内部研发资料（不公开）。
+GPU 主扫描、递归扫描、摘要传播与最终记录传播均声明既有 `DenormPreserve 32` 和 `SignedZeroInfNanPreserve 32`，并沿用设备能力绑定。求和直接生成 SPIR-V `OpFAdd`，不转换为整数加法或调用外部 Shader 编译器。CPU／GPU 不承诺逐位相同、固定误差界、NaN 载荷一致或中间结果不会溢出；次正规数、无穷和 NaN 继续参与真实运算，不截断、替换或滤除。对严重消减或精确分布有要求的算法仍须处理数值稳定性，编译成功不意味着这些数学条件成立。
 
 浮点极值使用既有严格比较：左值更小／更大时取左值，相等或无序时取右值，保留右侧有符号零及 NaN 位模式。CPU 使用 MINSS／MAXSS，GPU 使用有序比较与位选择；尾组没有真实右元素的子树直接保留左值，跨范围／组传播的首项直接取得此前真实前缀，不让空的局部前缀或尾部填充改写 NaN。含 NaN 的二元极值不具有一般结合律，CPU 范围划分与 GPU 树形分组可能产生不同结果；该能力不承诺含 NaN 的任意输入逐位相同，也不为此增加过滤、替换或运行时检查。
 
@@ -4729,7 +4729,7 @@ build 输出 `.spv`、归约 `.tail.spv`、CPU `.x64`、数学入口 `.reloc` �
 
 整数除余使用编译期常量倒数的精确乘法／移位序列，动态移位使用 ECX／CL，结果直接交付实际位置。比较直接读取来源后生成原有 bool 结果；IR 已准备好两个输入的 Select 使用 CMOV 做位选择，不改变前端的条件求值与 if／while 控制流。ModRM、REX 和 SIB 编码由同一后端消费寄存器／基址位移；零位移、8 位和 32 位位移用于实际需要的寻址，也服务非易失寄存器保存／恢复。
 
-上述指令选择描述标量执行，四元素降低见下节。进一步的寻址、寄存器合并、活跃区间拆分和复杂控制流向量化未完成；代码更短也不自动证明某个程序吞吐更高，实际数据见 内部研发资料（不公开）。
+上述指令选择描述标量执行，四元素降低见下节。进一步的寻址、寄存器合并、活跃区间拆分和复杂控制流向量化未完成；代码更短也不自动证明某个程序吞吐更高。
 
 ### 四元素 SSE2 并行降低
 
@@ -4749,7 +4749,7 @@ where 的直线及统一控制流正文复用相同计划、寄存器分配、Fr
 
 只服务寻址、没有普通值消费者的 Index 不生产索引向量，直接使用范围游标；实际使用 `index()` 时产生四个真实全局索引。整组入口以 64 位计算 index＋4，避免 u32 末端的加法回绕；只有整组落在范围内才装载四条记录。起点无需按四对齐，尾部不读取范围之外的行或广播记录。
 
-同一干涉图先供标量着色，再供 SIMD 机器位置分析，分析消费者结束后释放。整组与尾部的临时数据区域可以复用，唯一 Frame 在最大区域之后保存两者实际使用的非易失寄存器，并在范围入口／退出各处理一次；不复制两套栈帧或改变资源完成点。该实现仅使用既有 x64 基线中的 SSE2；AVX2／AVX512、更宽批次、分歧掩码与协作 SIMD 仍未完成。数值、规模与时间记录见 内部研发资料（不公开）。
+同一干涉图先供标量着色，再供 SIMD 机器位置分析，分析消费者结束后释放。整组与尾部的临时数据区域可以复用，唯一 Frame 在最大区域之后保存两者实际使用的非易失寄存器，并在范围入口／退出各处理一次；不复制两套栈帧或改变资源完成点。该实现仅使用既有 x64 基线中的 SSE2；AVX2／AVX512、更宽批次、分歧掩码与协作 SIMD 仍未完成。
 
 ### 编译期常量整数除余
 
@@ -4830,7 +4830,7 @@ for view in data.view_bindings() {
 let source = data.view_source(0, "pair.left");
 ```
 
-以上接口不分配观察图、不克隆Arc、不读回／等待GPU、不修改记录或保活另一份所有权。返回借用由Rust约束原父存储与来源寿命；不能据查询取得可写来源、跨越父存储释放或在活动观察时改写父存储。CPU执行本身沿原同步入口完成，查询不伪造GPU最后使用状态、初始化许可或静态别名事实。GPU对应的来源与绑定完成点、Frame数据根见后文；B／C实际入口仍见内部研发资料（不公开）。
+以上接口不分配观察图、不克隆Arc、不读回／等待GPU、不修改记录或保活另一份所有权。返回借用由Rust约束原父存储与来源寿命；不能据查询取得可写来源、跨越父存储释放或在活动观察时改写父存储。CPU执行本身沿原同步入口完成，查询不伪造GPU最后使用状态、初始化许可或静态别名事实。GPU对应的来源与绑定完成点、Frame数据根见后文。B／C对应的来源查询入口仍待实现。
 
 ### GPU布局、view来源与绑定保留点
 
@@ -4854,7 +4854,7 @@ if let Some(point) = gpu_data.last_use()? {
 }
 ```
 
-本节是原生Rust SDK观察，不新增B语法或C ABI。Frame当前数据根见下一节，B／C实际入口仍见内部研发资料（不公开）。
+本节是原生Rust SDK观察，不新增B语法或C ABI。Frame当前数据根见下一节。B／C对应的来源查询入口仍待实现。
 
 ### 应用Frame数据根与有效域关系的借用
 
@@ -4896,7 +4896,7 @@ let actual_relations = root.domain_relations();
 
 Rust SDK的`Frame::types()`返回构造时移入的原`&Vec<Ty>`，索引对应本Frame的类型号；len为有效类型数，capacity是原容器可容纳的Ty槽数。原Ty的size／align／components继续描述B数据布局，不是Rust Ty对象的槽大小。len与capacity分别乘实际`size_of::<Ty>()`得到已初始化槽跨度与容量字节，只计外层Vec，不含Ty内部String／Vec／Box、数据字、代码、设备、分配器或OS开销。capacity尾部不能作为有效Ty读取，空Vec指针不证明已分配，空但预留容量仍可持有槽存储。
 
-查询共享借用原表，不复制、过滤、修改类型或创建另一目录；原表保持到Frame结束。活动借用不能跨Frame修改或销毁，数据分配／resize／驻留替换／release结束后再借用同一表；这些数据操作本身不重建类型表。查询不装入、执行、等待或传输，也不赋予写权限。返回值可按原Rust规则借用为切片，不跨单元传递Rust容器，不增加B／C观察ABI。完整职责见内部研发资料（不公开），其余宿主分配与跨语言观察继续按Issues原编号推进。
+查询共享借用原表，不复制、过滤、修改类型或创建另一目录；原表保持到Frame结束。活动借用不能跨Frame修改或销毁，数据分配／resize／驻留替换／release结束后再借用同一表；这些数据操作本身不重建类型表。查询不装入、执行、等待或传输，也不赋予写权限。返回值可按原Rust规则借用为切片，不跨单元传递Rust容器，不增加B／C观察ABI。其余宿主分配与跨语言观察仍待实现。
 
 ### 应用Frame程序槽与代码根的借用
 
@@ -5228,7 +5228,7 @@ void split<const N:u32>(write dataset<A,N> first,write dataset<B,N> second) on c
 
 同一阶段中，append的输出与单u32计数不能再借作普通write／inout当前元素，也不能与inout tile_input域重叠，反向顺序同样拒绝为B221；计算append值时取得的借用也参与判定。这扩展原append的共享写入与独占元素互斥，不产生运行时检查。同一输出／计数对的连续append保持合法。
 
-普通map、where的原索引以及同域阶段组合复用同一IR Store／读取写入集合、现有CPU／SPIR-V后端和执行完成点，不增加GPU复制、宿主逐元素回调、运行期下标修正或额外调度器。实际使用是BLEngine在一次主命中中同时生成像素与48字节可见性记录；可选输出在const分支关闭时没有对应Store，普通图像不因此获得全图历史。当前实现与原生范围见内部研发资料（不公开）。
+普通map、where的原索引以及同域阶段组合复用同一IR Store／读取写入集合、现有CPU／SPIR-V后端和执行完成点，不增加GPU复制、宿主逐元素回调、运行期下标修正或额外调度器。实际使用是BLEngine在一次主命中中同时生成像素与48字节可见性记录；可选输出在const分支关闭时没有对应Store，普通图像不因此获得全图历史。
 
 
 ## 原生纹理的逐轴寻址

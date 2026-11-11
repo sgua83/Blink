@@ -3150,7 +3150,7 @@ impl ReductionKernel {
 
 没有结果的私有写与被删除的值分别表达。原StoreLocal的目标Local不在needed时，同一EliminatedOperation用DirectPrivateWrite记录原写来源和输入Scalar；ValueResults继续表达普通值及商余结果。两种操作复用原UnusedOperations／EliminatedOperations根，JSON的operations逐项区分eliminated_private_write与eliminated_value。直接写的result_types()为None，一个U64逻辑分量也不是四字节。槽号和Reg会随原压缩消失，不写成永久身份，不为来源保活旧IR、私有存储或值；实际运行地址仍由原运行观察职责负责。索引私有写用同一枚举的IndexedPrivateWrite，分别保留原逻辑范围长度component_count、原字节偏移项的index_type、静态byte_offset、写入Scalar及原来源。临时base／Local／Reg不做永久身份：array<Pair,3>可能有六个逻辑分量，写U64字段仍只写八字节，其字段偏移可以是八；范围长度不是数组元素数或固定四字节字。该记录沿同一ValueCode／Stage及空Map后的Program交接，原needed与求值不变，当前布局、运行地址和实际索引值不由删除来源猜补。
 
-这些事实直接从原bc ir普通函数、应用及程序查询取得，SDK和JSON消费同一根。普通指令的无代码事实、被删除的私有写、整数结果裁剪与整个Stage消失分别属于各自生产点；整个空Map阶段被原optimize移除时，Program.generated_origin以EmptyMapRemoval接收其原语句来源及已有生成材料；全部阶段消失仍能从原Program查询这次删除，不为保存来源保活空阶段。code为空与运行时集合为空分别理解，source_stages继续记录原展开数量。查询与生命周期见[规范](../Open/Docs/BLanguage.md#未消费普通值结果的删除来源)和内部研发资料（不公开）。
+这些事实直接从原bc ir普通函数、应用及程序查询取得，SDK和JSON消费同一根。普通指令的无代码事实、被删除的私有写、整数结果裁剪与整个Stage消失分别属于各自生产点；整个空Map阶段被原optimize移除时，Program.generated_origin以EmptyMapRemoval接收其原语句来源及已有生成材料；全部阶段消失仍能从原Program查询这次删除，不为保存来源保活空阶段。code为空与运行时集合为空分别理解，source_stages继续记录原展开数量。查询与生命周期见[规范](../Open/Docs/BLanguage.md#未消费普通值结果的删除来源)。
 ### 11.4 选择表达式不是总能两边都先算
 
 `condition ? a/b : 0` 只有选中除法时才应求除法，未选分支可能包含无效访问或不允许提前执行的计算。编译器保留必要控制流，再只对确实安全的操作简化为选择；这与第九章的路径事实相连。
@@ -5084,12 +5084,10 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 
 ## 附录 D 版本与进一步阅读
 
-正文按当前语言规则与正式工具入口编写；软件版本见工程根VERSION，具体运行与交付历史保存在P4双台账。
+正文按当前语言规则与正式工具入口编写。源码版本见工程根 VERSION，正式发行见 [Releases](https://github.com/sgua83/Blink/releases)。
 
 - [Blink 开源工程](https://github.com/sgua83/Blink)：源码、学习资料与正式 PDF。
 - [语言规则](../Open/Docs/BLanguage.md)：语法、类型、访问和集合操作的正式说明。
-- 内部研发资料（不公开）：编译器与执行框架的职责和所有权。
-- 内部研发资料（不公开）：现有能力、原生运行记录与未完成事项。
 - [Microsoft x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)：参数、寄存器与栈规则。
 - [Khronos SPIR-V 规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)：二进制格式、类型、控制流和执行环境。
 - [Khronos Vulkan 同步示例](https://docs.vulkan.org/guide/latest/synchronization_examples.html)：执行依赖与内存可见性的典型关系。

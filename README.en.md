@@ -168,7 +168,7 @@ Ordinary hosts select CPU/GPU in code. See the [formal-release ABI reference](ht
 |---|---|---|
 | **Native parallelism** | Express independent work and required cooperation through data domains, access contracts, and collectives | Multicore CPU and GPU execution on a single machine: parallel domains, reductions, scans, explicit atomics, and cooperation within blocks |
 | **Shared CPU/GPU source** | Share applicable algorithms, selecting targets and transfers explicitly | In-house native x64/SPIR-V backends; required GPU features depend on the program and driver |
-| **Native domain compilation and execution** | Organize machines into build and execution resources; select build and execution domains independently | **In design, not implemented**; 内部研发资料（不公开） |
+| **Native domain compilation and execution** | Organize machines into build and execution resources; select build and execution domains independently | **In design, not implemented** |
 
 <a id="ai-facing-tools-and-systems-development"></a>
 
@@ -211,7 +211,7 @@ Install a stable Blink seed first, then follow the [main build guide](Open/Docs/
 
 - **Usage, experience, and technical discussion:** [GitHub Discussions](https://github.com/sgua83/Blink/discussions).
 - **Reproducible defects and feature requests:** [GitHub Issues](https://github.com/sgua83/Blink/issues) · [Open an issue](https://github.com/sgua83/Blink/issues/new). Include minimal source, tool versions, source commit, exact commands, CPU/GPU/driver details, and original errors. For performance, include input size, build profile, timing scope, and transfer costs.
-- **Code and documentation contributions:** coordinate in an Issue or Discussion, then read the 内部研发资料（不公开） and 内部研发资料（不公开）. P4 is the development authority; GitHub is a one-way mirror and maintainers integrate changes through the mainline.
+- **Code and documentation contributions:** Describe the proposed change and its rationale in an Issue or Discussion. See the [public language reference](Open/Docs/BLanguage.md) for language rules. Maintainers integrate changes in P4 mainline, which supplies the public GitHub mirror.
 
 ## License
 
