@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "71fbb2a46b2edbc52d872d369e66d251990ff336f8d8e3266971f1b02cb05b8f"
+      "sha256": "6287b7e6fcc33f9550cdb473b3ad3acba508d1a33faef4fc2c531868ac080ee1"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -101,6 +101,14 @@
     {
       "path": "crates/blanguage/src/bootstrap/parser.h",
       "sha256": "1f20f6b0718b4532b38ec22d659ac4f3a4164720be837659141d6ddc0849c004"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/pe.b",
+      "sha256": "35a50b83b6c094f37e6f3e0b151f3db60e7f138739b8dee6146346046450cfb7"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/pe.h",
+      "sha256": "e67ab3ddfe950c0f266cbbfc9235295af094a1a01b476427e3b0a2aad88127c4"
     },
     {
       "path": "crates/blanguage/src/build/compiler_identity.rs",
@@ -372,7 +380,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/pe.rs",
-      "sha256": "5a3715bb6e69250cd64155745381967e6fbc72a406067be44c3cf133ed12929c"
+      "sha256": "09bf8cddb4dc0ff387153f849dfa773660cabaabc0f5bb3d82adf5153a51b44d"
     },
     {
       "path": "crates/blanguage/src/linker/resources.rs",
@@ -1549,6 +1557,12 @@
       "start_line": 400,
       "end_line": 424,
       "sha256": "8ab87ccb5b47a07b511c7650dafb396948f61d28e6b3288c147840a6d6692ceb"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/pe.b",
+      "start_line": 115,
+      "end_line": 132,
+      "sha256": "e1c779da9451f890ad84f177f7ddded77ae196756bdda1951729d6c08d3006aa"
     }
   ]
 }

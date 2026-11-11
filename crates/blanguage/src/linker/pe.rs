@@ -1,250 +1,117 @@
-//! 组合已编译 COFF 节、解析符号与重定位，写出 PE；不生成函数机器码。
+//! PE format is produced by the statically compiled B module. Object bytes remain
+//! borrowed until encoding ends; the shared machine relocation owner patches the
+//! same final output, also serving raw VM loading.
 use super::Result;
-use crate::object::{Import, Kind, Object, Target};
-use std::collections::{BTreeMap, BTreeSet};
-const BASE: u64 = 0x140000000;
-const TEXT: u32 = 0x1000;
-fn align(n: usize, a: usize) -> usize {
-    n.div_ceil(a) * a
-}
-fn put16(v: &mut [u8], at: usize, n: u16) {
-    v[at..at + 2].copy_from_slice(&n.to_le_bytes());
-}
-fn put32(v: &mut [u8], at: usize, n: u32) {
-    v[at..at + 4].copy_from_slice(&n.to_le_bytes());
-}
-fn put64(v: &mut [u8], at: usize, n: u64) {
-    v[at..at + 8].copy_from_slice(&n.to_le_bytes());
-}
-struct ImportTable {
-    bytes: Vec<u8>,
-    targets: BTreeMap<Import, u32>,
-    directory_size: u32,
-    iat_start: u32,
-    iat_size: u32,
-}
-fn imports(values: &BTreeSet<Import>, rva: u32) -> ImportTable {
-    let mut groups: BTreeMap<&str, Vec<Import>> = BTreeMap::new();
-    for value in values {
-        groups.entry(&value.dll).or_default().push(value.clone());
-    }
-    let directory_size = (groups.len() + 1) * 20;
-    let mut bytes = vec![0; align(directory_size, 8)];
-    let mut lookups = Vec::new();
-    for group in groups.values() {
-        let at = bytes.len();
-        bytes.resize(at + (group.len() + 1) * 8, 0);
-        lookups.push(at);
-    }
-    let iat_start = bytes.len();
-    let mut tables = Vec::new();
-    for group in groups.values() {
-        let at = bytes.len();
-        bytes.resize(at + (group.len() + 1) * 8, 0);
-        tables.push(at);
-    }
-    let iat_end = bytes.len();
-    let mut targets = BTreeMap::new();
-    for (i, (dll, group)) in groups.iter().enumerate() {
-        let name = bytes.len();
-        bytes.extend(dll.as_bytes());
-        bytes.push(0);
-        put32(&mut bytes, i * 20, rva + lookups[i] as u32);
-        put32(&mut bytes, i * 20 + 12, rva + name as u32);
-        put32(&mut bytes, i * 20 + 16, rva + tables[i] as u32);
-        for (j, value) in group.iter().enumerate() {
-            bytes.resize(align(bytes.len(), 2), 0);
-            let hint = bytes.len();
-            bytes.extend([0, 0]);
-            bytes.extend(value.name.as_bytes());
-            bytes.push(0);
-            put64(&mut bytes, lookups[i] + j * 8, (rva + hint as u32) as u64);
-            put64(&mut bytes, tables[i] + j * 8, (rva + hint as u32) as u64);
-            targets.insert(value.clone(), rva + (tables[i] + j * 8) as u32);
-        }
-    }
-    ImportTable {
-        bytes,
-        targets,
-        directory_size: directory_size as u32,
-        iat_start: rva + iat_start as u32,
-        iat_size: (iat_end - iat_start) as u32,
-    }
-}
-fn relocation_table(locations: &[u32]) -> Vec<u8> {
-    let mut pages: BTreeMap<u32, Vec<u16>> = BTreeMap::new();
-    for &location in locations {
-        pages
-            .entry(location & !4095)
-            .or_default()
-            .push(0xa000 | (location & 4095) as u16);
-    }
-    let mut bytes = Vec::new();
-    for (page, mut entries) in pages {
-        if entries.len() % 2 != 0 {
-            entries.push(0);
-        }
-        bytes.extend(page.to_le_bytes());
-        bytes.extend((8 + entries.len() as u32 * 2).to_le_bytes());
-        for entry in entries {
-            bytes.extend(entry.to_le_bytes());
-        }
-    }
-    bytes
-}
+use crate::object::{Kind, Object, Target};
 
-struct Section {
-    name: Vec<u8>,
-    rva: u32,
-    bytes: Vec<u8>,
-    flags: u32,
+#[repr(C)]
+struct PeSection {
+    name:*const u8, name_length:u64, bytes:*const u8, byte_length:u64,
+    relocation_start:u64, relocation_count:u64, flags:u32, rva:u32, raw:u64,
 }
-pub(super) fn stack_reserve(stack_bytes: u32) -> u64 { align(stack_bytes as usize + 1024 * 1024, 65536) as u64 }
-pub(super) fn link(object: &Object) -> Result<Vec<u8>> {
-    let stack_bytes = match object.kind {
-        Kind::Application { stack_bytes } => stack_bytes,
-        _ => return Err("需要应用目标文件".into()),
+#[repr(C)]
+struct PeRelocation {
+    offset:u64, kind:u32, target_kind:u32, section:u64, value:u64,
+    source:u64, target:u64,
+}
+#[repr(C)]
+struct PeImport {
+    dll:*const u8, dll_length:u64, name:*const u8, name_length:u64, relocation:u64,
+    lookup:u64, iat:u64, hint:u64, dll_at:u64, directory:u64,
+}
+#[derive(Clone,Copy,Default)]
+#[repr(C)]
+struct PeAbsolute {page:u64,value:u64,order:u64}
+#[derive(Clone,Copy)]
+#[repr(C)]
+struct PeInput {
+    sections:*mut PeSection, section_count:u64,
+    relocations:*mut PeRelocation,
+    imports:*mut PeImport, import_count:u64,
+    absolutes:*mut PeAbsolute, absolute_count:u64, stack_bytes:u64,
+}
+#[derive(Clone,Copy)]
+#[repr(C)]
+struct PeLayout {
+    length:u64,header:u64,idata:u64,idata_length:u64,import_directory_size:u64,
+    iat_start:u64,iat_size:u64,reloc:u64,reloc_length:u64,pdata:u64,pdata_length:u64,
+    section_count:u64,image_size:u64,image_base:u64,error:u64,
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.pe::layout"]
+    fn pe_layout(input:PeInput)->PeLayout;
+    #[link_name="bootstrap.pe::encode"]
+    fn pe_encode(input:PeInput,layout:PeLayout,output:*mut u8);
+    #[link_name="bootstrap.pe::stack_reserve"]
+    fn pe_stack_reserve(stack_bytes:u32)->u64;
+}
+pub(super) fn stack_reserve(stack_bytes:u32)->u64 {unsafe{pe_stack_reserve(stack_bytes)}}
+
+pub(super) fn link(object:&Object)->Result<Vec<u8>> {
+    let stack_bytes=match object.kind {
+        Kind::Application{stack_bytes}=>stack_bytes,
+        _=>return Err("需要应用目标文件".into()),
     };
-    let mut values = BTreeSet::new();
+    let mut sections=Vec::with_capacity(object.sections.len());
+    let mut relocations=Vec::new();
+    let mut imports=Vec::new();
+    let mut absolute_count=0;
     for section in &object.sections {
-        for r in &section.relocations {
-            if let Target::Import(i) = &r.target {
-                values.insert(i.clone());
-            }
-        }
-    }
-    let mut sections = Vec::new();
-    let mut rva = TEXT;
-    for section in &object.sections {
-        sections.push(Section {
-            name: section.name.as_bytes().to_vec(),
-            rva,
-            bytes: section.bytes.clone(),
-            flags: section.flags & !0x01f00000,
-        });
-        rva += u32::try_from(align(section.bytes.len(), 4096))?;
-    }
-    let idata_rva = rva;
-    let table = imports(&values, idata_rva);
-    let mut locations = Vec::new();
-    for (index, section) in object.sections.iter().enumerate() {
+        let start=relocations.len();
         for relocation in &section.relocations {
-            let target = match &relocation.target {
-                Target::Section(i, value) => {
-                    sections.get(*i).ok_or("重定位引用未知节")?.rva as u64 + *value as u64
-                }
-                Target::Import(i) => table.targets[i] as u64,
-                Target::Symbol(name) => return Err(format!("未定义模块符号 {name}").into()),
+            let (target_kind,target_section,value)=match &relocation.target {
+                Target::Section(index,value)=>(0,*index as u64,u64::from(*value)),
+                Target::Import(import)=>{
+                    imports.push(PeImport{
+                        dll:import.dll.as_ptr(),dll_length:import.dll.len() as u64,
+                        name:import.name.as_ptr(),name_length:import.name.len() as u64,
+                        relocation:relocations.len() as u64,lookup:0,iat:0,hint:0,dll_at:0,directory:0,
+                    });
+                    (1,0,0)
+                },
+                Target::Symbol(name)=>return Err(format!("未定义模块符号 {name}").into()),
             };
-            let at = relocation.offset;
-            let source = sections[index].rva as u64 + at as u64;
-            let bytes = &mut sections[index].bytes;
-            crate::native::coff_relocate(bytes, at, relocation.kind, BASE, source, target)?;
-            if relocation.kind == 1 { locations.push(source as u32); }
+            absolute_count+=usize::from(relocation.kind==1);
+            relocations.push(PeRelocation{
+                offset:relocation.offset as u64,kind:u32::from(relocation.kind),
+                target_kind,section:target_section,value,source:0,target:0,
+            });
         }
-    }
-    let pdata = sections
-        .iter()
-        .find(|s| s.name == b".pdata")
-        .ok_or("应用目标文件缺少展开信息")?;
-    let pdata_rva = pdata.rva;
-    let directory_size = pdata.bytes.len();
-    sections.push(Section {
-        name: b".idata".to_vec(),
-        rva: idata_rva,
-        bytes: table.bytes.clone(),
-        flags: 0xc0000040,
-    });
-    let reloc = relocation_table(&locations);
-    let reloc_size = reloc.len() as u32;
-    let reloc_rva = idata_rva + u32::try_from(align(table.bytes.len(), 4096))?;
-    if !reloc.is_empty() {
-        sections.push(Section {
-            name: b".reloc".to_vec(),
-            rva: reloc_rva,
-            bytes: reloc,
-            flags: 0x42000040,
+        sections.push(PeSection{
+            name:section.name.as_ptr(),name_length:section.name.len() as u64,
+            bytes:section.bytes.as_ptr(),byte_length:section.bytes.len() as u64,
+            relocation_start:start as u64,relocation_count:section.relocations.len() as u64,
+            flags:section.flags,rva:0,raw:0,
         });
     }
-    let header_size = align(0x80 + 24 + 240 + sections.len() * 40, 512);
-    let mut output = vec![0; header_size];
-    output[0..2].copy_from_slice(b"MZ");
-    put32(&mut output, 0x3c, 0x80);
-    output[0x80..0x84].copy_from_slice(b"PE\0\0");
-    let file = 0x84;
-    put16(&mut output, file, 0x8664);
-    put16(&mut output, file + 2, sections.len() as u16);
-    put16(&mut output, file + 16, 240);
-    put16(&mut output, file + 18, 0x22);
-    let optional = file + 20;
-    put16(&mut output, optional, 0x20b);
-    put32(
-        &mut output,
-        optional + 4,
-        align(sections[0].bytes.len(), 512) as u32,
-    );
-    put32(
-        &mut output,
-        optional + 8,
-        sections
-            .iter()
-            .skip(1)
-            .map(|section| align(section.bytes.len(), 512) as u32)
-            .sum(),
-    );
-    put32(&mut output, optional + 16, TEXT);
-    put32(&mut output, optional + 20, TEXT);
-    put64(&mut output, optional + 24, BASE);
-    put32(&mut output, optional + 32, 4096);
-    put32(&mut output, optional + 36, 512);
-    put16(&mut output, optional + 40, 6);
-    put16(&mut output, optional + 48, 6);
-    let last = sections.last().unwrap();
-    put32(
-        &mut output,
-        optional + 56,
-        last.rva + u32::try_from(align(last.bytes.len(), 4096))?,
-    );
-    put32(&mut output, optional + 60, header_size as u32);
-    put16(&mut output, optional + 68, 3);
-    put16(
-        &mut output,
-        optional + 70,
-        0x100 | if reloc_size != 0 { 0x60 } else { 0 },
-    );
-    put64(
-        &mut output,
-        optional + 72,
-        stack_reserve(stack_bytes),
-    );
-    put64(&mut output, optional + 80, 4096);
-    put64(&mut output, optional + 88, 1024 * 1024);
-    put64(&mut output, optional + 96, 4096);
-    put32(&mut output, optional + 108, 16);
-    for (index, rva, size) in [
-        (1, idata_rva, table.directory_size),
-        (3, pdata_rva, directory_size as u32),
-        (5, if reloc_size == 0 { 0 } else { reloc_rva }, reloc_size),
-        (12, table.iat_start, table.iat_size),
-    ] {
-        put32(&mut output, optional + 112 + index * 8, rva);
-        put32(&mut output, optional + 116 + index * 8, size);
+    let mut absolutes=vec![PeAbsolute::default();absolute_count];
+    let input=PeInput{
+        sections:sections.as_mut_ptr(),section_count:sections.len() as u64,
+        relocations:relocations.as_mut_ptr(),
+        imports:imports.as_mut_ptr(),import_count:imports.len() as u64,
+        absolutes:absolutes.as_mut_ptr(),absolute_count:absolutes.len() as u64,stack_bytes:u64::from(stack_bytes),
+    };
+    // Every pointer borrows its original Object or this call's final metadata
+    // allocation. B cannot retain them, and encoding does not resize any input.
+    let layout=unsafe{pe_layout(input)};
+    match layout.error {
+        0=>{},
+        1=>return Err("PE映像或节目录超出格式范围".into()),
+        2=>return Err("重定位引用未知节".into()),
+        4=>return Err("应用目标文件缺少展开信息".into()),
+        code=>return Err(format!("PE格式生成失败 {code}").into()),
     }
-    for (i, section) in sections.iter().enumerate() {
-        let header = optional + 240 + i * 40;
-        output[header..header + section.name.len()].copy_from_slice(&section.name);
-        put32(&mut output, header + 8, section.bytes.len() as u32);
-        put32(&mut output, header + 12, section.rva);
-        put32(
-            &mut output,
-            header + 16,
-            align(section.bytes.len(), 512) as u32,
-        );
-        let raw = output.len();
-        put32(&mut output, header + 20, raw as u32);
-        put32(&mut output, header + 36, section.flags);
-        output.extend(&section.bytes);
-        output.resize(align(output.len(), 512), 0);
+    let mut output=vec![0;usize::try_from(layout.length)?];
+    unsafe{pe_encode(input,layout,output.as_mut_ptr());}
+    for section in &sections {
+        let raw=usize::try_from(section.raw)?;
+        let bytes=&mut output[raw..raw+usize::try_from(section.byte_length)?];
+        let start=usize::try_from(section.relocation_start)?;
+        let count=usize::try_from(section.relocation_count)?;
+        for relocation in &relocations[start..start+count] {
+            crate::native::coff_relocate(bytes,usize::try_from(relocation.offset)?,relocation.kind as u16,
+                layout.image_base,relocation.source,relocation.target)?;
+        }
     }
     Ok(output)
 }

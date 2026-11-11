@@ -15,7 +15,7 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={}", seed.join(name).display());
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("缺少OUT_DIR")?);
-    let modules = ["lexer", "parser", "archive", "coff", "metadata", "bindings", "coff_read", "metadata_read", "object_read", "ast_storage"];
+    let modules = ["lexer", "parser", "archive", "coff", "metadata", "bindings", "coff_read", "metadata_read", "object_read", "ast_storage", "pe"];
     let objects: Vec<_> = modules.iter().map(|name| out.join(format!("blink_compiler_{name}.obj"))).collect();
     for (name, object) in modules.iter().zip(&objects) {
         let compiled = Command::new(seed.join("bin/bc.exe"))
