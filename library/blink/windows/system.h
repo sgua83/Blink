@@ -38,3 +38,12 @@ extern "C" void AcquireSRWLockExclusive(address lock) on cpu
     from "KERNEL32.dll";
 extern "C" void ReleaseSRWLockExclusive(address lock) on cpu
     from "KERNEL32.dll";
+
+struct ConditionVariable { address state; };
+
+extern "C" void InitializeConditionVariable(write ConditionVariable condition) on cpu
+    from "KERNEL32.dll";
+extern "C" i32 SleepConditionVariableSRW(address condition,address lock,u32 milliseconds,u32 flags) on cpu
+    from "KERNEL32.dll";
+extern "C" void WakeConditionVariable(address condition) on cpu
+    from "KERNEL32.dll";

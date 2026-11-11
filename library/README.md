@@ -157,6 +157,12 @@ println(info.number_of_processors);
 
 需要独占同一任务队列的读取、取项与截止位置时，调用者在一个获取／释放区间内完成实际队列操作，释放后再执行工作；失败更新截止位置仍由同一锁保护。共享地址保持至最后线程消费者结束，锁与队列同属原调用者，工作结果与线程等待分别交接。原声明不把地址解释成同步独占B借用，不自动加锁、承诺公平顺序或提供通用B任务拥有／异步借用；编译器采用继续沿原C-032.2.17。平台合同：[SRW锁](https://learn.microsoft.com/en-us/windows/win32/sync/slim-reader-writer--srw--locks)、[初始化](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-initializesrwlock)、[释放](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-releasesrwlockexclusive)。
 
+### Windows编译许可条件等待
+
+`ConditionVariable`沿Windows x64的`CONDITION_VARIABLE`布局保存一个不透明address状态，大小8、对齐8。调用者在共享前用`InitializeConditionVariable(write ConditionVariable condition)`完整初始化，并保持该存储地址固定直到最后等待者和唤醒调用结束。
+
+持有独占SRW锁时，`SleepConditionVariableSRW(address condition,address lock,u32 milliseconds,u32 flags)`以`flags=0`原子释放该锁并进入等待，返回前重新取得同一把锁。返回原i32 BOOL。有限等待超时返回零，立即由`GetLastError()`取得`ERROR_TIMEOUT`。许可队列可以复用`INFINITE`。`WakeConditionVariable(address condition)`唤醒一个等待者，许可的取得仍由锁内的可用队列决定。原持有者先归还许可，再唤醒等待者。等待者每次返回都在锁内检查同一可用条件，正确处理虚假唤醒及许可被其他线程先取得。队列、锁及条件变量的存储寿命由原调用者负责。[等待语义](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-sleepconditionvariablesrw)、[初始化与存储寿命](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-initializeconditionvariable)、[单个等待者唤醒](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-wakeconditionvariable)。
+
 ## blink.windows.thread
 
 本模块只有`.h`，四个入口直接调用Windows x64 Kernel32，不通过Rust转发或任务服务；与共用等待／关闭一起使用时显式导入`blink.windows.thread`和`blink.windows.system`。

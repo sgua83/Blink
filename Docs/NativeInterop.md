@@ -296,6 +296,8 @@ compiler Rust SDK可用`spirv::module_json(&[u32])`取得原模块全部指令�
 
 Windows x64独占SRWLock由同一blink.windows.system纯.h交接，实际记录为一个address、大小8／对齐8；InitializeSRWLock的完整write只在原存储共享前使用。AcquireSRWLockExclusive／ReleaseSRWLockExclusive消费同一个实际地址，原持有线程负责释放，调用方保持存储到最后等待者与使用者结束。这个地址边界允许实际系统共享，不冒充同步独占typed借用，不复制锁的内部状态、持有表或第二释放链。原队列保护及平台合同见[标准库](../library/README.md#windows原生独占锁)，普通B任务仍按原台账建设。
 
+条件变量同样归blink.windows.system。Windows x64记录只有一个address状态，InitializeConditionVariable在共享前完整write。SleepConditionVariableSRW消费实际条件变量和持有的SRW锁地址，编译许可使用独占模式flags=0。等待原子释放锁，返回时重新取得该锁，原BOOL和超时OS错误分别交接。归还者先在锁内归还许可，再调用WakeConditionVariable。被唤醒线程在锁内按原可用条件继续，原存储保持到最后等待和唤醒结束。实现与合同见[标准库](../library/README.md#windows编译许可条件等待)。
+
 ## Windows原生线程入口与最后完成
 
 blink.windows.thread直接以CreateThread的原六参数ABI交接address、64位usize、非零cfn<u32,address>、address、u32和可空thread_id地址，返回原handle；B extern C工作函数以c_function取得原入口。线程可在创建返回前开始，返回句柄不证明完成，原parameter存储和入口代码持续到实际线程结束，不能伪装成创建函数的同步typed借用。GetCurrentThreadId读取原当前u32身份，按memory(read)保持B存储；GetThreadId保留原u32结果及失败OS错误；GetExitCodeThread仅在BOOL非零初始化write u32。
