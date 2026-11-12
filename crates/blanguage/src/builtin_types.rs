@@ -4,7 +4,21 @@ use crate::ir::{BinaryOp, Comparison, Scalar};
 #[allow(dead_code)]
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Kind { Missing = 0, Numeric = 1, Address = 2, Handle = 3, RayHit = 4 }
+pub(crate) enum Kind {
+    Missing = 0,
+    Numeric = 1,
+    Address = 2,
+    Handle = 3,
+    RayHit = 4,
+    Array = 5,
+    Result = 6,
+    Owned = 7,
+    Task = 8,
+    TaskStartError = 9,
+    Void = 10,
+    Never = 11,
+    CFunction = 12,
+}
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -36,7 +50,10 @@ unsafe extern "C" {
 }
 impl Builtin {
     pub fn recognize(name: &str) -> Self { unsafe { recognize(name.as_ptr(), name.len() as u64) } }
-    pub fn is_present(self) -> bool { self.kind != Kind::Missing }
+    // This query covers the intrinsic values with a fixed layout.
+    pub fn is_present(self) -> bool {
+        matches!(self.kind, Kind::Numeric | Kind::Address | Kind::Handle | Kind::RayHit)
+    }
     pub fn is_scalar(self) -> bool {
         self.kind == Kind::Address || (self.kind == Kind::Numeric && self.rows == 1 && self.columns == 1)
     }
@@ -56,7 +73,7 @@ impl Builtin {
         }
     }
     pub fn canonical(self, name: &str) -> Option<&str> {
-        if self.kind == Kind::Missing { None }
+        if !self.is_present() { None }
         else if self.kind == Kind::Numeric && self.rows == 1 && self.columns == 1 { Some(self.scalar().name()) }
         else { Some(name) }
     }

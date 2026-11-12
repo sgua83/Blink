@@ -541,16 +541,20 @@ impl Ty {
     }
     #[cfg(feature = "compiler")]
     pub fn builtin(s: &str) -> Option<Self> {
-        use crate::builtin_types::{Builtin, Kind};
-        let builtin = Builtin::recognize(s);
+        Self::from_builtin(crate::builtin_types::Builtin::recognize(s))
+    }
+
+    #[cfg(feature = "compiler")]
+    pub(crate) fn from_builtin(builtin: crate::builtin_types::Builtin) -> Option<Self> {
+        use crate::builtin_types::Kind;
         match builtin.kind {
-            Kind::Missing => None,
             Kind::Numeric => Some(if builtin.rows > 1 {
                 Self::matrix(builtin.rows as usize, builtin.columns as usize)
             } else { Self::vector(builtin.scalar(), builtin.columns as usize) }),
             Kind::Address => { let mut ty = Self::scalar(Scalar::U64); ty.name = "address".into(); Some(ty) },
             Kind::Handle => { let mut ty = Self::vector(Scalar::U32, 2); ty.name = "handle".into(); Some(ty) },
             Kind::RayHit => Some(Self::ray_hit()),
+            _ => None,
         }
     }
     #[cfg(not(feature = "compiler"))]

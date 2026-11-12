@@ -834,7 +834,9 @@ impl Declarations {
 }
 impl World {
     pub(crate) fn type_reference(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<TypeName> {
-        if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
+        use crate::builtin_types::{Builtin, Kind};
+        let builtin = Builtin::recognize(&name.name);
+        if builtin.kind == Kind::CFunction && !name.dataset && !name.view && !name.tile {
             return self.c_function_reference(name, source, span, module, imports)
                 .map(ir::CFunctionType::into_syntax);
         }
@@ -845,14 +847,14 @@ impl World {
         }
         let mut resolved = std::borrow::Cow::Borrowed(name.name.as_str());
         let mut canonical = false;
-        let (types, count, code) = match name.name.as_str() {
-            "array" => (1, 2, "B238"),
-            "result" => (2, 2, "B269"),
-            "owned" => (1, 2, "B224"),
-            "task" | "task_start_error" => (1, 1, "B224"),
-            "void" | "never" => (0, 0, "B228"),
+        let (types, count, code) = match builtin.kind {
+            Kind::Array => (1, 2, "B238"),
+            Kind::Result => (2, 2, "B269"),
+            Kind::Owned => (1, 2, "B224"),
+            Kind::Task | Kind::TaskStartError => (1, 1, "B224"),
+            Kind::Void | Kind::Never => (0, 0, "B228"),
             _ => {
-                if let Some(builtin) = crate::builtin_types::Builtin::recognize(&name.name).canonical(&name.name) {
+                if let Some(builtin) = builtin.canonical(&name.name) {
                     resolved = std::borrow::Cow::Borrowed(builtin);
                     (0, 0, "B232")
                 } else {
@@ -872,7 +874,7 @@ impl World {
         }
         let mut arguments = Vec::with_capacity(count);
         for (index, argument) in name.arguments.iter().enumerate() {
-            let argument = if name.name == "owned" && index == 1 {
+            let argument = if builtin.kind == Kind::Owned && index == 1 {
                 let GenericArgument::Type(function) = argument else {
                     return source.fail(span, "B224", "owned<T,F>需要载荷类型与静态释放函数");
                 };
@@ -1004,10 +1006,12 @@ impl World {
         imports: &[String],
         stack: &mut BTreeSet<String>,
     ) -> Result<ir::Ty> {
-        if name.contracts.is_some() && name.name != "cfn" {
+        use crate::builtin_types::{Builtin, Kind};
+        let builtin = Builtin::recognize(&name.name);
+        if name.contracts.is_some() && builtin.kind != Kind::CFunction {
             return source.fail(span, "B225", "输入／输出合同属于cfn函数签名");
         }
-        if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
+        if builtin.kind == Kind::CFunction && !name.dataset && !name.view && !name.tile {
             return self.c_function_reference(name, source, span, module, imports)
                 .map(ir::CFunctionType::into_ty);
         }
@@ -1018,10 +1022,10 @@ impl World {
                 "texture2d／texture3d 只能作为 read 资源参数，不能作为普通值存储或返回",
             );
         }
-        if name.name == "void" {
+        if builtin.kind == Kind::Void {
             return source.fail(span, "B228", "void 只能表示函数无返回值，不能作为数据类型");
         }
-        if name.name == "never" {
+        if builtin.kind == Kind::Never {
             return source.fail(
                 span,
                 "B228",
@@ -1061,18 +1065,18 @@ impl World {
                 dataset: None, cleanup: None, function: None,
             });
         }
-        if matches!(name.name.as_str(),"task"|"task_start_error") {
+        if matches!(builtin.kind, Kind::Task | Kind::TaskStartError) {
             let [GenericArgument::Type(payload)] = name.arguments.as_slice() else {
                 return source.fail(span,"B224","任务类型需要一个类型实参");
             };
-            let void_result=name.name=="task" && payload.name=="void"
+            let void_result=builtin.kind == Kind::Task && payload.name=="void"
                 && payload.arguments.is_empty() && !payload.dataset && !payload.view && !payload.tile
                 && payload.count.is_none() && payload.contracts.is_none();
             let mut ty=if void_result { ir::Ty::unit() } else { self.ty_inner(payload,source,span,module,imports,stack)? };
             if payload.dataset {
                 ty=ir::Ty::owned_dataset(ty.syntax(),self.shape(&payload.count,source,span,module,imports)?);
             }
-            return if name.name=="task" {
+            return if builtin.kind == Kind::Task {
                 Ok(ir::Ty::task(ty))
             } else {
                 ir::Ty::task_start_error(ty).ok_or_else(||Diagnostic{
@@ -1080,7 +1084,7 @@ impl World {
                 })
             };
         }
-        if name.name == "owned" {
+        if builtin.kind == Kind::Owned {
             if name.arguments.len()!=2{return source.fail(span,"B224","owned<T,F>需要载荷类型与静态释放函数");}
             let (GenericArgument::Type(payload),GenericArgument::Type(function))=(&name.arguments[0],&name.arguments[1])else{return source.fail(span,"B224","owned<T,F>需要载荷类型与静态释放函数");};
             if function.dataset||function.tile||function.view||!function.arguments.is_empty(){return source.fail(span,"B224","释放函数由载荷推导泛型，声明处使用函数名称");}
@@ -1107,7 +1111,7 @@ impl World {
             if !compatible{return source.fail(span,"B124",format!("释放函数 {} 需要 {}，实际拥有载荷为 {}",cleanup,expected.name,payload.name));}
             return Ok(owner);
         }
-        if name.name == "result" {
+        if builtin.kind == Kind::Result {
             if name.arguments.len() != 2 {
                 return source.fail(span, "B269", "result<T,E> 需要成功及错误两个类型");
             }
@@ -1142,7 +1146,7 @@ impl World {
                 message: "结果布局超过 u32 字节地址范围".into(),
             });
         }
-        if name.name == "array" {
+        if builtin.kind == Kind::Array {
             if name.arguments.len() != 2 {
                 return source.fail(span, "B238", "array<T,N> 需要元素类型和固定长度");
             }
@@ -1205,7 +1209,7 @@ impl World {
                 dataset: None, cleanup: None, function: None,
             });
         }
-        if let Some(ty) = ir::Ty::builtin(&name.name) {
+        if let Some(ty) = ir::Ty::from_builtin(builtin) {
             if !name.arguments.is_empty() {
                 return source.fail(span, "B232", "内置数值类型不接受记录类型实参");
             }
