@@ -61,8 +61,8 @@ impl Builder<'_> {
         if value.value.ty.cleanup.is_none(){return self.fail(span,"B224","into_inner只解除用户拥有包装");}
         Ok(Some(self.unpack_record(&value,0)))
     }
-    pub(super) fn drop_user_owned(&mut self,mut value:OwnedValue,retained:&view::Borrow,span:Span)->Result<()>{
-        self.load_owned_value(&mut value,span)?;let payload=self.unpack_record(&value,0);
+    pub(super) fn drop_user_owned(&mut self,value:OwnedValue,retained:&view::Borrow,span:Span)->Result<()>{
+        let payload=self.unpack_record(&value,0);
         let resources=match &payload{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
         for data in resources{self.application_movable(data,retained,span)?;}
         let argument=cooperative::Argument::resource(payload);
@@ -99,14 +99,16 @@ fn data_contents(builder:&Builder<'_>,data:&application::Data,into:&mut view::Bo
 }
 
 impl OwnedValuePayload {
-    pub(super) fn cleanup_views(&self,omitted:&BTreeSet<usize>,into:&mut view::Borrow,map:&impl Fn(usize,view::Borrow)->view::Borrow){
-        fn visit(value:&OwnedValuePayload,root:&Value,offset:u32,path:&bounds::Clause,omitted:&BTreeSet<usize>,into:&mut view::Borrow,map:&impl Fn(usize,view::Borrow)->view::Borrow){
+    pub(super) fn cleanup_views(&self,omitted:&BTreeSet<usize>,into:&mut view::Borrow,map:&impl Fn(usize,&Ty,view::Borrow)->view::Borrow){
+        fn visit(value:&OwnedValuePayload,root:&Value,offset:u32,path:&bounds::Clause,omitted:&BTreeSet<usize>,into:&mut view::Borrow,map:&impl Fn(usize,&Ty,view::Borrow)->view::Borrow){
             if !value.ownership.may_own()||!value.value.ty.contains_cleanup(){return;}
             let path=if let Ownership::Conditional(when)=&value.ownership{when.condition().assume(path,true)}else{path.clone()};
-            if value.value.ty.cleanup.is_some(){
-                for component in view_contracts::components(&value.value.ty){
-                    let at=offset+value.value.ty.components[component].1;let index=root.ty.components.iter().position(|(_,word)|*word==at).unwrap();
-                    if !omitted.contains(&index){into.union(&map(index,root.proof.view_borrow(index).restricted(&path)));}
+            if value.value.ty.cleanup.is_some() || value.value.ty.task_result().is_some(){
+                for (word,field) in value.value.ty.borrow_fields() {
+                    let index=root.ty.components.iter().position(|(_,at)|*at==offset+word).unwrap();
+                    if !omitted.contains(&index) {
+                        into.union(&map(index,field,root.proof.view_borrow(index).restricted(&path)));
+                    }
                 }
                 return;
             }
@@ -122,7 +124,7 @@ impl OwnedValuePayload {
     pub(super) fn cleanup_borrow(&self,builder:&Builder<'_>,omitted:&BTreeSet<usize>,into:&mut view::Borrow)->Result<()>{
         let value=self;
         if !value.ownership.may_own(){return Ok(());}
-        value.cleanup_views(omitted,into,&|_,borrow|borrow);
+        value.cleanup_views(omitted,into,&|_,_,borrow|borrow);
         fn children(builder:&Builder<'_>,value:&OwnedValuePayload,into:&mut view::Borrow)->Result<()>{
             if !value.ownership.may_own(){return Ok(());}
             for payload in value.payloads.iter().flatten(){match payload.as_ref(){

@@ -49,7 +49,13 @@ fn model(model:&mut Returned,normal:&mut bounds::Normalizer) {
     }
 }
 fn initialization(values:&mut [address::Initialization],normal:&mut bounds::Normalizer) {
-    for value in values{normal.origin(&mut value.origin);value.when=normal.condition(&value.when);}
+    for value in values {
+        match &mut value.source {
+            address::InitializationSource::Position(origin)=>normal.origin(origin),
+            address::InitializationSource::Task(borrow)=>borrow.normalize_contract(normal),
+        }
+        value.when=normal.condition(&value.when);
+    }
 }
 fn accesses(values:&mut BTreeSet<view_contracts::Access>,normal:&mut bounds::Normalizer) {
     use view_contracts::Access;

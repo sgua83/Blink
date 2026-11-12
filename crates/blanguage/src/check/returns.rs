@@ -493,6 +493,10 @@ impl Builder<'_> {
         let initialized=address::initialization_effects(&initialized,&self.path);
         let memory=self.view_model.uses.len();
         self.require_return_borrow(view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Returned{memory}]),..view::Borrow::default()},owned,span)?;
+        if let Some(address)=self.task_return_source
+            && let Some(value)=value.as_mut().and_then(Returned::view_value_mut) {
+            self.publish_task_return_sources(value,address,span)?;
+        }
         let context = self.return_context.as_mut().unwrap();
         if context.scoped {
             if let Some(value) = &value {
@@ -509,6 +513,52 @@ impl Builder<'_> {
             initialized,
         });
         self.flow = Flow::RETURN;
+        Ok(())
+    }
+    fn publish_task_return_sources(&mut self,value:&mut Value,address:[Reg;2],span:Span)->Result<()> {
+        let index=self.constant(Scalar::U32,0).regs[0];
+        for (slot,component) in value.ty.task_components().into_iter().enumerate() {
+            let mut borrow=value.proof.view_borrow(component);
+            let sources=std::mem::take(&mut borrow.sources);
+            let active=sources.entries().filter(|(_,when)|self.path.overlaps(when)).collect::<Vec<_>>();
+            let closed=!borrow.inputs.entries().any(|(_,when)|self.path.overlaps(&when))
+                && !borrow.calls.entries().any(|(_,when)|self.path.overlaps(&when))
+                && !borrow.reads.entries().any(|(_,when)|self.path.overlaps(&when));
+            let from_inputs=active.iter().all(|(source,_)|
+                matches!(source,view::Source::Parameter(ValueIdentity::Register(_),_)));
+            let exit=self.reg(Scalar::U32);
+            self.emit(InstKind::Constant(exit,Scalar::U32,exit as Bits));
+            let mut result=exit;
+            for (source,when) in sources.entries() {
+                let mut origin=exit;
+                if closed && active.len()>1 && self.path.overlaps(&when) {
+                    let condition=if from_inputs
+                        && let view::Source::Parameter(ValueIdentity::Register(input),_)=source {
+                        let selected=self.reg(Scalar::Bool);
+                        self.emit(InstKind::Binary {
+                            dst:selected,op:BinaryOp::Compare(Comparison::Equal),a:value.regs[component],b:*input,
+                        });
+                        Some(selected)
+                    }else{
+                        self.task_source_condition(source,&active,span)?.map(|value|value.regs[0])
+                    };
+                    if let Some(condition)=condition {
+                        origin=self.reg(Scalar::U32);
+                        self.emit(InstKind::Constant(origin,Scalar::U32,origin as Bits));
+                        let previous=result;
+                        result=self.reg(Scalar::U32);
+                        self.emit(InstKind::Select{dst:result,condition,a:origin,b:previous});
+                    }
+                }
+                let when=bounds::Clause::both(&when,&bounds::Clause::task_return_source(component,origin as u32));
+                borrow.sources.insert_when(source.clone(),when);
+            }
+            self.emit(InstKind::StoreIndexed{
+                source:IndexedSource::View{address,index,stride:ElementStride::Constant(0)},
+                offset:index,word:slot as u32*Scalar::U32.size(),value:result,
+            });
+            value.proof=value.proof.clone().with_view_borrow(component,borrow);
+        }
         Ok(())
     }
     pub(super) fn function_body(&mut self, instance: &crate::generics::Instance, body: &Block) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
@@ -724,8 +774,29 @@ impl Builder<'_> {
                 mut model=>{
                     let index=definition.function.params().iter().position(|parameter|parameter.name()==name).unwrap();
                     let place=self.env[&name].stored_place().unwrap();
-                    let guards=outputs::guards(self,&instance,index,place.ty(),&context.inputs,returned.as_ref())?;
-                    if outputs::declared(&instance,index) && place.ty().owns_resources(){outputs::apply_ownership(&mut model,place.ty(),0,&guards);}
+                    let declared=outputs::declared(&instance,index);
+                    let direct_output=declared && !place.ty().owns_resources()
+                        && self.return_context.is_none() && self.program.target==Target::Cpu;
+                    // The interface names the returned storage, independently of private exit aliases.
+                    let returned_storage=returned.as_ref().map(|value| {
+                        if direct_output { Value{proof:bounds::Proof::default(),..value.clone()} }
+                        else { value.clone() }
+                    });
+                    let guards=outputs::guards(self,&instance,index,place.ty(),&context.inputs,returned_storage.as_ref())?;
+                    if declared {
+                        if place.ty().owns_resources() {
+                            outputs::apply_ownership(&mut model,place.ty(),0,&guards);
+                        } else if direct_output {
+                            for (component, guard) in guards.iter().enumerate() {
+                                let when=guard.condition();
+                                if when.active() {
+                                    let part=place.clone().project(Ty::scalar(place.ty().components[component].0),&[component]);
+                                    let source=address::InitializationSource::Position(self.position_origin(&part,definition.function.span())?);
+                                    initialized.push(address::InitializationEffect::Position(address::Initialization{source,when}));
+                                }
+                            }
+                        }
+                    }
                     match model {
                         Returned::Value(value)=>{let Some(Binding::Owned(mut owner))=self.env.get(&name).cloned()else{unreachable!()};owner.proof=value.proof;owner.uniform=value.uniform;self.initialize_output(&owner.place,&guards);Binding::Owned(owner)}
                         Returned::OwnedValue(mut value)=>{self.initialize_output(&place,&guards);value.place=Some(place);Binding::OwnedValue(value)}

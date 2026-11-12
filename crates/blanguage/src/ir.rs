@@ -245,6 +245,60 @@ impl Ty {
         ty.arguments.push(result);
         ty
     }
+    pub(crate) const TASK_COMPLETION: &'static str = "__blink_task_completion";
+    pub(crate) const TASK_RETURN_SOURCE: &'static str = "__blink_task_return_source";
+    pub(crate) fn task_components(&self) -> Vec<usize> {
+        if !self.owns_resources(){return Vec::new();}
+        self.borrow_fields().into_iter().filter(|(_,ty)|ty.task_result().is_some())
+            .map(|(offset,_)|self.components.iter().position(|(_,at)|*at==offset).unwrap())
+            .collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+    }
+    pub(crate) fn task_return_layout(components:&[usize]) -> Self {
+        let mut ty=Self::unit();
+        ty.name=Self::TASK_RETURN_SOURCE.into();
+        ty.align=Scalar::U32.align();
+        ty.size=components.len() as u32*Scalar::U32.size();
+        ty.components=(0..components.len()).map(|index|(Scalar::U32,index as u32*Scalar::U32.size())).collect();
+        ty
+    }
+    pub(crate) fn task_wait_layout(&self) -> Option<Self> {
+        let mut ty=self.clone();
+        let components=self.task_components();
+        if !components.is_empty() {
+            let sources=Self::task_return_layout(&components);
+            ty.size=self.size.checked_add(sources.size)?.checked_next_multiple_of(self.align)?;
+            ty.components.extend(sources.components.into_iter().map(|(scalar,word)|(scalar,self.size+word)));
+        }
+        Some(ty)
+    }
+    pub const TASK_COMPLETION_STATUS:u32=0;
+    pub const TASK_COMPLETION_PENDING:u32=0;
+    pub const TASK_COMPLETION_SUCCESS:u32=1;
+    pub const TASK_COMPLETION_FAILED:u32=2;
+    pub const TASK_COMPLETION_EXTENT:u32=4;
+    pub const TASK_COMPLETION_PAYLOAD:u32=8;
+    pub(crate) fn task_completion(&self) -> Option<Self> {
+        self.task_wait_layout()?.task_completion_storage()
+    }
+    pub(crate) fn task_completion_storage(&self) -> Option<Self> {
+        let mut ty=Self::unit();
+        ty.name=Self::TASK_COMPLETION.into();
+        ty.align=self.align.max(Scalar::U32.align());
+        let payload=(Self::TASK_COMPLETION_PAYLOAD+Scalar::U32.size()).checked_next_multiple_of(ty.align)?;
+        ty.size=payload.checked_add(self.size)?.checked_next_multiple_of(ty.align)?;
+        ty.components.extend([
+            (Scalar::U32,Self::TASK_COMPLETION_STATUS),
+            (Scalar::U32,Self::TASK_COMPLETION_EXTENT),
+            (Scalar::U32,Self::TASK_COMPLETION_PAYLOAD),
+        ]);
+        ty.components.extend(self.components.iter().map(|&(scalar,word)|(scalar,payload+word)));
+        ty.fields.push(("result".into(),payload,Box::new(self.clone())));
+        Some(ty)
+    }
+    pub fn task_completion_payload(&self) -> (u32,&Self) {
+        let (_,offset,ty)=&self.fields[0];
+        (*offset,ty)
+    }
     pub(crate) fn task_start_error(input: Self) -> Option<Self> {
         let mut ty=Self::unit();
         let at=align_up(4,input.align);
@@ -262,6 +316,38 @@ impl Ty {
     pub(crate) fn has_owned_presence(&self) -> bool {
         self.has_variants() || self.cleanup.is_some() || self.task_result().is_some()
     }
+    /// A task packet stores the ordinary ABI field, marked read when its Frame data stays owned by the caller.
+    pub const TASK_READ_FIELD_PREFIX: &'static str = "read:";
+    pub const TASK_BORROWED_DATASET_PREFIX: &'static str = "borrow:dataset:";
+    pub const TASK_OWNED_REFERENCE_PREFIX: &'static str = "owned-reference:";
+
+    pub fn contains_dataset(&self) -> bool {
+        self.dataset.is_some()
+            || self.variants.iter().any(|v| v.ty.contains_dataset())
+            || self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.contains_dataset())
+            || self.fields.iter().any(|(_, _, ty)| ty.contains_dataset())
+    }
+
+    /// Independently present owners within a task's actual output position.
+    pub fn task_output_owners(&self) -> Vec<(u32, &Self)> {
+        fn collect<'a>(ty: &'a Ty, offset: u32, owners: &mut Vec<(u32, &'a Ty)>) {
+            if !ty.owns_resources() {
+                return;
+            }
+            if ty.dataset.is_some() || ty.has_owned_presence() {
+                owners.push((offset, ty));
+                return;
+            }
+            for index in 0..ty.aggregate_len() {
+                let (at, field) = ty.aggregate_part(index);
+                collect(field, offset + at, owners);
+            }
+        }
+        let mut owners = Vec::new();
+        collect(self, 0, &mut owners);
+        owners
+    }
+
     pub fn owns_resources(&self) -> bool {
         self.task_result().is_some() || self.cleanup.is_some() || self.dataset.is_some()
             || self.variants.iter().any(|v| v.ty.owns_resources())
@@ -583,7 +669,7 @@ impl Ty {
             || self.fields.iter().any(|(_, _, t)| t.contains_views())
     }
     pub fn contains_borrows(&self) -> bool {
-        self.is_address()
+        self.task_result().is_some() || self.is_address()
             || self.view.is_some()
             || self.variants.iter().any(|v| v.ty.contains_borrows())
             || self.array.as_ref().is_some_and(|t| self.values[0] != 0 && t.contains_borrows())
@@ -591,7 +677,7 @@ impl Ty {
     }
     /// Borrow-bearing values in this layout, without following their pointees.
     pub(crate) fn borrow_fields(&self) -> Vec<(u32, &Ty)> {
-        if self.view.is_some() || self.is_address() { return vec![(0, self)]; }
+        if self.task_result().is_some() || self.view.is_some() || self.is_address() { return vec![(0, self)]; }
         if self.has_variants() {
             let payload = self.variant_payload_offset();
             return self.variants.iter().flat_map(|v|

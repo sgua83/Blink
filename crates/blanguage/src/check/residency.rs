@@ -68,6 +68,7 @@ pub(super) enum Origin {
     Gpu,
     Input(Input),
     Output(Output),
+    TaskTransfer,
 }
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum Residency {
@@ -80,6 +81,8 @@ impl Default for Residency{fn default()->Self{Self::Origins(BTreeSet::new())}}
 impl Residency {
     pub fn cpu()->Self{Self::Origins(BTreeSet::from([Origin::Cpu]))}
     pub fn gpu()->Self{Self::Origins(BTreeSet::from([Origin::Gpu]))}
+    // Successful task transfer has visited and moved every live owned CPU allocation.
+    pub(super) fn task_transfer() -> Self { Self::Origins(BTreeSet::from([Origin::TaskTransfer])) }
     pub fn parameter(parameter:usize)->Self{Self::input(Input::new(parameter))}
     pub(super) fn input(input:Input)->Self{Self::Origins(BTreeSet::from([Origin::Input(input)]))}
     fn absent(&self)->bool{matches!(self,Self::Absent)}
@@ -145,6 +148,7 @@ impl Residency {
                             Self::Origins(BTreeSet::from([Origin::Output(output)]))
                         },
                         Origin::Cpu|Origin::Gpu=>Self::default(),
+                        Origin::TaskTransfer=>Self::task_transfer(),
                     };result.join(&value);
                 }
                 result
@@ -350,7 +354,7 @@ fn known(value:&Residency,target:Target,path:&bounds::Clause)->bool{
     match value{
         Residency::Absent=>true,
         Residency::Selected(when,a,b)=>known(a,target,&when.assume(path,true))&&known(b,target,&when.assume(path,false)),
-        Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|match origin{Origin::Cpu=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,_=>true}),
+        Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|match origin{Origin::Cpu|Origin::TaskTransfer=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,_=>true}),
     }
 }
 fn insert(required:&mut Requirements,input:Input,target:Target,when:bounds::Condition)->bool{
@@ -365,7 +369,7 @@ fn consume(required:&mut Requirements,value:&Residency,target:Target,path:&bound
         Residency::Absent=>true,
         Residency::Selected(when,a,b)=>consume(required,a,target,&when.assume(path,true))&&consume(required,b,target,&when.assume(path,false)),
         Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|match origin{
-            Origin::Cpu=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,
+            Origin::Cpu|Origin::TaskTransfer=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,
             Origin::Input(input)=>insert(required,input.clone(),target,bounds::Condition::guard(path.clone())),
             Origin::Output(_)=>false,
         }),
@@ -397,14 +401,10 @@ pub(super) fn infer(inputs:&Inputs,parameters:&BTreeMap<ValueIdentity,bounds::Pr
             if !value.absent()&&!consume(&mut required,&value,*target,path){return source.fail(*span,"B266","实际资源来源不满足本次条件CPU／GPU位置要求");}
         },
         Use::Same{before,after,path,source,span}=>{
-            fn target(value:&Residency)->Option<Target>{
-                let Residency::Origins(origins)=value else{return None};let mut origins=origins.iter();
-                match(origins.next(),origins.next()){(Some(Origin::Cpu),None)=>Some(Target::Cpu),(Some(Origin::Gpu),None)=>Some(Target::Gpu),_=>None}
-            }
             let before=evaluate(before,outputs,path);let after=evaluate(after,outputs,path);
             if !before.absent()&&!after.absent()&&!equal_under(&before,&after,path,&mut|a,b,path|{
-                if let Some(target)=target(a){consume(&mut required,b,target,path)}
-                else if let Some(target)=target(b){consume(&mut required,a,target,path)}
+                if let Some(target)=physical_target(a){consume(&mut required,b,target,path)}
+                else if let Some(target)=physical_target(b){consume(&mut required,a,target,path)}
                 else{true}
             }){return source.fail(*span,"B266","循环实际相等位置要求与资源存储位置不一致");}
         },
@@ -462,7 +462,7 @@ fn query_consume(required:&mut Requirements,deferred:&mut bool,wanted:Option<&In
         Residency::Origins(origins)=>{
             if origins.is_empty(){return !path.overlaps(&bounds::Clause::default());}
             origins.iter().all(|origin|match origin{
-                Origin::Cpu=>target==Target::Cpu||!path.overlaps(&bounds::Clause::default()),
+                Origin::Cpu|Origin::TaskTransfer=>target==Target::Cpu||!path.overlaps(&bounds::Clause::default()),
                 Origin::Gpu=>target==Target::Gpu||!path.overlaps(&bounds::Clause::default()),
                 Origin::Input(input)=>{
                     if (*deferred && wanted!=Some(input))||(wanted.is_none()&&!path.overlaps(&bounds::Clause::default())){return true;}
@@ -564,8 +564,22 @@ fn refine(value:&Residency,required:&Requirements)->Residency{match value{
         }all
     },
 }}
+fn physical_target(value: &Residency) -> Option<Target> {
+    let Residency::Origins(origins) = value else { return None; };
+    let location = |origin: &Origin| match origin {
+        Origin::Cpu | Origin::TaskTransfer => Some(Target::Cpu),
+        Origin::Gpu => Some(Target::Gpu),
+        _ => None,
+    };
+    let first = origins.first().and_then(location)?;
+    origins.iter().all(|origin| location(origin) == Some(first)).then_some(first)
+}
 fn equal_under(a:&Residency,b:&Residency,path:&bounds::Clause,leaf:&mut impl FnMut(&Residency,&Residency,&bounds::Clause)->bool)->bool{
-    if !path.possible(){return true;}let a=a.under(path);let b=b.under(path);if a==b{return true;}
+    if !path.possible() { return true; }
+    let (a, b) = (a.under(path), b.under(path));
+    if a == b || physical_target(&a).is_some_and(|target| physical_target(&b) == Some(target)) {
+        return true;
+    }
     if let Residency::Selected(when,yes,no)=a{return equal_under(&yes,&b,&when.assume(path,true),leaf)&&equal_under(&no,&b,&when.assume(path,false),leaf);}
     if let Residency::Selected(when,yes,no)=b{return equal_under(&a,&yes,&when.assume(path,true),leaf)&&equal_under(&a,&no,&when.assume(path,false),leaf);}
     leaf(&a,&b,path)
@@ -720,7 +734,7 @@ pub(super) fn returned(value: &mut Returned, arguments: &Arguments) {
 }
 crate::module::codec::variants!(Part { 0 => Field(field), 1 => Elements, 2 => Selected(index) });
 crate::module::codec::record!(Input { parameter, fields });
-crate::module::codec::variants!(Origin { 0 => Cpu, 1 => Gpu, 2 => Input(input), 3 => Output(output) });
+crate::module::codec::variants!(Origin { 0 => Cpu, 1 => Gpu, 2 => Input(input), 3 => Output(output), 4 => TaskTransfer });
 crate::module::codec::variants!(Residency{0=>Absent,1=>Origins(origins),2=>Selected(when,a,b)});
 
 // 编译期调用结果是原资源来源表达式，不形成运行时位置表。

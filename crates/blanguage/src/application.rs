@@ -103,9 +103,14 @@ pub(crate) fn bind_tasks(
     let has_tasks=!tasks.is_empty();
     for binding in tasks {
         functions.push(binding.entry);
-        functions.extend(binding.cleanup);
     }
     Ok(has_tasks)
+}
+
+struct TaskInput<'a> {
+    ty: &'a Ty,
+    offset: Option<u32>,
+    buffer: [usize; 2],
 }
 
 struct TaskBinding {
@@ -114,7 +119,7 @@ struct TaskBinding {
     start: Ty,
     index: usize,
     entry: crate::ir::FunctionBody,
-    cleanup: Option<crate::ir::FunctionBody>,
+    selector: Option<String>,
 }
 
 fn bind_task_entries(
@@ -147,11 +152,13 @@ fn bind_task_entries(
                         return Err("task start needs a bound worker");
                     };
                     let worker=addresses.get(&values[0]).ok_or("missing actual task function address")?;
-                    let CallArgument::Value{values,..}=&call.arguments[3] else { return Err("missing task cleanup argument"); };
-                    let cleanup=addresses.get(&values[0]);
+                    let selector = call.arguments.get(4).and_then(|argument| match argument {
+                        CallArgument::Value { values, .. } => addresses.get(&values[0]),
+                        _ => None,
+                    });
                     let start=call.result.as_ref().ok_or("missing task start result type")?;
                     let binding=if let Some(index)=tasks.iter().position(|task| {
-                        task.worker==*worker && task.input==*input && task.start==*start
+                        task.worker==*worker && task.input==*input && task.start==*start && task.selector.as_ref()==selector
                     }) {
                         &tasks[index]
                     } else {
@@ -160,21 +167,40 @@ fn bind_task_entries(
                         } else {
                             crate::check::compiled_task_signature(imports.get(worker).ok_or("missing compiled ordinary worker contract")?)?
                         };
-                        let mut entry=task_entry(worker,&parameters,result.as_ref(),fallible,input)?;
-                        entry.name=format!("{worker}@task{}",tasks.len());
-                        let result=result.unwrap_or_else(Ty::unit);
-                        let cleanup=cleanup.map(|name| {
-                            let function=functions.iter().find(|function|function.name==*name)
-                                .ok_or("missing owned task result cleanup")?;
-                            let mut packet=Ty::unit();
-                            packet.fields.push(("value".into(),0,Box::new(result.clone())));
-                            let mut cleanup=task_entry(name,&function.parameters,None,function.fallible,&packet)?;
-                            cleanup.name=format!("{worker}@task_cleanup{}",tasks.len());
-                            Ok::<_,&'static str>(cleanup)
-                        }).transpose()?;
+                        let unit=Ty::unit();
+                        let result_ty=result.as_ref().unwrap_or(&unit);
+                        let completion=result_ty.task_wait_layout().ok_or("task result layout is too large")?;
+                        let work_output=input.arguments.last().unwrap();
                         let index=resources.types.len();
-                        resources.types.extend([input.clone(),result.clone(),start.clone()]);
-                        tasks.push(TaskBinding{worker:worker.clone(),input:input.clone(),start:start.clone(),index,entry,cleanup});
+                        let mut input_layout=input.clone();
+                        let mut position_types=Vec::new();
+                        let ordinary=parameters.iter().filter(|parameter|
+                            !matches!(&parameter.kind,crate::ir::CallParameterKind::Value(ty) if ty.name=="__blink_frame"));
+                        for ((name, _, _), parameter) in input_layout.fields.iter_mut().zip(ordinary) {
+                            if name.starts_with(Ty::TASK_OWNED_REFERENCE_PREFIX)
+                                && let crate::ir::CallParameterKind::Reference{ty,access}=&parameter.kind {
+                                let position=index+3+position_types.len();
+                                let access=if *access==crate::ast::Access::InOut {"inout"} else {"write"};
+                                let ready = name.strip_prefix(Ty::TASK_OWNED_REFERENCE_PREFIX).unwrap()
+                                    .split_once(':').map(|(_, offset)| offset.to_owned());
+                                *name=format!("{}{access}:{position}",Ty::TASK_OWNED_REFERENCE_PREFIX);
+                                if let Some(ready) = ready {
+                                    name.push(':');
+                                    name.push_str(&ready);
+                                }
+                                position_types.push(ty.clone());
+                            }
+                        }
+                        let inputs=input.fields.iter().map(|(_,offset,ty)|TaskInput {
+                            ty,offset:Some(*offset),buffer:[2,3],
+                        }).chain(work_output.fields.iter().map(|(_,offset,ty)|TaskInput {
+                            ty,offset:Some(*offset),buffer:[4,5],
+                        }));
+                        let mut entry=task_entry(worker,&parameters,result.as_ref(),fallible,inputs,selector.map(String::as_str))?;
+                        entry.name=format!("{worker}@task{}",tasks.len());
+                        resources.types.extend([input_layout,completion,start.clone()]);
+                        resources.types.extend(position_types);
+                        tasks.push(TaskBinding{worker:worker.clone(),input:input.clone(),start:start.clone(),index,entry,selector:selector.cloned()});
                         tasks.last().unwrap()
                     };
                     let entry=registers.len();
@@ -183,12 +209,7 @@ fn bind_task_entries(
                     output.push(Inst::new(InstKind::Constant(entry+1,Scalar::U32,binding.index as u64)));
                     let value=|scalar,reg|CallArgument::Value{ty:Ty::scalar(scalar),values:vec![reg],dataset_borrow:None,origin:None};
                     call.arguments[2]=value(Scalar::U64,entry);
-                    if let Some(cleanup)=&binding.cleanup {
-                        let register=registers.len();
-                        registers.push(Scalar::U64);
-                        output.push(Inst::new(InstKind::FunctionAddress(register,CallTarget::Defined(cleanup.name.clone()))));
-                        call.arguments[3]=value(Scalar::U64,register);
-                    }
+                    call.arguments.truncate(4);
                     call.arguments.push(value(Scalar::U32,entry+1));
                     let CallTarget::External(target)=&mut call.target else { unreachable!() };
                     target.symbol=start_symbol.into();
@@ -217,8 +238,9 @@ fn bind_task_entries(
 }
 
 /// Reuse the ordinary x64 call emitter for the actual compiled function signature.
-fn task_entry(worker:&str,parameters:&[crate::ir::CallParameter],result:Option<&Ty>,fallible:bool,packet:&Ty) -> Result<crate::ir::FunctionBody,&'static str> {
-    use crate::ir::{BinaryOp,Call,CallArgument,CallParameter,CallParameterKind,CallTarget,Comparison,FunctionBody,IndexedSource,Inst,InstKind,Scalar};
+fn task_entry<'a>(worker:&str,parameters:&[crate::ir::CallParameter],result:Option<&Ty>,fallible:bool,
+    mut fields: impl Iterator<Item = TaskInput<'a>>, selector: Option<&str>) -> Result<crate::ir::FunctionBody,&'static str> {
+    use crate::ir::{BinaryOp,Call,CallArgument,CallParameter,CallParameterKind,CallReference,CallStorage,CallTarget,Comparison,FunctionBody,IndexedSource,Inst,InstKind,Scalar};
     let pointer=Ty::vector(Scalar::U32,2);
     let mut body=ValueCode{entry_origin:None,generated_origin:None,registers:vec![Scalar::U32;6],
         locals:Default::default(),code:Vec::new(),inputs:(0..6).collect(),outputs:Vec::new()};
@@ -227,23 +249,63 @@ fn task_entry(worker:&str,parameters:&[crate::ir::CallParameter],result:Option<&
     body.code.push(Inst::new(InstKind::Constant(zero,Scalar::U32,0)));
     let buffer=|address|IndexedSource::Pointer{address,index:zero,stride:1,aliases:Vec::new()};
     let mut arguments=Vec::new();
-    let mut fields=packet.fields.iter();
+    let mut load = |scalar, address, word| {
+        let dst = body.registers.len();
+        body.registers.push(scalar);
+        body.code.push(Inst::new(InstKind::LoadIndexed { dst, source: buffer(address), offset: zero, word }));
+        dst
+    };
     for parameter in parameters {
-        let CallParameterKind::Value(ty)=&parameter.kind else { return Err("task requires by-value parameters"); };
-        let values=if ty.name=="__blink_frame" { vec![0,1] } else {
-            let Some((_,base,field))=fields.next() else { return Err("missing task argument"); };
-            if field.as_ref()!=ty { return Err("task input layout differs from the ordinary parameter"); }
-            let mut registers=Vec::new();
-            for &(scalar,offset) in &ty.components {
-                let dst=body.registers.len();
-                body.registers.push(scalar);
-                body.code.push(Inst::new(InstKind::LoadIndexed{dst,source:buffer([2,3]),offset:zero,word:*base+offset}));
-                registers.push(dst);
-            }
-            registers
+        let (ty, access) = match &parameter.kind {
+            CallParameterKind::Value(ty) => (ty, None),
+            CallParameterKind::Reference { ty, access } => (ty, Some(*access)),
         };
-        if ty.size!=0 {
-            arguments.push(CallArgument::Value{ty:ty.clone(),values,dataset_borrow:None,origin:None});
+        if ty.name==Ty::TASK_RETURN_SOURCE {
+            let word=result.ok_or("missing result for task return source")?.size;
+            arguments.push(CallArgument::Reference{
+                origin:None,ty:ty.clone(),access:crate::ast::Access::Write,
+                address:CallReference{storage:CallStorage::Indexed(buffer([4,5])),offset:None,word},
+            });
+            continue;
+        }
+        if ty.name==Ty::TASK_COMPLETION {
+            let field=fields.next().ok_or("missing task input completion field")?;
+            arguments.push(CallArgument::Reference{
+                origin:None,ty:ty.clone(),access:crate::ast::Access::InOut,
+                address:CallReference{storage:CallStorage::Indexed(buffer(field.buffer)),offset:None,word:field.offset.unwrap()},
+            });
+            continue;
+        }
+        let values = if ty.name == "__blink_frame" {
+            vec![0, 1]
+        } else {
+            let field = fields.next().ok_or("missing task argument")?;
+            if access.is_some() && !field.ty.is_address() {
+                return Err("task reference needs the original position address");
+            }
+            let Some(offset) = field.offset else {
+                arguments.push(CallArgument::Value { ty: ty.clone(), values: field.buffer.to_vec(), dataset_borrow: None, origin: None });
+                continue;
+            };
+            let (address, base) = if access.is_some() {
+                (std::array::from_fn(|part| load(Scalar::U32, field.buffer, offset + part as u32 * 4)), 0)
+            } else {
+                (field.buffer, offset)
+            };
+            if let Some(access) = access {
+                arguments.push(CallArgument::Reference {
+                    ty: ty.clone(), access, origin: None,
+                    address: CallReference { storage: CallStorage::Indexed(buffer(address)), offset: None, word: 0 },
+                });
+                continue;
+            }
+            if field.ty != ty {
+                return Err("task input layout differs from the ordinary parameter");
+            }
+            ty.components.iter().map(|&(scalar, offset)| load(scalar, address, base + offset)).collect()
+        };
+        if ty.size != 0 {
+            arguments.push(CallArgument::Value { ty: ty.clone(), values, dataset_borrow: None, origin: None });
         }
     }
     if fields.next().is_some() { return Err("unused task argument"); }
@@ -268,6 +330,15 @@ fn task_entry(worker:&str,parameters:&[crate::ir::CallParameter],result:Option<&
         for ((_,offset),value) in result.components.iter().zip(values) {
             body.code.push(Inst::new(InstKind::StoreIndexed{source:buffer([4,5]),offset:zero,word:*offset,value}));
         }
+    }
+    if let Some(selector) = selector {
+        let arguments = [[2, 3], [4, 5]].into_iter().map(|values| CallArgument::Value {
+            ty: pointer.clone(), values: values.to_vec(), dataset_borrow: None, origin: None,
+        }).collect();
+        body.code.push(Inst::new(InstKind::Call(Call {
+            failure: None, error: None, target: CallTarget::Defined(selector.into()), arguments,
+            memory: Vec::new(), memory_use: None, result: None, values: Vec::new(),
+        })));
     }
     Ok(FunctionBody{
         name:format!("{worker}@task"),fallible:true,source_origin:None,
@@ -308,7 +379,10 @@ pub(crate) fn compile_resources(
                 "blink_error_message",
                 "blink_error_destroy",
                 "blink_error_join",
+                "blink_error_consume",
+                "blink_error_consumed",
                 "blink_task_start",
+                "blink_task_submit",
                 "blink_task_wait",
                 "blink_application_failed",
             ]

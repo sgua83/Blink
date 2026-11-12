@@ -213,6 +213,7 @@ impl Values {
                 InstKind::Scope(body) => {
                     let mut scoped = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
                     let mut scope = scoped.block(body, registers, reuses);
+                    self.aliases = scoped.aliases;
                     merge(&mut scope.next, scope.exits.take());
                     continuing = self.resume(&mut flow, scope);
                 }

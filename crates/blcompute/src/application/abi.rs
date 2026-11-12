@@ -8,7 +8,10 @@ mod native {
 
     // 表示只由本运行库解释；跨模块交接不透明指针，不交接Rust容器。
     #[derive(Debug)]
-    struct NativeError { message: String }
+    struct NativeError {
+        message: String,
+        consumed: Vec<(usize,usize)>,
+    }
     impl std::fmt::Display for NativeError {
         fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str(&self.message)}
     }
@@ -26,6 +29,7 @@ mod native {
         Some(match name{
             "blink_allocate"=>blink_allocate as *const (),
             "blink_task_start"=>blink_task_start as *const (),
+            "blink_task_submit"=>blink_task_submit as *const (),
             "blink_task_wait"=>blink_task_wait as *const (),
             "blink_resize"=>blink_resize as *const (),
             "blink_run"=>blink_run as *const (),
@@ -39,25 +43,33 @@ mod native {
             "blink_error_message"=>blink_error_message as *const (),
             "blink_error_destroy"=>blink_error_destroy as *const (),
             "blink_error_join"=>blink_error_join as *const (),
+            "blink_error_consume" => blink_error_consume as *const (),
+            "blink_error_consumed"=>blink_error_consumed as *const (),
             _=>return None,
         })
     }
-    use super::super::task::{self, Entry};
+    use super::super::task::{self, Cleanup, Entry};
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_task_start(
-        output: *mut u8, frame: *mut Frame, input: *const u8, worker: Entry, cleanup: Option<Entry>, index: u32,
+        output: *mut u8, frame: *mut Frame, input: *const u8, worker: Entry, cleanup: Option<Cleanup>, index: u32,
     ) -> *mut c_void {
         finish(unsafe { task::start(&mut *frame,index as usize,worker,cleanup,input,output) }, |_| {})
     }
 
+    /// The originating call has finished retiring its write inputs and owns this unsubmitted task.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn blink_task_wait(frame: *mut Frame, owner: *mut c_void, output: *mut u8) -> *mut c_void {
-        unsafe { task::wait(&mut *frame,owner,output) }
+    pub unsafe extern "C" fn blink_task_submit(frame:*mut Frame, owner:*mut c_void, preparation:*mut c_void)->*mut c_void {
+        finish(unsafe { task::submit(&mut *frame,owner,preparation) }, |_| {})
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_task_wait(frame: *mut Frame, owner: *mut c_void, completion: *mut u8) -> *mut c_void {
+        unsafe { task::wait(&mut *frame,owner,completion) }
     }
 
     pub(in crate::application) fn into_error(error: Box<dyn std::error::Error + Send + Sync>) -> *mut c_void {
-        Box::into_raw(Box::new(NativeError { message: error.to_string() })).cast()
+        Box::into_raw(Box::new(NativeError { message: error.to_string(), consumed: Vec::new() })).cast()
     }
 
     fn finish<T>(result: crate::Result<T>, output: impl FnOnce(T)) -> *mut c_void {
@@ -90,7 +102,27 @@ mod native {
         let error=unsafe { &mut *primary.cast::<NativeError>() };
         error.message.push(char::from(10));
         error.message.push_str(&other.message);
+        error.consumed.extend(other.consumed);
         primary
+    }
+
+    pub(in crate::application) unsafe fn consumed(error:*mut c_void, address:usize, size:usize) {
+        unsafe { &mut *error.cast::<NativeError>() }.consumed.push((address,size));
+    }
+
+    /// Record an owning position destroyed in storage borrowed from the caller.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_error_consume(error: *mut c_void, address: usize, size: usize) {
+        unsafe { consumed(error, address, size) };
+    }
+
+    /// Query the owning positions already destroyed on this native failure.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_error_consumed(error:*const c_void, address:usize, size:usize)->u32 {
+        if error.is_null(){return 0;}
+        u32::from(unsafe { &*error.cast::<NativeError>() }.consumed.iter().any(|&(base,extent)|
+            address>=base && (address-base)<=extent && size<=extent-(address-base)
+        ))
     }
     /// # Safety
     /// frame属于本运行库，ty是已绑定模块的实际类型索引；调用遵守独占所有权。
@@ -201,7 +233,9 @@ mod native {
 #[cfg(windows)]
 pub(crate) use native::take_errors;
 #[cfg(windows)]
+pub(super) use native::consumed;
+#[cfg(windows)]
 pub(crate) use native::resource_symbol;
 
 #[cfg(windows)]
-pub(super) use native::{blink_error_join, into_error};
+pub(super) use native::{blink_error_consumed, blink_error_join, into_error};

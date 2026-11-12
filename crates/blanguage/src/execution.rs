@@ -63,6 +63,12 @@ impl Body<'_> {
                     }
                 }
             }
+            ExprKind::Call("start_task" | "wait_task", args) => {
+                self.host = true;
+                for arg in args {
+                    self.expr(world, d, &arg, false);
+                }
+            }
             ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => {
                 if !self.call(world, d, name, statement) {
                     for arg in args {

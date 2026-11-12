@@ -108,8 +108,7 @@ pub(super) fn parameter_type(world: &World, param: &Param, context: (&Source,&st
         imports,
     )?;
     if ty.owns_resources()
-        && (declared.dataset && !matches!(param.access, Access::Value | Access::Read | Access::InOut)
-            || declared.tile
+        && (declared.tile
             || !matches!(param.access, Access::Value | Access::Read | Access::Write | Access::InOut)
             || kind != FunctionKind::Value
             || target != Target::Cpu)
@@ -196,7 +195,7 @@ impl<'a> Builder<'a> {
         self.call_arguments(CallParameters::Declaration(&callee), args, span)
     }
     #[inline(never)]
-    fn source_call_argument(&mut self,parameters:CallParameters<'_>,index:usize,arg:&Expr)->Result<Option<Argument>> {
+    pub(super) fn source_call_argument(&mut self,parameters:CallParameters<'_>,index:usize,arg:&Expr)->Result<Option<Argument>> {
         let access=parameters.access(index);
         let form=parameters.form(index);
         Ok(Some(
@@ -304,32 +303,43 @@ if form==DeclaredArgumentForm::Acceleration {
         for argument in &arguments{if let Argument::Reference(owner)=argument{retained.union(&owner.proof.typed_view_borrow(owner.place.ty()));}}
         for(param,argument)in (0..parameters.len()).zip(&arguments){if parameters.access(param)==Access::Value{
             let resources=match argument{Argument::ApplicationData(data)=>vec![data],Argument::OwnedValue(value)=>value.resources(),_=>Vec::new()};
-            for data in resources{self.check_view_requirement(view::Requirement::Unborrowed{resource:self.owned_resource_borrow(data),borrow:retained.clone(),ownership:true,span})?;}
+            for data in resources{self.check_view_requirement(view::Requirement::Unborrowed{resource:self.owned_resource_borrow(data),borrow:retained.clone(),kind:view::Exclusion::Ownership,span})?;}
         }}
         self.view_uses.invocation(span);
         for (param, argument) in (0..parameters.len()).zip(&arguments) {
             if let Argument::OwnedReference{value,..}=argument && parameters.access(param).writes() {
-                for data in value.resources(){self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),ownership:true,span})?;}
+                for data in value.resources(){self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),kind:view::Exclusion::Ownership,span})?;}
                 if parameters.access(param)==Access::InOut{for data in value.resources(){self.application_handle_available(data.root.identity(),span,&[],&self.path)?;}}
             }
             if let Argument::BorrowedData(reference) = argument {
-                if parameters.access(param).writes() {
-                    self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&reference.sources),borrow:retained.clone(),ownership:false,span})?;
+                let access=parameters.access(param);
+                let tasks=self.task_places();
+                if !tasks.empty() {
+                    let (offset,ty)=reference.element_layout();
+                    let resource=application::dataset_origin(&reference.data,offset,ty,access.reads()).normalize();
+                    self.check_view_requirement(view::Requirement::Unborrowed{
+                        resource,borrow:tasks,kind:view::Exclusion::Position(access),span,
+                    })?;
+                }
+                if access.writes() {
+                    self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&reference.sources),borrow:retained.clone(),kind:view::Exclusion::View,span})?;
                     for path in view::resource_paths(reference.element_layout().1){
                         let mut fields=reference.projection.clone();fields.extend(path);
                         let resource=view::Borrow::element(self.data_value_borrow(&reference.data),fields,None);
-                        self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:retained.clone(),ownership:true,span})?;
+                        self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:retained.clone(),kind:view::Exclusion::Ownership,span})?;
                     }
                 }
                 for source in &reference.sources {
                     self.application_handle_available(*source, span, &[],&self.path)?;
                 }
             }
-            if let Argument::Reference(OwnedBinding{place,..}) | Argument::Atomic(place) = argument
-                && let Place::ApplicationElement { sources, .. } = place.storage()
-            {
-                for source in sources {
-                    self.application_handle_available(*source, span, &[],&self.path)?;
+            if let Argument::Reference(OwnedBinding{place,..}) | Argument::Atomic(place) = argument {
+                self.require_place_access(place,parameters.access(param),span)?;
+                if let Place::ApplicationElement { identity, sources, .. } = place.storage() {
+                    self.application_handle_available(*identity, span, &[],&self.path)?;
+                    for source in sources {
+                        self.application_handle_available(*source, span, &[],&self.path)?;
+                    }
                 }
             }
             let handle = match argument {
@@ -338,14 +348,10 @@ if form==DeclaredArgumentForm::Acceleration {
                 {
                     Some(data.root.identity())
                 }
-                Argument::Reference(OwnedBinding{place,..}) | Argument::Atomic(place) => match place.storage() {
-                    Place::ApplicationElement { identity, .. } => Some(*identity),
-                    _ => None,
-                },
                 _ => None,
             };
             if let Some(handle) = handle {
-                if parameters.access(param).writes() { self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&[handle]),borrow:retained.clone(),ownership:false,span})?; }
+                if parameters.access(param).writes() { self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&[handle]),borrow:retained.clone(),kind:view::Exclusion::Resource,span})?; }
                 self.application_handle_available(handle, span, &[],&self.path)?;
             }
         }

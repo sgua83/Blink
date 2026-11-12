@@ -197,6 +197,11 @@ impl Builder<'_> {
                     value.constant = None;
                 }
             }
+            for component in view_contracts::components(&payload.ty) {
+                let word=offset+payload.ty.components[component].1;
+                let target=ty.components.iter().position(|(_,at)|*at==word).unwrap();
+                value.proof=value.proof.with_view_borrow(target,payload.proof.view_borrow(component));
+            }
             value.retain_payload_nonzero(&payload, offset);
             value.uniform = payload.uniform;
         }
@@ -232,6 +237,11 @@ impl Builder<'_> {
             } else {
                 constant = None;
             }
+        }
+        for component in view_contracts::components(&ty) {
+            let word=offset+ty.components[component].1;
+            let source=value.ty.components.iter().position(|(_,at)|*at==word).unwrap();
+            proof=proof.with_view_borrow(component,value.proof.view_borrow(source));
         }
         proof.retain_view_borrows(&ty);
         let proof = self.path_proof(&ty, proof);

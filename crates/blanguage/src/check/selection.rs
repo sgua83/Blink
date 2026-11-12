@@ -114,7 +114,7 @@ impl Builder<'_> {
         let no_init = self.take_application_initialization_state();
         let yes_initial = yes_init.clone();
         let no_initial = no_init.clone();
-        self.join_initialization(&c, yes_init, no_init);
+        self.join_initialization(&owned_presence::Presence::input(&c),yes_init,no_init);
         let mut no = self.code.split_off(prefix);
         let no_regions = std::mem::replace(&mut self.memory_regions, outer_regions);
         let selected = c.constant.as_ref().map(|bits| bits[0] != 0);

@@ -126,6 +126,12 @@ impl Root {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TaskCompletionSource {
+    Input(Reg),
+    Returned(Reg,usize),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ValueIdentity {
     Register(Reg),
@@ -146,6 +152,13 @@ enum ValueIdentity {
     // The numeric storage snapshot produced by this actual call, not a machine argument.
     MemoryValue(usize, usize),
     LoopValue(usize, usize),
+    TaskResult(usize),
+    TaskCompletion(Reg, usize),
+    TaskWorkCompletion(u32,u32),
+    // 普通调用的实际任务返回句柄所确定的来源分支。
+    TaskControl(Reg),
+    // 普通返回实际交接的任务来源，按原结果分量命名。
+    TaskReturnSource(usize),
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexDomain {
@@ -1628,6 +1641,7 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
 struct CheckedContext {
     program: Arc<Program>,
     output_scopes: usize,
+    task_completions: BTreeMap<TaskCompletionSource, Vec<(Ty, [Reg; 2])>>,
 }
 struct CheckedFunction {
     context: CheckedContext,
@@ -1661,10 +1675,17 @@ fn checked_function(
     b.application = application;
     b.functions = functions;
     if b.application.is_some() { b.view_uses = view_liveness::State::new(world, instance); }
-    let (parameters, inputs, output_contracts) = function_parameters(&mut b, instance, name)?;
-    let (returned,written) = b.function_body(instance, d.function.body().as_ref().unwrap())?;
+    let (mut parameters, mut inputs, output_contracts) = function_parameters(&mut b, instance, name)?;
     let result_name=instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())?;
     let result=if result_name.name=="void"||result_name.is_never(){None}else{Some(b.expected_storage(&result_name,d.function.span())?)};
+    let task_results=result.as_ref().map(Ty::task_components).unwrap_or_default();
+    if b.application_entry()&&!d.function.c_abi()&&!task_results.is_empty() {
+        let address=[b.reg(Scalar::U32),b.reg(Scalar::U32)];
+        b.task_return_source=Some(address);
+        parameters.push(CallParameter::reference(Ty::task_return_layout(&task_results),Access::Write));
+        inputs.extend(address);
+    }
+    let (returned,written) = b.function_body(instance, d.function.body().as_ref().unwrap())?;
     finish_checked_function(b,program.clone(),name,d.function.span(),d.source_origin(),result,parameters,inputs,output_contracts,returned,written)
 }
 
@@ -1924,6 +1945,25 @@ fn function_parameters(
     contracts::assume(b,instance.into(),&mut environment,&requirements)?;b.env=environment;
     b.materialize_array_bindings();
     let output_contracts=outputs::contract_predicates(b,instance)?;
+    if b.application.is_some() && !d.function.c_abi() {
+        let first_completion=inputs.len();
+        for completion in native_function::task_completion_parameters(
+            parameters.iter().map(|parameter| match &parameter.kind {
+                CallParameterKind::Value(ty)=>(ty.components.len(),Some(ty)),
+                CallParameterKind::Reference{..}=>(2,None),
+            }),0,
+        ) {
+            let source=match completion.parent {
+                Some((parent,component))=>TaskCompletionSource::Returned(inputs[first_completion+2*parent],component),
+                None=>TaskCompletionSource::Input(inputs[completion.input]),
+            };
+            let address=[b.reg(Scalar::U32),b.reg(Scalar::U32)];
+            let layout=b.task_completion_layout(&completion.result,d.function.span())?;
+            b.task_completions.entry(source).or_default().push((completion.result,address));
+            parameters.push(CallParameter::reference(layout,Access::InOut));
+            inputs.extend(address);
+        }
+    }
     Ok((parameters, inputs, output_contracts))
 }
 
@@ -1962,7 +2002,7 @@ fn finish_checked_function(
         },
     };
     Ok(Box::new(CheckedFunction {
-        context: CheckedContext { program, output_scopes: b.output_scopes },
+        context: CheckedContext { program, output_scopes: b.output_scopes, task_completions: b.task_completions },
         body,
         returned,
         inputs: semantic_inputs,
@@ -2050,6 +2090,7 @@ pub struct FailureScope {
     control_uniform: bool,
     calls: Vec<String>,
     consumed: Vec<Place>,
+    task_outputs: Vec<native_function::TaskCompletionOutput>,
 }
 impl std::fmt::Debug for FailureScope {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str("FailureScope")}
@@ -2145,6 +2186,8 @@ struct Builder<'a> {
     view_model: view_contracts::Function,
     application: Option<application::Context>,
     pending_error: Option<PendingError>,
+    task_completions: BTreeMap<TaskCompletionSource, Vec<(Ty, [Reg; 2])>>,
+    task_return_source: Option<[Reg;2]>,
     functions: native_function::Module,
     world: &'a World,
     scope: LexicalScope,
@@ -2186,6 +2229,51 @@ struct Builder<'a> {
     prefix: Option<PrefixCount>,
 }
 impl<'a> Builder<'a> {
+    fn task_completion(&self, source:TaskCompletionSource, result:&Ty) -> Option<[Reg;2]> {
+        self.task_completions.get(&source)?.iter().find(|(ty,_)|ty==result).map(|(_,address)|*address)
+    }
+    fn task_completion_destination(
+        &mut self, task:Reg, result:&Ty, sources:&view::Borrow,
+    ) -> Option<([Reg;2],Option<Reg>)> {
+        if sources.inputs.entries().any(|(_,when)|self.path.overlaps(&when))
+            || sources.calls.entries().any(|(_,when)|self.path.overlaps(&when))
+            || sources.reads.entries().any(|(_,when)|self.path.overlaps(&when)) {
+            return None;
+        }
+        let mut destinations=BTreeMap::new();
+        for (source,_) in sources.sources.entries().filter(|(_,when)|self.path.overlaps(when)) {
+            let source=match source {
+                view::Source::Parameter(ValueIdentity::Register(input),_)=>TaskCompletionSource::Input(*input),
+                view::Source::TaskOutput{projection:view::TaskProjection::Returned(component,
+                    Some(ValueIdentity::TaskCompletion(parent,_))),..}=>TaskCompletionSource::Returned(*parent,*component),
+                _=>return None,
+            };
+            destinations.insert(source,self.task_completion(source,result)?);
+        }
+        let (last,mut destination)=destinations.pop_last()?;
+        if destinations.is_empty() {
+            return Some((destination,Some(destination[0])));
+        }
+        if !matches!(last,TaskCompletionSource::Input(_)) {return None;}
+        for (source,address) in destinations {
+            let TaskCompletionSource::Input(candidate)=source else {return None;};
+            let selected=self.reg(Scalar::Bool);
+            self.emit(InstKind::Binary {
+                dst:selected,op:BinaryOp::Compare(Comparison::Equal),a:task,b:candidate,
+            });
+            destination=std::array::from_fn(|part| {
+                let dst=self.reg(Scalar::U32);
+                self.emit(InstKind::Select{dst,condition:selected,a:address[part],b:destination[part]});
+                dst
+            });
+        }
+        Some((destination,None))
+    }
+    fn task_completion_layout(&self,result:&Ty,span:Span)->Result<Ty> {
+        result.task_completion().ok_or_else(||Diagnostic{
+            source:self.scope.source().clone(),span,code:"B224",message:"任务完成布局过大".into(),
+        })
+    }
     #[inline(never)]
     fn new(
         world: &'a World,
@@ -2244,6 +2332,8 @@ impl<'a> Builder<'a> {
             view_model: view_contracts::Function::default(),
             application: None,
             pending_error: None,
+            task_completions: BTreeMap::new(),
+            task_return_source: None,
             functions: native_function::Module::default(),
             world,
             scope: scope.clone(),
@@ -2292,17 +2382,21 @@ impl<'a> Builder<'a> {
     }
     fn failure_scope(&self,consumed:Vec<Place>)->Option<Box<FailureScope>> {
         let owns=self.env.values().any(|binding|match binding {
-            Binding::ApplicationData(data)=>data.ownership.may_own(),
+            Binding::ApplicationData(data)=>data.ownership.may_own() || data.owns_write_elements()
+                || data.returns_loan_on_error(),
             Binding::OwnedValue(value)=>value.ownership.may_own(),
             _=>false,
         });
-        if !owns{return None;}
+        if !owns && !consumed.iter().any(|place| self.borrowed_element_storage(place)) {
+            return None;
+        }
         Some(Box::new(FailureScope {
             env:self.env.clone(),path:self.path.clone(),initialized:self.initialized.clone(),
             scope:self.scope.clone(),source_definition:self.source_definition.clone(),
             source_context:self.source_context.clone(),source_site:self.source_site.clone(),
             mutable_names:self.mutable_names.clone(),frame:self.application.as_ref().unwrap().frame.clone(),
             domain:self.domain,control_uniform:self.control_uniform,calls:self.calls.clone(),consumed,
+            task_outputs:Vec::new(),
         }))
     }
     fn failure_continuation(&self,consumed:Vec<Place>)->Option<FailureContinuation> {
@@ -2321,6 +2415,16 @@ impl<'a> Builder<'a> {
         self.pending_error=None;
         result?;
         let failure=self.failure_scope(consumed);
+        // On the normal edge the original group status stayed zero throughout.
+        let mut statuses=Vec::new();
+        crate::optimize::visit(&body,&mut |inst|match &inst.kind {
+            InstKind::LoadLocal(value,source) if *source==slot => statuses.push(*value),
+            InstKind::Call(call) if matches!(&call.failure,Some(FailureContinuation::Cleanup(target))if *target==slot) => {
+                statuses.extend(call.error);
+            }
+            _=>{}
+        });
+        self.path=bounds::Clause::both(&self.path,&bounds::Clause::zero_results(statuses));
         self.emit(InstKind::Cleanup{slot,body,failure});
         Ok(())
     }
@@ -2571,6 +2675,7 @@ impl<'a> Builder<'a> {
         }
     }
     fn read_place(&mut self, p: &Place, span: Span, element_read_origin: Option<Arc<GeneratedOrigin>>) -> Result<Value> {
+        self.require_place_access(p,Access::Read,span)?;
         if p.ty().owns_resources() {
             return self.fail(
                 span,
@@ -2777,6 +2882,7 @@ impl<'a> Builder<'a> {
         }
     }
     fn write_place(&mut self, p: &Place, value: Value, span: Span, local_origin: Option<Arc<GeneratedOrigin>>) -> Result<()> {
+        self.require_place_access(p,Access::Write,span)?;
         if p.ty().contains_views() && matches!(p.storage(), Place::Element { .. } | Place::ApplicationElement { .. }) {
             return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
         }
@@ -3805,12 +3911,13 @@ impl<'a> Builder<'a> {
             self.path = bounds::Clause::either(&yes_path, &no_path);
             self.view_uses.after(span);
             self.env = yes_env;
-            self.join_initialization(&c, yes_init, no_init);
-            self.join_environment_selected(&mut no_env, &owned_presence::Presence::input(&c));
+            let when=owned_presence::Presence::input(&c);
+            self.join_initialization(&when,yes_init,no_init);
+            self.join_environment_selected(&mut no_env,&when);
         } else {
             self.path = bounds::Clause::impossible();
             self.env = environment;
-            self.join_initialization(&c, yes_init, no_init);
+            self.join_initialization(&owned_presence::Presence::input(&c),yes_init,no_init);
         }
         self.flow = yes_flow.union(no_flow);
         self.control_uniform = control && (c.uniform || (yes_reachable && no_reachable));
@@ -4690,7 +4797,7 @@ impl<'a> Builder<'a> {
             return Ok(());
         };
         if place.ty().owns_resources() {
-            return self.assign_owned_storage(place,op,rhs,span);
+            return self.assign_owned_storage(place,None,op,rhs,span);
         }
         let borrowed = matches!(place.storage(), Place::ApplicationElement { .. })
             .then(|| self.hold_binding(Binding::AtomicBorrow(place.clone())));
@@ -5113,7 +5220,7 @@ crate::module::codec::record!(Value {
     uniform,
     constant
 });
-crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource),5=>ParameterStorage(parameter),6=>ElementComponent(component),7=>ElementParent(depth,component),8=>DatasetContent(parameter,resource,component),9=>MemoryValue(call,component),10=>ElementIndex(depth),11=>LoopValue(scope,input)});
+crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource),5=>ParameterStorage(parameter),6=>ElementComponent(component),7=>ElementParent(depth,component),8=>DatasetContent(parameter,resource,component),9=>MemoryValue(call,component),10=>ElementIndex(depth),11=>LoopValue(scope,input),12=>TaskResult(component),13=>TaskCompletion(task,component),14=>TaskControl(reg),15=>TaskReturnSource(component),16=>TaskWorkCompletion(payload,word)});
 crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance),13=>Offset(base,amount),14=>Computed(expression),15=>Lower(base,distance),16=>CommonRange(source,from,low,extended,to),17=>KnownBits(scalar,mask,value),18=>Floating(bound)});
 
 

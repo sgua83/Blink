@@ -393,10 +393,8 @@ impl Builder<'_> {
         }
         match place {
             Place::Reference { words, access: Access::Write | Access::InOut, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
-            Place::ApplicationElement { words, resource, access: Access::Write | Access::InOut, .. } => {
-                self.require_view_unborrowed(resource,span)?;
-                Ok(words.iter().map(|word| *word as usize).collect())
-            },
+            Place::ApplicationElement { words, access: Access::Write | Access::InOut, .. } =>
+                Ok(words.iter().map(|word| *word as usize).collect()),
             Place::Local(_, slots, ..) => Ok(slots.clone()),
             Place::Element {
                 binding,
@@ -534,22 +532,34 @@ impl Builder<'_> {
     pub(super) fn initialize(&mut self, place: &Place) {
         self.initialized.extend(self.positions(place));
     }
+    // Ownership establishes the stored handle only for this destructor read.
+    pub(super) fn read_cleanup_storage<T>(&mut self,place:&Place,read:impl FnOnce(&mut Self)->Result<T>)->Result<T> {
+        let temporary=self.positions(place).into_iter()
+            .filter(|position|self.initialized.insert(position.clone())).collect::<Vec<_>>();
+        let result=read(self);
+        for position in temporary {
+            self.initialized.remove(&position);
+        }
+        result
+    }
     pub(super) fn join_initialization(
         &mut self,
-        condition: &Value,
-        yes: BTreeSet<Position>,
-        no: BTreeSet<Position>,
+        choice:&owned_presence::Presence,
+        yes:BTreeSet<Position>,
+        no:BTreeSet<Position>,
     ) {
-        self.initialized = if let Some(bits) = &condition.constant {
-            if bits[0] != 0 { yes } else { no }
-        } else {
-            let mut common=intersect_initialized(&yes,&no);
-            let choice=owned_presence::Presence::input(condition);
-            let yes=yes.difference(&common).cloned().collect::<Vec<_>>();
-            let no=no.difference(&common).cloned().collect::<Vec<_>>();
-            common.extend(yes.into_iter().map(|position|Position::selected(choice.clone(),position,Position::Initialized)));
-            common.extend(no.into_iter().map(|position|Position::selected(choice.clone().not(),position,Position::Initialized)));
-            common
+        use owned_presence::Presence;
+        self.initialized=match choice {
+            Presence::All=>yes,
+            Presence::None=>no,
+            choice=>{
+                let mut common=intersect_initialized(&yes,&no);
+                let yes=yes.difference(&common).cloned().collect::<Vec<_>>();
+                let no=no.difference(&common).cloned().collect::<Vec<_>>();
+                common.extend(yes.into_iter().map(|position|Position::selected(choice.clone(),position,Position::Initialized)));
+                common.extend(no.into_iter().map(|position|Position::selected(choice.clone().not(),position,Position::Initialized)));
+                common
+            }
         };
     }
     pub(super) fn borrow_owned(&mut self, place: Place) -> OwnedBinding {

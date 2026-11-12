@@ -77,6 +77,18 @@ pub(super) struct DataPayload {
     pub prefixes: prefix::Fields,
 }
 impl DataPayload {
+    pub(super) fn owns_write_elements(&self) -> bool {
+        self.ownership == Ownership::Borrowed && self.access == Access::Write
+            && self.ty.owns_resources()
+    }
+
+    pub(super) fn returns_loan_on_error(&self) -> bool {
+        self.ownership == Ownership::Borrowed && self.access == Access::InOut
+            && matches!(self.layout, DataLayout::Parameter { .. })
+            && matches!(self.elements, ElementFacts::Known(_) | ElementFacts::Common(..) | ElementFacts::Selected(..))
+            && self.ty.owns_resources()
+    }
+
     pub(super) fn loop_compatible(&self,other:&Self,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause,inputs:&BTreeMap<ValueIdentity,bounds::Proof>)->Result<bool> {
         if !self.ownership.loop_compatible(&other.ownership,inputs,path){return Ok(false);}
         let path=other.ownership.presence().condition().assume(path,true);
@@ -769,7 +781,7 @@ pub(super) fn pointer_type() -> Ty {
     ty.name = "__blink_frame".into();
     ty
 }
-fn argument(value: Value) -> CallArgument {
+pub(super) fn argument(value: Value) -> CallArgument {
     CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
         dataset_borrow:None, ty: value.ty,
         values: value.regs,
@@ -1089,7 +1101,11 @@ impl Builder<'_> {
             None
         };
         let element_ty=self.program.buffers[binding].ty.clone();
-        let elements=ElementFacts::Known(self.unknown_element_model(&element_ty,(&residency::Residency::parameter(parameter),&[]))?);
+        let mut model = self.unknown_element_model(&element_ty, (&residency::Residency::parameter(parameter), &[]))?;
+        if access == Access::Write {
+            model.restrict_owned(&owned_presence::Presence::None);
+        }
+        let elements = ElementFacts::Known(model);
         Ok(Box::new(DataPayload {
             prefixes: BTreeMap::new(),
             elements,
@@ -1309,49 +1325,205 @@ impl Builder<'_> {
             if owner.value.ty.task_result().is_none() {
                 return self.fail(span,"B224","wait_task需要一个实际拥有任务");
             }
-            return self.wait_task_value(owner.value,span).map(Some);
+            return self.wait_task_value(owner.value, span, |_, value| Ok(Some(value)));
         }
-        if args.len()!=2 { return self.fail(span,"B157","start_task需要静态普通CPU函数及拥有参数包"); }
+        if args.len()<2 {
+            return self.fail(span,"B157","start_task需要静态普通CPU函数、拥有参数记录和借用位置");
+        }
         let worker=args.at(0);
         let worker=Self::user_owned_function(self.scope.source(),&worker)?;
         let crate::frontend::NameResolution::Unique(key)=self.world.resolve(
             worker,self.scope.module(),self.scope.imports(),true,
         ) else { return self.fail(span,"B157","找不到实际工作函数"); };
-        let Some(mut input)=self.evaluate_returned(&args.at(1),None)? else { return Ok(None); };
+        let callee=self.world.functions[&key].clone();
+        let f=&callee.function;
+        let declared=f.params();
+        if f.kind()!=FunctionKind::Value || f.target()!=Target::Cpu || f.c_abi()
+            || declared.iter().any(|param|!matches!(param.access(),Access::Value|Access::Read|Access::Write|Access::InOut))
+        {
+            return self.fail(span,"B224","工作必须使用普通CPU值参数或read、write、inout位置");
+        }
+        let value_count=declared.iter().filter(|param|param.access()==Access::Value).count();
+        if args.len()!=2+declared.len()-value_count {
+            return self.fail(span,"B157","按值参数放入拥有记录，借用位置按声明顺序提供");
+        }
+        let source=args.at(1);
+        let Some(mut input)=self.evaluate_returned(&source,None)? else {return Ok(None);};
         let mut datasets=Vec::new();
-        residency::visit(&mut input,&mut residency::Input::new(0),&mut |data,_| datasets.push(data.clone()));
+        residency::visit(&mut input,&mut residency::Input::new(0),&mut |data,_|datasets.push(data.clone()));
         for data in datasets {
             self.require_application_initialized(&data,span)?;
             self.application_cpu(&data,span)?;
         }
         let packed=self.returned_storage(&input);
-        if packed.ty.contains_borrows() {
-            return self.fail(span,"B224","按值任务参数不能携带跨任务借用");
+        if packed.ty.fields.len()!=value_count {
+            return self.fail(source.span(),"B162","任务拥有参数记录只包含实际按值参数");
         }
-        let parameters=(0..packed.ty.fields.len()).map(|i| {
-            let field=if let Returned::OwnedValue(owner)=&input {
-                self.unpack_record(owner,i)
-            } else {
-                Returned::value(self.record_component(&packed,i))
-            };
-            cooperative::Argument::resource(field)
+        let held=match input {
+            Returned::OwnedValue(owner)=>Some(self.hold_binding(Binding::OwnedValue(owner))),
+            _=>None,
+        };
+        let signature=cooperative::CallParameters::Declaration(&callee);
+        let mut next_position=2;
+        let positions=declared.iter().map(|param| {
+            if param.access()==Access::Value {None}
+            else {
+                let arg=args.at(next_position);
+                next_position+=1;
+                Some(arg)
+            }
         }).collect::<Vec<_>>();
+        let mut field=0;
+        let parameters=self.call_arguments_from(
+            signature,declared.len(),span,
+            |index|positions[index].as_ref().map_or(source.span(),Expr::span),
+            |builder,index| {
+                if let Some(arg)=&positions[index] {
+                    let argument=builder.source_call_argument(signature,index,arg)?;
+                    let available=match argument.as_ref() {
+                        None | Some(cooperative::Argument::Reference(_)
+                            | cooperative::Argument::Value(_)
+                            | cooperative::Argument::OwnedReference { .. }
+                            | cooperative::Argument::BorrowedData(_)) => true,
+                        Some(cooperative::Argument::OwnedValue(value)) if signature.access(index)==Access::Read =>
+                            value.place().is_some(),
+                        _=>false,
+                    };
+                    if !available {
+                        return builder.fail(arg.span(),"B224","任务位置尚不能交接该拥有值或Frame资源");
+                    }
+                    return Ok(argument);
+                }
+                let value=if let Some(held)=&held {
+                    let Binding::OwnedValue(owner)=builder.env[held].clone() else {unreachable!()};
+                    let value=builder.unpack_record(&owner,field);
+                    if let Binding::OwnedValue(owner)=builder.env.get_mut(held).unwrap()
+                        && let Some(payload)=owner.payloads[field].as_deref_mut()
+                    {
+                        payload.restrict_owned(&owned_presence::Presence::None);
+                    }
+                    value
+                } else {
+                    Returned::value(builder.record_component(&packed,field))
+                };
+                field+=1;
+                Ok(Some(cooperative::Argument::resource(value)))
+            },
+        )?;
+        let Some(parameters)=parameters else {return Ok(None);};
+        if let Some(held)=held {self.env.remove(&held);}
         let worker=self.specialized_function(key,&parameters,span)?;
-        let f=&worker.definition.function;
-        if f.kind()!=FunctionKind::Value || f.target()!=Target::Cpu || f.c_abi()
-            || f.params().iter().any(|param|param.access()!=Access::Value) {
-            return self.fail(span,"B224","工作必须是按值调用的普通CPU函数");
-        }
         self.native_function(worker,parameters,span,None,None,Some(packed))
     }
 
-    pub(super) fn emit_task_start(&mut self,worker:&str,packed:Value,result:Ty,span:Span)
+    pub(super) fn emit_task_start(&mut self,worker:&str,source:Value,arguments:Vec<CallArgument>,captured:view::Borrow,
+        result:Ty,mut outputs:Vec<view::Borrow>,initialized:view::Borrow,guards:Vec<(usize, outputs::TaskGuard)>,conditional_positions:Vec<Position>,
+        borrowed_arguments:BTreeMap<usize,Option<(Ty,Access)>>,dataset_writes:Vec<(Access, DataReference)>,
+        retired_outputs:Vec<(Place,returns::Returned)>,memory:usize,call:usize,span:Span)
         -> Result<Option<returns::Returned>> {
-        if result.contains_borrows() {
-            return self.fail(span,"B224","按值任务结果不能携带跨任务借用");
+        let guarded = guards.iter().filter_map(|(parameter, guard)|
+            guard.frame_output_type().map(|_| (*parameter, guard))).collect::<BTreeMap<_,_>>();
+        let positions = arguments.iter().enumerate().filter(|(_, argument)| !matches!(argument,
+            CallArgument::Value { ty, .. } if ty.name == "__blink_frame")).enumerate().filter_map(|(field, (argument_index, argument))| {
+            let (ty, access, origin, layout) = match argument {
+                CallArgument::Reference { ty, access, origin: Some(origin), .. } => (ty, access, origin, None),
+                CallArgument::Value { ty, origin: Some(origin), .. } => {
+                    let (element, access) = borrowed_arguments.get(&argument_index)?.as_ref()?;
+                    (element, access, origin, Some(ty.clone()))
+                }
+                _ => return None,
+            };
+            if !access.writes() || !(if layout.is_some() { ty.owns_resources() } else { ty.contains_dataset() }) {
+                return None;
+            }
+            let ArgumentOrigin::Parameter { index, .. } = origin.as_ref() else { return None; };
+            let guard = guarded.get(index).copied();
+            let guard = if layout.is_none() || *access == Access::Write { guard } else { None };
+            Some((field, ty.clone(), guard.cloned(), layout, *access))
+        }).collect::<Vec<_>>();
+        let formal_frame=usize::from(!matches!(arguments.first(),
+            Some(CallArgument::Value{ty,..}) if ty.name=="__blink_frame"))*2;
+        let completed_inputs=native_function::task_completion_parameters(arguments.iter().map(|argument|match argument {
+            CallArgument::Value{ty,..}=>(ty.components.len(),Some(ty)),
+            CallArgument::Reference{..}=>(2,None),
+        }),0);
+        let first_completion=formal_frame+arguments.iter().map(|argument|match argument {
+            CallArgument::Value{ty,..}=>ty.components.len(),
+            CallArgument::Reference{..}=>2,
+        }).sum::<usize>();
+        let mut packed=self.task_argument_packet(arguments,&borrowed_arguments,span)?;
+        let overflow = || Diagnostic {
+            source: self.scope.source().clone(), span, code: "B224", message: "任务完成布局过大".into(),
+        };
+        let mut tail = result.task_wait_layout().ok_or_else(&overflow)?.size;
+        let mut selection = Vec::new();
+        let mut drop_positions = Vec::new();
+        let mut drop_datasets = Vec::new();
+        for (field, ty, guard, layout, access) in &positions {
+            let (name, offset, _) = &mut packed.ty.fields[*field];
+            let ready = if let Some(guard) = guard {
+                let base = tail.checked_next_multiple_of(Scalar::Bool.align()).ok_or_else(&overflow)?;
+                let width = u32::try_from(ty.task_output_owners().len()).ok()
+                    .and_then(|count| count.checked_mul(Scalar::Bool.size())).ok_or_else(&overflow)?;
+                tail = base.checked_add(width).ok_or_else(&overflow)?;
+                name.push_str(&format!(":{base}"));
+                selection.push((base, guard.clone()));
+                Some(base)
+            } else {
+                None
+            };
+            if let Some(layout) = layout {
+                drop_datasets.push((*offset, layout, ty, *access, ready));
+            } else {
+                drop_positions.push((*offset, ty, ready));
+            }
         }
-        let cleanup=if result.owns_resources() { Some(self.task_cleanup(&result,span)?) } else { None };
-        let error_ty=Ty::task_start_error(packed.ty.clone()).ok_or_else(||Diagnostic{
+        let mut work_output=Ty::unit();
+        work_output.name="@task_output".into();
+        work_output.size=tail;
+        let mut completions=Vec::<view::TaskInputCompletion>::new();
+        for completion in completed_inputs {
+            let result=completion.result;
+            let task=match completion.parent {
+                Some((parent,component))=>completions[parent].task.task_projection(view::TaskProjection::Returned(component,None)),
+                None=>self.view_model.calls[call].arguments[&ValueIdentity::Register(completion.input+formal_frame)].view_borrow(0),
+            };
+            let layout=self.task_wait_output_layout(&result,&task,span)?.task_completion_storage().ok_or_else(&overflow)?;
+            let offset=work_output.size.checked_next_multiple_of(layout.align).ok_or_else(&overflow)?;
+            work_output.size=offset.checked_add(layout.size).ok_or_else(&overflow)?;
+            work_output.align=work_output.align.max(layout.align);
+            work_output.components.extend(layout.components.iter().map(|&(scalar,word)|(scalar,offset+word)));
+            let input=first_completion+2*completions.len();
+            for (part,_) in result.task_components().into_iter().enumerate() {
+                let slot=result.components.len()+part;
+                let (_,word)=layout.components[3+slot];
+                let (payload,_)=layout.task_completion_payload();
+                self.view_model.calls[call].arguments.insert(ValueIdentity::TaskCompletion(input,slot),
+                    bounds::Proof::default().with_identity(ValueIdentity::TaskWorkCompletion(offset+payload,word-payload)));
+            }
+            work_output.fields.push((completions.len().to_string(),offset,Box::new(layout.clone())));
+            completions.push(view::TaskInputCompletion{offset,result,layout,task,parent:completion.parent});
+        }
+        for component in view_contracts::components(&result) {
+            let actual=outputs[component].at_call(&self.view_model.calls[call].arguments);
+            outputs[component]=if actual.empty() || actual.pending() || actual.unresolved() {
+                self.view_model.result(call,view_contracts::Output::Returned(component))
+            } else {
+                actual
+            };
+        }
+        packed.ty.arguments.push(work_output);
+        let cleanup = if drop_positions.is_empty() && drop_datasets.is_empty() && !result.owns_resources() {
+            None
+        } else {
+            Some(self.task_completion_cleanup(&drop_positions, &drop_datasets, &result, span)?)
+        };
+        let selector = if selection.is_empty() {
+            None
+        } else {
+            Some(self.task_selection(&packed, &result, &selection, span)?)
+        };
+        let error_ty=Ty::task_start_error(source.ty.clone()).ok_or_else(||Diagnostic{
             source:self.scope.source().clone(),span,code:"B224",message:"任务错误载荷布局过大".into(),
         })?;
         let result=Ty::result(Ty::task(result),error_ty).ok_or_else(||Diagnostic{
@@ -1374,47 +1546,327 @@ impl Builder<'_> {
         let input=CallArgument::Reference { origin:None,ty:packed.ty,access:Access::Read,
             address:CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:None,word:0} };
         let frame=argument(self.application_frame(span)?);
-        let values:Vec<_>=result.components.iter().map(|(s,_)|self.reg(*s)).collect();
+        let mut values:Vec<_>=result.components.iter().map(|(s,_)|self.reg(*s)).collect();
         let error=self.reg(Scalar::U64);
-        let call=runtime_call("task_start",vec![frame,input,argument(entry),argument(cleanup)],
+        let mut start_arguments = vec![frame.clone(), input, argument(entry), argument(cleanup)];
+        if let Some(selector) = selector {
+            let reg = self.reg(Scalar::U64);
+            self.emit(InstKind::FunctionAddress(reg, CallTarget::Defined(selector)));
+            start_arguments.push(CallArgument::Value { ty: Ty::scalar(Scalar::U64), values: vec![reg], dataset_borrow: None, origin: None });
+        }
+        let mut call=runtime_call("task_start",start_arguments,
             Some(result.clone()),values.clone(),Some(error),self.failure_continuation(Vec::new()));
+        if let InstKind::Call(call)=&mut call.kind {
+            call.memory_use=Some(memory);
+        }
         self.emit(call.kind);
-        let value=Value{ty:result,regs:values,proof:bounds::Proof::default(),uniform:false,literal:false,constant:None};
-        self.task_value(value).map(Some)
+        let payload=ir::align_up(4,result.align);
+        let at=result.components.iter().position(|(_,word)|*word==payload).unwrap();
+        let task=view::Borrow::source(view::Source::Task{captures:Box::new(captured),outputs,initialized:Box::new(initialized),guards: guards.into_iter().map(|(_, guard)| guard).collect(),completions});
+        let mut proof=bounds::Proof::default().with_view_borrow(at,task);
+        let error_type=(*result.variants[1].ty).clone();
+        let error_input=payload+error_type.fields[1].1;
+        for component in view_contracts::components(&source.ty){
+            let word=source.ty.components[component].1;
+            let at=result.components.iter().position(|(_,offset)|*offset==error_input+word).unwrap();
+            proof=proof.with_view_borrow(at,source.proof.view_borrow(component));
+        }
+        let mut error_regs=Vec::with_capacity(error_type.components.len());
+        error_regs.push(values[1]);
+        error_regs.extend(source.regs);
+        let error=Value{ty:error_type,regs:error_regs,proof:bounds::Proof::default(),uniform:false,literal:false,constant:None};
+        let failure=self.variant_value(result.clone(),1,Some(error));
+        let failed=values[0];
+        for (index,_) in result.components.iter().enumerate().filter(|(_,(_,word))|*word>=error_input) {
+            let dst=self.reg(Scalar::U32);
+            self.emit(InstKind::Select{dst,condition:failed,a:failure.regs[index],b:values[index]});
+            values[index]=dst;
+        }
+        let value=Value{ty:result,regs:values,proof,uniform:false,literal:false,constant:None};
+        let accepted=owned_presence::Presence::input(&self.result_condition(&value,span)?);
+        self.owned_when(&accepted,span,None,None,|builder| {
+            let owner=argument(builder.result_payload(&value,true).unwrap());
+            let submit=|builder:&mut Builder<'_>| {
+                for (_, reference) in &dataset_writes {
+                    if reference.root.ty.components[0].0==Scalar::U32 {
+                        let (stride,offset)=builder.application_reference_layout(reference);
+                        let wide=builder.reg(Scalar::U64);
+                        builder.emit(InstKind::Cast{dst:wide,src:offset.regs[0]});
+                        let offset=Value{ty:Ty::scalar(Scalar::U64),regs:vec![wide],proof:bounds::Proof::default(),
+                            literal:false,uniform:false,constant:None};
+                        builder.application_address(reference.root.regs[0],reference.root.identity(),offset,
+                            reference.element_layout().1.size,stride,reference.length.clone(),span)?;
+                    }
+                }
+                let status=if let Some(pending)=builder.pending_error {
+                    let status=builder.reg(Scalar::U64);
+                    builder.emit(InstKind::LoadLocal(status,pending.slot()));
+                    status
+                } else {
+                    builder.constant(Scalar::U64,0).regs[0]
+                };
+                let preparation=CallArgument::Value{
+                    origin:None,ty:Ty::scalar(Scalar::U64),values:vec![status],dataset_borrow:None,
+                };
+                let error=builder.reg(Scalar::U64);
+                let failure=builder.failure_continuation(Vec::new());
+                builder.emit(runtime_call("task_submit",vec![frame,owner,preparation],None,Vec::new(),Some(error),failure).kind);
+                Ok(())
+            };
+            let retired_datasets = dataset_writes.iter().filter_map(|(access, reference)|
+                (*access == Access::Write && reference.element_layout().1.owns_resources()).then_some(reference)
+            ).collect::<Vec<_>>();
+            if retired_outputs.is_empty() && retired_datasets.is_empty() {
+                return submit(builder);
+            }
+            let consumed=retired_outputs.iter().map(|(place,_)|place.clone()).collect();
+            builder.cleanup_group(consumed,|builder| {
+                for (_,old) in retired_outputs {
+                    builder.drop_returned(old,&view::Borrow::default(),span)?;
+                }
+                for reference in retired_datasets {
+                    builder.retire_application_elements(reference, span)?;
+                }
+                submit(builder)
+            })
+        })?;
+        if !conditional_positions.is_empty() {
+            let positions=conditional_positions.into_iter()
+                .map(|position|Position::selected(accepted.clone(),position,Position::Initialized)).collect::<Vec<_>>();
+            self.forget_output_positions(&positions,span)?;
+        }
+        self.task_value(value, residency::Residency::cpu()).map(Some)
     }
 
-    pub(super) fn wait_task_value(&mut self,mut owner:Value,span:Span) -> Result<returns::Returned> {
+    fn task_argument_packet(&mut self,arguments:Vec<CallArgument>,borrowed_arguments:&BTreeMap<usize,Option<(Ty,Access)>>,span:Span)->Result<Value> {
+        let mut packet=Ty::unit();
+        packet.name="@task_arguments".into();
+        let mut registers=Vec::new();
+        let source=self.scope.source().clone();
+        let overflow=||Diagnostic{source:source.clone(),span,code:"B224",message:"任务参数布局过大".into()};
+        for (index,argument) in arguments.into_iter().enumerate() {
+            let owned_position=matches!(&argument,
+                CallArgument::Reference{ty,access,..} if access.writes()&&ty.owns_resources());
+            let (ty,values)=match argument {
+                CallArgument::Value{ty,..} if ty.name=="__blink_frame"=>continue,
+                CallArgument::Value{ty,values,..}=>(ty,values),
+                CallArgument::Reference{address,..}=>{
+                    let dst=self.reg(Scalar::U64);
+                    self.emit(InstKind::PositionAddress{dst,address});
+                    (Ty::builtin("address").unwrap(),vec![dst])
+                },
+            };
+            let offset=packet.size.checked_next_multiple_of(ty.align).ok_or_else(&overflow)?;
+            packet.size=offset.checked_add(ty.size).ok_or_else(&overflow)?;
+            packet.align=packet.align.max(ty.align);
+            packet.components.extend(ty.components.iter().map(|(scalar,word)|(*scalar,offset+word)));
+            let field=packet.fields.len();
+            let name=if owned_position {
+                format!("{}{field}",Ty::TASK_OWNED_REFERENCE_PREFIX)
+            } else {
+                match borrowed_arguments.get(&index) {
+                    Some(Some((element,access))) => {
+                        let element_index=packet.arguments.len();
+                        packet.arguments.push(element.clone());
+                        let mode=match access {
+                            Access::Read=>"read",
+                            Access::Write=>"write",
+                            Access::InOut=>"inout",
+                            _=>unreachable!(),
+                        };
+                        format!("{}{mode}:{element_index}",Ty::TASK_BORROWED_DATASET_PREFIX)
+                    }
+                    Some(None) => format!("{}{field}", Ty::TASK_READ_FIELD_PREFIX),
+                    None => field.to_string(),
+                }
+            };
+            packet.fields.push((name,offset,Box::new(ty)));
+            registers.extend(values);
+        }
+        packet.size=packet.size.checked_next_multiple_of(packet.align).ok_or_else(overflow)?;
+        Ok(Value{ty:packet,regs:registers,proof:bounds::Proof::default(),uniform:false,literal:false,constant:None})
+    }
+
+    pub(super) fn task_wait_output_layout(&self,result:&Ty,sources:&view::Borrow,span:Span)->Result<Ty> {
+        let mut layout=result.task_wait_layout().ok_or_else(||Diagnostic{
+            source:self.scope.source().clone(),span,code:"B224",message:"任务结果布局过大".into(),
+        })?;
+        let mut words=BTreeSet::new();
+        for (source,when) in sources.sources.entries() {
+            if self.path.overlaps(&when) && let view::Source::Task{completions,..}=source {
+                for input in completions {
+                    layout.size=layout.size.max(input.offset+input.layout.size);
+                    layout.align=layout.align.max(input.layout.align);
+                    words.extend(input.layout.components.iter().map(|&(scalar,word)|(input.offset+word,scalar)));
+                }
+            }
+        }
+        layout.components.extend(words.into_iter().map(|(word,scalar)|(scalar,word)));
+        Ok(layout)
+    }
+
+    pub(super) fn complete_task_input_slots(&mut self,completions:&[view::TaskInputCompletion],
+        layout:&Ty,slots:&[usize],base:u32,span:Span)->Result<()> {
+        let mut outputs=Vec::<Arc<native_function::TaskCompletionOutput>>::new();
+        for input in completions {
+            let words=input.layout.components.iter().map(|&(scalar,word)| {
+                let component=layout.components.iter().position(|&(kind,offset)|
+                    kind==scalar&&offset==base+input.offset+word).unwrap();
+                slots[component]
+            }).collect();
+            let parent=input.parent.map(|(parent,component)|(outputs[parent].clone(),component));
+            let output=Arc::new(native_function::TaskCompletionOutput{
+                result:input.result.clone(),layout:input.layout.clone(),slots:words,task:input.task.clone(),parent,span,
+            });
+            output.complete_if_ready(self)?;
+            outputs.push(output);
+        }
+        Ok(())
+    }
+
+    pub(super) fn initialize_task_completion(&mut self,layout:&Ty,slots:&[usize]) {
+        let (payload,work)=layout.task_completion_payload();
+        for (&slot,value) in slots.iter().zip([Ty::TASK_COMPLETION_PENDING,work.size,payload]) {
+            let value=self.constant(Scalar::U32,Bits::from(value)).regs[0];
+            self.emit(InstKind::StoreLocal(slot,value));
+        }
+    }
+
+    pub(super) fn wait_task_value<T>(&mut self, mut owner: Value, span: Span,
+        consume: impl FnOnce(&mut Self, returns::Returned) -> Result<T>,
+    ) -> Result<T> {
         let result=owner.ty.task_result().unwrap().clone();
+        let sources=owner.proof.view_borrow(0);
+        let writes=sources.task_projection(view::TaskProjection::Writes).restricted(&self.path);
+        let memory=self.call_address_memory([(writes,Some(Access::Write))],span)?;
         owner.ty=Ty::scalar(Scalar::U64);
-        let (slots,storage)=self.local_slots(&result);
-        let output=CallArgument::Reference { origin:None,ty:result.clone(),access:Access::Write,
-            address:CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:None,word:0} };
+        let completion=self.task_completion_destination(owner.regs[0],&result,&sources);
+        let identity=completion.and_then(|(_,identity)|identity);
+        let layout=self.task_wait_output_layout(&result,&sources,span)?;
+        let returned_words=result.components.len()+result.task_components().len();
+        let storage_layout=layout.task_completion_storage().ok_or_else(||Diagnostic {
+            source:self.scope.source().clone(),span,code:"B224",message:"任务完成布局过大".into(),
+        })?;
+        let (storage,local)=if let Some((address,_))=completion {
+            let zero=self.constant(Scalar::U32,0).regs[0];
+            (CallStorage::Indexed(IndexedSource::View{address,index:zero,stride:ElementStride::Constant(0)}),None)
+        } else {
+            let (slots,range)=self.local_slots(&storage_layout);
+            self.initialize_task_completion(&storage_layout,&slots);
+            let output=native_function::TaskCompletionOutput{
+                result:result.clone(),layout:storage_layout.clone(),slots,task:sources.clone(),parent:None,span,
+            };
+            (CallStorage::Local{base:range.start,len:range.len()},Some(output))
+        };
+        let output=CallArgument::Reference { origin:None,ty:storage_layout,access:Access::InOut,
+            address:CallReference{storage,offset:None,word:0} };
         let frame=argument(self.application_frame(span)?);
         let error=self.reg(Scalar::U64);
+        let mut failure=self.failure_continuation(Vec::new());
+        if let Some(FailureContinuation::Scope(scope))=&mut failure
+            && let Some(output)=&local && output.has_owned_outputs() {
+            scope.task_outputs.push(output.clone());
+        }
         let mut call=runtime_call("task_wait",vec![frame,argument(owner),output],
-            None,Vec::new(),Some(error),self.failure_continuation(Vec::new()));
+            None,Vec::new(),Some(error),failure);
         if let InstKind::Call(call)=&mut call.kind {
-            call.memory.push(ir::MemoryAccess{alias:ir::MemoryAlias::Local{base:storage.start,len:storage.len()},access:Access::Write});
+            call.memory_use=Some(memory);
         }
         self.emit(call.kind);
-        if result.size==0 { return Ok(returns::Returned::Unit); }
-        let mut regs=Vec::new();
-        for (slot,(scalar,_)) in slots.into_iter().zip(&result.components) {
-            let reg=self.reg(*scalar);
-            self.emit(InstKind::LoadLocal(reg,slot));
-            regs.push(reg);
+        // In a cleanup group an error is saved while sibling destructors continue.
+        let complete=|builder:&mut Self| {
+            let completion=completion.map(|(address,_)| {
+                let zero=builder.constant(Scalar::U32,0).regs[0];
+                let payload=builder.reg(Scalar::U32);
+                builder.emit(InstKind::ViewLoad{dst:payload,address,index:zero,stride:ElementStride::Constant(0),word:Ty::TASK_COMPLETION_PAYLOAD});
+                (address,payload)
+            });
+            let mut regs=layout.components[..returned_words].iter().enumerate().map(|(component,&(scalar,word))| {
+                let dst=builder.reg(scalar);
+                let load=match completion {
+                    Some((address,payload))=>InstKind::ViewLoad{dst,address,index:payload,stride:ElementStride::Constant(1),word},
+                    None=>InstKind::LoadLocal(dst,local.as_ref().unwrap().slots[3+component]),
+                };
+                builder.emit(load);
+                dst
+            }).collect::<Vec<_>>();
+            let origins=regs.split_off(result.components.len());
+            let origins=result.task_components().into_iter().zip(origins.into_iter().enumerate()).collect::<BTreeMap<_,_>>();
+            let returned=regs.iter().enumerate().map(|(component,reg)|Some(match identity {
+                Some(identity)=>ValueIdentity::TaskCompletion(identity,component),
+                None=>ValueIdentity::Register(*reg),
+            })).collect();
+            let initialized=sources.task_projection(view::TaskProjection::Initialized(returned)).restricted(&builder.path);
+            let fact=address::Initialization {
+                source:address::InitializationSource::Task(initialized),
+                when:bounds::Condition::constant(true),
+            };
+            builder.initialized.extend(address::InitializationEffect::Position(fact).into_positions(&builder.path));
+            let mut proof=bounds::Proof::default();
+            if let Some(identity)=identity {
+                proof.origins=regs.iter().enumerate().map(|(component,reg)|
+                    vec![ValueIdentity::Register(*reg),ValueIdentity::TaskCompletion(identity,component)]).collect();
+            }
+            for component in view_contracts::components(&result){
+                let source=identity.zip(origins.get(&component)).map(|(input,(slot,_))|
+                    ValueIdentity::TaskCompletion(input,result.components.len()+slot));
+                let borrow=sources.task_projection(view::TaskProjection::Returned(component,source));
+                let borrow=if let Some(&(_,origin))=origins.get(&component) {
+                    builder.bind_work_task_return_sources(&borrow,component,origin,0,&|builder,word| {
+                        if let Some((address,payload))=completion {
+                            let marker=builder.reg(Scalar::U32);
+                            builder.emit(InstKind::ViewLoad{
+                                dst:marker,address,index:payload,stride:ElementStride::Constant(1),word,
+                            });
+                            marker
+                        } else {
+                            local.as_ref().unwrap().payload_source(builder,word)
+                        }
+                    })
+                }else{borrow};
+                proof=proof.with_view_borrow(component,borrow);
+            }
+            let result=Value{ty:result,regs,proof,uniform:false,literal:false,constant:None};
+            builder.complete_task_owned_places(&sources,|_,_|Some(result.clone()),None,
+                |builder,completions|match &local {
+                    Some(output)=>output.complete_inputs(builder,completions),
+                    None=>Ok(()),
+                },span)?;
+            let result = if result.ty.size == 0 { returns::Returned::Unit } else { builder.task_value(result, residency::Residency::task_transfer())? };
+            consume(builder, result)
+        };
+        if self.pending_error.is_none() {
+            return complete(self);
         }
-        self.task_value(Value{ty:result,regs,proof:bounds::Proof::default(),uniform:false,literal:false,constant:None})
+        let zero=self.constant(Scalar::U64,0).regs[0];
+        let condition=self.reg(Scalar::Bool);
+        self.emit(InstKind::Binary {
+            dst:condition,op:BinaryOp::Compare(Comparison::Equal),a:error,b:zero,
+        });
+        let success=Value {
+            ty:Ty::scalar(Scalar::Bool),regs:vec![condition],
+            proof:bounds::Proof::condition(bounds::Condition::guard(bounds::Clause::zero_results([error]))),
+            uniform:false,literal:false,constant:None,
+        };
+        let mut outcome=None;
+        self.conditional_blocks(success,|builder| {
+            outcome=Some(complete(builder)?);
+            Ok(())
+        },|builder|match &local {
+            Some(output) if output.has_owned_outputs()=>output.complete_if_ready(builder),
+            _=>Ok(()),
+        },span)?;
+        Ok(outcome.unwrap())
     }
 
-    fn task_value(&mut self,mut value:Value) -> Result<returns::Returned> {
+    fn task_value(&mut self, mut value: Value, location: residency::Residency) -> Result<returns::Returned> {
         use returns::Returned;
         let mut value=if value.ty.owns_resources() {
             value.proof=bounds::Proof::capture(&value);
             self.template_returned(value,true)?
         } else { Returned::value(value) };
         residency::visit(&mut value,&mut residency::Input::new(0),
-            &mut |data,_| data.residency=residency::Residency::cpu());
+            &mut |data,_| data.residency=location.clone());
         Ok(value)
     }
 
@@ -1474,15 +1926,44 @@ impl Builder<'_> {
         )
     }
 
-    pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
+    pub(super) fn application_drop(&mut self, data: &Data, retained: &view::Borrow, span: Span) -> Result<()> {
+        self.application_drop_with(data, retained, span, Self::drop_application_elements)
+    }
+
+    pub(super) fn drop_task_owned_dataset(&mut self, data: &Data, retained: &view::Borrow, span: Span) -> Result<()> {
+        self.application_drop_with(data, retained, span, |builder, data, _, span| {
+            builder.drop_application_elements_with(data, span, |builder, _, place| {
+                builder.drop_task_completion_element(&place, span)
+            })
+        })
+    }
+
+    fn application_drop_with(
+        &mut self, data: &Data, retained: &view::Borrow, span: Span,
+        drop_elements: impl FnOnce(&mut Self, &DataReference, &view::Borrow, Span) -> Result<()>,
+    ) -> Result<()> {
         // Child resources are consumed by their actual element cleanup below.
         // Releasing this allocation only ends positions in its own storage.
-        self.check_view_requirement(view::Requirement::Unborrowed{resource:view::resource_borrow(data),borrow:retained.clone(),ownership:false,span})?;
+        self.check_view_requirement(view::Requirement::Unborrowed{resource:view::resource_borrow(data),borrow:retained.clone(),kind:view::Exclusion::Resource,span})?;
         if self.application_position_borrowed(data.root.identity()) {
             return self.fail(span,"B227","dataset 的元素仍被当前游标或位置借用，不能结束父存储");
         }
-        let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span, None)?.regs[0]}else{data.root.regs[0]};
-        if data.ty.owns_resources(){self.drop_application_elements(data,retained,span)?;}
+        let handle=if data.ty.owns_resources() && data.length.maximum()!=0 {
+            let refreshed;
+            let data=if let Some(place)=&data.place {
+                refreshed=self.read_cleanup_storage(place,|builder|builder.refresh_application_data(data.clone(),span))?;
+                &refreshed
+            } else {
+                data
+            };
+            drop_elements(self, &DataReference::direct(data.clone()), retained, span)?;
+            data.root.regs[0]
+        } else if let Some(place)=&data.place {
+            let place=place.clone().project(Ty::scalar(Scalar::U32),&[0]);
+            self.read_cleanup_storage(&place,|builder|builder.read_place(&place,span,None))?.regs[0]
+        } else {
+            data.root.regs[0]
+        };
         let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetRelease,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
         self.code.push(Inst::generated(self.application_release(handle).kind,origin));
         Ok(())
@@ -1538,7 +2019,7 @@ impl Builder<'_> {
         })
     }
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
-        self.check_view_requirement(view::Requirement::Unborrowed{resource:self.owned_resource_borrow(data),borrow:retained.clone(),ownership:true,span})?;
+        self.check_view_requirement(view::Requirement::Unborrowed{resource:self.owned_resource_borrow(data),borrow:retained.clone(),kind:view::Exclusion::Ownership,span})?;
         if self.application_position_borrowed(data.root.identity()) {
             return self.fail(
                 span,
@@ -1602,8 +2083,11 @@ impl Builder<'_> {
         let mut names=builder.env.iter()
             .filter(|(name,_)|!keep.is_some_and(|names|names.contains(*name)))
             .filter_map(|(name,binding)|match binding {
-                Binding::ApplicationData(data) if data.ownership.may_own()=>Some(name.clone()),
-                Binding::OwnedValue(value) if value.ownership.may_own()&&(matches!(builder.pending_error,Some(PendingError::Exit(_)))||!matches!(value.place(),Some(Place::Reference{..})))=>Some(name.clone()),
+                Binding::ApplicationData(data) if data.ownership.may_own()
+                    || matches!(builder.pending_error, Some(PendingError::Exit(_))) && data.owns_write_elements()
+                    => Some(name.clone()),
+                Binding::OwnedValue(value) if value.ownership!=Ownership::Borrowed
+                    && (matches!(builder.pending_error,Some(PendingError::Exit(_)))||!matches!(value.place(),Some(Place::Reference{..})))=>Some(name.clone()),
                 _=>None,
             }).collect::<Vec<_>>();
         names.sort_by_key(|name|{
@@ -1611,17 +2095,23 @@ impl Builder<'_> {
             let declaration=match &builder.env[name]{Binding::OwnedValue(value)=>value.declaration,_=>0};
             (temporary.is_some(),temporary.unwrap_or(declaration))
         });
-        let mut bindings=names.into_iter().map(|name|{
+        while let Some(name)=names.pop(){
             let binding=builder.env[&name].clone();
-            (name,binding)
-        }).collect::<Vec<_>>();
-        while let Some((name,binding))=bindings.pop(){
             let mut remaining=retained.clone();
-            for(future,value)in &bindings{
-                if future.starts_with('\0'){remaining.union(&user_owned::cleanup_borrow(builder,value,&BTreeSet::new())?);}
+            for future in &names {
+                if future.starts_with('\0'){
+                    remaining.union(&user_owned::cleanup_borrow(builder,&builder.env[future],&BTreeSet::new())?);
+                }
             }
-            builder.drop_binding(binding,&remaining,builder.scope.span())?;
-            if name.starts_with('\0'){builder.env.remove(&name);}else{
+            // Implicit waits can update another destination before its own cleanup.
+            if let Binding::ApplicationData(data) = &binding && data.owns_write_elements() {
+                builder.drop_application_elements(&DataReference::direct(data.clone()), &remaining, builder.scope.span())?;
+            } else {
+                builder.drop_binding(binding,&remaining,builder.scope.span())?;
+            }
+            if name.starts_with('\0'){
+                builder.env.remove(&name);
+            }else{
                 match builder.env.get_mut(&name){
                     Some(Binding::OwnedValue(value))=>value.mark_moved(),
                     Some(Binding::ApplicationData(data))=>data.ownership=Ownership::Moved,
@@ -1902,13 +2392,13 @@ impl Builder<'_> {
         self.require_same(&data.ty,destination.ty(),output.span())?;
         let place=Self::application_element(&data,&last,(last.minimum(),last.maximum()));
         let packed=self.read_storage_value(&place,span,None)?;
-        let mut value=if data.ty.owns_resources(){self.materialize_element(&DataReference::direct(data.clone()),packed,&place)?}else{returns::Returned::value(packed)};
+        let mut value=if data.ty.owns_resources(){self.materialize_element(&DataReference::direct(data.clone()),Some(packed),&place)?}else{returns::Returned::value(packed)};
         self.require_returned_initialized(&mut value,span)?;
         self.env.remove(&held);
         self.view_uses.invocation(span);let retained=self.view_uses.all(self,&[])?;
         self.application_movable(&data,&retained,span)?;
         if data.ty.owns_resources(){
-            let old=if matches!(destination.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&destination,span)?}else{self.owned_place_model(&destination)};
+            let old=if matches!(destination.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&destination, false, span)?}else{self.owned_place_model(&destination)};
             self.view_uses.after(span);
             self.store_owned_returned(destination,old,value,span)?;
         }
@@ -2255,10 +2745,68 @@ impl Builder<'_> {
             None, Vec::new(), None, None).kind, origin));
         Ok(())
     }
-    fn drop_application_elements(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
-        if data.length.maximum()==0 {return Ok(());}
-        let data=self.refresh_application_data(data.clone(),span)?;
-        self.application_cpu(&data,span)?;
+    pub(super) fn retire_application_elements(&mut self, data: &DataReference, span: Span) -> Result<()> {
+        let ty = data.element_layout().1;
+        let mut ended = self.unknown_element_model(ty, (&data.residency, &data.projection))?;
+        ended.restrict_owned(&owned_presence::Presence::None);
+        self.apply_application_dataset_model(data, ElementFacts::Known(ended))?;
+        self.cleanup_group(Vec::new(), |builder| builder.drop_application_elements(data, &view::Borrow::default(), span))
+    }
+
+    pub(super) fn drop_task_completion_dataset(
+        &mut self, ty: &Ty, descriptor: &[Reg], guards: &[owned_presence::Presence], span: Span,
+    ) -> Result<()> {
+        let root = self.application_root(descriptor[0]);
+        let residency = residency::Residency::cpu();
+        let mut model = self.unknown_element_model(ty, (&residency, &[]))?;
+        owned_borrows::each_data(&mut model, &mut Vec::new(), &mut |data, _| data.residency = residency.clone());
+        outputs::apply_ownership(&mut model, ty, 0, guards);
+        let data = DataReference::direct(Box::new(DataPayload {
+            root, place: None, initialization: None, ty: ty.clone(),
+            length: self.application_root(descriptor[1]), ownership: Ownership::Borrowed,
+            access: Access::InOut, count: None, residency,
+            layout: DataLayout::Parameter {
+                parameter: 0, stride: self.application_root(descriptor[2]), offset: self.application_root(descriptor[3]),
+            },
+            elements: ElementFacts::Known(model), prefixes: BTreeMap::new(),
+        }));
+        self.drop_application_elements_with(&data, span, |builder, data, place| {
+            let mut element = builder.materialize_element(data, None, &place)?;
+            owned_borrows::set_storage(&mut element, place.clone());
+            builder.drop_owned_tree_with(element, &view::Borrow::default(), span, Self::drop_task_owned_dataset)?;
+            let status = builder.reg(Scalar::U64);
+            builder.emit(InstKind::LoadLocal(status, builder.pending_error.unwrap().slot()));
+            let arguments = builder.error_position_arguments(&place, status, span)?;
+            builder.emit(runtime_call("error_consume", arguments, None, Vec::new(), None, None).kind);
+            Ok(())
+        })
+    }
+
+    fn drop_application_elements(
+        &mut self, data: &DataReference, retained: &view::Borrow, span: Span,
+    ) -> Result<()> {
+        self.drop_application_elements_with(data, span, |builder, data, place| {
+            if matches!(&data.elements, ElementFacts::Unknown | ElementFacts::Input(_) | ElementFacts::Cleanup(_)) {
+                let trigger = builder.source_site.clone().map(GenerationAnchor::Syntax);
+                let origin = |reason| Arc::new(GeneratedOrigin { reason, trigger: trigger.clone() });
+                let value = builder.read_cleanup_storage(&place, |builder| builder.read_storage_value(
+                    &place, span, Some(origin(GenerationReason::DatasetDropElementRead)),
+                ))?;
+                let element = builder.materialize_element(data, Some(value), &place)?;
+                builder.native_element_drop(element, retained, span, origin(GenerationReason::DatasetElementDrop))
+            } else {
+                let mut element = builder.materialize_element(data, None, &place)?;
+                owned_borrows::set_storage(&mut element, place);
+                builder.drop_owned_tree(element, retained, span)
+            }
+        })
+    }
+
+    fn drop_application_elements_with(
+        &mut self, data: &DataReference, span: Span,
+        drop_element: impl FnOnce(&mut Self, &DataReference, Place) -> Result<()>,
+    ) -> Result<()> {
+        self.application_cpu(&data.data,span)?;
         let trigger=self.source_site.clone().map(GenerationAnchor::Syntax);
         let origin=|reason|Arc::new(GeneratedOrigin{reason,trigger:trigger.clone()});
         let scalar=Ty::scalar(Scalar::U32);let slot=self.local_slots(&scalar).0[0];
@@ -2273,14 +2821,8 @@ impl Builder<'_> {
         let one=self.constant_with_origin(Scalar::U32,1,Some(index_origin.clone())).regs[0];let index=self.reg(Scalar::U32);
         self.code.push(Inst::generated(InstKind::Binary{dst:index,op:ir::BinaryOp::ISub,a:cursor,b:one},index_origin));
         let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,data.length.maximum().saturating_sub(1)),uniform:false,literal:false,constant:None};
-        let place=Self::application_element(&data,&value_index,(value_index.minimum(),value_index.maximum()));
-        let value=self.read_storage_value(&place,span,Some(origin(GenerationReason::DatasetDropElementRead)))?;
-        let element=self.materialize_element(&DataReference::direct(data.clone()),value,&place)?;
-        if matches!(&data.elements,ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_)) {
-            self.native_element_drop(element,retained,span,origin(GenerationReason::DatasetElementDrop))?;
-        } else {
-            self.drop_owned_tree(element,retained,span)?;
-        }
+        let place = data.element(&value_index, (value_index.minimum(), value_index.maximum()));
+        drop_element(self, data, place)?;
         self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
@@ -2392,7 +2934,6 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<[Reg; 2]> {
         self.application_handle_available(identity, span, &[],&self.path)?;
-        if bytes != 0 { self.require_view_unborrowed(&self.data_borrow(&[identity]),span)?; }
         self.application_cpu_source(identity,span)?;
         let handle = Value {
             proof: bounds::Proof::default(),
@@ -3633,34 +4174,23 @@ impl Builder<'_> {
     }
     pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {
         let Some(mut place)=self.application_index(data.clone(),index)?else{return Ok(())};
-        let mut paths=vec![data.projection.clone()];
-        for part in projection {match part.kind() {
-            ExprKind::Member(_,field)=>{
-                let component=place.ty().fields.iter().position(|(name,..)|name==field).unwrap();
-                let(ty,components)=member_type(place.ty(),field,self.scope.source(),part.span())?;
-                place=place.project(ty,&components);for path in &mut paths{path.push(component);}
-            },
-            ExprKind::Index(_,index)=>{
-                let held=self.hold_binding(Binding::DataReference(data.clone()));let value=self.expr(&index)?;self.env.remove(&held);
-                let Some(value)=value else{return Ok(())};
-                let(minimum,maximum,count)=(value.minimum(),value.maximum(),place.ty().values[0]);
-                place=self.array_index(place,value,index.span())?;
-                paths=paths.into_iter().flat_map(|path|(0..count).filter(move|i|*i>=minimum&&*i<=maximum).map(move|i|{let mut path=path.clone();path.push(i as usize);path})).collect();
-            },
-            _=>unreachable!(),
-        }}
-        self.require_owned_writable(&place,span)?;self.writable_storage(&place,span,Some(bounds::Proof::default()))?;
-        if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
-        let loaded=self.read_storage_value(&place,span, None)?;
-        let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone(),&place)?;
-        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone(),&place)?,false,None);}
-        let held=self.hold_binding(Binding::DataReference(data.clone()));
-        let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
-        if !self.flow.continues(){return Ok(());}
-        let value=result.ok_or_else(||Diagnostic{source:self.scope.source().clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
-        // RHS结束后的原消费者仍指向旧内容；被覆盖位置的后续读取属于新内容。
-        self.view_uses.after(rhs.span());
-        self.store_owned_returned(place,old,value,span)
+        for part in projection {
+            match part.kind() {
+                ExprKind::Member(_,field)=>{
+                    let (ty,components)=member_type(place.ty(),field,self.scope.source(),part.span())?;
+                    place=place.project(ty,&components);
+                }
+                ExprKind::Index(_,index)=>{
+                    let held=self.hold_binding(Binding::DataReference(data.clone()));
+                    let value=self.expr(&index);
+                    self.env.remove(&held);
+                    let Some(value)=value? else{return Ok(());};
+                    place=self.array_index(place,value,index.span())?;
+                }
+                _=>unreachable!(),
+            }
+        }
+        self.assign_owned_storage(place,Some(data),op,rhs,span)
     }
     // These are the original already-evaluated metadata positions, not a second element table.
     fn element_selection(&self,place:Option<&Place>,first:usize,count:usize)->Option<owned_presence::Presence> {
@@ -3675,7 +4205,7 @@ impl Builder<'_> {
         }
         Some(selected)
     }
-    fn assign_application_element_model(&mut self,data:&DataReference,place:&Place,paths:&[Vec<usize>],value:&returns::Returned)->Result<()> {
+    fn assign_application_element_model(&mut self,data:&DataReference,place:&Place,paths:&[Vec<usize>],value:Option<&returns::Returned>)->Result<()> {
         let resource=view::resource_borrow(&data.data);let one=self.constant(Scalar::U32,1);
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
@@ -3696,8 +4226,23 @@ impl Builder<'_> {
                         None=>None,
                     };}
                     let Some(target)=target else{continue;};self.expand_current_element_facts(target)?;
+                    if value.is_none() && matches!(target.elements, ElementFacts::Unknown) {
+                        target.elements = ElementFacts::Known(self.unknown_element_model(&target.ty, (&target.residency, &[]))?);
+                    }
                     for projection in paths {
-                        let mut fresh=self.capture_element_model(target,projection,value.clone());
+                        let mut fresh = match value {
+                            Some(value) => self.capture_element_model(target, projection, value.clone()),
+                            None => {
+                                let mut current = target.elements.known().unwrap();
+                                for &field in projection {
+                                    let returns::Returned::OwnedValue(parent) = current else { unreachable!() };
+                                    current = parent.payloads[field].as_deref().unwrap();
+                                }
+                                let mut inactive = Box::new(current.clone());
+                                inactive.restrict_owned(&owned_presence::Presence::None);
+                                inactive
+                            }
+                        };
                         let complete=bounds::Condition::constant(unique&&paths.len()==1&&matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})).logical(complete_scope.clone(),false).logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);
                         let truth=complete.truth_in(&self.path);
                         if projection.is_empty(){
@@ -3736,35 +4281,79 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    fn application_owned_references(&self,place:&Place)->Vec<(DataReference,Vec<Vec<usize>>)>{
-        fn projections(ty:&Ty,wanted:&Ty,words:&[u32],indexed:bool,offset:u32,path:&mut Vec<usize>,into:&mut Vec<Vec<usize>>){
-            let actual=ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>();
-            if ty==wanted && (if indexed{actual.iter().all(|word|words.contains(word))}else{actual==words}){into.push(path.clone());return;}
-            if !ty.owns_resources() || ty.has_variants(){return;}
-            for field in 0..ty.aggregate_len(){let(at,child)=ty.aggregate_part(field);if child.owns_resources(){path.push(field);projections(child,wanted,words,indexed,offset+at,path,into);path.pop();}}
+    fn owned_element_projections(ty:&Ty,wanted:&Ty,words:&[u32],indexed:bool,offset:u32,path:&mut Vec<usize>,into:&mut Vec<Vec<usize>>){
+        let actual=ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>();
+        if ty==wanted && (if indexed{actual.iter().all(|word|words.contains(word))}else{actual==words}){into.push(path.clone());return;}
+        if !ty.owns_resources() || ty.has_variants(){return;}
+        for field in 0..ty.aggregate_len(){let(at,child)=ty.aggregate_part(field);if child.owns_resources(){path.push(field);Self::owned_element_projections(child,wanted,words,indexed,offset+at,path,into);path.pop();}}
+    }
+
+    pub(super) fn task_dataset_output_reference(&self, target: &view::Borrow, ty: &Ty) -> Option<DataReference> {
+        let target = target.restricted(&self.path);
+        for source in &target.sources {
+            let view::Source::Position(origin) = source else { continue; };
+            let address::Root::Resource { borrow, index: None } = &origin.root else { continue; };
+            for binding in self.env.values() {
+                for index in 0..binding_element_count(binding) {
+                    let Some(data) = binding_element_data(binding, index) else { continue; };
+                    for (fields, _, _) in self.application_element_scopes(&[], borrow, data, (&self.path, &self.env)) {
+                        let data = fields.iter().try_fold(data, |data, path| model_data(data.elements.known(), path));
+                        let Some(data) = data else { continue; };
+                        if address::Layout::of(&data.ty) != origin.base { continue; }
+                        let mut projections = Vec::new();
+                        Self::owned_element_projections(&data.ty, ty, &origin.words, false, 0, &mut Vec::new(), &mut projections);
+                        if let Some(projection) = projections.into_iter().next() {
+                            let mut reference = DataReference::direct(data.clone());
+                            reference.sources.clear();
+                            reference.projection = projection;
+                            reference.data.root.proof = reference.data.root.proof.clone().with_view_borrow(0, borrow.clone());
+                            return Some(reference);
+                        }
+                    }
+                }
+            }
         }
+        None
+    }
+
+    fn application_owned_references(&self,place:&Place)->Vec<(DataReference,Vec<Vec<usize>>)>{
         let Place::ApplicationElement{sources,resource,words,..}=place.storage()else{unreachable!()};
         let mut references=Vec::new();
         for binding in self.env.values(){for index in 0..binding_element_count(binding){if let Some(data)=binding_element_data(binding,index){
             for(scope,_,_)in self.application_element_scopes(sources,resource,data,(&self.path,&self.env)){
                 let mut data=data;
                 for fields in scope{data=model_data(data.elements.known(),&fields).unwrap();}
-                let mut paths=Vec::new();projections(&data.ty,place.ty(),words,matches!(place,Place::Indexed{..}),0,&mut Vec::new(),&mut paths);
+                let mut paths=Vec::new();Self::owned_element_projections(&data.ty,place.ty(),words,matches!(place,Place::Indexed{..}),0,&mut Vec::new(),&mut paths);
                 if !paths.is_empty(){let mut data=data.clone();data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,resource.clone());references.push((DataReference::direct(data),paths));}
             }
         }}}
         references
     }
-    pub(super) fn application_owned_argument(&mut self,place:&Place,span:Span)->Result<returns::Returned>{
-        let loaded=self.read_storage_value(place,span,None)?;
+    pub(super) fn borrowed_element_storage(&self, place: &Place) -> bool {
+        let Place::ApplicationElement { sources, resource, .. } = place.storage() else {
+            return false;
+        };
+        self.env.values().any(|binding| match binding {
+            Binding::ApplicationData(data)
+                if data.ownership == Ownership::Borrowed && data.access.writes()
+                    && matches!(data.layout, DataLayout::Parameter { .. }) =>
+            {
+                !self.application_element_scopes(sources, resource, data, (&self.path, &self.env)).is_empty()
+            }
+            _ => false,
+        })
+    }
+
+    pub(super) fn application_owned_argument(&mut self, place: &Place, read: bool, span: Span) -> Result<returns::Returned> {
+        let loaded = if read { Some(self.read_storage_value(place, span, None)?) } else { None };
         let references=self.application_owned_references(place);let mut values=Vec::new();
         for(mut data,paths)in references{for path in paths{data.projection=path;values.push(self.materialize_element(&data,loaded.clone(),place)?);}}
         let mut models=values.into_iter();
         let mut model=models.next().unwrap();for other in models{model.join(other,false,None);}
-        if let returns::Returned::OwnedValue(value)=&mut model{value.place=Some(place.clone());}
+        owned_borrows::set_storage(&mut model, place.clone());
         Ok(model)
     }
-    pub(super) fn assign_application_owned_argument(&mut self,place:&Place,value:&returns::Returned)->Result<()> {
+    pub(super) fn assign_application_owned_argument(&mut self,place:&Place,value:Option<&returns::Returned>)->Result<()> {
         for(data,paths)in self.application_owned_references(place){self.assign_application_element_model(&data,place,&paths,value)?;}
         Ok(())
     }
@@ -3798,7 +4387,7 @@ impl Builder<'_> {
         }
         self.close_stored_resources(&mut model,&original,&bindings);Box::new(model)
     }
-    pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value,place:&Place)->Result<returns::Returned>{
+    pub(super) fn materialize_element(&mut self,data:&DataReference,value:Option<Value>,place:&Place)->Result<returns::Returned>{
         let mut model=*self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())?;let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
         for field in &data.projection{
             let returns::Returned::OwnedValue(owner)=model else{unreachable!()};
@@ -3814,16 +4403,21 @@ impl Builder<'_> {
             bindings.insert(ValueIdentity::ElementIndex(depth),proof);
             selected=parent.as_deref();depth+=1;
         }
-        for(component,index)in components.into_iter().zip(0..value.regs.len()){
-            let loaded=self.value_component(&value,index);
-            let proof=self.path_proof(&loaded.ty,bounds::Proof::capture(&loaded));
-            bindings.insert(ValueIdentity::ElementComponent(component),proof.clone());
-            for source in storage.component_origins(index).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
-                bindings.insert(source,proof.clone().with_view_borrow(0,storage.proof.view_borrow(index)));
+        let registers = if let Some(value) = value {
+            for(component,index)in components.into_iter().zip(0..value.regs.len()){
+                let loaded=self.value_component(&value,index);
+                let proof=self.path_proof(&loaded.ty,bounds::Proof::capture(&loaded));
+                bindings.insert(ValueIdentity::ElementComponent(component),proof.clone());
+                for source in storage.component_origins(index).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
+                    bindings.insert(source,proof.clone().with_view_borrow(0,storage.proof.view_borrow(index)));
+                }
             }
-        }
+            value.regs
+        } else {
+            storage.regs
+        };
         self.bind_element_resource_borrows(data,&self.data_value_borrow(data),&mut bindings);
-        native_function::rebind_model(&mut model,value.regs.clone());
+        native_function::rebind_model(&mut model,registers);
         native_function::translate_returned(&mut model,&original,&bindings,true);
         let borrow=self.data_value_borrow(&data.data);
         owned_borrows::each_data(&mut model,&mut Vec::new(),&mut|child,path|{

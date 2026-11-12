@@ -686,10 +686,9 @@ impl Proof {
     ) {
         for (origins, reg) in self.origins.iter().zip(registers) {
             for identity in origins {
-                if let ValueIdentity::Register(source) = identity
-                    && *source >= entry
-                    && source != reg
-                {
+                if matches!(identity,ValueIdentity::Register(source) if *source>=entry && source!=reg)
+                    || matches!(identity,ValueIdentity::TaskCompletion(..)) {
+
                     bindings
                         .entry(*identity)
                         .or_insert(ValueIdentity::Register(*reg));
@@ -2469,6 +2468,52 @@ impl Clause {
             if !changed{break;}
         }
         terms.into_iter().fold(Self::impossible(),|all,facts|Self::either(&all,&Self::facts(facts)))
+    }
+    pub(super) fn task_return_source(component:usize,source:u32) -> Self {
+        let id=ValueIdentity::TaskReturnSource(component);
+        let source=Bits::from(source);
+        Self::facts([Fact::Minimum(id,Scalar::U32,source),Fact::Maximum(id,Scalar::U32,source)].into())
+    }
+    pub(super) fn task_return_sources(&self,component:usize) -> Option<BTreeSet<u32>> {
+        let id=ValueIdentity::TaskReturnSource(component);
+        fn both(a:&Option<BTreeSet<u32>>,b:&Option<BTreeSet<u32>>)->Option<BTreeSet<u32>> {
+            match (a,b) {
+                (Some(a),Some(b))=>Some(a.intersection(b).copied().collect()),
+                (Some(values),None)|(None,Some(values))=>Some(values.clone()),
+                (None,None)=>None,
+            }
+        }
+        let mut exits=BTreeMap::new();
+        for clause in Self::ordered(std::slice::from_ref(self)) {
+            let values=match &**clause.0 {
+                ClauseNode::Impossible=>Some(BTreeSet::new()),
+                ClauseNode::Facts(facts)=>facts.iter().find_map(|fact|match *fact {
+                    Fact::Minimum(identity,Scalar::U32,exit)
+                        if identity==id&&facts.contains(&Fact::Maximum(id,Scalar::U32,exit))=>
+                            Some(BTreeSet::from([exit as u32])),
+                    _=>None,
+                }),
+                ClauseNode::Both(a,b)=>both(&exits[&a.key()],&exits[&b.key()]),
+                ClauseNode::Either(a,b)=>exits[&a.key()].as_ref().zip(exits[&b.key()].as_ref())
+                    .map(|(a,b):(&BTreeSet<u32>,&BTreeSet<u32>)|a.union(b).copied().collect()),
+                ClauseNode::Branch(parent,condition,truth)=>
+                    both(&exits[&parent.key()],&exits[&condition.cases[usize::from(*truth)].key()]),
+            };
+            exits.insert(clause.key(),values);
+        }
+        exits.remove(&self.key()).flatten()
+    }
+    pub(super) fn zero_results(registers:impl IntoIterator<Item=Reg>)->Self {
+        Self::facts(registers.into_iter().map(|reg|Fact::Zero(ValueIdentity::Register(reg))).collect())
+    }
+    pub(super) fn task_control(reg:Reg,truth:bool) -> Self {
+        Self::facts([Fact::Boolean(ValueIdentity::TaskControl(reg),truth)].into())
+    }
+    pub(super) fn task_controls(&self) -> Option<BTreeMap<Reg,bool>> {
+        Some(self.required()?.into_iter().filter_map(|fact|match fact {
+            Fact::Boolean(ValueIdentity::TaskControl(reg),truth)=>Some((reg,truth)),
+            _=>None,
+        }).collect())
     }
     fn required(&self) -> Option<Facts> {
         self.required_in(&Facts::new())

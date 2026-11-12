@@ -621,7 +621,7 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
     fn owned(builder:&Builder<'_>,value:&owned_values::OwnedValue,path:&[Step],excluded:&BTreeSet<Path>,stored:bool,omitted:&BTreeMap<usize,owned_presence::Presence>,bindings:Option<&BTreeMap<ValueIdentity,bounds::Proof>>,passed:&[(usize,Vec<u32>)],transferred:&[Transfer<'_>],cleanup:bool,root:bool)->Result<view::Borrow>{
         let mut out=if cleanup{
             if root{
-                let mut borrow=view::Borrow::default();value.cleanup_views(&BTreeSet::new(),&mut borrow,&|component,borrow|{
+                let mut borrow=view::Borrow::default();value.cleanup_views(&BTreeSet::new(),&mut borrow,&|component,_,borrow|{
                     let borrow=retained_component(borrow,component,omitted);
                     if stored{let depth=passed.iter().filter(|(depth,words)|*depth!=0||words.contains(&value.value.ty.components[component].1)).map(|(depth,_)|*depth).max();external(borrow,depth).at_call(bindings.unwrap())}else{borrow}
                 });borrow

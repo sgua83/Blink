@@ -408,9 +408,37 @@ impl MemoryEffect {
             _=>all,
         }
     }
+    pub(super) fn access_conflicts(held:&view::Borrow,accessed:&view::Borrow,access:Access,path:&bounds::Clause)->bool {
+        accessed.sources.entries().any(|(source,when)| {
+            let view::Source::Position(origin)=source else {return false;};
+            let when=bounds::Clause::both(path,&when);
+            if !when.possible(){return false;}
+            let index=match &origin.root {
+                Root::Resource{index,..}|Root::Dataset{index,..}=>*index,
+                _=>None,
+            };
+            let effect=Self::of(&held.restricted(&when),Access::Write,None);
+            let owners=origin.owners();
+            // A whole dataset loan also keeps the original owned element resources readable.
+            let descendant=effect.known.iter().any(|(held,active,held_access,_)| {
+                let Root::Dataset{borrow,index:None}=&held.root else {return false;};
+                if !access.writes() && !held_access.writes() {return false;}
+                let held=borrow.resources();
+                owners.sources.entries().any(|(owner,path)|
+                    held.overlaps_source(owner,&bounds::Clause::both(active,&path)))
+            });
+            descendant || origin.memory_regions(&when).is_some_and(|regions|regions.iter().any(|region| {
+                let bytes=u16::from(effect.accessed_bytes(&region.position,Scalar::U64,index,|held|access.writes()||held.writes()));
+                (bytes>>region.offset)&((1u16<<region.size)-1)!=0
+            }))
+        })
+    }
     pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
-        if self.external.is_some_and(|access|access.writes()){return ((1u16<<scalar.size())-1) as u8;}
-        self.known.iter().filter(|(_,_,access,_)|access.writes()).fold(0,|bytes,(origin,when,_,_)|bytes|Self::origin_written_bytes(origin,when,position,scalar,index))
+        self.accessed_bytes(position,scalar,index,Access::writes)
+    }
+    fn accessed_bytes(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>,select:impl Fn(Access)->bool)->u8 {
+        if self.external.is_some_and(&select){return ((1u16<<scalar.size())-1) as u8;}
+        self.known.iter().filter(|(_,_,access,_)|select(*access)).fold(0,|bytes,(origin,when,_,_)|bytes|Self::origin_written_bytes(origin,when,position,scalar,index))
     }
     // A possible write joins its value with the old value; it is never a must-write guarantee.
     pub(super) fn written_value(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>,previous:&bounds::Proof)->bounds::Proof {
@@ -514,10 +542,41 @@ impl InitializationRead {
     }
 }
 
-/// A normal-return guarantee names one actual location and retains both outcomes.
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
-pub(super) struct Initialization { pub origin:Origin,pub when:bounds::Condition }
-crate::module::codec::record!(Initialization {origin,when});
+pub(super) enum InitializationSource {
+    Position(Origin),
+    Task(view::Borrow),
+}
+crate::module::codec::variants!(InitializationSource {0=>Position(origin),1=>Task(borrow)});
+
+impl InitializationSource {
+    pub(super) fn pending(&self)->bool {
+        match self {Self::Position(origin)=>origin.pending(),Self::Task(borrow)=>borrow.pending()}
+    }
+    pub(super) fn borrow(&self)->view::Borrow {
+        match self {
+            Self::Position(origin)=>view::Borrow::source(view::Source::Position(Arc::new(origin.clone()))),
+            Self::Task(borrow)=>borrow.clone(),
+        }
+    }
+    pub(super) fn map_borrows(&self,map:impl Fn(&view::Borrow)->view::Borrow)->Self {
+        match self {
+            Self::Position(origin)=>Self::Position(origin.map_borrows(map)),
+            Self::Task(borrow)=>Self::Task(map(borrow)),
+        }
+    }
+    fn bind_outputs(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
+        match self {
+            Self::Position(origin)=>Self::Position(origin.bind_outputs(bindings)),
+            Self::Task(borrow)=>Self::Task(borrow.output_bound(bindings)),
+        }
+    }
+}
+
+/// A normal-return guarantee names actual initialized locations.
+#[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
+pub(super) struct Initialization { pub source:InitializationSource,pub when:bounds::Condition }
+crate::module::codec::record!(Initialization {source,when});
 
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) struct InitializationState {
@@ -540,21 +599,31 @@ pub(super) enum InitializationEffect {
     Iteration{iteration:Arc<Iteration>,when:bounds::Condition},
 }
 impl InitializationEffect {
+    pub(super) fn into_positions(self,path:&bounds::Clause)->Vec<Position> {
+        let Self::Position(fact)=self else { return vec![Position::Initialization(Arc::new(self))]; };
+        merge_initializations([fact]).into_iter().flat_map(|fact| {
+            if !fact.source.pending() && fact.when.truth_in(path)==Some(true) {
+                fact.positions(path)
+            } else {
+                vec![Position::Initialization(Arc::new(Self::Position(fact)))]
+            }
+        }).collect()
+    }
     pub fn pending(&self)->bool {match self {
         Self::Call{..}=>true,
-        Self::Position(fact)=>fact.origin.pending(),
+        Self::Position(fact)=>fact.source.pending(),
         Self::Iteration{iteration,..}=>iteration.states.iter().any(|state|initialization_effects(&state.initialized,&bounds::Clause::default()).iter().any(Self::pending)),
     }}
     pub fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
         match self {
-            Self::Position(fact)=>Self::Position(Initialization{origin:fact.origin.bind_outputs(bindings),when:fact.when.output_bound(bindings)}),
+            Self::Position(fact)=>Self::Position(Initialization{source:fact.source.bind_outputs(bindings),when:fact.when.output_bound(bindings)}),
             Self::Call{call,when}=>Self::Call{call:*call,when:when.output_bound(bindings)},
             Self::Iteration{iteration,when}=>Self::Iteration{iteration:iteration.clone(),when:when.output_bound(bindings)},
         }
     }
     fn under(&self,condition:bounds::Condition)->Self {
         match self {
-            Self::Position(fact)=>Self::Position(Initialization{origin:fact.origin.clone(),when:fact.when.clone().logical(condition,false)}),
+            Self::Position(fact)=>Self::Position(Initialization{source:fact.source.clone(),when:fact.when.clone().logical(condition,false)}),
             Self::Call{call,when}=>Self::Call{call:*call,when:when.clone().logical(condition,false)},
             Self::Iteration{iteration,when}=>Self::Iteration{iteration:iteration.clone(),when:when.clone().logical(condition,false)},
         }
@@ -562,33 +631,85 @@ impl InitializationEffect {
 }
 impl Initialization {
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
-        Self{origin:self.origin.substitute_values(values),when:self.when.substitute_values(values)}
+        let source=match &self.source {
+            InitializationSource::Position(origin)=>InitializationSource::Position(origin.substitute_values(values)),
+            InitializationSource::Task(borrow)=>InitializationSource::Task(borrow.substitute_values(values)),
+        };
+        Self{source,when:self.when.substitute_values(values)}
     }
 
     pub fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
-        Self{origin:self.origin.bound_at_call(bindings),when:self.when.guaranteed_at_call(bindings)}
+        let source=match &self.source {
+            InitializationSource::Position(origin)=>InitializationSource::Position(origin.bound_at_call(bindings)),
+            InitializationSource::Task(borrow)=>InitializationSource::Task(borrow.at_call(bindings)),
+        };
+        Self{source,when:self.when.guaranteed_at_call(bindings)}
     }
     pub fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
-        Self{origin:self.origin.bind_outputs(bindings),when:self.when.guaranteed_at_call(&bindings.iter().map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect())}
+        Self{source:self.source.bind_outputs(bindings),when:self.when.guaranteed_at_call(&bindings.iter().map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect())}
     }
+    pub(super) fn position_parts(&self,path:&bounds::Clause)->Option<Vec<(Self,Option<Position>)>> {
+        let InitializationSource::Position(origin)=&self.source else {return None;};
+        Some(origin.layout.parts.iter().enumerate().map(|(component,(scalar,_))| {
+            let size=scalar.size();
+            let source=InitializationSource::Position(Origin{
+                layout:Layout{size,align:size,parts:Arc::from([(*scalar,0)])},
+                words:Arc::from([origin.words[component]]),
+                positions:origin.positions.get(component).cloned().into_iter().collect(),
+                initialized:Arc::from([origin.initialized[component]]),
+                ..origin.clone()
+            });
+            let part=Self{source,when:self.when.clone()};
+            let position=part.positions(path).into_iter().next();
+            (part,position)
+        }).collect())
+    }
+
     pub fn positions(&self,path:&bounds::Clause)->Vec<Position> {
-        match &self.origin.root {
-            Root::Dataset{..}=>borrowed_positions(&self.origin.normalize(),&self.origin.layout,&self.origin.layout.parts.iter().map(|(_,word)|*word).collect::<Vec<_>>()),
-            Root::Derived(borrow)=>{
-                let borrow=borrow_in_path(borrow,path);
-                borrowed_positions(&borrow,&self.origin.base,&self.origin.words)
+        fn positions(origin:&Origin,path:&bounds::Clause)->Vec<Position> {
+            match &origin.root {
+                Root::Dataset{..}=>borrowed_positions(&origin.normalize(),&origin.layout,&origin.layout.parts.iter().map(|(_,word)|*word).collect::<Vec<_>>()),
+                Root::Derived(borrow)=>{
+                    let borrow=borrow_in_path(borrow,path);
+                    borrowed_positions(&borrow,&origin.base,&origin.words)
+                }
+                _=>origin.layout.parts.iter().filter_map(|(_,word)|origin.position_at(*word)).collect(),
             }
-            _=>self.origin.layout.parts.iter().filter_map(|(_,word)|self.origin.position_at(*word)).collect(),
+        }
+        match &self.source {
+            InitializationSource::Position(origin)=>positions(origin,path),
+            InitializationSource::Task(borrow)=>borrow.sources.entries().flat_map(|(source,when)| {
+                if let view::Source::Position(origin)=source
+                    && bounds::Condition::guard(when).truth_in(path)==Some(true)
+                {
+                    positions(origin,path)
+                } else {Vec::new()}
+            }).collect(),
         }
     }
 }
 pub(super) fn merge_initializations(values:impl IntoIterator<Item=Initialization>)->Vec<Initialization> {
-    let mut locations:BTreeMap<Origin,bounds::Condition>=BTreeMap::new();
+    let mut locations:BTreeMap<InitializationSource,bounds::Condition>=BTreeMap::new();
+    let mut insert=|source,condition:bounds::Condition| {
+        if condition.active() {
+            locations.entry(source).and_modify(|when|*when=when.clone().logical(condition.clone(),true)).or_insert(condition);
+        }
+    };
     for fact in values {
-        if !fact.when.active(){continue;}
-        locations.entry(fact.origin).and_modify(|when|*when=when.clone().logical(fact.when.clone(),true)).or_insert(fact.when);
+        if let InitializationSource::Task(mut borrow)=fact.source {
+            for (source,path) in std::mem::take(&mut borrow.sources).into_entries() {
+                if let view::Source::Position(origin)=source {
+                    insert(InitializationSource::Position(origin.as_ref().clone()),fact.when.clone().logical(bounds::Condition::guard(path),false));
+                } else {
+                    borrow.sources.insert_when(source,path);
+                }
+            }
+            if borrow.active(){insert(InitializationSource::Task(borrow),fact.when);}
+        } else {
+            insert(fact.source,fact.when);
+        }
     }
-    locations.into_iter().map(|(origin,when)|Initialization{origin,when}).collect()
+    locations.into_iter().map(|(source,when)|Initialization{source,when}).collect()
 }
 pub(super) fn borrow_in_path(borrow:&view::Borrow,path:&bounds::Clause)->view::Borrow {
     fn edges<K:Ord+Clone>(values:&view::Edges<K>,path:&bounds::Clause)->view::Edges<K>{
@@ -611,7 +732,7 @@ pub(super) fn initialization_effects(initialized:&BTreeSet<Position>,path:&bound
                 let borrow=borrow_in_path(borrow,&when.assume(&bounds::Clause::default(),true));
                 let part=Layout{size:scalar.size(),align:scalar.size(),parts:Arc::from([(*scalar,0)])};
                 let origin=Origin{root:Root::Derived(borrow),layout:part,base:layout.clone(),words:Arc::from([*word]),positions:Arc::from([]),writable:true,initialized:Arc::from([true])};
-                result.push(InitializationEffect::Position(Initialization{origin,when}));
+                result.push(InitializationEffect::Position(Initialization{source:InitializationSource::Position(origin),when}));
             }
             Position::Initialization(effect)=>result.push(effect.under(when)),
             Position::Conditional(choice,a,b)=>{
@@ -890,6 +1011,37 @@ impl Builder<'_> {
             positions.iter().map(|position|self.position_initialized_in(position,&self.initialized,&self.env,None)).collect::<Vec<_>>()
         }else{vec![self.is_initialized(place);layout.parts.len()]};
         Ok(Origin{root,layout,base,words:words.into(),positions:positions.into(),writable,initialized:initialized.into()})
+    }
+    pub(super) fn position_borrows(&self,place:&Place,span:Span)->Result<view::Borrow> {
+        let origin=self.position_origin(place,span)?;
+        let positions=place.data_positions();
+        if !matches!(place,Place::Indexed{..}) || !matches!(origin.root,Root::Resource{..}) || positions.is_empty() {
+            return Ok(view::Borrow::source(view::Source::Position(Arc::new(origin))));
+        }
+        // The index selects one row of the existing per-component position choices.
+        fn collect(origin:&Origin,positions:&[Position],when:&bounds::Clause,out:&mut view::Borrow) {
+            if let Position::Indexed(choices,index)=&positions[0] {
+                for choice in 0..choices.len() {
+                    let when=bounds::Clause::both(when,&bounds::Clause::selection(*index,choice));
+                    if !when.possible(){continue;}
+                    let selected=positions.iter().map(|position| {
+                        let Position::Indexed(choices,_)=position else{unreachable!()};
+                        choices[choice].clone()
+                    }).collect::<Vec<_>>();
+                    collect(origin,&selected,&when,out);
+                }
+            } else {
+                let mut origin=origin.clone();
+                origin.words=positions.iter().map(|position| {
+                    let Position::Borrowed(_,_,word)=position else{unreachable!()};
+                    *word
+                }).collect();
+                out.sources.insert_when(view::Source::Position(Arc::new(origin)),when.clone());
+            }
+        }
+        let mut borrow=view::Borrow::default();
+        collect(&origin,&positions,&self.path,&mut borrow);
+        Ok(borrow)
     }
     pub(super) fn reference_memory(&self,place:&Place,span:Span)->Result<Option<(MemoryTarget,view::Borrow)>> {
         if let Place::Reference{address:ReferenceAddress::Borrowed{address,..}|ReferenceAddress::External{address,..},..}=place{

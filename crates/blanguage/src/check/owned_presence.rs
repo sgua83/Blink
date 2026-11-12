@@ -149,7 +149,7 @@ impl Builder<'_>{
         fn intersects(position:&Position,changed:&BTreeSet<Position>)->bool{changed.contains(position)||matches!(position,Position::Indexed(choices,_)if choices.iter().any(|choice|intersects(choice,changed)))}
         match value{Returned::Dataset(data)=>{if let Some(place)=&data.place{let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}},Returned::OwnedValue(value)=>{if value.value.ty.has_owned_presence(){if let Some(place)=value.place(){let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}}else{for i in 0..value.value.ty.aggregate_len(){if value.value.ty.aggregate_part(i).1.owns_resources(){let child=self.unpack_record(value,i);self.forget_owned_metadata(&child);}}}},_=>{}}
     }
-    fn presence_register(&mut self,value:&Presence,span:Span,origin:Option<&Arc<GeneratedOrigin>>)->Result<Reg>{
+    pub(super) fn presence_register(&mut self,value:&Presence,span:Span,origin:Option<&Arc<GeneratedOrigin>>)->Result<Reg>{
         match value{
             Presence::All=>Ok(self.constant_with_origin(Scalar::Bool,1,origin.cloned()).regs[0]),
             Presence::None=>Ok(self.constant_with_origin(Scalar::Bool,0,origin.cloned()).regs[0]),
@@ -183,10 +183,16 @@ impl Builder<'_>{
     pub(super) fn owned_when(&mut self,value:&Presence,span:Span,branch_origin:Option<Arc<GeneratedOrigin>>,condition_origin:Option<Arc<GeneratedOrigin>>,body:impl FnOnce(&mut Self)->Result<()>)->Result<()>{
         match self.condition_truth(&value.condition(),None){
             Some(false)=>Ok(()),
-            Some(true)=>{let initialized=self.initialized.clone();body(self)?;self.initialized=initialized;Ok(())},
+            Some(true)=>body(self),
             None=>{
                 let condition=self.presence_register(value,span,condition_origin.as_ref())?;let outer=std::mem::take(&mut self.code);let initialized=self.initialized.clone();let path=self.path.clone();
-                self.path=value.condition().assume(&path,true);body(self)?;self.path=path;self.initialized=initialized;
+                let mut unselected=self.env.clone();
+                self.path=value.condition().assume(&path,true);
+                body(self)?;
+                self.path=path;
+                let selected=self.take_application_initialization_state();
+                self.join_initialization(value,selected,initialized);
+                self.join_environment_selected(&mut unselected,value);
                 let yes=std::mem::replace(&mut self.code,outer);let kind=InstKind::If{condition,yes,no:Vec::new()};
                 if let Some(origin)=branch_origin{self.code.push(Inst::generated(kind,origin));}else{self.emit(kind);}
                 Ok(())

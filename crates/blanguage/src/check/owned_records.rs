@@ -509,7 +509,7 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<application::DataReference> {
         let (mut data,sources)=if let Place::ApplicationElement{access,..}=place.storage() {
-            let Returned::Dataset(mut data)=self.application_owned_argument(&place,span)?else{unreachable!()};
+            let Returned::Dataset(mut data)=self.application_owned_argument(&place,true,span)?else{unreachable!()};
             data.access=*access;
             (data,Vec::new())
         }else{

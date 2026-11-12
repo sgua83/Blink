@@ -1,15 +1,16 @@
 
 type OrdinaryWorker = unsafe extern "C" fn(*mut c_void, *const u8, *mut u8) -> *mut c_void;
+type Cleanup = unsafe extern "C" fn(*mut c_void, *const u8, *const u8, *mut c_void, u32) -> *mut c_void;
 
 unsafe extern "C" {
     fn blink_task_start(
-        output: *mut u8, frame: *mut c_void, input: *const u8, worker: OrdinaryWorker, cleanup: Option<OrdinaryWorker>, index: u32,
+        output: *mut u8, frame: *mut c_void, input: *const u8, worker: OrdinaryWorker, cleanup: Option<Cleanup>, index: u32,
     ) -> *mut c_void;
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn START_SYMBOL(
-    output: *mut u8, frame: *mut c_void, input: *const u8, worker: OrdinaryWorker, cleanup: Option<OrdinaryWorker>, index: u32,
+    output: *mut u8, frame: *mut c_void, input: *const u8, worker: OrdinaryWorker, cleanup: Option<Cleanup>, index: u32,
 ) -> *mut c_void {
     unsafe { blink_task_start(output,frame,input,worker,cleanup,TYPE_BASE + index) }
 }

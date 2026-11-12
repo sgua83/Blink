@@ -444,8 +444,17 @@ pub(super) fn guards<'a>(
     returned: Option<&Value>,
 ) -> Result<Vec<Presence>> {
     let definition = definition.into();
+    let clauses=output_clauses(definition,parameter,ty)?;
+    evaluate_guards(builder,definition,ty,&clauses,inputs,returned)
+}
+
+type GuardClause = (Vec<usize>, OutputCondition, Span);
+
+fn output_clauses(
+    definition:Contract<'_>, parameter:usize, ty:&Ty,
+)->Result<Vec<GuardClause>> {
     let name = definition.parameter_name(parameter);
-    let mut guards = vec![None::<Presence>; ty.components.len()];
+    let mut clauses = Vec::new();
     for contract in definition.contracts() {
         let (predicate, span) = (contract.predicate, contract.span);
         let ContractPredicate::Initialized { value, condition } = predicate else {
@@ -462,16 +471,27 @@ pub(super) fn guards<'a>(
             components = projection.iter().map(|i| components[*i]).collect();
             selected = next;
         }
+        clauses.push((components, condition, span));
+    }
+    Ok(clauses)
+}
+
+fn evaluate_guards(
+    builder:&mut Builder<'_>, definition:Contract<'_>, ty:&Ty,
+    clauses:&[GuardClause], inputs:&BTreeMap<String,Value>, returned:Option<&Value>,
+)->Result<Vec<Presence>> {
+    let mut guards = vec![None::<Presence>; ty.components.len()];
+    for (components,condition,span) in clauses {
         let when = Presence::input(&expression(
             builder,
             definition,
-            &condition,
+            condition,
             inputs,
             returned,
-            span,
+            *span,
             Some(&Ty::scalar(Scalar::Bool)),
         )?);
-        for component in components {
+        for &component in components {
             guards[component] = Some(
                 guards[component]
                     .take()
@@ -483,6 +503,147 @@ pub(super) fn guards<'a>(
         .into_iter()
         .map(|when| when.unwrap_or(Presence::All))
         .collect())
+}
+
+
+// The task keeps the original output predicate and the actual input words it names.
+#[derive(Clone)]
+pub(super) struct TaskGuard {
+    pub target:view::Borrow,
+    pub ty:Ty,
+    clauses:Vec<(Vec<usize>,OutputCondition)>,
+    result:Ty,
+    model:Option<Returned>,
+    arguments:BTreeMap<ValueIdentity,bounds::Proof>,
+    returned:Vec<Reg>,
+    inputs:BTreeMap<String,(Ty,Vec<Option<bounds::Operand>>)>,
+}
+crate::module::codec::record!(TaskGuard {target,ty,clauses,result,model,arguments,returned,inputs});
+impl Ord for TaskGuard {
+    fn cmp(&self,other:&Self)->std::cmp::Ordering {
+        use crate::module::codec::Encode;
+        self.bytes().cmp(&other.bytes())
+    }
+}
+impl PartialOrd for TaskGuard {
+    fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering> {Some(self.cmp(other))}
+}
+impl PartialEq for TaskGuard {
+    fn eq(&self,other:&Self)->bool {self.cmp(other).is_eq()}
+}
+impl Eq for TaskGuard {}
+
+impl TaskGuard {
+    pub(super) fn new(
+        builder:&Builder<'_>, definition:Contract<'_>, parameter:usize,
+        ty:&Ty, target:view::Borrow, inputs:&BTreeMap<String,Value>, result:&Ty, span:Span,
+        model:Option<Returned>, arguments:&BTreeMap<ValueIdentity,bounds::Proof>, returned:&[Reg],
+    )->Result<Self> {
+        let clauses=output_clauses(definition,parameter,ty)?.into_iter()
+            .map(|(components,condition,span)|Ok((components,bind_constants(builder.world,definition,&condition,span)?)))
+            .collect::<Result<Vec<_>>>()?;
+        let inputs=inputs.iter().map(|(name,value)| {
+            let words=value.regs.iter().enumerate().map(|(at,&reg)| Some(match &value.constant {
+                Some(bits)=>bounds::Operand::Constant(value.ty.components[at].0,bits[at]),
+                None=>bounds::Operand::Value(ValueIdentity::Register(reg)),
+            })).collect();
+            (name.clone(),(value.ty.clone(),words))
+        }).collect();
+        Ok(Self{target,ty:ty.clone(),clauses,result:result.clone(),model,
+            arguments:arguments.clone(),returned:returned.to_vec(),inputs})
+    }
+
+    pub(super) fn frame_output_type(&self) -> Option<&Ty> {
+        (!self.clauses.is_empty() && self.ty.contains_dataset()).then_some(&self.ty)
+    }
+
+    pub(super) fn map_inputs(&mut self, map:impl Fn(bounds::Operand)->Option<bounds::Operand>) {
+        for (_,words) in self.inputs.values_mut() {
+            for word in words {
+                *word=word.and_then(&map);
+            }
+        }
+    }
+
+    pub(super) fn map_arguments(&mut self,map:impl Fn(&bounds::Proof)->bounds::Proof) {
+        for argument in self.arguments.values_mut(){*argument=map(argument);}
+    }
+
+    pub(super) fn written_value(
+        &self,builder:&mut Builder<'_>,returned:Option<&Value>,
+    )->Result<Returned> {
+        // The ordinary written model names the output. Its consumers load the actual place.
+        let regs=self.ty.components.iter().map(|(scalar,_)|builder.reg(*scalar)).collect();
+        let value=Value{ty:self.ty.clone(),regs,proof:bounds::Proof::default(),
+            uniform:false,literal:false,constant:None};
+        let mut output=builder.template_returned(value,true)?;
+        if let Some(model)=&self.model {
+            let mut bindings=self.arguments.clone();
+            if let Some(returned)=returned {
+                let proof=bounds::Proof::capture(returned);
+                for (component,source) in self.returned.iter().enumerate() {
+                    bindings.insert(ValueIdentity::Register(*source),proof.project(&[component],returned.regs.len()));
+                }
+            }
+            let actual=builder.returned_storage(&output);
+            let model_proof=bounds::Proof::capture(&builder.returned_storage(model));
+            for (component,(source,target)) in model.registers().into_iter().zip(&actual.regs).enumerate() {
+                let proof=bounds::Proof::default().with_identity(ValueIdentity::Register(*target));
+                bindings.insert(ValueIdentity::Register(source),proof.clone());
+                if let Some(id)=model_proof.known_identity(component) {
+                    bindings.entry(id).or_insert(proof);
+                }
+            }
+            native_function::translate_returned(&mut output,model,&bindings,false);
+        }
+        residency::visit(&mut output,&mut residency::Input::new(0),
+            &mut |data,_|data.residency=residency::Residency::cpu());
+        Ok(output)
+    }
+
+    pub(super) fn result_at_call(
+        &self,builder:&mut Builder<'_>,returned:&[Option<ValueIdentity>],
+        bindings:&BTreeMap<ValueIdentity,bounds::Proof>,
+    )->Option<Value> {
+        let operands=returned.iter().zip(&self.result.components).map(|(source,(scalar,_))| {
+            let proof=bindings.get(source.as_ref()?)?;
+            proof.known_identity(0).map(bounds::Operand::Value).or_else(||
+                proof.known_value(&Ty::scalar(*scalar)).map(|bits|bounds::Operand::Constant(*scalar,bits[0])))
+        }).collect::<Option<Vec<_>>>()?;
+        if operands.len()!=self.result.components.len(){return None;}
+        let mut regs=Vec::with_capacity(operands.len());
+        for operand in operands {
+            match operand {
+                bounds::Operand::Constant(scalar,bits)=>regs.push(builder.constant(scalar,bits).regs[0]),
+                bounds::Operand::Value(ValueIdentity::Register(reg))=>regs.push(reg),
+                _=>return None,
+            }
+        }
+        Some(Value{ty:self.result.clone(),regs,proof:bounds::Proof::default(),
+            uniform:false,literal:false,constant:None})
+    }
+
+    pub(super) fn guards(
+        &self, builder:&mut Builder<'_>, returned:Option<&Value>, span:Span,
+    )->Result<Vec<Presence>> {
+        let source=builder.scope.source().clone();
+        let definition=Contract::signature(&source,"",&[],&[],&[],span);
+        let mut inputs=BTreeMap::new();
+        for (name,(ty,words)) in &self.inputs {
+            let mut regs=Vec::with_capacity(words.len());
+            for word in words {
+                match *word {
+                    Some(bounds::Operand::Constant(scalar,bits))=>regs.push(builder.constant(scalar,bits).regs[0]),
+                    Some(bounds::Operand::Value(ValueIdentity::Register(reg)))=>regs.push(reg),
+                    _=>return builder.fail(span,"B224","任务条件输出所引用的实际输入快照未交接"),
+                }
+            }
+            inputs.insert(name.clone(),Value{ty:ty.clone(),regs,proof:bounds::Proof::default(),
+                uniform:false,literal:false,constant:None});
+        }
+        let clauses=self.clauses.iter().map(|(parts,condition)|(parts.clone(),condition.clone(),span)).collect::<Vec<_>>();
+        evaluate_guards(builder,definition,&self.ty,&clauses,&inputs,returned)
+    }
 }
 
 pub(super) fn contract_predicates(
@@ -862,7 +1023,7 @@ pub(crate) fn validate_function_contracts(
     Ok(())
 }
 
-fn resource_guard(ty: &Ty, offset: u32, guards: &[Presence]) -> Presence {
+pub(super) fn resource_guard(ty: &Ty, offset: u32, guards: &[Presence]) -> Presence {
     guards[ty
         .components
         .iter()
@@ -899,7 +1060,7 @@ impl Builder<'_> {
     pub(super) fn forget_output_initialization(&mut self, place: &Place, span: Span) -> Result<()> {
         let changed=self.positions(place);self.forget_output_positions(&changed,span)
     }
-    fn forget_output_positions(&mut self,changed:&[Position],span:Span)->Result<()> {
+    pub(super) fn forget_output_positions(&mut self,changed:&[Position],span:Span)->Result<()> {
         fn index(builder: &mut Builder<'_>, index: ownership::ApplicationIndex) -> Value {
             match index {
                 ownership::ApplicationIndex::Constant(value) => {
@@ -956,6 +1117,13 @@ impl Builder<'_> {
                 _ => Presence::None,
             })
         }
+        fn changed_at(builder:&mut Builder<'_>,value:&Position,changed:&[Position],span:Span)->Result<Presence> {
+            let mut when=Presence::None;
+            for position in changed {
+                when=when.or(overlap(builder,position,value,span)?);
+            }
+            Ok(when)
+        }
         fn erase(
             builder: &mut Builder<'_>,
             value: &Position,
@@ -972,13 +1140,25 @@ impl Builder<'_> {
                     erase(builder, a, changed, span)?,
                     erase(builder, b, changed, span)?,
                 ),
-                value => {
-                    let mut when = Presence::None;
-                    for position in changed {
-                        when = when.or(overlap(builder, position, value, span)?);
+                Position::Initialization(effect)
+                    if let address::InitializationEffect::Position(fact)=effect.as_ref()
+                    && let Some(parts)=fact.position_parts(&builder.path) =>
+                {
+                    let mut surviving=Position::Initialized;
+                    for (mut part,position) in parts {
+                        if let Some(position)=position {
+                            let retained=changed_at(builder,&position,changed,span)?.not().condition();
+                            part.when=part.when.logical(retained,false);
+                        }
+                        if part.when.active() {
+                            surviving=Position::both(surviving,Position::Initialization(Arc::new(
+                                address::InitializationEffect::Position(part),
+                            )));
+                        }
                     }
-                    Position::selected(when, Position::Initialized, value.clone())
-                }
+                    surviving
+                },
+                value => Position::selected(changed_at(builder,value,changed,span)?,Position::Initialized,value.clone()),
             })
         }
         let previous = std::mem::take(&mut self.initialized);
@@ -1074,6 +1254,11 @@ impl Builder<'_> {
                 return self.fail(span, "B229", "返回分支没有满足dataset字段的条件初始化合同");
             }
         }
+        if data.ty.owns_resources() && data.length.maximum() != 0 {
+            self.path = path.clone();
+            let model = self.element_model(&data.ty, &data.elements, (&data.residency, &[]), span)?;
+            Self::check_output_resources(self, &model, &data.ty, 0, guards, &path, span)?;
+        }
         self.path = path;
         Ok(())
     }
@@ -1089,7 +1274,11 @@ impl Builder<'_> {
         }
     }
     pub(super) fn initialize_output(&mut self, place: &Place, guards: &[Presence]) {
-        for (position, when) in self.positions(place).into_iter().zip(guards) {
+        self.initialize_output_positions(self.positions(place),guards);
+    }
+
+    pub(super) fn initialize_output_positions(&mut self, positions:Vec<Position>, guards:&[Presence]) {
+        for (position, when) in positions.into_iter().zip(guards) {
             if self.owned_possible(when) {
                 self.initialized.insert(Position::selected(
                     when.clone(),
@@ -1098,6 +1287,69 @@ impl Builder<'_> {
                 ));
             }
         }
+    }
+
+    fn check_output_resources(
+        builder: &mut Builder<'_>,
+        model: &Returned,
+        root: &Ty,
+        offset: u32,
+        guards: &[Presence],
+        path: &bounds::Clause,
+        span: Span,
+    ) -> Result<()> {
+        match model {
+            Returned::Dataset(data) => {
+                let when = resource_guard(root, offset, guards);
+                builder.path = when.condition().assume(path, true);
+                if builder.path.possible() {
+                    let mut selected = model.clone();
+                    builder.resolve_owned_model(&mut selected, None);
+                    let Returned::Dataset(data) = selected else {
+                        unreachable!()
+                    };
+                    if !data.ownership.available() {
+                        return builder.fail(
+                            span,
+                            "B229",
+                            "条件输出分支没有实际拥有所声明的资源",
+                        );
+                    }
+                    builder.require_application_initialized(&data, span)?;
+                }
+                builder.path = when.condition().assume(path, false);
+                if builder.path.possible()
+                    && builder.resolve_ownership(&data.ownership, None).may_own()
+                {
+                    return builder.fail(
+                        span,
+                        "B229",
+                        "未交付分支仍拥有输出资源；按实际返回关系交付，或由原所有者释放",
+                    );
+                }
+            }
+            Returned::OwnedValue(value) => {
+                if value.value.ty.cleanup.is_some() {
+                    let when=resource_guard(root,offset,guards);
+                    builder.path=when.condition().assume(path,true);
+                    if builder.path.possible()&&!builder.resolve_ownership(&value.ownership,None).available(){return builder.fail(span,"B229","条件输出分支没有实际构造用户拥有值");}
+                    builder.path=when.condition().assume(path,false);
+                    if builder.path.possible()&&builder.resolve_ownership(&value.ownership,None).may_own(){return builder.fail(span,"B229","未交付分支仍拥有用户资源；按实际返回关系交付或由原所有者释放");}
+                }
+                for (index, payload) in value.payloads.iter().enumerate() {
+                    if let Some(payload) = payload {
+                        let at = if value.value.ty.has_variants() {
+                            value.value.ty.variant_payload_offset()
+                        } else {
+                            value.value.ty.aggregate_part(index).0
+                        };
+                        Self::check_output_resources(builder, payload, root, offset + at, guards, path, span)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     pub(super) fn conditional_written_model(
@@ -1149,69 +1401,7 @@ impl Builder<'_> {
             Binding::OwnedValue(value) => Returned::OwnedValue(value),
             _ => unreachable!(),
         };
-        fn resources(
-            builder: &mut Builder<'_>,
-            model: &Returned,
-            root: &Ty,
-            offset: u32,
-            guards: &[Presence],
-            path: &bounds::Clause,
-            span: Span,
-        ) -> Result<()> {
-            match model {
-                Returned::Dataset(data) => {
-                    let when = resource_guard(root, offset, guards);
-                    builder.path = when.condition().assume(path, true);
-                    if builder.path.possible() {
-                        let mut selected = model.clone();
-                        builder.resolve_owned_model(&mut selected, None);
-                        let Returned::Dataset(data) = selected else {
-                            unreachable!()
-                        };
-                        if !data.ownership.available() {
-                            return builder.fail(
-                                span,
-                                "B229",
-                                "条件输出分支没有实际拥有所声明的资源",
-                            );
-                        }
-                        builder.require_application_initialized(&data, span)?;
-                    }
-                    builder.path = when.condition().assume(path, false);
-                    if builder.path.possible()
-                        && builder.resolve_ownership(&data.ownership, None).may_own()
-                    {
-                        return builder.fail(
-                            span,
-                            "B229",
-                            "未交付分支仍拥有输出资源；按实际返回关系交付，或由原所有者释放",
-                        );
-                    }
-                }
-                Returned::OwnedValue(value) => {
-                    if value.value.ty.cleanup.is_some() {
-                        let when=resource_guard(root,offset,guards);
-                        builder.path=when.condition().assume(path,true);
-                        if builder.path.possible()&&!builder.resolve_ownership(&value.ownership,None).available(){return builder.fail(span,"B229","条件输出分支没有实际构造用户拥有值");}
-                        builder.path=when.condition().assume(path,false);
-                        if builder.path.possible()&&builder.resolve_ownership(&value.ownership,None).may_own(){return builder.fail(span,"B229","未交付分支仍拥有用户资源；按实际返回关系交付或由原所有者释放");}
-                    }
-                    for (index, payload) in value.payloads.iter().enumerate() {
-                        if let Some(payload) = payload {
-                            let at = if value.value.ty.has_variants() {
-                                value.value.ty.variant_payload_offset()
-                            } else {
-                                value.value.ty.aggregate_part(index).0
-                            };
-                            resources(builder, payload, root, offset + at, guards, path, span)?;
-                        }
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        }
-        resources(self, &model, place.ty(), 0, guards, &original_path, span)?;
+        Self::check_output_resources(self, &model, place.ty(), 0, guards, &original_path, span)?;
         self.path = original_path;
         fn absent(model: &mut Returned) {
             match model {

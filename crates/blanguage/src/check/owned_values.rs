@@ -453,7 +453,7 @@ impl Builder<'_> {
             && let Some(Binding::Owned(owner))=self.env.get(name).cloned()
             && matches!(owner.place.storage(),Place::ApplicationElement{..})
             && owner.place.ty().owns_resources() && owner.place.ty().dataset.is_none() {
-            let Returned::OwnedValue(mut value)=self.application_owned_argument(&owner.place,expr.span())? else{return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体")};
+            let Returned::OwnedValue(mut value)=self.application_owned_argument(&owner.place,true,expr.span())? else{return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体")};
             if !value.available(){return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源");}
             self.prepare_owned_read(&Returned::OwnedValue(value.clone()));value.borrow();
             return Ok(Some((Returned::OwnedValue(value),None)));
@@ -494,7 +494,7 @@ impl Builder<'_> {
                 let Some(place)=self.application_index(data.clone(),&index)?else{return Ok(None)};
                 if !place.ty().owns_resources(){return self.read_place(&place,expr.span(), None).map(|value|Some((Returned::value(value),None)));}
                 let packed=self.read_storage_value(&place,expr.span(), None)?;
-                let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed,&place)? else{unreachable!()};
+                let Returned::OwnedValue(mut value)=self.materialize_element(&data,Some(packed),&place)? else{unreachable!()};
                 value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),None)));
             }
             let Some((value,mut owner))=self.read_aggregate(&base,None)? else{return Ok(None)};
@@ -509,7 +509,7 @@ impl Builder<'_> {
                     let Some(place)=self.application_index(data.clone(),&index)?else{return Ok(None)};
                     if !place.ty().owns_resources(){return self.read_place(&place,expr.span(), None).map(|value|Some((Returned::value(value),owner)));}
                     let packed=self.read_storage_value(&place,expr.span(), None)?;
-                    let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed,&place)?else{unreachable!()};
+                    let Returned::OwnedValue(mut value)=self.materialize_element(&data,Some(packed),&place)?else{unreachable!()};
                     value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),owner)));
                 }
                 Returned::OwnedValue(value)=>value,
@@ -579,10 +579,11 @@ impl Builder<'_> {
             return self.fail(span, "B227", "拥有值存在未初始化或已移动的资源字段");
         }
         self.prepare_owned_read(&Returned::OwnedValue(result.clone()));
-        if !result.value.ty.has_variants()
-            && let Some(place) = result.place()
-        {
-            self.require_initialized(&place, span)?;
+        if let Some(place)=result.place() {
+            self.require_place_access(&place,Access::Write,span)?;
+            if !result.value.ty.has_variants() {
+                self.require_initialized(&place,span)?;
+            }
         }
         self.load_owned_value(&mut result,span)?;
         self.forget_owned_metadata(&Returned::OwnedValue(result.clone()));
@@ -1043,7 +1044,9 @@ impl Builder<'_> {
         let item=self.unpack_variant(value,index)?;
         if let Some(name)=name.filter(|n|*n!="_") {
             self.bind_returned(name,item,span)?;self.block(body)?;
-            if self.flow.continues() { if let Some(binding)=self.env.get(name).cloned() {self.drop_binding(binding,&view::Borrow::default(),span)?;} }
+            if self.flow.continues() && let Some(binding)=self.env.get(name).cloned() {
+                self.drop_binding(binding,&view::Borrow::default(),span)?;
+            }
             self.env.remove(name);
             Ok(())
         } else {self.drop_returned(item,&view::Borrow::default(),span)?;self.block(body)}
@@ -1083,34 +1086,82 @@ impl Builder<'_> {
             Returned::Dataset(data)=>data.place.clone(),
             _=>None,
         };
+        if let Some(place)=&consumed {
+            self.require_place_access(place,Access::Write,span)?;
+        }
         self.cleanup_group(consumed.into_iter().collect(),|builder|builder.drop_owned_tree(value,&borrow,span))
     }
-    pub(super) fn drop_owned_tree(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
-        self.prepare_owned_read(&value);
+    pub(super) fn error_position_arguments(&mut self, place: &Place, status: Reg, span: Span) -> Result<Vec<CallArgument>> {
+        let address = self.call_reference(place, Access::Read, false, span)?;
+        let pointer = self.reg(Scalar::U64);
+        self.emit(InstKind::PositionAddress { dst: pointer, address });
+        let extent = self.constant(Scalar::U64, Bits::from(place.ty().size)).regs[0];
+        Ok([status, pointer, extent].into_iter().map(|reg| CallArgument::Value {
+            origin: None, ty: Ty::scalar(Scalar::U64), values: vec![reg], dataset_borrow: None,
+        }).collect())
+    }
+
+    pub(super) fn drop_owned_tree(&mut self, value: Returned, retained: &view::Borrow, span: Span) -> Result<()> {
+        self.drop_owned_tree_with(value, retained, span, Self::application_drop)
+    }
+
+    pub(super) fn drop_owned_tree_with(
+        &mut self, value: Returned, retained: &view::Borrow, span: Span,
+        drop_dataset: fn(&mut Self, &application::Data, &view::Borrow, Span) -> Result<()>,
+    ) -> Result<()> {
+        let place=match &value {
+            Returned::Dataset(data) if data.ownership.may_own()=>data.place.clone(),
+            Returned::OwnedValue(value) if value.ownership.may_own()=>value.place(),
+            _=>None,
+        };
+        if let Some(error)=self.pending_error && let Some(place)=place && !place.ty().components.is_empty() {
+            let status=self.reg(Scalar::U64);
+            self.emit(InstKind::LoadLocal(status,error.slot()));
+            let arguments = self.error_position_arguments(&place, status, span)?;
+            let consumed=self.reg(Scalar::Bool);
+            self.emit(application::runtime_call("error_consumed",arguments,
+                Some(Ty::scalar(Scalar::Bool)),vec![consumed],None,None).kind);
+            let no_error=bounds::Condition::guard(bounds::Clause::zero_results([status]));
+            let consumed_proof=bounds::Proof::condition(no_error.negate().logical(bounds::Condition::default(),false));
+            let retained_owner=owned_presence::Presence::input(&Value{
+                ty:Ty::scalar(Scalar::Bool),regs:vec![consumed],proof:consumed_proof,
+                uniform:false,literal:false,constant:None,
+            }).not();
+            return self.owned_when(&retained_owner,span,None,None,|builder|builder.drop_present_owned_tree(value,retained,span,drop_dataset));
+        }
+        self.drop_present_owned_tree(value,retained,span,drop_dataset)
+    }
+
+    fn drop_present_owned_tree(
+        &mut self, value: Returned, retained: &view::Borrow, span: Span,
+        drop_dataset: fn(&mut Self, &application::Data, &view::Borrow, Span) -> Result<()>,
+    ) -> Result<()> {
         match value {
             Returned::Dataset(mut data) if matches!(data.ownership,Ownership::Conditional(_))=>{
                 let Ownership::Conditional(when)=data.ownership.clone()else{unreachable!()};data.ownership=Ownership::Owned;
                 let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
                 let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropBranch,trigger:trigger.clone()});
                 let condition=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropCondition,trigger});
-                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|{builder.prepare_owned_read(&Returned::Dataset(data.clone()));builder.drop_owned_tree(Returned::Dataset(data),retained,span)})
+                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|builder.drop_owned_tree_with(Returned::Dataset(data),retained,span,drop_dataset))
             }
             Returned::OwnedValue(mut value) if matches!(value.ownership,Ownership::Conditional(_))=>{
                 let Ownership::Conditional(when)=value.ownership.clone()else{unreachable!()};value.ownership=Ownership::Owned;
                 let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
                 let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropBranch,trigger:trigger.clone()});
                 let condition=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropCondition,trigger});
-                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|{builder.prepare_owned_read(&Returned::OwnedValue(value.clone()));builder.drop_owned_tree(Returned::OwnedValue(value),retained,span)})
+                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|builder.drop_owned_tree_with(Returned::OwnedValue(value),retained,span,drop_dataset))
             }
             Returned::Dataset(data) if data.ownership == Ownership::Owned => {
                 self.application_frame(span)?;
-                self.application_drop(&data,retained,span)?;
+                drop_dataset(self, &data, retained, span)?;
             }
             Returned::OwnedValue(mut result) if result.ownership == Ownership::Owned => {
+                if result.value.ty.has_owned_presence() && let Some(place)=result.place() {
+                    self.read_cleanup_storage(&place,|builder|builder.load_owned_value(&mut result,span))?;
+                }
                 if result.value.ty.task_result().is_some(){
-                    self.load_owned_value(&mut result,span)?;
-                    let value=self.wait_task_value(result.value,span)?;
-                    return self.drop_owned_tree(value,retained,span);
+                    return self.wait_task_value(result.value, span,
+                        |builder, value| builder.drop_owned_tree_with(value, retained, span, drop_dataset));
                 }
                 if result.value.ty.cleanup.is_some(){return self.drop_user_owned(result,retained,span);}
 
@@ -1121,35 +1172,37 @@ impl Builder<'_> {
                             result.payloads[i].as_deref_mut().unwrap().restrict_owned(&owned_presence::Presence::None);
                             let mut remaining=retained.clone();
                             result.cleanup_borrow(self,&BTreeSet::new(),&mut remaining)?;
-                            self.drop_owned_tree(field,&remaining,span)?;
+                            self.drop_owned_tree_with(field,&remaining,span,drop_dataset)?;
                         }
                     }
                     return Ok(());
                 }
-                self.load_owned_value(&mut result,span)?;
                 result.place=None;
-                self.drop_variant(&result,0,retained,span)?;
+                self.drop_variant(&result,0,retained,span,drop_dataset)?;
             }
             _ => {}
         }
         Ok(())
     }
-    fn drop_variant(&mut self,value:&OwnedValue,index:usize,retained:&view::Borrow,span:Span)->Result<()> {
+    fn drop_variant(
+        &mut self, value: &OwnedValue, index: usize, retained: &view::Borrow, span: Span,
+        drop_dataset: fn(&mut Self, &application::Data, &view::Borrow, Span) -> Result<()>,
+    ) -> Result<()> {
         if index+1==value.payloads.len() {
-            let item=self.unpack_variant(value,index)?;return self.drop_owned_tree(item,retained,span);
+            let item=self.unpack_variant(value,index)?;return self.drop_owned_tree_with(item,retained,span,drop_dataset);
         }
         let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
         let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropBranch,trigger:trigger.clone()});
         let selection=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropCondition,trigger});
         let condition=self.owned_variant_condition(value,index,span,Some(selection))?;
         if let Some(bits)=&condition.constant {
-            if bits[0]!=0 {let item=self.unpack_variant(value,index)?;self.drop_owned_tree(item,retained,span)}
-            else {self.drop_variant(value,index+1,retained,span)}
+            if bits[0]!=0 {let item=self.unpack_variant(value,index)?;self.drop_owned_tree_with(item,retained,span,drop_dataset)}
+            else {self.drop_variant(value,index+1,retained,span,drop_dataset)}
         } else {
             let outer=std::mem::take(&mut self.code);
-            let item=self.unpack_variant(value,index)?;self.drop_owned_tree(item,retained,span)?;
+            let item=self.unpack_variant(value,index)?;self.drop_owned_tree_with(item,retained,span,drop_dataset)?;
             let yes=std::mem::take(&mut self.code);
-            self.drop_variant(value,index+1,retained,span)?;
+            self.drop_variant(value,index+1,retained,span,drop_dataset)?;
             let no=std::mem::replace(&mut self.code,outer);
             self.code.push(Inst::generated(InstKind::If{condition:condition.regs[0],yes,no},branch));Ok(())
         }

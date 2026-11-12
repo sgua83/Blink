@@ -112,6 +112,7 @@ pub struct FrameCpuDataMemory {
 pub struct Frame {
     data: DomainBindings<Option<ResidentData>>,
     definitions: Arc<Definitions>,
+    task_completion_writes: Option<task::InputCompletionWrites>,
     gpu_programs: Vec<Option<vulkan::GpuTemplate>>,
     device: Option<vulkan::Device>,
 }
@@ -141,6 +142,7 @@ impl Frame {
             data: DomainBindings {datasets,domains:input_domains.to_vec()},
             gpu_programs: (0..definitions.programs.len()).map(|_| None).collect(),
             definitions,
+            task_completion_writes: None,
             device: None,
         }
     }

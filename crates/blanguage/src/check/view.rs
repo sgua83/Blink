@@ -63,12 +63,61 @@ impl Borrow {
                 Source::Position(origin)|Source::Contents{origin,..}=>normal.origin(Arc::make_mut(origin)),
                 Source::Element{parent,..}|Source::Projection{parent,..}=>parent.normalize_contract(normal),
                 Source::Relation(graph,_)=>Arc::make_mut(graph).normalize(normal),
+                Source::Task{captures,outputs,initialized,guards,completions}=>{
+                    captures.normalize_contract(normal);
+                    initialized.normalize_contract(normal);
+                    for output in outputs { output.normalize_contract(normal); }
+                    for guard in guards { guard.target.normalize_contract(normal); }
+                    for completion in completions { completion.task.normalize_contract(normal); }
+                },
+                Source::TaskOutput{task,..}=>task.normalize_contract(normal),
                 _=>{},
             }
             self.sources.insert_normalized(source,when,normal);
         }
     }
 }
+#[derive(Clone,PartialEq,Eq)]
+pub(super) struct TaskInputCompletion {
+    pub offset:u32,
+    pub result:Ty,
+    pub layout:Ty,
+    pub task:Borrow,
+    pub parent:Option<(usize,usize)>,
+}
+crate::module::codec::record!(TaskInputCompletion {offset,result,layout,task,parent});
+impl Ord for TaskInputCompletion {
+    fn cmp(&self,other:&Self)->std::cmp::Ordering {
+        use crate::module::codec::Encode;
+        self.offset.cmp(&other.offset)
+            .then_with(||self.result.bytes().cmp(&other.result.bytes()))
+            .then_with(||self.layout.bytes().cmp(&other.layout.bytes()))
+            .then_with(||self.task.cmp(&other.task))
+            .then_with(||self.parent.cmp(&other.parent))
+    }
+}
+impl PartialOrd for TaskInputCompletion {
+    fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}
+}
+impl TaskInputCompletion {
+    pub(super) fn map_task(&self,map:impl FnOnce(&Borrow)->Borrow)->Self {
+        Self{offset:self.offset,result:self.result.clone(),layout:self.layout.clone(),task:map(&self.task),parent:self.parent}
+    }
+}
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum TaskProjection { Returned(usize,Option<ValueIdentity>), Writes, Places, Initialized(Vec<Option<ValueIdentity>>) }
+crate::module::codec::variants!(TaskProjection {0=>Returned(component,source),1=>Writes,2=>Places,3=>Initialized(returned)});
+
+impl TaskProjection {
+    pub(super) fn map_result(&self, map:impl Fn(ValueIdentity)->Option<ValueIdentity>)->Self {
+        match self {
+            Self::Returned(component,source)=>Self::Returned(*component,source.and_then(&map)),
+            Self::Initialized(returned)=>Self::Initialized(returned.iter().map(|id|id.and_then(&map)).collect()),
+            projection=>projection.clone(),
+        }
+    }
+}
+
 impl Borrow{
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         let mut result=Self{inputs:self.inputs.substitute_values(values),calls:self.calls.substitute_values(values),reads:self.reads.substitute_values(values),..Self::default()};
@@ -79,6 +128,22 @@ impl Borrow{
                 Source::Contents{origin,word}=>Self::source(Source::Contents{origin:Arc::new(origin.substitute_values(values)),word:*word}),
                 Source::Element{parent,fields,index}=>Self::element(parent.substitute_values(values),fields.clone(),Source::index_substitute(*index,values)),
                 Source::Projection{parent,fields}=>Self::projection(parent.substitute_values(values),fields.clone()),
+                Source::Task{captures,outputs,initialized,guards,completions}=>Self::source(Source::Task{
+                    captures:Box::new(captures.substitute_values(values)),
+                    initialized:Box::new(initialized.substitute_values(values)),
+                    outputs:outputs.iter().map(|output|output.substitute_values(values)).collect(),
+                    completions:completions.iter().map(|completion|completion.map_task(|task|task.substitute_values(values))).collect(),
+                    guards:guards.iter().cloned().map(|mut guard| {
+                        guard.target=guard.target.substitute_values(values);
+                        guard.map_arguments(|proof|proof.substitute_values(values));
+                        guard.map_inputs(|word|match word {
+                            bounds::Operand::Value(id) if values.contains_key(&id)=>word.at_call(values),
+                            _=>Some(word),
+                        });
+                        guard
+                    }).collect(),
+                }),
+                Source::TaskOutput{task,projection}=>task.substitute_values(values).task_projection(projection.map_result(|id|match values.get(&id){Some(proof)=>proof.known_identity(0),None=>Some(id)})),
                 Source::Parameter(id,indices)=>{
                     let next=Source::Parameter(*id,indices.iter().map(|index|Source::index_substitute(*index,values)).collect());
                     if values.contains_key(id){next.at_call(values)}else{Self::source(next)}
@@ -126,6 +191,17 @@ impl Borrow{
                     Self::source(Source::Parameter(*id,selected))
                 },
                 Source::Projection{parent,fields}=>Self::projection(parent.select_elements(indices),fields.clone()),
+                Source::Task{captures,outputs,initialized,guards,completions}=>Self::source(Source::Task{
+                    captures:Box::new(captures.select_elements(indices)),
+                    initialized:Box::new(initialized.select_elements(indices)),
+                    outputs:outputs.iter().map(|output|output.select_elements(indices)).collect(),
+                    completions:completions.iter().map(|completion|completion.map_task(|task|task.select_elements(indices))).collect(),
+                    guards:guards.iter().cloned().map(|mut guard| {
+                        guard.target=guard.target.select_elements(indices);
+                        guard
+                    }).collect(),
+                }),
+                Source::TaskOutput{task,projection}=>task.select_elements(indices).task_projection(projection.clone()),
                 Source::Position(origin)=>origin.map_borrows(|borrow|borrow.select_elements(indices)).substitute_values(&values).normalize(),
                 Source::Contents{origin,word}=>Self::source(Source::Contents{origin:Arc::new(origin.map_borrows(|borrow|borrow.select_elements(indices)).substitute_values(&values)),word:*word}),
                 source=>Self::source(source.clone()),
@@ -155,17 +231,57 @@ impl Borrow{
         }
         result
     }
+    pub(super) fn task_projection(&self,projection:TaskProjection)->Self {
+        let mut result=Self::default();
+        for (source,when) in self.sources.entries() {
+            let value=match (source,&projection) {
+                (Source::Task{outputs,..},TaskProjection::Returned(component,None)) => outputs[*component].clone(),
+                (Source::Task{initialized,..},TaskProjection::Initialized(returned)) => initialized.initialization_guards(|id|match id {
+                    ValueIdentity::TaskResult(component)=>returned[component].map(identity_proof),
+                    _=>Some(identity_proof(id)),
+                }),
+                (Source::Inactive,TaskProjection::Initialized(_)) => Self::default(),
+                (Source::Task{captures,..},TaskProjection::Writes|TaskProjection::Places) => captures.task_projection(projection.clone()),
+                (Source::Position(origin),TaskProjection::Writes) if origin.writable => Self::source(source.clone()),
+                (Source::Position(_),TaskProjection::Places) => Self::source(source.clone()),
+                // Memory effects use all possible returned owners. The completion marker
+                // selects the concrete owner only when the caller receives the result.
+                (Source::TaskOutput{task,projection:TaskProjection::Returned(component,Some(_))},
+                    TaskProjection::Writes|TaskProjection::Places) => {
+                    task.task_projection(TaskProjection::Returned(*component,None)).task_projection(projection.clone())
+                },
+                (Source::TaskOutput{task,projection:held},TaskProjection::Writes|TaskProjection::Places)
+                    if matches!(held,TaskProjection::Writes|TaskProjection::Places) =>
+                {
+                    task.task_projection(if *held==TaskProjection::Writes { TaskProjection::Writes } else { projection.clone() })
+                },
+                (Source::Inactive|Source::Data(_)|Source::Position(_)|Source::External,TaskProjection::Writes|TaskProjection::Places) => Self::default(),
+                (Source::Inactive|Source::Unresolved,_) => Self::source(source.clone()),
+                _ => Self::source(Source::TaskOutput{task:Box::new(Self::source(source.clone())),projection:projection.clone()}),
+            };
+            result.union(&value.restricted(&when));
+        }
+        if !self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty(){
+            result.sources.insert(Source::TaskOutput{
+                task:Box::new(Self{inputs:self.inputs.clone(),calls:self.calls.clone(),reads:self.reads.clone(),..Self::default()}),
+                projection,
+            });
+        }
+        result
+    }
     pub(super) fn content_inputs(&self)->bool{self.sources.iter().any(|source|match source{
         Source::Contents{..}=>true,
         Source::Relation(graph,root)=>graph.content_inputs(*root),
         Source::Position(origin)=>origin.resources().content_inputs(),
         Source::Element{parent,..}|Source::Projection{parent,..}=>parent.content_inputs(),
+        Source::Task{captures,outputs,initialized,..}=>captures.content_inputs()||initialized.content_inputs()||outputs.iter().any(Self::content_inputs),
+        Source::TaskOutput{task,..}=>task.content_inputs(),
         _=>false,
     })}
     pub fn empty(&self)->bool{self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()&&self.reads.is_empty()}
     pub fn union(&mut self,other:&Self){self.sources.union(&other.sources);self.inputs.union(&other.inputs);self.calls.union(&other.calls);self.reads.union(&other.reads);}
     pub fn joined(mut self,other:Self)->Self{self.union(&other);self}
-    pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)|Source::Contents{origin,..}=>origin.pending(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.pending(),Source::Relation(graph,root)=>graph.pending(*root),_=>false})}
+    pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)|Source::Contents{origin,..}=>origin.pending(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.pending(),Source::Relation(graph,root)=>graph.pending(*root),Source::Task{captures,outputs,initialized,..}=>captures.pending()||initialized.pending()||outputs.iter().any(Self::pending),Source::TaskOutput{task,projection}=>!matches!(projection,TaskProjection::Returned(..))||task.pending(),_=>false})}
     pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())||self.reads.entries().any(|(_,when)|when.possible())}
     pub fn restricted(&self,path:&bounds::Clause)->Self{Self{sources:self.sources.restricted(path),inputs:self.inputs.restricted(path),calls:self.calls.restricted(path),reads:self.reads.restricted(path)}}
     pub fn selected(choice:&bounds::Condition,a:&Self,b:&Self)->Self{
@@ -173,7 +289,28 @@ impl Borrow{
         if a==b{return a.clone();}
         a.restricted(&choice.assume(&bounds::Clause::default(),true)).joined(b.restricted(&choice.assume(&bounds::Clause::default(),false)))
     }
+    fn initialization_guards(&self, lookup:impl Fn(ValueIdentity)->Option<bounds::Proof>)->Self {
+        let mut result=self.clone();
+        for when in result.sources.0.values_mut() {
+            let bindings=bounds::Proof::condition(when.clone()).scalar_identities().into_iter()
+                .filter_map(|id|lookup(id).map(|proof|(id,proof))).collect();
+            *when=when.guaranteed_at_call(&bindings);
+        }
+        result
+    }
+
+    pub(super) fn initialization_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
+        self.initialization_guards(|id|match id {
+            ValueIdentity::TaskResult(_)=>Some(identity_proof(id)),
+            _=>bindings.get(&id).cloned(),
+        })
+    }
+
     pub fn guards_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{Self{sources:self.sources.guards_at_call(bindings),inputs:self.inputs.guards_at_call(bindings),calls:self.calls.guards_at_call(bindings),reads:self.reads.guards_at_call(bindings)}}
+    pub(super) fn bind_guards(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
+        Self{sources:self.sources.output_bound(bindings),inputs:self.inputs.output_bound(bindings),
+            calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings)}
+    }
     pub fn map_sources(&self,map:impl Fn(Source)->Self)->Self{let mut result=Self{inputs:self.inputs.clone(),calls:self.calls.clone(),reads:self.reads.clone(),..Self::default()};for(source,when)in self.sources.entries(){result.union(&map(source.clone()).restricted(&when));}result}
     pub fn unresolved(&self)->bool {
         fn query(value:&Borrow,path:&bounds::Clause)->bool {
@@ -183,6 +320,8 @@ impl Borrow{
                     Source::Unresolved=>true,
                     Source::Relation(graph,root)=>graph.unresolved(*root),
                     Source::Element{parent,..}|Source::Projection{parent,..}=>query(parent,&when),
+                    Source::Task{captures,outputs,initialized,..}=>query(captures,&when)||query(initialized,&when)||outputs.iter().any(|output|query(output,&when)),
+                    Source::TaskOutput{task,..}=>query(task,&when),
                     Source::Contents{origin,..}=>origin.has_local()||query(&origin.resources(),&bounds::Clause::default()),
                     Source::Position(origin)=>matches!(&origin.root,address::Root::Resource{borrow,..}|address::Root::Derived(borrow)|address::Root::Dataset{borrow,..}if query(borrow,&when)),
                     _=>false,
@@ -202,11 +341,23 @@ impl Borrow{
                         _=>origin.has_local(),
                     },
                     Source::Element{parent,..}|Source::Projection{parent,..}=>query(parent,&when),
+                    Source::Task{captures,outputs,initialized,..}=>query(captures,&when)||query(initialized,&when)||outputs.iter().any(|output|query(output,&when)),
+                    Source::TaskOutput{task,..}=>query(task,&when),
                     _=>false,
                 }
             })
         }
         query(self,&bounds::Clause::default())
+    }
+    pub fn view_resources(&self)->Self {
+        self.map_sources(|source|match source {
+            Source::Task{captures,..}=>captures.map_sources(|source|match source {
+                Source::Position(_)=>Self::default(),
+                source=>Self::source(source).view_resources(),
+            }),
+            Source::TaskOutput{..}=>Self::source(source),
+            source=>Self::source(source).resources(),
+        })
     }
     pub fn resources(&self)->Self {
         self.map_sources(|source|match source {
@@ -214,6 +365,8 @@ impl Borrow{
             Source::Relation(graph,root)=>graph.resources(root),
             Source::Element{parent,fields,index}=>Self::element(parent.resources(),fields,index),
             Source::Projection{parent,..}=>parent.resources(),
+            Source::Task{captures,..}=>captures.resources(),
+            Source::TaskOutput{task,..}=>task.resources(),
             source=>Self::source(source),
         })
     }
@@ -223,6 +376,8 @@ impl Borrow{
             Source::Relation(graph,root)=>graph.owners(root),
             Source::Element{parent,fields,index}=>Self::element(parent.resources(),fields,index).joined(parent.owners()),
             Source::Projection{parent,..}=>parent.owners(),
+            Source::Task{captures,..}=>captures.owners(),
+            Source::TaskOutput{task,..}=>task.owners(),
             source=>Self::source(source),
         })
     }
@@ -328,9 +483,18 @@ pub(super) fn data_at_mut<'a>(binding:&'a mut Binding,path:&[usize])->Option<&'a
         _=>None,
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Exclusion {
+    Resource,
+    Ownership,
+    Position(Access),
+    View,
+}
+crate::module::codec::variants!(Exclusion {0=>Resource,1=>Ownership,2=>Position(access),3=>View});
+
 #[derive(Clone)]
 pub(super) enum Requirement {
-    Unborrowed {resource:Borrow,borrow:Borrow,ownership:bool,span:Span},
+    Unborrowed {resource:Borrow,borrow:Borrow,kind:Exclusion,span:Span},
     Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,owned:Borrow,span:Span},
     Address {borrow:Borrow,layout:address::Layout,written:Option<bounds::Proof>,writable:bool,initialized:bool,span:Span},
     Memory {target:address::MemoryTarget,borrow:Borrow,access:Option<Access>,written:Option<bounds::Proof>,snapshots:Option<Arc<[view_contracts::ValueSnapshot]>>,address_fields:Arc<[(u32,usize)]>,span:Span},
@@ -348,7 +512,7 @@ impl Requirement {
     }}
     pub fn mapped(&self,map:impl Fn(&Borrow)->Borrow)->Self {
         match self {
-            Self::Unborrowed{resource,borrow,ownership,span}=>Self::Unborrowed{resource:map(resource),borrow:map(borrow),ownership:*ownership,span:*span},
+            Self::Unborrowed{resource,borrow,kind,span}=>Self::Unborrowed{resource:map(resource),borrow:map(borrow),kind:*kind,span:*span},
             Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),owned:map(owned),span:*span},
             Self::Address{borrow,layout,written,writable,initialized,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),written:written.clone(),writable:*writable,initialized:*initialized,span:*span},
             Self::Memory{target,borrow,access,written,snapshots,address_fields,span}=>Self::Memory{target:*target,borrow:map(borrow),access:*access,written:written.clone(),snapshots:snapshots.clone(),address_fields:address_fields.clone(),span:*span},
@@ -378,7 +542,21 @@ impl Requirement {
         }
         match self {
             Self::Return{borrow,span,..} if borrow.has_local()=>source.fail(*span,"B227","地址不能返回或输出当前函数的局部存储"),
-            Self::Unborrowed{resource,borrow,ownership,span} if (if *ownership{borrow.owners()}else{borrow.resources()}).sources.entries().any(|(source,when)|matches!(source,Source::Data(_)|Source::Element{..})&&resource.resources().overlaps_source(source,&when))=>source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放"),
+            Self::Unborrowed{resource,borrow,kind,span} => {
+                let held=match kind {
+                    Exclusion::Position(access) => return if address::MemoryEffect::access_conflicts(borrow,resource,*access,&bounds::Clause::default()) {
+                        source.fail(*span,"B227","访问与运行中任务持有的位置权限冲突")
+                    } else { Ok(()) },
+                    Exclusion::Ownership => borrow.owners(),
+                    Exclusion::Resource => borrow.resources(),
+                    Exclusion::View => borrow.view_resources(),
+                };
+                if held.sources.entries().any(|(source,when)|
+                    matches!(source,Source::Data(_)|Source::Element{..}) && resource.resources().overlaps_source(source,&when))
+                {
+                    source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放")
+                } else { Ok(()) }
+            },
             Self::Return{borrow,allowed,owned,span} if !owned.pending()&&borrow.owners().sources.entries().any(|(source,when)|matches!(source,Source::Data(id)if !allowed.contains(id)&&when.overlaps(&owned.owners().sources.when(source).assume(&bounds::Clause::default(),false))))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
             _=>Ok(()),
         }
@@ -400,7 +578,13 @@ pub(super) enum Source {
     // The address value held by one input storage component, not its location owner.
     Contents { origin:Arc<address::Origin>, word:u32 },
     Relation(Arc<view_contracts::relation::Graph>,usize),
+    Task { captures:Box<Borrow>, outputs:Vec<Borrow>, initialized:Box<Borrow>, guards:Vec<outputs::TaskGuard>, completions:Vec<TaskInputCompletion> },
+    TaskOutput { task:Box<Borrow>, projection:TaskProjection },
 }
+fn identity_proof(id:ValueIdentity)->bounds::Proof {
+    bounds::Proof::default().with_identity(id)
+}
+
 impl Source {
     pub(in crate::check) fn index_substitute(index:Option<bounds::Operand>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Operand>{
         match index{
@@ -437,6 +621,20 @@ impl Source {
             Self::Contents{origin,word}=>Self::Contents{origin:Arc::new(origin.bind_outputs(bindings)),word},
             Self::Element{parent,fields,index}=>Self::Element{parent:Box::new(parent.output_bound(bindings)),fields,index:index.and_then(|index|index.map(|id|Some(bindings.get(&id).copied().unwrap_or(id))))},
             Self::Projection{parent,fields}=>Self::Projection{parent:Box::new(parent.output_bound(bindings)),fields},
+            Self::Task{captures,outputs,initialized,guards,completions}=>Self::Task{
+                captures:Box::new(captures.output_bound(bindings)),
+                initialized:Box::new(initialized.output_bound(bindings)),
+                outputs:outputs.into_iter().map(|output|output.output_bound(bindings)).collect(),
+                completions:completions.iter().map(|completion|completion.map_task(|task|task.output_bound(bindings))).collect(),
+                guards:guards.into_iter().map(|mut guard| {
+                    guard.target=guard.target.output_bound(bindings);
+                    let actual=bindings.iter().map(|(from,to)|(*from,bounds::Proof::default().with_identity(*to))).collect();
+                    guard.map_arguments(|proof|proof.at_call(&actual));
+                    guard.map_inputs(|word|word.map(|id|bindings.get(&id).copied()));
+                    guard
+                }).collect(),
+            },
+            Self::TaskOutput{task,projection}=>Self::TaskOutput{task:Box::new(task.output_bound(bindings)),projection:projection.map_result(|id|Some(bindings.get(&id).copied().unwrap_or(id)))},
             Self::Unresolved | Self::Inactive | Self::External => self,
         }
     }
@@ -456,6 +654,22 @@ impl Source {
             Self::Contents{origin,word}=>Borrow::source(Self::Contents{origin:Arc::new(origin.bound_at_call(bindings)),word}),
             Self::Element{parent,fields,index}=>Borrow::element(parent.at_call(bindings),fields,Self::index_at_call(index,bindings)),
             Self::Projection{parent,fields}=>Borrow::projection(parent.at_call(bindings),fields),
+            Self::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Self::Task{
+                captures:Box::new(captures.at_call(bindings)),
+                initialized:Box::new(initialized.initialization_at_call(bindings).map_sources(|source|source.at_call(bindings))),
+                outputs:outputs.into_iter().map(|output|output.at_call(bindings)).collect(),
+                completions:completions.iter().map(|completion|completion.map_task(|task|task.at_call(bindings))).collect(),
+                guards:guards.into_iter().map(|mut guard| {
+                    guard.target=guard.target.at_call(bindings);
+                    guard.map_arguments(|proof|proof.at_call(bindings));
+                    guard.map_inputs(|word|word.at_call(bindings));
+                    guard
+                }).collect(),
+            }),
+            Self::TaskOutput{task,projection}=>task.at_call(bindings).task_projection(projection.map_result(|id|match id {
+                ValueIdentity::TaskWorkCompletion(..)=>Some(id),
+                _=>bindings.get(&id)?.known_identity(0),
+            })),
             Self::Unresolved|Self::Inactive|Self::External=>Borrow::from_sources(BTreeSet::from([self])),
         }
     }
@@ -471,6 +685,10 @@ impl crate::module::codec::Encode for Source {
             Self::Projection{parent,fields}=>{7u32.encode(w);parent.encode(w);fields.encode(w);},
             Self::Contents{origin,word}=>{8u32.encode(w);origin.encode(w);word.encode(w);},
             Self::Relation(graph,root)=>{9u32.encode(w);graph.selected(*root).encode(w);},
+            Self::Task{captures,outputs,initialized,guards,completions}=>{
+                10u32.encode(w);captures.encode(w);outputs.encode(w);initialized.encode(w);guards.encode(w);completions.encode(w);
+            },
+            Self::TaskOutput{task,projection}=>{11u32.encode(w);task.encode(w);projection.encode(w);},
         }
     }
 }
@@ -484,6 +702,9 @@ impl crate::module::codec::Decode for Source {
             7=>Self::Projection{parent:Decode::decode(r)?,fields:Decode::decode(r)?},
             8=>Self::Contents{origin:Decode::decode(r)?,word:Decode::decode(r)?},
             9=>Self::Relation(Arc::new(Decode::decode(r)?),0),
+            10=>Self::Task{captures:Decode::decode(r)?,outputs:Decode::decode(r)?,initialized:Decode::decode(r)?,
+                guards:Decode::decode(r)?,completions:Decode::decode(r)?},
+            11=>Self::TaskOutput{task:Decode::decode(r)?,projection:Decode::decode(r)?},
             _=>return Err("模块枚举编码错误：Source".into()),
         })
     }
@@ -555,7 +776,38 @@ impl Builder<'_> {
     pub(super) fn require_view_unborrowed(&mut self,resource:&Borrow,span:Span)->Result<()> {
         let mut borrow=Borrow::default();
         for (name,binding) in &self.env {borrow.union(&self.live_view_borrow(name,binding)?);}
-        self.check_view_requirement(Requirement::Unborrowed{resource:resource.clone(),borrow,ownership:false,span})
+        self.check_view_requirement(Requirement::Unborrowed{resource:resource.clone(),borrow,kind:Exclusion::Resource,span})
+    }
+    pub(super) fn task_places(&self)->Borrow {
+        let mut writes=Borrow::default();
+        for binding in self.env.values() {
+            if let Binding::OwnedValue(value)=binding {
+                value.cleanup_views(&BTreeSet::new(),&mut writes,&|_,field,borrow| {
+                    if field.task_result().is_some() { borrow.task_projection(TaskProjection::Places) }
+                    else { Borrow::default() }
+                });
+            }
+        }
+        writes
+    }
+    pub(super) fn require_place_access(&mut self,place:&Place,access:Access,span:Span)->Result<()> {
+        if self.application_entry() && !matches!(place.storage(),Place::AtomicParameter(_)|Place::TileElement{..}) {
+            let borrow=self.task_places();
+            if !borrow.empty() {
+                let resource=self.position_borrows(place,span)?.map_sources(|source|match source {
+                    Source::Position(origin)=>origin.normalize(),
+                    source=>Borrow::source(source),
+                });
+                self.check_view_requirement(Requirement::Unborrowed{resource,borrow,kind:Exclusion::Position(access),span})?;
+            }
+        }
+        if access.writes() && let Place::ApplicationElement{resource,..}=place.storage() {
+            let borrow=self.view_uses.all(self,&[])?;
+            self.check_view_requirement(Requirement::Unborrowed{
+                resource:resource.clone(),borrow,kind:Exclusion::View,span,
+            })?;
+        }
+        Ok(())
     }
     pub(super) fn check_view_requirement(&mut self,requirement:Requirement)->Result<()> {
         if requirement.pending()||matches!(&requirement,Requirement::Initialized{..}|Requirement::Memory{..}) {
@@ -592,6 +844,8 @@ impl Builder<'_> {
                     Source::Data(id)=>builder.application_handle_available(*id,span,resources,&when)?,
                     Source::Element{parent,..}|Source::Projection{parent,..}=>available(builder,parent.restricted(&when),resources,span)?,
                     Source::Position(origin)=>available(builder,origin.owners().restricted(&when),resources,span)?,
+                    Source::Task{captures,..}=>available(builder,captures.restricted(&when),resources,span)?,
+                    Source::TaskOutput{task,..}=>available(builder,task.owners().restricted(&when),resources,span)?,
                     Source::Unresolved=>return builder.fail(span,"B271","view返回的实际借用来源尚未形成合同"),
                     Source::Parameter(..)|Source::Contents{..}|Source::Relation(..)|Source::Inactive|Source::External=>{},
                 }

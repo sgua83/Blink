@@ -45,7 +45,7 @@ impl PartialOrd for PositionAccess {fn partial_cmp(&self,other:&Self)->Option<st
 crate::module::codec::record!(PositionAccess {layout,written,writable,initialized});
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum Access {
-    Resource {resources:Borrow,borrows:Borrow,ownership:bool,when:bounds::Condition},
+    Resource {resources:Borrow,borrows:Borrow,kind:view::Exclusion,when:bounds::Condition},
     Position {borrows:Borrow,when:bounds::Condition,position:PositionAccess},
     Memory {borrows:Borrow,when:bounds::Condition,access:super::Access},
     Dataset {borrows:Borrow,when:bounds::Condition,index:Option<bounds::Operand>,access:super::Access,atomic:bool},
@@ -53,6 +53,17 @@ pub(super) enum Access {
     Stored {borrows:Borrow,word:u32,value:Borrow,when:bounds::Condition},
 }
 impl Access {
+    fn accessed(&self)->Option<(&Borrow,&bounds::Condition,super::Access)> {
+        match self {
+            Self::Position{borrows,when,position}=>{
+                let access=if position.writable||position.written.is_some(){super::Access::Write}else{super::Access::Read};
+                Some((borrows,when,access))
+            },
+            Self::Memory{borrows,when,access}|Self::Dataset{borrows,when,access,..}=>Some((borrows,when,*access)),
+            Self::Stored{borrows,when,..}=>Some((borrows,when,super::Access::Write)),
+            Self::Resource{..}|Self::Initialized{..}=>None,
+        }
+    }
     pub(super) fn when_mut(&mut self)->&mut bounds::Condition {match self {
         Self::Resource{when,..}|Self::Position{when,..}|Self::Memory{when,..}|Self::Dataset{when,..}|Self::Initialized{when,..}|Self::Stored{when,..}=>when,
     }}
@@ -64,7 +75,7 @@ impl Access {
 
     fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         match self {
-            Self::Resource{resources,borrows,ownership,when}=>Self::Resource{resources:resources.substitute_values(values),borrows:borrows.substitute_values(values),ownership:*ownership,when:when.substitute_values(values)},
+            Self::Resource{resources,borrows,kind,when}=>Self::Resource{resources:resources.substitute_values(values),borrows:borrows.substitute_values(values),kind:*kind,when:when.substitute_values(values)},
             Self::Position{borrows,when,position}=>Self::Position{borrows:borrows.substitute_values(values),when:when.substitute_values(values),position:PositionAccess{written:position.written.as_ref().map(|proof|proof.substitute_values(values)),..position.clone()}},
             Self::Memory{borrows,when,access}=>Self::Memory{borrows:borrows.substitute_values(values),when:when.substitute_values(values),access:*access},
             Self::Dataset{borrows,when,index,access,atomic}=>{
@@ -76,7 +87,7 @@ impl Access {
         }
     }
 }
-crate::module::codec::variants!(Access {0=>Resource{resources,borrows,ownership,when},1=>Position{borrows,when,position},2=>Memory{borrows,when,access},3=>Dataset{borrows,when,index,access,atomic},4=>Initialized{borrows,initialized,when},5=>Stored{borrows,word,value,when}});
+crate::module::codec::variants!(Access {0=>Resource{resources,borrows,kind,when},1=>Position{borrows,when,position},2=>Memory{borrows,when,access},3=>Dataset{borrows,when,index,access,atomic},4=>Initialized{borrows,initialized,when},5=>Stored{borrows,word,value,when}});
 #[derive(Clone,Default,PartialEq,Eq)]
 pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub initialization:Vec<address::Initialization>}
 pub(super) struct ValueSnapshot { pub position:Position, pub index:Option<bounds::Operand>, pub scalar:Scalar, pub proof:Arc<bounds::Proof> }
@@ -85,6 +96,8 @@ pub(super) struct ElementRead { pub scalar:Scalar, pub proof:bounds::Proof, pub 
 pub(super) struct Call {
     pub(super) function:String,
     pub(super) memory:usize,
+    deferred:bool,
+    live_task_places:Borrow,
     pub(super) arguments:BTreeMap<ValueIdentity,bounds::Proof>,
     pub(super) snapshots:Option<Arc<[ValueSnapshot]>>,
     initialization:Vec<address::InitializationEffect>,
@@ -299,13 +312,17 @@ impl Function {
             None=>bounds::Clause::default(),
         }
     }
-    pub fn initialization_when(&self,when:bounds::Condition)->bounds::Condition {
+    pub fn initialization_when(&self,fact:&address::Initialization)->bounds::Condition {
+        // Direct parameter outputs already express the validated normal-return contract.
+        if matches!(&fact.source,address::InitializationSource::Position(origin) if matches!(origin.root,address::Root::Parameter(_))) {
+            return fact.when.clone();
+        }
         let normal=match &self.normal_returns {Some(normal)=>normal.clone(),None=>bounds::Condition::constant(false)};
-        normal.negate().logical(when,true)
+        normal.negate().logical(fact.when.clone(),true)
     }
     pub fn scope(&mut self)->usize {let scope=self.next_scope;self.next_scope+=1;scope}
-    pub fn call(&mut self,function:&str,memory:usize,arguments:BTreeMap<ValueIdentity,bounds::Proof>,snapshots:Option<Arc<[ValueSnapshot]>>,initialization:Vec<address::InitializationEffect>,path:bounds::Clause,source:crate::Source,span:Span)->usize {
-        let call=self.calls.len();self.calls.push(Call{function:function.into(),memory,arguments,snapshots,initialization,outputs:BTreeSet::new(),path,source,span});call
+    pub fn call(&mut self,function:&str,memory:usize,arguments:BTreeMap<ValueIdentity,bounds::Proof>,snapshots:Option<Arc<[ValueSnapshot]>>,initialization:Vec<address::InitializationEffect>,path:bounds::Clause,source:crate::Source,span:Span,deferred:bool,live_task_places:Borrow)->usize {
+        let call=self.calls.len();self.calls.push(Call{function:function.into(),memory,deferred,live_task_places,arguments,snapshots,initialization,outputs:BTreeSet::new(),path,source,span});call
     }
     pub fn result(&mut self,call:usize,output:Output)->Borrow {
         self.calls[call].outputs.insert(output.clone());
@@ -318,7 +335,7 @@ impl Function {
         for component in components(ty) {self.outputs.insert(output(component),proof.view_borrow(component));}
     }
     fn input(&self,id:ValueIdentity)->bool {match id{ValueIdentity::Register(n)=>n<self.input_width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)|ValueIdentity::ParameterStorage(..)|ValueIdentity::DatasetContent(..)=>true,_=>false}}
-    fn address_borrows(&self,borrow:Borrow,when:bounds::Condition)->Option<(Borrow,bounds::Condition)>{
+    fn address_borrows(&self,borrow:Borrow,when:bounds::Condition)->Option<(Borrow,bounds::Condition)> {
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id,indices)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
                 .map(|id|Borrow::source(Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,self)).collect()))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
@@ -328,7 +345,7 @@ impl Function {
                     if let address::Root::Resource{index,..}|address::Root::Dataset{index,..}=&mut origin.root {
                         *index=index.filter(|index|index.map(|id|self.parameters.get(&id).copied().filter(|id|self.input(*id))).is_some());
                     }
-                    if let address::Root::Resource{borrow,..}|address::Root::External(address::Identity::Storage(borrow))=&mut origin.root {
+                    if let address::Root::Resource{borrow,..}|address::Root::Dataset{borrow,..}|address::Root::External(address::Identity::Storage(borrow))=&mut origin.root {
                         *borrow=borrow.map_sources(|source|match source{
                             Origin::Data(id) if !self.parameters.get(&id).is_some_and(|id|self.input(*id))=>Borrow::default(),
                             Origin::Position(origin)if origin.has_local()=>Borrow::default(),source=>Borrow::source(source)
@@ -337,36 +354,49 @@ impl Function {
                     }
                     canonical(Borrow::source(Origin::Position(Arc::new(origin))),self,None,&BTreeMap::new())
                 },
-            Origin::Unresolved|Origin::External|Origin::Contents{..}|Origin::Relation(..)=>canonical(Borrow::source(source),self,None,&BTreeMap::new()),
+            Origin::Unresolved|Origin::External|Origin::Contents{..}|Origin::Relation(..)
+            |Origin::TaskOutput{projection:view::TaskProjection::Writes|view::TaskProjection::Places,..}=>canonical(Borrow::source(source),self,None,&BTreeMap::new()),
             _=>Borrow::default(),
         });
         if !selected.active(){return None;}
         let bindings=residency::input_parameters(&self.parameters,self.input_width);
         let when=when.guard_at_call(&bindings);
-        let borrows=selected.guards_at_call(&bindings);
-        when.active().then_some((borrows,when))
+        when.active().then(||(selected.guards_at_call(&bindings),when))
     }
     fn initialization_access(&self,read:&address::InitializationRead,when:bounds::Condition)->Option<Access>{
         if read.missing().is_empty(){return None;}
-        let(borrows,when)=self.address_borrows(read.borrow(),when)?;
         let parameters=residency::input_parameters(&self.parameters,self.input_width);
         let initialized:Vec<_>=address::initialization_effects(&read.initialized,&bounds::Clause::default()).into_iter().filter_map(|effect|{
             let address::InitializationEffect::Position(mut fact)=effect else{return None;};
-            if fact.origin.has_local(){return None;}
-            let value=canonical(Borrow::source(Origin::Position(Arc::new(fact.origin))),self,None,&BTreeMap::new());
-            if value.unresolved(){return None;}
-            let Origin::Position(origin)=value.sources.iter().next()? else{return None;};
-            fact.origin=origin.as_ref().clone();
+            if fact.source.borrow().has_local(){return None;}
+            fact.source=match fact.source {
+                address::InitializationSource::Position(origin)=>{
+                    let value=canonical(Borrow::source(Origin::Position(Arc::new(origin))),self,None,&BTreeMap::new());
+                    if value.unresolved(){return None;}
+                    let Origin::Position(origin)=value.sources.iter().next()? else{return None;};
+                    address::InitializationSource::Position(origin.as_ref().clone())
+                },
+                address::InitializationSource::Task(borrow)=>{
+                    let value=canonical(borrow,self,None,&BTreeMap::new());
+                    if value.unresolved(){return None;}
+                    address::InitializationSource::Task(value)
+                },
+            };
             fact.when=fact.when.guaranteed_at_call(&parameters);
             Some(fact)
         }).collect();
-        Some(Access::Initialized{borrows,initialized:address::merge_initializations(initialized),when})
+        self.address_access(read.borrow(),|borrows,when|Access::Initialized{borrows,initialized:address::merge_initializations(initialized),when},when)
     }
     fn address_access(&self,borrow:Borrow,make:impl FnOnce(Borrow,bounds::Condition)->Access,when:bounds::Condition)->Option<Access>{
-        let(borrows,when)=self.address_borrows(borrow,when)?;
-        Some(make(borrows,when))
+        let (borrows, when) = self.address_borrows(borrow, when)?;
+        Some(make(borrows, when))
     }
-    fn access(&self,resources:Borrow,borrows:Borrow,ownership:bool,when:bounds::Condition)->Option<Access>{
+    fn access(&self,resources:Borrow,borrows:Borrow,kind:view::Exclusion,when:bounds::Condition)->Option<Access>{
+        if matches!(kind,view::Exclusion::Position(_)) {
+            let (resources, _) = self.address_borrows(resources, when.clone())?;
+            let (borrows, when) = self.address_borrows(borrows, when)?;
+            return Some(Access::Resource { resources, borrows, kind, when });
+        }
         let mut parameters=residency::input_parameters(&self.parameters,self.input_width);
         let mut indices=resource_index_values(&resources);indices.extend(resource_index_values(&borrows));
         indices.extend(bounds::Proof::condition(when.clone()).scalar_identities().into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))));
@@ -386,14 +416,21 @@ impl Function {
                 Origin::Projection{parent,fields}=>Borrow::projection(external(function,*parent,parameters),fields),
                 Origin::Position(origin)=>origin.resources(),
                 Origin::Contents{..}|Origin::Relation(..)=>canonical(Borrow::source(source),function,None,&BTreeMap::new()),
+                Origin::Task{captures,..}=>external(function,*captures,parameters),
+                Origin::TaskOutput{task,projection}=>external(function,*task,parameters).task_projection(projection),
                 Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
             }).guards_at_call(parameters)
         }
-        let resources=external(self,resources.resources(),&parameters);let borrows=external(self,if ownership{borrows.owners()}else{borrows.resources()},&parameters);
+        let resources=external(self,resources.resources(),&parameters);
+        let borrows=external(self,match kind {
+            view::Exclusion::Ownership=>borrows.owners(),
+            view::Exclusion::View=>borrows.view_resources(),
+            _=>borrows.resources(),
+        },&parameters);
         if !resources.active()||!borrows.active(){return None;}
         let when=when.guard_at_call(&parameters);
         let when=bounds::Condition::guard(when.assume(&bounds::Clause::default(),true).canonical());
-        when.active().then_some(Access::Resource{resources,borrows,ownership,when})
+        when.active().then_some(Access::Resource{resources,borrows,kind,when})
     }
     fn dataset_access(&self,borrow:Borrow,index:Option<bounds::Operand>,access:super::Access,atomic:bool,when:bounds::Condition,owns_input:&impl Fn(ValueIdentity)->bool)->Option<Access> {
         fn inputs(borrow:&Borrow,function:&Function,owns_input:&impl Fn(ValueIdentity)->bool)->Borrow {
@@ -409,9 +446,9 @@ impl Function {
                 source=>Borrow::source(source),
             })
         }
-        let(borrows,when)=self.address_borrows(inputs(&borrow,self,owns_input),when)?;
+
         let index=index.and_then(|index|index.map(|id|self.parameters.get(&id).copied().filter(|id|self.input(*id))));
-        Some(Access::Dataset{borrows,when,index,access,atomic})
+        self.address_access(inputs(&borrow,self,owns_input),|borrows,when|Access::Dataset{borrows,when,index,access,atomic},when)
     }
 }
 #[derive(Clone,Default,PartialEq,Eq)]
@@ -431,7 +468,7 @@ fn position_roots(position:&Position,roots:&mut Vec<Borrow>) {
 }
 fn initialization_roots(effect:&address::InitializationEffect,roots:&mut Vec<Borrow>) {
     match effect {
-        address::InitializationEffect::Position(fact)=>roots.push(Borrow::source(Origin::Position(Arc::new(fact.origin.clone())))),
+        address::InitializationEffect::Position(fact)=>roots.push(fact.source.borrow()),
         address::InitializationEffect::Call{..}=>{},
         address::InitializationEffect::Iteration{iteration,..}=>{
             for entry in iteration.states.iter(){for position in &entry.initialized{position_roots(position,roots);}}
@@ -465,11 +502,18 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
                 Requirement::Address{..}|Requirement::Dataset{..}|Requirement::Nonzero{..}=>{},
             }
         }
-        for call in &function.calls{if contracts.contains(&call.function){roots.extend(call.arguments.values().map(bounds::Proof::borrowed_view));}}
+        for call in &function.calls {
+            roots.push(call.live_task_places.clone());
+            if contracts.contains(&call.function){roots.extend(call.arguments.values().map(bounds::Proof::borrowed_view));}
+        }
         let mut loops=BTreeSet::new();let mut calls=BTreeSet::new();
         while let Some(borrow)=roots.pop() {
             for source in &borrow.sources {
-                if let Origin::Element{parent,..}|Origin::Projection{parent,..}=source{roots.push(parent.as_ref().clone());}
+                match source {
+                    Origin::Element{parent,..}|Origin::Projection{parent,..}|Origin::TaskOutput{task:parent,..}=>roots.push(parent.as_ref().clone()),
+                    Origin::Task{captures,outputs,initialized,..}=>{roots.push(captures.as_ref().clone());roots.push(initialized.as_ref().clone());roots.extend(outputs.iter().cloned());},
+                    _=>{},
+                }
                 if let Origin::Contents{origin,..}=source{roots.push(origin.resources());}
                 if let Origin::Relation(graph,root)=source{roots.extend(graph.seed_borrows(*root).into_iter().cloned());}
                 if let Origin::Position(origin)=source {
@@ -494,6 +538,17 @@ fn call_content_sources(borrow:&Borrow,call:&Call,arguments:&BTreeMap<ValueIdent
         Origin::Position(origin)=>origin.map_borrows(|parent|call_content_sources(parent,call,arguments)).normalize(),
         Origin::Element{parent,fields,index}=>Borrow::element(call_content_sources(&parent,call,arguments),fields,index),
         Origin::Projection{parent,fields}=>Borrow::projection(call_content_sources(&parent,call,arguments),fields),
+        Origin::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Origin::Task{
+            captures:Box::new(call_content_sources(&captures,call,arguments)),
+            initialized:Box::new(call_content_sources(&initialized,call,arguments)),
+            outputs:outputs.into_iter().map(|output|call_content_sources(&output,call,arguments)).collect(),
+            completions:completions.iter().map(|completion|completion.map_task(|task|call_content_sources(task,call,arguments))).collect(),
+            guards:guards.into_iter().map(|mut guard|{
+                guard.target=call_content_sources(&guard.target,call,arguments);
+                guard
+            }).collect(),
+        }),
+        Origin::TaskOutput{task,projection}=>call_content_sources(&task,call,arguments).task_projection(projection),
         source=>Borrow::source(source),
     })
 }
@@ -583,7 +638,7 @@ impl BorrowEvaluation<'_>{
         let(function,known)=(self.function,self.known);
         let usage=&function.uses[memory];
         let Requirement::Memory{borrow,access,written,address_fields,..}=&usage.requirement else{return;};
-        if let Some(call)=function.calls.iter().find(|call|call.memory==memory){
+        if let Some(call)=function.calls.iter().find(|call|!call.deferred&&call.memory==memory){
             for access in known[&call.function].interface.access.iter().rev(){
                 let Access::Stored{borrows,word,value:stored,when}=access else{continue;};
                 let when=when.guard_at_call(&call.arguments).assume(&usage.path,true);
@@ -735,6 +790,17 @@ impl BorrowEvaluation<'_>{
                 },
                 Origin::Element{parent,fields,index}=>Borrow::element(self.evaluate(parent),fields.clone(),*index),
                 Origin::Projection{parent,fields}=>Borrow::projection(self.evaluate(parent),fields.clone()),
+                Origin::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Origin::Task{
+                    captures:Box::new(self.evaluate(captures)),
+                    initialized:Box::new(self.evaluate(initialized)),
+                    outputs:outputs.iter().map(|output|self.evaluate(output)).collect(),
+                    completions:completions.iter().map(|completion|completion.map_task(|task|self.evaluate(task))).collect(),
+                    guards:guards.iter().cloned().map(|mut guard|{
+                        guard.target=self.evaluate(&guard.target);
+                        guard
+                    }).collect(),
+                }),
+                Origin::TaskOutput{task,projection}=>self.evaluate(task).task_projection(projection.clone()),
                 Origin::Position(origin)=>origin.map_borrows(|root|self.evaluate(root)).normalize(),
                 Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(origin.map_borrows(|root|self.evaluate(root))),word:*word}),
                 source=>Borrow::source(source.clone()),
@@ -781,6 +847,9 @@ fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds:
     index.and_then(|index|index.map(|id|match id{ValueIdentity::ElementIndex(_)=>Some(id),_=>function.parameters.get(&id).copied().filter(|id|function.input(*id))}))
 }
 fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&BTreeMap<Origin,Borrow>)->Borrow {
+    canonical_relation(borrow,function,resource,exposed,false)
+}
+fn canonical_relation(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&BTreeMap<Origin,Borrow>,initialization:bool)->Borrow {
     // Impossible source edges carry known absence, not a live private owner.
     // Keep that knowledge in the existing Inactive representation at the ABI.
     let known=!borrow.sources.is_empty();
@@ -818,11 +887,27 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&
         Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().map(|id|Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,function)).collect())).unwrap_or(Origin::Unresolved)),
         Origin::Element{parent,fields,index}=>Borrow::element(canonical(*parent,function,None,exposed),fields,input_index(index,function)),
         Origin::Projection{parent,fields}=>Borrow::projection(canonical(*parent,function,None,exposed),fields),
+        Origin::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Origin::Task{
+            captures:Box::new(canonical(*captures,function,None,exposed)),
+            initialized:Box::new(canonical_relation(*initialized,function,None,exposed,true)),
+            outputs:outputs.into_iter().map(|output|canonical(output,function,None,exposed)).collect(),
+            completions:completions.iter().map(|completion|completion.map_task(|task|canonical(task.clone(),function,None,exposed))).collect(),
+            guards:guards.into_iter().map(|mut guard|{
+                guard.target=canonical(guard.target,function,None,exposed);
+                guard.map_arguments(|proof|proof.at_call(&parameters));
+                guard.map_inputs(|word|word.map(|id|function.parameters.get(&id).copied()));
+                guard
+            }).collect(),
+        }),
+        Origin::TaskOutput{task,projection}=>canonical(*task,function,None,exposed).task_projection(projection.map_result(|id|function.parameters.get(&id).copied())),
         Origin::Position(origin)=>Borrow::source(Origin::Position(Arc::new(address(&origin)))),
         Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(address(&origin)),word}),
         Origin::Relation(graph,root)=>Borrow::source(Origin::Relation(Arc::new(graph.canonical(function,exposed)),root)),
         Origin::Unresolved|Origin::Inactive|Origin::External=>Borrow::source(source),
     }};
+    if initialization {
+        return borrow.initialization_at_call(&parameters).map_sources(renamed);
+    }
     match resource {
         // 拥有输出的来源改名不附加条件，先投影正式输入关系。
         Some(_)=>borrow.guards_at_call(&parameters).map_sources(renamed),
@@ -947,7 +1032,7 @@ fn initialization_effects(effects:&[address::InitializationEffect],function:&Fun
             }
         }
     }
-    for fact in &mut facts {fact.origin=fact.origin.map_borrows(|borrow|evaluate(borrow,function,state,known,true));}
+    for fact in &mut facts {fact.source=fact.source.map_borrows(|borrow|evaluate(borrow,function,state,known,true));}
     InitializedEffects{facts:address::merge_initializations(facts),iterations}
 }
 fn resolved_initialization(initialized:&BTreeSet<Position>,path:&bounds::Clause,function:&Function,state:&State,known:&States)->BTreeSet<Position> {
@@ -972,7 +1057,7 @@ fn refreshed_at_call(borrow:&Borrow,call:&Call,path:&bounds::Clause,function:&Fu
     let initialized=initialization_effects(&call.initialization,function,state,known).positions(path);
     evaluate(borrow,function,state,known,true).map_sources(|source|match source {
         Origin::Position(origin)=>{
-            let fact=address::Initialization{origin:origin.as_ref().clone(),when:bounds::Condition::constant(true)};
+            let fact=address::Initialization{source:address::InitializationSource::Position(origin.as_ref().clone()),when:bounds::Condition::constant(true)};
             let positions=fact.positions(path);
             let mut origin=origin.as_ref().clone();
             origin.initialized=origin.initialized.iter().enumerate().map(|(i,ready)|*ready||positions.get(i).is_some_and(|position|position.initialized_by(&initialized))).collect();
@@ -990,7 +1075,7 @@ fn access_at_call(access:&Access,call:&Call,path:&bounds::Clause,function:&Funct
     let borrows=if matches!(access,Access::Initialized{..}){evaluate(&borrows,function,state,known,true)}else{refreshed_at_call(&borrows,call,path,function,state,known)};
     let when=bounds::Condition::guard(when);
     match access {
-        Access::Resource{resources,ownership,..}=>Access::Resource{resources:evaluate(&call_content_sources(resources,call,arguments).at_call(arguments),function,state,known,true),borrows,ownership:*ownership,when},
+        Access::Resource{resources,kind,..}=>Access::Resource{resources:evaluate(&call_content_sources(resources,call,arguments).at_call(arguments),function,state,known,true),borrows,kind:*kind,when},
         Access::Position{position,..}=>Access::Position{borrows,when,position:PositionAccess{written:position.written.as_ref().map(|proof|proof.at_call(arguments)),..position.clone()}},
         Access::Memory{access,..}=>Access::Memory{borrows,when,access:*access},
         Access::Stored{word,value,..}=>Access::Stored{borrows,when,word:*word,value:evaluate(&call_content_sources(value,call,arguments).at_call(arguments),function,state,known,true)},
@@ -1065,33 +1150,42 @@ fn initializations(function:&Function,state:&State,known:&States,candidates:bool
     }
     let facts=initialization_effects(&function.initialization,function,state,known).facts;
     let facts=address::merge_initializations(facts.into_iter().filter_map(|mut fact|{
-        // A guarantee names one actual selected location; possible owners are never separate writes.
-        loop {
-            fact.origin=fact.origin.map_borrows(|borrow|address::borrow_in_path(borrow,&fact.when.assume(&bounds::Clause::default(),true)));
-            let value=fact.origin.normalize();
-            if !value.inputs.is_empty()||!value.calls.is_empty()||value.sources.iter().count()!=1{break;}
-            let(source,when)=value.sources.entries().next().unwrap();
-            let Origin::Position(origin)=source else{break;};
-            if bounds::Condition::guard(when).truth_in(&bounds::Clause::default())!=Some(true)||**origin==fact.origin{break;}
-            fact.origin=origin.as_ref().clone();
-        }
-        if fact.origin.has_local(){return None;}
-        fact.origin=fact.origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,&exposed));
-        if let address::Root::Resource{index:Some(index),..}|address::Root::Dataset{index:Some(index),..}=&mut fact.origin.root {
-            *index=index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id)))?;
-        }
-        let path=fact.when.assume(&bounds::Clause::default(),true);
-        if fact.origin.layout.parts.iter().zip(fact.origin.words.iter()).all(|((scalar,_),word)|required.iter().any(|(read,when)|{
-            when.truth_in(&path)==Some(true)&&read.base==fact.origin.base&&same_content_storage(&read.root,&fact.origin.root)
-                &&read.layout.parts.iter().zip(read.words.iter()).any(|((read_scalar,_),read_word)|read_scalar==scalar&&read_word==word)
-        })){return None;}
-        fact.origin.positions=Arc::from([]);
+        fact.source=match fact.source {
+            address::InitializationSource::Position(mut origin)=>{
+                // A guarantee names one actual selected location; possible owners are never separate writes.
+                loop {
+                    origin=origin.map_borrows(|borrow|address::borrow_in_path(borrow,&fact.when.assume(&bounds::Clause::default(),true)));
+                    let value=origin.normalize();
+                    if !value.inputs.is_empty()||!value.calls.is_empty()||value.sources.iter().count()!=1{break;}
+                    let(source,when)=value.sources.entries().next().unwrap();
+                    let Origin::Position(selected)=source else{break;};
+                    if bounds::Condition::guard(when).truth_in(&bounds::Clause::default())!=Some(true)||**selected==origin{break;}
+                    origin=selected.as_ref().clone();
+                }
+                if origin.has_local(){return None;}
+                origin=origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,&exposed));
+                if let address::Root::Resource{index:Some(index),..}|address::Root::Dataset{index:Some(index),..}=&mut origin.root {
+                    *index=index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id)))?;
+                }
+                let path=fact.when.assume(&bounds::Clause::default(),true);
+                if origin.layout.parts.iter().zip(origin.words.iter()).all(|((scalar,_),word)|required.iter().any(|(read,when)|{
+                    when.truth_in(&path)==Some(true)&&read.base==origin.base&&same_content_storage(&read.root,&origin.root)
+                        &&read.layout.parts.iter().zip(read.words.iter()).any(|((read_scalar,_),read_word)|read_scalar==scalar&&read_word==word)
+                })){return None;}
+                origin.positions=Arc::from([]);
+                address::InitializationSource::Position(origin)
+            },
+            address::InitializationSource::Task(borrow)=>{
+                if borrow.has_local(){return None;}
+                address::InitializationSource::Task(canonical(borrow,function,None,&exposed))
+            },
+        };
         if candidates{fact.when=bounds::Condition::constant(true);}
         Some(fact)
     }));
     if candidates{return facts;}
     facts.into_iter().filter_map(|mut fact|{
-        fact.when=normalized_condition(function.initialization_when(fact.when).guaranteed_at_call(&parameters));
+        fact.when=normalized_condition(function.initialization_when(&fact).guaranteed_at_call(&parameters));
         // Original normal exits form a finite induction domain; recursive scalar substitutions
         // cannot manufacture an unbounded chain of successively expanded path formulas.
         let mut when=bounds::Condition::constant(false);
@@ -1115,10 +1209,10 @@ fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut Sta
     loop {
         let mut next=known.clone();
         for(name,function)in functions {
-            let values=initializations(function,&known[name],known,false).into_iter().map(|fact|(fact.origin,fact.when)).collect::<BTreeMap<_,_>>();
+            let values=initializations(function,&known[name],known,false).into_iter().map(|fact|(fact.source,fact.when)).collect::<BTreeMap<_,_>>();
             next.get_mut(name).unwrap().interface.initialization=known[name].interface.initialization.iter().filter_map(|old|{
-                let when=normalized_condition(old.when.clone().logical(values.get(&old.origin)?.clone(),false));
-                when.active().then(||address::Initialization{origin:old.origin.clone(),when})
+                let when=normalized_condition(old.when.clone().logical(values.get(&old.source)?.clone(),false));
+                when.active().then(||address::Initialization{source:old.source.clone(),when})
             }).collect();
         }
         if *known==next{break;}*known=next;
@@ -1169,25 +1263,34 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     continue;
                 }
                 let value=match &usage.requirement {
-                    Requirement::Unborrowed{resource,borrow,ownership,..}=>function.access(
+                    Requirement::Unborrowed{resource,borrow,kind,..}=>function.access(
                         evaluate(resource,function,state,known,true),evaluate(borrow,function,state,known,true),
-                        *ownership,bounds::Condition::guard(usage.path.clone())),
+                        *kind,bounds::Condition::guard(usage.path.clone())),
                     Requirement::Address{borrow,layout,written,writable,initialized,..}=>function.address_access(
                         evaluate(borrow,function,state,known,true),
                         |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),written:written.as_ref().map(|proof|proof.at_call(&parameters)),writable:*writable,initialized:*initialized}},
                         bounds::Condition::guard(usage.path.clone())),
-                    Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if !function.calls.iter().any(|call|call.memory==*memory)=>
+                    Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if !function.calls.iter().any(|call|!call.deferred&&call.memory==*memory)=>
                         function.address_access(evaluate(borrow,function,state,known,true),|borrows,when|Access::Memory{borrows,when,access:*access},bounds::Condition::guard(usage.path.clone())),
                     Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,*access,*atomic,bounds::Condition::guard(usage.path.clone()),&|id|owns_input(name,id)),
                     _=>None,
                 };
                 if let Some(value)=value{insert(&mut access,value,normalize);}
             }
-            for call in function.calls.iter().filter(|call|call.function!=*name||state.entries.is_none()) {for requirement in &known[&call.function].interface.access {
+            for call in function.calls.iter().filter(|call|call.function!=*name||state.entries.is_none()) {
+                let live_task_places=evaluate(&call.live_task_places,function,state,known,true);
+                for requirement in &known[&call.function].interface.access {
                 let value=access_at_call(requirement,call,&call.path,function,state,known);
+                if live_task_places.active()
+                    && let Some((accessed,when,mode))=value.accessed()
+                    && let Some(exclusion)=function.access(accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when.clone())
+                {
+                    insert(&mut access,exclusion,normalize);
+                }
                 let value=match value {
                     Access::Position{mut position,borrows,when}=>{
-                        if position.written.is_none()&&!position.initialized{continue;}
+                        if call.deferred { position.written=None; }
+                        if position.written.is_none()&&!position.initialized&&!position.writable{continue;}
                         position.written=position.written.as_ref().map(|proof|proof.at_call(&parameters));
                         function.address_access(borrows,|borrows,when|Access::Position{borrows,when,position},when)
                     },
@@ -1197,7 +1300,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                         let path=when.assume(&bounds::Clause::default(),true);
                         function.initialization_access(&output_initialization_read(&borrows,&initialized,&path),when)
                     },
-                    Access::Resource{resources,borrows,ownership,when}=>function.access(resources,borrows,ownership,when),
+                    Access::Resource{resources,borrows,kind,when}=>function.access(resources,borrows,kind,when),
                     Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,when,&|id|owns_input(name,id)),
                 };
                 if let Some(value)=value{insert(&mut access,value,normalize);}
@@ -1210,7 +1313,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     Access::Position{borrows,when,position}=>Access::Position{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),position:PositionAccess{written:position.written.as_ref().map(|p|p.at_call(&inputs)),..position}},
                     Access::Memory{borrows,when,access}=>Access::Memory{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),access},
                     Access::Initialized{borrows,when,initialized}=>Access::Initialized{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),initialized:initialized.iter().map(|f|f.at_call(&inputs)).collect()},
-                    Access::Resource{resources,borrows,when,ownership}=>Access::Resource{resources:resources.at_call(&inputs),borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),ownership},
+                    Access::Resource{resources,borrows,when,kind}=>Access::Resource{resources:resources.at_call(&inputs),borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),kind},
                     Access::Dataset{borrows,when,index,access,atomic}=>Access::Dataset{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),index:index.and_then(|i|i.at_call(&inputs)),access,atomic},
                     Access::Stored{..}=>continue,
                 };let mut value=value;let when=value.when_mut();*when=when.clone().logical(invoked.clone(),false);insert(&mut access,value,normalize);}
@@ -1384,7 +1487,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
         loop {
         // Only scalar loop inputs feed back; ordinary Memory uses keep their original one-pass order.
         let previous=function.loops.values().any(|definition|definition.value.is_some()).then(||resolved.clone());values.clear();
-        let mut calls=function.calls.iter().peekable();let mut usages=function.uses.iter().enumerate().peekable();
+        let mut calls=function.calls.iter().filter(|call|!call.deferred).peekable();let mut usages=function.uses.iter().enumerate().peekable();
         while let Some((memory,usage))=usages.next(){
             if let Requirement::Dataset{values:Some(read),..}=&usage.requirement {
                 let mut proof=read[0].proof.substitute_values(&resolved).at_call(&read[0].bindings);
@@ -1469,14 +1572,21 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
         }
         for call in &function.calls{
             let path=bounds::Clause::both(&call.path,&context);
+            let live_task_places=evaluate(&call.live_task_places,function,state,&known,true);
             for requirement in &known[&call.function].interface.access{
                 let value=access_at_call(requirement,call,&path,function,state,&known);
                 let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..}|Access::Stored{when,..})=&value;
                 if when.active(){
                     let path=when.assume(&bounds::Clause::default(),true);
+                    if let Some((accessed,_,mode))=value.accessed() {
+                        Requirement::Unborrowed{
+                            resource:accessed.restricted(&path),borrow:live_task_places.restricted(&path),
+                            kind:view::Exclusion::Position(mode),span:call.span,
+                        }.check(&call.source)?;
+                    }
                     let requirement=match value {
                         Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,written:position.written,writable:position.writable,initialized:position.initialized,span:call.span},
-                        Access::Resource{resources,borrows,ownership,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),ownership,span:call.span},
+                        Access::Resource{resources,borrows,kind,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),kind,span:call.span},
                         Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}=>continue,
                         Access::Initialized{borrows,initialized,..}=>{
                             let read=output_initialization_read(&borrows,&initialized,&path);

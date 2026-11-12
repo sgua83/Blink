@@ -983,6 +983,23 @@ impl<'b, 'w> Scope<'b, 'w> {
                         if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(instance,&args)?,None=>BTreeMap::new()};writes(Write::External{call:expr.clone(),instance,arguments,syntax:args.clone()})?;}
                         }
                         crate::frontend::NameResolution::Missing => {
+                            if self.builder.is_none() && name=="start_task" && args.len()>=2 {
+                                let worker=args.at(0);
+                                let worker=match worker.kind() {
+                                    ExprKind::Name(worker)=>Some(worker),
+                                    ExprKind::FunctionRef(worker,explicit) if explicit.is_empty()=>Some(worker),
+                                    _=>None,
+                                };
+                                if let Some(worker)=worker
+                                    && let crate::frontend::NameResolution::Unique(key)=self.world.resolve(worker,self.lexical.module(),self.lexical.imports(),true)
+                                {
+                                    let parameters=self.world.functions[&key].function.params();
+                                    let positions=parameters.iter().filter(|param|param.access()!=Access::Value);
+                                    for (index,_) in positions.enumerate().take(args.len()-2) {
+                                        writes(Write::Position{place:args.at(index+2),call:Some(expr.clone()),contents:false,iterator:None,when:None,local_value:false})?;
+                                    }
+                                }
+                            }
                             if name=="take_last" && args.len()==2 {
                                 let place=args.at(1);
                                 writes(Write::Position{place,call:Some(expr.clone()),contents:false,iterator:None,when:None,local_value:false})?;

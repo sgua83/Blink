@@ -42,6 +42,7 @@ impl Builder<'_> {
         }
         let scalar = ty.components[0].0;
         let write=access.writes();
+        self.require_place_access(&place,access,target.span())?;
         self.dataset_effect(&place,access,true,target.span())?;
         let (base, offset, word) = match &place {
             Place::Indexed { base, offset, words, .. } => (&**base, Some(*offset), words[0]),

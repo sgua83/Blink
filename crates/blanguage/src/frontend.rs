@@ -1086,7 +1086,10 @@ impl World {
             let [GenericArgument::Type(payload)] = name.arguments.as_slice() else {
                 return source.fail(span,"B224","任务类型需要一个类型实参");
             };
-            let mut ty=self.ty_inner(payload,source,span,module,imports,stack)?;
+            let void_result=name.name=="task" && payload.name=="void"
+                && payload.arguments.is_empty() && !payload.dataset && !payload.view && !payload.tile
+                && payload.count.is_none() && payload.contracts.is_none();
+            let mut ty=if void_result { ir::Ty::unit() } else { self.ty_inner(payload,source,span,module,imports,stack)? };
             if payload.dataset {
                 ty=ir::Ty::owned_dataset(ty.syntax(),self.shape(&payload.count,source,span,module,imports)?);
             }
