@@ -1503,3 +1503,143 @@ extern "C" u64 offset_address(u32 stride, address output) on cpu {
     put_byte(cursor, u8(0x49)); put_byte(cursor + 1u64, u8(0x01)); put_byte(cursor + 2u64, u8(0xc7));
     return cursor + 3u64 - start;
 }
+
+// Buffer field offsets and stack indices come from the original native layout.
+u64 packet_table_base(u64 at, u32 offset) on cpu {
+    put_byte(at, u8(0x4d)); put_byte(at + 1u64, u8(0x8b));
+    put_byte(at + 2u64, u8(0xbc)); put_byte(at + 3u64, u8(0x24));
+    write_word(at + 4u64, offset);
+    return at + 8u64;
+}
+
+MoveLocation packet_buffer_operand(u32 offset) on cpu {
+    return MoveLocation(u64(offset), MOVE_MEMORY, u8(15), u8(0), u8(0));
+}
+
+u64 packet_buffer_scale(u64 at, u32 stride_offset) on cpu {
+    MoveLocation stride = MoveLocation(u64(stride_offset), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
+    return encode_operand_instruction(at, u16(0xaf0f), u8(0), true, u8(0), stride);
+}
+
+u64 packet_memory_at(u64 at, PacketMemory memory, u8 lane) on cpu {
+    u64 cursor = at;
+    if (memory.index_kind == 1) {
+        MoveLocation index = MoveLocation(u64(memory.frame_offset + u32(lane) * 4), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+        cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(0), index);
+    } else if (memory.index_kind == 2) {
+        cursor = packet_lane_at(cursor, memory.index, u8(0), u8(0));
+    } else {
+        put_byte(cursor, u8(0x89)); put_byte(cursor + 1u64, u8(0xd8)); cursor += 2u64;
+        if (lane != u8(0)) {
+            cursor = register_instruction(cursor, u16(0x83), u8(0), true, u8(0), u8(0));
+            put_byte(cursor, lane); cursor += 1u64;
+        }
+    }
+    cursor = packet_table_base(cursor, memory.data_offset);
+    return packet_buffer_scale(cursor, memory.stride_offset);
+}
+
+u64 packet_contiguous_field(u64 at, u32 stride_offset) on cpu {
+    MoveLocation stride = MoveLocation(u64(stride_offset), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
+    u64 cursor = encode_operand_instruction(at, u16(0x83), u8(0), true, u8(7), stride);
+    put_byte(cursor, u8(4));
+    return condition_field(cursor + 1u64, u8(0x85));
+}
+
+u64 packet_combine_at(u64 at, u8 target, bool broadcast) on cpu {
+    if (broadcast) { return packet_shuffle_at(at, target, target, u8(0)); }
+    u64 cursor = packet_instruction(at, u8(0x66), u8(0x62), target, u8(1));
+    cursor = packet_instruction(cursor, u8(0x66), u8(0x62), u8(2), u8(3));
+    return packet_instruction(cursor, u8(0x66), u8(0x6c), target, u8(2));
+}
+
+extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, address output) on cpu {
+    u64 start = address_bits(output); u64 cursor = start; u64 done = 0u64;
+    u8 target = packet_destination(dst);
+    MoveLocation operand = packet_buffer_operand(memory.offset);
+    if (memory.contiguous != 0) {
+        u64 strided = packet_contiguous_field(cursor, memory.stride_offset);
+        cursor = packet_memory_at(strided + 4u64, memory, u8(0));
+        cursor = encode_operand_instruction(cursor, u16(0x100f), u8(0), false, target, operand);
+        done = jump_field(cursor); cursor = done + 4u64;
+        patch_relative(unsafe_address(strided), strided, cursor);
+    }
+    bool broadcast = memory.index_kind == 2;
+    u8 count = u8(4); if (broadcast) { count = u8(1); }
+    for (ordinal in 0..u32(count)) {
+        u8 lane = u8(ordinal);
+        cursor = packet_memory_at(cursor, memory, lane);
+        u8 to = lane; if (lane == u8(0)) { to = target; }
+        cursor = encode_operand_instruction(cursor, u16(0x6e0f), u8(0x66), false, to, operand);
+    }
+    cursor = packet_combine_at(cursor, target, broadcast);
+    if (done != 0u64) { patch_relative(unsafe_address(done), done, cursor); }
+    cursor += packet_from_word(boolean, target, unsafe_address(cursor));
+    return packet_store_at(cursor, dst, target) - start;
+}
+
+extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address output) on cpu {
+    u64 start = address_bits(output); u64 cursor = start; u64 done = 0u64;
+    u8 source = u8(1);
+    if (src.kind == MOVE_XMM) { source = src.base; }
+    else { cursor = packet_load_at(cursor, src, source); }
+    MoveLocation operand = packet_buffer_operand(memory.offset);
+    if (memory.contiguous != 0) {
+        u64 strided = packet_contiguous_field(cursor, memory.stride_offset);
+        cursor = packet_memory_at(strided + 4u64, memory, u8(0));
+        cursor = encode_operand_instruction(cursor, u16(0x110f), u8(0), false, source, operand);
+        done = jump_field(cursor); cursor = done + 4u64;
+        patch_relative(unsafe_address(strided), strided, cursor);
+    }
+    for (ordinal in 0..4) {
+        u8 lane = u8(ordinal);
+        cursor = packet_memory_at(cursor, memory, lane);
+        u8 from = source;
+        if (lane != u8(0)) {
+            cursor = packet_shuffle_at(cursor, u8(0), source, lane * u8(0x55)); from = u8(0);
+        }
+        cursor = encode_operand_instruction(cursor, u16(0x7e0f), u8(0x66), false, from, operand);
+    }
+    if (done != 0u64) { patch_relative(unsafe_address(done), done, cursor); }
+    return cursor - start;
+}
+
+u64 packet_gather_base(u64 at, PacketGather input, u8 lane) on cpu {
+    if (input.kind == 0) { return packet_table_base(at, input.data_offset); }
+    u64 cursor = packet_lane_at(at, input.base_high, lane, u8(15));
+    put_byte(cursor, u8(0x49)); put_byte(cursor + 1u64, u8(0xc1));
+    put_byte(cursor + 2u64, u8(0xe7)); put_byte(cursor + 3u64, u8(32)); cursor += 4u64;
+    cursor = packet_lane_at(cursor, input.base_low, lane, u8(0));
+    put_byte(cursor, u8(0x49)); put_byte(cursor + 1u64, u8(0x09)); put_byte(cursor + 2u64, u8(0xc7));
+    return cursor + 3u64;
+}
+
+extern "C" u64 packet_gather(MoveLocation dst, PacketGather input, bool boolean, address output) on cpu {
+    u64 start = address_bits(output); u64 cursor = start;
+    bool shared = input.kind == 0 || input.uniform != 0;
+    if (shared) { cursor = packet_gather_base(cursor, input, u8(0)); }
+    u8 count = u8(4); if (input.broadcast != 0) { count = u8(1); }
+    for (ordinal in 0..u32(count)) {
+        u8 lane = u8(ordinal);
+        if (!shared) { cursor = packet_gather_base(cursor, input, lane); }
+        MoveLocation operand = packet_buffer_operand(input.offset);
+        if (input.kind == 0) {
+            cursor = packet_lane_at(cursor, input.index, lane, u8(0));
+            cursor = packet_buffer_scale(cursor, input.stride_offset);
+        } else {
+            AddressEncoding memory;
+            if (input.kind == 1) {
+                memory = view_memory_at(u8(15), input.index, input.stride, input.offset, true, lane, unsafe_address(cursor));
+            } else {
+                memory = view_memory_dynamic_at(u8(15), input.index, input.stride_low, input.stride_high, input.offset, true, lane, unsafe_address(cursor));
+            }
+            cursor += memory.length;
+            operand = MoveLocation(u64(memory.offset), MOVE_MEMORY, memory.base, memory.index, memory.shift);
+        }
+        // Extract all original lanes before the allocated destination is overwritten.
+        cursor = encode_operand_instruction(cursor, u16(0x6e0f), u8(0x66), false, lane, operand);
+    }
+    cursor = packet_combine_at(cursor, u8(0), input.broadcast != 0);
+    cursor += packet_from_word(boolean, u8(0), unsafe_address(cursor));
+    return packet_store_at(cursor, dst, u8(0)) - start;
+}

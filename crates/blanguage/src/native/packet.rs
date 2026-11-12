@@ -400,52 +400,6 @@ impl Emitter<'_> {
         let destination = allocation.location(slot).into();
         self.emit_bytes(16, |output| unsafe { encode_packet_store(destination, xmm, output) });
     }
-    fn packet_base_index(
-        &mut self,
-        allocation: &PacketAllocation,
-        binding: usize,
-        index: &Address,
-        lane: u32,
-    ) {
-        match index {
-            Address::Element if self.stage.selection.is_some() => {
-                self.instruction(
-                    None,
-                    &[0x8b],
-                    false,
-                    0,
-                    Operand::memory(4, self.frame.end as u32 + lane * 4),
-                );
-            }
-            Address::Element => {
-                self.bytes(&[0x89, 0xd8]);
-                if lane != 0 {
-                    self.instruction(None, &[0x83], true, 0, Operand::Register(0));
-                    self.bytes(&[lane as u8]);
-                }
-            },
-            Address::Uniform(r) => match allocation.location(PrivateSlot::Register(*r)) {
-                PacketPlace::Register(xmm) => {
-                    self.instruction(Some(0x66), &[0x0f, 0x7e], false, xmm, Operand::Register(0))
-                }
-                source @ PacketPlace::Stack(_) => {
-                    self.instruction(None, &[0x8b], false, 0, source.into())
-                }
-            },
-        }
-        self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-        self.u32(binding as u32 * BUFFER_BYTES);
-    }
-    fn packet_memory(
-        &mut self,
-        allocation: &PacketAllocation,
-        binding: usize,
-        index: &Address,
-        lane: u32,
-    ) -> Memory {
-        self.packet_base_index(allocation, binding, index, lane);
-        self.buffer_memory(binding, 0, 0)
-    }
     fn packet_from_word(&mut self, dst: Reg, xmm: u8) {
         let boolean = u32::from(self.stage.registers[dst] == Scalar::Bool);
         self.emit_bytes(64, |output| unsafe { encode_packet_from_word(boolean, xmm, output) });
@@ -629,64 +583,10 @@ impl Emitter<'_> {
                     let source = allocation.location(*src).into();
                     self.emit_bytes(32, |output| unsafe { encode_packet_copy(destination, source, output) });
                 }
-                StepKind::Load { dst, binding, index, word } => {
-                    let broadcast = matches!(index, Address::Uniform(_));
-                    let target = match allocation.location(Register(*dst)) {
-                        PacketPlace::Register(r) => r,
-                        _ => 0,
-                    };
-                    let done = if !sparse && !broadcast && self.buffers[*binding].stride == 4 {
-                        self.instruction(None, &[0x83], true, 7,
-                            Operand::memory(12, *binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
-                        self.bytes(&[4]);
-                        let strided = self.jump(Some(0x85));
-                        let memory = self.packet_memory(allocation, *binding, index, 0).offset(*word);
-                        self.instruction(None, &[0x0f, 0x10], false, target, memory.into());
-                        let done = self.jump(None);
-                        self.patch(strided, self.code.len());
-                        Some(done)
-                    } else { None };
-                    for lane in 0..if broadcast { 1 } else { 4 } {
-                        let memory = self.packet_memory(allocation, *binding, index, lane).offset(*word);
-                        self.instruction(Some(0x66), &[0x0f, 0x6e], false,
-                            if lane == 0 { target } else { lane as u8 }, memory.into());
-                    }
-                    if broadcast { self.shuffle(target, target, 0); } else {
-                        self.packed(Some(0x66), 0x62, target, 1);
-                        self.packed(Some(0x66), 0x62, 2, 3);
-                        self.packed(Some(0x66), 0x6c, target, 2);
-                    }
-                    if let Some(done) = done { self.patch(done, self.code.len()); }
-                    self.packet_from_word(*dst, target);
-                    self.packet_store(allocation, Register(*dst), target);
-                }
-                StepKind::Store { binding, index, word, value } => {
-                    let source = match allocation.location(Register(*value)) {
-                        PacketPlace::Register(r) => r,
-                        PacketPlace::Stack(_) => {
-                            self.packet_load(allocation, Register(*value), 1);
-                            1
-                        }
-                    };
-                    let done = if !sparse && self.buffers[*binding].stride == 4 {
-                        self.instruction(None, &[0x83], true, 7,
-                            Operand::memory(12, *binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
-                        self.bytes(&[4]);
-                        let strided = self.jump(Some(0x85));
-                        let memory = self.packet_memory(allocation, *binding, index, 0).offset(*word);
-                        self.instruction(None, &[0x0f, 0x11], false, source, memory.into());
-                        let done = self.jump(None);
-                        self.patch(strided, self.code.len());
-                        Some(done)
-                    } else { None };
-                    for lane in 0..4 {
-                        let memory = self.packet_memory(allocation, *binding, index, lane).offset(*word);
-                        if lane != 0 { self.shuffle(0, source, (lane * 0x55) as u8); }
-                        self.instruction(Some(0x66), &[0x0f, 0x7e], false,
-                            if lane == 0 { source } else { 0 }, memory.into());
-                    }
-                    if let Some(done) = done { self.patch(done, self.code.len()); }
-                }
+                StepKind::Load { dst, binding, index, word } =>
+                    self.packet_read(allocation, *dst, *binding, index, *word),
+                StepKind::Store { binding, index, word, value } =>
+                    self.packet_write(allocation, *value, *binding, index, *word),
                 StepKind::Gather {
                     dst,
                     source,

@@ -144,3 +144,20 @@ extern "C" u64 offset_address(u32 stride, address output) on cpu;
 extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu;
 extern "C" AddressEncoding packet_view_memory(u8 base, MoveLocation index, u8 lane, u64 stride, u32 offset, address output) on cpu;
 extern "C" AddressEncoding packet_view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u8 lane, u32 offset, address output) on cpu;
+
+// Full packet payload emission borrows 512 bytes for read/write and 1024 for gather.
+// Layout and eligibility remain with the original buffer, frame and IR owners.
+struct PacketMemory {
+    MoveLocation index;
+    u32 data_offset; u32 stride_offset; u32 frame_offset; u32 offset;
+    u32 index_kind; u32 contiguous;
+};
+struct PacketGather {
+    MoveLocation index; MoveLocation base_low; MoveLocation base_high;
+    MoveLocation stride_low; MoveLocation stride_high;
+    u64 stride;
+    u32 data_offset; u32 stride_offset; u32 offset; u32 kind; u32 uniform; u32 broadcast;
+};
+extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, address output) on cpu;
+extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address output) on cpu;
+extern "C" u64 packet_gather(MoveLocation dst, PacketGather input, bool boolean, address output) on cpu;
