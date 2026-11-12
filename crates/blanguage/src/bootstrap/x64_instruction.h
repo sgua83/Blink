@@ -246,3 +246,13 @@ struct SegmentedRange {
 
 // R12 and R13 have been saved. The caller owns 512 output bytes.
 extern "C" u64 segmented_reduce_range(SegmentedRange input, u32 finish, address output) on cpu;
+
+struct ScanRange {
+    ReductionRange values;
+    u32 target;
+    u32 target_word;
+    u32 parameters;
+};
+
+// R12 is saved for both passes, and R13 is saved for the summary pass.
+extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on cpu;

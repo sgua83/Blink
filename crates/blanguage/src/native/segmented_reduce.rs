@@ -27,7 +27,7 @@ pub fn emit_segmented_reduce_finish(
 pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bool) -> NativeCode {
     let values = &reduction.values;
     let input = SegmentedRange {
-        values: ReductionRange::from_spec(values),
+        values: ReductionRange::new(&values.fields, &values.ty, values.operator),
         target: values.fields.target as u32 * BUFFER_BYTES,
         target_word: values.fields.target_word,
         parameters: program.buffers.len() as u32 * BUFFER_BYTES,

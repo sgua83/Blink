@@ -4,7 +4,7 @@ use crate::builtin_types::ScalarEncoding;
 
 #[repr(C)]
 pub(super) struct ReductionRange {
-    identity: u64,
+    pub(super) identity: u64,
     scalar: ScalarEncoding,
     source: u32,
     stride_offset: u32,
@@ -15,7 +15,7 @@ pub(super) struct ReductionRange {
 }
 
 #[repr(C)]
-struct ReductionCode {
+pub(super) struct ReductionCode {
     length: u64,
     literals: [u64; 4],
 }
@@ -26,20 +26,20 @@ unsafe extern "C" {
 }
 
 impl ReductionRange {
-    pub(super) fn from_spec(reduction: &ReductionSpec) -> Self {
-        let scalar = reduction.ty.components[0].0;
-        let identity = reduction.operator.identity(scalar);
+    pub(super) fn new(fields: &Reduction, ty: &Ty, operator: CollectiveOperator) -> Self {
+        let scalar = ty.components[0].0;
+        let identity = operator.identity(scalar);
         let mut offsets = [0; 4];
-        for (slot, (_, offset)) in offsets.iter_mut().zip(&reduction.ty.components) {
+        for (slot, (_, offset)) in offsets.iter_mut().zip(&ty.components) {
             *slot = *offset;
         }
         Self {
             identity,
             scalar: scalar.into(),
-            source: reduction.fields.source as u32 * BUFFER_BYTES,
+            source: fields.source as u32 * BUFFER_BYTES,
             stride_offset: BUFFER_STRIDE,
-            source_word: reduction.fields.source_word,
-            operation: match reduction.operator {
+            source_word: fields.source_word,
+            operation: match operator {
                 CollectiveOperator::Sum => 0,
                 CollectiveOperator::Min => 1,
                 CollectiveOperator::Max => 2,
@@ -47,7 +47,7 @@ impl ReductionRange {
                 CollectiveOperator::BitOr => 4,
                 CollectiveOperator::BitXor => 5,
             },
-            count: reduction.ty.components.len() as u32,
+            count: ty.components.len() as u32,
             offsets,
         }
     }
@@ -75,17 +75,22 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     };
     e.push_registers(&[12]);
 
-    let input = ReductionRange::from_spec(reduction);
-    let identity = input.identity;
-    let start = e.code.len();
-    let mut literals = [0; 4];
-    e.emit_bytes(256, |output| {
-        let encoded = unsafe { reduce_range(input, output) };
-        literals = encoded.literals;
-        encoded.length
-    });
-    for offset in literals.into_iter().filter(|&offset| offset != 0) {
-        e.literals.entry((identity, false)).or_default().push(start + offset as usize);
-    }
+    let input = ReductionRange::new(&reduction.fields, &reduction.ty, reduction.operator);
+    e.emit_collective(256, input.identity, |output| unsafe { reduce_range(input, output) });
     e.finish(8)
+}
+
+impl Emitter<'_> {
+    pub(super) fn emit_collective(&mut self, capacity: usize, identity: Bits, emit: impl FnOnce(*mut u8) -> ReductionCode) {
+        let start = self.code.len();
+        let mut literals = [0; 4];
+        self.emit_bytes(capacity, |output| {
+            let encoded = emit(output);
+            literals = encoded.literals;
+            encoded.length
+        });
+        for offset in literals.into_iter().filter(|&offset| offset != 0) {
+            self.literals.entry((identity, false)).or_default().push(start + offset as usize);
+        }
+    }
 }

@@ -1,5 +1,6 @@
 //! 原生数值独占扫描：一次遍历累计各分量，范围前缀由同一执行框架传播。
 use super::*;
+use super::reduce::{ReductionCode, ReductionRange};
 pub fn emit_scan_add(program: &Program, scan: &Scan) -> NativeCode {
     emit_scan(program, scan, true)
 }
@@ -9,15 +10,27 @@ pub(super) fn emit_scan(program: &Program, scan: &Scan, add: bool) -> NativeCode
         None => emit(program, scan, add),
     }
 }
+#[repr(C)]
+struct ScanRange {
+    values: ReductionRange,
+    target: u32,
+    target_word: u32,
+    parameters: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::scan_range"]
+    fn scan_range(input: ScanRange, add: u32, output: *mut u8) -> ReductionCode;
+}
+
 pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
-    let r = &scan.values;
-    let scalar = scan.ty.components[0].0;
-    let float = scalar.is_float();
-    let wide = scalar.size() == 8;
-    let float_opcode = match scan.operator {
-        CollectiveOperator::Min => 0x5d,
-        CollectiveOperator::Max => 0x5f,
-        _ => 0x58,
+    let values = ReductionRange::new(&scan.values, &scan.ty, scan.operator);
+    let identity = values.identity;
+    let input = ScanRange {
+        values,
+        target: scan.values.target as u32 * BUFFER_BYTES,
+        target_word: scan.values.target_word,
+        parameters: program.buffers.len() as u32 * BUFFER_BYTES,
     };
     let mut e = Emitter {
         unwind: Vec::new(),
@@ -38,151 +51,12 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         allocation: Allocation::default(),
         frame: Frame::default(),
     };
-    e.push_registers(&[12]);
-    if !add { e.push_registers(&[13]); }
-    e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1,
-        (if add { r.target } else { r.source }) as u32 * BUFFER_BYTES + BUFFER_STRIDE));
-    if !add {
-        e.instruction(None, &[0x8b], true, 13, operands::Operand::memory(1,
-            r.target as u32 * BUFFER_BYTES + BUFFER_STRIDE));
-    }
-    if add {
-        e.bytes(&[0x48, 0x8b, 0x91]);
-        e.u32(program.buffers.len() as u32 * BUFFER_BYTES);
-    }
-    e.bytes(&[0x4c, 0x8b, 0x91]);
-    e.u32(if add { r.target } else { r.source } as u32 * BUFFER_BYTES);
-    if !add {
-        e.bytes(&[0x4c, 0x8b, 0x99]);
-        e.u32(r.target as u32 * BUFFER_BYTES);
-    }
-    e.bytes(&[0x44, 0x89, 0xc8]);
-    e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(12));
-    e.bytes(&[0x49, 0x01, 0xc2]);
-    if !add {
-        e.bytes(&[0x44, 0x89, 0xc8]);
-        e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(13));
-        e.bytes(&[0x49, 0x01, 0xc3]);
-    }
-    e.bytes(&[0x45, 0x29, 0xc8]);
-    // r8d 是剩余数量；浮点分量使用易失 xmm0–3，传播临时值使用 xmm4。
-    // 主扫描的 eax/ecx/edx/r9d 各累计一个整数分量。
-    // 传播内核从 rdx 取得范围前缀，随后保留 eax/ecx/r9d/r11d，edx 留作极值临时值。
-    let registers = if add { [0u8, 1, 9, 11] } else { [0u8, 1, 2, 9] };
-    for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
-        let reg = registers[component];
-        if float {
-            if add {
-                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x0f, 0x10, 0x82 + component as u8 * 8]);
-                e.u32(*offset);
-            } else if scan.operator == CollectiveOperator::Sum {
-                e.bytes(&[0x0f, 0x57, 0xc0 + component as u8 * 9]);
-            } else {
-                e.literal_width(allocation::Location::Xmm(component as u8), scan.operator.identity(scalar), wide);
-            }
-        } else if add {
-            e.instruction((scalar.size() == 2).then_some(0x66), &[if scalar.size() == 1 { 0x8a } else { 0x8b }], wide, reg, Memory::new(2, *offset).into());
-        } else {
-            let rex = 0x40 | if wide { 8 } else { 0 } | if reg >= 8 { 1 } else { 0 };
-            if rex != 0x40 {
-                e.bytes(&[rex]);
-            }
-            e.bytes(&[0xb8 + (reg & 7)]);
-            let identity = scan.operator.identity(scalar);
-            if wide { e.bytes(&identity.to_le_bytes()); } else { e.u32(identity as u32); }
-        }
-    }
-    if add && float && scan.operator != CollectiveOperator::Sum {
-        e.bytes(&[0x45, 0x89, 0xc1]); // r9d 保存范围实际长度，首项没有局部前缀。
-    }
-    let begin = e.code.len();
-    e.bytes(&[0x45, 0x85, 0xc0]);
-    let end = e.jump(Some(0x84));
-    for (component, (scalar, offset)) in scan.ty.components.iter().enumerate() {
-        if float {
-            if add {
-                // prefix + 本范围的局部前缀；prefix 本身留给该范围后续记录。
-                e.bytes(&[0x0f, 0x28, 0xe0 + component as u8]);
-                let first = if scan.operator != CollectiveOperator::Sum {
-                    e.bytes(&[0x45, 0x39, 0xc8]);
-                    Some(e.jump(Some(0x84)))
-                } else {
-                    None
-                };
-                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, float_opcode, 0xa2]);
-                e.u32(r.target_word + offset);
-                if let Some(first) = first {
-                    e.patch(first, e.code.len());
-                }
-                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, 0x11, 0xa2]);
-                e.u32(r.target_word + offset);
-            } else {
-                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, 0x11, 0x83 + component as u8 * 8]);
-                e.u32(r.target_word + offset);
-                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, float_opcode, 0x82 + component as u8 * 8]);
-                e.u32(r.source_word + offset);
-            }
-            continue;
-        }
-        let reg = registers[component];
-        let prefix = (scalar.size() == 2).then_some(0x66);
-        let byte = u8::from(scalar.size() == 1);
-        let memory = Memory::new(10, if add { r.target_word } else { r.source_word } + offset);
-        let opcode = match scan.operator {
-            CollectiveOperator::Sum => Some(if add { 0x01 } else { 0x03 }),
-            CollectiveOperator::BitAnd => Some(if add { 0x21 } else { 0x23 }),
-            CollectiveOperator::BitOr => Some(if add { 0x09 } else { 0x0b }),
-            CollectiveOperator::BitXor => Some(if add { 0x31 } else { 0x33 }),
-            CollectiveOperator::Min | CollectiveOperator::Max => None,
-        };
-        if !add {
-            e.write_value_address(allocation::Location::Gpr(reg), Memory::new(11, r.target_word + offset), scalar.size());
-        }
-        if let Some(opcode) = opcode {
-            e.instruction(prefix, &[opcode - byte], wide, reg, memory.into());
-        } else {
-            let condition = match (scalar.is_signed(), scan.operator == CollectiveOperator::Min) {
-                (false, true) => 0x47,
-                (true, true) => 0x4f,
-                (false, false) => 0x42,
-                (true, false) => 0x4c,
-            };
-            let (target, source) = if add {
-                e.instruction(prefix, &[0x8b - byte], wide, 2, memory.into());
-                (2, super::operands::Operand::Register(reg))
-            } else { (reg, memory.into()) };
-            e.instruction(prefix, &[0x3b - byte], wide, target, source);
-            if scalar.size() == 1 {
-                let skip = e.jump(Some((condition + 0x40) ^ 1));
-                e.instruction(None, &[0x8a], false, target, source);
-                e.patch(skip, e.code.len());
-            } else {
-                e.instruction(prefix, &[0x0f, condition], wide, target, source);
-            }
-            if add { e.write_value_address(allocation::Location::Gpr(target), memory, scalar.size()); }
-        }
-    }
-    e.instruction(None, &[0x03], true, 10, operands::Operand::Register(12));
-    if !add {
-        e.instruction(None, &[0x03], true, 11, operands::Operand::Register(13));
-    }
-    e.bytes(&[0x41, 0xff, 0xc8]);
-    let back = e.jump(None);
-    e.patch(back, begin);
-    e.patch(end, e.code.len());
-    if !add {
-        // 与归约同用第五个参数交付分量结果；普通扫描不再依赖单个 eax 返回值。
-        e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x38]);
-        for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
-            let value = if float { allocation::Location::Xmm(component as u8) } else { allocation::Location::Gpr(registers[component]) };
-            e.write_value_address(value, Memory::new(10, *offset), scalar.size());
-        }
-    }
-    e.bytes(&[0x31, 0xc0]);
-    if !add { e.bytes(&[0x41, 0x5d]); }
-    e.bytes(&[0x41, 0x5c, 0xc3]);
-    e.finish(if add { 8 } else { 16 })
+    let saved: &[u8] = if add { &[12] } else { &[12, 13] };
+    e.push_registers(saved);
+    e.emit_collective(512, identity, |output| unsafe { scan_range(input, u32::from(add), output) });
+    e.finish(saved.len() as u32 * 8)
 }
+
 fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> NativeCode {
     let r = &scan.values;
     let scalar = scan.ty.components[0].0;
