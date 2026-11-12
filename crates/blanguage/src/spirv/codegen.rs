@@ -283,6 +283,34 @@ struct PayloadWrite {
     next: u32,
 }
 
+#[repr(C)]
+struct ControlWords {
+    words: u64,
+    label: u32,
+    reaches_next: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LoopLabels {
+    header: u32,
+    check: u32,
+    run: u32,
+    next: u32,
+    end: u32,
+}
+
+#[repr(C)]
+struct LoopReturn {
+    bool_type: u32,
+    result: u32,
+    target: u32,
+    merge: u32,
+    not_returned: u32,
+    returned: u32,
+    edge_count: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
@@ -322,6 +350,24 @@ unsafe extern "C" {
         input: PayloadEmission, value: u32, pointers: *const u32, shifts: *const u32,
         output: *mut u32, body: *mut u32,
     ) -> PayloadWrite;
+    #[link_name = "bootstrap.spirv_envelope::open_selection"]
+    fn open_selection(merge: u32, condition: u32, yes: u32, no: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::next_control_block"]
+    fn next_control_block(target: u32, label: u32, reaches: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::close_selection"]
+    fn close_selection(merge: u32, yes_reaches: u32, no_reaches: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::open_loop"]
+    fn open_loop(labels: LoopLabels, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::test_loop"]
+    fn test_loop(labels: LoopLabels, test: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::close_loop"]
+    fn close_loop(labels: LoopLabels, reaches: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::open_function_scope"]
+    fn open_function_scope(merge: u32, selector: u32, begin: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::leave_control"]
+    fn leave_control(target: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::dispatch_loop_return"]
+    fn dispatch_loop_return(input: LoopReturn, edges: *const returns::ReturnEdge, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
     fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
@@ -620,6 +666,21 @@ impl Emitter<'_> {
         };
         self.page_address(unit, source, self.value(index), word, self.value(offset))
     }
+    fn emit_control(&mut self, capacity: usize, encode: impl FnOnce(*mut u32) -> ControlWords) -> bool {
+        let at = self.body.len();
+        self.body.reserve(capacity);
+        let emitted = encode(unsafe { self.body.as_mut_ptr().add(at) });
+        unsafe { self.body.set_len(at + emitted.words as usize); }
+        if emitted.label != 0 {
+            self.current_label = emitted.label;
+        }
+        emitted.reaches_next != 0
+    }
+
+    fn leave_control(&mut self, target: u32) -> bool {
+        self.emit_control(2, |body| unsafe { leave_control(target, body) })
+    }
+
     fn block(
         &mut self,
         code: &[Inst],
@@ -677,10 +738,7 @@ impl Emitter<'_> {
                     }
                 }
                 InstKind::Scope(body) => self.function_scope(body)?,
-                InstKind::Exit => {
-                    self.function_exit();
-                    return Ok(false);
-                }
+                InstKind::Exit => return Ok(self.function_exit()),
                 InstKind::Append(append) => self.append(append),
                 InstKind::Atomic(atomic) => self.atomic(atomic)?,
                 InstKind::TileBarrier => self.tile_barrier(),
@@ -934,66 +992,45 @@ impl Emitter<'_> {
                     ],
                 ),
                 InstKind::If { condition, yes, no } => {
-                    let y = self.id();
-                    let n = self.id();
+                    let yes_label = self.id();
+                    let no_label = self.id();
                     let merge = self.id();
-                    self.emit(247, &[merge, 0]);
-                    self.emit(250, &[self.value(*condition), y, n]);
-                    self.emit(248, &[y]);
-                    let yr = self.block(yes, loop_targets)?;
-                    if yr {
-                        self.emit(249, &[merge]);
-                    }
-                    self.emit(248, &[n]);
-                    let nr = self.block(no, loop_targets)?;
-                    if nr {
-                        self.emit(249, &[merge]);
-                    }
-                    self.emit(248, &[merge]);
-                    if !yr && !nr {
-                        self.emit(255, &[]);
+                    let condition = self.value(*condition);
+                    self.emit_control(9, |body| unsafe { open_selection(merge, condition, yes_label, no_label, body) });
+                    let yes_reaches = u32::from(self.block(yes, loop_targets)?);
+                    self.emit_control(4, |body| unsafe { next_control_block(merge, no_label, yes_reaches, body) });
+                    let no_reaches = u32::from(self.block(no, loop_targets)?);
+                    if !self.emit_control(4, |body| unsafe { close_selection(merge, yes_reaches, no_reaches, body) }) {
                         return Ok(false);
                     }
                 }
-                InstKind::Loop {
-                    condition,
-                    test,
-                    body,
-                } => {
-                    let header = self.id();
-                    let check = self.id();
-                    let run = self.id();
-                    let next = self.id();
-                    let end = self.id();
-                    let returning = self.begin_return_loop(body, end);
-                    self.emit(249, &[header]);
-                    self.emit(248, &[header]);
-                    self.emit(246, &[end, next, 0]);
-                    self.emit(249, &[check]);
-                    self.emit(248, &[check]);
-                    self.block(condition, Some((end, next)))?;
-                    self.loop_exit_edge(end, self.current_label);
-                    self.emit(250, &[self.value(*test), run, end]);
-                    self.emit(248, &[run]);
-                    if self.block(body, Some((end, next)))? {
-                        self.emit(249, &[next]);
-                    }
-                    self.emit(248, &[next]);
-                    self.emit(249, &[header]);
-                    self.emit(248, &[end]);
+                InstKind::Loop { condition, test, body } => {
+                    let labels = LoopLabels {
+                        header: self.id(),
+                        check: self.id(),
+                        run: self.id(),
+                        next: self.id(),
+                        end: self.id(),
+                    };
+                    let targets = Some((labels.end, labels.next));
+                    let returning = self.begin_return_loop(body, labels.end);
+                    self.emit_control(12, |words| unsafe { open_loop(labels, words) });
+                    self.block(condition, targets)?;
+                    self.loop_exit_edge(labels.end, self.current_label);
+                    let test = self.value(*test);
+                    self.emit_control(6, |words| unsafe { test_loop(labels, test, words) });
+                    let reaches = u32::from(self.block(body, targets)?);
+                    self.emit_control(8, |words| unsafe { close_loop(labels, reaches, words) });
                     if returning {
                         self.finish_return_loop();
                     }
                 }
                 InstKind::Break => {
-                    self.loop_exit_edge(loop_targets.unwrap().0, self.current_label);
-                    self.emit(249, &[loop_targets.unwrap().0]);
-                    return Ok(false);
+                    let (end, _) = loop_targets.unwrap();
+                    self.loop_exit_edge(end, self.current_label);
+                    return Ok(self.leave_control(end));
                 }
-                InstKind::Continue => {
-                    self.emit(249, &[loop_targets.unwrap().1]);
-                    return Ok(false);
-                }
+                InstKind::Continue => return Ok(self.leave_control(loop_targets.unwrap().1)),
             }
         }
         Ok(true)

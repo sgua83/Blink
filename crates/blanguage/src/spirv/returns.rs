@@ -7,7 +7,12 @@ pub(super) struct ReturnScope {
 }
 pub(super) struct ReturnLoop {
     pub merge: u32,
-    pub edges: Vec<(u32, bool)>,
+    pub edges: Vec<ReturnEdge>,
+}
+#[repr(C)]
+pub(super) struct ReturnEdge {
+    label: u32,
+    returned: u32,
 }
 fn contains_exit(code: &[Inst]) -> bool {
     code.iter().any(|i| match &(i).kind {
@@ -24,30 +29,26 @@ impl Emitter<'_> {
         let merge = self.id();
         let begin = self.id();
         let selector = self.constant(Scalar::U32, 0);
-        self.emit(247, &[merge, 0]);
-        self.emit(251, &[selector, begin]);
-        self.emit(248, &[begin]);
+        self.emit_control(8, |body| unsafe { open_function_scope(merge, selector, begin, body) });
         self.return_scopes.push(ReturnScope {
             merge,
             loops: Vec::new(),
         });
-        if self.block(body, None)? {
-            self.emit(249, &[merge]);
-        }
+        let reaches = u32::from(self.block(body, None)?);
         self.return_scopes.pop();
-        self.emit(248, &[merge]);
+        self.emit_control(4, |body| unsafe { next_control_block(merge, merge, reaches, body) });
         Ok(())
     }
-    pub(super) fn function_exit(&mut self) {
+    pub(super) fn function_exit(&mut self) -> bool {
         let label = self.current_label;
         let scope = self.return_scopes.last_mut().unwrap();
         let target = if let Some(cycle) = scope.loops.last_mut() {
-            cycle.edges.push((label, true));
+            cycle.edges.push(ReturnEdge { label, returned: 1 });
             cycle.merge
         } else {
             scope.merge
         };
-        self.emit(249, &[target]);
+        self.leave_control(target)
     }
     pub(super) fn begin_return_loop(&mut self, body: &[Inst], merge: u32) -> bool {
         if !contains_exit(body) {
@@ -70,30 +71,37 @@ impl Emitter<'_> {
             .and_then(|s| s.loops.last_mut())
         {
             if cycle.merge == merge {
-                cycle.edges.push((label, false));
+                cycle.edges.push(ReturnEdge { label, returned: 0 });
             }
         }
     }
     pub(super) fn finish_return_loop(&mut self) {
         let cycle = self.return_scopes.last_mut().unwrap().loops.pop().unwrap();
         let value = self.id();
-        let mut operands = vec![self.types[&Scalar::Bool], value];
-        for (label, returned) in cycle.edges {
-            let constant = self.constant(Scalar::Bool, u32::from(returned));
-            operands.extend([constant, label]);
+        let mut constants = [0; 2];
+        for edge in &cycle.edges {
+            constants[edge.returned as usize] = self.constant(Scalar::Bool, edge.returned);
         }
-        self.emit(245, &operands);
         let label = self.current_label;
         let scope = self.return_scopes.last_mut().unwrap();
         let target = if let Some(parent) = scope.loops.last_mut() {
-            parent.edges.push((label, true));
+            parent.edges.push(ReturnEdge { label, returned: 1 });
             parent.merge
         } else {
             scope.merge
         };
         let next = self.id();
-        self.emit(247, &[next, 0]);
-        self.emit(250, &[value, target, next]);
-        self.emit(248, &[next]);
+        let input = LoopReturn {
+            bool_type: self.types[&Scalar::Bool],
+            result: value,
+            target,
+            merge: next,
+            not_returned: constants[0],
+            returned: constants[1],
+            edge_count: cycle.edges.len() as u32,
+        };
+        self.emit_control(12 + 2 * cycle.edges.len(), |body| unsafe {
+            dispatch_loop_return(input, cycle.edges.as_ptr(), body)
+        });
     }
 }

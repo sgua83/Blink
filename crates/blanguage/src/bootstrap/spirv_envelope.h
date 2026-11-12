@@ -182,3 +182,27 @@ struct PayloadWrite { u64 words; u32 next; };
 // (write) body words. Only a Words write uses the output-ID buffer.
 extern "C" PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu;
 extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu;
+
+struct ControlWords { u64 words; u32 label; u32 reaches_next; };
+struct LoopLabels { u32 header; u32 check; u32 run; u32 next; u32 end; };
+struct LoopReturn {
+    u32 bool_type;
+    u32 result;
+    u32 target;
+    u32 merge;
+    u32 not_returned;
+    u32 returned;
+    u32 edge_count;
+};
+// The emitter supplies allocated labels and the actual exit status of each
+// child block. A zero result label means the fragment opened no new block.
+// The return edge slice contains label/returned u32 pairs.
+extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no, address body) on cpu;
+extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu;
+extern "C" ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address body) on cpu;
+extern "C" ControlWords open_loop(LoopLabels labels, address body) on cpu;
+extern "C" ControlWords test_loop(LoopLabels labels, u32 test, address body) on cpu;
+extern "C" ControlWords close_loop(LoopLabels labels, u32 reaches, address body) on cpu;
+extern "C" ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, address body) on cpu;
+extern "C" ControlWords leave_control(u32 target, address body) on cpu;
+extern "C" ControlWords dispatch_loop_return(LoopReturn input, address edges, address body) on cpu;

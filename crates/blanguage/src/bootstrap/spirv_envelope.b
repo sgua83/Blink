@@ -653,3 +653,79 @@ extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address 
     }
     return PayloadWrite(at, next);
 }
+
+u64 open_conditional(address body, u64 at, u32 merge, u32 condition, u32 yes, u32 no) on cpu {
+    u64 end = words_two(body, at, 247, merge, 0);
+    return words_three(body, end, 250, condition, yes, no);
+}
+
+extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no, address body) on cpu {
+    u64 at = open_conditional(body, 0u64, merge, condition, yes, no);
+    return ControlWords(words_one(body, at, 248, yes), yes, 1);
+}
+
+u64 branch_if_reached(address body, u64 at, u32 target, u32 reaches) on cpu {
+    return reaches != 0 ? words_one(body, at, 249, target) : at;
+}
+
+extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu {
+    u64 at = branch_if_reached(body, 0u64, target, reaches);
+    return ControlWords(words_one(body, at, 248, label), label, 1);
+}
+
+extern "C" ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address body) on cpu {
+    u64 at = branch_if_reached(body, 0u64, merge, no_reaches);
+    at = words_one(body, at, 248, merge);
+    u32 reaches = yes_reaches | no_reaches;
+    if (reaches == 0) {
+        put(body, at, instruction(255, 1));
+        at += 1u64;
+    }
+    return ControlWords(at, merge, reaches);
+}
+
+extern "C" ControlWords open_loop(LoopLabels labels, address body) on cpu {
+    u64 at = words_one(body, 0u64, 249, labels.header);
+    at = words_one(body, at, 248, labels.header);
+    at = words_three(body, at, 246, labels.end, labels.next, 0);
+    at = words_one(body, at, 249, labels.check);
+    return ControlWords(words_one(body, at, 248, labels.check), labels.check, 1);
+}
+
+extern "C" ControlWords test_loop(LoopLabels labels, u32 test, address body) on cpu {
+    u64 at = words_three(body, 0u64, 250, test, labels.run, labels.end);
+    return ControlWords(words_one(body, at, 248, labels.run), labels.run, 1);
+}
+
+extern "C" ControlWords close_loop(LoopLabels labels, u32 reaches, address body) on cpu {
+    u64 at = branch_if_reached(body, 0u64, labels.next, reaches);
+    at = words_one(body, at, 248, labels.next);
+    at = words_one(body, at, 249, labels.header);
+    return ControlWords(words_one(body, at, 248, labels.end), labels.end, 1);
+}
+
+extern "C" ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, address body) on cpu {
+    u64 at = words_two(body, 0u64, 247, merge, 0);
+    at = words_two(body, at, 251, selector, begin);
+    return ControlWords(words_one(body, at, 248, begin), begin, 1);
+}
+
+extern "C" ControlWords leave_control(u32 target, address body) on cpu {
+    return ControlWords(words_one(body, 0u64, 249, target), 0, 0);
+}
+
+extern "C" ControlWords dispatch_loop_return(LoopReturn input, address edges, address body) on cpu {
+    put(body, 0u64, instruction(245, 3 + 2 * input.edge_count));
+    put(body, 1u64, input.bool_type);
+    put(body, 2u64, input.result);
+    u64 at = 3u64;
+    for (edge in 0..input.edge_count) {
+        u32 label = payload_word(edges, edge * 2);
+        u32 returned = payload_word(edges, edge * 2 + 1);
+        put(body, at, returned != 0 ? input.returned : input.not_returned);
+        put(body, at + 1u64, label);
+        at += 2u64;
+    }
+    at = open_conditional(body, at, input.merge, input.result, input.target, input.merge);
+    return ControlWords(words_one(body, at, 248, input.merge), input.merge, 1);
+}
