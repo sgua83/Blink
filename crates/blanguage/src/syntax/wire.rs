@@ -263,6 +263,23 @@ pub struct SignatureNode {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BoundName { pub bytes: *const u8, pub length: u64, pub kind: u32, pub wrapped: u32 }
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UseContext { pub storage: StorageView, pub bindings: *const BoundName, pub count: u64 }
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UseError { pub code: u32, pub span: Span }
+unsafe extern "C" {
+    #[link_name = "bootstrap.static_uses::check_function"]
+    pub fn check_function(context: UseContext, function: FunctionRef) -> UseError;
+    #[link_name = "bootstrap.static_uses::check_type"]
+    pub fn check_type(context: UseContext, ty: TypeRef, span: Span) -> UseError;
+    #[link_name = "bootstrap.static_uses::check_expression"]
+    pub fn check_expression(context: UseContext, expression: ExprRef) -> UseError;
+}
+#[repr(C)]
 #[derive(Clone,Copy)]
 pub struct StorageCondition{pub value:ConditionRef, pub present:u32, pub error:StorageError,}
 #[repr(C)]

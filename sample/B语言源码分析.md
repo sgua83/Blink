@@ -768,6 +768,26 @@ bool type_contains_name(StorageView store, u64 offset, NameBytes name) on cpu {
 
 Type和Argument的原拥有者同步借出源存储、节点偏移和名称字节，并保持到查询返回。实际Ty、const值和冲突诊断仍由原推导器形成；只读语法查询与实际实例求解各有明确职责。
 
+实际绑定确定后，B还沿同一封存语法检查类型、函数签名、正文及表达式的静态用法。借用的描述只含名称、类型／const类别及实际类型是否已有资源包装；原Bindings继续持有完整类型和值。
+
+源码节选：`crates/blanguage/src/bootstrap/static_uses.b:55`。
+
+```b
+result<void,UseError> type_uses(UseContext context, TypeRef reference, Span span) on cpu {
+    TypeNode ty = node<TypeNode>(context, reference.offset);
+    try(argument_uses(context, ty.arguments, span));
+    u32 bound = binding(context, ty.name, 1);
+    if (bound != 0 && ty.arguments.count != 0u64) { return Err(UseError(1, span)); }
+    if (bound == 2 && (ty.dataset != 0 || ty.view != 0 || ty.tile != 0)) {
+        return Err(UseError(2, span));
+    }
+    if (ty.count.present != 0) { try(shape_uses(context, ty.count.value)); }
+    return Ok();
+}
+```
+
+B按原次序返回首个错误和源范围，Rust交接原诊断，并继续实际类型绑定、值求解和IR。类型根已完成静态扫描时，内部下探直接消费这些子项；独立实参仍按原逐项检查和求解次序处理。
+
 有限类型集合和 const 取值可以形成多个具体组合。当前 B 模块遍历这些组合，检查器按每一组实际绑定解释源定义；开放形参则等到实际调用给出实参。源码共享与实例独立分析是两层关系。
 
 例如一个宽度为四的固定数组与宽度为八的固定数组，存储、循环形状或协作工作量可能不同。把宽度在编译期确定，后端就能计算实际布局；代价是可能产生多个实例，编译量与代码体积也会增加。

@@ -361,7 +361,7 @@ pub(crate) fn variant_discriminant(world:&World,identity:&str,source:&Source,mod
         ("B268","变体编号必须是可完全编译期求值的底层整数"))
 }
 fn integer_expression(world:&World,key:&str,source:&Source,module:&str,imports:&[String],representation:&Ty,expression:&Expr,bindings:&Arc<crate::generics::Bindings>,diagnostic:(&'static str,&'static str))->Result<u32> {
-    crate::generics::validate_expr_uses(expression.clone(),bindings,source)?;
+    bindings.check_expression(expression,source)?;
     integer_value(world,key,source,module,imports,representation,expression.span(),bindings,diagnostic,
         |builder|builder.expr(expression))
 }

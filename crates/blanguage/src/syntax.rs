@@ -88,6 +88,9 @@ impl<T> fmt::Debug for Node<T> {
 }
 impl<T:Copy> Node<T> {
     fn row(&self)->T {self.owner.row(self.offset)}
+    fn use_context(&self, bindings: &[wire::BoundName]) -> wire::UseContext {
+        wire::UseContext { storage: self.owner.view(), bindings: bindings.as_ptr(), count: bindings.len() as u64 }
+    }
     fn signature_node(&self) -> wire::SignatureNode {
         wire::SignatureNode { storage: self.owner.view(), offset: self.offset }
     }
@@ -241,6 +244,21 @@ optional_list!(TypeNode,contracts,PredicateNode);
 optional_list!(FunctionNode,body,StmtNode);
 impl Type {pub fn canonical(&self)->bool{self.row().canonical!=0} pub fn dataset(&self)->bool{self.row().dataset!=0} pub fn view(&self)->bool{self.row().view!=0} pub fn tile(&self)->bool{self.row().tile!=0}}
 
+impl Function {
+    pub(crate) fn bound_uses(&self, bindings: &[wire::BoundName]) -> wire::UseError {
+        unsafe { wire::check_function(self.use_context(bindings), wire::FunctionRef { offset: self.offset }) }
+    }
+}
+impl Type {
+    pub(crate) fn bound_uses(&self, bindings: &[wire::BoundName], span: wire::Span) -> wire::UseError {
+        unsafe { wire::check_type(self.use_context(bindings), wire::TypeRef { offset: self.offset }, span) }
+    }
+}
+impl Expr {
+    pub(crate) fn bound_uses(&self, bindings: &[wire::BoundName]) -> wire::UseError {
+        unsafe { wire::check_expression(self.use_context(bindings), wire::ExprRef { offset: self.offset }) }
+    }
+}
 impl Type {
     pub(crate) fn mentions(&self, name: &str) -> bool {
         unsafe { wire::type_mentions(self.signature_node(), name.as_ptr(), name.len() as u64) }
