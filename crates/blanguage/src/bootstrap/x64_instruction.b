@@ -77,17 +77,22 @@ u64 instruction_operand(Encoding input, u64 at) on cpu {
     return cursor;
 }
 
+bool uses_byte_register(u8 first, u8 second) on cpu {
+    return first == u8(0x88) || first == u8(0x8a) ||
+        (first == u8(0x0f) && (second == u8(0xb6) || second == u8(0xbe)));
+}
+
 extern "C" u64 encode(Encoding input, address opcode, u64 opcode_length, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;
     bool byte_register = false;
     if (opcode_length == 1u64) {
-        u8 first = unsafe_position<u8>(opcode);
-        byte_register = first == u8(0x88) || first == u8(0x8a);
+        byte_register = uses_byte_register(unsafe_position<u8>(opcode), u8(0));
     }
-    if (opcode_length == 2u64 && unsafe_position<u8>(opcode) == u8(0x0f)) {
+    if (opcode_length == 2u64) {
+        u8 first = unsafe_position<u8>(opcode);
         u8 second = unsafe_position<u8>(unsafe_address(address_bits(opcode) + 1u64));
-        byte_register = second == u8(0xb6) || second == u8(0xbe);
+        if (first == u8(0x0f)) { byte_register = uses_byte_register(first, second); }
     }
     cursor = instruction_prefix(input, byte_register, cursor);
     u64 index = 0u64;
@@ -178,11 +183,7 @@ extern "C" TailRange append_literal(address image, u64 end, u64 bits, u32 width,
 }
 
 u64 register_instruction(u64 at, u16 opcode, u8 prefix, bool wide, u8 reg, u8 operand) on cpu {
-    Encoding input = Encoding(0, reg, operand, NO_INDEX, u8(0), DIRECT_REGISTER, prefix, u16(wide));
-    u64 cursor = instruction_prefix(input, false, at);
-    put_byte(cursor, u8(opcode));
-    put_byte(cursor + 1u64, u8(opcode >> 8));
-    return instruction_operand(input, cursor + 2u64);
+    return encode_operand_instruction(at, opcode, prefix, wide, reg, move_gpr(operand));
 }
 
 void put_byte(u64 at, u8 value) on cpu {
@@ -287,4 +288,214 @@ extern "C" DivisionPlan division_plan(u32 divisor) on cpu requires nonzero(divis
         ceil_twice += 1u64;
     }
     return DivisionPlan(u32(ceil_twice), u8(shift), DIVISION_MULTIPLY_ADD);
+}
+
+const u8 MOVE_GPR = u8(0);
+const u8 MOVE_XMM = u8(1);
+const u8 MOVE_MEMORY = u8(2);
+const u8 MOVE_IMMEDIATE = u8(3);
+const u8 RIP_RELATIVE = u8(3);
+
+MoveLocation move_gpr(u8 register) on cpu {
+    return MoveLocation(0u64, MOVE_GPR, register, NO_INDEX, u8(0));
+}
+
+u8 move_temporary(MoveLocation memory) on cpu {
+    if (memory.base != u8(0) && memory.index != u8(0)) { return u8(0); }
+    if (memory.base != u8(1) && memory.index != u8(1)) { return u8(1); }
+    return u8(2);
+}
+
+u64 encode_operand_instruction(u64 at, u16 opcode, u8 prefix, bool wide, u8 reg, MoveLocation operand) on cpu {
+    u8 form = DIRECT_REGISTER;
+    if (operand.kind == MOVE_MEMORY) { form = MEMORY; }
+    if (operand.kind == MOVE_IMMEDIATE) { form = RIP_RELATIVE; }
+    Encoding input = Encoding(u32(operand.value), reg, operand.base, operand.index, operand.shift, form, prefix, u16(wide));
+    u8 first = u8(opcode);
+    u8 second = u8(opcode >> 8);
+    u64 cursor = instruction_prefix(input, uses_byte_register(first, second), at);
+    put_byte(cursor, first);
+    cursor += 1u64;
+    if (second != u8(0)) {
+        put_byte(cursor, second);
+        cursor += 1u64;
+    }
+    return instruction_operand(input, cursor);
+}
+
+u64 move_immediate(u64 at, u8 register, u64 value, bool wide) on cpu {
+    bool full = wide && value > 0xffffffffu64;
+    Encoding input = Encoding(0, u8(0), register, NO_INDEX, u8(0), OPCODE_REGISTER, u8(0), u16(full));
+    u64 cursor = instruction_prefix(input, false, at);
+    put_byte(cursor, u8(0xb8) | (register & u8(7)));
+    write_word(cursor + 1u64, u32(value));
+    cursor += 5u64;
+    if (full) {
+        write_word(cursor, u32(value >> 32));
+        cursor += 4u64;
+    }
+    return cursor;
+}
+
+u64 load_extended(u64 at, u8 dst, MoveLocation src, u32 size, bool signed) on cpu {
+    u16 opcode = u16(0xb60f);
+    if (signed) { opcode = u16(0xbe0f); }
+    if (size == 2) { opcode += u16(0x100); }
+    return encode_operand_instruction(at, opcode, u8(0), false, dst, src);
+}
+
+u64 load_bits(u64 at, u8 dst, MoveLocation src, bool wide) on cpu {
+    return encode_operand_instruction(at, u16(0x8b), u8(0), wide, dst, src);
+}
+
+u64 load_float(u64 at, u8 dst, MoveLocation src, bool wide) on cpu {
+    u16 opcode = u16(0x100f);
+    if (wide) { opcode = u16(0x7e0f); }
+    return encode_operand_instruction(at, opcode, u8(0xf3), false, dst, src);
+}
+
+u64 store_bits(u64 at, MoveLocation dst, u8 src, u32 size) on cpu {
+    u16 opcode = u16(0x89);
+    u8 prefix = u8(0);
+    if (size == 1) { opcode = u16(0x88); }
+    if (size == 2) { prefix = u8(0x66); }
+    return encode_operand_instruction(at, opcode, prefix, size == 8, src, dst);
+}
+
+u64 store_float(u64 at, MoveLocation dst, u8 src, bool wide) on cpu {
+    if (wide) { return encode_operand_instruction(at, u16(0xd60f), u8(0x66), false, src, dst); }
+    return encode_operand_instruction(at, u16(0x110f), u8(0xf3), false, src, dst);
+}
+
+u64 store_immediate(u64 at, MoveLocation dst, u64 value, u32 size) on cpu {
+    u16 opcode = u16(0xc7);
+    u8 prefix = u8(0);
+    if (size == 1) { opcode = u16(0xc6); }
+    if (size == 2) { prefix = u8(0x66); }
+    u64 cursor = encode_operand_instruction(at, opcode, prefix, false, u8(0), dst);
+    for (byte in 0..size) {
+        put_byte(cursor + u64(byte), u8(value >> u64(byte * 8)));
+    }
+    return cursor + u64(size);
+}
+
+u64 copy_small(u64 at, MoveLocation dst, MoveLocation src, u32 size, bool signed) on cpu {
+    u8 target = u8(0);
+    if (dst.kind == MOVE_GPR) { target = dst.base; }
+    u64 cursor = at;
+    if (src.kind == MOVE_IMMEDIATE) {
+        u32 sign = 0x80;
+        if (size == 2) { sign = 0x8000; }
+        u32 bits = u32(src.value) & (2 * sign - 1);
+        if (signed) { bits = (bits ^ sign) - sign; }
+        cursor = move_immediate(cursor, target, u64(bits), false);
+    } else {
+        cursor = load_extended(cursor, target, src, size, signed);
+    }
+    if (dst.kind == MOVE_MEMORY) { cursor = store_bits(cursor, dst, target, size); }
+    return cursor;
+}
+
+u64 copy_bits(u64 at, MoveLocation dst, MoveLocation src, u32 size) on cpu {
+    bool wide = size == 8;
+    if (src.kind == MOVE_IMMEDIATE) {
+        if (dst.kind == MOVE_GPR) { return move_immediate(at, dst.base, src.value, wide); }
+        if (dst.kind == MOVE_XMM) {
+            if (!wide) { return load_float(at, dst.base, src, false); }
+            u64 cursor = move_immediate(at, u8(0), src.value, true);
+            return encode_operand_instruction(cursor, u16(0x6e0f), u8(0x66), true, dst.base, move_gpr(u8(0)));
+        }
+        if (!wide) { return store_immediate(at, dst, src.value, 4); }
+        u64 cursor = move_immediate(at, u8(0), src.value, true);
+        return store_bits(cursor, dst, u8(0), size);
+    }
+    if (dst.kind == MOVE_GPR) {
+        if (src.kind == MOVE_XMM) {
+            return encode_operand_instruction(at, u16(0x7e0f), u8(0x66), wide, src.base, dst);
+        }
+        return load_bits(at, dst.base, src, wide);
+    }
+    if (dst.kind == MOVE_XMM) {
+        if (src.kind == MOVE_GPR) {
+            return encode_operand_instruction(at, u16(0x6e0f), u8(0x66), wide, dst.base, src);
+        }
+        if (src.kind == MOVE_XMM) {
+            return encode_operand_instruction(at, u16(0x280f), u8(0), false, dst.base, src);
+        }
+        return load_float(at, dst.base, src, wide);
+    }
+    if (src.kind == MOVE_XMM) { return store_float(at, dst, src.base, wide); }
+    if (src.kind == MOVE_GPR) { return store_bits(at, dst, src.base, size); }
+    u64 cursor = load_bits(at, u8(0), src, wide);
+    return store_bits(cursor, dst, u8(0), size);
+}
+
+extern "C" MoveEncoding copy_scalar_move(MoveLocation dst, MoveLocation src, u32 size, bool signed, address output) on cpu {
+    u64 start = address_bits(output);
+    if (dst.kind == MOVE_IMMEDIATE) { return MoveEncoding(0u64, 0u64); }
+    if (size < 4) { return MoveEncoding(copy_small(start, dst, src, size, signed) - start, 0u64); }
+    if (dst.kind == src.kind && dst.value == src.value && dst.base == src.base) {
+        return MoveEncoding(0u64, 0u64);
+    }
+    u64 length = copy_bits(start, dst, src, size) - start;
+    u64 literal = 0u64;
+    if (dst.kind == MOVE_XMM && src.kind == MOVE_IMMEDIATE && size == 4) { literal = length - 4u64; }
+    return MoveEncoding(length, literal);
+}
+
+extern "C" u64 read_scalar_move(MoveLocation dst, MoveLocation memory, u32 size, bool signed, bool boolean, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    if (size < 4) {
+        u8 target = dst.base;
+        if (dst.kind != MOVE_GPR) { target = move_temporary(memory); }
+        cursor = load_extended(cursor, target, memory, size, signed);
+        if (dst.kind == MOVE_MEMORY) { cursor = store_bits(cursor, dst, target, size); }
+    } else if (boolean) {
+        u8 temporary = move_temporary(memory);
+        cursor = encode_operand_instruction(cursor, u16(0x83), u8(0), false, u8(7), memory);
+        put_byte(cursor, u8(0));
+        put_byte(cursor + 1u64, u8(0x0f));
+        put_byte(cursor + 2u64, u8(0x95));
+        put_byte(cursor + 3u64, u8(0xc0) | temporary);
+        MoveLocation value = move_gpr(temporary);
+        cursor = load_extended(cursor + 4u64, temporary, value, 1, false);
+        if (dst.kind != MOVE_IMMEDIATE && (dst.kind != MOVE_GPR || dst.base != temporary)) {
+            cursor = copy_bits(cursor, dst, value, 4);
+        }
+    } else if (dst.kind == MOVE_GPR) {
+        cursor = load_bits(cursor, dst.base, memory, size == 8);
+    } else if (dst.kind == MOVE_XMM) {
+        cursor = load_float(cursor, dst.base, memory, size == 8);
+    } else {
+        u8 temporary = move_temporary(memory);
+        cursor = load_bits(cursor, temporary, memory, size == 8);
+        if (dst.kind == MOVE_MEMORY) { cursor = store_bits(cursor, dst, temporary, size); }
+    }
+    return cursor - start;
+}
+
+extern "C" u64 write_scalar_move(MoveLocation memory, MoveLocation src, u32 size, address output) on cpu {
+    u64 start = address_bits(output);
+    if (src.kind == MOVE_IMMEDIATE && size != 8) {
+        return store_immediate(start, memory, src.value, size) - start;
+    }
+    if (src.kind == MOVE_XMM && size >= 4) {
+        return store_float(start, memory, src.base, size == 8) - start;
+    }
+    u8 register = src.base;
+    u64 cursor = start;
+    if (src.kind != MOVE_GPR) {
+        register = move_temporary(memory);
+        if (src.kind == MOVE_IMMEDIATE) {
+            cursor = move_immediate(cursor, register, src.value, true);
+        } else if (src.kind == MOVE_XMM) {
+            cursor = encode_operand_instruction(cursor, u16(0x7e0f), u8(0x66), false, src.base, move_gpr(register));
+        } else if (size < 4) {
+            cursor = load_extended(cursor, register, src, size, false);
+        } else {
+            cursor = load_bits(cursor, register, src, size == 8);
+        }
+    }
+    return store_bits(cursor, memory, register, size) - start;
 }

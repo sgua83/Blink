@@ -48,3 +48,22 @@ struct DivisionPlan {
     u8 mode;
 };
 extern "C" DivisionPlan division_plan(u32 divisor) on cpu requires nonzero(divisor);
+
+struct MoveLocation {
+    u64 value;
+    u8 kind;
+    u8 base;
+    u8 index;
+    u8 shift;
+};
+
+struct MoveEncoding {
+    u64 length;
+    u64 literal_field;
+};
+
+// The caller owns 24 output bytes. A nonzero literal_field is the offset
+// of a disp32 to the caller's original f32 literal, including its exact bits.
+extern "C" MoveEncoding copy_scalar_move(MoveLocation dst, MoveLocation src, u32 size, bool signed, address output) on cpu;
+extern "C" u64 read_scalar_move(MoveLocation dst, MoveLocation memory, u32 size, bool signed, bool boolean, address output) on cpu;
+extern "C" u64 write_scalar_move(MoveLocation memory, MoveLocation src, u32 size, address output) on cpu;
