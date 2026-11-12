@@ -590,6 +590,42 @@ u64 comparison_result(u64 at, MoveLocation dst, BinaryOperation operation, bool 
     return cursor + result.length;
 }
 
+u64 shift_result_component(u64 at, u32 offset, u8 operation) on cpu {
+    if (offset == 0) { return at; }
+    u64 immediate = register_instruction(at, u16(0xc1), u8(0), true, operation, u8(0));
+    put_byte(immediate, u8(offset * 8));
+    return immediate + 1u64;
+}
+
+extern "C" u64 pack_integer_component(ScalarEncoding scalar, u32 offset, bool merge, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    if (scalar.kind == ScalarKind::Signed && scalar.width < 32) {
+        put_byte(cursor, u8(0x25));
+        write_word(cursor + 1u64, (1 << scalar.width) - 1);
+        cursor += 5u64;
+    }
+    cursor = shift_result_component(cursor, offset, u8(4));
+    if (merge) {
+        cursor = register_instruction(cursor, u16(0x09), u8(0), true, u8(0), u8(1));
+    }
+    return cursor - start;
+}
+
+extern "C" u64 unpack_integer_component(ScalarEncoding scalar, u32 offset, bool packed, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    if (packed) {
+        cursor = load_bits(cursor, u8(0), move_gpr(u8(1)), true);
+    }
+    cursor = shift_result_component(cursor, offset, u8(5));
+    if (scalar.kind == ScalarKind::Boolean) {
+        cursor = register_instruction(cursor, u16(0x85), u8(0), false, u8(0), u8(0));
+        cursor = comparison_result(cursor, move_gpr(u8(0)), BinaryOperation::NotEqual, false, false);
+    }
+    return cursor - start;
+}
+
 u64 integer_immediate(u64 at, u8 extension, u8 left, u64 bits, bool wide) on cpu {
     i64 value = i64(bits);
     if (!wide) { value = i64(i32(u32(bits))); }

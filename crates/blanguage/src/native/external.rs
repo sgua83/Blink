@@ -1,6 +1,7 @@
 //! Windows x64普通B与C ABI：实际机器参数先进入调用槽，再交给参数寄存器。
 use super::operands::Operand;
 use super::*;
+use crate::builtin_types::ScalarEncoding;
 use allocation::Location;
 pub(super) struct Layout {
     pub bytes: u64,
@@ -24,7 +25,13 @@ unsafe extern "C" {
     #[link_name = "bootstrap.call_layout::copy_value"]
     fn copy_value(start: u64, size: u32, alignment: u32) -> ValueCopy;
     #[link_name = "bootstrap.x64_instruction::argument_register"]
-    fn encode_argument_register(slot: u8, float_size: u32, to_home: bool, output: *mut u8) -> u64;
+    fn encode_argument_register(slot: u8, float_size: u32, to_home: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::pack_integer_component"]
+    fn encode_pack_integer_component(scalar: ScalarEncoding, offset: u32,
+        merge: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::unpack_integer_component"]
+    fn encode_unpack_integer_component(scalar: ScalarEncoding, offset: u32,
+        packed: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.call_layout::plan"]
     fn call_plan(context: *const Call, count: u64, result: AbiType, flags: u32,
         argument: unsafe extern "C" fn(*const Call, u64) -> AbiType) -> CallPlan;
@@ -60,7 +67,7 @@ impl Layout {
 impl Emitter<'_> {
     pub(super) fn argument_register(&mut self, slot: usize, float_size: u32, to_home: bool) {
         self.emit_bytes(9, |output| unsafe {
-            encode_argument_register(slot as u8, float_size, to_home, output)
+            encode_argument_register(slot as u8, float_size, u32::from(to_home), output)
         });
     }
     fn stack_address(&mut self, offset: u32) {
@@ -120,6 +127,39 @@ impl Emitter<'_> {
     pub(super) fn invoke(&mut self, reference: Option<usize>) {
         self.calls.push(reference);
         self.bytes(&[0xff, 0xd0]);
+    }
+    pub(super) fn pack_integer_result(&mut self, ty: &Ty, outputs: &[Reg]) {
+        let components = ty.components.iter().zip(outputs);
+        let count = components.len();
+        if count == 0 {
+            self.copy_scalar(Location::Gpr(0), Location::Immediate(0), Scalar::U32);
+            return;
+        }
+        for (index, ((scalar, offset), reg)) in components.enumerate() {
+            self.load(*reg);
+            self.emit_bytes(12, |output| unsafe {
+                encode_pack_integer_component((*scalar).into(), *offset, u32::from(index != 0), output)
+            });
+            if index == 0 && count > 1 {
+                self.copy_scalar(Location::Gpr(1), Location::Gpr(0), Scalar::U64);
+            }
+        }
+        if count > 1 {
+            self.copy_scalar(Location::Gpr(0), Location::Gpr(1), Scalar::U64);
+        }
+    }
+    fn unpack_integer_result(&mut self, ty: &Ty, outputs: &[Reg]) {
+        let components = ty.components.iter().zip(outputs);
+        let packed = components.len() > 1;
+        if packed {
+            self.copy_scalar(Location::Gpr(1), Location::Gpr(0), Scalar::U64);
+        }
+        for ((scalar, offset), reg) in components {
+            self.emit_bytes(15, |output| unsafe {
+                encode_unpack_integer_component((*scalar).into(), *offset, u32::from(packed), output)
+            });
+            self.store(*reg);
+        }
     }
     pub(super) fn native_call(&mut self, call: &Call) -> Result<(), &'static str> {
         let layout = Layout::new(call);
@@ -184,18 +224,7 @@ impl Emitter<'_> {
             } else if float_size(ty) != 0 {
                 self.store_float(call.values[0]);
             } else {
-                // After the call, RCX preserves all packed return bits while RAX delivers each word.
-                self.bytes(&[0x48, 0x89, 0xc1]);
-                for ((scalar, offset), reg) in ty.components.iter().zip(&call.values) {
-                    self.bytes(&[0x48, 0x89, 0xc8]);
-                    if *offset != 0 {
-                        self.bytes(&[0x48, 0xc1, 0xe8, (*offset * 8) as u8]);
-                    }
-                    if *scalar == Scalar::Bool {
-                        self.bytes(&[0x85, 0xc0, 0x0f, 0x95, 0xc0, 0x0f, 0xb6, 0xc0]);
-                    }
-                    self.store(*reg);
-                }
+                self.unpack_integer_result(ty, &call.values);
             }
         }
         if let Some(at) = failed { self.patch(at, self.code.len()); }

@@ -199,19 +199,7 @@ fn emit_value(
             e.float(body.outputs[0], 0);
             AbiRangeKind::FloatResult
         } else {
-            e.bytes(&[0x31, 0xc9]);
-            for ((scalar, offset), reg) in ty.components.iter().zip(&body.outputs) {
-                e.load(*reg);
-                if scalar.is_signed() && scalar.size() < 4 {
-                    e.bytes(&[0x25]);
-                    e.u32(scalar.bit_mask() as u32);
-                }
-                if *offset != 0 {
-                    e.bytes(&[0x48, 0xc1, 0xe0, (*offset * 8) as u8]);
-                }
-                e.bytes(&[0x48, 0x09, 0xc1]);
-            }
-            e.bytes(&[0x48, 0x89, 0xc8]);
+            e.pack_integer_result(ty, &body.outputs);
             AbiRangeKind::IntegerResult
         };
         e.abi_range(start, kind);

@@ -76,7 +76,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::release_frame"]
     fn encode_frame_release(frame: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::stack_register"]
-    fn encode_stack_register(register: u8, restore: bool, output: *mut u8) -> u64;
+    fn encode_stack_register(register: u8, restore: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::stack_probe_size"]
     fn stack_probe_size() -> u64;
     #[link_name = "bootstrap.x64_instruction::append_stack_probe"]
@@ -166,7 +166,7 @@ impl Emitter<'_> {
 
     fn push_registers(&mut self, registers: &[u8]) {
         for &register in registers {
-            self.emit_bytes(2, |output| unsafe { encode_stack_register(register, false, output) });
+            self.emit_bytes(2, |output| unsafe { encode_stack_register(register, 0, output) });
             let at = self.code.len() as u8;
             self.unwind.push(UnwindOperation::push(at, register));
         }
@@ -194,7 +194,7 @@ impl Emitter<'_> {
         self.emit_bytes(7, |output| unsafe { encode_frame_release(frame, output) });
     }
     fn pop_register(&mut self, register: u8) {
-        self.emit_bytes(2, |output| unsafe { encode_stack_register(register, true, output) });
+        self.emit_bytes(2, |output| unsafe { encode_stack_register(register, 1, output) });
     }
     fn enter(&mut self, frame: u32) {
         self.push_registers(Self::RANGE_SAVED_REGISTERS);
