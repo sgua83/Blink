@@ -299,15 +299,17 @@ C 结构体保存字段，Rust 的 `struct` 也如此。Rust 的 `enum` 还可�
 
 `Result<T,E>` 表示成功或错误：`Ok(value)` 与 `Err(error)`。函数调用后面的 `?` 表示成功就取出结果，失败就把错误交还上层。它不是重新尝试，也不是忽略错误。
 
-源码节选：`crates/blanguage/src/parser.rs:36`。
+源码节选：`crates/blanguage/src/parser.rs:7`。
 
 ```rust
-pub fn parse(source: Source) -> Result<syntax::Module> {
-    Parser::new(source)?.module()
+pub fn parse(source:Source)->Result<syntax::Module>{
+    let mut host=ParseHost::new(source)?;
+    let module=host.invoke(|input,state,context|unsafe{b_module(input,state,literal,context)})?;
+    Ok(syntax::Module{source:host.source,root:host.storage.finish(module.offset)})
 }
 ```
 
-读这段代码时，先把 `lexer::lex(&source)?` 译成“对源码分词；失败时结束当前解析并传递错误”。随后创建 `Parser`，从 token 零开始解析模块。暂时不必逐个研究 Rust 的借用语法。
+ParseHost先分词并准备同一B存储，invoke把完整模块解析交给B。这里的两个 `?` 分别交回准备或解析的真实错误；成功时封存实际根和原Source。暂时不必逐个研究Rust借用语法。
 
 ### 3.3 引用、所有权和作用域
 
@@ -448,7 +450,7 @@ impl Token {
 }
 ```
 
-这里没有把每个关键字编成独立枚举；解析器仍比较原文。Parser在实际构造处将需长期持有的名称和数字文字交入B模块的自有字节；源范围仍指向原不可变Source快照，不为每次读取复制文字。
+这里没有把每个关键字编成独立枚举；解析器仍比较原文。B解析器在实际构造处将需长期持有的名称和数字文字交入同一模块的自有字节；源范围仍指向原不可变Source快照，不为每次读取复制文字。
 
 ### 5.2 一个扫描位置贯穿整个B循环
 
@@ -500,7 +502,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 编译器的一部分已经用 B 语言实现，构建它需要先有一份能够编译这些模块的 Blink 工具。这份独立、已安装的发行版就是稳定种子；不能把尚未构建成功的新工具当成自己的唯一前提。
 
-`build.rs` 用选定的上一代SDK编译B模块，再把实际原生对象与Rust部分链接。当前词法、表达式／类型／泛型／契约、语句／控制／并行构造、源节点存储、名称解析及部分布局和对象处理由B承担；模块声明、独立entry／type_query的外层流程和普通文字解码仍有Rust生产者。类型与访问检查、IR、后端主体和执行框架继续各自职责，局部接管不等于完整自举。
+`build.rs` 用选定的上一代SDK编译B模块，再把实际原生对象与Rust部分链接。当前词法、表达式／类型／泛型／契约、语句／控制／并行构造、源节点存储、名称解析及部分布局和对象处理由B承担，模块声明及完整entry／type_query也由B完成；普通文字解码仍有Rust生产者。类型与访问检查、IR、后端主体和执行框架继续各自职责，局部接管不等于完整自举。
 
 正常源码构建默认使用安装目录中的种子，显式代际构建可以通过 `BLINK_BOOTSTRAP_SDK` 选择另一份独立 SDK。供已有应用消费的源码 SDK 与编译器自身的源码生产使用各自明确的构建输入。
 
@@ -518,20 +520,15 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 6.2 解析器怎样知道在哪里
 
-源码节选：`crates/blanguage/src/parser.rs:57`。
+源码节选：`crates/blanguage/src/parser.rs:26`。
 
 ```rust
-struct Parser {
-    source:Source,
-    tokens:Vec<Token>,
-    at:usize,
-    storage:syntax::Builder,
-}
+struct ParseHost{source:Source,tokens:Vec<Token>,storage:syntax::Builder}
 ```
 
-Rust的Parser持有Source、Token缓冲和未封存存储，at用于外层模块游标。进入B解析时，同一输入交给ParseState，B推进at、保留原错误及Span，并直接返回完成节点的类型化索引；Rust读取推进后的游标继续模块声明，不再重造表达式或语句。
+ParseHost持有Source、Token缓冲和未封存存储。B独立维护本次ParseState.at，完成模块、entry或type_query并消费原EOF，返回同一存储的类型化根；Rust封存后交给只读消费者，不再继续模块游标或重造节点。
 
-源码节选：`crates/blanguage/src/bootstrap/parser.h:18`。
+源码节选：`crates/blanguage/src/bootstrap/parser.h:7`。
 
 ```b
 struct ParseInputs {address source;address tokens;u64 count;address storage;};
@@ -542,7 +539,7 @@ struct ParseState {u64 at;ParseError error;};
 
 B的read_expression消费最低优先级minimum：先解析基本表达式，再查看后续运算符。只有达到当前门槛的运算符才接入树中；右侧递归使用相应门槛，保持乘法先于加法等关系。read_expression_ref把完成节点写入同一源存储，返回ExprRef，不交回一份Rust草稿。
 
-源码节选：`crates/blanguage/src/bootstrap/parser.b:228`。
+源码节选：`crates/blanguage/src/bootstrap/parser.b:233`。
 
 ```b
 u32 operator_precedence(read ParseInputs input,u64 cursor) on cpu {
@@ -563,7 +560,7 @@ u32 operator_precedence(read ParseInputs input,u64 cursor) on cpu {
 
 优先级查询返回原运算符层级，正文解析只接入达到当前门槛的运算；右侧递归使用更高门槛，完成子树直接写入原存储。
 
-源码节选：`crates/blanguage/src/bootstrap/parser.b:829`。
+源码节选：`crates/blanguage/src/bootstrap/parser.b:835`。
 
 ```b
         u32 precedence=operator_precedence(input,state.at);if(precedence==0||precedence<minimum){break;}
@@ -588,11 +585,11 @@ u32 operator_precedence(read ParseInputs input,u64 cursor) on cpu {
 
 ### 6.5 泛型尖括号怎样与移位区别
 
-`array<array<u32,2>,3>`包含嵌套类型，连续的`>>`可结束两层泛型；`value<N+(x>>2)>`中的右移处在值表达式括号内，不能关闭外层泛型。前瞻只寻找结束之后的token游标；表达式、类型和子项由B解析器完整构造，外层模块声明仍由Rust按原语法边界完成。
+`array<array<u32,2>,3>`包含嵌套类型，连续的`>>`可结束两层泛型；`value<N+(x>>2)>`中的右移处在值表达式括号内，不能关闭外层泛型。前瞻只寻找结束之后的token游标；表达式、类型和子项由B解析器完整构造，模块外层与完整入口也由B按原语法边界完成。
 
 `bootstrap/parser.b`直接借用原Source字节和词法已写入的同一TokenSpan数组。B维护尖括号、圆括号与方括号深度，沿原接受规则返回结束游标或无结果。函数不改变Parser当前at，也不分配或保留Token；输入及其释放仍属于原调用者。
 
-源码节选：`crates/blanguage/src/bootstrap/parser.b:17`。
+源码节选：`crates/blanguage/src/bootstrap/parser.b:22`。
 
 ```b
 extern "C" AngleEnd angle_end(address source,address tokens,u64 count,u64 at) on cpu {
@@ -630,17 +627,17 @@ extern "C" AngleEnd angle_end(address source,address tokens,u64 count,u64 at) on
 
 C ABI结果AngleEnd用end和present表达可选位置，B的类型与表达式解析读取该前瞻结果。消费 `>>` 的一个字符后，解析器会推进原 `Span` 起点，后续前瞻读取剩余范围。
 
-词法扫描、前瞻、链接字符串解码及表达式／类型／泛型／契约与语句构造由B实现。模块声明、完整外层入口、普通文字解码以及检查／IR／后端仍按真实职责区分，不能把解析模块迁移等同于完整编译器自举。
+词法扫描、前瞻、链接字符串解码、表达式／类型／泛型／契约、语句与模块声明，以及三个完整解析入口由B实现。普通文字解码、检查／IR／后端仍按真实职责区分，局部解析接管不等于完整编译器自举。
 
 ### 6.6 链接字符串怎样直接进入唯一输出
 
 `extern "C"`、DLL库名和`as`后的符号名使用链接字符串。它们接受非空、非NUL的ASCII，反斜线和双引号需要转义；普通Unicode文本值沿另一条字面量规则处理。
 
-`Parser::link_string`保留双引号语法入口，借用原Source中去掉双引号的Token内文。Rust按内文长度分配一个Vec输出：每个解码后的字节至少消费一个输入字节，所以这块存储就是输出上界。`bootstrap/parser.b::decode_link_string`一次扫描、解释转义并写入该缓冲，不复制整个Token，也不先计算长度再重扫。
+B的read_link_string消费原双引号Token，借用Source中的内文，以内文长度分配本次临时输出上界。decode_link_string一次解释转义，实际成功字节直接交入同一B源存储，再释放临时缓冲；不复制整个Token或另存一份长期String。
 
-B返回成功长度，或不支持的转义、非ASCII／NUL、空结果这三类错误。Rust用原Span报告B263；成功时把已初始化部分交成String，沿用同一分配。错误时原Vec直接释放，输入始终属于Source，B不保存任何借用地址。这个私有C ABI由实际输入范围、同步调用和唯一输出所有者承担内存职责，没有逐字符回调、第二份字符串或新的释放链。
+成功长度、不支持的转义、非ASCII／NUL及空结果继续沿原ParseError／Span交给Rust诊断B263，源存储和临时清理的真实错误也各自交回。缓冲只活到这次同步交接结束，最终名字和模块节点仍归原B存储；没有逐字符回调或第二释放链。
 
-B已直接构造表达式、类型／泛型／契约和语句节点；模块声明与其const／枚举生成语法、普通Unicode文字仍沿原Rust生产者写入同一存储。解析职责尚未全部移交，完整编译器自举仍未完成。
+B直接完成模块const／枚举生成节点、函数／struct／typeset及有序子项，独立entry／type_query消费实际EOF；普通Unicode文字仍沿原Rust同步回调写同一存储。完整编译器自举仍未完成。
 
 ### 6.7 源节点、文字与最后消费者
 

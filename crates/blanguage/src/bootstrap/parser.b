@@ -1,4 +1,9 @@
 module bootstrap.parser;
+import bootstrap.lexer;
+
+struct AngleEnd {u64 end;u32 present;};
+struct LinkStringResult {u64 count;u32 error;};
+struct ParsedParameters {Slice types;Slice values;};
 
 u32 byte_at(address source,u64 at) on cpu {
     return u32(unsafe_position<u8>(unsafe_address(address_bits(source)+at)));
@@ -241,39 +246,40 @@ u32 operator_precedence(read ParseInputs input,u64 cursor) on cpu {
 }
 
 extern "C" address HeapReAlloc(handle heap,u32 flags,address data,usize bytes) on cpu from "KERNEL32.dll";
-struct TemporaryIndices {address data;u64 count;u64 capacity;};
-TemporaryIndices temporary_indices() on cpu {return TemporaryIndices(unsafe_address(0u64),0u64,0u64);}
+struct TemporaryValues {address data;u64 count;u64 capacity;};
+TemporaryValues temporary_values() on cpu {return TemporaryValues(unsafe_address(0u64),0u64,0u64);}
 void parse_fail(inout ParseError failure,u32 kind,u32 detail,Span span) on cpu {
     if(failure.kind==0){failure.kind=kind;failure.detail=detail;failure.span=span;}
 }
-void temporary_free(inout ParseError failure,TemporaryIndices values) on cpu {
+void temporary_free(inout ParseError failure,TemporaryValues values) on cpu {
     if(values.capacity!=0u64&&HeapFree(GetProcessHeap(),0,values.data)==0){
         if(failure.cleanup.kind==0){failure.cleanup=StorageError(3,GetLastError());}
         if(failure.kind==0){failure.kind=386;failure.span=Span(0u64,0u64);}
     }
 }
-void temporary_push(inout ParseError failure,inout TemporaryIndices values,u64 value) on cpu {
-    if(values.count==18446744073709551615u64/8u64){parse_storage_error(failure,StorageError(1,0));return;}
+void temporary_push<T>(inout ParseError failure,inout TemporaryValues values,T value) on cpu {
+    u64 stride=size_of<T>();
+    if(values.count==18446744073709551615u64/stride){parse_storage_error(failure,StorageError(1,0));return;}
     u64 required=values.count+1u64;
     if(required>values.capacity){
         u64 capacity=8u64;
         if(values.capacity!=0u64){
             capacity=required;
-            if(values.capacity<=18446744073709551615u64/16u64){capacity=values.capacity*2u64;}
+            if(values.capacity<=18446744073709551615u64/stride/2u64){capacity=values.capacity*2u64;}
         }
         address memory=unsafe_address(0u64);
-        if(values.capacity==0u64){memory=HeapAlloc(GetProcessHeap(),0,capacity*8u64);}
-        else{memory=HeapReAlloc(GetProcessHeap(),0,values.data,capacity*8u64);}
+        if(values.capacity==0u64){memory=HeapAlloc(GetProcessHeap(),0,capacity*stride);}
+        else{memory=HeapReAlloc(GetProcessHeap(),0,values.data,capacity*stride);}
         if(address_bits(memory)==0u64){parse_storage_error(failure,StorageError(2,0));return;}
         values.data=memory;values.capacity=capacity;
     }
-    unsafe_position<u64>(unsafe_address(address_bits(values.data)+values.count*8u64))=value;
+    unsafe_position<T>(unsafe_address(address_bits(values.data)+values.count*stride))=value;
     values.count=required;
 }
-u64 temporary_at(read TemporaryIndices values,u64 index) on cpu {
-    return unsafe_position<u64>(unsafe_address(address_bits(values.data)+index*8u64));
+T temporary_at<T>(read TemporaryValues values,u64 index) on cpu {
+    return unsafe_position<T>(unsafe_address(address_bits(values.data)+index*size_of<T>()));
 }
-Slice finish_indices(read ParseInputs input,inout ParseState state,TemporaryIndices values) on cpu {
+Slice finish_indices(read ParseInputs input,inout ParseState state,TemporaryValues values) on cpu {
     Slice result=Slice(0u64,0u64);
     if(state.error.kind==0&&values.count!=0u64){
         StorageSlice stored=indices(input.storage,values.data,values.count);
@@ -281,12 +287,12 @@ Slice finish_indices(read ParseInputs input,inout ParseState state,TemporaryIndi
     }
     temporary_free(state.error,values);return result;
 }
-Slice finish_choices(read ParseInputs input,inout ParseState state,TemporaryIndices values) on cpu {
+Slice finish_choices(read ParseInputs input,inout ParseState state,TemporaryValues values) on cpu {
     Slice result=Slice(0u64,0u64);
     if(state.error.kind==0){
         u64 at=0u64;
         while(at<values.count){
-            u32 value=u32(temporary_at(values,at));
+            u32 value=u32(temporary_at<u64>(values,at));
             unsafe_position<u32>(unsafe_address(address_bits(values.data)+at*4u64))=value;at+=1u64;
         }
         StorageSlice stored=choices(input.storage,values.data,values.count);
@@ -402,7 +408,7 @@ ShapeNode read_shape(read ParseInputs input,inout ParseState state,cfn<LiteralRe
     return expression_shape(input,state,expression);
 }
 Slice generic_arguments(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    TemporaryIndices arguments=temporary_indices();
+    TemporaryValues arguments=temporary_values();
     if(!expect_word(input,state,"<")){return finish_indices(input,state,arguments);}
     bool more=true;
     while(more&&state.error.kind==0){
@@ -491,7 +497,7 @@ ContractDraft read_contract(read ParseInputs input,inout ParseState state,cfn<Li
         if(!text_before(input,left,right)){Text swap=left;left=right;right=swap;}
         result.predicate=PredicateNode::SameLength(SameLengthPredicate(left,right));
     }else if(text_is(input,predicate,"range")){
-        Text value=contract_value_path(input,state);TemporaryIndices intervals=temporary_indices();
+        Text value=contract_value_path(input,state);TemporaryValues intervals=temporary_values();
         while(state.error.kind==0&&take_symbol(input,state.at,44,0)){
             ExprNode lower=read_expression(input,state,0,false,literal,context);
             if(state.error.kind!=0||!expect_word(input,state,",")){break;}
@@ -510,7 +516,7 @@ ContractDraft read_contract(read ParseInputs input,inout ParseState state,cfn<Li
     return result;
 }
 Optional<Slice> function_contracts(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    TemporaryIndices contracts=temporary_indices();
+    TemporaryValues contracts=temporary_values();
     while(state.error.kind==0&&function_clause(input,state.at)){
         ContractDraft contract=read_contract(input,state,literal,context);if(state.error.kind!=0){break;}
         bool accepted=false;
@@ -533,21 +539,21 @@ Optional<Slice> function_contracts(read ParseInputs input,inout ParseState state
     u32 present=0;if(contracts.count!=0u64){present=1;}
     return Optional<Slice>(present,finish_indices(input,state,contracts));
 }
-bool duplicate_parameter(read ParseInputs input,read TemporaryIndices types,read TemporaryIndices values,Text name) on cpu {
+bool duplicate_parameter(read ParseInputs input,read TemporaryValues types,read TemporaryValues values,Text name) on cpu {
     u64 at=0u64;
     while(at<types.count){
-        TypeParameterNode node=unsafe_position<TypeParameterNode>(unsafe_address(address_bits(view(input.storage).nodes)+temporary_at(types,at)));
+        TypeParameterNode node=unsafe_position<TypeParameterNode>(unsafe_address(address_bits(view(input.storage).nodes)+temporary_at<u64>(types,at)));
         if(same_text(input,node.name,name)){return true;}at+=1u64;
     }
     at=0u64;
     while(at<values.count){
-        ValueParameterNode node=unsafe_position<ValueParameterNode>(unsafe_address(address_bits(view(input.storage).nodes)+temporary_at(values,at)));
+        ValueParameterNode node=unsafe_position<ValueParameterNode>(unsafe_address(address_bits(view(input.storage).nodes)+temporary_at<u64>(values,at)));
         if(same_text(input,node.name,name)){return true;}at+=1u64;
     }
     return false;
 }
 ParsedParameters read_parameters(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    TemporaryIndices types=temporary_indices();TemporaryIndices values=temporary_indices();
+    TemporaryValues types=temporary_values();TemporaryValues values=temporary_values();
     bool more=take_symbol(input,state.at,60,0);
     while(more&&state.error.kind==0){
         Span span=parse_span(input,state.at);bool is_value=take_word(input,state.at,"const");Text name=parse_identifier(input,state);
@@ -557,7 +563,7 @@ ParsedParameters read_parameters(read ParseInputs input,inout ParseState state,c
             if(!expect_word(input,state,":")){break;}
             TypeNode ty=read_type(input,state,literal,context);if(state.error.kind!=0){break;}
             if(!(text_is(input,ty.name,"u32")||text_is(input,ty.name,"uint"))||ty.arguments.count!=0u64||ty.dataset!=0||ty.view!=0||ty.tile!=0){parse_fail(state.error,235,1,span);break;}
-            bool restricted=take_word(input,state.at,"in");TemporaryIndices options=temporary_indices();
+            bool restricted=take_word(input,state.at,"in");TemporaryValues options=temporary_values();
             bool option_more=false;
             if(restricted&&expect_word(input,state,"{")){option_more=!take_symbol(input,state.at,125,0);}
             while(option_more&&state.error.kind==0){
@@ -688,7 +694,7 @@ Text namespace_text(read ParseInputs input,inout ParseState state,ExprNode prefi
     return stored.value;
 }
 Slice expression_arguments(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    TemporaryIndices arguments=temporary_indices();
+    TemporaryValues arguments=temporary_values();
     if(!expect_word(input,state,"(")){return finish_indices(input,state,arguments);}
     bool more=!take_symbol(input,state.at,41,0);
     while(more&&state.error.kind==0){
@@ -852,16 +858,10 @@ extern "C" ContractRef parse_contract(read ParseInputs input,inout ParseState st
 extern "C" ParsedParameters parse_parameters(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
     return read_parameters(input,state,literal,context);
 }
-extern "C" Slice parse_generic_arguments(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    return generic_arguments(input,state,literal,context);
-}
 extern "C" u32 looks_like_declaration(read ParseInputs input,read ParseState state) on cpu {
     if(declaration_type(input,state.at)){return 1;}return 0;
 }
 
-extern "C" Text parse_qualified(read ParseInputs input,inout ParseState state) on cpu {
-    return qualified_text(input,state,46,false);
-}
 extern "C" ShapeRef parse_shape(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
     ShapeNode value=read_shape(input,state,literal,context);
     if(state.error.kind!=0){return ShapeRef(0u64);}
@@ -876,7 +876,7 @@ StmtRef publish_statement(read ParseInputs input,inout ParseState state,StmtKind
 
 Slice read_block(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
     if(!expect_word(input,state,"{")){return Slice(0u64,0u64);}
-    TemporaryIndices body=temporary_indices();
+    TemporaryValues body=temporary_values();
     while(state.error.kind==0&&!take_symbol(input,state.at,125,0)){
         if(word_is(input,state.at,"")){parse_fail(state.error,13,0,parse_span(input,state.at));break;}
         StmtRef statement=read_statement(input,state,literal,context);
@@ -937,7 +937,7 @@ StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<Literal
         if(!expect_word(input,state,"(")){return StmtRef(0u64);}
         ExprRef value=read_expression_ref(input,state,0,false,literal,context);
         if(state.error.kind!=0||!expect_word(input,state,")")||!expect_word(input,state,"{")){return StmtRef(0u64);}
-        TemporaryIndices arms=temporary_indices();
+        TemporaryValues arms=temporary_values();
         while(state.error.kind==0&&!take_symbol(input,state.at,125,0)){
             Span at=parse_span(input,state.at);Text variant=parse_type_name(input,state);
             if(state.error.kind!=0||!expect_word(input,state,"(")){break;}
@@ -1036,6 +1036,277 @@ StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<Literal
     expect_word(input,state,";");return publish_statement(input,state,StmtKind::Expr(left),span);
 }
 
-extern "C" Slice parse_block(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    return read_block(input,state,literal,context);
+
+Text stored_word<const N:u32>(read ParseInputs input,inout ParseState state,array<u8,N> value) on cpu {
+    StorageText stored=text(input.storage,address_of(value),u64(N));
+    parse_storage_error(state.error,stored.error);return stored.value;
+}
+Text read_link_string(read ParseInputs input,inout ParseState state) on cpu {
+    Span span=parse_span(input,state.at);
+    if(span.start==span.end||byte_at(input.source,span.start)!=34){parse_fail(state.error,263,1,span);return empty_text();}
+    u64 length=span.end-span.start-2u64;
+    address memory=HeapAlloc(GetProcessHeap(),0,length);
+    if(address_bits(memory)==0u64){parse_storage_error(state.error,StorageError(2,0));return empty_text();}
+    LinkStringResult decoded=decode_link_string(unsafe_address(address_bits(input.source)+span.start+1u64),length,memory);
+    Text result=empty_text();
+    if(decoded.error==0){
+        StorageText stored=text(input.storage,memory,decoded.count);
+        parse_storage_error(state.error,stored.error);result=stored.value;state.at+=1u64;
+    }else{parse_fail(state.error,263,decoded.error+1,span);}
+    temporary_free(state.error,TemporaryValues(memory,0u64,1u64));return result;
+}
+Slice finish_texts(read ParseInputs input,inout ParseState state,TemporaryValues values) on cpu {
+    Slice result=Slice(0u64,0u64);
+    if(state.error.kind==0&&values.count!=0u64){
+        StorageSlice stored=texts(input.storage,values.data,values.count);
+        parse_storage_error(state.error,stored.error);result=stored.value;
+    }
+    temporary_free(state.error,values);return result;
+}
+FunctionRef publish_function(read ParseInputs input,inout ParseState state,FunctionNode value) on cpu {
+    StorageIndex stored=put_function(input.storage,value);
+    parse_storage_error(state.error,stored.error);return FunctionRef(stored.offset);
+}
+FunctionNode function_node(Text name,TypeRef result,Span span) on cpu {
+    return FunctionNode(name,Slice(0u64,0u64),Slice(0u64,0u64),Slice(0u64,0u64),result,
+        0,0,Slice(0u64,0u64),Optional<Slice>(0,Slice(0u64,0u64)),0,
+        Optional<ExternalRef>(0,ExternalRef(0u64)),span.end,span);
+}
+Slice generated_return(read ParseInputs input,inout ParseState state,ExprRef value,Span span) on cpu {
+    StmtRef statement=publish_statement(input,state,StmtKind::Return(Optional<ExprRef>(1,value)),span);
+    if(state.error.kind!=0){return Slice(0u64,0u64);}
+    StorageSlice body=indices(input.storage,address_of(statement.offset),1u64);
+    parse_storage_error(state.error,body.error);return body.value;
+}
+bool duplicate_function_parameter(read ParseInputs input,read TemporaryValues params,Text name) on cpu {
+    u64 at=0u64;
+    while(at<params.count){
+        u64 offset=temporary_at<u64>(params,at);
+        ParamNode parameter=unsafe_position<ParamNode>(unsafe_address(address_bits(view(input.storage).nodes)+offset));
+        if(same_text(input,parameter.name,name)){return true;}at+=1u64;
+    }
+    return false;
+}
+FunctionRef read_function(read ParseInputs input,inout ParseState state,Span span,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+    u32 c_abi=0;u32 kind=0;
+    if(take_word(input,state.at,"extern")){
+        Text abi=read_link_string(input,state);
+        if(state.error.kind!=0){return FunctionRef(0u64);}
+        if(!text_is(input,abi,"C")){parse_fail(state.error,263,5,span);return FunctionRef(0u64);}c_abi=1;
+    }
+    if(take_word(input,state.at,"cooperative")){kind=1;}
+    TypeRef result=parse_type(input,state,literal,context);
+    if(state.error.kind!=0){return FunctionRef(0u64);}
+    Text name=parse_identifier(input,state);
+    if(state.error.kind!=0){return FunctionRef(0u64);}
+    ParsedParameters parameters=parse_parameters(input,state,literal,context);
+    if(state.error.kind!=0||!expect_word(input,state,"(")){return FunctionRef(0u64);}
+    TemporaryValues params=temporary_values();
+    bool more=!take_word(input,state.at,")");
+    while(more&&state.error.kind==0){
+        Span at=parse_span(input,state.at);u32 access=0;
+        if(take_word(input,state.at,"read")){access=1;}
+        else if(take_word(input,state.at,"write")){access=2;}
+        else if(take_word(input,state.at,"inout")){access=3;}
+        else if(take_word(input,state.at,"atomic")){access=4;}
+        TypeRef ty=parse_type(input,state,literal,context);
+        if(state.error.kind!=0){break;}
+        Text parameter=parse_identifier(input,state);if(state.error.kind!=0){break;}
+        if(duplicate_function_parameter(input,params,parameter)){
+            parse_fail(state.error,100,0,at);state.error.expected=parameter;break;
+        }
+        StorageIndex stored=put_param(input.storage,ParamNode(parameter,ty,access,at));
+        parse_storage_error(state.error,stored.error);
+        if(state.error.kind!=0){break;}
+        temporary_push(state.error,params,stored.offset);
+        if(take_word(input,state.at,")")){more=false;}else{expect_word(input,state,",");}
+    }
+    Slice param_refs=finish_indices(input,state,params);
+    if(state.error.kind!=0){return FunctionRef(0u64);}
+    u32 target=0;
+    if(take_word(input,state.at,"on")){
+        Text value=parse_identifier(input,state);if(state.error.kind!=0){return FunctionRef(0u64);}
+        if(text_is(input,value,"cpu")){target=1;}
+        else if(text_is(input,value,"gpu")){target=2;}
+        else if(!text_is(input,value,"compute")){parse_fail(state.error,12,0,span);return FunctionRef(0u64);}
+    }
+    TemporaryValues contracts=temporary_values();
+    while(state.error.kind==0&&(word_is(input,state.at,"requires")||word_is(input,state.at,"ensures"))){
+        ContractRef contract=parse_contract(input,state,literal,context);
+        if(state.error.kind==0){temporary_push(state.error,contracts,contract.offset);}
+    }
+    Slice contract_refs=finish_indices(input,state,contracts);
+    if(state.error.kind!=0){return FunctionRef(0u64);}
+    Optional<ExternalRef> external=Optional<ExternalRef>(0,ExternalRef(0u64));
+    if(c_abi!=0&&word_is(input,state.at,"from")){
+        if(parameters.types.count!=0u64||parameters.values.count!=0u64){parse_fail(state.error,263,6,span);return FunctionRef(0u64);}
+        state.at+=1u64;Text library=read_link_string(input,state);
+        if(state.error.kind!=0){return FunctionRef(0u64);}
+        Text symbol=name;
+        if(take_word(input,state.at,"as")){symbol=read_link_string(input,state);}
+        if(state.error.kind!=0){return FunctionRef(0u64);}
+        StorageIndex stored=put_external(input.storage,ExternalNode(library,symbol));
+        parse_storage_error(state.error,stored.error);external=Optional<ExternalRef>(1,ExternalRef(stored.offset));
+    }
+    if(state.error.kind!=0){return FunctionRef(0u64);}
+    u64 signature_end=parse_span(input,state.at).start;
+    Optional<Slice> body=Optional<Slice>(0,Slice(0u64,0u64));
+    if(!take_word(input,state.at,";")){body=Optional<Slice>(1,read_block(input,state,literal,context));}
+    if(state.error.kind!=0){return FunctionRef(0u64);}
+    return publish_function(input,state,FunctionNode(name,parameters.types,parameters.values,param_refs,result,
+        kind,target,contract_refs,body,c_abi,external,signature_end,Span(span.start,parse_span(input,state.at-1u64).end)));
+}
+RecordRef read_record(read ParseInputs input,inout ParseState state,Span span,bool enumeration,inout TemporaryValues functions,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+    Text name=parse_identifier(input,state);if(state.error.kind!=0){return RecordRef(0u64);}
+    ParsedParameters parameters=parse_parameters(input,state,literal,context);
+    Optional<TypeRef> representation=Optional<TypeRef>(0,TypeRef(0u64));
+    Optional<ShapeRef> stride=Optional<ShapeRef>(0,ShapeRef(0u64));
+    if(state.error.kind!=0){return RecordRef(0u64);}
+    if(enumeration){
+        if(!expect_word(input,state,":")){return RecordRef(0u64);}
+        representation=Optional<TypeRef>(1,parse_type(input,state,literal,context));
+    }else if(take_word(input,state.at,"stride")){
+        if(!expect_word(input,state,"(")){return RecordRef(0u64);}
+        stride=Optional<ShapeRef>(1,parse_shape(input,state,literal,context));
+        if(state.error.kind!=0||!expect_word(input,state,")")){return RecordRef(0u64);}
+    }
+    if(state.error.kind!=0||!expect_word(input,state,"{")){return RecordRef(0u64);}
+    TemporaryValues fields=temporary_values();TemporaryValues variants=temporary_values();
+    bool payloads=parameters.types.count!=0u64||parameters.values.count!=0u64;
+    while(state.error.kind==0&&!take_word(input,state.at,"}")){
+        Span at=parse_span(input,state.at);
+        if(enumeration){
+            Text member=parse_identifier(input,state);if(state.error.kind!=0){break;}
+            TypeRef payload=TypeRef(0u64);
+            bool typed=false;
+            if(take_word(input,state.at,"(")){
+                payloads=true;
+                if(!take_word(input,state.at,")")){
+                    payload=parse_type(input,state,literal,context);typed=true;
+                    if(state.error.kind!=0||!expect_word(input,state,")")){break;}
+                }
+            }
+            if(!typed){payload=publish_type(input,state,named_type(stored_word(input,state,"void")));}
+            if(state.error.kind!=0||!expect_word(input,state,"=")){break;}
+            ExprRef discriminant=parse_expression(input,state,0,0,literal,context);
+            if(state.error.kind!=0||!expect_word(input,state,";")){break;}
+            temporary_push(state.error,variants,VariantNode(member,payload,discriminant,at));
+        }else{
+            TypeRef ty=parse_type(input,state,literal,context);
+            if(state.error.kind!=0){break;}
+            Text field=parse_identifier(input,state);
+            if(state.error.kind!=0||!expect_word(input,state,";")){break;}
+            StorageIndex stored=put_field(input.storage,FieldNode(field,ty,at));parse_storage_error(state.error,stored.error);
+            if(state.error.kind==0){temporary_push(state.error,fields,stored.offset);}
+        }
+    }
+    if(state.error.kind==0){expect_word(input,state,";");}
+    u64 end=parse_span(input,state.at-1u64).end;
+    TemporaryValues published=temporary_values();u64 index=0u64;
+    while(state.error.kind==0&&index<variants.count){
+        VariantNode variant=temporary_at<VariantNode>(variants,index);
+        if(payloads){
+            StorageIndex stored=put_variant(input.storage,variant);parse_storage_error(state.error,stored.error);
+            if(state.error.kind==0){temporary_push(state.error,published,stored.offset);}
+        }else{
+            Text member=joined_variant_name(input,state,name,variant.name);
+            TypeRef result=publish_type(input,state,named_type(name));
+            if(state.error.kind!=0){break;}
+            StorageSlice arguments=indices(input.storage,address_of(variant.discriminant.offset),1u64);
+            parse_storage_error(state.error,arguments.error);if(state.error.kind!=0){break;}
+            ExprRef value=publish_expression(input,state,ExprNode(ExprKind::Call(CallExpr(name,arguments.value)),variant.span));
+            if(state.error.kind!=0){break;}
+            FunctionNode function=function_node(member,result,variant.span);function.kind=2;
+            function.body=Optional<Slice>(1,generated_return(input,state,value,variant.span));
+            if(state.error.kind!=0){break;}
+            FunctionRef stored=publish_function(input,state,function);
+            if(state.error.kind==0){temporary_push(state.error,functions,stored.offset);}
+        }
+        index+=1u64;
+    }
+    temporary_free(state.error,variants);
+    Slice field_refs=finish_indices(input,state,fields);Slice variant_refs=finish_indices(input,state,published);
+    if(state.error.kind!=0){return RecordRef(0u64);}
+    StorageIndex stored=put_record(input.storage,RecordNode(name,parameters.types,parameters.values,stride,representation,
+        variant_refs,field_refs,Span(span.start,end)));
+    parse_storage_error(state.error,stored.error);return RecordRef(stored.offset);
+}
+Text joined_variant_name(read ParseInputs input,inout ParseState state,Text name,Text member) on cpu {
+    u64 left=name.range.end-name.range.start;u64 right=member.range.end-member.range.start;u64 bytes=left+2u64+right;
+    address memory=HeapAlloc(GetProcessHeap(),0,bytes);
+    if(address_bits(memory)==0u64){parse_storage_error(state.error,StorageError(2,0));return empty_text();}
+    u64 at=0u64;
+    while(at<left){unsafe_position<u8>(unsafe_address(address_bits(memory)+at))=u8(stored_byte(input,name,at));at+=1u64;}
+    unsafe_position<u8>(unsafe_address(address_bits(memory)+left))=u8(58);
+    unsafe_position<u8>(unsafe_address(address_bits(memory)+left+1u64))=u8(58);
+    at=0u64;
+    while(at<right){unsafe_position<u8>(unsafe_address(address_bits(memory)+left+2u64+at))=u8(stored_byte(input,member,at));at+=1u64;}
+    StorageText stored=text(input.storage,memory,bytes);parse_storage_error(state.error,stored.error);
+    temporary_free(state.error,TemporaryValues(memory,0u64,1u64));return stored.value;
+}
+extern "C" ModuleRef parse_module(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+    if(!expect_word(input,state,"module")){return ModuleRef(0u64);}
+    Text name=qualified_text(input,state,46,false);
+    if(state.error.kind!=0||!expect_word(input,state,";")){return ModuleRef(0u64);}
+    TemporaryValues imports=temporary_values();TemporaryValues records=temporary_values();
+    TemporaryValues type_sets=temporary_values();TemporaryValues functions=temporary_values();
+    while(state.error.kind==0&&!word_is(input,state.at,"")){
+        Span span=parse_span(input,state.at);
+        if(take_word(input,state.at,"import")){
+            Text value=qualified_text(input,state,46,false);
+            if(state.error.kind!=0||!expect_word(input,state,";")){break;}
+            temporary_push(state.error,imports,value);
+        }else if(take_word(input,state.at,"const")){
+            TypeRef result=parse_type(input,state,literal,context);if(state.error.kind!=0){break;}
+            Text member=parse_identifier(input,state);
+            if(state.error.kind!=0||!expect_word(input,state,"=")){break;}
+            ExprRef value=parse_expression(input,state,0,0,literal,context);
+            if(state.error.kind!=0||!expect_word(input,state,";")){break;}
+            FunctionNode function=function_node(member,result,Span(span.start,parse_span(input,state.at-1u64).end));
+            function.kind=2;function.body=Optional<Slice>(1,generated_return(input,state,value,span));
+            if(state.error.kind!=0){break;}
+            FunctionRef stored=publish_function(input,state,function);
+            if(state.error.kind==0){temporary_push(state.error,functions,stored.offset);}
+        }else if(take_word(input,state.at,"typeset")){
+            Text member=parse_identifier(input,state);
+            if(state.error.kind!=0||!expect_word(input,state,"{")){break;}
+            TemporaryValues members=temporary_values();
+            while(state.error.kind==0&&!take_word(input,state.at,"}")){
+                TypeRef ty=parse_type(input,state,literal,context);
+                if(state.error.kind!=0||!expect_word(input,state,";")){break;}
+                temporary_push(state.error,members,ty.offset);
+            }
+            if(state.error.kind==0){expect_word(input,state,";");}
+            Slice member_refs=finish_indices(input,state,members);if(state.error.kind!=0){break;}
+            StorageIndex stored=put_type_set(input.storage,TypeSetNode(member,member_refs,Span(span.start,parse_span(input,state.at-1u64).end)));
+            parse_storage_error(state.error,stored.error);if(state.error.kind==0){temporary_push(state.error,type_sets,stored.offset);}
+        }else if(word_is(input,state.at,"enum")||word_is(input,state.at,"struct")){
+            bool enumeration=take_word(input,state.at,"enum");if(!enumeration){state.at+=1u64;}
+            RecordRef stored=read_record(input,state,span,enumeration,functions,literal,context);
+            if(state.error.kind==0){temporary_push(state.error,records,stored.offset);}
+        }else{
+            FunctionRef stored=read_function(input,state,span,literal,context);
+            if(state.error.kind==0){temporary_push(state.error,functions,stored.offset);}
+        }
+    }
+    Slice import_refs=finish_texts(input,state,imports);Slice record_refs=finish_indices(input,state,records);
+    Slice set_refs=finish_indices(input,state,type_sets);Slice function_refs=finish_indices(input,state,functions);
+    if(state.error.kind!=0){return ModuleRef(0u64);}
+    StorageIndex stored=put_module(input.storage,ModuleNode(name,import_refs,record_refs,set_refs,function_refs));
+    parse_storage_error(state.error,stored.error);return ModuleRef(stored.offset);
+}
+void finish_input(read ParseInputs input,inout ParseState state) on cpu {
+    if(take_word(input,state.at,"")){return;}
+    parse_fail(state.error,10,0,parse_span(input,state.at));
+    state.error.expected=empty_text();
+}
+extern "C" ParsedEntry parse_entry(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+    Text name=parse_type_name(input,state);Optional<Slice> arguments=Optional<Slice>(0,Slice(0u64,0u64));
+    if(state.error.kind==0&&word_is(input,state.at,"<")){arguments=Optional<Slice>(1,generic_arguments(input,state,literal,context));}
+    if(state.error.kind==0){finish_input(input,state);}
+    return ParsedEntry(name,arguments);
+}
+extern "C" TypeRef parse_type_query(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+    TypeRef value=parse_type(input,state,literal,context);
+    if(state.error.kind==0){finish_input(input,state);}return value;
 }

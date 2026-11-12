@@ -336,21 +336,11 @@ pub fn advance_instance_domain(domains:InstanceDomains, row:InstanceRow, first:u
 #[link_name="bootstrap.instance_domain::accepts_const"]
 pub fn accepts_const(nodes: *const c_void, choices: Optional<Slice>, value: u32) -> bool;
 #[link_name="bootstrap.ast_storage::indices"] pub fn indices(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
-#[link_name="bootstrap.ast_storage::texts"] pub fn texts(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
 #[link_name="bootstrap.ast_storage::text"] pub fn text(storage:*mut c_void,bytes:*mut c_void,count:u64)->StorageText;
 #[link_name="bootstrap.ast_storage::put_type"] pub fn put_type(storage:*mut c_void,value:*const TypeNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_shape"] pub fn put_shape(storage:*mut c_void,value:*const ShapeNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_argument"] pub fn put_argument(storage:*mut c_void,value:*const ArgumentNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_field"] pub fn put_field(storage:*mut c_void,value:*const FieldNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_variant"] pub fn put_variant(storage:*mut c_void,value:*const VariantNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_record"] pub fn put_record(storage:*mut c_void,value:*const RecordNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_param"] pub fn put_param(storage:*mut c_void,value:*const ParamNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_external"] pub fn put_external(storage:*mut c_void,value:*const ExternalNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_function"] pub fn put_function(storage:*mut c_void,value:*const FunctionNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_type_set"] pub fn put_type_set(storage:*mut c_void,value:*const TypeSetNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_module"] pub fn put_module(storage:*mut c_void,value:*const ModuleNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_expr"] pub fn put_expr(storage:*mut c_void,value:*const ExprNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_stmt"] pub fn put_stmt(storage:*mut c_void,value:*const StmtNode)->StorageIndex;
 }
 
 impl<T:Default> Optional<T>{pub fn none()->Self{Self{present:0,value:T::default()}}}

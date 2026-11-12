@@ -57,11 +57,6 @@ impl Builder {
         let result=unsafe{wire::text(self.owner.raw.as_ptr(),value.as_ptr().cast_mut().cast(),value.len()as u64)};
         checked(result.error)?;Ok(result.value)
     }
-    pub fn texts(&mut self,values:&[wire::Text])->Result<wire::Slice> {
-        let result=unsafe{wire::texts(self.owner.raw.as_ptr(),values.as_ptr().cast_mut().cast(),values.len()as u64)};
-        checked(result.error)?;Ok(result.value)
-    }
-    pub fn read<T:Copy>(&self,offset:u64)->T {self.owner.row(offset)}
     pub fn read_text(&self,text:wire::Text)->&str {self.owner.text(text)}
     pub fn finish<T>(self,offset:u64)->Node<T> {Node{owner:Arc::new(self.owner),offset,marker:PhantomData}}
     pub fn finish_list<T>(self,value:wire::Slice)->List<T> {List{owner:Arc::new(self.owner),value,marker:PhantomData}}
@@ -69,16 +64,7 @@ impl Builder {
 impl Builder {pub fn put_type(&mut self,value:&wire::TypeNode)->Result<u64>{let result=unsafe{wire::put_type(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_shape(&mut self,value:&wire::ShapeNode)->Result<u64>{let result=unsafe{wire::put_shape(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_argument(&mut self,value:&wire::ArgumentNode)->Result<u64>{let result=unsafe{wire::put_argument(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_field(&mut self,value:&wire::FieldNode)->Result<u64>{let result=unsafe{wire::put_field(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_variant(&mut self,value:&wire::VariantNode)->Result<u64>{let result=unsafe{wire::put_variant(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_record(&mut self,value:&wire::RecordNode)->Result<u64>{let result=unsafe{wire::put_record(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_param(&mut self,value:&wire::ParamNode)->Result<u64>{let result=unsafe{wire::put_param(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_external(&mut self,value:&wire::ExternalNode)->Result<u64>{let result=unsafe{wire::put_external(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_function(&mut self,value:&wire::FunctionNode)->Result<u64>{let result=unsafe{wire::put_function(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_type_set(&mut self,value:&wire::TypeSetNode)->Result<u64>{let result=unsafe{wire::put_type_set(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_module(&mut self,value:&wire::ModuleNode)->Result<u64>{let result=unsafe{wire::put_module(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_expr(&mut self,value:&wire::ExprNode)->Result<u64>{let result=unsafe{wire::put_expr(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_stmt(&mut self,value:&wire::StmtNode)->Result<u64>{let result=unsafe{wire::put_stmt(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 
 pub(crate) struct Node<T> {owner:Arc<Owner>,offset:u64,marker:PhantomData<T>}
 impl<T> Node<T> {pub fn same_node(&self,other:&Self)->bool{Arc::ptr_eq(&self.owner,&other.owner)&&self.offset==other.offset}}
