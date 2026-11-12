@@ -1,4 +1,5 @@
 module bootstrap.spirv_envelope;
+import bootstrap.type_families;
 
 struct Features {
     u32 atomic64;
@@ -32,3 +33,9 @@ struct Words { address data; u64 count; };
 // the declared interface order. A zero ID is an absent optional variable.
 extern "C" u64 envelope_capacity() on cpu;
 extern "C" u64 encode(Envelope input, address interfaces, u64 count, address words) on cpu;
+
+// The compiler supplies an existing concrete scalar and already allocated IDs.
+// Storage has room for 8 type/pointer words or 5 constant words respectively.
+// Constant bits are the original Scalar-truncated cache key.
+extern "C" u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer_id, address words) on cpu;
+extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u64 bits, address words) on cpu;

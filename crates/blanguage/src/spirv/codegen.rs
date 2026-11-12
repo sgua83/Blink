@@ -1,5 +1,6 @@
 //! 按 SPIR-V 1.4 标准直接编码；不调用 HLSL/GLSL 或第三方编译器。
 use crate::ir::*;
+use crate::builtin_types::ScalarCode;
 use super::{PAGE_BYTES, PREFIX_LEVELS, ProgramImage, ShaderCode, StageCode};
 #[path = "append.rs"]
 mod append;
@@ -101,6 +102,10 @@ unsafe extern "C" {
     fn encode_envelope(
         input: ShaderEnvelope, interfaces: *const ShaderWords, count: u64, words: *mut u32,
     ) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
+    fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
+    fn constant_declaration(scalar: ScalarCode, type_id: u32, id: u32, bits: u64, words: *mut u32) -> u64;
 }
 
 struct Emitter<'a> {
@@ -198,16 +203,11 @@ impl Emitter<'_> {
             return *id;
         }
         let id = self.id();
-        if s == Scalar::Bool {
-            op(
-                &mut self.defs,
-                if bits == 0 { 42 } else { 41 },
-                &[self.types[&s], id],
-            );
-        } else {
-            let mut words = vec![self.types[&s], id, bits as u32];
-            if s.size() == 8 { words.push((bits >> 32) as u32); }
-            op(&mut self.defs, 43, &words);
+        let start = self.defs.len();
+        self.defs.reserve(5);
+        unsafe {
+            let used = constant_declaration(ScalarCode::from(s), self.types[&s], id, bits, self.defs.as_mut_ptr().add(start));
+            self.defs.set_len(start + used as usize);
         }
         self.constants.insert((s, bits), id);
         id
@@ -1343,14 +1343,14 @@ fn emit_shader(
         .chain(integer8.then_some([Scalar::U8, Scalar::I8]).into_iter().flatten())
         .chain(integer16.then_some([Scalar::U16, Scalar::I16]).into_iter().flatten()) {
         let id = e.id();
-        match s {
-            Scalar::F32 | Scalar::F64 => op(&mut e.defs, 22, &[id, s.bit_width()]),
-            Scalar::Bool => op(&mut e.defs, 20, &[id]),
-            _ => op(&mut e.defs, 21, &[id, s.size() * 8, u32::from(s.is_signed())]),
-        };
-        e.types.insert(s, id);
         let ptr = e.id();
-        op(&mut e.defs, 32, &[ptr, 7, id]);
+        let start = e.defs.len();
+        e.defs.reserve(8);
+        unsafe {
+            let used = scalar_declaration(ScalarCode::from(s), id, ptr, e.defs.as_mut_ptr().add(start));
+            e.defs.set_len(start + used as usize);
+        }
+        e.types.insert(s, id);
         e.pointers.insert(s, ptr);
     }
     let u = e.types[&Scalar::U32];

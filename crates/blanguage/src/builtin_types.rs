@@ -6,10 +6,21 @@ use crate::ir::Scalar;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind { Missing = 0, Numeric = 1, Address = 2, Handle = 3, RayHit = 4 }
 
-#[allow(dead_code)]
 #[repr(u32)]
 #[derive(Clone, Copy)]
-enum ScalarCode { F32 = 0, U32 = 1, I32 = 2, Bool = 3, U64 = 4, I64 = 5, F64 = 6, U8 = 7, I8 = 8, U16 = 9, I16 = 10 }
+pub(crate) enum ScalarCode { F32 = 0, U32 = 1, I32 = 2, Bool = 3, U64 = 4, I64 = 5, F64 = 6, U8 = 7, I8 = 8, U16 = 9, I16 = 10 }
+
+
+impl From<Scalar> for ScalarCode {
+    fn from(scalar: Scalar) -> Self {
+        match scalar {
+            Scalar::F32 => Self::F32, Scalar::U32 => Self::U32, Scalar::I32 => Self::I32,
+            Scalar::Bool => Self::Bool, Scalar::U64 => Self::U64, Scalar::I64 => Self::I64,
+            Scalar::F64 => Self::F64, Scalar::U8 => Self::U8, Scalar::I8 => Self::I8,
+            Scalar::U16 => Self::U16, Scalar::I16 => Self::I16,
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]

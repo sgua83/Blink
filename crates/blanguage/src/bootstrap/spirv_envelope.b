@@ -167,3 +167,49 @@ extern "C" u64 encode(Envelope input, address interfaces, u64 count, address wor
     }
     return at;
 }
+
+struct ScalarDefinition { u32 opcode; u32 width; u32 signed; };
+
+ScalarDefinition scalar_definition(BuiltinScalar scalar) on cpu {
+    u32 width = 32;
+    if (scalar == BuiltinScalar::U64 || scalar == BuiltinScalar::I64 || scalar == BuiltinScalar::F64) { width = 64; }
+    if (scalar == BuiltinScalar::U8 || scalar == BuiltinScalar::I8) { width = 8; }
+    if (scalar == BuiltinScalar::U16 || scalar == BuiltinScalar::I16) { width = 16; }
+    u32 signed = u32(scalar == BuiltinScalar::I8 || scalar == BuiltinScalar::I16 || scalar == BuiltinScalar::I32 || scalar == BuiltinScalar::I64);
+    u32 opcode = 21;
+    if (scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) { opcode = 22; }
+    if (scalar == BuiltinScalar::Bool) { opcode = 20; }
+    return ScalarDefinition(opcode, width, signed);
+}
+
+extern "C" u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer_id, address words) on cpu {
+    ScalarDefinition type = scalar_definition(scalar);
+    u64 at = 2u64;
+    if (type.opcode != 20) { put(words, at, type.width); at += 1u64; }
+    if (type.opcode == 21) { put(words, at, type.signed); at += 1u64; }
+    put(words, 0u64, instruction(type.opcode, u32(at)));
+    put(words, 1u64, type_id);
+    put(words, at, instruction(32, 4));
+    put(words, at + 1u64, pointer_id);
+    put(words, at + 2u64, 7);
+    put(words, at + 3u64, type_id);
+    return at + 4u64;
+}
+
+extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u64 bits, address words) on cpu {
+    ScalarDefinition type = scalar_definition(scalar);
+    put(words, 1u64, type_id);
+    put(words, 2u64, id);
+    if (type.opcode == 20) {
+        put(words, 0u64, instruction(bits == 0u64 ? 42 : 41, 3));
+        return 3u64;
+    }
+    put(words, 3u64, u32(bits));
+    if (type.width == 64) {
+        put(words, 0u64, instruction(43, 5));
+        put(words, 4u64, u32(bits >> 32u64));
+        return 5u64;
+    }
+    put(words, 0u64, instruction(43, 4));
+    return 4u64;
+}
