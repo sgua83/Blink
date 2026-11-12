@@ -54,6 +54,26 @@ impl Emitter<'_> {
         collective: bool,
         sorting: bool,
     ) {
+        let (input, offsets) = self.dispatch_grid_input(count, limits, first, levels, collective, sorting);
+        let at = self.body.len();
+        self.body.reserve(input.word_capacity());
+        let emitted = unsafe {
+            let emitted = encode_dispatch_grid(input, offsets.as_ptr(), self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            emitted
+        };
+        self.next = emitted.next;
+    }
+
+    pub(super) fn dispatch_grid_input(
+        &mut self,
+        count: u32,
+        limits: [u32; 2],
+        first: usize,
+        levels: usize,
+        collective: bool,
+        sorting: bool,
+    ) -> (DispatchGrid, [u32; PREFIX_LEVELS * 2 * 4]) {
         let records = levels * (1 + usize::from(sorting));
         let mut offsets = [0; PREFIX_LEVELS * 2 * 4];
         for (slot, offset) in offsets[..records * 4].iter_mut().enumerate() {
@@ -78,15 +98,7 @@ impl Emitter<'_> {
             bins: if sorting { self.constant(Scalar::U32, 16) } else { 0 },
             next: self.next,
         };
-        let at = self.body.len();
-        // Page header, optional histogram count and up to 167 words per record.
-        self.body.reserve(25 + 167 * records);
-        let emitted = unsafe {
-            let emitted = encode_dispatch_grid(input, offsets.as_ptr(), self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            emitted
-        };
-        self.next = emitted.next;
+        (input, offsets)
     }
 
     pub(super) fn prefix_index(

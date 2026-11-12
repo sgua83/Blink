@@ -249,6 +249,13 @@ struct RecordCopy {
     step: u32,
 }
 
+impl RecordCopy {
+    fn word_capacity(&self) -> usize {
+        // Two record origins and up to 29 words per scalar copy.
+        182 + 29 * self.count as usize
+    }
+}
+
 #[repr(C)]
 struct RecordCopyWords {
     words: u64,
@@ -429,7 +436,7 @@ struct SortRankEmission {
 }
 
 #[repr(C)]
-struct SortRankWords { words: u64, next: u32, label: u32 }
+struct StageWords { words: u64, next: u32, label: u32 }
 
 #[repr(C)]
 struct DispatchValue {
@@ -454,6 +461,13 @@ struct DispatchGrid {
     collective: u32,
     bins: u32,
     next: u32,
+}
+
+impl DispatchGrid {
+    fn word_capacity(&self) -> usize {
+        // Page header, optional histogram count and up to 167 words per record.
+        25 + 167 * self.levels as usize * (1 + usize::from(self.bins != 0))
+    }
 }
 
 #[repr(C)]
@@ -610,7 +624,7 @@ unsafe extern "C" {
         input: PrivateAddress, parts: *const u32, pointers: *mut u32, body: *mut u32,
     ) -> PrivateAddressWords;
     #[link_name = "bootstrap.spirv_envelope::encode_sort_rank"]
-    fn encode_sort_rank(input: SortRankEmission, body: *mut u32) -> SortRankWords;
+    fn encode_sort_rank(input: SortRankEmission, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::encode_dispatch_grid"]
     fn encode_dispatch_grid(input: DispatchGrid, offsets: *const u32, body: *mut u32) -> DispatchValue;
     #[link_name = "bootstrap.spirv_envelope::encode_prefix_index"]
@@ -972,16 +986,16 @@ impl Emitter<'_> {
         }
     }
     // 记录页不拆分记录。两端沿原物理地址与对齐复制全部字节。
-    fn copy_record(
+    fn record_copy_input(
         &mut self,
         source_binding: usize,
         source_index: u32,
         target_binding: usize,
         target_index: u32,
-    ) {
+    ) -> Option<RecordCopy> {
         let stride = self.program.buffers[source_binding].stride;
         if stride == 0 {
-            return;
+            return None;
         }
         let align = self.program.buffers[source_binding].ty.align;
         let scalar = match align { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
@@ -991,7 +1005,7 @@ impl Emitter<'_> {
         let source = self.page_input(
             scalar, PageSource::Dataset(self.buffers[source_binding]), source_index, None, 0,
         );
-        let input = RecordCopy {
+        Some(RecordCopy {
             source,
             target_descriptor: self.buffers[target_binding],
             target_index,
@@ -999,16 +1013,34 @@ impl Emitter<'_> {
             unit_bytes,
             count,
             step,
+        })
+    }
+
+    fn copy_record(
+        &mut self, source: usize, source_index: u32, target: usize, target_index: u32,
+    ) {
+        let Some(input) = self.record_copy_input(source, source_index, target, target_index) else {
+            return;
         };
         let at = self.body.len();
-        // Two record origins, then at most 29 words per scalar copy.
-        self.body.reserve(182 + 29 * count as usize);
+        self.body.reserve(input.word_capacity());
         unsafe {
             let emitted = copy_record(input, self.body.as_mut_ptr().add(at));
             self.body.set_len(at + emitted.words as usize);
             self.next = emitted.next;
         }
     }
+    fn emit_stage(&mut self, capacity: usize, encode: impl FnOnce(*mut u32) -> StageWords) {
+        let at = self.body.len();
+        self.body.reserve(capacity);
+        unsafe {
+            let emitted = encode(self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
+        }
+    }
+
     fn view_source(&mut self, table: &[Reg; 2], stride: ElementStride) -> PageSource {
         let stride = match stride {
             ElementStride::Constant(bytes) => self.constant(Scalar::U32, bytes as u32),

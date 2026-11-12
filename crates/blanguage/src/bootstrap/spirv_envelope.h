@@ -422,6 +422,21 @@ struct DispatchGrid {
  
 extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address offsets, address body) on cpu;
 
+struct ScatterInput {
+    PageAddress flag;
+    u32 count;
+    u32 active;
+    u32 bool_type;
+    u32 prefix_descriptor;
+};
+
+// Record copy is absent for a zero-byte record. Both calls write directly to
+// the shader body and return its next ID and final active-merge label.
+extern "C" StageWords encode_record_scatter(ScatterInput input, address record_copy,
+    u32 count_descriptor, u32 count_word, address body) on cpu;
+extern "C" StageWords encode_index_scatter(ScatterInput input, u32 target_descriptor,
+    DispatchGrid grid, address offsets, address body) on cpu;
+
 struct SortRankEmission {
     PageAddress source;
     PageAddress totals;
@@ -448,8 +463,8 @@ struct SortRankEmission {
     u32 pair_step;
     u32 next;
 };
-struct SortRankWords { u64 words; u32 next; u32 label; };
-extern "C" SortRankWords encode_sort_rank(SortRankEmission input, address body) on cpu;
+struct StageWords { u64 words; u32 next; u32 label; };
+extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on cpu;
 
 struct PrefixIndexEmission {
     u32 uint_type;

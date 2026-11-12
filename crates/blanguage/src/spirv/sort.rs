@@ -116,15 +116,8 @@ impl Emitter<'_> {
             pair_step: self.constant(Scalar::U64, 4),
             next: self.next,
         };
-        let at = self.body.len();
         // At most two paired addresses, one single address, and the fixed rank instructions.
-        self.body.reserve(1024);
-        unsafe {
-            let emitted = encode_sort_rank(input, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            self.next = emitted.next;
-            self.current_label = emitted.label;
-        }
+        self.emit_stage(1024, |body| unsafe { encode_sort_rank(input, body) });
     }
 
 }
