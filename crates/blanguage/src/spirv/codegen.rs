@@ -218,6 +218,40 @@ struct MathEmission {
     sign: FloatSignOperands,
 }
 
+enum PageSource {
+    Dataset(u32),
+    View { low: u32, high: u32, stride: u32 },
+}
+
+#[repr(C)]
+struct PageAddress {
+    u32_type: u32,
+    u64_type: u32,
+    descriptor_pointer: u32,
+    page_pointer: u32,
+    result_pointer: u32,
+    descriptor: u32,
+    low: u32,
+    high: u32,
+    stride: u32,
+    index: u32,
+    word: u32,
+    extra: u32,
+    zero: u32,
+    one: u32,
+    high_shift: u32,
+    page_shift: u32,
+    page_bytes: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct PageAddressResult {
+    words: u64,
+    next: u32,
+    pointer: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
@@ -248,6 +282,8 @@ unsafe extern "C" {
     fn scalar_unary(input: UnaryEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::scalar_math"]
     fn scalar_math(input: MathEmission, body: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::page_address"]
+    fn page_address(input: PageAddress, body: *mut u32) -> PageAddressResult;
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
     fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
@@ -471,37 +507,37 @@ impl Emitter<'_> {
             word)
     }
     fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, word: u32) -> u32 {
-        let zero = self.constant(Scalar::U32, 0);
-        let mut header = [0; 2];
-        for (part, value) in header.iter_mut().enumerate() {
-            let field = self.constant(Scalar::U32, part as u32);
-            let pointer = self.id();
-            self.emit(65, &[self.ptr_table_u64, pointer, self.buffers[binding], zero, field]);
-            *value = self.id();
-            self.emit(61, &[self.u64_type, *value, pointer]);
+        self.page_address(unit, PageSource::Dataset(self.buffers[binding]), index, word, 0)
+    }
+
+    fn page_address(&mut self, unit: Scalar, source: PageSource, index: u32, word: u32, extra: u32) -> u32 {
+        let (descriptor, low, high, stride, zero, one) = match source {
+            PageSource::Dataset(descriptor) => (
+                descriptor, 0, 0, 0, self.constant(Scalar::U32, 0), self.constant(Scalar::U32, 1),
+            ),
+            PageSource::View { low, high, stride } => (0, low, high, stride, 0, 0),
+        };
+        let input = PageAddress {
+            u32_type: self.types[&Scalar::U32],
+            u64_type: self.u64_type,
+            descriptor_pointer: self.ptr_table_u64,
+            page_pointer: self.physical_pointers[&Scalar::U64],
+            result_pointer: self.physical_pointers[&unit],
+            descriptor, low, high, stride, index, extra, zero, one,
+            high_shift: self.constant(Scalar::U32, 32),
+            page_shift: self.constant(Scalar::U32, 3),
+            page_bytes: self.constant(Scalar::U32, PAGE_BYTES),
+            word: self.constant(Scalar::U32, word),
+            next: self.next,
+        };
+        let at = self.body.len();
+        self.body.reserve(109);
+        unsafe {
+            let address = page_address(input, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + address.words as usize);
+            self.next = address.next;
+            address.pointer
         }
-        let stride = self.id();
-        self.emit(113, &[self.types[&Scalar::U32], stride, header[1]]);
-        let bits = self.constant(Scalar::U32, 32);
-        let shifted = self.id();
-        self.emit(194, &[self.u64_type, shifted, header[1], bits]);
-        let field = self.id();
-        self.emit(113, &[self.types[&Scalar::U32], field, shifted]);
-        let (page, offset) = self.record_location(index, stride, word);
-        let at = self.id();
-        self.emit(128, &[self.types[&Scalar::U32], at, offset, field]);
-        let page64 = self.id();
-        self.emit(113, &[self.u64_type, page64, page]);
-        let three = self.constant(Scalar::U32, 3);
-        let page_bytes = self.id();
-        self.emit(196, &[self.u64_type, page_bytes, page64, three]);
-        let entry = self.id();
-        self.emit(128, &[self.u64_type, entry, header[0], page_bytes]);
-        let pointer = self.id();
-        self.emit(120, &[self.physical_pointers[&Scalar::U64], pointer, entry]);
-        let base = self.id();
-        self.emit(61, &[self.u64_type, base, pointer, 2, 8]);
-        self.word_pointer(unit, base, at)
     }
     // 记录页不拆分记录；原生复制完整字节布局，保留填充及 bool／浮点编码。
     fn copy_record(
@@ -522,71 +558,29 @@ impl Emitter<'_> {
             self.emit(62, &[target, value, 2, scalar.size()]);
         }
     }
-    fn record_location(&mut self, index: u32, stride: u32, word: u32) -> (u32, u32) {
-        let bytes = self.constant(Scalar::U32, PAGE_BYTES);
-        let capacity = self.id();
-        self.emit(134, &[self.types[&Scalar::U32], capacity, bytes, stride]);
-        let page = self.id();
-        self.emit(134, &[self.types[&Scalar::U32], page, index, capacity]);
-        let local = self.id();
-        self.emit(137, &[self.types[&Scalar::U32], local, index, capacity]);
-        let scaled = self.id();
-        self.emit(132, &[self.types[&Scalar::U32], scaled, local, stride]);
-        let offset = self.constant(Scalar::U32, word);
-        let at = self.id();
-        self.emit(128, &[self.types[&Scalar::U32], at, scaled, offset]);
-        (page, at)
+    fn view_source(&mut self, table: &[Reg; 2], stride: ElementStride) -> PageSource {
+        let stride = match stride {
+            ElementStride::Constant(bytes) => self.constant(Scalar::U32, bytes as u32),
+            ElementStride::Value(parts) => self.value(parts[0]),
+        };
+        PageSource::View { low: self.value(table[0]), high: self.value(table[1]), stride }
     }
-    fn word_pointer(&mut self, unit: Scalar, base: u32, bytes: u32) -> u32 {
-        let offset64 = self.id();
-        self.emit(113, &[self.u64_type, offset64, bytes]);
-        let address = self.id();
-        self.emit(128, &[self.u64_type, address, base, offset64]);
-        let ptr = self.id();
-        self.emit(120, &[self.physical_pointers[&unit], ptr, address]);
-        ptr
-    }
+
     fn view_address(&mut self, unit: Scalar, table: &[Reg; 2], index: Reg, stride: ElementStride, word: u32) -> u32 {
-        let low = self.id();
-        let high = self.id();
-        self.emit(113, &[self.u64_type, low, self.value(table[0])]);
-        self.emit(113, &[self.u64_type, high, self.value(table[1])]);
-        let width = self.constant(Scalar::U32, 32);
-        let shifted = self.id();
-        self.emit(196, &[self.u64_type, shifted, high, width]);
-        let address = self.id();
-        self.emit(197, &[self.u64_type, address, low, shifted]);
-        let stride = match stride {ElementStride::Constant(bytes)=>self.constant(Scalar::U32,bytes as u32),ElementStride::Value(parts)=>self.value(parts[0])};
-        let (page, offset) = self.record_location(self.value(index), stride, word);
-        let page64 = self.id();
-        self.emit(113, &[self.u64_type, page64, page]);
-        let three = self.constant(Scalar::U32, 3);
-        let page_bytes = self.id();
-        self.emit(196, &[self.u64_type, page_bytes, page64, three]);
-        let entry = self.id();
-        self.emit(128, &[self.u64_type, entry, address, page_bytes]);
-        let pointer = self.id();
-        self.emit(120, &[self.physical_pointers[&Scalar::U64], pointer, entry]);
-        let base = self.id();
-        self.emit(61, &[self.u64_type, base, pointer, 2, 8]);
-        self.word_pointer(unit, base, offset)
+        let source = self.view_source(table, stride);
+        self.page_address(unit, source, self.value(index), word, 0)
     }
+
     fn indexed_address(&mut self, unit: Scalar, source: &IndexedSource, offset: Reg, word: u32) -> u32 {
         if let IndexedSource::Tile { tile, index } = source {
             return self.tile_word_address(self.stage.shared_word(*tile, word), self.value(*index), Some(self.value(offset))).0;
         }
-        let pointer = match source {
-            IndexedSource::Data { binding, index } => self.address(unit, *binding, *index, word),
-            IndexedSource::View {
-                address,
-                index,
-                stride,
-            } => self.view_address(unit, address, *index, *stride, word),
+        let (source, index) = match source {
+            IndexedSource::Data { binding, index } => (PageSource::Dataset(self.buffers[*binding]), *index),
+            IndexedSource::View { address, index, stride } => (self.view_source(address, *stride), *index),
             _ => unreachable!(),
         };
-        let address = self.id();
-        self.emit(117, &[self.u64_type, address, pointer]);
-        self.word_pointer(unit, address, self.value(offset))
+        self.page_address(unit, source, self.value(index), word, self.value(offset))
     }
     fn block(
         &mut self,

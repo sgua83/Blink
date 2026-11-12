@@ -2680,7 +2680,7 @@ CPU整域read／write／inout／atomic调用的逻辑字段保留原句柄、实
 
 普通CPU函数按原参与范围确定借用ABI：Invocation的read／write／inout／atomic dataset交接真实地址、长度、u64步长和字段偏移；Host参数交接原Frame句柄、长度、记录步幅和字段偏移四个u32；DataPayload与实际Place直接保存Access，不以可写布尔值代替原子权限。atomic参数只允许原子操作及atomic转借，不能变成普通read／write／inout或不可变view；普通可写资源可按已初始化的真实区域借给atomic参数。atomic T沿已有原生位置参数ABI交接，字段、嵌套数组与非连续向量分量保留实际地址。Atomic直接使用IndexedSource的Data／Tile／View位置，不另存目标类别和重复下标；CPU地址上的读改写使用真实LOCK指令，加载／存储保持显式内存序，GPU不解释CPU裸地址。资源仍由原Frame拥有，最后真实消费者完成后释放；普通CPU函数自身不因此创建并行域。对象合同与资源C ABI采用语言规范“已编译模块的资源ABI”中的现行编码版本。
 
-GPU数据集绑定以同一个16字节头交接：原页数组的64位设备地址、u32物理记录步幅、u32逻辑字段偏移。原根在既有页表分配的开头持有其零偏移头，页数组紧随其后；非零字段偏移只由本次提交参数持有另一个同格式头，指向原页数组，不复制页地址或字段载荷。SPIR-V按物理步幅计算整记录分页，再叠加字段及真实分量偏移；归约、扫描、排序和临时摘要同样消费实际绑定布局，不再转传未被消费的固定stride。不可变view携带实际元素步长访问原页数组，设备指针指到原16字节dataset绑定头之后；24字节view值不替换该绑定头。集合首遍与根写回交接原逻辑描述符，实际中间层只替换自己的临时引用，不从根分配重建零偏移引用。输入根只交接一次，字段类型、初始化、read／write／inout／atomic与真实区域关系保持，DomainBindings在原require／completed处消费实际slot与offset，参数和资源由原Execution持有至真实GPU完成。Frame同步GPU调用保持等待本次完成并返回同一根，结果不隐式下载。GPU绑定头遵守现行执行映像语义；Frame共同C签名与对象合同分别按其实际编码版本交接，不相容产物须重新编译。
+GPU数据集绑定以同一个16字节头交接：原页数组的64位设备地址、u32物理记录步幅、u32逻辑字段偏移。原根在既有页表分配的开头持有其零偏移头，页数组紧随其后；非零字段偏移只由本次提交参数持有另一个同格式头，指向原页数组，不复制页地址或字段载荷。B发射器按物理步幅计算SPIR-V整记录分页，再叠加字段和分量偏移。动态数组字节偏移直接加到64位设备地址，最终载荷访问取得一次物理指针转换。归约、扫描、排序和临时摘要同样消费实际绑定布局，不再转传未被消费的固定stride。不可变view携带实际元素步长访问原页数组，设备指针指到原16字节dataset绑定头之后；24字节view值不替换该绑定头。集合首遍与根写回交接原逻辑描述符，实际中间层只替换自己的临时引用，不从根分配重建零偏移引用。输入根只交接一次，字段类型、初始化、read／write／inout／atomic与真实区域关系保持，DomainBindings在原require／completed处消费实际slot与offset，参数和资源由原Execution持有至真实GPU完成。Frame同步GPU调用保持等待本次完成并返回同一根，结果不隐式下载。GPU绑定头遵守现行执行映像语义；Frame共同C签名与对象合同分别按其实际编码版本交接，不相容产物须重新编译。
 
 `for (element in data)` 可以遍历 read 或 atomic 数据集；atomic 游标只是现有元素位置，必须使用 atomic_load／其他原子算子，不能隐式读取或直接赋值。游标支持 ordinal、break、continue、seek，也可把当前原子字段继续借给 atomic T 参数。函数内不允许 parallel、phase 或隐式协作同步；cooperative 仍须声明至少一个 tile 参数，并从调用点继承同一逻辑块。通用只读／原子数组不会把一个值函数变成新的并行域。
 
@@ -3281,7 +3281,7 @@ CLI 同样在所有 dataset 文件之后，按上述展开顺序提供每张 `.b
 
 宿主用 `Dataset::for_view` 获取元素类型和布局。CPU 用 `Dataset::freeze()?` 交还可跨宿主线程共享的 `blcompute::ReadDataset`，以 `Dataset::with_views(Vec<ViewBinding>)` 绑定父记录；GPU 上传后用 `GpuDataset::freeze()` 交还 Vulkan 的 `ReadDataset`，通过 `Device::upload_with_views` 绑定已有设备数据。两端共用字段、逐记录数量、元素类型和唯一性处理，GPU 另外检查实际设备归属；不以地址字节代替真实资源。父数据持有按所有者身份去重的子引用；CPU 原生范围完成前保持根数据，GPU 提交继续持有根数据到 Fence 完成，子资源随最后一个真实引用释放。嵌套图通过相同不可变引用闭合，不增加宿主每元素回调。
 
-view ABI 仍为 16 字节、对齐 8：隐藏的 64 位物理地址、u32 长度和填充。CPU 地址指向冻结存储的连续字缓冲，自研 x64 后端用 64 位元素寻址直接读取；GPU 地址指向现有物理页表，各数据集仍按完整记录分页。两种物理地址不互相冒充，IR 的 ViewLoad 使用中性的 address 字段，源语言不区分地址编码。SPIR-V 对物理页表加载声明 Aligned 8，对物理数据加载声明 Aligned 4，遵守 [Vulkan SPIR-V 环境规则](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html)。view地址与所有权由执行框架生产，view不公开其隐藏地址；独立CPU address值不绕过该view的资源与寿命。
+view 沿上文的 24 字节、对齐 8 的机器表示交接实际地址、长度及步长。CPU 使用冻结存储的连续字缓冲和 64 位元素寻址。GPU 使用现有物理页数组，B 发射器按实际记录步幅选页并计算记录内地址。IR 的 ViewLoad 使用同一个 address 字段。SPIR-V 对物理页数组的地址加载声明 Aligned 8，载荷访存按实际物理单元对齐，遵守 [Vulkan SPIR-V 环境规则](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html)。view地址与所有权由执行框架生产，view不公开其隐藏地址；独立CPU address值不绕过该view的资源与寿命。
 
 ### 主机资源的可变访问与传输
 

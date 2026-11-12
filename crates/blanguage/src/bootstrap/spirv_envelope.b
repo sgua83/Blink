@@ -499,3 +499,93 @@ extern "C" u64 scalar_math(MathEmission input, address body) on cpu {
     if (length == 7) { put(body, 6u64, input.right); }
     return u64(length);
 }
+
+u64 words_five(address body, u64 at, u32 opcode, u32 a, u32 b, u32 c, u32 d, u32 e) on cpu {
+    put(body, at, instruction(opcode, 6));
+    put(body, at + 1u64, a);
+    put(body, at + 2u64, b);
+    put(body, at + 3u64, c);
+    put(body, at + 4u64, d);
+    put(body, at + 5u64, e);
+    return at + 6u64;
+}
+
+struct PageOrigin { u64 words; u32 next; u32 table; u32 stride; u32 field; };
+
+u64 dataset_header_word(address body, u64 at, PageAddress input, u32 field, u32 pointer, u32 value) on cpu {
+    u64 end = words_five(body, at, 65, input.descriptor_pointer, pointer, input.descriptor, input.zero, field);
+    return words_three(body, end, 61, input.u64_type, value, pointer);
+}
+
+PageOrigin page_origin(PageAddress input, address body) on cpu {
+    u32 first = input.next;
+    if (input.descriptor != 0) {
+        u32 table = first + 1;
+        u32 layout = first + 3;
+        u64 at = dataset_header_word(body, 0u64, input, input.zero, first, table);
+        at = dataset_header_word(body, at, input, input.one, first + 2, layout);
+        u32 stride = first + 4;
+        u32 high = first + 5;
+        u32 field = first + 6;
+        at = words_three(body, at, 113, input.u32_type, stride, layout);
+        at = words_four(body, at, 194, input.u64_type, high, layout, input.high_shift);
+        at = words_three(body, at, 113, input.u32_type, field, high);
+        return PageOrigin(at, first + 7, table, stride, field);
+    }
+    u32 low = first;
+    u32 high = first + 1;
+    u32 shifted = first + 2;
+    u32 table = first + 3;
+    u64 at = words_three(body, 0u64, 113, input.u64_type, low, input.low);
+    at = words_three(body, at, 113, input.u64_type, high, input.high);
+    at = words_four(body, at, 196, input.u64_type, shifted, high, input.high_shift);
+    at = words_four(body, at, 197, input.u64_type, table, low, shifted);
+    return PageOrigin(at, first + 4, table, input.stride, 0);
+}
+
+extern "C" PageAddressResult page_address(PageAddress input, address body) on cpu {
+    PageOrigin origin = page_origin(input, body);
+    u32 first = origin.next;
+    u32 capacity = first;
+    u32 page = first + 1;
+    u32 local = first + 2;
+    u32 scaled = first + 3;
+    u32 byte_offset = first + 4;
+    u32 next = first + 5;
+    u32 t32 = input.u32_type;
+    u32 t64 = input.u64_type;
+    u64 at = words_four(body, origin.words, 134, t32, capacity, input.page_bytes, origin.stride);
+    at = words_four(body, at, 134, t32, page, input.index, capacity);
+    at = words_four(body, at, 137, t32, local, input.index, capacity);
+    at = words_four(body, at, 132, t32, scaled, local, origin.stride);
+    at = words_four(body, at, 128, t32, byte_offset, scaled, input.word);
+    if (origin.field != 0) {
+        at = words_four(body, at, 128, t32, next, byte_offset, origin.field);
+        byte_offset = next;
+        next += 1;
+    }
+
+    u32 page64 = next;
+    u32 page_bytes = next + 1;
+    u32 entry = next + 2;
+    u32 page_pointer = next + 3;
+    u32 base = next + 4;
+    u32 offset64 = next + 5;
+    u32 physical = next + 6;
+    next += 7;
+    at = words_three(body, at, 113, t64, page64, page);
+    at = words_four(body, at, 196, t64, page_bytes, page64, input.page_shift);
+    at = words_four(body, at, 128, t64, entry, origin.table, page_bytes);
+    at = words_three(body, at, 120, input.page_pointer, page_pointer, entry);
+    at = words_five(body, at, 61, t64, base, page_pointer, 2, 8);
+    at = words_three(body, at, 113, t64, offset64, byte_offset);
+    at = words_four(body, at, 128, t64, physical, base, offset64);
+    if (input.extra != 0) {
+        at = words_three(body, at, 113, t64, next, input.extra);
+        at = words_four(body, at, 128, t64, next + 1, physical, next);
+        physical = next + 1;
+        next += 2;
+    }
+    at = words_three(body, at, 120, input.result_pointer, next, physical);
+    return PageAddressResult(at, next + 1, next);
+}

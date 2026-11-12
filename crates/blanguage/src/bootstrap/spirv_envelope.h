@@ -138,3 +138,29 @@ struct MathEmission {
 // thirteen output words. A zero right operand ID denotes a unary math operation.
 extern "C" u64 scalar_unary(UnaryEmission input, address body) on cpu;
 extern "C" u64 scalar_math(MathEmission input, address body) on cpu;
+
+struct PageAddress {
+    u32 u32_type;
+    u32 u64_type;
+    u32 descriptor_pointer;
+    u32 page_pointer;
+    u32 result_pointer;
+    u32 descriptor;
+    u32 low;
+    u32 high;
+    u32 stride;
+    u32 index;
+    u32 word;
+    u32 extra;
+    u32 zero;
+    u32 one;
+    u32 high_shift;
+    u32 page_shift;
+    u32 page_bytes;
+    u32 next;
+};
+struct PageAddressResult { u64 words; u32 next; u32 pointer; };
+// A descriptor ID selects the dataset header. Otherwise the input contains the
+// view page table and stride IDs. The extra byte offset is an optional ID.
+// The emitter owns the next ID and up to 109 output words.
+extern "C" PageAddressResult page_address(PageAddress input, address body) on cpu;
