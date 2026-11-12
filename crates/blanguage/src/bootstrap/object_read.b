@@ -31,7 +31,27 @@ extern "C" ObjectSectionResult logical_section(ReadBytes input,ReadBytes headers
     }
     return ObjectSectionResult(value,0);
 }
-extern "C" ObjectAssociation association(ObjectRows rows,u64 selection,u64 owner) on cpu {
+address definition_address(address definitions,u64 index) on cpu {
+    return unsafe_address(address_bits(definitions)+index*4u64);
+}
+extern "C" ObjectSymbolResult object_symbol(
+    ReadBytes input,ReadSymbols table,u64 index,address definitions,u64 definition_count
+) on cpu {
+    ReadSymbol row=symbol(input,table,index);
+    u8 external=u8(0);
+    if(row.storage==2u64){external=u8(1);}
+    ObjectSymbol primary=ObjectSymbol(row.name,u32(row.value),i16(row.section),external,u8(row.function));
+    if(row.storage==3u64 && row.section>i64(0) && u64(row.section)<=definition_count && row.auxiliary!=0u64){
+        address slot=definition_address(definitions,u64(row.section)-1u64);
+        unsafe_position<SectionDefinition>(slot)=SectionDefinition(u16(row.owner),u8(row.selection),u8(1));
+    }
+    return ObjectSymbolResult(primary,row.next,row.error);
+}
+extern "C" ObjectAssociation association(ObjectRows rows,address definitions,u64 index) on cpu {
+    SectionDefinition definition=unsafe_position<SectionDefinition>(definition_address(definitions,index));
+    if(definition.present==u8(0)){return ObjectAssociation(0u64,0u64,16);}
+    u64 selection=u64(definition.selection);
+    u64 owner=u64(definition.owner);
     if(selection==1u64){return ObjectAssociation(0u64,0u64,0);}
     if(selection!=5u64){return ObjectAssociation(0u64,0u64,4);}
     if(owner==0u64){return ObjectAssociation(0u64,0u64,1);}

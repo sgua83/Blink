@@ -155,6 +155,7 @@ enum ObjectReadError {
     None, OwnerNumber, OwnerUnavailable, OwnerNotComdat, Selection, SectionUnavailable,
     DllLengthMissing, DllLengthEmpty, DllLengthDigit, DllLengthOverflow, DllLength,
     StackSection, StackPosition, StackNoLocation, StackRelocation, RelocationSymbol,
+    MissingSectionDefinition,
 }
 impl ObjectReadError {
     fn check(self) -> Result<()> {
@@ -175,6 +176,7 @@ impl ObjectReadError {
             Self::StackNoLocation => Err("没有COFF位置的入口不能引用COFF调用".into()),
             Self::StackRelocation => Err("栈调用信息缺少对应的原生重定位".into()),
             Self::RelocationSymbol => Err("COFF 重定位符号越界".into()),
+            Self::MissingSectionDefinition => Err("COFF COMDAT节缺少定义辅助记录".into()),
         }
     }
 }
@@ -201,6 +203,13 @@ impl ObjectSymbol {
 struct ObjectSymbols { values: *const ObjectSymbol, count: usize }
 
 #[repr(C)]
+struct ObjectSymbolResult { value: ObjectSymbol, next: usize, error: ReadError }
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct SectionDefinition { owner: u16, selection: u8, present: u8 }
+
+#[repr(C)]
 struct ObjectAssociation { present: u64, owner: usize, error: ObjectReadError }
 #[repr(u64)]
 enum ObjectTargetKind { Section, Import, Symbol }
@@ -214,8 +223,12 @@ struct ObjectRelocation { record: ReadRelocation, target: ObjectTarget }
 unsafe extern "C" {
     #[link_name = "bootstrap.object_read::logical_section"]
     fn object_logical_section(input: ReadBytes, headers: ReadBytes, index: usize, mapped: *mut u64) -> ObjectSectionResult;
+    #[link_name = "bootstrap.object_read::object_symbol"]
+    fn object_symbol(input: ReadBytes, table: ReadSymbols, index: usize,
+        definitions: *mut SectionDefinition, definition_count: usize) -> ObjectSymbolResult;
     #[link_name = "bootstrap.object_read::association"]
-    fn object_association(rows: ObjectRows, selection: u64, owner: u64) -> ObjectAssociation;
+    fn object_association(rows: ObjectRows, definitions: *const SectionDefinition,
+        index: usize) -> ObjectAssociation;
     #[link_name = "bootstrap.object_read::object_relocation"]
     fn object_relocation(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols,
         table: usize, index: usize) -> ObjectRelocation;
@@ -786,19 +799,13 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
     let table = unsafe { read_symbols(input) };
     table.error.check()?;
     let mut symbols = vec![ObjectSymbol::AUXILIARY; table.count];
-    let mut definitions = BTreeMap::new();
+    let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
     let mut i = 0;
     while i < table.count {
-        let row = unsafe { read_symbol(input, table, i) };
+        let row = unsafe { object_symbol(input, table, i, definitions.as_mut_ptr(), definitions.len()) };
         row.error.check()?;
-        std::str::from_utf8(unsafe { row.name.borrowed() })?;
-        if row.storage == 3 && row.section > 0 && row.auxiliary > 0 {
-            definitions.insert(row.section as usize - 1, (row.selection as u8, row.owner as u16));
-        }
-        symbols[i] = ObjectSymbol {
-            name: row.name, value: row.value as u32, section: row.section as i16,
-            external: u8::from(row.storage == 2), function: row.function as u8,
-        };
+        std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
+        symbols[i] = row.value;
         i = row.next;
     }
     let raw = reader.section_rows().collect::<Result<Vec<_>>>()?;
@@ -834,8 +841,7 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
     let rows = ObjectRows::new(&raw);
     for (old, row) in raw.iter().enumerate() {
         if row.mapped == 0 || row.flags & 0x1000 == 0 { continue; }
-        let &(selection, owner) = definitions.get(&old).ok_or("COFF COMDAT节缺少定义辅助记录")?;
-        let value = unsafe { object_association(rows, u64::from(selection), u64::from(owner)) };
+        let value = unsafe { object_association(rows, definitions.as_ptr(), old) };
         value.error.check()?;
         if value.present != 0 { sections[value.owner].associated.push(row.mapped - 1); }
     }
