@@ -129,7 +129,7 @@ impl Compiler {
             for interface in interfaces {
                 for import in interface.imports() {
                     if !names.contains(import) {
-                        inputs.capture(&unit.root.join(import.replace('.', "/")).with_extension("b"),
+                        inputs.capture(&crate::source_path::module(&unit.root, import, u16::from(b'b')),
                             &unit.root, &names, &mut visited)?;
                     }
                 }

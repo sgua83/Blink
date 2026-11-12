@@ -260,7 +260,7 @@
     },
     {
       "path": "crates/blanguage/src/build/graph.rs",
-      "sha256": "a73c6cc5c6df87d74367b055d623a080118792ecbd8b4c7e91085ecdc89754c5"
+      "sha256": "9d47b8beca4864e5d86031805e2f03adc5d1e61cf0c7e959484d973227c0c4f4"
     },
     {
       "path": "crates/blanguage/src/build/hash.rs",
