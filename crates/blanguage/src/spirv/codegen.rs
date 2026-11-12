@@ -252,6 +252,37 @@ struct PageAddressResult {
     pointer: u32,
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum PayloadAccess {
+    Words = 0,
+    Local = 1,
+    Physical = 2,
+}
+
+#[repr(C)]
+struct PayloadEmission {
+    access: PayloadAccess,
+    raw_type: u32,
+    unit_type: u32,
+    unit_bytes: u32,
+    count: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct PayloadRead {
+    words: u64,
+    next: u32,
+    value: u32,
+}
+
+#[repr(C)]
+struct PayloadWrite {
+    words: u64,
+    next: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
@@ -284,6 +315,13 @@ unsafe extern "C" {
     fn scalar_math(input: MathEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
     fn page_address(input: PageAddress, body: *mut u32) -> PageAddressResult;
+    #[link_name = "bootstrap.spirv_envelope::payload_read"]
+    fn payload_read(input: PayloadEmission, operands: *const u32, shifts: *const u32, body: *mut u32) -> PayloadRead;
+    #[link_name = "bootstrap.spirv_envelope::payload_write"]
+    fn payload_write(
+        input: PayloadEmission, value: u32, pointers: *const u32, shifts: *const u32,
+        output: *mut u32, body: *mut u32,
+    ) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
     fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
@@ -700,7 +738,7 @@ impl Emitter<'_> {
                     let scalar = self.stage.registers[*value];
                     let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
                     let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(unit, source, *offset, *word + part * 4)).collect();
-                    let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
+                    let raw = self.raw_bits(*value);
                     self.store_raw(scalar, unit, &pointers, raw, true);
                 }
                 InstKind::FunctionAddress(..) => return Err("CPU函数符号地址不能在GPU内核中生成"),
@@ -746,7 +784,7 @@ impl Emitter<'_> {
                     if self.private_words.contains(slot) {
                         let scalar = self.stage.registers[*src];
                         let (unit, pointers) = self.private_address(*slot, None, 0, scalar);
-                        let raw = self.to_words(*src, Self::raw_scalar(scalar))[0];
+                        let raw = self.raw_bits(*src);
                         self.store_raw(scalar, unit, &pointers, raw, false);
                     } else {
                         self.emit(62, &[self.locals[*slot], self.value(*src)]);
@@ -761,7 +799,7 @@ impl Emitter<'_> {
                 InstKind::StoreLocalIndexed { base, index, word, value, .. } => {
                     let scalar = self.stage.registers[*value];
                     let (unit, pointers) = self.private_address(*base, Some(*index), *word, scalar);
-                    let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
+                    let raw = self.raw_bits(*value);
                     self.store_raw(scalar, unit, &pointers, raw, false);
                 }
                 InstKind::Load { dst, binding, index, word } => {
@@ -771,7 +809,7 @@ impl Emitter<'_> {
                 }
                 InstKind::Store { binding, index, word, value } => {
                     let scalar = self.stage.registers[*value];
-                    let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
+                    let raw = self.raw_bits(*value);
                     self.store_raw_buffer(scalar, *binding, self.value(*index), *word, raw);
                 }
                 InstKind::Unary { dst, op, a } => {
@@ -1007,72 +1045,88 @@ impl Emitter<'_> {
     fn raw_constant(&mut self, scalar: Scalar, bits: Bits) -> u32 {
         self.constant_bits(Self::raw_scalar(scalar), bits)
     }
-    fn join_words(&mut self, scalar: Scalar, words: &[u32], unit: Scalar) -> u32 {
-        let raw = Self::raw_scalar(scalar);
-        let mut value = 0;
-        for (part, word) in words.iter().enumerate() {
-            let mut word = *word;
-            if raw != unit {
-                let converted = self.id();
-                self.emit(113, &[self.types[&raw], converted, word]);
-                word = converted;
-            }
-            if part == 0 { value = word; continue; }
-            let shift = self.constant(Scalar::U32, part as u32 * unit.bit_width());
-            let shifted = self.id();
-            self.emit(196, &[self.types[&raw], shifted, word, shift]);
-            let joined = self.id();
-            self.emit(197, &[self.types[&raw], joined, value, shifted]);
-            value = joined;
+    fn payload_input(&mut self, scalar: Scalar, unit: Scalar, count: usize, access: PayloadAccess)
+        -> (PayloadEmission, [u32; 8])
+    {
+        let mut shifts = [0; 8];
+        for (part, shift) in shifts.iter_mut().enumerate().take(count).skip(1) {
+            *shift = self.constant(Scalar::U32, part as u32 * unit.bit_width());
         }
-        value
+        let input = PayloadEmission {
+            access,
+            raw_type: self.raw_type(scalar),
+            unit_type: self.types[&unit],
+            unit_bytes: unit.size(),
+            count: count as u32,
+            next: self.next,
+        };
+        (input, shifts)
     }
-    fn to_words(&mut self, value: Reg, unit: Scalar) -> Vec<u32> {
+
+    fn read_payload(&mut self, scalar: Scalar, unit: Scalar, operands: &[u32], access: PayloadAccess) -> u32 {
+        let (input, shifts) = self.payload_input(scalar, unit, operands.len(), access);
+        let at = self.body.len();
+        self.body.reserve(20 * operands.len());
+        unsafe {
+            let read = payload_read(input, operands.as_ptr(), shifts.as_ptr(), self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + read.words as usize);
+            self.next = read.next;
+            read.value
+        }
+    }
+
+    fn join_words(&mut self, scalar: Scalar, words: &[u32], unit: Scalar) -> u32 {
+        self.read_payload(scalar, unit, words, PayloadAccess::Words)
+    }
+
+    fn raw_bits(&mut self, value: Reg) -> u32 {
         let scalar = self.stage.registers[value];
-        let mut bits = self.value(value);
+        let value = self.value(value);
         if scalar == Scalar::Bool {
-            bits = self.id();
+            let bits = self.id();
             let one = self.constant(Scalar::U32, 1);
             let zero = self.constant(Scalar::U32, 0);
-            self.emit(169, &[self.types[&Scalar::U32], bits, self.value(value), one, zero]);
+            self.emit(169, &[self.types[&Scalar::U32], bits, value, one, zero]);
+            bits
         } else if scalar != Self::raw_scalar(scalar) {
-            bits = self.id();
-            self.emit(124, &[self.raw_type(scalar), bits, self.value(value)]);
-        }
-        self.split_words(scalar, bits, unit)
-    }
-    fn split_words(&mut self, scalar: Scalar, bits: u32, unit: Scalar) -> Vec<u32> {
-        (0..scalar.size().div_ceil(unit.size())).map(|part| {
-            let mut value = bits;
-            if part != 0 {
-                let shift = self.constant(Scalar::U32, part * unit.bit_width());
-                value = self.id();
-                self.emit(194, &[self.raw_type(scalar), value, bits, shift]);
-            }
-            if Self::raw_scalar(scalar) != unit {
-                let converted = self.id();
-                self.emit(113, &[self.types[&unit], converted, value]);
-                value = converted;
-            }
+            let bits = self.id();
+            self.emit(124, &[self.raw_type(scalar), bits, value]);
+            bits
+        } else {
             value
-        }).collect()
-    }
-    fn load_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], physical: bool) -> u32 {
-        let words: Vec<_> = pointers.iter().map(|pointer| {
-            let raw = self.id();
-            let mut args = vec![self.types[&unit], raw, *pointer];
-            if physical { args.extend([2, unit.size()]); }
-            self.emit(61, &args);
-            raw
-        }).collect();
-        self.join_words(scalar, &words, unit)
-    }
-    fn store_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], value: u32, physical: bool) {
-        for (pointer, word) in pointers.iter().zip(self.split_words(scalar, value, unit)) {
-            let mut args = vec![*pointer, word];
-            if physical { args.extend([2, unit.size()]); }
-            self.emit(62, &args);
         }
+    }
+
+    fn write_payload(&mut self, input: PayloadEmission, value: u32, pointers: &[u32], shifts: &[u32; 8], output: *mut u32) {
+        let at = self.body.len();
+        self.body.reserve(14 * input.count as usize);
+        unsafe {
+            let write = payload_write(
+                input, value, pointers.as_ptr(), shifts.as_ptr(), output, self.body.as_mut_ptr().add(at),
+            );
+            self.body.set_len(at + write.words as usize);
+            self.next = write.next;
+        }
+    }
+
+    fn split_words(&mut self, scalar: Scalar, bits: u32, unit: Scalar) -> Vec<u32> {
+        let count = scalar.size().div_ceil(unit.size()) as usize;
+        let (input, shifts) = self.payload_input(scalar, unit, count, PayloadAccess::Words);
+        let mut words = Vec::with_capacity(count);
+        self.write_payload(input, bits, &[], &shifts, words.as_mut_ptr());
+        unsafe { words.set_len(count); }
+        words
+    }
+
+    fn load_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], physical: bool) -> u32 {
+        let access = if physical { PayloadAccess::Physical } else { PayloadAccess::Local };
+        self.read_payload(scalar, unit, pointers, access)
+    }
+
+    fn store_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], value: u32, physical: bool) {
+        let access = if physical { PayloadAccess::Physical } else { PayloadAccess::Local };
+        let (input, shifts) = self.payload_input(scalar, unit, pointers.len(), access);
+        self.write_payload(input, value, pointers, &shifts, std::ptr::null_mut());
     }
     fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32) -> u32 {
         let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });

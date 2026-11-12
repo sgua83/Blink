@@ -589,3 +589,67 @@ extern "C" PageAddressResult page_address(PageAddress input, address body) on cp
     at = words_three(body, at, 120, input.result_pointer, next, physical);
     return PageAddressResult(at, next + 1, next);
 }
+
+u32 payload_word(address words, u32 part) on cpu {
+    return unsafe_position<u32>(word_at(words, u64(part)));
+}
+
+extern "C" PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu {
+    u64 at = 0u64;
+    u32 next = input.next;
+    if (input.access != PayloadAccess::Words) {
+        for (part in 0..input.count) {
+            u32 pointer = payload_word(operands, part);
+            if (input.access == PayloadAccess::Physical) {
+                at = words_five(body, at, 61, input.unit_type, next, pointer, 2, input.unit_bytes);
+            } else {
+                at = words_three(body, at, 61, input.unit_type, next, pointer);
+            }
+            next += 1;
+        }
+    }
+    u32 value = 0;
+    for (part in 0..input.count) {
+        u32 word = input.access == PayloadAccess::Words ? payload_word(operands, part) : input.next + part;
+        if (input.raw_type != input.unit_type) {
+            at = words_three(body, at, 113, input.raw_type, next, word);
+            word = next;
+            next += 1;
+        }
+        if (part == 0) {
+            value = word;
+        } else {
+            at = words_four(body, at, 196, input.raw_type, next, word, payload_word(shifts, part));
+            at = words_four(body, at, 197, input.raw_type, next + 1, value, next);
+            value = next + 1;
+            next += 2;
+        }
+    }
+    return PayloadRead(at, next, value);
+}
+
+extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu {
+    u64 at = 0u64;
+    u32 next = input.next;
+    for (part in 0..input.count) {
+        u32 word = value;
+        if (part != 0) {
+            at = words_four(body, at, 194, input.raw_type, next, value, payload_word(shifts, part));
+            word = next;
+            next += 1;
+        }
+        if (input.raw_type != input.unit_type) {
+            at = words_three(body, at, 113, input.unit_type, next, word);
+            word = next;
+            next += 1;
+        }
+        if (input.access == PayloadAccess::Words) {
+            put(output, u64(part), word);
+        } else if (input.access == PayloadAccess::Physical) {
+            at = words_four(body, at, 62, payload_word(pointers, part), word, 2, input.unit_bytes);
+        } else {
+            at = words_two(body, at, 62, payload_word(pointers, part), word);
+        }
+    }
+    return PayloadWrite(at, next);
+}

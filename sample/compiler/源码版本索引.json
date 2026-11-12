@@ -612,7 +612,7 @@
     },
     {
       "path": "crates/blanguage/src/spirv/codegen.rs",
-      "sha256": "6fd049053e85f4b0d5a1454489b8fd8620b81d94e0dda138acba516d54cd3da9"
+      "sha256": "aec347ac0746ca462a564eac516a29ec7e004802720e7198549bf660e41e6924"
     },
     {
       "path": "crates/blanguage/src/spirv/image.rs",
@@ -632,7 +632,7 @@
     },
     {
       "path": "crates/blanguage/src/spirv/tile.rs",
-      "sha256": "17baca51c739917773a11224c3224affd6f4ea637e64dd1a8793c8a6ad18c526"
+      "sha256": "bc972c25a84109e11cc99724f70b9c9dc7c4d920635ab448bef62ce5e1e05842"
     },
     {
       "path": "crates/blanguage/src/syntax.rs",
@@ -728,11 +728,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/spirv_envelope.b",
-      "sha256": "d989a866b1cbfb1a5e47892a63dba960fb16445c243959fd245ea062020f82c2"
+      "sha256": "36ec34700b176a95448b08742ef9ceb5bbac159307c127f963220a445fff76c8"
     },
     {
       "path": "crates/blanguage/src/bootstrap/spirv_envelope.h",
-      "sha256": "be01d2576cec2d366edb5279cc6788dd815564186610287f4e108298ec84abbe"
+      "sha256": "2d4cac6874250e087570f999a77116866e6d5f0d44dc4cd362b3fa271ef86b98"
     },
     {
       "path": "crates/blanguage/src/bootstrap/call_layout.b",

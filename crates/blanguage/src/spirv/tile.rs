@@ -139,7 +139,7 @@ impl Emitter<'_> {
         let mut components = Vec::new();
         for (word, value) in &publication.values {
             let scalar = self.stage.registers[*value];
-            let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
+            let raw = self.raw_bits(*value);
             if scalar.size() == 8 {
                 let key = self.stage.shared_word(publication.tile, *word);
                 if self.tile_layout.contains_key(&key.aligned()) {

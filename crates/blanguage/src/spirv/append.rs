@@ -93,7 +93,7 @@ impl Emitter<'_> {
         self.emit(128, &[u, ticket, shared_base, rank]);
         for (word, value) in &a.values {
             let scalar = self.stage.registers[*value];
-            let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
+            let raw = self.raw_bits(*value);
             self.store_raw_buffer(scalar, a.target, ticket, *word, raw);
         }
         self.emit(249, &[finish]);

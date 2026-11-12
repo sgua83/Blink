@@ -3281,7 +3281,7 @@ CLI 同样在所有 dataset 文件之后，按上述展开顺序提供每张 `.b
 
 宿主用 `Dataset::for_view` 获取元素类型和布局。CPU 用 `Dataset::freeze()?` 交还可跨宿主线程共享的 `blcompute::ReadDataset`，以 `Dataset::with_views(Vec<ViewBinding>)` 绑定父记录；GPU 上传后用 `GpuDataset::freeze()` 交还 Vulkan 的 `ReadDataset`，通过 `Device::upload_with_views` 绑定已有设备数据。两端共用字段、逐记录数量、元素类型和唯一性处理，GPU 另外检查实际设备归属；不以地址字节代替真实资源。父数据持有按所有者身份去重的子引用；CPU 原生范围完成前保持根数据，GPU 提交继续持有根数据到 Fence 完成，子资源随最后一个真实引用释放。嵌套图通过相同不可变引用闭合，不增加宿主每元素回调。
 
-view 沿上文的 24 字节、对齐 8 的机器表示交接实际地址、长度及步长。CPU 使用冻结存储的连续字缓冲和 64 位元素寻址。GPU 使用现有物理页数组，B 发射器按实际记录步幅选页并计算记录内地址。IR 的 ViewLoad 使用同一个 address 字段。SPIR-V 对物理页数组的地址加载声明 Aligned 8，载荷访存按实际物理单元对齐，遵守 [Vulkan SPIR-V 环境规则](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html)。view地址与所有权由执行框架生产，view不公开其隐藏地址；独立CPU address值不绕过该view的资源与寿命。
+view 沿上文的 24 字节、对齐 8 的机器表示交接实际地址、长度及步长。CPU 使用冻结存储的连续字缓冲和 64 位元素寻址。GPU 使用现有物理页数组，B 发射器按实际记录步幅选页并计算记录内地址。IR 的 ViewLoad 使用同一个 address 字段。SPIR-V 对物理页数组的地址加载声明 Aligned 8，B发射的载荷访存按实际物理单元对齐并按低字在前的顺序拆合值，遵守 [Vulkan SPIR-V 环境规则](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html)。view地址与所有权由执行框架生产，view不公开其隐藏地址；独立CPU address值不绕过该view的资源与寿命。
 
 ### 主机资源的可变访问与传输
 

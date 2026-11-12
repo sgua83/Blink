@@ -48,7 +48,7 @@ impl Emitter<'_> {
             AtomicOp::Xor(_) => 242,
         };
         if let AtomicOp::Store(value) = atomic.op && unit == Scalar::U32 {
-            let value = self.to_words(value, unit)[0];
+            let value = self.raw_bits(value);
             self.emit(228, &[pointer, scope, semantics, value]);
             return Ok(());
         }
@@ -61,11 +61,11 @@ impl Emitter<'_> {
                 failure,
             } => {
                 operands.push(self.atomic_semantics(failure, memory));
-                operands.push(self.to_words(desired, unit)[0]);
-                operands.push(self.to_words(expected, unit)[0]);
+                operands.push(self.raw_bits(desired));
+                operands.push(self.raw_bits(expected));
             }
             ref op => {
-                operands.extend(op.operands().iter().map(|r| self.to_words(*r, unit)[0]));
+                operands.extend(op.operands().iter().map(|r| self.raw_bits(*r)));
             }
         };
         self.emit(opcode, &operands);

@@ -82,7 +82,7 @@ impl Emitter<'_> {
         self.custom_arguments(&r.ty, &kernel.left, left);
         self.custom_arguments(&r.ty, &kernel.right, right);
         self.block(&kernel.stage.code[kernel.project_end..], None)?;
-        let values: Vec<_> = kernel.result.iter().map(|reg| self.to_words(*reg, Self::raw_scalar(self.stage.registers[*reg]))[0]).collect();
+        let values: Vec<_> = kernel.result.iter().map(|reg| self.raw_bits(*reg)).collect();
         Ok(self.pack_words(r.ty.size, r.ty.components.iter().zip(&values).map(|((scalar, byte), value)| (*scalar, *byte, *value))))
     }
     fn custom_input(
@@ -106,7 +106,7 @@ impl Emitter<'_> {
             &kernel.stage.code[kernel.invariant_end..kernel.initialize_end],
             None,
         )?;
-        let initial: Vec<_> = kernel.initial.iter().map(|reg| self.to_words(*reg, Self::raw_scalar(self.stage.registers[*reg]))[0]).collect();
+        let initial: Vec<_> = kernel.initial.iter().map(|reg| self.raw_bits(*reg)).collect();
         let mut identity = self.pack_words(r.ty.size, r.ty.components.iter().zip(&initial).map(|((scalar, byte), value)| (*scalar, *byte, *value)));
         for _ in k..words {
             identity.push(self.constant(Scalar::U32, 0));
@@ -138,7 +138,7 @@ impl Emitter<'_> {
         for (dst, src) in kernel.right.iter().zip(&kernel.projected) {
             self.regs[*dst] = self.value(*src);
         }
-        let components: Vec<_> = kernel.right.iter().map(|reg| self.to_words(*reg, Self::raw_scalar(self.stage.registers[*reg]))[0]).collect();
+        let components: Vec<_> = kernel.right.iter().map(|reg| self.raw_bits(*reg)).collect();
         let values = self.pack_words(r.ty.size, r.ty.components.iter().zip(&components).map(|((scalar, byte), value)| (*scalar, *byte, *value)));
         self.custom_write(&own[..k], &values);
         if let Some(head_word) = head_word {

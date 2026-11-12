@@ -164,3 +164,21 @@ struct PageAddressResult { u64 words; u32 next; u32 pointer; };
 // view page table and stride IDs. The extra byte offset is an optional ID.
 // The emitter owns the next ID and up to 109 output words.
 extern "C" PageAddressResult page_address(PageAddress input, address body) on cpu;
+
+enum PayloadAccess:u32 { Words=0; Local=1; Physical=2; };
+struct PayloadEmission {
+    PayloadAccess access;
+    u32 raw_type;
+    u32 unit_type;
+    u32 unit_bytes;
+    u32 count;
+    u32 next;
+};
+struct PayloadRead { u64 words; u32 next; u32 value; };
+struct PayloadWrite { u64 words; u32 next; };
+// Operands are word IDs in Words mode and pointer IDs for storage accesses.
+// Shifts contains the original constant ID for each nonzero word position.
+// The emitter supplies count operand slots and 20*count (read) or 14*count
+// (write) body words. Only a Words write uses the output-ID buffer.
+extern "C" PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu;
+extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu;
