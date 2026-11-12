@@ -58,16 +58,51 @@ fn op(out: &mut Vec<u32>, code: u16, args: &[u32]) {
     out.push(((args.len() as u32 + 1) << 16) | code as u32);
     out.extend_from_slice(args);
 }
-fn string(s: &str) -> Vec<u32> {
-    let mut b = s.as_bytes().to_vec();
-    b.push(0);
-    while b.len() % 4 != 0 {
-        b.push(0);
-    }
-    b.chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
+#[repr(C)]
+struct ShaderFeatures {
+    atomic64: u32,
+    float64: u32,
+    integer8: u32,
+    integer16: u32,
+    preserve32: u32,
+    preserve64: u32,
+    subgroup_basic: u32,
+    subgroup_vote: u32,
+    subgroup_arithmetic: u32,
+    subgroup_ballot: u32,
+    subgroup_shuffle: u32,
+    subgroup_shuffle_relative: u32,
+    acceleration: u32,
+    position_fetch: u32,
+    texture: u32,
+    descriptor_indexing: u32,
+    maximal_reconvergence: u32,
 }
+
+#[repr(C)]
+struct ShaderEnvelope {
+    bound: u32,
+    ext: u32,
+    entry: u32,
+    workgroup_width: u32,
+    features: ShaderFeatures,
+}
+
+#[repr(C)]
+struct ShaderWords {
+    data: *const u32,
+    count: u64,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
+    fn envelope_capacity() -> u64;
+    #[link_name = "bootstrap.spirv_envelope::encode"]
+    fn encode_envelope(
+        input: ShaderEnvelope, interfaces: *const ShaderWords, count: u64, words: *mut u32,
+    ) -> u64;
+}
+
 struct Emitter<'a> {
     next: u32,
     types: BTreeMap<Scalar, u32>,
@@ -1264,33 +1299,16 @@ fn emit_shader(
         current_label: 0,
         return_scopes: Vec::new(),
     };
-    let mut prelude = Vec::new();
-    op(&mut prelude, 17, &[1]);
-    op(&mut prelude, 17, &[11]);
+    let requirements = program.requirements();
     let (atomic64, shared_atomic64) = stage.atomic64_requirements();
-    if atomic64 || shared_atomic64 { op(&mut prelude, 17, &[12]); }
-    op(&mut prelude, 17, &[5347]);
-    let float64 = program.requirements().float64;
-    if float64 { op(&mut prelude, 17, &[10]); }
-    let integer8 = program.requirements().integer8;
-    let integer16 = program.requirements().integer16;
-    if integer8 {
-        op(&mut prelude, 17, &[39]);
-        op(&mut prelude, 17, &[4448]);
-    }
-    if integer16 {
-        op(&mut prelude, 17, &[22]);
-        op(&mut prelude, 17, &[4433]);
-    }
-    let float64_preserve = matches!(pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd) && stage.requires_float_preserve(Scalar::F64);
-    let float32_preserve = matches!(
-        pass,
-        Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd
-    ) && stage.requires_float_preserve(Scalar::F32);
-    if float32_preserve || float64_preserve {
-        op(&mut prelude, 17, &[4464]);
-        op(&mut prelude, 17, &[4466]);
-    }
+    let float64 = requirements.float64;
+    let integer8 = requirements.integer8;
+    let integer16 = requirements.integer16;
+    let numeric_pass = matches!(
+        pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd
+    );
+    let float32_preserve = numeric_pass && stage.requires_float_preserve(Scalar::F32);
+    let float64_preserve = numeric_pass && stage.requires_float_preserve(Scalar::F64);
     let ranks = matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_));
     let subgroup_operations = if pass == Pass::Main {
         stage.subgroup_operations()
@@ -1298,64 +1316,26 @@ fn emit_shader(
         Default::default()
     };
     let subgroup_caps = SubgroupCapabilities::from_operations(subgroup_operations.iter().copied());
-    let maximal_reconvergence = pass == Pass::Main && stage.requires_maximal_reconvergence();
-    for (needed, capability) in [
-        (subgroup_caps.basic || ranks, 61),
-        (subgroup_caps.vote, 62),
-        (subgroup_caps.arithmetic, 63),
-        (subgroup_caps.ballot || ranks, 64),
-        (subgroup_caps.shuffle, 65),
-        (subgroup_caps.shuffle_relative, 66),
-    ] {
-        if needed {
-            op(&mut prelude, 17, &[capability]);
-        }
-    }
-    if !program.accelerations.is_empty() {
-        op(&mut prelude, 17, &[4472]);
-    }
-    if !e.position_queries.is_empty() {
-        op(&mut prelude, 17, &[5391]);
-    }
-    if !program.textures.is_empty() {
-        op(&mut prelude, 17, &[50]);
-    }
-    if program.requires_texture_indexing() {
-        op(&mut prelude, 17, &[5301]);
-        op(&mut prelude, 17, &[5307]);
-    }
-    // SPIR-V 的逻辑布局要求全部 Capability 先于全部 Extension。
-    if integer8 {
-        op(&mut prelude, 10, &string("SPV_KHR_8bit_storage"));
-    }
-    if integer16 {
-        op(&mut prelude, 10, &string("SPV_KHR_16bit_storage"));
-    }
-    if program.requires_texture_indexing() {
-        op(&mut prelude, 10, &string("SPV_EXT_descriptor_indexing"));
-    }
-    if float32_preserve || float64_preserve {
-        op(&mut prelude, 10, &string("SPV_KHR_float_controls"));
-    }
-    if maximal_reconvergence {
-        op(&mut prelude, 10, &string("SPV_KHR_maximal_reconvergence"));
-    }
-    if !program.accelerations.is_empty() {
-        op(&mut prelude, 10, &string("SPV_KHR_ray_query"));
-    }
-    if !e.position_queries.is_empty() {
-        op(
-            &mut prelude,
-            10,
-            &string("SPV_KHR_ray_tracing_position_fetch"),
-        );
-    }
-    op(&mut prelude, 10, &string("SPV_KHR_physical_storage_buffer"));
+    let features = ShaderFeatures {
+        atomic64: u32::from(atomic64 || shared_atomic64),
+        float64: u32::from(float64),
+        integer8: u32::from(integer8),
+        integer16: u32::from(integer16),
+        preserve32: u32::from(float32_preserve),
+        preserve64: u32::from(float64_preserve),
+        subgroup_basic: u32::from(subgroup_caps.basic || ranks),
+        subgroup_vote: u32::from(subgroup_caps.vote),
+        subgroup_arithmetic: u32::from(subgroup_caps.arithmetic),
+        subgroup_ballot: u32::from(subgroup_caps.ballot || ranks),
+        subgroup_shuffle: u32::from(subgroup_caps.shuffle),
+        subgroup_shuffle_relative: u32::from(subgroup_caps.shuffle_relative),
+        acceleration: u32::from(!program.accelerations.is_empty()),
+        position_fetch: u32::from(!e.position_queries.is_empty()),
+        texture: u32::from(!program.textures.is_empty()),
+        descriptor_indexing: u32::from(program.requires_texture_indexing()),
+        maximal_reconvergence: u32::from(pass == Pass::Main && stage.requires_maximal_reconvergence()),
+    };
     e.ext = e.id();
-    let mut words = vec![e.ext];
-    words.extend(string("GLSL.std.450"));
-    op(&mut prelude, 11, &words);
-    op(&mut prelude, 14, &[5348, 1]);
     let void = e.id();
     op(&mut e.defs, 19, &[void]);
     for s in [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool, Scalar::U64, Scalar::I64].into_iter()
@@ -1536,16 +1516,16 @@ fn emit_shader(
         op(&mut e.defs, 59, &[input_ptr, local_input, 1]);
         op(&mut e.decorations, 71, &[local_input, 11, 29]);
     }
-    let mut subgroup_inputs = Vec::new();
+    let mut subgroup_inputs = [0; 2];
     let mut ballot_type = 0;
     if ranks {
         let input_ptr = e.id();
         op(&mut e.defs, 32, &[input_ptr, 1, u]);
-        for builtin in [40, 41] {
+        for (input, builtin) in subgroup_inputs.iter_mut().zip([40, 41]) {
             let v = e.id();
             op(&mut e.defs, 59, &[input_ptr, v, 1]);
             op(&mut e.decorations, 71, &[v, 11, builtin]);
-            subgroup_inputs.push(v);
+            *input = v;
         }
     }
     if subgroup_caps.ballot || ranks {
@@ -1633,36 +1613,6 @@ fn emit_shader(
     let entry = e.id();
     let execute = e.id();
     let end = e.id();
-    let mut entry_words = vec![5, main];
-    entry_words.extend(string("main"));
-    entry_words.push(global);
-    if num_groups != 0 {
-        entry_words.push(num_groups);
-    }
-    entry_words.extend_from_slice(&e.buffers);
-    entry_words.extend_from_slice(&e.accelerations);
-    entry_words.extend_from_slice(&e.textures);
-    entry_words.push(e.push);
-    if shared != 0 {
-        entry_words.push(shared);
-    }
-    if reduction {
-        entry_words.push(local_input);
-    }
-    entry_words.extend_from_slice(&subgroup_inputs);
-    entry_words.extend(e.subgroup_inputs.values().copied());
-    entry_words.extend([e.tile_shared, e.tile_shared64].into_iter().filter(|v| *v != 0));
-    op(&mut prelude, 15, &entry_words);
-    op(&mut prelude, 16, &[main, 17, stage.workgroup_width(), 1, 1]);
-    if maximal_reconvergence {
-        op(&mut prelude, 16, &[main, 6023]);
-    }
-    for (needed,width) in [(float32_preserve,32),(float64_preserve,64)] {
-        if needed {
-            op(&mut prelude, 16, &[main, 4459, width]);
-            op(&mut prelude, 16, &[main, 4461, width]);
-        }
-    }
     e.regs = (0..stage.registers.len()).map(|_| e.id()).collect();
     e.emit(54, &[void, main, 0, fn_ty]);
     e.emit(248, &[entry]);
@@ -2007,8 +1957,32 @@ fn emit_shader(
     }
     e.emit(253, &[]);
     e.emit(56, &[]);
-    let mut out = vec![0x07230203, 0x00010400, 0, e.next, 0];
-    out.extend(prelude);
+    let global_inputs = [global, num_groups];
+    let workgroup_inputs = [e.push, shared, local_input];
+    let mut builtin_inputs = [0; 3];
+    for (input, &id) in builtin_inputs.iter_mut().zip(e.subgroup_inputs.values()) {
+        *input = id;
+    }
+    let tile_inputs = [e.tile_shared, e.tile_shared64];
+    let parts: [&[u32]; 8] = [
+        &global_inputs, &e.buffers, &e.accelerations, &e.textures,
+        &workgroup_inputs, &subgroup_inputs, &builtin_inputs, &tile_inputs,
+    ];
+    let interface_words: usize = parts.iter().map(|part| part.len()).sum();
+    let interfaces = parts.map(|part| ShaderWords {
+        data: part.as_ptr(),
+        count: part.len() as u64,
+    });
+    let input = ShaderEnvelope { bound: e.next, ext: e.ext, entry: main, workgroup_width: stage.workgroup_width(), features };
+    let mut out = Vec::with_capacity(
+        unsafe { envelope_capacity() } as usize + interface_words
+            + e.decorations.len() + e.defs.len() + e.body.len(),
+    );
+    // The envelope initializes the prefix in the same allocation the module returns.
+    unsafe {
+        let used = encode_envelope(input, interfaces.as_ptr(), interfaces.len() as u64, out.as_mut_ptr());
+        out.set_len(used as usize);
+    }
     out.extend(e.decorations);
     out.extend(e.defs);
     out.extend(e.body);

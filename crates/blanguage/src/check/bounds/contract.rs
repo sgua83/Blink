@@ -179,19 +179,69 @@ impl Normalizer {
         };
         let value=self.atom(positive);if truth{value}else{self.not(value)}
     }
+    fn unary(fact:&Fact)->bool {
+        matches!(fact,Fact::Minimum(..)|Fact::Maximum(..)|Fact::Zero(..)|Fact::NonZero(..)|Fact::Boolean(..)
+            |Fact::Index(_,IndexDomain::Fixed(_))|Fact::Outside(_,IndexDomain::Fixed(_)))
+            || matches!(fact,Fact::Predicate(predicate,_)if matches!((predicate.a,predicate.b),(Operand::Constant(..),_)|(_,Operand::Constant(..))))
+    }
+    // Fold the source join as one operation; its binary prefixes have no separate consumer.
+    fn operands<'a>(&self,root:&'a Clause,or:bool)->Vec<&'a Clause> {
+        let mut pending=vec![root];let mut seen=HashSet::new();let mut operands=Vec::new();
+        while let Some(clause)=pending.pop() {
+            if !seen.insert(clause.key()){continue;}
+            if self.clauses.contains_key(&clause.key()){operands.push(clause);continue;}
+            match &**clause.0 {
+                ClauseNode::Both(a,b)if !or=>pending.extend([b,a]),
+                ClauseNode::Either(a,b)if or=>pending.extend([b,a]),
+                ClauseNode::Branch(parent,condition,truth)if !or=>pending.extend([&condition.cases[usize::from(*truth)],parent]),
+                _=>operands.push(clause),
+            }
+        }
+        operands.sort_by_key(|clause|!matches!(&**clause.0,ClauseNode::Impossible)
+            && !matches!(&**clause.0,ClauseNode::Facts(facts)if facts.iter().all(Self::unary)));
+        operands
+    }
     fn import(&mut self,root:&Clause)->usize {
-        for clause in Clause::ordered(std::slice::from_ref(root)) {
-            if self.clauses.contains_key(&clause.key()){continue;}
-            let result=match &**clause.0 {
-                ClauseNode::Impossible=>0,
-                ClauseNode::Facts(facts)=>{
-                    let mut result=1;for fact in facts {let fact=self.fact(*fact);result=self.operation(result,fact,false);}result
+        enum Work<'a> {
+            Visit(&'a Clause),
+            Fold { clause:&'a Clause, or:bool, operands:Vec<&'a Clause>, next:usize, result:usize },
+        }
+        let mut pending=vec![Work::Visit(root)];
+        while let Some(work)=pending.pop() {
+            match work {
+                Work::Visit(clause)=>{
+                    if self.clauses.contains_key(&clause.key()){continue;}
+                    let result=match &**clause.0 {
+                        ClauseNode::Impossible=>0,
+                        ClauseNode::Facts(facts)=>{
+                            let mut result=1;
+                            for unary in [true,false] {for fact in facts {
+                                if Self::unary(fact)==unary {
+                                    let fact=self.fact(*fact);result=self.operation(result,fact,false);
+                                }
+                            }}
+                            result
+                        },
+                        _=>{
+                            let or=matches!(&**clause.0,ClauseNode::Either(..));
+                            pending.push(Work::Fold{clause,or,operands:self.operands(clause,or),next:0,result:usize::from(!or)});
+                            continue;
+                        },
+                    };
+                    self.clauses.insert(clause.key(),(clause.clone(),result));
                 },
-                ClauseNode::Both(a,b)=>self.operation(self.clauses[&a.key()].1,self.clauses[&b.key()].1,false),
-                ClauseNode::Either(a,b)=>self.operation(self.clauses[&a.key()].1,self.clauses[&b.key()].1,true),
-                ClauseNode::Branch(parent,condition,truth)=>self.operation(self.clauses[&parent.key()].1,self.clauses[&condition.cases[usize::from(*truth)].key()].1,false),
-            };
-            self.clauses.insert(clause.key(),(clause.clone(),result));
+                Work::Fold{clause,or,operands,mut next,mut result}=>{
+                    while next<operands.len() && result!=usize::from(or) {
+                        let operand=operands[next];
+                        let Some(&(_,value))=self.clauses.get(&operand.key())else{break;};
+                        result=self.operation(result,value,or);next+=1;
+                    }
+                    if next<operands.len() && result!=usize::from(or) {
+                        let operand=operands[next];
+                        pending.push(Work::Fold{clause,or,operands,next,result});pending.push(Work::Visit(operand));
+                    }else{self.clauses.insert(clause.key(),(clause.clone(),result));}
+                },
+            }
         }
         self.clauses[&root.key()].1
     }
