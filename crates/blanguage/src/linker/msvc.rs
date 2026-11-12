@@ -111,7 +111,7 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     ))
 }
 pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {
-    let binding = super::resources::resources(&archives.iter().collect::<Vec<_>>(), 0, 0, &[], &std::collections::BTreeMap::new(), None)?;
+    let binding = super::resources::resources(&archives.iter().collect::<Vec<_>>(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
     let (linker, libraries) = tools()?;
     let id = format!(
         "{}-{}",

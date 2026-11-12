@@ -427,6 +427,29 @@ extern "C" ArchiveSelection library_take(address library,address name,u64 length
 
 前端导入现行接口时仍读取库内全部模块，独立链接时才按未解析符号选成员。因此未使用的损坏成员可以不影响本次链接，却仍可使前端全成员导入失败；两种路径按实际消费者分别理解。
 
+### 4.6 链接怎样只保留真实消费者
+
+独立链接读取已有Object和Library，不重新读取B实现。bootstrap.native_select选择唯一应用或算法入口，沿真实符号、合同、重定位和关联节形成存活闭包；算法DLL保留本身全部入口节，原始CPU SDK则从明确的符号合同出发。定义和待处理节只有本次B选择拥有一份。
+
+源码节选：`crates/blanguage/src/bootstrap/native_select.b:114`。
+
+```b
+extern "C" SelectResult choose(SelectView input,SelectParams params,address context,
+    cfn<SelectReply,address,u64,BindingBytes> extract,cfn<SelectReply,address,u64> native_archive,
+    cfn<SelectReply,address,SelectResource> resources,cfn<BindingBytes,address,BindingBytes> slot) on cpu
+    requires nonzero(extract) requires nonzero(native_archive) requires nonzero(resources) requires nonzero(slot) {
+    SelectState state=SelectState(input,BindingForest(input.nodes,0u64,0u64,0u64),0u64,0u64,0u64,0u64,0u64);
+    if(params.native_mode==0u64){u64 count=0u64;u64 i=0u64;while(i<input.object_count){if(object_at(input,i).kind!=0u64){state.entry=i;count+=1u64;}i+=1u64;}
+        if(count!=1u64){return result(1u64,empty(),empty(),0u64);}}
+    u64 o=0u64;while(o<state.view.object_count){SelectResult defined=define(state,ordered(o,state.entry));if(defined.error!=0u64){return defined;}o+=1u64;}
+    if(params.native_mode==0u64){SelectObject entry=object_at(state.view,state.entry);
+        if(entry.kind==2u64){entry.selected=1u64;object_put(state.view,state.entry,entry);u64 i=entry.section_start;while(i<entry.section_start+entry.section_count){enqueue(state,i);i+=1u64;}}
+        else{include(state,state.entry,0u64);}
+    }else{u64 i=0u64;while(i<params.root_count){SelectRoot root=root_at(params,i);SelectTarget target=resolve(state,root.name,root.contract,context,extract);if(target.result.error!=0u64){return target.result;}include(state,target.object,target.section);i+=1u64;}}
+```
+
+定义核对与根选择之后，B继续消费同一队列，按原库顺序请求缺失成员并扩展资源需求。成员抽取、共享原生归档、槽名字存活和B资源绑定生产分别由原拥有者同步交接；这些接点不执行Rust选择算法。描述数组增长后交回当前视图，B跨交接保留索引。最后B交出节、符号、重定位、导出和栈的保留及映射，Rust移动自有对象或为真实借用对象生成最终映像，输入和代码保持到最后消费者。普通文件I/O、对象恢复和宿主链接进程仍有各自职责，局部选择接管不等于完整自举。
+
 ## 第五章 词法：把一行字符切成能辨认的单元
 
 ### 5.1 为什么不能直接按空格切开

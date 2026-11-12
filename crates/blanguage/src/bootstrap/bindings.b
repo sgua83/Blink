@@ -1,8 +1,6 @@
 module bootstrap.bindings;
 import bootstrap.coff;
 
-struct BindingForest {address nodes;u64 count;u64 names;u64 imports;};
-struct BindingInsert {u64 root;u64 node;};
 BindingBytes empty() on cpu {return BindingBytes(unsafe_address(0u64),0u64);}
 BindingNode node_at(BindingForest forest,u64 index) on cpu {
     return unsafe_position<BindingNode>(unsafe_address(address_bits(forest.nodes)+(index-1u64)*NODE_BYTES));

@@ -23,3 +23,12 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu;
 extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan,address names) on cpu;
 extern "C" u64 import_name_size(BindingBytes dll,BindingBytes name) on cpu;
 extern "C" void import_name(BindingBytes dll,BindingBytes name,address output) on cpu;
+
+struct BindingForest {address nodes;u64 count;u64 names;u64 imports;};
+struct BindingInsert {u64 root;u64 node;};
+BindingNode node_at(BindingForest forest,u64 index) on cpu;
+i32 bytes_compare(BindingBytes left,BindingBytes right) on cpu;
+u64 find(BindingForest forest,u64 root,BindingKey key) on cpu;
+BindingInsert put(inout BindingForest forest,u64 root,BindingKey key,u64 value) on cpu;
+u64 first(BindingForest forest,u64 root) on cpu;
+u64 next(BindingForest forest,u64 index) on cpu;

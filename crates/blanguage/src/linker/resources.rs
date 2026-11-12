@@ -3,7 +3,7 @@ use super::Result;
 use crate::object::{Archive, Kind, Object, Relocation, Section, Symbol, Target};
 #[derive(Clone,Copy)]
 #[repr(C)]
-pub(super) struct ImportBytes {bytes:*const u8,length:u64}
+pub(super) struct ImportBytes {pub(super) bytes:*const u8,pub(super) length:u64}
 impl ImportBytes {pub(super) fn new(text:&str)->Self{Self{bytes:text.as_ptr(),length:text.len() as u64}}}
 unsafe extern "C" {
     #[link_name="bootstrap.bindings::import_name_size"]
@@ -48,15 +48,15 @@ unsafe extern "C" {
     #[link_name="bootstrap.native_resources::encode"]
     fn resource_encode(input:ResourceInput,output:ResourceOutput,plan:ResourcePlan);
 }
-pub(super) fn resources(archives:&[&Archive],types:u32,programs:u32,runtime:&[String],local_imports:&std::collections::BTreeMap<String,String>,root_abi:Option<&[u8]>)->Result<Option<Object>> {
+pub(super) fn resources<'a>(archives:&[&Archive],types:u32,programs:u32,runtime:impl IntoIterator<Item=&'a str>,local_imports:impl IntoIterator<Item=(&'a str,&'a str)>,root_abi:Option<&[u8]>)->Result<Option<Object>> {
     let borrowed=|bytes:&[u8]|ImportBytes{bytes:bytes.as_ptr(),length:bytes.len() as u64};
     let empty=ImportBytes{bytes:std::ptr::null(),length:0};
     let mut modules=archives.iter().filter_map(|archive|archive.resources.as_ref()).map(|row|ResourceModule{
         prefix:ImportBytes::new(&row.prefix),abi:borrowed(&row.abi),types:row.types.into(),programs:row.programs.into(),
         type_value:0,program_value:0,factory_offset:0,type_offset:0,program_offset:0,factory:empty,type_name:empty,program_name:empty,
     }).collect::<Vec<_>>();
-    let mut locals=local_imports.iter().map(|(slot,name)|ResourceLocal{slot:ImportBytes::new(slot),name:ImportBytes::new(name),value:0}).collect::<Vec<_>>();
-    let mut runtime=runtime.iter().map(|name|ResourceRuntime{name:ImportBytes::new(name),value:0,relocation:0}).collect::<Vec<_>>();
+    let mut locals=local_imports.into_iter().map(|(slot,name)|ResourceLocal{slot:ImportBytes::new(slot),name:ImportBytes::new(name),value:0}).collect::<Vec<_>>();
+    let mut runtime=runtime.into_iter().map(|name|ResourceRuntime{name:ImportBytes::new(name),value:0,relocation:0}).collect::<Vec<_>>();
     let mut order=vec![0;modules.len()];
     let input=ResourceInput{
         modules:modules.as_mut_ptr(),module_count:modules.len() as u64,locals:locals.as_mut_ptr(),local_count:locals.len() as u64,
