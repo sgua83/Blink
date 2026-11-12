@@ -516,8 +516,7 @@ u64 dataset_header_word(address body, u64 at, PageAddress input, u32 field, u32 
     return words_three(body, end, 61, input.u64_type, value, pointer);
 }
 
-PageOrigin page_origin(PageAddress input, address body) on cpu {
-    u32 first = input.next;
+PageOrigin page_origin(PageAddress input, address body, u32 first) on cpu {
     if (input.descriptor != 0) {
         u32 table = first + 1;
         u32 layout = first + 3;
@@ -542,22 +541,28 @@ PageOrigin page_origin(PageAddress input, address body) on cpu {
     return PageOrigin(at, first + 4, table, input.stride, 0);
 }
 
-extern "C" PageAddressResult page_address(PageAddress input, address body) on cpu {
-    PageOrigin origin = page_origin(input, body);
+struct PhysicalAddress { u64 words; u32 next; u32 value; };
+
+PhysicalAddress physical_page_address(PageAddress input, address body, u32 start) on cpu {
+    PageOrigin origin = page_origin(input, body, start);
     u32 first = origin.next;
     u32 capacity = first;
     u32 page = first + 1;
     u32 local = first + 2;
     u32 scaled = first + 3;
-    u32 byte_offset = first + 4;
-    u32 next = first + 5;
+    u32 byte_offset = scaled;
+    u32 next = first + 4;
     u32 t32 = input.u32_type;
     u32 t64 = input.u64_type;
     u64 at = words_four(body, origin.words, 134, t32, capacity, input.page_bytes, origin.stride);
     at = words_four(body, at, 134, t32, page, input.index, capacity);
     at = words_four(body, at, 137, t32, local, input.index, capacity);
     at = words_four(body, at, 132, t32, scaled, local, origin.stride);
-    at = words_four(body, at, 128, t32, byte_offset, scaled, input.word);
+    if (input.word != 0) {
+        at = words_four(body, at, 128, t32, next, scaled, input.word);
+        byte_offset = next;
+        next += 1;
+    }
     if (origin.field != 0) {
         at = words_four(body, at, 128, t32, next, byte_offset, origin.field);
         byte_offset = next;
@@ -585,8 +590,45 @@ extern "C" PageAddressResult page_address(PageAddress input, address body) on cp
         physical = next + 1;
         next += 2;
     }
-    at = words_three(body, at, 120, input.result_pointer, next, physical);
+    return PhysicalAddress(at, next, physical);
+}
+
+extern "C" PageAddressResult page_address(PageAddress input, address body) on cpu {
+    PhysicalAddress address_value = physical_page_address(input, body, input.next);
+    u32 next = address_value.next;
+    u64 at = words_three(body, address_value.words, 120, input.result_pointer, next, address_value.value);
     return PageAddressResult(at, next + 1, next);
+}
+
+extern "C" RecordCopyWords copy_record(RecordCopy input, address body) on cpu {
+    PageAddress source = input.source;
+    PageAddress target = source;
+    target.descriptor = input.target_descriptor;
+    target.index = input.target_index;
+    PhysicalAddress from = physical_page_address(source, body, source.next);
+    PhysicalAddress to = physical_page_address(target, word_at(body, from.words), from.next);
+    u32 from_address = from.value;
+    u32 to_address = to.value;
+    u64 at = from.words + to.words;
+    u32 next = to.next;
+    for (unit in 0..input.count) {
+        if (unit != 0) {
+            at = words_four(body, at, 128, source.u64_type, next, from_address, input.step);
+            at = words_four(body, at, 128, source.u64_type, next + 1, to_address, input.step);
+            from_address = next;
+            to_address = next + 1;
+            next += 2;
+        }
+        u32 from_pointer = next;
+        u32 to_pointer = next + 1;
+        u32 value = next + 2;
+        at = words_three(body, at, 120, source.result_pointer, from_pointer, from_address);
+        at = words_three(body, at, 120, source.result_pointer, to_pointer, to_address);
+        at = words_five(body, at, 61, input.unit_type, value, from_pointer, 2, input.unit_bytes);
+        at = words_four(body, at, 62, to_pointer, value, 2, input.unit_bytes);
+        next += 3;
+    }
+    return RecordCopyWords(at, next);
 }
 
 u32 read_word(address words, u32 part) on cpu {

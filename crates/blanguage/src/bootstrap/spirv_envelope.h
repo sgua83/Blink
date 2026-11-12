@@ -165,6 +165,18 @@ struct PageAddressResult { u64 words; u32 next; u32 pointer; };
 // The emitter owns the next ID and up to 109 output words.
 extern "C" PageAddressResult page_address(PageAddress input, address body) on cpu;
 
+struct RecordCopy {
+    PageAddress source;
+    u32 target_descriptor;
+    u32 target_index;
+    u32 unit_type;
+    u32 unit_bytes;
+    u32 count;
+    u32 step;
+};
+struct RecordCopyWords { u64 words; u32 next; };
+extern "C" RecordCopyWords copy_record(RecordCopy input, address body) on cpu;
+
 enum PayloadAccess:u32 { Words=0; Local=1; Physical=2; };
 struct PayloadEmission {
     PayloadAccess access;

@@ -239,6 +239,23 @@ struct PageAddress {
 }
 
 #[repr(C)]
+struct RecordCopy {
+    source: PageAddress,
+    target_descriptor: u32,
+    target_index: u32,
+    unit_type: u32,
+    unit_bytes: u32,
+    count: u32,
+    step: u32,
+}
+
+#[repr(C)]
+struct RecordCopyWords {
+    words: u64,
+    next: u32,
+}
+
+#[repr(C)]
 struct PageAddressResult {
     words: u64,
     next: u32,
@@ -611,6 +628,8 @@ unsafe extern "C" {
     fn scalar_unary(input: UnaryEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::scalar_math"]
     fn scalar_math(input: MathEmission, body: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::copy_record"]
+    fn copy_record(input: RecordCopy, body: *mut u32) -> RecordCopyWords;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
     fn page_address(input: PageAddress, body: *mut u32) -> PageAddressResult;
     #[link_name = "bootstrap.spirv_envelope::payload_read"]
@@ -893,25 +912,7 @@ impl Emitter<'_> {
     }
 
     fn page_address(&mut self, unit: Scalar, source: PageSource, index: u32, word: u32, extra: u32) -> u32 {
-        let (descriptor, low, high, stride, zero, one) = match source {
-            PageSource::Dataset(descriptor) => (
-                descriptor, 0, 0, 0, self.constant(Scalar::U32, 0), self.constant(Scalar::U32, 1),
-            ),
-            PageSource::View { low, high, stride } => (0, low, high, stride, 0, 0),
-        };
-        let input = PageAddress {
-            u32_type: self.types[&Scalar::U32],
-            u64_type: self.u64_type,
-            descriptor_pointer: self.ptr_table_u64,
-            page_pointer: self.physical_pointers[&Scalar::U64],
-            result_pointer: self.physical_pointers[&unit],
-            descriptor, low, high, stride, index, extra, zero, one,
-            high_shift: self.constant(Scalar::U32, 32),
-            page_shift: self.constant(Scalar::U32, 3),
-            page_bytes: self.constant(Scalar::U32, PAGE_BYTES),
-            word: self.constant(Scalar::U32, word),
-            next: self.next,
-        };
+        let input = self.page_input(unit, source, index, Some(word), extra);
         let at = self.body.len();
         self.body.reserve(109);
         unsafe {
@@ -921,7 +922,31 @@ impl Emitter<'_> {
             address.pointer
         }
     }
-    // 记录页不拆分记录；原生复制完整字节布局，保留填充及 bool／浮点编码。
+
+    fn page_input(
+        &mut self, unit: Scalar, source: PageSource, index: u32, word: Option<u32>, extra: u32,
+    ) -> PageAddress {
+        let (descriptor, low, high, stride, zero, one) = match source {
+            PageSource::Dataset(descriptor) => (
+                descriptor, 0, 0, 0, self.constant(Scalar::U32, 0), self.constant(Scalar::U32, 1),
+            ),
+            PageSource::View { low, high, stride } => (0, low, high, stride, 0, 0),
+        };
+        PageAddress {
+            u32_type: self.types[&Scalar::U32],
+            u64_type: self.u64_type,
+            descriptor_pointer: self.ptr_table_u64,
+            page_pointer: self.physical_pointers[&Scalar::U64],
+            result_pointer: self.physical_pointers[&unit],
+            descriptor, low, high, stride, index, extra, zero, one,
+            high_shift: self.constant(Scalar::U32, 32),
+            page_shift: self.constant(Scalar::U32, 3),
+            page_bytes: self.constant(Scalar::U32, PAGE_BYTES),
+            word: word.map_or(0, |word| self.constant(Scalar::U32, word)),
+            next: self.next,
+        }
+    }
+    // 记录页不拆分记录。两端沿原物理地址与对齐复制全部字节。
     fn copy_record(
         &mut self,
         source_binding: usize,
@@ -930,14 +955,33 @@ impl Emitter<'_> {
         target_index: u32,
     ) {
         let stride = self.program.buffers[source_binding].stride;
+        if stride == 0 {
+            return;
+        }
         let align = self.program.buffers[source_binding].ty.align;
         let scalar = match align { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-        for word in (0..stride).step_by(scalar.size() as usize) {
-            let source = self.address_scalar(scalar, source_binding, source_index, word);
-            let target = self.address_scalar(scalar, target_binding, target_index, word);
-            let value = self.id();
-            self.emit(61, &[self.types[&scalar], value, source, 2, scalar.size()]);
-            self.emit(62, &[target, value, 2, scalar.size()]);
+        let unit_bytes = scalar.size();
+        let count = stride / unit_bytes;
+        let step = if count > 1 { self.constant(Scalar::U64, unit_bytes) } else { 0 };
+        let source = self.page_input(
+            scalar, PageSource::Dataset(self.buffers[source_binding]), source_index, None, 0,
+        );
+        let input = RecordCopy {
+            source,
+            target_descriptor: self.buffers[target_binding],
+            target_index,
+            unit_type: self.types[&scalar],
+            unit_bytes,
+            count,
+            step,
+        };
+        let at = self.body.len();
+        // Two record origins, then at most 29 words per scalar copy.
+        self.body.reserve(182 + 29 * count as usize);
+        unsafe {
+            let emitted = copy_record(input, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            self.next = emitted.next;
         }
     }
     fn view_source(&mut self, table: &[Reg; 2], stride: ElementStride) -> PageSource {
