@@ -234,3 +234,15 @@ struct ReductionCode {
 
 // R12 has already been saved. The caller owns 256 output bytes and the literal pool.
 extern "C" ReductionCode reduce_range(ReductionRange input, address output) on cpu;
+
+struct SegmentedRange {
+    ReductionRange values;
+    u32 target;
+    u32 target_word;
+    u32 parameters;
+    u32 head_word;
+    u32 value_words;
+};
+
+// R12 and R13 have been saved. The caller owns 512 output bytes.
+extern "C" u64 segmented_reduce_range(SegmentedRange input, u32 finish, address output) on cpu;

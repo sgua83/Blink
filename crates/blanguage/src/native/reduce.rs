@@ -3,7 +3,7 @@ use super::*;
 use crate::builtin_types::ScalarEncoding;
 
 #[repr(C)]
-struct ReductionRange {
+pub(super) struct ReductionRange {
     identity: u64,
     scalar: ScalarEncoding,
     source: u32,
@@ -25,8 +25,35 @@ unsafe extern "C" {
     fn reduce_range(input: ReductionRange, output: *mut u8) -> ReductionCode;
 }
 
+impl ReductionRange {
+    pub(super) fn from_spec(reduction: &ReductionSpec) -> Self {
+        let scalar = reduction.ty.components[0].0;
+        let identity = reduction.operator.identity(scalar);
+        let mut offsets = [0; 4];
+        for (slot, (_, offset)) in offsets.iter_mut().zip(&reduction.ty.components) {
+            *slot = *offset;
+        }
+        Self {
+            identity,
+            scalar: scalar.into(),
+            source: reduction.fields.source as u32 * BUFFER_BYTES,
+            stride_offset: BUFFER_STRIDE,
+            source_word: reduction.fields.source_word,
+            operation: match reduction.operator {
+                CollectiveOperator::Sum => 0,
+                CollectiveOperator::Min => 1,
+                CollectiveOperator::Max => 2,
+                CollectiveOperator::BitAnd => 3,
+                CollectiveOperator::BitOr => 4,
+                CollectiveOperator::BitXor => 5,
+            },
+            count: reduction.ty.components.len() as u32,
+            offsets,
+        }
+    }
+}
+
 pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
-    let scalar = reduction.ty.components[0].0;
     let mut e = Emitter {
         unwind: Vec::new(),
         prolog: 0,
@@ -48,28 +75,8 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     };
     e.push_registers(&[12]);
 
-    let identity = reduction.operator.identity(scalar);
-    let mut offsets = [0; 4];
-    for (slot, (_, offset)) in offsets.iter_mut().zip(&reduction.ty.components) {
-        *slot = *offset;
-    }
-    let input = ReductionRange {
-        identity,
-        scalar: scalar.into(),
-        source: reduction.fields.source as u32 * BUFFER_BYTES,
-        stride_offset: BUFFER_STRIDE,
-        source_word: reduction.fields.source_word,
-        operation: match reduction.operator {
-            CollectiveOperator::Sum => 0,
-            CollectiveOperator::Min => 1,
-            CollectiveOperator::Max => 2,
-            CollectiveOperator::BitAnd => 3,
-            CollectiveOperator::BitOr => 4,
-            CollectiveOperator::BitXor => 5,
-        },
-        count: reduction.ty.components.len() as u32,
-        offsets,
-    };
+    let input = ReductionRange::from_spec(reduction);
+    let identity = input.identity;
     let start = e.code.len();
     let mut literals = [0; 4];
     e.emit_bytes(256, |output| {
