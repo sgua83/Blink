@@ -1763,3 +1763,138 @@ extern "C" u64 atomic_sequence(AtomicSequence input, address output) on cpu {
     }
     return atomic_contiguous_at(start, input) - start;
 }
+
+u64 compact_disp32(u64 at, u32 instruction, u32 displacement) on cpu {
+    put_byte(at, u8(instruction));
+    put_byte(at + 1u64, u8(instruction >> 8));
+    put_byte(at + 2u64, u8(instruction >> 16));
+    write_word(at + 3u64, displacement);
+    return at + 7u64;
+}
+
+u64 compact_stride(u64 at, u8 target, u32 offset) on cpu {
+    MoveLocation slot = MoveLocation(u64(offset), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    return encode_operand_instruction(at, u16(0x8b), u8(0), true, target, slot);
+}
+
+u64 compact_flag_test(u64 at, u32 word) on cpu {
+    u64 immediate = compact_disp32(at, 0xba8341, word); // cmp dword [r10 + word], 0
+    put_byte(immediate, u8(0));
+    return immediate + 1u64;
+}
+
+u64 compact_advance(u64 at, u8 pointer, u8 stride, u32 bytes) on cpu {
+    u64 cursor = register_instruction(at, u16(0x03), u8(0), true, pointer, stride);
+    cursor = register_instruction(cursor, u16(0x81), u8(0), true, u8(5), pointer);
+    write_word(cursor, bytes);
+    return cursor + 4u64;
+}
+
+u64 compact_copy(u64 at, u32 bytes) on cpu {
+    u64 cursor = at;
+    u32 vectors = bytes / 16;
+    if (vectors != 0) {
+        if (vectors != 1) {
+            cursor = move_immediate(cursor, u8(1), u64(vectors), false);
+        }
+        u64 begin = cursor;
+        // movups xmm0,[rsi]; movups [rdi],xmm0; advance both record cursors.
+        write_word(cursor, 0x0f06100f);
+        write_word(cursor + 4u64, 0x83480711);
+        write_word(cursor + 8u64, 0x834810c6);
+        put_byte(cursor + 12u64, u8(0xc7));
+        put_byte(cursor + 13u64, u8(16));
+        cursor += 14u64;
+        if (vectors != 1) {
+            cursor = register_instruction(cursor, u16(0xff), u8(0), false, u8(1), u8(1)); // dec ecx
+            u64 again = condition_field(cursor, u8(0x85));
+            patch_relative(unsafe_address(again), again - at, begin - at);
+            cursor = again + 4u64;
+        }
+    }
+    if ((bytes & 8) != 0) { put_byte(cursor, u8(0x48)); put_byte(cursor + 1u64, u8(0xa5)); cursor += 2u64; }
+    if ((bytes & 4) != 0) { put_byte(cursor, u8(0xa5)); cursor += 1u64; }
+    if ((bytes & 2) != 0) { put_byte(cursor, u8(0x66)); put_byte(cursor + 1u64, u8(0xa5)); cursor += 2u64; }
+    if ((bytes & 1) != 0) { put_byte(cursor, u8(0xa4)); cursor += 1u64; }
+    return cursor;
+}
+
+extern "C" u64 compact_count(u32 flags, u32 stride_offset, u32 flag_word, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = compact_stride(start, u8(12), flags + stride_offset);
+    cursor = compact_disp32(cursor, 0x918b4c, flags); // mov r10,[rcx + flags]
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(12));
+    cursor = register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(10));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(1));
+    cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(0), u8(0));
+    u64 begin = cursor;
+    cursor = register_instruction(cursor, u16(0x39), u8(0), false, u8(8), u8(1));
+    u64 end = condition_field(cursor, u8(0x83));
+    cursor = compact_flag_test(end + 4u64, flag_word);
+    write_word(cursor, 0x0fc2950f); // setne dl; movzx edx,dl
+    put_byte(cursor + 4u64, u8(0xb6));
+    put_byte(cursor + 5u64, u8(0xd2));
+    cursor = register_instruction(cursor + 6u64, u16(0x01), u8(0), false, u8(2), u8(0));
+    cursor = register_instruction(cursor, u16(0x03), u8(0), true, u8(10), u8(12));
+    cursor = register_instruction(cursor, u16(0xff), u8(0), false, u8(0), u8(1));
+    u64 back = jump_field(cursor);
+    cursor = back + 4u64;
+    patch_relative(unsafe_address(back), back - start, begin - start);
+    patch_relative(unsafe_address(end), end - start, cursor - start);
+    // The fifth argument receives the algorithm output; EAX reports success.
+    write_word(cursor, 0x24548b4c);
+    write_word(cursor + 4u64, 0x02894130);
+    write_word(cursor + 8u64, 0x5c41c031);
+    put_byte(cursor + 12u64, u8(0xc3));
+    return cursor + 13u64 - start;
+}
+
+extern "C" u64 compact_scatter(CompactScatter input, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = compact_stride(start, u8(13), input.source + input.stride_offset);
+    cursor = compact_stride(cursor, u8(14), input.target + input.stride_offset);
+    cursor = compact_stride(cursor, u8(15), input.flags + input.stride_offset);
+    cursor = compact_disp32(cursor, 0xb18b48, input.source); // rsi = source
+    cursor = compact_disp32(cursor, 0xb98b48, input.target); // rdi = destination
+    cursor = compact_disp32(cursor, 0x918b4c, input.flags);  // r10 = flags
+    cursor = compact_disp32(cursor, 0x918b48, input.prefix); // rdx = range prefix
+    MoveLocation prefix = MoveLocation(0u64, MOVE_MEMORY, u8(2), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(0), prefix);
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(14));
+    cursor = register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(7));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(13));
+    cursor = register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(6));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(15));
+    cursor = register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(10));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(3));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(8), u8(12));
+    u64 begin = cursor;
+    cursor = register_instruction(cursor, u16(0x39), u8(0), false, u8(12), u8(3));
+    u64 end = condition_field(cursor, u8(0x83));
+    cursor = compact_flag_test(end + 4u64, input.flag_word);
+    u64 skip = condition_field(cursor, u8(0x84));
+    cursor = compact_copy(skip + 4u64, input.record_bytes);
+    cursor = compact_advance(cursor, u8(6), u8(13), input.record_bytes);
+    cursor = compact_advance(cursor, u8(7), u8(14), input.record_bytes);
+    u64 next = jump_field(cursor);
+    cursor = next + 4u64;
+    patch_relative(unsafe_address(skip), skip - start, cursor - start);
+    cursor = register_instruction(cursor, u16(0x03), u8(0), true, u8(6), u8(13));
+    patch_relative(unsafe_address(next), next - start, cursor - start);
+    cursor = register_instruction(cursor, u16(0x03), u8(0), true, u8(10), u8(15));
+    cursor = register_instruction(cursor, u16(0xff), u8(0), false, u8(0), u8(3));
+    u64 back = jump_field(cursor);
+    cursor = back + 4u64;
+    patch_relative(unsafe_address(back), back - start, begin - start);
+    patch_relative(unsafe_address(end), end - start, cursor - start);
+    // xor eax,eax; pop r15,r14,r13,r12,rdi,rsi,rbx; ret.
+    write_word(cursor, 0x5f41c031);
+    write_word(cursor + 4u64, 0x5d415e41);
+    write_word(cursor + 8u64, 0x5e5f5c41);
+    put_byte(cursor + 12u64, u8(0x5b));
+    put_byte(cursor + 13u64, u8(0xc3));
+    return cursor + 14u64 - start;
+}

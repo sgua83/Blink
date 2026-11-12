@@ -174,3 +174,13 @@ struct AtomicSequence {
 };
 // The caller supplies 128 output bytes. The original value, when consumed, is in RAX.
 extern "C" u64 atomic_sequence(AtomicSequence input, address output) on cpu;
+
+struct CompactScatter {
+    u32 source; u32 target; u32 flags; u32 prefix;
+    u32 stride_offset; u32 flag_word; u32 record_bytes;
+};
+
+// The range prologue and unwind records already belong to the emitter.
+// Output has space for 96 count bytes or 224 scatter bytes.
+extern "C" u64 compact_count(u32 flags, u32 stride_offset, u32 flag_word, address output) on cpu;
+extern "C" u64 compact_scatter(CompactScatter input, address output) on cpu;
