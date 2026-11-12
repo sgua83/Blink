@@ -4351,7 +4351,7 @@ void process(read dataset<Item> input,
 
 CPU 直接读取自己存储中的已生产计数，按该长度执行原生范围函数。GPU 先生成提交私有的层级执行快照，每层 16 字节：前三个 u32 为间接启动 X/Y/Z 工作组数，最后一个为该层有效数量；随后直接 `vkCmdDispatchIndirect`。map 使用一层，sum／scan／compact 一次产生覆盖当前 u32 域的六层参数；排序另有独立直方图域。计数与启动参数不为调度读回 CPU，命令和所有临时资源仍由同一提交持有到完成。原始 Count 数据集仍是生产者的输出，执行快照不是可独立修改的另一份权威计数。
 
-X 分区按 64 线程工作组对齐，并受设备上限与 `with_partition_elements` 控制；Y/Z 根据实际组数展开。主程序将多维全局坐标以 u64 线性化，先与有效数量比较，再提供语言层 u32 index，防止矩形网格补齐后发生 32 位回绕。空前缀的 map 产生零维启动；集合运算保留写出单位元或计数所需的工作组。间接参数缓冲区具有真实 INDIRECT_BUFFER 用途，参数写入到间接读取／Shader 读取之间具有明确内存依赖；同一提交的后续时间步覆盖参数前也等待此前读者。ABI 与用法依据 [Vulkan 间接启动规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdDispatchIndirect.html)和[参数结构规范](https://docs.vulkan.org/refpages/latest/refpages/source/VkDispatchIndirectCommand.html)。
+X 分区按实际工作组宽对齐，并受设备上限与 `with_partition_elements` 控制；Y/Z 根据实际组数展开。B 发射 u64 多维索引，先与有效数量比较，再提供语言层 u32 index。集合先用组首索引判断整组是否属于有效域，使矩形补齐组退出，同时保留空域写出单位元或计数所需的首组。空前缀的 map 产生零维启动。间接参数缓冲区具有真实 INDIRECT_BUFFER 用途，参数写入到间接读取／Shader 读取之间具有明确内存依赖；同一提交的后续时间步覆盖参数前也等待此前读者。ABI 与用法依据 [Vulkan 间接启动规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdDispatchIndirect.html)和[参数结构规范](https://docs.vulkan.org/refpages/latest/refpages/source/VkDispatchIndirectCommand.html)。
 
 `bc build` 为有效域额外输出 `.dispatch.spv`。模块接口可以声明和传递前缀域能力，跨提交由相同数据的所有权承载，见下节；通用动态任务仍待完成；前缀集合运算见下文。
 

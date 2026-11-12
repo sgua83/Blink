@@ -374,6 +374,34 @@ struct AtomicEmission {
 }
 
 #[repr(C)]
+struct PrefixIndexEmission {
+    uint_type: u32,
+    wide_type: u32,
+    bool_type: u32,
+    vector_type: u32,
+    global: u32,
+    global_x: u32,
+    num_groups: u32,
+    count_pointer: u32,
+    width: u32,
+    wide_width: u32,
+    zero: u32,
+    one: u32,
+    collective: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct PrefixIndexWords {
+    words: u64,
+    next: u32,
+    index: u32,
+    count: u32,
+    active: u32,
+    label: u32,
+}
+
+#[repr(C)]
 struct AppendEmission {
     uint_type: u32,
     bool_type: u32,
@@ -496,6 +524,8 @@ unsafe extern "C" {
     fn emit_private_address(
         input: PrivateAddress, parts: *const u32, pointers: *mut u32, body: *mut u32,
     ) -> PrivateAddressWords;
+    #[link_name = "bootstrap.spirv_envelope::encode_prefix_index"]
+    fn encode_prefix_index(input: PrefixIndexEmission, body: *mut u32) -> PrefixIndexWords;
     #[link_name = "bootstrap.spirv_envelope::encode_append_reservation"]
     fn encode_append_reservation(input: AppendEmission, body: *mut u32) -> AppendWords;
     #[link_name = "bootstrap.spirv_envelope::encode_atomic"]
@@ -1783,6 +1813,7 @@ fn emit_shader(
     let (count, active) = if num_groups != 0 {
         e.prefix_index(
             gid,
+            local_index,
             num_groups,
             v3,
             !matches!(stage.operation, Operation::Map)

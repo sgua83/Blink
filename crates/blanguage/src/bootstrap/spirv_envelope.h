@@ -376,3 +376,31 @@ struct TileExtract {
 // A dynamic byte ID computes the shift. Otherwise the caller supplies a
 // fixed shift ID, or zero for the low bits. The body has room for 19 words.
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu;
+
+struct PrefixIndexEmission {
+    u32 uint_type;
+    u32 wide_type;
+    u32 bool_type;
+    u32 vector_type;
+    u32 global;
+    u32 global_x;
+    u32 num_groups;
+    u32 count_pointer;
+    u32 width;
+    u32 wide_width;
+    u32 zero;
+    u32 one;
+    u32 collective;
+    u32 next;
+};
+
+struct PrefixIndexWords {
+    u64 words;
+    u32 next;
+    u32 index;
+    u32 count;
+    u32 active;
+    u32 label;
+};
+
+extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, address body) on cpu;

@@ -126,72 +126,45 @@ impl Emitter<'_> {
     }
     pub(super) fn prefix_index(
         &mut self,
-        gid: u32,
+        global: u32,
+        global_x: u32,
         num_groups: u32,
         vector_type: u32,
         collective: bool,
     ) -> (u32, u32) {
-        let u = self.types[&Scalar::U32];
-        let wide = self.u64_type;
-        let groups = self.id();
-        self.emit(61, &[vector_type, groups, num_groups]);
-        let mut coordinates = Vec::new();
-        for (vector, component) in [(gid, 0), (gid, 1), (gid, 2), (groups, 0), (groups, 1)] {
-            let v = self.id();
-            self.emit(81, &[u, v, vector, component]);
-            let w = self.id();
-            self.emit(113, &[wide, w, v]);
-            coordinates.push(w);
-        }
-        let zrows = self.id();
-        self.emit(132, &[wide, zrows, coordinates[2], coordinates[4]]);
-        let row = self.id();
-        self.emit(128, &[wide, row, coordinates[1], zrows]);
-        let width = self.constant(Scalar::U32, self.stage.workgroup_width());
-        let width64 = self.id();
-        self.emit(113, &[wide, width64, width]);
-        let pitch = self.id();
-        self.emit(132, &[wide, pitch, coordinates[3], width64]);
-        let offset = self.id();
-        self.emit(132, &[wide, offset, row, pitch]);
-        let index = self.id();
-        self.emit(128, &[wide, index, coordinates[0], offset]);
         let three = self.constant(Scalar::U32, 3);
         let base = self.prefix_push(1);
         let word = self.id();
-        self.emit(128, &[u, word, base, three]);
-        let source = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), word, 0);
-        let count = self.id();
-        self.emit(61, &[u, count, source, 2, 4]);
-        let count64 = self.id();
-        self.emit(113, &[wide, count64, count]);
-        let active = self.id();
-        self.emit(176, &[self.types[&Scalar::Bool], active, index, count64]);
+        self.emit(128, &[self.types[&Scalar::U32], word, base, three]);
+        let count_pointer = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), word, 0);
+        let input = PrefixIndexEmission {
+            uint_type: self.types[&Scalar::U32],
+            wide_type: self.u64_type,
+            bool_type: self.types[&Scalar::Bool],
+            vector_type,
+            global,
+            global_x,
+            num_groups,
+            count_pointer,
+            width: if collective { self.constant(Scalar::U32, self.workgroup_width) } else { 0 },
+            wide_width: self.constant(Scalar::U64, self.workgroup_width),
+            zero: self.constant(Scalar::U32, 0),
+            one: self.constant(Scalar::U32, 1),
+            collective: u32::from(collective),
+            next: self.next,
+        };
+        let at = self.body.len();
+        self.body.reserve(if collective { 134 } else { 88 });
+        let emitted = unsafe {
+            let emitted = encode_prefix_index(input, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            emitted
+        };
+        self.next = emitted.next;
+        self.index = emitted.index;
         if collective {
-            // 矩形网格补齐的整组先统一退出，不能写越界部分和，也不能分歧进入屏障。
-            let groups = self.prefix_ceil(count, width);
-            let zero = self.constant(Scalar::U32, 0);
-            let one = self.constant(Scalar::U32, 1);
-            let empty = self.id();
-            self.emit(170, &[self.types[&Scalar::Bool], empty, groups, zero]);
-            let groups_nonzero = self.id();
-            self.emit(169, &[u, groups_nonzero, empty, one, groups]);
-            let group = self.id();
-            self.emit(134, &[wide, group, index, width64]);
-            let groups64 = self.id();
-            self.emit(113, &[wide, groups64, groups_nonzero]);
-            let present = self.id();
-            self.emit(176, &[self.types[&Scalar::Bool], present, group, groups64]);
-            let proceed = self.id();
-            let stop = self.id();
-            self.emit(247, &[proceed, 0]);
-            self.emit(250, &[present, proceed, stop]);
-            self.emit(248, &[stop]);
-            self.emit(253, &[]);
-            self.emit(248, &[proceed]);
+            self.current_label = emitted.label;
         }
-        self.index = self.id();
-        self.emit(113, &[u, self.index, index]);
-        (count, active)
+        (emitted.count, emitted.active)
     }
 }

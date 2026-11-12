@@ -954,6 +954,83 @@ extern "C" AppendWords encode_append_reservation(AppendEmission input, address b
     return AppendWords(at, ticket + 1, ticket, write_label, finish);
 }
 
+u64 widen_component(address body, u64 at, PrefixIndexEmission input,
+                    u32 vector, u32 component, u32 result) on cpu {
+    u32 narrow = result - 1;
+    u64 end = words_four(body, at, 81, input.uint_type, narrow, vector, component);
+    return words_three(body, end, 113, input.wide_type, result, narrow);
+}
+
+extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, address body) on cpu {
+    u32 groups = input.next;
+    u32 x = groups + 1;
+    u32 y = x + 2;
+    u32 z = y + 2;
+    u32 groups_x = z + 2;
+    u32 groups_y = groups_x + 2;
+    u32 wide_type = input.wide_type;
+    u64 at = words_three(body, 0u64, 61, input.vector_type, groups, input.num_groups);
+    at = words_three(body, at, 113, wide_type, x, input.global_x);
+    at = widen_component(body, at, input, input.global, 1, y);
+    at = widen_component(body, at, input, input.global, 2, z);
+    at = widen_component(body, at, input, groups, 0, groups_x);
+    at = widen_component(body, at, input, groups, 1, groups_y);
+
+    u32 zrows = groups_y + 1;
+    u32 row = zrows + 1;
+    u32 pitch = row + 1;
+    u32 offset = pitch + 1;
+    u32 linear = offset + 1;
+    at = words_four(body, at, 132, wide_type, zrows, z, groups_y);
+    at = words_four(body, at, 128, wide_type, row, y, zrows);
+    at = words_four(body, at, 132, wide_type, pitch, groups_x, input.wide_width);
+    at = words_four(body, at, 132, wide_type, offset, row, pitch);
+    at = words_four(body, at, 128, wide_type, linear, x, offset);
+
+    u32 uint_type = input.uint_type;
+    u32 bool_type = input.bool_type;
+    u32 count = linear + 1;
+    u32 count_wide = count + 1;
+    u32 active = count_wide + 1;
+    at = words_five(body, at, 61, uint_type, count, input.count_pointer, 2, 4);
+    at = words_three(body, at, 113, wide_type, count_wide, count);
+    at = words_four(body, at, 176, bool_type, active, linear, count_wide);
+    u32 index = active + 1;
+    u32 label = 0;
+
+    if (input.collective != 0) {
+        // Each row begins on a workgroup boundary, so X alone gives the lane.
+        u32 lane = index;
+        u32 lane_wide = lane + 1;
+        u32 group_first = lane_wide + 1;
+        at = words_four(body, at, 137, uint_type, lane, input.global_x, input.width);
+        at = words_three(body, at, 113, wide_type, lane_wide, lane);
+        at = words_four(body, at, 130, wide_type, group_first, linear, lane_wide);
+
+        // An empty collective still runs its first group to publish its identity.
+        u32 empty = group_first + 1;
+        u32 nonzero_count = empty + 1;
+        u32 group_limit = nonzero_count + 1;
+        u32 present = group_limit + 1;
+        at = words_four(body, at, 170, bool_type, empty, count, input.zero);
+        at = words_five(body, at, 169, uint_type, nonzero_count, empty, input.one, count);
+        at = words_three(body, at, 113, wide_type, group_limit, nonzero_count);
+        at = words_four(body, at, 176, bool_type, present, group_first, group_limit);
+
+        u32 proceed = present + 1;
+        u32 stop = proceed + 1;
+        at = open_conditional(body, at, proceed, present, proceed, stop);
+        at = words_one(body, at, 248, stop);
+        put(body, at, instruction(253, 1));
+        at = words_one(body, at + 1u64, 248, proceed);
+        index = stop + 1;
+        label = proceed;
+    }
+
+    at = words_three(body, at, 113, uint_type, index, linear);
+    return PrefixIndexWords(at, index + 1, index, count, active, label);
+}
+
 extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {
     u64 at = 0u64;
     u32 next = input.next;
