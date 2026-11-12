@@ -1,4 +1,5 @@
 module bootstrap.x64_instruction;
+import bootstrap.scalar_fold;
 
 struct Encoding {
     u32 displacement;
@@ -67,3 +68,16 @@ struct MoveEncoding {
 extern "C" MoveEncoding copy_scalar_move(MoveLocation dst, MoveLocation src, u32 size, bool signed, address output) on cpu;
 extern "C" u64 read_scalar_move(MoveLocation dst, MoveLocation memory, u32 size, bool signed, bool boolean, address output) on cpu;
 extern "C" u64 write_scalar_move(MoveLocation memory, MoveLocation src, u32 size, address output) on cpu;
+
+struct ComparisonEncoding {
+    u64 length;
+    u64 left_literal;
+    u64 right_literal;
+};
+
+// The caller owns 64 output bytes. Literal fields are output-relative disp32
+// offsets, or zero when that input does not use the original literal pool.
+extern "C" ComparisonEncoding scalar_compare(MoveLocation dst, MoveLocation left, MoveLocation right,
+    u32 size, bool signed, bool floating, BinaryOperation operation, address output) on cpu;
+extern "C" MoveEncoding cast_boolean(MoveLocation dst, MoveLocation src,
+    u32 size, bool signed, bool floating, address output) on cpu;

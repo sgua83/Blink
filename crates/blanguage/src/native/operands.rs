@@ -104,7 +104,21 @@ struct MoveEncoding {
     literal_field: u64,
 }
 
+#[repr(C)]
+struct ComparisonEncoding {
+    length: u64,
+    left_literal: u64,
+    right_literal: u64,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::scalar_compare"]
+    fn scalar_compare(dst: MoveLocation, left: MoveLocation, right: MoveLocation,
+        size: u32, signed: u32, floating: u32, operation: crate::builtin_types::ScalarBinaryOp,
+        output: *mut u8) -> ComparisonEncoding;
+    #[link_name = "bootstrap.x64_instruction::cast_boolean"]
+    fn cast_boolean(dst: MoveLocation, src: MoveLocation,
+        size: u32, signed: u32, floating: u32, output: *mut u8) -> MoveEncoding;
     #[link_name = "bootstrap.x64_instruction::encode"]
     fn encode_instruction(input: InstructionEncoding, opcode: *const u8, length: u64, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::copy_scalar_move"]
@@ -244,9 +258,8 @@ impl Emitter<'_> {
     pub(super) fn location(&self, r: Reg) -> Location {
         self.allocation.location(PrivateSlot::Register(r))
     }
-    fn emit_move(&mut self, emit: impl FnOnce(*mut u8) -> u64) {
-        // The B emitter appends at most 24 bytes for one scalar transfer.
-        self.code.reserve(24);
+    fn emit_bytes(&mut self, capacity: usize, emit: impl FnOnce(*mut u8) -> u64) {
+        self.code.reserve(capacity);
         let start = self.code.len();
         unsafe {
             let length = emit(self.code.as_mut_ptr().add(start));
@@ -264,7 +277,7 @@ impl Emitter<'_> {
         let src = MoveLocation::from(src);
         let bits = src.value;
         let mut literal = 0;
-        self.emit_move(|output| {
+        self.emit_bytes(24, |output| {
             let result = unsafe { copy_scalar_move(dst.into(), src, size, u32::from(signed), output) };
             literal = result.literal_field as usize;
             result.length
@@ -300,7 +313,7 @@ impl Emitter<'_> {
     pub(super) fn read_scalar_address(&mut self, dst: Reg, memory: Memory) {
         let scalar = self.stage.registers[dst];
         let dst = self.location(dst);
-        self.emit_move(|output| unsafe {
+        self.emit_bytes(24, |output| unsafe {
             read_scalar_move(dst.into(), memory.into(), scalar.size(), u32::from(scalar.is_signed()), u32::from(scalar == Scalar::Bool), output)
         });
     }
@@ -317,7 +330,7 @@ impl Emitter<'_> {
         self.write_value_address(self.location(src), memory, self.stage.registers[src].size());
     }
     pub(super) fn write_value_address(&mut self, src: Location, memory: Memory, size: u32) {
-        self.emit_move(|output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });
+        self.emit_bytes(24, |output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });
     }
     pub(super) fn float_binary(&mut self, dst: Reg, a: Reg, b: Reg, opcode: u8) {
         let scalar = self.stage.registers[dst];
@@ -393,23 +406,19 @@ impl Emitter<'_> {
         } else if bit_copy(from, into) {
             self.copy_scalar(d, source, into);
         } else if into == Scalar::Bool {
-            if from.is_float() {
-                let left = match source {
-                    Location::Xmm(r) => r,
-                    _ => 0,
-                };
-                self.copy_scalar(Location::Xmm(left), source, from);
-                self.bytes(&[0x0f, 0x57, 0xc9]);
-                self.instruction(if from == Scalar::F64 { Some(0x66) } else { None }, &[0x0f, 0x2e], false, left, Operand::Register(1));
-            } else {
-                let source = if from.size() < 4 {
-                    self.copy_scalar(Location::Gpr(0), source, from);
-                    Operand::Register(0)
-                } else { self.operand(source, 1) };
-                self.instruction(None, &[0x83], from.size() == 8, 7, source);
-                self.bytes(&[0]);
+            let start = self.code.len();
+            let source = MoveLocation::from(source);
+            let bits = source.value;
+            let mut literal = 0;
+            self.emit_bytes(64, |output| {
+                let result = unsafe { cast_boolean(d.into(), source, from.size(),
+                    u32::from(from.is_signed()), u32::from(from.is_float()), output) };
+                literal = result.literal_field as usize;
+                result.length
+            });
+            if literal != 0 {
+                self.literals.entry((bits, false)).or_default().push(start + literal);
             }
-            self.comparison_result(dst, Comparison::NotEqual, from);
         } else if !from.is_float() && !into.is_float() {
             let target = match d { Location::Gpr(r) => r, _ => 0 };
             let register = Location::Gpr(target);
@@ -570,35 +579,25 @@ impl Emitter<'_> {
     }
     pub(super) fn compare(&mut self, dst: Reg, a: Reg, b: Reg, comparison: Comparison) {
         let scalar = self.stage.registers[a];
-        let (a, b) = (self.location(a), self.location(b));
-        if scalar.is_float() {
-            let left = match a {
-                Location::Xmm(r) => r,
-                _ => 0,
-            };
-            self.copy_scalar(Location::Xmm(left), a, scalar);
-            let right = self.float_operand(b, scalar);
-            self.instruction(if scalar == Scalar::F64 { Some(0x66) } else { None }, &[0x0f, 0x2e], false, left, right);
-        } else {
-            let left = match a {
-                Location::Gpr(r) => r,
-                _ => 0,
-            };
-            let wide = scalar.size() == 8;
-            self.copy_scalar(Location::Gpr(left), a, scalar);
-            if scalar.size() < 4 {
-                self.copy_scalar(Location::Gpr(1), b, scalar);
-                self.instruction(None, &[0x3b], false, left, Operand::Register(1));
-            } else if let Location::Immediate(bits) = b
-                && (!wide || bits as i64 == bits as i32 as i64)
-            {
-                self.integer_immediate(7, left, bits, wide);
-            } else {
-                let right = self.operand(b, 1);
-                self.instruction(None, &[0x3b], wide, left, right);
-            }
+        let destination = MoveLocation::from(self.location(dst));
+        let left = MoveLocation::from(self.location(a));
+        let right = MoveLocation::from(self.location(b));
+        let (left_bits, right_bits) = (left.value, right.value);
+        let start = self.code.len();
+        let mut fields = (0, 0);
+        self.emit_bytes(64, |output| {
+            let result = unsafe { scalar_compare(destination, left, right, scalar.size(),
+                u32::from(scalar.is_signed()), u32::from(scalar.is_float()),
+                BinaryOp::Compare(comparison).into(), output) };
+            fields = (result.left_literal as usize, result.right_literal as usize);
+            result.length
+        });
+        if fields.0 != 0 {
+            self.literals.entry((left_bits, false)).or_default().push(start + fields.0);
         }
-        self.comparison_result(dst, comparison, scalar);
+        if fields.1 != 0 {
+            self.literals.entry((right_bits, scalar.size() == 8)).or_default().push(start + fields.1);
+        }
     }
     pub(super) fn select(&mut self, dst: Reg, condition: Reg, a: Reg, b: Reg) {
         let scalar = self.stage.registers[dst];

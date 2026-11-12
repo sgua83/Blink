@@ -499,3 +499,128 @@ extern "C" u64 write_scalar_move(MoveLocation memory, MoveLocation src, u32 size
     }
     return store_bits(cursor, memory, register, size) - start;
 }
+
+u64 comparison_result(u64 at, MoveLocation dst, BinaryOperation operation, bool signed, bool floating) on cpu {
+    u8 condition = u8(0x94);
+    if (operation == BinaryOperation::NotEqual) { condition = u8(0x95); }
+    if (operation == BinaryOperation::Less) { condition = u8(0x92); }
+    if (operation == BinaryOperation::Greater) { condition = u8(0x97); }
+    if (operation == BinaryOperation::LessEqual) { condition = u8(0x96); }
+    if (operation == BinaryOperation::GreaterEqual) { condition = u8(0x93); }
+    if (signed && !floating) {
+        if (operation == BinaryOperation::Less) { condition = u8(0x9c); }
+        if (operation == BinaryOperation::Greater) { condition = u8(0x9f); }
+        if (operation == BinaryOperation::LessEqual) { condition = u8(0x9e); }
+        if (operation == BinaryOperation::GreaterEqual) { condition = u8(0x9d); }
+    }
+    put_byte(at, u8(0x0f));
+    put_byte(at + 1u64, condition);
+    put_byte(at + 2u64, u8(0xc0));
+    u64 cursor = at + 3u64;
+    if (floating) {
+        u8 parity = u8(0x9b);
+        u8 combine = u8(0x20);
+        if (operation == BinaryOperation::NotEqual) {
+            parity = u8(0x9a);
+            combine = u8(0x08);
+        }
+        put_byte(cursor, u8(0x0f));
+        put_byte(cursor + 1u64, parity);
+        put_byte(cursor + 2u64, u8(0xc2));
+        put_byte(cursor + 3u64, combine);
+        put_byte(cursor + 4u64, u8(0xd0));
+        cursor += 5u64;
+    }
+    u8 target = u8(0);
+    if (dst.kind == MOVE_GPR) { target = dst.base; }
+    cursor = load_extended(cursor, target, move_gpr(u8(0)), 1, false);
+    MoveEncoding result = copy_scalar_move(dst, move_gpr(target), 4, false, unsafe_address(cursor));
+    return cursor + result.length;
+}
+
+u64 compare_immediate(u64 at, u8 left, u64 bits, bool wide) on cpu {
+    i64 value = i64(bits);
+    if (!wide) { value = i64(i32(u32(bits))); }
+    u16 opcode = u16(0x81);
+    if (value >= -i64(128) && value <= i64(127)) { opcode = u16(0x83); }
+    u64 cursor = register_instruction(at, opcode, u8(0), wide, u8(7), left);
+    if (opcode == u16(0x83)) {
+        put_byte(cursor, u8(bits));
+        return cursor + 1u64;
+    }
+    write_word(cursor, u32(bits));
+    return cursor + 4u64;
+}
+
+extern "C" ComparisonEncoding scalar_compare(MoveLocation dst, MoveLocation left, MoveLocation right,
+    u32 size, bool signed, bool floating, BinaryOperation operation, address output) on cpu {
+    u64 start = address_bits(output);
+    u8 target = u8(0);
+    MoveLocation loaded = move_gpr(target);
+    if (floating) {
+        if (left.kind == MOVE_XMM) { target = left.base; }
+        loaded = MoveLocation(0u64, MOVE_XMM, target, NO_INDEX, u8(0));
+    } else if (left.kind == MOVE_GPR) {
+        target = left.base;
+        loaded = move_gpr(target);
+    }
+    MoveEncoding load = copy_scalar_move(loaded, left, size, signed, output);
+    u64 cursor = start + load.length;
+    u64 right_literal = 0u64;
+    bool wide = size == 8;
+    if (floating) {
+        u8 prefix = u8(0);
+        if (wide) { prefix = u8(0x66); }
+        cursor = encode_operand_instruction(cursor, u16(0x2e0f), prefix,
+            wide && right.kind == MOVE_IMMEDIATE, target, right);
+        if (right.kind == MOVE_IMMEDIATE) { right_literal = cursor - start - 4u64; }
+    } else if (size < 4) {
+        MoveEncoding source = copy_scalar_move(move_gpr(u8(1)), right, size, signed, unsafe_address(cursor));
+        cursor = register_instruction(cursor + source.length, u16(0x3b), u8(0), false, target, u8(1));
+    } else if (right.kind == MOVE_IMMEDIATE && (!wide || i64(right.value) == i64(i32(u32(right.value))))) {
+        cursor = compare_immediate(cursor, target, right.value, wide);
+    } else {
+        MoveLocation source = right;
+        if (right.kind == MOVE_IMMEDIATE) {
+            cursor = move_immediate(cursor, u8(1), right.value, right.value > 0xffffffffu64);
+            source = move_gpr(u8(1));
+        }
+        cursor = encode_operand_instruction(cursor, u16(0x3b), u8(0), wide, target, source);
+    }
+    cursor = comparison_result(cursor, dst, operation, signed, floating);
+    return ComparisonEncoding(cursor - start, load.literal_field, right_literal);
+}
+
+extern "C" MoveEncoding cast_boolean(MoveLocation dst, MoveLocation src,
+    u32 size, bool signed, bool floating, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    u64 literal = 0u64;
+    if (floating) {
+        u8 left = u8(0);
+        if (src.kind == MOVE_XMM) { left = src.base; }
+        MoveLocation target = MoveLocation(0u64, MOVE_XMM, left, NO_INDEX, u8(0));
+        MoveEncoding load = copy_scalar_move(target, src, size, signed, output);
+        cursor += load.length;
+        literal = load.literal_field;
+        cursor = register_instruction(cursor, u16(0x570f), u8(0), false, u8(1), u8(1));
+        u8 prefix = u8(0);
+        if (size == 8) { prefix = u8(0x66); }
+        cursor = register_instruction(cursor, u16(0x2e0f), prefix, false, left, u8(1));
+    } else {
+        MoveLocation source = src;
+        if (size < 4) {
+            MoveEncoding load = copy_scalar_move(move_gpr(u8(0)), src, size, signed, output);
+            cursor += load.length;
+            source = move_gpr(u8(0));
+        } else if (src.kind == MOVE_IMMEDIATE) {
+            cursor = move_immediate(cursor, u8(1), src.value, src.value > 0xffffffffu64);
+            source = move_gpr(u8(1));
+        }
+        cursor = encode_operand_instruction(cursor, u16(0x83), u8(0), size == 8, u8(7), source);
+        put_byte(cursor, u8(0));
+        cursor += 1u64;
+    }
+    cursor = comparison_result(cursor, dst, BinaryOperation::NotEqual, signed, floating);
+    return MoveEncoding(cursor - start, literal);
+}
