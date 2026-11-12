@@ -3,9 +3,10 @@
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Variable { Integer(ValueIdentity, Scalar), Atom(Fact) }
+// Typed bounds already use the scalar ordered-bit domain, including floats.
+enum Variable { Range(ValueIdentity, Scalar), Atom(Fact) }
 impl Variable {
-    fn end(self) -> u128 { match self { Self::Integer(_, scalar) => u128::from(scalar.bit_mask())+1, Self::Atom(_) => 2 } }
+    fn end(self) -> u128 { match self { Self::Range(_, scalar) => u128::from(scalar.bit_mask())+1, Self::Atom(_) => 2 } }
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Decision { variable: Variable, cells: Vec<(u128, usize)> }
@@ -53,7 +54,7 @@ impl Normalizer {
     fn atom(&mut self, fact:Fact)->usize { self.node(Variable::Atom(fact),vec![(1,0),(2,1)]) }
     fn cut(&mut self,id:ValueIdentity,scalar:Scalar,upper:Bits)->usize {
         if upper>=scalar.bit_mask() { return 1; }
-        self.node(Variable::Integer(id,scalar),vec![(u128::from(upper)+1,1),(u128::from(scalar.bit_mask())+1,0)])
+        self.node(Variable::Range(id,scalar),vec![(u128::from(upper)+1,1),(u128::from(scalar.bit_mask())+1,0)])
     }
     fn pairs(&self,a:usize,b:usize)->(Variable,Vec<(u128,usize,usize)>) {
         let left=self.nodes[a].as_ref().unwrap();let right=self.nodes[b].as_ref().unwrap();
@@ -139,8 +140,8 @@ impl Normalizer {
     fn fact(&mut self,fact:Fact)->usize {
         let fact=fact.numeric_alias();
         match fact {
-            Fact::Minimum(id,scalar,lower)if scalar.is_integer()=>return self.minimum(id,scalar,lower),
-            Fact::Maximum(id,scalar,upper)if scalar.is_integer()=>return self.cut(id,scalar,upper),
+            Fact::Minimum(id,scalar,lower)=>return self.minimum(id,scalar,lower),
+            Fact::Maximum(id,scalar,upper)=>return self.cut(id,scalar,upper),
             Fact::Zero(id)|Fact::NonZero(id)=>{
                 if let Some(scalar)=self.integer_type(id) {
                     let zero=self.zero(id,scalar);return if matches!(fact,Fact::Zero(_)){zero}else{self.not(zero)};
@@ -257,7 +258,7 @@ impl Normalizer {
             for(end,child)in decision.cells {
                 if child!=0 {
                     let guard=match decision.variable {
-                        Variable::Integer(id,scalar)=>{
+                        Variable::Range(id,scalar)=>{
                             let mut facts=Facts::new();
                             if begin!=0{facts.insert(Fact::Minimum(id,scalar,begin as Bits));}
                             if end!=decision.variable.end(){facts.insert(Fact::Maximum(id,scalar,(end-1)as Bits));}
