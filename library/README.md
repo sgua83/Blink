@@ -548,7 +548,7 @@ target/release/blink.exe --archive target/file.obj -o target/file.lib
 
 `ExistsError::Query(u32)`保留打开失败后立即取得的原GetLastError。关闭失败交回`ExistsError::Close(ExistsCloseError)`，其中handle字段为正式不透明handle、本次原句柄身份保持，code是原OS错误；结果不宣称该句柄已释放，不自动再次关闭或重新查询。正常结果不把任何句柄或路径借用留给调用者。公开接口不依赖文件内容、Unicode或序列模块，CreateFileW等路径查询专用C ABI声明留在私有实现，共用CloseHandle由实现显式导入blink.windows.system，不在path重复声明。
 
-模块以`import blink.windows.path;`及`-I library`装入，也可将path.b编译为模块并归档；仅消费try_exists的调用方只需path.lib，无需提供者.h／.b、文件内容库、序列代码或运行库sidecar。绝对路径的实际代码依赖见下节。当前Rust编译器Inputs::file尚未采用；规范路径接口见下节，扩展名词法替换见后节，路径组合接口见后节。平台调用见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，当前真实消费者语义见[Path::try_exists](https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists)。
+模块以`import blink.windows.path;`及`-I library`装入，也可将path.b编译为模块并归档；仅消费try_exists的调用方只需path.lib，无需提供者.h／.b、文件内容库、序列代码或运行库sidecar。绝对路径的实际代码依赖见下节。模块装入由原File单次打开决定实际存在与错误，不为读取先调用try_exists；独立存在性查询仍供确需它的消费者使用。规范路径接口见下节，扩展名词法替换见后节，路径组合接口见后节。平台调用见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，当前真实消费者语义见[Path::try_exists](https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists)。
 
 ### 取得绝对路径
 
@@ -606,7 +606,7 @@ enum ExtensionError : u32 { Separator(u32)=1; LengthOverflow=2; };
 
 新扩展名中的第一个斜线或反斜线由Separator交回其UTF-16单元索引，即使原路径没有文件名也不把它当成有效扩展名。LengthOverflow仅表示最终拥有数据集无法用当前u32长度表达，没有MAX_PATH或其他固定路径长度阈值。输入只读、输出修改及资源释放沿原dataset／Frame与最后消费者，不建立路径对象缓存或第二拥有者。
 
-归档调用方编译只导入path.lib，链接只需实际路径归档及生成物的原运行库代码，不要求sequence.lib或提供者.h／.b。当前Rust装入器与构建输入仍使用原Rust路径调用；本B库能力、消费者迁移与正式周发行分别记录。直接替换规则见[Rust PathBuf::set_extension](https://doc.rust-lang.org/std/path/struct.PathBuf.html#method.set_extension)。
+归档调用方编译导入path.lib和path_core.lib，链接提供两份实际归档及生成物的原运行库代码；也可将path.obj与path_core.obj沿原归档入口一起交付。with_extension不要求sequence.lib或提供者.h／.b。模块装入与构建输入的.h／.b路径已接入同源B算法，平台编码、临时缓冲和PathBuf仍归原宿主；实际文件打开和字节读取各归原所有者。直接替换规则见[Rust PathBuf::set_extension](https://doc.rust-lang.org/std/path/struct.PathBuf.html#method.set_extension)。
 
 ### 组合路径
 
@@ -622,7 +622,15 @@ enum JoinError : u32 { LengthOverflow=1; };
 
 LengthOverflow表示实际拥有数据集在本次组合中无法用当前u32长度继续表达，结果及必要的临时组件数据均沿原dataset／resize规则交接；没有MAX_PATH或预设组件数上限。临时组件是本次算法的普通数据，结束后由原Frame释放，不形成路径缓存或新的运行时拥有表。
 
-源码消费使用`import blink.windows.path;`与`-I library`；归档消费只导入path.lib，链接只提供本次实际路径归档及原运行库代码，join不要求sequence.lib或提供者.h／.b。当前Rust模块装入／构建图仍使用原Rust路径调用，本B接口的原生可用、编译器迁移、中央镜像及正式周发行分别记录。平台组合规则见[Rust PathBuf::push](https://doc.rust-lang.org/std/path/struct.PathBuf.html#method.push)。
+源码消费使用`import blink.windows.path;`与`-I library`，由同一源码根装入path_core；归档消费导入path.lib与path_core.lib，或交付包含两个实际模块的同一归档，链接仍不读取提供者源码。join不要求sequence.lib。编译器模块名的点分隔映射、根组合及.h／.b后缀同样由该B纯算法处理，原模块图、File打开、错误及已打开字节的所有者保持。库与编译器的缓冲分别按实际调用者管理；其他文件与目录API的实际采用按各自入口说明。平台组合规则见[Rust PathBuf::push](https://doc.rust-lang.org/std/path/struct.PathBuf.html#method.push)。
+
+### 同源路径核心与原生宿主
+
+`blink.windows.path_core`保存同一Windows词法、join及扩展名算法。普通path接口继续由原Frame拥有输入、结果和本次必要组件；目录创建也消费同一词法与组件解析，不另留一份路径算法。仅try_exists等未调用该核心的原生链接路径仍按实际符号裁剪，不因此装入另一运行库。
+
+原生C ABI使用`UnitSpan { address data; u64 length; }`借用实际UTF-16代码单元，不转码、不要求NUL。join_scratch返回临时JoinComponent行数，调用者提供按该C布局对齐的行空间；join_prepare交出最终单元数，join_encode直接写调用者的输出。extension_prepare／extension_encode沿同一输入及计划写出结果；新扩展名不得含分隔符，普通path接口仍先返回原Separator错误。输入、临时组件、计划及输出保持到同步编码结束，输出空间不与输入别名，返回后核心不保留地址或Frame。u64为本机64位布局计数，不扩大普通dataset的u32长度；公开path接口的LengthOverflow仍表达其实际结果和临时集合的表示边界。
+
+module_tail在调用者为原模块名预留的两个UTF-16单元中写出点及实际后缀，并将原名称的点改为斜线。编译器只交接已验证的模块名、OsStr编码及本次临时缓冲，B处理实际路径；File及源字节不经过这个纯算法模块，也不为此创建计算Frame。其他文件系统调用与平台采用按各自实际实现记录。
 
 ### 创建目录及缺失父级
 
@@ -642,5 +650,5 @@ LengthOverflow表示实际拥有数据集在本次组合中无法用当前u32长
 
 FILE_STANDARD_INFO沿Windows x64的24字节、8字节对齐布局交接，目录标志为偏移21的BOOLEAN。DirectoryCloseError.handle为正式不透明handle，可直接交接匹配的原Windows文件HANDLE接口，不属于数值或B内存view；复制身份不取得对象或关闭责任，原资源仍归实际调用者，不自动再次关闭。分配／执行失败沿原Frame边界；业务Err不回滚已经发生的目录创建。
 
-源码消费导入blink.windows.path；独立消费编译path模块，并以原`--instance "push<u16>"`在sequence模块交付实际使用的泛型实例，应用编译导入相应path.lib及sequence.lib，再由blink链接已编译产物。库实现及头文件不成为应用的编译／运行前置。当前Rust构建／缓存输出者尚未采用本B函数，目录枚举、完整缓存发布和编译器迁移分别按Issues推进；本入口可用不等于这些职责已迁移。平台行为见[CreateDirectoryW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)及[FILE_STANDARD_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_standard_info)。
+源码消费导入blink.windows.path；独立消费编译path及path_core模块，并以原`--instance "push<u16>"`在sequence模块交付实际使用的泛型实例，应用编译导入相应path.lib、path_core.lib及sequence.lib，再由blink链接已编译产物。库实现及头文件不成为应用的编译／运行前置。当前Rust构建／缓存输出者尚未采用本B函数，目录枚举、完整缓存发布和编译器迁移分别按Issues推进；本入口可用不等于这些职责已迁移。平台行为见[CreateDirectoryW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)及[FILE_STANDARD_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_standard_info)。
 

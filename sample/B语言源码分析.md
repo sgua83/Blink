@@ -333,7 +333,7 @@ ParseHost先分词并准备同一B存储，invoke把完整模块解析交给B。
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:180`。
+源码节选：`crates/blanguage/src/frontend.rs:148`。
 
 ```rust
 
@@ -364,13 +364,13 @@ pub fn compile_entry_with_modules(
 }
 ```
 
-这些 API 接收文件路径与模块根目录。根目录用于把 `lessons.map` 这样的模块名映射到文件路径；它与 C 预处理器简单粘贴头文件的行为不同。
+这些 API 接收文件路径与模块根目录。根目录用于把 `lessons.map` 这样的模块名映射到文件路径；它与 C 预处理器简单粘贴头文件的行为不同。 Windows模块名的点分隔映射、根路径组合与.h／.b后缀由`blink.windows.path_core`中的B算法形成。宿主只持有实际OsStr编码、同步借出的组件和输出缓冲，接回PathBuf后沿原File打开；普通B路径接口复用同一算法，结果和临时dataset仍归原Frame。核心不持有路径或地址，不另建Frame、文件打开或释放链。已打开文件的B字节捕获、源文本及模块图各沿原所有者交接。
 
 ### 4.2 模块身份先进入同一来源表
 
 A 导入 B、B 又导入 A 可以形成合法的函数引用。装载器先确认模块身份，再检查声明、类型和实现；导入成环与无法形成有限布局的按值递归不是同一种问题。
 
-源码节选：`crates/blanguage/src/frontend.rs:621`。
+源码节选：`crates/blanguage/src/frontend.rs:589`。
 
 ```rust
 if let Some(name) = import

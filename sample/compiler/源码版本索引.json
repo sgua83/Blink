@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "04e585b823f184a200aedf2a36cbaf0afcf3bfb8e9c37627c7a18dfd3998e44b"
+      "sha256": "b7a657b2574cb0e0ceff70d0bee0706807100e943e16c70f259ca5dae512dabc"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -268,7 +268,7 @@
     },
     {
       "path": "crates/blanguage/src/build/inputs.rs",
-      "sha256": "45a9def0fe0e11092500e1c64753b753129cd29f288f5d9e633a4eddd992b234"
+      "sha256": "07db9f76c681b2400e09b6f6d4923f50764fec1e329ebdfff137e97d6f17820f"
     },
     {
       "path": "crates/blanguage/src/build/mod.rs",
@@ -480,7 +480,7 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "sha256": "5154b34c70fdb17c86f51b82e869e10055cae428f324a1d63775db4e32905dff"
+      "sha256": "a4528d5b1f221ab5070921735360a797236a1ed071d8fc0c8800231f63ef099a"
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
@@ -520,7 +520,7 @@
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "sha256": "6ee41eda4646e6a3173674151bde9fa193a89f8b8ae8165d9dc2b190c0851eec"
+      "sha256": "5be46a0fdc6d1e3cf46c476c5bf69eb8fdb6c6f539cc3bfe0b8d70d7e1f08f41"
     },
     {
       "path": "crates/blanguage/src/linker/combine.rs",
@@ -711,6 +711,10 @@
       "sha256": "603de66802116105960a9d00c7555343601d0105715396b457886d2719507a52"
     },
     {
+      "path": "crates/blanguage/src/source_path.rs",
+      "sha256": "6f2d8457af74ee28ed84ab052995b760d50d079d85920376c9dfce46655cb968"
+    },
+    {
       "path": "crates/blanguage/src/spirv.rs",
       "sha256": "56f2f7eb4b120f78cb226348a3f9387c2016ad0ab6923840bdc71785d2f075ba"
     },
@@ -817,6 +821,18 @@
     {
       "path": "library/blink/unicode_scalar.h",
       "sha256": "77530328b446ae236c3e5aa599bbb586983178ca91efb930c72023543d8ef692"
+    },
+    {
+      "path": "library/blink/windows/path.b",
+      "sha256": "02fb39d571fdc8cc2100f596be266c14dff48dfec922742449630cbe937066d0"
+    },
+    {
+      "path": "library/blink/windows/path_core.b",
+      "sha256": "8fb66e13d521df0957da69d025c8d1d1a49d2763eba7fe72dd10d5911b9e05f5"
+    },
+    {
+      "path": "library/blink/windows/path_core.h",
+      "sha256": "78ad1ecdc7809734c76ce6ae8534599850fae933e26d791223c126a51829bdad"
     },
     {
       "path": "sample/lessons/map.b",

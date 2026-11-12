@@ -1,0 +1,28 @@
+module blink.windows.path_core;
+
+// Synchronous borrowed UTF16. The caller keeps all input, scratch and output
+// storage alive through preparation and encoding; no address is retained.
+struct UnitSpan { address data; u64 length; };
+struct LexicalPrefix { u64 end; bool literal; };
+struct ExtensionScan {
+    bool found; u64 stem; u64 size; bool only_dots;
+    bool has_dot; u64 dot; u64 end;
+};
+struct JoinComponent { bool from_base; u64 start; u64 length; u64 kind; };
+struct JoinPlan { u64 length; u64 components; u64 base_length; u64 separator; };
+struct ExtensionPlan { u64 length; u64 copy; u64 append; };
+bool lexical_separator(u16 unit,bool literal) on cpu;
+LexicalPrefix lexical_prefix(UnitSpan path,bool nt_prefix) on cpu;
+u64 component_capacity(UnitSpan path,bool literal) on cpu;
+u64 join_components(UnitSpan path,u64 body,bool from_base,bool literal,
+    address parts,u64 count) on cpu;
+// Number of JoinComponent rows needed during this call, zero for direct copies.
+extern "C" u64 join_scratch(UnitSpan base,UnitSpan path) on cpu;
+extern "C" JoinPlan join_prepare(UnitSpan base,UnitSpan path,address scratch) on cpu;
+extern "C" void join_encode(UnitSpan base,UnitSpan path,address scratch,
+    JoinPlan plan,address output) on cpu;
+extern "C" ExtensionPlan extension_prepare(UnitSpan path,u64 extension_length) on cpu;
+extern "C" void extension_encode(UnitSpan path,UnitSpan extension,
+    ExtensionPlan plan,address output) on cpu;
+// name has two writable units after its original length.
+extern "C" void module_tail(address name,u64 length,u16 suffix) on cpu;

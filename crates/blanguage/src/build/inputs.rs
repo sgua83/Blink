@@ -17,7 +17,7 @@ pub(crate) struct Inputs {
 impl Inputs {
     pub(super) fn header(&mut self, path: &Path) -> ast::Result<Arc<syntax::Module>> {
         use std::collections::btree_map::Entry;
-        let input = match self.sources.entry(path.with_extension("h")) {
+        let input = match self.sources.entry(crate::source_path::with_extension(path, u16::from(b'h'))) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let interface = Arc::new(parser::parse(crate::read(entry.key())?)?);
@@ -32,9 +32,9 @@ impl Inputs {
     ) -> ast::Result<()> {
         let interface = self.header(path)?;
         if !visited.insert(interface.name().to_owned()) { return Ok(()); }
-        let input = self.sources.get_mut(&path.with_extension("h")).unwrap();
+        let input = self.sources.get_mut(&crate::source_path::with_extension(path, u16::from(b'h'))).unwrap();
         if input.body.is_none() {
-            let implementation_path = path.with_extension("b");
+            let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
             let implementation = crate::read_implementation(&implementation_path)?;
             let imports = crate::names::module_imports(&interface, implementation.as_deref());
             input.body = Some(CapturedBody { implementation, imports });
@@ -42,7 +42,7 @@ impl Inputs {
         let imports = input.body.as_ref().unwrap().imports.clone();
         for name in imports.iter() {
             if !providers.contains(name) {
-                self.capture(&root.join(name.replace('.', "/")).with_extension("b"),
+                self.capture(&crate::source_path::module(root, name, u16::from(b'b')),
                     root, providers, visited)?;
             }
         }
@@ -79,8 +79,8 @@ impl Inputs {
             span: Span::default(), code: "B020",
             message: "模块不在本次已捕获的构建输入中".into(),
         };
-        let input = self.sources.get(&path.with_extension("h")).ok_or_else(|| missing(path.with_extension("h")))?;
-        let body = input.body.as_ref().ok_or_else(|| missing(path.with_extension("b")))?;
+        let input = self.sources.get(&crate::source_path::with_extension(path, u16::from(b'h'))).ok_or_else(|| missing(crate::source_path::with_extension(path, u16::from(b'h'))))?;
+        let body = input.body.as_ref().ok_or_else(|| missing(crate::source_path::with_extension(path, u16::from(b'b'))))?;
         Ok((input.interface.clone(), body.implementation.clone(), body.imports.clone()))
     }
 }

@@ -508,7 +508,7 @@ pub(crate) fn read_world(
                     if let Some((owner, _)) = ty.name().split_once("::")
                         && imported.modules.contains_key(owner)
                     {
-                        load(&module_root.join(owner.replace('.', "/")).with_extension("b"), module_root,
+                        load(&crate::source_path::module(module_root, owner, u16::from(b'b')), module_root,
                             &mut world, Some(imported), Some(owner), inputs)?;
                     }
                     arguments.extend(ty.arguments());
@@ -604,8 +604,8 @@ pub(crate) fn load(
         let (interface, implementation, imports) = inputs.source(path)?;
         (interface, implementation, Some(imports))
     } else {
-        let interface = Arc::new(parser::parse(read(&path.with_extension("h"))?)?);
-        let implementation_path = path.with_extension("b");
+        let interface = Arc::new(parser::parse(read(&crate::source_path::with_extension(path, u16::from(b'h')))?)?);
+        let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
         let implementation = read_implementation(&implementation_path)?;
         (interface, implementation, None)
     };
@@ -632,7 +632,7 @@ pub(crate) fn load(
         None => crate::names::module_imports(&interface, implementation.as_deref()),
     };
     for import in imports.iter() {
-        let import_path: PathBuf = root.join(import.replace('.', "/")).with_extension("b");
+        let import_path: PathBuf = crate::source_path::module(root, import, u16::from(b'b'));
         let actual = load(
             &import_path,
             root,
