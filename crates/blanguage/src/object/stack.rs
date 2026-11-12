@@ -1,5 +1,5 @@
 //! Stack information follows the same sections and relocations as native code.
-use super::{Kind, Object, Result, Target};
+use super::{Kind, Object, Target};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub(crate) struct Frame {
@@ -12,29 +12,6 @@ pub(crate) enum Call {
     Reference { offset: usize, tail: bool },
     Indirect,
     Unreported(String),
-}
-
-// Validate only the new references crossing the compiled-object boundary.
-pub(super) fn validate(object: &Object) -> Result<()> {
-    let mut positions = BTreeSet::new();
-    for frame in &object.stack {
-        if let Some((index, start)) = frame.coff {
-            let section = object.sections.get(index).ok_or("栈信息引用不存在的节")?;
-            if start as usize >= section.bytes.len() || !positions.insert((index, start)) {
-                return Err("栈信息的函数位置无效或重复".into());
-            }
-        }
-        for call in &frame.calls {
-            if let Call::Reference { offset, .. } = call {
-                let (index, _) = frame.coff.ok_or("没有COFF位置的入口不能引用COFF调用")?;
-                let section = &object.sections[index];
-                if !section.relocations.iter().any(|relocation| relocation.offset == *offset) {
-                    return Err("栈调用信息缺少对应的原生重定位".into());
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64>) -> String {

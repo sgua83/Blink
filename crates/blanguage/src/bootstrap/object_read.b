@@ -1,5 +1,7 @@
 module bootstrap.object_read;
 import bootstrap.coff_read;
+import bootstrap.metadata_read;
+import bootstrap.bindings;
 
 ReadBytes empty_bytes() on cpu {return ReadBytes(unsafe_address(0u64),0u64);}
 u32 byte_at(ReadBytes bytes,u64 index) on cpu {
@@ -74,4 +76,74 @@ extern "C" ObjectTarget resolve_target(ObjectRows rows,ReadBytes name,i64 sectio
     array<u8,15> prefix=array<u8,15>(u8(95),u8(95),u8(98),u8(108),u8(105),u8(110),u8(107),u8(95),u8(105),u8(109),u8(112),u8(111),u8(114),u8(116),u8(36));
     if(matches<15>(name,prefix,false)){return import_target(name,15u64);}
     return ObjectTarget(2u64,0u64,0u64,empty_bytes(),name,0);
+}
+
+address stack_frame_address(address frames,u64 index) on cpu {
+    return unsafe_address(address_bits(frames)+index*64u64);
+}
+MetaCall stack_call_at(address calls,u64 index) on cpu {
+    return unsafe_position<MetaCall>(unsafe_address(address_bits(calls)+index*40u64));
+}
+bool stack_relocation(ReadBytes input,ReadRelocations table,u64 offset) on cpu {
+    // Object recovery already read and validated these physical relocations.
+    u64 i=0u64;
+    while(i<table.count){
+        if(relocation(input,table.offset,i).offset==offset){return true;}
+        i+=1u64;
+    }
+    return false;
+}
+extern "C" u32 recover_stack(ReadBytes input,ObjectRows rows,address frames,u64 count,address calls,address nodes) on cpu {
+    // Resolve all section identities before interpreting positions and calls.
+    u64 i=0u64;
+    while(i<count){
+        MetaFrame frame=unsafe_position<MetaFrame>(stack_frame_address(frames,i));
+        if(frame.has_coff!=0u64){
+            if(frame.section>=rows.count || row_at(rows,frame.section).mapped==0u64){return 11;}
+        }
+        i+=1u64;
+    }
+    BindingForest positions=BindingForest(nodes,0u64,0u64,0u64);
+    BindingBytes empty=BindingBytes(unsafe_address(0u64),0u64);
+    u64 root=0u64;
+    u64 next_call=0u64;
+    i=0u64;
+    while(i<count){
+        address row=stack_frame_address(frames,i);
+        MetaFrame frame=unsafe_position<MetaFrame>(row);
+        ReadRelocations table=ReadRelocations(0u64,0u64,0);
+        if(frame.has_coff!=0u64){
+            ObjectSection section=row_at(rows,frame.section);
+            if(frame.start>=section.bytes.length){return 12;}
+            // The immutable section/start pair is the key until remapping.
+            BindingBytes location=BindingBytes(unsafe_address(address_bits(row)+24u64),16u64);
+            u64 before=positions.count;
+            BindingInsert inserted=put(positions,root,BindingKey(location,empty),0u64);
+            if(positions.count==before){return 12;}
+            root=inserted.root;
+            table=relocations(input,section.relocations,section.relocation_count,section.flags);
+        }
+        u64 remaining=frame.calls;
+        while(remaining!=0u64){
+            MetaCall call=stack_call_at(calls,next_call);
+            next_call+=1u64;
+            remaining-=1u64;
+            if(call.kind<2u64){
+                if(frame.has_coff==0u64){return 13;}
+                if(!stack_relocation(input,table,call.offset)){return 14;}
+            }
+        }
+        i+=1u64;
+    }
+    i=0u64;
+    while(i<count){
+        address row=stack_frame_address(frames,i);
+        MetaFrame frame=unsafe_position<MetaFrame>(row);
+        if(frame.has_coff!=0u64){
+            frame.section=row_at(rows,frame.section).mapped-1u64;
+            unsafe_position<MetaFrame>(row)=frame;
+        }
+        i+=1u64;
+    }
+    return 0;
 }

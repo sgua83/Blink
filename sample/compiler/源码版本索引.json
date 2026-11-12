@@ -168,11 +168,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/object_read.b",
-      "sha256": "4e7490f3d8eccd115ebe9944211105a4711e48ef6eaf470b31372df65f992969"
+      "sha256": "d137833a16c6047cb98cbcf83b8b6b6540d896c955f1ea2fe8c38cb3a3def3e1"
     },
     {
       "path": "crates/blanguage/src/bootstrap/object_read.h",
-      "sha256": "7d798786c874c258d8959e83a2830daa2f10769af1743c0fb4f1b1a6264f7be7"
+      "sha256": "83657a63c78469d12008cdd52a4e42edcfc3958593987a3bc54cd55e063767f5"
     },
     {
       "path": "crates/blanguage/src/bootstrap/parser.b",
@@ -668,7 +668,7 @@
     },
     {
       "path": "crates/blanguage/src/object/coff.rs",
-      "sha256": "37d47173be56454a122f92e88b6ba9401cc231391cc68e3f2444e87960204028"
+      "sha256": "450e5aa2a499bc672a674591b9657723ec8f7deee47c6dc103031f27c47523db"
     },
     {
       "path": "crates/blanguage/src/object/coff/facts.rs",

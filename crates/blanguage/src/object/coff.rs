@@ -154,6 +154,7 @@ impl ObjectRows {
 enum ObjectReadError {
     None, OwnerNumber, OwnerUnavailable, OwnerNotComdat, Selection, SectionUnavailable,
     DllLengthMissing, DllLengthEmpty, DllLengthDigit, DllLengthOverflow, DllLength,
+    StackSection, StackPosition, StackNoLocation, StackRelocation,
 }
 impl ObjectReadError {
     fn check(self) -> Result<()> {
@@ -169,6 +170,10 @@ impl ObjectReadError {
             Self::DllLengthDigit => Err("invalid digit found in string".into()),
             Self::DllLengthOverflow => Err("number too large to fit in target type".into()),
             Self::DllLength => Err("DLL 符号长度错误".into()),
+            Self::StackSection => Err("栈信息引用不可装载的节".into()),
+            Self::StackPosition => Err("栈信息的函数位置无效或重复".into()),
+            Self::StackNoLocation => Err("没有COFF位置的入口不能引用COFF调用".into()),
+            Self::StackRelocation => Err("栈调用信息缺少对应的原生重定位".into()),
         }
     }
 }
@@ -276,6 +281,44 @@ unsafe extern "C" {
     fn metadata_read_frame(cursor: *mut MetadataReadCursor) -> MetadataReadFrame;
     #[link_name = "bootstrap.metadata_read::call"]
     fn metadata_read_call(cursor: *mut MetadataReadCursor) -> MetadataReadCall;
+    #[link_name = "bootstrap.object_read::recover_stack"]
+    fn object_recover_stack(
+        input: ReadBytes, rows: ObjectRows, frames: *mut MetadataReadFrame,
+        count: usize, calls: *const MetadataReadCall, nodes: *mut [u64; 9],
+    ) -> ObjectReadError;
+}
+
+#[derive(Default)]
+struct StackMetadata {
+    frames: Vec<MetadataReadFrame>,
+    calls: Vec<MetadataReadCall>,
+}
+
+impl StackMetadata {
+    fn restore(mut self, input: ReadBytes, rows: ObjectRows) -> Result<Vec<stack::Frame>> {
+        let mut nodes = vec![[0; 9]; self.frames.len()];
+        unsafe {
+            object_recover_stack(input, rows, self.frames.as_mut_ptr(), self.frames.len(),
+                self.calls.as_ptr(), nodes.as_mut_ptr())
+        }.check()?;
+        // read_metadata already checked UTF-8 in these borrowed fields.
+        let text = |field: ReadBytes| unsafe { std::str::from_utf8_unchecked(field.borrowed()) }.to_owned();
+        let mut calls = self.calls.into_iter();
+        Ok(self.frames.into_iter().map(|frame| {
+            let calls = calls.by_ref().take(frame.calls as usize).map(|call| match call.kind {
+                ReadCallKind::Reference => stack::Call::Reference { offset: call.offset as usize, tail: false },
+                ReadCallKind::Tail => stack::Call::Reference { offset: call.offset as usize, tail: true },
+                ReadCallKind::Indirect => stack::Call::Indirect,
+                ReadCallKind::Unreported => stack::Call::Unreported(text(call.reason)),
+            }).collect();
+            stack::Frame {
+                name: text(frame.name),
+                coff: (frame.has_coff != 0).then_some((frame.section as usize, frame.start as u32)),
+                local: frame.local as u32,
+                calls,
+            }
+        }).collect())
+    }
 }
 impl MetadataReadCursor {
     fn new(input: &[u8]) -> Self { Self { input: ReadBytes::new(input), position: 0 } }
@@ -631,7 +674,7 @@ impl Reader<'_, super::ObjectBytes> {
 }
 fn read_metadata(
     meta: &[u8], archive: Option<super::ObjectBytes>, keep_stack: bool,
-) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, Vec<stack::Frame>, Option<Archive>)> {
+) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, StackMetadata, Option<Archive>)> {
     let mut c = MetadataReadCursor::new(meta);
     let header = unsafe { metadata_read_header(&mut c, u64::from(FORMAT)) };
     header.error.check()?;
@@ -687,31 +730,20 @@ fn read_metadata(
         value.error.check()?;
         bindings.insert(read_text(value.name)?, crate::check::canonical_function_contract(unsafe { value.value.borrowed() })?);
     }
-    let mut stack = Vec::new();
+    let mut stack = StackMetadata::default();
     for _ in 0..c.word()? {
-        let value = unsafe { metadata_read_frame(&mut c) };
-        value.error.check()?;
-        let name = std::str::from_utf8(unsafe { value.name.borrowed() })?;
-        let mut calls = Vec::new();
-        for _ in 0..value.calls {
+        let frame = unsafe { metadata_read_frame(&mut c) };
+        frame.error.check()?;
+        std::str::from_utf8(unsafe { frame.name.borrowed() })?;
+        for _ in 0..frame.calls {
             let call = unsafe { metadata_read_call(&mut c) };
             call.error.check()?;
-            let call = match call.kind {
-                ReadCallKind::Reference => stack::Call::Reference { offset: call.offset as usize, tail: false },
-                ReadCallKind::Tail => stack::Call::Reference { offset: call.offset as usize, tail: true },
-                ReadCallKind::Indirect => stack::Call::Indirect,
-                ReadCallKind::Unreported => {
-                    let reason = std::str::from_utf8(unsafe { call.reason.borrowed() })?;
-                    if !keep_stack { continue; }
-                    stack::Call::Unreported(reason.to_owned())
-                }
-            };
-            if keep_stack { calls.push(call); }
+            if matches!(call.kind, ReadCallKind::Unreported) {
+                std::str::from_utf8(unsafe { call.reason.borrowed() })?;
+            }
+            if keep_stack { stack.calls.push(call); }
         }
-        if keep_stack {
-            let coff = (value.has_coff != 0).then_some((value.section as usize, value.start as u32));
-            stack.push(stack::Frame { name: name.to_owned(), coff, local: value.local as u32, calls });
-        }
+        if keep_stack { stack.frames.push(frame); }
     }
     let archive = archive.map(|bytes| Archive {
         bytes,
@@ -740,8 +772,8 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
         i = row.next;
     }
     let raw = reader.section_rows().collect::<Result<Vec<_>>>()?;
-    let (name, kind, mut bindings, mut stack, archive) = match native {
-        Some(name) => (name.to_owned(), Kind::Module { interface: String::new(), requirements: BTreeMap::new(), stack_bytes: 0 }, BTreeMap::new(), Vec::new(), None),
+    let (name, kind, mut bindings, stack, archive) = match native {
+        Some(name) => (name.to_owned(), Kind::Module { interface: String::new(), requirements: BTreeMap::new(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),
         None => {
             let section = |name: &str| raw.iter().find(|row| unsafe { row.name.borrowed() } == name.as_bytes())
                 .map(|row| unsafe { row.bytes.borrowed() });
@@ -819,20 +851,15 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
                 })
             })
             .collect::<Result<_>>()?;
-    for frame in &mut stack {
-        if let Some((section, _)) = &mut frame.coff { *section = object_index(&raw, *section).ok_or("栈信息引用不可装载的节")?; }
-    }
-    let object = Object {
-        stack,
+    Ok(Object {
+        stack: stack.restore(input, rows)?,
         name,
         symbols,
         imports: bindings,
         sections,
         archive,
         kind,
-    };
-    stack::validate(&object)?;
-    Ok(object)
+    })
 }
 
 pub(super) mod facts;
