@@ -134,11 +134,21 @@ impl Bindings {
         let mut result = if let Some(actual) = self.types.get(source_type.name()) {
             actual.clone()
         } else {
+            let contracts = source_type.contracts().map(|contracts| {
+                let parameters = arguments.len().saturating_sub(1);
+                let value_of = |name: &str| {
+                    let value = *self.values.get(name)?;
+                    let positional = name.strip_prefix("argument")
+                        .and_then(|index| index.parse::<usize>().ok())
+                        .is_some_and(|index| index < parameters && name == format!("argument{index}"));
+                    (!positional).then_some(value)
+                };
+                Box::new(contracts.iter().map(|predicate| bound_predicate(&predicate, value_of)).collect())
+            });
             TypeName {
                 name: source_type.name().into(), canonical: source_type.canonical(), arguments,
                 dataset: false, view: false, tile: false, count: None,
-                contracts: source_type.contracts().map(|contracts|
-                    Box::new(contracts.iter().map(|predicate| bound_predicate(&predicate, &self.values)).collect())),
+                contracts,
             }
         };
         if source_type.dataset() || source_type.view() || source_type.tile() {
@@ -160,9 +170,12 @@ impl Bindings {
         let (source, module, imports) = context;
         arguments.iter().map(|argument| match argument.kind() {
             crate::syntax::ArgumentKind::Type(ty) => {
-                let mut argument = GenericArgument::Type(bind_type(&ty)?);
-                crate::value_parameters::substitute_argument(&mut argument, &self.values, source)?;
-                Ok(argument)
+                if ty.arguments().is_empty() && !ty.dataset() && !ty.view() && !ty.tile()
+                    && let Some(&value) = self.values.get(ty.name())
+                {
+                    return Ok(GenericArgument::Value(Shape::Literal(value)));
+                }
+                Ok(GenericArgument::Type(bind_type(&ty)?))
             }
             crate::syntax::ArgumentKind::Value(shape) => {
                 Ok(GenericArgument::Value(Shape::Literal(world.source_shape(&shape, self, source, span, module, imports)?)))
@@ -204,10 +217,13 @@ fn bound_contract(contract: crate::syntax::Contract, values: &BTreeMap<String, u
         return None;
     }
     Some(FunctionContract { kind: contract.kind(),
-        predicate: bound_predicate(&predicate, values), span: contract.span() })
+        predicate: bound_predicate(&predicate, |name| values.get(name).copied()), span: contract.span() })
 }
-fn bound_predicate(predicate: &crate::syntax::Predicate, values: &BTreeMap<String, u32>) -> ContractPredicate {
+fn bound_predicate(
+    predicate: &crate::syntax::Predicate, value_of: impl Fn(&str) -> Option<u32> + Copy,
+) -> ContractPredicate {
     use crate::syntax::PredicateKind as K;
+    let output_value = |name: &str| if name == "returned" { None } else { value_of(name) };
     match predicate.kind() {
         K::Prefix { data, count, field } => ContractPredicate::Prefix {
             data: data.into(), count: count.into(), field: field.into() },
@@ -218,29 +234,29 @@ fn bound_predicate(predicate: &crate::syntax::Predicate, values: &BTreeMap<Strin
         K::Index { value, resource } => ContractPredicate::Index { value: value.into(), resource: resource.into() },
         K::Range { value, intervals } => ContractPredicate::Range { value: value.into(),
             intervals: intervals.iter().map(|interval| (
-                bound_condition(interval.lower(), values),
-                bound_condition(interval.upper(), values))).collect() },
+                bound_condition(interval.lower(), value_of),
+                bound_condition(interval.upper(), value_of))).collect() },
         K::SameLength { left, right } => ContractPredicate::SameLength { left: left.into(), right: right.into() },
         K::Initialized { value, condition } => ContractPredicate::Initialized {
-            value: value.into(), condition: bound_condition(condition, values) },
+            value: value.into(), condition: bound_condition(condition, output_value) },
         K::Cleanup { value, condition } => ContractPredicate::Cleanup {
-            value: value.into(), condition: bound_condition(condition, values) },
+            value: value.into(), condition: bound_condition(condition, output_value) },
     }
 }
-fn bound_condition(condition: crate::syntax::Condition, values: &BTreeMap<String, u32>) -> OutputCondition {
+fn bound_condition(condition: crate::syntax::Condition, value_of: impl Fn(&str) -> Option<u32> + Copy) -> OutputCondition {
     use crate::syntax::ConditionKind as K;
     match condition.kind() {
-        K::Name(name) => match values.get(name) {
-            Some(value) => OutputCondition::StaticU32(*value),
+        K::Name(name) => match value_of(name) {
+            Some(value) => OutputCondition::StaticU32(value),
             None => OutputCondition::Name(name.into()),
         },
         K::Number(value) => OutputCondition::Number(value.into()),
         K::StaticU32(value) => OutputCondition::StaticU32(value),
         K::Bool(value) => OutputCondition::Bool(value),
-        K::Member(base, field) => OutputCondition::Member(Box::new(bound_condition(base, values)), field.into()),
-        K::Unary(op, value) => OutputCondition::Unary(op.into(), Box::new(bound_condition(value, values))),
+        K::Member(base, field) => OutputCondition::Member(Box::new(bound_condition(base, value_of)), field.into()),
+        K::Unary(op, value) => OutputCondition::Unary(op.into(), Box::new(bound_condition(value, value_of))),
         K::Binary(op, left, right) => OutputCondition::Binary(op.into(),
-            Box::new(bound_condition(left, values)), Box::new(bound_condition(right, values))),
+            Box::new(bound_condition(left, value_of)), Box::new(bound_condition(right, value_of))),
     }
 }
 #[derive(Clone)]
@@ -363,134 +379,4 @@ pub(crate) fn for_each_combination(
             .collect();
         consume(arguments, row)
     })
-}
-pub(crate) fn substitute_type(
-    ty: &mut TypeName,
-    replacements: &BTreeMap<String, TypeName>,
-    source: &Source,
-    span: Span,
-) -> Result<()> {
-    for argument in &mut ty.arguments {
-        match argument {
-            GenericArgument::Type(ty)=>substitute_type(ty,replacements,source,span)?,
-            GenericArgument::Value(Shape::Expression(expression))=>substitute_expr(expression,replacements,&BTreeMap::new(),source)?,
-            _=>{},
-        }
-    }
-    if let Some(actual) = replacements.get(&ty.name) {
-        if !ty.arguments.is_empty() {
-            return source.fail(
-                span,
-                "B232",
-                "类型参数已代表完整具体类型，不能再附加类型实参",
-            );
-        }
-        let (dataset, view, tile, count) = (ty.dataset, ty.view, ty.tile, ty.count.clone());
-        *ty = actual.clone();
-        if dataset || view || tile {
-            if ty.dataset || ty.view || ty.tile {return source.fail(span,"B232","资源包装的元素需要普通存储类型，不能再次包装资源");}
-            ty.dataset = dataset;
-            ty.view = view;
-            ty.tile = tile;
-            ty.count = count;
-        }
-    }
-    if let Some(Shape::Expression(expression))=&mut ty.count {
-        substitute_expr(expression,replacements,&BTreeMap::new(),source)?;
-    }
-    Ok(())
-}
-fn substitute_reference(
-    name: &str,
-    explicit: &mut [GenericArgument],
-    types: &BTreeMap<String, TypeName>,
-    values: &BTreeMap<String, u32>,
-    source: &Source,
-    span: Span,
-) -> Result<()> {
-    if types.contains_key(name) {
-        return source.fail(span, "B232", "类型参数已代表完整类型，不能再附加实参");
-    }
-    if values.contains_key(name) {
-        return source.fail(span, "B235", "const 参数不是可调用函数");
-    }
-    for arg in explicit {
-        if let GenericArgument::Type(ty) = arg {
-            substitute_type(ty, types, source, span)?;
-        }
-        crate::value_parameters::substitute_argument(arg, values,source)?;
-    }
-    Ok(())
-}
-pub(crate) fn substitute_expr(
-    expr: &mut Expr,
-    types: &BTreeMap<String, TypeName>,
-    values: &BTreeMap<String, u32>,
-    source: &Source,
-) -> Result<()> {
-    match &mut expr.kind {
-        ExprKind::Name(name) if values.contains_key(name) => {
-            expr.kind = ExprKind::StaticU32(values[name]);
-        }
-        ExprKind::Invoke(callee, args) => {
-            substitute_expr(callee, types, values, source)?;
-            for arg in args { substitute_expr(arg, types, values, source)?; }
-        }
-        ExprKind::Construct(ty, args) => {
-            substitute_type(ty, types, source, expr.span)?;
-            crate::value_parameters::substitute_type(ty, values,source)?;
-            for arg in args {
-                substitute_expr(arg, types, values, source)?;
-            }
-        }
-        ExprKind::Call(name, args) => {
-            if values.contains_key(name) {
-                return source.fail(expr.span, "B235", "const 参数不是可调用函数");
-            }
-            for arg in args.iter_mut() {
-                substitute_expr(arg, types, values, source)?;
-            }
-            if let Some(actual) = types.get(name) {
-                if actual.arguments.is_empty()
-                    && crate::builtin_types::Builtin::recognize(&actual.name).is_scalar()
-                {
-                    name.clone_from(&actual.name);
-                } else {
-                    expr.kind = ExprKind::Construct(actual.clone(), std::mem::take(args));
-                }
-            }
-        }
-        ExprKind::Specialize(name, explicit, args)
-        | ExprKind::Cooperate(name, Some(explicit), args) => {
-            substitute_reference(name, explicit, types, values, source, expr.span)?;
-            for arg in args {
-                substitute_expr(arg, types, values, source)?;
-            }
-        }
-        ExprKind::FunctionRef(name, explicit) => {
-            substitute_reference(name, explicit, types, values, source, expr.span)?;
-        }
-        ExprKind::Cooperate(name, None, args) => {
-            if values.contains_key(name) {
-                return source.fail(expr.span, "B235", "const 参数不是可调用函数");
-            }
-            for arg in args {
-                substitute_expr(arg, types, values, source)?;
-            }
-        }
-        ExprKind::Target(_,base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => {
-            substitute_expr(base, types, values, source)?
-        }
-        ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {
-            substitute_expr(a, types, values, source)?;
-            substitute_expr(b, types, values, source)?;
-        }
-        ExprKind::Select(a, b, c) => {
-            substitute_expr(a, types, values, source)?;
-            substitute_expr(b, types, values, source)?;
-            substitute_expr(c, types, values, source)?;
-        }
-        _ => {}
-    }
-    Ok(())
 }

@@ -488,7 +488,7 @@
     },
     {
       "path": "crates/blanguage/src/generics.rs",
-      "sha256": "83db7f000b16be949fa294dd0ffc5360ed3f5fdc00070b151e42d10e8f98ae77"
+      "sha256": "21c00c4a292b8950812b69e161aab739fdf2f257cc4430da9b71a0845a4dff98"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
