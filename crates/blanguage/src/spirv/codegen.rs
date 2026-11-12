@@ -374,6 +374,48 @@ struct AtomicEmission {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct DispatchScalars {
+    uint_type: u32,
+    bool_type: u32,
+    zero: u32,
+    one: u32,
+}
+
+#[repr(C)]
+struct DispatchGroups {
+    scalars: DispatchScalars,
+    count: u32,
+    width: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct DispatchValue {
+    words: u64,
+    next: u32,
+    value: u32,
+}
+
+#[repr(C)]
+struct DispatchGrid {
+    scalars: DispatchScalars,
+    wide_type: u32,
+    table_pointer: u32,
+    page_pointer: u32,
+    word_pointer: u32,
+    descriptor: u32,
+    count: u32,
+    width: u32,
+    max_x: u32,
+    max_y: u32,
+    levels: u32,
+    collective: u32,
+    bins: u32,
+    next: u32,
+}
+
+#[repr(C)]
 struct PrefixIndexEmission {
     uint_type: u32,
     wide_type: u32,
@@ -399,6 +441,8 @@ struct PrefixIndexWords {
     count: u32,
     active: u32,
     label: u32,
+    groups_x: u32,
+    groups_y: u32,
 }
 
 #[repr(C)]
@@ -524,6 +568,10 @@ unsafe extern "C" {
     fn emit_private_address(
         input: PrivateAddress, parts: *const u32, pointers: *mut u32, body: *mut u32,
     ) -> PrivateAddressWords;
+    #[link_name = "bootstrap.spirv_envelope::encode_dispatch_groups"]
+    fn encode_dispatch_groups(input: DispatchGroups, body: *mut u32) -> DispatchValue;
+    #[link_name = "bootstrap.spirv_envelope::encode_dispatch_grid"]
+    fn encode_dispatch_grid(input: DispatchGrid, offsets: *const u32, body: *mut u32) -> DispatchValue;
     #[link_name = "bootstrap.spirv_envelope::encode_prefix_index"]
     fn encode_prefix_index(input: PrefixIndexEmission, body: *mut u32) -> PrefixIndexWords;
     #[link_name = "bootstrap.spirv_envelope::encode_append_reservation"]
@@ -1485,8 +1533,10 @@ fn emit_shader(
         return Err("GPU 页寻址要求单条记录能容纳于一个物理页");
     }
     let stage = &program.stages[stage_index];
+    let argument_pass = matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments);
     let custom_kernel =
-        if let Operation::CustomReduce(r)
+        if !argument_pass
+            && let Operation::CustomReduce(r)
         | Operation::CustomScan(CustomScan { values: r, .. })
         | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values: r, .. }) =
             &stage.operation
@@ -1648,7 +1698,7 @@ fn emit_shader(
     let global = e.declare_annotated(VariableAnnotation::BuiltIn, ptr_input, 28);
     let mut num_groups = 0;
     if (stage.prefix.is_some() || stage.selection.is_some())
-        && !matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments)
+        && !argument_pass
     {
         num_groups = e.declare_annotated(VariableAnnotation::BuiltIn, ptr_input, 24);
     }
@@ -1773,44 +1823,91 @@ fn emit_shader(
     let entry = e.id();
     let execute = e.id();
     let end = e.id();
-    e.regs = (0..stage.registers.len()).map(|_| e.id()).collect();
+    let finish = |mut e: Emitter<'_>| {
+        e.emit(253, &[]);
+        e.emit(56, &[]);
+        let global_inputs = [global, num_groups];
+        let workgroup_inputs = [e.push, shared, local_input];
+        let mut builtin_inputs = [0; 3];
+        for (input, &id) in builtin_inputs.iter_mut().zip(e.subgroup_inputs.values()) {
+            *input = id;
+        }
+        let tile_inputs = [e.tile_shared, e.tile_shared64];
+        let parts: [&[u32]; 8] = [
+            &global_inputs, &e.buffers, &e.accelerations, &e.textures,
+            &workgroup_inputs, &subgroup_inputs, &builtin_inputs, &tile_inputs,
+        ];
+        let interface_words: usize = parts.iter().map(|part| part.len()).sum();
+        let interfaces = parts.map(|part| ShaderWords {
+            data: part.as_ptr(),
+            count: part.len() as u64,
+        });
+        let input = ShaderEnvelope { bound: e.next, ext: e.ext, entry: main, workgroup_width: e.workgroup_width, features };
+        let mut out = Vec::with_capacity(
+            unsafe { envelope_capacity() } as usize + interface_words
+                + e.decorations.len() + e.defs.len() + e.body.len(),
+        );
+        // The envelope initializes the prefix in the same allocation the module returns.
+        unsafe {
+            let used = encode_envelope(input, interfaces.as_ptr(), interfaces.len() as u64, out.as_mut_ptr());
+            out.set_len(used as usize);
+        }
+        out.extend(e.decorations);
+        out.extend(e.defs);
+        out.extend(e.body);
+        Ok((out, shared_bytes))
+    };
     e.emit(54, &[void, main, 0, fn_ty]);
     e.emit(248, &[entry]);
-    let mut rays = Vec::new();
-    ray_results(&stage.code, &mut rays);
-    for result in rays {
-        let id = e.declare_function_variable(ray_pointer);
-        e.ray_variables.insert(result, id);
-    }
-    e.locals.resize(stage.locals.last_key_value().map_or(0, |(end, _)| *end), 0);
-    for span in private_spans(&stage.code) {
-        let ty = &stage.locals[&span.end];
-        let size = ty.components.iter().map(|(s, _)| s.size()).min().unwrap().min(4);
-        let unit = match size { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-        let length = e.constant(Scalar::U32, ty.size / size);
-        let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
-        let pointer = e.declare_pointer(StorageClass::Function, array);
-        let variable = e.declare_function_variable(pointer);
-        e.private_arrays.insert(span.end, PrivateArray { start: span.start, unit, variable });
-    }
-    for (&end, ty) in &stage.locals {
-        if e.private_arrays.contains_key(&end) {
-            continue;
-        }
-        let start = end - ty.components.len();
-        for (slot, (scalar, _)) in (start..end).zip(&ty.components) {
-            e.locals[slot] = e.declare_function_variable(e.pointers[scalar]);
-        }
-    }
     let mut temporary = 0;
-    if ranks {
-        temporary = e.declare_function_variable(e.pointers[&shared_scalar]);
+    if !argument_pass {
+        e.regs = (0..stage.registers.len()).map(|_| e.id()).collect();
+        let mut rays = Vec::new();
+        ray_results(&stage.code, &mut rays);
+        for result in rays {
+            let id = e.declare_function_variable(ray_pointer);
+            e.ray_variables.insert(result, id);
+        }
+        e.locals.resize(stage.locals.last_key_value().map_or(0, |(end, _)| *end), 0);
+        for span in private_spans(&stage.code) {
+            let ty = &stage.locals[&span.end];
+            let size = ty.components.iter().map(|(s, _)| s.size()).min().unwrap().min(4);
+            let unit = match size { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
+            let length = e.constant(Scalar::U32, ty.size / size);
+            let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
+            let pointer = e.declare_pointer(StorageClass::Function, array);
+            let variable = e.declare_function_variable(pointer);
+            e.private_arrays.insert(span.end, PrivateArray { start: span.start, unit, variable });
+        }
+        for (&end, ty) in &stage.locals {
+            if e.private_arrays.contains_key(&end) {
+                continue;
+            }
+            let start = end - ty.components.len();
+            for (slot, (scalar, _)) in (start..end).zip(&ty.components) {
+                e.locals[slot] = e.declare_function_variable(e.pointers[scalar]);
+            }
+        }
+        if ranks {
+            temporary = e.declare_function_variable(e.pointers[&shared_scalar]);
+        }
     }
     let gid = e.id();
     e.emit(61, &[v3, gid, global]);
     let local_index = e.id();
     e.emit(81, &[u, local_index, gid, 0]);
-    let (count, active) = if num_groups != 0 {
+    match pass {
+        Pass::DispatchArguments(prefix) => {
+            e.prefix_arguments(Some(&prefix), local_index);
+            return finish(e);
+        }
+        Pass::SelectionArguments => {
+            e.prefix_arguments(stage.prefix.as_ref(), local_index);
+            return finish(e);
+        }
+        _ => {}
+    }
+    let (count, active, groups) = if num_groups != 0 {
         e.prefix_index(
             gid,
             local_index,
@@ -1846,26 +1943,16 @@ fn emit_shader(
         );
         e.index = e.id();
         e.emit(113, &[u, e.index, index_wide]);
-        (count, active)
+        (count, active, [0; 2])
     };
-    if let Some(kernel) = &custom_kernel
-        && !matches!(pass, Pass::DispatchArguments(_))
-    {
+    if let Some(kernel) = &custom_kernel {
         e.block(&kernel.stage.code[..kernel.invariant_end], None)?;
     }
-    if let Pass::DispatchArguments(prefix) = pass {
-        e.prefix_arguments(&prefix, local_index);
-    } else if pass == Pass::SelectionArguments {
-        if let Some(prefix) = stage.prefix {
-            e.prefix_arguments(&prefix, local_index);
-        } else {
-            e.selection_source_arguments(local_index);
-        }
-    } else if let Some(selection) = stage.selection
+    if let Some(selection) = stage.selection
         && pass != Pass::Main
     {
         if pass == Pass::SelectionScatter {
-            e.selection_scatter(selection, count, active);
+            e.selection_scatter(selection, count, active, groups);
         } else if scan_local {
             let local = e.id();
             e.emit(61, &[u, local, local_input]);
@@ -2111,36 +2198,5 @@ fn emit_shader(
             e.emit(248, &[end]);
         }
     }
-    e.emit(253, &[]);
-    e.emit(56, &[]);
-    let global_inputs = [global, num_groups];
-    let workgroup_inputs = [e.push, shared, local_input];
-    let mut builtin_inputs = [0; 3];
-    for (input, &id) in builtin_inputs.iter_mut().zip(e.subgroup_inputs.values()) {
-        *input = id;
-    }
-    let tile_inputs = [e.tile_shared, e.tile_shared64];
-    let parts: [&[u32]; 8] = [
-        &global_inputs, &e.buffers, &e.accelerations, &e.textures,
-        &workgroup_inputs, &subgroup_inputs, &builtin_inputs, &tile_inputs,
-    ];
-    let interface_words: usize = parts.iter().map(|part| part.len()).sum();
-    let interfaces = parts.map(|part| ShaderWords {
-        data: part.as_ptr(),
-        count: part.len() as u64,
-    });
-    let input = ShaderEnvelope { bound: e.next, ext: e.ext, entry: main, workgroup_width: e.workgroup_width, features };
-    let mut out = Vec::with_capacity(
-        unsafe { envelope_capacity() } as usize + interface_words
-            + e.decorations.len() + e.defs.len() + e.body.len(),
-    );
-    // The envelope initializes the prefix in the same allocation the module returns.
-    unsafe {
-        let used = encode_envelope(input, interfaces.as_ptr(), interfaces.len() as u64, out.as_mut_ptr());
-        out.set_len(used as usize);
-    }
-    out.extend(e.decorations);
-    out.extend(e.defs);
-    out.extend(e.body);
-    Ok((out, shared_bytes))
+    finish(e)
 }

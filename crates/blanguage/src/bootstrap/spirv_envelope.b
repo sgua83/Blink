@@ -954,6 +954,121 @@ extern "C" AppendWords encode_append_reservation(AppendEmission input, address b
     return AppendWords(at, ticket + 1, ticket, write_label, finish);
 }
 
+DispatchValue dispatch_ceil(address body, DispatchValue cursor, DispatchScalars types,
+                            u32 value, u32 divisor) on cpu {
+    u32 quotient = cursor.next;
+    u32 remainder = quotient + 1;
+    u32 partial = remainder + 1;
+    u32 carry = partial + 1;
+    u32 result = carry + 1;
+    u32 uint_type = types.uint_type;
+    u64 at = words_four(body, cursor.words, 134, uint_type, quotient, value, divisor);
+    at = words_four(body, at, 137, uint_type, remainder, value, divisor);
+    at = words_four(body, at, 171, types.bool_type, partial, remainder, types.zero);
+    at = words_five(body, at, 169, uint_type, carry, partial, types.one, types.zero);
+    at = words_four(body, at, 128, uint_type, result, quotient, carry);
+    return DispatchValue(at, result + 1, result);
+}
+
+DispatchValue dispatch_groups(address body, DispatchValue cursor, DispatchScalars types,
+                              u32 count, u32 width, bool collective) on cpu {
+    DispatchValue groups = dispatch_ceil(body, cursor, types, count, width);
+    if (!collective) { return groups; }
+    u32 empty = groups.next;
+    u32 nonzero = empty + 1;
+    u64 at = words_four(body, groups.words, 170, types.bool_type, empty, groups.value, types.zero);
+    at = words_five(body, at, 169, types.uint_type, nonzero, empty, types.one, groups.value);
+    return DispatchValue(at, nonzero + 1, nonzero);
+}
+
+extern "C" DispatchValue encode_dispatch_groups(DispatchGroups input, address body) on cpu {
+    return dispatch_groups(body, DispatchValue(0u64, input.next, 0), input.scalars,
+                           input.count, input.width, true);
+}
+
+DispatchValue dispatch_min(address body, DispatchValue cursor, DispatchScalars types, u32 a, u32 b) on cpu {
+    u32 less = cursor.next;
+    u32 result = less + 1;
+    u64 at = words_four(body, cursor.words, 176, types.bool_type, less, a, b);
+    at = words_five(body, at, 169, types.uint_type, result, less, a, b);
+    return DispatchValue(at, result + 1, result);
+}
+
+DispatchValue dispatch_pointer(address body, DispatchValue cursor, DispatchGrid input,
+                               u32 base, u32 offset) on cpu {
+    u32 physical = base;
+    u32 next = cursor.next;
+    u64 at = cursor.words;
+    if (offset != 0) {
+        physical = next;
+        at = words_four(body, at, 128, input.wide_type, physical, base, offset);
+        next += 1;
+    }
+    at = words_three(body, at, 120, input.word_pointer, next, physical);
+    return DispatchValue(at, next + 1, next);
+}
+
+DispatchValue dispatch_record(address body, DispatchValue cursor, DispatchGrid input,
+                              u32 base, u32 count, address offsets, u32 slot) on cpu {
+    DispatchScalars types = input.scalars;
+    u32 zero = types.zero;
+    DispatchValue output = cursor;
+    DispatchValue groups = DispatchValue(cursor.words, cursor.next, zero);
+    u32 x = zero;
+    u32 y = zero;
+    u32 z = zero;
+    if (count != zero || input.collective != 0) {
+        groups = dispatch_groups(body, cursor, types, count, input.width, input.collective != 0);
+        DispatchValue columns = dispatch_min(body, groups, types, groups.value, input.max_x);
+        DispatchValue rows = dispatch_ceil(body, columns, types, groups.value, input.max_x);
+        DispatchValue height = dispatch_min(body, rows, types, rows.value, input.max_y);
+        DispatchValue depth = dispatch_ceil(body, height, types, rows.value, input.max_y);
+        x = columns.value;
+        y = height.value;
+        z = depth.value;
+        output = depth;
+    }
+    array<u32,4> values = array<u32,4>(x, y, z, count);
+    for (i in 0..4) {
+        DispatchValue pointer = dispatch_pointer(body, output, input, base, read_word(offsets, slot + i));
+        u64 at = words_four(body, pointer.words, 62, pointer.value, values[i], 2, 4);
+        output = DispatchValue(at, pointer.next, 0);
+    }
+    return DispatchValue(output.words, output.next, groups.value);
+}
+
+DispatchValue dispatch_levels(address body, DispatchValue cursor, DispatchGrid input,
+                              u32 base, address offsets, u32 start, u32 count) on cpu {
+    DispatchValue first = dispatch_record(body, cursor, input, base, count, offsets, start);
+    DispatchValue level = first;
+    for (index in 1..input.levels) {
+        level = dispatch_record(body, level, input, base, level.value, offsets, start + index * 4);
+    }
+    return DispatchValue(level.words, level.next, first.value);
+}
+
+extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address offsets, address body) on cpu {
+    // The command and the shader consume the same first page of indirect records.
+    u32 header = input.next;
+    u32 table = header + 1;
+    u32 page = table + 1;
+    u32 base = page + 1;
+    u32 zero = input.scalars.zero;
+    u64 at = words_five(body, 0u64, 65, input.table_pointer, header, input.descriptor, zero, zero);
+    at = words_three(body, at, 61, input.wide_type, table, header);
+    at = words_three(body, at, 120, input.page_pointer, page, table);
+    at = words_five(body, at, 61, input.wide_type, base, page, 2, 8);
+    DispatchValue cursor = DispatchValue(at, base + 1, 0);
+    DispatchValue levels = dispatch_levels(body, cursor, input, base, offsets, 0, input.count);
+    if (input.bins != 0) {
+        u32 histogram = levels.next;
+        at = words_four(body, levels.words, 132, input.scalars.uint_type, histogram, levels.value, input.bins);
+        levels = dispatch_levels(body, DispatchValue(at, histogram + 1, 0), input, base,
+                                 offsets, input.levels * 4, histogram);
+    }
+    return levels;
+}
+
 u64 widen_component(address body, u64 at, PrefixIndexEmission input,
                     u32 vector, u32 component, u32 result) on cpu {
     u32 narrow = result - 1;
@@ -966,24 +1081,26 @@ extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, addre
     u32 x = groups + 1;
     u32 y = x + 2;
     u32 z = y + 2;
-    u32 groups_x = z + 2;
-    u32 groups_y = groups_x + 2;
+    u32 groups_x = z + 1;
+    u32 groups_x_wide = groups_x + 1;
+    u32 groups_y = groups_x_wide + 1;
+    u32 groups_y_wide = groups_y + 1;
     u32 wide_type = input.wide_type;
     u64 at = words_three(body, 0u64, 61, input.vector_type, groups, input.num_groups);
     at = words_three(body, at, 113, wide_type, x, input.global_x);
     at = widen_component(body, at, input, input.global, 1, y);
     at = widen_component(body, at, input, input.global, 2, z);
-    at = widen_component(body, at, input, groups, 0, groups_x);
-    at = widen_component(body, at, input, groups, 1, groups_y);
+    at = widen_component(body, at, input, groups, 0, groups_x_wide);
+    at = widen_component(body, at, input, groups, 1, groups_y_wide);
 
-    u32 zrows = groups_y + 1;
+    u32 zrows = groups_y_wide + 1;
     u32 row = zrows + 1;
     u32 pitch = row + 1;
     u32 offset = pitch + 1;
     u32 linear = offset + 1;
-    at = words_four(body, at, 132, wide_type, zrows, z, groups_y);
+    at = words_four(body, at, 132, wide_type, zrows, z, groups_y_wide);
     at = words_four(body, at, 128, wide_type, row, y, zrows);
-    at = words_four(body, at, 132, wide_type, pitch, groups_x, input.wide_width);
+    at = words_four(body, at, 132, wide_type, pitch, groups_x_wide, input.wide_width);
     at = words_four(body, at, 132, wide_type, offset, row, pitch);
     at = words_four(body, at, 128, wide_type, linear, x, offset);
 
@@ -1028,7 +1145,7 @@ extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, addre
     }
 
     at = words_three(body, at, 113, uint_type, index, linear);
-    return PrefixIndexWords(at, index + 1, index, count, active, label);
+    return PrefixIndexWords(at, index + 1, index, count, active, label, groups_x, groups_y);
 }
 
 extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {

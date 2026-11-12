@@ -377,6 +377,46 @@ struct TileExtract {
 // fixed shift ID, or zero for the low bits. The body has room for 19 words.
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu;
 
+struct DispatchScalars {
+    u32 uint_type;
+    u32 bool_type;
+    u32 zero;
+    u32 one;
+};
+
+struct DispatchGroups {
+    DispatchScalars scalars;
+    u32 count;
+    u32 width;
+    u32 next;
+};
+
+struct DispatchValue {
+    u64 words;
+    u32 next;
+    u32 value;
+};
+
+struct DispatchGrid {
+    DispatchScalars scalars;
+    u32 wide_type;
+    u32 table_pointer;
+    u32 page_pointer;
+    u32 word_pointer;
+    u32 descriptor;
+    u32 count;
+    u32 width;
+    u32 max_x;
+    u32 max_y;
+    u32 levels;
+    u32 collective;
+    u32 bins;
+    u32 next;
+};
+ 
+extern "C" DispatchValue encode_dispatch_groups(DispatchGroups input, address body) on cpu;
+extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address offsets, address body) on cpu;
+
 struct PrefixIndexEmission {
     u32 uint_type;
     u32 wide_type;
@@ -401,6 +441,8 @@ struct PrefixIndexWords {
     u32 count;
     u32 active;
     u32 label;
+    u32 groups_x;
+    u32 groups_y;
 };
 
 extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, address body) on cpu;

@@ -11,29 +11,9 @@ impl Emitter<'_> {
         self.emit(249, &[end]);
         self.emit(248, &[end]);
     }
-    fn selection_arguments(&mut self, count: u32) {
-        let u = self.types[&Scalar::U32];
-        let zero = self.constant(Scalar::U32, 0);
-        let one = self.constant(Scalar::U32, 1);
-        let at_x = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), zero, 0);
-        let at_y = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), one, 0);
-        let max_x = self.id();
-        let max_y = self.id();
-        self.emit(61, &[u, max_x, at_x, 2, 4]);
-        self.emit(61, &[u, max_y, at_y, 2, 4]);
-        let width = self.constant(Scalar::U32, self.stage.workgroup_width());
-        let groups = self.prefix_ceil(count, width);
-        let x = self.prefix_min(groups, max_x);
-        let rows = self.prefix_ceil(groups, max_x);
-        let y = self.prefix_min(rows, max_y);
-        let z = self.prefix_ceil(rows, max_y);
-        for (word, value) in [x, y, z, count].into_iter().enumerate() {
-            let index = self.constant(Scalar::U32, (PREFIX_LEVELS * 4 + word) as u32);
-            let target = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), index, 0);
-            self.emit(62, &[target, value, 2, 4]);
-        }
-    }
-    pub(super) fn selection_scatter(&mut self, selection: Selection, count: u32, active: u32) {
+    pub(super) fn selection_scatter(
+        &mut self, selection: Selection, count: u32, active: u32, groups: [u32; 2],
+    ) {
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
@@ -43,7 +23,7 @@ impl Emitter<'_> {
         self.selection_when(first, |e| {
             let empty = e.id();
             e.emit(170, &[b, empty, count, zero]);
-            e.selection_when(empty, |e| e.selection_arguments(zero));
+            e.selection_when(empty, |e| e.dispatch_grid(zero, groups, PREFIX_LEVELS, 1, false, false));
         });
         self.selection_when(active, |e| {
             let flag = e.address_scalar(Scalar::U32,
@@ -70,7 +50,7 @@ impl Emitter<'_> {
                 e.emit(169, &[u, chosen, keep, one, zero]);
                 let total = e.id();
                 e.emit(128, &[u, total, prefix, chosen]);
-                e.selection_arguments(total);
+                e.dispatch_grid(total, groups, PREFIX_LEVELS, 1, false, false);
             });
         });
     }

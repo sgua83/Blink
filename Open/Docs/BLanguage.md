@@ -4349,7 +4349,7 @@ void process(read dataset<Item> input,
 
 每个元素仍只拥有自身写入权限。计数读取进入阶段读集合和跨元素依赖；只有底层数据和 prefix 计数字段都相同的 map 才可按既有条件融合。完整容量域与有效域不能融合，显式 phase 仍保留。前缀域不授予任意地址散写权限；原子计数返回的数字也不自动取得写所有权或有效域生产证明。
 
-CPU 直接读取自己存储中的已生产计数，按该长度执行原生范围函数。GPU 先生成提交私有的层级执行快照，每层 16 字节：前三个 u32 为间接启动 X/Y/Z 工作组数，最后一个为该层有效数量；随后直接 `vkCmdDispatchIndirect`。map 使用一层，sum／scan／compact 一次产生覆盖当前 u32 域的六层参数；排序另有独立直方图域。计数与启动参数不为调度读回 CPU，命令和所有临时资源仍由同一提交持有到完成。原始 Count 数据集仍是生产者的输出，执行快照不是可独立修改的另一份权威计数。
+CPU 直接读取自己存储中的已生产计数，按该长度执行原生范围函数。GPU 用 B 发射提交私有的层级执行快照。每层 16 字节，前三个 u32 为间接启动 X/Y/Z 工作组数，最后一个为该层有效数量。生成器一次解析参数表的物理页地址，随后沿实际记录偏移写入。Vulkan 用 `vkCmdDispatchIndirect` 消费同一页的记录。map 使用一层，sum／scan／compact 一次产生覆盖当前 u32 域的六层参数；排序沿首层实际组数确定直方图域。筛选的后续参数直接使用前序工作的 NumWorkgroups X/Y。计数与启动参数不为调度读回 CPU，命令和所有临时资源仍由同一提交持有到完成。原始 Count 数据集仍是生产者的输出，执行快照不是可独立修改的另一份权威计数。
 
 X 分区按实际工作组宽对齐，并受设备上限与 `with_partition_elements` 控制；Y/Z 根据实际组数展开。B 发射 u64 多维索引，先与有效数量比较，再提供语言层 u32 index。集合先用组首索引判断整组是否属于有效域，使矩形补齐组退出，同时保留空域写出单位元或计数所需的首组。空前缀的 map 产生零维启动。间接参数缓冲区具有真实 INDIRECT_BUFFER 用途，参数写入到间接读取／Shader 读取之间具有明确内存依赖；同一提交的后续时间步覆盖参数前也等待此前读者。ABI 与用法依据 [Vulkan 间接启动规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdDispatchIndirect.html)和[参数结构规范](https://docs.vulkan.org/refpages/latest/refpages/source/VkDispatchIndirectCommand.html)。
 

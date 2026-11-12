@@ -160,11 +160,7 @@ impl Emitter<'_> {
             e.emit(62, &[at, total]);
         });
         self.scan_barrier();
-        let groups = self.prefix_ceil(count, width);
-        let empty = self.id();
-        self.emit(170, &[b, empty, groups, zero]);
-        let nonzero = self.id();
-        self.emit(169, &[u, nonzero, empty, one, groups]);
+        let nonzero = self.dispatch_groups(count, width);
         if histogram {
             let write = self.id();
             self.emit(176, &[b, write, local, bins]);
