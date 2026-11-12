@@ -1,11 +1,10 @@
-use crate::*;
+use crate::{file_bytes::FileBytes, *};
 use std::{
     cell::RefCell,
     fmt::Write,
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io,
-    os::windows::io::{AsRawHandle, RawHandle},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
@@ -119,28 +118,6 @@ impl World {
         &self.records[key]
     }
 }
-#[repr(C)]
-struct SourceBytes {
-    data: *mut u8,
-    length: usize,
-    error: syntax::wire::StorageError,
-}
-
-unsafe extern "C" {
-    #[link_name = "bootstrap.ast_storage::read_source"]
-    fn read_source(file: RawHandle) -> SourceBytes;
-    #[link_name = "bootstrap.ast_storage::release_source"]
-    fn release_source(data: *mut u8) -> i32;
-}
-
-impl Drop for SourceBytes {
-    fn drop(&mut self) {
-        if !self.data.is_null() && unsafe { release_source(self.data) } == 0 {
-            panic!("无法释放 B 源码缓冲");
-        }
-    }
-}
-
 fn source_error(path: &Path, error: impl std::fmt::Display) -> Diagnostic {
     Diagnostic {
         source: Source { path: path.into(), text: "".into() },
@@ -151,17 +128,8 @@ fn source_error(path: &Path, error: impl std::fmt::Display) -> Diagnostic {
 }
 
 fn read_opened(path: &Path, file: &File) -> Result<Source> {
-    const SOURCE_READ_ERROR: u32 = 4;
-    // The File owns the synchronous handle until the B read completes.
-    let bytes = unsafe { read_source(file.as_raw_handle()) };
-    match bytes.error.kind {
-        0 => {}
-        SOURCE_READ_ERROR => return Err(source_error(path, io::Error::from_raw_os_error(bytes.error.native_code as i32))),
-        kind => return Err(source_error(path, syntax::StorageFailure { kind, native_code: bytes.error.native_code })),
-    }
-    // A successful B read owns a buffer containing exactly these initialized bytes.
-    let raw = unsafe { std::slice::from_raw_parts(bytes.data, bytes.length) };
-    let text = std::str::from_utf8(raw).map_err(|_| source_error(path, "stream did not contain valid UTF-8"))?;
+    let bytes = FileBytes::read(file).map_err(|error| source_error(path, error))?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| source_error(path, "stream did not contain valid UTF-8"))?;
     Ok(Source { path: path.into(), text: text.into() })
 }
 

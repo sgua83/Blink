@@ -1,6 +1,7 @@
 //! 标准 COFF 静态库保存原对象；目录归库所有，实际符号绑定仍归链接器。
 use super::{Kind, Object, Result, coff};
-use std::{ops::Range, path::Path, ptr::NonNull, sync::Arc};
+use crate::file_bytes::FileBytes;
+use std::{fs::File, ops::{Deref, Range}, path::Path, ptr::NonNull, sync::Arc};
 const SIGNATURE: &[u8; 8] = b"!<arch>\n";
 
 pub enum Input {
@@ -9,9 +10,9 @@ pub enum Input {
 }
 impl Input {
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)?;
+        let bytes = FileBytes::read(&File::open(path)?)?;
         if bytes.starts_with(SIGNATURE) {
-            Ok(Self::Library(Library::decode(Arc::new(bytes), false)?))
+            Ok(Self::Library(Library::decode(ArchiveBytes::Captured(Arc::new(bytes)), false)?))
         } else {
             Ok(Self::Object(coff::decode(&bytes)?))
         }
@@ -47,16 +48,37 @@ impl Input {
         }
     }
 }
+#[derive(Clone)]
+enum ArchiveBytes {
+    Captured(Arc<FileBytes>),
+    Generated(Arc<Vec<u8>>),
+}
+
+impl Deref for ArchiveBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Captured(bytes) => bytes,
+            Self::Generated(bytes) => bytes,
+        }
+    }
+}
+
 // A writer queue keeps the original input alive and borrows its actual range.
 // Newly generated native members own their own complete input through new().
 pub(crate) struct Member {
     pub(crate) name: String,
-    bytes: Arc<Vec<u8>>,
+    bytes: ArchiveBytes,
     range: Range<usize>,
 }
 impl Member {
     pub(crate) fn new(name:String,bytes:Vec<u8>)->Self {
-        let range=0..bytes.len();Self{name,bytes:Arc::new(bytes),range}
+        Self::whole(name, ArchiveBytes::Generated(Arc::new(bytes)))
+    }
+    fn whole(name: String, bytes: ArchiveBytes) -> Self {
+        let range = 0..bytes.len();
+        Self { name, bytes, range }
     }
     fn bytes(&self)->&[u8] { &self.bytes[self.range.clone()] }
     pub(crate) fn object(&self,native:bool)->Result<Object> {
@@ -69,7 +91,7 @@ fn member_object(name:&str,bytes:&[u8],native:bool)->Result<Object> {
 }
 pub struct Library {
     directory: NonNull<std::ffi::c_void>,
-    bytes: Arc<Vec<u8>>,
+    bytes: ArchiveBytes,
     native: bool,
 }
 // The compiler moves this unique directory into its native worker. B keeps
@@ -164,8 +186,10 @@ fn archive_read_result(result: ArchiveReadResult) -> Result<()> {
     Err(format!("{message}（归档字节偏移 {}）",result.at).into())
 }
 impl Library {
-    pub(crate) fn native(bytes:Arc<Vec<u8>>)->Result<Self> {Self::decode(bytes,true)}
-    fn decode(bytes:Arc<Vec<u8>>,native:bool)->Result<Self> {
+    pub(crate) fn native(bytes:Arc<Vec<u8>>)->Result<Self> {
+        Self::decode(ArchiveBytes::Generated(bytes), true)
+    }
+    fn decode(bytes: ArchiveBytes, native: bool) -> Result<Self> {
         let directory=NonNull::new(unsafe{library_create(bytes.as_ptr())})
             .ok_or("静态库目录内存分配失败")?;
         let mut library=Self{directory,bytes,native};
@@ -265,17 +289,17 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
     let mut members = Vec::new();
     for input in inputs {
         let input = input.as_ref();
-        let bytes = std::fs::read(input)?;
+        let bytes = ArchiveBytes::Captured(Arc::new(FileBytes::read(&File::open(input)?)?));
         if bytes.starts_with(SIGNATURE) {
-            let library=Library::decode(Arc::new(bytes),false)?;
+            let library=Library::decode(bytes, false)?;
             for index in 0..library.member_count() {
                 let member=library.member(index).member;
                 let (name,_)=library.member_bytes(member);
-                members.push(Member{name:name.into(),bytes:Arc::clone(&library.bytes),
+                members.push(Member{name:name.into(),bytes:library.bytes.clone(),
                     range:member.body.start..member.body.start+member.body.length});
             }
         } else {
-            members.push(Member::new(input
+            members.push(Member::whole(input
                     .file_name()
                     .and_then(|n| n.to_str())
                     .ok_or("静态库输入名不是 UTF-8")?

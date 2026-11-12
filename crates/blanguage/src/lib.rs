@@ -69,6 +69,8 @@ impl std::ops::Deref for TemplateProgram {
     }
 }
 #[cfg(feature = "compiler")]
+mod file_bytes;
+#[cfg(feature = "compiler")]
 mod frontend;
 #[cfg(feature = "compiler")]
 pub use frontend::{Compilation, compile, compile_with_modules, compile_entry, compile_entry_with_modules,
