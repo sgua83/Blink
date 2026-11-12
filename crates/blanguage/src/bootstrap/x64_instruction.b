@@ -1563,17 +1563,30 @@ AddressEncoding view_memory_at(u8 base, MoveLocation index, u64 stride, u32 offs
     return AddressEncoding(cursor - start, offset, base, u8(0), u8(0));
 }
 
+u64 address_pair_at(u64 at, MoveLocation low, MoveLocation high, bool packet, u8 lane, u8 target) on cpu {
+    u64 cursor = address_word_at(at, high, packet, lane, target);
+    cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(4), target);
+    put_byte(cursor, u8(32));
+    cursor = address_word_at(cursor + 1u64, low, packet, lane, u8(0));
+    return register_instruction(cursor, u16(0x09), u8(0), true, u8(0), target);
+}
+
+extern "C" u64 address_pair(MoveLocation low, MoveLocation high, address output) on cpu {
+    u64 start = address_bits(output);
+    return address_pair_at(start, low, high, false, u8(0), u8(15)) - start;
+}
+
+extern "C" u64 reference_address(u8 base, u32 offset, bool indexed, address output) on cpu {
+    u64 start = address_bits(output);
+    u8 index = indexed ? u8(0) : NO_INDEX;
+    MoveLocation memory = MoveLocation(u64(offset), MOVE_MEMORY, base, index, u8(0));
+    return encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(0), memory) - start;
+}
+
 AddressEncoding view_memory_dynamic_at(u8 base, MoveLocation index, MoveLocation low,
     MoveLocation high, u32 offset, bool packet, u8 lane, address output) on cpu {
     u64 start = address_bits(output);
-    u8 high_register = u8(0);
-    if (packet) { high_register = u8(1); }
-    u64 cursor = address_word_at(start, high, packet, lane, high_register);
-    cursor = encode_operand_instruction(cursor, u16(0xc1), u8(0), true, u8(4), move_gpr(high_register));
-    put_byte(cursor, u8(32)); cursor += 1u64;
-    if (!packet) { cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(0), u8(1)); }
-    cursor = address_word_at(cursor, low, packet, lane, u8(0));
-    cursor = register_instruction(cursor, u16(0x09), u8(0), true, u8(0), u8(1));
+    u64 cursor = address_pair_at(start, low, high, packet, lane, u8(1));
     cursor = address_word_at(cursor, index, packet, lane, u8(0));
     cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(1));
     return AddressEncoding(cursor - start, offset, base, u8(0), u8(0));
@@ -1719,12 +1732,7 @@ extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address outpu
 
 u64 packet_gather_base(u64 at, PacketGather input, u8 lane) on cpu {
     if (input.kind == 0) { return packet_table_base(at, input.data_offset); }
-    u64 cursor = packet_lane_at(at, input.base_high, lane, u8(15));
-    put_byte(cursor, u8(0x49)); put_byte(cursor + 1u64, u8(0xc1));
-    put_byte(cursor + 2u64, u8(0xe7)); put_byte(cursor + 3u64, u8(32)); cursor += 4u64;
-    cursor = packet_lane_at(cursor, input.base_low, lane, u8(0));
-    put_byte(cursor, u8(0x49)); put_byte(cursor + 1u64, u8(0x09)); put_byte(cursor + 2u64, u8(0xc7));
-    return cursor + 3u64;
+    return address_pair_at(at, input.base_low, input.base_high, true, lane, u8(15));
 }
 
 extern "C" u64 packet_gather(MoveLocation dst, PacketGather input, bool boolean, address output) on cpu {

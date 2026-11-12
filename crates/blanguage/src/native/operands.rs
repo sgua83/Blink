@@ -132,6 +132,10 @@ unsafe extern "C" {
     fn encode_scale_index(index: u8, stride: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::offset_address"]
     fn encode_offset_address(stride: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::address_pair"]
+    fn encode_address_pair(low: MoveLocation, high: MoveLocation, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::reference_address"]
+    fn encode_reference_address(base: u8, offset: u32, indexed: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
     #[link_name = "bootstrap.x64_instruction::value_unary"]
@@ -211,6 +215,19 @@ impl Emitter<'_> {
         self.emit_bytes(16, |output| unsafe { encode_scale_index(register, stride, output) });
     }
     // The original R15 base and zero-extended RAX index remain owned by this emitter.
+    pub(super) fn address_pair(&mut self, [low, high]: [Reg; 2]) {
+        let low = self.location(low).into();
+        let high = self.location(high).into();
+        self.emit_bytes(24, |output| unsafe { encode_address_pair(low, high, output) });
+    }
+    pub(super) fn borrow_address(&mut self, base: u8, offset: u32, index: Option<Reg>) {
+        if let Some(index) = index {
+            self.load(index);
+        }
+        self.emit_bytes(8, |output| unsafe {
+            encode_reference_address(base, offset, u32::from(index.is_some()), output)
+        });
+    }
     pub(super) fn offset_address(&mut self, stride: u32) {
         self.emit_bytes(16, |output| unsafe { encode_offset_address(stride, output) });
     }

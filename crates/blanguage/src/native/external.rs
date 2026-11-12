@@ -76,9 +76,6 @@ impl Emitter<'_> {
             encode_argument_register(slot as u8, float_size, u32::from(to_home), output)
         });
     }
-    fn stack_address(&mut self, offset: u32) {
-        self.instruction(None, &[0x8d], true, 0, Operand::memory(4, offset));
-    }
     pub(super) fn reference_address(&mut self, address: &CallReference) -> Result<(), &'static str> {
         match &address.storage {
             CallStorage::Local { base, len } => {
@@ -87,38 +84,20 @@ impl Emitter<'_> {
                     else { return Err("C ABI 局部借用没有实际栈地址"); };
                     offset
                 };
-                self.stack_address(offset + address.word);
-                if let Some(index) = address.offset {
-                    // ABI argument registers are populated only after every call slot is ready.
-                    self.bytes(&[0x48, 0x89, 0xc1]);
-                    self.load(index);
-                    self.bytes(&[0x48, 0x01, 0xc8]);
-                }
+                self.borrow_address(4, offset + address.word, address.offset);
             }
             CallStorage::Indexed(source) => {
-                if let Some(offset) = address.offset {
+                let word = if let Some(offset) = address.offset {
                     self.indexed_address(source, offset, address.word);
+                    0
                 } else {
-                    match source {
-                        IndexedSource::Data { binding, index } => {
-                            self.address(*binding, *index);
-                            if address.word != 0 {
-                                self.bytes(&[0x49, 0x81, 0xc7]);
-                                self.u32(address.word);
-                            }
-                        }
-                        IndexedSource::View { .. }
-                        | IndexedSource::Pointer { .. } => {
-                            self.indexed_base(source);
-                            if address.word != 0 {
-                                self.bytes(&[0x49, 0x81, 0xc7]);
-                                self.u32(address.word);
-                            }
-                        }
-                        IndexedSource::Tile { .. } => return Err("C ABI 不接受块内分量存储"),
+                    if matches!(source, IndexedSource::Tile { .. }) {
+                        return Err("C ABI 不接受块内分量存储");
                     }
-                }
-                self.bytes(&[0x4c, 0x89, 0xf8]);
+                    self.indexed_base(source);
+                    address.word
+                };
+                self.borrow_address(15, word, None);
             }
         }
         Ok(())
@@ -176,7 +155,7 @@ impl Emitter<'_> {
             self.copy_scalar(Location::Stack(layout.target.unwrap() as u32), self.location(reg), Scalar::U64);
         }
         if let Some(at) = layout.result {
-            self.stack_address(at as u32);
+            self.borrow_address(4, at as u32, None);
             self.instruction(None, &[0x89], true, 0, Operand::memory(4, 0));
         }
         let arguments = call.arguments.iter()
@@ -197,7 +176,7 @@ impl Emitter<'_> {
                         self.write_scalar(*value, 4, base + *offset);
                     }
                     if copy.present != 0 {
-                        self.stack_address(copy.offset as u32);
+                        self.borrow_address(4, copy.offset as u32, None);
                         self.instruction(None, &[0x89], true, 0, Operand::memory(4, slot));
                     }
                 }

@@ -170,6 +170,12 @@ extern "C" AddressEncoding view_memory_dynamic(u8 base, MoveLocation index, Move
 extern "C" AddressEncoding scaled_memory(u8 base, u8 index, u32 stride, u32 offset, address output) on cpu;
 extern "C" u64 scale_index(u8 index, u32 stride, address output) on cpu;
 extern "C" u64 offset_address(u32 stride, address output) on cpu;
+
+// Combine two allocated 32-bit address words in R15. The caller owns 24 bytes.
+extern "C" u64 address_pair(MoveLocation low, MoveLocation high, address output) on cpu;
+// Place the effective address in RAX. An indexed address consumes RAX as its
+// index. The caller owns eight output bytes.
+extern "C" u64 reference_address(u8 base, u32 offset, bool indexed, address output) on cpu;
 // Packet inputs use their original allocated XMM/stack lanes; no source is retained.
 // packet_lane needs 16 bytes; either packet view entry needs 64 bytes.
 extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu;
