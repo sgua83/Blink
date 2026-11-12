@@ -100,13 +100,10 @@ impl Inputs {
     ) -> ast::Result<Arc<syntax::Module>> {
         let interfaces = self.interfaces.entry(name.into()).or_default();
         if let Some(module) = interfaces.get(text) { return Ok(module.clone()); }
-        let path = format!("<{name}>.h").into();
-        let module = if let Some(parsed) = parsed {
-            let mut module = parsed.as_ref().clone();
-            module.source.path = path;
-            module
-        } else { parser::parse(Source { path, text: text.into() })? };
-        let module = Arc::new(module);
+        let module = if let Some(parsed) = parsed { parsed.clone() }
+        else { Arc::new(parser::parse(Source {
+            path: format!("<{name}>.h").into(), text: text.into(),
+        })?) };
         interfaces.insert(module.source.text.clone(), module.clone());
         Ok(module)
     }

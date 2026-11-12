@@ -5034,7 +5034,7 @@ native::compile_program与spirv::compile_program的Rust错误结果现为String�
 
 ## 本次多单元构建图（C-021.5.2b.2）
 
-调用者用build::Unit声明本次编译单元、路径、模块根、依赖和输出，在同一Compiler上调用build_graph(&units)，或使用build::compile_graph。UnitKind::Object(ObjectKind)沿原对象构建；UnitKind::Entry { entry,target }沿原CPU／GPU入口映像构建。普通模块、应用、算法库对象及Entry映像以Dependency::Unit(index)引用本次提供者，或Dependency::Object(&object)借用已有模块，传递模块依赖自动沿这些绑定交接；图输出保持原所有权，入口在原选择完成后取得最终存活代码，不深复制整对象或运行库归档。单元引用可以向前，真实循环及越界直接报告；入口映像不能当作COFF模块提供者。
+调用者用build::Unit声明本次编译单元、路径、模块根、依赖和输出，在同一Compiler上调用build_graph(&units)，或使用build::compile_graph。UnitKind::Object(ObjectKind)沿原对象构建；UnitKind::Entry { entry,target }沿原CPU／GPU入口映像构建。普通模块、应用、算法库对象及Entry映像以Dependency::Unit(index)引用本次提供者，或Dependency::Object(&object)借用已有模块，传递模块依赖自动沿这些绑定交接；图输出保持原所有权，入口在原选择完成后取得最终存活代码，不深复制整对象或运行库归档。Dependency::Unit直接共享本次已经解析的接口及其源快照；后续声明／类型诊断保留原捕获头文件的真实路径、字节和范围，不将已知来源改成虚拟接口。Dependency::Object仅交接接口文本时继续使用<模块名>.h标记，不推测或读取提供者源码。源快照保持到图内最后真实消费者结束，路径描述这次捕获，不表示重新读取当前磁盘内容。单元引用可以向前，真实循环及越界直接报告；入口映像不能当作COFF模块提供者。
 
 例如已有math与app两份模块，可由实际构建调用组织：
 
