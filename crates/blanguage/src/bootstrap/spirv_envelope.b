@@ -860,6 +860,100 @@ extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu {
     return u64(length);
 }
 
+u64 phi_two(address body, u64 at, u32 type, u32 result,
+            u32 first_value, u32 first_block, u32 second_value, u32 second_block) on cpu {
+    put(body, at, instruction(245, 7));
+    put(body, at + 1u64, type);
+    put(body, at + 2u64, result);
+    put(body, at + 3u64, first_value);
+    put(body, at + 4u64, first_block);
+    put(body, at + 5u64, second_value);
+    put(body, at + 6u64, second_block);
+    return at + 7u64;
+}
+
+extern "C" AppendWords encode_append_reservation(AppendEmission input, address body) on cpu {
+    u32 uint_type = input.uint_type;
+    u32 bool_type = input.bool_type;
+    u32 subgroup_scope = input.subgroup_scope;
+    u32 zero = input.relaxed;
+    u32 ballot = input.next;
+    u32 size = ballot + 1;
+    u32 rank = size + 1;
+    u32 leader = rank + 1;
+    u32 reserve = leader + 1;
+    u32 gather = reserve + 1;
+    u64 at = words_four(body, 0u64, 339, input.ballot_type, ballot, subgroup_scope, input.active);
+    at = words_five(body, at, 342, uint_type, size, subgroup_scope, 0, ballot);
+    at = words_five(body, at, 342, uint_type, rank, subgroup_scope, 2, ballot);
+    at = words_three(body, at, 333, bool_type, leader, subgroup_scope);
+    at = open_conditional(body, at, gather, leader, reserve, gather);
+    at = words_one(body, at, 248, reserve);
+
+    u32 pointer = gather + 1;
+    u32 capacity = pointer + 1;
+    u32 initial = capacity + 1;
+    at = words_five(body, at, 65, input.push_pointer_type, pointer, input.push, zero, input.capacity_word);
+    at = words_five(body, at, 61, uint_type, capacity, pointer, 2, 4);
+    at += encode_atomic(AtomicEmission(AtomicOperation::Load, BuiltinScalar::U32,
+                        uint_type, initial, input.counter, input.device_scope, zero, 0, 0, 0), word_at(body, at));
+
+    u32 header = initial + 1;
+    u32 attempt = header + 1;
+    u32 retry = attempt + 1;
+    u32 end = retry + 1;
+    u32 old = end + 1;
+    u32 observed = old + 1;
+    u32 room = observed + 1;
+    at = words_one(body, at, 249, header);
+    at = words_one(body, at, 248, header);
+    at = phi_two(body, at, uint_type, old, initial, reserve, observed, retry);
+    at = words_four(body, at, 176, bool_type, room, old, capacity);
+    at = words_three(body, at, 246, end, retry, 0);
+    at = words_three(body, at, 250, room, attempt, end);
+    at = words_one(body, at, 248, attempt);
+
+    u32 available = room + 1;
+    u32 partial = available + 1;
+    u32 amount = partial + 1;
+    u32 desired = amount + 1;
+    u32 accepted = desired + 1;
+    at = words_four(body, at, 130, uint_type, available, capacity, old);
+    at = words_four(body, at, 176, bool_type, partial, available, size);
+    at = words_five(body, at, 169, uint_type, amount, partial, available, size);
+    at = words_four(body, at, 128, uint_type, desired, old, amount);
+    at += encode_atomic(AtomicEmission(AtomicOperation::CompareExchange, BuiltinScalar::U32,
+                        uint_type, observed, input.counter, input.device_scope, zero,
+                        desired, old, zero), word_at(body, at));
+    at = words_four(body, at, 170, bool_type, accepted, observed, old);
+    at = words_three(body, at, 250, accepted, end, retry);
+    at = words_one(body, at, 248, retry);
+    at = words_one(body, at, 249, header);
+
+    u32 leased = accepted + 1;
+    u32 base = leased + 1;
+    u32 length = base + 1;
+    u32 shared_base = length + 1;
+    u32 shared_length = shared_base + 1;
+    at = words_one(body, at, 248, end);
+    at = phi_two(body, at, uint_type, leased, zero, header, amount, attempt);
+    at = words_one(body, at, 249, gather);
+    at = words_one(body, at, 248, gather);
+    at = phi_two(body, at, uint_type, base, zero, input.outer, old, end);
+    at = phi_two(body, at, uint_type, length, zero, input.outer, leased, end);
+    at = words_four(body, at, 338, uint_type, shared_base, subgroup_scope, base);
+    at = words_four(body, at, 338, uint_type, shared_length, subgroup_scope, length);
+    at = words_four(body, at, 176, bool_type, input.accepted, rank, shared_length);
+
+    u32 write_label = shared_length + 1;
+    u32 finish = write_label + 1;
+    u32 ticket = finish + 1;
+    at = open_conditional(body, at, finish, input.accepted, write_label, finish);
+    at = words_one(body, at, 248, write_label);
+    at = words_four(body, at, 128, uint_type, ticket, shared_base, rank);
+    return AppendWords(at, ticket + 1, ticket, write_label, finish);
+}
+
 extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {
     u64 at = 0u64;
     u32 next = input.next;

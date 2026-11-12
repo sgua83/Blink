@@ -374,6 +374,33 @@ struct AtomicEmission {
 }
 
 #[repr(C)]
+struct AppendEmission {
+    uint_type: u32,
+    bool_type: u32,
+    ballot_type: u32,
+    device_scope: u32,
+    relaxed: u32,
+    subgroup_scope: u32,
+    active: u32,
+    counter: u32,
+    push_pointer_type: u32,
+    push: u32,
+    capacity_word: u32,
+    outer: u32,
+    accepted: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct AppendWords {
+    words: u64,
+    next: u32,
+    ticket: u32,
+    write_label: u32,
+    finish: u32,
+}
+
+#[repr(C)]
 struct PrivateAddress {
     index_type: u32,
     pointer_type: u32,
@@ -469,6 +496,8 @@ unsafe extern "C" {
     fn emit_private_address(
         input: PrivateAddress, parts: *const u32, pointers: *mut u32, body: *mut u32,
     ) -> PrivateAddressWords;
+    #[link_name = "bootstrap.spirv_envelope::encode_append_reservation"]
+    fn encode_append_reservation(input: AppendEmission, body: *mut u32) -> AppendWords;
     #[link_name = "bootstrap.spirv_envelope::encode_atomic"]
     fn encode_atomic(input: AtomicEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::flag_decoration"]

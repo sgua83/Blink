@@ -271,6 +271,33 @@ struct AtomicEmission {
 // A zero result is the resultless 32-bit store.
 extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu;
 
+struct AppendEmission {
+    u32 uint_type;
+    u32 bool_type;
+    u32 ballot_type;
+    u32 device_scope;
+    u32 relaxed;
+    u32 subgroup_scope;
+    u32 active;
+    u32 counter;
+    u32 push_pointer_type;
+    u32 push;
+    u32 capacity_word;
+    u32 outer;
+    u32 accepted;
+    u32 next;
+};
+
+struct AppendWords {
+    u64 words;
+    u32 next;
+    u32 ticket;
+    u32 write_label;
+    u32 finish;
+};
+
+extern "C" AppendWords encode_append_reservation(AppendEmission input, address body) on cpu;
+
 struct PrivateAddress {
     u32 index_type;
     u32 pointer_type;

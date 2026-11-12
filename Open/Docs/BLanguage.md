@@ -3099,7 +3099,7 @@ Count 的修改先预留位置，不表示同阶段的载荷已经发布。源�
 
 封闭 Append IR 保存实际输出、Count、完整字段与接纳结果，独占预留和写入不可分割。它参与原有读写依赖、跨元素访问、分支保留、活跃性和原生寄存器分配，不用另一套表达式解释器、宿主回调或队列管理器。CPU 直接用 x64 的容量比较、LOCK CMPXCHG 和记录存储；CAS 成功才写入原位置，失败比较返回的新计数进入同一原子算法。
 
-GPU 在实际活动 subgroup 中 ballot／计数／计算 rank。计数器读取与 CAS 由显式原子操作共用的 B 发射器写出，选举出的一个 invocation 用 CAS 预留 `min(活动数量, 剩余容量)` 个位置，再广播实际范围，各成功 lane 写入自己的记录。没有按 32／64 固定 lane 编号，也不为每条记录争用一个全局 CAS。源分歧与不同循环迭代中的活动集合必须准确，因此该 shader 显式使用 SPV_KHR_maximal_reconvergence／MaximallyReconvergesKHR；Device::for_program 按真实程序需求查询并启用 VK_KHR_shader_maximal_reconvergence，普通计算设备不会暗中升级或换算法。缺少所需能力直接报错。该汇合要求来自 [Khronos 最大汇合语义](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_maximal_reconvergence.html)及其[并行接纳示例](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_shader_maximal_reconvergence.html)，不是根据本机一次运行推测的保证。
+B 发射 GPU 接纳的活动 subgroup ballot、计数和 rank。选举出的 invocation 读取容量，循环头判断余量，沿与显式原子操作共用的计数读取和 CAS 预留 `min(活动数量, 剩余容量)` 个位置。B 发射范围广播、接纳结果及写入控制，各成功 lane 沿原载荷发射写入自己的完整记录。没有按 32／64 固定 lane 编号，也不为每条记录争用一个全局 CAS。源分歧与不同循环迭代中的活动集合必须准确，因此该 shader 显式使用 SPV_KHR_maximal_reconvergence／MaximallyReconvergesKHR；Device::for_program 按真实程序需求查询并启用 VK_KHR_shader_maximal_reconvergence，普通计算设备不会暗中升级或换算法。缺少所需能力直接报错。该汇合要求来自 [Khronos 最大汇合语义](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_maximal_reconvergence.html)及其[并行接纳示例](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_shader_maximal_reconvergence.html)，不是根据本机一次运行推测的保证。
 
 当前是完整记录的有界接纳，不是任意大小预留类型、并发出队／回收、同阶段生产消费、稳定输出、动态设备任务图或自动背压。一般 queue 容器、批量可写 reservation、64 位计数及设备自主调度仍需实现。
 
