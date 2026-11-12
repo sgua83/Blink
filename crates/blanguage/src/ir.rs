@@ -166,7 +166,19 @@ pub(crate) struct ArrayLayout {
 }
 
 #[cfg(feature = "compiler")]
+#[repr(C)]
+struct FieldPlacement {
+    offset: u64,
+    end: u64,
+    alignment: u32,
+}
+
+#[cfg(feature = "compiler")]
 unsafe extern "C" {
+    #[link_name = "bootstrap.type_layout::place"]
+    fn place_field(size: u32, alignment: u32, field_size: u32, field_alignment: u32) -> FieldPlacement;
+    #[link_name = "bootstrap.type_layout::natural_size"]
+    fn natural_record_size(size: u32, alignment: u32) -> u64;
     #[link_name = "bootstrap.type_layout::vector"]
     fn vector_layout(scalar_size: u32, scalar_alignment: u32, count: u64) -> VectorLayout;
     #[link_name = "bootstrap.type_layout::fixed_array"]
@@ -299,16 +311,32 @@ impl Ty {
         let (_,offset,ty)=&self.fields[0];
         (*offset,ty)
     }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn append_field_layout(&mut self, field: &Self) -> Option<u32> {
+        // Bound field types carry nonzero alignment.
+        let placement = unsafe { place_field(self.size, self.align, field.size, field.align) };
+        self.size = u32::try_from(placement.end).ok()?;
+        self.align = placement.alignment;
+        let offset = placement.offset as u32;
+        self.components.extend(field.components.iter().map(|&(scalar, word)| (scalar, offset + word)));
+        Some(offset)
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn finish_record_layout(&mut self) -> Option<()> {
+        let size = unsafe { natural_record_size(self.size, self.align) };
+        self.size = u32::try_from(size).ok()?;
+        Some(())
+    }
+    #[cfg(feature = "compiler")]
     pub(crate) fn task_start_error(input: Self) -> Option<Self> {
-        let mut ty=Self::unit();
-        let at=align_up(4,input.align);
-        ty.name=format!("task_start_error<{}>",input.name);
-        ty.align=input.align.max(4);
-        ty.size=at.checked_add(input.size)?.checked_next_multiple_of(ty.align)?;
-        ty.components.push((Scalar::U32,0));
-        ty.components.extend(input.components.iter().map(|(scalar,offset)|(*scalar,at+offset)));
-        ty.fields=vec![("code".into(),0,Box::new(Self::scalar(Scalar::U32))),
-            ("input".into(),at,Box::new(input.clone()))];
+        let mut ty = Self::scalar(Scalar::U32);
+        ty.name = format!("task_start_error<{}>", input.name);
+        let offset = ty.append_field_layout(&input)?;
+        ty.finish_record_layout()?;
+        ty.fields = vec![
+            ("code".into(), 0, Box::new(Self::scalar(Scalar::U32))),
+            ("input".into(), offset, Box::new(input.clone())),
+        ];
         ty.arguments.push(input);
         Some(ty)
     }

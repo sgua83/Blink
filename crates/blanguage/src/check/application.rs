@@ -1489,10 +1489,7 @@ impl Builder<'_> {
                 None=>self.view_model.calls[call].arguments[&ValueIdentity::Register(completion.input+formal_frame)].view_borrow(0),
             };
             let layout=self.task_wait_output_layout(&result,&task,span)?.task_completion_storage().ok_or_else(&overflow)?;
-            let offset=work_output.size.checked_next_multiple_of(layout.align).ok_or_else(&overflow)?;
-            work_output.size=offset.checked_add(layout.size).ok_or_else(&overflow)?;
-            work_output.align=work_output.align.max(layout.align);
-            work_output.components.extend(layout.components.iter().map(|&(scalar,word)|(scalar,offset+word)));
+            let offset = work_output.append_field_layout(&layout).ok_or_else(&overflow)?;
             let input=first_completion+2*completions.len();
             for (part,_) in result.task_components().into_iter().enumerate() {
                 let slot=result.components.len()+part;
@@ -1656,10 +1653,7 @@ impl Builder<'_> {
                     (Ty::builtin("address").unwrap(),vec![dst])
                 },
             };
-            let offset=packet.size.checked_next_multiple_of(ty.align).ok_or_else(&overflow)?;
-            packet.size=offset.checked_add(ty.size).ok_or_else(&overflow)?;
-            packet.align=packet.align.max(ty.align);
-            packet.components.extend(ty.components.iter().map(|(scalar,word)|(*scalar,offset+word)));
+            let offset = packet.append_field_layout(&ty).ok_or_else(&overflow)?;
             let field=packet.fields.len();
             let name=if owned_position {
                 format!("{}{field}",Ty::TASK_OWNED_REFERENCE_PREFIX)
@@ -1683,7 +1677,7 @@ impl Builder<'_> {
             packet.fields.push((name,offset,Box::new(ty)));
             registers.extend(values);
         }
-        packet.size=packet.size.checked_next_multiple_of(packet.align).ok_or_else(overflow)?;
+        packet.finish_record_layout().ok_or_else(overflow)?;
         Ok(Value{ty:packet,regs:registers,proof:bounds::Proof::default(),uniform:false,literal:false,constant:None})
     }
 

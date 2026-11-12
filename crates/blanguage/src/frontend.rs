@@ -9,18 +9,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-#[repr(C)]
-struct FieldPlacement {
-    offset: u64,
-    end: u64,
-    alignment: u32,
-}
-
 unsafe extern "C" {
-    #[link_name = "bootstrap.type_layout::place"]
-    fn place_field(size: u32, alignment: u32, field_size: u32, field_alignment: u32) -> FieldPlacement;
-    #[link_name = "bootstrap.type_layout::natural_size"]
-    fn natural_record_size(size: u32, alignment: u32) -> u64;
     #[link_name = "bootstrap.type_layout::accepts_stride"]
     fn accepts_record_stride(size: u32, alignment: u32, stride: u32) -> bool;
 }
@@ -1368,20 +1357,12 @@ impl World {
                 let reference=self.type_reference(&element,s,field.span(),m,i)?;
                 ir::Ty::owned_dataset(reference,self.shape(&field_type.count,s,field.span(),m,i)?)
             } else { self.ty_inner(&field_type,s,field.span(),m,i,stack)? };
-            // Bound field types carry nonzero alignment.
-            let placement = unsafe { place_field(ty.size, ty.align, f.size, f.align) };
-            let Ok(size) = u32::try_from(placement.end) else {
+            let Some(offset) = ty.append_field_layout(&f) else {
                 return s.fail(field.span(), "B238", "记录布局超过 u32 字节地址范围");
             };
-            let offset = placement.offset as u32;
-            ty.components
-                .extend(f.components.iter().map(|(s, o)| (*s, o + offset)));
-            ty.size = size;
-            ty.align = placement.alignment;
             ty.fields.push((field.name().to_owned(), offset, Box::new(f)));
         }
-        let size = unsafe { natural_record_size(ty.size, ty.align) };
-        ty.size = u32::try_from(size).map_err(|_| Diagnostic {
+        ty.finish_record_layout().ok_or_else(|| Diagnostic {
             source: source.clone(),
             span,
             code: "B238",
