@@ -62,7 +62,7 @@ impl Emitter<'_> {
         self.bytes(&[0x89, 0xd8, 0x31, 0xd2, 0xb9]);
         self.u32(width);
         self.bytes(&[0xf7, 0xf1, 0x85, 0xd2]);
-        let skip = self.jump(Some(0x85));
+        let skip = self.jump(Branch::Flags(0x85));
         // r14d 是对齐的范围末端；只有全局最后一块可以是不完整 tile。
         self.bytes(&[0x44, 0x89, 0xf0, 0x29, 0xd8, 0xb9]);
         self.u32(width);
@@ -90,7 +90,7 @@ impl Emitter<'_> {
             self.write_value_address(Location::Gpr(0), Memory::new(11, 0), unit.size());
             self.instruction(None, &[0x03], true, 10, operands::Operand::memory(12, source as u32 * BUFFER_BYTES + BUFFER_STRIDE));
             self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
-            let again = self.jump(Some(0x85));
+            let again = self.jump(Branch::Flags(0x85));
             self.patch(again, begin);
             self.parallel_abi(start, ParallelRangePart::TileInputCopy { binding: source, source_offset: byte, storage_offset, unit_bytes: unit.size() });
           }
@@ -199,7 +199,7 @@ impl Emitter<'_> {
             self.u32(self.tile_base_slot());
             self.bytes(&[0x3b, 0x84, 0x24]);
             self.u32(self.tile_length_slot());
-            let again = self.jump(Some(0x82));
+            let again = self.jump(Branch::Flags(0x82));
             self.patch(again, begin);
             self.parallel_abi(start, ParallelRangePart::TilePhaseAdvance { phase: phase_index });
             if let Some(inst @ Inst { kind: InstKind::TileCollective(collective), .. }) = phase.step {
@@ -321,14 +321,14 @@ impl Emitter<'_> {
                     };
                     self.instruction(prefix, &[0x3b - byte], wide, 0, operand);
                     if byte != 0 {
-                        let skip = self.jump(Some(0x80 + (condition ^ 1) - 0x40));
+                        let skip = self.jump(Branch::Flags(0x80 + (condition ^ 1) - 0x40));
                         self.instruction(None, &[0x8a], false, 0, operand);
                         self.patch(skip, self.code.len());
                     } else { self.instruction(prefix, &[0x0f, condition], wide, 0, operand); }
                 }
             }
             self.bytes(&[0x49, 0x83, 0xc2, 0x04, 0xff, 0xc9]);
-            let again = self.jump(Some(0x85));
+            let again = self.jump(Branch::Flags(0x85));
             self.patch(again, begin);
             self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
                 part: TileCollectivePart::Accumulate { input_high_delta: high_delta, loop_start: begin } });
@@ -339,7 +339,7 @@ impl Emitter<'_> {
                 let fill = self.code.len();
                 store(self);
                 self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
-                let again = self.jump(Some(0x85));
+                let again = self.jump(Branch::Flags(0x85));
                 self.patch(again, fill);
                 self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
                     part: TileCollectivePart::Fill { length_offset, loop_start: fill } });

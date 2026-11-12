@@ -81,6 +81,15 @@ unsafe extern "C" {
     fn append_literal(image: *mut u8, end: u64, bits: u64, width: u32, references: *const usize, count: u64) -> TailRange;
     #[link_name = "bootstrap.x64_instruction::patch_relative"]
     fn patch_relative(field: *mut u8, offset: u64, target: u64);
+    #[link_name = "bootstrap.x64_instruction::encode_branch"]
+    fn encode_branch(condition: u8, test_bits: u32, output: *mut u8) -> u64;
+}
+
+enum Branch {
+    Always,
+    Flags(u8),
+    Zero32,
+    Nonzero64,
 }
 
 struct Emitter<'a> {
@@ -201,15 +210,15 @@ impl Emitter<'_> {
     fn u32(&mut self, n: u32) {
         self.bytes(&n.to_le_bytes());
     }
-    fn jump(&mut self, condition: Option<u8>) -> usize {
-        if let Some(c) = condition {
-            self.bytes(&[0x0f, c]);
-        } else {
-            self.bytes(&[0xe9]);
-        }
-        let at = self.code.len();
-        self.u32(0);
-        at
+    fn jump(&mut self, branch: Branch) -> usize {
+        let (condition, test_bits) = match branch {
+            Branch::Always => (0, 0),
+            Branch::Flags(condition) => (condition, 0),
+            Branch::Zero32 => (0x84, 32),
+            Branch::Nonzero64 => (0x85, 64),
+        };
+        self.emit_bytes(9, |output| unsafe { encode_branch(condition, test_bits, output) });
+        self.code.len() - 4
     }
     fn patch(&mut self, at: usize, target: usize) {
         let field = &mut self.code[at..at + 4];
@@ -326,7 +335,7 @@ impl Emitter<'_> {
                 InstKind::Call(call) => self.native_call(call)?,
                 InstKind::Raise(error) => {
                     self.load(*error);
-                    let at=self.jump(None);
+                    let at=self.jump(Branch::Always);
                     self.exits[0].push(at);
                 }
                 InstKind::Print { dst, value } => {
@@ -400,7 +409,7 @@ impl Emitter<'_> {
                     }
                 }
                 InstKind::Exit => {
-                    let at = self.jump(None);
+                    let at = self.jump(Branch::Always);
                     self.exits.last_mut().unwrap().push(at);
                 }
                 InstKind::Append(append) => self.append(append),
@@ -579,13 +588,16 @@ impl Emitter<'_> {
                 }
                 InstKind::If { condition, yes, no } => {
                     self.load(*condition);
-                    self.bytes(&[0x85, 0xc0]);
-                    let other = self.jump(Some(0x84));
+                    let other = self.jump(Branch::Zero32);
                     self.block(yes)?;
-                    let end = self.jump(None);
-                    self.patch(other, self.code.len());
-                    self.block(no)?;
-                    self.patch(end, self.code.len());
+                    if no.is_empty() {
+                        self.patch(other, self.code.len());
+                    } else {
+                        let end = self.jump(Branch::Always);
+                        self.patch(other, self.code.len());
+                        self.block(no)?;
+                        self.patch(end, self.code.len());
+                    }
                 }
                 InstKind::Loop {
                     condition,
@@ -595,13 +607,12 @@ impl Emitter<'_> {
                     let begin = self.code.len();
                     self.block(condition)?;
                     self.load(*test);
-                    self.bytes(&[0x85, 0xc0]);
-                    let end = self.jump(Some(0x84));
+                    let end = self.jump(Branch::Zero32);
                     self.breaks.push(Vec::new());
                     self.continues.push(begin);
                     self.block(body)?;
                     self.continues.pop();
-                    let back = self.jump(None);
+                    let back = self.jump(Branch::Always);
                     self.patch(back, begin);
                     let target = self.code.len();
                     self.patch(end, target);
@@ -610,11 +621,11 @@ impl Emitter<'_> {
                     }
                 }
                 InstKind::Break => {
-                    let at = self.jump(None);
+                    let at = self.jump(Branch::Always);
                     self.breaks.last_mut().unwrap().push(at);
                 }
                 InstKind::Continue => {
-                    let at = self.jump(None);
+                    let at = self.jump(Branch::Always);
                     self.patch(at, *self.continues.last().unwrap());
                 }
             }
@@ -728,7 +739,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     }
     let begin = e.code.len();
     e.bytes(&[0x44, 0x39, 0xf3]);
-    let end = e.jump(Some(0x83));
+    let end = e.jump(Branch::Flags(0x83));
     e.parallel_abi(begin, super::ParallelRangePart::ScalarBounds);
     let skip_selection = stage.selection.map(|selection| {
         let start = e.code.len();
@@ -740,7 +751,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         let memory = Memory::indexed(0, 1, 0, selection.word);
         e.instruction(None, &[0x83], false, 7, memory.into());
         e.bytes(&[0]);
-        let skip = e.jump(Some(0x84));
+        let skip = e.jump(Branch::Flags(0x84));
         e.parallel_abi(start, super::ParallelRangePart::ScalarSelection { binding: selection.binding, offset: selection.word });
         skip
     });
@@ -759,7 +770,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         e.parallel_abi(start, super::ParallelRangePart::ScalarAdvance);
     }
     let start = e.code.len();
-    let back = e.jump(None);
+    let back = e.jump(Branch::Always);
     e.parallel_abi(start, super::ParallelRangePart::ScalarBackEdge);
     e.patch(back, begin);
     e.patch(end, e.code.len());

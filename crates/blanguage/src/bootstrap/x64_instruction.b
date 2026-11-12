@@ -201,6 +201,17 @@ u64 jump_field(u64 at) on cpu {
     return at + 1u64;
 }
 
+extern "C" u64 encode_branch(u8 condition, u32 test_bits, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    if (test_bits != 0) {
+        cursor = register_instruction(cursor, u16(0x85), u8(0), test_bits == 64, u8(0), u8(0));
+    }
+    u64 field = condition == u8(0) ? jump_field(cursor) : condition_field(cursor, condition);
+    write_word(field, 0);
+    return field + 4u64 - start;
+}
+
 const u32 ODD_HALF_LENGTH = 12;
 const array<u8,ODD_HALF_LENGTH> ODD_HALF = array<u8,ODD_HALF_LENGTH>(
     u8(0x48), u8(0x89), u8(0xc1), // mov rcx, rax

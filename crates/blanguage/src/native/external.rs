@@ -162,8 +162,7 @@ impl Emitter<'_> {
         self.invoke(reference);
         let failed = if let Some(error) = call.error {
             self.store(error);
-            self.bytes(&[0x48, 0x85, 0xc0]);
-            Some(self.jump(Some(0x85)))
+            Some(self.jump(Branch::Nonzero64))
         } else { None };
         if let Some(ty) = call.result.as_ref().filter(|ty| ty.size != 0) {
             if let Some(at) = layout.result {

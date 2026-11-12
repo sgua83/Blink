@@ -38,6 +38,10 @@ extern "C" TailRange append_literal(address image, u64 end, u64 bits, u32 width,
 // The field address refers to the four-byte displacement at offset in the image.
 extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu;
 
+// condition is zero for JMP; test_bits is zero for flags, or 32/64 for EAX/RAX.
+// The caller owns nine output bytes. The returned length includes the rel32.
+extern "C" u64 encode_branch(u8 condition, u32 test_bits, address output) on cpu;
+
 struct DivisionPlan {
     u32 magic;
     u8 shift;

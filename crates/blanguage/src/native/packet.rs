@@ -412,27 +412,27 @@ impl Emitter<'_> {
             self.bytes(&[0x31, 0xc9]); // ecx = 已收集 lane 数
             let collect = self.code.len();
             self.bytes(&[0x44, 0x39, 0xf3]);
-            let tail = self.jump(Some(0x83));
+            let tail = self.jump(Branch::Flags(0x83));
             self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
             self.u32(selection.binding as u32 * BUFFER_BYTES);
             self.bytes(&[0x89, 0xd8]);
             let memory = self.buffer_memory(selection.binding, 0, selection.word);
             self.instruction(None, &[0x83], false, 7, memory.into());
             self.bytes(&[0]);
-            let skip = self.jump(Some(0x84));
+            let skip = self.jump(Branch::Flags(0x84));
             self.bytes(&[0x89, 0x9c, 0x8c]); // indices[ecx] = ebx
             self.u32(self.frame.end as u32);
             self.bytes(&[0xff, 0xc1]);
             self.patch(skip, self.code.len());
             self.bytes(&[0xff, 0xc3, 0x83, 0xf9, 0x04]);
-            let again = self.jump(Some(0x85));
+            let again = self.jump(Branch::Flags(0x85));
             self.patch(again, collect);
             self.parallel_abi(begin, crate::native::ParallelRangePart::PacketCollect { binding: selection.binding, offset: selection.word });
             tail
         } else {
             // 用 64 位检查 index+4；u32 域末端附近也不让加法提前回绕。
             self.bytes(&[0x89, 0xd8, 0x48, 0x83, 0xc0, 0x04, 0x4c, 0x39, 0xf0]);
-            let tail = self.jump(Some(0x87));
+            let tail = self.jump(Branch::Flags(0x87));
             self.parallel_abi(begin, crate::native::ParallelRangePart::PacketBounds);
             tail
         };
@@ -443,14 +443,14 @@ impl Emitter<'_> {
             self.parallel_abi(start, crate::native::ParallelRangePart::PacketAdvance);
         }
         let start = self.code.len();
-        let again = self.jump(None);
+        let again = self.jump(Branch::Always);
         self.parallel_abi(start, crate::native::ParallelRangePart::PacketBackEdge);
         self.patch(again, begin);
         self.patch(tail, self.code.len());
         if sparse {
             let start = self.code.len();
             self.bytes(&[0x85, 0xc9]);
-            let empty = self.jump(Some(0x84));
+            let empty = self.jump(Branch::Flags(0x84));
             self.instruction(
                 None,
                 &[0x8b],
@@ -472,13 +472,16 @@ impl Emitter<'_> {
             match &step.kind {
                 StepKind::If { condition, yes, no } => {
                     self.packet_lane(allocation, *condition, 0, 0);
-                    self.bytes(&[0x85, 0xc0]);
-                    let other = self.jump(Some(0x84));
+                    let other = self.jump(Branch::Zero32);
                     self.packet_block(yes, allocation);
-                    let end = self.jump(None);
-                    self.patch(other, self.code.len());
-                    self.packet_block(no, allocation);
-                    self.patch(end, self.code.len());
+                    if no.is_empty() {
+                        self.patch(other, self.code.len());
+                    } else {
+                        let end = self.jump(Branch::Always);
+                        self.patch(other, self.code.len());
+                        self.packet_block(no, allocation);
+                        self.patch(end, self.code.len());
+                    }
                 }
                 StepKind::Loop {
                     condition,
@@ -488,13 +491,12 @@ impl Emitter<'_> {
                     let begin = self.code.len();
                     self.packet_block(condition, allocation);
                     self.packet_lane(allocation, *test, 0, 0);
-                    self.bytes(&[0x85, 0xc0]);
-                    let end = self.jump(Some(0x84));
+                    let end = self.jump(Branch::Zero32);
                     self.breaks.push(Vec::new());
                     self.continues.push(begin);
                     self.packet_block(body, allocation);
                     self.continues.pop();
-                    let back = self.jump(None);
+                    let back = self.jump(Branch::Always);
                     self.patch(back, begin);
                     let target = self.code.len();
                     self.patch(end, target);
@@ -511,15 +513,15 @@ impl Emitter<'_> {
                     }
                 }
                 StepKind::Exit => {
-                    let at = self.jump(None);
+                    let at = self.jump(Branch::Always);
                     self.exits.last_mut().unwrap().push(at);
                 }
                 StepKind::Break => {
-                    let at = self.jump(None);
+                    let at = self.jump(Branch::Always);
                     self.breaks.last_mut().unwrap().push(at);
                 }
                 StepKind::Continue => {
-                    let at = self.jump(None);
+                    let at = self.jump(Branch::Always);
                     self.patch(at, *self.continues.last().unwrap());
                 }
                 StepKind::Constant(dst, bits) => {
