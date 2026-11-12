@@ -95,6 +95,29 @@ struct ShaderWords {
     count: u64,
 }
 
+#[repr(u32)]
+enum TypeShape {
+    Void,
+    Vector,
+    Matrix,
+    SampledImage,
+    Array,
+    Function,
+    Acceleration,
+    RayQuery,
+    Image,
+    Pointer,
+}
+
+#[repr(C)]
+struct ResourceBlock {
+    element: u32,
+    length: u32,
+    array: u32,
+    block: u32,
+    pointer: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
@@ -102,6 +125,10 @@ unsafe extern "C" {
     fn encode_envelope(
         input: ShaderEnvelope, interfaces: *const ShaderWords, count: u64, words: *mut u32,
     ) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::type_declaration"]
+    fn type_declaration(shape: TypeShape, id: u32, first: u32, second: u32, words: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::resource_block"]
+    fn resource_block(input: ResourceBlock, definitions: *mut u32, decorations: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
     fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
@@ -211,6 +238,37 @@ impl Emitter<'_> {
         }
         self.constants.insert((s, bits), id);
         id
+    }
+    fn declare_type(&mut self, shape: TypeShape, first: u32, second: u32) -> u32 {
+        let id = self.id();
+        let at = self.defs.len();
+        self.defs.reserve(9);
+        unsafe {
+            let used = type_declaration(shape, id, first, second, self.defs.as_mut_ptr().add(at));
+            self.defs.set_len(at + used as usize);
+        }
+        id
+    }
+    fn declare_pointer(&mut self, storage: u32, pointee: u32) -> u32 {
+        self.declare_type(TypeShape::Pointer, storage, pointee)
+    }
+    fn declare_resource_block(&mut self, element: u32, length: u32) -> u32 {
+        let input = ResourceBlock {
+            element, length,
+            array: self.id(), block: self.id(), pointer: self.id(),
+        };
+        let pointer = input.pointer;
+        let defs = self.defs.len();
+        let annotations = self.decorations.len();
+        self.defs.reserve(11);
+        self.decorations.reserve(12);
+        unsafe {
+            let used = resource_block(input, self.defs.as_mut_ptr().add(defs),
+                self.decorations.as_mut_ptr().add(annotations));
+            self.defs.set_len(defs + used as usize);
+            self.decorations.set_len(annotations + 12);
+        }
+        pointer
     }
     fn emit(&mut self, code: u16, args: &[u32]) {
         if code == 248 {
@@ -1130,8 +1188,7 @@ impl Emitter<'_> {
             let mut fields = Vec::new();
             if self.position_queries.contains(&regs[0]) {
                 let length = self.constant(Scalar::U32, 3);
-                let array_type = self.id();
-                op(&mut self.defs, 28, &[array_type, self.vec3_type, length]);
+                let array_type = self.declare_type(TypeShape::Array, self.vec3_type, length);
                 let points = self.id();
                 self.emit(5340, &[array_type, points, query, committed]);
                 for v in 0..3 {
@@ -1144,8 +1201,7 @@ impl Emitter<'_> {
             }
             for (slot, opcode) in [(0, 6031), (1, 6032)] {
                 if self.transform_queries[slot].contains(&regs[0]) {
-                    let matrix_type = self.id();
-                    op(&mut self.defs, 24, &[matrix_type, self.vec3_type, 4]);
+                    let matrix_type = self.declare_type(TypeShape::Matrix, self.vec3_type, 4);
                     let matrix = self.id();
                     self.emit(opcode, &[matrix_type, matrix, query, committed]);
                     // SPIR-V以列为复合索引，B的float3x4以行存储。
@@ -1336,8 +1392,7 @@ fn emit_shader(
         maximal_reconvergence: u32::from(pass == Pass::Main && stage.requires_maximal_reconvergence()),
     };
     e.ext = e.id();
-    let void = e.id();
-    op(&mut e.defs, 19, &[void]);
+    let void = e.declare_type(TypeShape::Void, 0, 0);
     for s in [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool, Scalar::U64, Scalar::I64].into_iter()
         .chain(float64.then_some(Scalar::F64))
         .chain(integer8.then_some([Scalar::U8, Scalar::I8]).into_iter().flatten())
@@ -1354,34 +1409,25 @@ fn emit_shader(
         e.pointers.insert(s, ptr);
     }
     let u = e.types[&Scalar::U32];
-    e.vec3_type = e.id();
-    e.vec2_type = e.id();
-    op(&mut e.defs, 23, &[e.vec3_type, e.types[&Scalar::F32], 3]);
-    op(&mut e.defs, 23, &[e.vec2_type, e.types[&Scalar::F32], 2]);
+    let f = e.types[&Scalar::F32];
+    e.vec3_type = e.declare_type(TypeShape::Vector, f, 3);
+    e.vec2_type = e.declare_type(TypeShape::Vector, f, 2);
     if !program.textures.is_empty() {
-        e.vec4_type = e.id();
-        op(&mut e.defs, 23, &[e.vec4_type, e.types[&Scalar::F32], 4]);
-        e.uint2_type = e.id();
-        op(&mut e.defs, 23, &[e.uint2_type, u, 2]);
+        e.vec4_type = e.declare_type(TypeShape::Vector, f, 4);
+        e.uint2_type = e.declare_type(TypeShape::Vector, u, 2);
         for i in 0..program.textures.len() {
             let dimension = program.textures[i].dimension;
             if !e.texture_types.contains_key(&dimension) {
-                let image = e.id();
-                op(&mut e.defs, 25, &[image, e.types[&Scalar::F32], dimension.components() as u32 - 1, 0, 0, 0, 1, 0]);
-                let sampled = e.id();
-                op(&mut e.defs, 27, &[sampled, image]);
-                let pointer = e.id();
-                op(&mut e.defs, 32, &[pointer, 0, sampled]);
+                let image = e.declare_type(TypeShape::Image, f, dimension.components() as u32);
+                let sampled = e.declare_type(TypeShape::SampledImage, image, 0);
+                let pointer = e.declare_pointer(0, sampled);
                 e.texture_types.insert(dimension, (image, sampled, pointer));
             }
             let (_, sampled, pointer) = e.texture_types[&dimension];
             let pointer = if let Some(count) = program.textures[i].count {
                 let length = e.constant(Scalar::U32, count);
-                let array = e.id();
-                op(&mut e.defs, 28, &[array, sampled, length]);
-                let pointer = e.id();
-                op(&mut e.defs, 32, &[pointer, 0, array]);
-                pointer
+                let array = e.declare_type(TypeShape::Array, sampled, length);
+                e.declare_pointer(0, array)
             } else { pointer };
             let id = e.id();
             op(&mut e.defs, 59, &[pointer, id, 0]);
@@ -1400,10 +1446,8 @@ fn emit_shader(
     }
     let mut ray_pointer = 0;
     if !program.accelerations.is_empty() {
-        e.acceleration_type = e.id();
-        op(&mut e.defs, 5341, &[e.acceleration_type]);
-        let pointer = e.id();
-        op(&mut e.defs, 32, &[pointer, 0, e.acceleration_type]);
+        e.acceleration_type = e.declare_type(TypeShape::Acceleration, 0, 0);
+        let pointer = e.declare_pointer(0, e.acceleration_type);
         for i in 0..program.accelerations.len() {
             let id = e.id();
             op(&mut e.defs, 59, &[pointer, id, 0]);
@@ -1415,17 +1459,13 @@ fn emit_shader(
             );
             e.accelerations.push(id);
         }
-        let query_type = e.id();
-        op(&mut e.defs, 4472, &[query_type]);
-        ray_pointer = e.id();
-        op(&mut e.defs, 32, &[ray_pointer, 7, query_type]);
+        let query_type = e.declare_type(TypeShape::RayQuery, 0, 0);
+        ray_pointer = e.declare_pointer(7, query_type);
     }
     e.u64_type = e.types[&Scalar::U64];
-    let v3 = e.id();
+    let v3 = e.declare_type(TypeShape::Vector, u, 3);
     e.uint3_type = v3;
-    op(&mut e.defs, 23, &[v3, u, 3]);
-    let ptr_input = e.id();
-    op(&mut e.defs, 32, &[ptr_input, 1, v3]);
+    let ptr_input = e.declare_pointer(1, v3);
     let global = e.id();
     op(&mut e.defs, 59, &[ptr_input, global, 1]);
     op(&mut e.decorations, 71, &[global, 11, 28]);
@@ -1437,24 +1477,14 @@ fn emit_shader(
         op(&mut e.defs, 59, &[ptr_input, num_groups, 1]);
         op(&mut e.decorations, 71, &[num_groups, 11, 24]);
     }
-    let array = e.id();
-    op(&mut e.defs, 29, &[array, e.u64_type]);
-    op(&mut e.decorations, 71, &[array, 6, 8]);
-    let block = e.id();
-    op(&mut e.defs, 30, &[block, array]);
-    op(&mut e.decorations, 71, &[block, 2]);
-    op(&mut e.decorations, 72, &[block, 0, 35, 0]);
-    let ptr = e.id();
-    op(&mut e.defs, 32, &[ptr, 12, block]);
+    let ptr = e.declare_resource_block(e.u64_type, 0);
     for scalar in [Scalar::U32, Scalar::U64, Scalar::U8, Scalar::U16] {
         if let Some(ty) = e.types.get(&scalar).copied() {
-            let pointer = e.id();
-            op(&mut e.defs, 32, &[pointer, 5349, ty]);
+            let pointer = e.declare_pointer(5349, ty);
             e.physical_pointers.insert(scalar, pointer);
         }
     }
-    e.ptr_table_u64 = e.id();
-    op(&mut e.defs, 32, &[e.ptr_table_u64, 12, e.u64_type]);
+    e.ptr_table_u64 = e.declare_pointer(12, e.u64_type);
     for i in 0..program.buffers.len() + program.auxiliary_buffers() {
         let id = e.id();
         op(&mut e.defs, 59, &[ptr, id, 12]);
@@ -1476,19 +1506,10 @@ fn emit_shader(
         e.buffers.push(id);
     }
     let length = e.constant(Scalar::U32, program.uniform_bytes / 4);
-    let push_array = e.id();
-    op(&mut e.defs, 28, &[push_array, u, length]);
-    op(&mut e.decorations, 71, &[push_array, 6, 4]);
-    let push_block = e.id();
-    op(&mut e.defs, 30, &[push_block, push_array]);
-    op(&mut e.decorations, 71, &[push_block, 2]);
-    op(&mut e.decorations, 72, &[push_block, 0, 35, 0]);
-    let push_ptr = e.id();
-    op(&mut e.defs, 32, &[push_ptr, 9, push_block]);
+    let push_ptr = e.declare_resource_block(u, length);
     e.push = e.id();
     op(&mut e.defs, 59, &[push_ptr, e.push, 9]);
-    e.ptr_push_u32 = e.id();
-    op(&mut e.defs, 32, &[e.ptr_push_u32, 9, u]);
+    e.ptr_push_u32 = e.declare_pointer(9, u);
     let scan_local = (matches!(
         stage.operation,
         Operation::ScanExclusive(_) | Operation::CustomScan(_) | Operation::Compact(_)
@@ -1510,8 +1531,7 @@ fn emit_shader(
     let mut shared = 0;
     let mut shared_pointer = 0;
     if reduction {
-        let input_ptr = e.id();
-        op(&mut e.defs, 32, &[input_ptr, 1, u]);
+        let input_ptr = e.declare_pointer(1, u);
         local_input = e.id();
         op(&mut e.defs, 59, &[input_ptr, local_input, 1]);
         op(&mut e.decorations, 71, &[local_input, 11, 29]);
@@ -1519,8 +1539,7 @@ fn emit_shader(
     let mut subgroup_inputs = [0; 2];
     let mut ballot_type = 0;
     if ranks {
-        let input_ptr = e.id();
-        op(&mut e.defs, 32, &[input_ptr, 1, u]);
+        let input_ptr = e.declare_pointer(1, u);
         for (input, builtin) in subgroup_inputs.iter_mut().zip([40, 41]) {
             let v = e.id();
             op(&mut e.defs, 59, &[input_ptr, v, 1]);
@@ -1529,8 +1548,7 @@ fn emit_shader(
         }
     }
     if subgroup_caps.ballot || ranks {
-        ballot_type = e.id();
-        op(&mut e.defs, 23, &[ballot_type, u, 4]);
+        ballot_type = e.declare_type(TypeShape::Vector, u, 4);
         e.ballot_type = ballot_type;
     }
     for (operation, builtin) in [
@@ -1539,8 +1557,7 @@ fn emit_shader(
         (SubgroupOp::Id, 40),
     ] {
         if subgroup_operations.contains(&operation) {
-            let input_ptr = e.id();
-            op(&mut e.defs, 32, &[input_ptr, 1, u]);
+            let input_ptr = e.declare_pointer(1, u);
             let variable = e.id();
             op(&mut e.defs, 59, &[input_ptr, variable, 1]);
             op(&mut e.decorations, 71, &[variable, 11, builtin]);
@@ -1569,18 +1586,11 @@ fn emit_shader(
             };
         shared_bytes += u64::from(words) * 4;
         let count = e.constant(Scalar::U32, words);
-        let array = e.id();
-        op(&mut e.defs, 28, &[array, e.types[&shared_scalar], count]);
-        let array_ptr = e.id();
-        op(&mut e.defs, 32, &[array_ptr, 4, array]);
+        let array = e.declare_type(TypeShape::Array, e.types[&shared_scalar], count);
+        let array_ptr = e.declare_pointer(4, array);
         shared = e.id();
         op(&mut e.defs, 59, &[array_ptr, shared, 4]);
-        shared_pointer = e.id();
-        op(
-            &mut e.defs,
-            32,
-            &[shared_pointer, 4, e.types[&shared_scalar]],
-        );
+        shared_pointer = e.declare_pointer(4, e.types[&shared_scalar]);
     }
     if pass == Pass::Main {
         for unit in [Scalar::U32, Scalar::U64] {
@@ -1592,14 +1602,11 @@ fn emit_shader(
             let words = u32::try_from(words).map_err(|_| "tile 共享数组超过 SPIR-V 长度范围")?;
             shared_bytes += u64::from(words) * u64::from(unit.size());
             let length = e.constant(Scalar::U32, words);
-            let array = e.id();
-            op(&mut e.defs, 28, &[array, e.types[&unit], length]);
-            let array_ptr = e.id();
-            op(&mut e.defs, 32, &[array_ptr, 4, array]);
+            let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
+            let array_ptr = e.declare_pointer(4, array);
             let shared = e.id();
             op(&mut e.defs, 59, &[array_ptr, shared, 4]);
-            let pointer = e.id();
-            op(&mut e.defs, 32, &[pointer, 4, e.types[&unit]]);
+            let pointer = e.declare_pointer(4, e.types[&unit]);
             if unit == Scalar::U32 {
                 e.tile_shared = shared; e.tile_pointer = pointer;
             } else {
@@ -1607,8 +1614,7 @@ fn emit_shader(
             }
         }
     }
-    let fn_ty = e.id();
-    op(&mut e.defs, 33, &[fn_ty, void]);
+    let fn_ty = e.declare_type(TypeShape::Function, void, 0);
     let main = e.id();
     let entry = e.id();
     let execute = e.id();
@@ -1629,10 +1635,8 @@ fn emit_shader(
         let size = ty.components.iter().map(|(s, _)| s.size()).min().unwrap().min(4);
         let unit = match size { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
         let length = e.constant(Scalar::U32, ty.size / size);
-        let array = e.id();
-        op(&mut e.defs, 28, &[array, e.types[&unit], length]);
-        let pointer = e.id();
-        op(&mut e.defs, 32, &[pointer, 7, array]);
+        let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
+        let pointer = e.declare_pointer(7, array);
         let variable = e.id();
         e.emit(59, &[pointer, variable, 7]);
         e.private_words.extend(span.clone());

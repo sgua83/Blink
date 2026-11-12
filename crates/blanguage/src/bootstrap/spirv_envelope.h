@@ -39,3 +39,12 @@ extern "C" u64 encode(Envelope input, address interfaces, u64 count, address wor
 // Constant bits are the original Scalar-truncated cache key.
 extern "C" u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer_id, address words) on cpu;
 extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u64 bits, address words) on cpu;
+
+enum TypeShape:u32 { Void=0; Vector=1; Matrix=2; SampledImage=3; Array=4; Function=5; Acceleration=6; RayQuery=7; Image=8; Pointer=9; };
+struct ResourceBlock { u32 element; u32 length; u32 array; u32 block; u32 pointer; };
+
+// The existing shader supplies result IDs and type operands. Output has room for 9 words.
+extern "C" u64 type_declaration(TypeShape shape, u32 id, u32 first, u32 second, address words) on cpu;
+// A zero length ID selects the runtime array for the page table.
+// Definitions have room for 11 words, and the 12 decoration words are always written.
+extern "C" u64 resource_block(ResourceBlock input, address definitions, address decorations) on cpu;

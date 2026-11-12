@@ -189,11 +189,7 @@ extern "C" u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer
     if (type.opcode == 21) { put(words, at, type.signed); at += 1u64; }
     put(words, 0u64, instruction(type.opcode, u32(at)));
     put(words, 1u64, type_id);
-    put(words, at, instruction(32, 4));
-    put(words, at + 1u64, pointer_id);
-    put(words, at + 2u64, 7);
-    put(words, at + 3u64, type_id);
-    return at + 4u64;
+    return type_three(words, at, 32, pointer_id, 7, type_id);
 }
 
 extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u64 bits, address words) on cpu {
@@ -212,4 +208,79 @@ extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u
     }
     put(words, 0u64, instruction(43, 4));
     return 4u64;
+}
+
+u64 type_one(address words, u64 at, u32 opcode, u32 id) on cpu {
+    put(words, at, instruction(opcode, 2));
+    put(words, at + 1u64, id);
+    return at + 2u64;
+}
+
+u64 type_two(address words, u64 at, u32 opcode, u32 id, u32 first) on cpu {
+    put(words, at, instruction(opcode, 3));
+    put(words, at + 1u64, id);
+    put(words, at + 2u64, first);
+    return at + 3u64;
+}
+
+u64 type_three(address words, u64 at, u32 opcode, u32 id, u32 first, u32 second) on cpu {
+    put(words, at, instruction(opcode, 4));
+    put(words, at + 1u64, id);
+    put(words, at + 2u64, first);
+    put(words, at + 3u64, second);
+    return at + 4u64;
+}
+
+extern "C" u64 type_declaration(TypeShape shape, u32 id, u32 first, u32 second, address words) on cpu {
+    if (shape == TypeShape::Void) { return type_one(words, 0u64, 19, id); }
+    if (shape == TypeShape::Vector) { return type_three(words, 0u64, 23, id, first, second); }
+    if (shape == TypeShape::Matrix) { return type_three(words, 0u64, 24, id, first, second); }
+    if (shape == TypeShape::SampledImage) { return type_two(words, 0u64, 27, id, first); }
+    if (shape == TypeShape::Array) { return type_three(words, 0u64, 28, id, first, second); }
+    if (shape == TypeShape::Function) { return type_two(words, 0u64, 33, id, first); }
+    if (shape == TypeShape::Acceleration) { return type_one(words, 0u64, 5341, id); }
+    if (shape == TypeShape::RayQuery) { return type_one(words, 0u64, 4472, id); }
+    if (shape == TypeShape::Pointer) { return type_three(words, 0u64, 32, id, first, second); }
+
+    // The sampled image's dimensionality is the source texture coordinate width.
+    put(words, 0u64, instruction(25, 9));
+    put(words, 1u64, id);
+    put(words, 2u64, first);
+    put(words, 3u64, second - 1);
+    put(words, 4u64, 0); // Not a depth image.
+    put(words, 5u64, 0); // Descriptor arrays wrap the sampled image type.
+    put(words, 6u64, 0); // Single sample.
+    put(words, 7u64, 1); // Used with a sampler.
+    put(words, 8u64, 0); // Unknown image format.
+    return 9u64;
+}
+
+extern "C" u64 resource_block(ResourceBlock input, address definitions, address decorations) on cpu {
+    u64 at = 0u64;
+    u32 storage = 12;
+    u32 stride = 8;
+    if (input.length == 0) {
+        at = type_two(definitions, at, 29, input.array, input.element);
+    } else {
+        at = type_three(definitions, at, 28, input.array, input.element, input.length);
+        storage = 9;
+        stride = 4;
+    }
+    at = type_two(definitions, at, 30, input.block, input.array);
+    at = type_three(definitions, at, 32, input.pointer, storage, input.block);
+
+    // ArrayStride, Block, and Offset of the single array member.
+    put(decorations, 0u64, instruction(71, 4));
+    put(decorations, 1u64, input.array);
+    put(decorations, 2u64, 6);
+    put(decorations, 3u64, stride);
+    put(decorations, 4u64, instruction(71, 3));
+    put(decorations, 5u64, input.block);
+    put(decorations, 6u64, 2);
+    put(decorations, 7u64, instruction(72, 5));
+    put(decorations, 8u64, input.block);
+    put(decorations, 9u64, 0);
+    put(decorations, 10u64, 35);
+    put(decorations, 11u64, 0);
+    return at;
 }
