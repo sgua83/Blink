@@ -107,3 +107,23 @@ extern "C" u64 divide_constant32(DivisionOutputs result, MoveLocation src, u32 d
     ScalarEncoding scalar, address output) on cpu requires nonzero(divisor);
 extern "C" u64 divide_value(DivisionOutputs result, MoveLocation src, MoveLocation divisor,
     ScalarEncoding scalar, ScalarEncoding divisor_scalar, address output) on cpu;
+
+enum PacketMathOperation:u32 { Sqrt=0; Abs=1; Min=2; Max=3; };
+// Packet entries borrow the existing four-lane allocation; scratch XMM0..3 and
+// EAX/ECX follow that allocation. Constant has 24 output bytes; load/store 16;
+// from_word and multiply 64; the full numeric entries have 256 bytes.
+extern "C" u64 packet_constant(u8 dst, u32 bits, address output) on cpu;
+extern "C" u64 packet_load(MoveLocation src, u8 dst, address output) on cpu;
+extern "C" u64 packet_store(MoveLocation dst, u8 src, address output) on cpu;
+extern "C" u64 packet_copy(MoveLocation dst, MoveLocation src, address output) on cpu;
+extern "C" u64 packet_from_word(bool boolean, u8 dst, address output) on cpu;
+extern "C" u64 packet_multiply(bool broadcast, address output) on cpu;
+extern "C" u64 packet_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
+    ScalarEncoding scalar, BinaryOperation operation, bool uniform_count, address output) on cpu;
+extern "C" u64 packet_unary(MoveLocation dst, MoveLocation src, ValueUnaryOperation operation, address output) on cpu;
+extern "C" u64 packet_cast(MoveLocation dst, MoveLocation src, ScalarEncoding from,
+    ScalarEncoding into, address output) on cpu;
+extern "C" u64 packet_math(MoveLocation dst, MoveLocation left, MoveLocation right,
+    PacketMathOperation operation, address output) on cpu;
+extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
+    MoveLocation right, address output) on cpu;

@@ -1062,3 +1062,327 @@ extern "C" u64 divide_value(DivisionOutputs result, MoveLocation src, MoveLocati
     if (result.kind != 1) { cursor = store_division(cursor, division_remainder(result), u8(2), scalar); }
     return cursor - start;
 }
+
+MoveLocation packet_register(u8 reg) on cpu {
+    return MoveLocation(0u64, MOVE_XMM, reg, NO_INDEX, u8(0));
+}
+
+u64 packet_instruction(u64 at, u8 prefix, u8 opcode, u8 dst, u8 src) on cpu {
+    return register_instruction(at, u16(0x0f) | (u16(opcode) << 8), prefix, false, dst, src);
+}
+
+u64 packet_shuffle_at(u64 at, u8 dst, u8 src, u8 pattern) on cpu {
+    u64 cursor = packet_instruction(at, u8(0x66), u8(0x70), dst, src);
+    put_byte(cursor, pattern);
+    return cursor + 1u64;
+}
+
+u64 packet_constant_at(u64 at, u8 dst, u32 bits) on cpu {
+    if (bits == 0) { return packet_instruction(at, u8(0x66), u8(0xef), dst, dst); }
+    if (bits == 0xffffffff) { return packet_instruction(at, u8(0x66), u8(0x76), dst, dst); }
+    u64 cursor = move_immediate(at, u8(0), u64(bits), false);
+    cursor = packet_instruction(cursor, u8(0x66), u8(0x6e), dst, u8(0));
+    return packet_shuffle_at(cursor, dst, dst, u8(0));
+}
+
+u64 packet_load_at(u64 at, MoveLocation src, u8 dst) on cpu {
+    if (src.kind == MOVE_XMM && src.base == dst) { return at; }
+    return encode_operand_instruction(at, u16(0x280f), u8(0), false, dst, src);
+}
+
+u64 packet_store_at(u64 at, MoveLocation dst, u8 src) on cpu {
+    if (dst.kind == MOVE_XMM) {
+        if (dst.base == src) { return at; }
+        return packet_instruction(at, u8(0), u8(0x28), dst.base, src);
+    }
+    return encode_operand_instruction(at, u16(0x290f), u8(0), false, src, dst);
+}
+
+u8 packet_destination(MoveLocation dst) on cpu {
+    if (dst.kind == MOVE_XMM) { return dst.base; }
+    return u8(0);
+}
+
+u64 packet_bool_at(u64 at, u8 dst) on cpu {
+    u64 cursor = packet_constant_at(at, u8(3), 1);
+    return packet_instruction(cursor, u8(0x66), u8(0xdb), dst, u8(3));
+}
+
+extern "C" u64 packet_constant(u8 dst, u32 bits, address output) on cpu {
+    u64 start = address_bits(output);
+    return packet_constant_at(start, dst, bits) - start;
+}
+
+extern "C" u64 packet_load(MoveLocation src, u8 dst, address output) on cpu {
+    u64 start = address_bits(output);
+    return packet_load_at(start, src, dst) - start;
+}
+
+extern "C" u64 packet_store(MoveLocation dst, u8 src, address output) on cpu {
+    u64 start = address_bits(output);
+    return packet_store_at(start, dst, src) - start;
+}
+
+extern "C" u64 packet_copy(MoveLocation dst, MoveLocation src, address output) on cpu {
+    u64 start = address_bits(output);
+    if (same_move_location(dst, src)) { return 0u64; }
+    u8 temporary = u8(0);
+    if (dst.kind == MOVE_XMM) { temporary = dst.base; }
+    if (src.kind == MOVE_XMM) { temporary = src.base; }
+    u64 cursor = packet_load_at(start, src, temporary);
+    return packet_store_at(cursor, dst, temporary) - start;
+}
+
+extern "C" u64 packet_from_word(bool boolean, u8 dst, address output) on cpu {
+    u64 start = address_bits(output);
+    if (!boolean) { return 0u64; }
+    u64 cursor = packet_constant_at(start, u8(1), 0);
+    cursor = packet_instruction(cursor, u8(0x66), u8(0x76), dst, u8(1));
+    cursor = packet_constant_at(cursor, u8(1), 1);
+    return packet_instruction(cursor, u8(0x66), u8(0xfe), dst, u8(1)) - start;
+}
+
+u64 packet_multiply_at(u64 at, bool broadcast) on cpu {
+    u64 cursor = packet_instruction(at, u8(0), u8(0x28), u8(2), u8(0));
+    if (!broadcast) { cursor = packet_instruction(cursor, u8(0), u8(0x28), u8(3), u8(1)); }
+    cursor = packet_instruction(cursor, u8(0x66), u8(0x73), u8(3), u8(2));
+    put_byte(cursor, u8(4)); cursor += 1u64;
+    if (!broadcast) {
+        cursor = packet_instruction(cursor, u8(0x66), u8(0x73), u8(3), u8(3));
+        put_byte(cursor, u8(4)); cursor += 1u64;
+    }
+    cursor = packet_instruction(cursor, u8(0x66), u8(0xf4), u8(0), u8(1));
+    u8 right = u8(3);
+    if (broadcast) { right = u8(1); }
+    cursor = packet_instruction(cursor, u8(0x66), u8(0xf4), u8(2), right);
+    cursor = packet_shuffle_at(cursor, u8(0), u8(0), u8(0x88));
+    cursor = packet_shuffle_at(cursor, u8(2), u8(2), u8(0x88));
+    return packet_instruction(cursor, u8(0x66), u8(0x62), u8(0), u8(2));
+}
+
+extern "C" u64 packet_multiply(bool broadcast, address output) on cpu {
+    u64 start = address_bits(output);
+    return packet_multiply_at(start, broadcast) - start;
+}
+
+u64 packet_lane_at(u64 at, MoveLocation src, u8 lane, u8 gpr) on cpu {
+    if (src.kind == MOVE_XMM) {
+        u8 source = src.base;
+        u64 cursor = at;
+        if (lane != u8(0)) {
+            cursor = packet_shuffle_at(cursor, u8(3), source, lane * u8(0x55));
+            source = u8(3);
+        }
+        return packet_instruction(cursor, u8(0x66), u8(0x7e), source, gpr);
+    }
+    MoveLocation field = src;
+    field.value += u64(lane) * 4u64;
+    return encode_operand_instruction(at, u16(0x8b), u8(0), false, gpr, field);
+}
+
+u64 packet_compare_at(u64 at, MoveLocation dst, MoveLocation left, MoveLocation right,
+    ScalarEncoding scalar, BinaryOperation operation) on cpu {
+    bool floating = scalar.kind == ScalarKind::Float;
+    bool swap = floating && (operation == BinaryOperation::Greater || operation == BinaryOperation::GreaterEqual)
+        || !floating && (operation == BinaryOperation::Less || operation == BinaryOperation::GreaterEqual);
+    MoveLocation a = left; MoveLocation b = right;
+    if (swap) { a = right; b = left; }
+    bool equality = operation == BinaryOperation::Equal || operation == BinaryOperation::NotEqual;
+    bool bias = !equality && (scalar.kind == ScalarKind::Unsigned || scalar.kind == ScalarKind::Boolean);
+    u8 target = binary_target(dst, a, b, MOVE_XMM);
+    if (bias && dst.kind == MOVE_XMM) { target = dst.base; }
+    u64 cursor = at;
+    if (bias) { cursor = packet_load_at(cursor, b, u8(1)); }
+    cursor = packet_load_at(cursor, a, target);
+    if (floating) {
+        cursor = encode_operand_instruction(cursor, u16(0xc20f), u8(0), false, target, b);
+        u8 predicate = u8(0);
+        if (operation == BinaryOperation::NotEqual) { predicate = u8(4); }
+        if (operation == BinaryOperation::Less || operation == BinaryOperation::Greater) { predicate = u8(1); }
+        if (operation == BinaryOperation::LessEqual || operation == BinaryOperation::GreaterEqual) { predicate = u8(2); }
+        put_byte(cursor, predicate); cursor += 1u64;
+    } else {
+        MoveLocation source = b;
+        if (bias) {
+            cursor = packet_constant_at(cursor, u8(2), 0x80000000);
+            cursor = packet_instruction(cursor, u8(0x66), u8(0xef), target, u8(2));
+            cursor = packet_instruction(cursor, u8(0x66), u8(0xef), u8(1), u8(2));
+            source = packet_register(u8(1));
+        }
+        u8 opcode = u8(0x66);
+        if (equality) { opcode = u8(0x76); }
+        cursor = encode_operand_instruction(cursor, u16(0x0f) | (u16(opcode) << 8), u8(0x66), false, target, source);
+        if (operation == BinaryOperation::NotEqual || operation == BinaryOperation::LessEqual || operation == BinaryOperation::GreaterEqual) {
+            cursor = packet_constant_at(cursor, u8(2), 0xffffffff);
+            cursor = packet_instruction(cursor, u8(0x66), u8(0xef), target, u8(2));
+        }
+    }
+    cursor = packet_bool_at(cursor, target);
+    return packet_store_at(cursor, dst, target);
+}
+
+extern "C" u64 packet_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
+    ScalarEncoding scalar, BinaryOperation operation, bool uniform_count, address output) on cpu {
+    u64 start = address_bits(output);
+    if (u32(operation) >= u32(BinaryOperation::Equal)) {
+        return packet_compare_at(start, dst, left, right, scalar, operation) - start;
+    }
+    u64 cursor = start;
+    bool shift = operation == BinaryOperation::ShiftLeft || operation == BinaryOperation::ShiftRight || operation == BinaryOperation::ShiftRightSigned;
+    if (shift) {
+        if (uniform_count) {
+            u8 target = packet_destination(dst);
+            cursor = packet_load_at(cursor, right, u8(1));
+            cursor = packet_instruction(cursor, u8(0x66), u8(0x7e), u8(1), u8(0));
+            put_byte(cursor, u8(0x83)); put_byte(cursor + 1u64, u8(0xe0)); put_byte(cursor + 2u64, u8(0x1f)); cursor += 3u64;
+            cursor = packet_instruction(cursor, u8(0x66), u8(0x6e), u8(1), u8(0));
+            cursor = packet_load_at(cursor, left, target);
+            u8 opcode = u8(0xd2);
+            if (operation == BinaryOperation::ShiftLeft) { opcode = u8(0xf2); }
+            if (operation == BinaryOperation::ShiftRightSigned) { opcode = u8(0xe2); }
+            cursor = packet_instruction(cursor, u8(0x66), opcode, target, u8(1));
+            return packet_store_at(cursor, dst, target) - start;
+        }
+        cursor = packet_constant_at(cursor, u8(0), 0);
+        u8 kind = u8(5);
+        if (operation == BinaryOperation::ShiftLeft) { kind = u8(4); }
+        if (operation == BinaryOperation::ShiftRightSigned) { kind = u8(7); }
+        for (lane in 0..4) {
+            cursor = packet_lane_at(cursor, right, u8(lane), u8(1));
+            cursor = packet_lane_at(cursor, left, u8(lane), u8(0));
+            put_byte(cursor, u8(0xd3)); put_byte(cursor + 1u64, u8(0xc0) | (kind << u8(3))); cursor += 2u64;
+            cursor = packet_instruction(cursor, u8(0x66), u8(0x6e), u8(1), u8(0));
+            if (lane != 0) {
+                cursor = packet_instruction(cursor, u8(0x66), u8(0x73), u8(7), u8(1));
+                put_byte(cursor, u8(lane * 4)); cursor += 1u64;
+            }
+            cursor = packet_instruction(cursor, u8(0x66), u8(0xeb), u8(0), u8(1));
+        }
+        return packet_store_at(cursor, dst, u8(0)) - start;
+    }
+    bool floating = scalar.kind == ScalarKind::Float;
+    if (operation == BinaryOperation::Multiply && !floating) {
+        cursor = packet_load_at(cursor, left, u8(0));
+        cursor = packet_load_at(cursor, right, u8(1));
+        cursor = packet_multiply_at(cursor, false);
+        return packet_store_at(cursor, dst, u8(0)) - start;
+    }
+    u8 target = binary_target(dst, left, right, MOVE_XMM);
+    cursor = packet_load_at(cursor, left, target);
+    u8 prefix = u8(0x66); u8 opcode = u8(0xfe);
+    if (operation == BinaryOperation::And) { opcode = u8(0xdb); }
+    else if (operation == BinaryOperation::Or) { opcode = u8(0xeb); }
+    else if (operation == BinaryOperation::Xor) { opcode = u8(0xef); }
+    else if (floating) {
+        prefix = u8(0); opcode = u8(0x58);
+        if (operation == BinaryOperation::Subtract) { opcode = u8(0x5c); }
+        if (operation == BinaryOperation::Multiply) { opcode = u8(0x59); }
+        if (operation == BinaryOperation::Divide) { opcode = u8(0x5e); }
+    } else if (operation == BinaryOperation::Subtract) { opcode = u8(0xfa); }
+    cursor = encode_operand_instruction(cursor, u16(0x0f) | (u16(opcode) << 8), prefix, false, target, right);
+    return packet_store_at(cursor, dst, target) - start;
+}
+
+extern "C" u64 packet_unary(MoveLocation dst, MoveLocation src, ValueUnaryOperation operation, address output) on cpu {
+    u64 start = address_bits(output); u64 cursor = start; u8 target = packet_destination(dst);
+    if (operation == ValueUnaryOperation::SignedNegate || operation == ValueUnaryOperation::UnsignedNegate) {
+        cursor = packet_load_at(cursor, src, u8(1));
+        cursor = packet_constant_at(cursor, target, 0);
+        cursor = packet_instruction(cursor, u8(0x66), u8(0xfa), target, u8(1));
+    } else {
+        cursor = packet_load_at(cursor, src, target);
+        if (operation != ValueUnaryOperation::Bitcast) {
+            u32 bits = 0xffffffff;
+            if (operation == ValueUnaryOperation::FloatNegate) { bits = 0x80000000; }
+            if (operation == ValueUnaryOperation::LogicalNot) { bits = 1; }
+            cursor = packet_constant_at(cursor, u8(1), bits);
+            cursor = packet_instruction(cursor, u8(0x66), u8(0xef), target, u8(1));
+        }
+    }
+    return packet_store_at(cursor, dst, target) - start;
+}
+
+extern "C" u64 packet_cast(MoveLocation dst, MoveLocation src, ScalarEncoding from,
+    ScalarEncoding into, address output) on cpu {
+    u64 start = address_bits(output); u64 cursor = start; u8 target = packet_destination(dst);
+    bool floating = from.kind == ScalarKind::Float;
+    if (into.kind == ScalarKind::Float && (from.kind == ScalarKind::Signed || from.kind == ScalarKind::Boolean)
+        || floating && into.kind == ScalarKind::Signed) {
+        u8 prefix = u8(0);
+        if (floating) { prefix = u8(0xf3); }
+        cursor = encode_operand_instruction(cursor, u16(0x5b0f), prefix, false, target, src);
+    } else {
+        cursor = packet_load_at(cursor, src, target);
+        if (into.kind == ScalarKind::Boolean) {
+            cursor = packet_constant_at(cursor, u8(1), 0);
+            if (floating) {
+                cursor = packet_instruction(cursor, u8(0), u8(0xc2), target, u8(1));
+                put_byte(cursor, u8(4)); cursor += 1u64;
+            } else {
+                cursor = packet_instruction(cursor, u8(0x66), u8(0x76), target, u8(1));
+                cursor = packet_constant_at(cursor, u8(1), 0xffffffff);
+                cursor = packet_instruction(cursor, u8(0x66), u8(0xef), target, u8(1));
+            }
+            cursor = packet_bool_at(cursor, target);
+        } else if (into.kind == ScalarKind::Float) {
+            cursor = packet_instruction(cursor, u8(0), u8(0x28), u8(1), target);
+            cursor = packet_constant_at(cursor, u8(2), 0xffff);
+            cursor = packet_instruction(cursor, u8(0x66), u8(0xdb), target, u8(2));
+            cursor = packet_instruction(cursor, u8(0x66), u8(0x72), u8(2), u8(1));
+            put_byte(cursor, u8(16)); cursor += 1u64;
+            cursor = packet_instruction(cursor, u8(0), u8(0x5b), target, target);
+            cursor = packet_instruction(cursor, u8(0), u8(0x5b), u8(1), u8(1));
+            cursor = packet_constant_at(cursor, u8(2), 0x47800000);
+            cursor = packet_instruction(cursor, u8(0), u8(0x59), u8(1), u8(2));
+            cursor = packet_instruction(cursor, u8(0), u8(0x58), target, u8(1));
+        } else {
+            cursor = packet_constant_at(cursor, u8(1), 0x4f000000);
+            cursor = packet_instruction(cursor, u8(0), u8(0x28), u8(3), u8(1));
+            cursor = packet_instruction(cursor, u8(0), u8(0xc2), u8(1), target);
+            put_byte(cursor, u8(2)); cursor += 1u64;
+            cursor = packet_instruction(cursor, u8(0x66), u8(0xdb), u8(3), u8(1));
+            cursor = packet_instruction(cursor, u8(0), u8(0x5c), target, u8(3));
+            cursor = packet_instruction(cursor, u8(0xf3), u8(0x5b), target, target);
+            cursor = packet_constant_at(cursor, u8(2), 0x80000000);
+            cursor = packet_instruction(cursor, u8(0x66), u8(0xdb), u8(1), u8(2));
+            cursor = packet_instruction(cursor, u8(0x66), u8(0xef), target, u8(1));
+        }
+    }
+    return packet_store_at(cursor, dst, target) - start;
+}
+
+extern "C" u64 packet_math(MoveLocation dst, MoveLocation left, MoveLocation right,
+    PacketMathOperation operation, address output) on cpu {
+    u64 start = address_bits(output); u64 cursor = start; u8 target = packet_destination(dst);
+    if (operation == PacketMathOperation::Sqrt) {
+        cursor = encode_operand_instruction(cursor, u16(0x510f), u8(0), false, target, left);
+    } else if (operation == PacketMathOperation::Abs) {
+        cursor = packet_load_at(cursor, left, target);
+        cursor = packet_constant_at(cursor, u8(1), 0x7fffffff);
+        cursor = packet_instruction(cursor, u8(0x66), u8(0xdb), target, u8(1));
+    } else {
+        target = binary_target(dst, left, right, MOVE_XMM);
+        cursor = packet_load_at(cursor, left, target);
+        u16 opcode = u16(0x5d0f);
+        if (operation == PacketMathOperation::Max) { opcode = u16(0x5f0f); }
+        cursor = encode_operand_instruction(cursor, opcode, u8(0), false, target, right);
+    }
+    return packet_store_at(cursor, dst, target) - start;
+}
+
+extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
+    MoveLocation right, address output) on cpu {
+    u64 start = address_bits(output); u8 target = packet_destination(dst);
+    u64 cursor = packet_load_at(start, right, u8(1));
+    MoveLocation source = left;
+    if (left.kind == MOVE_XMM && left.base == target) {
+        cursor = packet_load_at(cursor, left, u8(2)); source = packet_register(u8(2));
+    }
+    cursor = packet_load_at(cursor, condition, target);
+    cursor = packet_constant_at(cursor, u8(3), 0);
+    cursor = packet_instruction(cursor, u8(0x66), u8(0x76), target, u8(3));
+    cursor = packet_instruction(cursor, u8(0x66), u8(0xdb), u8(1), target);
+    cursor = encode_operand_instruction(cursor, u16(0xdf0f), u8(0x66), false, target, source);
+    cursor = packet_instruction(cursor, u8(0x66), u8(0xeb), target, u8(1));
+    return packet_store_at(cursor, dst, target) - start;
+}

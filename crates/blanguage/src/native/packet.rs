@@ -10,14 +10,8 @@ mod integer;
 #[path="packet/memory.rs"]
 mod memory;
 
-enum Binary {
-    Float(u8),
-    Integer(u8),
-    Multiply,
-    Compare(Comparison, Scalar),
-    Shift(u8),
-    ShiftEach(u8),
-}
+#[derive(Clone, Copy)]
+#[repr(u32)]
 enum Math {
     Sqrt,
     Abs,
@@ -73,9 +67,10 @@ enum StepKind<'a> {
     },
     Binary {
         dst: Reg,
-        op: Binary,
+        op: BinaryOp,
         a: Reg,
         b: Reg,
+        uniform_count: bool,
     },
     IntegerDivide {
         result: IntegerDivisionResult,
@@ -91,7 +86,7 @@ enum StepKind<'a> {
     Math {
         dst: Reg,
         op: Math,
-        args: Vec<Reg>,
+        args: &'a [Reg],
     },
     Select {
         dst: Reg,
@@ -253,33 +248,9 @@ impl<'a> Plan<'a> {
                     op: *op,
                     a: *a,
                 },
-                InstKind::Binary { dst, op, a, b } => {
-                    let op = match op {
-                        BinaryOp::FAdd => Binary::Float(0x58),
-                        BinaryOp::FSub => Binary::Float(0x5c),
-                        BinaryOp::FMul => Binary::Float(0x59),
-                        BinaryOp::FDiv => Binary::Float(0x5e),
-                        BinaryOp::IAdd => Binary::Integer(0xfe),
-                        BinaryOp::ISub => Binary::Integer(0xfa),
-                        BinaryOp::And => Binary::Integer(0xdb),
-                        BinaryOp::Or => Binary::Integer(0xeb),
-                        BinaryOp::Xor => Binary::Integer(0xef),
-                        BinaryOp::IMul => Binary::Multiply,
-                        BinaryOp::Compare(c) => Binary::Compare(*c, stage.registers[*a]),
-                        BinaryOp::ShiftLeft if uniform[*b] => Binary::Shift(0xf2),
-                        BinaryOp::ShiftRightLogical if uniform[*b] => Binary::Shift(0xd2),
-                        BinaryOp::ShiftRightArithmetic if uniform[*b] => Binary::Shift(0xe2),
-                        BinaryOp::ShiftLeft => Binary::ShiftEach(4),
-                        BinaryOp::ShiftRightLogical => Binary::ShiftEach(5),
-                        BinaryOp::ShiftRightArithmetic => Binary::ShiftEach(7),
-                    };
-                    StepKind::Binary {
-                        dst: *dst,
-                        op,
-                        a: *a,
-                        b: *b,
-                    }
-                }
+                InstKind::Binary { dst, op, a, b } => StepKind::Binary {
+                    dst: *dst, op: *op, a: *a, b: *b, uniform_count: uniform[*b],
+                },
                 InstKind::IntegerDivide {
                     result,
                     src,
@@ -314,7 +285,7 @@ impl<'a> Plan<'a> {
                     StepKind::Math {
                         dst: *dst,
                         op,
-                        args: args.clone(),
+                        args,
                     }
                 }
                 InstKind::Select {
@@ -373,6 +344,43 @@ impl From<PacketPlace> for Operand {
         }
     }
 }
+impl From<PacketPlace> for operands::MoveLocation {
+    fn from(place: PacketPlace) -> Self {
+        match place {
+            PacketPlace::Register(reg) => allocation::Location::Xmm(reg).into(),
+            PacketPlace::Stack(offset) => operands::Memory::new(4, offset).into(),
+        }
+    }
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::packet_constant"]
+    fn encode_packet_constant(dst: u8, bits: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_load"]
+    fn encode_packet_load(src: operands::MoveLocation, dst: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_store"]
+    fn encode_packet_store(dst: operands::MoveLocation, src: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_copy"]
+    fn encode_packet_copy(dst: operands::MoveLocation, src: operands::MoveLocation, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_from_word"]
+    fn encode_packet_from_word(boolean: u32, dst: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_multiply"]
+    fn encode_packet_multiply(broadcast: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_binary"]
+    fn encode_packet_binary(dst: operands::MoveLocation, left: operands::MoveLocation, right: operands::MoveLocation,
+        scalar: crate::builtin_types::ScalarEncoding, operation: crate::builtin_types::ScalarBinaryOp,
+        uniform_count: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_unary"]
+    fn encode_packet_unary(dst: operands::MoveLocation, src: operands::MoveLocation, operation: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_cast"]
+    fn encode_packet_cast(dst: operands::MoveLocation, src: operands::MoveLocation,
+        from: crate::builtin_types::ScalarEncoding, into: crate::builtin_types::ScalarEncoding, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_math"]
+    fn encode_packet_math(dst: operands::MoveLocation, left: operands::MoveLocation, right: operands::MoveLocation,
+        operation: Math, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_select"]
+    fn encode_packet_select(dst: operands::MoveLocation, condition: operands::MoveLocation,
+        left: operands::MoveLocation, right: operands::MoveLocation, output: *mut u8) -> u64;
+}
 impl Emitter<'_> {
     fn packed(&mut self, prefix: Option<u8>, opcode: u8, dst: u8, src: u8) {
         self.instruction(prefix, &[0x0f, opcode], false, dst, Operand::Register(src));
@@ -382,34 +390,15 @@ impl Emitter<'_> {
         self.bytes(&[pattern]);
     }
     fn packet_constant(&mut self, xmm: u8, bits: u32) {
-        if bits == 0 {
-            self.packed(Some(0x66), 0xef, xmm, xmm);
-        } else if bits == u32::MAX {
-            self.packed(Some(0x66), 0x76, xmm, xmm);
-        } else {
-            self.bytes(&[0xb8]);
-            self.u32(bits);
-            self.instruction(Some(0x66), &[0x0f, 0x6e], false, xmm, Operand::Register(0));
-            self.shuffle(xmm, xmm, 0);
-        }
+        self.emit_bytes(24, |output| unsafe { encode_packet_constant(xmm, bits, output) });
     }
     fn packet_load(&mut self, allocation: &PacketAllocation, slot: PrivateSlot, xmm: u8) {
-        let source = allocation.location(slot);
-        if source != PacketPlace::Register(xmm) {
-            self.instruction(None, &[0x0f, 0x28], false, xmm, source.into());
-        }
+        let source = allocation.location(slot).into();
+        self.emit_bytes(16, |output| unsafe { encode_packet_load(source, xmm, output) });
     }
     fn packet_store(&mut self, allocation: &PacketAllocation, slot: PrivateSlot, xmm: u8) {
-        match allocation.location(slot) {
-            PacketPlace::Register(dst) => {
-                if dst != xmm {
-                    self.packed(None, 0x28, dst, xmm);
-                }
-            }
-            place @ PacketPlace::Stack(_) => {
-                self.instruction(None, &[0x0f, 0x29], false, xmm, place.into());
-            }
-        }
+        let destination = allocation.location(slot).into();
+        self.emit_bytes(16, |output| unsafe { encode_packet_store(destination, xmm, output) });
     }
     fn packet_base_index(
         &mut self,
@@ -457,170 +446,9 @@ impl Emitter<'_> {
         self.packet_base_index(allocation, binding, index, lane);
         self.buffer_memory(binding, 0, 0)
     }
-    fn packet_binary(
-        &mut self,
-        allocation: &PacketAllocation,
-        dst: Reg,
-        a: Reg,
-        b: Reg,
-        prefix: Option<u8>,
-        opcode: u8,
-    ) {
-        let (d, a_place, b_place) = (
-            allocation.location(PrivateSlot::Register(dst)),
-            allocation.location(PrivateSlot::Register(a)),
-            allocation.location(PrivateSlot::Register(b)),
-        );
-        let target = match d {
-            PacketPlace::Register(r) if d != b_place || a_place == b_place => r,
-            _ => 0,
-        };
-        self.packet_load(allocation, PrivateSlot::Register(a), target);
-        self.instruction(prefix, &[0x0f, opcode], false, target, b_place.into());
-        self.packet_store(allocation, PrivateSlot::Register(dst), target);
-    }
-    fn packet_bool(&mut self, xmm: u8) {
-        self.packet_constant(3, 1);
-        self.packed(Some(0x66), 0xdb, xmm, 3);
-    }
     fn packet_from_word(&mut self, dst: Reg, xmm: u8) {
-        if self.stage.registers[dst] == Scalar::Bool {
-            self.packet_constant(1, 0);
-            self.packed(Some(0x66), 0x76, xmm, 1);
-            // 零的比较掩码为 -1，其余为 0；加 1 得到规范的 0／1。
-            self.packet_constant(1, 1);
-            self.packed(Some(0x66), 0xfe, xmm, 1);
-        }
-    }
-    fn packet_compare(
-        &mut self,
-        allocation: &PacketAllocation,
-        dst: Reg,
-        a: Reg,
-        b: Reg,
-        op: Comparison,
-        scalar: Scalar,
-    ) {
-        let swap = matches!(op, Comparison::Greater | Comparison::GreaterEqual)
-            && scalar == Scalar::F32
-            || matches!(op, Comparison::Less | Comparison::GreaterEqual) && scalar != Scalar::F32;
-        let (a, b) = if swap { (b, a) } else { (a, b) };
-        let (d, left, right) = (
-            allocation.location(PrivateSlot::Register(dst)),
-            allocation.location(PrivateSlot::Register(a)),
-            allocation.location(PrivateSlot::Register(b)),
-        );
-        let equality = matches!(op, Comparison::Equal | Comparison::NotEqual);
-        let bias = !equality && matches!(scalar, Scalar::U32 | Scalar::Bool);
-        let target = match d {
-            PacketPlace::Register(r) if bias || d != right || left == right => r,
-            _ => 0,
-        };
-        if bias {
-            // 无符号顺序先保留右值；它可能与结果共用位置。
-            self.packet_load(allocation, PrivateSlot::Register(b), 1);
-        }
-        self.packet_load(allocation, PrivateSlot::Register(a), target);
-        if scalar == Scalar::F32 {
-            self.instruction(None, &[0x0f, 0xc2], false, target, right.into());
-            self.bytes(&[match op {
-                Comparison::Equal => 0,
-                Comparison::NotEqual => 4,
-                Comparison::Less | Comparison::Greater => 1,
-                Comparison::LessEqual | Comparison::GreaterEqual => 2,
-            }]);
-        } else {
-            if bias {
-                self.packet_constant(2, 0x80000000);
-                self.packed(Some(0x66), 0xef, target, 2);
-                self.packed(Some(0x66), 0xef, 1, 2);
-            }
-            self.instruction(
-                Some(0x66),
-                &[0x0f, if equality { 0x76 } else { 0x66 }],
-                false,
-                target,
-                if bias {
-                    Operand::Register(1)
-                } else {
-                    right.into()
-                },
-            );
-            if matches!(
-                op,
-                Comparison::NotEqual | Comparison::LessEqual | Comparison::GreaterEqual
-            ) {
-                self.packet_constant(2, u32::MAX);
-                self.packed(Some(0x66), 0xef, target, 2);
-            }
-        }
-        self.packet_bool(target);
-        self.packet_store(allocation, PrivateSlot::Register(dst), target);
-    }
-    fn packet_cast(
-        &mut self,
-        allocation: &PacketAllocation,
-        dst: Reg,
-        src: Reg,
-        from: Scalar,
-        into: Scalar,
-    ) {
-        use PrivateSlot::Register;
-        let target = match allocation.location(Register(dst)) {
-            PacketPlace::Register(r) => r,
-            _ => 0,
-        };
-        if into == Scalar::F32 && matches!(from, Scalar::I32 | Scalar::Bool)
-            || from == Scalar::F32 && into == Scalar::I32
-        {
-            let prefix = (from == Scalar::F32).then_some(0xf3);
-            self.instruction(
-                prefix,
-                &[0x0f, 0x5b],
-                false,
-                target,
-                allocation.location(Register(src)).into(),
-            );
-        } else {
-            self.packet_load(allocation, Register(src), target);
-            if into == Scalar::Bool {
-                self.packet_constant(1, 0);
-                if from == Scalar::F32 {
-                    self.packed(None, 0xc2, target, 1);
-                    self.bytes(&[4]);
-                } else {
-                    self.packed(Some(0x66), 0x76, target, 1);
-                    self.packet_constant(1, u32::MAX);
-                    self.packed(Some(0x66), 0xef, target, 1);
-                }
-                self.packet_bool(target);
-            } else if into == Scalar::F32 {
-                // u32 高低 16 位精确转换，仍只在最终加法舍入一次。
-                self.packed(None, 0x28, 1, target);
-                self.packet_constant(2, 0xffff);
-                self.packed(Some(0x66), 0xdb, target, 2);
-                self.packed(Some(0x66), 0x72, 2, 1);
-                self.bytes(&[16]);
-                self.packed(None, 0x5b, target, target);
-                self.packed(None, 0x5b, 1, 1);
-                self.packet_constant(2, 65536.0f32.to_bits());
-                self.packed(None, 0x59, 1, 2);
-                self.packed(None, 0x58, target, 1);
-            } else {
-                // f32 到 u32 仍按 2^31 拆分，转换本身的有效输入域不变。
-                self.packet_constant(1, 2147483648.0f32.to_bits());
-                self.packed(None, 0x28, 3, 1);
-                self.packed(None, 0xc2, 1, target);
-                self.bytes(&[2]);
-                self.packed(Some(0x66), 0xdb, 3, 1);
-                self.packed(None, 0x5c, target, 3);
-                self.packed(Some(0xf3), 0x5b, target, target);
-                self.packet_constant(2, 0x80000000);
-                self.packed(Some(0x66), 0xdb, 1, 2);
-                self.packed(Some(0x66), 0xef, target, 1);
-            }
-        }
-        self.packet_store(allocation, Register(dst), target);
+        let boolean = u32::from(self.stage.registers[dst] == Scalar::Bool);
+        self.emit_bytes(64, |output| unsafe { encode_packet_from_word(boolean, xmm, output) });
     }
     pub(super) fn packet_loop(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) {
         let begin = self.code.len();
@@ -797,18 +625,9 @@ impl Emitter<'_> {
                     self.packet_store(allocation, Register(*dst), target);
                 }
                 StepKind::Copy(dst, src) => {
-                    let d = allocation.location(*dst);
-                    let s = allocation.location(*src);
-                    if d != s {
-                        match (d, s) {
-                            (PacketPlace::Register(r), _) => self.packet_load(allocation, *src, r),
-                            (_, PacketPlace::Register(r)) => self.packet_store(allocation, *dst, r),
-                            _ => {
-                                self.packet_load(allocation, *src, 0);
-                                self.packet_store(allocation, *dst, 0);
-                            }
-                        }
-                    }
+                    let destination = allocation.location(*dst).into();
+                    let source = allocation.location(*src).into();
+                    self.emit_bytes(32, |output| unsafe { encode_packet_copy(destination, source, output) });
                 }
                 StepKind::Load { dst, binding, index, word } => {
                     let broadcast = matches!(index, Address::Uniform(_));
@@ -876,70 +695,19 @@ impl Emitter<'_> {
                     broadcast,
                 } => self.packet_gather(allocation, *dst, source, *index, *word, *broadcast),
                 StepKind::Unary { dst, op, a } => {
-                    let target = match allocation.location(Register(*dst)) {
-                        PacketPlace::Register(r) => r,
-                        _ => 0,
-                    };
-                    match op {
-                        UnaryOp::Bitcast => self.packet_load(allocation, Register(*a), target),
-                        UnaryOp::FloatNegate => {
-                            self.packet_load(allocation, Register(*a), target);
-                            self.packet_constant(1, 0x80000000);
-                            self.packed(Some(0x66), 0xef, target, 1);
-                        }
-                        UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => {
-                            // 目标可能与输入同址，先保存减数再清零目标。
-                            self.packet_load(allocation, Register(*a), 1);
-                            self.packet_constant(target, 0);
-                            self.packed(Some(0x66), 0xfa, target, 1);
-                        }
-                        UnaryOp::LogicalNot => {
-                            self.packet_load(allocation, Register(*a), target);
-                            self.packet_constant(1, 1);
-                            self.packed(Some(0x66), 0xef, target, 1);
-                        }
-                        UnaryOp::BitNot => {
-                            self.packet_load(allocation, Register(*a), target);
-                            self.packet_constant(1, u32::MAX);
-                            self.packed(Some(0x66), 0xef, target, 1);
-                        }
-                    }
-                    self.packet_store(allocation, Register(*dst), target);
+                    let destination = allocation.location(Register(*dst)).into();
+                    let source = allocation.location(Register(*a)).into();
+                    self.emit_bytes(256, |output| unsafe { encode_packet_unary(destination, source, *op as u32, output) });
                 }
-                StepKind::Binary { dst, op, a, b } => match op {
-                    Binary::Float(opcode) => {
-                        self.packet_binary(allocation, *dst, *a, *b, None, *opcode)
-                    }
-                    Binary::Integer(opcode) => {
-                        self.packet_binary(allocation, *dst, *a, *b, Some(0x66), *opcode)
-                    }
-                    Binary::Compare(op, scalar) => {
-                        self.packet_compare(allocation, *dst, *a, *b, *op, *scalar);
-                    }
-                    Binary::Shift(opcode) => {
-                        let target = match allocation.location(Register(*dst)) {
-                            PacketPlace::Register(r) => r,
-                            _ => 0,
-                        };
-                        // 先取得计数，再覆盖可能与右值共用的目标位置。
-                        self.packet_load(allocation, Register(*b), 1);
-                        self.instruction(Some(0x66), &[0x0f, 0x7e], false, 1, Operand::Register(0));
-                        self.bytes(&[0x83, 0xe0, 0x1f]);
-                        self.instruction(Some(0x66), &[0x0f, 0x6e], false, 1, Operand::Register(0));
-                        self.packet_load(allocation, Register(*a), target);
-                        self.packed(Some(0x66), *opcode, target, 1);
-                        self.packet_store(allocation, Register(*dst), target);
-                    }
-                    Binary::ShiftEach(kind) => {
-                        self.packet_shift_values(allocation, *dst, *a, *b, *kind)
-                    }
-                    Binary::Multiply => {
-                        self.packet_load(allocation, Register(*a), 0);
-                        self.packet_load(allocation, Register(*b), 1);
-                        self.packet_multiply(false);
-                        self.packet_store(allocation, Register(*dst), 0);
-                    }
-                },
+                StepKind::Binary { dst, op, a, b, uniform_count } => {
+                    let destination = allocation.location(Register(*dst)).into();
+                    let left = allocation.location(Register(*a)).into();
+                    let right = allocation.location(Register(*b)).into();
+                    let scalar = self.stage.registers[*a].into();
+                    self.emit_bytes(256, |output| unsafe {
+                        encode_packet_binary(destination, left, right, scalar, (*op).into(), u32::from(*uniform_count), output)
+                    });
+                }
                 StepKind::IntegerDivide {
                     result,
                     src,
@@ -952,68 +720,25 @@ impl Emitter<'_> {
                         self.packet_divide_value(allocation, *result, *src, *divisor)
                     }
                 },
-                StepKind::Cast {
-                    dst,
-                    src,
-                    from,
-                    into,
-                } => {
-                    self.packet_cast(allocation, *dst, *src, *from, *into);
+                StepKind::Cast { dst, src, from, into } => {
+                    let destination = allocation.location(Register(*dst)).into();
+                    let source = allocation.location(Register(*src)).into();
+                    self.emit_bytes(256, |output| unsafe {
+                        encode_packet_cast(destination, source, (*from).into(), (*into).into(), output)
+                    });
                 }
-                StepKind::Math { dst, op, args } => match op {
-                    Math::Min => self.packet_binary(allocation, *dst, args[0], args[1], None, 0x5d),
-                    Math::Max => self.packet_binary(allocation, *dst, args[0], args[1], None, 0x5f),
-                    Math::Sqrt => {
-                        let target = match allocation.location(Register(*dst)) {
-                            PacketPlace::Register(r) => r,
-                            _ => 0,
-                        };
-                        self.instruction(
-                            None,
-                            &[0x0f, 0x51],
-                            false,
-                            target,
-                            allocation.location(Register(args[0])).into(),
-                        );
-                        self.packet_store(allocation, Register(*dst), target);
-                    }
-                    Math::Abs => {
-                        let target = match allocation.location(Register(*dst)) {
-                            PacketPlace::Register(r) => r,
-                            _ => 0,
-                        };
-                        self.packet_load(allocation, Register(args[0]), target);
-                        self.packet_constant(1, 0x7fffffff);
-                        self.packed(Some(0x66), 0xdb, target, 1);
-                        self.packet_store(allocation, Register(*dst), target);
-                    }
-                },
-                StepKind::Select {
-                    dst,
-                    condition,
-                    a,
-                    b,
-                } => {
-                    let target = match allocation.location(Register(*dst)) {
-                        PacketPlace::Register(r) => r,
-                        _ => 0,
-                    };
-                    // 先保留假值；掩码若覆盖真值位置，还须先保存真值。
-                    self.packet_load(allocation, Register(*b), 1);
-                    let a = allocation.location(Register(*a));
-                    let source = if a == PacketPlace::Register(target) {
-                        self.instruction(None, &[0x0f, 0x28], false, 2, a.into());
-                        Operand::Register(2)
-                    } else {
-                        a.into()
-                    };
-                    self.packet_load(allocation, Register(*condition), target);
-                    self.packet_constant(3, 0);
-                    self.packed(Some(0x66), 0x76, target, 3);
-                    self.packed(Some(0x66), 0xdb, 1, target);
-                    self.instruction(Some(0x66), &[0x0f, 0xdf], false, target, source);
-                    self.packed(Some(0x66), 0xeb, target, 1);
-                    self.packet_store(allocation, Register(*dst), target);
+                StepKind::Math { dst, op, args } => {
+                    let destination = allocation.location(Register(*dst)).into();
+                    let left = allocation.location(Register(args[0])).into();
+                    let right = allocation.location(Register(*args.last().unwrap())).into();
+                    self.emit_bytes(256, |output| unsafe { encode_packet_math(destination, left, right, *op, output) });
+                }
+                StepKind::Select { dst, condition, a, b } => {
+                    let destination = allocation.location(Register(*dst)).into();
+                    let condition = allocation.location(Register(*condition)).into();
+                    let left = allocation.location(Register(*a)).into();
+                    let right = allocation.location(Register(*b)).into();
+                    self.emit_bytes(256, |output| unsafe { encode_packet_select(destination, condition, left, right, output) });
                 }
             }
             self.operation_range(step.instruction, start, first);

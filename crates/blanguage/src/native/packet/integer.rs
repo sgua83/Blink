@@ -4,29 +4,6 @@ use super::super::integer::{Division, DivisionMode};
 use std::num::NonZeroU64;
 
 impl Emitter<'_> {
-    pub(super) fn packet_shift_values(
-        &mut self,
-        allocation: &PacketAllocation,
-        dst: Reg,
-        src: Reg,
-        count: Reg,
-        kind: u8,
-    ) {
-        self.packed(Some(0x66), 0xef, 0, 0);
-        for lane in 0..4 {
-            self.packet_lane(allocation, count, lane, 1);
-            self.packet_lane(allocation, src, lane, 0);
-            self.bytes(&[0xd3, 0xc0 | (kind << 3)]); // eax 按 cl 的低五位移位。
-            self.instruction(Some(0x66), &[0x0f, 0x6e], false, 1, Operand::Register(0));
-            if lane != 0 {
-                self.packed(Some(0x66), 0x73, 7, 1);
-                self.bytes(&[lane * 4]);
-            }
-            self.packed(Some(0x66), 0xeb, 0, 1);
-        }
-        // 分配位置可复用任一输入；四个源 lane 全部读完后才交付结果。
-        self.packet_store(allocation, PrivateSlot::Register(dst), 0);
-    }
     pub(super) fn packet_divide_value(
         &mut self,
         allocation: &PacketAllocation,
@@ -95,21 +72,7 @@ impl Emitter<'_> {
         self.bytes(&[count]);
     }
     pub(super) fn packet_multiply(&mut self, right_broadcast: bool) {
-        self.packed(None, 0x28, 2, 0);
-        if !right_broadcast {
-            self.packed(None, 0x28, 3, 1);
-        }
-        self.packed(Some(0x66), 0x73, 3, 2);
-        self.bytes(&[4]);
-        if !right_broadcast {
-            self.packed(Some(0x66), 0x73, 3, 3);
-            self.bytes(&[4]);
-        }
-        self.packed(Some(0x66), 0xf4, 0, 1);
-        self.packed(Some(0x66), 0xf4, 2, if right_broadcast { 1 } else { 3 });
-        self.shuffle(0, 0, 0x88);
-        self.shuffle(2, 2, 0x88);
-        self.packed(Some(0x66), 0x62, 0, 2);
+        self.emit_bytes(64, |output| unsafe { encode_packet_multiply(u32::from(right_broadcast), output) });
     }
     fn packet_magnitude(&mut self, allocation: &PacketAllocation, src: Reg, xmm: u8, signed: bool) {
         self.packet_load(allocation, PrivateSlot::Register(src), xmm);
