@@ -819,3 +819,43 @@ extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, addre
     }
     return TextureWords(at, annotated, sampled + 3);
 }
+
+u32 atomic_update_opcode(AtomicOperation operation, BuiltinScalar scalar) on cpu {
+    if (operation == AtomicOperation::Store || operation == AtomicOperation::Exchange) { return 229; }
+    if (operation == AtomicOperation::Add || operation == AtomicOperation::Sub) {
+        return 234 + u32(operation) - u32(AtomicOperation::Add);
+    }
+    if (operation == AtomicOperation::Min || operation == AtomicOperation::Max) {
+        ScalarDefinition type = scalar_definition(scalar);
+        return 237 + 2 * (u32(operation) - u32(AtomicOperation::Min)) - type.signed;
+    }
+    return 240 + u32(operation) - u32(AtomicOperation::And);
+}
+
+extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu {
+    AtomicOperation operation = input.operation;
+    if (operation == AtomicOperation::Load) {
+        return words_five(body, 0u64, 227, input.result_type, input.result,
+                          input.pointer, input.scope, input.semantics);
+    }
+    if (operation == AtomicOperation::Store && input.result == 0) {
+        return words_four(body, 0u64, 228, input.pointer, input.scope, input.semantics, input.value);
+    }
+    bool compare_exchange = operation == AtomicOperation::CompareExchange;
+    u32 length = compare_exchange ? 9 : 7;
+    u32 opcode = compare_exchange ? 230 : atomic_update_opcode(operation, input.scalar);
+    put(body, 0u64, instruction(opcode, length));
+    put(body, 1u64, input.result_type);
+    put(body, 2u64, input.result);
+    put(body, 3u64, input.pointer);
+    put(body, 4u64, input.scope);
+    put(body, 5u64, input.semantics);
+    if (compare_exchange) {
+        put(body, 6u64, input.failure);
+        put(body, 7u64, input.value);
+        put(body, 8u64, input.compare);
+    } else {
+        put(body, 6u64, input.value);
+    }
+    return u64(length);
+}

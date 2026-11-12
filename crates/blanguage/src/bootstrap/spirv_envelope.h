@@ -250,3 +250,23 @@ struct TextureWords { u64 body; u64 decorations; u32 next; };
 // respectively. The emitter lends four result IDs and room for 46 body and
 // nine decoration words.
 extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, address results, address body, address decorations) on cpu;
+
+enum AtomicOperation:u32 {
+    Load=0; Store=1; Add=2; Sub=3; Exchange=4; CompareExchange=5;
+    Min=6; Max=7; And=8; Or=9; Xor=10;
+};
+struct AtomicEmission {
+    AtomicOperation operation;
+    BuiltinScalar scalar;
+    u32 result_type;
+    u32 result;
+    u32 pointer;
+    u32 scope;
+    u32 semantics;
+    u32 value;
+    u32 compare;
+    u32 failure;
+};
+// The emitter supplies resolved SPIR-V IDs and room for nine words.
+// A zero result is the resultless 32-bit store.
+extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu;

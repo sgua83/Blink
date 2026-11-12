@@ -34,7 +34,12 @@ impl Emitter<'_> {
         self.emit(250, &[leader, reserve, gather]);
         self.emit(248, &[reserve]);
         let initial = self.id();
-        self.emit(227, &[u, initial, counter, scope, relaxed]);
+        let counter_atomic = AtomicEmission {
+            operation: AtomicOperation::Load, scalar: Scalar::U32.into(), result_type: u,
+            result: initial, pointer: counter, scope, semantics: relaxed,
+            value: 0, compare: 0, failure: 0,
+        };
+        self.emit_atomic(counter_atomic);
         let entry = self.current_label;
         let header = self.id();
         let check = self.id();
@@ -61,10 +66,10 @@ impl Emitter<'_> {
         self.emit(169, &[u, amount, partial, available, size]);
         let desired = self.id();
         self.emit(128, &[u, desired, old, amount]);
-        self.emit(
-            230,
-            &[u, observed, counter, scope, relaxed, relaxed, desired, old],
-        );
+        self.emit_atomic(AtomicEmission {
+            operation: AtomicOperation::CompareExchange, result: observed,
+            value: desired, compare: old, failure: relaxed, ..counter_atomic
+        });
         let accepted = self.id();
         self.emit(170, &[b, accepted, observed, old]);
         self.emit(250, &[accepted, end, next]);

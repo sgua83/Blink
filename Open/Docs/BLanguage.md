@@ -2548,7 +2548,7 @@ GPU 使用 Device 作用域，约束当前设备上的 buffer 原子；CPU 约�
 
 同一数据集传给多个可写子程序参数时，只有这些别名全部声明 atomic 才能共享；混合普通读写别名仍报 B118。拥有 inout/atomic 能力的外层 计算函数 可调用相应子程序，read 或 write 单独不能升级成需要读写的 atomic 能力。不同访问阶段之间，编译器按真实读、写和跨元素访问保留依赖；原 cross_reads 统一为 cross_access，涵盖原子写入，不能把“先读取整域、再跨元素原子写入”错融成逐元素执行。
 
-原子效果不能作为纯表达式消除、缓存或提前到未选分支，忽略旧值也必须执行修改。CPU 自研 x64 直接使用对齐 MOV、LOCK XADD、内存 XCHG、LOCK CMPXCHG；极值和按位读改写由 CMPXCHG 构成同一个原子操作。GPU直接编码SPIR-V原子指令，宽整数使用同一物理页地址的64位指针及Int64Atomics，64位store复用OpAtomicExchange并丢弃旧值以落实原子写入，原relaxed／release源合同保持；原Device按程序查询、启用[shaderBufferInt64Atomics](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceShaderAtomicInt64Features.html)，未声明或不支持时明确拒绝。acquire／release使用UniformMemory语义；不增加宿主锁、逐元素回调或另一种 Shader 编译器。指令和比较交换的成功／失败规则见 [SPIR-V 原子规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpAtomicCompareExchange)。当前 CPU 原子阶段使用原生标量范围并行，尚未实现原子操作的四元素 SIMD。
+原子效果不能作为纯表达式消除、缓存或提前到未选分支，忽略旧值也必须执行修改。CPU 自研 x64 直接使用对齐 MOV、LOCK XADD、内存 XCHG、LOCK CMPXCHG；极值和按位读改写由 CMPXCHG 构成同一个原子操作。GPU的B发射器按原操作、位宽和有符号性写出SPIR-V原子指令，交接实际指针、作用域和内存语义ID。宽整数使用同一物理页地址的64位指针及Int64Atomics，64位store复用OpAtomicExchange并丢弃旧值以落实原子写入，原relaxed／release源合同保持；原Device按程序查询、启用[shaderBufferInt64Atomics](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceShaderAtomicInt64Features.html)，未声明或不支持时明确拒绝。acquire／release使用UniformMemory语义；不增加宿主锁、逐元素回调或另一种 Shader 编译器。指令和比较交换的成功／失败规则见 [SPIR-V 原子规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpAtomicCompareExchange)。当前 CPU 原子阶段使用原生标量范围并行，尚未实现原子操作的四元素 SIMD。
 
 前缀域在 CPU 启动范围／GPU 间接参数中已经捕获本次有效数量。阶段内原子改写原 Count 不改变本次范围；既有 written 规则撤销下一阶段的旧域关系，不能继续使用旧 prefix 或声称保留其 ensures。原子增量、返回的票号或单独的 Count 都不能自行签发安全散写／容量／prefix 能力。返回旧值依赖执行次序，CPU 与 GPU 的逐行票号可以不同；可交换整数归约的最终结果与票号唯一性分别评价。
 
@@ -2592,7 +2592,7 @@ void count(read dataset<Sample> input,atomic dataset<BinBlock,1> bins) on comput
 
 ## 普通函数的原子字段借用
 
-普通函数可以用 `atomic T parameter` 借用一个实际原子位置，不把它读成 T 的普通值。T 可以是标量、向量、固定数组或不含资源 view 的非空记录；实际原子操作接受 u32/i32/u64/i64 标量字段；tile 当前只支持32位原子。`.h` 与 `.b` 的 atomic 访问模式必须一致，它明确声明共享访问效果，不能当作纯数值参数。接口示例：
+普通函数可以用 `atomic T parameter` 借用一个实际原子位置，不把它读成 T 的普通值。T 可以是标量、向量、固定数组或不含资源 view 的非空记录；实际原子操作接受 u32/i32/u64/i64 标量字段；tile 的原子标量和实际设备要求见“块内原子共享值与显式屏障”。`.h` 与 `.b` 的 atomic 访问模式必须一致，它明确声明共享访问效果，不能当作纯数值参数。接口示例：
 
 ```c
 module counters;
@@ -3095,7 +3095,7 @@ Count 的修改先预留位置，不表示同阶段的载荷已经发布。源�
 
 封闭 Append IR 保存实际输出、Count、完整字段与接纳结果，独占预留和写入不可分割。它参与原有读写依赖、跨元素访问、分支保留、活跃性和原生寄存器分配，不用另一套表达式解释器、宿主回调或队列管理器。CPU 直接用 x64 的容量比较、LOCK CMPXCHG 和记录存储；CAS 成功才写入原位置，失败比较返回的新计数进入同一原子算法。
 
-GPU 在实际活动 subgroup 中 ballot／计数／计算 rank，由选举出的一个 invocation 用 CAS 一次预留 `min(活动数量, 剩余容量)` 个位置，再广播实际范围，各成功 lane 写入自己的记录。没有按 32／64 固定 lane 编号，也不为每条记录争用一个全局 CAS。源分歧与不同循环迭代中的活动集合必须准确，因此该 shader 显式使用 SPV_KHR_maximal_reconvergence／MaximallyReconvergesKHR；Device::for_program 按真实程序需求查询并启用 VK_KHR_shader_maximal_reconvergence，普通计算设备不会暗中升级或换算法。缺少所需能力直接报错。该汇合要求来自 [Khronos 最大汇合语义](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_maximal_reconvergence.html)及其[并行接纳示例](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_shader_maximal_reconvergence.html)，不是根据本机一次运行推测的保证。
+GPU 在实际活动 subgroup 中 ballot／计数／计算 rank。计数器读取与 CAS 由显式原子操作共用的 B 发射器写出，选举出的一个 invocation 用 CAS 预留 `min(活动数量, 剩余容量)` 个位置，再广播实际范围，各成功 lane 写入自己的记录。没有按 32／64 固定 lane 编号，也不为每条记录争用一个全局 CAS。源分歧与不同循环迭代中的活动集合必须准确，因此该 shader 显式使用 SPV_KHR_maximal_reconvergence／MaximallyReconvergesKHR；Device::for_program 按真实程序需求查询并启用 VK_KHR_shader_maximal_reconvergence，普通计算设备不会暗中升级或换算法。缺少所需能力直接报错。该汇合要求来自 [Khronos 最大汇合语义](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_maximal_reconvergence.html)及其[并行接纳示例](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_shader_maximal_reconvergence.html)，不是根据本机一次运行推测的保证。
 
 当前是完整记录的有界接纳，不是任意大小预留类型、并发出队／回收、同阶段生产消费、稳定输出、动态设备任务图或自动背压。一般 queue 容器、批量可写 reservation、64 位计数及设备自主调度仍需实现。
 
@@ -3689,7 +3689,7 @@ B 后端按原 SubgroupOp 和实际类型发射内建读取、交换、投票和
 
 优化器对这些指令处理寄存器依赖、别名重写与无用结果删除，不跨含协作的源阶段做 map 融合，避免改变参与集合。SPIR-V 只声明实际使用的 basic／vote／arithmetic／ballot／shuffle／shuffle-relative 能力；直接／XOR shuffle 和相对 shuffle 分别声明对应能力，不连带申请其他组操作。绑定时由同一设备的真实 compute subgroup 属性决定能否执行，不满足则报告能力错误。普通协作管线不固定 32 或 64 lane，不额外启用排序所需的 subgroup size control／full subgroup。排序仍保留自己的 32 lane 要求。未消费的交换可随既有 DCE 删除，不继续生产能力或空 Map；实参中的真实写效果仍保留。
 
-当前已实现 subgroup 值协作与任意 lane shuffle、类型化 tile 输入快照和中间值发布；Device 作用域的 u32/i32 存储原子已实现；块内原子共享值和显式根块屏障现已实现；非原子任意共享写与一般组间协作仍未实现。
+当前已实现 subgroup 值协作与任意 lane shuffle、类型化 tile 输入快照和中间值发布；Device 作用域的 u32／i32／u64／i64 存储原子已实现；块内原子共享值和显式根块屏障现已实现；非原子任意共享写与一般组间协作仍未实现。
 
 ## 类型化 tile 输入快照
 
@@ -5762,7 +5762,7 @@ Windows x64原生C ABI使用int8_t／uint8_t／int16_t／uint16_t，普通C／Ru
 原始compact／稳定排序按原Ty完整字节布局复制，包含填充和数值位模式；排序键身份继续保留真实字节位置。append构造实际记录值时只写声明的真实分量，保持目标填充及相邻记录，不能用宽存储覆盖窄字段。CPU／GPU分别沿原机器指令与原生存储操作落实，不新建运行时拷贝所有者。
 自定义集合按原Ty字段位段交接真实标量；同一物理摘要字中的窄字段不得互相覆盖。投影与直接值输入、普通与分段扫描／归约共用原ValueCode和有序合并规则；共享容量必须报告实际物理单元，不以载荷字节数低报。编译器私有摘要填充不成为用户字段，实际目标仍只写声明的真实分量。
 
-tile输入、发布及动态读取消费原Ty的实际字段字节，仅把真实片段装入原u32共享格；同格字段保留最后真实消费者，发布只保留被消费字段。CPU跨阶段私有流和GPU集合树按实际存储字分配，数据载荷不扩大。8／16位tile集合沿实际模算术、有符号比较及位运算，32／64位值仍沿原布局；普通tile保持只读，显式tile_atomic仍只支持既有32位整数。f64位复制保留完整位模式，GPU浮点运算继续要求真实目标能力。
+tile输入、发布及动态读取消费原Ty的实际字段字节，仅把真实片段装入原u32共享格；同格字段保留最后真实消费者，发布只保留被消费字段。CPU跨阶段私有流和GPU集合树按实际存储字分配，数据载荷不扩大。8／16位tile集合沿实际模算术、有符号比较及位运算，32／64位值仍沿原布局；普通tile保持只读，显式tile_atomic沿u32／i32／u64／i64及实际目标能力执行。f64位复制保留完整位模式，GPU浮点运算继续要求真实目标能力。
 
 普通CPU函数，以及CPU／GPU元素阶段的普通／cooperative函数，可对普通标量、记录、固定数组、向量、enum／Result及其view字段声明read，实参与声明类型一致。设备阶段按原目标与参与范围内联，普通GPU原生调用不由本项新增。已有位置直接按真实布局借用，多个只读参数可以重合；不相交独占位置仍按原规则允许，重叠独占、未初始化读取和活动view所指存储的写入／移动继续拒绝。调用者表达式产生的普通值及常量使用原临时存储；窄字面量仍按既有显式转换规则书写。
 
