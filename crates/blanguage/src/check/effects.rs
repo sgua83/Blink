@@ -511,7 +511,10 @@ impl Builder<'_> {
                     }
                     Write::Generator(factory)
                 },
-                Write::External{call,instance:Some(instance),arguments,syntax}=>{
+                // Domain effects stay possible writes; its execution interface is not an ordinary call contract.
+                Write::External{call,instance:Some(instance),arguments,syntax}
+                    if instance.definition.execution!=crate::execution::Requirement::Domain
+                        || instance.definition.function.target()==Target::Cpu&&!super::kernel_interface(self.world,&instance)?=>{
                     self.native_declaration(&instance)?;
                     if self.functions.read_only(&instance.name) {
                         normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if origin.same_node(&call)));
