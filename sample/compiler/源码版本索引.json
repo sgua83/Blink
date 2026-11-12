@@ -96,7 +96,7 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/host_sdk.b",
-      "sha256": "72745e9a979c02f7f2caba08bf40ae54019dcfb6e818d6ae0558197fae298b6e"
+      "sha256": "69a4b063857820fe642b01b9c1983a51fe0ae5355dc45642db9957d67eade7d1"
     },
     {
       "path": "crates/blanguage/src/bootstrap/host_sdk.h",

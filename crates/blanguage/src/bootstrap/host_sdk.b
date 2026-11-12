@@ -5,6 +5,7 @@ import blink.windows.error;
 const handle INVALID_SEARCH = unsafe_handle(0xffffffffffffffffu64);
 const u32 ERROR_FILE_NOT_FOUND = 2;
 const u32 ERROR_NO_MORE_FILES = 18;
+const u32 FILE_ATTRIBUTE_DIRECTORY = 0x10;
 
 extern "C" handle FindFirstFileExW(address pattern, i32 information, write FindData data,
     i32 search, address filter, u32 flags) on cpu
@@ -165,17 +166,19 @@ extern "C" SdkVersionResult find_sdk_version(address pattern, address selected) 
     usize selected_units = 0u64;
     i32 more = i32(1);
     while (more != i32(0)) {
-        address name = address_of(data.name[0]);
-        SdkVersionName entry = SdkVersionName(name, 0u64);
-        while (version_unit(entry, entry.units) != 0) { entry.units += 1u64; }
-        if (select_sdk_version(entry, SdkVersionName(selected, selected_units))) {
-            usize index = 0u64;
-            while (index < entry.units) {
-                address unit = unsafe_address(address_bits(selected) + index * 2u64);
-                unsafe_position<u16>(unit) = u16(version_unit(entry, index));
-                index += 1u64;
+        if ((data.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            address name = address_of(data.name[0]);
+            SdkVersionName entry = SdkVersionName(name, 0u64);
+            while (version_unit(entry, entry.units) != 0) { entry.units += 1u64; }
+            if (select_sdk_version(entry, SdkVersionName(selected, selected_units))) {
+                usize index = 0u64;
+                while (index < entry.units) {
+                    address unit = unsafe_address(address_bits(selected) + index * 2u64);
+                    unsafe_position<u16>(unit) = u16(version_unit(entry, index));
+                    index += 1u64;
+                }
+                selected_units = entry.units;
             }
-            selected_units = entry.units;
         }
         more = FindNextFileW(search, data);
     }
