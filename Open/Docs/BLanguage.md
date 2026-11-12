@@ -2929,7 +2929,7 @@ void run(inout dataset<Job> jobs) on compute {
 <a id="common-element-nonzero"></a>
 ### dataset共同元素的nonzero
 
-普通CPU函数可用`requires nonzero(input[*].field)`声明每个已初始化元素的所选整数分量非零。`[*]`明确选择该dataset的共同元素模型；元素本身为整数时可写`nonzero(input[*])`，记录字段／owned载荷／swizzle沿原字段规则选择。dataset在记录字段中时可写`nonzero(input.rows[*].value)`；嵌套dataset可逐层选择，如`nonzero(input[*].rows[*].value)`。每一层保留自己的元素及资源来源，不将兄弟字段或另一份dataset的事实混用。
+普通CPU函数可用`requires nonzero(input[*].field)`声明每个已初始化元素的所选整数分量非零。`[*]`明确选择该dataset的共同元素模型；元素本身为整数时可写`nonzero(input[*])`，记录字段／owned载荷／swizzle沿原字段规则选择。dataset在记录字段中时可写`nonzero(input.rows[*].value)`；嵌套dataset可逐层选择，如`nonzero(input[*].rows[*].value)`。每一层保留自己的元素及资源来源，不将兄弟字段或另一份dataset的事实混用。同一当前读取合取共同数值时，非零与区间、关系及条件一起进入该值；不要求把nonzero改写成range，初始循环及return／break也不清除未写字段的非零。真实写入仍撤回被覆盖字段的旧前提；写前保存的普通值快照保持原事实，写后的新值不能回借它。
 
 整域函数也可对普通`read`／`inout dataset`输入声明`requires nonzero(input[*].field)`；整数元素本身使用`nonzero(input[*])`。根为实际dataset参数，嵌套普通记录字段和向量swizzle按实际类型选择，沿原整数位宽逐分量排除零，不要求有符号值为正。此处与整域`range`共用同一字段区间、源码／已编译接口及真实执行前提，不保存另一份非零状态；不因该谓词取得输出初始化、访问或资源寿命。原子并发输入、write未初始化输入、浮点／Bool或整个普通记录不能作为该非零整数字段。实际字段改写后按原写区撤回旧前提，不能由兄弟字段的声明取得本字段非零。
 

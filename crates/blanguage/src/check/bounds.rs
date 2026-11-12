@@ -607,10 +607,12 @@ impl Proof {
         }
     }
     pub(super) fn constrain_common_ranges(&mut self, other: &Self, width: usize) {
+        self.nonzero.resize(width, false);
         self.domains.resize_with(width, Domains::new);
         self.ranges.resize_with(width, ScalarRanges::default);
         self.conditions.resize_with(width,||None);
         for component in 0..width {
+            self.nonzero[component] |= other.nonzero.get(component) == Some(&true);
             for domain in other.domains(component){self.mark_domain(component,domain);}
             self.ranges[component] = self.range_set(component).combine(&other.range_set(component),
                 |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
