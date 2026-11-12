@@ -874,7 +874,7 @@ B按原次序返回首个错误和源范围，Rust交接原诊断，并继续实
 
 ### 7.4 泛型实例化不等于任意语言能力已经齐备
 
-本版支持有限类型集合、具体类型和值参数、开放 u32 const 的具体实例等能力。一般关联类型或全部符号约束不能因此推定为已完成。读 `generics.rs`、`value_parameters.rs`、`type_sets.rs` 时，应分别辨认“允许哪些实参”“怎样按实际绑定解释源引用”“何时检查”。
+本版支持有限类型集合、具体类型和值参数、开放 u32 const 的具体实例等能力。一般关联类型或全部符号约束不能因此推定为已完成。函数和记录的泛型形参由 `bootstrap/signatures.b` 从同一源存储读取，按原顺序检查保留名、同名和空值域，再由 `generics.rs` 生成声明诊断。`type_sets.rs` 继续交接实际类型集合，具体类型和值绑定沿原实例消费。
 
 **自己走一遍。** 把一个静态宽度从四改成八，需要修改 GPU 内存分配器里的固定字段偏移吗？不应如此。具体类型重新给出布局，后端与执行框架消费它，避免维护第二份权威布局。
 
@@ -2360,7 +2360,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 | `crates/blanguage/src/main.rs` | 命令行怎样选择检查、代码导出与目标文件编译 |
 | `lib.rs`、`frontend.rs` | 公开接口、模块装载、接口核对与 Compilation |
 | `lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |
-| `generics.rs`、`value_parameters.rs`、`type_sets.rs` | 具体类型、静态值与类型集合怎样形成实例 |
+| `bootstrap/signatures.b`、`generics.rs`、`type_sets.rs` | 泛型声明校验及具体类型、静态值与类型集合怎样形成实例 |
 | `check.rs` | 参数、资源、函数、表达式与 parallel 怎样形成 IR |
 | `check/ownership.rs`、`view.rs` | 位置身份、字段借用与只读来源怎样传递 |
 | `check/bounds.rs`、`flow.rs`、`returns.rs` | 条件、写入和合流怎样影响事实与控制流 |

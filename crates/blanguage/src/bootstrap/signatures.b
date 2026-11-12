@@ -1,6 +1,7 @@
 module bootstrap.signatures;
 import bootstrap.ast_storage;
 import bootstrap.names;
+import bootstrap.type_families;
 
 T read_node<T>(StorageView store, u64 offset) on cpu {
     return unsafe_position<T>(unsafe_address(address_bits(store.nodes) + offset));
@@ -386,4 +387,64 @@ extern "C" Optional<u32> infer_const_arguments(SignatureNode type, address name,
         index += 1u64;
     }
     return Optional<u32>(0, 0);
+}
+
+bool parameter_name_is<const N:u32 in {4,5,7,9,12}>(NameBytes name, read array<u8,N> word) on cpu {
+    return compare_name(name, NameBytes(address_of(word[0]), u64(N))) == i32(0);
+}
+
+bool reserved_parameter_name(NameBytes name, bool type_parameter) on cpu {
+    BuiltinKind kind = recognize(name.bytes, name.length).kind;
+    return kind == BuiltinKind::Numeric || kind == BuiltinKind::Address
+        || kind == BuiltinKind::Handle || kind == BuiltinKind::RayHit
+        || kind == BuiltinKind::Void || kind == BuiltinKind::Array
+        || (type_parameter && (kind == BuiltinKind::Never || kind == BuiltinKind::Result))
+        || parameter_name_is(name, "dataset") || parameter_name_is(name, "view")
+        || parameter_name_is(name, "tile") || parameter_name_is(name, "acceleration")
+        || parameter_name_is(name, "texture2d") || parameter_name_is(name, "texture3d");
+}
+
+ParameterError parameter_error(StorageView store, Text owner, Slice types, Slice values, Slice parameters) on cpu {
+    NameBytes owner_name = text_bytes(store, owner);
+    u64 index = 0u64;
+    while (index < types.count) {
+        TypeParameterNode parameter = read_node<TypeParameterNode>(store, child_at(store, types, index));
+        NameBytes name = text_bytes(store, parameter.name);
+        if (reserved_parameter_name(name, true) || compare_name(name, owner_name) == i32(0)) {
+            return ParameterError::TypeName;
+        }
+        index += 1u64;
+    }
+
+    index = 0u64;
+    while (index < values.count) {
+        ValueParameterNode parameter = read_node<ValueParameterNode>(store, child_at(store, values, index));
+        if (parameter.choices.present != 0 && parameter.choices.value.count == 0u64) {
+            return ParameterError::EmptyConstDomain;
+        }
+        NameBytes name = text_bytes(store, parameter.name);
+        if (reserved_parameter_name(name, false) || compare_name(name, owner_name) == i32(0)) {
+            return ParameterError::ConstName;
+        }
+        u64 ordinary = 0u64;
+        while (ordinary < parameters.count) {
+            ParamNode param = read_node<ParamNode>(store, child_at(store, parameters, ordinary));
+            if (compare_name(name, text_bytes(store, param.name)) == i32(0)) {
+                return ParameterError::ConstName;
+            }
+            ordinary += 1u64;
+        }
+        index += 1u64;
+    }
+    return ParameterError::Valid;
+}
+
+extern "C" ParameterError function_parameter_error(SignatureNode declaration) on cpu {
+    FunctionNode function = read_node<FunctionNode>(declaration.storage, declaration.offset);
+    return parameter_error(declaration.storage, function.name, function.types, function.values, function.params);
+}
+
+extern "C" ParameterError record_parameter_error(SignatureNode declaration) on cpu {
+    RecordNode record = read_node<RecordNode>(declaration.storage, declaration.offset);
+    return parameter_error(declaration.storage, record.name, record.types, record.values, Slice(0u64, 0u64));
 }

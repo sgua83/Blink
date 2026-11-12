@@ -246,6 +246,16 @@ pub struct StorageCreate{pub storage:*mut c_void, pub error:StorageError,}
 #[repr(C)]
 #[derive(Clone,Copy)]
 pub struct StorageView{pub nodes:*mut c_void, pub node_bytes:u64, pub text:*mut c_void, pub text_bytes:u64, pub source:*mut c_void, pub source_bytes:u64,}
+// Discriminants are returned by the B declaration checker.
+#[allow(dead_code)]
+#[repr(u32)]
+pub enum ParameterError {
+    Valid = 0,
+    TypeName = 1,
+    EmptyConstDomain = 2,
+    ConstName = 3,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SignatureNode {
@@ -301,6 +311,12 @@ pub struct CfnParameter {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.signatures::function_parameter_error"]
+    pub fn function_parameter_error(declaration: SignatureNode) -> ParameterError;
+
+    #[link_name = "bootstrap.signatures::record_parameter_error"]
+    pub fn record_parameter_error(declaration: SignatureNode) -> ParameterError;
+
     #[link_name = "bootstrap.signatures::type_mentions"]
     pub fn type_mentions(ty: SignatureNode, name: *const u8, length: u64) -> bool;
     #[link_name = "bootstrap.signatures::infer_const_count"]

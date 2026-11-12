@@ -32,3 +32,7 @@ extern "C" bool infer_const_count(SignatureNode type, address name, u64 length, 
     inout Optional<u32> inferred) on cpu;
 extern "C" Optional<u32> infer_const_arguments(SignatureNode type, address name, u64 length,
     u64 first, address values, u64 count, inout Optional<u32> inferred) on cpu;
+
+enum ParameterError:u32 { Valid=0; TypeName=1; EmptyConstDomain=2; ConstName=3; };
+extern "C" ParameterError function_parameter_error(SignatureNode declaration) on cpu;
+extern "C" ParameterError record_parameter_error(SignatureNode declaration) on cpu;

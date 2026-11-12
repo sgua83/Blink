@@ -45,8 +45,6 @@ pub mod spirv;
 mod builtin_types;
 #[cfg(feature = "compiler")]
 mod type_sets;
-#[cfg(feature = "compiler")]
-mod value_parameters;
 
 #[cfg(feature = "compiler")]
 use ast::*;

@@ -308,8 +308,8 @@ pub(crate) fn instantiate(
 pub(crate) fn validate_declaration(definition: &crate::Definition) -> Result<()> {
     let f = &definition.function;
     crate::check::validate_signature(definition)?;
-    validate_parameters(&f.types(), f.name(), &definition.source, f.span())?;
-    crate::value_parameters::validate(&f.values(), f.name(), f.params().iter(), &definition.source, f.span())
+    let error = unsafe { crate::syntax::wire::function_parameter_error(f.signature_node()) };
+    parameter_diagnostic(error, &definition.source, f.span())
 }
 pub(crate) fn instances(
     world: &World,
@@ -330,33 +330,21 @@ pub(crate) fn instances(
     )?;
     Ok(result)
 }
-pub(crate) fn validate_parameters(
-    types: &crate::syntax::List<crate::syntax::wire::TypeParameterNode>,
-    owner: &str,
-    source: &Source,
-    span: Span,
-) -> Result<()> {
-    for parameter in types {
-        if crate::builtin_types::Builtin::recognize(parameter.name()).is_present()
-            || matches!(
-                parameter.name(),
-                "void"
-                    | "never"
-                    | "dataset"
-                    | "view"
-                    | "tile"
-                    | "array"
-                    | "result"
-                    | "acceleration"
-                    | "texture2d" | "texture3d"
-            )
-            || parameter.name() == owner
-        {
-            return source.fail(span, "B231", "类型参数不能覆盖内置类型或当前声明名");
-        }
-    }
-    Ok(())
+pub(crate) fn validate_record_parameters(record: &crate::syntax::Record, source: &Source) -> Result<()> {
+    let error = unsafe { crate::syntax::wire::record_parameter_error(record.signature_node()) };
+    parameter_diagnostic(error, source, record.span())
 }
+
+fn parameter_diagnostic(error: crate::syntax::wire::ParameterError, source: &Source, span: Span) -> Result<()> {
+    use crate::syntax::wire::ParameterError;
+    match error {
+        ParameterError::Valid => Ok(()),
+        ParameterError::TypeName => source.fail(span, "B231", "类型参数不能覆盖内置类型或当前声明名"),
+        ParameterError::EmptyConstDomain => source.fail(span, "B235", "const 参数至少需要一个允许的 u32 值"),
+        ParameterError::ConstName => source.fail(span, "B235", "const 参数不能覆盖内置名称、当前声明名或普通参数"),
+    }
+}
+
 pub(crate) fn for_each_combination(
     world: &World,
     types: &crate::syntax::List<crate::syntax::wire::TypeParameterNode>,

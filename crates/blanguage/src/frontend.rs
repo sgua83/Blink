@@ -541,8 +541,7 @@ pub(crate) fn validate_types(world: &World) -> Result<()> {
         world.for_each_set_member(name, &mut BTreeSet::new(), |_| {})?;
     }
     for (name, (record, source, module, imports)) in &world.records {
-        generics::validate_parameters(&record.types(), &record.name(), source, record.span())?;
-        value_parameters::validate(&record.values(), record.name(), std::iter::empty::<crate::syntax::Param>(), source, record.span())?;
+        generics::validate_record_parameters(record, source)?;
         generics::for_each_combination(
             world,
             &record.types(),
