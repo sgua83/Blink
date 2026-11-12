@@ -306,3 +306,85 @@ extern "C" u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u3
 extern "C" void flag_decoration(FlagDecoration decoration, u32 id, address decorations) on cpu {
     words_two(decorations, 0u64, 71, id, u32(decoration));
 }
+
+u64 words_four(address words, u64 at, u32 opcode, u32 id, u32 first, u32 second, u32 third) on cpu {
+    put(words, at, instruction(opcode, 5));
+    put(words, at + 1u64, id);
+    put(words, at + 2u64, first);
+    put(words, at + 3u64, second);
+    put(words, at + 4u64, third);
+    return at + 5u64;
+}
+
+u32 comparison_opcode(BinaryOperation operation, ScalarDefinition scalar) on cpu {
+    bool floating = scalar.opcode == 22;
+    bool signed = scalar.signed != 0;
+    if (operation == BinaryOperation::Equal) { return floating ? 180 : (scalar.opcode == 20 ? 164 : 170); }
+    if (operation == BinaryOperation::NotEqual) { return floating ? 183 : (scalar.opcode == 20 ? 165 : 171); }
+    if (operation == BinaryOperation::Less) { return floating ? 184 : (signed ? 177 : 176); }
+    if (operation == BinaryOperation::Greater) { return floating ? 186 : (signed ? 173 : 172); }
+    if (operation == BinaryOperation::LessEqual) { return floating ? 188 : (signed ? 179 : 178); }
+    return floating ? 190 : (signed ? 175 : 174);
+}
+
+u32 binary_opcode(BinaryOperation operation, ScalarDefinition scalar) on cpu {
+    bool floating = scalar.opcode == 22;
+    if (operation == BinaryOperation::Add) { return floating ? 129 : 128; }
+    if (operation == BinaryOperation::Subtract) { return floating ? 131 : 130; }
+    if (operation == BinaryOperation::Multiply) { return floating ? 133 : 132; }
+    if (operation == BinaryOperation::Divide) { return 136; }
+    if (operation == BinaryOperation::And) { return 199; }
+    if (operation == BinaryOperation::Or) { return 197; }
+    if (operation == BinaryOperation::Xor) { return 198; }
+    if (operation == BinaryOperation::ShiftLeft) { return 196; }
+    if (operation == BinaryOperation::ShiftRight) { return 194; }
+    if (operation == BinaryOperation::ShiftRightSigned) { return 195; }
+    return comparison_opcode(operation, scalar);
+}
+
+extern "C" BinaryWords scalar_binary(BinaryEmission input, address body, address decorations) on cpu {
+    ScalarDefinition scalar = scalar_definition(input.scalar);
+    u32 opcode = binary_opcode(input.operation, scalar);
+    u64 at = 0u64;
+    u32 right = input.right;
+    if (input.masked != 0) {
+        at = words_four(body, at, 199, input.result_type, input.masked, right, input.mask);
+        right = input.masked;
+    }
+    at = words_four(body, at, opcode, input.result_type, input.result, input.left, right);
+    if (scalar.opcode == 22 && u32(input.operation) <= u32(BinaryOperation::Divide)) {
+        flag_decoration(FlagDecoration::NoContraction, input.result, decorations);
+        return BinaryWords(at, 3u64);
+    }
+    return BinaryWords(at, 0u64);
+}
+
+u32 cast_opcode(BuiltinScalar from, BuiltinScalar to, ScalarDefinition source, ScalarDefinition target) on cpu {
+    if (source.opcode == 22) {
+        if (target.opcode == 21) { return target.signed != 0 ? 110 : 109; }
+        return from == to ? 83 : 115;
+    }
+    if (target.opcode == 22) { return source.signed != 0 ? 111 : 112; }
+    if (source.width != target.width) { return source.signed != 0 ? 114 : 113; }
+    return 124;
+}
+
+extern "C" u64 scalar_cast(CastEmission input, address body) on cpu {
+    if (input.from == BuiltinScalar::Bool) {
+        put(body, 0u64, instruction(169, 6));
+        put(body, 1u64, input.result_type);
+        put(body, 2u64, input.result);
+        put(body, 3u64, input.value);
+        put(body, 4u64, input.one);
+        put(body, 5u64, input.zero);
+        return 6u64;
+    }
+    ScalarDefinition source = scalar_definition(input.from);
+    if (input.to == BuiltinScalar::Bool) {
+        return words_four(body, 0u64, source.opcode == 22 ? 183 : 171,
+            input.result_type, input.result, input.value, input.zero);
+    }
+    ScalarDefinition target = scalar_definition(input.to);
+    return words_three(body, 0u64, cast_opcode(input.from, input.to, source, target),
+        input.result_type, input.result, input.value);
+}

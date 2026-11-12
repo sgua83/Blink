@@ -1,5 +1,6 @@
 module bootstrap.spirv_envelope;
 import bootstrap.type_families;
+import bootstrap.scalar_fold;
 
 struct Features {
     u32 atomic64;
@@ -62,3 +63,31 @@ extern "C" u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u3
 enum FlagDecoration:u32 { NoContraction=42; NonUniform=5300; };
 // Output has room for three decoration words.
 extern "C" void flag_decoration(FlagDecoration decoration, u32 id, address decorations) on cpu;
+
+struct BinaryEmission {
+    BinaryOperation operation;
+    BuiltinScalar scalar;
+    u32 result_type;
+    u32 result;
+    u32 left;
+    u32 right;
+    u32 mask;
+    u32 masked;
+};
+struct BinaryWords { u64 body; u64 decorations; };
+struct CastEmission {
+    BuiltinScalar from;
+    BuiltinScalar to;
+    u32 result_type;
+    u32 result;
+    u32 value;
+    u32 zero;
+    u32 one;
+};
+
+// The original emitter owns the IDs and buffers. A masked ID is present for shifts.
+// Storage has room for ten body words and three decoration words.
+extern "C" BinaryWords scalar_binary(BinaryEmission input, address body, address decorations) on cpu;
+// Zero and one are the original constant IDs for a conversion involving bool.
+// Storage has room for six body words.
+extern "C" u64 scalar_cast(CastEmission input, address body) on cpu;

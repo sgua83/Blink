@@ -1,5 +1,6 @@
 //! 标量常量按实际类型与位宽求值；已知值直接成为既有 IR 常量。
 use super::*;
+use crate::builtin_types::ScalarBinaryOp;
 use std::num::NonZeroU64;
 
 impl Builder<'_> {
@@ -262,26 +263,6 @@ enum FoldUnary {
 }
 
 #[repr(u32)]
-enum FoldBinary {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    And,
-    Or,
-    Xor,
-    ShiftLeft,
-    ShiftRight,
-    ShiftRightSigned,
-    Equal,
-    NotEqual,
-    Less,
-    Greater,
-    LessEqual,
-    GreaterEqual,
-}
-
-#[repr(u32)]
 enum ScalarKind {
     Unsigned,
     Signed,
@@ -319,9 +300,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::unary"]
     fn fold_unary(operation: FoldUnary, width: u32, bits: Bits) -> Bits;
     #[link_name = "bootstrap.scalar_fold::binary"]
-    fn fold_integer_binary(operation: FoldBinary, width: u32, signed: u32, left: Bits, right: Bits) -> Bits;
+    fn fold_integer_binary(operation: ScalarBinaryOp, width: u32, signed: u32, left: Bits, right: Bits) -> Bits;
     #[link_name = "bootstrap.scalar_fold::float_binary"]
-    fn fold_float_binary(operation: FoldBinary, width: u32, left: Bits, right: Bits) -> Bits;
+    fn fold_float_binary(operation: ScalarBinaryOp, width: u32, left: Bits, right: Bits) -> Bits;
     #[link_name = "bootstrap.scalar_fold::divide_unsigned"]
     fn divide_unsigned(left: u64, right: u64, remainder: u32) -> u64;
     #[link_name = "bootstrap.scalar_fold::divide_signed"]
@@ -358,27 +339,14 @@ pub(super) fn divide(scalar: Scalar, a: Bits, divisor: NonZeroU64, remainder: bo
 }
 pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: Bits, b: Bits) -> Option<Bits> {
     let floating = scalar.is_float();
-    let operation = match (op, floating) {
-        (BinaryOp::IAdd, false) | (BinaryOp::FAdd, true) => FoldBinary::Add,
-        (BinaryOp::ISub, false) | (BinaryOp::FSub, true) => FoldBinary::Subtract,
-        (BinaryOp::IMul, false) | (BinaryOp::FMul, true) => FoldBinary::Multiply,
-        (BinaryOp::FDiv, true) => FoldBinary::Divide,
-        (BinaryOp::And, false) => FoldBinary::And,
-        (BinaryOp::Or, false) => FoldBinary::Or,
-        (BinaryOp::Xor, false) => FoldBinary::Xor,
-        (BinaryOp::ShiftLeft, false) => FoldBinary::ShiftLeft,
-        (BinaryOp::ShiftRightLogical, false) => FoldBinary::ShiftRight,
-        (BinaryOp::ShiftRightArithmetic, false) => FoldBinary::ShiftRightSigned,
-        (BinaryOp::Compare(comparison), _) => match comparison {
-            Comparison::Equal => FoldBinary::Equal,
-            Comparison::NotEqual => FoldBinary::NotEqual,
-            Comparison::Less => FoldBinary::Less,
-            Comparison::Greater => FoldBinary::Greater,
-            Comparison::LessEqual => FoldBinary::LessEqual,
-            Comparison::GreaterEqual => FoldBinary::GreaterEqual,
-        },
-        _ => return None,
-    };
+    match (op, floating) {
+        (BinaryOp::FAdd | BinaryOp::FSub | BinaryOp::FMul | BinaryOp::FDiv, false)
+        | (BinaryOp::IAdd | BinaryOp::ISub | BinaryOp::IMul | BinaryOp::And | BinaryOp::Or
+            | BinaryOp::Xor | BinaryOp::ShiftLeft | BinaryOp::ShiftRightLogical
+            | BinaryOp::ShiftRightArithmetic, true) => return None,
+        _ => {}
+    }
+    let operation = ScalarBinaryOp::from(op);
     let width = scalar.bit_width();
     Some(if floating {
         unsafe { fold_float_binary(operation, width, a, b) }

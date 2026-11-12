@@ -4695,7 +4695,7 @@ SPIR-V 1.4 直接按标准编码。GPU 的逻辑数据集通过只读的 u64 设
 .\target\release\bc.exe build ..\BLEngine\Programs\simulation\statistics.b Saved\Compiled ..\BLEngine\Programs
 ```
 
-B 直接写出 SPIR-V 类型、常量、变量、资源绑定及配套装饰，沿用原着色器的 ID、绑定顺序和块布局。build 输出 `.spv`、归约 `.tail.spv`、CPU `.x64`、数学入口 `.reloc` 和布局 `.layout`。引擎运行时直接使用同一编译器结果和后端，不靠这些调试导出文件再建立第二套权威表示。
+B 直接写出 SPIR-V 类型、常量、变量、资源绑定及配套装饰，沿用原着色器的 ID、绑定顺序和块布局。普通标量二元运算、比较与数值转换由 B 选择和发射，对实际位宽、NaN 谓词及浮点禁止收缩使用原数值语义。build 输出 `.spv`、归约 `.tail.spv`、CPU `.x64`、数学入口 `.reloc` 和布局 `.layout`。引擎运行时直接使用同一编译器结果和后端，不靠这些调试导出文件再建立第二套权威表示。
 
 ### x64 物理寄存器与栈槽
 

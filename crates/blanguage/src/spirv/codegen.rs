@@ -1,6 +1,6 @@
 //! 按 SPIR-V 1.4 标准直接编码；不调用 HLSL/GLSL 或第三方编译器。
 use crate::ir::*;
-use crate::builtin_types::ScalarCode;
+use crate::builtin_types::{ScalarBinaryOp, ScalarCode};
 use super::{PAGE_BYTES, PREFIX_LEVELS, ProgramImage, ShaderCode, StageCode};
 #[path = "append.rs"]
 mod append;
@@ -142,6 +142,35 @@ enum FlagDecoration {
     NonUniform = 5300,
 }
 
+#[repr(C)]
+struct BinaryEmission {
+    operation: ScalarBinaryOp,
+    scalar: ScalarCode,
+    result_type: u32,
+    result: u32,
+    left: u32,
+    right: u32,
+    mask: u32,
+    masked: u32,
+}
+
+#[repr(C)]
+struct BinaryWords {
+    body: u64,
+    decorations: u64,
+}
+
+#[repr(C)]
+struct CastEmission {
+    from: ScalarCode,
+    to: ScalarCode,
+    result_type: u32,
+    result: u32,
+    value: u32,
+    zero: u32,
+    one: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
@@ -162,6 +191,10 @@ unsafe extern "C" {
     ) -> u64;
     #[link_name = "bootstrap.spirv_envelope::flag_decoration"]
     fn flag_decoration(decoration: FlagDecoration, id: u32, decorations: *mut u32);
+    #[link_name = "bootstrap.spirv_envelope::scalar_binary"]
+    fn scalar_binary(input: BinaryEmission, body: *mut u32, decorations: *mut u32) -> BinaryWords;
+    #[link_name = "bootstrap.spirv_envelope::scalar_cast"]
+    fn scalar_cast(input: CastEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
     fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
@@ -773,134 +806,54 @@ impl Emitter<'_> {
                     a,
                     b,
                 } => {
-                    let s = self.stage.registers[*a];
-                    let f = s.is_float();
-                    let signed = s.is_signed();
-                    let opcode = match operation {
-                        BinaryOp::FAdd => 129,
-                        BinaryOp::FSub => 131,
-                        BinaryOp::FMul => 133,
-                        BinaryOp::FDiv => 136,
-                        BinaryOp::IAdd => 128,
-                        BinaryOp::ISub => 130,
-                        BinaryOp::IMul => 132,
-                        BinaryOp::And => 199,
-                        BinaryOp::Or => 197,
-                        BinaryOp::Xor => 198,
-                        BinaryOp::ShiftLeft => 196,
-                        BinaryOp::ShiftRightLogical => 194,
-                        BinaryOp::ShiftRightArithmetic => 195,
-                        BinaryOp::Compare(c) => match c {
-                            Comparison::Equal => {
-                                if f {
-                                    180
-                                } else if s == Scalar::Bool {
-                                    164
-                                } else {
-                                    170
-                                }
-                            }
-                            Comparison::NotEqual => {
-                                if f {
-                                    183
-                                } else if s == Scalar::Bool {
-                                    165
-                                } else {
-                                    171
-                                }
-                            }
-                            Comparison::Less => {
-                                if f {
-                                    184
-                                } else if signed {
-                                    177
-                                } else {
-                                    176
-                                }
-                            }
-                            Comparison::Greater => {
-                                if f {
-                                    186
-                                } else if signed {
-                                    173
-                                } else {
-                                    172
-                                }
-                            }
-                            Comparison::LessEqual => {
-                                if f {
-                                    188
-                                } else if signed {
-                                    179
-                                } else {
-                                    178
-                                }
-                            }
-                            Comparison::GreaterEqual => {
-                                if f {
-                                    190
-                                } else if signed {
-                                    175
-                                } else {
-                                    174
-                                }
-                            }
-                        },
-                    };
-                    let b = if matches!(
-                        operation,
-                        BinaryOp::ShiftLeft
-                            | BinaryOp::ShiftRightLogical
-                            | BinaryOp::ShiftRightArithmetic
+                    let scalar = self.stage.registers[*a];
+                    let (mask, masked) = if matches!(
+                        operation, BinaryOp::ShiftLeft | BinaryOp::ShiftRightLogical | BinaryOp::ShiftRightArithmetic
                     ) {
-                        let mask = self.constant(s, s.size() * 8 - 1);
-                        let temp = self.id();
-                        self.emit(199, &[self.types[&s], temp, self.value(*b), mask]);
-                        temp
+                        (self.constant(scalar, scalar.bit_width() - 1), self.id())
                     } else {
-                        self.value(*b)
+                        (0, 0)
                     };
-                    self.emit(
-                        opcode,
-                        &[self.ty(*dst), self.value(*dst), self.value(*a), b],
-                    );
-                    if matches!(
-                        operation,
-                        BinaryOp::FAdd | BinaryOp::FSub | BinaryOp::FMul | BinaryOp::FDiv
-                    ) {
-                        let id = self.value(*dst);
-                        self.decorate_flag(FlagDecoration::NoContraction, id);
+                    let input = BinaryEmission {
+                        operation: (*operation).into(), scalar: scalar.into(),
+                        result_type: self.ty(*dst), result: self.value(*dst),
+                        left: self.value(*a), right: self.value(*b), mask, masked,
+                    };
+                    let body = self.body.len();
+                    let decorations = self.decorations.len();
+                    self.body.reserve(10);
+                    self.decorations.reserve(3);
+                    unsafe {
+                        let words = scalar_binary(input, self.body.as_mut_ptr().add(body),
+                            self.decorations.as_mut_ptr().add(decorations));
+                        self.body.set_len(body + words.body as usize);
+                        self.decorations.set_len(decorations + words.decorations as usize);
                     }
                 }
                 InstKind::Cast { dst, src } => {
-                    let a = self.stage.registers[*src];
-                    let b = self.stage.registers[*dst];
-                    if a == Scalar::Bool {
-                        let one = self.constant_bits(b, match b {
+                    let from = self.stage.registers[*src];
+                    let to = self.stage.registers[*dst];
+                    let (zero, one) = if from == Scalar::Bool {
+                        let one = self.constant_bits(to, match to {
                             Scalar::F32 => 1.0f32.to_bits() as Bits,
                             Scalar::F64 => 1.0f64.to_bits(),
                             _ => 1,
                         });
-                        let zero = self.constant(b, 0);
-                        self.emit(
-                            169,
-                            &[self.ty(*dst), self.value(*dst), self.value(*src), one, zero],
-                        );
-                    } else if b == Scalar::Bool {
-                        let zero = self.constant(a, 0);
-                        self.emit(
-                            if a.is_float() { 183 } else { 171 },
-                            &[self.ty(*dst), self.value(*dst), self.value(*src), zero],
-                        );
+                        (self.constant(to, 0), one)
+                    } else if to == Scalar::Bool {
+                        (self.constant(from, 0), 0)
                     } else {
-                        let opcode = match (a, b) {
-                            _ if a.is_float() && b.is_integer() => if b.is_signed() { 110 } else { 109 },
-                            _ if a.is_integer() && b.is_float() => if a.is_signed() { 111 } else { 112 },
-                            _ if a.is_float() && b.is_float() => if a == b { 83 } else { 115 },
-                            _ if a.size() != b.size() => if a.is_signed() { 114 } else { 113 },
-                            _ => 124,
-                        };
-                        self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*src)]);
+                        (0, 0)
+                    };
+                    let input = CastEmission {
+                        from: from.into(), to: to.into(), result_type: self.ty(*dst),
+                        result: self.value(*dst), value: self.value(*src), zero, one,
+                    };
+                    let body = self.body.len();
+                    self.body.reserve(6);
+                    unsafe {
+                        let words = scalar_cast(input, self.body.as_mut_ptr().add(body));
+                        self.body.set_len(body + words as usize);
                     }
                 }
                 InstKind::Math {

@@ -1,4 +1,4 @@
-use crate::ir::Scalar;
+use crate::ir::{BinaryOp, Comparison, Scalar};
 
 // These discriminants are produced by the B implementation of the static C ABI.
 #[allow(dead_code)]
@@ -59,5 +59,51 @@ impl Builtin {
         if self.kind == Kind::Missing { None }
         else if self.kind == Kind::Numeric && self.rows == 1 && self.columns == 1 { Some(self.scalar().name()) }
         else { Some(name) }
+    }
+}
+
+// Shared bootstrap.scalar_fold::BinaryOperation ABI used by folding and SPIR-V.
+#[repr(u32)]
+pub(crate) enum ScalarBinaryOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    And,
+    Or,
+    Xor,
+    ShiftLeft,
+    ShiftRight,
+    ShiftRightSigned,
+    Equal,
+    NotEqual,
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+}
+
+impl From<BinaryOp> for ScalarBinaryOp {
+    fn from(op: BinaryOp) -> Self {
+        match op {
+            BinaryOp::IAdd | BinaryOp::FAdd => Self::Add,
+            BinaryOp::ISub | BinaryOp::FSub => Self::Subtract,
+            BinaryOp::IMul | BinaryOp::FMul => Self::Multiply,
+            BinaryOp::FDiv => Self::Divide,
+            BinaryOp::And => Self::And,
+            BinaryOp::Or => Self::Or,
+            BinaryOp::Xor => Self::Xor,
+            BinaryOp::ShiftLeft => Self::ShiftLeft,
+            BinaryOp::ShiftRightLogical => Self::ShiftRight,
+            BinaryOp::ShiftRightArithmetic => Self::ShiftRightSigned,
+            BinaryOp::Compare(comparison) => match comparison {
+                Comparison::Equal => Self::Equal,
+                Comparison::NotEqual => Self::NotEqual,
+                Comparison::Less => Self::Less,
+                Comparison::Greater => Self::Greater,
+                Comparison::LessEqual => Self::LessEqual,
+                Comparison::GreaterEqual => Self::GreaterEqual,
+            },
+        }
     }
 }
