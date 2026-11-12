@@ -424,7 +424,45 @@ struct RayWords {
     label: u32,
 }
 
+#[repr(C)]
+struct TileAddress {
+    index_type: u32,
+    pointer_type: u32,
+    shared: u32,
+    index: u32,
+    offset: u32,
+    bias: u32,
+    cell_bytes: u32,
+    width: u32,
+    base: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct TileAddressWords {
+    words: u64,
+    next: u32,
+    pointer: u32,
+    byte: u32,
+}
+
+#[repr(C)]
+struct TileExtract {
+    index_type: u32,
+    cell_type: u32,
+    pointer: u32,
+    byte: u32,
+    cell_bytes: u32,
+    bits_per_byte: u32,
+    shift: u32,
+    next: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::tile_address"]
+    fn emit_tile_address(input: TileAddress, body: *mut u32) -> TileAddressWords;
+    #[link_name = "bootstrap.spirv_envelope::tile_extract"]
+    fn emit_tile_extract(input: TileExtract, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::encode_ray"]
     fn encode_ray(input: RayEmission, results: *const u32, body: *mut u32) -> RayWords;
     #[link_name = "bootstrap.spirv_envelope::private_address"]
@@ -542,6 +580,7 @@ struct Emitter<'a> {
     ext: u32,
     subgroup_inputs: BTreeMap<SubgroupOp, u32>,
     ballot_type: u32,
+    workgroup_width: u32,
     tile_layout: BTreeMap<SharedWord, (Scalar, usize, u32)>,
     tile_shared64: u32,
     tile_pointer64: u32,
@@ -1444,6 +1483,7 @@ fn emit_shader(
         ext: 0,
         subgroup_inputs: BTreeMap::new(),
         ballot_type: 0,
+        workgroup_width: stage.workgroup_width(),
         tile_layout: stage.tile_layout(true),
         tile_shared64: 0,
         tile_pointer64: 0,
@@ -1652,7 +1692,7 @@ fn emit_shader(
         for unit in [Scalar::U32, Scalar::U64] {
             let cells = e.tile_layout.values().filter(|(kind, _, _)| *kind == unit)
                 .map(|(_, slot, _)| *slot as u64 + 1).max().unwrap_or(0);
-            let words = cells * u64::from(stage.workgroup_width())
+            let words = cells * u64::from(e.workgroup_width)
                 + if unit == Scalar::U32 { stage.tile_scratch_bytes() / 4 } else { 0 };
             if words == 0 { continue; }
             let words = u32::try_from(words).map_err(|_| "tile 共享数组超过 SPIR-V 长度范围")?;
@@ -2029,7 +2069,7 @@ fn emit_shader(
         data: part.as_ptr(),
         count: part.len() as u64,
     });
-    let input = ShaderEnvelope { bound: e.next, ext: e.ext, entry: main, workgroup_width: stage.workgroup_width(), features };
+    let input = ShaderEnvelope { bound: e.next, ext: e.ext, entry: main, workgroup_width: e.workgroup_width, features };
     let mut out = Vec::with_capacity(
         unsafe { envelope_capacity() } as usize + interface_words
             + e.decorations.len() + e.defs.len() + e.body.len(),

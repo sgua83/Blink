@@ -1016,3 +1016,53 @@ extern "C" RayWords encode_ray(RayEmission input, address results, address body)
     }
     return RayWords(at, next, end);
 }
+
+extern "C" TileAddressWords tile_address(TileAddress input, address body) on cpu {
+    u64 at = 0u64;
+    u32 next = input.next;
+    u32 index = input.index;
+    u32 byte = input.offset;
+    u32 u = input.index_type;
+    if (input.offset != 0) {
+        if (input.bias != 0) {
+            at = words_four(body, at, 128, u, next, byte, input.bias);
+            byte = next;
+            next += 1;
+        }
+        u32 cell = next;
+        u32 lane_offset = next + 1;
+        u32 lane = next + 2;
+        next += 3;
+        at = words_four(body, at, 134, u, cell, byte, input.cell_bytes);
+        at = words_four(body, at, 132, u, lane_offset, cell, input.width);
+        at = words_four(body, at, 128, u, lane, index, lane_offset);
+        index = lane;
+    }
+    if (input.base != 0) {
+        at = words_four(body, at, 128, u, next, index, input.base);
+        index = next;
+        next += 1;
+    }
+    at = words_four(body, at, 65, input.pointer_type, next, input.shared, index);
+    return TileAddressWords(at, next + 1, next, byte);
+}
+
+extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu {
+    u32 value = input.next;
+    u32 next = value + 1;
+    u64 at = words_three(body, 0u64, 61, input.cell_type, value, input.pointer);
+    u32 shift = input.shift;
+    if (input.byte != 0) {
+        u32 part = next;
+        shift = next + 1;
+        next += 2;
+        at = words_four(body, at, 137, input.index_type, part, input.byte, input.cell_bytes);
+        at = words_four(body, at, 132, input.index_type, shift, part, input.bits_per_byte);
+    }
+    if (shift != 0) {
+        at = words_four(body, at, 194, input.cell_type, next, value, shift);
+        value = next;
+        next += 1;
+    }
+    return PayloadRead(at, next, value);
+}

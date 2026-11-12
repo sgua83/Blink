@@ -317,3 +317,35 @@ struct RayWords { u64 words; u32 next; u32 label; };
 // Optional aggregate type IDs are zero when the field group is unused.
 // The body has room for 61 words for Any or 587 for full Closest.
 extern "C" RayWords encode_ray(RayEmission input, address results, address body) on cpu;
+
+struct TileAddress {
+    u32 index_type;
+    u32 pointer_type;
+    u32 shared;
+    u32 index;
+    u32 offset;
+    u32 bias;
+    u32 cell_bytes;
+    u32 width;
+    u32 base;
+    u32 next;
+};
+struct TileAddressWords { u64 words; u32 next; u32 pointer; u32 byte; };
+// The emitter resolves the selected plane and the actual constant IDs.
+// Zero offset selects a fixed cell; zero bias or base omits an addition.
+// The body has room for thirty words.
+extern "C" TileAddressWords tile_address(TileAddress input, address body) on cpu;
+
+struct TileExtract {
+    u32 index_type;
+    u32 cell_type;
+    u32 pointer;
+    u32 byte;
+    u32 cell_bytes;
+    u32 bits_per_byte;
+    u32 shift;
+    u32 next;
+};
+// A dynamic byte ID computes the shift. Otherwise the caller supplies a
+// fixed shift ID, or zero for the low bits. The body has room for 19 words.
+extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu;
