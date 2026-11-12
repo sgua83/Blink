@@ -40,37 +40,55 @@ struct Prepared<'a> {
     kind: UnitKind<'a>,
     providers: Vec<Dependency<'a>>,
 }
-fn expand<'a>(
-    index: usize, units: &[Unit<'a>], active: &mut BTreeSet<usize>,
-    expanded: &mut [Option<Vec<Dependency<'a>>>],
-) -> Result<Vec<Dependency<'a>>> {
-    let unit = units.get(index).ok_or_else(|| std::io::Error::other(format!("构建单元引用越界：{index}")))?;
-    if let Some(value) = &expanded[index] { return Ok(value.clone()); }
-    if !active.insert(index) { return Err(format!("构建依赖形成循环：单元{index} {}", unit.path.display()).into()); }
+#[derive(Clone, Copy, Default)]
+enum Visit {
+    #[default]
+    Unvisited,
+    Visiting,
+    Complete,
+}
+
+#[derive(Default)]
+struct Expansion<'a> {
+    visit: Visit,
+    providers: Vec<Dependency<'a>>,
+}
+
+fn expand<'a, 'graph>(
+    index: usize, unit: &Unit<'a>, units: &[Unit<'a>], expanded: &'graph mut [Expansion<'a>],
+) -> Result<&'graph [Dependency<'a>]> {
+    match expanded[index].visit {
+        Visit::Unvisited => {}
+        Visit::Visiting => return Err(format!("构建依赖形成循环：单元{index} {}", unit.path.display()).into()),
+        Visit::Complete => return Ok(&expanded[index].providers),
+    }
+
+    expanded[index].visit = Visit::Visiting;
     let mut providers = Vec::new();
     let mut seen = BTreeSet::new();
     for dependency in unit.dependencies {
-        let mut values = match dependency {
+        let inherited = match dependency {
             Dependency::Unit(id) => {
                 let source = units.get(*id).ok_or_else(|| std::io::Error::other(format!("构建单元引用越界：{id}")))?;
                 if !matches!(source.kind, UnitKind::Object(_)) {
                     return Err(format!("单元{id}的入口映像不是COFF模块提供者").into());
                 }
-                expand(*id, units, active, expanded)?
+                expand(*id, source, units, expanded)?
             }
-            Dependency::Object(_) => Vec::new(),
+            Dependency::Object(_) => &[],
         };
-        values.push(*dependency);
-        for value in values {
-            let key = match value { Dependency::Unit(id) => (false, id),
-                Dependency::Object(object) => (true, object as *const Object as usize) };
+        for &value in inherited.iter().chain(std::iter::once(dependency)) {
+            let key = match value {
+                Dependency::Unit(id) => (false, id),
+                Dependency::Object(object) => (true, object as *const Object as usize),
+            };
             if seen.insert(key) { providers.push(value); }
         }
     }
-    active.remove(&index);
-    expanded[index] = Some(providers.clone());
-    Ok(providers)
+    expanded[index] = Expansion { visit: Visit::Complete, providers };
+    Ok(&expanded[index].providers)
 }
+
 enum Provider<'a> {
     Built(Arc<ObjectCompilation>),
     Object(&'a Object),
@@ -94,15 +112,16 @@ impl Compiler {
     pub fn build_graph(&self, units: &[Unit<'_>]) -> Result<Vec<Output>> {
         if units.is_empty() { return Ok(Vec::new()); }
         let (prepared, inputs, following, waiting) = self.execute(|_| {
-        let mut expanded = vec![None; units.len()];
-        for index in 0..units.len() { expand(index, units, &mut BTreeSet::new(), &mut expanded)?; }
-        let prepared = units.iter().enumerate().map(|(index, unit)| {
+        let mut expanded = Vec::with_capacity(units.len());
+        expanded.resize_with(units.len(), Expansion::default);
+        for (index, unit) in units.iter().enumerate() { expand(index, unit, units, &mut expanded)?; }
+        let prepared = units.iter().zip(expanded).map(|(unit, expansion)| {
             let mut path = unit.path.to_path_buf();
             path.set_extension("h");
             let mut path = path.canonicalize()?;
             path.set_extension(unit.path.extension().unwrap_or_else(|| std::ffi::OsStr::new("b")));
             Ok(Prepared { path, root: unit.root.canonicalize()?, output: std::path::absolute(unit.output)?,
-                kind: unit.kind, providers: expanded[index].take().unwrap() })
+                kind: unit.kind, providers: expansion.providers })
         }).collect::<Result<Vec<_>>>()?;
         let mut inputs = Inputs::default();
         for unit in &prepared { inputs.header(&unit.path)?; }
