@@ -3,6 +3,8 @@ use super::Result;
 use crate::object::Archive;
 use std::{
     ffi::OsString,
+    fs::File,
+    io::{self, Write},
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     process::Command,
@@ -132,6 +134,12 @@ fn path_argument(prefix: &str, path: &Path) -> OsString {
     argument
 }
 
+fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io::Result<()> {
+    let mut file = File::create_new(&path)?;
+    temporary.push(path);
+    file.write_all(bytes)
+}
+
 pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {
     let binding = super::resources::resources(&archives.iter().collect::<Vec<_>>(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
     let (linker, libraries) = tools()?;
@@ -143,46 +151,38 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
             .as_nanos()
     );
     let mut temporary = Vec::new();
-    for (index, archive) in archives.iter().enumerate() {
-        let path = path
-            .parent()
-            .unwrap()
-            .join(format!(".blink-link-{id}-{index}.lib"));
-        std::fs::write(&path, archive.bytes.as_slice())?;
-        temporary.push(path);
-    }
-    for (index, object) in objects.iter().enumerate() {
-        let path = path.parent().unwrap().join(format!(".blink-link-{id}-code-{index}.obj"));
-        object.write(&path)?;
-        temporary.push(path);
-    }
-    // Same import-slot owner as the explicit native-host archive product.
-    let imports = objects.iter().flat_map(|object| &object.sections)
-        .flat_map(|section| &section.relocations)
-        .filter_map(|relocation| match &relocation.target {
-            crate::object::Target::Import(import) => Some(import), _ => None,
-        }).collect::<std::collections::BTreeSet<_>>();
-    if !imports.is_empty() {
-        let mut members = Vec::new();
-        let mut symbols = Vec::new();
-        for import in imports {
-            let (member, symbol) = super::imports::member(import)?;
-            symbols.push((members.len(), symbol));
-            members.push(member);
+    let mut result = (|| {
+        let directory = path.parent().unwrap();
+        for (index, archive) in archives.iter().enumerate() {
+            let path = directory.join(format!(".blink-link-{id}-{index}.lib"));
+            write_input(&mut temporary, path, &archive.bytes)?;
         }
-        let path = path.parent().unwrap().join(format!(".blink-link-{id}-imports.lib"));
-        std::fs::write(&path, crate::object::library_bytes(&members, &symbols)?)?;
-        temporary.push(path);
-    }
-    if let Some(binding) = binding {
-        let path = path
-            .parent()
-            .unwrap()
-            .join(format!(".blink-link-{id}-resources.obj"));
-        binding.write(&path)?;
-        temporary.push(path);
-    }
-    let result = (|| {
+        for (index, object) in objects.iter().enumerate() {
+            let path = directory.join(format!(".blink-link-{id}-code-{index}.obj"));
+            write_input(&mut temporary, path, &object.coff_bytes()?)?;
+        }
+        // Same import-slot owner as the explicit native-host archive product.
+        let imports = objects.iter().flat_map(|object| &object.sections)
+            .flat_map(|section| &section.relocations)
+            .filter_map(|relocation| match &relocation.target {
+                crate::object::Target::Import(import) => Some(import), _ => None,
+            }).collect::<std::collections::BTreeSet<_>>();
+        if !imports.is_empty() {
+            let mut members = Vec::new();
+            let mut symbols = Vec::new();
+            for import in imports {
+                let (member, symbol) = super::imports::member(import)?;
+                symbols.push((members.len(), symbol));
+                members.push(member);
+            }
+            let path = directory.join(format!(".blink-link-{id}-imports.lib"));
+            let bytes = crate::object::library_bytes(&members, &symbols)?;
+            write_input(&mut temporary, path, &bytes)?;
+        }
+        if let Some(binding) = binding {
+            let path = directory.join(format!(".blink-link-{id}-resources.obj"));
+            write_input(&mut temporary, path, &binding.coff_bytes()?)?;
+        }
         let mut command = Command::new(linker);
         command
             .args([
@@ -227,7 +227,8 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
         Ok(())
     })();
     for path in temporary {
-        std::fs::remove_file(path)?;
+        let removed = std::fs::remove_file(path).map_err(Into::into);
+        result = result.and(removed);
     }
     result
 }
