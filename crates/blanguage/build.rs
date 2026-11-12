@@ -15,14 +15,14 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={}", seed.join(name).display());
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("缺少OUT_DIR")?);
-    let modules = ["lexer", "parser", "names", "signatures", "type_families", "type_layout", "scalar_fold", "archive", "coff", "metadata", "bindings", "coff_read", "metadata_read", "object_read", "ast_storage", "pe", "combine", "native_import", "native_resources", "instance_domain", "unwind", "frame_layout", "x64_instruction"];
+    let modules = ["lexer", "parser", "names", "signatures", "type_families", "type_layout", "scalar_fold", "archive", "coff", "metadata", "bindings", "coff_read", "metadata_read", "object_read", "ast_storage", "pe", "combine", "native_import", "native_resources", "instance_domain", "unwind", "frame_layout", "x64_instruction", "coloring"];
     let objects: Vec<_> = modules.iter().map(|name| out.join(format!("blink_compiler_{name}.obj"))).collect();
     for (name, object) in modules.iter().zip(&objects) {
         let mut compiler = Command::new(seed.join("bin/bc.exe"));
         compiler.arg("-c").arg(format!("src/bootstrap/{name}.b"))
             .args(["-I", "src", "--module", "-o"]).arg(object);
         if *name == "names" {
-            compiler.args(["--instance", "sort_rows<u64>", "--instance", "sort_rows<u32>"]);
+            compiler.args(["--instance", "sort_rows<u64>", "--instance", "sort_rows<u32>", "--instance", "sort_rows<array<u64,3>>"]);
         }
         let compiled = compiler.status()?;
         if !compiled.success() {
