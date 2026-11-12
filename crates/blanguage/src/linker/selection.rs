@@ -173,7 +173,7 @@ unsafe extern "C" fn extract(context:*mut c_void,library:u64,name:Bytes)->Reply 
 }
 unsafe extern "C" fn native_archive(context:*mut c_void,index:u64)->Reply {
     let context=unsafe{&mut *context.cast::<Context<'_>>()};
-    let result=Library::native(std::sync::Arc::clone(&context.sources[index as usize].archive.as_ref().unwrap().bytes));
+    let result=Library::native(context.sources[index as usize].archive.as_ref().unwrap().bytes.clone());
     match result {Ok(library)=>{context.libraries.push(library);context.reply(Ok(None))},Err(error)=>context.reply(Err(error))}
 }
 unsafe extern "C" fn slot(context:*mut c_void,name:Bytes)->Bytes {

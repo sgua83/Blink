@@ -62,8 +62,9 @@ pub(super) fn compile<'a>(
     let source = identity::sources(&path, &root, selection,
         worker.compiler().max_parameter_bytes(), &world, &module, matches!(kind, ObjectKind::Module(_)))?;
     let runtime = !matches!(kind, ObjectKind::Module(_));
-    match fs::read(&artifact) {
-        Ok(bytes) => {
+    match fs::File::open(&artifact) {
+        Ok(file) => {
+            let bytes = crate::object::ObjectBytes::capture(&file).map_err(error)?;
             let reader = crate::object::ObjectReader::new(&bytes).map_err(error)?;
             if let Some(bytes) = reader.build_inputs().map_err(error)?
                 && let Some(stored) = identity::decode(bytes)?

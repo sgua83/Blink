@@ -465,7 +465,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
     let meta = metadata(o)?;
     let mut extra = vec![(META, meta.as_slice(), 0x840, &[][..])];
     if let Some(build) = build { extra.push((BUILD, build, 0x840, &[])); }
-    if let Some(archive) = &o.archive { extra.push((ARCHIVE, archive.bytes.as_slice(), 0x840, &[])); }
+    if let Some(archive) = &o.archive { extra.push((ARCHIVE, &archive.bytes, 0x840, &[])); }
     encode_sections(&o.name, &o.sections, &o.symbols, &extra)
 }
 
@@ -560,27 +560,27 @@ fn encode_sections(
 
 }
 
-pub(super) fn decode(b: &[u8]) -> Result<Object> {
+pub(super) fn decode(b: &super::ObjectBytes) -> Result<Object> {
     Reader::new(b)?.object()
 }
 /// 同一COFF包络的借用视图；构建调用先消费输入记录，命中后才消费代码ABI。
-pub(crate) struct Reader<'a> {
-    bytes: &'a [u8],
+pub(crate) struct Reader<'a, Input: ?Sized = [u8]> {
+    bytes: &'a Input,
     headers: &'a [u8],
 }
-impl<'a> Reader<'a> {
-    pub(crate) fn new(bytes: &'a [u8]) -> Result<Self> {
-        let headers = unsafe { read_headers(ReadBytes::new(bytes)) };
+impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
+    pub(crate) fn new(bytes: &'a Input) -> Result<Self> {
+        let headers = unsafe { read_headers(ReadBytes::new(bytes.as_ref())) };
         headers.error.check()?;
         Ok(Self { bytes, headers: unsafe { headers.bytes.borrowed() } })
     }
     pub(crate) fn build_inputs(&self) -> Result<Option<&'a [u8]>> {
-        let input = unsafe { read_build_inputs(ReadBytes::new(self.bytes), ReadBytes::new(self.headers)) };
+        let input = unsafe { read_build_inputs(ReadBytes::new(self.bytes.as_ref()), ReadBytes::new(self.headers)) };
         input.error.check()?;
         Ok(if input.present == 0 { None } else { Some(unsafe { input.bytes.borrowed() }) })
     }
     fn section_rows(&self) -> impl Iterator<Item = Result<ObjectSection>> + '_ {
-        let input = ReadBytes::new(self.bytes);
+        let input = ReadBytes::new(self.bytes.as_ref());
         let headers = ReadBytes::new(self.headers);
         let mut mapped = 0u64;
         (0..self.headers.len() / 40).map(move |index| {
@@ -602,7 +602,7 @@ impl<'a> Reader<'a> {
         let (name, kind, mut bindings, _, _) = read_metadata(
             metadata.ok_or("缺少 Blink 目标文件元数据")?, None, false,
         )?;
-        let input = ReadBytes::new(self.bytes);
+        let input = ReadBytes::new(self.bytes.as_ref());
         let table = unsafe { read_symbols(input) };
         table.error.check()?;
         let mut definitions = BTreeMap::new();
@@ -620,6 +620,8 @@ impl<'a> Reader<'a> {
         definitions.extend(bindings);
         Ok((name, kind, definitions))
     }
+}
+impl Reader<'_, super::ObjectBytes> {
     /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
     pub(crate) fn native(&self, name: &str) -> Result<Object> { decode_object(self, Some(name)) }
     pub(crate) fn object(&self) -> Result<Object> {
@@ -627,7 +629,7 @@ impl<'a> Reader<'a> {
     }
 }
 fn read_metadata(
-    meta: &[u8], archive: Option<&[u8]>, keep_stack: bool,
+    meta: &[u8], archive: Option<super::ObjectBytes>, keep_stack: bool,
 ) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, Vec<stack::Frame>, Option<Archive>)> {
     let mut c = MetadataReadCursor::new(meta);
     let header = unsafe { metadata_read_header(&mut c, u64::from(FORMAT)) };
@@ -711,14 +713,14 @@ fn read_metadata(
         }
     }
     let archive = archive.map(|bytes| Archive {
-        bytes: std::sync::Arc::new(bytes.to_vec()),
+        bytes,
         libraries,
         exports,
         resources,
     });
     Ok((name, kind, bindings, stack, archive))
 }
-fn decode_object(reader: &Reader<'_>, native: Option<&str>) -> Result<Object> {
+fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) -> Result<Object> {
     let b = reader.bytes;
     let input = ReadBytes::new(b);
     let table = unsafe { read_symbols(input) };
@@ -742,7 +744,11 @@ fn decode_object(reader: &Reader<'_>, native: Option<&str>) -> Result<Object> {
         None => {
             let section = |name: &str| raw.iter().find(|row| unsafe { row.name.borrowed() } == name.as_bytes())
                 .map(|row| unsafe { row.bytes.borrowed() });
-            read_metadata(section(META).ok_or("缺少 Blink 目标文件元数据")?, section(ARCHIVE), true)?
+            let archive = section(ARCHIVE).map(|bytes| {
+                let start = bytes.as_ptr().addr() - b.as_ptr().addr();
+                b.slice(start..start + bytes.len())
+            });
+            read_metadata(section(META).ok_or("缺少 Blink 目标文件元数据")?, archive, true)?
         }
     };
     let mut sections = Vec::new();

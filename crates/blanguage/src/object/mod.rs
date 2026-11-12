@@ -3,7 +3,7 @@ mod archive;
 mod static_library;
 pub use static_library::{Input, archive};
 pub(crate) use static_library::{Member as LibraryMember, members as library_members, encode as library_bytes};
-pub(crate) use static_library::Library;
+pub(crate) use static_library::{Library, ObjectBytes};
 mod coff;
 pub(crate) use coff::encode_native;
 pub(crate) mod stack;
@@ -54,7 +54,7 @@ pub(crate) struct ResourceBinding {
     pub code: Vec<String>,
 }
 pub(crate) struct Archive {
-    pub bytes: std::sync::Arc<Vec<u8>>,
+    pub bytes: ObjectBytes,
     pub libraries: Vec<String>,
     pub exports: Vec<String>,
     pub resources: Option<ResourceBinding>,
@@ -96,7 +96,7 @@ impl Object {
         coff::encode(self)
     }
     pub fn read(path: &Path) -> Result<Self> {
-        coff::decode(&std::fs::read(path)?)
+        coff::decode(&ObjectBytes::read(path)?)
     }
     pub(crate) fn build_bytes(&self, inputs: &[u8]) -> Result<Vec<u8>> {
         coff::encode_build(self, Some(inputs))

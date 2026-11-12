@@ -12,9 +12,9 @@ pub enum Input {
 }
 impl Input {
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = FileBytes::read(&File::open(path)?)?;
+        let bytes = ObjectBytes::read(path)?;
         if has_signature(&bytes) {
-            Ok(Self::Library(Library::decode(ArchiveBytes::Captured(Arc::new(bytes)), false)?))
+            Ok(Self::Library(Library::decode(bytes, false)?))
         } else {
             Ok(Self::Object(coff::decode(&bytes)?))
         }
@@ -27,7 +27,7 @@ impl Input {
                     let member=library.member(index);
                     if member.available==0 { continue; }
                     let (name,bytes)=library.member_bytes(member.member);
-                    let (module,kind,definitions)=coff::Reader::new(bytes)?.interface()
+                    let (module,kind,definitions)=coff::Reader::new(&bytes)?.interface()
                         .map_err(|error| format!("静态库成员 {name}：{error}"))?;
                     imports.insert(&module,&kind,definitions)?;
                 }
@@ -44,56 +44,83 @@ impl Input {
                     let member=library.member(index);
                     (member.available!=0).then(|| {
                         let (name,bytes)=library.member_bytes(member.member);
-                        member_object(name,bytes,library.native)
+                        member_object(name,&bytes,library.native)
                     })
                 }).collect(),
         }
     }
 }
 #[derive(Clone)]
-enum ArchiveBytes {
+enum Storage {
     Captured(Arc<FileBytes>),
     Generated(Arc<Vec<u8>>),
 }
 
-impl Deref for ArchiveBytes {
+// The original snapshot owns storage. Each consumer holds the range it reads.
+#[derive(Clone)]
+pub(crate) struct ObjectBytes {
+    storage: Storage,
+    range: Range<usize>,
+}
+
+impl ObjectBytes {
+    pub(crate) fn read(path: &Path) -> Result<Self> {
+        Self::capture(&File::open(path)?)
+    }
+
+    pub(crate) fn capture(file: &File) -> Result<Self> {
+        let bytes = FileBytes::read(file)?;
+        let range = 0..bytes.len();
+        Ok(Self { storage: Storage::Captured(Arc::new(bytes)), range })
+    }
+
+    fn generated(bytes: Vec<u8>) -> Self {
+        let range = 0..bytes.len();
+        Self { storage: Storage::Generated(Arc::new(bytes)), range }
+    }
+
+    pub(super) fn slice(&self, range: Range<usize>) -> Self {
+        let start = self.range.start;
+        Self { storage: self.storage.clone(), range: start + range.start..start + range.end }
+    }
+}
+
+impl Deref for ObjectBytes {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        match self {
-            Self::Captured(bytes) => bytes,
-            Self::Generated(bytes) => bytes,
-        }
+        let bytes: &[u8] = match &self.storage {
+            Storage::Captured(bytes) => bytes,
+            Storage::Generated(bytes) => bytes,
+        };
+        &bytes[self.range.clone()]
     }
 }
 
-// A writer queue keeps the original input alive and borrows its actual range.
-// Newly generated native members own their own complete input through new().
+impl AsRef<[u8]> for ObjectBytes {
+    fn as_ref(&self) -> &[u8] { self }
+}
+
 pub(crate) struct Member {
     pub(crate) name: String,
-    bytes: ArchiveBytes,
-    range: Range<usize>,
+    bytes: ObjectBytes,
 }
 impl Member {
     pub(crate) fn new(name:String,bytes:Vec<u8>)->Self {
-        Self::whole(name, ArchiveBytes::Generated(Arc::new(bytes)))
+        Self { name, bytes: ObjectBytes::generated(bytes) }
     }
-    fn whole(name: String, bytes: ArchiveBytes) -> Self {
-        let range = 0..bytes.len();
-        Self { name, bytes, range }
-    }
-    fn bytes(&self)->&[u8] { &self.bytes[self.range.clone()] }
+    fn bytes(&self)->&[u8] { &self.bytes }
     pub(crate) fn object(&self,native:bool)->Result<Object> {
-        member_object(&self.name,self.bytes(),native)
+        member_object(&self.name,&self.bytes,native)
     }
 }
-fn member_object(name:&str,bytes:&[u8],native:bool)->Result<Object> {
+fn member_object(name:&str,bytes:&ObjectBytes,native:bool)->Result<Object> {
     (if native {coff::Reader::new(bytes)?.native(name)} else {coff::decode(bytes)})
         .map_err(|error|format!("静态库成员 {name}：{error}").into())
 }
 pub struct Library {
     directory: NonNull<std::ffi::c_void>,
-    bytes: ArchiveBytes,
+    bytes: ObjectBytes,
     native: bool,
 }
 // The compiler moves this unique directory into its native worker. B keeps
@@ -106,7 +133,8 @@ impl Drop for Library {
 #[derive(Clone, Copy)]
 struct ArchiveRange { start: usize, length: usize }
 impl ArchiveRange {
-    fn bytes<'a>(&self, bytes: &'a [u8]) -> &'a [u8] { &bytes[self.start..self.start+self.length] }
+    fn range(self) -> Range<usize> { self.start..self.start + self.length }
+    fn bytes<'a>(&self, bytes: &'a [u8]) -> &'a [u8] { &bytes[self.range()] }
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -190,10 +218,10 @@ fn archive_read_result(result: ArchiveReadResult) -> Result<()> {
     Err(format!("{message}（归档字节偏移 {}）",result.at).into())
 }
 impl Library {
-    pub(crate) fn native(bytes:Arc<Vec<u8>>)->Result<Self> {
-        Self::decode(ArchiveBytes::Generated(bytes), true)
+    pub(crate) fn native(bytes:ObjectBytes)->Result<Self> {
+        Self::decode(bytes, true)
     }
-    fn decode(bytes: ArchiveBytes, native: bool) -> Result<Self> {
+    fn decode(bytes: ObjectBytes, native: bool) -> Result<Self> {
         let directory=NonNull::new(unsafe{library_create(bytes.as_ptr())})
             .ok_or("静态库目录内存分配失败")?;
         let mut library=Self{directory,bytes,native};
@@ -206,9 +234,9 @@ impl Library {
     }
     fn member_count(&self)->usize {unsafe{library_member_count(self.directory.as_ptr())}}
     fn member(&self,index:usize)->ArchiveMemberState {unsafe{library_member(self.directory.as_ptr(),index)}}
-    fn member_bytes(&self,member:ArchiveReadMember)->(&str,&[u8]) {
+    fn member_bytes(&self,member:ArchiveReadMember)->(&str,ObjectBytes) {
         // The original receiver validated this name before B retained its range.
-        (unsafe{std::str::from_utf8_unchecked(member.name.bytes(&self.bytes))},member.body.bytes(&self.bytes))
+        (unsafe{std::str::from_utf8_unchecked(member.name.bytes(&self.bytes))},self.bytes.slice(member.body.range()))
     }
     pub(crate) fn extract(&mut self,symbol:&str)->Result<Option<Object>> {
         let selected=unsafe{library_take(self.directory.as_ptr(),symbol.as_ptr(),symbol.len())};
@@ -219,7 +247,7 @@ impl Library {
         }
         let member=self.member(selected.index).member;
         let (name,bytes)=self.member_bytes(member);
-        let object=member_object(name,bytes,self.native)?;
+        let object=member_object(name,&bytes,self.native)?;
         if !matches!(object.kind,Kind::Module{..}) {
             return Err(format!("静态库成员 {name} 不是独立模块").into());
         }
@@ -293,23 +321,20 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
     let mut members = Vec::new();
     for input in inputs {
         let input = input.as_ref();
-        let bytes = ArchiveBytes::Captured(Arc::new(FileBytes::read(&File::open(input)?)?));
+        let bytes = ObjectBytes::read(input)?;
         if has_signature(&bytes) {
             let library=Library::decode(bytes, false)?;
             for index in 0..library.member_count() {
                 let member=library.member(index).member;
-                let (name,_)=library.member_bytes(member);
-                members.push(Member{name:name.into(),bytes:library.bytes.clone(),
-                    range:member.body.start..member.body.start+member.body.length});
+                let (name,bytes)=library.member_bytes(member);
+                members.push(Member{name:name.into(),bytes});
             }
         } else {
-            members.push(Member::whole(input
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .ok_or("静态库输入名不是 UTF-8")?
-                    .into(),
-                bytes,
-            ));
+            let name = input.file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("静态库输入名不是 UTF-8")?
+                .into();
+            members.push(Member { name, bytes });
         }
     }
     Ok(members)
