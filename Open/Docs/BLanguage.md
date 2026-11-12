@@ -1088,7 +1088,7 @@ bc code --object target/module.obj --section 1
 bc code --object target/module.obj --function exact-qualified-symbol
 ```
 
-Rust SDK使用`object::code_facts(bytes, object::CodeSelection::CodeSections)`，或Section(number)／Function(name)。直接消费调用者拥有的原COFF字节，复用原B `bootstrap.coff_read`的headers／section／symbol／relocation，不经过Object逻辑节映射或符号归一化，不要求Blink私有元数据／合同，不读取B源码、构建输入含义、内嵌归档成员或重编、链接、装载／执行代码。CLI沿现有code入口在Compiler初始化前分派。观察、归档、模块导入和Blink链接共用COFF符号表读取，主记录及其辅助记录须位于文件头声明的符号表范围内。输出是独立字符串，查询结束不保活原产物或执行资源。
+Rust SDK使用`object::code_facts(bytes, object::CodeSelection::CodeSections)`，或Section(number)／Function(name)。直接消费调用者拥有的原COFF字节，复用原B `bootstrap.coff_read`的headers／section／symbol／relocation，不经过Object逻辑节映射或符号归一化，不要求Blink私有元数据／合同，不读取B源码、构建输入含义、内嵌归档成员或重编、链接、装载／执行代码。CLI沿现有code入口在Compiler初始化前分派。观察、归档、模块导入和Blink链接共用COFF符号表读取，主记录及其辅助记录须位于文件头声明的符号表范围内。节的`byte_length`表示实际文件内容长度。未初始化节需要装载零区时，`zero_fill_bytes`给出零字节数。输出是独立字符串，查询结束不保活原产物或执行资源。
 
 结果kind=coff_code、bitness=64、address_basis=section_relative；header_bytes为原20字节COFF头。section_number是从1开始的原物理节号，symbol_index是从0开始、包含辅助记录占位的原符号表索引，均区别于Object内部逻辑节索引；原符号／字符串表文件位置及完整string_table_bytes保留。sections始终列出全部原节的header_bytes、特征、实际长度及文件位置；默认只为原代码特征位选择的节展开bytes／regions／relocations，--section可明确选择任意物理节。--function只按精确、唯一且有定义的原函数符号选择其所在节，保留原symbol_index／value，不推测该符号的新函数末端或截掉同节其他字节。
 

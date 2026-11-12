@@ -75,8 +75,17 @@ extern "C" ReadSymbol symbol(ReadBytes input,ReadSymbols table,u64 index) on cpu
 }
 extern "C" ReadSection section(ReadBytes input,ReadBytes headers,u64 index) on cpu {
     address bytes=at(headers.bytes,index*40u64);
-    ReadRange body=range(input,little(bytes,20u64,4u64),little(bytes,16u64,4u64));
-    return ReadSection(inline_name(bytes),body.bytes,little(bytes,36u64,4u64),little(bytes,24u64,4u64),little(bytes,32u64,2u64),body.error);
+    u64 flags=little(bytes,36u64,4u64);
+    u64 offset=little(bytes,20u64,4u64);
+    u64 length=little(bytes,16u64,4u64);
+    u64 zero_fill=0u64;
+    if(offset==0u64 && (flags&128u64)!=0u64){
+        zero_fill=length;
+        length=0u64;
+    }
+    ReadRange body=range(input,offset,length);
+    return ReadSection(inline_name(bytes),body.bytes,flags,little(bytes,24u64,4u64),
+        little(bytes,32u64,2u64),zero_fill,body.error);
 }
 extern "C" ReadRelocations relocations(ReadBytes input,u64 offset,u64 count,u64 flags) on cpu {
     if((flags&16777216u64)!=0u64){

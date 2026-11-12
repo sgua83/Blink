@@ -9,7 +9,7 @@ struct ReadSymbol {
     u64 auxiliary;u64 selection;u64 owner;u64 next;u32 error;
 };
 struct ReadSection {
-    ReadBytes name;ReadBytes bytes;u64 flags;u64 relocations;u64 relocation_count;u32 error;
+    ReadBytes name;ReadBytes bytes;u64 flags;u64 relocations;u64 relocation_count;u64 zero_fill;u32 error;
 };
 struct ReadRelocations {u64 offset;u64 count;u32 error;};
 struct ReadRelocation {u64 offset;u64 symbol;u64 kind;u32 error;};

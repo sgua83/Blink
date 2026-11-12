@@ -14,7 +14,7 @@ pub enum CodeSelection<'a> {
 #[derive(Clone, Copy)]
 struct ReadSection {
     name: ReadBytes, bytes: ReadBytes, flags: u64,
-    relocations: usize, relocation_count: usize, error: ReadError,
+    relocations: usize, relocation_count: usize, zero_fill: usize, error: ReadError,
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.coff_read::section"]
@@ -173,6 +173,9 @@ impl<'a> Facts<'a> {
             ("header_bytes", hex(&self.reader.headers[index * 40..(index + 1) * 40])),
             ("characteristics", row.flags.to_string()), ("byte_length", row.bytes.length.to_string()),
             ("relocation_count", section.relocations.len().to_string()), ("selected", selected.to_string())];
+        if row.zero_fill != 0 {
+            values.push(("zero_fill_bytes", row.zero_fill.to_string()));
+        }
         if selected {
             let bytes = unsafe { row.bytes.borrowed() };
             let layout = material.and_then(|material| material.layout(index));

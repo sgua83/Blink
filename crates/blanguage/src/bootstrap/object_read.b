@@ -21,7 +21,7 @@ ObjectSection row_at(ObjectRows rows,u64 index) on cpu {
 }
 extern "C" ObjectSectionResult logical_section(ReadBytes input,ReadBytes headers,u64 index,inout u64 mapped) on cpu {
     ReadSection row=section(input,headers,index);
-    ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64);
+    ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64,row.zero_fill);
     if(row.error!=0){return ObjectSectionResult(value,row.error);}
     array<u8,7> meta=array<u8,7>(u8(46),u8(98),u8(108),u8(109),u8(101),u8(116),u8(97));array<u8,5> runtime=array<u8,5>(u8(46),u8(98),u8(108),u8(114),u8(116));array<u8,8> build=array<u8,8>(u8(46),u8(98),u8(108),u8(98),u8(117),u8(105),u8(108),u8(100));
     if(!matches<7>(row.name,meta,true) &&
@@ -114,7 +114,7 @@ extern "C" u32 recover_stack(ReadBytes input,ObjectRows rows,address frames,u64 
         ReadRelocations table=ReadRelocations(0u64,0u64,0);
         if(frame.has_coff!=0u64){
             ObjectSection section=row_at(rows,frame.section);
-            if(frame.start>=section.bytes.length){return 12;}
+            if(frame.start>=section.bytes.length+section.zero_fill){return 12;}
             // The immutable section/start pair is the key until remapping.
             BindingBytes location=BindingBytes(unsafe_address(address_bits(row)+24u64),16u64);
             u64 before=positions.count;

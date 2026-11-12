@@ -2,9 +2,9 @@ module bootstrap.object_read;
 import bootstrap.coff_read;
 
 // Borrowed rows replace the original physical-to-loaded section map.
-const u64 OBJECT_SECTION_BYTES=64u64;
+const u64 OBJECT_SECTION_BYTES=72u64;
 struct ObjectSection {
-    ReadBytes name;ReadBytes bytes;u64 flags;u64 relocations;u64 relocation_count;u64 mapped;
+    ReadBytes name;ReadBytes bytes;u64 flags;u64 relocations;u64 relocation_count;u64 mapped;u64 zero_fill;
 };
 struct ObjectSectionResult {ObjectSection value;u32 error;};
 struct ObjectRows {address values;u64 count;};

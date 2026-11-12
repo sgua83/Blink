@@ -139,7 +139,7 @@ unsafe extern "C" {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ObjectSection {
-    name: ReadBytes, bytes: ReadBytes, flags: u64, relocations: usize, relocation_count: usize, mapped: usize,
+    name: ReadBytes, bytes: ReadBytes, flags: u64, relocations: usize, relocation_count: usize, mapped: usize, zero_fill: usize,
 }
 #[repr(C)]
 struct ObjectSectionResult { value: ObjectSection, error: ReadError }
@@ -791,7 +791,11 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
                 associated: Vec::new(),
                 layout: None,
                 name: read_text(row.name)?,
-                bytes: unsafe { row.bytes.borrowed() }.to_vec(),
+                bytes: if row.zero_fill == 0 {
+                    unsafe { row.bytes.borrowed() }.to_vec()
+                } else {
+                    vec![0; row.zero_fill]
+                },
                 flags: row.flags as u32,
                 relocations: Vec::new(),
             });
