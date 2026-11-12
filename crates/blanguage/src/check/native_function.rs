@@ -1582,7 +1582,7 @@ impl Builder<'_> {
             memory_use:Some(memory_use),
             result: result.clone(),
             values: values.clone(),
-        }), source_site, generated_origin });
+        }), float_preserve: true, source_site, generated_origin });
         // 已闭合合同按本次实参交接来源；未闭合函数才借原调用图等待结果。
         let prototype = self.functions.units[name]
             .as_ref()
@@ -2372,7 +2372,7 @@ fn lower_dataset_borrows<'a>(
                 let original=std::mem::replace(&mut instruction.kind,InstKind::Scope(Vec::new()));
                 before.push(original);
                 instruction.kind=InstKind::Scope(before.into_iter().map(|kind|Inst{
-                    kind,source_site:instruction.source_site.clone(),generated_origin:instruction.generated_origin.clone(),
+                    source_site:instruction.source_site.clone(),generated_origin:instruction.generated_origin.clone(),..Inst::new(kind)
                 }).collect());
             }
         }
@@ -2536,7 +2536,7 @@ fn lower_failure_calls(
                     inst.kind=InstKind::Scope(body);out.push(inst);changed=true;continue;
                 }
                 let site=inst.source_site.clone();let origin=inst.generated_origin.clone();
-                let generated=|kind|Inst{kind,source_site:site.clone(),generated_origin:origin.clone()};
+                let generated=|kind|Inst{source_site:site.clone(),generated_origin:origin.clone(),..Inst::new(kind)};
                 let zero=registers.len();registers.push(Scalar::U64);
                 let error=registers.len();registers.push(Scalar::U64);
                 let failed=registers.len();registers.push(Scalar::Bool);
@@ -2577,7 +2577,7 @@ fn lower_failure_calls(
                 }else{None}
             }else{None};
             let site=inst.source_site.clone();let origin=inst.generated_origin.clone();
-            let generated=|kind|Inst{kind,source_site:site.clone(),generated_origin:origin.clone()};
+            let generated=|kind|Inst{source_site:site.clone(),generated_origin:origin.clone(),..Inst::new(kind)};
             out.push(inst);
             if let Some((error,continuation))=failure {
                 changed=true;

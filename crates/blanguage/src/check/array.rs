@@ -185,7 +185,7 @@ impl Builder<'_> {
         let (slots, storage) = self.local_slots(&value.ty);
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
         for (slot, r) in slots.iter().zip(&value.regs) {
-            self.code.push(Inst { kind: InstKind::StoreLocal(*slot, *r), source_site: source_site.clone(), generated_origin: generated_origin.clone() });
+            self.code.push(Inst { source_site: source_site.clone(), generated_origin: generated_origin.clone(), ..Inst::new(InstKind::StoreLocal(*slot, *r)) });
         }
         let place = Place::Local(value.ty, slots, storage);
         self.initialize(&place);

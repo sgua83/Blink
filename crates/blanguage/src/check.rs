@@ -3364,8 +3364,13 @@ impl<'a> Builder<'a> {
             } else {
                 InstKind::Binary { dst, op: operation.unwrap(), a: ar, b: br }
             };
+            let instruction = self.code.len();
             if let Some(origin) = &generated_origin { self.code.push(Inst::generated(kind, origin.clone())); }
             else { self.emit(kind); }
+            if scalar.is_float() {
+                self.code[instruction].float_preserve =
+                    proof.binary_requires_float_preserve(scalar, i, &a, &b, comparison);
+            }
             regs.push(dst);
         }
         let mut value = Value {

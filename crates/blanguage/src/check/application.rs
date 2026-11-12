@@ -4809,7 +4809,7 @@ pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::applicat
         CallArgument::Value{origin:None,dataset_borrow:None,ty:Ty::scalar(scalar),values:vec![reg]}
     }
     fn emit(code:&mut Vec<Inst>,original:&Inst,kind:InstKind){
-        code.push(Inst{kind,source_site:original.source_site.clone(),generated_origin:original.generated_origin.clone()});
+        code.push(Inst{source_site:original.source_site.clone(),generated_origin:original.generated_origin.clone(),..Inst::new(kind)});
     }
     fn constant(registers:&mut Vec<Scalar>,code:&mut Vec<Inst>,original:&Inst,scalar:Scalar,bits:Bits)->Reg{
         let reg=registers.len();registers.push(scalar);emit(code,original,InstKind::Constant(reg,scalar,bits));reg

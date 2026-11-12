@@ -1123,6 +1123,8 @@ impl TextureBinding {
 #[derive(Clone, Debug)]
 pub struct Inst {
     pub kind: InstKind,
+    // Semantic requirement from this operation's operand and result facts, not source provenance.
+    pub(crate) float_preserve: bool,
     #[cfg(feature = "compiler")]
     pub(crate) source_site: Option<std::sync::Arc<SourceSite>>,
     #[cfg(feature = "compiler")]
@@ -1130,13 +1132,13 @@ pub struct Inst {
 }
 impl Inst {
     pub fn new(kind: InstKind) -> Self {
-        Self { kind, #[cfg(feature = "compiler")] source_site: None, #[cfg(feature = "compiler")] generated_origin: None }
+        Self { kind, float_preserve: true, #[cfg(feature = "compiler")] source_site: None, #[cfg(feature = "compiler")] generated_origin: None }
     }
     #[cfg(feature = "compiler")]
     pub fn source_site(&self) -> Option<&SourceSite> { self.source_site.as_deref() }
     #[cfg(feature = "compiler")]
     pub(crate) fn generated(kind: InstKind, origin: std::sync::Arc<GeneratedOrigin>) -> Self {
-        Self { kind, source_site: None, generated_origin: Some(origin) }
+        Self { kind, float_preserve: true, source_site: None, generated_origin: Some(origin) }
     }
     #[cfg(feature = "compiler")]
     pub fn generated_origin(&self) -> Option<&GeneratedOrigin> { self.generated_origin.as_deref() }
@@ -1750,7 +1752,7 @@ impl Stage {
         fn arithmetic(code: &[Inst], registers: &[Scalar], scalar: Scalar) -> bool {
             code.iter().any(|inst| match &(inst).kind {
                 InstKind::Math { dst, op, .. } => registers[*dst] == scalar && *op != MathOp::Abs,
-                InstKind::Binary { a, .. } => registers[*a] == scalar,
+                InstKind::Binary { a, .. } => inst.float_preserve && registers[*a] == scalar,
                 InstKind::Cast { dst, src } => {
                     registers[*src].is_float() && !registers[*dst].is_integer() && ((registers[*dst] == scalar) != (registers[*src] == scalar))
                 }

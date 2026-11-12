@@ -1,6 +1,35 @@
 //! 同一Proof区间集合中的有限浮点次序；不拥有运行资源或另一份事实表。
 use super::*;
 
+impl Proof {
+    pub(in crate::check) fn binary_requires_float_preserve(
+        &self, scalar: Scalar, component: usize, a: &Value, b: &Value, comparison: bool,
+    ) -> bool {
+        let (minimum, maximum) = if scalar == Scalar::F32 {
+            (f32::MIN_POSITIVE.to_bits() as Bits, f32::MAX.to_bits() as Bits)
+        } else { (f64::MIN_POSITIVE.to_bits(), f64::MAX.to_bits()) };
+        let sign = 1 << (scalar.bit_width() - 1);
+        let ordinary = [
+            (order(scalar, maximum | sign), order(scalar, minimum | sign)),
+            (order(scalar, 0), order(scalar, 0)),
+            (order(scalar, minimum), order(scalar, maximum)),
+        ];
+        let requires = |ranges: ScalarRanges, domains: Domains| {
+            // Cast names the original unsigned integer -> F32 conversion: +0 or finite normal.
+            if scalar == Scalar::F32 && domains.iter().any(|domain|
+                matches!(domain, IndexDomain::Floating(FloatingBound { form: FloatingForm::Cast, .. }))) {
+                return false;
+            }
+            ranges.0.iter().any(|&(lower, upper)|
+                !ordinary.iter().any(|&(first, last)| first <= lower && upper <= last))
+        };
+        let (ai, bi) = (component % a.regs.len(), component % b.regs.len());
+        requires(ranges(a, ai), a.proof.domains(ai))
+            || requires(ranges(b, bi), b.proof.domains(bi))
+            || (!comparison && requires(self.range_set(component), self.domains(component)))
+    }
+}
+
 pub(super) fn order(scalar: Scalar, bits: Bits) -> Bits {
     let sign = 1 << (scalar.bit_width() - 1);
     if bits & sign == 0 { bits ^ sign } else { !bits & scalar.bit_mask() }

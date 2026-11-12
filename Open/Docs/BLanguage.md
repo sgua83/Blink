@@ -4769,7 +4769,9 @@ CPU 标量与四元素 SSE2 共用自研整数倒数参数。二次幂以右移�
 
 ### GPU f32 运算的保留模式
 
-编译器从优化后的实际 IR 派生 f32 运算要求，包括算术、数值比较与转换、数学函数、块内集合、subgroup 数值协作和全域 f32 归约／扫描。主入口、f32 归约尾入口及扫描的递归／传播入口声明 `DenormPreserve 32` 和 `SignedZeroInfNanPreserve 32`；纯位复制、整数运算及已删除的浮点计算不引入该要求。该规则归属浮点运算本身，普通内核与使用极值集合的内核使用相同模式。
+编译器从优化后的实际 IR 派生 f32 保持要求。二元运算在原语义生成处消费两个输入及结果的实际数值事实，包括原范围和无符号整数到f32转换所得正零或有限正规数；只有这些事实排除次正规、负零、NaN及无穷时，该次运算才不引入保持要求。比较只核对其浮点输入。未知输入或仍可能产生这些值时继续要求保持，不能只凭最终输出范围、样本或类型名称取消要求。数学函数、数值转换、块内集合、subgroup 数值协作和全域f32归约／扫描继续沿各自运算规则确定要求。
+
+存在保持要求时，主入口、f32归约尾入口及扫描的递归／传播入口声明 `DenormPreserve 32` 和 `SignedZeroInfNanPreserve 32`；已证无需保持的二元运算、纯位复制、整数运算及已删除的浮点计算不引入该要求。程序设备合同与逐入口SPIR-V模式消费同一运算要求。模式不改变原运算顺序，不引入软件浮点、载荷扫描或用户开关。
 
 同一 Vulkan 设备在既有属性查询链读取 `VkPhysicalDeviceFloatControlsProperties`，实际执行绑定检查所需的两个 32 位能力；不支持时明确报错。该能力来自 [Vulkan 1.2 浮点控制属性](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceFloatControlsProperties.html)，入口模式按 [SPIR-V float controls](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_float_controls.html) 编码。保留有符号零、次正规数、NaN／无穷语义不等于承诺所有 NaN 载荷、浮点结合顺序、近似数学结果和舍入误差一致；CPU 继续使用既有原生浮点指令。
 
