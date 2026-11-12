@@ -1,6 +1,11 @@
 //! 一次构建持有的解析输入；跨次复用仍由正式对象／映像拥有。
-use crate::{ast::{self, Diagnostic, Source, Span}, parser, syntax};
+use crate::{ast::{self, Diagnostic, Source, Span}, object::{Kind, Object}, parser, syntax};
 use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::Arc};
+pub(super) enum ProviderInterface<'a> {
+    Unit(Arc<syntax::Module>),
+    Object(&'a Object),
+}
+
 struct SourceInput {
     interface: Arc<syntax::Module>,
     body: Option<CapturedBody>,
@@ -27,7 +32,13 @@ impl Inputs {
         Ok(input.interface.clone())
     }
     pub(super) fn capture(
-        &mut self, path: &Path, root: &Path, providers: &BTreeSet<String>,
+        &mut self, path: &Path, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
+    ) -> ast::Result<()> {
+        self.capture_source(path, root, providers, &mut BTreeSet::new())
+    }
+
+    fn capture_source(
+        &mut self, path: &Path, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
         visited: &mut BTreeSet<String>,
     ) -> ast::Result<()> {
         let interface = self.header(path)?;
@@ -40,15 +51,43 @@ impl Inputs {
             input.body = Some(CapturedBody { implementation, imports });
         }
         let imports = input.body.as_ref().unwrap().imports.clone();
-        for name in imports.iter() {
-            if !providers.contains(name) {
-                self.capture(&crate::source_path::module(root, name, u16::from(b'b')),
-                    root, providers, visited)?;
+        self.capture_imports(&imports, root, providers, visited)
+    }
+
+    fn capture_imports(
+        &mut self, imports: &[String], root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
+        visited: &mut BTreeSet<String>,
+    ) -> ast::Result<()> {
+        for name in imports {
+            if visited.contains(name) {
+                continue;
+            }
+            let interface = match providers.get(name) {
+                Some(ProviderInterface::Unit(header)) => {
+                    self.capture_interface(name, &header.source.text, Some(header))?
+                }
+                Some(ProviderInterface::Object(object)) => {
+                    let Kind::Module { interface, .. } = &object.kind else {
+                        // Imports reports invalid explicit providers when constructing the module inputs.
+                        continue;
+                    };
+                    self.capture_interface(name, interface, None)?
+                }
+                None => {
+                    let path = crate::source_path::module(root, name, u16::from(b'b'));
+                    self.capture_source(&path, root, providers, visited)?;
+                    continue;
+                }
+            };
+            if visited.insert(interface.name().to_owned()) {
+                let imports = crate::names::module_imports(&interface, None);
+                self.capture_imports(&imports, root, providers, visited)?;
             }
         }
         Ok(())
     }
-    pub(super) fn capture_interface(
+
+    fn capture_interface(
         &mut self, name: &str, text: &str, parsed: Option<&Arc<syntax::Module>>,
     ) -> ast::Result<Arc<syntax::Module>> {
         let interfaces = self.interfaces.entry(name.into()).or_default();

@@ -1,7 +1,7 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
-use super::{Compilation, Inputs, ObjectCompilation, ObjectKind, Result};
+use super::{Compilation, Inputs, ObjectCompilation, ObjectKind, Result, inputs::ProviderInterface};
 use crate::{Compiler, ast::Target, object::Object};
-use std::{collections::BTreeSet, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex}, thread};
+use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex}, thread};
 #[derive(Clone, Copy)]
 pub enum Dependency<'a> {
     Unit(usize),
@@ -107,33 +107,18 @@ impl Compiler {
         let mut inputs = Inputs::default();
         for unit in &prepared { inputs.header(&unit.path)?; }
         for unit in &prepared {
-            let mut names = BTreeSet::new();
-            let mut interfaces = Vec::new();
+            let mut providers = BTreeMap::new();
             for provider in &unit.providers {
-                match provider {
+                let (name, interface) = match *provider {
                     Dependency::Unit(id) => {
-                        let parsed = inputs.header(&prepared[*id].path)?;
-                        names.insert(parsed.name().to_owned());
-                        interfaces.push(inputs.capture_interface(parsed.name(), &parsed.source.text, Some(&parsed))?);
+                        let header = inputs.header(&prepared[id].path)?;
+                        (header.name().to_owned(), ProviderInterface::Unit(header))
                     }
-                    Dependency::Object(object) => {
-                        names.insert(object.name().into());
-                        if let crate::object::Kind::Module { interface, .. } = &object.kind {
-                            interfaces.push(inputs.capture_interface(object.name(), interface, None)?);
-                        }
-                    }
-                }
+                    Dependency::Object(object) => (object.name().to_owned(), ProviderInterface::Object(object)),
+                };
+                providers.entry(name).or_insert(interface);
             }
-            let mut visited = BTreeSet::new();
-            inputs.capture(&unit.path, &unit.root, &names, &mut visited)?;
-            for interface in interfaces {
-                for import in interface.imports() {
-                    if !names.contains(import) {
-                        inputs.capture(&crate::source_path::module(&unit.root, import, u16::from(b'b')),
-                            &unit.root, &names, &mut visited)?;
-                    }
-                }
-            }
+            inputs.capture(&unit.path, &unit.root, &providers)?;
         }
         let mut following = vec![Vec::new(); units.len()];
         let waiting = units.iter().enumerate().map(|(index, unit)| {
