@@ -206,3 +206,26 @@ extern "C" ControlWords close_loop(LoopLabels labels, u32 reaches, address body)
 extern "C" ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, address body) on cpu;
 extern "C" ControlWords leave_control(u32 target, address body) on cpu;
 extern "C" ControlWords dispatch_loop_return(LoopReturn input, address edges, address body) on cpu;
+
+// Operation identities follow the original IR SubgroupOp.
+enum SubgroupOperation:u32 {
+    Lane=0; Size=1; Id=2; Elect=3; Any=4; All=5; Count=6; PrefixCount=7;
+    BroadcastFirst=8; Shuffle=9; ShuffleXor=10; ShuffleUp=11; ShuffleDown=12;
+    Sum=13; ExclusiveSum=14; Min=15; Max=16; BitAnd=17; BitOr=18; BitXor=19;
+    ExclusiveBitAnd=20; ExclusiveBitOr=21; ExclusiveBitXor=22;
+};
+struct SubgroupEmission {
+    SubgroupOperation operation;
+    BuiltinScalar scalar;
+    u32 result_type;
+    u32 result;
+    u32 scope_or_pointer;
+    u32 value;
+    u32 argument;
+    u32 ballot_type;
+    u32 next;
+};
+struct SubgroupWords { u64 words; u32 next; };
+// The input carries the resolved built-in pointer or Subgroup scope constant.
+// The emitter supplies up to eleven words. Ballot count consumes one temporary ID.
+extern "C" SubgroupWords encode_subgroup(SubgroupEmission input, address body) on cpu;

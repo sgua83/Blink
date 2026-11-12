@@ -729,3 +729,57 @@ extern "C" ControlWords dispatch_loop_return(LoopReturn input, address edges, ad
     at = open_conditional(body, at, input.merge, input.result, input.target, input.merge);
     return ControlWords(words_one(body, at, 248, input.merge), input.merge, 1);
 }
+
+struct SubgroupArithmetic { u32 opcode; u32 group; };
+
+SubgroupArithmetic subgroup_arithmetic(SubgroupOperation operation, BuiltinScalar scalar) on cpu {
+    if (operation == SubgroupOperation::Sum || operation == SubgroupOperation::ExclusiveSum) {
+        ScalarDefinition type = scalar_definition(scalar);
+        return SubgroupArithmetic(type.opcode == 22 ? 350 : 349, operation == SubgroupOperation::ExclusiveSum ? 2 : 0);
+    }
+    if (operation == SubgroupOperation::Min || operation == SubgroupOperation::Max) {
+        ScalarDefinition type = scalar_definition(scalar);
+        u32 base = operation == SubgroupOperation::Min ? 353 : 356;
+        u32 offset = type.signed != 0 ? 0 : (type.opcode == 21 ? 1 : 2);
+        return SubgroupArithmetic(base + offset, 0);
+    }
+    if (operation == SubgroupOperation::BitAnd) { return SubgroupArithmetic(359, 0); }
+    if (operation == SubgroupOperation::BitOr) { return SubgroupArithmetic(360, 0); }
+    if (operation == SubgroupOperation::BitXor) { return SubgroupArithmetic(361, 0); }
+    if (operation == SubgroupOperation::ExclusiveBitAnd) { return SubgroupArithmetic(359, 2); }
+    if (operation == SubgroupOperation::ExclusiveBitOr) { return SubgroupArithmetic(360, 2); }
+    return SubgroupArithmetic(361, 2);
+}
+
+extern "C" SubgroupWords encode_subgroup(SubgroupEmission input, address body) on cpu {
+    SubgroupOperation operation = input.operation;
+    u32 type = input.result_type;
+    u32 result = input.result;
+    u32 scope = input.scope_or_pointer;
+    if (operation == SubgroupOperation::Lane || operation == SubgroupOperation::Size || operation == SubgroupOperation::Id) {
+        return SubgroupWords(words_three(body, 0u64, 61, type, result, input.scope_or_pointer), input.next);
+    }
+    if (operation == SubgroupOperation::Elect) {
+        return SubgroupWords(words_three(body, 0u64, 333, type, result, scope), input.next);
+    }
+    if (operation == SubgroupOperation::Any || operation == SubgroupOperation::All || operation == SubgroupOperation::BroadcastFirst) {
+        u32 opcode = operation == SubgroupOperation::Any ? 335 : (operation == SubgroupOperation::All ? 334 : 338);
+        return SubgroupWords(words_four(body, 0u64, opcode, type, result, scope, input.value), input.next);
+    }
+    if (operation == SubgroupOperation::Count || operation == SubgroupOperation::PrefixCount) {
+        u32 ballot = input.next;
+        u32 group = operation == SubgroupOperation::PrefixCount ? 2 : 0;
+        u64 at = words_four(body, 0u64, 339, input.ballot_type, ballot, scope, input.value);
+        at = words_five(body, at, 342, type, result, scope, group, ballot);
+        return SubgroupWords(at, ballot + 1);
+    }
+    if (operation == SubgroupOperation::Shuffle || operation == SubgroupOperation::ShuffleXor ||
+        operation == SubgroupOperation::ShuffleUp || operation == SubgroupOperation::ShuffleDown) {
+        u32 opcode = 345 + u32(operation) - u32(SubgroupOperation::Shuffle);
+        u64 at = words_five(body, 0u64, opcode, type, result, scope, input.value, input.argument);
+        return SubgroupWords(at, input.next);
+    }
+    SubgroupArithmetic arithmetic = subgroup_arithmetic(operation, input.scalar);
+    u64 at = words_five(body, 0u64, arithmetic.opcode, type, result, scope, arithmetic.group, input.value);
+    return SubgroupWords(at, input.next);
+}

@@ -311,6 +311,25 @@ struct LoopReturn {
     edge_count: u32,
 }
 
+#[repr(C)]
+struct SubgroupEmission {
+    operation: u32,
+    scalar: ScalarCode,
+    result_type: u32,
+    result: u32,
+    scope_or_pointer: u32,
+    value: u32,
+    argument: u32,
+    ballot_type: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct SubgroupWords {
+    words: u64,
+    next: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
@@ -368,6 +387,8 @@ unsafe extern "C" {
     fn leave_control(target: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::dispatch_loop_return"]
     fn dispatch_loop_return(input: LoopReturn, edges: *const returns::ReturnEdge, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::encode_subgroup"]
+    fn encode_subgroup(input: SubgroupEmission, body: *mut u32) -> SubgroupWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
     fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::constant_declaration"]

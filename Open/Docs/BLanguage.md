@@ -3675,7 +3675,7 @@ void annotate(inout dataset<WorkItem> work) on gpu {
 }
 ```
 
-同一调用只包含当时实际参与的 invocation：尾组只处理有效元素，分歧分支只处理进入该分支的参与者，循环按各次动态调用的参与者协作。`subgroup_size()` 仍是物理宽度，不是活动数量；活动数量使用 `subgroup_count(true)`。lane 不是 `index()`，subgroup 编号也不是全局任务编号，不能假定相邻记录必然按某种 lane 顺序分组。这些规则遵循 [Vulkan group operations](https://docs.vulkan.org/spec/latest/chapters/shaders.html#shaders-group-operations) 与 [SPIR-V non-uniform instructions](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#_non_uniform_instructions)。
+B 后端按原 SubgroupOp 和实际类型发射内建读取、交换、投票和归约等指令。所需设备能力沿原合同交接。同一调用只包含当时实际参与的 invocation：尾组只处理有效元素，分歧分支只处理进入该分支的参与者，循环按各次动态调用的参与者协作。`subgroup_size()` 仍是物理宽度，不是活动数量；活动数量使用 `subgroup_count(true)`。lane 不是 `index()`，subgroup 编号也不是全局任务编号，不能假定相邻记录必然按某种 lane 顺序分组。这些规则遵循 [Vulkan group operations](https://docs.vulkan.org/spec/latest/chapters/shaders.html#shaders-group-operations) 与 [SPIR-V non-uniform instructions](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#_non_uniform_instructions)。
 
 四种shuffle返回与value相同的类型，接收f32／u32／i32／u64／i64标量、现有32位向量及bool；记录、数组、矩阵和 view 不作为交换值。两个实参各求值一次，再对已有值逐分量编码；参数可来自普通 GPU 值函数，跨模块调用和循环继续使用同一指令及寄存器依赖。它们是寄存器值交换，不执行浮点算术；被交换的 NaN 载荷、有符号零和次正规数保留，bool 使用语言的规范真假值。
 
