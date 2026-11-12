@@ -58,6 +58,31 @@ pub use sort::{emit_sort_gather, emit_sort_histogram, emit_sort_key, emit_sort_s
 const BUFFER_BYTES: u32 = std::mem::size_of::<BufferAddress>() as u32;
 const BUFFER_STRIDE: u32 = std::mem::offset_of!(BufferAddress, stride) as u32;
 
+#[repr(C)]
+struct FrameEncoding {
+    length: u64,
+    probe_field: u64,
+}
+
+#[repr(C)]
+struct TailRange {
+    start: u64,
+    end: u64,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::allocate_frame"]
+    fn encode_stack_frame(frame: u32, output: *mut u8) -> FrameEncoding;
+    #[link_name = "bootstrap.x64_instruction::stack_probe_size"]
+    fn stack_probe_size() -> u64;
+    #[link_name = "bootstrap.x64_instruction::append_stack_probe"]
+    fn append_stack_probe(image: *mut u8, end: u64, call_field: u64) -> u64;
+    #[link_name = "bootstrap.x64_instruction::append_literal"]
+    fn append_literal(image: *mut u8, end: u64, bits: u64, width: u32, references: *const usize, count: u64) -> TailRange;
+    #[link_name = "bootstrap.x64_instruction::patch_relative"]
+    fn patch_relative(field: *mut u8, offset: u64, target: u64);
+}
+
 struct Emitter<'a> {
     code: Vec<u8>,
     unwind: Vec<UnwindOperation>,
@@ -87,35 +112,29 @@ impl Emitter<'_> {
         let unwind = unwind::encode(self.prolog, &self.unwind);
         if let Some(at) = self.probe {
             let start = self.code.len();
-            self.patch(at, start);
+            self.code.reserve(unsafe { stack_probe_size() } as usize);
+            unsafe {
+                let end = append_stack_probe(self.code.as_mut_ptr(), start as u64, at as u64);
+                self.code.set_len(end as usize);
+            }
             tail_references.push(super::TailReference { target: start, rel32_fields: vec![at] });
-            self.bytes(&[0x4c, 0x8b, 0xd4, 0x49, 0x83, 0xc2, 0x08, 0x49, 0x89, 0xc3]);
-            let begin = self.code.len();
-            self.bytes(&[0x49, 0x81, 0xfb]);
-            self.u32(4096);
-            let tail = self.jump(Some(0x82));
-            self.bytes(&[0x49, 0x81, 0xea]);
-            self.u32(4096);
-            self.bytes(&[0x41, 0x85, 0x02, 0x49, 0x81, 0xeb]);
-            self.u32(4096);
-            let back = self.jump(None);
-            self.patch(back, begin);
-            self.patch(tail, self.code.len());
-            self.bytes(&[0x4d, 0x29, 0xda, 0x41, 0x85, 0x02, 0xc3]);
             tail_regions.push(super::Region { end: self.code.len(), kind: super::RegionKind::StackProbe });
         }
-        for ((bits, wide), references) in std::mem::take(&mut self.literals) {
-            let aligned = self.code.len().div_ceil(4) * 4;
-            if aligned != self.code.len() {
-                self.code.resize(aligned, 0);
-                tail_regions.push(super::Region { end: aligned, kind: super::RegionKind::Alignment });
+        for ((bits, wide), references) in self.literals {
+            let start = self.code.len();
+            let width = if wide { 8 } else { 4 };
+            self.code.reserve(width as usize + 3);
+            let range = unsafe {
+                let range = append_literal(self.code.as_mut_ptr(), start as u64, bits, width,
+                    references.as_ptr(), references.len() as u64);
+                self.code.set_len(range.end as usize);
+                range
+            };
+            let target = range.start as usize;
+            if target != start {
+                tail_regions.push(super::Region { end: target, kind: super::RegionKind::Alignment });
             }
-            let target = self.code.len();
-            if wide { self.bytes(&bits.to_le_bytes()); } else { self.u32(bits as u32); }
-            tail_regions.push(super::Region { end: self.code.len(), kind: super::RegionKind::Literal });
-            for &at in &references {
-                self.patch(at, target);
-            }
+            tail_regions.push(super::Region { end: range.end as usize, kind: super::RegionKind::Literal });
             tail_references.push(super::TailReference { target, rel32_fields: references });
         }
         NativeCode {
@@ -140,20 +159,22 @@ impl Emitter<'_> {
         self.prolog = self.code.len() as u8;
     }
     fn allocate_frame(&mut self, frame: u32) {
-        if frame >= 4096 {
-            self.bytes(&[0xb8]);
-            self.u32(frame);
-            self.bytes(&[0xe8]);
-            self.probe = Some(self.code.len());
-            self.u32(0);
+        if frame == 0 {
+            return;
         }
-        if frame != 0 {
-            self.bytes(&[0x48, 0x81, 0xec]);
-            self.u32(frame);
-            let at = self.code.len() as u8;
-            self.unwind.push(UnwindOperation::allocate(at, frame));
-            self.prolog = at;
+        // Optional mov/call (10 bytes) followed by sub rsp, imm32 (7 bytes).
+        self.code.reserve(17);
+        let start = self.code.len();
+        let encoding = unsafe {
+            let encoding = encode_stack_frame(frame, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + encoding.length as usize);
+            encoding
+        };
+        if encoding.probe_field != 0 {
+            self.probe = Some(start + encoding.probe_field as usize);
         }
+        self.prolog = self.code.len() as u8;
+        self.unwind.push(UnwindOperation::allocate(self.prolog, frame));
     }
     fn enter(&mut self, frame: u32) {
         self.push_registers(&[12, 13, 14, 15, 3]);
@@ -191,8 +212,8 @@ impl Emitter<'_> {
         at
     }
     fn patch(&mut self, at: usize, target: usize) {
-        let relative = (target as i64 - (at + 4) as i64) as i32;
-        self.code[at..at + 4].copy_from_slice(&relative.to_le_bytes());
+        let field = &mut self.code[at..at + 4];
+        unsafe { patch_relative(field.as_mut_ptr(), at as u64, target as u64); }
     }
     fn address(&mut self, binding: usize, index: Reg) {
         self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);

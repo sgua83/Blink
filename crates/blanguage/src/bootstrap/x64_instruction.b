@@ -87,3 +87,80 @@ extern "C" u64 encode(Encoding input, address opcode, u64 opcode_length, address
     }
     return cursor - start;
 }
+
+void write_word(u64 at, u32 word) on cpu {
+    unsafe_position<u8>(unsafe_address(at)) = u8(word);
+    unsafe_position<u8>(unsafe_address(at + 1u64)) = u8(word >> 8);
+    unsafe_position<u8>(unsafe_address(at + 2u64)) = u8(word >> 16);
+    unsafe_position<u8>(unsafe_address(at + 3u64)) = u8(word >> 24);
+}
+
+extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu {
+    write_word(address_bits(field), u32(target) - u32(offset + 4u64));
+}
+
+extern "C" FrameEncoding allocate_frame(u32 frame, address output) on cpu {
+    u64 cursor = address_bits(output);
+    u64 probe_field = 0u64;
+    if (frame >= 4096) {
+        // The leaf helper takes the byte count in EAX.
+        unsafe_position<u8>(unsafe_address(cursor)) = u8(0xb8);
+        write_word(cursor + 1u64, frame);
+        unsafe_position<u8>(unsafe_address(cursor + 5u64)) = u8(0xe8);
+        probe_field = 6u64;
+        write_word(cursor + probe_field, 0);
+        cursor += 10u64;
+    }
+    unsafe_position<u8>(unsafe_address(cursor)) = u8(0x48);
+    unsafe_position<u8>(unsafe_address(cursor + 1u64)) = u8(0x81);
+    unsafe_position<u8>(unsafe_address(cursor + 2u64)) = u8(0xec);
+    write_word(cursor + 3u64, frame);
+    return FrameEncoding(cursor + 7u64 - address_bits(output), probe_field);
+}
+
+// The leaf touches each page from the caller's stack pointer to the new end.
+// It preserves RAX and the argument registers. Its internal branches are fixed.
+const u32 STACK_PROBE_LENGTH = 52;
+const array<u8,STACK_PROBE_LENGTH> STACK_PROBE = array<u8,STACK_PROBE_LENGTH>(
+    u8(0x4c), u8(0x8b), u8(0xd4), u8(0x49), u8(0x83), u8(0xc2), u8(0x08), u8(0x49), u8(0x89), u8(0xc3),
+    u8(0x49), u8(0x81), u8(0xfb), u8(0x00), u8(0x10), u8(0x00), u8(0x00),
+    u8(0x0f), u8(0x82), u8(0x16), u8(0x00), u8(0x00), u8(0x00),
+    u8(0x49), u8(0x81), u8(0xea), u8(0x00), u8(0x10), u8(0x00), u8(0x00),
+    u8(0x41), u8(0x85), u8(0x02), u8(0x49), u8(0x81), u8(0xeb), u8(0x00), u8(0x10), u8(0x00), u8(0x00),
+    u8(0xe9), u8(0xdd), u8(0xff), u8(0xff), u8(0xff),
+    u8(0x4d), u8(0x29), u8(0xda), u8(0x41), u8(0x85), u8(0x02), u8(0xc3)
+);
+
+extern "C" u64 stack_probe_size() on cpu {
+    return u64(STACK_PROBE_LENGTH);
+}
+
+extern "C" u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu {
+    u64 base = address_bits(image);
+    patch_relative(unsafe_address(base + call_field), call_field, end);
+    for (index in 0..STACK_PROBE_LENGTH) {
+        unsafe_position<u8>(unsafe_address(base + end + u64(index))) = STACK_PROBE[index];
+    }
+    return end + u64(STACK_PROBE_LENGTH);
+}
+
+extern "C" TailRange append_literal(address image, u64 end, u64 bits, u32 width, address references, u64 count) on cpu {
+    u64 base = address_bits(image);
+    u64 start = ((end + 3u64) / 4u64) * 4u64;
+    u64 cursor = end;
+    while (cursor < start) {
+        unsafe_position<u8>(unsafe_address(base + cursor)) = u8(0);
+        cursor += 1u64;
+    }
+    write_word(base + start, u32(bits));
+    if (width == 8) {
+        write_word(base + start + 4u64, u32(bits >> 32));
+    }
+    u64 index = 0u64;
+    while (index < count) {
+        u64 field = unsafe_position<u64>(unsafe_address(address_bits(references) + index * 8u64));
+        patch_relative(unsafe_address(base + field), field, start);
+        index += 1u64;
+    }
+    return TailRange(start, start + u64(width));
+}
