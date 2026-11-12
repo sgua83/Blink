@@ -1772,7 +1772,7 @@ u64 compact_disp32(u64 at, u32 instruction, u32 displacement) on cpu {
     return at + 7u64;
 }
 
-u64 compact_stride(u64 at, u8 target, u32 offset) on cpu {
+u64 load_range_binding(u64 at, u8 target, u32 offset) on cpu {
     MoveLocation slot = MoveLocation(u64(offset), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
     return encode_operand_instruction(at, u16(0x8b), u8(0), true, target, slot);
 }
@@ -1790,7 +1790,7 @@ u64 compact_advance(u64 at, u8 pointer, u8 stride, u32 bytes) on cpu {
     return cursor + 4u64;
 }
 
-u64 compact_copy(u64 at, u32 bytes) on cpu {
+u64 copy_record_at(u64 at, u32 bytes) on cpu {
     u64 cursor = at;
     u32 vectors = bytes / 16;
     if (vectors != 0) {
@@ -1821,7 +1821,7 @@ u64 compact_copy(u64 at, u32 bytes) on cpu {
 
 extern "C" u64 compact_count(u32 flags, u32 stride_offset, u32 flag_word, address output) on cpu {
     u64 start = address_bits(output);
-    u64 cursor = compact_stride(start, u8(12), flags + stride_offset);
+    u64 cursor = load_range_binding(start, u8(12), flags + stride_offset);
     cursor = compact_disp32(cursor, 0x918b4c, flags); // mov r10,[rcx + flags]
     cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
     cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(12));
@@ -1852,9 +1852,9 @@ extern "C" u64 compact_count(u32 flags, u32 stride_offset, u32 flag_word, addres
 
 extern "C" u64 compact_scatter(CompactScatter input, address output) on cpu {
     u64 start = address_bits(output);
-    u64 cursor = compact_stride(start, u8(13), input.source + input.stride_offset);
-    cursor = compact_stride(cursor, u8(14), input.target + input.stride_offset);
-    cursor = compact_stride(cursor, u8(15), input.flags + input.stride_offset);
+    u64 cursor = load_range_binding(start, u8(13), input.source + input.stride_offset);
+    cursor = load_range_binding(cursor, u8(14), input.target + input.stride_offset);
+    cursor = load_range_binding(cursor, u8(15), input.flags + input.stride_offset);
     cursor = compact_disp32(cursor, 0xb18b48, input.source); // rsi = source
     cursor = compact_disp32(cursor, 0xb98b48, input.target); // rdi = destination
     cursor = compact_disp32(cursor, 0x918b4c, input.flags);  // r10 = flags
@@ -1876,7 +1876,7 @@ extern "C" u64 compact_scatter(CompactScatter input, address output) on cpu {
     u64 end = condition_field(cursor, u8(0x83));
     cursor = compact_flag_test(end + 4u64, input.flag_word);
     u64 skip = condition_field(cursor, u8(0x84));
-    cursor = compact_copy(skip + 4u64, input.record_bytes);
+    cursor = copy_record_at(skip + 4u64, input.record_bytes);
     cursor = compact_advance(cursor, u8(6), u8(13), input.record_bytes);
     cursor = compact_advance(cursor, u8(7), u8(14), input.record_bytes);
     u64 next = jump_field(cursor);
@@ -1897,4 +1897,159 @@ extern "C" u64 compact_scatter(CompactScatter input, address output) on cpu {
     put_byte(cursor + 12u64, u8(0x5b));
     put_byte(cursor + 13u64, u8(0xc3));
     return cursor + 14u64 - start;
+}
+
+u64 sort_range_end(u64 at) on cpu {
+    u64 cursor = register_instruction(at, u16(0x39), u8(0), false, u8(8), u8(9)); // cmp r9d,r8d
+    return condition_field(cursor, u8(0x83));
+}
+
+u64 sort_finish_range(u64 at, u64 start, u64 begin, u64 end) on cpu {
+    u64 cursor = register_instruction(at, u16(0xff), u8(0), false, u8(0), u8(9)); // inc r9d
+    u64 back = jump_field(cursor);
+    cursor = back + 4u64;
+    patch_relative(unsafe_address(back), back - start, begin - start);
+    patch_relative(unsafe_address(end), end - start, cursor - start);
+    return cursor;
+}
+
+extern "C" u64 sort_key(SortKeyEmission input, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = load_range_binding(start, u8(12), input.stride_offset);
+    cursor = load_range_binding(cursor, u8(10), 0); // source record base
+    cursor = load_range_binding(cursor, u8(11), 3 * input.buffer_bytes);
+    if (input.first != 0) {
+        cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
+        cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(12));
+        cursor = register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(10));
+    }
+    u64 begin = cursor;
+    u64 end = sort_range_end(cursor);
+    cursor = end + 4u64;
+    MoveLocation index = MoveLocation(4u64, MOVE_MEMORY, u8(11), u8(9), u8(3));
+    MoveLocation key = MoveLocation(u64(input.word), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+    if (input.first != 0) {
+        cursor = encode_operand_instruction(cursor, u16(0x89), u8(0), false, u8(9), index);
+    } else {
+        cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(0), index);
+        cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(12));
+        key.index = u8(0);
+    }
+    if (input.floating != 0 && input.bytes == 8) {
+        MoveLocation high = key;
+        high.value += 4u64;
+        cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(1), high);
+    }
+    u16 load = input.bytes == 1 ? u16(0xb60f) : (input.bytes == 2 ? u16(0xb70f) : u16(0x8b));
+    cursor = encode_operand_instruction(cursor, load, u8(0), false, u8(0), key);
+    // Each radix pass consumes a 32-bit subkey and its original ordinal.
+    if (input.bias != 0) {
+        put_byte(cursor, u8(0x35)); // xor eax,imm32
+        write_word(cursor + 1u64, input.bias);
+        cursor += 5u64;
+    } else if (input.floating != 0 && input.bytes == 4) {
+        write_word(cursor, 0xfac1c289); // mov edx,eax; sar edx,31
+        put_byte(cursor + 4u64, u8(31));
+        put_byte(cursor + 5u64, u8(0x81)); // or edx,0x80000000
+        put_byte(cursor + 6u64, u8(0xca));
+        write_word(cursor + 7u64, 0x80000000);
+        cursor = register_instruction(cursor + 11u64, u16(0x31), u8(0), false, u8(2), u8(0));
+    } else if (input.floating != 0 && input.bytes == 8) {
+        put_byte(cursor, u8(0xc1)); // sar ecx,31
+        put_byte(cursor + 1u64, u8(0xf9));
+        put_byte(cursor + 2u64, u8(31));
+        cursor = register_instruction(cursor + 3u64, u16(0x31), u8(0), false, u8(1), u8(0));
+    }
+    if (input.descending != 0) {
+        cursor = register_instruction(cursor, u16(0xf7), u8(0), false, u8(2), u8(0)); // not eax
+    }
+    MoveLocation row = MoveLocation(0u64, MOVE_MEMORY, u8(11), u8(9), u8(3));
+    cursor = encode_operand_instruction(cursor, u16(0x89), u8(0), false, u8(0), row);
+    if (input.first != 0) {
+        cursor = register_instruction(cursor, u16(0x03), u8(0), true, u8(10), u8(12));
+    }
+    cursor = sort_finish_range(cursor, start, begin, end);
+    write_word(cursor, 0x5c41c031);
+    put_byte(cursor + 4u64, u8(0xc3));
+    return cursor + 5u64 - start;
+}
+
+u64 sort_digit(u64 at) on cpu {
+    MoveLocation row = MoveLocation(0u64, MOVE_MEMORY, u8(10), u8(9), u8(3));
+    u64 cursor = encode_operand_instruction(at, u16(0x8b), u8(0), false, u8(0), row);
+    write_word(cursor, 0xe083e8d3); // shr eax,cl; and eax,15
+    put_byte(cursor + 4u64, u8(15));
+    return cursor + 5u64;
+}
+
+u64 sort_shift(u64 at, u32 buffer_bytes) on cpu {
+    u64 cursor = load_range_binding(at, u8(2), 4 * buffer_bytes);
+    MoveLocation params = MoveLocation(0u64, MOVE_MEMORY, u8(2), NO_INDEX, u8(0));
+    return encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(1), params);
+}
+
+extern "C" u64 sort_histogram(u32 buffer_bytes, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = load_range_binding(start, u8(10), 2 * buffer_bytes);
+    cursor = sort_shift(cursor, buffer_bytes);
+    u64 begin = cursor;
+    u64 end = sort_range_end(cursor);
+    cursor = sort_digit(end + 4u64);
+    // Parameter row: shift followed by the range's private counts.
+    MoveLocation count = MoveLocation(4u64, MOVE_MEMORY, u8(2), u8(0), u8(2));
+    cursor = encode_operand_instruction(cursor, u16(0xff), u8(0), false, u8(0), count);
+    cursor = sort_finish_range(cursor, start, begin, end);
+    put_byte(cursor, u8(0x31));
+    put_byte(cursor + 1u64, u8(0xc0));
+    put_byte(cursor + 2u64, u8(0xc3));
+    return cursor + 3u64 - start;
+}
+
+extern "C" u64 sort_scatter(u32 buffer_bytes, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = load_range_binding(start, u8(10), 2 * buffer_bytes);
+    cursor = load_range_binding(cursor, u8(11), 3 * buffer_bytes);
+    cursor = sort_shift(cursor, buffer_bytes);
+    u64 begin = cursor;
+    u64 end = sort_range_end(cursor);
+    cursor = sort_digit(end + 4u64);
+    MoveLocation bucket = MoveLocation(4u64, MOVE_MEMORY, u8(2), u8(0), u8(2));
+    cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(0), bucket);
+    MoveLocation next = MoveLocation(0u64, MOVE_MEMORY, u8(0), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(3), next);
+    cursor = encode_operand_instruction(cursor, u16(0xff), u8(0), false, u8(0), next);
+    MoveLocation source = MoveLocation(0u64, MOVE_MEMORY, u8(10), u8(9), u8(3));
+    MoveLocation target = MoveLocation(0u64, MOVE_MEMORY, u8(11), u8(3), u8(3));
+    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), true, u8(0), source);
+    cursor = encode_operand_instruction(cursor, u16(0x89), u8(0), true, u8(0), target);
+    cursor = sort_finish_range(cursor, start, begin, end);
+    write_word(cursor, 0xc35bc031);
+    return cursor + 4u64 - start;
+}
+
+extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = load_range_binding(start, u8(12), stride_offset);
+    cursor = load_range_binding(cursor, u8(13), buffer_bytes + stride_offset);
+    cursor = load_range_binding(cursor, u8(10), 0);
+    cursor = load_range_binding(cursor, u8(11), buffer_bytes);
+    cursor = load_range_binding(cursor, u8(2), 2 * buffer_bytes);
+    u64 begin = cursor;
+    u64 end = sort_range_end(cursor);
+    MoveLocation index = MoveLocation(4u64, MOVE_MEMORY, u8(2), u8(9), u8(3));
+    cursor = encode_operand_instruction(end + 4u64, u16(0x8b), u8(0), false, u8(0), index);
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(12));
+    MoveLocation source = MoveLocation(0u64, MOVE_MEMORY, u8(10), u8(0), u8(0));
+    cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(6), source);
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(13));
+    MoveLocation target = MoveLocation(0u64, MOVE_MEMORY, u8(11), u8(0), u8(0));
+    cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(7), target);
+    cursor = copy_record_at(cursor, record_bytes);
+    cursor = sort_finish_range(cursor, start, begin, end);
+    write_word(cursor, 0x5d41c031);
+    write_word(cursor + 4u64, 0x5e5f5c41);
+    put_byte(cursor + 8u64, u8(0x5b));
+    put_byte(cursor + 9u64, u8(0xc3));
+    return cursor + 10u64 - start;
 }

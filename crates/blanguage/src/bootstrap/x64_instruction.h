@@ -184,3 +184,21 @@ struct CompactScatter {
 // Output has space for 96 count bytes or 224 scatter bytes.
 extern "C" u64 compact_count(u32 flags, u32 stride_offset, u32 flag_word, address output) on cpu;
 extern "C" u64 compact_scatter(CompactScatter input, address output) on cpu;
+
+struct SortKeyEmission {
+    u32 buffer_bytes;
+    u32 stride_offset;
+    u32 word;
+    u32 bytes;
+    u32 bias;
+    u32 floating;
+    u32 descending;
+    u32 first;
+};
+
+// The emitter owns the prologue and unwind. The caller supplies 160, 96,
+// 128 or 192 output bytes for the four respective entry points.
+extern "C" u64 sort_key(SortKeyEmission input, address output) on cpu;
+extern "C" u64 sort_histogram(u32 buffer_bytes, address output) on cpu;
+extern "C" u64 sort_scatter(u32 buffer_bytes, address output) on cpu;
+extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes, address output) on cpu;
