@@ -7,9 +7,10 @@ use std::{
     io::{self, Write},
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output},
 };
-fn text(bytes: &[u8]) -> Result<String> {
+// Detached link.exe has no console code page and encodes diagnostics with CP_ACP.
+fn link_text(bytes: &[u8]) -> Result<String> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn MultiByteToWideChar(
@@ -35,19 +36,10 @@ fn text(bytes: &[u8]) -> Result<String> {
     }
     Ok(String::from_utf16(&wide)?)
 }
-fn output(command: &mut Command) -> Result<String> {
+fn output(command: &mut Command) -> io::Result<Output> {
     use std::os::windows::process::CommandExt;
-    command.creation_flags(0x08000000);
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "本机链接工具失败：{}{}",
-            text(&output.stdout)?,
-            text(&output.stderr)?
-        )
-        .into());
-    }
-    Ok(text(&output.stdout)?.trim().to_owned())
+    const DETACHED_PROCESS: u32 = 0x00000008;
+    command.creation_flags(DETACHED_PROCESS).output()
 }
 #[repr(C)]
 struct SdkRoot {
@@ -94,7 +86,8 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         std::env::var_os("ProgramFiles(x86)").ok_or("缺少 Windows ProgramFiles(x86)")?,
     )
     .join("Microsoft Visual Studio/Installer/vswhere.exe");
-    let installation = output(Command::new(installer).args([
+    let found = output(Command::new(installer).args([
+        "-utf8",
         "-latest",
         "-products",
         "*",
@@ -103,10 +96,19 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         "-property",
         "installationPath",
     ]))?;
+    if !found.status.success() {
+        return Err(format!(
+            "Visual Studio 工具定位失败（{}）\n{}{}",
+            found.status,
+            String::from_utf8_lossy(&found.stdout),
+            String::from_utf8_lossy(&found.stderr)
+        ).into());
+    }
+    let installation = std::str::from_utf8(&found.stdout)?.trim_end_matches(['\r', '\n']);
     if installation.is_empty() {
         return Err("未安装 Visual Studio C++ 本机工具".into());
     }
-    let vs = Path::new(&installation);
+    let vs = Path::new(installation);
     let version = std::fs::read_to_string(
         vs.join("VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"),
     )?;
@@ -223,8 +225,20 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
         for name in exports {
             command.arg(format!("/EXPORT:{name}"));
         }
-        output(&mut command)?;
-        Ok(())
+        let linked = output(&mut command)?;
+        if linked.status.success() {
+            return Ok(());
+        }
+        let mut diagnostics = linked.stdout;
+        diagnostics.extend(linked.stderr);
+        let details = match link_text(&diagnostics) {
+            Ok(text) => text,
+            Err(error) => format!("链接工具诊断解码失败：{error}"),
+        };
+        Err(format!(
+            "本机链接工具失败（{}）：{path:?}\n{details}",
+            linked.status
+        ).into())
     })();
     for path in temporary {
         let removed = std::fs::remove_file(path).map_err(Into::into);

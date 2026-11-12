@@ -1380,7 +1380,7 @@ u32 main() on cpu {
 
 `bc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]` 只输出 Windows x64 COFF 目标文件；普通应用默认选择 main，`--program` 选择具体算法入口。目标文件保存已经生成的机器码、SPIR-V、符号、标准地址重定位及必要的静态运行库代码，不保存待编译的实现源码或值IR；独立模块携带其公开.h接口。
 
-`blink <input.obj> [module.obj|library.lib ...] -o <output.exe|output.dll>` 链接已编译对象及模块库：普通应用生成 exe，算法单元生成 DLL 和宿主调用接口。链接器和归档器共用 B 的文件读取，按归档签名辨别实际输入。归档成员共享原输入字节至最后一个消费者结束。链接可以在没有 B 源码、bc、Cargo 或 rustc 的目录执行。含执行框架的目标文件需要 Visual Studio C++ 本机链接工具和 Windows SDK。本次链接释放自己创建的暂存输入，交回准备、链接或释放中最早发生的错误。链接器从 Windows 安装注册表读取 SDK 根路径，按数字版本选择实际 SDK 库目录，再将目录交给原生链接工具。文件路径沿 Windows 原生表示传递。算法 DLL 的文件主名用于生成 Rust 绑定，必须能表示为 UTF-8。仅含普通值的应用由 Blink 自有 PE 链接器输出。
+`blink <input.obj> [module.obj|library.lib ...] -o <output.exe|output.dll>` 链接已编译对象及模块库：普通应用生成 exe，算法单元生成 DLL 和宿主调用接口。链接器和归档器共用 B 的文件读取，按归档签名辨别实际输入。归档成员共享原输入字节至最后一个消费者结束。链接可以在没有 B 源码、bc、Cargo 或 rustc 的目录执行。含执行框架的目标文件需要 Visual Studio C++ 本机链接工具和 Windows SDK。本次链接释放自己创建的暂存输入，交回准备、链接或释放中最早发生的错误。MSVC 链接失败时交回本机进程的退出状态、目标路径与诊断。链接器从 Windows 安装注册表读取 SDK 根路径，按数字版本选择实际 SDK 库目录，再将目录交给原生链接工具。文件路径沿 Windows 原生表示传递。算法 DLL 的文件主名用于生成 Rust 绑定，必须能表示为 UTF-8。仅含普通值的应用由 Blink 自有 PE 链接器输出。
 
 编译时若需要执行框架，源码 SDK 使用现有 Rust 工具链把框架和 ABI 编译成静态目标代码，写进该目标文件；链接时只解析这些已经编译的代码及本机库依赖。独立原生模块与模块静态库按后节的明确导入和链接方式组合。`bc check` 与阶段代码导出 `bc build` 保留，不承担最终应用链接；旧的 `build-exe/build-dll` 合并命令已移除。
 

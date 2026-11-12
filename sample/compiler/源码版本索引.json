@@ -536,7 +536,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/msvc.rs",
-      "sha256": "d49a74b2e2e8ed591c11d234b50c627d56e3b4559d0873e44a68686198488ca6"
+      "sha256": "525360563183ebe2e3a57ca5112f6abe8c1ba8309248e1a43374861a95d133fb"
     },
     {
       "path": "crates/blanguage/src/linker/native.rs",
