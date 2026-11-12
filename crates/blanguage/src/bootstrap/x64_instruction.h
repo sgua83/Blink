@@ -202,3 +202,14 @@ extern "C" u64 sort_key(SortKeyEmission input, address output) on cpu;
 extern "C" u64 sort_histogram(u32 buffer_bytes, address output) on cpu;
 extern "C" u64 sort_scatter(u32 buffer_bytes, address output) on cpu;
 extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes, address output) on cpu;
+
+struct AppendBranch {
+    u64 length;
+    u64 full;
+};
+
+// The emitter supplies 96 reservation bytes and 16 result bytes. The
+// reservation returns the full-path disp32; the result returns its target.
+extern "C" AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
+    u32 capacity_slot, u32 target_slot, address output) on cpu;
+extern "C" AppendBranch append_result(address output) on cpu;

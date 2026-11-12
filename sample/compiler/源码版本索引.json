@@ -248,11 +248,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/x64_instruction.b",
-      "sha256": "221b05576064451b534250003e706a34d1a2f7f41bfc8d70d0f26434b3be5fd2"
+      "sha256": "b8b6c2cfbc7e208fc02f39605aba87f35c28ed89dd8e16a83c922483fecb66c8"
     },
     {
       "path": "crates/blanguage/src/bootstrap/x64_instruction.h",
-      "sha256": "05960497e17d2ba13152622c20604382cbe245f642e3b14cb3d35e34f88e6b47"
+      "sha256": "5bf4e7dbb7e653b718e7f15783fe0c78a61acc294b8527ac1bcd76bfecf27632"
     },
     {
       "path": "crates/blanguage/src/build/compiler_identity.rs",
@@ -573,6 +573,10 @@
     {
       "path": "crates/blanguage/src/native/allocation.rs",
       "sha256": "d702a2df9fdec513a5904d916057583fd6d14fda060a8b4d3c681b4d748af7cf"
+    },
+    {
+      "path": "crates/blanguage/src/native/append.rs",
+      "sha256": "a6dd6ea106ddb7fd66e174829d09c1ec125106f55c5f07db1b18233c80bf12c4"
     },
     {
       "path": "crates/blanguage/src/native/application.rs",

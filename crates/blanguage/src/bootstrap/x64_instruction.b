@@ -2053,3 +2053,37 @@ extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes
     put_byte(cursor + 9u64, u8(0xc3));
     return cursor + 10u64 - start;
 }
+
+extern "C" AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
+    u32 capacity_slot, u32 target_slot, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation count = MoveLocation(u64(counter_slot), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
+    u64 cursor = encode_operand_instruction(start, u16(0x8b), u8(0), true, u8(15), count);
+    MoveLocation counter = MoveLocation(u64(counter_word), MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
+    MoveLocation capacity = MoveLocation(u64(capacity_slot), MOVE_MEMORY, u8(13), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(1), capacity);
+    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(0), counter);
+    u64 begin = cursor;
+    cursor = register_instruction(cursor, u16(0x39), u8(0), false, u8(1), u8(0));
+    u64 full = condition_field(cursor, u8(0x83));
+    write_word(full, 0); // The emitter patches across the record stores.
+    MoveLocation successor = MoveLocation(1u64, MOVE_MEMORY, u8(0), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(full + 4u64, u16(0x8d), u8(0), false, u8(2), successor);
+    cursor = encode_operand_instruction(cursor, u16(0xb10f), u8(0xf0), false, u8(2), counter);
+    u64 again = condition_field(cursor, u8(0x85));
+    patch_relative(unsafe_address(again), again - start, begin - start);
+    // EAX still holds the successful old count; R15 receives the target base.
+    MoveLocation target = MoveLocation(u64(target_slot), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(again + 4u64, u16(0x8b), u8(0), true, u8(15), target);
+    return AppendBranch(cursor - start, full - start);
+}
+
+extern "C" AppendBranch append_result(address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = move_immediate(start, u8(0), 1u64, false);
+    u64 done = jump_field(cursor);
+    u64 full = done + 4u64;
+    cursor = register_instruction(full, u16(0x31), u8(0), false, u8(0), u8(0));
+    patch_relative(unsafe_address(done), done - start, cursor - start);
+    return AppendBranch(cursor - start, full - start);
+}

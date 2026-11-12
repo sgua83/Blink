@@ -1,47 +1,54 @@
-//! 单次有界接纳直接使用原计数和输出地址；不暴露尚未写完的票号。
-use super::{operands::Operand, *};
+//! 单次有界接纳使用原计数和输出地址，成功后直接写入完整记录。
+use super::*;
+
+#[repr(C)]
+struct AppendBranch {
+    length: u64,
+    full: u64,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::reserve_append"]
+    fn reserve_append(
+        counter_slot: u32,
+        counter_word: u32,
+        capacity_slot: u32,
+        target_slot: u32,
+        output: *mut u8,
+    ) -> AppendBranch;
+    #[link_name = "bootstrap.x64_instruction::append_result"]
+    fn append_result(output: *mut u8) -> AppendBranch;
+}
+
 impl Emitter<'_> {
     pub(super) fn append(&mut self, a: &Append) {
-        self.instruction(
-            None,
-            &[0x8b],
-            true,
-            15,
-            Operand::memory(12, a.count.binding as u32 * BUFFER_BYTES),
-        );
-        let counter = Operand::memory(15, a.count.word);
-        self.instruction(
-            None,
-            &[0x8b],
-            false,
-            1,
-            Operand::memory(13, 8 + a.target as u32 * 4),
-        );
-        self.instruction(None, &[0x8b], false, 0, counter);
-        let begin = self.code.len();
-        self.bytes(&[0x39, 0xc8]); // old >= capacity 时不修改计数
-        let full = self.jump(Some(0x83));
-        self.bytes(&[0x8d, 0x50, 0x01]); // edx = old + 1；old < capacity 保证不回绕
-        self.instruction(Some(0xf0), &[0x0f, 0xb1], false, 2, counter);
-        let again = self.jump(Some(0x85));
-        self.patch(again, begin);
-        // EAX 是成功预留的原计数，直接形成唯一记录地址。
-        self.instruction(
-            None,
-            &[0x8b],
-            true,
-            15,
-            Operand::memory(12, a.target as u32 * BUFFER_BYTES),
-        );
+        let start = self.code.len();
+        let mut full_offset = 0;
+        self.emit_bytes(96, |output| {
+            let reservation = unsafe {
+                reserve_append(
+                    a.count.binding as u32 * BUFFER_BYTES,
+                    a.count.word,
+                    8 + a.target as u32 * 4,
+                    a.target as u32 * BUFFER_BYTES,
+                    output,
+                )
+            };
+            full_offset = reservation.full as usize;
+            reservation.length
+        });
+        let full_branch = start + full_offset;
         self.offset_buffer_address(a.target);
         for (word, value) in &a.values {
             self.write_scalar(*value, 15, *word);
         }
-        self.bytes(&[0xb8, 1, 0, 0, 0]);
-        let done = self.jump(None);
-        self.patch(full, self.code.len());
-        self.bytes(&[0x31, 0xc0]);
-        self.patch(done, self.code.len());
+        let result_start = self.code.len();
+        self.emit_bytes(16, |output| {
+            let result = unsafe { append_result(output) };
+            full_offset = result.full as usize;
+            result.length
+        });
+        self.patch(full_branch, result_start + full_offset);
         self.store(a.accepted);
     }
 }
