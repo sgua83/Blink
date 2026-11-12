@@ -189,6 +189,35 @@ struct DivisionWords {
     next: u32,
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct FloatSignOperands {
+    raw_type: u32,
+    mask: u32,
+    temporary: u32,
+}
+
+#[repr(C)]
+struct UnaryEmission {
+    operation: u32,
+    result_type: u32,
+    result: u32,
+    value: u32,
+    zero: u32,
+    sign: FloatSignOperands,
+}
+
+#[repr(C)]
+struct MathEmission {
+    operation: u32,
+    result_type: u32,
+    result: u32,
+    left: u32,
+    right: u32,
+    extended_set: u32,
+    sign: FloatSignOperands,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
@@ -215,6 +244,10 @@ unsafe extern "C" {
     fn scalar_cast(input: CastEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::integer_division"]
     fn integer_division(input: DivisionEmission, body: *mut u32) -> DivisionWords;
+    #[link_name = "bootstrap.spirv_envelope::scalar_unary"]
+    fn scalar_unary(input: UnaryEmission, body: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::scalar_math"]
+    fn scalar_math(input: MathEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
     fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
@@ -747,30 +780,26 @@ impl Emitter<'_> {
                     let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
                     self.store_raw_buffer(scalar, *binding, self.value(*index), *word, raw);
                 }
-                InstKind::Unary {
-                    dst,
-                    op: operation,
-                    a,
-                } => {
-                    let opcode = match operation {
-                        UnaryOp::UnsignedNegate => {
-                            let zero = self.constant(self.stage.registers[*a], 0);
-                            self.emit(
-                                130,
-                                &[self.ty(*dst), self.value(*dst), zero, self.value(*a)],
-                            );
-                            continue;
-                        }
-                        UnaryOp::FloatNegate => {
-                            self.sign_bits(*dst, *a, 198, 0x8000_0000);
-                            continue;
-                        }
-                        UnaryOp::SignedNegate => 126,
-                        UnaryOp::LogicalNot => 168,
-                        UnaryOp::BitNot => 200,
-                        UnaryOp::Bitcast => 124,
+                InstKind::Unary { dst, op, a } => {
+                    let scalar = self.stage.registers[*a];
+                    let input = UnaryEmission {
+                        operation: *op as u32,
+                        result_type: self.ty(*dst),
+                        result: self.value(*dst),
+                        value: self.value(*a),
+                        zero: if *op == UnaryOp::UnsignedNegate { self.constant(scalar, 0) } else { 0 },
+                        sign: if *op == UnaryOp::FloatNegate {
+                            self.float_sign_operands(scalar, true)
+                        } else {
+                            FloatSignOperands::default()
+                        },
                     };
-                    self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*a)]);
+                    let at = self.body.len();
+                    self.body.reserve(13);
+                    unsafe {
+                        let words = scalar_unary(input, self.body.as_mut_ptr().add(at));
+                        self.body.set_len(at + words as usize);
+                    }
                 }
                 InstKind::IntegerDivide { result, src, divisor } => {
                     self.integer_divide(*result, *src, *divisor);
@@ -831,35 +860,31 @@ impl Emitter<'_> {
                         self.body.set_len(body + words as usize);
                     }
                 }
-                InstKind::Math {
-                    dst,
-                    op: operation,
-                    args,
-                } => {
-                    if self.stage.registers[*dst] == Scalar::F64 && matches!(operation,
+                InstKind::Math { dst, op, args } => {
+                    let scalar = self.stage.registers[*dst];
+                    if scalar == Scalar::F64 && matches!(op,
                         MathOp::Sin | MathOp::Cos | MathOp::Pow | MathOp::Exp | MathOp::Exp2 | MathOp::Log | MathOp::Log2) {
                         return Err("GPU f64 超越函数尚未实现；GLSL.std.450 对应指令不接受64位浮点，不能隐式降低精度");
                     }
-                    let opcode = match operation {
-                        MathOp::Abs => {
-                            self.sign_bits(*dst, args[0], 199, 0x7fff_ffff);
-                            continue;
-                        }
-                        MathOp::Floor => 8,
-                        MathOp::Sin => 13,
-                        MathOp::Cos => 14,
-                        MathOp::Pow => 26,
-                        MathOp::Exp => 27,
-                        MathOp::Log => 28,
-                        MathOp::Exp2 => 29,
-                        MathOp::Log2 => 30,
-                        MathOp::Sqrt => 31,
-                        MathOp::Min => 37,
-                        MathOp::Max => 40,
+                    let input = MathEmission {
+                        operation: *op as u32,
+                        result_type: self.ty(*dst),
+                        result: self.value(*dst),
+                        left: self.value(args[0]),
+                        right: args.get(1).map_or(0, |&r| self.value(r)),
+                        extended_set: self.ext,
+                        sign: if *op == MathOp::Abs {
+                            self.float_sign_operands(scalar, false)
+                        } else {
+                            FloatSignOperands::default()
+                        },
                     };
-                    let mut operands = vec![self.ty(*dst), self.value(*dst), self.ext, opcode];
-                    operands.extend(args.iter().map(|r| self.value(*r)));
-                    self.emit(12, &operands);
+                    let at = self.body.len();
+                    self.body.reserve(13);
+                    unsafe {
+                        let words = scalar_math(input, self.body.as_mut_ptr().add(at));
+                        self.body.set_len(at + words as usize);
+                    }
                 }
                 InstKind::Select {
                     dst,
@@ -941,14 +966,12 @@ impl Emitter<'_> {
         }
         Ok(true)
     }
-    fn sign_bits(&mut self, dst: Reg, src: Reg, opcode: u16, mask: u32) {
-        let mut words = self.to_words(src, Scalar::U32);
-        let mask = self.constant(Scalar::U32, mask);
-        let result = self.id();
-        let last = words.len() - 1;
-        self.emit(opcode, &[self.types[&Scalar::U32], result, words[last], mask]);
-        words[last] = result;
-        self.from_words(dst, &words, Scalar::U32);
+    fn float_sign_operands(&mut self, scalar: Scalar, negate: bool) -> FloatSignOperands {
+        let sign = 1u64 << (scalar.bit_width() - 1);
+        let mask = self.raw_constant(scalar, if negate { sign } else { sign - 1 });
+        let temporary = self.id();
+        self.id();
+        FloatSignOperands { raw_type: self.raw_type(scalar), mask, temporary }
     }
     fn from_words(&mut self, dst: Reg, words: &[u32], unit: Scalar) {
         let scalar = self.stage.registers[dst];

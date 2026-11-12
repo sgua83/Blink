@@ -108,3 +108,33 @@ struct DivisionWords { u32 body; u32 next; };
 // ID denotes unsigned inputs. The caller supplies the original next ID and
 // holds ten (unsigned) or eighty-one (signed) output words.
 extern "C" DivisionWords integer_division(DivisionEmission input, address body) on cpu;
+
+// Operation identities follow the original IR UnaryOp and MathOp.
+enum UnaryOperation:u32 {
+    FloatNegate=0; SignedNegate=1; UnsignedNegate=2; LogicalNot=3; BitNot=4; Bitcast=5;
+};
+enum MathOperation:u32 {
+    Abs=0; Floor=1; Sin=2; Cos=3; Pow=4; Exp=5; Log=6; Exp2=7; Log2=8; Sqrt=9; Min=10; Max=11;
+};
+struct FloatSignOperands { u32 raw_type; u32 mask; u32 temporary; };
+struct UnaryEmission {
+    UnaryOperation operation;
+    u32 result_type;
+    u32 result;
+    u32 value;
+    u32 zero;
+    FloatSignOperands sign;
+};
+struct MathEmission {
+    MathOperation operation;
+    u32 result_type;
+    u32 result;
+    u32 left;
+    u32 right;
+    u32 extended_set;
+    FloatSignOperands sign;
+};
+// The emitter supplies consecutive temporary IDs for the sign operation and
+// thirteen output words. A zero right operand ID denotes a unary math operation.
+extern "C" u64 scalar_unary(UnaryEmission input, address body) on cpu;
+extern "C" u64 scalar_math(MathEmission input, address body) on cpu;

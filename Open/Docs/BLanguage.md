@@ -99,7 +99,7 @@ Windows x64普通调用和外部C声明按真实double／Rust f64签名交接。
 
 GPU实际使用f64类型需要shaderFloat64；接口中的未解释载荷仅作整数存储复制、未参与实际浮点类型使用时，不因其f64声明额外要求该能力。阶段寄存器、局部、自定义值函数及内建归约／扫描的真实f64类型仍须声明；64位subgroup还需shaderSubgroupExtendedTypes。实际浮点运算、不同浮点宽度的转换及浮点转bool的比较按涉及位宽声明DenormPreserve与SignedZeroInfNanPreserve；整数与浮点之间的转换、bool转浮点及同类型值交接本身不声明这两种模式，实际类型能力仍须具备。程序整体需要的两种浮点位宽保留模式由原DeviceRequirements.float32_preserve／float64_preserve交接，来源是各原Stage的实际运算需求；ProgramLayout保存并随BLRI51执行映像编码，GPU装入消费该合同。Shader各入口仍按实际操作发射模式，运行阶段不另保存同一程序汇总。设备查询、启用和装入在原Vulkan所有者内完成。显式选定设备不具备所需能力时明确拒绝；默认入口在首次创建逻辑设备前，按原DeviceRequirements特性、计算队列及必要设备扩展匹配真实物理设备，并以实际uniform_bytes及原纹理数组元素总数匹配候选的推送常量与纹理描述符容量，并从实际GPU映像的ExecutionPlan取得工作组宽度及发射后的共享内存峰值参与同一选择。同一程序的普通／辅助storage binding与纹理数组元素的组合总数也参与候选maxPerStageResources匹配。数值语义不因缺失能力改变，GPU工作不转交CPU；创建后的设备身份保持，创建／装入／执行失败直接返回。SDK可显式选择真实物理设备，C算法绑定的GPU入口复用同一默认创建路径；完整资源限额选卡仍见Issues C-022.5.4.3。
 
-CPU数学直接使用平台C ABI的f64函数。GPU当前直接支持标准允许64位的abs、floor、sqrt、min／max和既有数值集合／subgroup运算；Sin、Cos、Pow、Exp、Exp2、Log、Log2的GLSL.std.450指令不接受64位浮点，尚未实现的GPU f64超越函数明确报错。该限制不构成永久语言边界，也不表示全部输入上的严格浮点精度策略、浮点原子或所有64位平台已完成。GPU64位tile的实现与当前原生缺陷见块内原子章节。
+CPU数学直接使用平台C ABI的f64函数。GPU的浮点取负与abs在B发射器中共用同宽无符号位转换，分别翻转与清除符号位，保留其余位。floor、sqrt和min／max由B发射GLSL.std.450指令，既有64位数值集合／subgroup运算沿各自原入口；Sin、Cos、Pow、Exp、Exp2、Log、Log2的GLSL.std.450指令不接受64位浮点，尚未实现的GPU f64超越函数明确报错。该限制不构成永久语言边界，也不表示全部输入上的严格浮点精度策略、浮点原子或所有64位平台已完成。GPU64位tile的实现与当前原生缺陷见块内原子章节。
 
 BLJson::Number所需的f64只是基础数值能力；字符串、递归容器及JSON职责的实际迁移分别按真实缺口记录。
 
@@ -4695,7 +4695,7 @@ SPIR-V 1.4 直接按标准编码。GPU 的逻辑数据集通过只读的 u64 设
 .\target\release\bc.exe build ..\BLEngine\Programs\simulation\statistics.b Saved\Compiled ..\BLEngine\Programs
 ```
 
-B 直接写出 SPIR-V 类型、常量、变量、资源绑定及配套装饰，沿用原着色器的 ID、绑定顺序和块布局。普通标量二元运算、比较与数值转换由 B 选择和发射，对实际位宽、NaN 谓词及浮点禁止收缩使用原数值语义。build 输出 `.spv`、归约 `.tail.spv`、CPU `.x64`、数学入口 `.reloc` 和布局 `.layout`。引擎运行时直接使用同一编译器结果和后端，不靠这些调试导出文件再建立第二套权威表示。
+B 直接写出 SPIR-V 类型、常量、变量、资源绑定及配套装饰，沿用原着色器的 ID、绑定顺序和块布局。普通标量二元和单目运算、比较、数值转换及数学指令由 B 选择和发射。实际位宽、NaN 谓词及浮点禁止收缩沿原数值语义交接。build 输出 `.spv`、归约 `.tail.spv`、CPU `.x64`、数学入口 `.reloc` 和布局 `.layout`。引擎运行时直接使用同一编译器结果和后端，不靠这些调试导出文件再建立第二套权威表示。
 
 ### x64 物理寄存器与栈槽
 

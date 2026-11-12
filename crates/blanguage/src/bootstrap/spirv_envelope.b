@@ -450,3 +450,52 @@ extern "C" DivisionWords integer_division(DivisionEmission input, address body) 
     }
     return cursor;
 }
+
+u64 float_sign(address body, u32 opcode, u32 type, u32 result, u32 value, FloatSignOperands input) on cpu {
+    u32 bits = input.temporary;
+    u32 changed = bits + 1;
+    u64 at = words_three(body, 0u64, 124, input.raw_type, bits, value);
+    at = words_four(body, at, opcode, input.raw_type, changed, bits, input.mask);
+    return words_three(body, at, 124, type, result, changed);
+}
+
+extern "C" u64 scalar_unary(UnaryEmission input, address body) on cpu {
+    if (input.operation == UnaryOperation::FloatNegate) {
+        return float_sign(body, 198, input.result_type, input.result, input.value, input.sign);
+    }
+    if (input.operation == UnaryOperation::UnsignedNegate) {
+        return words_four(body, 0u64, 130, input.result_type, input.result, input.zero, input.value);
+    }
+    u32 opcode = input.operation == UnaryOperation::SignedNegate ? 126 :
+        input.operation == UnaryOperation::LogicalNot ? 168 :
+        input.operation == UnaryOperation::BitNot ? 200 : 124;
+    return words_three(body, 0u64, opcode, input.result_type, input.result, input.value);
+}
+
+u32 math_opcode(MathOperation operation) on cpu {
+    if (operation == MathOperation::Floor) { return 8; }
+    if (operation == MathOperation::Sin) { return 13; }
+    if (operation == MathOperation::Cos) { return 14; }
+    if (operation == MathOperation::Pow) { return 26; }
+    if (operation == MathOperation::Exp) { return 27; }
+    if (operation == MathOperation::Log) { return 28; }
+    if (operation == MathOperation::Exp2) { return 29; }
+    if (operation == MathOperation::Log2) { return 30; }
+    if (operation == MathOperation::Sqrt) { return 31; }
+    if (operation == MathOperation::Min) { return 37; }
+    return 40;
+}
+extern "C" u64 scalar_math(MathEmission input, address body) on cpu {
+    if (input.operation == MathOperation::Abs) {
+        return float_sign(body, 199, input.result_type, input.result, input.left, input.sign);
+    }
+    u32 length = input.right == 0 ? 6 : 7;
+    put(body, 0u64, instruction(12, length));
+    put(body, 1u64, input.result_type);
+    put(body, 2u64, input.result);
+    put(body, 3u64, input.extended_set);
+    put(body, 4u64, math_opcode(input.operation));
+    put(body, 5u64, input.left);
+    if (length == 7) { put(body, 6u64, input.right); }
+    return u64(length);
+}
