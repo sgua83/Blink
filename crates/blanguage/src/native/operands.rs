@@ -58,6 +58,28 @@ impl From<Memory> for Operand {
         Self::Memory(memory)
     }
 }
+#[repr(u8)]
+enum InstructionForm { OpcodeRegister, Register, Memory, RipRelative }
+
+#[repr(C)]
+struct InstructionEncoding {
+    displacement: u32,
+    reg: u8,
+    base: u8,
+    index: u8,
+    shift: u8,
+    form: InstructionForm,
+    prefix: u8,
+    wide: u16,
+}
+
+const NO_INDEX: u8 = u8::MAX;
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::encode"]
+    fn encode_instruction(input: InstructionEncoding, opcode: *const u8, length: u64, output: *mut u8) -> u64;
+}
+
 impl Emitter<'_> {
     fn float_operand(&mut self, location: Location, scalar: Scalar) -> Operand {
         match location {
@@ -138,22 +160,21 @@ impl Emitter<'_> {
     // R15 holds the base, RAX the zero-extended index; only the address is consumed.
     pub(super) fn offset_address(&mut self, stride: u32) {
         if stride.is_power_of_two() && stride <= 8 {
-            self.bytes(&[
-                0x4d,
-                0x8d,
-                0x3c,
-                0x07 | ((stride.trailing_zeros() as u8) << 6),
-            ]);
+            let memory = Memory::indexed(15, 0, stride.trailing_zeros() as u8, 0);
+            self.instruction(None, &[0x8d], true, 15, memory.into());
         } else {
             self.scale_index(0, stride);
             self.bytes(&[0x49, 0x01, 0xc7]);
         }
     }
-    fn rex(&mut self, wide: bool, r: u8, b: u8, index: u8, byte: bool) {
-        let prefix =
-            0x40 | (u8::from(wide) << 3) | ((r >> 3) << 2) | ((index >> 3) << 1) | (b >> 3);
-        if prefix != 0x40 || byte {
-            self.bytes(&[prefix]);
+    fn emit_instruction(&mut self, opcode: &[u8], input: InstructionEncoding) {
+        // One legacy prefix, REX, ModR/M, SIB and at most four displacement bytes.
+        self.code.reserve(opcode.len() + 8);
+        let start = self.code.len();
+        unsafe {
+            let output = self.code.as_mut_ptr().add(start);
+            let count = encode_instruction(input, opcode.as_ptr(), opcode.len() as u64, output);
+            self.code.set_len(start + count as usize);
         }
     }
     pub(super) fn instruction(
@@ -164,53 +185,21 @@ impl Emitter<'_> {
         register: u8,
         operand: Operand,
     ) {
-        if let Some(prefix) = prefix {
-            self.bytes(&[prefix]);
-        }
-        let field = (register & 7) << 3;
-        let byte = matches!(opcode, [0x88] | [0x8a] | [0x0f, 0xb6] | [0x0f, 0xbe]);
-        match operand {
-            Operand::Literal(bits, wide) => {
-                // Scalar literal reads end at disp32: ModRM 00/r/101 is RIP-relative.
-                self.rex(wide, register, 0, 0, byte);
-                self.bytes(opcode);
-                self.bytes(&[field | 5]);
-                let at = self.code.len();
-                self.u32(0);
-                self.literals.entry((bits, wide)).or_default().push(at);
+        let (form, base, index, shift, displacement, wide) = match operand {
+            Operand::Register(r) => (InstructionForm::Register, r, NO_INDEX, 0, 0, wide),
+            Operand::Memory(Memory { base, index, offset }) => {
+                let (index, shift) = index.unwrap_or((NO_INDEX, 0));
+                (InstructionForm::Memory, base, index, shift, offset, wide)
             }
-            Operand::Register(r) => {
-                self.rex(wide, register, r, 0, byte);
-                self.bytes(opcode);
-                self.bytes(&[0xc0 | field | (r & 7)]);
-            }
-            Operand::Memory(Memory {
-                base,
-                index,
-                offset,
-            }) => {
-                self.rex(wide, register, base, index.map_or(0, |(r, _)| r), byte);
-                self.bytes(opcode);
-                let mode = if offset == 0 && base & 7 != 5 {
-                    0
-                } else if offset <= 127 {
-                    1
-                } else {
-                    2
-                };
-                let indexed = index.is_some() || base & 7 == 4;
-                self.bytes(&[(mode << 6) | field | if indexed { 4 } else { base & 7 }]);
-                if let Some((r, shift)) = index {
-                    self.bytes(&[(shift << 6) | ((r & 7) << 3) | (base & 7)]);
-                } else if indexed {
-                    self.bytes(&[0x24]);
-                }
-                match mode {
-                    0 => {}
-                    1 => self.bytes(&[offset as u8]),
-                    _ => self.u32(offset),
-                }
-            }
+            Operand::Literal(_, wide) => (InstructionForm::RipRelative, 0, NO_INDEX, 0, 0, wide),
+        };
+        self.emit_instruction(opcode, InstructionEncoding {
+            displacement, reg: register, base, index, shift, form,
+            prefix: prefix.unwrap_or(0), wide: u16::from(wide),
+        });
+        if let Operand::Literal(bits, wide) = operand {
+            let at = self.code.len() - 4;
+            self.literals.entry((bits, wide)).or_default().push(at);
         }
     }
     pub(super) fn location(&self, r: Reg) -> Location {
@@ -302,8 +291,10 @@ impl Emitter<'_> {
             Location::Immediate(_) => {}
             Location::Gpr(d) => {
                 let immediate64 = wide && bits > u32::MAX as Bits;
-                self.rex(immediate64, 0, d, 0, false);
-                self.bytes(&[0xb8 | (d & 7)]);
+                self.emit_instruction(&[0xb8 | (d & 7)], InstructionEncoding {
+                    displacement: 0, reg: 0, base: d, index: NO_INDEX, shift: 0,
+                    form: InstructionForm::OpcodeRegister, prefix: 0, wide: u16::from(immediate64),
+                });
                 if immediate64 { self.bytes(&bits.to_le_bytes()); } else { self.u32(bits as u32); }
             }
             dst @ Location::Stack(_) => {
