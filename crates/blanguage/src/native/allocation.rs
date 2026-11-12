@@ -1,6 +1,6 @@
 //! 按结构化 IR 活跃性着色；调用跨越值使用 ABI 保留寄存器，溢出槽按干涉复用。
 use super::*;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, ffi::c_void};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Location {
@@ -11,7 +11,7 @@ pub(super) enum Location {
 }
 #[derive(Default)]
 pub(super) struct Allocation {
-    locations: Vec<Location>,
+    locations: Vec<ColorPlace>,
     registers: usize,
     data_end: u64,
 }
@@ -21,7 +21,7 @@ pub(super) enum PacketPlace {
     Stack(u32),
 }
 pub(super) struct PacketAllocation {
-    locations: Vec<PacketPlace>,
+    locations: Vec<ColorPlace>,
     registers: usize,
     data_end: u64,
 }
@@ -328,95 +328,108 @@ impl Graph {
 
 }
 #[repr(C)]
-struct ColorNode { weight: u64, degree: u64, flags: u64 }
-#[repr(C)]
-struct ColorPlace { value: u64, kind: u32 }
-
-enum ColorLocations<'a> {
-    Scalar(&'a mut [Option<Location>], &'a [Scalar]),
-    Packet(&'a mut [Option<PacketPlace>]),
+struct ColorNode {
+    weight: u64,
+    degree: u64,
+    across_call: u64,
 }
-struct ColorContext<'a> { graph: &'a Graph, locations: ColorLocations<'a> }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ColorPlace {
+    value: u64,
+    kind: u32,
+    width: u8,
+    floating: u8,
+}
+impl ColorPlace {
+    const UNSEEN: u32 = 0;
+    const IMMEDIATE: u32 = 1;
+    const GPR: u32 = 2;
+    const XMM: u32 = 3;
+    const STACK: u32 = 4;
+    const VARYING: u32 = 5;
+
+    fn new(width: u8, floating: bool) -> Self {
+        Self { value: 0, kind: Self::UNSEEN, width, floating: u8::from(floating) }
+    }
+    fn scalar(self) -> Location {
+        match self.kind {
+            Self::IMMEDIATE => Location::Immediate(self.value),
+            Self::GPR => Location::Gpr(self.value as u8),
+            Self::XMM => Location::Xmm(self.value as u8),
+            Self::STACK => Location::Stack(self.value as u32),
+            _ => unreachable!("unplaced scalar"),
+        }
+    }
+    fn packet(self) -> PacketPlace {
+        match self.kind {
+            Self::XMM => PacketPlace::Register(self.value as u8),
+            Self::STACK => PacketPlace::Stack(self.value as u32),
+            _ => unreachable!("unplaced packet"),
+        }
+    }
+}
+
 
 unsafe extern "C" {
     #[link_name = "bootstrap.coloring::color"]
-    fn color(context: *mut ColorContext<'_>, count: u64, order: *mut [u64; 3], mode: u32,
-        node: unsafe extern "C" fn(*const ColorContext<'_>, u64) -> ColorNode,
-        next: unsafe extern "C" fn(*const ColorContext<'_>, u64, bool, u64) -> u64,
-        get: unsafe extern "C" fn(*const ColorContext<'_>, u64) -> ColorPlace,
-        put: unsafe extern "C" fn(*mut ColorContext<'_>, u64, bool, u32)) -> u32;
+    fn color(
+        graph: *const c_void, count: u64, places: *mut ColorPlace, order: *mut [u64; 3],
+        mode: u32, base: u64,
+        node: unsafe extern "C" fn(*const c_void, u64) -> ColorNode,
+        next: unsafe extern "C" fn(*const c_void, u64, bool, u64) -> u64,
+    ) -> u64;
 }
-unsafe extern "C" fn color_node(context: *const ColorContext<'_>, id: u64) -> ColorNode {
-    let context = unsafe { &*context };
+unsafe extern "C" fn color_node(graph: *const c_void, id: u64) -> ColorNode {
+    let graph = unsafe { &*graph.cast::<Graph>() };
     let id = id as usize;
-    let floating = match &context.locations {
-        ColorLocations::Scalar(_, scalars) => scalars[id].is_float(),
-        ColorLocations::Packet(_) => false,
-    };
-    ColorNode { weight: context.graph.weights[id], degree: context.graph.edges[id].len() as u64,
-        flags: u64::from(floating) | (u64::from(context.graph.across_call.contains(&id)) << 1) }
+    ColorNode {
+        weight: graph.weights[id],
+        degree: graph.edges[id].len() as u64,
+        across_call: u64::from(graph.across_call.contains(&id)),
+    }
 }
-unsafe extern "C" fn color_next(context: *const ColorContext<'_>, id: u64, affinity: bool, after: u64) -> u64 {
+unsafe extern "C" fn color_next(graph: *const c_void, id: u64, affinity: bool, after: u64) -> u64 {
     use std::ops::Bound::{Excluded, Unbounded};
-    let graph = unsafe { &(*context).graph };
+    let graph = unsafe { &*graph.cast::<Graph>() };
     let set = if affinity { &graph.affinities[id as usize] } else { &graph.edges[id as usize] };
     let next = if after == graph.edges.len() as u64 { set.first() }
         else { set.range((Excluded(after as usize), Unbounded)).next() };
     next.map_or(graph.edges.len() as u64, |id| *id as u64)
 }
-unsafe extern "C" fn color_get(context: *const ColorContext<'_>, id: u64) -> ColorPlace {
-    let context = unsafe { &*context };
-    let (kind, value) = match &context.locations {
-        ColorLocations::Scalar(locations, _) => match locations[id as usize] {
-            None => (0, 0),
-            Some(Location::Immediate(value)) => (1, value),
-            Some(Location::Gpr(reg)) => (2, u64::from(reg)),
-            Some(Location::Xmm(reg)) => (3, u64::from(reg)),
-            Some(Location::Stack(slot)) => (4, u64::from(slot)),
-        },
-        ColorLocations::Packet(locations) => match locations[id as usize] {
-            None => (0, 0),
-            Some(PacketPlace::Register(reg)) => (3, u64::from(reg)),
-            Some(PacketPlace::Stack(slot)) => (4, u64::from(slot)),
-        },
-    };
-    ColorPlace { value, kind }
-}
-unsafe extern "C" fn color_put(context: *mut ColorContext<'_>, id: u64, stack: bool, index: u32) {
-    match &mut unsafe { &mut *context }.locations {
-        ColorLocations::Scalar(locations, scalars) => {
-            locations[id as usize] = Some(if stack { Location::Stack(index) }
-                else if scalars[id as usize].is_float() { Location::Xmm(index as u8) }
-                else { Location::Gpr(index as u8) });
-        },
-        ColorLocations::Packet(locations) => {
-            locations[id as usize] = Some(if stack { PacketPlace::Stack(index * 16) }
-                else { PacketPlace::Register(index as u8) });
-        },
+fn color_locations(graph: &Graph, places: &mut [ColorPlace], mode: u32, base: u64) -> u64 {
+    let mut order = Vec::<[u64; 3]>::with_capacity(places.len());
+    // B borrows the graph and writes the final locations. The order rows are
+    // scratch through coloring and byte layout and are never read by Rust.
+    unsafe {
+        color((graph as *const Graph).cast(), places.len() as u64, places.as_mut_ptr(),
+            order.as_mut_ptr(), mode, base, color_node, color_next)
     }
-}
-fn color_locations(context: &mut ColorContext<'_>, mode: u32) -> u32 {
-    // B initializes the pending order and reuses only its consumed prefix.
-    let count = context.graph.edges.len();
-    let mut order = Vec::<[u64; 3]>::with_capacity(count);
-    unsafe { color(context, count as u64, order.as_mut_ptr(), mode, color_node, color_next, color_get, color_put) }
 }
 
 impl Allocation {
     pub fn new(stage: &Stage, graph: &Graph) -> Self {
         // A register may be defined in several structured blocks. Only identical
         // literal definitions have no mutable storage; locals remain real slots.
-        fn literals(code: &[Inst], values: &mut [Option<Option<Bits>>]) {
+        fn literals(code: &[Inst], values: &mut [ColorPlace]) {
             for inst in code {
                 let literal = match &(inst).kind {
                     InstKind::Constant(_, _, bits) => Some(*bits),
                     _ => None,
                 };
                 for dst in inst.results() {
-                    values[dst] = Some(match values[dst] {
-                        None => literal,
-                        Some(previous) => previous.filter(|bits| Some(*bits) == literal),
-                    });
+                    let place = &mut values[dst];
+                    if let Some(bits) = literal {
+                        if place.kind == ColorPlace::UNSEEN
+                            || (place.kind == ColorPlace::IMMEDIATE && place.value == bits)
+                        {
+                            place.kind = ColorPlace::IMMEDIATE;
+                            place.value = bits;
+                            continue;
+                        }
+                    }
+                    place.kind = ColorPlace::VARYING;
                 }
                 match &(inst).kind {
                     InstKind::If { yes, no, .. } => {
@@ -434,54 +447,28 @@ impl Allocation {
                 }
             }
         }
-        let mut constants = vec![None; stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end)];
-        literals(&stage.code, &mut constants);
-        let scalars: Vec<_> = stage
+        let mut locations: Vec<_> = stage
             .registers
             .iter()
             .chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
-            .copied()
-            .collect();
-        let base = graph.outgoing_bytes;
-        let mut locations: Vec<_> = constants.iter().map(|value| value.flatten().map(Location::Immediate)).collect();
-        let spills = color_locations(&mut ColorContext {
-            graph, locations: ColorLocations::Scalar(&mut locations, &scalars),
-        }, u32::from(stage.has_tile_scope()));
-        let mut locations: Vec<_> = locations.into_iter().map(Option::unwrap).collect();
-        // Coloring chooses reusable spill identities. Their byte layout belongs
-        // to the actual scalar values sharing each identity, not a fixed word.
-        let mut spill_layout = vec![(0, 1); spills as usize];
-        for (id, (location, scalar)) in locations.iter().zip(&scalars).enumerate() {
-            // Addressed declarations get their physical storage from the original Ty below.
-            if graph.addressable.contains(&id) { continue; }
-            if let Location::Stack(slot) = location {
-                let (size, align) = &mut spill_layout[*slot as usize];
-                *size = (*size).max(scalar.size());
-                *align = (*align).max(scalar.align());
-            }
-        }
-        let mut data_end = base;
-        let spill_offsets: Vec<_> = spill_layout
-            .into_iter()
-            .map(|(size, align)| {
-                data_end = data_end.div_ceil(u64::from(align)) * u64::from(align);
-                let offset = data_end as u32;
-                data_end += u64::from(size);
-                offset
+            .enumerate()
+            .map(|(id, scalar)| {
+                let width = if graph.addressable.contains(&id) { 0 } else { scalar.size() as u8 };
+                ColorPlace::new(width, scalar.is_float())
             })
             .collect();
-        for location in &mut locations {
-            if let Location::Stack(slot) = location {
-                *slot = spill_offsets[*slot as usize];
-            }
-        }
+        literals(&stage.code, &mut locations);
+        let mut data_end = color_locations(
+            graph, &mut locations, u32::from(stage.has_tile_scope()), graph.outgoing_bytes,
+        );
         for span in private_spans(&stage.code) {
             let ty = &stage.locals[&span.end];
             let align = u64::from(ty.align.max(16));
             data_end = data_end.div_ceil(align) * align;
             for (slot, (_, offset)) in span.clone().zip(&ty.components) {
-                locations[stage.registers.len() + slot] =
-                    Location::Stack((data_end + u64::from(*offset)) as u32);
+                let place = &mut locations[stage.registers.len() + slot];
+                place.kind = ColorPlace::STACK;
+                place.value = data_end + u64::from(*offset);
             }
             data_end += u64::from(ty.size);
         }
@@ -495,7 +482,7 @@ impl Allocation {
         self.locations[match slot {
             PrivateSlot::Register(r) => r,
             PrivateSlot::Local(s) => self.registers + s,
-        }]
+        }].scalar()
     }
 }
 impl PacketAllocation {
@@ -507,22 +494,19 @@ impl PacketAllocation {
             }
             graph.weights[*r] = 0;
         }
-        let mut locations = vec![None; graph.edges.len()];
-        let spills = color_locations(&mut ColorContext {
-            graph, locations: ColorLocations::Packet(&mut locations),
-        }, 2);
-        let locations = locations.into_iter().map(Option::unwrap).collect();
+        let mut locations = vec![ColorPlace::new(16, false); graph.edges.len()];
+        let data_end = color_locations(graph, &mut locations, 2, 0);
         Self {
             locations,
             registers: stage.registers.len(),
-            data_end: spills as u64 * 16,
+            data_end,
         }
     }
     pub fn location(&self, slot: PrivateSlot) -> PacketPlace {
         self.locations[match slot {
             PrivateSlot::Register(r) => r,
             PrivateSlot::Local(s) => self.registers + s,
-        }]
+        }].packet()
     }
 }
 impl Frame {
@@ -530,7 +514,7 @@ impl Frame {
         let mut gpr = 0u32;
         let mut xmm = 0u32;
         for &location in &scalar.locations {
-            match location {
+            match location.scalar() {
                 // The allocator assigns only RBP, RSI, and RDI from the nonvolatile GPRs.
                 Location::Gpr(register @ 5..=7) => gpr |= 1 << register,
                 Location::Xmm(register) => xmm |= 1 << register,
@@ -541,7 +525,7 @@ impl Frame {
         if let Some(packet) = packet {
             data_end = data_end.max(packet.data_end);
             for &place in &packet.locations {
-                if let PacketPlace::Register(register) = place {
+                if let PacketPlace::Register(register) = place.packet() {
                     xmm |= 1 << register;
                 }
             }

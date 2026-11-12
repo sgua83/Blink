@@ -1,6 +1,15 @@
 module bootstrap.coloring;
 import bootstrap.names;
 
+const u32 IMMEDIATE = 1;
+const u32 GPR = 2;
+const u32 XMM = 3;
+const u32 STACK = 4;
+
+address place_at(address places, u64 index) on cpu {
+    return unsafe_address(address_bits(places) + index * size_of<ColorPlace>());
+}
+
 address order_at(address rows, u64 index) on cpu {
     return unsafe_address(address_bits(rows) + index * size_of<array<u64,3>>());
 }
@@ -28,17 +37,59 @@ bool spill_used(address rows, u64 count, u32 value) on cpu {
     return low < count && unsafe_position<u32>(spill_at(rows, low)) == value;
 }
 
-extern "C" u32 color(address context, u64 count, address order, u32 mode,
+// After coloring, every order row is dead. Reuse that memory first for the
+// maximum width of each spill color, then for its final stack offset.
+u64 layout_spills(address places, u64 count, address scratch, u64 spills, u64 base) on cpu {
+    u64 end = base;
+    u64 slot = 0u64;
+    while (slot < spills) {
+        unsafe_position<u64>(order_at(scratch, slot)) = 0u64;
+        slot += 1u64;
+    }
+    u64 id = 0u64;
+    while (id < count) {
+        ColorPlace place = unsafe_position<ColorPlace>(place_at(places, id));
+        if (place.kind == STACK) {
+            address row = order_at(scratch, place.value);
+            u64 width = u64(place.width);
+            if (unsafe_position<u64>(row) < width) {
+                unsafe_position<u64>(row) = width;
+            }
+        }
+        id += 1u64;
+    }
+    slot = 0u64;
+    while (slot < spills) {
+        address row = order_at(scratch, slot);
+        u64 width = unsafe_position<u64>(row);
+        if (width != 0u64) {
+            end = ((end + width - 1u64) / width) * width;
+        }
+        unsafe_position<u64>(row) = end;
+        end += width;
+        slot += 1u64;
+    }
+    id = 0u64;
+    while (id < count) {
+        address row = place_at(places, id);
+        if (unsafe_position<ColorPlace>(row).kind == STACK) {
+            slot = unsafe_position<ColorPlace>(row).value;
+            unsafe_position<ColorPlace>(row).value = unsafe_position<u64>(order_at(scratch, slot));
+        }
+        id += 1u64;
+    }
+    return end;
+}
+
+extern "C" u64 color(address graph, u64 count, address places, address order, u32 mode, u64 base,
     cfn<ColorNode,address,u64> node,
-    cfn<u64,address,u64,bool,u64> next,
-    cfn<ColorPlace,address,u64> get,
-    cfn<void,address,u64,bool,u32> put) on cpu
-    requires nonzero(node) requires nonzero(next) requires nonzero(get) requires nonzero(put) {
+    cfn<u64,address,u64,bool,u64> next) on cpu
+    requires nonzero(node) requires nonzero(next) {
     u64 pending = 0u64;
     u64 id = 0u64;
     while (id < count) {
-        if (get(context, id).kind == 0) {
-            ColorNode facts = node(context, id);
+        if (unsafe_position<ColorPlace>(place_at(places, id)).kind != IMMEDIATE) {
+            ColorNode facts = node(graph, id);
             unsafe_position<array<u64,3>>(order_at(order, pending)) = array<u64,3>(facts.weight, facts.degree, id);
             pending += 1u64;
         }
@@ -49,46 +100,47 @@ extern "C" u32 color(address context, u64 count, address order, u32 mode,
     u64 at = 0u64;
     while (at < pending) {
         id = unsafe_position<array<u64,3>>(order_at(order, at))[2];
-        ColorNode facts = node(context, id);
-        u32 bank = 2;
+        ColorNode facts = node(graph, id);
+        address destination = place_at(places, id);
+        u32 bank = GPR;
         u32 allowed = mode == 1 ? 0x3e0 : 0xfe0;
-        if ((facts.flags & 2u64) != 0u64) { allowed &= 0xe0; }
-        if ((facts.flags & 1u64) != 0u64) {
-            bank = 3;
-            allowed = (facts.flags & 2u64) != 0u64 ? 0xffc0 : 0xfffc;
+        if (facts.across_call != 0u64) { allowed &= 0xe0; }
+        if (unsafe_position<ColorPlace>(destination).floating != 0) {
+            bank = XMM;
+            allowed = facts.across_call != 0u64 ? 0xffc0 : 0xfffc;
         }
-        if (mode == 2) { bank = 3; allowed = 0xfff0; }
+        if (mode == 2) { bank = XMM; allowed = 0xfff0; }
 
         u32 used = 0;
         u64 occupied = 0u64;
-        u64 neighbor = next(context, id, false, count);
+        u64 neighbor = next(graph, id, false, count);
         while (neighbor != count) {
-            ColorPlace place = get(context, neighbor);
+            ColorPlace place = unsafe_position<ColorPlace>(place_at(places, neighbor));
             if (place.kind == bank) { used |= 1 << u32(place.value); }
-            if (place.kind == 4) {
+            if (place.kind == STACK) {
                 // Only earlier nonfixed nodes can have stack colors. Their
                 // order rows are dead; the unprocessed suffix remains intact.
                 unsafe_position<u32>(spill_at(order, occupied)) = u32(place.value);
                 occupied += 1u64;
             }
-            neighbor = next(context, id, false, neighbor);
+            neighbor = next(graph, id, false, neighbor);
         }
         u32 available = allowed & ~used;
         u32 chosen = 16;
-        neighbor = next(context, id, true, count);
+        neighbor = next(graph, id, true, count);
         while (neighbor != count) {
-            ColorPlace place = get(context, neighbor);
+            ColorPlace place = unsafe_position<ColorPlace>(place_at(places, neighbor));
             if (place.kind == bank && (available & (1 << u32(place.value))) != 0) {
                 chosen = u32(place.value);
                 break;
             }
-            neighbor = next(context, id, true, neighbor);
+            neighbor = next(graph, id, true, neighbor);
         }
         if (chosen == 16) {
             u32 candidate = 0;
             while (candidate < 16) {
                 u32 reg = candidate;
-                if (bank == 2) {
+                if (bank == GPR) {
                     if (candidate >= 7) { break; }
                     reg = candidate < 4 ? candidate + 8 : (candidate < 6 ? candidate + 2 : 5);
                 }
@@ -97,16 +149,18 @@ extern "C" u32 color(address context, u64 count, address order, u32 mode,
             }
         }
         if (chosen != 16) {
-            put(context, id, false, chosen);
+            unsafe_position<ColorPlace>(destination).value = u64(chosen);
+            unsafe_position<ColorPlace>(destination).kind = bank;
         } else {
             sort_rows<u32>(order, occupied, address(), c_function(spill_before));
             u32 slot = 0;
-            u32 stride = mode == 2 ? 16 : 1;
-            while (spill_used(order, occupied, slot * stride)) { slot += 1; }
+            while (spill_used(order, occupied, slot)) { slot += 1; }
             if (spills < slot + 1) { spills = slot + 1; }
-            put(context, id, true, slot);
+            unsafe_position<ColorPlace>(destination).value = u64(slot);
+            unsafe_position<ColorPlace>(destination).kind = STACK;
         }
         at += 1u64;
     }
-    return spills;
+    if (spills == 0) { return base; }
+    return layout_spills(places, count, order, u64(spills), base);
 }
