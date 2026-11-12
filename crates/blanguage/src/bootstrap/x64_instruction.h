@@ -29,6 +29,10 @@ struct TailRange {
 // The destination has room for 17 bytes. The caller supplies a nonempty frame.
 // probe_field is relative to the output, and zero when no call is emitted.
 extern "C" FrameEncoding allocate_frame(u32 frame, address output) on cpu;
+// The caller supplies a nonempty frame and seven destination bytes.
+extern "C" u64 release_frame(u32 frame, address output) on cpu;
+// The caller owns two output bytes. restore selects POP instead of PUSH.
+extern "C" u64 stack_register(u8 register, bool restore, address output) on cpu;
 extern "C" u64 stack_probe_size() on cpu;
 // The caller owns the code image through end plus stack_probe_size bytes.
 extern "C" u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu;

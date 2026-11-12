@@ -88,6 +88,7 @@ fn emit_value(
             _ => false,
         })
     }
+    const SCRATCH_REGISTER: u8 = 15;
     let scratch = scratch(&stage.code);
     let result = result.filter(|ty| ty.size != 0);
     let hidden = result.is_some_and(|ty| fallible || indirect(ty));
@@ -139,7 +140,7 @@ fn emit_value(
     }
     if scratch {
         let start = e.code.len();
-        e.push_registers(&[15]);
+        e.push_registers(&[SCRATCH_REGISTER]);
         e.abi_range(start, AbiRangeKind::ScratchSave);
     }
     let start = e.code.len();
@@ -228,13 +229,12 @@ fn emit_value(
     e.abi_range(start, AbiRangeKind::NonvolatileRestore);
     if frame != 0 {
         let start = e.code.len();
-        e.bytes(&[0x48, 0x81, 0xc4]);
-        e.u32(frame);
+        e.release_frame(frame);
         e.abi_range(start, AbiRangeKind::FrameRelease { bytes: frame });
     }
     if scratch {
         let start = e.code.len();
-        e.bytes(&[0x41, 0x5f]);
+        e.pop_register(SCRATCH_REGISTER);
         e.abi_range(start, AbiRangeKind::ScratchRestore);
     }
     let start = e.code.len();

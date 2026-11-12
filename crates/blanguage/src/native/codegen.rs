@@ -73,6 +73,10 @@ struct TailRange {
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::allocate_frame"]
     fn encode_stack_frame(frame: u32, output: *mut u8) -> FrameEncoding;
+    #[link_name = "bootstrap.x64_instruction::release_frame"]
+    fn encode_frame_release(frame: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::stack_register"]
+    fn encode_stack_register(register: u8, restore: bool, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::stack_probe_size"]
     fn stack_probe_size() -> u64;
     #[link_name = "bootstrap.x64_instruction::append_stack_probe"]
@@ -158,10 +162,11 @@ impl Emitter<'_> {
             sources: super::CodeSources::Emitted { operation_ranges: self.operation_ranges, function_abi: self.function_abi },
         }
     }
+    const RANGE_SAVED_REGISTERS: &'static [u8] = &[12, 13, 14, 15, 3];
+
     fn push_registers(&mut self, registers: &[u8]) {
         for &register in registers {
-            if register >= 8 { self.bytes(&[0x41]); }
-            self.bytes(&[0x50 + (register & 7)]);
+            self.emit_bytes(2, |output| unsafe { encode_stack_register(register, false, output) });
             let at = self.code.len() as u8;
             self.unwind.push(UnwindOperation::push(at, register));
         }
@@ -185,8 +190,14 @@ impl Emitter<'_> {
         self.prolog = self.code.len() as u8;
         self.unwind.push(UnwindOperation::allocate(self.prolog, frame));
     }
+    fn release_frame(&mut self, frame: u32) {
+        self.emit_bytes(7, |output| unsafe { encode_frame_release(frame, output) });
+    }
+    fn pop_register(&mut self, register: u8) {
+        self.emit_bytes(2, |output| unsafe { encode_stack_register(register, true, output) });
+    }
     fn enter(&mut self, frame: u32) {
-        self.push_registers(&[12, 13, 14, 15, 3]);
+        self.push_registers(Self::RANGE_SAVED_REGISTERS);
         self.allocate_frame(frame);
         self.preserve_registers(false);
         self.bytes(&[
@@ -198,11 +209,13 @@ impl Emitter<'_> {
         let exit=self.code.len();
         for at in std::mem::take(&mut self.exits[0]){self.patch(at,exit);}
         self.preserve_registers(true);
-        if frame > 0 {
-            self.bytes(&[0x48, 0x81, 0xc4]);
-            self.u32(frame);
+        if frame != 0 {
+            self.release_frame(frame);
         }
-        self.bytes(&[0x5b, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0xc3]);
+        for &register in Self::RANGE_SAVED_REGISTERS.iter().rev() {
+            self.pop_register(register);
+        }
+        self.bytes(&[0xc3]);
     }
     fn bytes(&mut self, b: &[u8]) {
         self.code.extend_from_slice(b);

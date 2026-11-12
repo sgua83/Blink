@@ -116,6 +116,31 @@ extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu {
     write_word(address_bits(field), u32(target) - u32(offset + 4u64));
 }
 
+u64 adjust_frame(u64 at, u8 modrm, u32 frame) on cpu {
+    put_byte(at, u8(0x48));
+    put_byte(at + 1u64, u8(0x81));
+    put_byte(at + 2u64, modrm);
+    write_word(at + 3u64, frame);
+    return at + 7u64;
+}
+
+extern "C" u64 release_frame(u32 frame, address output) on cpu {
+    u64 start = address_bits(output);
+    return adjust_frame(start, u8(0xc4), frame) - start;
+}
+
+extern "C" u64 stack_register(u8 register, bool restore, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    if (register >= u8(8)) {
+        put_byte(cursor, u8(0x41));
+        cursor += 1u64;
+    }
+    u32 opcode = restore ? 0x58 : 0x50;
+    put_byte(cursor, u8(opcode + (u32(register) & 7)));
+    return cursor + 1u64 - start;
+}
+
 extern "C" FrameEncoding allocate_frame(u32 frame, address output) on cpu {
     u64 cursor = address_bits(output);
     u64 probe_field = 0u64;
@@ -128,11 +153,8 @@ extern "C" FrameEncoding allocate_frame(u32 frame, address output) on cpu {
         write_word(cursor + probe_field, 0);
         cursor += 10u64;
     }
-    unsafe_position<u8>(unsafe_address(cursor)) = u8(0x48);
-    unsafe_position<u8>(unsafe_address(cursor + 1u64)) = u8(0x81);
-    unsafe_position<u8>(unsafe_address(cursor + 2u64)) = u8(0xec);
-    write_word(cursor + 3u64, frame);
-    return FrameEncoding(cursor + 7u64 - address_bits(output), probe_field);
+    cursor = adjust_frame(cursor, u8(0xec), frame);
+    return FrameEncoding(cursor - address_bits(output), probe_field);
 }
 
 // The leaf touches each page from the caller's stack pointer to the new end.
