@@ -269,7 +269,21 @@ impl MetadataReadCursor {
         value.error.check()?;
         Ok(value.value)
     }
-    fn string(&mut self) -> Result<String> { read_text(self.bytes()?) }
+    fn strings(&mut self, keep: bool) -> Result<Vec<String>> {
+        let count = self.word()? as usize;
+        read_strings(count, keep, || Ok(std::str::from_utf8(unsafe { self.bytes()?.borrowed() })?))
+    }
+}
+
+fn read_strings<'a>(
+    count: usize, keep: bool, mut read: impl FnMut() -> Result<&'a str>,
+) -> Result<Vec<String>> {
+    let mut strings = Vec::new();
+    for _ in 0..count {
+        let text = read()?;
+        if keep { strings.push(text.to_owned()); }
+    }
+    Ok(strings)
 }
 
 // Synchronous borrowed metadata views; the original Object owns every field.
@@ -535,23 +549,29 @@ impl<'a> Reader<'a> {
         input.error.check()?;
         Ok(if input.present == 0 { None } else { Some(unsafe { input.bytes.borrowed() }) })
     }
-    fn sections(&self) -> Result<Vec<ObjectSection>> {
+    fn section_rows(&self) -> impl Iterator<Item = Result<ObjectSection>> + '_ {
         let input = ReadBytes::new(self.bytes);
         let headers = ReadBytes::new(self.headers);
-        let mut raw = Vec::new();
         let mut mapped = 0u64;
-        for index in 0..self.headers.len() / 40 {
+        (0..self.headers.len() / 40).map(move |index| {
             let row = unsafe { object_logical_section(input, headers, index, &mut mapped) };
             row.error.check()?;
-            // Preserve the original per-section UTF-8 check before reading the following section.
             std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
-            raw.push(row.value);
-        }
-        Ok(raw)
+            Ok(row.value)
+        })
     }
-    /// 只恢复B公开接口与实际定义；不复制代码、资源归档或恢复重定位。
+    /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
-        let (name, kind, mut bindings, _, _) = read_metadata(&self.sections()?, false)?;
+        let mut metadata = None;
+        for row in self.section_rows() {
+            let row = row?;
+            if metadata.is_none() && unsafe { row.name.borrowed() } == META.as_bytes() {
+                metadata = Some(unsafe { row.bytes.borrowed() });
+            }
+        }
+        let (name, kind, mut bindings, _, _) = read_metadata(
+            metadata.ok_or("缺少 Blink 目标文件元数据")?, None, false,
+        )?;
         let input = ReadBytes::new(self.bytes);
         let table = unsafe { read_symbols(input) };
         table.error.check()?;
@@ -576,10 +596,9 @@ impl<'a> Reader<'a> {
         decode_object(self, None)
     }
 }
-fn read_metadata(raw: &[ObjectSection], archive_bytes: bool) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, Vec<stack::Frame>, Option<Archive>)> {
-    let meta = raw.iter().find(|row| unsafe { row.name.borrowed() } == META.as_bytes())
-        .ok_or("缺少 Blink 目标文件元数据")?;
-    let meta = unsafe { meta.bytes.borrowed() };
+fn read_metadata(
+    meta: &[u8], archive: Option<&[u8]>, keep_stack: bool,
+) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, Vec<stack::Frame>, Option<Archive>)> {
     let mut c = MetadataReadCursor::new(meta);
     let header = unsafe { metadata_read_header(&mut c, u64::from(FORMAT)) };
     header.error.check()?;
@@ -604,18 +623,21 @@ fn read_metadata(raw: &[ObjectSection], archive_bytes: bool) -> Result<(String, 
             prefix: read_text(header.prefix)?, header: read_text(header.header)?, binding: read_text(header.binding)?,
         },
     };
-    let libraries = (0..c.word()?).map(|_| c.string()).collect::<Result<Vec<_>>>()?;
-    let exports = (0..c.word()?).map(|_| c.string()).collect::<Result<Vec<_>>>()?;
+    let keep_archive = archive.is_some();
+    let libraries = c.strings(keep_archive)?;
+    let exports = c.strings(keep_archive)?;
     use crate::module::codec::{Decode, Reader};
     let bytes = c.bytes()?;
     let mut resource = Reader::new(unsafe { bytes.borrowed() });
     let resources = if bool::decode(&mut resource)? {
-        Some(ResourceBinding {
-            prefix: String::decode(&mut resource)?,
-            types: u32::decode(&mut resource)?,
-            programs: u32::decode(&mut resource)?,
-            abi: Vec::<u8>::decode(&mut resource)?,
-            code: Vec::<String>::decode(&mut resource)?,
+        let prefix = resource.text()?;
+        let types = u32::decode(&mut resource)?;
+        let programs = u32::decode(&mut resource)?;
+        let abi = resource.byte_slice()?;
+        let count = usize::decode(&mut resource)?;
+        let code = read_strings(count, keep_archive, || resource.text())?;
+        keep_archive.then(|| ResourceBinding {
+            prefix: prefix.to_owned(), types, programs, abi: abi.to_vec(), code,
         })
     } else {
         None
@@ -630,23 +652,30 @@ fn read_metadata(raw: &[ObjectSection], archive_bytes: bool) -> Result<(String, 
     for _ in 0..c.word()? {
         let value = unsafe { metadata_read_frame(&mut c) };
         value.error.check()?;
-        let name = read_text(value.name)?;
-        let coff = if value.has_coff == 0 { None } else { Some((value.section as usize, value.start as u32)) };
+        let name = std::str::from_utf8(unsafe { value.name.borrowed() })?;
         let mut calls = Vec::new();
         for _ in 0..value.calls {
             let call = unsafe { metadata_read_call(&mut c) };
             call.error.check()?;
-            calls.push(match call.kind {
+            let call = match call.kind {
                 ReadCallKind::Reference => stack::Call::Reference { offset: call.offset as usize, tail: false },
                 ReadCallKind::Tail => stack::Call::Reference { offset: call.offset as usize, tail: true },
                 ReadCallKind::Indirect => stack::Call::Indirect,
-                ReadCallKind::Unreported => stack::Call::Unreported(read_text(call.reason)?),
-            });
+                ReadCallKind::Unreported => {
+                    let reason = std::str::from_utf8(unsafe { call.reason.borrowed() })?;
+                    if !keep_stack { continue; }
+                    stack::Call::Unreported(reason.to_owned())
+                }
+            };
+            if keep_stack { calls.push(call); }
         }
-        stack.push(stack::Frame { name, coff, local: value.local as u32, calls });
+        if keep_stack {
+            let coff = (value.has_coff != 0).then_some((value.section as usize, value.start as u32));
+            stack.push(stack::Frame { name: name.to_owned(), coff, local: value.local as u32, calls });
+        }
     }
-    let archive = raw.iter().filter(|_| archive_bytes).find(|row| unsafe { row.name.borrowed() } == ARCHIVE.as_bytes()).map(|row| Archive {
-        bytes: std::sync::Arc::new(unsafe { row.bytes.borrowed() }.to_vec()),
+    let archive = archive.map(|bytes| Archive {
+        bytes: std::sync::Arc::new(bytes.to_vec()),
         libraries,
         exports,
         resources,
@@ -671,10 +700,14 @@ fn decode_object(reader: &Reader<'_>, native: Option<&str>) -> Result<Object> {
         symbols[i] = Some((name, row.section as i16, row.value as u32, row.storage as u8, row.function != 0));
         i = row.next;
     }
-    let raw = reader.sections()?;
+    let raw = reader.section_rows().collect::<Result<Vec<_>>>()?;
     let (name, kind, mut bindings, mut stack, archive) = match native {
         Some(name) => (name.to_owned(), Kind::Module { interface: String::new(), requirements: BTreeMap::new(), stack_bytes: 0 }, BTreeMap::new(), Vec::new(), None),
-        None => read_metadata(&raw, true)?,
+        None => {
+            let section = |name: &str| raw.iter().find(|row| unsafe { row.name.borrowed() } == name.as_bytes())
+                .map(|row| unsafe { row.bytes.borrowed() });
+            read_metadata(section(META).ok_or("缺少 Blink 目标文件元数据")?, section(ARCHIVE), true)?
+        }
     };
     let mut sections = Vec::new();
     for row in &raw {

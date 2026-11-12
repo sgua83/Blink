@@ -16,6 +16,10 @@ impl<'a> Reader<'a> {
         self.position = end;
         Ok(bytes)
     }
+    pub fn text(&mut self) -> Result<&'a str> {
+        let size = usize::decode(self)?;
+        Ok(std::str::from_utf8(self.take(size)?)?)
+    }
     pub fn byte_slice(&mut self) -> Result<&'a [u8]> {
         let size = usize::decode(self)?;
         // Match Vec<u8>'s truncated-payload error, including a maximum encoded count.
@@ -102,8 +106,7 @@ impl Encode for String {
 }
 impl Decode for String {
     fn decode(r: &mut Reader<'_>) -> Result<Self> {
-        let size = usize::decode(r)?;
-        Ok(std::str::from_utf8(r.take(size)?)?.to_owned())
+        Ok(r.text()?.to_owned())
     }
 }
 impl<T: Encode> Encode for Option<T> {

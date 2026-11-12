@@ -5004,7 +5004,7 @@ Rust API 为 `blanguage::compile_entry(path,module_root,"run<uint3,37,11>")`；�
 
 Compiler由SDK调用方持有，其clone共享同一CPU工作许可。创建普通会话用Compiler::available()，或以NonZeroUsize明确Compiler::with_workers的并行预算；Windows按Processor { group, number }列表调用Compiler::on_processors选择实际逻辑CPU。预算不是固定32，组内编号不是全机编号。OS绑定错误直接报告，不改用其他CPU。其他平台的显式CPU绑定仍未实现；具体机器验证范围见双台账。
 
-现有源码函数对应同会话方法compile、check、compile_entry、compile_application、compile_application_with_modules及compile_native_module。CPU与SPIR-V映像使用compiler.native(program)／compiler.spirv(program)，正式入口复用使用compiler.build_entry(path,root,entry,target,output)，消费编译后obj／lib时使用同一会话的build_entry_with_inputs(path,root,entry,target,output,inputs)，算法库对象使用compiler.compile_dll(program,prefix)。返回的App／Module的compile继续消费其创建时的会话；待发射物不持有活动执行许可，最终机器产物不带编译会话。需要跨调用共享预算时复用同一Compiler，多个自由函数调用不会偷偷成为全局预算或常驻服务。
+现有源码函数对应同会话方法compile、check、compile_entry、compile_application、compile_application_with_modules及compile_native_module。CPU与SPIR-V映像使用compiler.native(program)／compiler.spirv(program)，正式入口复用使用compiler.build_entry(path,root,entry,target,output)，消费编译后obj／lib时使用同一会话的build_entry_with_inputs(path,root,entry,target,output,inputs)，算法库对象使用compiler.compile_dll(program,prefix)。从静态库查询公开接口时借用成员原字节，按对象元数据与实际导出取得接口和合同。链接及栈诊断由各自所需的完整对象材料交接。返回的App／Module的compile继续消费其创建时的会话；待发射物不持有活动执行许可，最终机器产物不带编译会话。需要跨调用共享预算时复用同一Compiler，多个自由函数调用不会偷偷成为全局预算或常驻服务。
 
 每个活动编译及内部独立阶段只使用已分配的真实许可；没有空闲许可时在当前工作完成，内部不等待父工作已经持有的许可。普通调用在原调用线程执行，显式CPU绑定使用本次临时工作线程，所有派生消费者汇合后才归还资源。运行库静态目标代码仍在编译阶段生成，其Cargo子工作使用当前这一份CPU许可，不另行扩大整机并发。已存在的完整模块推导、资源和Frame／Device职责保持。
 
