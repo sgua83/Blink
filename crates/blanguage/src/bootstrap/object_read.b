@@ -65,7 +65,7 @@ ObjectTarget import_target(ReadBytes name,u64 prefix_length) on cpu {
     if(boundary<name.length && (byte_at(name,boundary)&192)==128){return failure(10);}
     return ObjectTarget(1u64,0u64,0u64,part(name,start,length),part(name,boundary,available-length),0);
 }
-extern "C" ObjectTarget resolve_target(ObjectRows rows,ReadBytes name,i64 section,u64 value) on cpu {
+ObjectTarget resolve_target(ObjectRows rows,ReadBytes name,i64 section,u64 value) on cpu {
     if(section>i64(0)){
         u64 index=u64(section)-1u64;
         if(index>=rows.count){return failure(5);}
@@ -76,6 +76,19 @@ extern "C" ObjectTarget resolve_target(ObjectRows rows,ReadBytes name,i64 sectio
     array<u8,15> prefix=array<u8,15>(u8(95),u8(95),u8(98),u8(108),u8(105),u8(110),u8(107),u8(95),u8(105),u8(109),u8(112),u8(111),u8(114),u8(116),u8(36));
     if(matches<15>(name,prefix,false)){return import_target(name,15u64);}
     return ObjectTarget(2u64,0u64,0u64,empty_bytes(),name,0);
+}
+
+extern "C" ObjectRelocation object_relocation(
+    ReadBytes input,ObjectRows rows,ObjectSymbols symbols,u64 table,u64 index
+) on cpu {
+    ReadRelocation record=relocation(input,table,index);
+    if(record.error!=0){return ObjectRelocation(record,failure(0));}
+    if(record.symbol>=symbols.count){return ObjectRelocation(record,failure(15));}
+    address row=unsafe_address(address_bits(symbols.values)+record.symbol*24u64);
+    ObjectSymbol symbol=unsafe_position<ObjectSymbol>(row);
+    if(address_bits(symbol.name.bytes)==0u64){return ObjectRelocation(record,failure(15));}
+    ObjectTarget target=resolve_target(rows,symbol.name,i64(symbol.section),u64(symbol.value));
+    return ObjectRelocation(record,target);
 }
 
 address stack_frame_address(address frames,u64 index) on cpu {

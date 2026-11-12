@@ -154,7 +154,7 @@ impl ObjectRows {
 enum ObjectReadError {
     None, OwnerNumber, OwnerUnavailable, OwnerNotComdat, Selection, SectionUnavailable,
     DllLengthMissing, DllLengthEmpty, DllLengthDigit, DllLengthOverflow, DllLength,
-    StackSection, StackPosition, StackNoLocation, StackRelocation,
+    StackSection, StackPosition, StackNoLocation, StackRelocation, RelocationSymbol,
 }
 impl ObjectReadError {
     fn check(self) -> Result<()> {
@@ -174,9 +174,32 @@ impl ObjectReadError {
             Self::StackPosition => Err("栈信息的函数位置无效或重复".into()),
             Self::StackNoLocation => Err("没有COFF位置的入口不能引用COFF调用".into()),
             Self::StackRelocation => Err("栈调用信息缺少对应的原生重定位".into()),
+            Self::RelocationSymbol => Err("COFF 重定位符号越界".into()),
         }
     }
 }
+// One slot per physical symbol record. Auxiliary slots have no primary name.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ObjectSymbol {
+    name: ReadBytes,
+    value: u32,
+    section: i16,
+    external: u8,
+    function: u8,
+}
+
+impl ObjectSymbol {
+    const AUXILIARY: Self = Self {
+        name: ReadBytes { bytes: std::ptr::null(), length: 0 },
+        value: 0, section: 0, external: 0, function: 0,
+    };
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ObjectSymbols { values: *const ObjectSymbol, count: usize }
+
 #[repr(C)]
 struct ObjectAssociation { present: u64, owner: usize, error: ObjectReadError }
 #[repr(u64)]
@@ -185,13 +208,17 @@ enum ObjectTargetKind { Section, Import, Symbol }
 struct ObjectTarget {
     kind: ObjectTargetKind, section: usize, value: u64, dll: ReadBytes, name: ReadBytes, error: ObjectReadError,
 }
+#[repr(C)]
+struct ObjectRelocation { record: ReadRelocation, target: ObjectTarget }
+
 unsafe extern "C" {
     #[link_name = "bootstrap.object_read::logical_section"]
     fn object_logical_section(input: ReadBytes, headers: ReadBytes, index: usize, mapped: *mut u64) -> ObjectSectionResult;
     #[link_name = "bootstrap.object_read::association"]
     fn object_association(rows: ObjectRows, selection: u64, owner: u64) -> ObjectAssociation;
-    #[link_name = "bootstrap.object_read::resolve_target"]
-    fn object_resolve_target(rows: ObjectRows, name: ReadBytes, section: i64, value: u64) -> ObjectTarget;
+    #[link_name = "bootstrap.object_read::object_relocation"]
+    fn object_relocation(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols,
+        table: usize, index: usize) -> ObjectRelocation;
 }
 fn object_index(rows: &[ObjectSection], index: usize) -> Option<usize> {
     rows.get(index)?.mapped.checked_sub(1)
@@ -758,17 +785,20 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
     let input = ReadBytes::new(b);
     let table = unsafe { read_symbols(input) };
     table.error.check()?;
-    let mut symbols = vec![None; table.count];
+    let mut symbols = vec![ObjectSymbol::AUXILIARY; table.count];
     let mut definitions = BTreeMap::new();
     let mut i = 0;
     while i < table.count {
         let row = unsafe { read_symbol(input, table, i) };
         row.error.check()?;
-        let name = std::str::from_utf8(unsafe { row.name.borrowed() })?;
+        std::str::from_utf8(unsafe { row.name.borrowed() })?;
         if row.storage == 3 && row.section > 0 && row.auxiliary > 0 {
             definitions.insert(row.section as usize - 1, (row.selection as u8, row.owner as u16));
         }
-        symbols[i] = Some((name, row.section as i16, row.value as u32, row.storage == 2, row.function != 0));
+        symbols[i] = ObjectSymbol {
+            name: row.name, value: row.value as u32, section: row.section as i16,
+            external: u8::from(row.storage == 2), function: row.function as u8,
+        };
         i = row.next;
     }
     let raw = reader.section_rows().collect::<Result<Vec<_>>>()?;
@@ -809,24 +839,25 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
         value.error.check()?;
         if value.present != 0 { sections[value.owner].associated.push(row.mapped - 1); }
     }
+    let symbol_rows = ObjectSymbols { values: symbols.as_ptr(), count: symbols.len() };
     for row in &raw {
         if row.mapped == 0 { continue; }
         let table = unsafe { read_relocations(input, row.relocations, row.relocation_count, row.flags) };
         table.error.check()?;
         for i in 0..table.count {
-            let r = unsafe { read_relocation(input, table.offset, i) };
+            let ObjectRelocation { record: r, target: value } =
+                unsafe { object_relocation(input, rows, symbol_rows, table.offset, i) };
             r.error.check()?;
             if let Some(kind)=crate::native::CoffRelocationKind::of(r.kind as u16){
                 kind.range(sections[row.mapped-1].bytes.len(),r.offset)?;
             }
-            let &(name, section, offset, _, _) = symbols.get(r.symbol).and_then(Option::as_ref)
-                .ok_or("COFF 重定位符号越界")?;
-            let value = unsafe { object_resolve_target(rows, ReadBytes::new(name.as_bytes()), i64::from(section), u64::from(offset)) };
             value.error.check()?;
             let target = match value.kind {
                 ObjectTargetKind::Section => Target::Section(value.section, value.value as u32),
                 ObjectTargetKind::Import => Target::Import(Import { dll: read_text(value.dll)?, name: read_text(value.name)? }),
                 ObjectTargetKind::Symbol => {
+                    // The primary symbol's borrowed name was checked before target resolution.
+                    let name = unsafe { std::str::from_utf8_unchecked(value.name.borrowed()) };
                     if native.is_some() { bindings.entry(name.to_owned()).or_default(); }
                     else { bindings.get(name).ok_or("未定义符号缺少模块接口合同")?; }
                     Target::Symbol(name.to_owned())
@@ -837,21 +868,21 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
     }
     let symbols = symbols
             .into_iter()
-            .flatten()
-            .filter(|(_, section, _, external, _)| *external && *section > 0)
-            .map(|(name, section, value, _, function)| {
+            .filter(|symbol| symbol.external != 0 && symbol.section > 0)
+            .map(|symbol| {
+                let name = unsafe { std::str::from_utf8_unchecked(symbol.name.borrowed()) };
                 let (name, contract) = if native.is_some() {
                     (name.to_owned(), Vec::new())
                 } else {
                     bindings.remove_entry(name).ok_or("导出符号缺少模块接口合同")?
                 };
                 Ok(super::Symbol {
-                    function,
+                    function: symbol.function != 0,
                     name,
                     contract,
-                    section: object_index(&raw, section as usize - 1)
+                    section: object_index(&raw, symbol.section as usize - 1)
                         .ok_or("导出符号引用不可装载的节")?,
-                    value,
+                    value: symbol.value,
                 })
             })
             .collect::<Result<_>>()?;
