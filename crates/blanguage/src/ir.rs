@@ -453,6 +453,21 @@ impl Ty {
     pub fn matrix_shape(&self) -> Option<(usize, usize)> {
         matrix_shape(&self.name)
     }
+    #[cfg(feature = "compiler")]
+    pub fn builtin(s: &str) -> Option<Self> {
+        use crate::builtin_types::{Builtin, Kind};
+        let builtin = Builtin::recognize(s);
+        match builtin.kind {
+            Kind::Missing => None,
+            Kind::Numeric => Some(if builtin.rows > 1 {
+                Self::matrix(builtin.rows as usize, builtin.columns as usize)
+            } else { Self::vector(builtin.scalar(), builtin.columns as usize) }),
+            Kind::Address => { let mut ty = Self::scalar(Scalar::U64); ty.name = "address".into(); Some(ty) },
+            Kind::Handle => { let mut ty = Self::vector(Scalar::U32, 2); ty.name = "handle".into(); Some(ty) },
+            Kind::RayHit => Some(Self::ray_hit()),
+        }
+    }
+    #[cfg(not(feature = "compiler"))]
     pub fn builtin(s: &str) -> Option<Self> {
         if let Some((rows, columns)) = matrix_shape(s) {
             return Some(Self::matrix(rows, columns));
@@ -488,7 +503,12 @@ impl Ty {
             "int2" => Self::vector(Scalar::I32, 2),
             "int3" => Self::vector(Scalar::I32, 3),
             "int4" => Self::vector(Scalar::I32, 4),
-            "RayHit" => Self {
+            "RayHit" => Self::ray_hit(),
+            _ => return None,
+        })
+    }
+    fn ray_hit() -> Self {
+        Self {
                 name: "RayHit".into(),
                 arguments: Vec::new(),
                 values: Vec::new(),
@@ -528,9 +548,7 @@ impl Ty {
                     ("object_to_world".into(), 80, Box::new(Self::matrix(3, 4))),
                     ("world_to_object".into(), 128, Box::new(Self::matrix(3, 4))),
                 ],
-            },
-            _ => return None,
-        })
+            }
     }
     pub fn is_address(&self) -> bool {
         self.name == "address"

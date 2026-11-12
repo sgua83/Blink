@@ -4,15 +4,11 @@ const u32 FLOATING = 1;
 const u32 INTEGER = 2;
 const u32 SCALAR = 4;
 
-struct Member {
-    BuiltinName name;
-    u32 traits;
-};
 
-Member member<const N:u32 in {2,3,4,5,6}>(read array<u8,N> name, u32 traits) on cpu {
+BuiltinName member<const N:u32 in {2,3,4,5,6}>(read array<u8,N> name) on cpu {
     array<u8,6> bytes = array<u8,6>(u8(0),u8(0),u8(0),u8(0),u8(0),u8(0));
     for (index in 0..N) { bytes[index] = name[index]; }
-    return Member(BuiltinName(bytes,N),traits);
+    return BuiltinName(bytes,N);
 }
 
 extern "C" u32 builtin_members(read TypeFamilyNode family, address output) on cpu {
@@ -26,25 +22,79 @@ extern "C" u32 builtin_members(read TypeFamilyNode family, address output) on cp
         TypeFamilyNode::Named(name) { return 0; }
     }
 
-    array<Member,19> members = array<Member,19>(
-        member("f32",FLOATING|SCALAR),
-        member("float2",FLOATING),member("float3",FLOATING),member("float4",FLOATING),
-        member("u32",INTEGER|SCALAR),
-        member("uint2",INTEGER),member("uint3",INTEGER),member("uint4",INTEGER),
-        member("i32",INTEGER|SCALAR),
-        member("int2",INTEGER),member("int3",INTEGER),member("int4",INTEGER),
-        member("u64",INTEGER|SCALAR),member("i64",INTEGER|SCALAR),
-        member("f64",FLOATING|SCALAR),
-        member("u8",INTEGER|SCALAR),member("i8",INTEGER|SCALAR),
-        member("u16",INTEGER|SCALAR),member("i16",INTEGER|SCALAR)
+    array<BuiltinName,19> members = array<BuiltinName,19>(
+        member("f32"),
+        member("float2"),member("float3"),member("float4"),
+        member("u32"),
+        member("uint2"),member("uint3"),member("uint4"),
+        member("i32"),
+        member("int2"),member("int3"),member("int4"),
+        member("u64"),member("i64"),
+        member("f64"),
+        member("u8"),member("i8"),
+        member("u16"),member("i16")
     );
     u32 count = 0;
     for (index in 0..members.length) {
-        if ((members[index].traits & required) == required) {
+        BuiltinName name = members[index];
+        BuiltinType builtin = recognize(address_of(name.bytes), u64(name.length));
+        u32 traits = builtin.scalar == BuiltinScalar::F32 || builtin.scalar == BuiltinScalar::F64 ? FLOATING : INTEGER;
+        if (builtin.rows == 1 && builtin.columns == 1) { traits |= SCALAR; }
+        if ((traits & required) == required) {
             address slot = unsafe_address(address_bits(output)+u64(count)*size_of<BuiltinName>());
-            unsafe_position<BuiltinName>(slot) = members[index].name;
+            unsafe_position<BuiltinName>(slot) = name;
             count += 1;
         }
     }
     return count;
+}
+
+u8 name_byte(address name, u64 index) on cpu {
+    return unsafe_position<u8>(unsafe_address(address_bits(name) + index));
+}
+bool same<const N:u32 in {2,3,4,5,6,7}>(address name, u64 length, read array<u8,N> word) on cpu {
+    if (length != u64(N)) { return false; }
+    for (index in 0..N) {
+        if (name_byte(name, u64(index)) != word[index]) { return false; }
+    }
+    return true;
+}
+BuiltinType numeric(BuiltinScalar scalar, u32 rows, u32 columns) on cpu {
+    return BuiltinType(BuiltinKind::Numeric, scalar, rows, columns);
+}
+extern "C" BuiltinType recognize(address name, u64 length) on cpu {
+    if (length == 8u64 && same(name, 5u64, "float")) {
+        u8 rows = name_byte(name, 5u64);
+        u8 columns = name_byte(name, 7u64);
+        if (rows >= 50 && rows <= 52 && name_byte(name, 6u64) == 120 && columns >= 50 && columns <= 52) {
+            return numeric(BuiltinScalar::F32, u32(rows) - 48, u32(columns) - 48);
+        }
+    }
+    if (length == 6u64 && same(name, 5u64, "float")) {
+        u8 columns = name_byte(name, 5u64);
+        if (columns >= 50 && columns <= 52) { return numeric(BuiltinScalar::F32, 1, u32(columns) - 48); }
+    }
+    if (length == 5u64 && same(name, 4u64, "uint")) {
+        u8 columns = name_byte(name, 4u64);
+        if (columns >= 50 && columns <= 52) { return numeric(BuiltinScalar::U32, 1, u32(columns) - 48); }
+    }
+    if (length == 4u64 && same(name, 3u64, "int")) {
+        u8 columns = name_byte(name, 3u64);
+        if (columns >= 50 && columns <= 52) { return numeric(BuiltinScalar::I32, 1, u32(columns) - 48); }
+    }
+    if (same(name, length, "f32") || same(name, length, "float")) { return numeric(BuiltinScalar::F32, 1, 1); }
+    if (same(name, length, "u32") || same(name, length, "uint")) { return numeric(BuiltinScalar::U32, 1, 1); }
+    if (same(name, length, "i32") || same(name, length, "int")) { return numeric(BuiltinScalar::I32, 1, 1); }
+    if (same(name, length, "bool")) { return numeric(BuiltinScalar::Bool, 1, 1); }
+    if (same(name, length, "u64") || same(name, length, "usize")) { return numeric(BuiltinScalar::U64, 1, 1); }
+    if (same(name, length, "i64") || same(name, length, "isize")) { return numeric(BuiltinScalar::I64, 1, 1); }
+    if (same(name, length, "f64")) { return numeric(BuiltinScalar::F64, 1, 1); }
+    if (same(name, length, "u8")) { return numeric(BuiltinScalar::U8, 1, 1); }
+    if (same(name, length, "i8")) { return numeric(BuiltinScalar::I8, 1, 1); }
+    if (same(name, length, "u16")) { return numeric(BuiltinScalar::U16, 1, 1); }
+    if (same(name, length, "i16")) { return numeric(BuiltinScalar::I16, 1, 1); }
+    if (same(name, length, "address")) { return BuiltinType(BuiltinKind::Address, BuiltinScalar::U64, 1, 1); }
+    if (same(name, length, "handle")) { return BuiltinType(BuiltinKind::Handle, BuiltinScalar::U32, 1, 2); }
+    if (same(name, length, "RayHit")) { return BuiltinType(BuiltinKind::RayHit, BuiltinScalar::F32, 0, 0); }
+    return BuiltinType(BuiltinKind::Missing, BuiltinScalar::F32, 0, 0);
 }

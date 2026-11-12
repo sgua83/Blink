@@ -662,7 +662,7 @@ pub(crate) fn load(
                 | "texture2d" | "texture3d"
                 | "void"
                 | "never"
-        ) || ir::Ty::builtin(&record.name()).is_some()
+        ) || crate::builtin_types::Builtin::recognize(&record.name()).is_present()
         {
             return source.fail(record.span(), "B184", "记录名称不能覆盖内置类型");
         }
@@ -690,7 +690,7 @@ pub(crate) fn load(
         let key = format!("{name}::{}", set.name());
         if world.records.contains_key(&key)
             || world.type_sets.contains_key(&key)
-            || ir::Ty::builtin(&set.name()).is_some()
+            || crate::builtin_types::Builtin::recognize(&set.name()).is_present()
             || matches!(
                 set.name(),
                 "void"
@@ -844,8 +844,8 @@ impl World {
             "task" | "task_start_error" => (1, 1, "B224"),
             "void" | "never" => (0, 0, "B228"),
             _ => {
-                if let Some(builtin) = ir::Ty::builtin(&name.name) {
-                    syntax.name = builtin.name;
+                if let Some(canonical) = crate::builtin_types::Builtin::recognize(&name.name).canonical(&name.name) {
+                    syntax.name = canonical.into();
                     (0, 0, "B232")
                 } else {
                     let key = if name.canonical {

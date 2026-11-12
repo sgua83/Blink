@@ -75,7 +75,7 @@ pub(crate) enum TypeCall<'a> { Builtin(&'a str), Construct(&'a TypeName) }
 impl Bindings {
     pub(crate) fn type_call(&self,name:&str)->Option<TypeCall<'_>> {
         let actual=self.types.get(name)?;
-        Some(if actual.arguments.is_empty()&&Ty::builtin(&actual.name).is_some_and(|ty|ty.fields.is_empty()) {
+        Some(if actual.arguments.is_empty()&&crate::builtin_types::Builtin::recognize(&actual.name).is_scalar() {
             TypeCall::Builtin(&actual.name)
         }else{TypeCall::Construct(actual)})
     }
@@ -376,7 +376,7 @@ pub(crate) fn validate_parameters(
     span: Span,
 ) -> Result<()> {
     for parameter in types {
-        if Ty::builtin(parameter.name()).is_some()
+        if crate::builtin_types::Builtin::recognize(parameter.name()).is_present()
             || matches!(
                 parameter.name(),
                 "void"
@@ -507,7 +507,7 @@ pub(crate) fn substitute_expr(
             }
             if let Some(actual) = types.get(name) {
                 if actual.arguments.is_empty()
-                    && Ty::builtin(&actual.name).is_some_and(|t| t.fields.is_empty())
+                    && crate::builtin_types::Builtin::recognize(&actual.name).is_scalar()
                 {
                     name.clone_from(&actual.name);
                 } else {

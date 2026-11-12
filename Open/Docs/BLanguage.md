@@ -2116,11 +2116,11 @@ void iterate<const R:u32>(inout dataset<Item> items) on compute {
 
 | 类型集合 | 允许类型 |
 |---|---|
-| floating | f32、float2、float3、float4 |
-| integer | u32、uint2、uint3、uint4、i32、int2、int3、int4、u64、i64 |
-| numeric | floating 与 integer 的全部14种类型 |
-| scalar_numeric | f32、u32、i32、u64、i64 |
-| scalar_integer | u32、i32、u64、i64 |
+| floating | f32、float2、float3、float4、f64 |
+| integer | u32、uint2、uint3、uint4、i32、int2、int3、int4、u64、i64、u8、i8、u16、i16 |
+| numeric | floating 与 integer 的全部19种类型 |
+| scalar_numeric | f32、u32、i32、u64、i64、f64、u8、i8、u16、i16 |
+| scalar_integer | u32、i32、u64、i64、u8、i8、u16、i16 |
 
 自动推导从实际参数类型取得类型参数，也可来自 dataset、tile 或 view 的元素类型，以及 write／inout／atomic 借用。只出现在返回类型或完全不出现在形参中的类型参数需要显式指定；不根据预期返回类型或运行数据猜测。bool、用户记录、acceleration 和资源句柄本身不属于这些集合；例如 view<uint3> 可匹配 view<T> 并推导 T=uint3，不能作为裸 T 的 numeric 实参。内建view<T>构造形成的局部值及其词法类型预分析保留同一完整view元素类型，参与普通泛型推导；构造的范围、位置、权限与来源仍在实际构造处检查。
 

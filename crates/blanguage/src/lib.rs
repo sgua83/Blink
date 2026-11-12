@@ -42,6 +42,8 @@ mod parallel;
 pub mod resource;
 pub mod spirv;
 #[cfg(feature = "compiler")]
+mod builtin_types;
+#[cfg(feature = "compiler")]
 mod type_sets;
 #[cfg(feature = "compiler")]
 mod value_parameters;

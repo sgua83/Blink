@@ -1,5 +1,5 @@
 //! u32 const 参数在使用处静态实例化；有限集合继续逐项检查。
-use crate::{ast::*, ir::Ty};
+use crate::ast::*;
 use std::collections::BTreeMap;
 
 pub(crate) fn substitute_output_condition(condition:&mut OutputCondition,values:&BTreeMap<String,u32>){
@@ -22,7 +22,7 @@ pub(crate) fn validate(
         if parameter.choices().is_some_and(<[u32]>::is_empty) {
             return source.fail(span, "B235", "const 参数至少需要一个允许的 u32 值");
         }
-        if Ty::builtin(parameter.name()).is_some()
+        if crate::builtin_types::Builtin::recognize(parameter.name()).is_present()
             || parameter.name() == owner
             || matches!(
                 parameter.name(),
