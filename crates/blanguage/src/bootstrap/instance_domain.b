@@ -17,11 +17,29 @@ Slice domain_at(InstanceDomains domains, u64 column) on cpu {
     return choices.value;
 }
 
+u32 domain_value(address nodes, Slice choices, u64 index) on cpu {
+    return unsafe_position<u32>(at(nodes, choices.offset + index * size_of<u32>()));
+}
+
+extern "C" bool accepts_const(address nodes, Optional<Slice> choices, u32 value) on cpu {
+    if (choices.present == 0) { return true; }
+
+    u64 first = 0u64;
+    u64 last = choices.value.count;
+    while (first < last) {
+        u64 middle = first + (last - first) / 2u64;
+        u32 candidate = domain_value(nodes, choices.value, middle);
+        if (candidate == value) { return true; }
+        if (candidate < value) { first = middle + 1u64; }
+        else { last = middle; }
+    }
+    return false;
+}
+
 void select_choice(InstanceDomains domains, InstanceRow row, Slice domain, u64 column, u64 index) on cpu {
     unsafe_position<u64>(at(row.indices, column * size_of<u64>())) = index;
     if (column >= domains.type_count) {
-        u64 offset = domain.offset + index * size_of<u32>();
-        u32 value = unsafe_position<u32>(at(domains.nodes, offset));
+        u32 value = domain_value(domains.nodes, domain, index);
         unsafe_position<u32>(at(row.values, (column - domains.type_count) * size_of<u32>())) = value;
     }
 }

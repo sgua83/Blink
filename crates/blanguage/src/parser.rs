@@ -446,8 +446,6 @@ impl Parser {
                             self.expect(",")?;
                         }
                     }
-                    choices.sort();
-                    choices.dedup();
                     values.push(store!(self,make_value_parameter,ValueParameter {
                         name,
                         choices: restricted.then_some(choices),

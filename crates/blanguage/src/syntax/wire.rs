@@ -302,6 +302,8 @@ unsafe extern "C" {
 #[link_name="bootstrap.ast_storage::view"] pub fn view(storage:*mut c_void)->StorageView;
 #[link_name="bootstrap.instance_domain::advance"]
 pub fn advance_instance_domain(domains:InstanceDomains, row:InstanceRow, first:u32)->u32;
+#[link_name="bootstrap.instance_domain::accepts_const"]
+pub fn accepts_const(nodes: *const c_void, choices: Optional<Slice>, value: u32) -> bool;
 #[link_name="bootstrap.ast_storage::indices"] pub fn indices(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
 #[link_name="bootstrap.ast_storage::choices"] pub fn choices(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
 #[link_name="bootstrap.ast_storage::texts"] pub fn texts(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;

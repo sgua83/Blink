@@ -1264,11 +1264,7 @@ impl World {
             let value = self
                 .shape(&Some(shape), source, span, module, imports)?
                 .unwrap();
-            if parameter
-                .choices()
-                .as_ref()
-                .is_some_and(|choices| !choices.contains(&value))
-            {
+            if !parameter.accepts_const(value) {
                 return source.fail(
                     span,
                     "B235",

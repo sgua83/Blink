@@ -253,11 +253,7 @@ pub(crate) fn specialize(
                 ),
             })?
         };
-        if parameter
-            .choices()
-            .as_ref()
-            .is_some_and(|choices| !choices.contains(&value))
-        {
+        if !parameter.accepts_const(value) {
             return source.fail(
                 span,
                 "B235",

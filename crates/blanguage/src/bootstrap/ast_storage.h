@@ -118,6 +118,7 @@ extern "C" StorageCreate create(address source,u64 length) on cpu;
 extern "C" StorageError destroy(address storage) on cpu;
 extern "C" StorageView view(address storage) on cpu;
 extern "C" StorageSlice indices(address storage,address values,u64 count) on cpu;
+// The caller lends mutable values. Store only their sorted, unique prefix.
 extern "C" StorageSlice choices(address storage,address values,u64 count) on cpu;
 extern "C" StorageSlice texts(address storage,address values,u64 count) on cpu;
 extern "C" StorageText text(address storage,address bytes,u64 count) on cpu;

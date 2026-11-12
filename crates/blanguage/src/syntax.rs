@@ -64,8 +64,8 @@ impl Builder {
         let result=unsafe{wire::indices(self.owner.raw.as_ptr(),values.as_ptr().cast_mut().cast(),values.len()as u64)};
         checked(result.error)?;Ok(result.value)
     }
-    pub fn choices(&mut self,values:&[u32])->Result<wire::Slice> {
-        let result=unsafe{wire::choices(self.owner.raw.as_ptr(),values.as_ptr().cast_mut().cast(),values.len()as u64)};
+    pub fn choices(&mut self,values:&mut [u32])->Result<wire::Slice> {
+        let result=unsafe{wire::choices(self.owner.raw.as_ptr(),values.as_mut_ptr().cast(),values.len()as u64)};
         checked(result.error)?;Ok(result.value)
     }
     pub fn texts(&mut self,values:&[wire::Text])->Result<wire::Slice> {
@@ -264,7 +264,17 @@ span_field!(ContractNode);
 optional_list!(TypeNode,contracts,PredicateNode);
 optional_list!(FunctionNode,body,StmtNode);
 impl Type {pub fn canonical(&self)->bool{self.row().canonical!=0} pub fn dataset(&self)->bool{self.row().dataset!=0} pub fn view(&self)->bool{self.row().view!=0} pub fn tile(&self)->bool{self.row().tile!=0}}
-impl ValueParameter {pub fn choices(&self)->Option<&[u32]>{let value=self.row().choices;(value.present!=0).then(||self.owner.array(value.value))}}
+impl ValueParameter {
+    pub fn choices(&self) -> Option<&[u32]> {
+        let choices = self.row().choices;
+        (choices.present != 0).then(|| self.owner.array(choices.value))
+    }
+
+    pub(crate) fn accepts_const(&self, value: u32) -> bool {
+        // B reads only the canonical choices in this live sealed store.
+        unsafe { wire::accepts_const(self.owner.view().nodes, self.row().choices, value) }
+    }
+}
 pub(crate) struct InstanceCombinations<'a> {
     parameters: &'a List<wire::ValueParameterNode>,
     type_sizes: &'a [u64],

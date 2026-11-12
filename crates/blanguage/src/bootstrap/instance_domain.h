@@ -16,6 +16,7 @@ struct InstanceRow {
 // Types precede the const parameters. The caller owns one index per axis
 // and one value per const parameter, and keeps the syntax store sealed.
 extern "C" u32 advance(InstanceDomains domains, InstanceRow row, u32 first) on cpu;
+extern "C" bool accepts_const(address nodes, Optional<Slice> choices, u32 value) on cpu;
 
 struct NameBytes {
     address bytes;

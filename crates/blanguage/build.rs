@@ -22,7 +22,7 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         compiler.arg("-c").arg(format!("src/bootstrap/{name}.b"))
             .args(["-I", "src", "--module", "-o"]).arg(object);
         if *name == "names" {
-            compiler.args(["--instance", "sort_rows<u64>"]);
+            compiler.args(["--instance", "sort_rows<u64>", "--instance", "sort_rows<u32>"]);
         }
         let compiled = compiler.status()?;
         if !compiled.success() {

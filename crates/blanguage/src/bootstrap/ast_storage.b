@@ -1,4 +1,5 @@
 module bootstrap.ast_storage;
+import bootstrap.names;
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
 extern "C" address HeapReAlloc(handle heap,u32 flags,address data,usize bytes) on cpu from "KERNEL32.dll";
@@ -77,7 +78,28 @@ extern "C" StorageView view(address storage) on cpu {
     return StorageView(store.nodes.data,store.nodes.length,store.text.data,store.text.length,store.source,store.source_bytes);
 }
 extern "C" StorageSlice indices(address storage,address values,u64 count) on cpu {return append_array<u64>(storage,values,count);}
-extern "C" StorageSlice choices(address storage,address values,u64 count) on cpu {return append_array<u32>(storage,values,count);}
+extern "C" bool choice_before(address left, address right, address context) on cpu {
+    return unsafe_position<u32>(left) < unsafe_position<u32>(right);
+}
+
+extern "C" StorageSlice choices(address storage, address values, u64 count) on cpu {
+    if (count < 2u64) { return append_array<u32>(storage, values, count); }
+
+    sort_rows<u32>(values, count, address(), c_function(choice_before));
+    u64 unique = 1u64;
+    u32 previous = unsafe_position<u32>(values);
+    u64 index = 1u64;
+    while (index < count) {
+        u32 value = unsafe_position<u32>(at(values, index * size_of<u32>()));
+        if (value != previous) {
+            unsafe_position<u32>(at(values, unique * size_of<u32>())) = value;
+            unique += 1u64;
+            previous = value;
+        }
+        index += 1u64;
+    }
+    return append_array<u32>(storage, values, unique);
+}
 extern "C" StorageSlice texts(address storage,address values,u64 count) on cpu {return append_array<Text>(storage,values,count);}
 extern "C" StorageText text(address storage,address bytes,u64 count) on cpu {
     StorageIndex slot=prepare(unsafe_position<Store>(storage).heap,unsafe_position<Store>(storage).text,count,1u64);

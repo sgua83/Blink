@@ -180,7 +180,7 @@ impl Builder {
         Ok(wire::TypeParameterRef{offset:self.put_type_parameter(&row)?})
     }
     pub fn make_value_parameter(&mut self,v:ValueParameter)->Result<wire::ValueParameterRef> {
-        let choices=match v.choices{Some(v)=>wire::Optional::some(self.choices(&v)?),None=>wire::Optional::none()};
+        let choices=match v.choices{Some(mut v)=>wire::Optional::some(self.choices(&mut v)?),None=>wire::Optional::none()};
         let row=wire::ValueParameterNode{name:self.text(&v.name)?,choices};
         Ok(wire::ValueParameterRef{offset:self.put_value_parameter(&row)?})
     }
