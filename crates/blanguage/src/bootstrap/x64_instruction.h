@@ -256,3 +256,12 @@ struct ScanRange {
 
 // R12 is saved for both passes, and R13 is saved for the summary pass.
 extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on cpu;
+
+struct SegmentedScanRange {
+    ScanRange scan;
+    u32 head_word;
+    u32 value_words;
+};
+
+// R12 and R13 are saved by the caller for either pass.
+extern "C" u64 segmented_scan_range(SegmentedScanRange input, u32 add, address output) on cpu;

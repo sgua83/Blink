@@ -2211,11 +2211,31 @@ u64 segmented_store(u64 at, ReductionRange values, u8 base, u32 field) on cpu {
     return cursor;
 }
 
+u64 segmented_accumulate(u64 at, ReductionRange values) on cpu {
+    u64 cursor = at;
+    bool wide = values.scalar.width == 64;
+    bool floating = values.scalar.kind == ScalarKind::Float;
+    for (component in 0..4) {
+        if (component == values.count) { break; }
+        u8 lane = u8(component);
+        u8 register = lane;
+        if (!floating) {
+            cursor = register_instruction(cursor, u16(0x7e0f), u8(0x66), wide, lane, u8(0));
+            register = u8(0);
+        }
+        MoveLocation operand = MoveLocation(u64(values.source_word + values.offsets[component]), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+        cursor = collective_accumulate(cursor, values.operation, values.scalar, register, operand);
+        if (!floating) {
+            cursor = register_instruction(cursor, u16(0x6e0f), u8(0x66), wide, lane, u8(0));
+        }
+    }
+    return cursor;
+}
+
 extern "C" u64 segmented_reduce_range(SegmentedRange input, u32 finish, address output) on cpu {
     u64 start = address_bits(output);
     ReductionRange values = input.values;
     bool wide = values.scalar.width == 64;
-    bool floating = values.scalar.kind == ScalarKind::Float;
     u32 summary_flag = input.value_words * 4;
     u32 summary_count = summary_flag + 4;
     MoveLocation source_stride = MoveLocation(u64(values.source + values.stride_offset), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
@@ -2269,20 +2289,7 @@ extern "C" u64 segmented_reduce_range(SegmentedRange input, u32 finish, address 
         cursor = register_instruction(cursor, u16(0x760f), u8(0x66), false, u8(5), u8(5));
     }
     patch_relative(unsafe_address(no_head), no_head, cursor);
-    for (component in 0..4) {
-        if (component == values.count) { break; }
-        u8 lane = u8(component);
-        u8 register = lane;
-        if (!floating) {
-            cursor = register_instruction(cursor, u16(0x7e0f), u8(0x66), wide, lane, u8(0));
-            register = u8(0);
-        }
-        MoveLocation operand = MoveLocation(u64(values.source_word + values.offsets[component]), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
-        cursor = collective_accumulate(cursor, values.operation, values.scalar, register, operand);
-        if (!floating) {
-            cursor = register_instruction(cursor, u16(0x6e0f), u8(0x66), wide, lane, u8(0));
-        }
-    }
+    cursor = segmented_accumulate(cursor, values);
     if (finish != 0) {
         // A segment ends at the logical last record or before the next record's head.
         MoveLocation next_index = MoveLocation(1u64, MOVE_MEMORY, u8(9), NO_INDEX, u8(0));
@@ -2326,6 +2333,20 @@ extern "C" u64 segmented_reduce_range(SegmentedRange input, u32 finish, address 
     put_byte(cursor + 5u64, u8(0x5c));
     put_byte(cursor + 6u64, u8(0xc3));
     return cursor + 7u64 - start;
+}
+
+u64 scan_float_correction(u64 at, ReductionOperator operation, ScalarEncoding scalar, u8 lane, MoveLocation destination) on cpu {
+    u64 cursor = register_instruction(at, u16(0x280f), u8(0), false, u8(4), lane);
+    if (operation == ReductionOperator::Sum) {
+        cursor = collective_accumulate(cursor, operation, scalar, u8(4), destination);
+    } else {
+        // The first local element has no previous value in this range.
+        cursor = register_instruction(cursor, u16(0x39), u8(0), false, u8(9), u8(8));
+        u64 first = condition_field(cursor, u8(0x84));
+        cursor = collective_accumulate(first + 4u64, operation, scalar, u8(4), destination);
+        patch_relative(unsafe_address(first), first, cursor);
+    }
+    return store_float(cursor, destination, u8(4), scalar.width == 64);
 }
 
 extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on cpu {
@@ -2411,17 +2432,7 @@ extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on
             }
             cursor = collective_accumulate(cursor, values.operation, values.scalar, register, source);
         } else if (floating) {
-            cursor = register_instruction(cursor, u16(0x280f), u8(0), false, u8(4), lane);
-            if (extrema) {
-                // The first local element has no previous value in this range.
-                cursor = register_instruction(cursor, u16(0x39), u8(0), false, u8(9), u8(8));
-                u64 first = condition_field(cursor, u8(0x84));
-                cursor = collective_accumulate(first + 4u64, values.operation, values.scalar, u8(4), destination);
-                patch_relative(unsafe_address(first), first, cursor);
-            } else {
-                cursor = collective_accumulate(cursor, values.operation, values.scalar, u8(4), destination);
-            }
-            cursor = store_float(cursor, destination, u8(4), wide);
+            cursor = scan_float_correction(cursor, values.operation, values.scalar, lane, destination);
         } else if (extrema) {
             cursor = encode_operand_instruction(cursor, u16(0x8b) - byte_form, prefix, wide, u8(2), destination);
             cursor = collective_accumulate(cursor, values.operation, values.scalar, u8(2), move_gpr(register));
@@ -2462,4 +2473,99 @@ extern "C" ReductionCode scan_range(ScanRange input, u32 add, address output) on
     put_byte(cursor + 1u64, u8(0x5c));
     put_byte(cursor + 2u64, u8(0xc3));
     return ReductionCode(cursor + 3u64 - start, literals);
+}
+
+extern "C" u64 segmented_scan_range(SegmentedScanRange input, u32 add, address output) on cpu {
+    u64 start = address_bits(output);
+    ScanRange scan = input.scan;
+    ReductionRange values = scan.values;
+    bool correction = add != 0;
+    u32 size = values.scalar.width / 8;
+    bool wide = size == 8;
+    bool floating = values.scalar.kind == ScalarKind::Float;
+    MoveLocation source_stride = MoveLocation(u64(values.source + values.stride_offset), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    u64 cursor = load_bits(start, u8(12), source_stride, true);
+    MoveLocation target_stride = MoveLocation(u64(scan.target + values.stride_offset), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    cursor = load_bits(cursor, u8(13), target_stride, true);
+    MoveLocation source = MoveLocation(u64(values.source), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    cursor = load_bits(cursor, u8(10), source, true);
+    MoveLocation target = MoveLocation(u64(scan.target), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    cursor = load_bits(cursor, u8(11), target, true);
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(12));
+    cursor = register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(10));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(13));
+    cursor = register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(11));
+    cursor = register_instruction(cursor, u16(0x29), u8(0), false, u8(9), u8(8));
+    if (correction) {
+        MoveLocation parameters = MoveLocation(u64(scan.parameters), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+        cursor = load_bits(cursor, u8(2), parameters, true);
+        for (component in 0..4) {
+            if (component == values.count) { break; }
+            MoveLocation incoming = MoveLocation(u64(values.offsets[component]), MOVE_MEMORY, u8(2), NO_INDEX, u8(0));
+            cursor = load_float(cursor, u8(component), incoming, wide);
+        }
+        if (floating && values.operation != ReductionOperator::Sum) {
+            cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(8), u8(9));
+        }
+    } else {
+        cursor = segmented_identity(cursor, values);
+        // R9D records whether the local range reset at a segment head.
+        cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(9), u8(9));
+    }
+
+    u64 begin = cursor;
+    cursor = register_instruction(cursor, u16(0x85), u8(0), false, u8(8), u8(8));
+    u64 end = condition_field(cursor, u8(0x84));
+    MoveLocation head = MoveLocation(u64(input.head_word), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(end + 4u64, u16(0x83), u8(0), false, u8(7), head);
+    put_byte(cursor, u8(0));
+    cursor += 1u64;
+    u64 head_end = 0u64;
+    if (correction) {
+        // At a head, the local scan already owns the rest of the range.
+        head_end = condition_field(cursor, u8(0x85));
+        cursor = head_end + 4u64;
+        for (component in 0..4) {
+            if (component == values.count) { break; }
+            u8 lane = u8(component);
+            MoveLocation destination = MoveLocation(u64(scan.target_word + values.offsets[component]), MOVE_MEMORY, u8(11), NO_INDEX, u8(0));
+            if (floating) {
+                cursor = scan_float_correction(cursor, values.operation, values.scalar, lane, destination);
+            } else {
+                cursor = register_instruction(cursor, u16(0x7e0f), u8(0x66), wide, lane, u8(0));
+                cursor = collective_accumulate(cursor, values.operation, values.scalar, u8(0), destination);
+                cursor = store_bits(cursor, destination, u8(0), size);
+            }
+        }
+    } else {
+        u64 no_head = condition_field(cursor, u8(0x84));
+        cursor = segmented_identity(no_head + 4u64, values);
+        cursor = move_immediate(cursor, u8(9), 1u64, false);
+        patch_relative(unsafe_address(no_head), no_head, cursor);
+        cursor = segmented_store(cursor, values, u8(11), scan.target_word);
+        cursor = segmented_accumulate(cursor, values);
+    }
+    cursor = register_instruction(cursor, u16(0x03), u8(0), true, u8(10), u8(12));
+    cursor = register_instruction(cursor, u16(0x03), u8(0), true, u8(11), u8(13));
+    cursor = register_instruction(cursor, u16(0xff), u8(0), false, u8(1), u8(8));
+    u64 back = jump_field(cursor);
+    cursor = back + 4u64;
+    patch_relative(unsafe_address(back), back, begin);
+    patch_relative(unsafe_address(end), end, cursor);
+    if (correction) {
+        patch_relative(unsafe_address(head_end), head_end, cursor);
+    } else {
+        MoveLocation result = MoveLocation(0x38u64, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+        cursor = load_bits(cursor, u8(10), result, true);
+        cursor = segmented_store(cursor, values, u8(10), 0);
+        MoveLocation reset = MoveLocation(u64(input.value_words * 4), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+        cursor = store_bits(cursor, reset, u8(9), 4);
+    }
+    write_word(cursor, 0x5d41c031);
+    put_byte(cursor + 4u64, u8(0x41));
+    put_byte(cursor + 5u64, u8(0x5c));
+    put_byte(cursor + 6u64, u8(0xc3));
+    return cursor + 7u64 - start;
 }
