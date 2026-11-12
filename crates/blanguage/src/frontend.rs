@@ -593,7 +593,7 @@ pub(crate) fn validate_types(world: &World) -> Result<()> {
             (source, record.span(), module, imports),
             |arguments, row| {
                 let mut ty = TypeName::named(name);
-                ty.arguments = arguments.into_iter().map(GenericArgument::Type)
+                ty.arguments = arguments.into_iter().map(|argument| GenericArgument::Type(argument.syntax))
                     .chain(row.iter().map(|&value| GenericArgument::Value(Shape::Literal(value))))
                     .collect();
                 world.ty(&ty, source, record.span(), module, imports)?;

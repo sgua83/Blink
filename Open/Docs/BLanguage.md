@@ -2194,7 +2194,7 @@ void step(inout dataset<Particle<float3>> particles, f32 dt) on compute {
 
 记录字段可以嵌套另一泛型记录，例如 `struct Wrap<T: numeric> { Pair<T> pair; u32 marker; };`。多个类型参数分别指定集合，例如 `struct Entry<T: numeric, I: scalar_integer> { T value; I key; };`，使用 Entry<float3,u32>。每个类型实参必须属于声明的集合；Pair<Pair<f32>> 不满足 numeric，但以用户集合约束的记录可以接收其中列出的普通记录类型。
 
-未用于字段的类型参数也保留名义身份，例如 `struct Tag<T: numeric> { u32 id; };` 的 Tag<u32> 和 Tag<f32> 物理布局相同，类型仍不同。函数可从 Tag<T> 推导 T，不从字段反猜类型。float／uint 等既有内置别名仍在解析具体类型后规范为 f32／u32；类型参数不成为物理数据中的标签。
+未用于字段的类型参数也保留名义身份，例如 `struct Tag<T: numeric> { u32 id; };` 的 Tag<u32> 和 Tag<f32> 物理布局相同，类型仍不同。函数可从 Tag<T> 推导 T，不从字段反猜类型。float／uint 等内置别名在解析具体类型后规范为 f32／u32。显式实参、推导和有限集合交接同一实际类型身份，用于生成具体实例名。类型参数不成为物理数据中的标签。
 
 编译器检查每份泛型记录的全部允许类型组合，包括未被 计算函数 使用的实例。类型实参个数、集合或名义类型推导不符报 B232；类型参数声明沿用 B231。记录的递归、空字段及普通字段重名继续报原诊断；dataset 字段形成拥有记录，按CPU应用资源规则使用；默认值、泛型记录的自动构造参数推导及开放接口约束尚未实现；u32记录const与形状推导见相应章节。
 

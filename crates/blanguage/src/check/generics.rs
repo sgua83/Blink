@@ -209,7 +209,8 @@ pub(crate) fn specialize(
                 ),
             })?
         };
-        types.push(actual.syntax());
+        let syntax = actual.syntax();
+        types.push(crate::generics::TypeArgument { name: actual.name, syntax });
     }
     for (index, parameter) in f.values().iter().enumerate() {
         let value = if let Some(arg) = explicit_values.get(index) {

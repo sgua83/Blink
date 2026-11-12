@@ -1,5 +1,5 @@
 //! 类型集合属于编译期模块定义；按完整名义类型解析并去重，不生成运行时类型对象。
-use crate::{World, ast::*, ir::Ty};
+use crate::{World, ast::*, generics::TypeArgument, ir::Ty};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::syntax::FamilyKind;
@@ -31,11 +31,13 @@ impl World {
         module: &str,
         imports: &[String],
         stack: &mut BTreeSet<String>,
-    ) -> Result<Vec<TypeName>> {
+    ) -> Result<Vec<TypeArgument>> {
         match family.kind() {
             FamilyKind::Named(name) => Ok(self.named_family_members(name, source, span, module, imports, stack)?
-                .into_values().collect()),
-            _ => Ok(family.builtin_names().iter().map(TypeName::named).collect()),
+                .into_iter().map(|(name, syntax)| TypeArgument { name, syntax }).collect()),
+            _ => Ok(family.builtin_names().iter().map(|name| TypeArgument {
+                name: name.to_owned(), syntax: TypeName::named(name),
+            }).collect()),
         }
     }
 

@@ -243,11 +243,17 @@ fn bound_condition(condition: crate::syntax::Condition, values: &BTreeMap<String
             Box::new(bound_condition(left, values)), Box::new(bound_condition(right, values))),
     }
 }
+#[derive(Clone)]
+pub(crate) struct TypeArgument {
+    pub name: String,
+    pub syntax: TypeName,
+}
+
 pub(crate) fn instantiate(
     world:&World,
     base:&str,
     definition:&std::sync::Arc<crate::Definition>,
-    arguments:Vec<TypeName>,
+    arguments: Vec<TypeArgument>,
     values:&[u32],
 )->Result<Instance> {
     let function=&definition.function;
@@ -262,14 +268,10 @@ pub(crate) fn instantiate(
         return Ok(Instance{name:base.into(),definition:definition.clone(),
             bindings:std::sync::Arc::new(Bindings::default())});
     }
-    let names=arguments.iter().map(|ty| {
-        if *ty==TypeName::named("void"){return Ok("void".to_owned());}
-        let actual=world.ty(ty,&definition.source,function.span(),&definition.module,&definition.imports)?;
-        Ok(if ty.dataset {
-            Ty::owned_dataset(actual.syntax(),world.shape(&ty.count,&definition.source,function.span(),&definition.module,&definition.imports)?).name
-        }else{actual.name})
-    }).collect::<Result<Vec<_>>>()?;
-    let types=function.types().iter().zip(arguments).map(|(parameter,ty)|(parameter.name().to_owned(),ty)).collect();
+    let name = key(base, arguments.iter().map(|argument| argument.name.as_str()), values);
+    let types = function.types().iter().zip(arguments)
+        .map(|(parameter, argument)| (parameter.name().to_owned(), argument.syntax))
+        .collect();
     let value_map=function.values().iter().zip(values).map(|(parameter,value)|(parameter.name().to_owned(),*value)).collect();
     let bindings=Bindings{types,values:value_map};
     for contract in function.contracts().iter() {
@@ -282,7 +284,7 @@ pub(crate) fn instantiate(
         }
     }
     bindings.check_function(function, &definition.source)?;
-    let instance=Instance{name:key(base,names.iter().map(String::as_str),values),definition:definition.clone(),bindings:std::sync::Arc::new(bindings)};
+    let instance=Instance{name,definition:definition.clone(),bindings:std::sync::Arc::new(bindings)};
     if function.c_abi(){crate::check::external::check_declaration(world,&instance)?;}
     world.check_interface_types(definition,&instance.bindings)?;
     Ok(instance)
@@ -344,7 +346,7 @@ pub(crate) fn for_each_combination(
     types: &crate::syntax::List<crate::syntax::wire::TypeParameterNode>,
     values: &crate::syntax::List<crate::syntax::wire::ValueParameterNode>,
     (source, span, module, imports): (&Source, Span, &str, &[String]),
-    mut consume: impl FnMut(Vec<TypeName>, &[u32]) -> Result<()>,
+    mut consume: impl FnMut(Vec<TypeArgument>, &[u32]) -> Result<()>,
 ) -> Result<()> {
     let mut domains = Vec::with_capacity(types.len());
     for parameter in types {
