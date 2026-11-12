@@ -1548,7 +1548,7 @@ loop {
 
 本版 `native/packet.rs` 为能够表达的直线计算建立四元素计划。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:760`。
+源码节选：`crates/blanguage/src/native/codegen.rs:695`。
 
 ```rust
 let stage = &lowered;
