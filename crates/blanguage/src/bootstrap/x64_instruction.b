@@ -1643,3 +1643,123 @@ extern "C" u64 packet_gather(MoveLocation dst, PacketGather input, bool boolean,
     cursor += packet_from_word(boolean, u8(0), unsafe_address(cursor));
     return packet_store_at(cursor, dst, u8(0)) - start;
 }
+
+u64 atomic_input(u64 at, MoveLocation source, u32 size) on cpu {
+    MoveEncoding load = copy_scalar_move(move_gpr(u8(0)), source, size, false, unsafe_address(at));
+    return at + load.length;
+}
+
+u64 atomic_update(u64 at, AtomicOperation operation, bool wide, bool signed) on cpu {
+    u16 opcode = u16(0x39);
+    if (operation == AtomicOperation::Add) { opcode = u16(0x01); }
+    if (operation == AtomicOperation::Sub) { opcode = u16(0x29); }
+    if (operation == AtomicOperation::And) { opcode = u16(0x21); }
+    if (operation == AtomicOperation::Or) { opcode = u16(0x09); }
+    if (operation == AtomicOperation::Xor) { opcode = u16(0x31); }
+    u64 cursor = register_instruction(at, opcode, u8(0), wide, u8(2), u8(1));
+    if (operation == AtomicOperation::Min || operation == AtomicOperation::Max) {
+        bool minimum = operation == AtomicOperation::Min;
+        u8 condition = signed ? (minimum ? u8(0x4f) : u8(0x4c)) : (minimum ? u8(0x47) : u8(0x42));
+        cursor = register_instruction(cursor, u16(0x0f) | (u16(condition) << 8), u8(0), wide, u8(1), u8(2));
+    }
+    return cursor;
+}
+
+u64 atomic_read_split(u64 at, MoveLocation low, MoveLocation high) on cpu {
+    u64 cursor = encode_operand_instruction(at, u16(0x8b), u8(0), false, u8(0), low);
+    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(1), high);
+    cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(4), u8(1));
+    put_byte(cursor, u8(32));
+    return register_instruction(cursor + 1u64, u16(0x09), u8(0), true, u8(1), u8(0));
+}
+
+u64 atomic_write_split(u64 at, MoveLocation low, MoveLocation high, u8 source) on cpu {
+    u64 cursor = encode_operand_instruction(at, u16(0x89), u8(0), false, source, low);
+    cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(5), source);
+    put_byte(cursor, u8(32));
+    return encode_operand_instruction(cursor + 1u64, u16(0x89), u8(0), false, source, high);
+}
+
+u64 atomic_split_at(u64 at, AtomicSequence input) on cpu {
+    AtomicOperation operation = input.operation;
+    if (operation == AtomicOperation::Load) {
+        return atomic_read_split(at, input.low, input.high);
+    }
+    u64 cursor = atomic_input(at, input.first, 8);
+    if (operation == AtomicOperation::Store) {
+        return atomic_write_split(cursor, input.low, input.high, u8(0));
+    }
+    cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(0), u8(2));
+    cursor = atomic_read_split(cursor, input.low, input.high);
+    if (operation == AtomicOperation::Exchange) {
+        return atomic_write_split(cursor, input.low, input.high, u8(2));
+    }
+    if (operation == AtomicOperation::CompareExchange) {
+        cursor = register_instruction(cursor, u16(0x39), u8(0), true, u8(2), u8(0));
+        u64 different = condition_field(cursor, u8(0x85));
+        cursor = register_instruction(different + 4u64, u16(0x89), u8(0), true, u8(0), u8(1));
+        cursor = atomic_input(cursor, input.second, 8);
+        cursor = atomic_write_split(cursor, input.low, input.high, u8(0));
+        cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(1), u8(0));
+        patch_relative(unsafe_address(different), different - at, cursor - at);
+        return cursor;
+    }
+    cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(0), u8(1));
+    cursor = atomic_update(cursor, operation, true, input.scalar.kind == ScalarKind::Signed);
+    return atomic_write_split(cursor, input.low, input.high, u8(1));
+}
+
+u64 atomic_contiguous_at(u64 at, AtomicSequence input) on cpu {
+    AtomicOperation operation = input.operation;
+    u32 size = input.scalar.width / 8;
+    bool wide = size == 8;
+    bool shared = input.storage == AtomicStorage::Shared;
+    u8 lock = shared ? u8(0xf0) : u8(0);
+    if (operation == AtomicOperation::Load) {
+        return encode_operand_instruction(at, u16(0x8b), u8(0), wide, u8(0), input.low);
+    }
+    if (operation == AtomicOperation::CompareExchange) {
+        u64 cursor = atomic_input(at, input.second, size);
+        cursor = register_instruction(cursor, u16(0x89), u8(0), wide, u8(0), u8(2));
+        cursor = atomic_input(cursor, input.first, size);
+        return encode_operand_instruction(cursor, u16(0xb10f), lock, wide, u8(2), input.low);
+    }
+    u64 cursor = atomic_input(at, input.first, size);
+    if (operation == AtomicOperation::Store) {
+        return encode_operand_instruction(cursor, u16(0x89), u8(0), wide, u8(0), input.low);
+    }
+    if (operation == AtomicOperation::Add || operation == AtomicOperation::Sub) {
+        if (operation == AtomicOperation::Sub) {
+            cursor = register_instruction(cursor, u16(0xf7), u8(0), wide, u8(3), u8(0));
+        }
+        return encode_operand_instruction(cursor, u16(0xc10f), lock, wide, u8(0), input.low);
+    }
+    if (operation == AtomicOperation::Exchange && shared) {
+        // Memory XCHG is implicitly locked.
+        return encode_operand_instruction(cursor, u16(0x87), u8(0), wide, u8(0), input.low);
+    }
+    cursor = register_instruction(cursor, u16(0x89), u8(0), wide, u8(0), u8(2));
+    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), wide, u8(0), input.low);
+    if (operation == AtomicOperation::Exchange) {
+        return encode_operand_instruction(cursor, u16(0x89), u8(0), wide, u8(2), input.low);
+    }
+    u64 begin = cursor;
+    cursor = register_instruction(cursor, u16(0x89), u8(0), wide, u8(0), u8(1));
+    cursor = atomic_update(cursor, operation, wide, input.scalar.kind == ScalarKind::Signed);
+    if (shared) {
+        // CMPXCHG supplies the new observed value in RAX after a failed exchange.
+        cursor = encode_operand_instruction(cursor, u16(0xb10f), u8(0xf0), wide, u8(1), input.low);
+        u64 again = condition_field(cursor, u8(0x85));
+        patch_relative(unsafe_address(again), again - at, begin - at);
+        return again + 4u64;
+    }
+    return encode_operand_instruction(cursor, u16(0x89), u8(0), wide, u8(1), input.low);
+}
+
+extern "C" u64 atomic_sequence(AtomicSequence input, address output) on cpu {
+    u64 start = address_bits(output);
+    if (input.storage == AtomicStorage::Split) {
+        return atomic_split_at(start, input) - start;
+    }
+    return atomic_contiguous_at(start, input) - start;
+}

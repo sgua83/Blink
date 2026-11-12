@@ -161,3 +161,16 @@ struct PacketGather {
 extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, address output) on cpu;
 extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address output) on cpu;
 extern "C" u64 packet_gather(MoveLocation dst, PacketGather input, bool boolean, address output) on cpu;
+
+enum AtomicOperation:u32 {
+    Load=0; Store=1; Add=2; Sub=3; Exchange=4; CompareExchange=5;
+    And=6; Or=7; Xor=8; Min=9; Max=10;
+};
+enum AtomicStorage:u32 { Shared=0; Private=1; Split=2; };
+struct AtomicSequence {
+    MoveLocation low; MoveLocation high; MoveLocation first; MoveLocation second;
+    ScalarEncoding scalar;
+    AtomicOperation operation; AtomicStorage storage;
+};
+// The caller supplies 128 output bytes. The original value, when consumed, is in RAX.
+extern "C" u64 atomic_sequence(AtomicSequence input, address output) on cpu;
