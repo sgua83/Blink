@@ -23,7 +23,7 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         .args(["-c", "../../library/blink/unicode_scalar.b", "-I", "../../library", "--module", "-o"])
         .arg(&unicode).status()?;
     if !compiled.success() { return Err(format!("Blink种子{}编译Unicode纯值模块失败", seed.display()).into()); }
-    let modules = ["lexer", "parser", "names", "signatures", "type_families", "type_layout", "scalar_fold", "archive", "coff", "metadata", "bindings", "coff_read", "metadata_read", "object_read", "ast_storage", "pe", "combine", "native_import", "native_resources", "instance_domain", "unwind", "frame_layout", "x64_instruction", "coloring", "call_layout", "spirv_envelope", "static_uses", "native_select"];
+    let modules = ["lexer", "parser", "names", "signatures", "type_families", "type_layout", "scalar_fold", "archive", "coff", "metadata", "bindings", "coff_read", "metadata_read", "object_read", "ast_storage", "pe", "combine", "native_import", "native_resources", "instance_domain", "unwind", "frame_layout", "x64_instruction", "coloring", "call_layout", "spirv_envelope", "static_uses", "native_select", "host_sdk"];
     let objects: Vec<_> = modules.iter().map(|name| out.join(format!("blink_compiler_{name}.obj"))).collect();
     for (name, object) in modules.iter().zip(&objects) {
         let mut compiler = Command::new(seed.join("bin/bc.exe"));

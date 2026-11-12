@@ -2,10 +2,11 @@
 use super::Result;
 use crate::object::Archive;
 use std::{
+    ffi::OsString,
+    os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
     process::Command,
 };
-#[cfg(windows)]
 fn text(bytes: &[u8]) -> Result<String> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -32,16 +33,9 @@ fn text(bytes: &[u8]) -> Result<String> {
     }
     Ok(String::from_utf16(&wide)?)
 }
-#[cfg(not(windows))]
-fn text(bytes: &[u8]) -> Result<String> {
-    Ok(std::str::from_utf8(bytes)?.into())
-}
 fn output(command: &mut Command) -> Result<String> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x08000000);
     let output = command.output()?;
     if !output.status.success() {
         return Err(format!(
@@ -53,6 +47,32 @@ fn output(command: &mut Command) -> Result<String> {
     }
     Ok(text(&output.stdout)?.trim().to_owned())
 }
+#[repr(C)]
+struct SdkRoot {
+    path: *const u16,
+    units: u32,
+    status: i32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.host_sdk::read_sdk_root"]
+    fn read_sdk_root() -> SdkRoot;
+    #[link_name = "bootstrap.host_sdk::release_sdk_root"]
+    fn release_sdk_root(path: *const u16) -> i32;
+}
+
+fn sdk_root() -> Result<PathBuf> {
+    let root = unsafe { read_sdk_root() };
+    if root.status != 0 {
+        return Err(format!("无法读取 Windows SDK KitsRoot10：{}", std::io::Error::from_raw_os_error(root.status)).into());
+    }
+    let path = OsString::from_wide(unsafe { std::slice::from_raw_parts(root.path, root.units as usize) });
+    if unsafe { release_sdk_root(root.path) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(path.into())
+}
+
 fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     let installer = PathBuf::from(
         std::env::var_os("ProgramFiles(x86)").ok_or("缺少 Windows ProgramFiles(x86)")?,
@@ -75,18 +95,7 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         vs.join("VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"),
     )?;
     let vc = vs.join("VC/Tools/MSVC").join(version.trim());
-    let registry = output(Command::new("reg.exe").args([
-        "query",
-        r"HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots",
-        "/v",
-        "KitsRoot10",
-        "/reg:64",
-    ]))?;
-    let sdk = registry
-        .lines()
-        .find_map(|line| line.split_once("REG_SZ").map(|(_, v)| v.trim()))
-        .ok_or("未安装 Windows SDK KitsRoot10")?;
-    let lib = Path::new(sdk).join("Lib");
+    let lib = sdk_root()?.join("Lib");
     let mut versions = Vec::new();
     for entry in std::fs::read_dir(&lib)? {
         let entry = entry?;

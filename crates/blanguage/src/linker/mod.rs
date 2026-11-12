@@ -2,6 +2,7 @@
 mod combine;
 mod selection;
 use selection::select;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod msvc;
 mod imports;
 pub use imports::host_archive;
@@ -67,12 +68,16 @@ pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> 
     let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects,None)? };
     Ok(crate::object::stack::report(&object, budget, reserve))
 }
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+fn link_objects(objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>, _: &Path) -> Result<()> {
+    prepare(objects, libraries)?;
+    Err("本机链接当前输出 Windows x64".into())
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn link_objects(objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
     let (objects, archives) = prepare(objects, libraries)?;
     let object = &objects[0];
-    if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        return Err("本机链接当前输出 Windows x64".into());
-    }
     let output = std::path::absolute(path)?;
     std::fs::create_dir_all(output.parent().unwrap())?;
     match &object.kind {
