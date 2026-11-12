@@ -200,7 +200,7 @@ fn read_text(bytes: ReadBytes) -> Result<String> {
 struct MetadataReadCursor { input: ReadBytes, position: usize }
 #[repr(u32)]
 #[derive(Clone, Copy)]
-enum MetadataReadError { None, Word, Field, Version, Kind, Requirement, Coff, Call }
+enum MetadataReadError { None, Word, Field, Version, Kind, Requirement, Coff, Call, ModuleTruncated, ModuleLength, ResourceFlag }
 impl MetadataReadError {
     fn check(self) -> Result<()> {
         match self {
@@ -212,6 +212,9 @@ impl MetadataReadError {
             Self::Requirement => Err("未知的模块参与要求".into()),
             Self::Coff => Err("未知的栈代码位置种类".into()),
             Self::Call => Err("未知的栈调用引用种类".into()),
+            Self::ModuleTruncated => Err("模块接口被截断".into()),
+            Self::ModuleLength => Err("模块接口长度溢出".into()),
+            Self::ResourceFlag => Err("模块布尔值编码错误".into()),
         }
     }
 }
@@ -241,7 +244,23 @@ struct MetadataReadBinding { name: ReadBytes, value: ReadBytes, error: MetadataR
 struct MetadataReadFrame { name: ReadBytes, has_coff: u64, section: u64, start: u64, local: u64, calls: u64, error: MetadataReadError }
 #[repr(C)]
 struct MetadataReadCall { kind: ReadCallKind, offset: u64, reason: ReadBytes, error: MetadataReadError }
+#[repr(C)]
+struct MetadataReadResourceHead { present: u64, prefix: ReadBytes, error: MetadataReadError }
+#[repr(C)]
+struct MetadataReadResourceBody {
+    types: u64,
+    programs: u64,
+    abi: ReadBytes,
+    code_count: usize,
+    error: MetadataReadError,
+}
 unsafe extern "C" {
+    #[link_name = "bootstrap.metadata_read::resource_head"]
+    fn metadata_read_resource_head(cursor: *mut MetadataReadCursor) -> MetadataReadResourceHead;
+    #[link_name = "bootstrap.metadata_read::resource_body"]
+    fn metadata_read_resource_body(cursor: *mut MetadataReadCursor) -> MetadataReadResourceBody;
+    #[link_name = "bootstrap.metadata_read::resource_text"]
+    fn metadata_read_resource_text(cursor: *mut MetadataReadCursor) -> MetadataReadField;
     #[link_name = "bootstrap.metadata_read::word"]
     fn metadata_read_word(cursor: *mut MetadataReadCursor) -> MetadataReadWord;
     #[link_name = "bootstrap.metadata_read::bytes"]
@@ -306,6 +325,17 @@ struct MetadataFrame {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct MetadataResource {
+    present: u64,
+    prefix: MetadataBytes,
+    types: u64,
+    programs: u64,
+    abi: MetadataBytes,
+    code: *const MetadataBytes,
+    code_count: usize,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct MetadataInput {
     format_version: u64, name: MetadataBytes, kind: u64,
     interface: MetadataBytes, stack_bytes: u64,
@@ -313,7 +343,7 @@ struct MetadataInput {
     requirements: *const MetadataRequirement, requirement_count: usize,
     libraries: *const MetadataBytes, library_count: usize,
     exports: *const MetadataBytes, export_count: usize,
-    resource: MetadataBytes,
+    resource: MetadataResource,
     bindings: *const MetadataBinding, binding_count: usize,
     frames: *const MetadataFrame, frame_count: usize,
 }
@@ -331,18 +361,19 @@ unsafe extern "C" {
 }
 
 fn metadata(o: &Object) -> Result<Vec<u8>> {
-    use crate::module::codec::{Encode, Writer};
-    let mut resource = Writer(Vec::new());
-    if let Some(binding) = o.archive.as_ref().and_then(|a| a.resources.as_ref()) {
-        true.encode(&mut resource);
-        binding.prefix.encode(&mut resource);
-        binding.types.encode(&mut resource);
-        binding.programs.encode(&mut resource);
-        binding.abi.encode(&mut resource);
-        binding.code.encode(&mut resource);
-    } else {
-        false.encode(&mut resource);
-    }
+    let binding = o.archive.as_ref().and_then(|archive| archive.resources.as_ref());
+    let empty = MetadataBytes::new(&[]);
+    let code = binding.iter().flat_map(|binding| &binding.code)
+        .map(|name| MetadataBytes::new(name.as_bytes())).collect::<Vec<_>>();
+    let resource = MetadataResource {
+        present: u64::from(binding.is_some()),
+        prefix: binding.map_or(empty, |binding| MetadataBytes::new(binding.prefix.as_bytes())),
+        types: binding.map_or(0, |binding| u64::from(binding.types)),
+        programs: binding.map_or(0, |binding| u64::from(binding.programs)),
+        abi: binding.map_or(empty, |binding| MetadataBytes::new(&binding.abi)),
+        code: code.as_ptr(),
+        code_count: code.len(),
+    };
     let mut bindings = BTreeMap::new();
     for symbol in &o.symbols {
         bindings.insert(symbol.name.as_str(), symbol.contract.as_slice());
@@ -371,7 +402,6 @@ fn metadata(o: &Object) -> Result<Vec<u8>> {
             },
         }).collect::<Vec<_>>()
     } else { Vec::new() };
-    let empty = MetadataBytes::new(&[]);
     let calls = o.stack.iter().map(|frame| frame.calls.iter().map(|call| {
         let (kind, offset, reason) = match call {
             stack::Call::Reference { offset, tail } => (u64::from(*tail), *offset as u64, empty),
@@ -395,7 +425,7 @@ fn metadata(o: &Object) -> Result<Vec<u8>> {
         interface: empty, stack_bytes: 0, prefix: empty, header: empty, binding: empty,
         requirements: requirements.as_ptr(), requirement_count: requirements.len(),
         libraries: libraries.as_ptr(), library_count: libraries.len(),
-        exports: exports.as_ptr(), export_count: exports.len(), resource: MetadataBytes::new(&resource.0),
+        exports: exports.as_ptr(), export_count: exports.len(), resource,
         bindings: bindings.as_ptr(), binding_count: bindings.len(),
         frames: frames.as_ptr(), frame_count: frames.len(),
     };
@@ -626,18 +656,24 @@ fn read_metadata(
     let keep_archive = archive.is_some();
     let libraries = c.strings(keep_archive)?;
     let exports = c.strings(keep_archive)?;
-    use crate::module::codec::{Decode, Reader};
-    let bytes = c.bytes()?;
-    let mut resource = Reader::new(unsafe { bytes.borrowed() });
-    let resources = if bool::decode(&mut resource)? {
-        let prefix = resource.text()?;
-        let types = u32::decode(&mut resource)?;
-        let programs = u32::decode(&mut resource)?;
-        let abi = resource.byte_slice()?;
-        let count = usize::decode(&mut resource)?;
-        let code = read_strings(count, keep_archive, || resource.text())?;
+    let mut resource = MetadataReadCursor::new(unsafe { c.bytes()?.borrowed() });
+    let head = unsafe { metadata_read_resource_head(&mut resource) };
+    head.error.check()?;
+    let resources = if head.present != 0 {
+        let prefix = std::str::from_utf8(unsafe { head.prefix.borrowed() })?;
+        let body = unsafe { metadata_read_resource_body(&mut resource) };
+        body.error.check()?;
+        let code = read_strings(body.code_count, keep_archive, || {
+            let value = unsafe { metadata_read_resource_text(&mut resource) };
+            value.error.check()?;
+            Ok(std::str::from_utf8(unsafe { value.value.borrowed() })?)
+        })?;
         keep_archive.then(|| ResourceBinding {
-            prefix: prefix.to_owned(), types, programs, abi: abi.to_vec(), code,
+            prefix: prefix.to_owned(),
+            types: body.types as u32,
+            programs: body.programs as u32,
+            abi: unsafe { body.abi.borrowed() }.to_vec(),
+            code,
         })
     } else {
         None

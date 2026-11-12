@@ -3,13 +3,50 @@ import bootstrap.coff_read;
 
 ReadBytes empty() on cpu {return ReadBytes(unsafe_address(0u64),0u64);}
 address at(address bytes,u64 offset) on cpu {return unsafe_address(address_bits(bytes)+offset);}
-extern "C" MetaWord word(inout MetaCursor cursor) on cpu {
-    if(cursor.input.length-cursor.position<4u64){return MetaWord(0u64,1);}
+MetaWord number(inout MetaCursor cursor,u64 width,u32 error) on cpu {
+    if(cursor.input.length-cursor.position<width){return MetaWord(0u64,error);}
     u64 value=0u64;u64 i=0u64;
-    while(i<4u64){
-        value=value|(u64(unsafe_position<u8>(at(cursor.input.bytes,cursor.position+i)))<<(i*8u64));i+=1u64;
+    while(i<width){
+        value=value|(u64(unsafe_position<u8>(at(cursor.input.bytes,cursor.position+i)))<<(i*8u64));
+        i+=1u64;
     }
-    cursor.position+=4u64;return MetaWord(value,0);
+    cursor.position+=width;
+    return MetaWord(value,0);
+}
+extern "C" MetaWord word(inout MetaCursor cursor) on cpu {
+    return number(cursor,4u64,1);
+}
+MetaField resource_range(inout MetaCursor cursor,bool text) on cpu {
+    MetaWord length=number(cursor,8u64,8);
+    if(length.error!=0){return MetaField(empty(),length.error);}
+    if(length.value>cursor.input.length-cursor.position){
+        if(text && length.value>18446744073709551615u64-cursor.position){return MetaField(empty(),9);}
+        return MetaField(empty(),8);
+    }
+    ReadBytes field=ReadBytes(at(cursor.input.bytes,cursor.position),length.value);
+    cursor.position+=length.value;
+    return MetaField(field,0);
+}
+extern "C" MetaField resource_text(inout MetaCursor cursor) on cpu {
+    return resource_range(cursor,true);
+}
+extern "C" MetaResourceHead resource_head(inout MetaCursor cursor) on cpu {
+    MetaWord present=number(cursor,1u64,8);
+    if(present.error!=0){return MetaResourceHead(0u64,empty(),present.error);}
+    if(present.value==0u64){return MetaResourceHead(0u64,empty(),0);}
+    if(present.value!=1u64){return MetaResourceHead(0u64,empty(),10);}
+    MetaField prefix=resource_range(cursor,true);
+    return MetaResourceHead(1u64,prefix.value,prefix.error);
+}
+extern "C" MetaResourceBody resource_body(inout MetaCursor cursor) on cpu {
+    MetaWord types=number(cursor,4u64,8);
+    if(types.error!=0){return MetaResourceBody(0u64,0u64,empty(),0u64,types.error);}
+    MetaWord programs=number(cursor,4u64,8);
+    if(programs.error!=0){return MetaResourceBody(0u64,0u64,empty(),0u64,programs.error);}
+    MetaField abi=resource_range(cursor,false);
+    if(abi.error!=0){return MetaResourceBody(0u64,0u64,empty(),0u64,abi.error);}
+    MetaWord code=number(cursor,8u64,8);
+    return MetaResourceBody(types.value,programs.value,abi.value,code.value,code.error);
 }
 extern "C" MetaField bytes(inout MetaCursor cursor) on cpu {
     MetaWord length=word(cursor);if(length.error!=0){return MetaField(empty(),length.error);}

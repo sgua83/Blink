@@ -13,6 +13,15 @@ struct MetadataFrame {
     MetadataBytes name;u64 has_coff;u64 section;u64 start;u64 local;
     address calls;u64 call_count;
 };
+struct MetadataResource {
+    u64 present;
+    MetadataBytes prefix;
+    u64 types;
+    u64 programs;
+    MetadataBytes abi;
+    address code;
+    u64 code_count;
+};
 struct MetadataInput {
     u64 format_version;MetadataBytes name;u64 kind;
     MetadataBytes interface;u64 stack_bytes;
@@ -20,7 +29,7 @@ struct MetadataInput {
     address requirements;u64 requirement_count;
     address libraries;u64 library_count;
     address exports;u64 export_count;
-    MetadataBytes resource;
+    MetadataResource resource;
     address bindings;u64 binding_count;
     address frames;u64 frame_count;
 };

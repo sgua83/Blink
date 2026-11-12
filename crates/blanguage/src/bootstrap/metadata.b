@@ -52,8 +52,18 @@ extern "C" MetadataLayout layout(MetadataInput input) on cpu {
         if(value.length>4294967295u64){return invalid(2);}
         at+=4u64+value.length;if(at>4294967295u64){return invalid(3);}i+=1u64;
     }
-    if(input.resource.length>4294967295u64){return invalid(2);}
-    at+=4u64+input.resource.length;
+    u64 resource_length=1u64;
+    if(input.resource.present!=0u64){
+        resource_length+=32u64+input.resource.prefix.length+input.resource.abi.length;
+        if(resource_length>4294967295u64){return invalid(2);}
+        i=0u64;
+        while(i<input.resource.code_count){
+            resource_length+=8u64+bytes_at(input.resource.code,i).length;
+            if(resource_length>4294967295u64){return invalid(2);}
+            i+=1u64;
+        }
+    }
+    at+=4u64+resource_length;
     if(at>4294967295u64){return invalid(3);}
     at+=4u64;i=0u64;
     while(i<input.binding_count){
@@ -109,6 +119,34 @@ void copy(address output,u64 at,MetadataBytes value) on cpu {
 u64 bytes(address output,u64 at,MetadataBytes value) on cpu {
     u64 begin=word(output,at,value.length);copy(output,begin,value);return begin+value.length;
 }
+u64 wide_word(address output,u64 at,u64 value) on cpu {
+    u64 next=word(output,at,value&4294967295u64);
+    return word(output,next,value>>32u64);
+}
+u64 resource_field(address output,u64 at,MetadataBytes value) on cpu {
+    u64 begin=wide_word(output,at,value.length);
+    copy(output,begin,value);
+    return begin+value.length;
+}
+u64 encode_resource(address output,u64 at,MetadataResource resource) on cpu {
+    u64 begin=at+4u64;
+    unsafe_position<u8>(unsafe_address(address_bits(output)+begin))=u8(resource.present);
+    u64 next=begin+1u64;
+    if(resource.present!=0u64){
+        next=resource_field(output,next,resource.prefix);
+        next=word(output,next,resource.types);
+        next=word(output,next,resource.programs);
+        next=resource_field(output,next,resource.abi);
+        next=wide_word(output,next,resource.code_count);
+        u64 i=0u64;
+        while(i<resource.code_count){
+            next=resource_field(output,next,bytes_at(resource.code,i));
+            i+=1u64;
+        }
+    }
+    word(output,at,next-begin);
+    return next;
+}
 extern "C" void encode(MetadataInput input,address output) on cpu {
     u64 at=word(output,0u64,1329810498u64);
     at=word(output,at,input.format_version);at=bytes(output,at,input.name);at=word(output,at,input.kind);
@@ -128,7 +166,7 @@ extern "C" void encode(MetadataInput input,address output) on cpu {
     while(i<input.library_count){at=bytes(output,at,bytes_at(input.libraries,i));i+=1u64;}
     at=word(output,at,input.export_count);i=0u64;
     while(i<input.export_count){at=bytes(output,at,bytes_at(input.exports,i));i+=1u64;}
-    at=bytes(output,at,input.resource);at=word(output,at,input.binding_count);i=0u64;
+    at=encode_resource(output,at,input.resource);at=word(output,at,input.binding_count);i=0u64;
     while(i<input.binding_count){
         MetadataBinding binding=binding_at(input,i);
         at=bytes(output,at,binding.name);at=bytes(output,at,binding.value);i+=1u64;
