@@ -388,7 +388,7 @@ fn select_elements(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,env
     selection.element_paths=paths;selection.scope=Some(scope);Ok(selection)
 }
 
-fn validate_nonzero_type(ty: &Ty, source: &Source, span: Span) -> Result<()> {
+pub(super) fn validate_nonzero_type(ty: &Ty, source: &Source, span: Span) -> Result<()> {
     if !(ty.is_numeric() || ty.is_c_function())
         || !ty.components.first().is_some_and(|(scalar, _)| scalar.is_integer()) {
         return source.fail(span, "B225", "nonzero 需要整数标量／向量或cfn函数地址的按值参数／字段");

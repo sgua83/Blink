@@ -2881,7 +2881,7 @@ PrefixRelation的domain_region为None时表示该实际绑定的完整声明类�
 | 约束 | 含义与适用参数 |
 |---|---|
 | `requires nonzero(value)` | 按值整数标量／向量的每个选中分量非零，或cfn函数地址非空；支持记录字段和 swizzle；普通CPU按值拥有聚合的字段及owned包装的value沿同一规则，不表示有符号数一定为正或代码签名／寿命已经证明 |
-| `requires nonzero(input[*].field)` | 普通CPU dataset每个已初始化元素的所选整数分量非零；元素、记录中的dataset及嵌套元素显式按[*]选择，调用点消费同一实际共同Proof，见下节 |
+| `requires nonzero(input[*].field)` | 普通CPU及整域dataset每个已初始化元素的所选整数分量非零；整域使用原read／inout字段前提。普通CPU的记录内dataset及嵌套元素显式按[*]选择，调用点消费同一实际共同Proof，见下节 |
 | `requires nonempty(resource)` | dataset／tile、固定array或按值不可变view的长度至少为一；支持普通CPU按值拥有记录的dataset字段及记录中的view字段 |
 | `requires nonempty(input[*].field)` | 普通CPU dataset每个已初始化元素中所选子dataset／固定array非空，沿同一实际长度／Proof交接；见[共同资源前提](#common-element-nonempty) |
 | `requires prefix(data,count.field)` | 普通CPU函数的真实资源前提；data与count为命名dataset形参，count为独立固定形状1的可读u32计数字段；Count写入撤回关系，数值相等／复制不建立前缀，实际参数可为字段投影 |
@@ -2924,12 +2924,16 @@ void run(inout dataset<Job> jobs) on compute {
 
 普通值集合回调可以声明这些要求，但仍须在实际集合调用处证明。例如投影的 divisor 通过 `bind(project,7)` 传入时可以满足 nonzero；未知输入元素不会因为实际数据恰好非零就取得该能力。原纯值类型、统一捕获与禁止隐藏资源副作用的规则保持，requires 不绕开集合接口。
 
-非法声明／不支持的约束报 B225，调用点缺少证明报 B226；签名不一致继续报 B028，函数中使用 prefix 继续报 B192。body 内改写后失去普通索引／非零证明时，仍按原 B137／B201／B152 报错。本节实现上述明确输入约束；同长资源前提按其独立章节交接，不代表已有第一类 NonZero 类型、任意精化类型、函数后置条件、计算函数 值条件或完整语言。
+非法声明／不支持的约束报 B225，调用点缺少证明报 B226；签名不一致继续报 B028，函数中使用 prefix 继续报 B192。body 内改写后失去普通索引／非零证明时，仍按原 B137／B201／B152 报错。本节实现上述明确输入约束；同长资源前提按其独立章节交接，不代表已有第一类 NonZero 类型、任意精化类型、通用函数后置条件、统一值入口条件或完整语言。
 
 <a id="common-element-nonzero"></a>
-### CPU dataset共同元素的nonzero
+### dataset共同元素的nonzero
 
 普通CPU函数可用`requires nonzero(input[*].field)`声明每个已初始化元素的所选整数分量非零。`[*]`明确选择该dataset的共同元素模型；元素本身为整数时可写`nonzero(input[*])`，记录字段／owned载荷／swizzle沿原字段规则选择。dataset在记录字段中时可写`nonzero(input.rows[*].value)`；嵌套dataset可逐层选择，如`nonzero(input[*].rows[*].value)`。每一层保留自己的元素及资源来源，不将兄弟字段或另一份dataset的事实混用。
+
+整域函数也可对普通`read`／`inout dataset`输入声明`requires nonzero(input[*].field)`；整数元素本身使用`nonzero(input[*])`。根为实际dataset参数，嵌套普通记录字段和向量swizzle按实际类型选择，沿原整数位宽逐分量排除零，不要求有符号值为正。此处与整域`range`共用同一字段区间、源码／已编译接口及真实执行前提，不保存另一份非零状态；不因该谓词取得输出初始化、访问或资源寿命。原子并发输入、write未初始化输入、浮点／Bool或整个普通记录不能作为该非零整数字段。实际字段改写后按原写区撤回旧前提，不能由兄弟字段的声明取得本字段非零。
+
+外部生产者可沿现有可信字段交接提供非零区间：例如宿主实际以NonZeroU32生产block字段，在真实写入完成后用原DomainBindings::produced_element或Frame::complete_field交出该字段的非零范围，再由原上传及执行绑定消费。任意原始字节不自动得到该前提，缺少担保或已交出的范围包含零时，原绑定入口按既有字段合同拒绝，不扫描载荷、钳制分母或补造运行分支。该字段能力不替代自动parallel捕获uniform和一般统一值入口的条件交接，真实缺口继续见Issues C-021.1.4.1。
 
 ```b
 void dispose(u32 value) on cpu requires nonzero(value) {

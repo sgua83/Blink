@@ -160,7 +160,7 @@ pub(super) fn relations(
     kind: ContractKind,
 ) -> Result<Vec<PrefixRelation>> {
     let mut result = contracts
-        .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. } | ContractPredicate::Range { .. }))
+        .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. } | ContractPredicate::Range { .. } | ContractPredicate::Nonzero(_)))
         .map(|c| relation(program, env, d, &c))
         .collect::<Result<Vec<_>>>()?;
     result.sort();
@@ -173,17 +173,17 @@ pub(super) fn element_requirements(world: &World, buffers: &[Buffer], env: &BTre
     let mut requirements = Vec::new();
     for contract in contracts {
         let value = match &contract.predicate {
-            ContractPredicate::Index { value, .. } | ContractPredicate::Range { value, .. } => value,
+            ContractPredicate::Nonzero(value) | ContractPredicate::Index { value, .. } | ContractPredicate::Range { value, .. } => value,
             _ => continue,
         };
         if contract.kind != ContractKind::Requires {
-            return d.source.fail(contract.span, "B225", "整域index／range声明实际输入前提；输出由完整真实写入推导");
+            return d.source.fail(contract.span, "B225", "整域字段值条件声明实际输入前提；输出由完整真实写入推导");
         }
         let Some((root, fields)) = value.split_once("[*]") else {
-            return d.source.fail(contract.span, "B225", "整域index／range需要实际dataset共同元素的[*]字段选择");
+            return d.source.fail(contract.span, "B225", "整域字段值条件需要实际dataset共同元素的[*]字段选择");
         };
         let Some(Root::Data(binding, access)) = env.get(root) else {
-            return d.source.fail(contract.span, "B225", "整域index需要共同元素源与独立dataset目标");
+            return d.source.fail(contract.span, "B225", "整域字段值条件需要实际dataset共同元素源");
         };
         if !access.reads() || *access == Access::Atomic {
             return d.source.fail(contract.span, "B225", "共同输入字段需要普通read或inout访问");
@@ -196,6 +196,13 @@ pub(super) fn element_requirements(world: &World, buffers: &[Buffer], env: &BTre
             ty = selected;
         }
         match &contract.predicate {
+            ContractPredicate::Nonzero(_) => {
+                contracts::validate_nonzero_type(&ty, &d.source, contract.span)?;
+                let mut proof = bounds::Proof::default();
+                for component in components { proof.mark_nonzero(component); }
+                requirements.extend(proof.element_ranges(*binding, &buffers[*binding].ty)
+                    .into_iter().map(ElementFact::Range));
+            }
             ContractPredicate::Index { resource, .. } => {
                 if !ty.is_numeric() || ty.components.iter().any(|(scalar, _)| *scalar != Scalar::U32) {
                     return d.source.fail(contract.span, "B225", "index字段需要u32标量或向量分量");
