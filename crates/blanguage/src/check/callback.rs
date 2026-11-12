@@ -43,7 +43,7 @@ pub(super) fn signature_named<'a>(world:&World,caller:&LexicalScope,name:&str,sp
     let instance = generics::specialize(world, &key, &[], explicit.as_deref(), (caller.source(), caller.module(), caller.imports()), reference_span)?;
     let definition = &instance.definition;
     let f = &definition.function;
-    let contracts = instance.contracts().filter_map(|contract| {
+    let contracts: Vec<_> = instance.contracts().filter_map(|contract| {
         match &contract.predicate {
             ContractPredicate::Nonzero(value) if contract.kind == ContractKind::Requires =>
                 Some(ContractPredicate::Nonzero(parameter_name(value, &f.params()))),
@@ -53,13 +53,16 @@ pub(super) fn signature_named<'a>(world:&World,caller:&LexicalScope,name:&str,sp
             _ => None,
         }
     }).collect();
-    let syntax = CFunctionType {
-        result: instance.bindings.type_name(world,&f.result(),(&definition.source,&definition.module,&definition.imports),f.span())?,
-        parameters: f.params().iter().map(|parameter| Ok((parameter.access(),
-            instance.bindings.type_name(world,&parameter.ty(),(&definition.source,&definition.module,&definition.imports),parameter.span())?))).collect::<Result<_>>()?,
-        contracts,
-    }.syntax();
-    let ty = world.c_function_type(&syntax, &definition.source, f.span(), &definition.module, &definition.imports)?;
+    let context: (&Source, &str, &[String]) = (&definition.source, &definition.module, &definition.imports);
+    let result = instance.bindings.type_name(world, &f.result(), context, f.span())?;
+    let parameters = f.params().iter().map(|parameter| {
+        let ty = instance.bindings.type_name(world, &parameter.ty(), context, parameter.span())?;
+        Ok((parameter.access(), ty))
+    }).collect::<Result<Vec<_>>>()?;
+    let ty = world.bind_c_function_reference(
+        &result, parameters.iter().map(|(access, ty)| Ok((*access, ty))), &contracts,
+        (context.0, f.span(), context.1, context.2),
+    )?.into_ty();
     Ok((instance, ty))
 }
 impl Builder<'_> {

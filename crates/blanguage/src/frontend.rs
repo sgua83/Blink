@@ -835,13 +835,16 @@ impl Declarations {
 impl World {
     pub(crate) fn type_reference(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<TypeName> {
         if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
-            return Ok(self.c_function_type(name, source, span, module, imports)?.syntax());
+            return self.c_function_reference(name, source, span, module, imports)
+                .map(ir::CFunctionType::into_syntax);
         }
-        let mut syntax = name.clone();
-        syntax.canonical = false;
-        if syntax.is_texture() || syntax.is_acceleration() {
+        if name.is_texture() || name.is_acceleration() {
+            let mut syntax = name.clone();
+            syntax.canonical = false;
             return Ok(syntax);
         }
+        let mut resolved = std::borrow::Cow::Borrowed(name.name.as_str());
+        let mut canonical = false;
         let (types, count, code) = match name.name.as_str() {
             "array" => (1, 2, "B238"),
             "result" => (2, 2, "B269"),
@@ -849,8 +852,8 @@ impl World {
             "task" | "task_start_error" => (1, 1, "B224"),
             "void" | "never" => (0, 0, "B228"),
             _ => {
-                if let Some(canonical) = crate::builtin_types::Builtin::recognize(&name.name).canonical(&name.name) {
-                    syntax.name = canonical.into();
+                if let Some(builtin) = crate::builtin_types::Builtin::recognize(&name.name).canonical(&name.name) {
+                    resolved = std::borrow::Cow::Borrowed(builtin);
                     (0, 0, "B232")
                 } else {
                     let key = if name.canonical {
@@ -858,16 +861,16 @@ impl World {
                     } else { self.resolve(&name.name, module, imports, false).unique() };
                     let Some(key) = key else { return source.fail(span, "B031", format!("未知或不明确的类型 {}", name.name)); };
                     let record = &self.record(&key).0;
-                    syntax.name = key;
-                    syntax.canonical = true;
+                    resolved = std::borrow::Cow::Owned(key);
+                    canonical = true;
                     (record.types().len(), record.types().len() + record.values().len(), "B232")
                 }
             }
         };
         if name.arguments.len() != count {
-            return source.fail(span, code, format!("类型 {} 需要 {count} 个类型及const实参，实际为 {}", syntax.name, name.arguments.len()));
+            return source.fail(span, code, format!("类型 {resolved} 需要 {count} 个类型及const实参，实际为 {}", name.arguments.len()));
         }
-        syntax.arguments.clear();
+        let mut arguments = Vec::with_capacity(count);
         for (index, argument) in name.arguments.iter().enumerate() {
             let argument = if name.name == "owned" && index == 1 {
                 let GenericArgument::Type(function) = argument else {
@@ -892,12 +895,19 @@ impl World {
                 let value = self.shape(&Some(value), source, span, module, imports)?.unwrap();
                 GenericArgument::Value(Shape::Literal(value))
             };
-            syntax.arguments.push(argument);
+            arguments.push(argument);
         }
-        if let Some(count) = &name.count {
-            syntax.count = Some(Shape::Literal(self.shape(&Some(count.clone()), source, span, module, imports)?.unwrap()));
-        }
-        Ok(syntax)
+        let count = self.shape(&name.count, source, span, module, imports)?.map(Shape::Literal);
+        Ok(TypeName {
+            name: resolved.into_owned(),
+            canonical,
+            arguments,
+            dataset: name.dataset,
+            view: name.view,
+            tile: name.tile,
+            count,
+            contracts: name.contracts.clone(),
+        })
     }
     fn write_type_layout_json(&self, out: &mut String, value: &ir::Ty, source: &Source, span: Span,
         module: &str, imports: &[String], active: &mut BTreeSet<String>) -> Result<()> {
@@ -998,7 +1008,8 @@ impl World {
             return source.fail(span, "B225", "输入／输出合同属于cfn函数签名");
         }
         if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
-            return self.c_function_type(name, source, span, module, imports);
+            return self.c_function_reference(name, source, span, module, imports)
+                .map(ir::CFunctionType::into_ty);
         }
         if matches!(name.name.as_str(), "texture2d" | "texture3d") {
             return source.fail(

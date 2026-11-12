@@ -195,7 +195,7 @@ pub struct Ty {
 }
 impl Ty {
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
-        if let Some(function) = &self.function { return function.syntax(); }
+        if let Some(function) = &self.function { return (**function).clone().into_syntax(); }
         if let Some(cleanup) = &self.cleanup {
             let mut ty=crate::ast::TypeName::named("owned");
             let mut release=crate::ast::TypeName::named(cleanup);release.canonical=true;
@@ -2220,24 +2220,57 @@ impl Ty {
 }
 
 impl CFunctionType {
-    pub(crate) fn syntax(&self) -> crate::ast::TypeName {
-        use crate::ast::{TypeName, GenericArgument};
+    fn access_wrapper(access: Access) -> Option<&'static str> {
+        match access {
+            Access::Value => None,
+            Access::Read => Some("read"),
+            Access::Write => Some("write"),
+            Access::InOut => Some("inout"),
+            Access::Atomic => Some("atomic"),
+        }
+    }
+
+    pub(crate) fn into_syntax(self) -> crate::ast::TypeName {
+        use crate::ast::{GenericArgument, TypeName};
         let mut syntax = TypeName::named("cfn");
-        syntax.arguments.push(GenericArgument::Type(self.result.clone()));
-        syntax.arguments.extend(self.parameters.iter().map(|(access, ty)| {
-            let wrapper = match access {
-                Access::Value => None, Access::Read => Some("read"), Access::Write => Some("write"),
-                Access::InOut => Some("inout"), Access::Atomic => Some("atomic"),
+        syntax.arguments.reserve(self.parameters.len() + 1);
+        syntax.arguments.push(GenericArgument::Type(self.result));
+        syntax.arguments.extend(self.parameters.into_iter().map(|(access, ty)| {
+            let ty = if let Some(wrapper) = Self::access_wrapper(access) {
+                let mut position = TypeName::named(wrapper);
+                position.arguments.push(GenericArgument::Type(ty));
+                position
+            } else {
+                ty
             };
-            let ty = if let Some(wrapper) = wrapper {
-                let mut syntax = TypeName::named(wrapper);
-                syntax.arguments.push(GenericArgument::Type(ty.clone()));
-                syntax
-            } else { ty.clone() };
             GenericArgument::Type(ty)
         }));
-        if !self.contracts.is_empty() { syntax.contracts = Some(Box::new(self.contracts.clone())); }
+        if !self.contracts.is_empty() { syntax.contracts = Some(Box::new(self.contracts)); }
         syntax
+    }
+
+    #[cfg(feature = "compiler")]
+    pub(crate) fn into_ty(self) -> Ty {
+        use crate::ast::{write_type_contracts, write_type_name};
+        let mut name = String::from("cfn<");
+        write_type_name(&mut name, &self.result);
+        for (access, ty) in &self.parameters {
+            name.push(',');
+            if let Some(wrapper) = Self::access_wrapper(*access) {
+                name.push_str(wrapper);
+                name.push('<');
+                write_type_name(&mut name, ty);
+                name.push('>');
+            } else {
+                write_type_name(&mut name, ty);
+            }
+        }
+        name.push('>');
+        write_type_contracts(&mut name, &self.contracts);
+        let mut ty = Ty::scalar(Scalar::U64);
+        ty.name = name;
+        ty.function = Some(Box::new(self));
+        ty
     }
 }
 

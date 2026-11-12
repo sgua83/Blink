@@ -500,35 +500,61 @@ pub enum StmtKind {
 }
 
 pub(crate) fn type_name(ty: &TypeName) -> String {
-    let shape = |value: &Shape| match value { Shape::Literal(value) => value.to_string(), Shape::Constant(name) => name.clone(), Shape::Expression(expression)=>expression_name(expression) };
-    let mut name = ty.name.clone();
+    let mut name = String::new();
+    write_type_name(&mut name, ty);
+    name
+}
+
+pub(crate) fn write_type_name(name: &mut String, ty: &TypeName) {
+    let shape = |value: &Shape| match value {
+        Shape::Literal(value) => value.to_string(),
+        Shape::Constant(name) => name.clone(),
+        Shape::Expression(expression) => expression_name(expression),
+    };
+    let wrappers = [(ty.tile, "tile"), (ty.view, "view"), (ty.dataset, "dataset")];
+    for (present, prefix) in wrappers {
+        if present {
+            name.push_str(prefix);
+            name.push('<');
+        }
+    }
+    name.push_str(&ty.name);
     if !ty.arguments.is_empty() {
         name.push('<');
-        name.push_str(&ty.arguments.iter().map(|argument| match argument {
-            GenericArgument::Type(ty) => type_name(ty),
-            GenericArgument::Value(value) => shape(value),
-        }).collect::<Vec<_>>().join(","));
+        for (index, argument) in ty.arguments.iter().enumerate() {
+            if index != 0 { name.push(','); }
+            match argument {
+                GenericArgument::Type(ty) => write_type_name(name, ty),
+                GenericArgument::Value(value) => name.push_str(&shape(value)),
+            }
+        }
         name.push('>');
     }
-    for (present, prefix) in [(ty.dataset, "dataset"), (ty.view, "view"), (ty.tile, "tile")] {
+    for (present, _) in wrappers.into_iter().rev() {
         if present {
-            name = if let Some(count) = &ty.count { format!("{prefix}<{name},{}>", shape(count)) }
-                else { format!("{prefix}<{name}>") };
+            if let Some(count) = &ty.count {
+                name.push(',');
+                name.push_str(&shape(count));
+            }
+            name.push('>');
         }
     }
     if let Some(outputs) = &ty.contracts {
-        for output in outputs.iter() {
-            if let ContractPredicate::Nonzero(value) = output {
-                name.push_str(&format!(" requires nonzero({value})"));
-            } else if let ContractPredicate::Memory(access)=output {
-                let mode=match access{None=>"none",Some(Access::Read)=>"read",Some(Access::Write)=>"write",Some(Access::InOut)=>"inout",Some(Access::Value)=>"value",Some(Access::Atomic)=>"atomic"};
-                name.push_str(&format!(" ensures memory({mode})"));
-            } else if let ContractPredicate::Initialized { value, condition } = output {
-                name.push_str(&format!(" ensures initialized({value},{})", condition_name(condition)));
-            }
+        write_type_contracts(name, outputs);
+    }
+}
+
+pub(crate) fn write_type_contracts(name: &mut String, outputs: &[ContractPredicate]) {
+    for output in outputs {
+        if let ContractPredicate::Nonzero(value) = output {
+            name.push_str(&format!(" requires nonzero({value})"));
+        } else if let ContractPredicate::Memory(access)=output {
+            let mode=match access{None=>"none",Some(Access::Read)=>"read",Some(Access::Write)=>"write",Some(Access::InOut)=>"inout",Some(Access::Value)=>"value",Some(Access::Atomic)=>"atomic"};
+            name.push_str(&format!(" ensures memory({mode})"));
+        } else if let ContractPredicate::Initialized { value, condition } = output {
+            name.push_str(&format!(" ensures initialized({value},{})", condition_name(condition)));
         }
     }
-    name
 }
 pub(crate) fn expression_name(expression:&Expr)->String {
     let arguments=|values:&[Expr]|values.iter().map(expression_name).collect::<Vec<_>>().join(",");

@@ -103,14 +103,14 @@ impl World {
         }
         self.ty(name, source, span, module, imports)
     }
-    pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<Ty> {
+    pub(crate) fn c_function_reference(
+        &self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String],
+    ) -> crate::Result<CFunctionType> {
         let Some((result, parameters)) = name.arguments.split_first() else {
             return source.fail(span, "B263", "cfn<R,P...>至少需要一个返回类型");
         };
         let GenericArgument::Type(result) = result else { return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值"); };
-        let result = self.type_reference(result, source, span, module, imports)?;
-        let mut parsed = Vec::new();
-        for parameter in parameters {
+        let parameters = parameters.iter().map(|parameter| {
             let GenericArgument::Type(parameter) = parameter else { return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值"); };
             let access = if !parameter.dataset && !parameter.view && !parameter.tile {
                 match parameter.name.as_str() { "read" => Access::Read, "write" => Access::Write, "inout" => Access::InOut, _ => Access::Value }
@@ -121,16 +121,29 @@ impl World {
                 };
                 element
             };
-            parsed.push((access, self.type_reference(parameter, source, span, module, imports)?));
-        }
+            Ok((access, parameter))
+        });
+        self.bind_c_function_reference(
+            result, parameters, name.contracts.as_ref().map_or(&[], |value| value.as_slice()),
+            (source, span, module, imports),
+        )
+    }
+
+    pub(crate) fn bind_c_function_reference<'a>(
+        &self, result: &TypeName,
+        parameters: impl IntoIterator<Item = crate::Result<(Access, &'a TypeName)>>,
+        outputs: &[ContractPredicate],
+        (source, span, module, imports): (&Source, Span, &str, &[String]),
+    ) -> crate::Result<CFunctionType> {
+        let result = self.type_reference(result, source, span, module, imports)?;
+        let parameters = parameters.into_iter().map(|parameter| {
+            let (access, ty) = parameter?;
+            Ok((access, self.type_reference(ty, source, span, module, imports)?))
+        }).collect::<crate::Result<Vec<_>>>()?;
         let contracts = crate::check::outputs::bind_function_contracts(
-            self, &result, &parsed, name.contracts.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
-            source, span, module, imports)?;
-        let function = CFunctionType { result, parameters: parsed, contracts };
-        let mut ty = Ty::scalar(Scalar::U64);
-        ty.name = type_name(&function.syntax());
-        ty.function = Some(Box::new(function));
-        Ok(ty)
+            self, &result, &parameters, outputs, source, span, module, imports,
+        )?;
+        Ok(CFunctionType { result, parameters, contracts })
     }
     pub(crate) fn c_function_signature(&self, function: &CFunctionType, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<(Vec<CallParameter>, Option<Ty>, bool)> {
         let mut parameters = Vec::new();
