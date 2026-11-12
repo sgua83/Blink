@@ -5,6 +5,11 @@ extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KER
 extern "C" address HeapReAlloc(handle heap,u32 flags,address data,usize bytes) on cpu from "KERNEL32.dll";
 extern "C" i32 HeapFree(handle heap,u32 flags,address data) on cpu from "KERNEL32.dll";
 extern "C" u32 GetLastError() on cpu ensures memory(read) from "KERNEL32.dll";
+extern "C" i32 ReadFile(handle file,address buffer,u32 capacity,write u32 received,
+    address overlapped) on cpu from "KERNEL32.dll";
+const u32 ERROR_HANDLE_EOF = 38;
+const u32 ERROR_BROKEN_PIPE = 109;
+const u32 SOURCE_READ_ERROR = 4;
 struct Buffer {address data;u64 length;u64 capacity;};
 struct Store {handle heap;address source;u64 source_bytes;Buffer nodes;Buffer text;};
 StorageError success() on cpu {return StorageError(0,0);}
@@ -31,6 +36,39 @@ StorageIndex prepare(handle heap,inout Buffer buffer,u64 size,u64 alignment) on 
     StorageError error=reserve(heap,buffer,offset+size);
     return StorageIndex(offset,error);
 }
+// Read into the compiler's temporary source buffer using the same storage
+// allocator as syntax. The caller retains the open synchronous file.
+extern "C" SourceBytes read_source(handle file) on cpu {
+    handle heap = GetProcessHeap();
+    Buffer buffer = Buffer(address(),0u64,0u64);
+    StorageError error = reserve(heap,buffer,4095u64);
+    while (error.kind == 0) {
+        if (buffer.length == buffer.capacity) {
+            StorageIndex slot = prepare(heap,buffer,1u64,1u64);
+            error = slot.error;
+            if (error.kind != 0) { break; }
+        }
+        u64 room = buffer.capacity - buffer.length;
+        u32 chunk = 0xffffffff;
+        if (room < u64(chunk)) { chunk = u32(room); }
+        u32 received = 0;
+        if (ReadFile(file,at(buffer.data,buffer.length),chunk,received,address()) == 0) {
+            u32 code = GetLastError();
+            if (code != ERROR_HANDLE_EOF && code != ERROR_BROKEN_PIPE) {
+                error = StorageError(SOURCE_READ_ERROR,code);
+            }
+            break;
+        }
+        buffer.length += u64(received);
+        if (received == 0) { break; }
+    }
+    return SourceBytes(buffer.data,buffer.length,error);
+}
+
+extern "C" i32 release_source(address data) on cpu {
+    return HeapFree(GetProcessHeap(),0,data);
+}
+
 StorageIndex append<T>(address storage,read T value) on cpu {
     StorageIndex slot=prepare(unsafe_position<Store>(storage).heap,
         unsafe_position<Store>(storage).nodes,size_of<T>(),align_of<T>());

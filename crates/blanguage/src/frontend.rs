@@ -3,6 +3,9 @@ use std::{
     cell::RefCell,
     fmt::Write,
     collections::{BTreeMap, BTreeSet},
+    fs::File,
+    io,
+    os::windows::io::{AsRawHandle, RawHandle},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
@@ -116,21 +119,65 @@ impl World {
         &self.records[key]
     }
 }
-pub(crate) fn read(path: &Path) -> Result<Source> {
-    let text = std::fs::read_to_string(path).map_err(|e| Diagnostic {
-        source: Source {
-            path: path.into(),
-            text: "".into(),
-        },
+#[repr(C)]
+struct SourceBytes {
+    data: *mut u8,
+    length: usize,
+    error: syntax::wire::StorageError,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ast_storage::read_source"]
+    fn read_source(file: RawHandle) -> SourceBytes;
+    #[link_name = "bootstrap.ast_storage::release_source"]
+    fn release_source(data: *mut u8) -> i32;
+}
+
+impl Drop for SourceBytes {
+    fn drop(&mut self) {
+        if !self.data.is_null() && unsafe { release_source(self.data) } == 0 {
+            panic!("无法释放 B 源码缓冲");
+        }
+    }
+}
+
+fn source_error(path: &Path, error: impl std::fmt::Display) -> Diagnostic {
+    Diagnostic {
+        source: Source { path: path.into(), text: "".into() },
         span: Span::default(),
         code: "B020",
-        message: format!("无法读取模块：{e}"),
-    })?;
-    Ok(Source {
-        path: path.into(),
-        text: text.into(),
-    })
+        message: format!("无法读取模块：{error}"),
+    }
 }
+
+fn read_opened(path: &Path, file: &File) -> Result<Source> {
+    const SOURCE_READ_ERROR: u32 = 4;
+    // The File owns the synchronous handle until the B read completes.
+    let bytes = unsafe { read_source(file.as_raw_handle()) };
+    match bytes.error.kind {
+        0 => {}
+        SOURCE_READ_ERROR => return Err(source_error(path, io::Error::from_raw_os_error(bytes.error.native_code as i32))),
+        kind => return Err(source_error(path, syntax::StorageFailure { kind, native_code: bytes.error.native_code })),
+    }
+    // A successful B read owns a buffer containing exactly these initialized bytes.
+    let raw = unsafe { std::slice::from_raw_parts(bytes.data, bytes.length) };
+    let text = std::str::from_utf8(raw).map_err(|_| source_error(path, "stream did not contain valid UTF-8"))?;
+    Ok(Source { path: path.into(), text: text.into() })
+}
+
+pub(crate) fn read(path: &Path) -> Result<Source> {
+    let file = File::open(path).map_err(|error| source_error(path, error))?;
+    read_opened(path, &file)
+}
+
+pub(crate) fn read_implementation(path: &Path) -> Result<Option<Arc<syntax::Module>>> {
+    match File::open(path) {
+        Ok(file) => parser::parse(read_opened(path, &file)?).map(|module| Some(Arc::new(module))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(source_error(path, error)),
+    }
+}
+
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
     compile_module(path, module_root, true, None, &[])
 }
@@ -591,17 +638,7 @@ pub(crate) fn load(
     } else {
         let interface = Arc::new(parser::parse(read(&path.with_extension("h"))?)?);
         let implementation_path = path.with_extension("b");
-        let present = implementation_path.try_exists().map_err(|error| Diagnostic {
-            source: interface.source.clone(),
-            span: Span::default(),
-            code: "B020",
-            message: format!("无法访问实现源 {}：{error}", implementation_path.display()),
-        })?;
-        let implementation = if present {
-            Some(Arc::new(parser::parse(read(&implementation_path)?)?))
-        } else {
-            None
-        };
+        let implementation = read_implementation(&implementation_path)?;
         (interface, implementation, None)
     };
     if let Some(module) = &implementation

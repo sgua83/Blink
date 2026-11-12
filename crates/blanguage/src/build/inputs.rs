@@ -35,15 +35,7 @@ impl Inputs {
         let input = self.sources.get_mut(&path.with_extension("h")).unwrap();
         if input.body.is_none() {
             let implementation_path = path.with_extension("b");
-            let present = implementation_path.try_exists().map_err(|error| Diagnostic {
-                source: Source { path: implementation_path.clone(), text: "".into() },
-                span: Span::default(), code: "B020", message: format!("无法访问实现源：{error}"),
-            })?;
-            let implementation = if present {
-                Some(Arc::new(parser::parse(crate::read(&implementation_path)?)?))
-            } else {
-                None
-            };
+            let implementation = crate::read_implementation(&implementation_path)?;
             let imports = crate::names::module_imports(&interface, implementation.as_deref());
             input.body = Some(CapturedBody { implementation, imports });
         }

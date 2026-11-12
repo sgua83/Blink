@@ -110,6 +110,9 @@ struct ParallelNode {Text dataset;Optional<ExprRef> count;Optional<ExprRef> sele
 struct ArmNode {Text variant;Optional<Text> binding;Slice body;Span span;};
 struct StorageError {u32 kind;u32 native_code;};
 struct StorageCreate {address storage;StorageError error;};
+struct SourceBytes {address data;u64 length;StorageError error;};
+extern "C" SourceBytes read_source(handle file) on cpu;
+extern "C" i32 release_source(address data) on cpu;
 struct StorageIndex {u64 offset;StorageError error;};
 struct StorageSlice {Slice value;StorageError error;};
 struct StorageText {Text value;StorageError error;};
