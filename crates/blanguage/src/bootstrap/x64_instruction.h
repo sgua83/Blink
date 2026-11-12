@@ -43,7 +43,7 @@ struct DivisionPlan {
     u8 shift;
     u8 mode;
 };
-extern "C" DivisionPlan division_plan(u32 divisor) on cpu requires nonzero(divisor);
+extern "C" DivisionPlan division_plan(u32 divisor, bool signed) on cpu requires nonzero(divisor);
 
 struct MoveLocation {
     u64 value;
@@ -95,3 +95,15 @@ extern "C" BinaryEncoding value_cast(MoveLocation dst, MoveLocation src, ScalarE
     ScalarEncoding into, address output) on cpu;
 extern "C" BinaryEncoding value_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
     MoveLocation right, u32 size, bool signed, address output) on cpu;
+
+// kind is 1 for quotient, 2 for remainder, or 3 for both. Only kind 3 uses second.
+struct DivisionOutputs { MoveLocation first; MoveLocation second; u32 kind; };
+// The packet caller already has its numerator in EAX and divisor in ECX.
+// Output has room for the original eleven-byte signed sequence.
+extern "C" u64 divide_value_instruction(bool signed, address output) on cpu;
+// Full scalar division entries borrow 128 output bytes. The 32-bit constant is
+// the original nonzero divisor normalized by its Scalar, including its sign.
+extern "C" u64 divide_constant32(DivisionOutputs result, MoveLocation src, u32 divisor,
+    ScalarEncoding scalar, address output) on cpu requires nonzero(divisor);
+extern "C" u64 divide_value(DivisionOutputs result, MoveLocation src, MoveLocation divisor,
+    ScalarEncoding scalar, ScalarEncoding divisor_scalar, address output) on cpu;

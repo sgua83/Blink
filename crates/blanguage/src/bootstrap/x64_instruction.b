@@ -259,24 +259,26 @@ const u8 DIVISION_SHIFT = u8(0);
 const u8 DIVISION_MULTIPLY = u8(1);
 const u8 DIVISION_MULTIPLY_ADD = u8(2);
 
-extern "C" DivisionPlan division_plan(u32 divisor) on cpu requires nonzero(divisor) {
-    u32 high = divisor;
+extern "C" DivisionPlan division_plan(u32 divisor, bool signed) on cpu requires nonzero(divisor) {
+    u32 magnitude = divisor;
+    if (signed && i32(divisor) < i32(0)) { magnitude = u32(-i64(i32(divisor))); }
+    u32 high = magnitude;
     u32 shift = 0;
     if (high >= 0x10000) { high >>= 16; shift += 16; }
     if (high >= 0x100) { high >>= 8; shift += 8; }
     if (high >= 0x10) { high >>= 4; shift += 4; }
     if (high >= 4) { high >>= 2; shift += 2; }
     if (high >= 2) { shift += 1; }
-    if ((divisor & (divisor - 1)) == 0) {
+    if ((magnitude & (magnitude - 1)) == 0) {
         return DivisionPlan(0, u8(shift), DIVISION_SHIFT);
     }
 
-    u64 d = u64(divisor);
+    u64 d = u64(magnitude);
     u64 power = 1u64 << u64(shift);
     u64 numerator = 0x100000000u64 * power;
     u64 quotient = numerator / d;
     u64 remainder = numerator % d;
-    // A non-power-of-two divisor cannot divide the power-of-two numerator.
+    // A non-power-of-two magnitude cannot divide the power-of-two numerator.
     if (d - remainder < power) {
         return DivisionPlan(u32(quotient + 1u64), u8(shift), DIVISION_MULTIPLY);
     }
@@ -921,4 +923,142 @@ extern "C" BinaryEncoding value_select(MoveLocation dst, MoveLocation condition,
     cursor = encode_operand_instruction(cursor, opcode, u8(0), size == 8, target, source);
     MoveEncoding store = copy_scalar_move(dst, move_gpr(target), size, signed, unsafe_address(cursor));
     return BinaryEncoding(cursor + store.length - start, 0u64, 0u64);
+}
+
+u64 division_shift(u64 at, u8 target, u8 kind, bool wide, u8 count) on cpu {
+    u64 cursor = register_instruction(at, u16(0xc1), u8(0), wide, kind, target);
+    put_byte(cursor, count);
+    return cursor + 1u64;
+}
+
+u64 integer_magnitude(u64 at, u8 value, u8 mask, bool wide) on cpu {
+    u64 cursor = register_instruction(at, u16(0x89), u8(0), wide, value, mask);
+    u8 count = u8(31);
+    if (wide) { count = u8(63); }
+    cursor = division_shift(cursor, mask, u8(7), wide, count);
+    cursor = register_instruction(cursor, u16(0x31), u8(0), wide, mask, value);
+    return register_instruction(cursor, u16(0x29), u8(0), wide, mask, value);
+}
+
+u64 divide_unsigned_instruction(u64 at, bool wide) on cpu {
+    u64 cursor = register_instruction(at, u16(0x31), u8(0), false, u8(2), u8(2));
+    return register_instruction(cursor, u16(0xf7), u8(0), wide, u8(6), u8(1));
+}
+
+extern "C" u64 divide_value_instruction(bool signed, address output) on cpu {
+    u64 start = address_bits(output);
+    if (!signed) { return divide_unsigned_instruction(start, false) - start; }
+    u64 cursor = register_instruction(start, u16(0x63), u8(0), true, u8(0), u8(0));
+    cursor = register_instruction(cursor, u16(0x63), u8(0), true, u8(1), u8(1));
+    put_byte(cursor, u8(0x48));
+    put_byte(cursor + 1u64, u8(0x99));
+    return register_instruction(cursor + 2u64, u16(0xf7), u8(0), true, u8(7), u8(1)) - start;
+}
+
+u64 load_magnitude32(u64 at, MoveLocation src, ScalarEncoding scalar) on cpu {
+    bool signed = scalar.kind == ScalarKind::Signed;
+    MoveEncoding load = copy_scalar_move(move_gpr(u8(0)), src, scalar.width / 8, signed, unsafe_address(at));
+    u64 cursor = at + load.length;
+    if (signed) { cursor = integer_magnitude(cursor, u8(0), u8(1), false); }
+    return cursor;
+}
+
+u64 store_division(u64 at, MoveLocation dst, u8 register, ScalarEncoding scalar) on cpu {
+    MoveEncoding store = copy_scalar_move(dst, move_gpr(register), scalar.width / 8,
+        scalar.kind == ScalarKind::Signed, unsafe_address(at));
+    return at + store.length;
+}
+
+MoveLocation division_remainder(DivisionOutputs result) on cpu {
+    if (result.kind == 3) { return result.second; }
+    return result.first;
+}
+
+extern "C" u64 divide_constant32(DivisionOutputs result, MoveLocation src, u32 divisor,
+    ScalarEncoding scalar, address output) on cpu requires nonzero(divisor) {
+    u64 start = address_bits(output);
+    bool signed = scalar.kind == ScalarKind::Signed;
+    DivisionPlan plan = division_plan(divisor, signed);
+    u64 cursor = load_magnitude32(start, src, scalar);
+    if (plan.mode == DIVISION_SHIFT) {
+        if (plan.shift != u8(0)) { cursor = division_shift(cursor, u8(0), u8(5), false, plan.shift); }
+    } else {
+        cursor = move_immediate(cursor, u8(1), u64(plan.magic), false);
+        cursor = register_instruction(cursor, u16(0xf7), u8(0), false, u8(4), u8(1));
+        if (plan.mode == DIVISION_MULTIPLY_ADD) {
+            cursor = load_magnitude32(cursor, src, scalar);
+            cursor = register_instruction(cursor, u16(0x29), u8(0), false, u8(2), u8(0));
+            cursor = register_instruction(cursor, u16(0xd1), u8(0), false, u8(5), u8(0));
+            cursor = register_instruction(cursor, u16(0x01), u8(0), false, u8(2), u8(0));
+        } else {
+            cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(2), u8(0));
+        }
+        cursor = division_shift(cursor, u8(0), u8(5), false, plan.shift);
+    }
+    if (signed) {
+        MoveEncoding sign = copy_scalar_move(move_gpr(u8(2)), src, scalar.width / 8, true, unsafe_address(cursor));
+        cursor = division_shift(cursor + sign.length, u8(2), u8(7), false, u8(31));
+        if (i32(divisor) < i32(0)) { cursor = register_instruction(cursor, u16(0xf7), u8(0), false, u8(2), u8(2)); }
+        cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(2), u8(0));
+        cursor = register_instruction(cursor, u16(0x29), u8(0), false, u8(2), u8(0));
+    }
+    if (result.kind != 1) {
+        if (result.kind == 3) { cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(0), u8(1)); }
+        cursor = register_instruction(cursor, u16(0x69), u8(0), false, u8(0), u8(0));
+        write_word(cursor, divisor);
+        cursor += 4u64;
+        MoveEncoding source = copy_scalar_move(move_gpr(u8(2)), src, scalar.width / 8, signed, unsafe_address(cursor));
+        cursor = register_instruction(cursor + source.length, u16(0x29), u8(0), false, u8(0), u8(2));
+        if (result.kind == 3) { cursor = store_division(cursor, result.first, u8(1), scalar); }
+        cursor = store_division(cursor, division_remainder(result), u8(2), scalar);
+    } else {
+        cursor = store_division(cursor, result.first, u8(0), scalar);
+    }
+    return cursor - start;
+}
+
+extern "C" u64 divide_value(DivisionOutputs result, MoveLocation src, MoveLocation divisor,
+    ScalarEncoding scalar, ScalarEncoding divisor_scalar, address output) on cpu {
+    u64 start = address_bits(output);
+    u32 size = scalar.width / 8;
+    bool signed = scalar.kind == ScalarKind::Signed;
+    u32 divisor_size = divisor_scalar.width / 8;
+    bool divisor_signed = divisor_scalar.kind == ScalarKind::Signed;
+    if (size == 8) { divisor_size = size; divisor_signed = signed; }
+    MoveEncoding right = copy_scalar_move(move_gpr(u8(1)), divisor, divisor_size, divisor_signed, output);
+    u64 cursor = start + right.length;
+    MoveEncoding left = copy_scalar_move(move_gpr(u8(0)), src, size, signed, unsafe_address(cursor));
+    cursor += left.length;
+    if (size == 8) {
+        if (signed) {
+            cursor = integer_magnitude(cursor, u8(0), u8(2), true);
+            cursor = integer_magnitude(cursor, u8(1), u8(2), true);
+        }
+        cursor = divide_unsigned_instruction(cursor, true);
+        if (signed) {
+            if (result.kind != 2) {
+                MoveEncoding sign = copy_scalar_move(move_gpr(u8(1)), src, size, true, unsafe_address(cursor));
+                cursor += sign.length;
+                if (divisor.kind == MOVE_IMMEDIATE) {
+                    if (i64(divisor.value) < i64(0)) { cursor = register_instruction(cursor, u16(0xf7), u8(0), true, u8(2), u8(1)); }
+                } else {
+                    cursor = encode_operand_instruction(cursor, u16(0x33), u8(0), true, u8(1), divisor);
+                }
+                cursor = division_shift(cursor, u8(1), u8(7), true, u8(63));
+                cursor = register_instruction(cursor, u16(0x31), u8(0), true, u8(1), u8(0));
+                cursor = register_instruction(cursor, u16(0x29), u8(0), true, u8(1), u8(0));
+            }
+            if (result.kind != 1) {
+                MoveEncoding sign = copy_scalar_move(move_gpr(u8(1)), src, size, true, unsafe_address(cursor));
+                cursor = division_shift(cursor + sign.length, u8(1), u8(7), true, u8(63));
+                cursor = register_instruction(cursor, u16(0x31), u8(0), true, u8(1), u8(2));
+                cursor = register_instruction(cursor, u16(0x29), u8(0), true, u8(1), u8(2));
+            }
+        }
+    } else {
+        cursor += divide_value_instruction(signed, unsafe_address(cursor));
+    }
+    if (result.kind != 2) { cursor = store_division(cursor, result.first, u8(0), scalar); }
+    if (result.kind != 1) { cursor = store_division(cursor, division_remainder(result), u8(2), scalar); }
+    return cursor - start;
 }

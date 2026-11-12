@@ -67,7 +67,7 @@ const NO_INDEX: u8 = u8::MAX;
 enum MoveKind { Gpr, Xmm, Memory, Immediate }
 
 #[repr(C)]
-struct MoveLocation {
+pub(super) struct MoveLocation {
     value: u64,
     kind: MoveKind,
     base: u8,
@@ -265,7 +265,7 @@ impl Emitter<'_> {
     pub(super) fn location(&self, r: Reg) -> Location {
         self.allocation.location(PrivateSlot::Register(r))
     }
-    fn emit_bytes(&mut self, capacity: usize, emit: impl FnOnce(*mut u8) -> u64) {
+    pub(super) fn emit_bytes(&mut self, capacity: usize, emit: impl FnOnce(*mut u8) -> u64) {
         self.code.reserve(capacity);
         let start = self.code.len();
         unsafe {
