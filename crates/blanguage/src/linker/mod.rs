@@ -21,23 +21,31 @@ pub fn link(input: &Path, output: &Path) -> Result<()> {
     link_inputs(&[input], output)
 }
 pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
-    let (objects, libraries) = read_inputs(inputs)?;
-    link_objects(objects, libraries, output)
+    link_objects(read_inputs(inputs)?, output)
 }
-fn read_inputs(inputs: &[impl AsRef<Path>]) -> Result<(Vec<Source<'static>>, Vec<crate::object::Library>)> {
-    Ok(partition(inputs.iter().map(|input| Input::read(input.as_ref())).collect::<Result<Vec<_>>>()?))
+fn read_inputs(paths: &[impl AsRef<Path>]) -> Result<Inputs<'static>> {
+    let mut inputs = Inputs::default();
+    for path in paths {
+        inputs.push(Input::read(path.as_ref())?);
+    }
+    Ok(inputs)
 }
-fn partition<'a>(inputs: Vec<Input>) -> (Vec<Source<'a>>, Vec<crate::object::Library>) {
-    let mut objects = Vec::new();
-    let mut libraries = Vec::new();
-    for input in inputs {
+
+#[derive(Default)]
+struct Inputs<'a> {
+    sources: Vec<Source<'a>>,
+    libraries: Vec<crate::object::Library>,
+}
+
+impl Inputs<'_> {
+    fn push(&mut self, input: Input) {
         match input {
-            Input::Object(object) => objects.push(Source::Owned(object)),
-            Input::Library(library) => libraries.push(library),
+            Input::Object(object) => self.sources.push(Source::Owned(object)),
+            Input::Library(library) => self.libraries.push(library),
         }
     }
-    (objects, libraries)
 }
+
 /// One original object owner; graph consumers borrow the same compiled value.
 enum Source<'a> {
     Owned(Object),
@@ -54,29 +62,28 @@ enum Roots<'a> {
     Symbols(&'a BTreeMap<String, Vec<u8>>, u32, u32),
 }
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
-    link_objects(vec![Source::Owned(object)], Vec::new(), path)
+    link_objects(Inputs { sources: vec![Source::Owned(object)], libraries: Vec::new() }, path)
 }
-fn prepare(objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>) -> Result<(Vec<Object>, Vec<crate::object::Archive>)> {
-    let mut objects = select(objects, libraries, Roots::Entry)?;
+fn prepare(inputs: Inputs<'_>) -> Result<(Vec<Object>, Vec<crate::object::Archive>)> {
+    let mut objects = select(inputs, Roots::Entry)?;
     let archives = objects.iter_mut().filter_map(|object| object.archive.take()).collect();
     Ok((objects, archives))
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
-    let (objects, libraries) = read_inputs(inputs)?;
-    let (mut objects, _) = prepare(objects, libraries)?;
+    let (mut objects, _) = prepare(read_inputs(inputs)?)?;
     let reserve = match objects[0].kind { Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes)), _ => None };
     let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects,None)? };
     Ok(crate::object::stack::report(&object, budget, reserve))
 }
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-fn link_objects(objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>, _: &Path) -> Result<()> {
-    prepare(objects, libraries)?;
+fn link_objects(inputs: Inputs<'_>, _: &Path) -> Result<()> {
+    prepare(inputs)?;
     Err("本机链接当前输出 Windows x64".into())
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-fn link_objects(objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
-    let (objects, archives) = prepare(objects, libraries)?;
+fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
+    let (objects, archives) = prepare(inputs)?;
     let object = &objects[0];
     let output = std::path::absolute(path)?;
     std::fs::create_dir_all(output.parent().unwrap())?;

@@ -1,11 +1,14 @@
 //! 原始CPU映像只消费原链接器已选择的COFF，不产生函数代码。
-use super::{Result, Roots, combine, partition, select};
+use super::{Inputs, Result, Roots, Source, combine, select};
 use crate::{native::{ModuleCode, ModuleSection, ModuleRelocation, ModuleTarget}, object::{Input, Target}};
 use std::collections::BTreeMap;
 pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], roots: &BTreeMap<String, Vec<u8>>, local: &std::collections::BTreeSet<&str>, types: u32, programs: u32) -> Result<Option<ModuleCode>> {
-    let (mut objects, libraries) = partition(inputs);
-    objects.extend(borrowed.iter().copied().map(super::Source::Borrowed));
-    let objects = select(objects, libraries, Roots::Symbols(roots, types, programs))?;
+    let mut linked = Inputs::default();
+    for input in inputs {
+        linked.push(input);
+    }
+    linked.sources.extend(borrowed.iter().copied().map(Source::Borrowed));
+    let objects = select(linked, Roots::Symbols(roots, types, programs))?;
     if objects.is_empty() { return Ok(None); }
     let mut symbols = BTreeMap::new();
     let object = combine::objects(objects,Some(&mut symbols))?;

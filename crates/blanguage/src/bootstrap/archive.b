@@ -1,5 +1,11 @@
 module bootstrap.archive;
 
+const u64 ARCHIVE_SIGNATURE = 0x0a3e686372613c21u64;
+
+u32 signature_byte(u64 index) on cpu {
+    return u32((ARCHIVE_SIGNATURE >> (index * 8u64)) & 255u64);
+}
+
 void put(address bytes,u64 at,u32 value) on cpu {
     unsafe_position<u8>(unsafe_address(address_bits(bytes)+at))=u8(value);
 }
@@ -106,8 +112,9 @@ void sort_symbols(ArchiveInput input) on cpu {
     while(end>1u64){end-=1u64;exchange(input,0u64,end);sift(input,0u64,end);}
 }
 extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on cpu {
-    put(out,0u64,33);put(out,1u64,60);put(out,2u64,97);put(out,3u64,114);
-    put(out,4u64,99);put(out,5u64,104);put(out,6u64,62);put(out,7u64,10);
+    for (index in 0..8) {
+        put(out, u64(index), signature_byte(u64(index)));
+    }
     u64 first=8u64;header(out,first,layout.first,0,0u64);
     u64 at=first+60u64;be32(out,at,input.symbol_count);at+=4u64;
     u64 i=0u64;
@@ -151,6 +158,14 @@ struct ArchiveReadNumber {u64 value;bool valid;};
 u32 read_byte(address bytes,u64 at) on cpu {
     return u32(unsafe_position<u8>(unsafe_address(address_bits(bytes)+at)));
 }
+extern "C" bool has_signature(address bytes, u64 length) on cpu {
+    if (length < 8u64) { return false; }
+    for (index in 0..8) {
+        if (read_byte(bytes, u64(index)) != signature_byte(u64(index))) { return false; }
+    }
+    return true;
+}
+
 u32 read_word(address bytes,u64 at) on cpu {
     return read_byte(bytes,at)|read_byte(bytes,at+1u64)<<8
         |read_byte(bytes,at+2u64)<<16|read_byte(bytes,at+3u64)<<24;

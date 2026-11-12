@@ -2,7 +2,9 @@
 use super::{Kind, Object, Result, coff};
 use crate::file_bytes::FileBytes;
 use std::{fs::File, ops::{Deref, Range}, path::Path, ptr::NonNull, sync::Arc};
-const SIGNATURE: &[u8; 8] = b"!<arch>\n";
+fn has_signature(bytes: &[u8]) -> bool {
+    unsafe { archive_has_signature(bytes.as_ptr(), bytes.len()) }
+}
 
 pub enum Input {
     Object(Object),
@@ -11,7 +13,7 @@ pub enum Input {
 impl Input {
     pub fn read(path: &Path) -> Result<Self> {
         let bytes = FileBytes::read(&File::open(path)?)?;
-        if bytes.starts_with(SIGNATURE) {
+        if has_signature(&bytes) {
             Ok(Self::Library(Library::decode(ArchiveBytes::Captured(Arc::new(bytes)), false)?))
         } else {
             Ok(Self::Object(coff::decode(&bytes)?))
@@ -120,6 +122,8 @@ enum ArchiveReadError {
 #[repr(C)]
 struct ArchiveReadResult { error: ArchiveReadError, at: usize }
 unsafe extern "C" {
+    #[link_name = "bootstrap.archive::has_signature"]
+    fn archive_has_signature(bytes: *const u8, length: usize) -> bool;
     #[link_name = "bootstrap.archive::decode"]
     fn archive_decode(bytes: *const u8, length: usize, context: *mut std::ffi::c_void,
         member: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveReadMember) -> u32,
@@ -290,7 +294,7 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
     for input in inputs {
         let input = input.as_ref();
         let bytes = ArchiveBytes::Captured(Arc::new(FileBytes::read(&File::open(input)?)?));
-        if bytes.starts_with(SIGNATURE) {
+        if has_signature(&bytes) {
             let library=Library::decode(bytes, false)?;
             for index in 0..library.member_count() {
                 let member=library.member(index).member;

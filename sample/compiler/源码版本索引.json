@@ -24,11 +24,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.b",
-      "sha256": "4ac194bc6719ab6ab4340cb7cf47467c46af2b9cbe67c768808d7baac281a073"
+      "sha256": "842bbd77439a0bb611cc5bb55eaa92b0a588ea6d9837b4ab348db1b6dfffdaae"
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.h",
-      "sha256": "2eae83dc92d8e790b6674b256a959edc79a1d0c4954e745b9e7991459b3d2081"
+      "sha256": "11e141734472da90c8bc2aab9867fbab1891090cfc7b228a81fcd538f6ac8821"
     },
     {
       "path": "crates/blanguage/src/bootstrap/ast_storage.b",
@@ -532,7 +532,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/mod.rs",
-      "sha256": "23bb2fdd4b68b0432ce999cff515d251adec821d6d542b338773de141e087400"
+      "sha256": "69e88cbf60db43097774d52310634260d19fbdd36824a6d83658aed009f71a75"
     },
     {
       "path": "crates/blanguage/src/linker/msvc.rs",
@@ -540,7 +540,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/native.rs",
-      "sha256": "7a900c685269ae03289ae4ee3a9ec5870694aec13031e6a6696d3fe2abfe4d0f"
+      "sha256": "5200988bccfc3cb5539b873470650ee0e75d618743306e2ef00b8d2f3dc1a9b5"
     },
     {
       "path": "crates/blanguage/src/linker/pe.rs",
@@ -552,7 +552,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/selection.rs",
-      "sha256": "069a130a0ba60a494f74a1d7ad957cf25d64d1b558d7271c563ecb6de99814a6"
+      "sha256": "8414742d2c9a9c317beec80db78ca73c72171cdcd44f58a8ac61da054bcc6ea2"
     },
     {
       "path": "crates/blanguage/src/module/domain.rs",
@@ -684,7 +684,7 @@
     },
     {
       "path": "crates/blanguage/src/object/static_library.rs",
-      "sha256": "cfc695de67491574c67077039bbb21e62306f4b4de0627a7955786ee00ff766f"
+      "sha256": "17b86512a490019985c1d8446babaf8b25783faea628da7c756cb2ed38540e0e"
     },
     {
       "path": "crates/blanguage/src/optimize.rs",
@@ -880,8 +880,8 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.b",
-      "start_line": 355,
-      "end_line": 369,
+      "start_line": 370,
+      "end_line": 384,
       "sha256": "afa49c8a9820a5edee14409af8c4a0d9ad7dec5d6e8f3393ac9b53dd164be01b"
     },
     {

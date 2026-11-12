@@ -1,6 +1,6 @@
 //! B owns this link's definition tree, section queue, resource closure and remapping.
 //! Rust keeps the original objects/libraries and only hands their current borrowed views across the synchronous call.
-use super::{Result,Roots,Source,resources};
+use super::{Inputs,Result,Roots,Source,resources};
 use crate::object::{self,Object,Kind,Target,Library};
 use resources::ImportBytes as Bytes;
 use std::ffi::c_void;
@@ -58,7 +58,8 @@ struct Context<'a> {
     locals:Vec<LocalView>,runtime:Vec<Bytes>,archives:Vec<u64>,slots:Vec<String>,error:Option<Box<dyn std::error::Error>>,
 }
 impl<'a> Context<'a> {
-    fn new(sources:Vec<Source<'a>>,libraries:Vec<Library>)->Self {
+    fn new(inputs: Inputs<'a>)->Self {
+        let Inputs { sources, libraries } = inputs;
         let mut context=Self{sources,libraries,objects:Vec::new(),sections:Vec::new(),relocations:Vec::new(),associated:Vec::new(),
             symbols:Vec::new(),imports:Vec::new(),exports:Vec::new(),code:Vec::new(),frames:Vec::new(),nodes:Vec::new(),pending:Vec::new(),
             locals:Vec::new(),runtime:Vec::new(),archives:Vec::new(),slots:Vec::new(),error:None};
@@ -188,14 +189,14 @@ unsafe extern "C" fn binding(context:*mut c_void,request:ResourceRequest)->Reply
     let result=resources::resources(&archives,request.types as u32,request.programs as u32,runtime.iter().map(text),locals.iter().map(|row|(text(&row.slot),text(&row.name))),Some(crate::resource::ABI));
     context.reply(result)
 }
-pub(super) fn select(objects:Vec<Source<'_>>,libraries:Vec<Library>,roots:Roots<'_>)->Result<Vec<Object>> {
+pub(super) fn select(inputs: Inputs<'_>, roots: Roots<'_>)->Result<Vec<Object>> {
     let(native_mode,types,programs,roots)=match roots{
         Roots::Entry=>(0,0,0,Vec::new()),
         Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots.iter().map(|(name,contract)|RootView{name:Bytes::new(name),contract:borrowed(contract)}).collect()),
     };
     let runtime=crate::resource::MODULE_RUNTIME_SYMBOLS.iter().map(|name|Bytes::new(name)).collect::<Vec<_>>();
     let params=Params{native_mode,types,programs,roots:roots.as_ptr(),root_count:roots.len() as u64,runtime_library:Bytes::new(crate::application::RUNTIME_LIBRARY),runtime_symbols:runtime.as_ptr(),runtime_symbol_count:runtime.len() as u64};
-    let mut context=Context::new(objects,libraries);let input=context.view();
+    let mut context=Context::new(inputs);let input=context.view();
     let result=unsafe{choose(input,params,&mut context as *mut Context<'_> as *mut c_void,extract,native_archive,binding,slot)};
     match result.error{
         0=>{},
