@@ -775,7 +775,25 @@ impl<'b, 'w> Scope<'b, 'w> {
             if let ExprKind::Bool(value)=expr.kind(){return Ok(Some((Ty::scalar(Scalar::Bool),bounds::Proof::condition(bounds::Condition::constant(value)),view::Borrow::default())));}
             return Ok(None);
         };
-        if self.bindings[..limit].iter().any(|(bound,_)|*bound==name){return Ok(None);}
+        if let Some(index)=self.bindings[..limit].iter().rposition(|(bound,_)|*bound==name) {
+            let Local::NamedElement(source)=&self.bindings[index].1 else{return Ok(None);};
+            if self.bindings[..index].iter().any(|(bound,_)|bound==source){return Ok(None);}
+            let Some((data,offset,element))=(match builder.env.get(source) {
+                Some(Binding::ApplicationData(data))=>Some((data,0,&data.ty)),
+                Some(Binding::DataReference(data))=>{let(offset,ty)=data.element_layout();Some((&data.data,offset,ty))},
+                _=>None,
+            })else{return Ok(None);};
+            let Some((ty,parts))=builder.component_projection(expr,&name,element,None,None,&|_|Ok(None))?else{return Ok(None);};
+            let mut borrow=view::Borrow::default();
+            for choice in 0..parts.first().map_or(0,Vec::len) {
+                let mut origin=application::dataset_origin(data,offset,element,false);
+                origin.layout=address::Layout::of(&ty);
+                origin.words=parts.iter().map(|part|offset+element.components[part[choice]].1).collect();
+                origin.initialized=vec![false;ty.components.len()].into();
+                borrow.union(&origin.normalize());
+            }
+            return Ok(Some((ty.clone(),bounds::Proof::default().with_external_borrows(&ty),borrow)));
+        }
         let Some(binding)=builder.env.get(&name)else{return Ok(None);};
         let known_index=|index:&Expr| {
             if let ExprKind::Name(name)=index.kind()
@@ -1045,7 +1063,13 @@ impl<'b, 'w> Scope<'b, 'w> {
                     self.bindings.push((name.to_string(), Local::Initialized(ty,expr,code.slice(statement_at+1..))));
                 }
                 StmtKind::Assign(lhs, _, rhs) => {
-                    writes(Write::Position{ place: lhs.clone(), call: None, contents: false, iterator: None,when:None,local_value:self.builder.is_some()&&self.local_value_write(&lhs)?==Some(true)})?;
+                    let element=self.builder.is_some() && assigned_root(&lhs).is_some_and(|name|
+                        self.bindings.iter().rev().find(|(bound,_)|*bound==name).is_some_and(|(_,local)|matches!(local,Local::NamedElement(_))));
+                    if element && let Some((_,_,borrow))=self.input_snapshot(&lhs,self.bindings.len(),Access::Write,None,None)? {
+                        writes(Write::Memory{call:lhs.clone(),borrow})?;
+                    } else {
+                        writes(Write::Position{ place: lhs.clone(), call: None, contents: false, iterator: None,when:None,local_value:self.builder.is_some()&&self.local_value_write(&lhs)?==Some(true)})?;
+                    }
                     self.writes_expression(&lhs,writes,None,Access::Write)?;
                     self.writes_expression(&rhs,writes,None,Access::Value)?;
                 }

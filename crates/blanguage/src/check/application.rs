@@ -3003,10 +3003,10 @@ impl Builder<'_> {
         element_inputs.sort();
         element_inputs.dedup();
         let name = format!(
-            "{}@parallel{}:{:?}",
+            "{}@parallel{}:{}",
             self.calls.last().unwrap(),
             statement.span().start,
-            params.iter().map(|p| (&p.ty, p.access)).collect::<Vec<_>>()
+            self.functions.units.len()
         );
         let owner=self.scope.function().unwrap().clone();
         let parameters=Arc::<[Param]>::from(params);

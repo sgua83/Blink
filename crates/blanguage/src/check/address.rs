@@ -401,7 +401,7 @@ impl MemoryEffect {
             Position::Local(_)=>known(),
             Position::Element(binding,_)=>if origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Data(actual)if actual==binding)){all}else{0},
             Position::Borrowed(borrow,_,_) if matches!(&origin.root,
-                Root::Resource{borrow:source,index:Some(_)}|Root::Dataset{borrow:source,index:Some(_)}if same_loop_resource(source,borrow))
+                Root::Resource{borrow:source,..}|Root::Dataset{borrow:source,..}if same_loop_resource(source,borrow))
                 ||!borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>known(),
             Position::Both(a,b)|Position::Conditional(_,a,b)=>Self::origin_written_bytes(origin,when,a,scalar,index)|Self::origin_written_bytes(origin,when,b,scalar,index),
             Position::Indexed(positions,_)=>positions.iter().fold(0,|bytes,position|bytes|Self::origin_written_bytes(origin,when,position,scalar,index)),
