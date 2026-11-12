@@ -189,7 +189,7 @@ extern "C" u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer
     if (type.opcode == 21) { put(words, at, type.signed); at += 1u64; }
     put(words, 0u64, instruction(type.opcode, u32(at)));
     put(words, 1u64, type_id);
-    return type_three(words, at, 32, pointer_id, 7, type_id);
+    return words_three(words, at, 32, pointer_id, u32(StorageClass::Function), type_id);
 }
 
 extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u64 bits, address words) on cpu {
@@ -210,20 +210,20 @@ extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u
     return 4u64;
 }
 
-u64 type_one(address words, u64 at, u32 opcode, u32 id) on cpu {
+u64 words_one(address words, u64 at, u32 opcode, u32 id) on cpu {
     put(words, at, instruction(opcode, 2));
     put(words, at + 1u64, id);
     return at + 2u64;
 }
 
-u64 type_two(address words, u64 at, u32 opcode, u32 id, u32 first) on cpu {
+u64 words_two(address words, u64 at, u32 opcode, u32 id, u32 first) on cpu {
     put(words, at, instruction(opcode, 3));
     put(words, at + 1u64, id);
     put(words, at + 2u64, first);
     return at + 3u64;
 }
 
-u64 type_three(address words, u64 at, u32 opcode, u32 id, u32 first, u32 second) on cpu {
+u64 words_three(address words, u64 at, u32 opcode, u32 id, u32 first, u32 second) on cpu {
     put(words, at, instruction(opcode, 4));
     put(words, at + 1u64, id);
     put(words, at + 2u64, first);
@@ -232,15 +232,15 @@ u64 type_three(address words, u64 at, u32 opcode, u32 id, u32 first, u32 second)
 }
 
 extern "C" u64 type_declaration(TypeShape shape, u32 id, u32 first, u32 second, address words) on cpu {
-    if (shape == TypeShape::Void) { return type_one(words, 0u64, 19, id); }
-    if (shape == TypeShape::Vector) { return type_three(words, 0u64, 23, id, first, second); }
-    if (shape == TypeShape::Matrix) { return type_three(words, 0u64, 24, id, first, second); }
-    if (shape == TypeShape::SampledImage) { return type_two(words, 0u64, 27, id, first); }
-    if (shape == TypeShape::Array) { return type_three(words, 0u64, 28, id, first, second); }
-    if (shape == TypeShape::Function) { return type_two(words, 0u64, 33, id, first); }
-    if (shape == TypeShape::Acceleration) { return type_one(words, 0u64, 5341, id); }
-    if (shape == TypeShape::RayQuery) { return type_one(words, 0u64, 4472, id); }
-    if (shape == TypeShape::Pointer) { return type_three(words, 0u64, 32, id, first, second); }
+    if (shape == TypeShape::Void) { return words_one(words, 0u64, 19, id); }
+    if (shape == TypeShape::Vector) { return words_three(words, 0u64, 23, id, first, second); }
+    if (shape == TypeShape::Matrix) { return words_three(words, 0u64, 24, id, first, second); }
+    if (shape == TypeShape::SampledImage) { return words_two(words, 0u64, 27, id, first); }
+    if (shape == TypeShape::Array) { return words_three(words, 0u64, 28, id, first, second); }
+    if (shape == TypeShape::Function) { return words_two(words, 0u64, 33, id, first); }
+    if (shape == TypeShape::Acceleration) { return words_one(words, 0u64, 5341, id); }
+    if (shape == TypeShape::RayQuery) { return words_one(words, 0u64, 4472, id); }
+    if (shape == TypeShape::Pointer) { return words_three(words, 0u64, 32, id, first, second); }
 
     // The sampled image's dimensionality is the source texture coordinate width.
     put(words, 0u64, instruction(25, 9));
@@ -257,30 +257,52 @@ extern "C" u64 type_declaration(TypeShape shape, u32 id, u32 first, u32 second, 
 
 extern "C" u64 resource_block(ResourceBlock input, address definitions, address decorations) on cpu {
     u64 at = 0u64;
-    u32 storage = 12;
+    StorageClass storage = StorageClass::StorageBuffer;
     u32 stride = 8;
     if (input.length == 0) {
-        at = type_two(definitions, at, 29, input.array, input.element);
+        at = words_two(definitions, at, 29, input.array, input.element);
     } else {
-        at = type_three(definitions, at, 28, input.array, input.element, input.length);
-        storage = 9;
+        at = words_three(definitions, at, 28, input.array, input.element, input.length);
+        storage = StorageClass::PushConstant;
         stride = 4;
     }
-    at = type_two(definitions, at, 30, input.block, input.array);
-    at = type_three(definitions, at, 32, input.pointer, storage, input.block);
+    at = words_two(definitions, at, 30, input.block, input.array);
+    at = words_three(definitions, at, 32, input.pointer, u32(storage), input.block);
 
     // ArrayStride, Block, and Offset of the single array member.
-    put(decorations, 0u64, instruction(71, 4));
-    put(decorations, 1u64, input.array);
-    put(decorations, 2u64, 6);
-    put(decorations, 3u64, stride);
-    put(decorations, 4u64, instruction(71, 3));
-    put(decorations, 5u64, input.block);
-    put(decorations, 6u64, 2);
+    u64 next = words_three(decorations, 0u64, 71, input.array, 6, stride);
+    words_two(decorations, next, 71, input.block, 2);
     put(decorations, 7u64, instruction(72, 5));
     put(decorations, 8u64, input.block);
     put(decorations, 9u64, 0);
     put(decorations, 10u64, 35);
     put(decorations, 11u64, 0);
     return at;
+}
+
+extern "C" void variable_declaration(StorageClass storage, u32 pointer, u32 id, address words) on cpu {
+    words_three(words, 0u64, 59, pointer, id, u32(storage));
+}
+
+extern "C" u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u32 id, u32 operand, address definitions, address decorations) on cpu {
+    if (annotation == VariableAnnotation::BuiltIn) {
+        variable_declaration(StorageClass::Input, pointer, id, definitions);
+        return words_three(decorations, 0u64, 71, id, 11, operand);
+    }
+    StorageClass storage = StorageClass::UniformConstant;
+    if (annotation == VariableAnnotation::PageTable) {
+        storage = StorageClass::StorageBuffer;
+    }
+    variable_declaration(storage, pointer, id, definitions);
+    u64 at = words_three(decorations, 0u64, 71, id, 34, 0);
+    at = words_three(decorations, at, 71, id, 33, operand);
+    if (annotation == VariableAnnotation::PageTable) {
+        // Page-table access is read-only even when referenced elements can be written.
+        at = words_two(decorations, at, 71, id, 24);
+    }
+    return at;
+}
+
+extern "C" void flag_decoration(FlagDecoration decoration, u32 id, address decorations) on cpu {
+    words_two(decorations, 0u64, 71, id, u32(decoration));
 }

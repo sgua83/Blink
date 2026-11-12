@@ -16,16 +16,16 @@ impl Emitter<'_> {
         if let Some(element) = texture.element {
             let index = self.id();
             self.emit(83, &[self.types[&Scalar::U32], index, self.value(element)]);
-            op(&mut self.decorations, 71, &[index, 5300]);
+            self.decorate_flag(FlagDecoration::NonUniform, index);
             let selected = self.id();
             self.emit(65, &[sampled_pointer, selected, pointer, index]);
-            op(&mut self.decorations, 71, &[selected, 5300]);
+            self.decorate_flag(FlagDecoration::NonUniform, selected);
             pointer = selected;
         }
         let sampled = self.id();
         self.emit(61, &[sampled_type, sampled, pointer]);
         if texture.element.is_some() {
-            op(&mut self.decorations, 71, &[sampled, 5300]);
+            self.decorate_flag(FlagDecoration::NonUniform, sampled);
         }
         sampled
     }
@@ -35,7 +35,7 @@ impl Emitter<'_> {
         let (image_type, _, _) = self.texture_types[&self.program.textures[texture.binding].dimension];
         self.emit(100, &[image_type, image, sampled]);
         if texture.element.is_some() {
-            op(&mut self.decorations, 71, &[image, 5300]);
+            self.decorate_flag(FlagDecoration::NonUniform, image);
         }
         image
     }

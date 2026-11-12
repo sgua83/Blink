@@ -48,3 +48,17 @@ extern "C" u64 type_declaration(TypeShape shape, u32 id, u32 first, u32 second, 
 // A zero length ID selects the runtime array for the page table.
 // Definitions have room for 11 words, and the 12 decoration words are always written.
 extern "C" u64 resource_block(ResourceBlock input, address definitions, address decorations) on cpu;
+
+enum StorageClass:u32 {
+    UniformConstant=0; Input=1; Workgroup=4; Function=7; PushConstant=9; StorageBuffer=12; PhysicalStorageBuffer=5349;
+};
+enum VariableAnnotation:u32 { Descriptor=0; PageTable=1; BuiltIn=2; };
+
+// The caller owns four definition words for a variable without an initializer.
+extern "C" void variable_declaration(StorageClass storage, u32 pointer, u32 id, address words) on cpu;
+// Output has room for four definition words and eleven decoration words.
+// Operand is the assigned descriptor binding or the built-in enumerant.
+extern "C" u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u32 id, u32 operand, address definitions, address decorations) on cpu;
+enum FlagDecoration:u32 { NoContraction=42; NonUniform=5300; };
+// Output has room for three decoration words.
+extern "C" void flag_decoration(FlagDecoration decoration, u32 id, address decorations) on cpu;

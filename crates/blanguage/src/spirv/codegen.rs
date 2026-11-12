@@ -118,6 +118,30 @@ struct ResourceBlock {
     pointer: u32,
 }
 
+#[repr(u32)]
+enum StorageClass {
+    UniformConstant = 0,
+    Input = 1,
+    Workgroup = 4,
+    Function = 7,
+    PushConstant = 9,
+    StorageBuffer = 12,
+    PhysicalStorageBuffer = 5349,
+}
+
+#[repr(u32)]
+enum VariableAnnotation {
+    Descriptor,
+    PageTable,
+    BuiltIn,
+}
+
+#[repr(u32)]
+enum FlagDecoration {
+    NoContraction = 42,
+    NonUniform = 5300,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
@@ -129,6 +153,15 @@ unsafe extern "C" {
     fn type_declaration(shape: TypeShape, id: u32, first: u32, second: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::resource_block"]
     fn resource_block(input: ResourceBlock, definitions: *mut u32, decorations: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::variable_declaration"]
+    fn variable_declaration(storage: StorageClass, pointer: u32, id: u32, words: *mut u32);
+    #[link_name = "bootstrap.spirv_envelope::annotated_variable"]
+    fn annotated_variable(
+        annotation: VariableAnnotation, pointer: u32, id: u32, operand: u32,
+        definitions: *mut u32, decorations: *mut u32,
+    ) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::flag_decoration"]
+    fn flag_decoration(decoration: FlagDecoration, id: u32, decorations: *mut u32);
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
     fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
@@ -249,8 +282,48 @@ impl Emitter<'_> {
         }
         id
     }
-    fn declare_pointer(&mut self, storage: u32, pointee: u32) -> u32 {
-        self.declare_type(TypeShape::Pointer, storage, pointee)
+    fn declare_pointer(&mut self, storage: StorageClass, pointee: u32) -> u32 {
+        self.declare_type(TypeShape::Pointer, storage as u32, pointee)
+    }
+    fn append_variable(words: &mut Vec<u32>, storage: StorageClass, pointer: u32, id: u32) {
+        let start = words.len();
+        words.reserve(4);
+        unsafe {
+            variable_declaration(storage, pointer, id, words.as_mut_ptr().add(start));
+            words.set_len(start + 4);
+        }
+    }
+    fn declare_variable(&mut self, storage: StorageClass, pointer: u32) -> u32 {
+        let id = self.id();
+        Self::append_variable(&mut self.defs, storage, pointer, id);
+        id
+    }
+    fn declare_function_variable(&mut self, pointer: u32) -> u32 {
+        let id = self.id();
+        Self::append_variable(&mut self.body, StorageClass::Function, pointer, id);
+        id
+    }
+    fn declare_annotated(&mut self, annotation: VariableAnnotation, pointer: u32, operand: u32) -> u32 {
+        let id = self.id();
+        let defs = self.defs.len();
+        let decorations = self.decorations.len();
+        self.defs.reserve(4);
+        self.decorations.reserve(11);
+        unsafe {
+            let used = annotated_variable(annotation, pointer, id, operand,
+                self.defs.as_mut_ptr().add(defs), self.decorations.as_mut_ptr().add(decorations));
+            self.defs.set_len(defs + 4);
+            self.decorations.set_len(decorations + used as usize);
+        }
+        id
+    }
+    fn decorate_flag(&mut self, decoration: FlagDecoration, id: u32) {
+        let start = self.decorations.len();
+        self.decorations.reserve(3);
+        unsafe {
+            flag_decoration(decoration, id, self.decorations.as_mut_ptr().add(start));
+            self.decorations.set_len(start + 3);
+        }
     }
     fn declare_resource_block(&mut self, element: u32, length: u32) -> u32 {
         let input = ResourceBlock {
@@ -796,7 +869,7 @@ impl Emitter<'_> {
                         BinaryOp::FAdd | BinaryOp::FSub | BinaryOp::FMul | BinaryOp::FDiv
                     ) {
                         let id = self.value(*dst);
-                        op(&mut self.decorations, 71, &[id, 42]);
+                        self.decorate_flag(FlagDecoration::NoContraction, id);
                     }
                 }
                 InstKind::Cast { dst, src } => {
@@ -1420,96 +1493,64 @@ fn emit_shader(
             if !e.texture_types.contains_key(&dimension) {
                 let image = e.declare_type(TypeShape::Image, f, dimension.components() as u32);
                 let sampled = e.declare_type(TypeShape::SampledImage, image, 0);
-                let pointer = e.declare_pointer(0, sampled);
+                let pointer = e.declare_pointer(StorageClass::UniformConstant, sampled);
                 e.texture_types.insert(dimension, (image, sampled, pointer));
             }
             let (_, sampled, pointer) = e.texture_types[&dimension];
             let pointer = if let Some(count) = program.textures[i].count {
                 let length = e.constant(Scalar::U32, count);
                 let array = e.declare_type(TypeShape::Array, sampled, length);
-                e.declare_pointer(0, array)
+                e.declare_pointer(StorageClass::UniformConstant, array)
             } else { pointer };
-            let id = e.id();
-            op(&mut e.defs, 59, &[pointer, id, 0]);
-            op(&mut e.decorations, 71, &[id, 34, 0]);
-            op(
-                &mut e.decorations,
-                71,
-                &[
-                    id,
-                    33,
-                    (program.buffers.len() + program.accelerations.len() + i) as u32,
-                ],
-            );
+            let binding = (program.buffers.len() + program.accelerations.len() + i) as u32;
+            let id = e.declare_annotated(VariableAnnotation::Descriptor, pointer, binding);
             e.textures.push(id);
         }
     }
     let mut ray_pointer = 0;
     if !program.accelerations.is_empty() {
         e.acceleration_type = e.declare_type(TypeShape::Acceleration, 0, 0);
-        let pointer = e.declare_pointer(0, e.acceleration_type);
+        let pointer = e.declare_pointer(StorageClass::UniformConstant, e.acceleration_type);
         for i in 0..program.accelerations.len() {
-            let id = e.id();
-            op(&mut e.defs, 59, &[pointer, id, 0]);
-            op(&mut e.decorations, 71, &[id, 34, 0]);
-            op(
-                &mut e.decorations,
-                71,
-                &[id, 33, (program.buffers.len() + i) as u32],
-            );
+            let binding = (program.buffers.len() + i) as u32;
+            let id = e.declare_annotated(VariableAnnotation::Descriptor, pointer, binding);
             e.accelerations.push(id);
         }
         let query_type = e.declare_type(TypeShape::RayQuery, 0, 0);
-        ray_pointer = e.declare_pointer(7, query_type);
+        ray_pointer = e.declare_pointer(StorageClass::Function, query_type);
     }
     e.u64_type = e.types[&Scalar::U64];
     let v3 = e.declare_type(TypeShape::Vector, u, 3);
     e.uint3_type = v3;
-    let ptr_input = e.declare_pointer(1, v3);
-    let global = e.id();
-    op(&mut e.defs, 59, &[ptr_input, global, 1]);
-    op(&mut e.decorations, 71, &[global, 11, 28]);
+    let ptr_input = e.declare_pointer(StorageClass::Input, v3);
+    let global = e.declare_annotated(VariableAnnotation::BuiltIn, ptr_input, 28);
     let mut num_groups = 0;
     if (stage.prefix.is_some() || stage.selection.is_some())
         && !matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments)
     {
-        num_groups = e.id();
-        op(&mut e.defs, 59, &[ptr_input, num_groups, 1]);
-        op(&mut e.decorations, 71, &[num_groups, 11, 24]);
+        num_groups = e.declare_annotated(VariableAnnotation::BuiltIn, ptr_input, 24);
     }
     let ptr = e.declare_resource_block(e.u64_type, 0);
     for scalar in [Scalar::U32, Scalar::U64, Scalar::U8, Scalar::U16] {
         if let Some(ty) = e.types.get(&scalar).copied() {
-            let pointer = e.declare_pointer(5349, ty);
+            let pointer = e.declare_pointer(StorageClass::PhysicalStorageBuffer, ty);
             e.physical_pointers.insert(scalar, pointer);
         }
     }
-    e.ptr_table_u64 = e.declare_pointer(12, e.u64_type);
+    e.ptr_table_u64 = e.declare_pointer(StorageClass::StorageBuffer, e.u64_type);
     for i in 0..program.buffers.len() + program.auxiliary_buffers() {
-        let id = e.id();
-        op(&mut e.defs, 59, &[ptr, id, 12]);
-        op(&mut e.decorations, 71, &[id, 34, 0]);
-        op(
-            &mut e.decorations,
-            71,
-            &[
-                id,
-                33,
-                if i >= program.buffers.len() {
-                    (i + program.accelerations.len() + program.textures.len()) as u32
-                } else {
-                    i as u32
-                },
-            ],
-        );
-        op(&mut e.decorations, 71, &[id, 24]); // 页表始终只读，访问权限仍由 IR 定义。
+        let binding = if i >= program.buffers.len() {
+            (i + program.accelerations.len() + program.textures.len()) as u32
+        } else {
+            i as u32
+        };
+        let id = e.declare_annotated(VariableAnnotation::PageTable, ptr, binding);
         e.buffers.push(id);
     }
     let length = e.constant(Scalar::U32, program.uniform_bytes / 4);
     let push_ptr = e.declare_resource_block(u, length);
-    e.push = e.id();
-    op(&mut e.defs, 59, &[push_ptr, e.push, 9]);
-    e.ptr_push_u32 = e.declare_pointer(9, u);
+    e.push = e.declare_variable(StorageClass::PushConstant, push_ptr);
+    e.ptr_push_u32 = e.declare_pointer(StorageClass::PushConstant, u);
     let scan_local = (matches!(
         stage.operation,
         Operation::ScanExclusive(_) | Operation::CustomScan(_) | Operation::Compact(_)
@@ -1531,20 +1572,15 @@ fn emit_shader(
     let mut shared = 0;
     let mut shared_pointer = 0;
     if reduction {
-        let input_ptr = e.declare_pointer(1, u);
-        local_input = e.id();
-        op(&mut e.defs, 59, &[input_ptr, local_input, 1]);
-        op(&mut e.decorations, 71, &[local_input, 11, 29]);
+        let input_ptr = e.declare_pointer(StorageClass::Input, u);
+        local_input = e.declare_annotated(VariableAnnotation::BuiltIn, input_ptr, 29);
     }
     let mut subgroup_inputs = [0; 2];
     let mut ballot_type = 0;
     if ranks {
-        let input_ptr = e.declare_pointer(1, u);
+        let input_ptr = e.declare_pointer(StorageClass::Input, u);
         for (input, builtin) in subgroup_inputs.iter_mut().zip([40, 41]) {
-            let v = e.id();
-            op(&mut e.defs, 59, &[input_ptr, v, 1]);
-            op(&mut e.decorations, 71, &[v, 11, builtin]);
-            *input = v;
+            *input = e.declare_annotated(VariableAnnotation::BuiltIn, input_ptr, builtin);
         }
     }
     if subgroup_caps.ballot || ranks {
@@ -1557,10 +1593,8 @@ fn emit_shader(
         (SubgroupOp::Id, 40),
     ] {
         if subgroup_operations.contains(&operation) {
-            let input_ptr = e.declare_pointer(1, u);
-            let variable = e.id();
-            op(&mut e.defs, 59, &[input_ptr, variable, 1]);
-            op(&mut e.decorations, 71, &[variable, 11, builtin]);
+            let input_ptr = e.declare_pointer(StorageClass::Input, u);
+            let variable = e.declare_annotated(VariableAnnotation::BuiltIn, input_ptr, builtin);
             e.subgroup_inputs.insert(operation, variable);
         }
     }
@@ -1587,10 +1621,9 @@ fn emit_shader(
         shared_bytes += u64::from(words) * 4;
         let count = e.constant(Scalar::U32, words);
         let array = e.declare_type(TypeShape::Array, e.types[&shared_scalar], count);
-        let array_ptr = e.declare_pointer(4, array);
-        shared = e.id();
-        op(&mut e.defs, 59, &[array_ptr, shared, 4]);
-        shared_pointer = e.declare_pointer(4, e.types[&shared_scalar]);
+        let array_ptr = e.declare_pointer(StorageClass::Workgroup, array);
+        shared = e.declare_variable(StorageClass::Workgroup, array_ptr);
+        shared_pointer = e.declare_pointer(StorageClass::Workgroup, e.types[&shared_scalar]);
     }
     if pass == Pass::Main {
         for unit in [Scalar::U32, Scalar::U64] {
@@ -1603,10 +1636,9 @@ fn emit_shader(
             shared_bytes += u64::from(words) * u64::from(unit.size());
             let length = e.constant(Scalar::U32, words);
             let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
-            let array_ptr = e.declare_pointer(4, array);
-            let shared = e.id();
-            op(&mut e.defs, 59, &[array_ptr, shared, 4]);
-            let pointer = e.declare_pointer(4, e.types[&unit]);
+            let array_ptr = e.declare_pointer(StorageClass::Workgroup, array);
+            let shared = e.declare_variable(StorageClass::Workgroup, array_ptr);
+            let pointer = e.declare_pointer(StorageClass::Workgroup, e.types[&unit]);
             if unit == Scalar::U32 {
                 e.tile_shared = shared; e.tile_pointer = pointer;
             } else {
@@ -1625,8 +1657,7 @@ fn emit_shader(
     let mut rays = Vec::new();
     ray_results(&stage.code, &mut rays);
     for result in rays {
-        let id = e.id();
-        e.emit(59, &[ray_pointer, id, 7]);
+        let id = e.declare_function_variable(ray_pointer);
         e.ray_variables.insert(result, id);
     }
     e.locals.resize(stage.locals.last_key_value().map_or(0, |(end, _)| *end), 0);
@@ -1636,9 +1667,8 @@ fn emit_shader(
         let unit = match size { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
         let length = e.constant(Scalar::U32, ty.size / size);
         let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
-        let pointer = e.declare_pointer(7, array);
-        let variable = e.id();
-        e.emit(59, &[pointer, variable, 7]);
+        let pointer = e.declare_pointer(StorageClass::Function, array);
+        let variable = e.declare_function_variable(pointer);
         e.private_words.extend(span.clone());
         e.private_arrays.push((span, variable));
     }
@@ -1646,14 +1676,12 @@ fn emit_shader(
         if e.private_words.contains(&slot) {
             continue;
         }
-        let id = e.id();
-        e.emit(59, &[e.pointers[s], id, 7]);
+        let id = e.declare_function_variable(e.pointers[s]);
         e.locals[slot] = id;
     }
     let mut temporary = 0;
     if ranks {
-        temporary = e.id();
-        e.emit(59, &[e.pointers[&shared_scalar], temporary, 7]);
+        temporary = e.declare_function_variable(e.pointers[&shared_scalar]);
     }
     let gid = e.id();
     e.emit(61, &[v3, gid, global]);

@@ -35,7 +35,7 @@ impl Emitter<'_> {
             if scalar.is_float() {
                 let sum = self.id();
                 self.emit(129, &[self.types[&scalar], sum, av, bv]);
-                op(&mut self.decorations, 71, &[sum, 42]);
+                self.decorate_flag(FlagDecoration::NoContraction, sum);
                 self.emit(124, &[u, result, sum]);
             } else {
                 self.emit(128, &[u, result, a, b]);
