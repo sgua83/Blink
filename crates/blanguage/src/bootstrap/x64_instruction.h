@@ -41,3 +41,10 @@ extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu;
 extern "C" u64 unsigned_to_float(u8 target, u8 prefix, address output) on cpu;
 // XMM0 holds the source and XMM1 holds 2^63. Output has room for 34 bytes.
 extern "C" u64 float_to_unsigned(u8 target, u8 prefix, address output) on cpu;
+
+struct DivisionPlan {
+    u32 magic;
+    u8 shift;
+    u8 mode;
+};
+extern "C" DivisionPlan division_plan(u32 divisor) on cpu requires nonzero(divisor);

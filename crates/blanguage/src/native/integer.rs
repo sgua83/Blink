@@ -3,40 +3,32 @@ use super::*;
 use allocation::Location;
 use std::num::NonZeroU64;
 
-pub(super) enum Division {
-    Shift(u8),
-    Multiply { magic: u32, shift: u8, add: bool },
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DivisionMode {
+    Shift,
+    Multiply,
+    MultiplyAdd,
 }
+
+#[repr(C)]
+pub(super) struct Division {
+    pub(super) magic: u32,
+    pub(super) shift: u8,
+    pub(super) mode: DivisionMode,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::division_plan"]
+    fn division_plan(divisor: u32) -> Division;
+}
+
 impl Division {
     pub fn new(divisor: NonZeroU64, signed: bool) -> Self {
         let bits = divisor.get() as u32;
-        let d = if signed {
-            (bits as i32).unsigned_abs()
-        } else {
-            bits
-        };
-        let shift = (31 - d.leading_zeros()) as u8;
-        if d.is_power_of_two() {
-            return Self::Shift(shift);
-        }
-        let numerator = 1u128 << (32 + shift);
-        let d = d as u128;
-        let multiplier = numerator.div_ceil(d);
-        // m=ceil(2^(32+l)/d)，e=m*d-2^(32+l)。e<2^l 时直接取高位再右移；
-        // 否则改用多一位的倒数，以 ((n-q0)>>1)+q0 避免 33 位求和溢出。
-        if multiplier * d - numerator < 1u128 << shift {
-            Self::Multiply {
-                magic: multiplier as u32,
-                shift,
-                add: false,
-            }
-        } else {
-            Self::Multiply {
-                magic: ((2 * numerator).div_ceil(d) - (1u128 << 32)) as u32,
-                shift,
-                add: true,
-            }
-        }
+        let magnitude = if signed { (bits as i32).unsigned_abs() } else { bits };
+        // Scalar and packet callers both pass a nonzero divisor in the 32-bit lane.
+        unsafe { division_plan(magnitude) }
     }
 }
 impl Emitter<'_> {
@@ -91,17 +83,18 @@ impl Emitter<'_> {
         let signed = scalar.is_signed();
         let divisor = if signed { NonZeroU64::new(scalar.signed(divisor.get()) as u32 as u64).unwrap() } else { divisor };
         self.unsigned_magnitude(src, signed);
-        match Division::new(divisor, signed) {
-            Division::Shift(shift) => {
+        let Division { magic, shift, mode } = Division::new(divisor, signed);
+        match mode {
+            DivisionMode::Shift => {
                 if shift != 0 {
                     self.bytes(&[0xc1, 0xe8, shift]);
                 }
             }
-            Division::Multiply { magic, shift, add } => {
+            DivisionMode::Multiply | DivisionMode::MultiplyAdd => {
                 self.bytes(&[0xb9]);
                 self.u32(magic);
                 self.bytes(&[0xf7, 0xe1]); // EDX:EAX = unsigned EAX * ECX。
-                if add {
+                if mode == DivisionMode::MultiplyAdd {
                     self.unsigned_magnitude(src, signed);
                     self.bytes(&[0x29, 0xd0, 0xd1, 0xe8, 0x01, 0xd0]);
                 } else {

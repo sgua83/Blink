@@ -1,6 +1,6 @@
 //! SSE2 四路整数乘法、除余与移位；常量使用精确倒数，动态值逐 lane 原生执行。
 use super::*;
-use super::super::integer::Division;
+use super::super::integer::{Division, DivisionMode};
 use std::num::NonZeroU64;
 
 impl Emitter<'_> {
@@ -129,13 +129,14 @@ impl Emitter<'_> {
     ) {
         let signed = self.stage.registers[src] == Scalar::I32;
         self.packet_magnitude(allocation, src, 0, signed);
-        match Division::new(divisor, signed) {
-            Division::Shift(shift) => {
+        let Division { magic, shift, mode } = Division::new(divisor, signed);
+        match mode {
+            DivisionMode::Shift => {
                 if shift != 0 {
                     self.packet_shift(0, 2, shift);
                 }
             }
-            Division::Multiply { magic, shift, add } => {
+            DivisionMode::Multiply | DivisionMode::MultiplyAdd => {
                 self.packet_constant(1, magic);
                 self.packed(None, 0x28, 2, 0);
                 self.packed(Some(0x66), 0x73, 3, 2);
@@ -145,7 +146,7 @@ impl Emitter<'_> {
                 self.shuffle(0, 0, 0xdd);
                 self.shuffle(2, 2, 0xdd);
                 self.packed(Some(0x66), 0x62, 0, 2);
-                if add {
+                if mode == DivisionMode::MultiplyAdd {
                     self.packet_magnitude(allocation, src, 1, signed);
                     self.packed(Some(0x66), 0xfa, 1, 0);
                     self.packet_shift(1, 2, 1);

@@ -253,3 +253,38 @@ extern "C" u64 float_to_unsigned(u8 target, u8 prefix, address output) on cpu {
     patch_relative(unsafe_address(done), done, cursor);
     return cursor - start;
 }
+
+const u8 DIVISION_SHIFT = u8(0);
+const u8 DIVISION_MULTIPLY = u8(1);
+const u8 DIVISION_MULTIPLY_ADD = u8(2);
+
+extern "C" DivisionPlan division_plan(u32 divisor) on cpu requires nonzero(divisor) {
+    u32 high = divisor;
+    u32 shift = 0;
+    if (high >= 0x10000) { high >>= 16; shift += 16; }
+    if (high >= 0x100) { high >>= 8; shift += 8; }
+    if (high >= 0x10) { high >>= 4; shift += 4; }
+    if (high >= 4) { high >>= 2; shift += 2; }
+    if (high >= 2) { shift += 1; }
+    if ((divisor & (divisor - 1)) == 0) {
+        return DivisionPlan(0, u8(shift), DIVISION_SHIFT);
+    }
+
+    u64 d = u64(divisor);
+    u64 power = 1u64 << u64(shift);
+    u64 numerator = 0x100000000u64 * power;
+    u64 quotient = numerator / d;
+    u64 remainder = numerator % d;
+    // A non-power-of-two divisor cannot divide the power-of-two numerator.
+    if (d - remainder < power) {
+        return DivisionPlan(u32(quotient + 1u64), u8(shift), DIVISION_MULTIPLY);
+    }
+
+    // Compute ceil(2 * numerator / d) from the quotient and remainder.
+    // The multiplier takes the low 32 bits after dropping the implicit high bit.
+    u64 ceil_twice = 2u64 * quotient + 1u64;
+    if (2u64 * remainder > d) {
+        ceil_twice += 1u64;
+    }
+    return DivisionPlan(u32(ceil_twice), u8(shift), DIVISION_MULTIPLY_ADD);
+}
