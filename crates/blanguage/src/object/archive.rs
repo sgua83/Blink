@@ -80,7 +80,7 @@ pub(crate) fn compile(
                 .map(str::to_owned)
                 .collect();
             Ok(Archive {
-                bytes: std::fs::read(target.join(format!("release/{unit}.lib")))?,
+                bytes: std::sync::Arc::new(std::fs::read(target.join(format!("release/{unit}.lib")))?),
                 libraries,
                 exports,
                 resources: None,

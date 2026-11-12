@@ -397,6 +397,34 @@ CPU 主流程可以直接使用 `parallel`，也可以普通调用其他 CPU 函
 
 内部的 `Program`、`Stage` 和 `ExecutionPlan` 分别保存编译产物、计算阶段及执行关系。它们是实现对象，与源码采用哪一种函数写法分开理解。
 
+### 4.5 静态库目录怎样保持原输入
+
+库文件的成员正文留在同一不可变输入中，B目录只保存原成员／符号范围和一次抽取状态。普通文件读取后直接进入该输入；嵌入运行支持的归档与实际链接消费者共享它。UTF-8名称解释和COFF对象仍由原Rust接收者负责，目录插入、查询、同名首项及最后释放由B完成。
+
+源码节选：`crates/blanguage/src/bootstrap/archive.b:355`。
+
+```b
+extern "C" ArchiveSelection library_take(address library,address name,u64 length) on cpu {
+    LibraryDirectory value=directory_at(library);ArchiveSymbol key=ArchiveSymbol(name,length,0u64);
+    u64 symbol=directory_symbol_position(value,key);
+    if(symbol==value.symbol_count||compare_names(directory_symbol(value,symbol),key)!=i32(0)){return ArchiveSelection(0,0u64);}
+    u64 offset=directory_symbol(value,symbol).member;
+    u64 first=0u64;u64 end=value.member_count;
+    while(first<end){
+        u64 middle=first+(end-first)/2u64;
+        if(u64(directory_member(value,middle).member.offset)<offset){first=middle+1u64;}else{end=middle;}
+    }
+    if(first==value.member_count||u64(directory_member(value,first).member.offset)!=offset){return ArchiveSelection(2,0u64);}
+    LibraryMember selected=directory_member(value,first);
+    if(selected.taken!=0){return ArchiveSelection(0,0u64);}
+    selected.taken=1;directory_member_put(value,first,selected);return ArchiveSelection(1,first);
+}
+```
+
+查找先定位符号，再定位实际成员。成员第一次交出时修改自己的taken，之后返回未选中；不存在的符号与目录指向不存在的成员继续表达不同结果。Library先结束B目录，原输入在最后引用结束后释放。归档写出队列引用原输入和成员范围，新生成成员保留自己的字节，不为每个已有成员复制正文。
+
+前端导入现行接口时仍读取库内全部模块，独立链接时才按未解析符号选成员。因此未使用的损坏成员可以不影响本次链接，却仍可使前端全成员导入失败；两种路径按实际消费者分别理解。
+
 ## 第五章 词法：把一行字符切成能辨认的单元
 
 ### 5.1 为什么不能直接按空格切开

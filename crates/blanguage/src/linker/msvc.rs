@@ -126,7 +126,7 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
             .parent()
             .unwrap()
             .join(format!(".blink-link-{id}-{index}.lib"));
-        std::fs::write(&path, &archive.bytes)?;
+        std::fs::write(&path, archive.bytes.as_slice())?;
         temporary.push(path);
     }
     for (index, object) in objects.iter().enumerate() {

@@ -1,6 +1,6 @@
 //! 标准 COFF 静态库保存原对象；目录归库所有，实际符号绑定仍归链接器。
 use super::{Kind, Object, Result, coff};
-use std::{collections::BTreeMap, path::Path};
+use std::{ops::Range, path::Path, ptr::NonNull, sync::Arc};
 const SIGNATURE: &[u8; 8] = b"!<arch>\n";
 
 pub enum Input {
@@ -11,7 +11,7 @@ impl Input {
     pub fn read(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path)?;
         if bytes.starts_with(SIGNATURE) {
-            Ok(Self::Library(Library::decode(&bytes, false)?))
+            Ok(Self::Library(Library::decode(Arc::new(bytes), false)?))
         } else {
             Ok(Self::Object(coff::decode(&bytes)?))
         }
@@ -20,10 +20,13 @@ impl Input {
         match self {
             Self::Object(object) => imports.object(object)?,
             Self::Library(library) => {
-                for member in library.members.values().flatten() {
-                    let (name, kind, definitions) = coff::Reader::new(&member.bytes)?.interface()
-                        .map_err(|error| format!("静态库成员 {}：{error}", member.name))?;
-                    imports.insert(&name, &kind, definitions)?;
+                for index in 0..library.member_count() {
+                    let member=library.member(index);
+                    if member.available==0 { continue; }
+                    let (name,bytes)=library.member_bytes(member.member);
+                    let (module,kind,definitions)=coff::Reader::new(bytes)?.interface()
+                        .map_err(|error| format!("静态库成员 {name}：{error}"))?;
+                    imports.insert(&module,&kind,definitions)?;
                 }
             }
         }
@@ -33,29 +36,47 @@ impl Input {
     pub fn objects(self) -> Result<Vec<Object>> {
         match self {
             Self::Object(object) => Ok(vec![object]),
-            Self::Library(library) => library
-                .members
-                .into_values()
-                .flatten()
-                .map(|member| member.object(library.native))
-                .collect(),
+            Self::Library(library) => (0..library.member_count())
+                .filter_map(|index| {
+                    let member=library.member(index);
+                    (member.available!=0).then(|| {
+                        let (name,bytes)=library.member_bytes(member.member);
+                        member_object(name,bytes,library.native)
+                    })
+                }).collect(),
         }
     }
 }
+// A writer queue keeps the original input alive and borrows its actual range.
+// Newly generated native members own their own complete input through new().
 pub(crate) struct Member {
     pub(crate) name: String,
-    pub(crate) bytes: Vec<u8>,
+    bytes: Arc<Vec<u8>>,
+    range: Range<usize>,
 }
 impl Member {
-    pub(crate) fn object(&self, native: bool) -> Result<Object> {
-        (if native { coff::Reader::new(&self.bytes)?.native(&self.name) } else { coff::decode(&self.bytes) })
-            .map_err(|error| format!("静态库成员 {}：{error}", self.name).into())
+    pub(crate) fn new(name:String,bytes:Vec<u8>)->Self {
+        let range=0..bytes.len();Self{name,bytes:Arc::new(bytes),range}
+    }
+    fn bytes(&self)->&[u8] { &self.bytes[self.range.clone()] }
+    pub(crate) fn object(&self,native:bool)->Result<Object> {
+        member_object(&self.name,self.bytes(),native)
     }
 }
+fn member_object(name:&str,bytes:&[u8],native:bool)->Result<Object> {
+    (if native {coff::Reader::new(bytes)?.native(name)} else {coff::decode(bytes)})
+        .map_err(|error|format!("静态库成员 {name}：{error}").into())
+}
 pub struct Library {
-    members: BTreeMap<u32, Option<Member>>,
-    symbols: BTreeMap<String, u32>,
+    directory: NonNull<std::ffi::c_void>,
+    bytes: Arc<Vec<u8>>,
     native: bool,
+}
+// The compiler moves this unique directory into its native worker. B keeps
+// only CRT allocations and immutable input ranges; mutation requires &mut Self.
+unsafe impl Send for Library {}
+impl Drop for Library {
+    fn drop(&mut self) { unsafe {library_destroy(self.directory.as_ptr());} }
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -64,6 +85,7 @@ impl ArchiveRange {
     fn bytes<'a>(&self, bytes: &'a [u8]) -> &'a [u8] { &bytes[self.start..self.start+self.length] }
 }
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct ArchiveReadMember { offset: u32, name: ArchiveRange, body: ArchiveRange }
 #[repr(C)]
 struct ArchiveReadSymbol { member: u32, name: ArchiveRange }
@@ -80,28 +102,49 @@ unsafe extern "C" {
     fn archive_decode(bytes: *const u8, length: usize, context: *mut std::ffi::c_void,
         member: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveReadMember) -> u32,
         symbol: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveReadSymbol) -> u32) -> ArchiveReadResult;
+    #[link_name="bootstrap.archive::library_create"]
+    fn library_create(bytes:*const u8)->*mut std::ffi::c_void;
+    #[link_name="bootstrap.archive::library_add_member"]
+    fn library_add_member(library:*mut std::ffi::c_void,member:ArchiveReadMember)->u32;
+    #[link_name="bootstrap.archive::library_add_symbol"]
+    fn library_add_symbol(library:*mut std::ffi::c_void,symbol:ArchiveReadSymbol)->u32;
+    #[link_name="bootstrap.archive::library_member_count"]
+    fn library_member_count(library:*mut std::ffi::c_void)->usize;
+    #[link_name="bootstrap.archive::library_member"]
+    fn library_member(library:*mut std::ffi::c_void,index:usize)->ArchiveMemberState;
+    #[link_name="bootstrap.archive::library_take"]
+    fn library_take(library:*mut std::ffi::c_void,name:*const u8,length:usize)->ArchiveSelection;
+    #[link_name="bootstrap.archive::library_destroy"]
+    fn library_destroy(library:*mut std::ffi::c_void);
 }
-// The input, original Library containers, and an actual receiver error belong
-// to the synchronous Rust caller. B never retains the context or byte ranges.
-struct ArchiveRead<'a> { bytes: &'a [u8], library: Library, received: Result<()> }
-unsafe extern "C" fn read_member(context: *mut std::ffi::c_void, member: ArchiveReadMember) -> u32 {
-    let read = unsafe { &mut *(context as *mut ArchiveRead<'_>) };
-    match std::str::from_utf8(member.name.bytes(read.bytes)) {
-        Ok(name) => {
-            read.library.members.insert(member.offset, Some(Member {
-                name: name.into(), bytes: member.body.bytes(read.bytes).into(),
-            }));
-            1
+#[repr(C)]
+struct ArchiveMemberState {member:ArchiveReadMember,available:u32}
+#[repr(C)]
+struct ArchiveSelection {result:u32,index:usize}
+// The synchronous receiver interprets UTF-8. B retains only the ranges into
+// Library's immutable input, and owns directory insertion and release.
+struct ArchiveRead<'a> {library:&'a mut Library,received:Result<()>}
+unsafe extern "C" fn read_member(context:*mut std::ffi::c_void,member:ArchiveReadMember)->u32 {
+    let read=unsafe{&mut *(context as *mut ArchiveRead<'_>)};
+    let result=(||->Result<()>{
+        std::str::from_utf8(member.name.bytes(&read.library.bytes))?;
+        if unsafe{library_add_member(read.library.directory.as_ptr(),member)}==0 {
+            return Err("静态库目录内存分配失败".into());
         }
-        Err(error) => { read.received=Err(error.into()); 0 }
-    }
+        Ok(())
+    })();
+    match result {Ok(())=>1,Err(error)=>{read.received=Err(error);0}}
 }
-unsafe extern "C" fn read_symbol(context: *mut std::ffi::c_void, symbol: ArchiveReadSymbol) -> u32 {
-    let read = unsafe { &mut *(context as *mut ArchiveRead<'_>) };
-    match std::str::from_utf8(symbol.name.bytes(read.bytes)) {
-        Ok(name) => { read.library.symbols.entry(name.into()).or_insert(symbol.member); 1 }
-        Err(error) => { read.received=Err(error.into()); 0 }
-    }
+unsafe extern "C" fn read_symbol(context:*mut std::ffi::c_void,symbol:ArchiveReadSymbol)->u32 {
+    let read=unsafe{&mut *(context as *mut ArchiveRead<'_>)};
+    let result=(||->Result<()>{
+        std::str::from_utf8(symbol.name.bytes(&read.library.bytes))?;
+        if unsafe{library_add_symbol(read.library.directory.as_ptr(),symbol)}==0 {
+            return Err("静态库目录内存分配失败".into());
+        }
+        Ok(())
+    })();
+    match result {Ok(())=>1,Err(error)=>{read.received=Err(error);0}}
 }
 fn archive_read_result(result: ArchiveReadResult) -> Result<()> {
     let message=match result.error {
@@ -121,31 +164,36 @@ fn archive_read_result(result: ArchiveReadResult) -> Result<()> {
     Err(format!("{message}（归档字节偏移 {}）",result.at).into())
 }
 impl Library {
-    pub(crate) fn native(bytes: &[u8]) -> Result<Self> { Self::decode(bytes, true) }
-    fn decode(bytes: &[u8], native: bool) -> Result<Self> {
-        let mut read=ArchiveRead {
-            bytes, library: Self { members:BTreeMap::new(), symbols:BTreeMap::new(), native }, received:Ok(()),
-        };
-        let result=unsafe { archive_decode(bytes.as_ptr(),bytes.len(),
-            &mut read as *mut ArchiveRead<'_> as *mut std::ffi::c_void,read_member,read_symbol) };
+    pub(crate) fn native(bytes:Arc<Vec<u8>>)->Result<Self> {Self::decode(bytes,true)}
+    fn decode(bytes:Arc<Vec<u8>>,native:bool)->Result<Self> {
+        let directory=NonNull::new(unsafe{library_create(bytes.as_ptr())})
+            .ok_or("静态库目录内存分配失败")?;
+        let mut library=Self{directory,bytes,native};
+        let mut read=ArchiveRead{library:&mut library,received:Ok(())};
+        let result=unsafe{archive_decode(read.library.bytes.as_ptr(),read.library.bytes.len(),
+            &mut read as *mut ArchiveRead<'_> as *mut std::ffi::c_void,read_member,read_symbol)};
         read.received?;
         archive_read_result(result)?;
-        Ok(read.library)
+        Ok(library)
     }
-    pub(crate) fn extract(&mut self, symbol: &str) -> Result<Option<Object>> {
-        let Some(offset) = self.symbols.get(symbol) else {
-            return Ok(None);
-        };
-        let member = self
-            .members
-            .get_mut(offset)
-            .ok_or("静态库目录未指向对象成员")?;
-        let Some(member) = member.take() else {
-            return Ok(None);
-        };
-        let object = member.object(self.native)?;
-        if !matches!(object.kind, Kind::Module { .. }) {
-            return Err(format!("静态库成员 {} 不是独立模块", member.name).into());
+    fn member_count(&self)->usize {unsafe{library_member_count(self.directory.as_ptr())}}
+    fn member(&self,index:usize)->ArchiveMemberState {unsafe{library_member(self.directory.as_ptr(),index)}}
+    fn member_bytes(&self,member:ArchiveReadMember)->(&str,&[u8]) {
+        // The original receiver validated this name before B retained its range.
+        (unsafe{std::str::from_utf8_unchecked(member.name.bytes(&self.bytes))},member.body.bytes(&self.bytes))
+    }
+    pub(crate) fn extract(&mut self,symbol:&str)->Result<Option<Object>> {
+        let selected=unsafe{library_take(self.directory.as_ptr(),symbol.as_ptr(),symbol.len())};
+        match selected.result {
+            0=>return Ok(None),
+            1=>{},
+            _=>return Err("静态库目录未指向对象成员".into()),
+        }
+        let member=self.member(selected.index).member;
+        let (name,bytes)=self.member_bytes(member);
+        let object=member_object(name,bytes,self.native)?;
+        if !matches!(object.kind,Kind::Module{..}) {
+            return Err(format!("静态库成员 {name} 不是独立模块").into());
         }
         Ok(Some(object))
     }
@@ -219,16 +267,21 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
         let input = input.as_ref();
         let bytes = std::fs::read(input)?;
         if bytes.starts_with(SIGNATURE) {
-            members.extend(Library::decode(&bytes, false)?.members.into_values().flatten());
+            let library=Library::decode(Arc::new(bytes),false)?;
+            for index in 0..library.member_count() {
+                let member=library.member(index).member;
+                let (name,_)=library.member_bytes(member);
+                members.push(Member{name:name.into(),bytes:Arc::clone(&library.bytes),
+                    range:member.body.start..member.body.start+member.body.length});
+            }
         } else {
-            members.push(Member {
-                name: input
+            members.push(Member::new(input
                     .file_name()
                     .and_then(|n| n.to_str())
                     .ok_or("静态库输入名不是 UTF-8")?
                     .into(),
                 bytes,
-            });
+            ));
         }
     }
     Ok(members)
@@ -237,7 +290,7 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
 pub(crate) fn encode(members: &[Member], symbols: &[(usize, String)]) -> Result<Vec<u8>> {
     let mut member_views: Vec<_> = members.iter().map(|member| ArchiveMember {
         name: member.name.as_ptr(), name_length: member.name.len(),
-        bytes: member.bytes.as_ptr(), byte_length: member.bytes.len(),
+        bytes: member.bytes().as_ptr(), byte_length: member.bytes().len(),
         offset: 0, name_offset: 0,
     }).collect();
     let mut symbol_views: Vec<_> = symbols.iter().map(|(member, name)| ArchiveSymbol {

@@ -73,15 +73,18 @@ void header(address out,u64 at,u64 size,u32 kind,u64 name) on cpu {
     put(out,at+58u64,96);put(out,at+59u64,10);
     if(size%2u64!=0u64){put(out,at+60u64+size,10);}
 }
-bool later(ArchiveSymbol left,ArchiveSymbol right) on cpu {
+i32 compare_names(ArchiveSymbol left,ArchiveSymbol right) on cpu {
     u64 count=left.name_length;if(right.name_length<count){count=right.name_length;}
     u64 i=0u64;
     while(i<count){
         u32 a=u32(unsafe_position<u8>(unsafe_address(address_bits(left.name)+i)));u32 b=u32(unsafe_position<u8>(unsafe_address(address_bits(right.name)+i)));
-        if(a!=b){return a>b;}i+=1u64;
+        if(a<b){return i32(-1);}if(a>b){return i32(1);}i+=1u64;
     }
-    if(left.name_length!=right.name_length){return left.name_length>right.name_length;}
-    return left.member>right.member;
+    if(left.name_length<right.name_length){return i32(-1);}if(left.name_length>right.name_length){return i32(1);}
+    return i32(0);
+}
+bool later(ArchiveSymbol left,ArchiveSymbol right) on cpu {
+    i32 order=compare_names(left,right);return order>i32(0)||(order==i32(0)&&left.member>right.member);
 }
 void exchange(ArchiveInput input,u64 left,u64 right) on cpu {
     ArchiveSymbol a=symbol_at(input,left);ArchiveSymbol b=symbol_at(input,right);
@@ -278,4 +281,93 @@ extern "C" ArchiveReadResult decode(address bytes,u64 length,address context,
         at=item.next;
     }
     return ArchiveReadResult(0,0u64);
+}
+
+// The B directory owns only its entries. The original immutable input is borrowed.
+extern "C" address malloc(u64 bytes) on cpu from "ucrtbase.dll";
+extern "C" address realloc(address bytes,u64 length) on cpu from "ucrtbase.dll";
+extern "C" void free(address bytes) on cpu from "ucrtbase.dll";
+
+struct LibraryMember {ArchiveReadMember member;u32 taken;};
+struct LibraryDirectory {
+    address bytes;address members;u64 member_count;u64 member_capacity;
+    address symbols;u64 symbol_count;u64 symbol_capacity;
+};
+LibraryDirectory directory_at(address library) on cpu {return unsafe_position<LibraryDirectory>(library);}
+void directory_put(address library,LibraryDirectory value) on cpu {unsafe_position<LibraryDirectory>(library)=value;}
+LibraryMember directory_member(LibraryDirectory library,u64 index) on cpu {
+    return unsafe_position<LibraryMember>(unsafe_address(address_bits(library.members)+index*size_of<LibraryMember>()));
+}
+void directory_member_put(LibraryDirectory library,u64 index,LibraryMember member) on cpu {
+    unsafe_position<LibraryMember>(unsafe_address(address_bits(library.members)+index*size_of<LibraryMember>()))=member;
+}
+ArchiveSymbol directory_symbol(LibraryDirectory library,u64 index) on cpu {
+    return unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(library.symbols)+index*size_of<ArchiveSymbol>()));
+}
+void directory_symbol_put(LibraryDirectory library,u64 index,ArchiveSymbol symbol) on cpu {
+    unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(library.symbols)+index*size_of<ArchiveSymbol>()))=symbol;
+}
+// Counts come from the original COFF u32 count/offset fields. Native directory
+// indices remain u64. Growth does not rescan the archive or retain a second table.
+u32 directory_grow(inout address bytes,inout u64 capacity,u64 required,u64 stride) on cpu {
+    if(required<=capacity){return 1;}
+    u64 next=capacity*2u64;if(next==0u64){next=16u64;}
+    address value=realloc(bytes,next*stride);
+    if(address_bits(value)==0u64){return 0;}
+    bytes=value;capacity=next;return 1;
+}
+extern "C" address library_create(address bytes) on cpu {
+    address library=malloc(size_of<LibraryDirectory>());
+    if(address_bits(library)==0u64){return library;}
+    directory_put(library,LibraryDirectory(bytes,unsafe_address(0u64),0u64,0u64,unsafe_address(0u64),0u64,0u64));
+    return library;
+}
+extern "C" u32 library_add_member(address library,ArchiveReadMember member) on cpu {
+    LibraryDirectory value=directory_at(library);
+    if(directory_grow(value.members,value.member_capacity,value.member_count+1u64,size_of<LibraryMember>())==0){return 0;}
+    directory_member_put(value,value.member_count,LibraryMember(member,0));
+    value.member_count+=1u64;directory_put(library,value);return 1;
+}
+u64 directory_symbol_position(LibraryDirectory library,ArchiveSymbol name) on cpu {
+    u64 first=0u64;u64 end=library.symbol_count;
+    while(first<end){
+        u64 middle=first+(end-first)/2u64;
+        if(compare_names(directory_symbol(library,middle),name)<i32(0)){first=middle+1u64;}else{end=middle;}
+    }
+    return first;
+}
+extern "C" u32 library_add_symbol(address library,ArchiveReadSymbol symbol) on cpu {
+    LibraryDirectory value=directory_at(library);
+    ArchiveSymbol name=ArchiveSymbol(unsafe_address(address_bits(value.bytes)+symbol.name.start),symbol.name.length,u64(symbol.member));
+    u64 slot=directory_symbol_position(value,name);
+    if(slot<value.symbol_count&&compare_names(directory_symbol(value,slot),name)==i32(0)){return 1;}
+    if(directory_grow(value.symbols,value.symbol_capacity,value.symbol_count+1u64,size_of<ArchiveSymbol>())==0){return 0;}
+    u64 at=value.symbol_count;
+    while(at>slot){at-=1u64;directory_symbol_put(value,at+1u64,directory_symbol(value,at));}
+    directory_symbol_put(value,slot,name);value.symbol_count+=1u64;directory_put(library,value);return 1;
+}
+extern "C" u64 library_member_count(address library) on cpu {return directory_at(library).member_count;}
+extern "C" ArchiveMemberState library_member(address library,u64 index) on cpu {
+    LibraryMember member=directory_member(directory_at(library),index);
+    u32 available=0;if(member.taken==0){available=1;}
+    return ArchiveMemberState(member.member,available);
+}
+extern "C" ArchiveSelection library_take(address library,address name,u64 length) on cpu {
+    LibraryDirectory value=directory_at(library);ArchiveSymbol key=ArchiveSymbol(name,length,0u64);
+    u64 symbol=directory_symbol_position(value,key);
+    if(symbol==value.symbol_count||compare_names(directory_symbol(value,symbol),key)!=i32(0)){return ArchiveSelection(0,0u64);}
+    u64 offset=directory_symbol(value,symbol).member;
+    u64 first=0u64;u64 end=value.member_count;
+    while(first<end){
+        u64 middle=first+(end-first)/2u64;
+        if(u64(directory_member(value,middle).member.offset)<offset){first=middle+1u64;}else{end=middle;}
+    }
+    if(first==value.member_count||u64(directory_member(value,first).member.offset)!=offset){return ArchiveSelection(2,0u64);}
+    LibraryMember selected=directory_member(value,first);
+    if(selected.taken!=0){return ArchiveSelection(0,0u64);}
+    selected.taken=1;directory_member_put(value,first,selected);return ArchiveSelection(1,first);
+}
+extern "C" void library_destroy(address library) on cpu {
+    LibraryDirectory value=directory_at(library);
+    free(value.symbols);free(value.members);free(library);
 }

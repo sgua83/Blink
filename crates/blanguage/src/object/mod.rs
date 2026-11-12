@@ -54,7 +54,7 @@ pub(crate) struct ResourceBinding {
     pub code: Vec<String>,
 }
 pub(crate) struct Archive {
-    pub bytes: Vec<u8>,
+    pub bytes: std::sync::Arc<Vec<u8>>,
     pub libraries: Vec<String>,
     pub exports: Vec<String>,
     pub resources: Option<ResourceBinding>,

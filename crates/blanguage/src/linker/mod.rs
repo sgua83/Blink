@@ -198,7 +198,7 @@ fn select(mut objects: Vec<Source<'_>>, mut libraries: Vec<crate::object::Librar
                     if native {
                         let selected_object = selected[object].as_mut().unwrap();
                         if !selected_object.resources {
-                            libraries.push(crate::object::Library::native(&archive.bytes)?);
+                            libraries.push(crate::object::Library::native(std::sync::Arc::clone(&archive.bytes))?);
                             selected_object.resources = true;
                         }
                         let (target, section_index) = resolve_symbol(&name, &[], &mut objects, &mut libraries, &mut defined)?;

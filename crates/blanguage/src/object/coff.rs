@@ -646,7 +646,7 @@ fn read_metadata(raw: &[ObjectSection], archive_bytes: bool) -> Result<(String, 
         stack.push(stack::Frame { name, coff, local: value.local as u32, calls });
     }
     let archive = raw.iter().filter(|_| archive_bytes).find(|row| unsafe { row.name.borrowed() } == ARCHIVE.as_bytes()).map(|row| Archive {
-        bytes: unsafe { row.bytes.borrowed() }.to_vec(),
+        bytes: std::sync::Arc::new(unsafe { row.bytes.borrowed() }.to_vec()),
         libraries,
         exports,
         resources,

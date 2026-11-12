@@ -56,7 +56,7 @@ pub(super) fn member(import:&Import)->Result<(LibraryMember,String)> {
     for(index,row)in rows.iter().enumerate(){if row.owner!=0{sections[usize::try_from(row.owner-1)?].associated.push(index);}}
     let symbol=Symbol{name:slot,section:0,value:0,contract:Vec::new(),function:false};
     let bytes=object::encode_native(&stem,&sections,std::slice::from_ref(&symbol))?;
-    Ok((LibraryMember{name:member,bytes},symbol.name))
+    Ok((LibraryMember::new(member,bytes),symbol.name))
 }
 
 /// 保存已编译模块及其原生导入材料，供C／C++／Rust静态宿主链接。
