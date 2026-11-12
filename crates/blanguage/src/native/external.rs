@@ -19,6 +19,8 @@ impl AbiType {
 struct CallPlan { bytes: u64, result: u64, copies: u64, target: u64, hidden: u64 }
 #[repr(C)]
 struct ValueCopy { offset: u64, end: u64, present: u64 }
+#[repr(C)]
+struct SymbolEncoding { length: u64, field: u64 }
 unsafe extern "C" {
     #[link_name = "bootstrap.call_layout::indirect"]
     fn indirect_value(size: u32, alignment: u32) -> bool;
@@ -26,6 +28,10 @@ unsafe extern "C" {
     fn copy_value(start: u64, size: u32, alignment: u32) -> ValueCopy;
     #[link_name = "bootstrap.x64_instruction::argument_register"]
     fn encode_argument_register(slot: u8, float_size: u32, to_home: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::symbol_target"]
+    fn encode_symbol_target(invoke: u32, output: *mut u8) -> SymbolEncoding;
+    #[link_name = "bootstrap.x64_instruction::call_slot"]
+    fn encode_call_slot(offset: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::pack_integer_component"]
     fn encode_pack_integer_component(scalar: ScalarEncoding, offset: u32,
         merge: u32, output: *mut u8) -> u64;
@@ -117,16 +123,19 @@ impl Emitter<'_> {
         }
         Ok(())
     }
-    pub(super) fn native_code_address(&mut self, target: NativeSymbol) -> usize {
-        self.bytes(&[0x48, 0xb8]);
-        let at = self.code.len();
-        self.relocations.push(Relocation { offset: at, target });
-        self.bytes(&[0; 8]);
-        at
-    }
-    pub(super) fn invoke(&mut self, reference: Option<usize>) {
-        self.calls.push(reference);
-        self.bytes(&[0xff, 0xd0]);
+    pub(super) fn emit_symbol_target(&mut self, target: NativeSymbol, invoke: bool) {
+        self.code.reserve(12);
+        let start = self.code.len();
+        let encoding = unsafe {
+            let encoding = encode_symbol_target(u32::from(invoke), self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + encoding.length as usize);
+            encoding
+        };
+        let offset = start + encoding.field as usize;
+        self.relocations.push(Relocation { offset, target });
+        if invoke {
+            self.calls.push(Some(offset));
+        }
     }
     pub(super) fn pack_integer_result(&mut self, ty: &Ty, outputs: &[Reg]) {
         let components = ty.components.iter().zip(outputs);
@@ -164,8 +173,7 @@ impl Emitter<'_> {
     pub(super) fn native_call(&mut self, call: &Call) -> Result<(), &'static str> {
         let layout = Layout::new(call);
         if let CallTarget::Indirect(reg) = call.target {
-            self.load(reg);
-            self.instruction(None, &[0x89], true, 0, Operand::memory(4, layout.target.unwrap() as u32));
+            self.copy_scalar(Location::Stack(layout.target.unwrap() as u32), self.location(reg), Scalar::U64);
         }
         if let Some(at) = layout.result {
             self.stack_address(at as u32);
@@ -206,12 +214,15 @@ impl Emitter<'_> {
             };
             self.argument_register(slot, size, false);
         }
-        let reference = match &call.target {
-            CallTarget::Indirect(_) => { self.instruction(None, &[0x8b], true, 0, Operand::memory(4, layout.target.unwrap() as u32)); None }
-            CallTarget::External(name) => Some(self.native_code_address(NativeSymbol::External(name.clone()))),
-            CallTarget::Defined(name) => Some(self.native_code_address(NativeSymbol::Function(name.clone()))),
-        };
-        self.invoke(reference);
+        match &call.target {
+            CallTarget::Indirect(_) => {
+                let offset = layout.target.unwrap() as u32;
+                self.emit_bytes(7, |output| unsafe { encode_call_slot(offset, output) });
+                self.calls.push(None);
+            }
+            CallTarget::External(name) => self.emit_symbol_target(NativeSymbol::External(name.clone()), true),
+            CallTarget::Defined(name) => self.emit_symbol_target(NativeSymbol::Function(name.clone()), true),
+        }
         let failed = if let Some(error) = call.error {
             self.store(error);
             Some(self.jump(Branch::Nonzero64))

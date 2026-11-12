@@ -358,13 +358,18 @@ u64 encode_operand_instruction(u64 at, u16 opcode, u8 prefix, bool wide, u8 reg,
     return instruction_operand(input, cursor);
 }
 
+u64 immediate_register_field(u64 at, u8 register, bool full) on cpu {
+    Encoding input = Encoding(0, u8(0), register, NO_INDEX, u8(0), OPCODE_REGISTER, u8(0), u16(full));
+    u64 opcode = instruction_prefix(input, false, at);
+    put_byte(opcode, u8(0xb8) | (register & u8(7)));
+    return opcode + 1u64;
+}
+
 u64 move_immediate(u64 at, u8 register, u64 value, bool wide) on cpu {
     bool full = wide && value > 0xffffffffu64;
-    Encoding input = Encoding(0, u8(0), register, NO_INDEX, u8(0), OPCODE_REGISTER, u8(0), u16(full));
-    u64 cursor = instruction_prefix(input, false, at);
-    put_byte(cursor, u8(0xb8) | (register & u8(7)));
-    write_word(cursor + 1u64, u32(value));
-    cursor += 5u64;
+    u64 cursor = immediate_register_field(at, register, full);
+    write_word(cursor, u32(value));
+    cursor += 4u64;
     if (full) {
         write_word(cursor, u32(value >> 32));
         cursor += 4u64;
@@ -400,6 +405,28 @@ u64 store_bits(u64 at, MoveLocation dst, u8 src, u32 size) on cpu {
 u64 store_float(u64 at, MoveLocation dst, u8 src, bool wide) on cpu {
     if (wide) { return encode_operand_instruction(at, u16(0xd60f), u8(0x66), false, src, dst); }
     return encode_operand_instruction(at, u16(0x110f), u8(0xf3), false, src, dst);
+}
+
+u64 call_operand(u64 at, MoveLocation target) on cpu {
+    return encode_operand_instruction(at, u16(0xff), u8(0), false, u8(2), target);
+}
+
+extern "C" SymbolEncoding symbol_target(bool invoke, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 field = immediate_register_field(start, u8(0), true);
+    write_word(field, 0);
+    write_word(field + 4u64, 0);
+    u64 end = field + 8u64;
+    if (invoke) {
+        end = call_operand(end, move_gpr(u8(0)));
+    }
+    return SymbolEncoding(end - start, field - start);
+}
+
+extern "C" u64 call_slot(u32 offset, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation target = MoveLocation(u64(offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    return call_operand(start, target) - start;
 }
 
 extern "C" u64 argument_register(u8 slot, u32 float_size, bool to_home, address output) on cpu {

@@ -58,6 +58,17 @@ extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu;
 // The caller owns nine output bytes. The returned length includes the rel32.
 extern "C" u64 encode_branch(u8 condition, u32 test_bits, address output) on cpu;
 
+struct SymbolEncoding {
+    u64 length;
+    u64 field;
+};
+
+// The caller owns twelve bytes. Field locates the zeroed ABS64 address in
+// the emitted sequence, with or without a following call through RAX.
+extern "C" SymbolEncoding symbol_target(bool invoke, address output) on cpu;
+// Call through an existing outgoing stack slot. The caller owns seven bytes.
+extern "C" u64 call_slot(u32 offset, address output) on cpu;
+
 struct DivisionPlan {
     u32 magic;
     u8 shift;

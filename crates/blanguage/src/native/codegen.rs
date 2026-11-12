@@ -354,9 +354,10 @@ impl Emitter<'_> {
                 InstKind::Print { dst, value } => {
                     let scalar = self.stage.registers[*value];
                     self.copy_scalar(allocation::Location::Gpr(1), self.location(*value), scalar);
-                    if scalar.is_float() { self.bytes(&[0xba]); self.u32(scalar.bit_width()); }
-                    let reference = self.native_code_address(NativeSymbol::Print(scalar));
-                    self.invoke(Some(reference));
+                    if scalar.is_float() {
+                        self.copy_scalar(allocation::Location::Gpr(2), allocation::Location::Immediate(u64::from(scalar.bit_width())), Scalar::U32);
+                    }
+                    self.emit_symbol_target(NativeSymbol::Print(scalar), true);
                     self.store(*dst);
                 }
                 InstKind::TextureBindingAddress { dst, texture } => {
@@ -484,8 +485,8 @@ impl Emitter<'_> {
                 }
                 InstKind::FunctionAddress(dst, target) => {
                     match target {
-                        CallTarget::Defined(name) => { self.native_code_address(NativeSymbol::Function(name.clone())); }
-                        CallTarget::External(name) => { self.native_code_address(NativeSymbol::External(name.clone())); }
+                        CallTarget::Defined(name) => self.emit_symbol_target(NativeSymbol::Function(name.clone()), false),
+                        CallTarget::External(name) => self.emit_symbol_target(NativeSymbol::External(name.clone()), false),
                         CallTarget::Indirect(reg) => self.load(*reg),
                     }
                     self.store(*dst);
@@ -583,11 +584,10 @@ impl Emitter<'_> {
                     if let Some(name) = name {
                         if args.len() == 2 { self.float(args[1], 1); }
                         self.float(args[0], 0);
-                        let reference = self.native_code_address(NativeSymbol::External(crate::ast::ExternalName {
+                        self.emit_symbol_target(NativeSymbol::External(crate::ast::ExternalName {
                             library: "ucrtbase.dll".into(),
                             symbol: if self.stage.registers[*dst] == Scalar::F32 { format!("{name}f") } else { name.into() },
-                        }));
-                        self.invoke(Some(reference));
+                        }), true);
                         self.store_float(*dst);
                     }
                 },
