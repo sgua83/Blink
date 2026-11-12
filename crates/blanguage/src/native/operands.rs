@@ -78,6 +78,10 @@ const NO_INDEX: u8 = u8::MAX;
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::encode"]
     fn encode_instruction(input: InstructionEncoding, opcode: *const u8, length: u64, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::unsigned_to_float"]
+    fn encode_unsigned_to_float(target: u8, prefix: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::float_to_unsigned"]
+    fn encode_float_to_unsigned(target: u8, prefix: u8, output: *mut u8) -> u64;
 }
 
 impl Emitter<'_> {
@@ -561,19 +565,12 @@ impl Emitter<'_> {
         let prefix = if self.stage.registers[dst] == Scalar::F64 { 0xf2 } else { 0xf3 };
         let target = match location { Location::Xmm(r) => r, _ => 0 };
         self.load(src);
-        self.bytes(&[0x48, 0x85, 0xc0]);
-        let low = self.jump(Some(0x89));
-        // The low bit supplies the sticky bit before the signed conversion.
-        // Rounding the half value to odd preserves the final floating-point rounding.
-        self.bytes(&[0x48, 0x89, 0xc1, 0x83, 0xe1, 1, 0x48, 0xd1, 0xe8, 0x48, 0x09, 0xc8]);
-        self.instruction(None, &[0x0f, 0x57], false, target, Operand::Register(target));
-        self.instruction(Some(prefix), &[0x0f, 0x2a], true, target, Operand::Register(0));
-        self.instruction(Some(prefix), &[0x0f, 0x58], false, target, Operand::Register(target));
-        let end = self.jump(None);
-        self.patch(low, self.code.len());
-        self.instruction(None, &[0x0f, 0x57], false, target, Operand::Register(target));
-        self.instruction(Some(prefix), &[0x0f, 0x2a], true, target, Operand::Register(0));
-        self.patch(end, self.code.len());
+        self.code.reserve(49);
+        let start = self.code.len();
+        unsafe {
+            let count = encode_unsigned_to_float(target, prefix, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + count as usize);
+        }
         self.copy_scalar(location, Location::Xmm(target), self.stage.registers[dst]);
     }
     fn float_to_unsigned64(&mut self, dst: Reg, src: Reg) {
@@ -582,16 +579,12 @@ impl Emitter<'_> {
         let target = match location { Location::Gpr(r) => r, _ => 0 };
         self.float(src, 0);
         self.literal_width(Location::Xmm(1), if prefix == 0xf2 { (2.0f64.powi(63)).to_bits() } else { 0x5f000000 }, prefix == 0xf2);
-        self.instruction(if prefix == 0xf2 { Some(0x66) } else { None }, &[0x0f, 0x2e], false, 0, Operand::Register(1));
-        let low = self.jump(Some(0x82));
-        self.instruction(Some(prefix), &[0x0f, 0x5c], false, 0, Operand::Register(1));
-        self.instruction(Some(prefix), &[0x0f, 0x2c], true, target, Operand::Register(0));
-        self.instruction(None, &[0x0f, 0xba], true, 5, Operand::Register(target));
-        self.bytes(&[63]);
-        let end = self.jump(None);
-        self.patch(low, self.code.len());
-        self.instruction(Some(prefix), &[0x0f, 0x2c], true, target, Operand::Register(0));
-        self.patch(end, self.code.len());
+        self.code.reserve(34);
+        let start = self.code.len();
+        unsafe {
+            let count = encode_float_to_unsigned(target, prefix, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + count as usize);
+        }
         self.copy_scalar(location, Location::Gpr(target), Scalar::U64);
     }
     pub(super) fn float_sign(&mut self, dst: Reg, src: Reg, negate: bool) {

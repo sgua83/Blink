@@ -5,21 +5,11 @@ const u8 DIRECT_REGISTER = u8(1);
 const u8 MEMORY = u8(2);
 const u8 NO_INDEX = u8(255);
 
-extern "C" u64 encode(Encoding input, address opcode, u64 opcode_length, address output) on cpu {
-    u64 start = address_bits(output);
-    u64 cursor = start;
+u64 instruction_prefix(Encoding input, bool byte_register, u64 at) on cpu {
+    u64 cursor = at;
     if (input.prefix != u8(0)) {
         unsafe_position<u8>(unsafe_address(cursor)) = input.prefix;
         cursor += 1u64;
-    }
-    bool byte_register = false;
-    if (opcode_length == 1u64) {
-        u8 first = unsafe_position<u8>(opcode);
-        byte_register = first == u8(0x88) || first == u8(0x8a);
-    }
-    if (opcode_length == 2u64 && unsafe_position<u8>(opcode) == u8(0x0f)) {
-        u8 second = unsafe_position<u8>(unsafe_address(address_bits(opcode) + 1u64));
-        byte_register = second == u8(0xb6) || second == u8(0xbe);
     }
     u32 rex = 0x40 | (u32(input.wide) << 3) | ((u32(input.reg) >> 3) << 2) | (u32(input.base) >> 3);
     bool has_index = input.index != NO_INDEX;
@@ -30,16 +20,15 @@ extern "C" u64 encode(Encoding input, address opcode, u64 opcode_length, address
         unsafe_position<u8>(unsafe_address(cursor)) = u8(rex);
         cursor += 1u64;
     }
-    u64 index = 0u64;
-    while (index < opcode_length) {
-        u8 byte = unsafe_position<u8>(unsafe_address(address_bits(opcode) + index));
-        unsafe_position<u8>(unsafe_address(cursor)) = byte;
-        cursor += 1u64;
-        index += 1u64;
-    }
+    return cursor;
+}
+
+u64 instruction_operand(Encoding input, u64 at) on cpu {
+    u64 cursor = at;
     if (input.form == OPCODE_REGISTER) {
-        return cursor - start;
+        return cursor;
     }
+    bool has_index = input.index != NO_INDEX;
 
     u32 reg_field = (u32(input.reg) & 7) << 3;
     u32 base_field = u32(input.base) & 7;
@@ -85,7 +74,30 @@ extern "C" u64 encode(Encoding input, address opcode, u64 opcode_length, address
         displacement >>= 8;
         remaining -= 1;
     }
-    return cursor - start;
+    return cursor;
+}
+
+extern "C" u64 encode(Encoding input, address opcode, u64 opcode_length, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    bool byte_register = false;
+    if (opcode_length == 1u64) {
+        u8 first = unsafe_position<u8>(opcode);
+        byte_register = first == u8(0x88) || first == u8(0x8a);
+    }
+    if (opcode_length == 2u64 && unsafe_position<u8>(opcode) == u8(0x0f)) {
+        u8 second = unsafe_position<u8>(unsafe_address(address_bits(opcode) + 1u64));
+        byte_register = second == u8(0xb6) || second == u8(0xbe);
+    }
+    cursor = instruction_prefix(input, byte_register, cursor);
+    u64 index = 0u64;
+    while (index < opcode_length) {
+        u8 byte = unsafe_position<u8>(unsafe_address(address_bits(opcode) + index));
+        unsafe_position<u8>(unsafe_address(cursor)) = byte;
+        cursor += 1u64;
+        index += 1u64;
+    }
+    return instruction_operand(input, cursor) - start;
 }
 
 void write_word(u64 at, u32 word) on cpu {
@@ -163,4 +175,81 @@ extern "C" TailRange append_literal(address image, u64 end, u64 bits, u32 width,
         index += 1u64;
     }
     return TailRange(start, start + u64(width));
+}
+
+u64 register_instruction(u64 at, u16 opcode, u8 prefix, bool wide, u8 reg, u8 operand) on cpu {
+    Encoding input = Encoding(0, reg, operand, NO_INDEX, u8(0), DIRECT_REGISTER, prefix, u16(wide));
+    u64 cursor = instruction_prefix(input, false, at);
+    put_byte(cursor, u8(opcode));
+    put_byte(cursor + 1u64, u8(opcode >> 8));
+    return instruction_operand(input, cursor + 2u64);
+}
+
+void put_byte(u64 at, u8 value) on cpu {
+    unsafe_position<u8>(unsafe_address(at)) = value;
+}
+
+u64 condition_field(u64 at, u8 condition) on cpu {
+    put_byte(at, u8(0x0f));
+    put_byte(at + 1u64, condition);
+    return at + 2u64;
+}
+
+u64 jump_field(u64 at) on cpu {
+    put_byte(at, u8(0xe9));
+    return at + 1u64;
+}
+
+const u32 ODD_HALF_LENGTH = 12;
+const array<u8,ODD_HALF_LENGTH> ODD_HALF = array<u8,ODD_HALF_LENGTH>(
+    u8(0x48), u8(0x89), u8(0xc1), // mov rcx, rax
+    u8(0x83), u8(0xe1), u8(1),    // and ecx, 1
+    u8(0x48), u8(0xd1), u8(0xe8), // shr rax, 1
+    u8(0x48), u8(0x09), u8(0xc8)  // or rax, rcx
+);
+
+extern "C" u64 unsigned_to_float(u8 target, u8 prefix, address output) on cpu {
+    u64 start = address_bits(output);
+    put_byte(start, u8(0x48));
+    put_byte(start + 1u64, u8(0x85));
+    put_byte(start + 2u64, u8(0xc0)); // test rax, rax
+    u64 low = condition_field(start + 3u64, u8(0x89)); // jns
+    u64 cursor = low + 4u64;
+    // Preserve the sticky bit before conversion so doubling rounds correctly.
+    for (index in 0..ODD_HALF_LENGTH) {
+        put_byte(cursor + u64(index), ODD_HALF[index]);
+    }
+    cursor += u64(ODD_HALF_LENGTH);
+    cursor = register_instruction(cursor, u16(0x570f), u8(0), false, target, target);
+    cursor = register_instruction(cursor, u16(0x2a0f), prefix, true, target, u8(0));
+    cursor = register_instruction(cursor, u16(0x580f), prefix, false, target, target);
+    u64 done = jump_field(cursor);
+    cursor = done + 4u64;
+    patch_relative(unsafe_address(low), low, cursor);
+    cursor = register_instruction(cursor, u16(0x570f), u8(0), false, target, target);
+    cursor = register_instruction(cursor, u16(0x2a0f), prefix, true, target, u8(0));
+    patch_relative(unsafe_address(done), done, cursor);
+    return cursor - start;
+}
+
+extern "C" u64 float_to_unsigned(u8 target, u8 prefix, address output) on cpu {
+    u64 start = address_bits(output);
+    u8 compare_prefix = u8(0);
+    if (prefix == u8(0xf2)) {
+        compare_prefix = u8(0x66);
+    }
+    u64 cursor = register_instruction(start, u16(0x2e0f), compare_prefix, false, u8(0), u8(1));
+    u64 low = condition_field(cursor, u8(0x82)); // jb
+    cursor = low + 4u64;
+    // Subtract 2^63 for the signed conversion and restore the high bit.
+    cursor = register_instruction(cursor, u16(0x5c0f), prefix, false, u8(0), u8(1));
+    cursor = register_instruction(cursor, u16(0x2c0f), prefix, true, target, u8(0));
+    cursor = register_instruction(cursor, u16(0xba0f), u8(0), true, u8(5), target);
+    put_byte(cursor, u8(63));
+    u64 done = jump_field(cursor + 1u64);
+    cursor = done + 4u64;
+    patch_relative(unsafe_address(low), low, cursor);
+    cursor = register_instruction(cursor, u16(0x2c0f), prefix, true, target, u8(0));
+    patch_relative(unsafe_address(done), done, cursor);
+    return cursor - start;
 }
