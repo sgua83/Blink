@@ -9,43 +9,39 @@ use std::{
     path::{Component, Path, PathBuf, Prefix},
     process::{Command, Output},
 };
-// Detached link.exe has no console code page and encodes diagnostics with CP_ACP.
-fn link_text(bytes: &[u8]) -> Result<String> {
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn MultiByteToWideChar(
-            page: u32,
-            flags: u32,
-            input: *const u8,
-            len: i32,
-            output: *mut u16,
-            capacity: i32,
-        ) -> i32;
-    }
-    if bytes.is_empty() {
-        return Ok(String::new());
-    }
-    let len = i32::try_from(bytes.len())?;
-    let size = unsafe { MultiByteToWideChar(0, 8, bytes.as_ptr(), len, std::ptr::null_mut(), 0) };
-    if size == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let mut wide = vec![0; size as usize];
-    if unsafe { MultiByteToWideChar(0, 8, bytes.as_ptr(), len, wide.as_mut_ptr(), size) } == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    Ok(String::from_utf16(&wide)?)
-}
 fn output(command: &mut Command) -> io::Result<Output> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x00000008;
     command.creation_flags(DETACHED_PROCESS).output()
 }
 #[repr(C)]
-struct SdkRoot {
-    path: *const u16,
+struct HostWide {
+    data: *const u16,
+    first: u32,
     units: u32,
     status: i32,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum HostText {
+    LinkOutput = 0,
+    InstallationPath = 1,
+    ToolVersion = 2,
+}
+
+impl HostWide {
+    fn consume<T>(self, copy: impl FnOnce(&[u16]) -> T) -> io::Result<T> {
+        // A successful decode owns this initialized span until the copy ends.
+        let units = unsafe {
+            std::slice::from_raw_parts(self.data.add(self.first as usize), self.units as usize)
+        };
+        let result = copy(units);
+        if unsafe { release_host_wide(self.data) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(result)
+    }
 }
 
 #[repr(C)]
@@ -58,9 +54,11 @@ unsafe extern "C" {
     #[link_name = "bootstrap.host_sdk::find_sdk_version"]
     fn find_sdk_version(pattern: *const u16, selected: *mut u16) -> SdkVersionResult;
     #[link_name = "bootstrap.host_sdk::read_sdk_root"]
-    fn read_sdk_root() -> SdkRoot;
-    #[link_name = "bootstrap.host_sdk::release_sdk_root"]
-    fn release_sdk_root(path: *const u16) -> i32;
+    fn read_sdk_root() -> HostWide;
+    #[link_name = "bootstrap.host_sdk::decode_host_text"]
+    fn decode_host_text(input: *const u8, bytes: i32, kind: HostText) -> HostWide;
+    #[link_name = "bootstrap.host_sdk::release_host_wide"]
+    fn release_host_wide(data: *const u16) -> i32;
 }
 
 fn sdk_root() -> Result<PathBuf> {
@@ -68,11 +66,22 @@ fn sdk_root() -> Result<PathBuf> {
     if root.status != 0 {
         return Err(format!("无法读取 Windows SDK KitsRoot10：{}", std::io::Error::from_raw_os_error(root.status)).into());
     }
-    let path = OsString::from_wide(unsafe { std::slice::from_raw_parts(root.path, root.units as usize) });
-    if unsafe { release_sdk_root(root.path) } == 0 {
-        return Err(std::io::Error::last_os_error().into());
+    Ok(root.consume(|units| PathBuf::from(OsString::from_wide(units)))?)
+}
+
+fn host_text<T>(bytes: &[u8], kind: HostText, copy: impl FnOnce(&[u16]) -> T) -> Result<T> {
+    if bytes.is_empty() {
+        return Ok(copy(&[]));
     }
-    Ok(path.into())
+    let decoded = unsafe { decode_host_text(bytes.as_ptr(), i32::try_from(bytes.len())?, kind) };
+    const ERROR_NO_UNICODE_TRANSLATION: i32 = 1113;
+    if matches!(kind, HostText::ToolVersion) && decoded.status == ERROR_NO_UNICODE_TRANSLATION {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "stream did not contain valid UTF-8").into());
+    }
+    if decoded.status != 0 {
+        return Err(io::Error::from_raw_os_error(decoded.status).into());
+    }
+    Ok(decoded.consume(copy)?)
 }
 
 fn sdk_search_pattern(directory: &Path) -> io::Result<Vec<u16>> {
@@ -125,15 +134,17 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
             String::from_utf8_lossy(&found.stderr)
         ).into());
     }
-    let installation = std::str::from_utf8(&found.stdout)?.trim_end_matches(['\r', '\n']);
+    let installation = host_text(&found.stdout, HostText::InstallationPath, OsString::from_wide)?;
     if installation.is_empty() {
         return Err("未安装 Visual Studio C++ 本机工具".into());
     }
-    let vs = Path::new(installation);
-    let version = std::fs::read_to_string(
-        vs.join("VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"),
-    )?;
-    let vc = vs.join("VC/Tools/MSVC").join(version.trim());
+    let vs = Path::new(&installation);
+    let vc = {
+        let path = vs.join("VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt");
+        let bytes = crate::file_bytes::FileBytes::read(&File::open(path)?)?;
+        let version = host_text(&bytes, HostText::ToolVersion, OsString::from_wide)?;
+        vs.join("VC/Tools/MSVC").join(version)
+    };
     let lib = sdk_root()?.join("Lib");
     let pattern = sdk_search_pattern(&lib)?;
     let mut version = [0u16; 260];
@@ -251,7 +262,8 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
         }
         let mut diagnostics = linked.stdout;
         diagnostics.extend(linked.stderr);
-        let details = match link_text(&diagnostics) {
+        let details = match host_text(&diagnostics, HostText::LinkOutput, String::from_utf16)
+            .and_then(|text| Ok(text?)) {
             Ok(text) => text,
             Err(error) => format!("链接工具诊断解码失败：{error}"),
         };
