@@ -3173,7 +3173,7 @@ void shade(inout dataset<Sample> pixels, read texture2d albedo) on compute {
 
 资源维度、参数数量、坐标／LOD 类型、只读权限与不可存储性在编译期检查，分别使用 B239 或既有类型诊断 B124。当前跨后端数值约定以有限坐标／LOD 为前提，编译器尚无一般有限值证明，不增加逐次采样的运行时修正。采样的目标精度和允许差异见下节；返回 float4 不表示原生过滤的所有中间量都按 CPU f32 求值。
 
-源采样进入同一 TextureSample IR，TextureBinding 保存实际静态维度，结果与坐标／LOD 参与原活跃性、死值删除、静态函数内联和 tile 私有值交接。GPU 自研后端按该维度直接编码 `OpTypeImage`、`OpTypeSampledImage` 与 `OpImageSampleExplicitLod`，由 Vulkan sampled image／sampler 执行过滤；不经过 HLSL／GLSL 或第三方编译器。CPU 后端沿同一降低器读取 mip 元数据，二维取四点、三维取八点，逐轴插值后混合 mip，使用 64 位 texel 地址并直接生成 x64 指令，没有逐 texel 的宿主回调。CPU采样降低在实际生成指令时保留原采样来源与cpu_texture_sample生成职责；普通函数的同次NativeCode操作范围据此交接，观察材料不改变执行代码或ABI。含采样的 map 当前使用标量范围代码，采样通道裁剪、重复采样复用与更宽 SIMD 仍需后端工作。
+源采样进入同一 TextureSample IR，TextureBinding 保存实际静态维度，结果与坐标／LOD 参与原活跃性、死值删除、静态函数内联和 tile 私有值交接。GPU 后端的 B 发射器按该维度直接写出图像与采样类型、描述符读取及显式 LOD 指令。资源数组选择发射对应的 NonUniform 装饰，过滤由原 Vulkan sampled image／sampler 执行。CPU 后端沿同一降低器读取 mip 元数据，二维取四点、三维取八点，逐轴插值后混合 mip，使用 64 位 texel 地址并直接生成 x64 指令，没有逐 texel 的宿主回调。CPU采样降低在实际生成指令时保留原采样来源与cpu_texture_sample生成职责；普通函数的同次NativeCode操作范围据此交接，观察材料不改变执行代码或ABI。含采样的 map 当前使用标量范围代码，采样通道裁剪、重复采样复用与更宽 SIMD 仍需后端工作。
 
 ### 采样数值与目标精度
 
@@ -3265,7 +3265,7 @@ void animate(inout dataset<FrameSample> samples, read array<texture2d,FrameCount
 
 源资源引用保存原 binding 与可选元素寄存器；动态元素属于 IR 输入，参与原重映射、死值删除、寄存器活跃性与跨 tile 阶段保存。资源选择也参与值的 uniform 判定，不能因 UV／LOD 是常量就把逐元素选纹理的结果当成统一值。函数静态内联保持实际资源及元素，不复制像素或把采样移成宿主逐元素调用。
 
-GPU 一个资源数组占一个 descriptor binding，其 descriptorCount 为 N；不同 invocation 可以选不同元素。同一程序按原TextureBinding的实际数组元素合计描述符数，设备创建直接消费候选已查询的maxPerStageDescriptorSamplers、maxPerStageDescriptorSampledImages、maxDescriptorSetSamplers和maxDescriptorSetSampledImages四项容量；独立程序各自形成布局，多程序选择取各程序总数的最大值。实际装入继续消费已确定设备的容量，并在该调用内求一次总数供纹理及组合资源检查使用。自研 SPIR-V 后端生成数组、AccessChain 与 `NonUniform` 标记，按 [SPIR-V descriptor indexing](https://github.khronos.org/SPIRV-Registry/extensions/EXT/SPV_EXT_descriptor_indexing.html) 编码。`Device::for_program/with_presentation` 为资源数组明确查询并启用 [shaderSampledImageArrayNonUniformIndexing](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceDescriptorIndexingFeatures.html)，不支持或未声明设备能力时明确报错；不改成逐材质宿主提交。CPU 按绑定表中的实际资源指针寻址，整体数量与地址保留原生宽度，仍由原范围线程执行。
+GPU 一个资源数组占一个 descriptor binding，其 descriptorCount 为 N；不同 invocation 可以选不同元素。同一程序按原TextureBinding的实际数组元素合计描述符数，设备创建直接消费候选已查询的maxPerStageDescriptorSamplers、maxPerStageDescriptorSampledImages、maxDescriptorSetSamplers和maxDescriptorSetSampledImages四项容量；独立程序各自形成布局，多程序选择取各程序总数的最大值。实际装入继续消费已确定设备的容量，并在该调用内求一次总数供纹理及组合资源检查使用。B 发射器写出数组声明及实际选择的 AccessChain，为索引、指针和采样图像写入 `NonUniform` 装饰，按 [SPIR-V descriptor indexing](https://github.khronos.org/SPIRV-Registry/extensions/EXT/SPV_EXT_descriptor_indexing.html) 编码。`Device::for_program/with_presentation` 为资源数组明确查询并启用 [shaderSampledImageArrayNonUniformIndexing](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceDescriptorIndexingFeatures.html)，不支持或未声明设备能力时明确报错；不改成逐材质宿主提交。CPU 按绑定表中的实际资源指针寻址，整体数量与地址保留原生宽度，仍由原范围线程执行。
 
 `Program::textures()` 返回按参数顺序排列的 TextureBinding，count=None 为单张纹理、Some(N) 为资源数组；`texture_count()` 是实际元素总数，`texture_offset(binding)` 是该参数在扁平资源列表中的起点。`cpu::Bindings.textures`／`vulkan::Bindings.textures` 仍为同一实际所有者列表：按参数顺序，再按每个数组的元素顺序展开。例如数组 3 张、单张、数组 2 张，共三个纹理 binding、六个资源元素；执行器辅助 binding 在三个资源 binding 之后。物理能力按元素总数判断，不误用参数个数。
 

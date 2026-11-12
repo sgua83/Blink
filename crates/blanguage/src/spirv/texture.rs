@@ -1,44 +1,7 @@
-//! GPU 采样直接发出标准 sampled-image 指令，使用显式 LOD。
+//! 从原纹理绑定解析采样所用的类型与值，交接原 SPIR-V 字流。
 use super::*;
+
 impl Emitter<'_> {
-    pub(super) fn texture_coordinate_type(&self, texture: TextureSource, floating: bool) -> u32 {
-        use crate::ast::TextureDimension;
-        match (self.program.textures[texture.binding].dimension, floating) {
-            (TextureDimension::D2, true) => self.vec2_type,
-            (TextureDimension::D3, true) => self.vec3_type,
-            (TextureDimension::D2, false) => self.uint2_type,
-            (TextureDimension::D3, false) => self.uint3_type,
-        }
-    }
-    fn sampled_texture(&mut self, texture: TextureSource) -> u32 {
-        let (_, sampled_type, sampled_pointer) = self.texture_types[&self.program.textures[texture.binding].dimension];
-        let mut pointer = self.textures[texture.binding];
-        if let Some(element) = texture.element {
-            let index = self.id();
-            self.emit(83, &[self.types[&Scalar::U32], index, self.value(element)]);
-            self.decorate_flag(FlagDecoration::NonUniform, index);
-            let selected = self.id();
-            self.emit(65, &[sampled_pointer, selected, pointer, index]);
-            self.decorate_flag(FlagDecoration::NonUniform, selected);
-            pointer = selected;
-        }
-        let sampled = self.id();
-        self.emit(61, &[sampled_type, sampled, pointer]);
-        if texture.element.is_some() {
-            self.decorate_flag(FlagDecoration::NonUniform, sampled);
-        }
-        sampled
-    }
-    pub(super) fn texture_image(&mut self, texture: TextureSource) -> u32 {
-        let sampled = self.sampled_texture(texture);
-        let image = self.id();
-        let (image_type, _, _) = self.texture_types[&self.program.textures[texture.binding].dimension];
-        self.emit(100, &[image_type, image, sampled]);
-        if texture.element.is_some() {
-            self.decorate_flag(FlagDecoration::NonUniform, image);
-        }
-        image
-    }
     pub(super) fn texture_sample(
         &mut self,
         result: [Reg; 4],
@@ -46,18 +9,42 @@ impl Emitter<'_> {
         coordinate: &[Reg],
         lod: Reg,
     ) {
-        let sampled = self.sampled_texture(texture);
-        let coord = self.id();
-        let mut operands = vec![self.texture_coordinate_type(texture, true), coord];
-        operands.extend(coordinate.iter().map(|r| self.value(*r)));
-        self.emit(80, &operands);
-        let value = self.id();
-        self.emit(
-            88,
-            &[self.vec4_type, value, sampled, coord, 2, self.value(lod)],
-        );
-        for (i, r) in result.iter().enumerate() {
-            self.emit(81, &[self.ty(*r), self.value(*r), value, i as u32]);
+        use crate::ast::TextureDimension;
+        let dimension = self.program.textures[texture.binding].dimension;
+        let (sampled_type, sampled_pointer) = self.texture_types[&dimension];
+        let input = TextureSampleEmission {
+            variable: self.textures[texture.binding],
+            element: texture.element.map_or(0, |reg| self.value(reg)),
+            index_type: self.types[&Scalar::U32],
+            sampled_type,
+            sampled_pointer,
+            coordinate_type: match dimension {
+                TextureDimension::D2 => self.vec2_type,
+                TextureDimension::D3 => self.vec3_type,
+            },
+            vector_type: self.vec4_type,
+            component_type: self.types[&Scalar::F32],
+            x: self.value(coordinate[0]),
+            y: self.value(coordinate[1]),
+            z: coordinate.get(2).map_or(0, |reg| self.value(*reg)),
+            lod: self.value(lod),
+            next: self.next,
+        };
+        let result = result.map(|reg| self.value(reg));
+        let body_at = self.body.len();
+        let decoration_at = self.decorations.len();
+        self.body.reserve(46);
+        self.decorations.reserve(9);
+        unsafe {
+            let emitted = encode_texture_sample(
+                input,
+                result.as_ptr(),
+                self.body.as_mut_ptr().add(body_at),
+                self.decorations.as_mut_ptr().add(decoration_at),
+            );
+            self.body.set_len(body_at + emitted.body as usize);
+            self.decorations.set_len(decoration_at + emitted.decorations as usize);
+            self.next = emitted.next;
         }
     }
 }

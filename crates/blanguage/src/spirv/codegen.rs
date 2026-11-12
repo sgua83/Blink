@@ -75,7 +75,6 @@ struct ShaderFeatures {
     subgroup_shuffle_relative: u32,
     acceleration: u32,
     position_fetch: u32,
-    texture: u32,
     descriptor_indexing: u32,
     maximal_reconvergence: u32,
 }
@@ -134,12 +133,6 @@ enum VariableAnnotation {
     Descriptor,
     PageTable,
     BuiltIn,
-}
-
-#[repr(u32)]
-enum FlagDecoration {
-    NoContraction = 42,
-    NonUniform = 5300,
 }
 
 #[repr(C)]
@@ -330,7 +323,42 @@ struct SubgroupWords {
     next: u32,
 }
 
+#[repr(u32)]
+enum FlagDecoration {
+    NoContraction = 42,
+}
+
+#[repr(C)]
+struct TextureSampleEmission {
+    variable: u32,
+    element: u32,
+    index_type: u32,
+    sampled_type: u32,
+    sampled_pointer: u32,
+    coordinate_type: u32,
+    vector_type: u32,
+    component_type: u32,
+    x: u32,
+    y: u32,
+    z: u32,
+    lod: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct TextureWords {
+    body: u64,
+    decorations: u64,
+    next: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::flag_decoration"]
+    fn flag_decoration(decorations: *mut u32, at: u64, decoration: FlagDecoration, id: u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::encode_texture_sample"]
+    fn encode_texture_sample(
+        input: TextureSampleEmission, results: *const u32, body: *mut u32, decorations: *mut u32,
+    ) -> TextureWords;
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
     #[link_name = "bootstrap.spirv_envelope::encode"]
@@ -348,8 +376,6 @@ unsafe extern "C" {
         annotation: VariableAnnotation, pointer: u32, id: u32, operand: u32,
         definitions: *mut u32, decorations: *mut u32,
     ) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::flag_decoration"]
-    fn flag_decoration(decoration: FlagDecoration, id: u32, decorations: *mut u32);
     #[link_name = "bootstrap.spirv_envelope::scalar_binary"]
     fn scalar_binary(input: BinaryEmission, body: *mut u32, decorations: *mut u32) -> BinaryWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_cast"]
@@ -406,10 +432,8 @@ struct Emitter<'a> {
     buffers: Vec<u32>,
     accelerations: Vec<u32>,
     textures: Vec<u32>,
-    texture_types: BTreeMap<crate::ast::TextureDimension, (u32, u32, u32)>,
+    texture_types: BTreeMap<crate::ast::TextureDimension, (u32, u32)>,
     vec4_type: u32,
-    uint2_type: u32,
-    uint3_type: u32,
     acceleration_type: u32,
     ray_variables: BTreeMap<Reg, u32>,
     position_queries: std::collections::BTreeSet<Reg>,
@@ -548,8 +572,8 @@ impl Emitter<'_> {
         let start = self.decorations.len();
         self.decorations.reserve(3);
         unsafe {
-            flag_decoration(decoration, id, self.decorations.as_mut_ptr().add(start));
-            self.decorations.set_len(start + 3);
+            let words = flag_decoration(self.decorations.as_mut_ptr().add(start), 0, decoration, id);
+            self.decorations.set_len(start + words as usize);
         }
     }
     fn declare_resource_block(&mut self, element: u32, length: u32) -> u32 {
@@ -717,47 +741,13 @@ impl Emitter<'_> {
                     coordinate,
                     lod,
                 } => self.texture_sample(*result, *texture, coordinate, *lod),
-                InstKind::TextureLevels { dst, texture } => {
-                    let image = self.texture_image(*texture);
-                    self.emit(106, &[self.types[&Scalar::U32], self.value(*dst), image]);
-                }
                 InstKind::TextureBindingAddress { .. }
                 | InstKind::TextureAddress { .. }
                 | InstKind::TextureFormat { .. }
-                | InstKind::TextureRead { .. } => return Err("CPU纹理降低指令不能进入SPIR-V"),
-                InstKind::TextureSize {
-                    result,
-                    texture,
-                    level,
-                } => {
-                    let image = self.texture_image(*texture);
-                    let size = self.id();
-                    let ty = self.texture_coordinate_type(*texture, false);
-                    self.emit(103, &[ty, size, image, self.value(*level)]);
-                    for (i, r) in result.iter().enumerate() {
-                        self.emit(81, &[self.ty(*r), self.value(*r), size, i as u32]);
-                    }
-                }
-                InstKind::TextureFetch {
-                    result,
-                    texture,
-                    coordinate,
-                    level,
-                } => {
-                    let image = self.texture_image(*texture);
-                    let coord = self.id();
-                    let mut operands = vec![self.texture_coordinate_type(*texture, false), coord];
-                    operands.extend(coordinate.iter().map(|r| self.value(*r)));
-                    self.emit(80, &operands);
-                    let value = self.id();
-                    self.emit(
-                        95,
-                        &[self.vec4_type, value, image, coord, 2, self.value(*level)],
-                    );
-                    for (i, r) in result.iter().enumerate() {
-                        self.emit(81, &[self.ty(*r), self.value(*r), value, i as u32]);
-                    }
-                }
+                | InstKind::TextureRead { .. }
+                | InstKind::TextureLevels { .. }
+                | InstKind::TextureSize { .. }
+                | InstKind::TextureFetch { .. } => return Err("CPU纹理降低指令不能进入SPIR-V"),
                 InstKind::Scope(body) => self.function_scope(body)?,
                 InstKind::Exit => return Ok(self.function_exit()),
                 InstKind::Append(append) => self.append(append),
@@ -1449,8 +1439,6 @@ fn emit_shader(
         textures: Vec::new(),
         texture_types: BTreeMap::new(),
         vec4_type: 0,
-        uint2_type: 0,
-        uint3_type: 0,
         acceleration_type: 0,
         ray_variables: BTreeMap::new(),
         position_queries: stage.ray_result_queries(6..15),
@@ -1517,7 +1505,6 @@ fn emit_shader(
         subgroup_shuffle_relative: u32::from(subgroup_caps.shuffle_relative),
         acceleration: u32::from(!program.accelerations.is_empty()),
         position_fetch: u32::from(!e.position_queries.is_empty()),
-        texture: u32::from(!program.textures.is_empty()),
         descriptor_indexing: u32::from(program.requires_texture_indexing()),
         maximal_reconvergence: u32::from(pass == Pass::Main && stage.requires_maximal_reconvergence()),
     };
@@ -1544,16 +1531,15 @@ fn emit_shader(
     e.vec2_type = e.declare_type(TypeShape::Vector, f, 2);
     if !program.textures.is_empty() {
         e.vec4_type = e.declare_type(TypeShape::Vector, f, 4);
-        e.uint2_type = e.declare_type(TypeShape::Vector, u, 2);
         for i in 0..program.textures.len() {
             let dimension = program.textures[i].dimension;
             if !e.texture_types.contains_key(&dimension) {
                 let image = e.declare_type(TypeShape::Image, f, dimension.components() as u32);
                 let sampled = e.declare_type(TypeShape::SampledImage, image, 0);
                 let pointer = e.declare_pointer(StorageClass::UniformConstant, sampled);
-                e.texture_types.insert(dimension, (image, sampled, pointer));
+                e.texture_types.insert(dimension, (sampled, pointer));
             }
-            let (_, sampled, pointer) = e.texture_types[&dimension];
+            let (sampled, pointer) = e.texture_types[&dimension];
             let pointer = if let Some(count) = program.textures[i].count {
                 let length = e.constant(Scalar::U32, count);
                 let array = e.declare_type(TypeShape::Array, sampled, length);
@@ -1578,7 +1564,6 @@ fn emit_shader(
     }
     e.u64_type = e.types[&Scalar::U64];
     let v3 = e.declare_type(TypeShape::Vector, u, 3);
-    e.uint3_type = v3;
     let ptr_input = e.declare_pointer(StorageClass::Input, v3);
     let global = e.declare_annotated(VariableAnnotation::BuiltIn, ptr_input, 28);
     let mut num_groups = 0;

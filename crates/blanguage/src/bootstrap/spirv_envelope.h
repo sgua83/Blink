@@ -17,7 +17,6 @@ struct Features {
     u32 subgroup_shuffle_relative;
     u32 acceleration;
     u32 position_fetch;
-    u32 texture;
     u32 descriptor_indexing;
     u32 maximal_reconvergence;
 };
@@ -60,9 +59,10 @@ extern "C" void variable_declaration(StorageClass storage, u32 pointer, u32 id, 
 // Output has room for four definition words and eleven decoration words.
 // Operand is the assigned descriptor binding or the built-in enumerant.
 extern "C" u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u32 id, u32 operand, address definitions, address decorations) on cpu;
+
 enum FlagDecoration:u32 { NoContraction=42; NonUniform=5300; };
-// Output has room for three decoration words.
-extern "C" void flag_decoration(FlagDecoration decoration, u32 id, address decorations) on cpu;
+// Appends one flag to the borrowed decoration words and returns the new end.
+extern "C" u64 flag_decoration(address decorations, u64 at, FlagDecoration decoration, u32 id) on cpu;
 
 struct BinaryEmission {
     BinaryOperation operation;
@@ -229,3 +229,24 @@ struct SubgroupWords { u64 words; u32 next; };
 // The input carries the resolved built-in pointer or Subgroup scope constant.
 // The emitter supplies up to eleven words. Ballot count consumes one temporary ID.
 extern "C" SubgroupWords encode_subgroup(SubgroupEmission input, address body) on cpu;
+
+struct TextureSampleEmission {
+    u32 variable;
+    u32 element;
+    u32 index_type;
+    u32 sampled_type;
+    u32 sampled_pointer;
+    u32 coordinate_type;
+    u32 vector_type;
+    u32 component_type;
+    u32 x;
+    u32 y;
+    u32 z;
+    u32 lod;
+    u32 next;
+};
+struct TextureWords { u64 body; u64 decorations; u32 next; };
+// Element and z are zero for a single binding and a two-component coordinate
+// respectively. The emitter lends four result IDs and room for 46 body and
+// nine decoration words.
+extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, address results, address body, address decorations) on cpu;

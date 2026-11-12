@@ -1,9 +1,9 @@
 module bootstrap.spirv_envelope;
 
-const u32 CAPABILITIES = 22;
+const u32 CAPABILITIES = 21;
 const array<u32,CAPABILITIES> CAPABILITY_CODES = array<u32,CAPABILITIES>(
     1, 11, 12, 5347, 10, 39, 4448, 22, 4433, 4464, 4466,
-    61, 62, 63, 64, 65, 66, 4472, 5391, 50, 5301, 5307);
+    61, 62, 63, 64, 65, 66, 4472, 5391, 5301, 5307);
 const u32 EXTENSIONS = 8;
 const u32 EXTENSION_WIDTH = 10;
 
@@ -54,7 +54,7 @@ u64 capabilities(address output, u64 start, Features f) on cpu {
         f.integer8, f.integer8, f.integer16, f.integer16, preserve, preserve,
         f.subgroup_basic, f.subgroup_vote, f.subgroup_arithmetic, f.subgroup_ballot,
         f.subgroup_shuffle, f.subgroup_shuffle_relative, f.acceleration,
-        f.position_fetch, f.texture, f.descriptor_indexing, f.descriptor_indexing);
+        f.position_fetch, f.descriptor_indexing, f.descriptor_indexing);
     for (index in 0..CAPABILITIES) {
         if (needed[index] != 0) {
             put(output, at, instruction(17, 2));
@@ -303,8 +303,8 @@ extern "C" u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u3
     return at;
 }
 
-extern "C" void flag_decoration(FlagDecoration decoration, u32 id, address decorations) on cpu {
-    words_two(decorations, 0u64, 71, id, u32(decoration));
+extern "C" u64 flag_decoration(address decorations, u64 at, FlagDecoration decoration, u32 id) on cpu {
+    return words_two(decorations, at, 71, id, u32(decoration));
 }
 
 u64 words_four(address words, u64 at, u32 opcode, u32 id, u32 first, u32 second, u32 third) on cpu {
@@ -353,8 +353,7 @@ extern "C" BinaryWords scalar_binary(BinaryEmission input, address body, address
     }
     at = words_four(body, at, opcode, input.result_type, input.result, input.left, right);
     if (scalar.opcode == 22 && u32(input.operation) <= u32(BinaryOperation::Divide)) {
-        flag_decoration(FlagDecoration::NoContraction, input.result, decorations);
-        return BinaryWords(at, 3u64);
+        return BinaryWords(at, flag_decoration(decorations, 0u64, FlagDecoration::NoContraction, input.result));
     }
     return BinaryWords(at, 0u64);
 }
@@ -590,7 +589,7 @@ extern "C" PageAddressResult page_address(PageAddress input, address body) on cp
     return PageAddressResult(at, next + 1, next);
 }
 
-u32 payload_word(address words, u32 part) on cpu {
+u32 read_word(address words, u32 part) on cpu {
     return unsafe_position<u32>(word_at(words, u64(part)));
 }
 
@@ -599,7 +598,7 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
     u32 next = input.next;
     if (input.access != PayloadAccess::Words) {
         for (part in 0..input.count) {
-            u32 pointer = payload_word(operands, part);
+            u32 pointer = read_word(operands, part);
             if (input.access == PayloadAccess::Physical) {
                 at = words_five(body, at, 61, input.unit_type, next, pointer, 2, input.unit_bytes);
             } else {
@@ -610,7 +609,7 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
     }
     u32 value = 0;
     for (part in 0..input.count) {
-        u32 word = input.access == PayloadAccess::Words ? payload_word(operands, part) : input.next + part;
+        u32 word = input.access == PayloadAccess::Words ? read_word(operands, part) : input.next + part;
         if (input.raw_type != input.unit_type) {
             at = words_three(body, at, 113, input.raw_type, next, word);
             word = next;
@@ -619,7 +618,7 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
         if (part == 0) {
             value = word;
         } else {
-            at = words_four(body, at, 196, input.raw_type, next, word, payload_word(shifts, part));
+            at = words_four(body, at, 196, input.raw_type, next, word, read_word(shifts, part));
             at = words_four(body, at, 197, input.raw_type, next + 1, value, next);
             value = next + 1;
             next += 2;
@@ -634,7 +633,7 @@ extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address 
     for (part in 0..input.count) {
         u32 word = value;
         if (part != 0) {
-            at = words_four(body, at, 194, input.raw_type, next, value, payload_word(shifts, part));
+            at = words_four(body, at, 194, input.raw_type, next, value, read_word(shifts, part));
             word = next;
             next += 1;
         }
@@ -646,9 +645,9 @@ extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address 
         if (input.access == PayloadAccess::Words) {
             put(output, u64(part), word);
         } else if (input.access == PayloadAccess::Physical) {
-            at = words_four(body, at, 62, payload_word(pointers, part), word, 2, input.unit_bytes);
+            at = words_four(body, at, 62, read_word(pointers, part), word, 2, input.unit_bytes);
         } else {
-            at = words_two(body, at, 62, payload_word(pointers, part), word);
+            at = words_two(body, at, 62, read_word(pointers, part), word);
         }
     }
     return PayloadWrite(at, next);
@@ -720,8 +719,8 @@ extern "C" ControlWords dispatch_loop_return(LoopReturn input, address edges, ad
     put(body, 2u64, input.result);
     u64 at = 3u64;
     for (edge in 0..input.edge_count) {
-        u32 label = payload_word(edges, edge * 2);
-        u32 returned = payload_word(edges, edge * 2 + 1);
+        u32 label = read_word(edges, edge * 2);
+        u32 returned = read_word(edges, edge * 2 + 1);
         put(body, at, returned != 0 ? input.returned : input.not_returned);
         put(body, at + 1u64, label);
         at += 2u64;
@@ -782,4 +781,41 @@ extern "C" SubgroupWords encode_subgroup(SubgroupEmission input, address body) o
     SubgroupArithmetic arithmetic = subgroup_arithmetic(operation, input.scalar);
     u64 at = words_five(body, 0u64, arithmetic.opcode, type, result, scope, arithmetic.group, input.value);
     return SubgroupWords(at, input.next);
+}
+
+extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, address results, address body, address decorations) on cpu {
+    u32 sampled = input.next;
+    u32 pointer = input.variable;
+    u64 at = 0u64;
+    u64 annotated = 0u64;
+    if (input.element != 0) {
+        u32 index = sampled;
+        pointer = sampled + 1;
+        sampled += 2;
+        at = words_three(body, at, 83, input.index_type, index, input.element);
+        at = words_four(body, at, 65, input.sampled_pointer, pointer, input.variable, index);
+        annotated = flag_decoration(decorations, annotated, FlagDecoration::NonUniform, index);
+        annotated = flag_decoration(decorations, annotated, FlagDecoration::NonUniform, pointer);
+        annotated = flag_decoration(decorations, annotated, FlagDecoration::NonUniform, sampled);
+    }
+    u32 coordinate = sampled + 1;
+    u32 value = sampled + 2;
+    at = words_three(body, at, 61, input.sampled_type, sampled, pointer);
+    if (input.z == 0) {
+        at = words_four(body, at, 80, input.coordinate_type, coordinate, input.x, input.y);
+    } else {
+        at = words_five(body, at, 80, input.coordinate_type, coordinate, input.x, input.y, input.z);
+    }
+    put(body, at, instruction(88, 7));
+    put(body, at + 1u64, input.vector_type);
+    put(body, at + 2u64, value);
+    put(body, at + 3u64, sampled);
+    put(body, at + 4u64, coordinate);
+    put(body, at + 5u64, 2);
+    put(body, at + 6u64, input.lod);
+    at += 7u64;
+    for (component in 0..4) {
+        at = words_four(body, at, 81, input.component_type, read_word(results, component), value, component);
+    }
+    return TextureWords(at, annotated, sampled + 3);
 }
