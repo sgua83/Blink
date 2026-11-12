@@ -21,6 +21,10 @@ impl<K:Ord+Clone> Edges<K>{
         self.0.entry(key).and_modify(|old|*old=bounds::Condition::guard(bounds::Clause::either(&old.assume(&bounds::Clause::default(),true),&when).canonical())).or_insert_with(||bounds::Condition::guard(when));
     }
     pub fn union(&mut self,other:&Self){for(key,when)in &other.0{self.0.entry(key.clone()).and_modify(|old|*old=old.clone().logical(when.clone(),true)).or_insert_with(||when.clone());}}
+    pub(in crate::check) fn insert_normalized(&mut self,key:K,when:bounds::Condition,normal:&mut bounds::Normalizer){
+        let when=normal.condition(&when);
+        self.0.entry(key).and_modify(|old|*old=normal.union(old,&when)).or_insert(when);
+    }
     pub fn remove(&mut self, key: &K) -> Option<bounds::Clause> {
         self.0.remove(key).map(|when| when.assume(&bounds::Clause::default(), true))
     }
@@ -58,10 +62,10 @@ impl Borrow {
             match &mut source {
                 Source::Position(origin)|Source::Contents{origin,..}=>normal.origin(Arc::make_mut(origin)),
                 Source::Element{parent,..}|Source::Projection{parent,..}=>parent.normalize_contract(normal),
+                Source::Relation(graph,_)=>Arc::make_mut(graph).normalize(normal),
                 _=>{},
             }
-            let when=normal.condition(&when);
-            self.sources.0.entry(source).and_modify(|previous|*previous=normal.union(previous,&when)).or_insert(when);
+            self.sources.insert_normalized(source,when,normal);
         }
     }
 }
@@ -71,6 +75,7 @@ impl Borrow{
         for(source,when)in self.sources.entries(){
             let next=match source {
                 Source::Position(origin)=>origin.substitute_values(values).normalize(),
+                Source::Relation(graph,root)=>Self::source(Source::Relation(Arc::new(graph.substitute_values(values)),*root)),
                 Source::Contents{origin,word}=>Self::source(Source::Contents{origin:Arc::new(origin.substitute_values(values)),word:*word}),
                 Source::Element{parent,fields,index}=>Self::element(parent.substitute_values(values),fields.clone(),Source::index_substitute(*index,values)),
                 Source::Projection{parent,fields}=>Self::projection(parent.substitute_values(values),fields.clone()),
@@ -114,6 +119,7 @@ impl Borrow{
         for(source,when)in self.sources.entries(){
             let value=match source{
                 Source::Element{parent,fields,index}=>Self::element(parent.select_elements(indices),fields.clone(),Source::index_substitute(*index,&values)),
+                Source::Relation(graph,root)=>graph.select(*root,indices),
                 Source::Parameter(id,selected)=>{
                     let selected=if matches!(id,ValueIdentity::DatasetContent(..))&&selected.is_empty(){indices.to_vec()}
                         else{selected.iter().map(|index|Source::index_substitute(*index,&values)).collect()};
@@ -151,6 +157,7 @@ impl Borrow{
     }
     pub(super) fn content_inputs(&self)->bool{self.sources.iter().any(|source|match source{
         Source::Contents{..}=>true,
+        Source::Relation(graph,root)=>graph.content_inputs(*root),
         Source::Position(origin)=>origin.resources().content_inputs(),
         Source::Element{parent,..}|Source::Projection{parent,..}=>parent.content_inputs(),
         _=>false,
@@ -158,7 +165,7 @@ impl Borrow{
     pub fn empty(&self)->bool{self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()&&self.reads.is_empty()}
     pub fn union(&mut self,other:&Self){self.sources.union(&other.sources);self.inputs.union(&other.inputs);self.calls.union(&other.calls);self.reads.union(&other.reads);}
     pub fn joined(mut self,other:Self)->Self{self.union(&other);self}
-    pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)|Source::Contents{origin,..}=>origin.pending(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.pending(),_=>false})}
+    pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)|Source::Contents{origin,..}=>origin.pending(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.pending(),Source::Relation(graph,root)=>graph.pending(*root),_=>false})}
     pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())||self.reads.entries().any(|(_,when)|when.possible())}
     pub fn restricted(&self,path:&bounds::Clause)->Self{Self{sources:self.sources.restricted(path),inputs:self.inputs.restricted(path),calls:self.calls.restricted(path),reads:self.reads.restricted(path)}}
     pub fn selected(choice:&bounds::Condition,a:&Self,b:&Self)->Self{
@@ -174,6 +181,7 @@ impl Borrow{
                 let when=bounds::Clause::both(path,&when);
                 when.possible()&&match source {
                     Source::Unresolved=>true,
+                    Source::Relation(graph,root)=>graph.unresolved(*root),
                     Source::Element{parent,..}|Source::Projection{parent,..}=>query(parent,&when),
                     Source::Contents{origin,..}=>origin.has_local()||query(&origin.resources(),&bounds::Clause::default()),
                     Source::Position(origin)=>matches!(&origin.root,address::Root::Resource{borrow,..}|address::Root::Derived(borrow)|address::Root::Dataset{borrow,..}if query(borrow,&when)),
@@ -188,6 +196,7 @@ impl Borrow{
             value.sources.entries().any(|(source,when)|{
                 let when=bounds::Clause::both(path,&when);
                 when.possible()&&match source {
+                    Source::Relation(graph,root)=>graph.has_local(*root),
                     Source::Position(origin)=>match &origin.root {
                         address::Root::Derived(parent)|address::Root::Dataset{borrow:parent,..}=>query(parent,&when),
                         _=>origin.has_local(),
@@ -202,6 +211,7 @@ impl Borrow{
     pub fn resources(&self)->Self {
         self.map_sources(|source|match source {
             Source::Position(origin)=>origin.resources(),
+            Source::Relation(graph,root)=>graph.resources(root),
             Source::Element{parent,fields,index}=>Self::element(parent.resources(),fields,index),
             Source::Projection{parent,..}=>parent.resources(),
             source=>Self::source(source),
@@ -210,6 +220,7 @@ impl Borrow{
     pub fn owners(&self)->Self {
         self.map_sources(|source|match source{
             Source::Position(origin)=>origin.owners(),
+            Source::Relation(graph,root)=>graph.owners(root),
             Source::Element{parent,fields,index}=>Self::element(parent.resources(),fields,index).joined(parent.owners()),
             Source::Projection{parent,..}=>parent.owners(),
             source=>Self::source(source),
@@ -322,7 +333,7 @@ pub(super) enum Requirement {
     Unborrowed {resource:Borrow,borrow:Borrow,ownership:bool,span:Span},
     Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,owned:Borrow,span:Span},
     Address {borrow:Borrow,layout:address::Layout,written:Option<bounds::Proof>,writable:bool,initialized:bool,span:Span},
-    Memory {target:address::MemoryTarget,borrow:Borrow,access:Option<Access>,written:Option<bounds::Proof>,snapshots:Option<Arc<[view_contracts::ValueSnapshot]>>,address_fields:Arc<[u32]>,span:Span},
+    Memory {target:address::MemoryTarget,borrow:Borrow,access:Option<Access>,written:Option<bounds::Proof>,snapshots:Option<Arc<[view_contracts::ValueSnapshot]>>,address_fields:Arc<[(u32,usize)]>,span:Span},
     Dataset {borrow:Borrow,index:Option<bounds::Operand>,access:Access,atomic:bool,values:Option<Arc<[view_contracts::ElementRead]>>,span:Span},
     Initialized {borrow:Borrow,read:address::InitializationRead,code:&'static str,span:Span},
     Nonzero {value:Box<Value>,path:bounds::Clause,span:Span},
@@ -351,7 +362,6 @@ impl Requirement {
         if let Self::Nonzero{value,path,span}=self {
             return if bounds::integer_divisors(value,path).is_some(){Ok(())}else{source.fail(*span,"B152",bounds::INTEGER_DIVISOR_MESSAGE)};
         }
-        if self.borrow().is_some_and(Borrow::unresolved)||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.unresolved()){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Dataset{span,..}|Self::Initialized{span,..}|Self::Nonzero{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
         if let Self::Address{borrow,layout,writable,initialized,span,..}=self {
             for(origin_source,when)in borrow.sources.entries() {
                 if !when.possible(){continue;}
@@ -362,6 +372,7 @@ impl Requirement {
                 }
             }
         }
+        if self.borrow().is_some_and(Borrow::unresolved)||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.unresolved()){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Dataset{span,..}|Self::Initialized{span,..}|Self::Nonzero{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
         if let Self::Initialized{read,code,span,..}=self {
             if !read.complete(){return source.fail(*span,code,"读取或返回前没有完整初始化原位置的所需分量");}
         }
@@ -388,15 +399,16 @@ pub(super) enum Source {
     Position(Arc<address::Origin>),
     // The address value held by one input storage component, not its location owner.
     Contents { origin:Arc<address::Origin>, word:u32 },
+    Relation(Arc<view_contracts::relation::Graph>,usize),
 }
 impl Source {
-    fn index_substitute(index:Option<bounds::Operand>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Operand>{
+    pub(in crate::check) fn index_substitute(index:Option<bounds::Operand>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Operand>{
         match index{
             Some(index@bounds::Operand::Value(id))if values.contains_key(&id)=>index.at_call(values),
             other=>other,
         }
     }
-    fn index_at_call(index:Option<bounds::Operand>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Operand>{
+    pub(in crate::check) fn index_at_call(index:Option<bounds::Operand>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Operand>{
         match index{
             Some(index@bounds::Operand::Value(id@ValueIdentity::ElementIndex(_)))if !values.contains_key(&id)=>Some(index),
             index=>index.and_then(|index|index.at_call(values)),
@@ -421,6 +433,7 @@ impl Source {
             Self::Data(id) => Self::Data(bindings.get(&id).copied().unwrap_or(id)),
             Self::Parameter(id,indices) => Self::Parameter(bindings.get(&id).copied().unwrap_or(id),indices.into_iter().map(|index|index.and_then(|index|index.map(|id|Some(bindings.get(&id).copied().unwrap_or(id))))).collect()),
             Self::Position(origin) => Self::Position(Arc::new(origin.bind_outputs(bindings))),
+            Self::Relation(graph,root)=>Self::Relation(Arc::new(graph.output_bound(bindings)),root),
             Self::Contents{origin,word}=>Self::Contents{origin:Arc::new(origin.bind_outputs(bindings)),word},
             Self::Element{parent,fields,index}=>Self::Element{parent:Box::new(parent.output_bound(bindings)),fields,index:index.and_then(|index|index.map(|id|Some(bindings.get(&id).copied().unwrap_or(id))))},
             Self::Projection{parent,fields}=>Self::Projection{parent:Box::new(parent.output_bound(bindings)),fields},
@@ -439,6 +452,7 @@ impl Source {
                 if !value.empty(){value}else{Borrow::from_sources(BTreeSet::from([proof.known_identity(0).map(Self::Data).unwrap_or(Self::Unresolved)]))}
             }
             Self::Position(origin)=>origin.at_call(bindings),
+            Self::Relation(graph,root)=>Borrow::source(Self::Relation(Arc::new(graph.at_call(bindings)),root)),
             Self::Contents{origin,word}=>Borrow::source(Self::Contents{origin:Arc::new(origin.bound_at_call(bindings)),word}),
             Self::Element{parent,fields,index}=>Borrow::element(parent.at_call(bindings),fields,Self::index_at_call(index,bindings)),
             Self::Projection{parent,fields}=>Borrow::projection(parent.at_call(bindings),fields),
@@ -446,7 +460,34 @@ impl Source {
         }
     }
 }
-crate::module::codec::variants!(Source{0=>Data(id),1=>Parameter(id,indices),2=>Unresolved,3=>Inactive,4=>External,5=>Position(origin),6=>Element{parent,fields,index},7=>Projection{parent,fields},8=>Contents{origin,word}});
+impl crate::module::codec::Encode for Source {
+    fn encode(&self,w:&mut crate::module::codec::Writer){
+        match self {
+            Self::Data(id)=>{0u32.encode(w);id.encode(w);},
+            Self::Parameter(id,indices)=>{1u32.encode(w);id.encode(w);indices.encode(w);},
+            Self::Unresolved=>2u32.encode(w),Self::Inactive=>3u32.encode(w),Self::External=>4u32.encode(w),
+            Self::Position(origin)=>{5u32.encode(w);origin.encode(w);},
+            Self::Element{parent,fields,index}=>{6u32.encode(w);parent.encode(w);fields.encode(w);index.encode(w);},
+            Self::Projection{parent,fields}=>{7u32.encode(w);parent.encode(w);fields.encode(w);},
+            Self::Contents{origin,word}=>{8u32.encode(w);origin.encode(w);word.encode(w);},
+            Self::Relation(graph,root)=>{9u32.encode(w);graph.selected(*root).encode(w);},
+        }
+    }
+}
+impl crate::module::codec::Decode for Source {
+    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
+        use crate::module::codec::Decode;
+        Ok(match u32::decode(r)? {
+            0=>Self::Data(Decode::decode(r)?),1=>Self::Parameter(Decode::decode(r)?,Decode::decode(r)?),
+            2=>Self::Unresolved,3=>Self::Inactive,4=>Self::External,5=>Self::Position(Decode::decode(r)?),
+            6=>Self::Element{parent:Decode::decode(r)?,fields:Decode::decode(r)?,index:Decode::decode(r)?},
+            7=>Self::Projection{parent:Decode::decode(r)?,fields:Decode::decode(r)?},
+            8=>Self::Contents{origin:Decode::decode(r)?,word:Decode::decode(r)?},
+            9=>Self::Relation(Arc::new(Decode::decode(r)?),0),
+            _=>return Err("模块枚举编码错误：Source".into()),
+        })
+    }
+}
 impl Binding {
     pub(super) fn view_parts(&self)->Option<(&Ty,&bounds::Proof)> {
         match self {
@@ -552,7 +593,7 @@ impl Builder<'_> {
                     Source::Element{parent,..}|Source::Projection{parent,..}=>available(builder,parent.restricted(&when),resources,span)?,
                     Source::Position(origin)=>available(builder,origin.owners().restricted(&when),resources,span)?,
                     Source::Unresolved=>return builder.fail(span,"B271","view返回的实际借用来源尚未形成合同"),
-                    Source::Parameter(..)|Source::Contents{..}|Source::Inactive|Source::External=>{},
+                    Source::Parameter(..)|Source::Contents{..}|Source::Relation(..)|Source::Inactive|Source::External=>{},
                 }
             }
             Ok(())

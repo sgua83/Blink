@@ -83,6 +83,7 @@ impl Origin {
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         let mut origin=self.clone();
         origin.root=match &self.root {
+            Root::Parameter(parameter)if values.contains_key(&ValueIdentity::ParameterStorage(*parameter))=>{origin.positions=Arc::from([]);Root::Derived(values[&ValueIdentity::ParameterStorage(*parameter)].view_borrow(0))},
             Root::External(identity)=>Root::External(identity.substitute_values(values)),
             Root::Derived(borrow)=>Root::Derived(borrow.substitute_values(values)),
             Root::Resource{borrow,index}=>Root::Resource{borrow:borrow.substitute_values(values),index:*index},
@@ -101,6 +102,7 @@ impl Origin {
                 view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..)|ValueIdentity::DatasetContent(..),_)
                 |view::Source::Contents{..}=>true,
                 view::Source::Position(origin)=>origin.symbolic_input(),
+                view::Source::Relation(graph,root)=>graph.symbolic(*root),
                 _=>false,
             }),
             _=>false,
@@ -111,6 +113,7 @@ impl Origin {
             Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().all(|source|match source {
                 view::Source::Position(origin)=>origin.layout==self.base&&origin.layout_valid(),
                 view::Source::External|view::Source::Parameter(..)|view::Source::Contents{..}|view::Source::Inactive=>true,
+                view::Source::Relation(graph,root)=>graph.symbolic(*root),
                 _=>false,
             }),
             _=>true,

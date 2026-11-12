@@ -15,15 +15,17 @@ pub(super) enum ContentRead {
     Snapshot {memory:usize,component:usize,position:Position,initial:Arc<bounds::Proof>},
     Call {memory:usize,origin:Arc<address::Origin>,word:u32,snapshots:Option<Arc<[ValueSnapshot]>>},
     Returned {memory:usize},
+    Relation {memory:usize,graph:Arc<relation::Graph>,root:usize,snapshots:Option<Arc<[ValueSnapshot]>>},
 }
 #[derive(PartialEq,Eq,PartialOrd,Ord)]
-enum ContentKey<'a>{Value(usize,u32),Snapshot(usize,usize),Call(usize,&'a address::Origin,u32),Returned(usize)}
+enum ContentKey<'a>{Value(usize,u32),Snapshot(usize,usize),Call(usize,&'a address::Origin,u32),Returned(usize),Relation(usize,&'a relation::Graph,usize)}
 impl ContentRead {
     fn key(&self)->ContentKey<'_>{match self {
         Self::Value{memory,word,..}=>ContentKey::Value(*memory,*word),
         Self::Snapshot{memory,component,..}=>ContentKey::Snapshot(*memory,*component),
         Self::Call{memory,origin,word,..}=>ContentKey::Call(*memory,origin,*word),
         Self::Returned{memory}=>ContentKey::Returned(*memory),
+        Self::Relation{memory,graph,root,..}=>ContentKey::Relation(*memory,graph,*root),
     }}
 }
 impl PartialEq for ContentRead{fn eq(&self,other:&Self)->bool{self.key()==other.key()}}
@@ -335,7 +337,7 @@ impl Function {
                     }
                     canonical(Borrow::source(Origin::Position(Arc::new(origin))),self,None,&BTreeMap::new())
                 },
-            Origin::Unresolved|Origin::External|Origin::Contents{..}=>canonical(Borrow::source(source),self,None,&BTreeMap::new()),
+            Origin::Unresolved|Origin::External|Origin::Contents{..}|Origin::Relation(..)=>canonical(Borrow::source(source),self,None,&BTreeMap::new()),
             _=>Borrow::default(),
         });
         if !selected.active(){return None;}
@@ -383,7 +385,7 @@ impl Function {
                 Origin::Element{parent,fields,index}=>Borrow::element(external(function,*parent,parameters),fields,index.and_then(|index|index.at_call(parameters))),
                 Origin::Projection{parent,fields}=>Borrow::projection(external(function,*parent,parameters),fields),
                 Origin::Position(origin)=>origin.resources(),
-                Origin::Contents{..}=>canonical(Borrow::source(source),function,None,&BTreeMap::new()),
+                Origin::Contents{..}|Origin::Relation(..)=>canonical(Borrow::source(source),function,None,&BTreeMap::new()),
                 Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
             }).guards_at_call(parameters)
         }
@@ -413,7 +415,7 @@ impl Function {
     }
 }
 #[derive(Clone,Default,PartialEq,Eq)]
-struct State { loops:BTreeMap<LoopInput,Borrow>, interface:Interface }
+struct State { loops:BTreeMap<LoopInput,Borrow>, entries:Option<BTreeMap<ValueIdentity,Borrow>>, interface:Interface }
 type States=BTreeMap<String,State>;
 
 // Loop sources are solved only for actual output, contract and memory consumers.
@@ -469,6 +471,7 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
             for source in &borrow.sources {
                 if let Origin::Element{parent,..}|Origin::Projection{parent,..}=source{roots.push(parent.as_ref().clone());}
                 if let Origin::Contents{origin,..}=source{roots.push(origin.resources());}
+                if let Origin::Relation(graph,root)=source{roots.extend(graph.seed_borrows(*root).into_iter().cloned());}
                 if let Origin::Position(origin)=source {
                     match &origin.root {address::Root::Resource{borrow,..}|address::Root::Derived(borrow)=>roots.push(borrow.clone()),_=>{}}
                 }
@@ -483,6 +486,7 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
 
 fn call_content_sources(borrow:&Borrow,call:&Call,arguments:&BTreeMap<ValueIdentity,bounds::Proof>)->Borrow {
     borrow.map_sources(|source|match source {
+        Origin::Relation(graph,root)=>Borrow{reads:view::Edges::from([ContentRead::Relation{memory:call.memory,graph:Arc::new(graph.at_call(arguments)),root,snapshots:call.snapshots.clone()}]),..Borrow::default()},
         Origin::Contents{origin,word}=>{
             let origin=origin.map_borrows(|parent|call_content_sources(parent,call,arguments)).bound_at_call(arguments);
             Borrow{reads:view::Edges::from([ContentRead::Call{memory:call.memory,origin:Arc::new(origin),word,snapshots:call.snapshots.clone()}]),..Borrow::default()}
@@ -521,14 +525,15 @@ struct ContentAtRead {
 }
 
 impl ContentAtRead {
-    fn write(&mut self, incoming: &Borrow, when: &bounds::Clause, complete: bool) {
+    fn write(&mut self, incoming: &Borrow, when: &bounds::Condition, complete: bool) {
+        let selected=when.assume(&bounds::Clause::default(),true);
         let visible = self.earlier.as_ref().map_or_else(
-            || when.clone(),
-            |earlier| bounds::Clause::both(earlier, when),
+            || selected.clone(),
+            |earlier| bounds::Clause::both(earlier, &selected),
         );
         self.writes.union(&incoming.restricted(&visible));
         if complete {
-            let unchanged = bounds::Condition::execution(when).assume(&bounds::Clause::default(), false);
+            let unchanged = when.assume(&bounds::Clause::default(), false);
             self.earlier = Some(match self.earlier.take() {
                 Some(earlier) => bounds::Clause::both(&earlier, &unchanged),
                 None => unchanged,
@@ -547,6 +552,10 @@ impl ContentAtRead {
 
 fn apply_content_write(result:&mut ContentAtRead,query:Option<(&address::Origin,u32)>,position:Option<&Position>,
     target:&address::Origin,word:u32,incoming:&Borrow,when:&bounds::Clause) {
+    let(affected,complete)=content_write_overlap(query,position,target,word,when);
+    if affected {result.write(incoming,&bounds::Condition::execution(when),complete);}
+}
+fn content_write_overlap(query:Option<(&address::Origin,u32)>,position:Option<&Position>,target:&address::Origin,word:u32,when:&bounds::Clause)->(bool,bool){
     let complete=query.is_some_and(|(origin,at)|origin.base==target.base&&same_content_storage(&origin.root,&target.root)
         &&content_word(origin,at).zip(content_word(target,word)).is_some_and(|((_,a),(_,b))|a==b))
         ||position.zip(content_position(target,word).as_ref()).is_some_and(|(a,b)|a==b);
@@ -555,17 +564,18 @@ fn apply_content_write(result:&mut ContentAtRead,query:Option<(&address::Origin,
         let borrow=Borrow::source(Origin::Position(Arc::new(target.clone()))).restricted(when);
         address::MemoryEffect::of(&borrow,super::Access::Write,None).written_bytes(position,Scalar::U64,None)!=0
     });
-    if affected {result.write(incoming, when, complete);}
+    (affected,complete)
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum LoopSources {
     Symbolic,
-    Carried,
+    Deferred,
     Resolved,
 }
 
 struct BorrowEvaluation<'a>{
-    function:&'a Function,state:&'a State,known:&'a States,expand_loops:bool,
+    function:&'a Function,state:&'a State,known:&'a States,expand_loops:bool,deferred_reads:bool,
+    loop_bindings:Vec<BTreeMap<LoopInput,Borrow>>,
     values:BTreeMap<(LoopSources,ContentRead),Borrow>,
 }
 impl BorrowEvaluation<'_>{
@@ -595,20 +605,18 @@ impl BorrowEvaluation<'_>{
             match source {
                 Origin::Position(origin)=>{
                     if let Some(written)=written {
-                        for word in address_fields.iter().rev(){
-                            if let Some((component,_))=content_word(origin,*word){
-                                let stored=self.evaluate(&written.view_borrow(component));
-                                apply_content_write(result,query,position,origin,*word,&stored,&when);
-                            }
+                        for &(word,component) in address_fields.iter().rev(){
+                            let stored=self.evaluate(&written.view_borrow(component));
+                            apply_content_write(result,query,position,origin,word,&stored,&when);
                         }
                     }else{
                         let effect=address::MemoryEffect::of(&Borrow::source(source.clone()).restricted(&when),super::Access::Write,None);
                         if position.is_some_and(|position|effect.written_bytes(position,Scalar::U64,None)!=0){
-                            result.write(&Borrow::source(Origin::External),&when,false);
+                            result.write(&Borrow::source(Origin::External),&bounds::Condition::execution(&when),false);
                         }
                     }
                 },
-                Origin::External=>result.write(&Borrow::source(Origin::External),&when,false),
+                Origin::External=>result.write(&Borrow::source(Origin::External),&bounds::Condition::execution(&when),false),
                 _=>{},
             }
         }
@@ -647,7 +655,7 @@ impl BorrowEvaluation<'_>{
             }else if written.is_some(){
                 let target=self.evaluate(borrow).restricted(&usage.path);
                 for(source,when)in target.sources.entries(){if when.possible()&&let Origin::Position(origin)=source{
-                    for word in address_fields.iter(){result.insert((origin.clone(),*word));}
+                    for &(word,_) in address_fields.iter(){result.insert((origin.clone(),word));}
                 }}
             }
         }
@@ -670,6 +678,10 @@ impl BorrowEvaluation<'_>{
         if let Some(value)=self.values.get(&key){return value.clone();}
         let function=self.function;
         let value=match read {
+            ContentRead::Relation{memory,graph,root,snapshots}=>{
+                let (graph,root)=graph.bind_incoming(*root,*memory,snapshots.clone(),function,self.state,self.known);
+                graph.solve(root,self).restricted(&function.uses[*memory].path)
+            },
             ContentRead::Returned{memory}=>{
                 let mut value=Borrow::default();
                 for(_,_,stored)in self.stored_at_exit(*memory){value.union(&stored);}
@@ -707,7 +719,7 @@ impl BorrowEvaluation<'_>{
     }
 
     fn evaluate(&mut self,borrow:&Borrow)->Borrow{
-        let sources=if self.expand_loops{LoopSources::Resolved}else{LoopSources::Symbolic};
+        let sources=if self.deferred_reads{LoopSources::Deferred}else if self.expand_loops{LoopSources::Resolved}else{LoopSources::Symbolic};
         self.evaluate_sources(borrow,sources)
     }
 
@@ -716,6 +728,11 @@ impl BorrowEvaluation<'_>{
         let mut value=Borrow{..Borrow::default()};
         for(source,when)in borrow.sources.entries() {
             let resolved=match source {
+                Origin::Relation(graph,root)=>{
+                    if matches!(sources,LoopSources::Deferred){Borrow::source(source.clone())}else{
+                        if graph.pending(*root){let(graph,root)=graph.bind(*root,function,state,known);graph.solve(root,self)}else{graph.solve(*root,self)}
+                    }
+                },
                 Origin::Element{parent,fields,index}=>Borrow::element(self.evaluate(parent),fields.clone(),*index),
                 Origin::Projection{parent,fields}=>Borrow::projection(self.evaluate(parent),fields.clone()),
                 Origin::Position(origin)=>origin.map_borrows(|root|self.evaluate(root)).normalize(),
@@ -724,8 +741,12 @@ impl BorrowEvaluation<'_>{
             };
             value.union(&resolved.restricted(&when));
         }
-        for(input,when)in borrow.inputs.entries(){if matches!(sources,LoopSources::Resolved){value.union(&state.loops[input].restricted(&when));}else{value.inputs.insert_when(*input,when.clone());}}
-        for(read,when)in borrow.reads.entries(){value.union(&self.content_read(read,sources).restricted(&when));}
+        for(input,when)in borrow.inputs.entries(){if matches!(sources,LoopSources::Resolved){
+            let bound=self.loop_bindings.iter().rev().find_map(|scope|scope.get(input)).cloned();
+            let next=match bound{Some(bound)=>bound,None=>self.evaluate_sources(&state.loops[input],sources)};
+            value.union(&next.restricted(&when));
+        }else{value.inputs.insert_when(*input,when.clone());}}
+        for(read,when)in borrow.reads.entries(){if matches!(sources,LoopSources::Deferred){value.reads.insert_when(read.clone(),when);}else{value.union(&self.content_read(read,sources).restricted(&when));}}
         for(result,when)in borrow.calls.entries(){
             let call=&function.calls[result.call];
             let Some(output)=known[&call.function].interface.outputs.get(&result.output)else {value.sources.insert_when(Origin::Unresolved,when.clone());continue;};
@@ -753,7 +774,7 @@ fn stored_target(origin:&address::Origin,function:&Function,exposed:&BTreeMap<Or
     canonical(Borrow::source(Origin::Position(Arc::new(origin))),function,None,exposed)
 }
 fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
-    BorrowEvaluation{function,state,known,expand_loops,values:BTreeMap::new()}.evaluate(borrow)
+    BorrowEvaluation{function,state,known,expand_loops,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()}.evaluate(borrow)
 }
 
 fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds::Operand>{
@@ -799,6 +820,7 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&
         Origin::Projection{parent,fields}=>Borrow::projection(canonical(*parent,function,None,exposed),fields),
         Origin::Position(origin)=>Borrow::source(Origin::Position(Arc::new(address(&origin)))),
         Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(address(&origin)),word}),
+        Origin::Relation(graph,root)=>Borrow::source(Origin::Relation(Arc::new(graph.canonical(function,exposed)),root)),
         Origin::Unresolved|Origin::Inactive|Origin::External=>Borrow::source(source),
     }};
     match resource {
@@ -1029,6 +1051,18 @@ fn initializations(function:&Function,state:&State,known:&States,candidates:bool
     let exposed=exposed_resources(function,function.resource_names.keys().map(|output|(output,evaluate(&function.outputs[output],function,state,known,true))));
     let parameters=function.parameters.iter().map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect();
     let exits=function.initialization.iter().map(|effect|match effect {address::InitializationEffect::Position(fact)=>&fact.when,address::InitializationEffect::Call{when,..}|address::InitializationEffect::Iteration{when,..}=>when}).map(|when|when.guard_at_call(&parameters)).collect::<Vec<_>>();
+    // Reading a fixed input before this function's first write already requires those bytes on entry.
+    // Re-exporting the same bytes as newly initialized adds no fact for any legitimate caller.
+    let mut required=Vec::new();
+    for(memory,usage)in function.uses.iter().enumerate(){
+        if function.calls.iter().any(|call|call.memory==memory)||matches!(&usage.requirement,Requirement::Memory{access:Some(access),..}if access.writes()){break;}
+        if let Requirement::Address{borrow,initialized:true,..}=&usage.requirement && !borrow.pending(){
+            for(source,when)in borrow.sources.entries(){
+                let value=canonical(Borrow::source(source.clone()),function,None,&exposed);
+                for selected in value.sources.iter(){if let Origin::Position(origin)=selected{required.push((origin.clone(),bounds::Condition::guard(bounds::Clause::both(&usage.path,&when))));}}
+            }
+        }
+    }
     let facts=initialization_effects(&function.initialization,function,state,known).facts;
     let facts=address::merge_initializations(facts.into_iter().filter_map(|mut fact|{
         // A guarantee names one actual selected location; possible owners are never separate writes.
@@ -1046,6 +1080,11 @@ fn initializations(function:&Function,state:&State,known:&States,candidates:bool
         if let address::Root::Resource{index:Some(index),..}|address::Root::Dataset{index:Some(index),..}=&mut fact.origin.root {
             *index=index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id)))?;
         }
+        let path=fact.when.assume(&bounds::Clause::default(),true);
+        if fact.origin.layout.parts.iter().zip(fact.origin.words.iter()).all(|((scalar,_),word)|required.iter().any(|(read,when)|{
+            when.truth_in(&path)==Some(true)&&read.base==fact.origin.base&&same_content_storage(&read.root,&fact.origin.root)
+                &&read.layout.parts.iter().zip(read.words.iter()).any(|((read_scalar,_),read_word)|read_scalar==scalar&&read_word==word)
+        })){return None;}
         fact.origin.positions=Arc::from([]);
         if candidates{fact.when=bounds::Condition::constant(true);}
         Some(fact)
@@ -1144,7 +1183,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                 };
                 if let Some(value)=value{insert(&mut access,value,normalize);}
             }
-            for call in &function.calls {for requirement in &known[&call.function].interface.access {
+            for call in function.calls.iter().filter(|call|call.function!=*name||state.entries.is_none()) {for requirement in &known[&call.function].interface.access {
                 let value=access_at_call(requirement,call,&call.path,function,state,known);
                 let value=match value {
                     Access::Position{mut position,borrows,when}=>{
@@ -1163,6 +1202,19 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                 };
                 if let Some(value)=value{insert(&mut access,value,normalize);}
             }}
+            if let Some(entries)=&state.entries{
+                let invoked=function.calls.iter().filter(|call|call.function==*name).map(|call|bounds::Condition::execution(&call.path).guard_at_call(&parameters)).reduce(|a,b|a.logical(b,true)).unwrap();
+                let inputs=entries.iter().map(|(input,value)|(*input,bounds::Proof::default().with_view_borrow(0,value.clone()))).collect::<BTreeMap<_,_>>();
+                let direct=access.iter().map(|(access,when)|{let mut a=access.clone();*a.when_mut()=when.clone();a}).collect::<Vec<_>>();
+                for value in direct{let value=match value{
+                    Access::Position{borrows,when,position}=>Access::Position{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),position:PositionAccess{written:position.written.as_ref().map(|p|p.at_call(&inputs)),..position}},
+                    Access::Memory{borrows,when,access}=>Access::Memory{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),access},
+                    Access::Initialized{borrows,when,initialized}=>Access::Initialized{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),initialized:initialized.iter().map(|f|f.at_call(&inputs)).collect()},
+                    Access::Resource{resources,borrows,when,ownership}=>Access::Resource{resources:resources.at_call(&inputs),borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),ownership},
+                    Access::Dataset{borrows,when,index,access,atomic}=>Access::Dataset{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),index:index.and_then(|i|i.at_call(&inputs)),access,atomic},
+                    Access::Stored{..}=>continue,
+                };let mut value=value;let when=value.when_mut();*when=when.clone().logical(invoked.clone(),false);insert(&mut access,value,normalize);}
+            }
             next.get_mut(name).unwrap().interface.access=access.into_iter().map(|(mut access,when)| {
                 *access.when_mut()=when;access
             }).collect();
@@ -1186,46 +1238,36 @@ fn stored_outputs(evaluation:&mut BorrowEvaluation<'_>,exposed:&BTreeMap<Origin,
     }
     stored.into_iter().map(|((borrows,word),value)|Access::Stored{borrows,word,value,when:bounds::Condition::constant(true)}).collect()
 }
-fn close_loop_sources(mut pending: BTreeMap<LoopInput, Borrow>) -> BTreeMap<LoopInput, Borrow> {
-    let mut definitions = Vec::with_capacity(pending.len());
-    while let Some((input, mut value)) = pending.pop_first() {
-        // A conditionally forwarded copy of this slot adds no source to the slot.
-        value.inputs.remove(&input);
-        for consumer in pending.values_mut() {
-            if let Some(path) = consumer.inputs.remove(&input) {
-                consumer.union(&value.restricted(&path));
-            }
-        }
-        definitions.push((input, value));
-    }
-
-    let mut closed: BTreeMap<LoopInput, Borrow> = BTreeMap::new();
-    for (input, mut value) in definitions.into_iter().rev() {
-        for (source, path) in std::mem::take(&mut value.inputs).into_entries() {
-            value.union(&closed[&source].restricted(&path));
-        }
-        closed.insert(input, value);
-    }
-    closed
-}
 
 fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTreeSet<(String,Output)>){
     loop{
         let mut next=known.clone();
         for(name,function)in functions{
             let state=&known[name];let result=next.get_mut(name).unwrap();
-            let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,values:BTreeMap::new()};
-            result.loops = close_loop_sources(state.loops.keys().map(|input| {
-                let definition = &function.loops[input].borrow;
-                let value = if function.independent.contains(input) {
-                    evaluation.evaluate(definition).resources()
-                } else {
-                    evaluation.evaluate_sources(definition, LoopSources::Carried)
-                };
-                (*input, value)
-            }).collect());
+            let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()};
+            result.loops = relation::Graph::loops(function,state,known);
+            result.entries=relation::Graph::recursive_inputs(name,function,state,known);
+            let forwards=|output:&Output,definition:&Borrow|matches!(output,Output::Returned(_))&&definition.calls.iter().any(|result|function.calls[result.call].function==*name&&result.output==*output);
+            let entry_bindings=result.entries.as_ref().filter(|_|function.outputs.iter().any(|(output,definition)|forwards(output,definition))).map(|entries|{
+                let mut inverse=BTreeMap::new();for(&local,&formal)in &function.parameters{inverse.entry(formal).or_insert_with(||bounds::Proof::default().with_identity(local).with_view_borrow(0,Borrow::source(Origin::Parameter(local,Vec::new()))));}
+                let parameters=residency::input_parameters(&function.parameters,function.input_width);
+                function.parameters.iter().filter_map(|(&local,&formal)|{
+                    let entry=entries.get(&formal)?.substitute_values(&inverse);
+                    let unchanged=function.calls.iter().filter(|call|call.function==*name).all(|call|call.arguments.get(&formal).is_some_and(|value|value.at_call(&parameters).known_identity(0)==Some(formal)));
+                    let proof=if unchanged{bounds::Proof::default().with_identity(local)}else{bounds::Proof::default()};
+                    Some((local,proof.with_view_borrow(0,entry)))
+                }).collect::<BTreeMap<_,_>>()
+            });
             let physical=function.outputs.iter().map(|(output,definition)|{
-                let value=evaluation.evaluate(definition);
+                let basis=match &entry_bindings{
+                    Some(bindings)if forwards(output,definition)=>{
+                        let mut basis=definition.clone();let calls=basis.calls.iter().filter(|result|function.calls[result.call].function==*name&&result.output==*output).cloned().collect::<Vec<_>>();
+                        for call in calls{basis.calls.remove(&call);}
+                        std::borrow::Cow::Owned(basis.substitute_values(bindings))
+                    },
+                    _=>std::borrow::Cow::Borrowed(definition),
+                };
+                let value=evaluation.evaluate(&basis);
                 let value=if function.resource_names.contains_key(output){value.resources()}else{value};
                 (output.clone(),value)
             }).collect::<Outputs>();
@@ -1327,6 +1369,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
     let mut known=closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect::<States>();
     for(name,function)in functions{known.insert(name.clone(),State{
         loops:loops[name].iter().map(|input|(*input,Borrow::default())).collect(),
+        entries:None,
         interface:Interface{outputs:function.outputs.keys().map(|output|(output.clone(),Borrow::default())).collect(),access:BTreeSet::new(),initialization:Vec::new()},
     });}
     converge(functions,&mut known,&BTreeSet::new());
@@ -1545,3 +1588,5 @@ impl Builder<'_> {
         Ok(memory)
     }
 }
+
+pub(super) mod relation;

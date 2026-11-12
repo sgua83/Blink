@@ -392,7 +392,8 @@ impl Builder<'_> {
             }
             if let Some(components) = modified.get(name) {
                 let components: Vec<_> = components.iter().copied().collect();
-                if raw && let Some((proof,_,storage))=binding.proof_storage() {
+                // Registered loop inputs receive actual memory writes through their original backedges.
+                if raw && context.view_scope.is_none() && let Some((proof,_,storage))=binding.proof_storage() {
                     for(offset,field)in storage.ty().borrow_fields() {
                         if field.is_address() {
                             let component=storage.ty().components.iter().position(|(_,at)|*at==offset).unwrap();
