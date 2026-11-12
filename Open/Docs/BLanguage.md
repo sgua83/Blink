@@ -3125,11 +3125,11 @@ RayHit 当前 ABI 为176字节、16字节对齐，原字段偏移0／4／8／16�
 
 object_to_world与world_to_object来自本次实际命中的TLAS实例，分别把物体空间与世界空间互换；包含平移，按B的float3x4行字段使用。逆矩阵由实际AS交付，不在宿主维护第二份矩阵或在着色时再次求逆。外向法线可用transpose(float3x3(hit.world_to_object.r0.xyz,hit.world_to_object.r1.xyz,hit.world_to_object.r2.xyz))变换原物体法线。
 
-优化后的IR分别识别顶点、正向矩阵和逆向矩阵的真实消费；只读取矩阵不申请位置扩展，不消费某矩阵就不发射该矩阵读取。后端直接使用[SPV_KHR_ray_query](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_ray_query.html)的OpRayQueryGetIntersectionObjectToWorldKHR／WorldToObjectKHR（6031／6032）；标准结果为四列float3，逐分量转换为B的三行float4。两项仍属于原RayQueryKHR能力，无额外设备扩展。只在真实命中分支读取，未命中分支形成零值Phi；不把CPU矩阵表作为GPU查询结果。
+优化后的IR分别识别顶点、正向矩阵和逆向矩阵的真实消费；只读取矩阵不申请位置扩展，不消费某矩阵就不发射该矩阵读取。B 发射器直接使用[SPV_KHR_ray_query](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_ray_query.html)的OpRayQueryGetIntersectionObjectToWorldKHR／WorldToObjectKHR（6031／6032）；标准结果为四列float3，逐分量转换为B的三行float4。两项仍属于原RayQueryKHR能力，无额外设备扩展。只在真实命中分支读取，未命中分支形成零值Phi；不把CPU矩阵表作为GPU查询结果。
 
 当前查询处理不透明双面三角形，使用固定 0xff 可见掩码，自动接受三角形候选；trace_any 在首次命中终止。它可服务可见性、遮挡与其他几何计算，不等于已经实现物理接触解算器、透明材质或光传输系统。
 
-前端生成封闭的 RayQuery IR，自研后端直接编码 SPIR-V 1.4 与 SPV_KHR_ray_query。CPU 后端明确拒绝硬件查询操作，不转成另一种求交算法。GPU 值函数可借用命名的 `read acceleration` 并调用其他 GPU 函数；内联时绑定调用方的真实资源下标，不复制加速结构、不增加描述符，也不允许把资源当普通值返回。仅借用 acceleration 与普通值的辅助函数同样使用该资源调用规则，不要求同时声明 dataset／texture。查询最终仍在调用 计算函数 的并行域执行；不可变数据 view 可以经 CPU／compute／GPU 函数组合。
+前端生成封闭的 RayQuery IR，B 发射器写出 SPIR-V 1.4 与 SPV_KHR_ray_query 的初始化、遍历和结果合流。同一着色器按实际使用共享顶点数组和矩阵的类型声明。CPU 后端明确拒绝硬件查询操作，不转成另一种求交算法。GPU 值函数可借用命名的 `read acceleration` 并调用其他 GPU 函数；内联时绑定调用方的真实资源下标，不复制加速结构、不增加描述符，也不允许把资源当普通值返回。仅借用 acceleration 与普通值的辅助函数同样使用该资源调用规则，不要求同时声明 dataset／texture。查询最终仍在调用 计算函数 的并行域执行；不可变数据 view 可以经 CPU／compute／GPU 函数组合。
 
 执行框架 `Bindings` 同时接收 datasets 与 accelerations；提交对象在实际完成前持有全部资源。顶层结构的唯一所有者持有去重的 BLAS 引用；只读 acceleration 可以共享同一所有者。由 `Device::for_program` 从程序资源需求选择设备能力，创建加速结构的低层 unsafe 接口明确要求调用者提供有效几何及有限、可逆的实例变换。材质和数值算法正确性不由资源类型证明。
 

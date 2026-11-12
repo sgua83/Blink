@@ -391,7 +391,42 @@ struct PrivateAddressWords {
     next: u32,
 }
 
+#[repr(C)]
+struct RayEmission {
+    acceleration_type: u32,
+    acceleration: u32,
+    query: u32,
+    u32_type: u32,
+    f32_type: u32,
+    bool_type: u32,
+    vec2_type: u32,
+    vec3_type: u32,
+    origin: [u32; 3],
+    direction: [u32; 3],
+    minimum: u32,
+    maximum: u32,
+    flags: u32,
+    mask: u32,
+    committed: u32,
+    zero: u32,
+    float_zero: u32,
+    position_type: u32,
+    object_to_world: u32,
+    world_to_object: u32,
+    closest: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct RayWords {
+    words: u64,
+    next: u32,
+    label: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::encode_ray"]
+    fn encode_ray(input: RayEmission, results: *const u32, body: *mut u32) -> RayWords;
     #[link_name = "bootstrap.spirv_envelope::private_address"]
     fn emit_private_address(
         input: PrivateAddress, parts: *const u32, pointers: *mut u32, body: *mut u32,
@@ -487,6 +522,8 @@ struct Emitter<'a> {
     vec4_type: u32,
     acceleration_type: u32,
     ray_variables: BTreeMap<Reg, u32>,
+    ray_position_type: u32,
+    ray_transform_type: u32,
     position_queries: std::collections::BTreeSet<Reg>,
     transform_queries: [std::collections::BTreeSet<Reg>; 2],
     vec3_type: u32,
@@ -1253,168 +1290,53 @@ impl Emitter<'_> {
         maximum: Reg,
         result: &RayResult,
     ) {
-        let query = self.ray_variables[&result.registers()[0]];
-        let acceleration = self.id();
-        self.emit(
-            61,
-            &[
-                self.acceleration_type,
-                acceleration,
-                self.accelerations[scene],
-            ],
-        );
-        let o = self.id();
-        let d = self.id();
-        self.emit(
-            80,
-            &[
-                self.vec3_type,
-                o,
-                self.value(origin[0]),
-                self.value(origin[1]),
-                self.value(origin[2]),
-            ],
-        );
-        self.emit(
-            80,
-            &[
-                self.vec3_type,
-                d,
-                self.value(direction[0]),
-                self.value(direction[1]),
-                self.value(direction[2]),
-            ],
-        );
-        let flags = self.constant(
-            Scalar::U32,
-            if matches!(result, RayResult::Any(_)) {
-                5
-            } else {
-                1
-            },
-        );
-        let mask = self.constant(Scalar::U32, 255);
-        self.emit(
-            4473,
-            &[
-                query,
-                acceleration,
-                flags,
-                mask,
-                o,
-                self.value(minimum),
-                d,
-                self.value(maximum),
-            ],
-        );
-        let header = self.id();
-        let body = self.id();
-        let next = self.id();
-        let end = self.id();
-        self.emit(249, &[header]);
-        self.emit(248, &[header]);
-        self.emit(246, &[end, next, 0]);
-        self.emit(249, &[body]);
-        self.emit(248, &[body]);
-        let more = self.id();
-        self.emit(4477, &[self.types[&Scalar::Bool], more, query]);
-        self.emit(250, &[more, next, end]);
-        self.emit(248, &[next]);
-        self.emit(249, &[header]);
-        self.emit(248, &[end]);
-        let committed = self.constant(Scalar::U32, 1);
-        let kind = self.id();
-        self.emit(4479, &[self.types[&Scalar::U32], kind, query, committed]);
-        let zero = self.constant(Scalar::U32, 0);
-        self.emit(
-            171,
-            &[
-                self.types[&Scalar::Bool],
-                self.value(result.registers()[0]),
-                kind,
-                zero,
-            ],
-        );
-        if let RayResult::Closest(regs) = result {
-            let yes = self.id();
-            let no = self.id();
-            let merged = self.id();
-            self.emit(247, &[merged, 0]);
-            self.emit(250, &[self.value(regs[0]), yes, no]);
-            self.emit(248, &[yes]);
-            let distance = self.id();
-            let barycentric = self.id();
-            let u = self.id();
-            let v = self.id();
-            let instance = self.id();
-            let primitive = self.id();
-            self.emit(
-                6018,
-                &[self.types[&Scalar::F32], distance, query, committed],
-            );
-            self.emit(6024, &[self.vec2_type, barycentric, query, committed]);
-            self.emit(81, &[self.types[&Scalar::F32], u, barycentric, 0]);
-            self.emit(81, &[self.types[&Scalar::F32], v, barycentric, 1]);
-            self.emit(
-                6020,
-                &[self.types[&Scalar::U32], instance, query, committed],
-            );
-            self.emit(
-                6023,
-                &[self.types[&Scalar::U32], primitive, query, committed],
-            );
-            let mut fields = Vec::new();
-            if self.position_queries.contains(&regs[0]) {
-                let length = self.constant(Scalar::U32, 3);
-                let array_type = self.declare_type(TypeShape::Array, self.vec3_type, length);
-                let points = self.id();
-                self.emit(5340, &[array_type, points, query, committed]);
-                for v in 0..3 {
-                    for c in 0..3 {
-                        let component = self.id();
-                        self.emit(81, &[self.types[&Scalar::F32], component, points, v, c]);
-                        fields.push((regs[6 + v as usize * 3 + c as usize], component));
-                    }
-                }
-            }
-            for (slot, opcode) in [(0, 6031), (1, 6032)] {
-                if self.transform_queries[slot].contains(&regs[0]) {
-                    let matrix_type = self.declare_type(TypeShape::Matrix, self.vec3_type, 4);
-                    let matrix = self.id();
-                    self.emit(opcode, &[matrix_type, matrix, query, committed]);
-                    // SPIR-V以列为复合索引，B的float3x4以行存储。
-                    for row in 0..3 {
-                        for column in 0..4 {
-                            let component = self.id();
-                            self.emit(
-                                81,
-                                &[self.types[&Scalar::F32], component, matrix, column, row],
-                            );
-                            fields.push((
-                                regs[15 + slot * 12 + row as usize * 4 + column as usize],
-                                component,
-                            ));
-                        }
-                    }
-                }
-            }
-            self.emit(249, &[merged]);
-            self.emit(248, &[no]);
-            self.emit(249, &[merged]);
-            self.emit(248, &[merged]);
-            let z = self.constant(Scalar::F32, 0);
-            for (r, value, miss) in [
-                (regs[1], distance, self.value(maximum)),
-                (regs[2], u, z),
-                (regs[3], v, z),
-                (regs[4], instance, zero),
-                (regs[5], primitive, zero),
-            ] {
-                self.emit(245, &[self.ty(r), self.value(r), value, yes, miss, no]);
-            }
-            for (r, value) in fields {
-                self.emit(245, &[self.ty(r), self.value(r), value, yes, z, no]);
-            }
+        let mut results = [0; 39];
+        for (id, reg) in results.iter_mut().zip(result.registers()) {
+            *id = self.value(*reg);
+        }
+        let hit = result.registers()[0];
+        let closest = matches!(result, RayResult::Closest(_));
+        let positions = self.position_queries.contains(&hit);
+        let object_to_world = self.transform_queries[0].contains(&hit);
+        let world_to_object = self.transform_queries[1].contains(&hit);
+        if positions && self.ray_position_type == 0 {
+            let length = self.constant(Scalar::U32, 3);
+            self.ray_position_type = self.declare_type(TypeShape::Array, self.vec3_type, length);
+        }
+        if (object_to_world || world_to_object) && self.ray_transform_type == 0 {
+            self.ray_transform_type = self.declare_type(TypeShape::Matrix, self.vec3_type, 4);
+        }
+        let input = RayEmission {
+            acceleration_type: self.acceleration_type,
+            acceleration: self.accelerations[scene],
+            query: self.ray_variables[&hit],
+            u32_type: self.types[&Scalar::U32],
+            f32_type: self.types[&Scalar::F32],
+            bool_type: self.types[&Scalar::Bool],
+            vec2_type: self.vec2_type,
+            vec3_type: self.vec3_type,
+            origin: origin.map(|reg| self.value(reg)),
+            direction: direction.map(|reg| self.value(reg)),
+            minimum: self.value(minimum),
+            maximum: self.value(maximum),
+            flags: self.constant(Scalar::U32, if closest { 1 } else { 5 }),
+            mask: self.constant(Scalar::U32, 255),
+            committed: self.constant(Scalar::U32, 1),
+            zero: self.constant(Scalar::U32, 0),
+            float_zero: if closest { self.constant(Scalar::F32, 0) } else { 0 },
+            position_type: if positions { self.ray_position_type } else { 0 },
+            object_to_world: if object_to_world { self.ray_transform_type } else { 0 },
+            world_to_object: if world_to_object { self.ray_transform_type } else { 0 },
+            closest: u32::from(closest),
+            next: self.next,
+        };
+        let at = self.body.len();
+        self.body.reserve(if closest { 587 } else { 61 });
+        unsafe {
+            let emitted = encode_ray(input, results.as_ptr(), self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
         }
     }
 }
@@ -1499,6 +1421,8 @@ fn emit_shader(
         vec4_type: 0,
         acceleration_type: 0,
         ray_variables: BTreeMap::new(),
+        ray_position_type: 0,
+        ray_transform_type: 0,
         position_queries: stage.ray_result_queries(6..15),
         transform_queries: [
             stage.ray_result_queries(15..27),

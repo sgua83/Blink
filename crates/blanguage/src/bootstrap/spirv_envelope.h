@@ -287,3 +287,33 @@ struct PrivateAddressWords { u64 words; u32 next; };
 // omits the corresponding arithmetic. The caller owns count pointer slots
 // and 10*count+5 body words.
 extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu;
+
+struct RayEmission {
+    u32 acceleration_type;
+    u32 acceleration;
+    u32 query;
+    u32 u32_type;
+    u32 f32_type;
+    u32 bool_type;
+    u32 vec2_type;
+    u32 vec3_type;
+    array<u32,3> origin;
+    array<u32,3> direction;
+    u32 minimum;
+    u32 maximum;
+    u32 flags;
+    u32 mask;
+    u32 committed;
+    u32 zero;
+    u32 float_zero;
+    u32 position_type;
+    u32 object_to_world;
+    u32 world_to_object;
+    u32 closest;
+    u32 next;
+};
+struct RayWords { u64 words; u32 next; u32 label; };
+// Results contains the original RayResult IDs (one for Any, 39 for Closest).
+// Optional aggregate type IDs are zero when the field group is unused.
+// The body has room for 61 words for Any or 587 for full Closest.
+extern "C" RayWords encode_ray(RayEmission input, address results, address body) on cpu;

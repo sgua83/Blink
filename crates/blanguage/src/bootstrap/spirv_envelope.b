@@ -891,3 +891,128 @@ extern "C" PrivateAddressWords private_address(PrivateAddress input, address par
     }
     return PrivateAddressWords(at, next);
 }
+
+u64 ray_phi(address body, u64 at, u32 type, u32 result, u32 hit, u32 yes, u32 miss, u32 no) on cpu {
+    put(body, at, instruction(245, 7));
+    put(body, at + 1u64, type);
+    put(body, at + 2u64, result);
+    put(body, at + 3u64, hit);
+    put(body, at + 4u64, yes);
+    put(body, at + 5u64, miss);
+    put(body, at + 6u64, no);
+    return at + 7u64;
+}
+
+RayWords ray_closest(RayEmission input, address results, address body, u64 start, u32 first) on cpu {
+    u64 at = start;
+    u32 yes = first;
+    u32 no = first + 1;
+    u32 merge = first + 2;
+    u32 distance = first + 3;
+    u32 barycentric = first + 4;
+    u32 u = first + 5;
+    u32 v = first + 6;
+    u32 instance = first + 7;
+    u32 primitive = first + 8;
+    u32 next = first + 9;
+    u32 f = input.f32_type;
+    u32 q = input.query;
+    u32 committed = input.committed;
+    at += open_selection(merge, read_word(results, 0), yes, no, word_at(body, at)).words;
+    at = words_four(body, at, 6018, f, distance, q, committed);
+    at = words_four(body, at, 6024, input.vec2_type, barycentric, q, committed);
+    at = words_four(body, at, 81, f, u, barycentric, 0);
+    at = words_four(body, at, 81, f, v, barycentric, 1);
+    at = words_four(body, at, 6020, input.u32_type, instance, q, committed);
+    at = words_four(body, at, 6023, input.u32_type, primitive, q, committed);
+
+    u32 positions = 0;
+    if (input.position_type != 0) {
+        u32 points = next;
+        positions = next + 1;
+        next += 10;
+        at = words_four(body, at, 5340, input.position_type, points, q, committed);
+        for (part in 0..9) {
+            at = words_five(body, at, 81, f, positions + part, points, part / 3, part % 3);
+        }
+    }
+
+    array<u32,2> types = array<u32,2>(input.object_to_world, input.world_to_object);
+    array<u32,2> matrices = array<u32,2>(0, 0);
+    for (slot in 0..2) {
+        if (types[slot] != 0) {
+            u32 matrix = next;
+            matrices[slot] = next + 1;
+            next += 13;
+            at = words_four(body, at, 6031 + slot, types[slot], matrix, q, committed);
+            // SPIR-V uses columns, while the B value has rows.
+            for (part in 0..12) {
+                at = words_five(body, at, 81, f, matrices[slot] + part, matrix, part % 4, part / 4);
+            }
+        }
+    }
+
+    at += next_control_block(merge, no, 1, word_at(body, at)).words;
+    at += close_selection(merge, 1, 1, word_at(body, at)).words;
+    u32 z = input.float_zero;
+    at = ray_phi(body, at, f, read_word(results, 1), distance, yes, input.maximum, no);
+    at = ray_phi(body, at, f, read_word(results, 2), u, yes, z, no);
+    at = ray_phi(body, at, f, read_word(results, 3), v, yes, z, no);
+    at = ray_phi(body, at, input.u32_type, read_word(results, 4), instance, yes, input.zero, no);
+    at = ray_phi(body, at, input.u32_type, read_word(results, 5), primitive, yes, input.zero, no);
+    if (positions != 0) {
+        for (part in 0..9) {
+            at = ray_phi(body, at, f, read_word(results, 6 + part), positions + part, yes, z, no);
+        }
+    }
+    for (slot in 0..2) {
+        if (matrices[slot] != 0) {
+            for (part in 0..12) {
+                at = ray_phi(body, at, f, read_word(results, 15 + 12 * slot + part),
+                             matrices[slot] + part, yes, z, no);
+            }
+        }
+    }
+    return RayWords(at, next, merge);
+}
+
+extern "C" RayWords encode_ray(RayEmission input, address results, address body) on cpu {
+    u32 first = input.next;
+    u32 acceleration = first;
+    u32 origin = first + 1;
+    u32 direction = first + 2;
+    u32 header = first + 3;
+    u32 test = first + 4;
+    u32 again = first + 5;
+    u32 end = first + 6;
+    u32 more = first + 7;
+    u32 kind = first + 8;
+    u32 next = first + 9;
+    u32 query = input.query;
+    u64 at = words_three(body, 0u64, 61, input.acceleration_type, acceleration, input.acceleration);
+    at = words_five(body, at, 80, input.vec3_type, origin, input.origin[0], input.origin[1], input.origin[2]);
+    at = words_five(body, at, 80, input.vec3_type, direction, input.direction[0], input.direction[1], input.direction[2]);
+    put(body, at, instruction(4473, 9));
+    put(body, at + 1u64, query);
+    put(body, at + 2u64, acceleration);
+    put(body, at + 3u64, input.flags);
+    put(body, at + 4u64, input.mask);
+    put(body, at + 5u64, origin);
+    put(body, at + 6u64, input.minimum);
+    put(body, at + 7u64, direction);
+    put(body, at + 8u64, input.maximum);
+    at += 9u64;
+
+    LoopLabels loop = LoopLabels(header, test, again, again, end);
+    at += open_loop(loop, word_at(body, at)).words;
+    at = words_three(body, at, 4477, input.bool_type, more, query);
+    at += test_loop(loop, more, word_at(body, at)).words;
+    at = words_one(body, at, 249, header);
+    at = words_one(body, at, 248, end);
+    at = words_four(body, at, 4479, input.u32_type, kind, query, input.committed);
+    at = words_four(body, at, 171, input.bool_type, read_word(results, 0), kind, input.zero);
+    if (input.closest != 0) {
+        return ray_closest(input, results, body, at, next);
+    }
+    return RayWords(at, next, end);
+}
