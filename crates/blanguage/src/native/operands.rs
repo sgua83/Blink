@@ -740,7 +740,7 @@ impl Emitter<'_> {
             );
             if !restore {
                 let at = self.code.len() as u8;
-                self.unwind.push((at, unwind::saved(at, r, offset, false)));
+                self.unwind.push(UnwindOperation::save(at, r, offset, false));
                 self.prolog = at;
             }
         }
@@ -754,7 +754,7 @@ impl Emitter<'_> {
             );
             if !restore {
                 let at = self.code.len() as u8;
-                self.unwind.push((at, unwind::saved(at, r, offset, true)));
+                self.unwind.push(UnwindOperation::save(at, r, offset, true));
                 self.prolog = at;
             }
         }

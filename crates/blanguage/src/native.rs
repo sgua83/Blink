@@ -8,7 +8,7 @@ mod codegen;
 #[cfg(feature="compiler")]
 pub use codegen::*;
 #[cfg(feature="compiler")]
-pub(crate) use codegen::{emit_application,emit_function,unwind_info,program};
+pub(crate) use codegen::{emit_application,emit_function,unwind_info,UnwindOperation,program};
 
 #[cfg(feature = "compiler")]
 mod disassemble;

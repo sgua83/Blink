@@ -1,6 +1,6 @@
 //! 应用编译产物：入口、标准输出、导入跳板和展开信息都在编译阶段生成。
 use super::{Import, Relocation, Result, Section, Target, stack::{Frame, Call}};
-use crate::native::{NativeCode, NativeSymbol, unwind_info};
+use crate::native::{NativeCode, NativeSymbol, unwind_info, UnwindOperation};
 use super::coff::facts::observations::Layout;
 use std::collections::{BTreeMap, BTreeSet};
 fn put32(v: &mut [u8], at: usize, n: u32) {
@@ -93,12 +93,12 @@ fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
     for &reg in &saved {
         v.push(0x50 + reg);
         let at = v.len() as u8;
-        operations.push((at, vec![at, reg << 4]));
+        operations.push(UnwindOperation::push(at, reg));
     }
     v.extend([0x48, 0x83, 0xec, frame]);
     let at = v.len() as u8;
-    operations.push((at, vec![at, ((frame / 8 - 1) << 4) | 2]));
-    let unwind = unwind_info(at, operations);
+    operations.push(UnwindOperation::allocate(at, u32::from(frame)));
+    let unwind = unwind_info(at, &operations);
     if float {
         // Intrinsics receive original bits; only f32 needs promotion for C's %g.
         v.extend([0x66]);
@@ -241,7 +241,7 @@ fn functions(
         call(&mut bytes, &mut patches, kernel("ExitProcess"));
         let end = u32::try_from(bytes.len())?;
         let calls = std::iter::once(Call::Reference { offset: 5, tail: false }).chain(patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false })).collect();
-        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, unwind_info(4, vec![(4, vec![4, 0x42])]))), Some(Layout::Startup));
+        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, unwind_info(4, &[UnwindOperation::allocate(4, 40)]))), Some(Layout::Startup));
         let calls = native.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
         let main = function(&mut sections, &mut frames, format!("entry {name}"), native.stack_bytes, calls, native.bytes, Some((native.function_end.try_into()?, native.unwind)), native.tail_regions.map(|tails| Layout::Function { tails, references: native.tail_references, sources: native.sources }));
         symbols.insert("main".into(), (main, 0));

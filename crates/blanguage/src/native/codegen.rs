@@ -12,7 +12,7 @@ use allocation::{Allocation, Frame, PacketAllocation};
 mod application;
 #[path="unwind.rs"]
 mod unwind;
-pub(crate) use unwind::encode as unwind_info;
+pub(crate) use unwind::{encode as unwind_info, Operation as UnwindOperation};
 #[path="compact.rs"]
 mod compact;
 #[path="custom_reduce.rs"]
@@ -60,7 +60,7 @@ const BUFFER_STRIDE: u32 = std::mem::offset_of!(BufferAddress, stride) as u32;
 
 struct Emitter<'a> {
     code: Vec<u8>,
-    unwind: Vec<(u8, Vec<u8>)>,
+    unwind: Vec<UnwindOperation>,
     prolog: u8,
     probe: Option<usize>,
     relocations: Vec<Relocation>,
@@ -84,7 +84,7 @@ impl Emitter<'_> {
         let function_end = self.code.len();
         let mut tail_regions = Vec::new();
         let mut tail_references = Vec::new();
-        let unwind = unwind::encode(self.prolog, std::mem::take(&mut self.unwind));
+        let unwind = unwind::encode(self.prolog, &self.unwind);
         if let Some(at) = self.probe {
             let start = self.code.len();
             self.patch(at, start);
@@ -135,7 +135,7 @@ impl Emitter<'_> {
             if register >= 8 { self.bytes(&[0x41]); }
             self.bytes(&[0x50 + (register & 7)]);
             let at = self.code.len() as u8;
-            self.unwind.push((at, vec![at, register << 4]));
+            self.unwind.push(UnwindOperation::push(at, register));
         }
         self.prolog = self.code.len() as u8;
     }
@@ -151,7 +151,7 @@ impl Emitter<'_> {
             self.bytes(&[0x48, 0x81, 0xec]);
             self.u32(frame);
             let at = self.code.len() as u8;
-            self.unwind.push((at, unwind::allocation(at, frame)));
+            self.unwind.push(UnwindOperation::allocate(at, frame));
             self.prolog = at;
         }
     }
