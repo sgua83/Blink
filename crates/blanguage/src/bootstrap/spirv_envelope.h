@@ -270,3 +270,20 @@ struct AtomicEmission {
 // The emitter supplies resolved SPIR-V IDs and room for nine words.
 // A zero result is the resultless 32-bit store.
 extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu;
+
+struct PrivateAddress {
+    u32 index_type;
+    u32 pointer_type;
+    u32 variable;
+    u32 index;
+    u32 offset;
+    u32 width;
+    u32 count;
+    u32 next;
+};
+struct PrivateAddressWords { u64 words; u32 next; };
+// A zero index means parts already holds fixed element IDs. Otherwise parts
+// holds the relative element IDs after the first one. Zero offset or width
+// omits the corresponding arithmetic. The caller owns count pointer slots
+// and 10*count+5 body words.
+extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu;

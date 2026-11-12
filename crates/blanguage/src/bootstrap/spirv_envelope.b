@@ -859,3 +859,35 @@ extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu {
     }
     return u64(length);
 }
+
+extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {
+    u64 at = 0u64;
+    u32 next = input.next;
+    u32 position = input.index;
+    if (input.offset != 0) {
+        at = words_four(body, at, 128, input.index_type, next, position, input.offset);
+        position = next;
+        next += 1;
+    }
+    if (input.width != 0) {
+        at = words_four(body, at, 134, input.index_type, next, position, input.width);
+        position = next;
+        next += 1;
+    }
+    for (part in 0..input.count) {
+        u32 index = read_word(parts, part);
+        if (position != 0) {
+            if (part == 0) {
+                index = position;
+            } else {
+                at = words_four(body, at, 128, input.index_type, next, position, index);
+                index = next;
+                next += 1;
+            }
+        }
+        at = words_four(body, at, 65, input.pointer_type, next, input.variable, index);
+        put(pointers, u64(part), next);
+        next += 1;
+    }
+    return PrivateAddressWords(at, next);
+}

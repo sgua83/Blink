@@ -373,7 +373,29 @@ struct AtomicEmission {
     failure: u32,
 }
 
+#[repr(C)]
+struct PrivateAddress {
+    index_type: u32,
+    pointer_type: u32,
+    variable: u32,
+    index: u32,
+    offset: u32,
+    width: u32,
+    count: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct PrivateAddressWords {
+    words: u64,
+    next: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::private_address"]
+    fn emit_private_address(
+        input: PrivateAddress, parts: *const u32, pointers: *mut u32, body: *mut u32,
+    ) -> PrivateAddressWords;
     #[link_name = "bootstrap.spirv_envelope::encode_atomic"]
     fn encode_atomic(input: AtomicEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::flag_decoration"]
@@ -444,6 +466,12 @@ unsafe extern "C" {
     fn constant_declaration(scalar: ScalarCode, type_id: u32, id: u32, bits: u64, words: *mut u32) -> u64;
 }
 
+struct PrivateArray {
+    start: usize,
+    unit: Scalar,
+    variable: u32,
+}
+
 struct Emitter<'a> {
     next: u32,
     types: BTreeMap<Scalar, u32>,
@@ -471,8 +499,7 @@ struct Emitter<'a> {
     index: u32,
     regs: Vec<u32>,
     locals: Vec<u32>,
-    private_arrays: Vec<(std::ops::Range<usize>, u32)>,
-    private_words: std::collections::BTreeSet<usize>,
+    private_arrays: BTreeMap<usize, PrivateArray>,
     stage: &'a Stage,
     program: &'a Program,
     ext: u32,
@@ -489,40 +516,60 @@ struct Emitter<'a> {
     return_scopes: Vec<returns::ReturnScope>,
 }
 impl Emitter<'_> {
-    fn private_address(&mut self, base: usize, index: Option<Reg>, word: u32, scalar: Scalar) -> (Scalar, Vec<u32>) {
-        let (span, variable) = self
-            .private_arrays
-            .iter()
-            .find(|(span, _)| span.contains(&base))
-            .unwrap();
-        let ty = &self.stage.locals[&span.end];
-        let unit = Self::raw_scalar(ty.components.iter().map(|(s, _)| *s).min_by_key(|s| s.size()).unwrap());
-        let unit = if unit.size() == 8 { Scalar::U32 } else { unit };
-        let offset = ty.components[base - span.start].1 + word;
-        let variable = *variable;
-        let mut at = match index { Some(r) => self.value(r), None => self.constant(Scalar::U32, 0) };
-        if offset != 0 {
-            let offset = self.constant(Scalar::U32, offset);
-            let sum = self.id();
-            self.emit(128, &[self.types[&Scalar::U32], sum, at, offset]);
-            at = sum;
-        }
-        let width = self.constant(Scalar::U32, unit.size());
-        let position = self.id();
-        self.emit(134, &[self.types[&Scalar::U32], position, at, width]);
-        let pointers = (0..scalar.size().div_ceil(unit.size())).map(|part| {
-            let mut at = position;
-            if part != 0 {
-                let offset = self.constant(Scalar::U32, part);
-                at = self.id();
-                self.emit(128, &[self.types[&Scalar::U32], at, position, offset]);
+    fn private_address(
+        &mut self, base: usize, index: Option<Reg>, word: u32, scalar: Scalar,
+    ) -> (Scalar, [u32; 8], usize) {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let (&end, array) = self.private_arrays.range((Excluded(base), Unbounded)).next().unwrap();
+        let offset = self.stage.locals[&end].components[base - array.start].1 + word;
+        let unit = array.unit;
+        let variable = array.variable;
+        let bytes = unit.size();
+        let count = scalar.size().div_ceil(bytes) as usize;
+        let mut parts = [0; 8];
+        let (index, offset, width) = if let Some(index) = index {
+            let offset = if offset == 0 { 0 } else { self.constant(Scalar::U32, offset) };
+            let width = if bytes == 1 { 0 } else { self.constant(Scalar::U32, bytes) };
+            for (part, slot) in parts[..count].iter_mut().enumerate().skip(1) {
+                *slot = self.constant(Scalar::U32, part as u32);
             }
-            let pointer = self.id();
-            self.emit(65, &[self.pointers[&unit], pointer, variable, at]);
-            pointer
-        }).collect();
-        (unit, pointers)
+            (self.value(index), offset, width)
+        } else {
+            let first = offset / bytes;
+            for (part, slot) in parts[..count].iter_mut().enumerate() {
+                *slot = self.constant(Scalar::U32, first + part as u32);
+            }
+            (0, 0, 0)
+        };
+        let input = PrivateAddress {
+            index_type: self.types[&Scalar::U32], pointer_type: self.pointers[&unit], variable,
+            index, offset, width, count: count as u32, next: self.next,
+        };
+        let mut pointers = [0; 8];
+        let at = self.body.len();
+        self.body.reserve(10 * count + 5);
+        unsafe {
+            let emitted = emit_private_address(input, parts.as_ptr(), pointers.as_mut_ptr(), self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            self.next = emitted.next;
+        }
+        (unit, pointers, count)
     }
+
+    fn load_private(&mut self, dst: Reg, base: usize, index: Option<Reg>, word: u32) {
+        let scalar = self.stage.registers[dst];
+        let (unit, pointers, count) = self.private_address(base, index, word, scalar);
+        let raw = self.load_raw(scalar, unit, &pointers[..count], false);
+        self.from_words(dst, &[raw], Self::raw_scalar(scalar));
+    }
+
+    fn store_private(&mut self, src: Reg, base: usize, index: Option<Reg>, word: u32) {
+        let scalar = self.stage.registers[src];
+        let (unit, pointers, count) = self.private_address(base, index, word, scalar);
+        let raw = self.raw_bits(src);
+        self.store_raw(scalar, unit, &pointers[..count], raw, false);
+    }
+
     fn id(&mut self) -> u32 {
         let v = self.next;
         self.next += 1;
@@ -863,37 +910,25 @@ impl Emitter<'_> {
                     self.from_words(*dst, &words, Scalar::U32);
                 }
                 InstKind::LoadLocal(dst, slot) => {
-                    if self.private_words.contains(slot) {
-                        let scalar = self.stage.registers[*dst];
-                        let (unit, pointers) = self.private_address(*slot, None, 0, scalar);
-                        let raw = self.load_raw(scalar, unit, &pointers, false);
-                        self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
+                    let pointer = self.locals[*slot];
+                    if pointer == 0 {
+                        self.load_private(*dst, *slot, None, 0);
                     } else {
-                        self.emit(61, &[self.ty(*dst), self.value(*dst), self.locals[*slot]]);
+                        self.emit(61, &[self.ty(*dst), self.value(*dst), pointer]);
                     }
                 }
                 InstKind::StoreLocal(slot, src) => {
-                    if self.private_words.contains(slot) {
-                        let scalar = self.stage.registers[*src];
-                        let (unit, pointers) = self.private_address(*slot, None, 0, scalar);
-                        let raw = self.raw_bits(*src);
-                        self.store_raw(scalar, unit, &pointers, raw, false);
+                    let pointer = self.locals[*slot];
+                    if pointer == 0 {
+                        self.store_private(*src, *slot, None, 0);
                     } else {
-                        self.emit(62, &[self.locals[*slot], self.value(*src)]);
+                        self.emit(62, &[pointer, self.value(*src)]);
                     }
                 }
-                InstKind::LoadLocalIndexed { dst, base, index, word, .. } => {
-                    let scalar = self.stage.registers[*dst];
-                    let (unit, pointers) = self.private_address(*base, Some(*index), *word, scalar);
-                    let raw = self.load_raw(scalar, unit, &pointers, false);
-                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
-                }
-                InstKind::StoreLocalIndexed { base, index, word, value, .. } => {
-                    let scalar = self.stage.registers[*value];
-                    let (unit, pointers) = self.private_address(*base, Some(*index), *word, scalar);
-                    let raw = self.raw_bits(*value);
-                    self.store_raw(scalar, unit, &pointers, raw, false);
-                }
+                InstKind::LoadLocalIndexed { dst, base, index, word, .. } =>
+                    self.load_private(*dst, *base, Some(*index), *word),
+                InstKind::StoreLocalIndexed { base, index, word, value, .. } =>
+                    self.store_private(*value, *base, Some(*index), *word),
                 InstKind::Load { dst, binding, index, word } => {
                     let scalar = self.stage.registers[*dst];
                     let raw = self.load_raw_buffer(scalar, *binding, self.value(*index), *word);
@@ -1479,8 +1514,7 @@ fn emit_shader(
         index: 0,
         regs: Vec::new(),
         locals: Vec::new(),
-        private_arrays: Vec::new(),
-        private_words: std::collections::BTreeSet::new(),
+        private_arrays: BTreeMap::new(),
         stage,
         program,
         ext: 0,
@@ -1734,15 +1768,16 @@ fn emit_shader(
         let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
         let pointer = e.declare_pointer(StorageClass::Function, array);
         let variable = e.declare_function_variable(pointer);
-        e.private_words.extend(span.clone());
-        e.private_arrays.push((span, variable));
+        e.private_arrays.insert(span.end, PrivateArray { start: span.start, unit, variable });
     }
-    for (slot, s) in stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)).enumerate() {
-        if e.private_words.contains(&slot) {
+    for (&end, ty) in &stage.locals {
+        if e.private_arrays.contains_key(&end) {
             continue;
         }
-        let id = e.declare_function_variable(e.pointers[s]);
-        e.locals[slot] = id;
+        let start = end - ty.components.len();
+        for (slot, (scalar, _)) in (start..end).zip(&ty.components) {
+            e.locals[slot] = e.declare_function_variable(e.pointers[scalar]);
+        }
     }
     let mut temporary = 0;
     if ranks {
