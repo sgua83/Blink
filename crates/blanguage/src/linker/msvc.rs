@@ -126,6 +126,12 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         vec![vc.join("lib/x64"), sdk.join("um/x64"), sdk.join("ucrt/x64")],
     ))
 }
+fn path_argument(prefix: &str, path: &Path) -> OsString {
+    let mut argument = OsString::from(prefix);
+    argument.push(path);
+    argument
+}
+
 pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {
     let binding = super::resources::resources(&archives.iter().collect::<Vec<_>>(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
     let (linker, libraries) = tools()?;
@@ -186,7 +192,7 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
                 "/OPT:ICF",
                 "/NOEXP",
             ])
-            .arg(format!("/OUT:{}", path.display()))
+            .arg(path_argument("/OUT:", path))
             .args(&temporary);
         if let Some(crate::object::Object { kind: crate::object::Kind::Application { stack_bytes }, .. }) = objects.first().copied() {
             command.arg("/SUBSYSTEM:CONSOLE").arg(format!("/STACK:{}", super::pe::stack_reserve(*stack_bytes)));
@@ -196,12 +202,12 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
         if import_library {
             let mut import_path = path.to_path_buf();
             import_path.set_extension("lib");
-            command.arg(format!("/IMPLIB:{}", import_path.display()));
+            command.arg(path_argument("/IMPLIB:", &import_path));
         } else {
             command.arg("/NOIMPLIB");
         }
         for lib in libraries {
-            command.arg(format!("/LIBPATH:{}", lib.display()));
+            command.arg(path_argument("/LIBPATH:", &lib));
         }
         let libraries = archives
             .iter()

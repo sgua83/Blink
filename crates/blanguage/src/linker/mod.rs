@@ -98,14 +98,14 @@ fn link_objects(objects: Vec<Source<'_>>, libraries: Vec<crate::object::Library>
             if archives.is_empty() {
                 return Err("DLL 目标文件没有静态目标库".into());
             }
-            msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, true)?;
-            let mut header_path = output.clone();
-            header_path.set_extension("abi.h");
-            std::fs::write(header_path, header)?;
             let library = output
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .ok_or("DLL 文件名不是 UTF-8")?;
+            msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, true)?;
+            let mut header_path = output.clone();
+            header_path.set_extension("abi.h");
+            std::fs::write(header_path, header)?;
             let binding = binding.replace(
                 &format!("#[link(name=\"{prefix}\")]"),
                 &format!("#[link(name=\"{library}\")]"),

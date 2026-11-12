@@ -9,7 +9,7 @@ fn main() -> ExitCode {
     }
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--version" {
         println!("Blink linker {}", include_str!("../../../../VERSION").trim());
         return Ok(());
@@ -28,10 +28,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut output = None;
     let mut i = 0;
     while i < args.len() {
-        let requested = match args[i].as_str() {
-            "--archive" => Some(Product::Archive),
-            "--host-archive" => Some(Product::HostArchive),
-            "--stack-report" => Some(Product::StackReport),
+        let requested = match args[i].to_str() {
+            Some("--archive") => Some(Product::Archive),
+            Some("--host-archive") => Some(Product::HostArchive),
+            Some("--stack-report") => Some(Product::StackReport),
             _ => None,
         };
         if let Some(requested) = requested {
@@ -41,7 +41,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             product = Some(requested);
         } else if args[i] == "--stack-budget" {
             i += 1;
-            stack_budget = Some(args.get(i).ok_or("--stack-budget缺少字节数")?.parse::<u64>()?);
+            let budget = args.get(i).ok_or("--stack-budget缺少字节数")?;
+            stack_budget = Some(budget.to_str().ok_or("--stack-budget需要十进制字节数")?.parse::<u64>()?);
         } else if args[i] == "-o" {
             i += 1;
             output = Some(PathBuf::from(args.get(i).ok_or("-o 缺少输出路径")?));

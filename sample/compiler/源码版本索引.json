@@ -20,7 +20,7 @@
     },
     {
       "path": "crates/blanguage/src/bin/blink.rs",
-      "sha256": "ee2ef9d9a69449c98d41b2313d658c050adce349ec627c955c636b78ab6d200a"
+      "sha256": "08b895f7ba9a7a5c53a4f532628d7878d688a966de30fa30418615b1c60b1569"
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.b",
@@ -528,11 +528,11 @@
     },
     {
       "path": "crates/blanguage/src/linker/mod.rs",
-      "sha256": "7bfcd5527ca0edf6342f4f318df59a25a7c8957a7bcbf749dea69642b1400e74"
+      "sha256": "23bb2fdd4b68b0432ce999cff515d251adec821d6d542b338773de141e087400"
     },
     {
       "path": "crates/blanguage/src/linker/msvc.rs",
-      "sha256": "0aa5ecf3c659f1a6fbb679b5e5e8270b66bb60cbb27a6bce6fa175d85320369a"
+      "sha256": "c1284dab50ef9d803c49548f29396dd43e80609efc59b9d714793b27d63549b5"
     },
     {
       "path": "crates/blanguage/src/linker/native.rs",
