@@ -440,13 +440,8 @@ fn infer_type(
             code: "B031",
             message: format!("未知或不明确的记录类型 {}", formal.name()),
         })?;
-    let expected = crate::generics::key(
-        &base,
-        actual.arguments.iter().map(|ty| ty.name.as_str()),
-        &actual.values,
-    );
-    if actual.name != expected
-        || formal.arguments().len() != actual.arguments.len() + actual.values.len()
+    if formal.arguments().len() != actual.arguments.len() + actual.values.len()
+        || !crate::generics::record_key_matches(&base, actual)
     {
         return source.fail(
             span,
@@ -564,13 +559,8 @@ fn infer_value(
             code: "B031",
             message: format!("未知记录 {}", formal.name()),
         })?;
-    let expected = crate::generics::key(
-        &base,
-        actual.arguments.iter().map(|ty| ty.name.as_str()),
-        &actual.values,
-    );
-    if expected != actual.name
-        || formal.arguments().len() != actual.arguments.len() + actual.values.len()
+    if formal.arguments().len() != actual.arguments.len() + actual.values.len()
+        || !crate::generics::record_key_matches(&base, actual)
     {
         return source.fail(span, "B232", "无法从不同名义记录推导 const 参数");
     }

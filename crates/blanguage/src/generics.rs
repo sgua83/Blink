@@ -25,19 +25,44 @@ unsafe extern "C" {
     fn instance_key_size(name: InstanceName) -> u64;
     #[link_name = "bootstrap.instance_domain::write_key"]
     fn write_instance_key(name: InstanceName, output: *mut u8);
+    #[link_name = "bootstrap.instance_domain::matches_key"]
+    fn matches_instance_key(name: InstanceName, actual: NameBytes) -> bool;
 }
-pub(crate) fn key<'a>(base: &str, types: impl IntoIterator<Item = &'a str>, values: &[u32]) -> String {
+
+fn with_instance_name<'a, T>(
+    base: &str,
+    types: impl IntoIterator<Item = &'a str>,
+    values: &[u32],
+    consume: impl FnOnce(InstanceName) -> T,
+) -> T {
     let types = types.into_iter().map(NameBytes::new).collect::<Vec<_>>();
-    let name = InstanceName { base: NameBytes::new(base), types: types.as_ptr(), type_count: types.len() as u64,
-        values: values.as_ptr(), value_count: values.len() as u64 };
-    // B initializes the final UTF-8 bytes; all borrowed input stays live through both calls.
-    let length = unsafe { instance_key_size(name) } as usize;
-    let mut bytes = Vec::with_capacity(length);
-    unsafe {
-        write_instance_key(name, bytes.as_mut_ptr());
-        bytes.set_len(length);
-        String::from_utf8_unchecked(bytes)
-    }
+    consume(InstanceName {
+        base: NameBytes::new(base),
+        types: types.as_ptr(),
+        type_count: types.len() as u64,
+        values: values.as_ptr(),
+        value_count: values.len() as u64,
+    })
+}
+
+pub(crate) fn key<'a>(base: &str, types: impl IntoIterator<Item = &'a str>, values: &[u32]) -> String {
+    with_instance_name(base, types, values, |name| {
+        // B initializes the final UTF-8 bytes while the input is still borrowed.
+        let length = unsafe { instance_key_size(name) } as usize;
+        let mut bytes = Vec::with_capacity(length);
+        unsafe {
+            write_instance_key(name, bytes.as_mut_ptr());
+            bytes.set_len(length);
+            String::from_utf8_unchecked(bytes)
+        }
+    })
+}
+
+pub(crate) fn record_key_matches(base: &str, actual: &Ty) -> bool {
+    with_instance_name(base, actual.arguments.iter().map(|ty| ty.name.as_str()), &actual.values, |name| {
+        // B compares against the existing name without producing another string.
+        unsafe { matches_instance_key(name, NameBytes::new(&actual.name)) }
+    })
 }
 #[derive(Default)]
 pub(crate) struct Bindings {

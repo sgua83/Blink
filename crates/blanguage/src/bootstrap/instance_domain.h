@@ -34,3 +34,4 @@ struct InstanceName {
 // All input ranges and the final output belong to this synchronous caller.
 extern "C" u64 key_size(InstanceName name) on cpu;
 extern "C" void write_key(InstanceName name, address output) on cpu;
+extern "C" bool matches_key(InstanceName name, NameBytes actual) on cpu;

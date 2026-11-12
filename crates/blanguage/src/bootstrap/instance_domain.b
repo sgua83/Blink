@@ -99,34 +99,48 @@ extern "C" u64 key_size(InstanceName name) on cpu {
     return size;
 }
 
-void copy_name(NameBytes text, address output, u64 offset) on cpu {
-    u64 index = 0u64;
-    while (index < text.length) {
-        unsafe_position<u8>(at(output, offset + index)) = unsafe_position<u8>(at(text.bytes, index));
-        index += 1u64;
-    }
+bool key_byte<const Compare:u32 in {0,1}>(address bytes, u64 offset, u8 value) on cpu {
+    address slot = unsafe_address(address_bits(bytes) + offset);
+    if (Compare == 1) { return unsafe_position<u8>(slot) == value; }
+    unsafe_position<u8>(slot) = value;
+    return true;
 }
 
-extern "C" void write_key(InstanceName name, address output) on cpu {
-    copy_name(name.base, output, 0u64);
+bool key_text<const Compare:u32 in {0,1}>(NameBytes text, address bytes, u64 offset) on cpu {
+    u64 index = 0u64;
+    while (index < text.length) {
+        u8 value = unsafe_position<u8>(unsafe_address(address_bits(text.bytes) + index));
+        address slot = unsafe_address(address_bits(bytes) + offset + index);
+        if (Compare == 1) {
+            if (unsafe_position<u8>(slot) != value) { return false; }
+        } else {
+            unsafe_position<u8>(slot) = value;
+        }
+        index += 1u64;
+    }
+    return true;
+}
+
+bool key_bytes<const Compare:u32 in {0,1}>(InstanceName name, address bytes) on cpu {
+    if (!key_text<Compare>(name.base, bytes, 0u64)) { return false; }
     u64 offset = name.base.length;
-    unsafe_position<u8>(at(output, offset)) = u8(60);
+    if (!key_byte<Compare>(bytes, offset, u8(60))) { return false; }
     offset += 1u64;
     u64 index = 0u64;
     while (index < name.type_count) {
         if (index != 0u64) {
-            unsafe_position<u8>(at(output, offset)) = u8(44);
+            if (!key_byte<Compare>(bytes, offset, u8(44))) { return false; }
             offset += 1u64;
         }
         NameBytes text = unsafe_position<NameBytes>(at(name.types, index * size_of<NameBytes>()));
-        copy_name(text, output, offset);
+        if (!key_text<Compare>(text, bytes, offset)) { return false; }
         offset += text.length;
         index += 1u64;
     }
     index = 0u64;
     while (index < name.value_count) {
         if (name.type_count != 0u64 || index != 0u64) {
-            unsafe_position<u8>(at(output, offset)) = u8(44);
+            if (!key_byte<Compare>(bytes, offset, u8(44))) { return false; }
             offset += 1u64;
         }
         u32 value = unsafe_position<u32>(at(name.values, index * size_of<u32>()));
@@ -134,11 +148,25 @@ extern "C" void write_key(InstanceName name, address output) on cpu {
         u64 cursor = end;
         while (cursor > offset) {
             cursor -= 1u64;
-            unsafe_position<u8>(at(output, cursor)) = u8(48 + value % 10);
+            u8 digit = u8(48 + value % 10);
+            address slot = unsafe_address(address_bits(bytes) + cursor);
+            if (Compare == 1) {
+                if (unsafe_position<u8>(slot) != digit) { return false; }
+            } else {
+                unsafe_position<u8>(slot) = digit;
+            }
             value /= 10;
         }
         offset = end;
         index += 1u64;
     }
-    unsafe_position<u8>(at(output, offset)) = u8(62);
+    return key_byte<Compare>(bytes, offset, u8(62));
+}
+
+extern "C" void write_key(InstanceName name, address output) on cpu {
+    key_bytes<0>(name, output);
+}
+
+extern "C" bool matches_key(InstanceName name, NameBytes actual) on cpu {
+    return actual.length == key_size(name) && key_bytes<1>(name, actual.bytes);
 }
