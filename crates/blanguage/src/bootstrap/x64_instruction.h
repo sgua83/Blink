@@ -213,3 +213,24 @@ struct AppendBranch {
 extern "C" AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
     u32 capacity_slot, u32 target_slot, address output) on cpu;
 extern "C" AppendBranch append_result(address output) on cpu;
+
+enum ReductionOperator:u32 { Sum=0; Min=1; Max=2; BitAnd=3; BitOr=4; BitXor=5; };
+
+struct ReductionRange {
+    u64 identity;
+    ScalarEncoding scalar;
+    u32 source;
+    u32 stride_offset;
+    u32 source_word;
+    ReductionOperator operation;
+    u32 count;
+    array<u32,4> offsets;
+};
+
+struct ReductionCode {
+    u64 length;
+    array<u64,4> literals;
+};
+
+// R12 has already been saved. The caller owns 256 output bytes and the literal pool.
+extern "C" ReductionCode reduce_range(ReductionRange input, address output) on cpu;

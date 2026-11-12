@@ -2087,3 +2087,104 @@ extern "C" AppendBranch append_result(address output) on cpu {
     patch_relative(unsafe_address(done), done - start, cursor - start);
     return AppendBranch(cursor - start, full - start);
 }
+
+u8 reduction_opcode(ReductionOperator operation, bool floating) on cpu {
+    if (operation == ReductionOperator::Sum) { return floating ? u8(0x58) : u8(0x03); }
+    if (operation == ReductionOperator::Min) { return u8(0x5d); }
+    if (operation == ReductionOperator::Max) { return u8(0x5f); }
+    if (operation == ReductionOperator::BitAnd) { return u8(0x23); }
+    if (operation == ReductionOperator::BitOr) { return u8(0x0b); }
+    return u8(0x33);
+}
+
+u64 reduce_accumulate(u64 at, ReductionOperator operation, ScalarEncoding scalar, u8 register, u32 offset) on cpu {
+    u32 size = scalar.width / 8;
+    bool wide = size == 8;
+    bool floating = scalar.kind == ScalarKind::Float;
+    u8 opcode = reduction_opcode(operation, floating);
+    MoveLocation operand = MoveLocation(u64(offset), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+    if (floating) {
+        u16 instruction = (u16(opcode) << 8) | u16(0x0f);
+        u8 prefix = wide ? u8(0xf2) : u8(0xf3);
+        return encode_operand_instruction(at, instruction, prefix, false, register, operand);
+    }
+    u8 prefix = size == 2 ? u8(0x66) : u8(0);
+    u16 byte_form = size == 1 ? u16(1) : u16(0);
+    bool minimum = operation == ReductionOperator::Min;
+    if (!minimum && operation != ReductionOperator::Max) {
+        return encode_operand_instruction(at, u16(opcode) - byte_form, prefix, wide, register, operand);
+    }
+    bool signed = scalar.kind == ScalarKind::Signed;
+    u8 condition = minimum ? (signed ? u8(0x4f) : u8(0x47)) : (signed ? u8(0x4c) : u8(0x42));
+    u64 cursor = encode_operand_instruction(at, u16(0x3b) - byte_form, prefix, wide, register, operand);
+    if (size != 1) {
+        return encode_operand_instruction(cursor, (u16(condition) << 8) | u16(0x0f), prefix, wide, register, operand);
+    }
+    // There is no byte CMOV. Read the selected byte only when it wins.
+    u64 skip = condition_field(cursor, (condition + u8(0x40)) ^ u8(1));
+    cursor = encode_operand_instruction(skip + 4u64, u16(0x8a), u8(0), false, register, operand);
+    patch_relative(unsafe_address(skip), skip, cursor);
+    return cursor;
+}
+
+extern "C" ReductionCode reduce_range(ReductionRange input, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation stride = MoveLocation(u64(input.source + input.stride_offset), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    u64 cursor = encode_operand_instruction(start, u16(0x8b), u8(0), true, u8(12), stride);
+    // Keep source address in R10, stride in R12, and range index in ECX.
+    MoveLocation source = MoveLocation(u64(input.source), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), true, u8(10), source);
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(0));
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(12));
+    cursor = register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(10));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(1));
+
+    let integer_registers = array<u8,4>(u8(0), u8(2), u8(9), u8(11));
+    array<u64,4> literals = array<u64,4>(0u64, 0u64, 0u64, 0u64);
+    u32 size = input.scalar.width / 8;
+    bool floating = input.scalar.kind == ScalarKind::Float;
+    for (component in 0..4) {
+        if (component == input.count) { break; }
+        if (floating) {
+            MoveLocation dst = MoveLocation(0u64, MOVE_XMM, u8(component), NO_INDEX, u8(0));
+            MoveLocation src = MoveLocation(input.identity, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+            MoveEncoding value = copy_scalar_move(dst, src, size, false, unsafe_address(cursor));
+            if (value.literal_field != 0u64) { literals[component] = cursor - start + value.literal_field; }
+            cursor += value.length;
+        } else {
+            cursor = move_immediate(cursor, integer_registers[component], input.identity, size == 8);
+        }
+    }
+
+    u64 begin = cursor;
+    cursor = register_instruction(cursor, u16(0x39), u8(0), false, u8(8), u8(1));
+    u64 end = condition_field(cursor, u8(0x83));
+    cursor = end + 4u64;
+    for (component in 0..4) {
+        if (component == input.count) { break; }
+        u8 register = floating ? u8(component) : integer_registers[component];
+        cursor = reduce_accumulate(cursor, input.operation, input.scalar, register, input.source_word + input.offsets[component]);
+    }
+    cursor = register_instruction(cursor, u16(0x03), u8(0), true, u8(10), u8(12));
+    cursor = register_instruction(cursor, u16(0xff), u8(0), false, u8(0), u8(1));
+    u64 back = jump_field(cursor);
+    cursor = back + 4u64;
+    patch_relative(unsafe_address(back), back, begin);
+    patch_relative(unsafe_address(end), end, cursor);
+
+    // Return address, four shadow slots and saved R12 precede the result pointer.
+    MoveLocation result = MoveLocation(0x30u64, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), true, u8(10), result);
+    for (component in 0..4) {
+        if (component == input.count) { break; }
+        MoveLocation destination = MoveLocation(u64(input.offsets[component]), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+        if (floating) {
+            cursor = store_float(cursor, destination, u8(component), size == 8);
+        } else {
+            cursor = store_bits(cursor, destination, integer_registers[component], size);
+        }
+    }
+    write_word(cursor, 0x5c41c031);
+    put_byte(cursor + 4u64, u8(0xc3));
+    return ReductionCode(cursor + 5u64 - start, literals);
+}
