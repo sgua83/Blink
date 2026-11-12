@@ -176,6 +176,15 @@ extern "C" u64 address_pair(MoveLocation low, MoveLocation high, address output)
 // Place the effective address in RAX. An indexed address consumes RAX as its
 // index. The caller owns eight output bytes.
 extern "C" u64 reference_address(u8 base, u32 offset, bool indexed, address output) on cpu;
+
+// Field offsets refer to the caller's original table in R12.
+extern "C" u64 buffer_load(u32 offset, u8 target, address output) on cpu;
+// Scale an index by the stored u64 stride. Base 255 leaves the scaled index
+// available as an operand; otherwise add it to the given pointer register.
+extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output) on cpu;
+extern "C" u64 buffer_advance(u32 stride_offset, u8 target, address output) on cpu;
+// Read the selection field for EBX and leave the comparison flags.
+extern "C" u64 buffer_selection(u32 data_offset, u32 stride_offset, u32 word, address output) on cpu;
 // Packet inputs use their original allocated XMM/stack lanes; no source is retained.
 // packet_lane needs 16 bytes; either packet view entry needs 64 bytes.
 extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu;

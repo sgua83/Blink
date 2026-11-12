@@ -413,12 +413,7 @@ impl Emitter<'_> {
             let collect = self.code.len();
             self.bytes(&[0x44, 0x39, 0xf3]);
             let tail = self.jump(Branch::Flags(0x83));
-            self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-            self.u32(selection.binding as u32 * BUFFER_BYTES);
-            self.bytes(&[0x89, 0xd8]);
-            let memory = self.buffer_memory(selection.binding, 0, selection.word);
-            self.instruction(None, &[0x83], false, 7, memory.into());
-            self.bytes(&[0]);
+            self.buffer_selection(selection.binding, selection.word);
             let skip = self.jump(Branch::Flags(0x84));
             self.bytes(&[0x89, 0x9c, 0x8c]); // indices[ecx] = ebx
             self.u32(self.frame.end as u32);

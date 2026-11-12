@@ -1630,21 +1630,47 @@ extern "C" u64 offset_address(u32 stride, address output) on cpu {
     return cursor + 3u64 - start;
 }
 
-// Buffer field offsets and stack indices come from the original native layout.
-u64 packet_table_base(u64 at, u32 offset) on cpu {
-    put_byte(at, u8(0x4d)); put_byte(at + 1u64, u8(0x8b));
-    put_byte(at + 2u64, u8(0xbc)); put_byte(at + 3u64, u8(0x24));
-    write_word(at + 4u64, offset);
-    return at + 8u64;
+// The caller supplies the actual descriptor field offsets in the table held by R12.
+u64 buffer_field_at(u64 at, u32 offset, u16 opcode, u8 reg) on cpu {
+    MoveLocation field = MoveLocation(u64(offset), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
+    return encode_operand_instruction(at, opcode, u8(0), true, reg, field);
 }
 
-MoveLocation packet_buffer_operand(u32 offset) on cpu {
+u64 buffer_index_at(u64 at, u32 stride_offset, u8 index, u8 base) on cpu {
+    u64 cursor = buffer_field_at(at, stride_offset, u16(0xaf0f), index);
+    if (base != NO_INDEX) {
+        cursor = register_instruction(cursor, u16(0x01), u8(0), true, index, base);
+    }
+    return cursor;
+}
+
+MoveLocation buffer_element_operand(u32 offset) on cpu {
     return MoveLocation(u64(offset), MOVE_MEMORY, u8(15), u8(0), u8(0));
 }
 
-u64 packet_buffer_scale(u64 at, u32 stride_offset) on cpu {
-    MoveLocation stride = MoveLocation(u64(stride_offset), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
-    return encode_operand_instruction(at, u16(0xaf0f), u8(0), true, u8(0), stride);
+extern "C" u64 buffer_load(u32 offset, u8 target, address output) on cpu {
+    u64 start = address_bits(output);
+    return buffer_field_at(start, offset, u16(0x8b), target) - start;
+}
+
+extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output) on cpu {
+    u64 start = address_bits(output);
+    return buffer_index_at(start, stride_offset, index, base) - start;
+}
+
+extern "C" u64 buffer_advance(u32 stride_offset, u8 target, address output) on cpu {
+    u64 start = address_bits(output);
+    return buffer_field_at(start, stride_offset, u16(0x03), target) - start;
+}
+
+extern "C" u64 buffer_selection(u32 data_offset, u32 stride_offset, u32 word, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = buffer_field_at(start, data_offset, u16(0x8b), u8(15));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(3), u8(0));
+    cursor = buffer_index_at(cursor, stride_offset, u8(0), NO_INDEX);
+    cursor = encode_operand_instruction(cursor, u16(0x83), u8(0), false, u8(7), buffer_element_operand(word));
+    put_byte(cursor, u8(0));
+    return cursor + 1u64 - start;
 }
 
 u64 packet_memory_at(u64 at, PacketMemory memory, u8 lane) on cpu {
@@ -1661,13 +1687,12 @@ u64 packet_memory_at(u64 at, PacketMemory memory, u8 lane) on cpu {
             put_byte(cursor, lane); cursor += 1u64;
         }
     }
-    cursor = packet_table_base(cursor, memory.data_offset);
-    return packet_buffer_scale(cursor, memory.stride_offset);
+    cursor = buffer_field_at(cursor, memory.data_offset, u16(0x8b), u8(15));
+    return buffer_index_at(cursor, memory.stride_offset, u8(0), NO_INDEX);
 }
 
 u64 packet_contiguous_field(u64 at, u32 stride_offset) on cpu {
-    MoveLocation stride = MoveLocation(u64(stride_offset), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
-    u64 cursor = encode_operand_instruction(at, u16(0x83), u8(0), true, u8(7), stride);
+    u64 cursor = buffer_field_at(at, stride_offset, u16(0x83), u8(7));
     put_byte(cursor, u8(4));
     return condition_field(cursor + 1u64, u8(0x85));
 }
@@ -1682,7 +1707,7 @@ u64 packet_combine_at(u64 at, u8 target, bool broadcast) on cpu {
 extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, address output) on cpu {
     u64 start = address_bits(output); u64 cursor = start; u64 done = 0u64;
     u8 target = packet_destination(dst);
-    MoveLocation operand = packet_buffer_operand(memory.offset);
+    MoveLocation operand = buffer_element_operand(memory.offset);
     if (memory.contiguous != 0) {
         u64 strided = packet_contiguous_field(cursor, memory.stride_offset);
         cursor = packet_memory_at(strided + 4u64, memory, u8(0));
@@ -1709,7 +1734,7 @@ extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address outpu
     u8 source = u8(1);
     if (src.kind == MOVE_XMM) { source = src.base; }
     else { cursor = packet_load_at(cursor, src, source); }
-    MoveLocation operand = packet_buffer_operand(memory.offset);
+    MoveLocation operand = buffer_element_operand(memory.offset);
     if (memory.contiguous != 0) {
         u64 strided = packet_contiguous_field(cursor, memory.stride_offset);
         cursor = packet_memory_at(strided + 4u64, memory, u8(0));
@@ -1731,7 +1756,7 @@ extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address outpu
 }
 
 u64 packet_gather_base(u64 at, PacketGather input, u8 lane) on cpu {
-    if (input.kind == 0) { return packet_table_base(at, input.data_offset); }
+    if (input.kind == 0) { return buffer_field_at(at, input.data_offset, u16(0x8b), u8(15)); }
     return address_pair_at(at, input.base_low, input.base_high, true, lane, u8(15));
 }
 
@@ -1743,10 +1768,10 @@ extern "C" u64 packet_gather(MoveLocation dst, PacketGather input, bool boolean,
     for (ordinal in 0..u32(count)) {
         u8 lane = u8(ordinal);
         if (!shared) { cursor = packet_gather_base(cursor, input, lane); }
-        MoveLocation operand = packet_buffer_operand(input.offset);
+        MoveLocation operand = buffer_element_operand(input.offset);
         if (input.kind == 0) {
             cursor = packet_lane_at(cursor, input.index, lane, u8(0));
-            cursor = packet_buffer_scale(cursor, input.stride_offset);
+            cursor = buffer_index_at(cursor, input.stride_offset, u8(0), NO_INDEX);
         } else {
             AddressEncoding memory;
             if (input.kind == 1) {
@@ -2178,8 +2203,7 @@ extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes
 extern "C" AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
     u32 capacity_slot, u32 target_slot, address output) on cpu {
     u64 start = address_bits(output);
-    MoveLocation count = MoveLocation(u64(counter_slot), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
-    u64 cursor = encode_operand_instruction(start, u16(0x8b), u8(0), true, u8(15), count);
+    u64 cursor = buffer_field_at(start, counter_slot, u16(0x8b), u8(15));
     MoveLocation counter = MoveLocation(u64(counter_word), MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
     MoveLocation capacity = MoveLocation(u64(capacity_slot), MOVE_MEMORY, u8(13), NO_INDEX, u8(0));
     cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(1), capacity);
@@ -2194,8 +2218,7 @@ extern "C" AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
     u64 again = condition_field(cursor, u8(0x85));
     patch_relative(unsafe_address(again), again - start, begin - start);
     // EAX still holds the successful old count; R15 receives the target base.
-    MoveLocation target = MoveLocation(u64(target_slot), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
-    cursor = encode_operand_instruction(again + 4u64, u16(0x8b), u8(0), true, u8(15), target);
+    cursor = buffer_field_at(again + 4u64, target_slot, u16(0x8b), u8(15));
     return AppendBranch(cursor - start, full - start);
 }
 

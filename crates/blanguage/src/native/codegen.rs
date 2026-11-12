@@ -87,6 +87,14 @@ unsafe extern "C" {
     fn patch_relative(field: *mut u8, offset: u64, target: u64);
     #[link_name = "bootstrap.x64_instruction::encode_branch"]
     fn encode_branch(condition: u8, test_bits: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::buffer_load"]
+    fn encode_buffer_load(offset: u32, target: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::buffer_index"]
+    fn encode_buffer_index(stride_offset: u32, index: u8, base: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::buffer_advance"]
+    fn encode_buffer_advance(stride_offset: u32, target: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::buffer_selection"]
+    fn encode_buffer_selection(data_offset: u32, stride_offset: u32, word: u32, output: *mut u8) -> u64;
 }
 
 enum Branch {
@@ -237,29 +245,38 @@ impl Emitter<'_> {
         let field = &mut self.code[at..at + 4];
         unsafe { patch_relative(field.as_mut_ptr(), at as u64, target as u64); }
     }
+    fn buffer_load(&mut self, offset: u32, target: u8) {
+        self.emit_bytes(8, |output| unsafe { encode_buffer_load(offset, target, output) });
+    }
     fn address(&mut self, binding: usize, index: Reg) {
-        self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-        self.u32(binding as u32 * BUFFER_BYTES);
+        self.buffer_load(binding as u32 * BUFFER_BYTES, 15);
         self.load(index);
         self.offset_buffer_address(binding);
     }
     fn data_memory(&mut self, binding: usize, index: Reg, word: u32) -> Memory {
-        self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-        self.u32(binding as u32 * BUFFER_BYTES);
+        self.buffer_load(binding as u32 * BUFFER_BYTES, 15);
         self.load(index);
-        self.buffer_memory(binding, 0, word)
+        self.buffer_index(binding, 0, None);
+        Memory::indexed(15, 0, 0, word)
     }
-    fn scale_buffer_index(&mut self, table: u8, binding: usize, index: u8) {
-        self.instruction(None, &[0x0f, 0xaf], true, index,
-            operands::Operand::memory(table, binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+    fn buffer_index(&mut self, binding: usize, index: u8, base: Option<u8>) {
+        let stride = binding as u32 * BUFFER_BYTES + BUFFER_STRIDE;
+        self.emit_bytes(12, |output| unsafe {
+            encode_buffer_index(stride, index, base.unwrap_or(u8::MAX), output)
+        });
     }
     fn offset_buffer_address(&mut self, binding: usize) {
-        self.scale_buffer_index(12, binding, 0);
-        self.bytes(&[0x49, 0x01, 0xc7]);
+        self.buffer_index(binding, 0, Some(15));
     }
-    fn buffer_memory(&mut self, binding: usize, index: u8, word: u32) -> Memory {
-        self.scale_buffer_index(12, binding, index);
-        Memory::indexed(15, index, 0, word)
+    fn buffer_advance(&mut self, binding: usize, target: u8) {
+        let stride = binding as u32 * BUFFER_BYTES + BUFFER_STRIDE;
+        self.emit_bytes(8, |output| unsafe { encode_buffer_advance(stride, target, output) });
+    }
+    fn buffer_selection(&mut self, binding: usize, word: u32) {
+        let data = binding as u32 * BUFFER_BYTES;
+        self.emit_bytes(32, |output| unsafe {
+            encode_buffer_selection(data, data + BUFFER_STRIDE, word, output)
+        });
     }
     fn private_memory(
         &mut self,
@@ -472,7 +489,7 @@ impl Emitter<'_> {
                 }
                 InstKind::PositionAddress { dst, address } => { self.reference_address(address)?; self.store(*dst); }
                 InstKind::BufferStride(dst,binding) => {
-                    self.instruction(None,&[0x8b],true,0,operands::Operand::memory(12,*binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+                    self.buffer_load(*binding as u32 * BUFFER_BYTES + BUFFER_STRIDE, 0);
                     self.store(*dst);
                 }
                 InstKind::FunctionAddress(dst, target) => {
@@ -748,14 +765,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     e.parallel_abi(begin, super::ParallelRangePart::ScalarBounds);
     let skip_selection = stage.selection.map(|selection| {
         let start = e.code.len();
-        // R12 is the data table, EBX the original record index.
-        e.bytes(&[0x49, 0x8b, 0x84, 0x24]);
-        e.u32(selection.binding as u32 * BUFFER_BYTES);
-        e.bytes(&[0x89, 0xd9]);
-        e.scale_buffer_index(12, selection.binding, 1);
-        let memory = Memory::indexed(0, 1, 0, selection.word);
-        e.instruction(None, &[0x83], false, 7, memory.into());
-        e.bytes(&[0]);
+        e.buffer_selection(selection.binding, selection.word);
         let skip = e.jump(Branch::Flags(0x84));
         e.parallel_abi(start, super::ParallelRangePart::ScalarSelection { binding: selection.binding, offset: selection.word });
         skip
