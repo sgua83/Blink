@@ -260,6 +260,7 @@ struct PageAddressResult {
     words: u64,
     next: u32,
     pointer: u32,
+    second: u32,
 }
 
 #[repr(u32)]
@@ -631,7 +632,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::copy_record"]
     fn copy_record(input: RecordCopy, body: *mut u32) -> RecordCopyWords;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
-    fn page_address(input: PageAddress, body: *mut u32) -> PageAddressResult;
+    fn page_address(input: PageAddress, step: u32, body: *mut u32) -> PageAddressResult;
     #[link_name = "bootstrap.spirv_envelope::payload_read"]
     fn payload_read(input: PayloadEmission, operands: *const u32, shifts: *const u32, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::payload_write"]
@@ -901,25 +902,26 @@ impl Emitter<'_> {
             self.next = emitted.next;
         }
     }
-    fn address(&mut self, unit: Scalar, binding: usize, index: Reg, word: u32) -> u32 {
-        self.address_scalar(unit,
-            binding,
-            self.value(index),
-            word)
-    }
     fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, word: u32) -> u32 {
         self.page_address(unit, PageSource::Dataset(self.buffers[binding]), index, word, 0)
     }
 
     fn page_address(&mut self, unit: Scalar, source: PageSource, index: u32, word: u32, extra: u32) -> u32 {
+        self.paged_pointers(unit, source, index, word, extra, false)[0]
+    }
+
+    fn paged_pointers(
+        &mut self, unit: Scalar, source: PageSource, index: u32, word: u32, extra: u32, pair: bool,
+    ) -> [u32; 2] {
+        let step = if pair { self.constant(Scalar::U64, unit.size()) } else { 0 };
         let input = self.page_input(unit, source, index, Some(word), extra);
         let at = self.body.len();
-        self.body.reserve(109);
+        self.body.reserve(if pair { 118 } else { 109 });
         unsafe {
-            let address = page_address(input, self.body.as_mut_ptr().add(at));
+            let address = page_address(input, step, self.body.as_mut_ptr().add(at));
             self.body.set_len(at + address.words as usize);
             self.next = address.next;
-            address.pointer
+            [address.pointer, address.second]
         }
     }
 
@@ -992,22 +994,16 @@ impl Emitter<'_> {
         PageSource::View { low: self.value(table[0]), high: self.value(table[1]), stride }
     }
 
-    fn view_address(&mut self, unit: Scalar, table: &[Reg; 2], index: Reg, stride: ElementStride, word: u32) -> u32 {
-        let source = self.view_source(table, stride);
-        self.page_address(unit, source, self.value(index), word, 0)
+    fn indexed_page(&mut self, source: &IndexedSource) -> (PageSource, u32) {
+        match source {
+            IndexedSource::Data { binding, index } =>
+                (PageSource::Dataset(self.buffers[*binding]), self.value(*index)),
+            IndexedSource::View { address, index, stride } =>
+                (self.view_source(address, *stride), self.value(*index)),
+            _ => unreachable!(),
+        }
     }
 
-    fn indexed_address(&mut self, unit: Scalar, source: &IndexedSource, offset: Reg, word: u32) -> u32 {
-        if let IndexedSource::Tile { tile, index } = source {
-            return self.tile_word_address(self.stage.shared_word(*tile, word), self.value(*index), Some(self.value(offset))).0;
-        }
-        let (source, index) = match source {
-            IndexedSource::Data { binding, index } => (PageSource::Dataset(self.buffers[*binding]), *index),
-            IndexedSource::View { address, index, stride } => (self.view_source(address, *stride), *index),
-            _ => unreachable!(),
-        };
-        self.page_address(unit, source, self.value(index), word, self.value(offset))
-    }
     fn emit_control(&mut self, capacity: usize, encode: impl FnOnce(*mut u32) -> ControlWords) -> bool {
         let at = self.body.len();
         self.body.reserve(capacity);
@@ -1076,9 +1072,8 @@ impl Emitter<'_> {
                 } => self.subgroup(*dst, *op, *value, *argument),
                 InstKind::ViewLoad { dst, address, index, stride, word } => {
                     let scalar = self.stage.registers[*dst];
-                    let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-                    let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.view_address(unit, address, *index, *stride, *word + part * 4)).collect();
-                    let raw = self.load_raw(scalar, unit, &pointers, true);
+                    let source = self.view_source(address, *stride);
+                    let raw = self.load_physical(scalar, source, self.value(*index), *word, 0);
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
                 InstKind::RayQuery { scene, origin, direction, minimum, maximum, result } => {
@@ -1094,18 +1089,29 @@ impl Emitter<'_> {
                     let raw = if let IndexedSource::Tile { tile, index } = source {
                         self.tile_read(scalar, *tile, self.value(*index), *word, Some(self.value(*offset)))
                     } else {
-                        let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-                        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(unit, source, *offset, *word + part * 4)).collect();
-                        self.load_raw(scalar, unit, &pointers, true)
+                        let (page, index) = self.indexed_page(source);
+                        self.load_physical(scalar, page, index, *word, self.value(*offset))
                     };
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
                 InstKind::StoreIndexed { source, offset, word, value } => {
                     let scalar = self.stage.registers[*value];
-                    let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-                    let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(unit, source, *offset, *word + part * 4)).collect();
+                    let unit = Self::physical_unit(scalar);
+                    let count = scalar.size().div_ceil(4) as usize;
+                    let offset = self.value(*offset);
+                    let pointers = if let IndexedSource::Tile { tile, index } = source {
+                        let mut pointers = [0; 2];
+                        for (part, pointer) in pointers[..count].iter_mut().enumerate() {
+                            let slot = self.stage.shared_word(*tile, *word + part as u32 * 4);
+                            *pointer = self.tile_word_address(slot, self.value(*index), Some(offset)).0;
+                        }
+                        pointers
+                    } else {
+                        let (page, index) = self.indexed_page(source);
+                        self.paged_pointers(unit, page, index, *word, offset, count == 2)
+                    };
                     let raw = self.raw_bits(*value);
-                    self.store_raw(scalar, unit, &pointers, raw, true);
+                    self.store_raw(scalar, unit, &pointers[..count], raw, true);
                 }
                 InstKind::FunctionAddress(..) => return Err("CPU函数符号地址不能在GPU内核中生成"),
                 InstKind::Constant(dst, s, bits) if s.is_float() => {
@@ -1461,15 +1467,26 @@ impl Emitter<'_> {
         let (input, shifts) = self.payload_input(scalar, unit, pointers.len(), access);
         self.write_payload(input, value, pointers, &shifts, std::ptr::null_mut());
     }
-    fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32) -> u32 {
-        let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(unit, binding, index, word + part * 4)).collect();
-        self.load_raw(scalar, unit, &pointers, true)
+    fn physical_unit(scalar: Scalar) -> Scalar {
+        Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 })
     }
+
+    fn load_physical(&mut self, scalar: Scalar, source: PageSource, index: u32, word: u32, extra: u32) -> u32 {
+        let unit = Self::physical_unit(scalar);
+        let count = scalar.size().div_ceil(4) as usize;
+        let pointers = self.paged_pointers(unit, source, index, word, extra, count == 2);
+        self.load_raw(scalar, unit, &pointers[..count], true)
+    }
+
+    fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32) -> u32 {
+        self.load_physical(scalar, PageSource::Dataset(self.buffers[binding]), index, word, 0)
+    }
+
     fn store_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32, value: u32) {
-        let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(unit, binding, index, word + part * 4)).collect();
-        self.store_raw(scalar, unit, &pointers, value, true);
+        let unit = Self::physical_unit(scalar);
+        let count = scalar.size().div_ceil(4) as usize;
+        let pointers = self.paged_pointers(unit, PageSource::Dataset(self.buffers[binding]), index, word, 0, count == 2);
+        self.store_raw(scalar, unit, &pointers[..count], value, true);
     }
     fn ray(
         &mut self,

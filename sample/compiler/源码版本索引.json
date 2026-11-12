@@ -616,7 +616,7 @@
     },
     {
       "path": "crates/blanguage/src/spirv/codegen.rs",
-      "sha256": "86a9d944ce5f1485bf0b6e34083c10b1fbabd4d9822c1baa31841c3d960be511"
+      "sha256": "045c576528eb16dbee2d6219c3190be8c4d325ad138d292d501b3d971a2de41e"
     },
     {
       "path": "crates/blanguage/src/spirv/image.rs",
@@ -632,7 +632,7 @@
     },
     {
       "path": "crates/blanguage/src/spirv/sort.rs",
-      "sha256": "9e695070e6dda693b64c2337b31f12d7718a34405b74ae4e2ac466b57e6192ce"
+      "sha256": "7c48703e4533d56ac4aa8a19ce791775f2944d061638728d3293e110b673ac82"
     },
     {
       "path": "crates/blanguage/src/spirv/tile.rs",
@@ -732,11 +732,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/spirv_envelope.b",
-      "sha256": "8a9cb180dc1544b9694f79ecbaa8bb9b90d8038bc16ba9ea2c80ab41fef865aa"
+      "sha256": "0aaab70711f3dd9e79fffdbbba15de316f136ee8d3ce840b35444c479f1bd8a4"
     },
     {
       "path": "crates/blanguage/src/bootstrap/spirv_envelope.h",
-      "sha256": "6be7cf56ee973b06eebde05e47ca8faca9aa2ece129d89c7fae0a1f52b3b8fad"
+      "sha256": "844e2e6398c0148949f264df43391a65491734a5a9a942b52f0937f7d6d325cf"
     },
     {
       "path": "crates/blanguage/src/bootstrap/call_layout.b",
@@ -1178,15 +1178,15 @@
     },
     {
       "path": "crates/blanguage/src/spirv/sort.rs",
-      "start_line": 66,
-      "end_line": 67,
-      "sha256": "c50c937443a737a4ed74aecf96c96f0489d7a1c877a170d175a150b87df01a1a"
+      "start_line": 69,
+      "end_line": 70,
+      "sha256": "b6c167239e2d9b4f857de361b7bba045b68495caf9757667d8d1778b40febcdb"
     },
     {
       "path": "crates/blanguage/src/spirv/sort.rs",
       "start_line": 36,
-      "end_line": 59,
-      "sha256": "f1596bc8392927ab4bbc5c28b927cf102f23e60c646ed416f8e3d7dd7f1c9d66"
+      "end_line": 62,
+      "sha256": "8bd59f27079771c980bd11a0b6d18ceca2890953ca07e5a0c705e2b24d5c076f"
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",

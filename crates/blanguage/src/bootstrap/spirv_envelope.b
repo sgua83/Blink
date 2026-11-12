@@ -593,11 +593,17 @@ PhysicalAddress physical_page_address(PageAddress input, address body, u32 start
     return PhysicalAddress(at, next, physical);
 }
 
-extern "C" PageAddressResult page_address(PageAddress input, address body) on cpu {
+extern "C" PageAddressResult page_address(PageAddress input, u32 step, address body) on cpu {
     PhysicalAddress address_value = physical_page_address(input, body, input.next);
     u32 next = address_value.next;
     u64 at = words_three(body, address_value.words, 120, input.result_pointer, next, address_value.value);
-    return PageAddressResult(at, next + 1, next);
+    if (step == 0) {
+        return PageAddressResult(at, next + 1, next, 0);
+    }
+    u32 high = next + 1;
+    at = words_four(body, at, 128, input.u64_type, high, address_value.value, step);
+    at = words_three(body, at, 120, input.result_pointer, next + 2, high);
+    return PageAddressResult(at, next + 3, next, next + 2);
 }
 
 extern "C" RecordCopyWords copy_record(RecordCopy input, address body) on cpu {

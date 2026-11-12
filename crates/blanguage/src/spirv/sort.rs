@@ -34,13 +34,16 @@ impl Emitter<'_> {
                 e.load_raw_buffer(Scalar::U32, s.target, e.index, 4)
             };
             let scalar = s.keys[key_index].1;
-            let unit = match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-            let at = e.address_scalar(unit, s.source, original, s.keys[key_index].0);
+            let unit = Self::physical_unit(scalar);
+            let [at, high] = e.paged_pointers(
+                unit, PageSource::Dataset(e.buffers[s.source]), original,
+                s.keys[key_index].0, 0, scalar == Scalar::F64,
+            );
             let key = e.load_raw(Scalar::U32, unit, &[at], true);
             let bias = scalar.order_bias() as u32;
             let key = if scalar.is_float() {
                 let high = if scalar == Scalar::F64 {
-                    e.load_raw_buffer(Scalar::U32, s.source, original, s.keys[key_index].0 + 4)
+                    e.load_raw(Scalar::U32, Scalar::U32, &[high], true)
                 } else { key };
                 let shift = e.constant(Scalar::U32, 31);
                 let negative = e.sort_binary(194, high, shift);

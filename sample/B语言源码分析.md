@@ -1672,7 +1672,7 @@ word 4：输入 B 的编号
 
 ### 17.3 为什么生成器维护多个输出区
 
-模块中的类型、常量、装饰和函数体各有位置。Emitter 持有 `types`、`constants`、`defs`、`decorations` 和 `body`，将实际编号和输出区交给 B 的 `bootstrap.spirv_envelope`。B 直接写出模块声明、普通标量指令及数据集和视图的分页地址。GPU 按实际记录步幅选页，再加上记录内的字段和数组字节偏移。B 按物理单元的宽度和对齐读写载荷，低位字排在前面。局部数组、归约和扫描共用相同的拆字和合字规则。以浮点取负和绝对值为例，B 把原值解释为同宽无符号位模式，翻转或清除最高符号位，再把结果解释回原浮点类型。由此保留 NaN 载荷和非正规数的其余位。
+模块中的类型、常量、装饰和函数体各有位置。Emitter 持有 `types`、`constants`、`defs`、`decorations` 和 `body`，将实际编号和输出区交给 B 的 `bootstrap.spirv_envelope`。B 直接写出模块声明、普通标量指令及数据集和视图的分页地址。GPU 按实际记录步幅选页，再加上记录内的字段和数组字节偏移。B 按物理单元的宽度和对齐读写载荷，低位字排在前面。同一个 64 位标量的两字从一次选页得到的物理起点寻址。局部数组、归约和扫描共用相同的拆字和合字规则。以浮点取负和绝对值为例，B 把原值解释为同宽无符号位模式，翻转或清除最高符号位，再把结果解释回原浮点类型。由此保留 NaN 载荷和非正规数的其余位。
 
 相同类型和常量可以复用对应编号，不同结果需要各自编号。Emitter 遍历原 IR 并交接真实标签和前驱。B 按子块的实际终止状态写出分支、循环和跳转指令。循环内提前返回时，合流指令消费对应前驱的退出值。
 
@@ -2088,7 +2088,7 @@ IR 的 PrefixCount 与 PrefixRelation 将数据和计数的对应保存下来。
 
 若一条记录很大，每轮排序都搬全部字段会增加大量内存流量。实现中间主要重排八字节的“键与原始序号”，等完整顺序确定后，再 gather 一次完整记录。GPU 的 gather 与 compact 共用 B 发射的记录复制。源和目标各解析一次实际记录起点，按原对齐复制全部字节，包括填充和浮点位模式。
 
-源码节选：`crates/blanguage/src/spirv/sort.rs:66`。
+源码节选：`crates/blanguage/src/spirv/sort.rs:69`。
 
 ```rust
 e.sort_store(s.target, e.index, 0, key);
@@ -2105,13 +2105,16 @@ e.sort_store(s.target, e.index, 4, original);
 
 ```rust
 let scalar = s.keys[key_index].1;
-let unit = match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-let at = e.address_scalar(unit, s.source, original, s.keys[key_index].0);
+let unit = Self::physical_unit(scalar);
+let [at, high] = e.paged_pointers(
+    unit, PageSource::Dataset(e.buffers[s.source]), original,
+    s.keys[key_index].0, 0, scalar == Scalar::F64,
+);
 let key = e.load_raw(Scalar::U32, unit, &[at], true);
 let bias = scalar.order_bias() as u32;
 let key = if scalar.is_float() {
     let high = if scalar == Scalar::F64 {
-        e.load_raw_buffer(Scalar::U32, s.source, original, s.keys[key_index].0 + 4)
+        e.load_raw(Scalar::U32, Scalar::U32, &[high], true)
     } else { key };
     let shift = e.constant(Scalar::U32, 31);
     let negative = e.sort_binary(194, high, shift);

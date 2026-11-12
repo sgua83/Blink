@@ -23,11 +23,10 @@ impl Emitter<'_> {
         let unit = Self::raw_scalar(atomic.scalar);
         let (pointer, scope, memory) = match atomic.target {
             IndexedSource::Data { binding, index } => {
-                let at = if let Some(offset) = atomic.offset {
-                    self.indexed_address(unit, &atomic.target, offset, atomic.word)
-                } else {
-                    self.address(unit, binding, index, atomic.word)
-                };
+                let offset = atomic.offset.map_or(0, |reg| self.value(reg));
+                let at = self.page_address(
+                    unit, PageSource::Dataset(self.buffers[binding]), self.value(index), atomic.word, offset,
+                );
                 (at, 1, 0x40)
             }
             IndexedSource::Tile { tile, index } => (
