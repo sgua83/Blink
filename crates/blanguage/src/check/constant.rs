@@ -205,8 +205,10 @@ impl World {
                 None => self.shape(&Some(Shape::Constant(name.into())), source, span, module, imports).map(Option::unwrap),
             },
             crate::syntax::ShapeKind::Expression(expression) => {
-                let key = format!("<shape>:{}:{module}:{:?}:{:?}:{:?}",
-                    source.path.display(), expression.span(), bindings.types, bindings.values);
+                // Generated nodes can share a diagnostic span. The source store's
+                // actual expression offset distinguishes their active evaluations.
+                let key = format!("<shape>:{}:{module}:{:?}:{:?}:{:?}:{:?}",
+                    source.path.display(), expression, expression.span(), bindings.types, bindings.values);
                 integer_expression(self, &key, source, module, imports, &Ty::scalar(Scalar::U32),
                     &expression, bindings,
                     ("B234", "形状或const实参必须完全在编译期求值，不能包含运行期运算或副作用"))

@@ -304,7 +304,7 @@ C 结构体保存字段，Rust 的 `struct` 也如此。Rust 的 `enum` 还可�
 ```rust
 pub fn parse(source:Source)->Result<syntax::Module>{
     let mut host=ParseHost::new(source)?;
-    let module=host.invoke(|input,state,context|unsafe{b_module(input,state,literal,context)})?;
+    let module=host.invoke(|input,state|unsafe{b_module(input,state)})?;
     Ok(syntax::Module{source:host.source,root:host.storage.finish(module.offset)})
 }
 ```
@@ -525,7 +525,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 编译器的一部分已经用 B 语言实现，构建它需要先有一份能够编译这些模块的 Blink 工具。这份独立、已安装的发行版就是稳定种子；不能把尚未构建成功的新工具当成自己的唯一前提。
 
-`build.rs` 用选定的上一代SDK编译B模块，再把实际原生对象与Rust部分链接。当前词法、表达式／类型／泛型／契约、语句／控制／并行构造、源节点存储、名称解析及部分布局和对象处理由B承担，模块声明及完整entry／type_query也由B完成；普通文字解码仍有Rust生产者。类型与访问检查、IR、后端主体和执行框架继续各自职责，局部接管不等于完整自举。
+`build.rs` 用选定的上一代SDK编译B模块，再把实际原生对象与Rust部分链接。当前词法、表达式／类型／泛型／契约、语句／控制／并行构造、源节点存储、名称解析及部分布局和对象处理由B承担，模块声明及完整entry／type_query也由B完成；普通文字解码与字节节点构造也由B直接完成。类型与访问检查、IR、后端主体和执行框架继续各自职责，局部接管不等于完整自举。
 
 正常源码构建默认使用安装目录中的种子，显式代际构建可以通过 `BLINK_BOOTSTRAP_SDK` 选择另一份独立 SDK。供已有应用消费的源码 SDK 与编译器自身的源码生产使用各自明确的构建输入。
 
@@ -562,7 +562,7 @@ struct ParseState {u64 at;ParseError error;};
 
 B的read_expression消费最低优先级minimum：先解析基本表达式，再查看后续运算符。只有达到当前门槛的运算符才接入树中；右侧递归使用相应门槛，保持乘法先于加法等关系。read_expression_ref把完成节点写入同一源存储，返回ExprRef，不交回一份Rust草稿。
 
-源码节选：`crates/blanguage/src/bootstrap/parser.b:233`。
+源码节选：`crates/blanguage/src/bootstrap/parser.b:234`。
 
 ```b
 u32 operator_precedence(read ParseInputs input,u64 cursor) on cpu {
@@ -583,12 +583,12 @@ u32 operator_precedence(read ParseInputs input,u64 cursor) on cpu {
 
 优先级查询返回原运算符层级，正文解析只接入达到当前门槛的运算；右侧递归使用更高门槛，完成子树直接写入原存储。
 
-源码节选：`crates/blanguage/src/bootstrap/parser.b:835`。
+源码节选：`crates/blanguage/src/bootstrap/parser.b:922`。
 
 ```b
         u32 precedence=operator_precedence(input,state.at);if(precedence==0||precedence<minimum){break;}
         Text operation=current_text(input,state.at);state.at+=1u64;
-        ExprRef right=read_expression_ref(input,state,precedence+1,type_argument,literal,context);
+        ExprRef right=read_expression_ref(input,state,precedence+1,type_argument);
         if(state.error.kind!=0){break;}
         left=ExprNode(ExprKind::Binary(BinaryExpr(operation,publish_expression(input,state,left),right)),span);
     }
@@ -612,7 +612,7 @@ u32 operator_precedence(read ParseInputs input,u64 cursor) on cpu {
 
 `bootstrap/parser.b`直接借用原Source字节和词法已写入的同一TokenSpan数组。B维护尖括号、圆括号与方括号深度，沿原接受规则返回结束游标或无结果。函数不改变Parser当前at，也不分配或保留Token；输入及其释放仍属于原调用者。
 
-源码节选：`crates/blanguage/src/bootstrap/parser.b:22`。
+源码节选：`crates/blanguage/src/bootstrap/parser.b:23`。
 
 ```b
 extern "C" AngleEnd angle_end(address source,address tokens,u64 count,u64 at) on cpu {
@@ -650,7 +650,7 @@ extern "C" AngleEnd angle_end(address source,address tokens,u64 count,u64 at) on
 
 C ABI结果AngleEnd用end和present表达可选位置，B的类型与表达式解析读取该前瞻结果。消费 `>>` 的一个字符后，解析器会推进原 `Span` 起点，后续前瞻读取剩余范围。
 
-词法扫描、前瞻、链接字符串解码、表达式／类型／泛型／契约、语句与模块声明，以及三个完整解析入口由B实现。普通文字解码、检查／IR／后端仍按真实职责区分，局部解析接管不等于完整编译器自举。
+词法扫描、前瞻、链接字符串解码、表达式／类型／泛型／契约、语句与模块声明，以及三个完整解析入口由B实现。普通文字解码同样由B完成；检查／IR／后端仍按真实职责区分，局部解析接管不等于完整编译器自举。
 
 ### 6.6 链接字符串怎样直接进入唯一输出
 
@@ -660,9 +660,41 @@ B的read_link_string消费原双引号Token，借用Source中的内文，以内�
 
 成功长度、不支持的转义、非ASCII／NUL及空结果继续沿原ParseError／Span交给Rust诊断B263，源存储和临时清理的真实错误也各自交回。缓冲只活到这次同步交接结束，最终名字和模块节点仍归原B存储；没有逐字符回调或第二释放链。
 
-B直接完成模块const／枚举生成节点、函数／struct／typeset及有序子项，独立entry／type_query消费实际EOF；普通Unicode文字仍沿原Rust同步回调写同一存储。完整编译器自举仍未完成。
+B直接完成模块const／枚举生成节点、函数／struct／typeset及有序子项，独立entry／type_query消费实际EOF；普通Unicode文字由同一B解析器直接构造字节与长度节点。完整编译器自举仍未完成。
 
-### 6.7 源节点、文字与最后消费者
+### 6.7 普通文本怎样成为固定字节数组
+
+普通文字解析直接读取原Source中的有效UTF-8字节。未转义内容保持原字节，转义在本次B解析中产生对应字节；每个字节直接形成同一存储中的明确u8构造，实际数量形成array的长度。空文字产生零长数组，不补NUL。生成的字节数节点可以与整段文字及外层成员表达式共享诊断Span；形状求值沿同一Source中实际节点偏移和本次绑定判定身份，不能按Span把不同节点当作递归。原临时子项列表在交入存储后释放，后续消费者共享封存存储，没有另一份解码String或Rust构造树。
+
+源码节选：`crates/blanguage/src/bootstrap/parser.b:740`。
+
+```b
+ExprNode ordinary_literal(read ParseInputs input,inout ParseState state,Span span) on cpu {
+    ExprNode result=ExprNode(ExprKind::Name(empty_text()),span);
+    TemporaryValues values=temporary_values();
+    Text byte_name=literal_text(input,state,"u8");
+    TypeRef byte_type=publish_type(input,state,named_type(byte_name));
+    u64 at=span.start+1u64;u64 end=span.end-1u64;
+    while(at<end&&state.error.kind==0){
+        u32 value=byte_at(input.source,at);at+=1u64;
+        if(value!=92){literal_byte(input,state,values,byte_type,span,value);}
+        else if(at==end){parse_fail(state.error,385,4,span);}
+        else{
+```
+
+Unicode转义先按原诊断次序取得十六进制标量，再消费标准库的共同标量验证和UTF-8纯值位布局。普通UTF-8编码入口及整段转换使用同一位布局；其dataset和Frame仍由原Unicode函数与调用者持有。build.rs先从同一项目library根生成该纯值对象，解析模块通过原--import消费，实际对象随其余引导模块一并静态链接到工具。
+
+源码节选：`library/blink/unicode_scalar.b:2`。
+
+```b
+bool is_scalar(u32 value) on cpu {
+    return value<=0x10ffff&&(value<0xd800||value>0xdfff);
+}
+```
+
+非法转义、缺少花括号和非标量继续沿原B385与整个文字Span交回；实际存储与清理错误保留各自来源。C ABI／PE链接字符串继续使用上一节的严格ASCII合同。
+
+### 6.8 源节点、文字与最后消费者
 
 解析器把源节点写入 B 语言模块拥有的存储，节点之间使用类型化索引相连。存储扩容可能移动地址，索引仍能标识原节点；构造完成后，读取者共享只读视图和源码快照。
 
@@ -709,7 +741,7 @@ extern "C" StorageError destroy(address storage) on cpu {
 }
 ```
 
-源码节选：`crates/blanguage/src/syntax.rs:19`。
+源码节选：`crates/blanguage/src/syntax.rs:18`。
 
 ```rust
 struct Owner {raw:NonNull<c_void>,source:Option<Arc<str>>}
@@ -1008,7 +1040,7 @@ enum Fact {
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1286`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1288`。
 
 ```rust
 self.nonzero = (0..width)
@@ -1548,7 +1580,7 @@ loop {
 
 本版 `native/packet.rs` 为能够表达的直线计算建立四元素计划。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:695`。
+源码节选：`crates/blanguage/src/native/codegen.rs:668`。
 
 ```rust
 let stage = &lowered;

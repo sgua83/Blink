@@ -1,6 +1,5 @@
 //! Read-only syntax views borrow the one B-owned store; builders publish no views.
 #[path="syntax/wire.rs"] pub(crate) mod wire;
-#[path="syntax/build.rs"] pub(crate) mod build;
 use crate::ast::Source;
 use std::{ffi::c_void,fmt,marker::PhantomData,ptr::NonNull,sync::Arc};
 
@@ -53,18 +52,10 @@ impl Builder {
         let created=unsafe{wire::create(data,length)};checked(created.error)?;
         Ok(Self{owner:Owner{raw:unsafe{NonNull::new_unchecked(created.storage)},source:source.map(|source|source.text)}})
     }
-    pub fn text(&mut self,value:&str)->Result<wire::Text> {
-        let result=unsafe{wire::text(self.owner.raw.as_ptr(),value.as_ptr().cast_mut().cast(),value.len()as u64)};
-        checked(result.error)?;Ok(result.value)
-    }
     pub fn read_text(&self,text:wire::Text)->&str {self.owner.text(text)}
     pub fn finish<T>(self,offset:u64)->Node<T> {Node{owner:Arc::new(self.owner),offset,marker:PhantomData}}
     pub fn finish_list<T>(self,value:wire::Slice)->List<T> {List{owner:Arc::new(self.owner),value,marker:PhantomData}}
 }
-impl Builder {pub fn put_type(&mut self,value:&wire::TypeNode)->Result<u64>{let result=unsafe{wire::put_type(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_shape(&mut self,value:&wire::ShapeNode)->Result<u64>{let result=unsafe{wire::put_shape(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_argument(&mut self,value:&wire::ArgumentNode)->Result<u64>{let result=unsafe{wire::put_argument(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_expr(&mut self,value:&wire::ExprNode)->Result<u64>{let result=unsafe{wire::put_expr(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 
 pub(crate) struct Node<T> {owner:Arc<Owner>,offset:u64,marker:PhantomData<T>}
 impl<T> Node<T> {pub fn same_node(&self,other:&Self)->bool{Arc::ptr_eq(&self.owner,&other.owner)&&self.offset==other.offset}}

@@ -1,4 +1,5 @@
 module blink.unicode;
+import blink.unicode_scalar;
 
 result<DecodedScalar,DecodeError> decode_utf8(read dataset<u8> text,u32 offset) on cpu {
     if (offset >= text.length) {
@@ -199,14 +200,11 @@ result<dataset<u16>,SliceError> slice_utf16(read dataset<u16> text,u32 start,u32
 }
 
 Utf8Encoding utf8_encoding(u32 value) on cpu {
-    if (value < 0x80) { return Utf8Encoding::One(u8(value)); }
-    if (value < 0x800) {
-        return Utf8Encoding::Two(array<u8,2>(u8(0xc0|(value>>6)),u8(0x80|(value&0x3f))));
-    }
-    if (value < 0x10000) {
-        return Utf8Encoding::Three(array<u8,3>(u8(0xe0|(value>>12)),u8(0x80|((value>>6)&0x3f)),u8(0x80|(value&0x3f))));
-    }
-    return Utf8Encoding::Four(array<u8,4>(u8(0xf0|(value>>18)),u8(0x80|((value>>12)&0x3f)),u8(0x80|((value>>6)&0x3f)),u8(0x80|(value&0x3f))));
+    Utf8Units units=utf8_units(value);
+    if(units.length==1){return Utf8Encoding::One(u8(units.bits));}
+    if(units.length==2){return Utf8Encoding::Two(array<u8,2>(u8(units.bits),u8(units.bits>>8)));}
+    if(units.length==3){return Utf8Encoding::Three(array<u8,3>(u8(units.bits),u8(units.bits>>8),u8(units.bits>>16)));}
+    return Utf8Encoding::Four(array<u8,4>(u8(units.bits),u8(units.bits>>8),u8(units.bits>>16),u8(units.bits>>24)));
 }
 
 Utf16Encoding utf16_encoding(u32 value) on cpu {
@@ -216,7 +214,7 @@ Utf16Encoding utf16_encoding(u32 value) on cpu {
 }
 
 result<Utf8Encoding,u32> encode_utf8(u32 value) on cpu {
-    if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) { return Err(value); }
+    if (!is_scalar(value)) { return Err(value); }
     return Ok(utf8_encoding(value));
 }
 

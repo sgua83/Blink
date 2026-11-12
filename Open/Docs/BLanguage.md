@@ -5698,6 +5698,8 @@ dataset声明、重赋值及拥有字段投影统一消费原Returned求值；�
 
 正式B模块`blink.unicode`以普通CPU函数实现`decode_utf8`、`decode_utf16`、`encode_utf8`和`encode_utf16`，以及`to_utf16(read dataset<u8>)`和`to_utf8(read dataset<u16>)`。标量解码Result交回value及实际next位置，或含原位置与原因的DecodeError；UTF-8位置以字节计，UTF-16以逻辑u16代码单元计。标量编码将合法u32交回按实际单位数区分的固定载荷变体，非法值在Err保留。
 
+`blink.unicode_scalar`共享普通CPU纯值的Unicode标量判断及UTF-8字节位布局。`is_scalar(u32 value)`判定合法Unicode标量；`utf8_units(u32 value)`只消费已验证的合法标量，交回`Utf8Units {u32 length;u32 bits;}`，length为实际1至4字节，bits按低字节在前保存UTF-8单元。它不持有文本或Frame，不替代`encode_utf8`对任意u32的Err／Ok合同；原UTF-8接口、整段转换及源文本解码消费同一位布局，非法输入不依赖该纯值函数交付编码结果。独立Unicode对象的实际依赖包含该纯值模块，归档和分立对象命令见标准库README。
+
 scalar_length_utf8(read dataset<u8>)和scalar_length_utf16(read dataset<u16>)复用原严格decoder，从零到末尾取得Unicode标量数，返回Result<u32,DecodeError>；空输入为Ok(0)，第一个错误原样保留绝对index和reason，不交付部分计数。NUL、BOM、组合标记各按标量计数，UTF-16合法代理对计一个；已有dataset.length仍为字节或u16代码单元数，不表示字素簇。长度统计只读借用输入，不分配或复制文本、保存计数缓存或改变输入所有权。
 
 slice_utf8(read dataset<u8>,u32 start,u32 end)和slice_utf16(read dataset<u16>,u32 start,u32 end)返回Result<dataset<原单元类型>,SliceError>，以半开Unicode标量区间[start,end)构造独立拥有序列，保持所选原始代码单元；合法空区间及末尾空区间成功。整个输入严格解码，第一个非法编码优先以SliceError::Decode保留原绝对位置与原因，所选区间之后的非法编码也不忽略。完整文本合法时要求start<=end<=标量长度，否则SliceError::Range的ScalarRangeError保存原start／end和实际标量length。输入只读借用，成功输出可独立修改、移动和释放；错误不交付部分输出，其存储沿原Frame退出释放。实现复用原decoder和resize／Vec容量，输出单元不超过原输入，不重编码、不另建文本状态或边界表。它们不按字素簇切割、不产生输入view或改变原所有者，分配／执行失败继续按原运行库处理。

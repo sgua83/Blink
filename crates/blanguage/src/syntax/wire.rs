@@ -245,15 +245,6 @@ pub struct StorageError{pub kind:u32, pub native_code:u32,}
 pub struct StorageCreate{pub storage:*mut c_void, pub error:StorageError,}
 #[repr(C)]
 #[derive(Clone,Copy)]
-pub struct StorageIndex{pub offset:u64, pub error:StorageError,}
-#[repr(C)]
-#[derive(Clone,Copy)]
-pub struct StorageSlice{pub value:Slice, pub error:StorageError,}
-#[repr(C)]
-#[derive(Clone,Copy)]
-pub struct StorageText{pub value:Text, pub error:StorageError,}
-#[repr(C)]
-#[derive(Clone,Copy)]
 pub struct StorageView{pub nodes:*mut c_void, pub node_bytes:u64, pub text:*mut c_void, pub text_bytes:u64, pub source:*mut c_void, pub source_bytes:u64,}
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -335,12 +326,6 @@ unsafe extern "C" {
 pub fn advance_instance_domain(domains:InstanceDomains, row:InstanceRow, first:u32)->u32;
 #[link_name="bootstrap.instance_domain::accepts_const"]
 pub fn accepts_const(nodes: *const c_void, choices: Optional<Slice>, value: u32) -> bool;
-#[link_name="bootstrap.ast_storage::indices"] pub fn indices(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
-#[link_name="bootstrap.ast_storage::text"] pub fn text(storage:*mut c_void,bytes:*mut c_void,count:u64)->StorageText;
-#[link_name="bootstrap.ast_storage::put_type"] pub fn put_type(storage:*mut c_void,value:*const TypeNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_shape"] pub fn put_shape(storage:*mut c_void,value:*const ShapeNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_argument"] pub fn put_argument(storage:*mut c_void,value:*const ArgumentNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_expr"] pub fn put_expr(storage:*mut c_void,value:*const ExprNode)->StorageIndex;
 }
 
 impl<T:Default> Optional<T>{pub fn none()->Self{Self{present:0,value:T::default()}}}

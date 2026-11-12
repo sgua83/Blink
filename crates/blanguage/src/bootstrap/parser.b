@@ -1,5 +1,6 @@
 module bootstrap.parser;
 import bootstrap.lexer;
+import blink.unicode_scalar;
 
 struct AngleEnd {u64 end;u32 present;};
 struct LinkStringResult {u64 count;u32 error;};
@@ -391,9 +392,8 @@ bool value_argument(read ParseInputs input,u64 cursor) on cpu {
 }
 
 struct ContractDraft {u32 kind;PredicateNode predicate;Span span;};
-ExprRef read_expression_ref(read ParseInputs input,inout ParseState state,u32 minimum,bool type_argument,
-    cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    ExprNode expression=read_expression(input,state,minimum,type_argument,literal,context);
+ExprRef read_expression_ref(read ParseInputs input,inout ParseState state,u32 minimum,bool type_argument) on cpu {
+    ExprNode expression=read_expression(input,state,minimum,type_argument);
     if(state.error.kind!=0){return ExprRef(0u64);}
     return publish_expression(input,state,expression);
 }
@@ -402,22 +402,22 @@ ConditionRef source_condition(read ParseInputs input,inout ParseState state,Expr
     if(state.error.kind==0&&result.present==0){parse_fail(state.error,225,detail,expression.span);}
     return result.value;
 }
-ShapeNode read_shape(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    ExprNode expression=read_expression(input,state,0,true,literal,context);
+ShapeNode read_shape(read ParseInputs input,inout ParseState state) on cpu {
+    ExprNode expression=read_expression(input,state,0,true);
     if(state.error.kind!=0){return ShapeNode::Literal(0);}
     return expression_shape(input,state,expression);
 }
-Slice generic_arguments(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+Slice generic_arguments(read ParseInputs input,inout ParseState state) on cpu {
     TemporaryValues arguments=temporary_values();
     if(!expect_word(input,state,"<")){return finish_indices(input,state,arguments);}
     bool more=true;
     while(more&&state.error.kind==0){
         ArgumentNode argument=ArgumentNode::Value(ShapeRef(0u64));
         if(value_argument(input,state.at)){
-            ShapeNode value=read_shape(input,state,literal,context);
+            ShapeNode value=read_shape(input,state);
             if(state.error.kind==0){argument=ArgumentNode::Value(publish_shape(input,state,value));}
         }else{
-            TypeNode ty=read_type(input,state,literal,context);
+            TypeNode ty=read_type(input,state);
             if(state.error.kind==0){argument=ArgumentNode::Type(publish_type(input,state,ty));}
         }
         if(state.error.kind!=0){break;}
@@ -427,17 +427,17 @@ Slice generic_arguments(read ParseInputs input,inout ParseState state,cfn<Litera
     }
     return finish_indices(input,state,arguments);
 }
-TypeNode read_type(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+TypeNode read_type(read ParseInputs input,inout ParseState state) on cpu {
     Text name=parse_type_name(input,state);TypeNode result=named_type(name);
     if(state.error.kind!=0){return result;}
     bool dataset=text_is(input,name,"dataset");bool is_view=text_is(input,name,"view");bool tile=text_is(input,name,"tile");
     if(dataset||is_view||tile){
         if(!expect_word(input,state,"<")){return result;}
-        result=read_type(input,state,literal,context);if(state.error.kind!=0){return result;}
+        result=read_type(input,state);if(state.error.kind!=0){return result;}
         if(result.dataset!=0||result.view!=0||result.tile!=0){parse_fail(state.error,232,0,parse_span(input,state.at));return result;}
         Optional<ShapeRef> count=Optional<ShapeRef>(0,ShapeRef(0u64));
         if(dataset&&take_symbol(input,state.at,44,0)){
-            ShapeNode value=read_shape(input,state,literal,context);
+            ShapeNode value=read_shape(input,state);
             if(state.error.kind!=0){return result;}
             count=Optional<ShapeRef>(1,publish_shape(input,state,value));
         }
@@ -446,11 +446,11 @@ TypeNode read_type(read ParseInputs input,inout ParseState state,cfn<LiteralResu
         if(dataset){result.dataset=1;}if(is_view){result.view=1;}if(tile){result.tile=1;}
         result.count=count;return result;
     }
-    if(token_is(input,state.at,60,0)){result.arguments=generic_arguments(input,state,literal,context);}
-    if(state.error.kind==0&&text_is(input,name,"cfn")){result.contracts=function_contracts(input,state,literal,context);}
+    if(token_is(input,state.at,60,0)){result.arguments=generic_arguments(input,state);}
+    if(state.error.kind==0&&text_is(input,name,"cfn")){result.contracts=function_contracts(input,state);}
     return result;
 }
-ContractDraft read_contract(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+ContractDraft read_contract(read ParseInputs input,inout ParseState state) on cpu {
     Span span=parse_span(input,state.at);u32 kind=0;
     if(!take_word(input,state.at,"requires")){kind=1;expect_word(input,state,"ensures");}
     ContractDraft result=ContractDraft(kind,PredicateNode::Nonzero(empty_text()),span);
@@ -465,7 +465,7 @@ ContractDraft read_contract(read ParseInputs input,inout ParseState state,cfn<Li
         Text value=contract_value_path(input,state);if(state.error.kind!=0){return result;}
         ConditionRef condition=ConditionRef(0u64);
         if(take_symbol(input,state.at,44,0)){
-            ExprNode expression=read_expression(input,state,0,false,literal,context);
+            ExprNode expression=read_expression(input,state,0,false);
             if(state.error.kind!=0){return result;}condition=source_condition(input,state,expression,1);
         }else{
             StorageIndex stored=put_condition(input.storage,ConditionNode::Bool(1));parse_storage_error(state.error,stored.error);condition=ConditionRef(stored.offset);
@@ -487,7 +487,7 @@ ContractDraft read_contract(read ParseInputs input,inout ParseState state,cfn<Li
         result.predicate=PredicateNode::Memory(access);
     }else if(text_is(input,predicate,"initialized")){
         Text value=qualified_text(input,state,46,false);if(state.error.kind!=0||!expect_word(input,state,",")){return result;}
-        ExprNode expression=read_expression(input,state,0,false,literal,context);
+        ExprNode expression=read_expression(input,state,0,false);
         if(state.error.kind!=0){return result;}
         result.predicate=PredicateNode::Initialized(ConditionalPredicate(value,source_condition(input,state,expression,3)));
     }else if(text_is(input,predicate,"same_length")){
@@ -499,9 +499,9 @@ ContractDraft read_contract(read ParseInputs input,inout ParseState state,cfn<Li
     }else if(text_is(input,predicate,"range")){
         Text value=contract_value_path(input,state);TemporaryValues intervals=temporary_values();
         while(state.error.kind==0&&take_symbol(input,state.at,44,0)){
-            ExprNode lower=read_expression(input,state,0,false,literal,context);
+            ExprNode lower=read_expression(input,state,0,false);
             if(state.error.kind!=0||!expect_word(input,state,",")){break;}
-            ExprNode upper=read_expression(input,state,0,false,literal,context);if(state.error.kind!=0){break;}
+            ExprNode upper=read_expression(input,state,0,false);if(state.error.kind!=0){break;}
             ConditionRef lo=source_condition(input,state,lower,4);if(state.error.kind!=0){break;}
             ConditionRef hi=source_condition(input,state,upper,4);if(state.error.kind!=0){break;}
             StorageIndex stored=put_interval(input.storage,IntervalNode(lo,hi));parse_storage_error(state.error,stored.error);
@@ -515,10 +515,10 @@ ContractDraft read_contract(read ParseInputs input,inout ParseState state,cfn<Li
     if(state.error.kind==0){expect_word(input,state,")");}
     return result;
 }
-Optional<Slice> function_contracts(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+Optional<Slice> function_contracts(read ParseInputs input,inout ParseState state) on cpu {
     TemporaryValues contracts=temporary_values();
     while(state.error.kind==0&&function_clause(input,state.at)){
-        ContractDraft contract=read_contract(input,state,literal,context);if(state.error.kind!=0){break;}
+        ContractDraft contract=read_contract(input,state);if(state.error.kind!=0){break;}
         bool accepted=false;
         match(contract.predicate){
             PredicateNode::Nonzero(value){accepted=contract.kind==0;}
@@ -552,7 +552,7 @@ bool duplicate_parameter(read ParseInputs input,read TemporaryValues types,read 
     }
     return false;
 }
-ParsedParameters read_parameters(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+ParsedParameters read_parameters(read ParseInputs input,inout ParseState state) on cpu {
     TemporaryValues types=temporary_values();TemporaryValues values=temporary_values();
     bool more=take_symbol(input,state.at,60,0);
     while(more&&state.error.kind==0){
@@ -561,13 +561,13 @@ ParsedParameters read_parameters(read ParseInputs input,inout ParseState state,c
         if(duplicate_parameter(input,types,values,name)){parse_fail(state.error,231,0,span);break;}
         if(is_value){
             if(!expect_word(input,state,":")){break;}
-            TypeNode ty=read_type(input,state,literal,context);if(state.error.kind!=0){break;}
+            TypeNode ty=read_type(input,state);if(state.error.kind!=0){break;}
             if(!(text_is(input,ty.name,"u32")||text_is(input,ty.name,"uint"))||ty.arguments.count!=0u64||ty.dataset!=0||ty.view!=0||ty.tile!=0){parse_fail(state.error,235,1,span);break;}
             bool restricted=take_word(input,state.at,"in");TemporaryValues options=temporary_values();
             bool option_more=false;
             if(restricted&&expect_word(input,state,"{")){option_more=!take_symbol(input,state.at,125,0);}
             while(option_more&&state.error.kind==0){
-                ShapeNode choice=read_shape(input,state,literal,context);if(state.error.kind!=0){break;}
+                ShapeNode choice=read_shape(input,state);if(state.error.kind!=0){break;}
                 match(choice){
                     ShapeNode::Literal(value){temporary_push(state.error,options,u64(value));}
                     ShapeNode::Constant(value){parse_fail(state.error,235,2,span);}
@@ -693,12 +693,12 @@ Text namespace_text(read ParseInputs input,inout ParseState state,ExprNode prefi
     }
     return stored.value;
 }
-Slice expression_arguments(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+Slice expression_arguments(read ParseInputs input,inout ParseState state) on cpu {
     TemporaryValues arguments=temporary_values();
     if(!expect_word(input,state,"(")){return finish_indices(input,state,arguments);}
     bool more=!take_symbol(input,state.at,41,0);
     while(more&&state.error.kind==0){
-        ExprRef value=read_expression_ref(input,state,0,false,literal,context);if(state.error.kind!=0){break;}
+        ExprRef value=read_expression_ref(input,state,0,false);if(state.error.kind!=0){break;}
         temporary_push(state.error,arguments,value.offset);
         if(take_symbol(input,state.at,41,0)){more=false;}else{expect_word(input,state,",");}
     }
@@ -712,12 +712,99 @@ bool angle_before_reference(read ParseInputs input,u64 at) on cpu {
     AngleEnd end=angle_end(input.source,input.tokens,input.count,at);
     return end.present!=0&&(token_is(input,end.end,40,0)||token_is(input,end.end,44,0)||token_is(input,end.end,41,0)||token_is(input,end.end,59,0));
 }
-ExprNode read_expression(read ParseInputs input,inout ParseState state,u32 minimum,bool type_argument,
-    cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+Text literal_text<const N:u32>(read ParseInputs input,inout ParseState state,array<u8,N> value) on cpu {
+    StorageText stored=text(input.storage,address_of(value),u64(N));
+    parse_storage_error(state.error,stored.error);return stored.value;
+}
+Text literal_decimal(read ParseInputs input,inout ParseState state,u64 value) on cpu {
+    array<u8,20> digits=array<u8,20>(u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0),u8(0));
+    u32 at=20;u64 remaining=value;
+    for(index in 0..20){
+        u32 slot=19-index;digits[slot]=u8(48u64+remaining%10u64);at=slot;remaining/=10u64;
+        if(remaining==0u64){break;}
+    }
+    StorageText stored=text(input.storage,unsafe_address(address_bits(address_of(digits))+u64(at)),20u64-u64(at));
+    parse_storage_error(state.error,stored.error);return stored.value;
+}
+Slice literal_index(read ParseInputs input,inout ParseState state,u64 value) on cpu {
+    StorageSlice stored=indices(input.storage,address_of(value),1u64);
+    parse_storage_error(state.error,stored.error);return stored.value;
+}
+void literal_byte(read ParseInputs input,inout ParseState state,inout TemporaryValues values,TypeRef byte_type,Span span,u32 value) on cpu {
+    Text digits=literal_decimal(input,state,u64(value));if(state.error.kind!=0){return;}
+    ExprRef number=publish_expression(input,state,ExprNode(ExprKind::Number(digits),span));if(state.error.kind!=0){return;}
+    Slice arguments=literal_index(input,state,number.offset);if(state.error.kind!=0){return;}
+    ExprRef byte=publish_expression(input,state,ExprNode(ExprKind::Construct(ConstructExpr(byte_type,arguments)),span));
+    if(state.error.kind==0){temporary_push(state.error,values,byte.offset);}
+}
+ExprNode ordinary_literal(read ParseInputs input,inout ParseState state,Span span) on cpu {
+    ExprNode result=ExprNode(ExprKind::Name(empty_text()),span);
+    TemporaryValues values=temporary_values();
+    Text byte_name=literal_text(input,state,"u8");
+    TypeRef byte_type=publish_type(input,state,named_type(byte_name));
+    u64 at=span.start+1u64;u64 end=span.end-1u64;
+    while(at<end&&state.error.kind==0){
+        u32 value=byte_at(input.source,at);at+=1u64;
+        if(value!=92){literal_byte(input,state,values,byte_type,span,value);}
+        else if(at==end){parse_fail(state.error,385,4,span);}
+        else{
+            u32 escape=byte_at(input.source,at);at+=1u64;
+            if(escape==92||escape==34){literal_byte(input,state,values,byte_type,span,escape);}
+            else if(escape==110){literal_byte(input,state,values,byte_type,span,10);}
+            else if(escape==114){literal_byte(input,state,values,byte_type,span,13);}
+            else if(escape==116){literal_byte(input,state,values,byte_type,span,9);}
+            else if(escape==48){literal_byte(input,state,values,byte_type,span,0);}
+            else if(escape==117){
+                if(at==end||byte_at(input.source,at)!=123){parse_fail(state.error,385,1,span);}
+                else{
+                    at+=1u64;u64 close=at;
+                    while(close<end&&byte_at(input.source,close)!=125){close+=1u64;}
+                    if(close==end){parse_fail(state.error,385,2,span);}
+                    else{
+                        bool valid=at!=close;u32 scalar=0;
+                        while(at<close&&valid){
+                            u32 digit=byte_at(input.source,at);at+=1u64;
+                            if(digit>=48&&digit<=57){digit-=48;}
+                            else if(digit>=65&&digit<=70){digit=digit-65+10;}
+                            else if(digit>=97&&digit<=102){digit=digit-97+10;}
+                            else{valid=false;}
+                            if(valid){
+                                if(scalar>268435455){valid=false;}
+                                else{scalar=scalar*16+digit;}
+                            }
+                        }
+                        if(!valid||!is_scalar(scalar)){parse_fail(state.error,385,3,span);}
+                        else{
+                            Utf8Units units=utf8_units(scalar);u32 index=0;
+                            while(index<units.length&&state.error.kind==0){
+                                literal_byte(input,state,values,byte_type,span,u32(u8(units.bits>>(index*8))));index+=1;
+                            }
+                            at=close+1u64;
+                        }
+                    }
+                }
+            }else{parse_fail(state.error,385,4,span);}
+        }
+    }
+    u64 length=values.count;Slice elements=finish_indices(input,state,values);
+    if(state.error.kind!=0){return result;}
+    ArgumentRef element=publish_argument(input,state,ArgumentNode::Type(byte_type));
+    Text digits=literal_decimal(input,state,length);
+    ExprRef count_value=publish_expression(input,state,ExprNode(ExprKind::Number(digits),span));
+    ShapeRef count_shape=publish_shape(input,state,ShapeNode::Expression(count_value));
+    ArgumentRef count=publish_argument(input,state,ArgumentNode::Value(count_shape));
+    array<u64,2> arguments=array<u64,2>(element.offset,count.offset);
+    StorageSlice stored=indices(input.storage,address_of(arguments),2u64);parse_storage_error(state.error,stored.error);
+    TypeNode array_type=named_type(literal_text(input,state,"array"));array_type.arguments=stored.value;
+    TypeRef ty=publish_type(input,state,array_type);
+    result.kind=ExprKind::Construct(ConstructExpr(ty,elements));return result;
+}
+
+ExprNode read_expression(read ParseInputs input,inout ParseState state,u32 minimum,bool type_argument) on cpu {
     Span span=parse_span(input,state.at);ExprNode left=ExprNode(ExprKind::Name(empty_text()),span);
     if(word_is(input,state.at,"-")||word_is(input,state.at,"+")||word_is(input,state.at,"!")||word_is(input,state.at,"~")){
         Text operation=current_text(input,state.at);state.at+=1u64;
-        ExprRef value=read_expression_ref(input,state,12,type_argument,literal,context);
+        ExprRef value=read_expression_ref(input,state,12,type_argument);
         left.kind=ExprKind::Unary(UnaryExpr(operation,value));
     }else if(word_is(input,state.at,"target")&&token_is(input,state.at+1u64,40,0)){
         state.at+=2u64;Text target=parse_identifier(input,state);u32 selected=0;
@@ -726,22 +813,22 @@ ExprNode read_expression(read ParseInputs input,inout ParseState state,u32 minim
         else if(text_is(input,target,"gpu")){selected=2;}
         else{parse_fail(state.error,266,0,span);return left;}
         if(!expect_word(input,state,",")){return left;}
-        ExprRef value=read_expression_ref(input,state,0,false,literal,context);
+        ExprRef value=read_expression_ref(input,state,0,false);
         if(state.error.kind==0){expect_word(input,state,")");}
         left.kind=ExprKind::Target(TargetExpr(selected,value));
     }else if(take_word(input,state.at,"cooperate")){
         Text name=qualified_text(input,state,46,true);if(state.error.kind!=0){return left;}
         Optional<Slice> types=Optional<Slice>(0,Slice(0u64,0u64));
-        if(token_is(input,state.at,60,0)){types=Optional<Slice>(1,generic_arguments(input,state,literal,context));}
+        if(token_is(input,state.at,60,0)){types=Optional<Slice>(1,generic_arguments(input,state));}
         if(state.error.kind!=0){return left;}
-        Slice arguments=expression_arguments(input,state,literal,context);
+        Slice arguments=expression_arguments(input,state);
         left.kind=ExprKind::Cooperate(CooperateExpr(name,types,arguments));
     }else if(word_is(input,state.at,"cfn")&&token_is(input,state.at+1u64,60,0)&&angle_before_call(input,state.at+1u64)){
-        TypeNode ty=read_type(input,state,literal,context);if(state.error.kind!=0){return left;}
-        Slice arguments=expression_arguments(input,state,literal,context);if(state.error.kind!=0){return left;}
+        TypeNode ty=read_type(input,state);if(state.error.kind!=0){return left;}
+        Slice arguments=expression_arguments(input,state);if(state.error.kind!=0){return left;}
         left.kind=ExprKind::Construct(ConstructExpr(publish_type(input,state,ty),arguments));
     }else if(take_symbol(input,state.at,40,0)){
-        left=read_expression(input,state,0,false,literal,context);
+        left=read_expression(input,state,0,false);
         if(state.error.kind==0){expect_word(input,state,")");}
     }else if(take_word(input,state.at,"true")){
         left.kind=ExprKind::Bool(1);
@@ -751,8 +838,8 @@ ExprNode read_expression(read ParseInputs input,inout ParseState state,u32 minim
         Text token=current_text(input,state.at);u64 length=token.range.end-token.range.start;u32 first=0;
         if(length!=0u64){first=stored_byte(input,token,0u64);}
         if(first==34){
-            LiteralResult decoded=literal(context,span);left=decoded.expression;
-            if(decoded.error.kind!=0){state.error=decoded.error;return left;}
+            left=ordinary_literal(input,state,span);
+            if(state.error.kind!=0){return left;}
             state.at+=1u64;
         }else if(first>=48&&first<=57||first==46){
             left.kind=ExprKind::Number(token);state.at+=1u64;
@@ -772,7 +859,7 @@ ExprNode read_expression(read ParseInputs input,inout ParseState state,u32 minim
             left=ExprNode(ExprKind::Member(MemberExpr(publish_expression(input,state,left),field)),span);continue;
         }
         if(take_symbol(input,state.at,91,0)){
-            ExprRef index=read_expression_ref(input,state,0,false,literal,context);
+            ExprRef index=read_expression_ref(input,state,0,false);
             if(state.error.kind!=0||!expect_word(input,state,"]")){break;}
             left=ExprNode(ExprKind::Index(IndexExpr(publish_expression(input,state,left),index)),span);continue;
         }
@@ -796,11 +883,11 @@ ExprNode read_expression(read ParseInputs input,inout ParseState state,u32 minim
             ExprKind::Select(value){}
         }
         if(reference){
-            Slice arguments=generic_arguments(input,state,literal,context);
+            Slice arguments=generic_arguments(input,state);
             left=ExprNode(ExprKind::FunctionRef(FunctionExpr(reference_name,arguments)),span);continue;
         }
         if(token_is(input,state.at,40,0)){
-            Slice arguments=expression_arguments(input,state,literal,context);if(state.error.kind!=0){break;}
+            Slice arguments=expression_arguments(input,state);if(state.error.kind!=0){break;}
             ExprKind kind=ExprKind::Bool(0);
             bool named=false;
             match(left.kind){
@@ -825,45 +912,44 @@ ExprNode read_expression(read ParseInputs input,inout ParseState state,u32 minim
             left=ExprNode(kind,span);continue;
         }
         if(minimum==0&&take_symbol(input,state.at,63,0)){
-            ExprRef yes=read_expression_ref(input,state,0,false,literal,context);
+            ExprRef yes=read_expression_ref(input,state,0,false);
             if(state.error.kind!=0||!expect_word(input,state,":")){break;}
-            ExprRef no=read_expression_ref(input,state,0,type_argument,literal,context);
+            ExprRef no=read_expression_ref(input,state,0,type_argument);
             if(state.error.kind!=0){break;}
             left=ExprNode(ExprKind::Select(SelectExpr(publish_expression(input,state,left),yes,no)),span);continue;
         }
         if(type_argument&&(token_is(input,state.at,62,0)||token_is(input,state.at,62,62))){break;}
         u32 precedence=operator_precedence(input,state.at);if(precedence==0||precedence<minimum){break;}
         Text operation=current_text(input,state.at);state.at+=1u64;
-        ExprRef right=read_expression_ref(input,state,precedence+1,type_argument,literal,context);
+        ExprRef right=read_expression_ref(input,state,precedence+1,type_argument);
         if(state.error.kind!=0){break;}
         left=ExprNode(ExprKind::Binary(BinaryExpr(operation,publish_expression(input,state,left),right)),span);
     }
     return left;
 }
-extern "C" ExprRef parse_expression(read ParseInputs input,inout ParseState state,u32 minimum,u32 type_argument,
-    cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    return read_expression_ref(input,state,minimum,type_argument!=0,literal,context);
+extern "C" ExprRef parse_expression(read ParseInputs input,inout ParseState state,u32 minimum,u32 type_argument) on cpu {
+    return read_expression_ref(input,state,minimum,type_argument!=0);
 }
-extern "C" TypeRef parse_type(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    TypeNode value=read_type(input,state,literal,context);if(state.error.kind!=0){return TypeRef(0u64);}
+extern "C" TypeRef parse_type(read ParseInputs input,inout ParseState state) on cpu {
+    TypeNode value=read_type(input,state);if(state.error.kind!=0){return TypeRef(0u64);}
     return publish_type(input,state,value);
 }
-extern "C" ContractRef parse_contract(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    ContractDraft value=read_contract(input,state,literal,context);if(state.error.kind!=0){return ContractRef(0u64);}
+extern "C" ContractRef parse_contract(read ParseInputs input,inout ParseState state) on cpu {
+    ContractDraft value=read_contract(input,state);if(state.error.kind!=0){return ContractRef(0u64);}
     StorageIndex predicate=put_predicate(input.storage,value.predicate);parse_storage_error(state.error,predicate.error);
     if(state.error.kind!=0){return ContractRef(0u64);}
     StorageIndex stored=put_contract(input.storage,ContractNode(value.kind,PredicateRef(predicate.offset),value.span));
     parse_storage_error(state.error,stored.error);return ContractRef(stored.offset);
 }
-extern "C" ParsedParameters parse_parameters(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    return read_parameters(input,state,literal,context);
+extern "C" ParsedParameters parse_parameters(read ParseInputs input,inout ParseState state) on cpu {
+    return read_parameters(input,state);
 }
 extern "C" u32 looks_like_declaration(read ParseInputs input,read ParseState state) on cpu {
     if(declaration_type(input,state.at)){return 1;}return 0;
 }
 
-extern "C" ShapeRef parse_shape(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    ShapeNode value=read_shape(input,state,literal,context);
+extern "C" ShapeRef parse_shape(read ParseInputs input,inout ParseState state) on cpu {
+    ShapeNode value=read_shape(input,state);
     if(state.error.kind!=0){return ShapeRef(0u64);}
     return publish_shape(input,state,value);
 }
@@ -874,18 +960,18 @@ StmtRef publish_statement(read ParseInputs input,inout ParseState state,StmtKind
     parse_storage_error(state.error,stored.error);return StmtRef(stored.offset);
 }
 
-Slice read_block(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+Slice read_block(read ParseInputs input,inout ParseState state) on cpu {
     if(!expect_word(input,state,"{")){return Slice(0u64,0u64);}
     TemporaryValues body=temporary_values();
     while(state.error.kind==0&&!take_symbol(input,state.at,125,0)){
         if(word_is(input,state.at,"")){parse_fail(state.error,13,0,parse_span(input,state.at));break;}
-        StmtRef statement=read_statement(input,state,literal,context);
+        StmtRef statement=read_statement(input,state);
         if(state.error.kind==0){temporary_push(state.error,body,statement.offset);}
     }
     return finish_indices(input,state,body);
 }
 
-StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+StmtRef read_statement(read ParseInputs input,inout ParseState state) on cpu {
     Span span=parse_span(input,state.at);
     if(take_word(input,state.at,"parallel")){
         if(!expect_word(input,state,"(")){return StmtRef(0u64);}
@@ -901,16 +987,16 @@ StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<Literal
         if(state.error.kind!=0){return StmtRef(0u64);}
         if(prefix){
             if(!expect_word(input,state,",")){return StmtRef(0u64);}
-            count=Optional<ExprRef>(1,read_expression_ref(input,state,0,false,literal,context));
+            count=Optional<ExprRef>(1,read_expression_ref(input,state,0,false));
             if(state.error.kind!=0||!expect_word(input,state,")")){return StmtRef(0u64);}
         }
         if(selected){
             if(!expect_word(input,state,",")){return StmtRef(0u64);}
-            selection=Optional<ExprRef>(1,read_expression_ref(input,state,0,false,literal,context));
+            selection=Optional<ExprRef>(1,read_expression_ref(input,state,0,false));
             if(state.error.kind!=0||!expect_word(input,state,")")){return StmtRef(0u64);}
         }
         if(!expect_word(input,state,")")){return StmtRef(0u64);}
-        Slice body=read_block(input,state,literal,context);
+        Slice body=read_block(input,state);
         if(state.error.kind!=0){return StmtRef(0u64);}
         StorageIndex domain=put_parallel(input.storage,ParallelNode(dataset,count,selection));
         parse_storage_error(state.error,domain.error);
@@ -918,24 +1004,24 @@ StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<Literal
     }
     if(take_word(input,state.at,"if")){
         if(!expect_word(input,state,"(")){return StmtRef(0u64);}
-        ExprRef condition=read_expression_ref(input,state,0,false,literal,context);
+        ExprRef condition=read_expression_ref(input,state,0,false);
         if(state.error.kind!=0||!expect_word(input,state,")")){return StmtRef(0u64);}
-        Slice yes=read_block(input,state,literal,context);
+        Slice yes=read_block(input,state);
         if(state.error.kind!=0){return StmtRef(0u64);}
         Slice no=Slice(0u64,0u64);
         if(take_word(input,state.at,"else")){
             if(word_is(input,state.at,"if")){
-                StmtRef alternate=read_statement(input,state,literal,context);
+                StmtRef alternate=read_statement(input,state);
                 if(state.error.kind!=0){return StmtRef(0u64);}
                 StorageSlice stored=indices(input.storage,address_of(alternate.offset),1u64);
                 parse_storage_error(state.error,stored.error);no=stored.value;
-            }else{no=read_block(input,state,literal,context);}
+            }else{no=read_block(input,state);}
         }
         return publish_statement(input,state,StmtKind::If(IfStmt(condition,yes,no)),span);
     }
     if(take_word(input,state.at,"match")){
         if(!expect_word(input,state,"(")){return StmtRef(0u64);}
-        ExprRef value=read_expression_ref(input,state,0,false,literal,context);
+        ExprRef value=read_expression_ref(input,state,0,false);
         if(state.error.kind!=0||!expect_word(input,state,")")||!expect_word(input,state,"{")){return StmtRef(0u64);}
         TemporaryValues arms=temporary_values();
         while(state.error.kind==0&&!take_symbol(input,state.at,125,0)){
@@ -946,7 +1032,7 @@ StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<Literal
                 binding=Optional<Text>(1,parse_identifier(input,state));
                 if(state.error.kind!=0||!expect_word(input,state,")")){break;}
             }
-            Slice body=read_block(input,state,literal,context);
+            Slice body=read_block(input,state);
             if(state.error.kind!=0){break;}
             StorageIndex arm=put_arm(input.storage,ArmNode(variant,binding,body,at));
             parse_storage_error(state.error,arm.error);
@@ -957,29 +1043,29 @@ StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<Literal
     }
     if(take_word(input,state.at,"while")){
         if(!expect_word(input,state,"(")){return StmtRef(0u64);}
-        ExprRef condition=read_expression_ref(input,state,0,false,literal,context);
+        ExprRef condition=read_expression_ref(input,state,0,false);
         if(state.error.kind!=0||!expect_word(input,state,")")){return StmtRef(0u64);}
-        Slice body=read_block(input,state,literal,context);
+        Slice body=read_block(input,state);
         return publish_statement(input,state,StmtKind::While(WhileStmt(condition,body)),span);
     }
     if(take_word(input,state.at,"for")){
         if(!expect_word(input,state,"(")){return StmtRef(0u64);}
         Text name=parse_identifier(input,state);
         if(state.error.kind!=0||!expect_word(input,state,"in")){return StmtRef(0u64);}
-        ExprRef start=read_expression_ref(input,state,0,false,literal,context);
+        ExprRef start=read_expression_ref(input,state,0,false);
         if(state.error.kind!=0){return StmtRef(0u64);}
         Optional<ExprRef> end=Optional<ExprRef>(0,ExprRef(0u64));
         if(take_symbol(input,state.at,46,46)){
-            end=Optional<ExprRef>(1,read_expression_ref(input,state,0,false,literal,context));
+            end=Optional<ExprRef>(1,read_expression_ref(input,state,0,false));
         }
         if(state.error.kind!=0||!expect_word(input,state,")")){return StmtRef(0u64);}
-        Slice body=read_block(input,state,literal,context);
+        Slice body=read_block(input,state);
         return publish_statement(input,state,StmtKind::For(ForStmt(name,start,end,body)),span);
     }
     if(take_word(input,state.at,"return")){
         Optional<ExprRef> value=Optional<ExprRef>(0,ExprRef(0u64));
         if(!take_symbol(input,state.at,59,0)){
-            value=Optional<ExprRef>(1,read_expression_ref(input,state,0,false,literal,context));
+            value=Optional<ExprRef>(1,read_expression_ref(input,state,0,false));
             if(state.error.kind!=0||!expect_word(input,state,";")){return StmtRef(0u64);}
         }
         return publish_statement(input,state,StmtKind::Return(value),span);
@@ -997,19 +1083,19 @@ StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<Literal
         if(!expect_word(input,state,"(")){return StmtRef(0u64);}
         Text name=parse_identifier(input,state);
         if(state.error.kind!=0||!expect_word(input,state,",")){return StmtRef(0u64);}
-        ExprRef position=read_expression_ref(input,state,0,false,literal,context);
+        ExprRef position=read_expression_ref(input,state,0,false);
         if(state.error.kind!=0||!expect_word(input,state,")")||!expect_word(input,state,";")){return StmtRef(0u64);}
         return publish_statement(input,state,StmtKind::Seek(SeekStmt(name,position)),span);
     }
     if(take_word(input,state.at,"let")){
         Text name=parse_identifier(input,state);
         if(state.error.kind!=0||!expect_word(input,state,"=")){return StmtRef(0u64);}
-        ExprRef value=read_expression_ref(input,state,0,false,literal,context);
+        ExprRef value=read_expression_ref(input,state,0,false);
         if(state.error.kind!=0||!expect_word(input,state,";")){return StmtRef(0u64);}
         return publish_statement(input,state,StmtKind::Let(LetStmt(Optional<TypeRef>(0,TypeRef(0u64)),name,value)),span);
     }
     if(declaration_type(input,state.at)){
-        TypeRef ty=parse_type(input,state,literal,context);
+        TypeRef ty=parse_type(input,state);
         if(state.error.kind!=0){return StmtRef(0u64);}
         Text name=parse_identifier(input,state);
         if(state.error.kind!=0){return StmtRef(0u64);}
@@ -1017,11 +1103,11 @@ StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<Literal
             return publish_statement(input,state,StmtKind::Declare(DeclareStmt(ty,name)),span);
         }
         if(!expect_word(input,state,"=")){return StmtRef(0u64);}
-        ExprRef value=read_expression_ref(input,state,0,false,literal,context);
+        ExprRef value=read_expression_ref(input,state,0,false);
         if(state.error.kind!=0||!expect_word(input,state,";")){return StmtRef(0u64);}
         return publish_statement(input,state,StmtKind::Let(LetStmt(Optional<TypeRef>(1,ty),name,value)),span);
     }
-    ExprRef left=read_expression_ref(input,state,0,false,literal,context);
+    ExprRef left=read_expression_ref(input,state,0,false);
     if(state.error.kind!=0){return StmtRef(0u64);}
     bool assignment=word_is(input,state.at,"=")||word_is(input,state.at,"+=")||word_is(input,state.at,"-=")
         ||word_is(input,state.at,"*=")||word_is(input,state.at,"/=")||word_is(input,state.at,"%=")
@@ -1029,7 +1115,7 @@ StmtRef read_statement(read ParseInputs input,inout ParseState state,cfn<Literal
         ||word_is(input,state.at,"<<=")||word_is(input,state.at,">>=");
     if(assignment){
         Text operation=current_text(input,state.at);state.at+=1u64;
-        ExprRef right=read_expression_ref(input,state,0,false,literal,context);
+        ExprRef right=read_expression_ref(input,state,0,false);
         if(state.error.kind!=0||!expect_word(input,state,";")){return StmtRef(0u64);}
         return publish_statement(input,state,StmtKind::Assign(AssignStmt(left,operation,right)),span);
     }
@@ -1087,7 +1173,7 @@ bool duplicate_function_parameter(read ParseInputs input,read TemporaryValues pa
     }
     return false;
 }
-FunctionRef read_function(read ParseInputs input,inout ParseState state,Span span,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+FunctionRef read_function(read ParseInputs input,inout ParseState state,Span span) on cpu {
     u32 c_abi=0;u32 kind=0;
     if(take_word(input,state.at,"extern")){
         Text abi=read_link_string(input,state);
@@ -1095,11 +1181,11 @@ FunctionRef read_function(read ParseInputs input,inout ParseState state,Span spa
         if(!text_is(input,abi,"C")){parse_fail(state.error,263,5,span);return FunctionRef(0u64);}c_abi=1;
     }
     if(take_word(input,state.at,"cooperative")){kind=1;}
-    TypeRef result=parse_type(input,state,literal,context);
+    TypeRef result=parse_type(input,state);
     if(state.error.kind!=0){return FunctionRef(0u64);}
     Text name=parse_identifier(input,state);
     if(state.error.kind!=0){return FunctionRef(0u64);}
-    ParsedParameters parameters=parse_parameters(input,state,literal,context);
+    ParsedParameters parameters=parse_parameters(input,state);
     if(state.error.kind!=0||!expect_word(input,state,"(")){return FunctionRef(0u64);}
     TemporaryValues params=temporary_values();
     bool more=!take_word(input,state.at,")");
@@ -1109,7 +1195,7 @@ FunctionRef read_function(read ParseInputs input,inout ParseState state,Span spa
         else if(take_word(input,state.at,"write")){access=2;}
         else if(take_word(input,state.at,"inout")){access=3;}
         else if(take_word(input,state.at,"atomic")){access=4;}
-        TypeRef ty=parse_type(input,state,literal,context);
+        TypeRef ty=parse_type(input,state);
         if(state.error.kind!=0){break;}
         Text parameter=parse_identifier(input,state);if(state.error.kind!=0){break;}
         if(duplicate_function_parameter(input,params,parameter)){
@@ -1132,7 +1218,7 @@ FunctionRef read_function(read ParseInputs input,inout ParseState state,Span spa
     }
     TemporaryValues contracts=temporary_values();
     while(state.error.kind==0&&(word_is(input,state.at,"requires")||word_is(input,state.at,"ensures"))){
-        ContractRef contract=parse_contract(input,state,literal,context);
+        ContractRef contract=parse_contract(input,state);
         if(state.error.kind==0){temporary_push(state.error,contracts,contract.offset);}
     }
     Slice contract_refs=finish_indices(input,state,contracts);
@@ -1151,23 +1237,23 @@ FunctionRef read_function(read ParseInputs input,inout ParseState state,Span spa
     if(state.error.kind!=0){return FunctionRef(0u64);}
     u64 signature_end=parse_span(input,state.at).start;
     Optional<Slice> body=Optional<Slice>(0,Slice(0u64,0u64));
-    if(!take_word(input,state.at,";")){body=Optional<Slice>(1,read_block(input,state,literal,context));}
+    if(!take_word(input,state.at,";")){body=Optional<Slice>(1,read_block(input,state));}
     if(state.error.kind!=0){return FunctionRef(0u64);}
     return publish_function(input,state,FunctionNode(name,parameters.types,parameters.values,param_refs,result,
         kind,target,contract_refs,body,c_abi,external,signature_end,Span(span.start,parse_span(input,state.at-1u64).end)));
 }
-RecordRef read_record(read ParseInputs input,inout ParseState state,Span span,bool enumeration,inout TemporaryValues functions,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+RecordRef read_record(read ParseInputs input,inout ParseState state,Span span,bool enumeration,inout TemporaryValues functions) on cpu {
     Text name=parse_identifier(input,state);if(state.error.kind!=0){return RecordRef(0u64);}
-    ParsedParameters parameters=parse_parameters(input,state,literal,context);
+    ParsedParameters parameters=parse_parameters(input,state);
     Optional<TypeRef> representation=Optional<TypeRef>(0,TypeRef(0u64));
     Optional<ShapeRef> stride=Optional<ShapeRef>(0,ShapeRef(0u64));
     if(state.error.kind!=0){return RecordRef(0u64);}
     if(enumeration){
         if(!expect_word(input,state,":")){return RecordRef(0u64);}
-        representation=Optional<TypeRef>(1,parse_type(input,state,literal,context));
+        representation=Optional<TypeRef>(1,parse_type(input,state));
     }else if(take_word(input,state.at,"stride")){
         if(!expect_word(input,state,"(")){return RecordRef(0u64);}
-        stride=Optional<ShapeRef>(1,parse_shape(input,state,literal,context));
+        stride=Optional<ShapeRef>(1,parse_shape(input,state));
         if(state.error.kind!=0||!expect_word(input,state,")")){return RecordRef(0u64);}
     }
     if(state.error.kind!=0||!expect_word(input,state,"{")){return RecordRef(0u64);}
@@ -1182,17 +1268,17 @@ RecordRef read_record(read ParseInputs input,inout ParseState state,Span span,bo
             if(take_word(input,state.at,"(")){
                 payloads=true;
                 if(!take_word(input,state.at,")")){
-                    payload=parse_type(input,state,literal,context);typed=true;
+                    payload=parse_type(input,state);typed=true;
                     if(state.error.kind!=0||!expect_word(input,state,")")){break;}
                 }
             }
             if(!typed){payload=publish_type(input,state,named_type(stored_word(input,state,"void")));}
             if(state.error.kind!=0||!expect_word(input,state,"=")){break;}
-            ExprRef discriminant=parse_expression(input,state,0,0,literal,context);
+            ExprRef discriminant=parse_expression(input,state,0,0);
             if(state.error.kind!=0||!expect_word(input,state,";")){break;}
             temporary_push(state.error,variants,VariantNode(member,payload,discriminant,at));
         }else{
-            TypeRef ty=parse_type(input,state,literal,context);
+            TypeRef ty=parse_type(input,state);
             if(state.error.kind!=0){break;}
             Text field=parse_identifier(input,state);
             if(state.error.kind!=0||!expect_word(input,state,";")){break;}
@@ -1244,7 +1330,7 @@ Text joined_variant_name(read ParseInputs input,inout ParseState state,Text name
     StorageText stored=text(input.storage,memory,bytes);parse_storage_error(state.error,stored.error);
     temporary_free(state.error,TemporaryValues(memory,0u64,1u64));return stored.value;
 }
-extern "C" ModuleRef parse_module(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+extern "C" ModuleRef parse_module(read ParseInputs input,inout ParseState state) on cpu {
     if(!expect_word(input,state,"module")){return ModuleRef(0u64);}
     Text name=qualified_text(input,state,46,false);
     if(state.error.kind!=0||!expect_word(input,state,";")){return ModuleRef(0u64);}
@@ -1257,10 +1343,10 @@ extern "C" ModuleRef parse_module(read ParseInputs input,inout ParseState state,
             if(state.error.kind!=0||!expect_word(input,state,";")){break;}
             temporary_push(state.error,imports,value);
         }else if(take_word(input,state.at,"const")){
-            TypeRef result=parse_type(input,state,literal,context);if(state.error.kind!=0){break;}
+            TypeRef result=parse_type(input,state);if(state.error.kind!=0){break;}
             Text member=parse_identifier(input,state);
             if(state.error.kind!=0||!expect_word(input,state,"=")){break;}
-            ExprRef value=parse_expression(input,state,0,0,literal,context);
+            ExprRef value=parse_expression(input,state,0,0);
             if(state.error.kind!=0||!expect_word(input,state,";")){break;}
             FunctionNode function=function_node(member,result,Span(span.start,parse_span(input,state.at-1u64).end));
             function.kind=2;function.body=Optional<Slice>(1,generated_return(input,state,value,span));
@@ -1272,7 +1358,7 @@ extern "C" ModuleRef parse_module(read ParseInputs input,inout ParseState state,
             if(state.error.kind!=0||!expect_word(input,state,"{")){break;}
             TemporaryValues members=temporary_values();
             while(state.error.kind==0&&!take_word(input,state.at,"}")){
-                TypeRef ty=parse_type(input,state,literal,context);
+                TypeRef ty=parse_type(input,state);
                 if(state.error.kind!=0||!expect_word(input,state,";")){break;}
                 temporary_push(state.error,members,ty.offset);
             }
@@ -1282,10 +1368,10 @@ extern "C" ModuleRef parse_module(read ParseInputs input,inout ParseState state,
             parse_storage_error(state.error,stored.error);if(state.error.kind==0){temporary_push(state.error,type_sets,stored.offset);}
         }else if(word_is(input,state.at,"enum")||word_is(input,state.at,"struct")){
             bool enumeration=take_word(input,state.at,"enum");if(!enumeration){state.at+=1u64;}
-            RecordRef stored=read_record(input,state,span,enumeration,functions,literal,context);
+            RecordRef stored=read_record(input,state,span,enumeration,functions);
             if(state.error.kind==0){temporary_push(state.error,records,stored.offset);}
         }else{
-            FunctionRef stored=read_function(input,state,span,literal,context);
+            FunctionRef stored=read_function(input,state,span);
             if(state.error.kind==0){temporary_push(state.error,functions,stored.offset);}
         }
     }
@@ -1300,13 +1386,13 @@ void finish_input(read ParseInputs input,inout ParseState state) on cpu {
     parse_fail(state.error,10,0,parse_span(input,state.at));
     state.error.expected=empty_text();
 }
-extern "C" ParsedEntry parse_entry(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
+extern "C" ParsedEntry parse_entry(read ParseInputs input,inout ParseState state) on cpu {
     Text name=parse_type_name(input,state);Optional<Slice> arguments=Optional<Slice>(0,Slice(0u64,0u64));
-    if(state.error.kind==0&&word_is(input,state.at,"<")){arguments=Optional<Slice>(1,generic_arguments(input,state,literal,context));}
+    if(state.error.kind==0&&word_is(input,state.at,"<")){arguments=Optional<Slice>(1,generic_arguments(input,state));}
     if(state.error.kind==0){finish_input(input,state);}
     return ParsedEntry(name,arguments);
 }
-extern "C" TypeRef parse_type_query(read ParseInputs input,inout ParseState state,cfn<LiteralResult,address,Span> literal,address context) on cpu requires nonzero(literal) {
-    TypeRef value=parse_type(input,state,literal,context);
+extern "C" TypeRef parse_type_query(read ParseInputs input,inout ParseState state) on cpu {
+    TypeRef value=parse_type(input,state);
     if(state.error.kind==0){finish_input(input,state);}return value;
 }

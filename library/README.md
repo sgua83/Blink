@@ -58,7 +58,7 @@ target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 
 ## blink.unicode
 
-`blink.unicode`以纯B实现严格UTF-8／UTF-16标量编解码、标量长度、UTF-8借用切片、拥有切片和整段转换。以`import blink.unicode;`导入，源码根仍为`-I library`。标量接口可在普通CPU函数和CPU并行域调用；拥有输出的切片与整段转换属于普通CPU资源组织。
+`blink.unicode`以纯B实现严格UTF-8／UTF-16标量编解码、标量长度、UTF-8／UTF-16借用切片、拥有切片和整段转换。以`import blink.unicode;`导入，源码根仍为`-I library`。标量接口可在普通CPU函数和CPU并行域调用；拥有输出的切片与整段转换属于普通CPU资源组织。
 
 | 函数 | 成功与失败 |
 |---|---|
@@ -100,17 +100,20 @@ result<dataset<u8>,TextError> roundtrip(read dataset<u8> text) on cpu {
 }
 ```
 
-同名.h按原模块规则声明上述函数；wide在调用期间只读借用，返回后沿原退出释放。独立模块按实际依赖分别编译序列和Unicode，再组成标准COFF静态库：
+同名.h按原模块规则声明上述函数；wide在调用期间只读借用，返回后沿原退出释放。独立模块按实际依赖分别编译共同纯值模块、序列和Unicode，再组成标准COFF静态库：
 
 ```powershell
+target/release/bc.exe -c library/blink/unicode_scalar.b -I library --module -o target/unicode_scalar.obj
 target/release/bc.exe -c library/blink/sequence.b -I library --module --instance 'push<u8>' --instance 'push<u16>' -o target/sequence.obj
-target/release/bc.exe -c library/blink/unicode.b -I library --module --import target/sequence.obj -o target/unicode.obj
-target/release/blink.exe --archive target/unicode.obj target/sequence.obj -o target/unicode.lib
+target/release/bc.exe -c library/blink/unicode.b -I library --module --import target/sequence.obj --import target/unicode_scalar.obj -o target/unicode.obj
+target/release/blink.exe --archive target/unicode.obj target/sequence.obj target/unicode_scalar.obj -o target/unicode.lib
 ```
 
-调用方用`--import target/unicode.lib`编译，并与同一库链接；使用分立对象时同时导入并链接unicode.obj及sequence.obj。两份提供者.b无需进入调用方编译或链接，公开.h继续提供接口。标量公开输入检查与转换共用同一私有编码载荷生产者；转换只将成功解码的标量交给它，不复制编码算法或另造宿主执行路径。
+调用方用`--import target/unicode.lib`编译，并与同一库链接；使用分立对象时同时导入并链接unicode.obj、sequence.obj及unicode_scalar.obj。三份提供者.b无需进入调用方编译或链接，公开.h继续提供接口。UTF-8公开标量输入检查和整段转换共用`blink.unicode_scalar`的纯值位布局，原Unicode函数只把同一字节交回既有Utf8Encoding变体；转换只将成功解码的标量交给它。UTF-16继续使用原私有编码载荷生产者。
 
-完整文本值、借用字符切片、源码字符串字面量和OS字符串地址／生命周期仍待实现；本模块不表示BLEngine JSON、窗口或IME业务已经迁移。
+`blink.unicode_scalar`提供普通CPU纯值接口`is_scalar(u32)`及`utf8_units(u32)`。前者判定U+0000至U+10FFFF且排除代理区间；后者消费调用者已验证的合法标量，返回`Utf8Units {u32 length; u32 bits;}`：length为1至4个字节，bits从低八位开始依次保存实际UTF-8字节。它不返回第二份文本或资源，也不代替带Err的`encode_utf8`输入验证。原UTF-8接口、转换及源文本解析共用这一位布局；调用方不对无效标量解释其输出。
+
+普通字符串字面量已形成固定UTF-8字节数组，UTF-8／UTF-16借用切片沿上述接口交接。完整动态文本类型仍未实现；进程参数、路径和其他OS文本入口沿各自平台模块及实际地址／资源生命周期说明。本模块不表示BLEngine JSON、窗口或IME业务已经迁移。
 
 ## blink.windows.system
 
