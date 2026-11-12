@@ -69,7 +69,7 @@ extern "C" MoveEncoding copy_scalar_move(MoveLocation dst, MoveLocation src, u32
 extern "C" u64 read_scalar_move(MoveLocation dst, MoveLocation memory, u32 size, bool signed, bool boolean, address output) on cpu;
 extern "C" u64 write_scalar_move(MoveLocation memory, MoveLocation src, u32 size, address output) on cpu;
 
-struct ComparisonEncoding {
+struct BinaryEncoding {
     u64 length;
     u64 left_literal;
     u64 right_literal;
@@ -77,7 +77,12 @@ struct ComparisonEncoding {
 
 // The caller owns 64 output bytes. Literal fields are output-relative disp32
 // offsets, or zero when that input does not use the original literal pool.
-extern "C" ComparisonEncoding scalar_compare(MoveLocation dst, MoveLocation left, MoveLocation right,
+extern "C" BinaryEncoding scalar_compare(MoveLocation dst, MoveLocation left, MoveLocation right,
     u32 size, bool signed, bool floating, BinaryOperation operation, address output) on cpu;
+extern "C" BinaryEncoding scalar_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
+    u32 size, bool signed, bool floating, u32 count_size, bool count_signed,
+    BinaryOperation operation, address output) on cpu;
+extern "C" BinaryEncoding float_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
+    u32 size, u8 opcode, address output) on cpu;
 extern "C" MoveEncoding cast_boolean(MoveLocation dst, MoveLocation src,
     u32 size, bool signed, bool floating, address output) on cpu;

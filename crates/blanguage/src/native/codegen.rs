@@ -547,20 +547,8 @@ impl Emitter<'_> {
                     };
                 }
                 InstKind::Binary { dst, op, a, b } => match op {
-                    BinaryOp::FAdd => self.float_binary(*dst, *a, *b, 0x58),
-                    BinaryOp::FSub => self.float_binary(*dst, *a, *b, 0x5c),
-                    BinaryOp::FMul => self.float_binary(*dst, *a, *b, 0x59),
-                    BinaryOp::FDiv => self.float_binary(*dst, *a, *b, 0x5e),
                     BinaryOp::Compare(comparison) => self.compare(*dst, *a, *b, *comparison),
-                    BinaryOp::IAdd => self.integer_binary(*dst, *a, *b, &[0x03], Some(0)),
-                    BinaryOp::ISub => self.integer_binary(*dst, *a, *b, &[0x2b], Some(5)),
-                    BinaryOp::IMul => self.integer_binary(*dst, *a, *b, &[0x0f, 0xaf], None),
-                    BinaryOp::And => self.integer_binary(*dst, *a, *b, &[0x23], Some(4)),
-                    BinaryOp::Or => self.integer_binary(*dst, *a, *b, &[0x0b], Some(1)),
-                    BinaryOp::Xor => self.integer_binary(*dst, *a, *b, &[0x33], Some(6)),
-                    BinaryOp::ShiftLeft => self.shift(*dst, *a, *b, 4),
-                    BinaryOp::ShiftRightLogical => self.shift(*dst, *a, *b, 5),
-                    BinaryOp::ShiftRightArithmetic => self.shift(*dst, *a, *b, 7),
+                    operation => self.binary(*dst, *a, *b, *operation),
                 },
                 InstKind::IntegerDivide {
                     result,

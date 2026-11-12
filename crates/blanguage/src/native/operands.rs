@@ -105,17 +105,24 @@ struct MoveEncoding {
 }
 
 #[repr(C)]
-struct ComparisonEncoding {
+struct BinaryEncoding {
     length: u64,
     left_literal: u64,
     right_literal: u64,
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::scalar_binary"]
+    fn scalar_binary(dst: MoveLocation, left: MoveLocation, right: MoveLocation,
+        size: u32, signed: u32, floating: u32, count_size: u32, count_signed: u32,
+        operation: crate::builtin_types::ScalarBinaryOp, output: *mut u8) -> BinaryEncoding;
+    #[link_name = "bootstrap.x64_instruction::float_binary"]
+    fn encode_float_binary(dst: MoveLocation, left: MoveLocation, right: MoveLocation,
+        size: u32, opcode: u8, output: *mut u8) -> BinaryEncoding;
     #[link_name = "bootstrap.x64_instruction::scalar_compare"]
     fn scalar_compare(dst: MoveLocation, left: MoveLocation, right: MoveLocation,
         size: u32, signed: u32, floating: u32, operation: crate::builtin_types::ScalarBinaryOp,
-        output: *mut u8) -> ComparisonEncoding;
+        output: *mut u8) -> BinaryEncoding;
     #[link_name = "bootstrap.x64_instruction::cast_boolean"]
     fn cast_boolean(dst: MoveLocation, src: MoveLocation,
         size: u32, signed: u32, floating: u32, output: *mut u8) -> MoveEncoding;
@@ -334,61 +341,18 @@ impl Emitter<'_> {
     }
     pub(super) fn float_binary(&mut self, dst: Reg, a: Reg, b: Reg, opcode: u8) {
         let scalar = self.stage.registers[dst];
-        let (d, a, b) = (self.location(dst), self.location(a), self.location(b));
-        // legacy SSE 是两地址指令：目标若占了尚未读取的右值，先在 XMM0 计算。
-        let target = match d {
-            Location::Xmm(r) if d != b || a == b => r,
-            _ => 0,
-        };
-        self.copy_scalar(Location::Xmm(target), a, scalar);
-        let right = self.float_operand(b, scalar);
-        self.instruction(Some(if scalar == Scalar::F64 { 0xf2 } else { 0xf3 }), &[0x0f, opcode], false, target, right);
-        self.copy_scalar(d, Location::Xmm(target), self.stage.registers[dst]);
+        self.emit_binary(dst, a, b, scalar, |d, a, b, output| unsafe {
+            encode_float_binary(d, a, b, scalar.size(), opcode, output)
+        });
     }
-    pub(super) fn integer_binary(
-        &mut self,
-        dst: Reg,
-        a: Reg,
-        b: Reg,
-        opcode: &[u8],
-        immediate: Option<u8>,
-    ) {
+    pub(super) fn binary(&mut self, dst: Reg, a: Reg, b: Reg, operation: BinaryOp) {
         let scalar = self.stage.registers[dst];
-        let wide = scalar.size() == 8;
-        let (d, a, b) = (self.location(dst), self.location(a), self.location(b));
-        let target = match d {
-            Location::Gpr(r) if d != b || a == b => r,
-            _ => 0,
-        };
-        self.copy_scalar(Location::Gpr(target), a, scalar);
-        if scalar.size() < 4 {
-            self.copy_scalar(Location::Gpr(1), b, scalar);
-            self.instruction(None, opcode, false, target, Operand::Register(1));
-        } else if let Location::Immediate(bits) = b {
-            if wide && bits as i64 != bits as i32 as i64 {
-                self.literal_width(Location::Gpr(1), bits, true);
-                self.instruction(None, opcode, true, target, Operand::Register(1));
-            } else if let Some(extension) = immediate {
-                self.integer_immediate(extension, target, bits, wide);
-            } else {
-                self.instruction(None, &[0x69], wide, target, Operand::Register(target));
-                self.u32(bits as u32);
-            }
-        } else {
-            let right = self.operand(b, 1);
-            self.instruction(None, opcode, wide, target, right);
-        }
-        self.copy_scalar(d, Location::Gpr(target), scalar);
-    }
-    fn integer_immediate(&mut self, extension: u8, target: u8, bits: Bits, wide: bool) {
-        let signed = if wide { bits as i64 } else { bits as i32 as i64 };
-        if i8::try_from(signed).is_ok() {
-            self.instruction(None, &[0x83], wide, extension, Operand::Register(target));
-            self.bytes(&[bits as u8]);
-        } else {
-            self.instruction(None, &[0x81], wide, extension, Operand::Register(target));
-            self.u32(bits as u32);
-        }
+        let count = self.stage.registers[b];
+        self.emit_binary(dst, a, b, scalar, |d, a, b, output| unsafe {
+            scalar_binary(d, a, b, scalar.size(), u32::from(scalar.is_signed()),
+                u32::from(scalar.is_float()), count.size(), u32::from(count.is_signed()),
+                operation.into(), output)
+        });
     }
     pub(super) fn cast(&mut self, dst: Reg, src: Reg) {
         let from = self.stage.registers[src];
@@ -552,33 +516,15 @@ impl Emitter<'_> {
         }
         self.copy_scalar(d, target, scalar);
     }
-    pub(super) fn shift(&mut self, dst: Reg, a: Reg, b: Reg, kind: u8) {
-        let scalar = self.stage.registers[dst];
-        let wide = scalar.size() == 8;
-        let shift = self.location(b);
-        if !matches!(shift, Location::Immediate(_)) {
-            self.copy_scalar(Location::Gpr(1), shift, self.stage.registers[b]);
-            if scalar.size() < 4 {
-                self.instruction(None, &[0x83], false, 4, Operand::Register(1));
-                self.bytes(&[(scalar.bit_width() - 1) as u8]);
-            }
-        }
-        let d = self.location(dst);
-        let target = match d {
-            Location::Gpr(r) => r,
-            _ => 0,
-        };
-        self.copy_scalar(Location::Gpr(target), self.location(a), scalar);
-        if let Location::Immediate(bits) = shift {
-            self.instruction(None, &[0xc1], wide, kind, Operand::Register(target));
-            self.bytes(&[(bits & Bits::from(scalar.bit_width() - 1)) as u8]);
-        } else {
-            self.instruction(None, &[0xd3], wide, kind, Operand::Register(target));
-        }
-        self.copy_scalar(d, Location::Gpr(target), scalar);
-    }
     pub(super) fn compare(&mut self, dst: Reg, a: Reg, b: Reg, comparison: Comparison) {
         let scalar = self.stage.registers[a];
+        self.emit_binary(dst, a, b, scalar, |d, a, b, output| unsafe {
+            scalar_compare(d, a, b, scalar.size(), u32::from(scalar.is_signed()),
+                u32::from(scalar.is_float()), BinaryOp::Compare(comparison).into(), output)
+        });
+    }
+    fn emit_binary(&mut self, dst: Reg, a: Reg, b: Reg, scalar: Scalar,
+        emit: impl FnOnce(MoveLocation, MoveLocation, MoveLocation, *mut u8) -> BinaryEncoding) {
         let destination = MoveLocation::from(self.location(dst));
         let left = MoveLocation::from(self.location(a));
         let right = MoveLocation::from(self.location(b));
@@ -586,9 +532,7 @@ impl Emitter<'_> {
         let start = self.code.len();
         let mut fields = (0, 0);
         self.emit_bytes(64, |output| {
-            let result = unsafe { scalar_compare(destination, left, right, scalar.size(),
-                u32::from(scalar.is_signed()), u32::from(scalar.is_float()),
-                BinaryOp::Compare(comparison).into(), output) };
+            let result = emit(destination, left, right, output);
             fields = (result.left_literal as usize, result.right_literal as usize);
             result.length
         });
