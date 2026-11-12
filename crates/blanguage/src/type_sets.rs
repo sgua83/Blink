@@ -17,9 +17,13 @@ impl World {
     ) -> Result<bool> {
         let Some(family) = family else { return Ok(true); };
         match family.kind() {
-            FamilyKind::Named(name) => Ok(self.named_family_members(name, source, span, module, imports, stack)?
-                .contains_key(&actual.name)),
-            _ => Ok(family.builtin_names().iter().any(|name| name == actual.name)),
+            FamilyKind::Named(name) => {
+                let key = self.named_family_key(name, source, span, module, imports)?;
+                let mut accepted = false;
+                self.for_each_set_member(&key, stack, |ty| accepted |= ty.name == actual.name)?;
+                Ok(accepted)
+            }
+            _ => Ok(family.contains_builtin(&actual.name)),
         }
     }
 
@@ -33,43 +37,49 @@ impl World {
         stack: &mut BTreeSet<String>,
     ) -> Result<Vec<TypeArgument>> {
         match family.kind() {
-            FamilyKind::Named(name) => Ok(self.named_family_members(name, source, span, module, imports, stack)?
-                .into_iter().map(|(name, syntax)| TypeArgument { name, syntax }).collect()),
+            FamilyKind::Named(name) => {
+                let key = self.named_family_key(name, source, span, module, imports)?;
+                let mut members = BTreeMap::new();
+                self.for_each_set_member(&key, stack, |ty| {
+                    let syntax = ty.syntax();
+                    members.insert(ty.name, syntax);
+                })?;
+                Ok(members.into_iter().map(|(name, syntax)| TypeArgument { name, syntax }).collect())
+            }
             _ => Ok(family.builtin_names().iter().map(|name| TypeArgument {
                 name: name.to_owned(), syntax: TypeName::named(name),
             }).collect()),
         }
     }
 
-    fn named_family_members(
+    fn named_family_key(
         &self,
         name: &str,
         source: &Source,
         span: Span,
         module: &str,
         imports: &[String],
-        stack: &mut BTreeSet<String>,
-    ) -> Result<BTreeMap<String, TypeName>> {
+    ) -> Result<String> {
         if let Some(inputs) = &self.build_declarations {
             inputs.borrow_mut().insert(crate::build::Declaration::TypeSetName {
                 name: name.into(), module: module.into(), imports: imports.to_vec(),
             });
         }
-        let key = self.declarations.resolve_type_set(name, module, imports)
+        self.declarations.resolve_type_set(name, module, imports)
             .ok_or_else(|| Diagnostic {
                 source: source.clone(),
                 span,
                 code: "B233",
                 message: format!("未知或不明确的类型集合 {name}"),
-            })?;
-        self.set_members(&key, stack)
+            })
     }
 
-    pub(crate) fn set_members(
+    pub(crate) fn for_each_set_member(
         &self,
         key: &str,
         stack: &mut BTreeSet<String>,
-    ) -> Result<BTreeMap<String, TypeName>> {
+        mut consume: impl FnMut(Ty),
+    ) -> Result<()> {
         if let Some(inputs) = &self.build_declarations {
             inputs.borrow_mut().insert(crate::build::Declaration::TypeSet(key.into()));
         }
@@ -85,7 +95,6 @@ impl World {
                 format!("类型集合与记录约束递归引用 {key}"),
             );
         }
-        let mut members = BTreeMap::new();
         let bindings=std::sync::Arc::new(crate::generics::Bindings::default());
         for member in &set.members() {
             if member.dataset() || member.view() || member.tile() {
@@ -96,12 +105,10 @@ impl World {
                 );
             }
             let member=bindings.type_name(self,&member,(source,module,imports),set.span())?;
-            let ty = self.ty_inner(&member, source, set.span(), module, imports, stack)?;
-            let name = ty.syntax();
-            members.insert(ty.name, name);
+            consume(self.ty_inner(&member, source, set.span(), module, imports, stack)?);
         }
         stack.remove(&identity);
-        Ok(members)
+        Ok(())
     }
 }
 

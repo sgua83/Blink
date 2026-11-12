@@ -359,9 +359,15 @@ pub(crate) struct BuiltinFamilyNames {
 unsafe extern "C" {
     #[link_name = "bootstrap.type_families::builtin_members"]
     fn builtin_family_members(family: *const wire::TypeFamilyNode, output: *mut BuiltinFamilyName) -> u32;
+    #[link_name = "bootstrap.type_families::builtin_has_member"]
+    fn builtin_family_has_member(family: *const wire::TypeFamilyNode, name: *const u8, length: usize) -> bool;
 }
 
 impl TypeFamily {
+    pub(crate) fn contains_builtin(&self, name: &str) -> bool {
+        unsafe { builtin_family_has_member(&self.row(), name.as_ptr(), name.len()) }
+    }
+
     pub(crate) fn builtin_names(&self) -> BuiltinFamilyNames {
         let mut names = [std::mem::MaybeUninit::uninit(); 19];
         // B writes one row per selected name, with at most 19 rows in total.

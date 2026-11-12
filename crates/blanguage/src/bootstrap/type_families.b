@@ -11,18 +11,19 @@ BuiltinName member<const N:u32 in {2,3,4,5,6}>(read array<u8,N> name) on cpu {
     return BuiltinName(bytes,N);
 }
 
-extern "C" u32 builtin_members(read TypeFamilyNode family, address output) on cpu {
-    u32 required;
+Optional<u32> family_requirement(read TypeFamilyNode family) on cpu {
     match (family) {
-        TypeFamilyNode::Numeric() { required = 0; }
-        TypeFamilyNode::Floating() { required = FLOATING; }
-        TypeFamilyNode::Integer() { required = INTEGER; }
-        TypeFamilyNode::ScalarNumeric() { required = SCALAR; }
-        TypeFamilyNode::ScalarInteger() { required = SCALAR | INTEGER; }
-        TypeFamilyNode::Named(name) { return 0; }
+        TypeFamilyNode::Numeric() { return Optional<u32>(1, 0); }
+        TypeFamilyNode::Floating() { return Optional<u32>(1, FLOATING); }
+        TypeFamilyNode::Integer() { return Optional<u32>(1, INTEGER); }
+        TypeFamilyNode::ScalarNumeric() { return Optional<u32>(1, SCALAR); }
+        TypeFamilyNode::ScalarInteger() { return Optional<u32>(1, SCALAR | INTEGER); }
+        TypeFamilyNode::Named(name) { return Optional<u32>(0, 0); }
     }
+}
 
-    array<BuiltinName,19> members = array<BuiltinName,19>(
+array<BuiltinName,19> ordered_members() on cpu {
+    return array<BuiltinName,19>(
         member("f32"),
         member("float2"),member("float3"),member("float4"),
         member("u32"),
@@ -34,19 +35,48 @@ extern "C" u32 builtin_members(read TypeFamilyNode family, address output) on cp
         member("u8"),member("i8"),
         member("u16"),member("i16")
     );
+}
+
+bool matches_family(read BuiltinName name, u32 required) on cpu {
+    BuiltinType builtin = recognize(address_of(name.bytes), u64(name.length));
+    u32 traits = builtin.scalar == BuiltinScalar::F32 || builtin.scalar == BuiltinScalar::F64 ? FLOATING : INTEGER;
+    if (builtin.rows == 1 && builtin.columns == 1) { traits |= SCALAR; }
+    return (traits & required) == required;
+}
+
+extern "C" u32 builtin_members(read TypeFamilyNode family, address output) on cpu {
+    Optional<u32> required = family_requirement(family);
+    if (required.present == 0) { return 0; }
+    array<BuiltinName,19> members = ordered_members();
     u32 count = 0;
     for (index in 0..members.length) {
         BuiltinName name = members[index];
-        BuiltinType builtin = recognize(address_of(name.bytes), u64(name.length));
-        u32 traits = builtin.scalar == BuiltinScalar::F32 || builtin.scalar == BuiltinScalar::F64 ? FLOATING : INTEGER;
-        if (builtin.rows == 1 && builtin.columns == 1) { traits |= SCALAR; }
-        if ((traits & required) == required) {
-            address slot = unsafe_address(address_bits(output)+u64(count)*size_of<BuiltinName>());
+        if (matches_family(name, required.value)) {
+            address slot = unsafe_address(address_bits(output) + u64(count) * size_of<BuiltinName>());
             unsafe_position<BuiltinName>(slot) = name;
             count += 1;
         }
     }
     return count;
+}
+
+bool matches_name(read BuiltinName member, address name, usize length) on cpu {
+    if (length != usize(member.length)) { return false; }
+    address spelling = address_of(member.bytes);
+    for (index in 0..member.length) {
+        if (name_byte(spelling, u64(index)) != name_byte(name, u64(index))) { return false; }
+    }
+    return true;
+}
+
+extern "C" bool builtin_has_member(read TypeFamilyNode family, address name, usize length) on cpu {
+    Optional<u32> required = family_requirement(family);
+    if (required.present == 0) { return false; }
+    array<BuiltinName,19> members = ordered_members();
+    for (index in 0..members.length) {
+        if (matches_name(members[index], name, length)) { return matches_family(members[index], required.value); }
+    }
+    return false;
 }
 
 u8 name_byte(address name, u64 index) on cpu {

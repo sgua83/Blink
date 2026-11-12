@@ -14,3 +14,4 @@ extern "C" BuiltinType recognize(address name, u64 length) on cpu;
 
 // Output has space for all 19 numeric names. Only the returned prefix is written.
 extern "C" u32 builtin_members(read TypeFamilyNode family, address output) on cpu;
+extern "C" bool builtin_has_member(read TypeFamilyNode family, address name, usize length) on cpu;

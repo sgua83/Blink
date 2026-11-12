@@ -549,7 +549,7 @@ pub(crate) fn read_world(
 }
 pub(crate) fn validate_types(world: &World) -> Result<()> {
     for name in world.type_sets.keys() {
-        world.set_members(name, &mut BTreeSet::new())?;
+        world.for_each_set_member(name, &mut BTreeSet::new(), |_| {})?;
     }
     for (name, (record, source, module, imports)) in &world.records {
         generics::validate_parameters(&record.types(), &record.name(), source, record.span())?;
