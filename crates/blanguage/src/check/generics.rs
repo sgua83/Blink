@@ -291,6 +291,34 @@ fn resource_names_shape(ty:&crate::syntax::Type,name:&str)->bool{
     false
 }
 
+fn for_each_cfn_type(
+    formal: &crate::syntax::Type,
+    actual: &crate::ir::CFunctionType,
+    source: &Source,
+    span: Span,
+    mut consume: impl FnMut(crate::syntax::Type, &TypeName) -> Result<()>,
+) -> Result<()> {
+    for (index, argument) in formal.arguments().iter().enumerate() {
+        let crate::syntax::ArgumentKind::Type(formal) = argument.kind() else {
+            return source.fail(span, "B263", "cfn签名只接受类型");
+        };
+        if index == 0 {
+            consume(formal, &actual.result)?;
+            continue;
+        }
+        let (actual_access, syntax) = &actual.parameters[index - 1];
+        let (access, element) = formal.cfn_parameter();
+        if access != *actual_access {
+            return source.fail(span, "B124", "cfn参数访问方式不匹配");
+        }
+        let Some(element) = element else {
+            return source.fail(span, "B263", "cfn位置参数使用read<T>／write<T>／inout<T>");
+        };
+        consume(element, syntax)?;
+    }
+    Ok(())
+}
+
 fn infer_type(
     world: &World,
     source: &Source,
@@ -361,39 +389,15 @@ fn infer_type(
         if formal.arguments().len() != function.parameters.len() + 1 {
             return source.fail(span, "B263", "cfn类型推导需要相同参数数量");
         }
-        for (index, argument) in formal.arguments().iter().enumerate() {
-            let crate::syntax::ArgumentKind::Type(formal) = argument.kind() else {
-                return source.fail(span, "B263", "cfn签名只接受类型");
-            };
-            let (formal, syntax) = if index == 0 {
-                (formal, &function.result)
-            } else {
-                let access = if !formal.dataset() && !formal.view() && !formal.tile() {
-                    match formal.name() {
-                        "read" => Access::Read, "write" => Access::Write,
-                        "inout" => Access::InOut, _ => Access::Value,
-                    }
-                } else { Access::Value };
-                let (actual_access, syntax) = &function.parameters[index - 1];
-                if access != *actual_access {
-                    return source.fail(span, "B124", "cfn参数访问方式不匹配");
-                }
-                let formal = if access == Access::Value { formal } else {
-                    let (1,Some(crate::syntax::ArgumentKind::Type(element))) = (formal.arguments().len(),formal.arguments().first().map(|argument|argument.kind())) else {
-                        return source.fail(span, "B263", "cfn位置参数使用read<T>／write<T>／inout<T>");
-                    };
-                    element
-                };
-                (formal, syntax)
-            };
-            if type_mentions(&formal,parameter.name()) {
+        return for_each_cfn_type(formal, function, source, span, |formal, syntax| {
+            if type_mentions(&formal, parameter.name()) {
                 let actual = if *syntax == TypeName::named("void") { Ty::unit() } else {
                     world.ty(syntax, source, span, &callee.module, &callee.imports)?
                 };
                 infer_type(world, source, &formal, &actual, parameter, callee, span, inferred)?;
             }
-        }
-        return Ok(());
+            Ok(())
+        });
     }
     if formal.name() == "result" {
         if !actual.result || formal.arguments().len() != 2 {
@@ -504,38 +508,13 @@ fn infer_value(
         if formal.arguments().len() != function.parameters.len() + 1 {
             return source.fail(span, "B263", "cfn const推导需要相同参数数量");
         }
-        for (index, argument) in formal.arguments().iter().enumerate() {
-            let crate::syntax::ArgumentKind::Type(formal) = argument.kind() else {
-                return source.fail(span, "B263", "cfn签名只接受类型");
-            };
-            let (formal, syntax) = if index == 0 {
-                (formal, &function.result)
-            } else {
-                let access = if !formal.dataset() && !formal.view() && !formal.tile() {
-                    match formal.name() {
-                        "read" => Access::Read, "write" => Access::Write,
-                        "inout" => Access::InOut, _ => Access::Value,
-                    }
-                } else { Access::Value };
-                let (actual_access, syntax) = &function.parameters[index - 1];
-                if access != *actual_access {
-                    return source.fail(span, "B124", "cfn参数访问方式不匹配");
-                }
-                let formal = if access == Access::Value { formal } else {
-                    let (1,Some(crate::syntax::ArgumentKind::Type(element))) = (formal.arguments().len(),formal.arguments().first().map(|argument|argument.kind())) else {
-                        return source.fail(span, "B263", "cfn位置参数使用read<T>／write<T>／inout<T>");
-                    };
-                    element
-                };
-                (formal, syntax)
-            };
+        return for_each_cfn_type(formal, function, source, span, |formal, syntax| {
             if *syntax == TypeName::named("void") || syntax.is_never() {
-                continue;
+                return Ok(());
             }
             let actual = world.ty(syntax, source, span, &callee.module, &callee.imports)?;
-            infer_value(world, &formal, &actual, name, callee, source, span, inferred)?;
-        }
-        return Ok(());
+            infer_value(world, &formal, &actual, name, callee, source, span, inferred)
+        });
     }
     if formal.name() == "result" {
         if !actual.result || formal.arguments().len() != 2 {

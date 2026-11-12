@@ -264,6 +264,14 @@ span_field!(ContractNode);
 optional_list!(TypeNode,contracts,PredicateNode);
 optional_list!(FunctionNode,body,StmtNode);
 impl Type {pub fn canonical(&self)->bool{self.row().canonical!=0} pub fn dataset(&self)->bool{self.row().dataset!=0} pub fn view(&self)->bool{self.row().view!=0} pub fn tile(&self)->bool{self.row().tile!=0}}
+
+impl Type {
+    pub(crate) fn cfn_parameter(&self) -> (crate::ast::Access, Option<Type>) {
+        // The sealed owner stays live for the query and the returned child.
+        let parameter = unsafe { wire::cfn_parameter(self.signature_node()) };
+        (parameter.access, (parameter.ty.present != 0).then(|| self.child(parameter.ty.value.offset)))
+    }
+}
 impl ValueParameter {
     pub fn choices(&self) -> Option<&[u32]> {
         let choices = self.row().choices;

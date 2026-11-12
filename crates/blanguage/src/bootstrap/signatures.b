@@ -263,3 +263,30 @@ extern "C" RecordMember record_member(SignatureNode record, address bytes, u64 l
     }
     return RecordMember::Missing();
 }
+
+u32 cfn_access(StorageView store, TypeNode formal) on cpu {
+    if (formal.dataset != 0 || formal.view != 0 || formal.tile != 0) { return 0; }
+    NameBytes name = text_bytes(store, formal.name);
+    array<u8,4> read_name = "read";
+    if (compare_name(name, NameBytes(address_of(read_name[0]), 4u64)) == i32(0)) { return 1; }
+    array<u8,5> write_name = "write";
+    if (compare_name(name, NameBytes(address_of(write_name[0]), 5u64)) == i32(0)) { return 2; }
+    array<u8,5> inout_name = "inout";
+    if (compare_name(name, NameBytes(address_of(inout_name[0]), 5u64)) == i32(0)) { return 3; }
+    return 0;
+}
+
+extern "C" CfnParameter cfn_parameter(SignatureNode formal) on cpu {
+    TypeNode declared = read_node<TypeNode>(formal.storage, formal.offset);
+    u32 access = cfn_access(formal.storage, declared);
+    if (access == 0) { return CfnParameter(access, Optional<TypeRef>(1, TypeRef(formal.offset))); }
+
+    Optional<TypeRef> child = Optional<TypeRef>(0, TypeRef(0u64));
+    if (declared.arguments.count == 1u64) {
+        match (read_node<ArgumentNode>(formal.storage, child_at(formal.storage, declared.arguments, 0u64))) {
+            ArgumentNode::Type(type) { child = Optional<TypeRef>(1, type); }
+            ArgumentNode::Value(shape) {}
+        }
+    }
+    return CfnParameter(access, child);
+}

@@ -18,3 +18,10 @@ enum RecordMember : u32 {
 };
 
 extern "C" RecordMember record_member(SignatureNode record, address bytes, u64 length) on cpu;
+
+struct CfnParameter {
+    u32 access;
+    Optional<TypeRef> type;
+};
+
+extern "C" CfnParameter cfn_parameter(SignatureNode formal) on cpu;

@@ -286,7 +286,15 @@ pub enum RecordMember {
     Field(TypeRef) = 2,
 }
 
+#[repr(C)]
+pub struct CfnParameter {
+    pub access: crate::ast::Access,
+    pub ty: Optional<TypeRef>,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.signatures::cfn_parameter"]
+    pub fn cfn_parameter(formal: SignatureNode) -> CfnParameter;
     #[link_name = "bootstrap.signatures::record_member"]
     pub fn record_member(record: SignatureNode, name: *const u8, length: u64) -> RecordMember;
     #[link_name = "bootstrap.signatures::compare_condition"]
