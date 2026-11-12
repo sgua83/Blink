@@ -730,31 +730,19 @@ impl Emitter<'_> {
         self.copy_scalar(d, Location::Gpr(target), scalar);
     }
     pub(super) fn preserve_registers(&mut self, restore: bool) {
-        for (r, offset) in self.frame.saved_gpr.clone() {
-            self.instruction(
-                None,
-                &[if restore { 0x8b } else { 0x89 }],
-                true,
-                r,
-                Operand::memory(4, offset),
-            );
+        for index in 0..self.frame.saved.len() {
+            let saved = self.frame.saved[index];
+            let register = saved.register as u8;
+            let xmm = saved.bank != 0;
+            let opcode: &[u8] = if xmm {
+                &[0x0f, if restore { 0x28 } else { 0x29 }]
+            } else {
+                &[if restore { 0x8b } else { 0x89 }]
+            };
+            self.instruction(None, opcode, !xmm, register, Operand::memory(4, saved.offset));
             if !restore {
                 let at = self.code.len() as u8;
-                self.unwind.push(UnwindOperation::save(at, r, offset, false));
-                self.prolog = at;
-            }
-        }
-        for (r, offset) in self.frame.saved_xmm.clone() {
-            self.instruction(
-                None,
-                &[0x0f, if restore { 0x28 } else { 0x29 }],
-                false,
-                r,
-                Operand::memory(4, offset),
-            );
-            if !restore {
-                let at = self.code.len() as u8;
-                self.unwind.push(UnwindOperation::save(at, r, offset, true));
+                self.unwind.push(UnwindOperation::save(at, register, saved.offset, xmm));
                 self.prolog = at;
             }
         }

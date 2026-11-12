@@ -25,10 +25,22 @@ pub(super) struct PacketAllocation {
     registers: usize,
     data_end: u64,
 }
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct SavedRegister {
+    pub offset: u32,
+    pub register: u16,
+    pub bank: u16,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.frame_layout::saved_registers"]
+    fn saved_registers(data_end: u64, gpr: u32, xmm: u32, saves: *mut SavedRegister) -> u64;
+}
+
 #[derive(Default)]
 pub(super) struct Frame {
-    pub saved_gpr: Vec<(u8, u32)>,
-    pub saved_xmm: Vec<(u8, u32)>,
+    pub saved: Vec<SavedRegister>,
     pub end: u64,
     pub tile_shared: std::collections::BTreeMap<SharedWord, u32>,
     pub tile_private: std::collections::BTreeMap<PrivateSlot, u32>,
@@ -500,34 +512,36 @@ impl PacketAllocation {
 }
 impl Frame {
     pub fn new(scalar: &Allocation, packet: Option<&PacketAllocation>) -> Self {
-        let mut saved_gpr = Vec::new();
-        let mut saved_xmm = Vec::new();
-        let mut used: BTreeSet<_> = scalar.locations.iter().copied().collect();
-        let mut end = scalar.data_end;
+        let mut gpr = 0u32;
+        let mut xmm = 0u32;
+        for &location in &scalar.locations {
+            match location {
+                // The allocator assigns only RBP, RSI, and RDI from the nonvolatile GPRs.
+                Location::Gpr(register @ 5..=7) => gpr |= 1 << register,
+                Location::Xmm(register) => xmm |= 1 << register,
+                _ => {}
+            }
+        }
+        let mut data_end = scalar.data_end;
         if let Some(packet) = packet {
-            end = end.max(packet.data_end);
-            used.extend(packet.locations.iter().filter_map(|place| match place {
-                PacketPlace::Register(r) => Some(Location::Xmm(*r)),
-                PacketPlace::Stack(_) => None,
-            }));
-        }
-        end = end.div_ceil(8) * 8;
-        for location in &used {
-            if let Location::Gpr(r @ 5..=7) = location {
-                saved_gpr.push((*r, end as u32));
-                end += 8;
+            data_end = data_end.max(packet.data_end);
+            for &place in &packet.locations {
+                if let PacketPlace::Register(register) = place {
+                    xmm |= 1 << register;
+                }
             }
         }
-        end = end.div_ceil(16) * 16;
-        for location in used {
-            if let Location::Xmm(r @ 6..=15) = location {
-                saved_xmm.push((r, end as u32));
-                end += 16;
-            }
-        }
+        xmm &= 0xffc0; // XMM6–15 are nonvolatile.
+        let count = (gpr.count_ones() + xmm.count_ones()) as usize;
+        let mut saved = Vec::with_capacity(count);
+        // B writes one row for each bit in these same masks.
+        let end = unsafe {
+            let end = saved_registers(data_end, gpr, xmm, saved.as_mut_ptr());
+            saved.set_len(count);
+            end
+        };
         Self {
-            saved_gpr,
-            saved_xmm,
+            saved,
             end,
             tile_shared: std::collections::BTreeMap::new(),
             tile_private: std::collections::BTreeMap::new(),
