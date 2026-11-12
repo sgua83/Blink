@@ -1,6 +1,15 @@
 //! 只读间接数据逐 lane 寻址，结果交回既有 SSE2 批次；不开放散写权限。
 use super::*;
 
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::packet_lane"]
+    fn encode_packet_lane(src: operands::MoveLocation, lane: u8, gpr: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_view_memory"]
+    fn encode_packet_view_memory(base: u8, index: operands::MoveLocation, lane: u8, stride: u64, offset: u32, output: *mut u8) -> operands::AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::packet_view_memory_dynamic"]
+    fn encode_packet_view_memory_dynamic(base: u8, index: operands::MoveLocation, low: operands::MoveLocation, high: operands::MoveLocation, lane: u8, offset: u32, output: *mut u8) -> operands::AddressEncoding;
+}
+
 impl Emitter<'_> {
     pub(super) fn packet_lane(
         &mut self,
@@ -9,30 +18,8 @@ impl Emitter<'_> {
         lane: u8,
         gpr: u8,
     ) {
-        match allocation.location(PrivateSlot::Register(value)) {
-            PacketPlace::Register(xmm) => {
-                let source = if lane == 0 {
-                    xmm
-                } else {
-                    self.shuffle(3, xmm, lane * 0x55);
-                    3
-                };
-                self.instruction(
-                    Some(0x66),
-                    &[0x0f, 0x7e],
-                    false,
-                    source,
-                    Operand::Register(gpr),
-                );
-            }
-            PacketPlace::Stack(offset) => self.instruction(
-                None,
-                &[0x8b],
-                false,
-                gpr,
-                Operand::memory(4, offset + u32::from(lane) * 4),
-            ),
-        }
+        let source = allocation.location(PrivateSlot::Register(value)).into();
+        self.emit_bytes(16, |output| unsafe { encode_packet_lane(source, lane, gpr, output) });
     }
 
     pub(super) fn packet_gather(
@@ -60,19 +47,20 @@ impl Emitter<'_> {
                 ReadSource::Dataset(binding) => {
                     self.packet_lane(allocation,index,lane,0);self.buffer_memory(*binding,0,word)
                 },
-                ReadSource::View { stride:ElementStride::Constant(bytes),.. } if *bytes<=u64::from(u32::MAX)=>{
-                    self.packet_lane(allocation,index,lane,0);self.scaled_memory(15,0,*bytes as u32,word)
-                },
-                ReadSource::View { stride,.. }=>{
+                ReadSource::View { stride, .. } => {
+                    let index = allocation.location(PrivateSlot::Register(index)).into();
                     match stride {
-                        ElementStride::Constant(bytes)=>self.literal_width(allocation::Location::Gpr(1),*bytes,true),
-                        ElementStride::Value(parts)=>{
-                            self.packet_lane(allocation,parts[1],lane,1);self.bytes(&[0x48,0xc1,0xe1,32]);
-                            self.packet_lane(allocation,parts[0],lane,0);self.bytes(&[0x48,0x09,0xc1]);
+                        ElementStride::Constant(bytes) => self.emit_address(64, |output| unsafe {
+                            encode_packet_view_memory(15, index, lane, *bytes, word, output)
+                        }),
+                        ElementStride::Value(parts) => {
+                            let low = allocation.location(PrivateSlot::Register(parts[0])).into();
+                            let high = allocation.location(PrivateSlot::Register(parts[1])).into();
+                            self.emit_address(64, |output| unsafe {
+                                encode_packet_view_memory_dynamic(15, index, low, high, lane, word, output)
+                            })
                         },
                     }
-                    self.packet_lane(allocation,index,lane,0);self.bytes(&[0x48,0x0f,0xaf,0xc1]);
-                    Memory::indexed(15,0,0,word)
                 },
             };
             // XMM3 只在取 lane 时暂用，第四个读取在地址完成后才写入它。

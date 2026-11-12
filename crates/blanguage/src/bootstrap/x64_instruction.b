@@ -1386,3 +1386,120 @@ extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocat
     cursor = packet_instruction(cursor, u8(0x66), u8(0xeb), target, u8(1));
     return packet_store_at(cursor, dst, target) - start;
 }
+
+// A scalar input index is zero extended before the existing address arithmetic.
+u8 address_shift(u32 stride) on cpu {
+    u8 shift = u8(0);
+    while (shift < u8(3) && (stride & (1 << u32(shift))) == 0) { shift += u8(1); }
+    return shift;
+}
+
+u64 address_scale_at(u64 at, u8 index, u32 stride) on cpu {
+    if (stride == 1) { return at; }
+    u32 remaining = stride;
+    u8 shift = u8(0);
+    while (remaining > 1 && (remaining & 1) == 0) { remaining >>= 1; shift += u8(1); }
+    u64 cursor = at;
+    if (remaining == 1) {
+        cursor = encode_operand_instruction(cursor, u16(0xc1), u8(0), true, u8(4), move_gpr(index));
+        put_byte(cursor, shift);
+        return cursor + 1u64;
+    }
+    cursor = encode_operand_instruction(cursor, u16(0x69), u8(0), true, index, move_gpr(index));
+    write_word(cursor, stride);
+    return cursor + 4u64;
+}
+
+extern "C" AddressEncoding scaled_memory(u8 base, u8 index, u32 stride, u32 offset, address output) on cpu {
+    u64 start = address_bits(output);
+    u8 shift = address_shift(stride);
+    u64 cursor = address_scale_at(start, index, stride >> u32(shift));
+    return AddressEncoding(cursor - start, offset, base, index, shift);
+}
+
+extern "C" AddressEncoding value_memory(u8 base, MoveLocation index, u32 stride, u32 offset, address output) on cpu {
+    u8 shift = address_shift(stride);
+    if ((stride >> u32(shift)) == 1 && index.kind == MOVE_GPR) {
+        return AddressEncoding(0u64, offset, base, index.base, shift);
+    }
+    u64 start = address_bits(output);
+    MoveEncoding loaded = copy_scalar_move(move_gpr(u8(0)), index, 4, false, output);
+    u64 cursor = address_scale_at(start + loaded.length, u8(0), stride >> u32(shift));
+    return AddressEncoding(cursor - start, offset, base, u8(0), shift);
+}
+
+// The allocation chooses scalar or packet input; both use the same stride arithmetic.
+u64 address_word_at(u64 at, MoveLocation src, bool packet, u8 lane, u8 gpr) on cpu {
+    if (packet) { return packet_lane_at(at, src, lane, gpr); }
+    return at + copy_scalar_move(move_gpr(gpr), src, 4, false, unsafe_address(at)).length;
+}
+
+AddressEncoding view_memory_at(u8 base, MoveLocation index, u64 stride, u32 offset,
+    bool packet, u8 lane, address output) on cpu {
+    u64 start = address_bits(output);
+    if (stride <= 0xffffffffu64) {
+        if (!packet) { return value_memory(base, index, u32(stride), offset, output); }
+        u64 cursor = packet_lane_at(start, index, lane, u8(0));
+        AddressEncoding result = scaled_memory(base, u8(0), u32(stride), offset, unsafe_address(cursor));
+        result.length += cursor - start;
+        return result;
+    }
+    u64 cursor = start + copy_scalar_move(move_gpr(u8(1)), MoveLocation(stride, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0)), 8, false, output).length;
+    cursor = address_word_at(cursor, index, packet, lane, u8(0));
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(1));
+    return AddressEncoding(cursor - start, offset, base, u8(0), u8(0));
+}
+
+AddressEncoding view_memory_dynamic_at(u8 base, MoveLocation index, MoveLocation low,
+    MoveLocation high, u32 offset, bool packet, u8 lane, address output) on cpu {
+    u64 start = address_bits(output);
+    u8 high_register = u8(0);
+    if (packet) { high_register = u8(1); }
+    u64 cursor = address_word_at(start, high, packet, lane, high_register);
+    cursor = encode_operand_instruction(cursor, u16(0xc1), u8(0), true, u8(4), move_gpr(high_register));
+    put_byte(cursor, u8(32)); cursor += 1u64;
+    if (!packet) { cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(0), u8(1)); }
+    cursor = address_word_at(cursor, low, packet, lane, u8(0));
+    cursor = register_instruction(cursor, u16(0x09), u8(0), true, u8(0), u8(1));
+    cursor = address_word_at(cursor, index, packet, lane, u8(0));
+    cursor = register_instruction(cursor, u16(0xaf0f), u8(0), true, u8(0), u8(1));
+    return AddressEncoding(cursor - start, offset, base, u8(0), u8(0));
+}
+
+extern "C" AddressEncoding view_memory(u8 base, MoveLocation index, u64 stride, u32 offset, address output) on cpu {
+    return view_memory_at(base, index, stride, offset, false, u8(0), output);
+}
+
+extern "C" AddressEncoding view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u32 offset, address output) on cpu {
+    return view_memory_dynamic_at(base, index, low, high, offset, false, u8(0), output);
+}
+
+extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu {
+    u64 start = address_bits(output);
+    return packet_lane_at(start, src, lane, gpr) - start;
+}
+
+extern "C" AddressEncoding packet_view_memory(u8 base, MoveLocation index, u8 lane, u64 stride, u32 offset, address output) on cpu {
+    return view_memory_at(base, index, stride, offset, true, lane, output);
+}
+
+extern "C" AddressEncoding packet_view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u8 lane, u32 offset, address output) on cpu {
+    return view_memory_dynamic_at(base, index, low, high, offset, true, lane, output);
+}
+
+extern "C" u64 scale_index(u8 index, u32 stride, address output) on cpu {
+    u64 start = address_bits(output);
+    return address_scale_at(start, index, stride) - start;
+}
+
+extern "C" u64 offset_address(u32 stride, address output) on cpu {
+    u64 start = address_bits(output);
+    u8 shift = address_shift(stride);
+    if ((stride >> u32(shift)) == 1 && stride <= 8) {
+        MoveLocation memory = MoveLocation(0u64, MOVE_MEMORY, u8(15), u8(0), shift);
+        return encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(15), memory) - start;
+    }
+    u64 cursor = address_scale_at(start, u8(0), stride);
+    put_byte(cursor, u8(0x49)); put_byte(cursor + 1u64, u8(0x01)); put_byte(cursor + 2u64, u8(0xc7));
+    return cursor + 3u64 - start;
+}

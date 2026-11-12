@@ -110,7 +110,28 @@ struct BinaryEncoding {
     right_literal: u64,
 }
 
+#[repr(C)]
+pub(super) struct AddressEncoding {
+    length: u64,
+    offset: u32,
+    base: u8,
+    index: u8,
+    shift: u8,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::value_memory"]
+    fn encode_value_memory(base: u8, index: MoveLocation, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::view_memory"]
+    fn encode_view_memory(base: u8, index: MoveLocation, stride: u64, offset: u32, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::view_memory_dynamic"]
+    fn encode_view_memory_dynamic(base: u8, index: MoveLocation, low: MoveLocation, high: MoveLocation, offset: u32, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::scaled_memory"]
+    fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::scale_index"]
+    fn encode_scale_index(index: u8, stride: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::offset_address"]
+    fn encode_offset_address(stride: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
     #[link_name = "bootstrap.x64_instruction::value_unary"]
@@ -157,75 +178,41 @@ impl Emitter<'_> {
             }
         }
     }
-    pub(super) fn value_memory(
-        &mut self,
-        base: u8,
-        index: Location,
-        stride: u32,
-        offset: u32,
-    ) -> Memory {
-        let shift = stride.trailing_zeros().min(3) as u8;
-        if stride >> shift == 1
-            && let Location::Gpr(index) = index
-        {
-            Memory {
-                base,
-                index: Some((index, shift)),
-                offset,
-            }
-        } else {
-            self.load_location(index);
-            self.scaled_memory(base, 0, stride, offset)
+    pub(super) fn emit_address(&mut self, capacity: usize, emit: impl FnOnce(*mut u8) -> AddressEncoding) -> Memory {
+        self.code.reserve(capacity);
+        let start = self.code.len();
+        unsafe {
+            let result = emit(self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + result.length as usize);
+            Memory::indexed(result.base, result.index, result.shift, result.offset)
         }
     }
-    pub(super) fn view_memory(&mut self,base:u8,index:Location,stride:ElementStride,offset:u32)->Memory{
+    pub(super) fn value_memory(&mut self, base: u8, index: Location, stride: u32, offset: u32) -> Memory {
+        let index = index.into();
+        self.emit_address(32, |output| unsafe { encode_value_memory(base, index, stride, offset, output) })
+    }
+    pub(super) fn view_memory(&mut self, base: u8, index: Location, stride: ElementStride, offset: u32) -> Memory {
+        let index = index.into();
         match stride {
-            ElementStride::Constant(bytes) if bytes<=u64::from(u32::MAX)=>return self.value_memory(base,index,bytes as u32,offset),
-            ElementStride::Constant(bytes)=>self.literal_width(Location::Gpr(1),bytes,true),
-            ElementStride::Value(words)=>{
-                self.load(words[1]);self.bytes(&[0x48,0xc1,0xe0,32,0x48,0x89,0xc1]);
-                self.load(words[0]);self.bytes(&[0x48,0x09,0xc1]);
+            ElementStride::Constant(bytes) => self.emit_address(64, |output| unsafe {
+                encode_view_memory(base, index, bytes, offset, output)
+            }),
+            ElementStride::Value(words) => {
+                let low = self.location(words[0]).into();
+                let high = self.location(words[1]).into();
+                self.emit_address(64, |output| unsafe { encode_view_memory_dynamic(base, index, low, high, offset, output) })
             },
         }
-        self.load_location(index);self.bytes(&[0x48,0x0f,0xaf,0xc1]);
-        Memory{base,index:Some((0,0)),offset}
     }
-    pub(super) fn scaled_memory(
-        &mut self,
-        base: u8,
-        index: u8,
-        stride: u32,
-        offset: u32,
-    ) -> Memory {
-        let shift = stride.trailing_zeros().min(3) as u8;
-        self.scale_index(index, stride >> shift);
-        Memory {
-            base,
-            index: Some((index, shift)),
-            offset,
-        }
+    pub(super) fn scaled_memory(&mut self, base: u8, index: u8, stride: u32, offset: u32) -> Memory {
+        self.emit_address(16, |output| unsafe { encode_scaled_memory(base, index, stride, offset, output) })
     }
     pub(super) fn scale_index(&mut self, register: u8, stride: u32) {
-        if stride == 1 {
-            return;
-        }
-        if stride.is_power_of_two() {
-            self.instruction(None, &[0xc1], true, 4, Operand::Register(register));
-            self.bytes(&[stride.trailing_zeros() as u8]);
-        } else {
-            self.instruction(None, &[0x69], true, register, Operand::Register(register));
-            self.u32(stride);
-        }
+        self.emit_bytes(16, |output| unsafe { encode_scale_index(register, stride, output) });
     }
-    // R15 holds the base, RAX the zero-extended index; only the address is consumed.
+    // The original R15 base and zero-extended RAX index remain owned by this emitter.
     pub(super) fn offset_address(&mut self, stride: u32) {
-        if stride.is_power_of_two() && stride <= 8 {
-            let memory = Memory::indexed(15, 0, stride.trailing_zeros() as u8, 0);
-            self.instruction(None, &[0x8d], true, 15, memory.into());
-        } else {
-            self.scale_index(0, stride);
-            self.bytes(&[0x49, 0x01, 0xc7]);
-        }
+        self.emit_bytes(16, |output| unsafe { encode_offset_address(stride, output) });
     }
     fn emit_instruction(&mut self, opcode: &[u8], input: InstructionEncoding) {
         // One legacy prefix, REX, ModR/M, SIB and at most four displacement bytes.

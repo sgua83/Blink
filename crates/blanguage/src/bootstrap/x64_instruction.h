@@ -127,3 +127,20 @@ extern "C" u64 packet_math(MoveLocation dst, MoveLocation left, MoveLocation rig
     PacketMathOperation operation, address output) on cpu;
 extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
     MoveLocation right, address output) on cpu;
+
+// The caller owns the output and consumes the returned native memory operand.
+// B retains no address after return; the emitter owns the code and memory operand.
+struct AddressEncoding { u64 length; u32 offset; u8 base; u8 index; u8 shift; };
+// value_memory needs 32 output bytes; view_memory and its dynamic form need 64.
+// scaled_memory, scale_index and offset_address need 16 output bytes.
+extern "C" AddressEncoding value_memory(u8 base, MoveLocation index, u32 stride, u32 offset, address output) on cpu;
+extern "C" AddressEncoding view_memory(u8 base, MoveLocation index, u64 stride, u32 offset, address output) on cpu;
+extern "C" AddressEncoding view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u32 offset, address output) on cpu;
+extern "C" AddressEncoding scaled_memory(u8 base, u8 index, u32 stride, u32 offset, address output) on cpu;
+extern "C" u64 scale_index(u8 index, u32 stride, address output) on cpu;
+extern "C" u64 offset_address(u32 stride, address output) on cpu;
+// Packet inputs use their original allocated XMM/stack lanes; no source is retained.
+// packet_lane needs 16 bytes; either packet view entry needs 64 bytes.
+extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu;
+extern "C" AddressEncoding packet_view_memory(u8 base, MoveLocation index, u8 lane, u64 stride, u32 offset, address output) on cpu;
+extern "C" AddressEncoding packet_view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u8 lane, u32 offset, address output) on cpu;
