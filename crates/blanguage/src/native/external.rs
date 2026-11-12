@@ -5,59 +5,48 @@ use allocation::Location;
 pub(super) struct Layout {
     pub bytes: u64,
     pub result: Option<u64>,
-    pub copies: Vec<Option<u64>>,
+    copies: u64,
     pub hidden: bool,
     target: Option<u64>,
 }
+#[repr(C)]
+struct AbiType { size: u32, alignment: u32, value: u64 }
+impl AbiType {
+    fn value(ty: &Ty) -> Self { Self { size: ty.size, alignment: ty.align, value: 1 } }
+}
+#[repr(C)]
+struct CallPlan { bytes: u64, result: u64, copies: u64, target: u64, hidden: u64 }
+#[repr(C)]
+struct ValueCopy { offset: u64, end: u64, present: u64 }
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_layout::indirect"]
+    fn indirect_value(size: u32, alignment: u32) -> bool;
+    #[link_name = "bootstrap.call_layout::copy_value"]
+    fn copy_value(start: u64, size: u32, alignment: u32) -> ValueCopy;
+    #[link_name = "bootstrap.call_layout::plan"]
+    fn call_plan(context: *const Call, count: u64, result: AbiType, flags: u32,
+        argument: unsafe extern "C" fn(*const Call, u64) -> AbiType) -> CallPlan;
+}
+unsafe extern "C" fn argument_type(call: *const Call, index: u64) -> AbiType {
+    match &unsafe { &*call }.arguments[index as usize] {
+        CallArgument::Value { ty, .. } => AbiType::value(ty),
+        CallArgument::Reference { .. } => AbiType { size: 0, alignment: 1, value: 0 },
+    }
+}
 pub(super) fn indirect(ty: &Ty) -> bool {
-    !matches!(align_up(ty.size, ty.align), 0 | 1 | 2 | 4 | 8)
+    unsafe { indirect_value(ty.size, ty.align) }
 }
 pub(super) fn floating(ty: &Ty) -> bool {
     *ty == Ty::scalar(Scalar::F32) || *ty == Ty::scalar(Scalar::F64)
 }
 impl Layout {
     pub(super) fn new(call: &Call) -> Self {
-        let hidden = call.result.as_ref().is_some_and(|ty| ty.size != 0 && (call.error.is_some() || indirect(ty)));
-        let count = call.arguments.iter()
-            .filter(|arg| !matches!(arg, CallArgument::Value { ty, .. } if ty.size == 0)).count();
-        let mut bytes =
-            ((count + usize::from(hidden)).max(4) as u64 * 8).div_ceil(16) * 16;
-        let result = if hidden {
-            let at = bytes;
-            let ty = call.result.as_ref().unwrap();
-            bytes += align_up(ty.size, ty.align) as u64;
-            Some(at)
-        } else {
-            None
-        };
-        let mut copies = Vec::new();
-        for arg in &call.arguments {
-            copies.push(
-                if let CallArgument::Value { ty, .. } = arg
-                    && indirect(ty)
-                {
-                    bytes = bytes.div_ceil(16) * 16;
-                    let at = bytes;
-                    bytes += align_up(ty.size, ty.align) as u64;
-                    Some(at)
-                } else {
-                    None
-                },
-            );
-        }
-        let target = if matches!(call.target, CallTarget::Indirect(_)) {
-            bytes = bytes.div_ceil(8) * 8;
-            let at = bytes;
-            bytes += 8;
-            Some(at)
-        } else { None };
-        Self {
-            bytes: bytes.div_ceil(16) * 16,
-            result,
-            copies,
-            hidden,
-            target,
-        }
+        let result = call.result.as_ref().map_or(AbiType { size: 0, alignment: 1, value: 0 }, AbiType::value);
+        let flags = u32::from(call.error.is_some()) | (u32::from(matches!(call.target, CallTarget::Indirect(_))) << 1);
+        let plan = unsafe { call_plan(call, call.arguments.len() as u64, result, flags, argument_type) };
+        let hidden = plan.hidden != 0;
+        Self { bytes: plan.bytes, result: hidden.then_some(plan.result), copies: plan.copies,
+            hidden, target: (flags & 2 != 0).then_some(plan.target) }
     }
 }
 impl Emitter<'_> {
@@ -129,9 +118,10 @@ impl Emitter<'_> {
             self.stack_address(at as u32);
             self.instruction(None, &[0x89], true, 0, Operand::memory(4, 0));
         }
-        let arguments = call.arguments.iter().enumerate()
-            .filter(|(_, arg)| !matches!(arg, CallArgument::Value { ty, .. } if ty.size == 0));
-        for (slot, (i, arg)) in arguments.clone().enumerate() {
+        let arguments = call.arguments.iter()
+            .filter(|arg| !matches!(arg, CallArgument::Value { ty, .. } if ty.size == 0));
+        let mut copies = layout.copies;
+        for (slot, arg) in arguments.clone().enumerate() {
             let slot = (slot + usize::from(layout.hidden)) as u32 * 8;
             match arg {
                 CallArgument::Reference { address, .. } => {
@@ -139,12 +129,14 @@ impl Emitter<'_> {
                     self.instruction(None, &[0x89], true, 0, Operand::memory(4, slot));
                 }
                 CallArgument::Value { ty, values, .. } => {
-                    let base = layout.copies[i].map_or(slot, |at| at as u32);
+                    let copy = unsafe { copy_value(copies, ty.size, ty.align) };
+                    copies = copy.end;
+                    let base = if copy.present != 0 { copy.offset as u32 } else { slot };
                     for ((_, offset), value) in ty.components.iter().zip(values) {
                         self.write_scalar(*value, 4, base + *offset);
                     }
-                    if let Some(at) = layout.copies[i] {
-                        self.stack_address(at as u32);
+                    if copy.present != 0 {
+                        self.stack_address(copy.offset as u32);
                         self.instruction(None, &[0x89], true, 0, Operand::memory(4, slot));
                     }
                 }
@@ -153,7 +145,7 @@ impl Emitter<'_> {
         if layout.hidden {
             self.instruction(None, &[0x8b], true, 1, Operand::memory(4, 0));
         }
-        for (slot, (_, arg)) in arguments.enumerate().take(4 - usize::from(layout.hidden)) {
+        for (slot, arg) in arguments.enumerate().take(4 - usize::from(layout.hidden)) {
             let slot = slot + usize::from(layout.hidden);
             let memory = Operand::memory(4, slot as u32 * 8);
             if let CallArgument::Value { ty, .. } = arg && floating(ty) {

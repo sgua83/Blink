@@ -1,0 +1,50 @@
+module bootstrap.call_layout;
+
+u32 padded(u32 size, u32 alignment) on cpu {
+    return (size + alignment - 1) & ~(alignment - 1);
+}
+extern "C" bool indirect(u32 size, u32 alignment) on cpu {
+    u32 bytes = padded(size, alignment);
+    return bytes != 0 && bytes != 1 && bytes != 2 && bytes != 4 && bytes != 8;
+}
+extern "C" ValueCopy copy_value(u64 start, u32 size, u32 alignment) on cpu {
+    if (!indirect(size, alignment)) { return ValueCopy(0u64, start, 0u64); }
+    u64 at = (start + 15u64) & ~15u64;
+    return ValueCopy(at, at + u64(padded(size, alignment)), 1u64);
+}
+extern "C" CallPlan plan(address context, u64 count, AbiType result, u32 flags,
+    cfn<AbiType,address,u64> argument) on cpu requires nonzero(argument) {
+    bool hidden = result.size != 0 && ((flags & 1) != 0 || indirect(result.size, result.alignment));
+    u64 slots = 0u64;
+    u64 index = 0u64;
+    while (index < count) {
+        AbiType value = argument(context, index);
+        if (value.value == 0u64 || value.size != 0) { slots += 1u64; }
+        index += 1u64;
+    }
+    if (hidden) { slots += 1u64; }
+    // Windows x64 owns four home slots even when fewer arguments are present.
+    if (slots < 4u64) { slots = 4u64; }
+    u64 bytes = (slots * 8u64 + 15u64) & ~15u64;
+    u64 result_at = 0u64;
+    if (hidden) {
+        result_at = bytes;
+        bytes += u64(padded(result.size, result.alignment));
+    }
+    u64 copies = bytes;
+    index = 0u64;
+    while (index < count) {
+        AbiType value = argument(context, index);
+        if (value.value != 0u64) {
+            bytes = copy_value(bytes, value.size, value.alignment).end;
+        }
+        index += 1u64;
+    }
+    u64 target = 0u64;
+    if ((flags & 2) != 0) {
+        bytes = (bytes + 7u64) & ~7u64;
+        target = bytes;
+        bytes += 8u64;
+    }
+    return CallPlan((bytes + 15u64) & ~15u64, result_at, copies, target, hidden ? 1u64 : 0u64);
+}
