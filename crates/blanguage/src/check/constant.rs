@@ -1,6 +1,6 @@
 //! 标量常量按实际类型与位宽求值；已知值直接成为既有 IR 常量。
 use super::*;
-use crate::builtin_types::ScalarBinaryOp;
+use crate::builtin_types::{ScalarBinaryOp, ScalarEncoding};
 use std::num::NonZeroU64;
 
 impl Builder<'_> {
@@ -260,32 +260,6 @@ enum FoldUnary {
     LogicalNot,
     BitNot,
     FloatNegate,
-}
-
-#[repr(u32)]
-enum ScalarKind {
-    Unsigned,
-    Signed,
-    Float,
-    Boolean,
-}
-
-#[repr(C)]
-struct ScalarEncoding {
-    kind: ScalarKind,
-    width: u32,
-}
-
-impl From<Scalar> for ScalarEncoding {
-    fn from(scalar: Scalar) -> Self {
-        let kind = match scalar {
-            Scalar::Bool => ScalarKind::Boolean,
-            Scalar::F32 | Scalar::F64 => ScalarKind::Float,
-            Scalar::I8 | Scalar::I16 | Scalar::I32 | Scalar::I64 => ScalarKind::Signed,
-            Scalar::U8 | Scalar::U16 | Scalar::U32 | Scalar::U64 => ScalarKind::Unsigned,
-        };
-        Self { kind, width: scalar.bit_width() }
-    }
 }
 
 #[repr(C)]

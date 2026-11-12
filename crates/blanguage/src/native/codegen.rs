@@ -530,22 +530,7 @@ impl Emitter<'_> {
                     let memory = self.data_memory(*binding, *index, *word);
                     self.write_scalar_address(*value, memory);
                 }
-                InstKind::Unary { dst, op, a } => {
-                    match op {
-                        UnaryOp::FloatNegate => {
-                            self.float_sign(*dst, *a, true);
-                        }
-                        UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => {
-                            self.integer_unary(*dst, *a, 0xf7, 3, None)
-                        }
-                        UnaryOp::LogicalNot => {
-                            // IR 布尔值已经规范为 0／1；其逻辑非就是翻转这一位。
-                            self.integer_unary(*dst, *a, 0x83, 6, Some(1))
-                        }
-                        UnaryOp::BitNot => self.integer_unary(*dst, *a, 0xf7, 2, None),
-                        UnaryOp::Bitcast => self.copy_scalar(self.location(*dst), self.location(*a), self.stage.registers[*dst]),
-                    };
-                }
+                InstKind::Unary { dst, op, a } => self.unary(*dst, *a, *op),
                 InstKind::Binary { dst, op, a, b } => match op {
                     BinaryOp::Compare(comparison) => self.compare(*dst, *a, *b, *comparison),
                     operation => self.binary(*dst, *a, *b, *operation),
@@ -565,10 +550,10 @@ impl Emitter<'_> {
                 InstKind::Cast { dst, src } => self.cast(*dst, *src),
                 InstKind::Math { dst, op, args } => {
                     let name = match op {
-                        MathOp::Sqrt => { self.float_sqrt(*dst, args[0]); None }
+                        MathOp::Sqrt => { self.float_math(*dst, args[0], true); None }
                         MathOp::Min => { self.float_binary(*dst, args[0], args[1], 0x5d); None }
                         MathOp::Max => { self.float_binary(*dst, args[0], args[1], 0x5f); None }
-                        MathOp::Abs => { self.float_sign(*dst, args[0], false); None }
+                        MathOp::Abs => { self.float_math(*dst, args[0], false); None }
                         MathOp::Sin => Some("sin"), MathOp::Cos => Some("cos"), MathOp::Floor => Some("floor"),
                         MathOp::Exp => Some("exp"), MathOp::Exp2 => Some("exp2"), MathOp::Log => Some("log"),
                         MathOp::Log2 => Some("log2"), MathOp::Pow => Some("pow"),

@@ -38,11 +38,6 @@ extern "C" TailRange append_literal(address image, u64 end, u64 bits, u32 width,
 // The field address refers to the four-byte displacement at offset in the image.
 extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu;
 
-// RAX holds the u64 source. Output has room for 49 bytes.
-extern "C" u64 unsigned_to_float(u8 target, u8 prefix, address output) on cpu;
-// XMM0 holds the source and XMM1 holds 2^63. Output has room for 34 bytes.
-extern "C" u64 float_to_unsigned(u8 target, u8 prefix, address output) on cpu;
-
 struct DivisionPlan {
     u32 magic;
     u8 shift;
@@ -84,5 +79,19 @@ extern "C" BinaryEncoding scalar_binary(MoveLocation dst, MoveLocation left, Mov
     BinaryOperation operation, address output) on cpu;
 extern "C" BinaryEncoding float_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
     u32 size, u8 opcode, address output) on cpu;
-extern "C" MoveEncoding cast_boolean(MoveLocation dst, MoveLocation src,
-    u32 size, bool signed, bool floating, address output) on cpu;
+
+// These identities follow the original IR UnaryOp, including its bit-copy operation.
+enum ValueUnaryOperation:u32 {
+    FloatNegate=0; SignedNegate=1; UnsignedNegate=2; LogicalNot=3; BitNot=4; Bitcast=5;
+};
+extern "C" bool bit_copy(ScalarEncoding from, ScalarEncoding into) on cpu;
+// Unary, math and selection receive 64 output bytes. Cast receives 80 bytes.
+// Cast's left literal is the original input; its right literal is f32 2^63.
+extern "C" MoveEncoding value_unary(MoveLocation dst, MoveLocation src, ScalarEncoding scalar,
+    ValueUnaryOperation operation, address output) on cpu;
+extern "C" MoveEncoding value_math(MoveLocation dst, MoveLocation src, u32 size,
+    bool sqrt, address output) on cpu;
+extern "C" BinaryEncoding value_cast(MoveLocation dst, MoveLocation src, ScalarEncoding from,
+    ScalarEncoding into, address output) on cpu;
+extern "C" BinaryEncoding value_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
+    MoveLocation right, u32 size, bool signed, address output) on cpu;

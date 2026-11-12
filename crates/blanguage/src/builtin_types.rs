@@ -107,3 +107,31 @@ impl From<BinaryOp> for ScalarBinaryOp {
         }
     }
 }
+
+// Shared bootstrap.scalar_fold::ScalarEncoding ABI for folding and native emission.
+#[repr(u32)]
+enum ScalarKind {
+    Unsigned,
+    Signed,
+    Float,
+    Boolean,
+}
+
+#[repr(C)]
+pub(crate) struct ScalarEncoding {
+    kind: ScalarKind,
+    width: u32,
+}
+
+impl From<Scalar> for ScalarEncoding {
+    fn from(scalar: Scalar) -> Self {
+        let kind = match scalar {
+            Scalar::Bool => ScalarKind::Boolean,
+            Scalar::F32 | Scalar::F64 => ScalarKind::Float,
+            Scalar::I8 | Scalar::I16 | Scalar::I32 | Scalar::I64 => ScalarKind::Signed,
+            Scalar::U8 | Scalar::U16 | Scalar::U32 | Scalar::U64 => ScalarKind::Unsigned,
+        };
+        Self { kind, width: scalar.bit_width() }
+    }
+}
+
