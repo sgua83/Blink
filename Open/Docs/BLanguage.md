@@ -581,7 +581,7 @@ SDK／ReductionKernel::ir_json查询同一本次实际内核，分区末尾、in
 
 JSON的reason与锚点kind均为unary_constant_fold；operation按原UnaryOp拼写，scalar按原Scalar拼写；input_bits／result_bits是0x加十六位十六进制数字的字符串，Scalar决定实际有效位宽。component_index_base为0，component_index／component_count描述本次平坦逻辑分量，不能当作SSA寄存器或机器位置。原单源trigger()及锚点syntax()／origin()／instance()借用expression的已有事实；没有语法材料时仍返回空，不猜补来源。
 
-实际运算包括FloatNegate、SignedNegate、UnsignedNegate、LogicalNot与BitNot，仍消费原位宽截断、环绕和浮点符号位规则，不重新解释源码或另作求值。单目加号只交回已验证原值，没有新运算事件。Unary(-,Number)由negative_number完成负字面量定型，特别是i32／i64最小值，不虚构同型正输入或普通SignedNegate；其原Constant及SourceSite、源码快照保留最终类型、位模式与原表达式。
+实际运算包括FloatNegate、SignedNegate、UnsignedNegate、LogicalNot与BitNot，仍消费原位宽截断、环绕和浮点符号位规则，不重新解释源码或另作求值。单目加号与负号共用原数值／矩阵类型判定，随后只交回已验证原值，没有新运算事件。Unary(-,Number)由negative_number完成负字面量定型，特别是i32／i64最小值，不虚构同型正输入或普通SignedNegate；其原Constant及SourceSite、源码快照保留最终类型、位模式与原表达式。
 
 后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；阶段Literal的值IR接收沿后文交接，形状／变体编号仍各有来源缺口；不能把临时Builder中的材料当作最终能力。
 
@@ -1302,6 +1302,8 @@ match (next(input)) {
 错误返回经过原返回点，本地拥有资源按真实作用域释放，借用仍归调用者。write／inout按声明的完整或条件初始化合同交还输出，条件输出见“条件输出初始化”；Err本身不取消输出义务。已发生的inout／外部效果保持，不自动回滚；GPU工作及存储保持到真实消费者完成。完整失败资源阶段、异步／远端与运行库错误传播仍待实现。
 
 ### 表达式求值与提前退出
+
+一元正号`+value`和负号`-value`接收数值标量、数值向量及矩阵，共用同一类型规则；bool、记录、数组、变体、资源和地址／函数／不透明身份不是数值操作数。正号保留实际类型和全部位模式，交回已求值原值，不隐式转换或增加复制；操作数只求值一次。负号沿原位宽、整数回绕和浮点符号位规则；负整数字面量按其最终有符号范围定型。逻辑非`!`接收bool，位非`~`接收整数。普通表达式与函数值声明中的条件共用这些类型规则。
 
 try 可以嵌套在普通 CPU／compute／GPU 函数的运算、数值转换、记录／数组／Result构造、普通或资源实参、位置索引、赋值右侧、条件与循环边界中。操作数和实参仍按原从左到右顺序求值，选择与短路只执行实际分支；try 一旦交付当前函数的Err，当前路径就没有继续值，外层不再读取位置、生成算术、分配资源、求后续实参或执行调用／写入。例如：
 

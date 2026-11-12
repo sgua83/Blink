@@ -97,17 +97,11 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
         a.components.len().max(b.components.len())), Binary::Numeric { operands, comparison, operation }))
 }
 pub(super) fn unary(op: &str, ty: &Ty, source: &Source, span: Span) -> Result<Option<UnaryOp>> {
-    if op == "+" {
-        if ty.components.is_empty() || ty.is_c_function() || ty.is_handle() || ty.is_address() || ty.array.is_some()
-            || ty.enumeration || ty.has_variants() {
-            return source.fail(span, "B146", "数值一元运算需要数值类型");
-        }
-        return Ok(None);
-    }
     if op == "!" { same(&Ty::scalar(Scalar::Bool), ty, source, span)?; }
-    else if !ty.is_numeric() && !(op == "-" && ty.matrix_shape().is_some()) {
+    else if !ty.is_numeric() && !(matches!(op, "+" | "-") && ty.matrix_shape().is_some()) {
         return source.fail(span, "B146", "数值一元运算需要数值类型");
     }
+    if op == "+" { return Ok(None); }
     let scalar = ty.components[0].0;
     let operation = match op {
         "-" if scalar.is_float() => UnaryOp::FloatNegate,
