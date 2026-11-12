@@ -388,3 +388,65 @@ extern "C" u64 scalar_cast(CastEmission input, address body) on cpu {
     return words_three(body, 0u64, cast_opcode(input.from, input.to, source, target),
         input.result_type, input.result, input.value);
 }
+
+struct SignedMagnitude { u64 end; u32 value; u32 sign; u32 next; };
+
+SignedMagnitude emit_magnitude(address body, u64 at, DivisionEmission input, u32 value, u32 next) on cpu {
+    u32 sign = next;
+    u32 flipped = next + 1;
+    u32 magnitude = next + 2;
+    u32 bits = next + 3;
+    u32 type = input.integer_type;
+    u64 end = words_four(body, at, 195, type, sign, value, input.sign_shift);
+    end = words_four(body, end, 198, type, flipped, value, sign);
+    end = words_four(body, end, 130, type, magnitude, flipped, sign);
+    end = words_three(body, end, 124, input.magnitude_type, bits, magnitude);
+    return SignedMagnitude(end, bits, sign, next + 4);
+}
+
+DivisionWords emit_signed_division_result(address body, DivisionWords cursor, DivisionEmission input,
+    SignedMagnitude numerator, SignedMagnitude denominator, u32 result, bool quotient) on cpu {
+    u32 raw = cursor.next;
+    u32 signed = raw + 1;
+    u32 next = signed + 1;
+    u32 type = input.integer_type;
+    u64 at = words_four(body, u64(cursor.body), quotient ? 134 : 137,
+        input.magnitude_type, raw, numerator.value, denominator.value);
+    at = words_three(body, at, 124, type, signed, raw);
+    u32 sign = numerator.sign;
+    if (quotient) {
+        sign = next;
+        next += 1;
+        at = words_four(body, at, 198, type, sign, numerator.sign, denominator.sign);
+    }
+    u32 flipped = next;
+    at = words_four(body, at, 198, type, flipped, signed, sign);
+    at = words_four(body, at, 130, type, result, flipped, sign);
+    return DivisionWords(u32(at), next + 1);
+}
+
+extern "C" DivisionWords integer_division(DivisionEmission input, address body) on cpu {
+    if (input.sign_shift == 0) {
+        u64 at = 0u64;
+        if (input.quotient != 0) {
+            at = words_four(body, at, 134, input.integer_type, input.quotient, input.numerator, input.denominator);
+        }
+        if (input.remainder != 0) {
+            at = words_four(body, at, 137, input.integer_type, input.remainder, input.numerator, input.denominator);
+        }
+        return DivisionWords(u32(at), input.next);
+    }
+
+    // Unsigned magnitudes represent signed MIN exactly. Restore quotient and
+    // remainder signs separately so the remainder follows the numerator.
+    SignedMagnitude numerator = emit_magnitude(body, 0u64, input, input.numerator, input.next);
+    SignedMagnitude denominator = emit_magnitude(body, numerator.end, input, input.denominator, numerator.next);
+    DivisionWords cursor = DivisionWords(u32(denominator.end), denominator.next);
+    if (input.quotient != 0) {
+        cursor = emit_signed_division_result(body, cursor, input, numerator, denominator, input.quotient, true);
+    }
+    if (input.remainder != 0) {
+        cursor = emit_signed_division_result(body, cursor, input, numerator, denominator, input.remainder, false);
+    }
+    return cursor;
+}

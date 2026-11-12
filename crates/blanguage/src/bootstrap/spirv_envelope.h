@@ -91,3 +91,20 @@ extern "C" BinaryWords scalar_binary(BinaryEmission input, address body, address
 // Zero and one are the original constant IDs for a conversion involving bool.
 // Storage has room for six body words.
 extern "C" u64 scalar_cast(CastEmission input, address body) on cpu;
+
+struct DivisionEmission {
+    u32 integer_type;
+    u32 magnitude_type;
+    u32 numerator;
+    u32 denominator;
+    u32 quotient;
+    u32 remainder;
+    u32 sign_shift;
+    u32 next;
+};
+struct DivisionWords { u32 body; u32 next; };
+
+// A zero result ID denotes the unused quotient or remainder. A zero sign-shift
+// ID denotes unsigned inputs. The caller supplies the original next ID and
+// holds ten (unsigned) or eighty-one (signed) output words.
+extern "C" DivisionWords integer_division(DivisionEmission input, address body) on cpu;

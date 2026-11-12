@@ -171,6 +171,24 @@ struct CastEmission {
     one: u32,
 }
 
+#[repr(C)]
+struct DivisionEmission {
+    integer_type: u32,
+    magnitude_type: u32,
+    numerator: u32,
+    denominator: u32,
+    quotient: u32,
+    remainder: u32,
+    sign_shift: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct DivisionWords {
+    body: u32,
+    next: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::envelope_capacity"]
     fn envelope_capacity() -> u64;
@@ -195,6 +213,8 @@ unsafe extern "C" {
     fn scalar_binary(input: BinaryEmission, body: *mut u32, decorations: *mut u32) -> BinaryWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_cast"]
     fn scalar_cast(input: CastEmission, body: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::integer_division"]
+    fn integer_division(input: DivisionEmission, body: *mut u32) -> DivisionWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
     fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
@@ -388,48 +408,27 @@ impl Emitter<'_> {
     fn ty(&self, r: Reg) -> u32 {
         self.types[&self.stage.registers[r]]
     }
-    fn signed_magnitude(&mut self, value: u32, scalar: Scalar) -> (u32, u32) {
-        let i = self.types[&scalar];
-        let unsigned = Self::raw_scalar(scalar);
-        let shift = self.constant(scalar, scalar.size() * 8 - 1);
-        let sign = self.id();
-        self.emit(195, &[i, sign, value, shift]);
-        let flipped = self.id();
-        self.emit(198, &[i, flipped, value, sign]);
-        let magnitude = self.id();
-        self.emit(130, &[i, magnitude, flipped, sign]);
-        let bits = self.id();
-        self.emit(124, &[self.types[&unsigned], bits, magnitude]);
-        (bits, sign)
-    }
-    fn signed_divide(&mut self, result: IntegerDivisionResult, src: Reg, divisor: u32) {
+    fn integer_divide(&mut self, result: IntegerDivisionResult, src: Reg, divisor: IntegerDivisor) {
         let scalar = self.stage.registers[src];
-        let unsigned = Self::raw_scalar(scalar);
-        let (numerator, nsign) = self.signed_magnitude(self.value(src), scalar);
-        let (denominator, dsign) = self.signed_magnitude(divisor, scalar);
-        let i = self.types[&scalar];
-        for (operator, dst) in result.outputs() {
-            let raw = self.id();
-            self.emit(
-                if operator == IntegerDivisionOp::Quotient {
-                    134
-                } else {
-                    137
-                },
-                &[self.types[&unsigned], raw, numerator, denominator],
-            );
-            let signed = self.id();
-            self.emit(124, &[i, signed, raw]);
-            let sign = if operator == IntegerDivisionOp::Quotient {
-                let sign = self.id();
-                self.emit(198, &[i, sign, nsign, dsign]);
-                sign
-            } else {
-                nsign
-            };
-            let flipped = self.id();
-            self.emit(198, &[i, flipped, signed, sign]);
-            self.emit(130, &[i, self.value(dst), flipped, sign]);
+        let denominator = match divisor {
+            IntegerDivisor::Constant(divisor) => self.constant_bits(scalar, divisor.get()),
+            IntegerDivisor::Value(divisor) => self.value(divisor),
+        };
+        let sign_shift = if scalar.is_signed() { self.constant(scalar, scalar.bit_width() - 1) } else { 0 };
+        let input = DivisionEmission {
+            integer_type: self.types[&scalar],
+            magnitude_type: self.types[&Self::raw_scalar(scalar)],
+            numerator: self.value(src), denominator,
+            quotient: result.quotient().map_or(0, |r| self.value(r)),
+            remainder: result.remainder().map_or(0, |r| self.value(r)),
+            sign_shift, next: self.next,
+        };
+        let at = self.body.len();
+        self.body.reserve(if sign_shift == 0 { 10 } else { 81 });
+        unsafe {
+            let emitted = integer_division(input, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.body as usize);
+            self.next = emitted.next;
         }
     }
     fn address(&mut self, unit: Scalar, binding: usize, index: Reg, word: u32) -> u32 {
@@ -773,32 +772,8 @@ impl Emitter<'_> {
                     };
                     self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*a)]);
                 }
-                InstKind::IntegerDivide {
-                    result,
-                    src,
-                    divisor,
-                } => {
-                    let scalar = self.stage.registers[*src];
-                    let divisor = match divisor {
-                        IntegerDivisor::Constant(divisor) => self.constant_bits(scalar, divisor.get()),
-                        IntegerDivisor::Value(divisor) => self.value(*divisor),
-                    };
-                    if scalar.is_signed() {
-                        // Vulkan 未启用 maintenance8 时，负操作数的 OpSRem 没有定义。
-                        // 常量与动态除数共用幅值降低，保持语言的带符号除余规则。
-                        self.signed_divide(*result, *src, divisor);
-                        continue;
-                    }
-                    for (op, dst) in result.outputs() {
-                        let opcode = match op {
-                            IntegerDivisionOp::Quotient => 134,
-                            IntegerDivisionOp::Remainder => 137,
-                        };
-                        self.emit(
-                            opcode,
-                            &[self.ty(dst), self.value(dst), self.value(*src), divisor],
-                        );
-                    }
+                InstKind::IntegerDivide { result, src, divisor } => {
+                    self.integer_divide(*result, *src, *divisor);
                 }
                 InstKind::Binary {
                     dst,
