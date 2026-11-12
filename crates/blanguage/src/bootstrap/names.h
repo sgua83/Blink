@@ -16,5 +16,8 @@ struct FunctionName {
 
 extern "C" void pair_functions(address names, u64 declarations, u64 implementations, address output) on cpu;
 
+// The active path and key are borrowed from the synchronous evaluation calls.
+extern "C" bool dependency_active(address path, u64 count, NameBytes key) on cpu;
+
 void sort_rows<T>(address rows, u64 count, address context,
     cfn<bool,address,address,address> less) on cpu requires nonzero(less);

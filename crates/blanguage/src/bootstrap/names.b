@@ -1,4 +1,12 @@
 module bootstrap.names;
+extern "C" bool dependency_active(address path, u64 count, NameBytes key) on cpu {
+    u64 at = count;
+    while (at != 0u64) {
+        at -= 1u64;
+        if (equal(import_at(path, at), key)) { return true; }
+    }
+    return false;
+}
 NameBytes empty() on cpu {return NameBytes(unsafe_address(0u64),0u64);}
 u8 byte_at(NameBytes value,u64 at) on cpu {return unsafe_position<u8>(unsafe_address(address_bits(value.bytes)+at));}
 NameBytes import_at(address imports,u64 at) on cpu {return unsafe_position<NameBytes>(row_at<NameBytes>(imports,at));}

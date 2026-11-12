@@ -1,6 +1,6 @@
 //! B chooses names and visibility; the original declaration maps keep their storage.
 use crate::{frontend::NameResolution, syntax::{List, wire::FunctionNode}};
-use std::ffi::c_void;
+use std::{cell::RefCell, ffi::c_void};
 #[derive(Clone,Copy)]
 #[repr(C)]
 struct Bytes { bytes:*const u8, length:u64 }
@@ -21,6 +21,8 @@ struct Hit { name:Bytes, owner:Bytes, public:u64, present:u64 }
 struct Resolution { name:Bytes, count:u64 }
 pub(crate) struct Declaration<'a> { pub name:&'a str, pub owner:&'a str, pub public:bool }
 unsafe extern "C" {
+    #[link_name = "bootstrap.names::dependency_active"]
+    fn dependency_active(path: *const Bytes, count: u64, key: Bytes) -> bool;
     #[link_name = "bootstrap.names::order_imports"]
     fn order_imports(names: *mut Bytes, count: u64) -> u64;
     #[link_name = "bootstrap.names::pair_functions"]
@@ -28,6 +30,35 @@ unsafe extern "C" {
     #[link_name="bootstrap.names::resolve"]
     fn choose(name:Bytes,module:Bytes,imports:*const Bytes,count:u64,candidate:*mut u8,context:*const c_void,
         lookup:unsafe extern "C" fn(*const c_void,Bytes)->Hit)->Resolution;
+}
+
+#[derive(Default)]
+pub(crate) struct ActiveDependencies {
+    path: RefCell<Vec<Bytes>>,
+}
+
+struct DependencyScope<'a>(&'a ActiveDependencies);
+
+impl Drop for DependencyScope<'_> {
+    fn drop(&mut self) {
+        self.0.path.borrow_mut().pop();
+    }
+}
+
+impl ActiveDependencies {
+    pub(crate) fn evaluate<T>(&self, key: &str, evaluate: impl FnOnce() -> T) -> Option<T> {
+        let key = Bytes::new(key);
+        {
+            let path = self.path.borrow();
+            if unsafe { dependency_active(path.as_ptr(), path.len() as u64, key) } {
+                return None;
+            }
+        }
+        self.path.borrow_mut().push(key);
+        // The key stays borrowed through this call; remove its descriptor before returning or unwinding.
+        let _scope = DependencyScope(self);
+        Some(evaluate())
+    }
 }
 unsafe extern "C" fn lookup<'a,F:Fn(&str)->Option<Declaration<'a>>>(context:*const c_void,name:Bytes)->Hit {
     let lookup=unsafe{&*context.cast::<F>()};

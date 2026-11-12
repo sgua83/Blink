@@ -95,7 +95,7 @@ pub(crate) struct Declarations {
 pub(crate) struct World {
     pub(crate) declarations: Arc<Declarations>,
     pub(crate) worker: compiler::Worker,
-    pub(crate) evaluating_constants: RefCell<BTreeSet<String>>,
+    pub(crate) evaluating_constants: crate::names::ActiveDependencies,
     pub(crate) build_declarations: Option<RefCell<BTreeSet<build::Declaration>>>,
 }
 impl std::ops::Deref for World {
@@ -104,7 +104,7 @@ impl std::ops::Deref for World {
 }
 impl World {
     pub(crate) fn new(declarations: Arc<Declarations>, worker: compiler::Worker) -> Self {
-        Self { declarations, worker, evaluating_constants: RefCell::new(BTreeSet::new()), build_declarations: None }
+        Self { declarations, worker, evaluating_constants: crate::names::ActiveDependencies::default(), build_declarations: None }
     }
     pub(crate) fn resolve(&self, name: &str, module: &str, imports: &[String], functions: bool) -> NameResolution {
         if let Some(inputs) = &self.build_declarations {

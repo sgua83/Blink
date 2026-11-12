@@ -128,72 +128,68 @@ pub(super) fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty
         }
         return Ok(constant.value.clone());
     }
-    if !world.evaluating_constants.borrow_mut().insert(key.into()) {
-        return definition.source.fail(
-            definition.function.span(),
-            "B160",
-            format!("编译期值与类型递归依赖 {key}"),
-        );
-    }
-    let parent_inputs = world.build_declarations.as_ref().map(|inputs| inputs.take());
-    let result = (|| {
-        let instance = crate::generics::instantiate(world, key, definition, Vec::new(), &[])?;
-        let ty=instance.bindings.type_name(world,&definition.function.result(),
-            (&definition.source,&definition.module,&definition.imports),definition.function.span())?;
-        if ty.dataset || ty.tile || ty.view || ty.name == "void" || ty.is_never() {
-            return definition.source.fail(
-                definition.function.span(),
-                "B234",
-                "const 需要普通值类型，不能持有资源或 void",
-            );
+    world.evaluating_constants.evaluate(key, || {
+        let parent_inputs = world.build_declarations.as_ref().map(|inputs| inputs.take());
+        let result = (|| {
+            let instance = crate::generics::instantiate(world, key, definition, Vec::new(), &[])?;
+            let ty=instance.bindings.type_name(world,&definition.function.result(),
+                (&definition.source,&definition.module,&definition.imports),definition.function.span())?;
+            if ty.dataset || ty.tile || ty.view || ty.name == "void" || ty.is_never() {
+                return definition.source.fail(
+                    definition.function.span(),
+                    "B234",
+                    "const 需要普通值类型，不能持有资源或 void",
+                );
+            }
+            let context = constant_context(key);
+            let scope = LexicalScope::Function(instance.clone());
+            let (source_definition, source_context) = definition.syntax_context(Some(key));
+            let mut builder = Builder::from_checked(world, &scope, &context, 0,
+                source_definition, source_context, BTreeSet::new());
+            builder.in_function = true;
+            builder.calls.extend_from_slice(calls);
+            builder.calls.push(key.into());
+            let body = definition.function.body().unwrap();
+            let (returned, _) = builder.function_body(&instance, &body)?;
+            let value = builder.ordinary_return(returned, definition.function.span())?.unwrap();
+            if value.ty.contains_views()
+                || value.constant.is_none()
+                || builder
+                    .code
+                    .iter()
+                    .any(|inst| !matches!(&(inst).kind, InstKind::Constant(..)))
+            {
+                return definition.source.fail(
+                    definition.function.span(),
+                    "B234",
+                    "const 初始化尚不能完全在编译期求值；不允许资源、运行期运算或控制流",
+                );
+            }
+            let operations = evaluation_operations(builder.code.iter());
+            let origin = (!operations.is_empty()).then(|| Arc::new(GeneratedOrigin {
+                reason: GenerationReason::ModuleConstantEvaluation,
+                trigger: Some(GenerationAnchor::ModuleConstantEvaluation {
+                    definition: definition.source_origin().map(Arc::new), constant: Arc::from(key), operations,
+                }),
+            }));
+            Ok((value.ty, value.constant.unwrap(), origin))
+        })();
+        let mut used = BTreeSet::new();
+        if let (Some(inputs), Some(parent)) = (&world.build_declarations, parent_inputs) {
+            used = inputs.replace(parent);
         }
-        let context = constant_context(key);
-        let scope = LexicalScope::Function(instance.clone());
-        let (source_definition, source_context) = definition.syntax_context(Some(key));
-        let mut builder = Builder::from_checked(world, &scope, &context, 0,
-            source_definition, source_context, BTreeSet::new());
-        builder.in_function = true;
-        builder.calls.extend_from_slice(calls);
-        builder.calls.push(key.into());
-        let body = definition.function.body().unwrap();
-        let (returned, _) = builder.function_body(&instance, &body)?;
-        let value = builder.ordinary_return(returned, definition.function.span())?.unwrap();
-        if value.ty.contains_views()
-            || value.constant.is_none()
-            || builder
-                .code
-                .iter()
-                .any(|inst| !matches!(&(inst).kind, InstKind::Constant(..)))
-        {
-            return definition.source.fail(
-                definition.function.span(),
-                "B234",
-                "const 初始化尚不能完全在编译期求值；不允许资源、运行期运算或控制流",
-            );
-        }
-        let operations = evaluation_operations(builder.code.iter());
-        let origin = (!operations.is_empty()).then(|| Arc::new(GeneratedOrigin {
-            reason: GenerationReason::ModuleConstantEvaluation,
-            trigger: Some(GenerationAnchor::ModuleConstantEvaluation {
-                definition: definition.source_origin().map(Arc::new), constant: Arc::from(key), operations,
-            }),
+        let value = result?;
+        let constant = definition.constant.get_or_init(|| Arc::new(crate::frontend::EvaluatedConstant {
+            value,
+            inputs: used,
         }));
-        Ok((value.ty, value.constant.unwrap(), origin))
-    })();
-    world.evaluating_constants.borrow_mut().remove(key);
-    let mut used = BTreeSet::new();
-    if let (Some(inputs), Some(parent)) = (&world.build_declarations, parent_inputs) {
-        used = inputs.replace(parent);
-    }
-    let value = result?;
-    let constant = definition.constant.get_or_init(|| Arc::new(crate::frontend::EvaluatedConstant {
-        value,
-        inputs: used,
-    }));
-    if let Some(inputs) = &world.build_declarations {
-        inputs.borrow_mut().insert(crate::build::Declaration::Constant(key.into()));
-    }
-    Ok(constant.value.clone())
+        if let Some(inputs) = &world.build_declarations {
+            inputs.borrow_mut().insert(crate::build::Declaration::Constant(key.into()));
+        }
+        Ok(constant.value.clone())
+    }).unwrap_or_else(|| definition.source.fail(
+        definition.function.span(), "B160", format!("编译期值与类型递归依赖 {key}"),
+    ))
 }
 impl World {
 
@@ -404,10 +400,7 @@ fn integer_expression(world:&World,key:&str,source:&Source,module:&str,imports:&
 fn integer_value(world:&World,key:&str,source:&Source,module:&str,imports:&[String],representation:&Ty,
     span:Span,bindings:&Arc<crate::generics::Bindings>,diagnostic:(&'static str,&'static str),
     read:impl FnOnce(&mut Builder<'_>)->Result<Option<Value>>)->Result<u32> {
-    if !world.evaluating_constants.borrow_mut().insert(key.into()){
-        return source.fail(span,"B160",format!("编译期表达式与类型递归依赖 {key}"));
-    }
-    let result=(||{
+    world.evaluating_constants.evaluate(key, || {
         let context=constant_context(key);
         let mut builder=Builder::expression(world,&context,source,module,imports,bindings.clone(),span);
         builder.in_function=true;
@@ -418,9 +411,7 @@ fn integer_value(world:&World,key:&str,source:&Source,module:&str,imports:&[Stri
             return source.fail(span,diagnostic.0,diagnostic.1);
         }
         Ok(value.constant.unwrap()[0]as u32)
-    })();
-    world.evaluating_constants.borrow_mut().remove(key);
-    result
+    }).unwrap_or_else(|| source.fail(span,"B160",format!("编译期表达式与类型递归依赖 {key}")))
 }
 
 // The runtime/SDK schema is kept as data. This reader borrows its actual nodes;
