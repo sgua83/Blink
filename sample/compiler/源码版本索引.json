@@ -268,7 +268,7 @@
     },
     {
       "path": "crates/blanguage/src/build/inputs.rs",
-      "sha256": "7477d3ae9ccc1961480714faa2808599667dfd2ac8b8d6ff6f961189016c65e9"
+      "sha256": "b12fb2c58add2b7c2df6b7eb3969465622b9f1bca1a2271f4afb50d30e41f295"
     },
     {
       "path": "crates/blanguage/src/build/mod.rs",

@@ -21,16 +21,20 @@ pub(crate) struct Inputs {
 }
 impl Inputs {
     pub(super) fn header(&mut self, path: &Path) -> ast::Result<Arc<syntax::Module>> {
+        Ok(self.source_input(path)?.interface.clone())
+    }
+
+    fn source_input(&mut self, path: &Path) -> ast::Result<&mut SourceInput> {
         use std::collections::btree_map::Entry;
-        let input = match self.sources.entry(crate::source_path::with_extension(path, u16::from(b'h'))) {
+        Ok(match self.sources.entry(crate::source_path::with_extension(path, u16::from(b'h'))) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let interface = Arc::new(parser::parse(crate::read(entry.key())?)?);
                 entry.insert(SourceInput { interface, body: None })
             }
-        };
-        Ok(input.interface.clone())
+        })
     }
+
     pub(super) fn capture(
         &mut self, path: &Path, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
     ) -> ast::Result<()> {
@@ -41,16 +45,20 @@ impl Inputs {
         &mut self, path: &Path, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
         visited: &mut BTreeSet<String>,
     ) -> ast::Result<()> {
-        let interface = self.header(path)?;
+        let SourceInput { interface, body } = self.source_input(path)?;
+        let imports = match body {
+            Some(body) => &body.imports,
+            None => {
+                let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
+                let implementation = crate::read_implementation(&implementation_path)?;
+                let imports = crate::names::module_imports(interface, implementation.as_deref());
+                &body.insert(CapturedBody { implementation, imports }).imports
+            }
+        };
+        // Different paths can declare the same module. Only import traversal
+        // is deduplicated by module name; load still consumes each opened path.
         if !visited.insert(interface.name().to_owned()) { return Ok(()); }
-        let input = self.sources.get_mut(&crate::source_path::with_extension(path, u16::from(b'h'))).unwrap();
-        if input.body.is_none() {
-            let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
-            let implementation = crate::read_implementation(&implementation_path)?;
-            let imports = crate::names::module_imports(&interface, implementation.as_deref());
-            input.body = Some(CapturedBody { implementation, imports });
-        }
-        let imports = input.body.as_ref().unwrap().imports.clone();
+        let imports = imports.clone();
         self.capture_imports(&imports, root, providers, visited)
     }
 
