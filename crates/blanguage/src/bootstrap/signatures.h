@@ -27,5 +27,8 @@ struct CfnParameter {
 extern "C" CfnParameter cfn_parameter(SignatureNode formal) on cpu;
 
 extern "C" bool type_mentions(SignatureNode type, address bytes, u64 length) on cpu;
-extern "C" bool argument_names_const(SignatureNode argument, address bytes, u64 length) on cpu;
-extern "C" bool resource_names_shape(SignatureNode type, address bytes, u64 length) on cpu;
+// The caller keeps the original source nodes and resolved const values live.
+extern "C" bool infer_const_count(SignatureNode type, address name, u64 length, u32 value,
+    inout Optional<u32> inferred) on cpu;
+extern "C" Optional<u32> infer_const_arguments(SignatureNode type, address name, u64 length,
+    u64 first, address values, u64 count, inout Optional<u32> inferred) on cpu;

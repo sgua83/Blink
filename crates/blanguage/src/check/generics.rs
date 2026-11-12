@@ -1,6 +1,7 @@
 //! 从值、位置及资源的名义类型参数推导；原访问权限与资源所有权保持。
 use super::*;
 use cooperative::Argument;
+use crate::syntax::wire::Optional;
 pub(crate) struct Actual<'a> {
     pub ty: Option<std::borrow::Cow<'a,Ty>>,
     pub count: Option<u32>,
@@ -224,19 +225,20 @@ pub(crate) fn specialize(
                 .shape(&Some(shape), source, span, module, imports)?
                 .unwrap()
         } else {
-            let mut inferred = None;
+            let mut inferred = Optional { present: 0, value: 0 };
             for (formal, actual) in f.params().iter().zip(actuals) {
-                if formal.ty().names_shape(parameter.name())
-                    && let Some(value) = actual.count
+                let formal = formal.ty();
+                if let Some(value) = actual.count
+                    && !formal.infer_const_count(parameter.name(), value, &mut inferred)
                 {
-                    merge_value(&mut inferred, value, source, span)?;
+                    return source.fail(span, "B235", "const 参数的重复静态推导不一致");
                 }
                 if let Some(actual) = actual.ty.as_deref() {
                     infer_value(
                         world,
-                        &formal.ty(),
+                        &formal,
                         actual,
-                        &parameter.name(),
+                        parameter.name(),
                         callee,
                         source,
                         span,
@@ -244,7 +246,7 @@ pub(crate) fn specialize(
                     )?;
                 }
             }
-            inferred.ok_or_else(|| Diagnostic {
+            (inferred.present != 0).then_some(inferred.value).ok_or_else(|| Diagnostic {
                 source: source.clone(),
                 span,
                 code: "B235",
@@ -264,13 +266,6 @@ pub(crate) fn specialize(
         values.push(value);
     }
     crate::generics::instantiate(world, key, callee, types, &values)
-}
-fn merge_value(inferred: &mut Option<u32>, value: u32, source: &Source, span: Span) -> Result<()> {
-    if inferred.is_some_and(|previous| previous != value) {
-        return source.fail(span, "B235", "const 参数的重复静态推导不一致");
-    }
-    *inferred = Some(value);
-    Ok(())
 }
 fn for_each_cfn_type(
     formal: &crate::syntax::Type,
@@ -449,17 +444,14 @@ fn infer_value(
     callee: &Definition,
     source: &Source,
     span: Span,
-    inferred: &mut Option<u32>,
+    inferred: &mut Optional<u32>,
 ) -> Result<()> {
     if formal.dataset()
         && actual.dataset.is_some()
-        && formal.count().is_some_and(|shape|matches!(shape.kind(),crate::syntax::ShapeKind::Constant(value)if value==name))
-        && let Some(value) = actual.values.first()
+        && let Some(&value) = actual.values.first()
+        && !formal.infer_const_count(name, value, inferred)
     {
-        if inferred.is_some_and(|before| before != *value) {
-            return source.fail(span, "B235", "dataset 的重复长度推导不一致");
-        }
-        *inferred = Some(*value);
+        return source.fail(span, "B235", "dataset 的重复长度推导不一致");
     }
     let resolved;
     let actual = if formal.dataset() && let Some(reference)=actual.dataset.as_deref() {
@@ -523,12 +515,8 @@ fn infer_value(
                 inferred,
             )?;
         }
-        if formal.arguments().at(1).names_value(name) {
-            let value = actual.values[0];
-            if inferred.is_some_and(|previous| previous != value) {
-                return source.fail(span, "B235", "array 的重复长度推导不一致");
-            }
-            *inferred = Some(value);
+        if formal.infer_const_arguments(name, 1, &actual.values, inferred).is_some() {
+            return source.fail(span, "B235", "array 的重复长度推导不一致");
         }
         return Ok(());
     }
@@ -550,23 +538,11 @@ fn infer_value(
             infer_value(world, &arg, ty, name, callee, source, span, inferred)?;
         }
     }
-    for (arg, value) in formal.arguments().slice(actual.arguments.len()..)
-        .iter()
-        .zip(&actual.values)
-    {
-        if arg.names_value(name) {
-            if let Some(previous) = *inferred {
-                if previous != *value {
-                    return source.fail(
-                        span,
-                        "B235",
-                        format!("const 参数 {name} 的名义实参不一致：{previous} 与 {value}"),
-                    );
-                }
-            } else {
-                *inferred = Some(*value);
-            }
-        }
+    if let Some(value) = formal.infer_const_arguments(name, actual.arguments.len(), &actual.values, inferred) {
+        let previous = inferred.value;
+        return source.fail(
+            span, "B235", format!("const 参数 {name} 的名义实参不一致：{previous} 与 {value}"),
+        );
     }
     Ok(())
 }

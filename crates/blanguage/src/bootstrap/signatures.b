@@ -331,14 +331,9 @@ bool value_argument_is_name(StorageView store, u64 offset, NameBytes name) on cp
     }
 }
 
-extern "C" bool argument_names_const(SignatureNode argument, address bytes, u64 length) on cpu {
-    return value_argument_is_name(argument.storage, argument.offset, NameBytes(bytes, length));
-}
-
-extern "C" bool resource_names_shape(SignatureNode type, address bytes, u64 length) on cpu {
+bool resource_names_shape(SignatureNode type, NameBytes name) on cpu {
     StorageView store = type.storage;
     TypeNode outer = read_node<TypeNode>(store, type.offset);
-    NameBytes name = NameBytes(bytes, length);
     if (outer.dataset != 0) {
         return outer.count.present != 0 && shape_is_name(store, outer.count.value, name);
     }
@@ -362,4 +357,33 @@ extern "C" bool resource_names_shape(SignatureNode type, address bytes, u64 leng
         }
         ArgumentNode::Value(shape) { return false; }
     }
+}
+
+bool merge_const(u32 value, inout Optional<u32> inferred) on cpu {
+    if (inferred.present != 0) { return inferred.value == value; }
+    inferred = Optional<u32>(1, value);
+    return true;
+}
+
+extern "C" bool infer_const_count(SignatureNode type, address name, u64 length, u32 value,
+    inout Optional<u32> inferred) on cpu {
+    if (!resource_names_shape(type, NameBytes(name, length))) { return true; }
+    return merge_const(value, inferred);
+}
+
+extern "C" Optional<u32> infer_const_arguments(SignatureNode type, address name, u64 length,
+    u64 first, address values, u64 count, inout Optional<u32> inferred) on cpu {
+    StorageView store = type.storage;
+    Slice arguments = read_node<TypeNode>(store, type.offset).arguments;
+    NameBytes parameter = NameBytes(name, length);
+    u64 index = 0u64;
+    while (index < count) {
+        if (value_argument_is_name(store, child_at(store, arguments, first + index), parameter)) {
+            address unit = unsafe_address(address_bits(values) + index * size_of<u32>());
+            u32 value = unsafe_position<u32>(unit);
+            if (!merge_const(value, inferred)) { return Optional<u32>(1, value); }
+        }
+        index += 1u64;
+    }
+    return Optional<u32>(0, 0);
 }

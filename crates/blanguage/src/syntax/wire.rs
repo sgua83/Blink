@@ -303,10 +303,15 @@ pub struct CfnParameter {
 unsafe extern "C" {
     #[link_name = "bootstrap.signatures::type_mentions"]
     pub fn type_mentions(ty: SignatureNode, name: *const u8, length: u64) -> bool;
-    #[link_name = "bootstrap.signatures::argument_names_const"]
-    pub fn argument_names_const(argument: SignatureNode, name: *const u8, length: u64) -> bool;
-    #[link_name = "bootstrap.signatures::resource_names_shape"]
-    pub fn resource_names_shape(ty: SignatureNode, name: *const u8, length: u64) -> bool;
+    #[link_name = "bootstrap.signatures::infer_const_count"]
+    pub fn infer_const_count(
+        ty: SignatureNode, name: *const u8, length: u64, value: u32, inferred: &mut Optional<u32>,
+    ) -> bool;
+    #[link_name = "bootstrap.signatures::infer_const_arguments"]
+    pub fn infer_const_arguments(
+        ty: SignatureNode, name: *const u8, length: u64, first: u64,
+        values: *const u32, count: u64, inferred: &mut Optional<u32>,
+    ) -> Optional<u32>;
     #[link_name = "bootstrap.signatures::cfn_parameter"]
     pub fn cfn_parameter(formal: SignatureNode) -> CfnParameter;
     #[link_name = "bootstrap.signatures::record_member"]

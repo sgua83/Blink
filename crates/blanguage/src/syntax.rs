@@ -240,13 +240,21 @@ impl Type {
     pub(crate) fn mentions(&self, name: &str) -> bool {
         unsafe { wire::type_mentions(self.signature_node(), name.as_ptr(), name.len() as u64) }
     }
-    pub(crate) fn names_shape(&self, name: &str) -> bool {
-        unsafe { wire::resource_names_shape(self.signature_node(), name.as_ptr(), name.len() as u64) }
+    pub(crate) fn infer_const_count(
+        &self, name: &str, value: u32, inferred: &mut wire::Optional<u32>,
+    ) -> bool {
+        unsafe { wire::infer_const_count(self.signature_node(), name.as_ptr(), name.len() as u64, value, inferred) }
     }
-}
-impl Argument {
-    pub(crate) fn names_value(&self, name: &str) -> bool {
-        unsafe { wire::argument_names_const(self.signature_node(), name.as_ptr(), name.len() as u64) }
+    pub(crate) fn infer_const_arguments(
+        &self, name: &str, first: usize, values: &[u32], inferred: &mut wire::Optional<u32>,
+    ) -> Option<u32> {
+        let conflict = unsafe {
+            wire::infer_const_arguments(
+                self.signature_node(), name.as_ptr(), name.len() as u64, first as u64,
+                values.as_ptr(), values.len() as u64, inferred,
+            )
+        };
+        (conflict.present != 0).then_some(conflict.value)
     }
 }
 impl Type {
