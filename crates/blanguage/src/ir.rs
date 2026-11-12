@@ -152,7 +152,25 @@ struct VariantLayout {
 }
 
 #[cfg(feature = "compiler")]
+#[repr(C)]
+struct VectorLayout {
+    size: u64,
+    alignment: u32,
+}
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+pub(crate) struct ArrayLayout {
+    pub(crate) size: u64,
+    pub(crate) stride: u64,
+}
+
+#[cfg(feature = "compiler")]
 unsafe extern "C" {
+    #[link_name = "bootstrap.type_layout::vector"]
+    fn vector_layout(scalar_size: u32, scalar_alignment: u32, count: u64) -> VectorLayout;
+    #[link_name = "bootstrap.type_layout::fixed_array"]
+    pub(crate) fn fixed_array_layout(element_size: u32, alignment: u32, count: u32) -> ArrayLayout;
     #[link_name = "bootstrap.type_layout::tagged_variant"]
     fn tagged_variant_layout(payload_size: u32, payload_alignment: u32) -> VariantLayout;
 }
@@ -367,6 +385,13 @@ impl Ty {
         if n == 1 {
             return Self::scalar(s);
         }
+        #[cfg(feature = "compiler")]
+        let (size, align) = {
+            let layout = unsafe { vector_layout(s.size(), s.align(), n as u64) };
+            (layout.size as u32, layout.alignment)
+        };
+        #[cfg(not(feature = "compiler"))]
+        let (size, align) = (n as u32 * s.size(), s.align() * if n == 2 { 2 } else { 4 });
         Self {
             name: match s {
                 Scalar::F32 => format!("float{n}"),
@@ -377,8 +402,8 @@ impl Ty {
             },
             arguments: Vec::new(),
             values: Vec::new(),
-            size: n as u32 * s.size(),
-            align: s.align() * if n == 2 { 2 } else { 4 },
+            size,
+            align,
             components: (0..n).map(|i| (s, i as u32 * s.size())).collect(),
             fields: Vec::new(),
             view: None,
@@ -391,12 +416,21 @@ impl Ty {
     }
     pub fn matrix(rows: usize, columns: usize) -> Self {
         let row = Self::vector(Scalar::F32, columns);
-        let stride = align_up(row.size, row.align);
+        #[cfg(feature = "compiler")]
+        let (size, stride) = {
+            let layout = unsafe { fixed_array_layout(row.size, row.align, rows as u32) };
+            (layout.size as u32, layout.stride as u32)
+        };
+        #[cfg(not(feature = "compiler"))]
+        let (size, stride) = {
+            let stride = align_up(row.size, row.align);
+            (stride * rows as u32, stride)
+        };
         Self {
             name: format!("float{rows}x{columns}"),
             arguments: Vec::new(),
             values: Vec::new(),
-            size: stride * rows as u32,
+            size,
             align: row.align,
             components: (0..rows)
                 .flat_map(|r| {

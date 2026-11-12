@@ -1,5 +1,10 @@
 module bootstrap.type_layout;
 
+extern "C" VectorLayout vector(u32 scalar_size, u32 scalar_alignment, u64 count) on cpu {
+    u32 lanes = count == 2 ? 2 : 4;
+    return VectorLayout(u64(scalar_size) * count, scalar_alignment * lanes);
+}
+
 extern "C" u64 natural_size(u32 size, u32 alignment) on cpu requires nonzero(alignment) {
     u32 remainder = size % alignment;
     if (remainder == 0) {

@@ -1,5 +1,12 @@
 module bootstrap.type_layout;
 
+struct VectorLayout {
+    u64 size;
+    u32 alignment;
+};
+
+extern "C" VectorLayout vector(u32 scalar_size, u32 scalar_alignment, u64 count) on cpu;
+
 struct FieldPlacement {
     u64 offset;
     u64 end;

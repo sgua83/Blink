@@ -14,15 +14,7 @@ struct FieldPlacement {
     alignment: u32,
 }
 
-#[repr(C)]
-struct ArrayLayout {
-    size: u64,
-    stride: u64,
-}
-
 unsafe extern "C" {
-    #[link_name = "bootstrap.type_layout::fixed_array"]
-    fn fixed_array_layout(element_size: u32, alignment: u32, count: u32) -> ArrayLayout;
     #[link_name = "bootstrap.type_layout::place"]
     fn place_field(size: u32, alignment: u32, field_size: u32, field_alignment: u32) -> FieldPlacement;
     #[link_name = "bootstrap.type_layout::natural_size"]
@@ -1160,7 +1152,7 @@ impl World {
                 .shape(&Some(length), source, span, module, imports)?
                 .unwrap();
             // Bound element types carry nonzero alignment.
-            let layout = unsafe { fixed_array_layout(element.size, element.align, count) };
+            let layout = unsafe { ir::fixed_array_layout(element.size, element.align, count) };
             let size = u32::try_from(layout.size).map_err(|_| Diagnostic {
                 source: source.clone(),
                 span,
