@@ -86,7 +86,7 @@ impl ReadBytes {
 }
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
-enum ReadError { None = 0, Machine = 1, Truncated = 2, StringOffset = 4, Unterminated = 5, RelocationCount = 6 }
+enum ReadError { None = 0, Machine = 1, Truncated = 2, StringOffset = 4, Unterminated = 5, RelocationCount = 6, AuxiliaryCount = 7 }
 impl ReadError {
     fn check(self) -> Result<()> {
         match self {
@@ -96,6 +96,7 @@ impl ReadError {
             Self::StringOffset => Err("COFF 字符串偏移错误".into()),
             Self::Unterminated => Err("COFF 符号缺少结尾".into()),
             Self::RelocationCount => Err("COFF 重定位数量错误".into()),
+            Self::AuxiliaryCount => Err("COFF auxiliary records exceed the symbol table".into()),
         }
     }
 }
@@ -611,9 +612,9 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
             let row = unsafe { read_symbol(input, table, i) };
             row.error.check()?;
             if row.storage == 2 && row.section > 0 {
-                let symbol = read_text(row.name)?;
-                let contract = bindings.remove(&symbol).ok_or("导出符号缺少模块接口合同")?;
-                definitions.insert(symbol, contract);
+                let symbol = std::str::from_utf8(unsafe { row.name.borrowed() })?;
+                let (name, contract) = bindings.remove_entry(symbol).ok_or("导出符号缺少模块接口合同")?;
+                definitions.insert(name, contract);
             }
             i = row.next;
         }
@@ -731,11 +732,11 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
     while i < table.count {
         let row = unsafe { read_symbol(input, table, i) };
         row.error.check()?;
-        let name = read_text(row.name)?;
+        let name = std::str::from_utf8(unsafe { row.name.borrowed() })?;
         if row.storage == 3 && row.section > 0 && row.auxiliary > 0 {
             definitions.insert(row.section as usize - 1, (row.selection as u8, row.owner as u16));
         }
-        symbols[i] = Some((name, row.section as i16, row.value as u32, row.storage as u8, row.function != 0));
+        symbols[i] = Some((name, row.section as i16, row.value as u32, row.storage == 2, row.function != 0));
         i = row.next;
     }
     let raw = reader.section_rows().collect::<Result<Vec<_>>>()?;
@@ -782,17 +783,17 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
             if let Some(kind)=crate::native::CoffRelocationKind::of(r.kind as u16){
                 kind.range(sections[row.mapped-1].bytes.len(),r.offset)?;
             }
-            let s = symbols.get(r.symbol).and_then(Option::as_ref)
+            let &(name, section, offset, _, _) = symbols.get(r.symbol).and_then(Option::as_ref)
                 .ok_or("COFF 重定位符号越界")?;
-            let value = unsafe { object_resolve_target(rows, ReadBytes::new(s.0.as_bytes()), i64::from(s.1), u64::from(s.2)) };
+            let value = unsafe { object_resolve_target(rows, ReadBytes::new(name.as_bytes()), i64::from(section), u64::from(offset)) };
             value.error.check()?;
             let target = match value.kind {
                 ObjectTargetKind::Section => Target::Section(value.section, value.value as u32),
                 ObjectTargetKind::Import => Target::Import(Import { dll: read_text(value.dll)?, name: read_text(value.name)? }),
                 ObjectTargetKind::Symbol => {
-                    if native.is_some() { bindings.entry(s.0.clone()).or_default(); }
-                    else { bindings.get(&s.0).ok_or("未定义符号缺少模块接口合同")?; }
-                    Target::Symbol(s.0.clone())
+                    if native.is_some() { bindings.entry(name.to_owned()).or_default(); }
+                    else { bindings.get(name).ok_or("未定义符号缺少模块接口合同")?; }
+                    Target::Symbol(name.to_owned())
                 }
             };
             sections[row.mapped - 1].relocations.push(Relocation { offset: r.offset, kind: r.kind as u16, target });
@@ -801,17 +802,17 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
     let symbols = symbols
             .into_iter()
             .flatten()
-            .filter(|(_, section, _, class, _)| {
-                *class == 2
-                    && *section > 0
-            })
+            .filter(|(_, section, _, external, _)| *external && *section > 0)
             .map(|(name, section, value, _, function)| {
+                let (name, contract) = if native.is_some() {
+                    (name.to_owned(), Vec::new())
+                } else {
+                    bindings.remove_entry(name).ok_or("导出符号缺少模块接口合同")?
+                };
                 Ok(super::Symbol {
                     function,
-                    contract: if native.is_some() { Vec::new() } else {
-                        bindings.remove(&name).ok_or("导出符号缺少模块接口合同")?
-                    },
                     name,
+                    contract,
                     section: object_index(&raw, section as usize - 1)
                         .ok_or("导出符号引用不可装载的节")?,
                     value,

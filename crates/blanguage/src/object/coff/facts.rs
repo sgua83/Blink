@@ -60,7 +60,6 @@ impl<'a> Facts<'a> {
         let mut index = 0;
         while index < table.count {
             let row = unsafe { read_symbol(input, table, index) }; row.error.check()?;
-            if row.next > table.count { return Err("COFF auxiliary records exceed the symbol table".into()); }
             symbols[index] = Some(row); index = row.next;
         }
         let mut sections = Vec::new();

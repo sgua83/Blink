@@ -62,6 +62,8 @@ extern "C" ReadSymbol symbol(ReadBytes input,ReadSymbols table,u64 index) on cpu
     u64 raw=little(bytes,12u64,2u64);i64 section=i64(raw);
     if(raw>=32768u64){section-=i64(65536);}
     u64 storage=little(bytes,16u64,1u64);u64 auxiliary=little(bytes,17u64,1u64);
+    u64 next=index+1u64+auxiliary;
+    if(next>table.count){return bad_symbol(7);}
     u64 selection=0u64;u64 owner=0u64;
     if(storage==3u64 && section>i64(0) && auxiliary>0u64){
         ReadRange extra=range(input,table.offset+(index+1u64)*18u64,18u64);
@@ -69,7 +71,7 @@ extern "C" ReadSymbol symbol(ReadBytes input,ReadSymbols table,u64 index) on cpu
         selection=little(extra.bytes.bytes,14u64,1u64);owner=little(extra.bytes.bytes,12u64,2u64);
     }
     u64 function=0u64;if(little(bytes,14u64,2u64)==32u64){function=1u64;}
-    return ReadSymbol(name,section,little(bytes,8u64,4u64),storage,function,auxiliary,selection,owner,index+1u64+auxiliary,0);
+    return ReadSymbol(name,section,little(bytes,8u64,4u64),storage,function,auxiliary,selection,owner,next,0);
 }
 extern "C" ReadSection section(ReadBytes input,ReadBytes headers,u64 index) on cpu {
     address bytes=at(headers.bytes,index*40u64);
