@@ -12,7 +12,7 @@
 
 遇到必要知识，我们先用能手算的例子说明，再进入源码。例如，先看乘法为什么应先于加法组成语法树，再看解析函数；先理解“两个值还要同时用，所以不能占同一个寄存器”，再看寄存器分配；先区分“工作已提交”和“工作已完成”，再看 GPU 资源释放。
 
-本版按 **Blink P4 CL19111／v0.14.177.162** 阅读实现，对应[公开源码快照](https://github.com/sgua83/Blink/tree/74a2b47a109b4516c21c99590e68c9118ab9ac11)。源码节选逐段核对，仅为排版去除共同缩进；行范围和文件 SHA256 记录在 `compiler/源码版本索引.json`。手算、伪代码与示意图用于解释；历史运行图另注明当时的输入和日期。
+本书按当前研发源码说明已实现行为，源码节选随MD正文同步，仅为排版去除共同缩进。每份实际源码的SHA256、节选行范围与节选字节身份记录在 `compiler/源码版本索引.json`。手算、伪代码与示意图用于解释；历史运行图另注明当时的输入和日期。
 
 当前实现包括自研前端、并行中间表示、Windows x64／SPIR-V 后端及 CPU／Vulkan 执行框架，也能把普通 CPU 应用编译为目标文件，再由独立链接器生成可执行程序。普通 CPU 原生调用、递归与有限独立模块已有实现；完整模块／资源契约、其他目标调用、一般异步应用、基础库与跨平台能力仍分别开放。
 
@@ -191,13 +191,20 @@ brun先接收精确的`cpu`／`gpu`后端，其他值直接交回参数错误；
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:366`。
+源码节选：`crates/blanguage/src/ir.rs:384`。
 
 ```rust
 pub fn vector(s: Scalar, n: usize) -> Self {
     if n == 1 {
         return Self::scalar(s);
     }
+    #[cfg(feature = "compiler")]
+    let (size, align) = {
+        let layout = unsafe { vector_layout(s.size(), s.align(), n as u64) };
+        (layout.size as u32, layout.alignment)
+    };
+    #[cfg(not(feature = "compiler"))]
+    let (size, align) = (n as u32 * s.size(), s.align() * if n == 2 { 2 } else { 4 });
     Self {
         name: match s {
             Scalar::F32 => format!("float{n}"),
@@ -208,8 +215,8 @@ pub fn vector(s: Scalar, n: usize) -> Self {
         },
         arguments: Vec::new(),
         values: Vec::new(),
-        size: n as u32 * s.size(),
-        align: s.align() * if n == 2 { 2 } else { 4 },
+        size,
+        align,
         components: (0..n).map(|i| (s, i as u32 * s.size())).collect(),
         fields: Vec::new(),
         view: None,
@@ -222,6 +229,8 @@ pub fn vector(s: Scalar, n: usize) -> Self {
 }
 ```
 
+编译角色把实际标量字节宽度、对齐与分量数交给B的vector_layout，读取布局描述后构造原Ty。关闭compiler的运行角色保留既定ABI计算，不因构造运行期类型而依赖源前端或种子。布局描述和最终类型分别由原生产者持有。
+
 不要从“内容十二字节”推出“任何地方都连续十二字节”。记录中的字段、矩阵的行、整个 dataset 的 stride 都要按编译器布局处理。C++ 或 Rust 的同名类型也未必具有相同布局。
 
 ![记录布局和地址计算](figures/compiler-memory.svg)
@@ -230,7 +239,7 @@ pub fn vector(s: Scalar, n: usize) -> Self {
 
 ### 2.3 源码中的 Ty 保存了什么
 
-源码节选：`crates/blanguage/src/ir.rs:160`。
+源码节选：`crates/blanguage/src/ir.rs:178`。
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -290,7 +299,7 @@ C 结构体保存字段，Rust 的 `struct` 也如此。Rust 的 `enum` 还可�
 
 `Result<T,E>` 表示成功或错误：`Ok(value)` 与 `Err(error)`。函数调用后面的 `?` 表示成功就取出结果，失败就把错误交还上层。它不是重新尝试，也不是忽略错误。
 
-源码节选：`crates/blanguage/src/parser.rs:42`。
+源码节选：`crates/blanguage/src/parser.rs:36`。
 
 ```rust
 pub fn parse(source: Source) -> Result<syntax::Module> {
@@ -322,7 +331,7 @@ pub fn parse(source: Source) -> Result<syntax::Module> {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:157`。
+源码节选：`crates/blanguage/src/frontend.rs:180`。
 
 ```rust
 
@@ -359,7 +368,7 @@ pub fn compile_entry_with_modules(
 
 A 导入 B、B 又导入 A 可以形成合法的函数引用。装载器先确认模块身份，再检查声明、类型和实现；导入成环与无法形成有限布局的按值递归不是同一种问题。
 
-源码节选：`crates/blanguage/src/frontend.rs:598`。
+源码节选：`crates/blanguage/src/frontend.rs:621`。
 
 ```rust
 if let Some(name) = import
@@ -463,7 +472,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 编译器的一部分已经用 B 语言实现，构建它需要先有一份能够编译这些模块的 Blink 工具。这份独立、已安装的发行版就是稳定种子；不能把尚未构建成功的新工具当成自己的唯一前提。
 
-`build.rs` 用种子编译 B 模块，再把生成的原生对象与 Rust 部分链接。当前词法、部分语法辅助、源节点存储、名称解析以及部分布局和对象处理由 B 承担；其余解析、类型与访问检查、IR、后端和执行框架仍有 Rust 实现。局部接管不等于完整自举已经完成。
+`build.rs` 用选定的上一代SDK编译B模块，再把实际原生对象与Rust部分链接。当前词法、表达式／类型／泛型／契约、语句／控制／并行构造、源节点存储、名称解析及部分布局和对象处理由B承担；模块声明、独立entry／type_query的外层流程和普通文字解码仍有Rust生产者。类型与访问检查、IR、后端主体和执行框架继续各自职责，局部接管不等于完整自举。
 
 正常源码构建默认使用安装目录中的种子，显式代际构建可以通过 `BLINK_BOOTSTRAP_SDK` 选择另一份独立 SDK。供已有应用消费的源码 SDK 与编译器自身的源码生产使用各自明确的构建输入。
 
@@ -481,7 +490,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 6.2 解析器怎样知道在哪里
 
-源码节选：`crates/blanguage/src/parser.rs:67`。
+源码节选：`crates/blanguage/src/parser.rs:57`。
 
 ```rust
 struct Parser {
@@ -490,80 +499,52 @@ struct Parser {
     at:usize,
     storage:syntax::Builder,
 }
-impl Parser {
-    fn new(source:Source)->Result<Self> {
-        let tokens=lexer::lex(&source)?;
-        let storage=syntax::Builder::new(Some(source.clone())).map_err(|error|Diagnostic {
-            source:source.clone(),span:Span::default(),code:"B386",message:error.to_string(),
-        })?;
-        Ok(Self{source,tokens,at:0,storage})
-    }
-    fn storage_result<T>(&self,result:std::result::Result<T,syntax::StorageFailure>)->Result<T> {
-        result.map_err(|error|Diagnostic {source:self.source.clone(),span:Span::default(),code:"B386",message:error.to_string()})
-    }
-    fn expr_ref(&mut self,min:u8,type_argument:bool)->Result<wire::ExprRef> {
-        Ok(store!(self,make_expr,self.expr(min,type_argument)?))
-    }
-    fn stmt_ref(&mut self)->Result<wire::StmtRef> {
-        Ok(store!(self,make_stmt,self.stmt()?))
-    }
-    fn source_condition(&mut self,expression:Expr,message:&str)->Result<wire::ConditionRef> {
-        let span=expression.span;
-        store!(self,source_condition,expression).ok_or_else(||Diagnostic {
-            source:self.source.clone(),span,code:"B225",message:message.into(),
-        })
-    }
-
-    fn peek(&self) -> &str {
-        self.tokens[self.at].text(&self.source)
-    }
-    fn span(&self) -> Span {
-        self.tokens[self.at].span
-    }
-    fn take(&mut self, text: &str) -> bool {
-        if self.peek() == text {
-            self.at += 1;
-            true
-        } else {
-            false
-        }
-    }
 ```
 
-`peek` 查看下一项，`take` 在匹配时向前移动，`expect` 则要求必须匹配，否则产生错误。读长解析函数时，始终记着“at 当前指向哪一个 token”，通常比盯着所有分支更容易理解。
+Rust的Parser持有Source、Token缓冲和未封存存储，at用于外层模块游标。进入B解析时，同一输入交给ParseState，B推进at、保留原错误及Span，并直接返回完成节点的类型化索引；Rust读取推进后的游标继续模块声明，不再重造表达式或语句。
+
+源码节选：`crates/blanguage/src/bootstrap/parser.h:18`。
+
+```b
+struct ParseInputs {address source;address tokens;u64 count;address storage;};
+struct ParseState {u64 at;ParseError error;};
+```
 
 ### 6.3 优先级不是靠先写哪一行代码猜出来的
 
-本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
+B的read_expression消费最低优先级minimum：先解析基本表达式，再查看后续运算符。只有达到当前门槛的运算符才接入树中；右侧递归使用相应门槛，保持乘法先于加法等关系。read_expression_ref把完成节点写入同一源存储，返回ExprRef，不交回一份Rust草稿。
 
-源码节选：`crates/blanguage/src/parser.rs:1164`。
+源码节选：`crates/blanguage/src/bootstrap/parser.b:228`。
 
-```rust
-        let prec = match self.peek() {
-            "||" => 1,
-            "&&" => 2,
-            "|" => 3,
-            "^" => 4,
-            "&" => 5,
-            "==" | "!=" => 6,
-            "<" | ">" | "<=" | ">=" => 7,
-            "<<" | ">>" => 8,
-            "+" | "-" => 9,
-            "*" | "/" | "%" => 10,
-            _ => 0,
-        };
-        if prec == 0 || prec < min {
-            break;
-        }
-        let op = self.peek().to_owned();
-        self.at += 1;
-        let rhs = self.expr_ref(prec + 1,type_argument)?;
-        lhs = Expr {
-            kind: ExprKind::Binary(op, store!(self,make_expr,lhs), rhs),
-            span,
-        };
+```b
+u32 operator_precedence(read ParseInputs input,u64 cursor) on cpu {
+    u64 at=cursor;
+    if(token_is(input,at,124,124)){return 1;}
+    if(token_is(input,at,38,38)){return 2;}
+    if(token_is(input,at,124,0)){return 3;}
+    if(token_is(input,at,94,0)){return 4;}
+    if(token_is(input,at,38,0)){return 5;}
+    if(token_is(input,at,61,61)||token_is(input,at,33,61)){return 6;}
+    if(token_is(input,at,60,0)||token_is(input,at,62,0)||token_is(input,at,60,61)||token_is(input,at,62,61)){return 7;}
+    if(token_is(input,at,60,60)||token_is(input,at,62,62)){return 8;}
+    if(token_is(input,at,43,0)||token_is(input,at,45,0)){return 9;}
+    if(token_is(input,at,42,0)||token_is(input,at,47,0)||token_is(input,at,37,0)){return 10;}
+    return 0;
+}
+```
+
+优先级查询返回原运算符层级，正文解析只接入达到当前门槛的运算；右侧递归使用更高门槛，完成子树直接写入原存储。
+
+源码节选：`crates/blanguage/src/bootstrap/parser.b:829`。
+
+```b
+        u32 precedence=operator_precedence(input,state.at);if(precedence==0||precedence<minimum){break;}
+        Text operation=current_text(input,state.at);state.at+=1u64;
+        ExprRef right=read_expression_ref(input,state,precedence+1,type_argument,literal,context);
+        if(state.error.kind!=0){break;}
+        left=ExprNode(ExprKind::Binary(BinaryExpr(operation,publish_expression(input,state,left),right)),span);
     }
-    Ok(lhs)
+    return left;
 }
 ```
 
@@ -571,15 +552,15 @@ impl Parser {
 
 ### 6.4 语句树保留了并行结构
 
-普通算式之外，AST 还保存条件、循环、函数调用、parallel、阶段边界和集合操作的源形式。语法层知道这是并行语句，却还没有证明独占写入、有效下标或函数权限。结构合法和语义合法是两件事。
+普通算式之外，AST 还保存条件、循环、函数调用、parallel、阶段边界和集合操作的源形式。这些语句及其正文由B解析，直接形成原存储中的StmtRef、有序Slice和分支／并行节点；语法层保留结构及Span，尚不证明独占写入、有效下标或函数权限，也不启动执行资源。结构合法和语义合法是两件事。
 
-`array<array<u32,4>,3>` 中连续的 `>>` 在类型上下文是两个闭合尖括号；表达式中的 `>>` 则是右移。解析器的 `type_close` 专门区分这两个位置。同样的字符在不同语法位置可以承担不同意义。
+`array<array<u32,4>,3>` 中连续的 `>>` 在类型上下文是两个闭合尖括号；表达式中的 `>>` 则是右移。B解析器的close_type专门区分这两个位置。同样的字符在不同语法位置可以承担不同意义。
 
 **自己走一遍。** `2 + 3 * 4` 的根是加法，右子树是乘法，结果十四。若代码生成器收到错误的树，后端再正确也只会忠实计算错误的结构。
 
 ### 6.5 泛型尖括号怎样与移位区别
 
-`array<array<u32,2>,3>`包含嵌套类型，连续的`>>`可结束两层泛型；`value<N+(x>>2)>`中的右移处在值表达式括号内，不能关闭外层泛型。前瞻只寻找结束之后的token游标，完整语法仍由Parser构造原AST。
+`array<array<u32,2>,3>`包含嵌套类型，连续的`>>`可结束两层泛型；`value<N+(x>>2)>`中的右移处在值表达式括号内，不能关闭外层泛型。前瞻只寻找结束之后的token游标；表达式、类型和子项由B解析器完整构造，外层模块声明仍由Rust按原语法边界完成。
 
 `bootstrap/parser.b`直接借用原Source字节和词法已写入的同一TokenSpan数组。B维护尖括号、圆括号与方括号深度，沿原接受规则返回结束游标或无结果。函数不改变Parser当前at，也不分配或保留Token；输入及其释放仍属于原调用者。
 
@@ -619,9 +600,9 @@ extern "C" AngleEnd angle_end(address source,address tokens,u64 count,u64 at) on
 }
 ```
 
-C ABI 结果 `AngleEnd` 用 `end` 和 `present` 表达可选位置，Rust 入口将它交回类型与表达式解析。消费 `>>` 的一个字符后，解析器会推进原 `Span` 起点，后续前瞻读取剩余范围。
+C ABI结果AngleEnd用end和present表达可选位置，B的类型与表达式解析读取该前瞻结果。消费 `>>` 的一个字符后，解析器会推进原 `Span` 起点，后续前瞻读取剩余范围。
 
-词法扫描、这段前瞻和下面的链接字符串解码已由 B 语言实现。其余解析与编译职责仍需分别阅读，不能把这些模块迁移等同于编译器已完整自举。
+词法扫描、前瞻、链接字符串解码及表达式／类型／泛型／契约与语句构造由B实现。模块声明、完整外层入口、普通文字解码以及检查／IR／后端仍按真实职责区分，不能把解析模块迁移等同于完整编译器自举。
 
 ### 6.6 链接字符串怎样直接进入唯一输出
 
@@ -631,7 +612,7 @@ C ABI 结果 `AngleEnd` 用 `end` 和 `present` 表达可选位置，Rust 入口
 
 B返回成功长度，或不支持的转义、非ASCII／NUL、空结果这三类错误。Rust用原Span报告B263；成功时把已初始化部分交成String，沿用同一分配。错误时原Vec直接释放，输入始终属于Source，B不保存任何借用地址。这个私有C ABI由实际输入范围、同步调用和唯一输出所有者承担内存职责，没有逐字符回调、第二份字符串或新的释放链。
 
-AST构造、普通Unicode文本解码和其余语法仍由各自现有实现处理，局部B接管不代表完整解析器或编译器自举已经完成。
+B已直接构造表达式、类型／泛型／契约和语句节点；模块声明与其const／枚举生成语法、普通Unicode文字仍沿原Rust生产者写入同一存储。解析职责尚未全部移交，完整编译器自举仍未完成。
 
 ### 6.7 源节点、文字与最后消费者
 
@@ -650,7 +631,7 @@ struct ShapeRef {u64 offset;};
 struct ArgumentRef {u64 offset;};
 ```
 
-源码节选：`crates/blanguage/src/bootstrap/ast_storage.b:33`。
+源码节选：`crates/blanguage/src/bootstrap/ast_storage.b:72`。
 
 ```b
 StorageIndex append<T>(address storage,read T value) on cpu {
@@ -664,7 +645,7 @@ StorageIndex append<T>(address storage,read T value) on cpu {
 
 B 存储模块负责分配、增长和释放。Rust 句柄共享同一份只读源存储，最后一个实际节点、列表或声明消费者结束后，才调用释放入口。`Arc` 在这里管理共享句柄的寿命，不复制另一棵语法树。
 
-源码节选：`crates/blanguage/src/bootstrap/ast_storage.b:64`。
+源码节选：`crates/blanguage/src/bootstrap/ast_storage.b:103`。
 
 ```b
 extern "C" StorageError destroy(address storage) on cpu {
@@ -710,7 +691,7 @@ impl Owner {
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:349`。
+源码节选：`crates/blanguage/src/ir.rs:367`。
 
 ```rust
 pub fn scalar(s: Scalar) -> Self {
@@ -740,7 +721,7 @@ Scalar明确描述各数值类型的实际大小与对齐：窄整数为一／�
 
 “同一个函数能处理不同类型”有两种很不同的实现：运行时判断类型，或者编译前形成具体实例。Blink 当前主要采用后者。
 
-源码节选：`crates/blanguage/src/generics.rs:11`。
+源码节选：`crates/blanguage/src/generics.rs:67`。
 
 ```rust
 #[derive(Default)]
@@ -754,13 +735,13 @@ pub(crate) enum TypeCall<'a> { Builtin(&'a str), Construct(&'a TypeName) }
 impl Bindings {
     pub(crate) fn type_call(&self,name:&str)->Option<TypeCall<'_>> {
         let actual=self.types.get(name)?;
-        Some(if actual.arguments.is_empty()&&Ty::builtin(&actual.name).is_some_and(|ty|ty.fields.is_empty()) {
+        Some(if actual.arguments.is_empty()&&crate::builtin_types::Builtin::recognize(&actual.name).is_scalar() {
             TypeCall::Builtin(&actual.name)
         }else{TypeCall::Construct(actual)})
     }
 ```
 
-`Bindings.types` 把类型形参映射到实际类型，`Bindings.values` 保存 const 整数实参。实例按这些绑定读取同一份源定义，形成自己的类型、合同和 IR，而不是为每一组实参重写一棵语法树。
+Bindings.types把类型形参映射到实际类型，Bindings.values保存const整数实参。type_call沿原内置类型身份识别标量，不为这次分类构造完整Ty。实例按这些绑定读取同一份源定义，形成自己的类型、合同和 IR，而不是为每一组实参重写一棵语法树。
 
 有限类型集合和 const 取值可以形成多个具体组合。当前 B 模块遍历这些组合，检查器按每一组实际绑定解释源定义；开放形参则等到实际调用给出实参。源码共享与实例独立分析是两层关系。
 
@@ -972,7 +953,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:1066`。
+源码节选：`crates/blanguage/src/ir.rs:1118`。
 
 ```rust
 Constant(Reg, Scalar, Bits),
@@ -986,7 +967,7 @@ LoadLocal(Reg, usize),
 StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:1089`。
+源码节选：`crates/blanguage/src/ir.rs:1141`。
 
 ```rust
 Load {
@@ -1018,7 +999,7 @@ Binary {
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1296`。
+源码节选：`crates/blanguage/src/ir.rs:1348`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1226,7 +1207,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1132`。
+源码节选：`crates/blanguage/src/ir.rs:1184`。
 
 ```rust
 If {
@@ -1303,7 +1284,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:166`。
+源码节选：`crates/blanguage/src/native/codegen.rs:187`。
 
 ```rust
 fn leave(&mut self, frame: u32) {
@@ -1349,7 +1330,7 @@ pub(super) enum Location {
 
 位置分为通用寄存器、XMM 和栈。放不下的值进入栈槽，这叫溢出；同样不同时使用的溢出值仍可复用栈空间。
 
-源码节选：`crates/blanguage/src/native/allocation.rs:52`。
+源码节选：`crates/blanguage/src/native/allocation.rs:64`。
 
 ```rust
 fn edge(&mut self, a: usize, b: usize) {
@@ -1380,7 +1361,7 @@ fn together(&mut self, live: &BTreeSet<PrivateSlot>) {
 
 ### 14.3 Emitter 把结果写成真实字节
 
-源码节选：`crates/blanguage/src/native/codegen.rs:183`。
+源码节选：`crates/blanguage/src/native/codegen.rs:204`。
 
 ```rust
 fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -1394,12 +1375,12 @@ fn jump(&mut self, condition: Option<u8>) -> usize {
     at
 }
 fn patch(&mut self, at: usize, target: usize) {
-    let relative = (target as i64 - (at + 4) as i64) as i32;
-    self.code[at..at + 4].copy_from_slice(&relative.to_le_bytes());
+    let field = &mut self.code[at..at + 4];
+    unsafe { patch_relative(field.as_mut_ptr(), at as u64, target as u64); }
 }
 ```
 
-一个前向跳转生成时，目标代码可能尚未出现。生成器先写占位位移，记住位置；目标出现后，`patch` 按“目标地址减去该跳转后续位置”补入相对位移。它不是运行时搜索标签。
+一个前向跳转生成时，目标代码可能尚未出现。Rust生成器先写占位位移并记住位置；目标出现后，patch把实际字段、字段位置和目标交给B的patch_relative，按“目标地址减去该跳转后续位置”写入四字节位移。它不是运行时搜索标签。
 
 算术、加载、存储和转换也都进入 Emitter。`operands.rs` 选择可直接使用的操作数，`integer.rs` 处理整数专门降低，`texture.rs` 将 CPU 纹理访问连接到对应实现。不能只读 `emit` 入口就认为已读完全部指令生成。
 
@@ -1466,7 +1447,7 @@ loop {
 
 本版 `native/packet.rs` 为能够表达的直线计算建立四元素计划。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:739`。
+源码节选：`crates/blanguage/src/native/codegen.rs:760`。
 
 ```rust
 let stage = &lowered;
@@ -1563,7 +1544,7 @@ SPIR-V 是标准二进制中间语言。它仍由驱动处理成设备执行形�
 
 ### 17.2 一条指令怎样装进 word
 
-源码节选：`crates/blanguage/src/spirv/codegen.rs:57`。
+源码节选：`crates/blanguage/src/spirv/codegen.rs:58`。
 
 ```rust
 fn op(out: &mut Vec<u32>, code: u16, args: &[u32]) {
@@ -1596,7 +1577,7 @@ word 4：输入 B 的编号
 
 ### 17.4 一个语言阶段可能需要多个 GPU pass
 
-源码节选：`crates/blanguage/src/spirv/codegen.rs:38`。
+源码节选：`crates/blanguage/src/spirv/codegen.rs:39`。
 
 ```rust
 pub enum Pass {

@@ -1,6 +1,6 @@
 //! Read-only syntax views borrow the one B-owned store; builders publish no views.
-pub(crate) mod wire;
-pub(crate) mod build;
+#[path="syntax/wire.rs"] pub(crate) mod wire;
+#[path="syntax/build.rs"] pub(crate) mod build;
 use crate::ast::Source;
 use std::{ffi::c_void,fmt,marker::PhantomData,ptr::NonNull,sync::Arc};
 
@@ -53,28 +53,13 @@ impl Builder {
         let created=unsafe{wire::create(data,length)};checked(created.error)?;
         Ok(Self{owner:Owner{raw:unsafe{NonNull::new_unchecked(created.storage)},source:source.map(|source|source.text)}})
     }
-    pub fn source_text(&self,span:crate::ast::Span)->wire::Text {
-        wire::Text{kind:0,range:wire::Span{start:span.start as u64,end:span.end as u64}}
-    }
     pub fn text(&mut self,value:&str)->Result<wire::Text> {
         let result=unsafe{wire::text(self.owner.raw.as_ptr(),value.as_ptr().cast_mut().cast(),value.len()as u64)};
-        checked(result.error)?;Ok(result.value)
-    }
-    pub fn indices(&mut self,values:&[u64])->Result<wire::Slice> {
-        let result=unsafe{wire::indices(self.owner.raw.as_ptr(),values.as_ptr().cast_mut().cast(),values.len()as u64)};
-        checked(result.error)?;Ok(result.value)
-    }
-    pub fn choices(&mut self,values:&mut [u32])->Result<wire::Slice> {
-        let result=unsafe{wire::choices(self.owner.raw.as_ptr(),values.as_mut_ptr().cast(),values.len()as u64)};
         checked(result.error)?;Ok(result.value)
     }
     pub fn texts(&mut self,values:&[wire::Text])->Result<wire::Slice> {
         let result=unsafe{wire::texts(self.owner.raw.as_ptr(),values.as_ptr().cast_mut().cast(),values.len()as u64)};
         checked(result.error)?;Ok(result.value)
-    }
-    pub fn condition(&mut self,expression:wire::ExprRef)->Result<Option<wire::ConditionRef>> {
-        let result=unsafe{wire::condition(self.owner.raw.as_ptr(),expression)};
-        checked(result.error)?;Ok((result.present!=0).then_some(result.value))
     }
     pub fn read<T:Copy>(&self,offset:u64)->T {self.owner.row(offset)}
     pub fn read_text(&self,text:wire::Text)->&str {self.owner.text(text)}
@@ -84,13 +69,6 @@ impl Builder {
 impl Builder {pub fn put_type(&mut self,value:&wire::TypeNode)->Result<u64>{let result=unsafe{wire::put_type(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_shape(&mut self,value:&wire::ShapeNode)->Result<u64>{let result=unsafe{wire::put_shape(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_argument(&mut self,value:&wire::ArgumentNode)->Result<u64>{let result=unsafe{wire::put_argument(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_condition(&mut self,value:&wire::ConditionNode)->Result<u64>{let result=unsafe{wire::put_condition(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_predicate(&mut self,value:&wire::PredicateNode)->Result<u64>{let result=unsafe{wire::put_predicate(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_interval(&mut self,value:&wire::IntervalNode)->Result<u64>{let result=unsafe{wire::put_interval(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_contract(&mut self,value:&wire::ContractNode)->Result<u64>{let result=unsafe{wire::put_contract(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_type_family(&mut self,value:&wire::TypeFamilyNode)->Result<u64>{let result=unsafe{wire::put_type_family(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_type_parameter(&mut self,value:&wire::TypeParameterNode)->Result<u64>{let result=unsafe{wire::put_type_parameter(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_value_parameter(&mut self,value:&wire::ValueParameterNode)->Result<u64>{let result=unsafe{wire::put_value_parameter(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_field(&mut self,value:&wire::FieldNode)->Result<u64>{let result=unsafe{wire::put_field(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_variant(&mut self,value:&wire::VariantNode)->Result<u64>{let result=unsafe{wire::put_variant(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_record(&mut self,value:&wire::RecordNode)->Result<u64>{let result=unsafe{wire::put_record(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
@@ -101,8 +79,6 @@ impl Builder {pub fn put_type_set(&mut self,value:&wire::TypeSetNode)->Result<u6
 impl Builder {pub fn put_module(&mut self,value:&wire::ModuleNode)->Result<u64>{let result=unsafe{wire::put_module(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_expr(&mut self,value:&wire::ExprNode)->Result<u64>{let result=unsafe{wire::put_expr(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 impl Builder {pub fn put_stmt(&mut self,value:&wire::StmtNode)->Result<u64>{let result=unsafe{wire::put_stmt(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_parallel(&mut self,value:&wire::ParallelNode)->Result<u64>{let result=unsafe{wire::put_parallel(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
-impl Builder {pub fn put_arm(&mut self,value:&wire::ArmNode)->Result<u64>{let result=unsafe{wire::put_arm(self.owner.raw.as_ptr(),value)};checked(result.error)?;Ok(result.offset)}}
 
 pub(crate) struct Node<T> {owner:Arc<Owner>,offset:u64,marker:PhantomData<T>}
 impl<T> Node<T> {pub fn same_node(&self,other:&Self)->bool{Arc::ptr_eq(&self.owner,&other.owner)&&self.offset==other.offset}}
@@ -511,3 +487,7 @@ impl Structural for wire::ValueParameterNode {
 impl Structural for wire::ExternalNode {
     fn compare(a:&External,b:&External)->std::cmp::Ordering{a.library().cmp(b.library()).then_with(||a.symbol().cmp(b.symbol()))}
 }
+
+impl Builder {pub(crate) fn raw_for_parser(&self)->*mut std::ffi::c_void {self.owner.raw.as_ptr()}}
+
+

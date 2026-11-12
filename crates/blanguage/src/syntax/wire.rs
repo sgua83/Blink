@@ -313,19 +313,11 @@ pub fn advance_instance_domain(domains:InstanceDomains, row:InstanceRow, first:u
 #[link_name="bootstrap.instance_domain::accepts_const"]
 pub fn accepts_const(nodes: *const c_void, choices: Optional<Slice>, value: u32) -> bool;
 #[link_name="bootstrap.ast_storage::indices"] pub fn indices(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
-#[link_name="bootstrap.ast_storage::choices"] pub fn choices(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
 #[link_name="bootstrap.ast_storage::texts"] pub fn texts(storage:*mut c_void,values:*mut c_void,count:u64)->StorageSlice;
 #[link_name="bootstrap.ast_storage::text"] pub fn text(storage:*mut c_void,bytes:*mut c_void,count:u64)->StorageText;
 #[link_name="bootstrap.ast_storage::put_type"] pub fn put_type(storage:*mut c_void,value:*const TypeNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_shape"] pub fn put_shape(storage:*mut c_void,value:*const ShapeNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_argument"] pub fn put_argument(storage:*mut c_void,value:*const ArgumentNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_condition"] pub fn put_condition(storage:*mut c_void,value:*const ConditionNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_predicate"] pub fn put_predicate(storage:*mut c_void,value:*const PredicateNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_interval"] pub fn put_interval(storage:*mut c_void,value:*const IntervalNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_contract"] pub fn put_contract(storage:*mut c_void,value:*const ContractNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_type_family"] pub fn put_type_family(storage:*mut c_void,value:*const TypeFamilyNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_type_parameter"] pub fn put_type_parameter(storage:*mut c_void,value:*const TypeParameterNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_value_parameter"] pub fn put_value_parameter(storage:*mut c_void,value:*const ValueParameterNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_field"] pub fn put_field(storage:*mut c_void,value:*const FieldNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_variant"] pub fn put_variant(storage:*mut c_void,value:*const VariantNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_record"] pub fn put_record(storage:*mut c_void,value:*const RecordNode)->StorageIndex;
@@ -336,11 +328,7 @@ pub fn accepts_const(nodes: *const c_void, choices: Optional<Slice>, value: u32)
 #[link_name="bootstrap.ast_storage::put_module"] pub fn put_module(storage:*mut c_void,value:*const ModuleNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_expr"] pub fn put_expr(storage:*mut c_void,value:*const ExprNode)->StorageIndex;
 #[link_name="bootstrap.ast_storage::put_stmt"] pub fn put_stmt(storage:*mut c_void,value:*const StmtNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_parallel"] pub fn put_parallel(storage:*mut c_void,value:*const ParallelNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::put_arm"] pub fn put_arm(storage:*mut c_void,value:*const ArmNode)->StorageIndex;
-#[link_name="bootstrap.ast_storage::condition"] pub fn condition(storage:*mut c_void,expression:ExprRef)->StorageCondition;
 }
 
-unsafe extern "C" {#[link_name="bootstrap.ast_storage::condition_input"] pub fn condition_input(storage:*mut c_void,node:*const ExprNode)->StorageCondition;}
 impl<T:Default> Optional<T>{pub fn none()->Self{Self{present:0,value:T::default()}}}
 impl<T> Optional<T>{pub fn some(value:T)->Self{Self{present:1,value}}}
