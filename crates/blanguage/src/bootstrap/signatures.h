@@ -25,3 +25,7 @@ struct CfnParameter {
 };
 
 extern "C" CfnParameter cfn_parameter(SignatureNode formal) on cpu;
+
+extern "C" bool type_mentions(SignatureNode type, address bytes, u64 length) on cpu;
+extern "C" bool argument_names_const(SignatureNode argument, address bytes, u64 length) on cpu;
+extern "C" bool resource_names_shape(SignatureNode type, address bytes, u64 length) on cpu;

@@ -242,6 +242,19 @@ optional_list!(FunctionNode,body,StmtNode);
 impl Type {pub fn canonical(&self)->bool{self.row().canonical!=0} pub fn dataset(&self)->bool{self.row().dataset!=0} pub fn view(&self)->bool{self.row().view!=0} pub fn tile(&self)->bool{self.row().tile!=0}}
 
 impl Type {
+    pub(crate) fn mentions(&self, name: &str) -> bool {
+        unsafe { wire::type_mentions(self.signature_node(), name.as_ptr(), name.len() as u64) }
+    }
+    pub(crate) fn names_shape(&self, name: &str) -> bool {
+        unsafe { wire::resource_names_shape(self.signature_node(), name.as_ptr(), name.len() as u64) }
+    }
+}
+impl Argument {
+    pub(crate) fn names_value(&self, name: &str) -> bool {
+        unsafe { wire::argument_names_const(self.signature_node(), name.as_ptr(), name.len() as u64) }
+    }
+}
+impl Type {
     pub(crate) fn cfn_parameter(&self) -> (crate::ast::Access, Option<Type>) {
         // The sealed owner stays live for the query and the returned child.
         let parameter = unsafe { wire::cfn_parameter(self.signature_node()) };

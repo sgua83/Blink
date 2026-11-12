@@ -179,7 +179,7 @@ pub(crate) fn specialize(
         } else {
             let mut inferred = None;
             for (formal, actual) in f.params().iter().zip(actuals) {
-                if !type_mentions(&formal.ty(),parameter.name()) {
+                if !formal.ty().mentions(parameter.name()) {
                     continue;
                 }
                 let actual = actual.ty.as_deref().ok_or_else(|| Diagnostic {
@@ -225,7 +225,7 @@ pub(crate) fn specialize(
         } else {
             let mut inferred = None;
             for (formal, actual) in f.params().iter().zip(actuals) {
-                if resource_names_shape(&formal.ty(),parameter.name())
+                if formal.ty().names_shape(parameter.name())
                     && let Some(value) = actual.count
                 {
                     merge_value(&mut inferred, value, source, span)?;
@@ -271,26 +271,6 @@ fn merge_value(inferred: &mut Option<u32>, value: u32, source: &Source, span: Sp
     *inferred = Some(value);
     Ok(())
 }
-fn type_mentions(ty:&crate::syntax::Type,name:&str)->bool{
-    ty.name()==name || ty.arguments().iter().any(|argument|
-        matches!(argument.kind(),crate::syntax::ArgumentKind::Type(ty)if type_mentions(&ty,name)))
-}
-fn argument_names_value(argument:&crate::syntax::Argument,name:&str)->bool{
-    match argument.kind(){
-        crate::syntax::ArgumentKind::Value(shape)=>matches!(shape.kind(),crate::syntax::ShapeKind::Constant(value)if value==name),
-        crate::syntax::ArgumentKind::Type(ty)=>ty.arguments().is_empty()&&!ty.dataset()&&!ty.view()&&!ty.tile()&&ty.name()==name,
-    }
-}
-fn resource_names_shape(ty:&crate::syntax::Type,name:&str)->bool{
-    if ty.dataset(){return ty.count().is_some_and(|shape|matches!(shape.kind(),crate::syntax::ShapeKind::Constant(value)if value==name));}
-    if ty.name()=="array"&&!ty.view()&&!ty.tile()&&ty.arguments().len()==2
-        &&let crate::syntax::ArgumentKind::Type(element)=ty.arguments().at(0).kind()
-        &&matches!(element.name(),"texture2d"|"texture3d")&&!element.dataset()&&!element.view()&&!element.tile(){
-        return argument_names_value(&ty.arguments().at(1),name);
-    }
-    false
-}
-
 fn for_each_cfn_type(
     formal: &crate::syntax::Type,
     actual: &crate::ir::CFunctionType,
@@ -329,7 +309,7 @@ fn infer_type(
     span: Span,
     inferred: &mut Option<Ty>,
 ) -> Result<()> {
-    if !type_mentions(formal,parameter.name()) {
+    if !formal.mentions(parameter.name()) {
         return Ok(());
     }
     let resolved;
@@ -390,7 +370,7 @@ fn infer_type(
             return source.fail(span, "B263", "cfn类型推导需要相同参数数量");
         }
         return for_each_cfn_type(formal, function, source, span, |formal, syntax| {
-            if type_mentions(&formal, parameter.name()) {
+            if formal.mentions(parameter.name()) {
                 let actual = if *syntax == TypeName::named("void") { Ty::unit() } else {
                     world.ty(syntax, source, span, &callee.module, &callee.imports)?
                 };
@@ -542,7 +522,7 @@ fn infer_value(
                 inferred,
             )?;
         }
-        if argument_names_value(&formal.arguments().at(1),name) {
+        if formal.arguments().at(1).names_value(name) {
             let value = actual.values[0];
             if inferred.is_some_and(|previous| previous != value) {
                 return source.fail(span, "B235", "array 的重复长度推导不一致");
@@ -573,7 +553,7 @@ fn infer_value(
         .iter()
         .zip(&actual.values)
     {
-        if argument_names_value(&arg,name) {
+        if arg.names_value(name) {
             if let Some(previous) = *inferred {
                 if previous != *value {
                     return source.fail(

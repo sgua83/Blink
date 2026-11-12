@@ -743,6 +743,31 @@ impl Bindings {
 
 Bindings.types把类型形参映射到实际类型，Bindings.values保存const整数实参。type_call沿原内置类型身份识别标量，不为这次分类构造完整Ty。实例按这些绑定读取同一份源定义，形成自己的类型、合同和 IR，而不是为每一组实参重写一棵语法树。
 
+实际推导先判断形参是否出现在封存语法中。B签名模块沿同一类型节点递归读取名称和类型实参，并读取直接命名const及dataset／texture数组的静态形状；这些查询只返回bool。
+
+源码节选：`crates/blanguage/src/bootstrap/signatures.b:294`。
+
+```b
+bool type_contains_name(StorageView store, u64 offset, NameBytes name) on cpu {
+    TypeNode type = read_node<TypeNode>(store, offset);
+    if (compare_name(text_bytes(store, type.name), name) == i32(0)) { return true; }
+    u64 index = 0u64;
+    while (index < type.arguments.count) {
+        ArgumentNode argument = read_node<ArgumentNode>(store, child_at(store, type.arguments, index));
+        match (argument) {
+            ArgumentNode::Type(child) {
+                if (type_contains_name(store, child.offset, name)) { return true; }
+            }
+            ArgumentNode::Value(shape) {}
+        }
+        index += 1u64;
+    }
+    return false;
+}
+```
+
+Type和Argument的原拥有者同步借出源存储、节点偏移和名称字节，并保持到查询返回。实际Ty、const值和冲突诊断仍由原推导器形成；只读语法查询与实际实例求解各有明确职责。
+
 有限类型集合和 const 取值可以形成多个具体组合。当前 B 模块遍历这些组合，检查器按每一组实际绑定解释源定义；开放形参则等到实际调用给出实参。源码共享与实例独立分析是两层关系。
 
 例如一个宽度为四的固定数组与宽度为八的固定数组，存储、循环形状或协作工作量可能不同。把宽度在编译期确定，后端就能计算实际布局；代价是可能产生多个实例，编译量与代码体积也会增加。

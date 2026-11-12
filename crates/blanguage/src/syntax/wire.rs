@@ -293,6 +293,12 @@ pub struct CfnParameter {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.signatures::type_mentions"]
+    pub fn type_mentions(ty: SignatureNode, name: *const u8, length: u64) -> bool;
+    #[link_name = "bootstrap.signatures::argument_names_const"]
+    pub fn argument_names_const(argument: SignatureNode, name: *const u8, length: u64) -> bool;
+    #[link_name = "bootstrap.signatures::resource_names_shape"]
+    pub fn resource_names_shape(ty: SignatureNode, name: *const u8, length: u64) -> bool;
     #[link_name = "bootstrap.signatures::cfn_parameter"]
     pub fn cfn_parameter(formal: SignatureNode) -> CfnParameter;
     #[link_name = "bootstrap.signatures::record_member"]

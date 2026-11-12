@@ -290,3 +290,76 @@ extern "C" CfnParameter cfn_parameter(SignatureNode formal) on cpu {
     }
     return CfnParameter(access, child);
 }
+
+bool type_contains_name(StorageView store, u64 offset, NameBytes name) on cpu {
+    TypeNode type = read_node<TypeNode>(store, offset);
+    if (compare_name(text_bytes(store, type.name), name) == i32(0)) { return true; }
+    u64 index = 0u64;
+    while (index < type.arguments.count) {
+        ArgumentNode argument = read_node<ArgumentNode>(store, child_at(store, type.arguments, index));
+        match (argument) {
+            ArgumentNode::Type(child) {
+                if (type_contains_name(store, child.offset, name)) { return true; }
+            }
+            ArgumentNode::Value(shape) {}
+        }
+        index += 1u64;
+    }
+    return false;
+}
+
+extern "C" bool type_mentions(SignatureNode type, address bytes, u64 length) on cpu {
+    return type_contains_name(type.storage, type.offset, NameBytes(bytes, length));
+}
+
+bool shape_is_name(StorageView store, ShapeRef shape, NameBytes name) on cpu {
+    match (read_node<ShapeNode>(store, shape.offset)) {
+        ShapeNode::Constant(text) { return compare_name(text_bytes(store, text), name) == i32(0); }
+        ShapeNode::Literal(value) { return false; }
+        ShapeNode::Expression(expr) { return false; }
+    }
+}
+
+bool value_argument_is_name(StorageView store, u64 offset, NameBytes name) on cpu {
+    match (read_node<ArgumentNode>(store, offset)) {
+        ArgumentNode::Type(child) {
+            TypeNode type = read_node<TypeNode>(store, child.offset);
+            return type.arguments.count == 0u64 && type.dataset == 0 && type.view == 0 && type.tile == 0
+                && compare_name(text_bytes(store, type.name), name) == i32(0);
+        }
+        ArgumentNode::Value(shape) { return shape_is_name(store, shape, name); }
+    }
+}
+
+extern "C" bool argument_names_const(SignatureNode argument, address bytes, u64 length) on cpu {
+    return value_argument_is_name(argument.storage, argument.offset, NameBytes(bytes, length));
+}
+
+extern "C" bool resource_names_shape(SignatureNode type, address bytes, u64 length) on cpu {
+    StorageView store = type.storage;
+    TypeNode outer = read_node<TypeNode>(store, type.offset);
+    NameBytes name = NameBytes(bytes, length);
+    if (outer.dataset != 0) {
+        return outer.count.present != 0 && shape_is_name(store, outer.count.value, name);
+    }
+    if (outer.view != 0 || outer.tile != 0 || outer.arguments.count != 2u64) { return false; }
+    array<u8,5> array_name = "array";
+    if (compare_name(text_bytes(store, outer.name), NameBytes(address_of(array_name[0]), 5u64)) != i32(0)) {
+        return false;
+    }
+    match (read_node<ArgumentNode>(store, child_at(store, outer.arguments, 0u64))) {
+        ArgumentNode::Type(child) {
+            TypeNode element = read_node<TypeNode>(store, child.offset);
+            if (element.dataset != 0 || element.view != 0 || element.tile != 0) { return false; }
+            NameBytes element_name = text_bytes(store, element.name);
+            array<u8,9> texture_2d = "texture2d";
+            array<u8,9> texture_3d = "texture3d";
+            if (compare_name(element_name, NameBytes(address_of(texture_2d[0]), 9u64)) != i32(0)
+                && compare_name(element_name, NameBytes(address_of(texture_3d[0]), 9u64)) != i32(0)) {
+                return false;
+            }
+            return value_argument_is_name(store, child_at(store, outer.arguments, 1u64), name);
+        }
+        ArgumentNode::Value(shape) { return false; }
+    }
+}
