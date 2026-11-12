@@ -23,6 +23,8 @@ unsafe extern "C" {
     fn indirect_value(size: u32, alignment: u32) -> bool;
     #[link_name = "bootstrap.call_layout::copy_value"]
     fn copy_value(start: u64, size: u32, alignment: u32) -> ValueCopy;
+    #[link_name = "bootstrap.x64_instruction::argument_register"]
+    fn encode_argument_register(slot: u8, float_size: u32, to_home: bool, output: *mut u8) -> u64;
     #[link_name = "bootstrap.call_layout::plan"]
     fn call_plan(context: *const Call, count: u64, result: AbiType, flags: u32,
         argument: unsafe extern "C" fn(*const Call, u64) -> AbiType) -> CallPlan;
@@ -36,8 +38,14 @@ unsafe extern "C" fn argument_type(call: *const Call, index: u64) -> AbiType {
 pub(super) fn indirect(ty: &Ty) -> bool {
     unsafe { indirect_value(ty.size, ty.align) }
 }
-pub(super) fn floating(ty: &Ty) -> bool {
-    *ty == Ty::scalar(Scalar::F32) || *ty == Ty::scalar(Scalar::F64)
+pub(super) fn float_size(ty: &Ty) -> u32 {
+    if *ty == Ty::scalar(Scalar::F32) {
+        4
+    } else if *ty == Ty::scalar(Scalar::F64) {
+        8
+    } else {
+        0
+    }
 }
 impl Layout {
     pub(super) fn new(call: &Call) -> Self {
@@ -50,6 +58,11 @@ impl Layout {
     }
 }
 impl Emitter<'_> {
+    pub(super) fn argument_register(&mut self, slot: usize, float_size: u32, to_home: bool) {
+        self.emit_bytes(9, |output| unsafe {
+            encode_argument_register(slot as u8, float_size, to_home, output)
+        });
+    }
     fn stack_address(&mut self, offset: u32) {
         self.instruction(None, &[0x8d], true, 0, Operand::memory(4, offset));
     }
@@ -143,16 +156,15 @@ impl Emitter<'_> {
             }
         }
         if layout.hidden {
-            self.instruction(None, &[0x8b], true, 1, Operand::memory(4, 0));
+            self.argument_register(0, 0, false);
         }
         for (slot, arg) in arguments.enumerate().take(4 - usize::from(layout.hidden)) {
             let slot = slot + usize::from(layout.hidden);
-            let memory = Operand::memory(4, slot as u32 * 8);
-            if let CallArgument::Value { ty, .. } = arg && floating(ty) {
-                self.instruction(Some(if ty == &Ty::scalar(Scalar::F64) { 0xf2 } else { 0xf3 }), &[0x0f, 0x10], false, slot as u8, memory);
-            } else {
-                self.instruction(None, &[0x8b], true, [1, 2, 8, 9][slot], memory);
-            }
+            let size = match arg {
+                CallArgument::Value { ty, .. } => float_size(ty),
+                CallArgument::Reference { .. } => 0,
+            };
+            self.argument_register(slot, size, false);
         }
         let reference = match &call.target {
             CallTarget::Indirect(_) => { self.instruction(None, &[0x8b], true, 0, Operand::memory(4, layout.target.unwrap() as u32)); None }
@@ -169,7 +181,7 @@ impl Emitter<'_> {
                 for ((_, offset), reg) in ty.components.iter().zip(&call.values) {
                     self.read_scalar(*reg, 4, at as u32 + *offset);
                 }
-            } else if floating(ty) {
+            } else if float_size(ty) != 0 {
                 self.store_float(call.values[0]);
             } else {
                 // After the call, RCX preserves all packed return bits while RAX delivers each word.

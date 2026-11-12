@@ -402,6 +402,23 @@ u64 store_float(u64 at, MoveLocation dst, u8 src, bool wide) on cpu {
     return encode_operand_instruction(at, u16(0x110f), u8(0xf3), false, src, dst);
 }
 
+extern "C" u64 argument_register(u8 slot, u32 float_size, bool to_home, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 offset = u64(slot) * 8u64 + (to_home ? 8u64 : 0u64);
+    MoveLocation home = MoveLocation(offset, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    if (float_size != 0) {
+        u8 prefix = float_size == 8 ? u8(0xf2) : u8(0xf3);
+        u16 opcode = to_home ? u16(0x110f) : u16(0x100f);
+        return encode_operand_instruction(start, opcode, prefix, false, slot, home) - start;
+    }
+    // Positions zero through three are RCX, RDX, R8, and R9.
+    u8 register = slot + (slot < u8(2) ? u8(1) : u8(6));
+    if (to_home) {
+        return store_bits(start, home, register, 8) - start;
+    }
+    return load_bits(start, register, home, true) - start;
+}
+
 u64 store_immediate(u64 at, MoveLocation dst, u64 value, u32 size) on cpu {
     u16 opcode = u16(0xc7);
     u8 prefix = u8(0);

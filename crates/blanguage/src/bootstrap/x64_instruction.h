@@ -33,6 +33,11 @@ extern "C" FrameEncoding allocate_frame(u32 frame, address output) on cpu;
 extern "C" u64 release_frame(u32 frame, address output) on cpu;
 // The caller owns two output bytes. restore selects POP instead of PUSH.
 extern "C" u64 stack_register(u8 register, bool restore, address output) on cpu;
+
+// slot is 0..3, float_size is 4 or 8 for scalar floats and zero for the GPR bank.
+// to_home stores at the callee's entry, above the return address. Otherwise load from
+// the caller's outgoing slot. The caller owns nine output bytes.
+extern "C" u64 argument_register(u8 slot, u32 float_size, bool to_home, address output) on cpu;
 extern "C" u64 stack_probe_size() on cpu;
 // The caller owns the code image through end plus stack_probe_size bytes.
 extern "C" u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu;

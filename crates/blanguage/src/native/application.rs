@@ -15,7 +15,7 @@ pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'sta
         Some(&function.name),
     )
 }
-use super::external::{floating, indirect};
+use super::external::{float_size, indirect};
 fn emit_value(
     body: &ValueCode,
     parameters: &[CallParameter],
@@ -125,12 +125,11 @@ fn emit_value(
         .chain(parameters.clone().map(Some)).take(4).enumerate()
     {
         let start = e.code.len();
-        let memory = Operand::memory(4, 8 + slot as u32 * 8);
-        if let Some(CallParameterKind::Value(ty)) = value.map(|(_, parameter)| &parameter.kind) && floating(ty) {
-            e.instruction(Some(if ty == &Ty::scalar(Scalar::F64) { 0xf2 } else { 0xf3 }), &[0x0f, 0x11], false, slot as u8, memory);
-        } else {
-            e.instruction(None, &[0x89], true, [1, 2, 8, 9][slot], memory);
-        }
+        let size = match value.map(|(_, parameter)| &parameter.kind) {
+            Some(CallParameterKind::Value(ty)) => float_size(ty),
+            _ => 0,
+        };
+        e.argument_register(slot, size, true);
         e.abi_range(start, match value {
             None => AbiRangeKind::HiddenResultHome { slot },
             Some((index, parameter)) => AbiRangeKind::ParameterHome {
@@ -196,7 +195,7 @@ fn emit_value(
             }
             e.bytes(&[0x48, 0x89, 0xc8]);
             AbiRangeKind::IndirectResult { stack_offset: at }
-        } else if floating(ty) {
+        } else if float_size(ty) != 0 {
             e.float(body.outputs[0], 0);
             AbiRangeKind::FloatResult
         } else {
