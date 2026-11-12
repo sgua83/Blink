@@ -2137,7 +2137,7 @@ let key = if scalar.is_float() {
 
 ### 24.4 稳定逻辑次序不能依赖硬件偶然安排
 
-subgroup 的 lane 与 LocalInvocationIndex 未必能按某张显卡的习惯直接等同。实现合成算法所需的逻辑序号，声明必要 subgroup 能力，保证散布的稳定含义。把碰巧在一台机器成立的映射写进算法，会破坏跨设备正确性。
+subgroup 的 lane 与 LocalInvocationIndex 未必能按某张显卡的习惯直接等同。B 发射器用 subgroup 编号和 lane 合成逻辑序号，为每个四位子键生成直方图与散射。共享桶先计入当前 subgroup，再用前一 subgroup 的计数补足组内序号。活跃分支的键和原序号经 SSA 合流交接，散射读取和写入的两个字分别共用各自记录的页地址。把碰巧在一台机器成立的映射写进算法，会破坏跨设备正确性。
 
 CPU 排序则使用自己的原生范围与合并路径，位于 `native/sort.rs` 和 `cpu/sort.rs`。两个后端的代码形态可以不同，稳定性、键解释和记录布局必须服从同一语言操作。
 

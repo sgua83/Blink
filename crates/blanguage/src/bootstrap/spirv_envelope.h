@@ -397,13 +397,6 @@ struct DispatchScalars {
     u32 one;
 };
 
-struct DispatchGroups {
-    DispatchScalars scalars;
-    u32 count;
-    u32 width;
-    u32 next;
-};
-
 struct DispatchValue {
     u64 words;
     u32 next;
@@ -427,8 +420,36 @@ struct DispatchGrid {
     u32 next;
 };
  
-extern "C" DispatchValue encode_dispatch_groups(DispatchGroups input, address body) on cpu;
 extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address offsets, address body) on cpu;
+
+struct SortRankEmission {
+    PageAddress source;
+    PageAddress totals;
+    PageAddress target;
+    DispatchScalars scalars;
+    u32 histogram;
+    u32 count;
+    u32 index;
+    u32 label;
+    u32 wave_input;
+    u32 lane_input;
+    u32 ballot_type;
+    u32 shared;
+    u32 shared_pointer;
+    u32 shift;
+    u32 width;
+    u32 wave_width;
+    u32 bins;
+    u32 mask;
+    array<u32,4> bit_masks;
+    u32 subgroup_scope;
+    u32 workgroup_scope;
+    u32 shared_semantics;
+    u32 pair_step;
+    u32 next;
+};
+struct SortRankWords { u64 words; u32 next; u32 label; };
+extern "C" SortRankWords encode_sort_rank(SortRankEmission input, address body) on cpu;
 
 struct PrefixIndexEmission {
     u32 uint_type;

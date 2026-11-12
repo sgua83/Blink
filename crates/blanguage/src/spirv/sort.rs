@@ -76,14 +76,6 @@ impl Emitter<'_> {
             e.copy_record(s.source, original, s.target, e.index);
         });
     }
-    fn sort_ballot(&mut self, predicate: u32, vector: u32) -> u32 {
-        let subgroup = self.constant(Scalar::U32, 3);
-        let ballot = self.id();
-        self.emit(339, &[vector, ballot, subgroup, predicate]);
-        let bits = self.id();
-        self.emit(81, &[self.types[&Scalar::U32], bits, ballot, 0]);
-        bits
-    }
     pub(super) fn sort_rank(
         &mut self,
         s: &Sorting,
@@ -91,113 +83,48 @@ impl Emitter<'_> {
         histogram: bool,
         count: u32,
         inputs: &[u32],
-        vector: u32,
+        ballot_type: u32,
         shared: u32,
-        pointer: u32,
-        temporary: u32,
+        shared_pointer: u32,
     ) {
-        let u = self.types[&Scalar::U32];
-        let b = self.types[&Scalar::Bool];
-        let zero = self.constant(Scalar::U32, 0);
-        let one = self.constant(Scalar::U32, 1);
-        let width = self.constant(Scalar::U32, 64);
-        let half = self.constant(Scalar::U32, 32);
-        let bins = self.constant(Scalar::U32, 16);
-        let mask = self.constant(Scalar::U32, 15);
-        let wave = self.id();
-        let lane = self.id();
-        self.emit(61, &[u, wave, inputs[0]]);
-        self.emit(61, &[u, lane, inputs[1]]);
-        let group = self.sort_binary(134, self.index, width);
-        let local_base = self.sort_binary(132, wave, half);
-        let local = self.sort_binary(128, local_base, lane);
-        let base = self.sort_binary(132, group, width);
-        self.index = self.sort_binary(128, base, local);
-        let active = self.id();
-        self.emit(176, &[b, active, self.index, count]);
-        self.emit(62, &[temporary, zero]);
-        self.sort_when(active, |e| {
-            let key = e.load_raw_buffer(Scalar::U32, s.source, e.index, 0);
-            e.emit(62, &[temporary, key]);
-        });
-        let key = self.id();
-        self.emit(61, &[u, key, temporary]);
-        let shift = self.constant(Scalar::U32, shift);
-        let shifted = self.sort_binary(194, key, shift);
-        let digit = self.sort_binary(199, shifted, mask);
-        let mut equal = self.sort_ballot(active, vector);
-        for bit in 0..4 {
-            let bit = self.constant(Scalar::U32, 1 << bit);
-            let bits = self.sort_binary(199, digit, bit);
-            let set = self.id();
-            self.emit(171, &[b, set, bits, zero]);
-            let selected = self.sort_ballot(set, vector);
-            let inverted = self.id();
-            self.emit(200, &[u, inverted, selected]);
-            let matching = self.id();
-            self.emit(169, &[u, matching, set, selected, inverted]);
-            equal = self.sort_binary(199, equal, matching);
-        }
-        let bit = self.sort_binary(196, one, lane);
-        let lower = self.sort_binary(130, bit, one);
-        let prior = self.sort_binary(199, equal, lower);
-        let rank = self.id();
-        let total = self.id();
-        self.emit(205, &[u, rank, prior]);
-        self.emit(205, &[u, total, equal]);
-        let init = self.id();
-        self.emit(176, &[b, init, local, half]);
-        self.sort_when(init, |e| {
-            let at = e.shared_at(pointer, shared, local);
-            e.emit(62, &[at, zero]);
-        });
-        self.scan_barrier();
-        let first = self.id();
-        self.emit(170, &[b, first, rank, zero]);
-        let leader = self.id();
-        self.emit(167, &[b, leader, first, active]);
-        let wave_bin = self.sort_binary(132, wave, bins);
-        let own_bin = self.sort_binary(128, wave_bin, digit);
-        self.sort_when(leader, |e| {
-            let at = e.shared_at(pointer, shared, own_bin);
-            e.emit(62, &[at, total]);
-        });
-        self.scan_barrier();
-        let nonzero = self.dispatch_groups(count, width);
-        if histogram {
-            let write = self.id();
-            self.emit(176, &[b, write, local, bins]);
-            self.sort_when(write, |e| {
-                let a = e.shared_at(pointer, shared, local);
-                let next = e.sort_binary(128, local, bins);
-                let c = e.shared_at(pointer, shared, next);
-                let x = e.id();
-                let y = e.id();
-                e.emit(61, &[u, x, a]);
-                e.emit(61, &[u, y, c]);
-                let total = e.sort_binary(128, x, y);
-                let row = e.sort_binary(132, local, nonzero);
-                let at = e.sort_binary(128, row, group);
-                e.sort_store(e.program.buffers.len(), at, 0, total);
-            });
-        } else {
-            self.sort_when(active, |e| {
-                let a = e.shared_at(pointer, shared, digit);
-                let first = e.id();
-                e.emit(61, &[u, first, a]);
-                let other = e.id();
-                e.emit(170, &[b, other, wave, zero]);
-                let previous = e.id();
-                e.emit(169, &[u, previous, other, zero, first]);
-                let own_rank = e.sort_binary(128, rank, previous);
-                let row = e.sort_binary(132, digit, nonzero);
-                let at = e.sort_binary(128, row, group);
-                let offset = e.load_raw_buffer(Scalar::U32, e.program.buffers.len(), at, 0);
-                let target = e.sort_binary(128, offset, own_rank);
-                let original = e.load_raw_buffer(Scalar::U32, s.source, e.index, 4);
-                e.sort_store(s.target, target, 0, key);
-                e.sort_store(s.target, target, 4, original);
-            });
+        let source = self.page_input(
+            Scalar::U32, PageSource::Dataset(self.buffers[s.source]), self.index, None, 0,
+        );
+        let totals = PageAddress { descriptor: self.buffers[self.program.buffers.len()], ..source };
+        let target = PageAddress { descriptor: self.buffers[s.target], ..source };
+        let input = SortRankEmission {
+            source, totals, target,
+            scalars: self.dispatch_scalars(),
+            histogram: u32::from(histogram),
+            count,
+            index: self.index,
+            label: self.current_label,
+            wave_input: inputs[0],
+            lane_input: inputs[1],
+            ballot_type,
+            shared,
+            shared_pointer,
+            shift: self.constant(Scalar::U32, shift),
+            width: self.constant(Scalar::U32, 64),
+            wave_width: self.constant(Scalar::U32, 32),
+            bins: self.constant(Scalar::U32, 16),
+            mask: self.constant(Scalar::U32, 15),
+            bit_masks: [1, 2, 4, 8].map(|bit| self.constant(Scalar::U32, bit)),
+            subgroup_scope: self.constant(Scalar::U32, 3),
+            workgroup_scope: self.constant(Scalar::U32, 2),
+            shared_semantics: self.constant(Scalar::U32, 0x108),
+            pair_step: self.constant(Scalar::U64, 4),
+            next: self.next,
+        };
+        let at = self.body.len();
+        // At most two paired addresses, one single address, and the fixed rank instructions.
+        self.body.reserve(1024);
+        unsafe {
+            let emitted = encode_sort_rank(input, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
         }
     }
+
 }

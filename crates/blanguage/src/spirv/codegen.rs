@@ -401,12 +401,35 @@ struct DispatchScalars {
 }
 
 #[repr(C)]
-struct DispatchGroups {
+struct SortRankEmission {
+    source: PageAddress,
+    totals: PageAddress,
+    target: PageAddress,
     scalars: DispatchScalars,
+    histogram: u32,
     count: u32,
+    index: u32,
+    label: u32,
+    wave_input: u32,
+    lane_input: u32,
+    ballot_type: u32,
+    shared: u32,
+    shared_pointer: u32,
+    shift: u32,
     width: u32,
+    wave_width: u32,
+    bins: u32,
+    mask: u32,
+    bit_masks: [u32; 4],
+    subgroup_scope: u32,
+    workgroup_scope: u32,
+    shared_semantics: u32,
+    pair_step: u32,
     next: u32,
 }
+
+#[repr(C)]
+struct SortRankWords { words: u64, next: u32, label: u32 }
 
 #[repr(C)]
 struct DispatchValue {
@@ -586,8 +609,8 @@ unsafe extern "C" {
     fn emit_private_address(
         input: PrivateAddress, parts: *const u32, pointers: *mut u32, body: *mut u32,
     ) -> PrivateAddressWords;
-    #[link_name = "bootstrap.spirv_envelope::encode_dispatch_groups"]
-    fn encode_dispatch_groups(input: DispatchGroups, body: *mut u32) -> DispatchValue;
+    #[link_name = "bootstrap.spirv_envelope::encode_sort_rank"]
+    fn encode_sort_rank(input: SortRankEmission, body: *mut u32) -> SortRankWords;
     #[link_name = "bootstrap.spirv_envelope::encode_dispatch_grid"]
     fn encode_dispatch_grid(input: DispatchGrid, offsets: *const u32, body: *mut u32) -> DispatchValue;
     #[link_name = "bootstrap.spirv_envelope::encode_prefix_index"]
@@ -1920,7 +1943,6 @@ fn emit_shader(
     };
     e.emit(54, &[void, main, 0, fn_ty]);
     e.emit(248, &[entry]);
-    let mut temporary = 0;
     if !argument_pass {
         e.regs = (0..stage.registers.len()).map(|_| e.id()).collect();
         let mut rays = Vec::new();
@@ -1948,9 +1970,6 @@ fn emit_shader(
             for (slot, (scalar, _)) in (start..end).zip(&ty.components) {
                 e.locals[slot] = e.declare_function_variable(e.pointers[scalar]);
             }
-        }
-        if ranks {
-            temporary = e.declare_function_variable(e.pointers[&shared_scalar]);
         }
     }
     let gid = e.id();
@@ -2051,7 +2070,6 @@ fn emit_shader(
                 ballot_type,
                 shared,
                 shared_pointer,
-                temporary,
             ),
             Pass::SortScan | Pass::ScanTail => {
                 let local = e.id();

@@ -1029,9 +1029,187 @@ DispatchValue dispatch_groups(address body, DispatchValue cursor, DispatchScalar
     return DispatchValue(at, nonzero + 1, nonzero);
 }
 
-extern "C" DispatchValue encode_dispatch_groups(DispatchGroups input, address body) on cpu {
-    return dispatch_groups(body, DispatchValue(0u64, input.next, 0), input.scalars,
-                           input.count, input.width, true);
+struct SortCursor { address body; u64 words; u32 next; };
+struct SortBranch { u32 run; u32 end; };
+
+u32 sort_op(inout SortCursor out, u32 op, u32 ty, u32 a, u32 b) on cpu {
+    u32 result = out.next;
+    out.words = words_four(out.body, out.words, op, ty, result, a, b);
+    out.next = result + 1;
+    return result;
+}
+
+u32 sort_load(inout SortCursor out, u32 ty, u32 pointer, bool physical) on cpu {
+    u32 result = out.next;
+    if (physical) {
+        out.words = words_five(out.body, out.words, 61, ty, result, pointer, 2, 4);
+    } else {
+        out.words = words_three(out.body, out.words, 61, ty, result, pointer);
+    }
+    out.next = result + 1;
+    return result;
+}
+
+PageAddressResult sort_address(inout SortCursor out, PageAddress input, u32 index, u32 step) on cpu {
+    PageAddress request = input;
+    request.index = index;
+    request.next = out.next;
+    PageAddressResult result = page_address(request, step, word_at(out.body, out.words));
+    out.words += result.words;
+    out.next = result.next;
+    return result;
+}
+
+SortBranch sort_open(inout SortCursor out, u32 condition) on cpu {
+    u32 run = out.next;
+    u32 end = run + 1;
+    out.words = open_conditional(out.body, out.words, end, condition, run, end);
+    out.words = words_one(out.body, out.words, 248, run);
+    out.next = end + 1;
+    return SortBranch(run, end);
+}
+
+void sort_close(inout SortCursor out, SortBranch branch) on cpu {
+    out.words = words_one(out.body, out.words, 249, branch.end);
+    out.words = words_one(out.body, out.words, 248, branch.end);
+}
+
+u32 sort_phi(inout SortCursor out, u32 ty, u32 zero, u32 before, u32 value, u32 active) on cpu {
+    u64 at = out.words;
+    u32 result = out.next;
+    put(out.body, at, instruction(245, 7));
+    put(out.body, at + 1u64, ty);
+    put(out.body, at + 2u64, result);
+    put(out.body, at + 3u64, zero);
+    put(out.body, at + 4u64, before);
+    put(out.body, at + 5u64, value);
+    put(out.body, at + 6u64, active);
+    out.words = at + 7u64;
+    out.next = result + 1;
+    return result;
+}
+
+u32 sort_ballot(inout SortCursor out, u32 ty, u32 vector, u32 scope, u32 predicate) on cpu {
+    u32 vote = sort_op(out, 339, vector, scope, predicate);
+    return sort_op(out, 81, ty, vote, 0);
+}
+
+u32 sort_select(inout SortCursor out, u32 ty, u32 condition, u32 yes, u32 no) on cpu {
+    u32 result = out.next;
+    out.words = words_five(out.body, out.words, 169, ty, result, condition, yes, no);
+    out.next = result + 1;
+    return result;
+}
+
+u32 sort_unary(inout SortCursor out, u32 op, u32 ty, u32 value) on cpu {
+    u32 result = out.next;
+    out.words = words_three(out.body, out.words, op, ty, result, value);
+    out.next = result + 1;
+    return result;
+}
+
+void sort_barrier(inout SortCursor out, u32 scope, u32 semantics) on cpu {
+    out.words = words_three(out.body, out.words, 224, scope, scope, semantics);
+}
+
+extern "C" SortRankWords encode_sort_rank(SortRankEmission input, address body) on cpu {
+    SortCursor out = SortCursor(body, 0u64, input.next);
+    DispatchScalars types = input.scalars;
+    u32 u = types.uint_type;
+    u32 b = types.bool_type;
+    u32 zero = types.zero;
+    bool histogram = input.histogram != 0;
+
+    u32 wave = sort_load(out, u, input.wave_input, false);
+    u32 lane = sort_load(out, u, input.lane_input, false);
+    u32 group = sort_op(out, 134, u, input.index, input.width);
+    u32 wave_base = sort_op(out, 132, u, wave, input.wave_width);
+    u32 local = sort_op(out, 128, u, wave_base, lane);
+    u32 base = sort_op(out, 132, u, group, input.width);
+    u32 index = sort_op(out, 128, u, base, local);
+    u32 active = sort_op(out, 176, b, index, input.count);
+
+    // Both values stay in SSA. Histogram needs only the key.
+    SortBranch read = sort_open(out, active);
+    PageAddressResult source = sort_address(out, input.source, index, histogram ? 0 : input.pair_step);
+    u32 loaded = sort_load(out, u, source.pointer, true);
+    u32 ordinal = zero;
+    if (!histogram) { ordinal = sort_load(out, u, source.second, true); }
+    sort_close(out, read);
+    u32 key = sort_phi(out, u, zero, input.label, loaded, read.run);
+    if (!histogram) { ordinal = sort_phi(out, u, zero, input.label, ordinal, read.run); }
+
+    u32 shifted = sort_op(out, 194, u, key, input.shift);
+    u32 digit = sort_op(out, 199, u, shifted, input.mask);
+    u32 equal = sort_ballot(out, u, input.ballot_type, input.subgroup_scope, active);
+    for (bit in 0..4) {
+        u32 masked = sort_op(out, 199, u, digit, input.bit_masks[bit]);
+        u32 set = sort_op(out, 171, b, masked, zero);
+        u32 selected = sort_ballot(out, u, input.ballot_type, input.subgroup_scope, set);
+        u32 inverted = sort_unary(out, 200, u, selected);
+        u32 matching = sort_select(out, u, set, selected, inverted);
+        equal = sort_op(out, 199, u, equal, matching);
+    }
+    u32 bit = sort_op(out, 196, u, types.one, lane);
+    u32 lower = sort_op(out, 130, u, bit, types.one);
+    u32 prior = sort_op(out, 199, u, equal, lower);
+    u32 rank = sort_unary(out, 205, u, prior);
+    u32 total = sort_unary(out, 205, u, equal);
+
+    // Each of the two waves owns its sixteen bins.
+    u32 init = sort_op(out, 176, b, local, input.wave_width);
+    SortBranch clear = sort_open(out, init);
+    u32 cell = sort_op(out, 65, input.shared_pointer, input.shared, local);
+    out.words = words_two(body, out.words, 62, cell, zero);
+    sort_close(out, clear);
+    sort_barrier(out, input.workgroup_scope, input.shared_semantics);
+
+    u32 first = sort_op(out, 170, b, rank, zero);
+    u32 leader = sort_op(out, 167, b, first, active);
+    u32 wave_bin = sort_op(out, 132, u, wave, input.bins);
+    u32 own_bin = sort_op(out, 128, u, wave_bin, digit);
+    SortBranch write = sort_open(out, leader);
+    u32 cell_out = sort_op(out, 65, input.shared_pointer, input.shared, own_bin);
+    out.words = words_two(body, out.words, 62, cell_out, total);
+    sort_close(out, write);
+    sort_barrier(out, input.workgroup_scope, input.shared_semantics);
+
+    DispatchValue groups = dispatch_groups(body, DispatchValue(out.words, out.next, 0), types, input.count, input.width, true);
+    out.words = groups.words;
+    out.next = groups.next;
+    if (histogram) {
+        u32 writes_bin = sort_op(out, 176, b, local, input.bins);
+        SortBranch sum = sort_open(out, writes_bin);
+        u32 a = sort_op(out, 65, input.shared_pointer, input.shared, local);
+        u32 next_bin = sort_op(out, 128, u, local, input.bins);
+        u32 c = sort_op(out, 65, input.shared_pointer, input.shared, next_bin);
+        u32 x = sort_load(out, u, a, false);
+        u32 y = sort_load(out, u, c, false);
+        u32 sum_bin = sort_op(out, 128, u, x, y);
+        u32 row = sort_op(out, 132, u, local, groups.value);
+        u32 slot = sort_op(out, 128, u, row, group);
+        PageAddressResult target = sort_address(out, input.totals, slot, 0);
+        out.words = words_four(body, out.words, 62, target.pointer, sum_bin, 2, 4);
+        sort_close(out, sum);
+        return SortRankWords(out.words, out.next, sum.end);
+    }
+
+    SortBranch scatter = sort_open(out, active);
+    u32 prior_bin = sort_op(out, 65, input.shared_pointer, input.shared, digit);
+    u32 prior_wave = sort_load(out, u, prior_bin, false);
+    u32 is_first_wave = sort_op(out, 170, b, wave, zero);
+    u32 previous = sort_select(out, u, is_first_wave, zero, prior_wave);
+    u32 own_rank = sort_op(out, 128, u, rank, previous);
+    u32 row = sort_op(out, 132, u, digit, groups.value);
+    u32 slot = sort_op(out, 128, u, row, group);
+    PageAddressResult offsets = sort_address(out, input.totals, slot, 0);
+    u32 offset = sort_load(out, u, offsets.pointer, true);
+    u32 index_out = sort_op(out, 128, u, offset, own_rank);
+    PageAddressResult target = sort_address(out, input.target, index_out, input.pair_step);
+    out.words = words_four(body, out.words, 62, target.pointer, key, 2, 4);
+    out.words = words_four(body, out.words, 62, target.second, ordinal, 2, 4);
+    sort_close(out, scatter);
+    return SortRankWords(out.words, out.next, scatter.end);
 }
 
 DispatchValue dispatch_min(address body, DispatchValue cursor, DispatchScalars types, u32 a, u32 b) on cpu {

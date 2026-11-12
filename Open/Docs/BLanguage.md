@@ -4591,7 +4591,7 @@ f32／f64分别使用与[Rust f32::total_cmp](https://doc.rust-lang.org/std/prim
 
 两个后端都从最低优先级的32位子键开始，每个子键以 4 bit、16 桶进行八轮稳定基数分配；一个64位整数因此由两个32位子键处理。下一个分量直接按已有原始序号从源记录装入同一键槽；不保存全部键的副本，不为每个键生成一个完整记录中间集。中间始终只移动 8 字节的当前键／原始序号，最后 gather 一次完整记录，保留字段与 ABI 填充字节。CPU gather按实际尾部8／4／2／1字节复制，GPU gather复用原类型化物理存储复制完整记录，按Ty实际1／2／4字节存储单元与对齐交接；不宽读或覆盖下一条记录，页边界仍不拆记录。复制包含所有 ABI 填充，不对 bool、NaN、次正规数或有符号零做数值转换；对齐与物理指针访问遵循 [SPIR-V 规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)。CPU 由自研 x64 内核完成键装入、各范围私有直方图、稳定散写与 gather；执行框架只为少量范围／桶计算前缀，继续复用 Windows 范围线程池，不调用另一套排序库。CPU两块键／序号工作区只预留可写容量，首次读取分别在原生初始化或scatter完整覆盖并成功完成之后，不预填无消费者的零值；直方图计数继续使用已初始化切片和每轮零基线。临时内存由当前执行拥有，所有范围实际结束后释放，分配或原生执行失败直接报告。
 
-GPU 每个 64 线程组产生 16 桶直方图，桶优先、组序号其次排列；对该扁平序列做独占扫描即可同时得到桶起点与此前各组的数量。ballot 求出本 subgroup 内的相等键掩码和稳定序号，加上此前 subgroup 的桶计数后得到组内序号；全局前缀与组内序号共同给出唯一写入位置。直方图扫描复用已有设备扫描层级，全部中间数据留在 GPU，提交持有页与 pipeline 到最后一个消费者完成。
+GPU 每个 64 线程组产生 16 桶直方图，桶优先、组序号其次排列；对该扁平序列做独占扫描即可同时得到桶起点与此前各组的数量。ballot 求出本 subgroup 内的相等键掩码和稳定序号，加上此前 subgroup 的桶计数后得到组内序号；全局前缀与组内序号共同给出唯一写入位置。B发射直方图与散射，活跃lane的键及原序号通过SSA合流交接。直方图只读取键，散射的键与序号在源和目标各共用一次选页。直方图扫描复用已有设备扫描层级，全部中间数据留在 GPU，提交持有页与 pipeline 到最后一个消费者完成。
 
 Vulkan 不保证 LocalInvocationIndex 与 subgroup lane 的直接对应关系，因此排序内核明确申请 32 lane、full subgroups，并用 `SubgroupId * 32 + SubgroupLocalInvocationId` 合成逻辑输入序号。尾组仍完整参加 ballot／共享存储屏障；域外元素不贡献计数。依据为 [Khronos subgroup 序号规则](https://docs.vulkan.org/refpages/latest/refpages/source/SubgroupLocalInvocationId.html)与[完整 subgroup 能力定义](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceSubgroupSizeControlFeatures.html)。32 是当前排序后端的实现要求，不改变语言元素域，也不是所有 GPU 算法的固定 wave 宽度。
 

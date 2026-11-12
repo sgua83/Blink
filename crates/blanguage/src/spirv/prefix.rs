@@ -10,31 +10,13 @@ impl Emitter<'_> {
         self.emit(61, &[self.types[&Scalar::U32], value, at]);
         value
     }
-    fn dispatch_scalars(&mut self) -> DispatchScalars {
+    pub(super) fn dispatch_scalars(&mut self) -> DispatchScalars {
         DispatchScalars {
             uint_type: self.types[&Scalar::U32],
             bool_type: self.types[&Scalar::Bool],
             zero: self.constant(Scalar::U32, 0),
             one: self.constant(Scalar::U32, 1),
         }
-    }
-
-    pub(super) fn dispatch_groups(&mut self, count: u32, width: u32) -> u32 {
-        let input = DispatchGroups {
-            scalars: self.dispatch_scalars(),
-            count,
-            width,
-            next: self.next,
-        };
-        let at = self.body.len();
-        self.body.reserve(37);
-        let emitted = unsafe {
-            let emitted = encode_dispatch_groups(input, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            emitted
-        };
-        self.next = emitted.next;
-        emitted.value
     }
 
     pub(super) fn prefix_arguments(&mut self, prefix: Option<&PrefixCount>, invocation: u32) {
