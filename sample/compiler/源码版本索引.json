@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "b7a657b2574cb0e0ceff70d0bee0706807100e943e16c70f259ca5dae512dabc"
+      "sha256": "b117c0b320679e698ff2a025bc784bd1174db186469af96d36781f16b8443427"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -96,11 +96,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/host_sdk.b",
-      "sha256": "8873943b2cd4efa3ec2898c41e536cbd26f9a42efeb36c2d519c5bad9bb8e33d"
+      "sha256": "4c5a7d0b6f053782984a327f78c670c7f46f184dba9386cbf81cdc8ef05ae268"
     },
     {
       "path": "crates/blanguage/src/bootstrap/host_sdk.h",
-      "sha256": "6162ecf27d997acc2d11dc9c9a792d158280ab1541ca08c98da6ebeb9772739d"
+      "sha256": "76987eb3e680e26f5523e5aff88d0658bb7b1c89a3dfef34f336e590f1846cc1"
     },
     {
       "path": "crates/blanguage/src/bootstrap/instance_domain.b",
@@ -536,7 +536,7 @@
     },
     {
       "path": "crates/blanguage/src/linker/msvc.rs",
-      "sha256": "525360563183ebe2e3a57ca5112f6abe8c1ba8309248e1a43374861a95d133fb"
+      "sha256": "6d5a50742e3924b90b30b70dee5e5c80afb44bd31c8fa28f7c1bdceaa298645c"
     },
     {
       "path": "crates/blanguage/src/linker/native.rs",

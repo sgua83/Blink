@@ -6,7 +6,7 @@ use std::{
     fs::File,
     io::{self, Write},
     os::windows::ffi::{OsStrExt, OsStringExt},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf, Prefix},
     process::{Command, Output},
 };
 // Detached link.exe has no console code page and encodes diagnostics with CP_ACP.
@@ -49,20 +49,14 @@ struct SdkRoot {
 }
 
 #[repr(C)]
-struct SdkVersionName {
-    data: *const u16,
-    units: usize,
-}
-
-impl SdkVersionName {
-    fn new(name: &[u16]) -> Self {
-        Self { data: name.as_ptr(), units: name.len() }
-    }
+struct SdkVersionResult {
+    units: u32,
+    status: u32,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.host_sdk::select_sdk_version"]
-    fn select_sdk_version(name: SdkVersionName, selected: SdkVersionName) -> bool;
+    #[link_name = "bootstrap.host_sdk::find_sdk_version"]
+    fn find_sdk_version(pattern: *const u16, selected: *mut u16) -> SdkVersionResult;
     #[link_name = "bootstrap.host_sdk::read_sdk_root"]
     fn read_sdk_root() -> SdkRoot;
     #[link_name = "bootstrap.host_sdk::release_sdk_root"]
@@ -79,6 +73,33 @@ fn sdk_root() -> Result<PathBuf> {
         return Err(std::io::Error::last_os_error().into());
     }
     Ok(path.into())
+}
+
+fn sdk_search_pattern(directory: &Path) -> io::Result<Vec<u16>> {
+    let pattern = directory.join("*");
+    let mut units: Vec<_> = pattern.as_os_str().encode_wide().collect();
+    if units.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file name contained an unexpected NUL byte"));
+    }
+    const VERBATIM: &str = r"\\?\";
+    let verbatim = units.starts_with(&[92, 92, 63, 92]) || units.starts_with(&[92, 63, 63, 92]);
+    if !verbatim && (units.len() >= 247 || !pattern.is_absolute()) {
+        let absolute = std::path::absolute(&pattern)?;
+        let (prefix, skip) = match absolute.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(_) => (VERBATIM, 0),
+                Prefix::UNC(..) => (r"\\?\UNC\", 2),
+                Prefix::DeviceNS(_) => (VERBATIM, 4),
+                _ => ("", 0),
+            },
+            _ => ("", 0),
+        };
+        units.clear();
+        units.extend(prefix.encode_utf16());
+        units.extend(absolute.as_os_str().encode_wide().skip(skip));
+    }
+    units.push(0);
+    Ok(units)
 }
 
 fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
@@ -114,17 +135,16 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     )?;
     let vc = vs.join("VC/Tools/MSVC").join(version.trim());
     let lib = sdk_root()?.join("Lib");
-    let mut version = Vec::new();
-    for entry in std::fs::read_dir(&lib)? {
-        let name: Vec<_> = entry?.file_name().encode_wide().collect();
-        if unsafe { select_sdk_version(SdkVersionName::new(&name), SdkVersionName::new(&version)) } {
-            version = name;
-        }
+    let pattern = sdk_search_pattern(&lib)?;
+    let mut version = [0u16; 260];
+    let selected = unsafe { find_sdk_version(pattern.as_ptr(), version.as_mut_ptr()) };
+    if selected.status != 0 {
+        return Err(io::Error::from_raw_os_error(selected.status as i32).into());
     }
-    if version.is_empty() {
+    if selected.units == 0 {
         return Err("Windows SDK 没有已安装的本机库".into());
     }
-    let sdk = lib.join(OsString::from_wide(&version));
+    let sdk = lib.join(OsString::from_wide(&version[..selected.units as usize]));
     Ok((
         vc.join("bin/Hostx64/x64/link.exe"),
         vec![vc.join("lib/x64"), sdk.join("um/x64"), sdk.join("ucrt/x64")],

@@ -34,6 +34,12 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut compiler = Command::new(seed.join("bin/bc.exe"));
         compiler.arg("-c").arg(format!("src/bootstrap/{name}.b"))
             .args(["-I", "src", "--module", "-o"]).arg(object);
+        if *name == "host_sdk" {
+            compiler.args(["-I", "../../library"]);
+            for header in ["directory", "error", "time"] {
+                println!("cargo:rerun-if-changed=../../library/blink/windows/{header}.h");
+            }
+        }
         if *name == "parser" { compiler.arg("--import").arg(&shared[0]); }
         if *name == "names" {
             compiler.args(["--instance", "sort_rows<u64>", "--instance", "sort_rows<u32>", "--instance", "sort_rows<array<u64,3>>"]);

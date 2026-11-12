@@ -9,10 +9,7 @@ struct SdkRoot {
 extern "C" SdkRoot read_sdk_root() on cpu;
 extern "C" i32 release_sdk_root(address path) on cpu;
 
-struct SdkVersionName {
-    address data;
-    usize units;
-};
+struct SdkVersionResult { u32 units; u32 status; };
 
-// selected is empty or a name accepted by this same function.
-extern "C" bool select_sdk_version(SdkVersionName name, SdkVersionName selected) on cpu;
+// pattern is a terminated Win32 search path. selected holds 260 UTF-16 units.
+extern "C" SdkVersionResult find_sdk_version(address pattern, address selected) on cpu;

@@ -1,4 +1,14 @@
 module bootstrap.host_sdk;
+import blink.windows.directory;
+import blink.windows.error;
+
+const handle INVALID_SEARCH = unsafe_handle(0xffffffffffffffffu64);
+const u32 ERROR_FILE_NOT_FOUND = 2;
+const u32 ERROR_NO_MORE_FILES = 18;
+
+extern "C" handle FindFirstFileExW(address pattern, i32 information, write FindData data,
+    i32 search, address filter, u32 flags) on cpu
+    ensures initialized(data, returned != INVALID_SEARCH) from "KERNEL32.dll";
 
 extern "C" i32 RegGetValueW(handle key, address subkey, address value, u32 flags,
     address type_output, address data, inout u32 size) on cpu from "ADVAPI32.dll";
@@ -47,6 +57,11 @@ extern "C" i32 release_sdk_root(address path) on cpu {
     return HeapFree(GetProcessHeap(), 0, path);
 }
 
+struct SdkVersionName {
+    address data;
+    usize units;
+};
+
 struct VersionPart {
     u32 value;
     usize next;
@@ -74,7 +89,7 @@ VersionPart version_part(SdkVersionName name, usize start) on cpu {
     return VersionPart(number, index + 1u64, index != first_digit);
 }
 
-extern "C" bool select_sdk_version(SdkVersionName name, SdkVersionName selected) on cpu {
+bool select_sdk_version(SdkVersionName name, SdkVersionName selected) on cpu {
     usize index = 0u64;
     usize selected_index = 0u64;
     bool equal_prefix = selected.units != 0u64;
@@ -93,4 +108,39 @@ extern "C" bool select_sdk_version(SdkVersionName name, SdkVersionName selected)
     }
     // For equal versions, the current directory entry replaces the previous one.
     return !equal_prefix || selected_index > selected.units;
+}
+
+extern "C" SdkVersionResult find_sdk_version(address pattern, address selected) on cpu {
+    FindData data;
+    // FindExInfoBasic omits the unused alternate filename.
+    handle search = FindFirstFileExW(pattern, i32(1), data, i32(0), address(), 0);
+    if (search == INVALID_SEARCH) {
+        u32 status = GetLastError();
+        if (status == ERROR_FILE_NOT_FOUND) { return SdkVersionResult(0, 0); }
+        return SdkVersionResult(0, status);
+    }
+
+    usize selected_units = 0u64;
+    i32 more = i32(1);
+    while (more != i32(0)) {
+        address name = address_of(data.name[0]);
+        SdkVersionName entry = SdkVersionName(name, 0u64);
+        while (version_unit(entry, entry.units) != 0) { entry.units += 1u64; }
+        if (select_sdk_version(entry, SdkVersionName(selected, selected_units))) {
+            usize index = 0u64;
+            while (index < entry.units) {
+                address unit = unsafe_address(address_bits(selected) + index * 2u64);
+                unsafe_position<u16>(unit) = u16(version_unit(entry, index));
+                index += 1u64;
+            }
+            selected_units = entry.units;
+        }
+        more = FindNextFileW(search, data);
+    }
+    u32 status = GetLastError();
+    if (FindClose(search) == i32(0) && status == ERROR_NO_MORE_FILES) {
+        return SdkVersionResult(0, GetLastError());
+    }
+    if (status != ERROR_NO_MORE_FILES) { return SdkVersionResult(0, status); }
+    return SdkVersionResult(u32(selected_units), 0);
 }
