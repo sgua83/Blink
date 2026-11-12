@@ -46,3 +46,51 @@ extern "C" SdkRoot read_sdk_root() on cpu {
 extern "C" i32 release_sdk_root(address path) on cpu {
     return HeapFree(GetProcessHeap(), 0, path);
 }
+
+struct VersionPart {
+    u32 value;
+    usize next;
+    bool valid;
+};
+
+u32 version_unit(SdkVersionName name, usize index) on cpu {
+    return u32(unsafe_position<u16>(unsafe_address(address_bits(name.data) + index * 2u64)));
+}
+
+VersionPart version_part(SdkVersionName name, usize start) on cpu {
+    usize index = start;
+    if (index < name.units && version_unit(name, index) == 43) { index += 1u64; }
+    usize first_digit = index;
+    u32 number = 0;
+    while (index < name.units) {
+        u32 unit = version_unit(name, index);
+        if (unit == 46) { break; }
+        if (unit < 48 || unit > 57) { return VersionPart(0, index, false); }
+        u32 digit = unit - 48;
+        if (number > (0xffffffff - digit) / 10) { return VersionPart(0, index, false); }
+        number = number * 10 + digit;
+        index += 1u64;
+    }
+    return VersionPart(number, index + 1u64, index != first_digit);
+}
+
+extern "C" bool select_sdk_version(SdkVersionName name, SdkVersionName selected) on cpu {
+    usize index = 0u64;
+    usize selected_index = 0u64;
+    bool equal_prefix = selected.units != 0u64;
+    while (index <= name.units) {
+        VersionPart part = version_part(name, index);
+        if (!part.valid) { return false; }
+        if (equal_prefix && selected_index <= selected.units) {
+            VersionPart previous = version_part(selected, selected_index);
+            if (part.value < previous.value) { return false; }
+            equal_prefix = part.value == previous.value;
+            selected_index = previous.next;
+        } else {
+            equal_prefix = false;
+        }
+        index = part.next;
+    }
+    // For equal versions, the current directory entry replaces the previous one.
+    return !equal_prefix || selected_index > selected.units;
+}

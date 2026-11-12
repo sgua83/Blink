@@ -3,7 +3,7 @@ use super::Result;
 use crate::object::Archive;
 use std::{
     ffi::OsString,
-    os::windows::ffi::OsStringExt,
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -54,7 +54,21 @@ struct SdkRoot {
     status: i32,
 }
 
+#[repr(C)]
+struct SdkVersionName {
+    data: *const u16,
+    units: usize,
+}
+
+impl SdkVersionName {
+    fn new(name: &[u16]) -> Self {
+        Self { data: name.as_ptr(), units: name.len() }
+    }
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.host_sdk::select_sdk_version"]
+    fn select_sdk_version(name: SdkVersionName, selected: SdkVersionName) -> bool;
     #[link_name = "bootstrap.host_sdk::read_sdk_root"]
     fn read_sdk_root() -> SdkRoot;
     #[link_name = "bootstrap.host_sdk::release_sdk_root"]
@@ -96,24 +110,17 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     )?;
     let vc = vs.join("VC/Tools/MSVC").join(version.trim());
     let lib = sdk_root()?.join("Lib");
-    let mut versions = Vec::new();
+    let mut version = Vec::new();
     for entry in std::fs::read_dir(&lib)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if let Ok(parts) = name
-            .split('.')
-            .map(str::parse::<u32>)
-            .collect::<std::result::Result<Vec<_>, _>>()
-        {
-            versions.push((parts, entry.path()));
+        let name: Vec<_> = entry?.file_name().encode_wide().collect();
+        if unsafe { select_sdk_version(SdkVersionName::new(&name), SdkVersionName::new(&version)) } {
+            version = name;
         }
     }
-    let sdk = versions
-        .into_iter()
-        .max_by_key(|(v, _)| v.clone())
-        .ok_or("Windows SDK 没有已安装的本机库")?
-        .1;
+    if version.is_empty() {
+        return Err("Windows SDK 没有已安装的本机库".into());
+    }
+    let sdk = lib.join(OsString::from_wide(&version));
     Ok((
         vc.join("bin/Hostx64/x64/link.exe"),
         vec![vc.join("lib/x64"), sdk.join("um/x64"), sdk.join("ucrt/x64")],
