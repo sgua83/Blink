@@ -169,14 +169,11 @@ extern "C" PageAddressResult page_address(PageAddress input, u32 step, address b
 struct RecordCopy {
     PageAddress source;
     u32 target_descriptor;
-    u32 target_index;
     u32 unit_type;
     u32 unit_bytes;
     u32 count;
     u32 step;
 };
-struct RecordCopyWords { u64 words; u32 next; };
-extern "C" RecordCopyWords copy_record(RecordCopy input, address body) on cpu;
 
 enum PayloadAccess:u32 { Words=0; Local=1; Physical=2; };
 struct PayloadEmission {
@@ -465,6 +462,8 @@ struct SortRankEmission {
 };
 struct StageWords { u64 words; u32 next; u32 label; };
 extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on cpu;
+
+extern "C" StageWords encode_sort_gather(PageAddress indices, address layout, u32 active, address body) on cpu;
 
 struct PrefixIndexEmission {
     u32 uint_type;

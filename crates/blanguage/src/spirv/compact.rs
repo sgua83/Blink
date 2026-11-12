@@ -42,7 +42,7 @@ impl Emitter<'_> {
     pub(super) fn compact_scatter(&mut self, c: &Compaction, count: u32, active: u32) {
         let count_word = self.constant(Scalar::U32, c.count_word);
         let count_descriptor = self.buffers[c.count];
-        let copy = self.record_copy_input(c.source, self.index, c.target, 0);
+        let copy = self.record_copy_input(c.source, c.target);
         let input = self.scatter_input(c.flags, c.flag_word, self.program.buffers.len(), count, active);
         let capacity = ScatterInput::WORD_CAPACITY + 2 * ScatterInput::STORE_CAPACITY
             + copy.as_ref().map_or(0, RecordCopy::word_capacity);

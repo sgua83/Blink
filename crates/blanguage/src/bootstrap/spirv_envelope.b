@@ -606,16 +606,23 @@ extern "C" PageAddressResult page_address(PageAddress input, u32 step, address b
     return PageAddressResult(at, next + 3, next, next + 2);
 }
 
-extern "C" RecordCopyWords copy_record(RecordCopy input, address body) on cpu {
+struct StageCursor { address body; u64 words; u32 next; };
+
+void copy_record(inout StageCursor out, address layout, u32 source_index, u32 target_index) on cpu {
+    if (address_bits(layout) == 0) { return; }
+    let input = unsafe_position<RecordCopy>(layout);
     PageAddress source = input.source;
+    source.index = source_index;
     PageAddress target = source;
     target.descriptor = input.target_descriptor;
-    target.index = input.target_index;
-    PhysicalAddress from = physical_page_address(source, body, source.next);
-    PhysicalAddress to = physical_page_address(target, word_at(body, from.words), from.next);
+    target.index = target_index;
+    address body = out.body;
+    u64 start = out.words;
+    PhysicalAddress from = physical_page_address(source, word_at(body, start), out.next);
+    PhysicalAddress to = physical_page_address(target, word_at(body, start + from.words), from.next);
     u32 from_address = from.value;
     u32 to_address = to.value;
-    u64 at = from.words + to.words;
+    u64 at = start + from.words + to.words;
     u32 next = to.next;
     for (unit in 0..input.count) {
         if (unit != 0) {
@@ -634,7 +641,8 @@ extern "C" RecordCopyWords copy_record(RecordCopy input, address body) on cpu {
         at = words_four(body, at, 62, to_pointer, value, 2, input.unit_bytes);
         next += 3;
     }
-    return RecordCopyWords(at, next);
+    out.words = at;
+    out.next = next;
 }
 
 u32 read_word(address words, u32 part) on cpu {
@@ -1029,7 +1037,6 @@ DispatchValue dispatch_groups(address body, DispatchValue cursor, DispatchScalar
     return DispatchValue(at, nonzero + 1, nonzero);
 }
 
-struct StageCursor { address body; u64 words; u32 next; };
 struct StageBranch { u32 run; u32 end; };
 
 u32 stage_op(inout StageCursor out, u32 op, u32 ty, u32 a, u32 b) on cpu {
@@ -1295,6 +1302,16 @@ extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address offset
     return levels;
 }
 
+extern "C" StageWords encode_sort_gather(PageAddress indices, address layout, u32 active, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, indices.next);
+    StageBranch run = stage_open(out, active);
+    PageAddressResult at = stage_address(out, indices, indices.index, 0);
+    u32 original = stage_load(out, indices.u32_type, at.pointer, true);
+    copy_record(out, layout, original, indices.index);
+    stage_close(out, run);
+    return StageWords(out.words, out.next, run.end);
+}
+
 struct ScatterRecords { address copy; u32 count_descriptor; u32 count_word; };
 struct ScatterIndices { u32 descriptor; DispatchGrid grid; address offsets; };
 enum ScatterTarget:u32 { Records(ScatterRecords)=0; Indices(ScatterIndices)=1; };
@@ -1322,14 +1339,7 @@ void scatter_count(inout StageCursor out, PageAddress flag, read ScatterTarget t
 void scatter_selected(inout StageCursor out, PageAddress flag, read ScatterTarget target, u32 prefix) on cpu {
     match (target) {
         ScatterTarget::Records(records) {
-            if (address_bits(records.copy) != 0) {
-                RecordCopy copy = unsafe_position<RecordCopy>(records.copy);
-                copy.source.next = out.next;
-                copy.target_index = prefix;
-                RecordCopyWords written = copy_record(copy, word_at(out.body, out.words));
-                out.words += written.words;
-                out.next = written.next;
-            }
+            copy_record(out, records.copy, flag.index, prefix);
         }
         ScatterTarget::Indices(indices) {
             PageAddress field = flag;

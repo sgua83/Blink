@@ -242,7 +242,6 @@ struct PageAddress {
 struct RecordCopy {
     source: PageAddress,
     target_descriptor: u32,
-    target_index: u32,
     unit_type: u32,
     unit_bytes: u32,
     count: u32,
@@ -254,12 +253,6 @@ impl RecordCopy {
         // Two record origins and up to 29 words per scalar copy.
         182 + 29 * self.count as usize
     }
-}
-
-#[repr(C)]
-struct RecordCopyWords {
-    words: u64,
-    next: u32,
 }
 
 #[repr(C)]
@@ -666,8 +659,6 @@ unsafe extern "C" {
     fn scalar_unary(input: UnaryEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::scalar_math"]
     fn scalar_math(input: MathEmission, body: *mut u32) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::copy_record"]
-    fn copy_record(input: RecordCopy, body: *mut u32) -> RecordCopyWords;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
     fn page_address(input: PageAddress, step: u32, body: *mut u32) -> PageAddressResult;
     #[link_name = "bootstrap.spirv_envelope::payload_read"]
@@ -989,9 +980,7 @@ impl Emitter<'_> {
     fn record_copy_input(
         &mut self,
         source_binding: usize,
-        source_index: u32,
         target_binding: usize,
-        target_index: u32,
     ) -> Option<RecordCopy> {
         let stride = self.program.buffers[source_binding].stride;
         if stride == 0 {
@@ -1003,12 +992,11 @@ impl Emitter<'_> {
         let count = stride / unit_bytes;
         let step = if count > 1 { self.constant(Scalar::U64, unit_bytes) } else { 0 };
         let source = self.page_input(
-            scalar, PageSource::Dataset(self.buffers[source_binding]), source_index, None, 0,
+            scalar, PageSource::Dataset(self.buffers[source_binding]), self.index, None, 0,
         );
         Some(RecordCopy {
             source,
             target_descriptor: self.buffers[target_binding],
-            target_index,
             unit_type: self.types[&scalar],
             unit_bytes,
             count,
@@ -1016,20 +1004,6 @@ impl Emitter<'_> {
         })
     }
 
-    fn copy_record(
-        &mut self, source: usize, source_index: u32, target: usize, target_index: u32,
-    ) {
-        let Some(input) = self.record_copy_input(source, source_index, target, target_index) else {
-            return;
-        };
-        let at = self.body.len();
-        self.body.reserve(input.word_capacity());
-        unsafe {
-            let emitted = copy_record(input, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            self.next = emitted.next;
-        }
-    }
     fn emit_stage(&mut self, capacity: usize, encode: impl FnOnce(*mut u32) -> StageWords) {
         let at = self.body.len();
         self.body.reserve(capacity);

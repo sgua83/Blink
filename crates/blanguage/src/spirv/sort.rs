@@ -1,5 +1,12 @@
 //! 4-bit LSD 基数排序。subgroup 合成逻辑序号，稳定性不依赖 LocalInvocationIndex 的硬件映射。
 use super::*;
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::encode_sort_gather"]
+    fn encode_sort_gather(
+        indices: PageAddress, layout: *const RecordCopy, active: u32, body: *mut u32,
+    ) -> StageWords;
+}
+
 impl Emitter<'_> {
     fn sort_when(&mut self, condition: u32, body: impl FnOnce(&mut Self)) {
         let run = self.id();
@@ -71,11 +78,19 @@ impl Emitter<'_> {
         });
     }
     pub(super) fn sort_gather(&mut self, s: &Sorting, active: u32) {
-        self.sort_when(active, |e| {
-            let original = e.load_raw_buffer(Scalar::U32, e.program.buffers.len(), e.index, 4);
-            e.copy_record(s.source, original, s.target, e.index);
+        let layout = self.record_copy_input(s.source, s.target);
+        let indices = self.page_input(
+            Scalar::U32, PageSource::Dataset(self.buffers[self.program.buffers.len()]),
+            self.index, Some(4), 0,
+        );
+        // Branch, one paged u32 index load and the original record copy.
+        let capacity = 13 + 109 + 6 + layout.as_ref().map_or(0, RecordCopy::word_capacity);
+        self.emit_stage(capacity, |body| unsafe {
+            encode_sort_gather(indices, layout.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
+                active, body)
         });
     }
+
     pub(super) fn sort_rank(
         &mut self,
         s: &Sorting,
