@@ -229,6 +229,23 @@ list_field!(ArmNode,body,StmtNode);
 optional_child!(TypeNode,count,ShapeNode);
 optional_child!(RecordNode,stride,ShapeNode);
 optional_child!(RecordNode,enumeration,TypeNode);
+
+pub(crate) enum ContractMember {
+    Missing,
+    Variant,
+    Field(Type),
+}
+
+impl Record {
+    pub(crate) fn contract_member(&self, name: &str) -> ContractMember {
+        // The declaration owner keeps both node and source bytes alive during the query.
+        match unsafe { wire::record_member(self.signature_node(), name.as_ptr(), name.len() as u64) } {
+            wire::RecordMember::Missing => ContractMember::Missing,
+            wire::RecordMember::Variant => ContractMember::Variant,
+            wire::RecordMember::Field(ty) => ContractMember::Field(self.child(ty.offset)),
+        }
+    }
+}
 optional_child!(FunctionNode,external,ExternalNode);
 optional_child!(TypeParameterNode,family,TypeFamilyNode);
 optional_child!(ParallelNode,count,ExprNode);

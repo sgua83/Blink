@@ -59,17 +59,24 @@ impl World {
                 return if rest.is_empty() { Ok(Ty::scalar(Scalar::Bool)) }
                     else { source.fail(span, "B225", "变体条件没有后续字段") };
             }
-            let key = if name.canonical { self.records.get_key_value(&name.name).map(|(key, _)| key.clone()) }
-                else { self.resolve(&name.name, module, imports, false).unique() };
-            let Some(key) = key else { return source.fail(span, "B031", format!("未知类型 {}", name.name)); };
-            let (record, record_source, record_module, record_imports) = self.record(&key);
-            if record.variants().iter().any(|variant| variant.name() == *field) {
-                return if rest.is_empty() { Ok(Ty::scalar(Scalar::Bool)) }
-                    else { source.fail(span, "B225", "变体条件没有后续字段") };
-            }
-            let selected = record.fields().iter().find(|candidate| candidate.name() == *field)
-                .ok_or_else(|| crate::Diagnostic { source: source.clone(), span, code: "B225",
-                    message: format!("类型 {} 没有字段 {field}", name.name) })?;
+            let (record, record_source, record_module, record_imports) = if name.canonical {
+                self.record(&name.name)
+            } else {
+                let Some(key) = self.resolve(&name.name, module, imports, false).unique() else {
+                    return source.fail(span, "B031", format!("未知类型 {}", name.name));
+                };
+                self.record(&key)
+            };
+            let selected = match record.contract_member(field) {
+                crate::syntax::ContractMember::Field(ty) => ty,
+                crate::syntax::ContractMember::Variant => {
+                    return if rest.is_empty() { Ok(Ty::scalar(Scalar::Bool)) }
+                        else { source.fail(span, "B225", "变体条件没有后续字段") };
+                }
+                crate::syntax::ContractMember::Missing => {
+                    return source.fail(span, "B225", format!("类型 {} 没有字段 {field}", name.name));
+                }
+            };
             let types = record.types().iter().zip(&name.arguments).map(|(parameter, argument)| {
                 let GenericArgument::Type(ty) = argument else {
                     return source.fail(span, "B232", "此记录参数需要类型实参");
@@ -81,7 +88,7 @@ impl World {
                 Ok((parameter.name().to_owned(), self.shape(&Some(shape), source, span, module, imports)?.unwrap()))
             }).collect::<crate::Result<_>>()?;
             let bindings=std::sync::Arc::new(crate::generics::Bindings{types,values});
-            let selected=bindings.type_name(self,&selected.ty(),(record_source,record_module,record_imports),span)?;
+            let selected=bindings.type_name(self,&selected,(record_source,record_module,record_imports),span)?;
             return self.output_path_type(&selected, rest, record_source, span, record_module, record_imports);
         }
         // A literal cannot numerically operate on an ordinary record. Decide

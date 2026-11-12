@@ -279,7 +279,16 @@ pub struct InstanceRow {
     pub indices: *mut u64,
     pub values: *mut u32,
 }
+#[repr(C, u32)]
+pub enum RecordMember {
+    Missing = 0,
+    Variant = 1,
+    Field(TypeRef) = 2,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.signatures::record_member"]
+    pub fn record_member(record: SignatureNode, name: *const u8, length: u64) -> RecordMember;
     #[link_name = "bootstrap.signatures::compare_condition"]
     pub fn compare_condition(left: SignatureNode, right: SignatureNode) -> i32;
     #[link_name = "bootstrap.signatures::compare_predicate"]

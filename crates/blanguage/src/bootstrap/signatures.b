@@ -239,3 +239,27 @@ extern "C" bool same_signature(SignatureNode left, SignatureNode right,
     }
     return true;
 }
+
+extern "C" RecordMember record_member(SignatureNode record, address bytes, u64 length) on cpu {
+    StorageView store = record.storage;
+    RecordNode declaration = read_node<RecordNode>(store, record.offset);
+    NameBytes member = NameBytes(bytes, length);
+
+    u64 index = 0u64;
+    while (index < declaration.variants.count) {
+        VariantNode variant = read_node<VariantNode>(store, child_at(store, declaration.variants, index));
+        if (compare_name(text_bytes(store, variant.name), member) == i32(0)) {
+            return RecordMember::Variant();
+        }
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < declaration.fields.count) {
+        FieldNode field = read_node<FieldNode>(store, child_at(store, declaration.fields, index));
+        if (compare_name(text_bytes(store, field.name), member) == i32(0)) {
+            return RecordMember::Field(field.ty);
+        }
+        index += 1u64;
+    }
+    return RecordMember::Missing();
+}
