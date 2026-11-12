@@ -68,7 +68,7 @@ impl<T:Copy> Node<T> {
     fn use_context(&self, bindings: &[wire::BoundName]) -> wire::UseContext {
         wire::UseContext { storage: self.owner.view(), bindings: bindings.as_ptr(), count: bindings.len() as u64 }
     }
-    fn signature_node(&self) -> wire::SignatureNode {
+    pub(crate) fn signature_node(&self) -> wire::SignatureNode {
         wire::SignatureNode { storage: self.owner.view(), offset: self.offset }
     }
     fn child<U>(&self,offset:u64)->Node<U> {Node{owner:self.owner.clone(),offset,marker:PhantomData}}

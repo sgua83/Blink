@@ -1,8 +1,7 @@
-use crate::{Definition, Declarations, ast::*, build::Declaration};
-use crate::syntax::{Expr,ExprKind,StmtKind,Block};
-use std::{cell::RefCell, collections::{BTreeMap, BTreeSet}};
+use crate::{Declarations, ast::*, build::Declaration, syntax::wire};
+use std::{cell::RefCell, collections::BTreeSet, ffi::c_void};
 
-/// 从定义推导的调用参与范围，不是源语言中的函数种类或运行期许可。
+/// Participation inferred from definitions, not a source function kind or runtime permit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Requirement {
     #[default]
@@ -11,219 +10,90 @@ pub(crate) enum Requirement {
     Host,
 }
 
-#[derive(Default)]
-struct Body<'a> {
-    inputs: Option<&'a RefCell<BTreeSet<Declaration>>>,
-    domain: bool,
-    local: bool,
-    host: bool,
-    calls: BTreeSet<String>,
-    statements: BTreeSet<String>,
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct NameBytes { bytes: *const u8, length: u64 }
+impl NameBytes {
+    fn new(name: &str) -> Self { Self { bytes: name.as_ptr(), length: name.len() as u64 } }
+    unsafe fn text<'a>(self) -> &'a str {
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.bytes, self.length as usize)) }
+    }
 }
-impl Body<'_> {
-    fn call(&mut self, world: &Declarations, d: &Definition, name: &str, statement: bool) -> bool {
-        if let Some(inputs) = self.inputs {
-            inputs.borrow_mut().insert(Declaration::RecordName {
-                name: name.into(), module: d.module.clone(), imports: d.imports.to_vec(),
-            });
-        }
-        if !world.resolve(name, &d.module, &d.imports, false).is_missing() {
-            self.local |= statement || d.function.target() == Target::Cpu;
-            return false;
-        }
-        if let Some(inputs) = self.inputs {
-            inputs.borrow_mut().insert(Declaration::ValueName {
-                name: name.into(), module: d.module.clone(), imports: d.imports.to_vec(),
-            });
-        }
-        match world.resolve(name, &d.module, &d.imports, true) {
-            crate::frontend::NameResolution::Unique(key) => {
-                self.calls.insert(key.clone());
-                if statement { self.statements.insert(key); }
-            }
-            crate::frontend::NameResolution::Missing if matches!(name, "dataset" | "upload" | "download") => self.host = true,
-            crate::frontend::NameResolution::Missing if crate::check::stage_intrinsic(name) => {
-                self.domain = true;
-                // 集合参数由原域展开解释，不在CPU主机求值。
-                return true;
-            }
-            crate::frontend::NameResolution::Missing | crate::frontend::NameResolution::Ambiguous =>
-                self.local |= statement || d.function.target() == Target::Cpu,
-        }
-        false
+
+#[repr(C)]
+struct FunctionInput { key: NameBytes, source: wire::SignatureNode, compiled: u32, requirement: u32 }
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct BodyState { domain: u32, local: u32, host: u32, requirement: u32 }
+#[repr(C)]
+struct CallEdge { caller: u64, callee: u64, statement: u64 }
+
+struct Lookup<'a> {
+    world: &'a Declarations,
+    functions: &'a [FunctionInput],
+    inputs: Option<&'a RefCell<BTreeSet<Declaration>>>,
+    calls: Vec<CallEdge>,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.participation::scan"]
+    fn scan(functions: *const FunctionInput, count: u64, states: *mut BodyState, context: *mut c_void,
+        lookup: unsafe extern "C" fn(*mut c_void, u64, NameBytes, u32) -> u32);
+    #[link_name = "bootstrap.participation::less_call"]
+    fn less_call(left: *const c_void, right: *const c_void, context: *const c_void) -> u32;
+    #[link_name = "bootstrap.participation::solve"]
+    fn solve(functions: *const FunctionInput, count: u64, states: *mut BodyState, calls: *mut CallEdge, call_count: u64,
+        less: unsafe extern "C" fn(*const c_void, *const c_void, *const c_void) -> u32);
+}
+
+// This adapter asks the original World and records its original dependency. B owns
+// the source traversal and participation rules; this callback retains no B address.
+unsafe extern "C" fn lookup(context: *mut c_void, caller: u64, name: NameBytes, statement: u32) -> u32 {
+    let lookup = unsafe { &mut *context.cast::<Lookup<'_>>() };
+    let key = unsafe { lookup.functions[caller as usize].key.text() };
+    let d = &lookup.world.functions[key];
+    let name = unsafe { name.text() };
+    if let Some(inputs) = lookup.inputs {
+        inputs.borrow_mut().insert(Declaration::RecordName {
+            name: name.into(), module: d.module.clone(), imports: d.imports.to_vec(),
+        });
     }
-    fn expr(&mut self, world: &Declarations, d: &Definition, e: &Expr, statement: bool) {
-        match e.kind() {
-            ExprKind::Target(_, call) => {
-                self.host = true;
-                // target 已拥有发起位置，不把内部域调用传播成调用者的域参数。
-                if let ExprKind::Call(_, args) | ExprKind::Specialize(_, _, args) = call.kind() {
-                    for arg in args {
-                        self.expr(world, d, &arg, false);
-                    }
-                }
-            }
-            ExprKind::Call("start_task" | "wait_task", args) => {
-                self.host = true;
-                for arg in args {
-                    self.expr(world, d, &arg, false);
-                }
-            }
-            ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => {
-                if !self.call(world, d, name, statement) {
-                    for arg in args {
-                        self.expr(world, d, &arg, false);
-                    }
-                }
-            }
-            ExprKind::Invoke(callee, args) => {
-                self.local |= statement || d.function.target() == Target::Cpu;
-                self.expr(world, d, &callee, false);
-                for arg in args { self.expr(world, d, &arg, false); }
-            }
-            ExprKind::Construct(_, args) | ExprKind::Cooperate(_, _, args) => {
-                self.local |= d.function.target() == Target::Cpu;
-                for arg in args {
-                    self.expr(world, d, &arg, false);
-                }
-            }
-            ExprKind::Member(e, _) | ExprKind::Unary(_, e) => {
-                self.local |= d.function.target() == Target::Cpu;
-                self.expr(world, d, &e, false);
-            }
-            ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {
-                self.local |= d.function.target() == Target::Cpu;
-                self.expr(world, d, &a, false);
-                self.expr(world, d, &b, false);
-            }
-            ExprKind::Select(a, b, c) => {
-                self.local |= d.function.target() == Target::Cpu;
-                self.expr(world, d, &a, false);
-                self.expr(world, d, &b, false);
-                self.expr(world, d, &c, false);
-            }
-            _ => {}
-        }
+    if !lookup.world.resolve(name, &d.module, &d.imports, false).is_missing() { return 1; }
+    if let Some(inputs) = lookup.inputs {
+        inputs.borrow_mut().insert(Declaration::ValueName {
+            name: name.into(), module: d.module.clone(), imports: d.imports.to_vec(),
+        });
     }
-    fn block(&mut self, world: &Declarations, d: &Definition, body: &Block) {
-        for s in body {
-            match s.kind() {
-                StmtKind::Parallel(..) | StmtKind::Phase => self.domain = true,
-                StmtKind::Expr(e) => self.expr(world, d, &e, true),
-                StmtKind::For(_, a, b, body) => {
-                    // CPU 主流程保留普通循环；设备阶段的常量求值由原阶段编译器负责。
-                    self.local |= d.function.target() == Target::Cpu;
-                    self.expr(world, d, &a, false);
-                    if let Some(b) = b {
-                        self.expr(world, d, &b, false);
-                    }
-                    self.block(world, d, &body);
-                }
-                StmtKind::If(e, a, b) => {
-                    // 设备阶段可按原常量环境选择分支；是否真为静态bool
-                    // 由阶段展开处判断。CPU主流程仍保留普通运行期控制。
-                    self.local |= d.function.target() == Target::Cpu;
-                    self.expr(world, d, &e, false);
-                    self.block(world, d, &a);
-                    self.block(world, d, &b);
-                }
-                StmtKind::Match(value, arms) => {
-                    self.local=true;self.expr(world,d,&value,false);
-                    for arm in arms {self.block(world,d,&arm.body());}
-                }
-                StmtKind::While(e, b) => {
-                    self.local = true;
-                    self.expr(world, d, &e, false);
-                    self.block(world, d, &b);
-                }
-                StmtKind::Let(_, _, e) => {
-                    // 设备阶段的值绑定由原阶段常量语义解释，声明本身不是宿主控制。
-                    self.local |= d.function.target() == Target::Cpu;
-                    self.expr(world, d, &e, false);
-                }
-                StmtKind::Assign(a, _, b) => {
-                    self.local = true;
-                    self.expr(world, d, &a, false);
-                    self.expr(world, d, &b, false);
-                }
-                StmtKind::Return(Some(e)) | StmtKind::Seek(_, e) => {
-                    self.local = true;
-                    self.expr(world, d, &e, false);
-                }
-                StmtKind::Declare(..) | StmtKind::Break | StmtKind::Continue => self.local = true,
-                StmtKind::Return(None) => {}
-            }
+    match lookup.world.resolve(name, &d.module, &d.imports, true) {
+        crate::frontend::NameResolution::Unique(key) => {
+            // Both views come from the same sorted original function map.
+            let callee = lookup.functions.partition_point(|function| unsafe { function.key.text() } < key.as_str());
+            lookup.calls.push(CallEdge { caller, callee: callee as u64, statement: u64::from(statement) });
+            0
         }
+        crate::frontend::NameResolution::Missing => if crate::check::stage_intrinsic(name) { 4 } else { 2 },
+        crate::frontend::NameResolution::Ambiguous => 3,
     }
 }
 
 pub(crate) fn infer(world: &mut Declarations, inputs: Option<&RefCell<BTreeSet<Declaration>>>) {
-    let bodies: BTreeMap<_, _> = world
-        .functions
-        .iter()
-        .map(|(key, d)| {
-            let mut body = Body { inputs, ..Body::default() };
-            if d.compiled.is_some() {
-                body.domain = d.execution == Requirement::Domain;
-                body.host = d.execution == Requirement::Host;
-            }
-            if d.function.kind() == FunctionKind::Value {
-                if let Some(stmts) = &d.function.body() {
-                    body.block(world, d, stmts);
-                }
-            }
-            (key.clone(), body)
-        })
-        .collect();
-    let mut domains: BTreeMap<_, _> = bodies
-        .iter()
-        .map(|(key, body)| (key.clone(), body.domain))
-        .collect();
-    loop {
-        let mut changed = false;
-        for (key, body) in &bodies {
-            if !domains[key] && body.calls.iter().any(|callee| domains[callee]) {
-                domains.insert(key.clone(), true);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    // 先求实际域依赖闭包，再判断域外的普通控制，结果不依赖声明／名称顺序。
-    let mut hosts: BTreeMap<_, _> = bodies
-        .iter()
-        .map(|(key, body)| {
-            let local = body.local
-                || body.statements.iter().any(|callee| !domains[callee])
-                || body.calls.iter().any(|callee| {
-                    !domains[callee]
-                        && (world.functions[key].function.target() == Target::Cpu
-                            || world.functions[callee].function.target() == Target::Cpu)
-                });
-            (key.clone(), body.host || (domains[key] && local))
-        })
-        .collect();
-    loop {
-        let mut changed = false;
-        for (key, body) in &bodies {
-            if !hosts[key] && body.calls.iter().any(|callee| hosts[callee]) {
-                hosts.insert(key.clone(), true);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    for (key, d) in &mut world.functions {
-        std::sync::Arc::make_mut(d).execution = if hosts[key] {
-            Requirement::Host
-        } else if domains[key] {
-            Requirement::Domain
-        } else {
-            Requirement::Invocation
+    let functions = world.functions.iter().map(|(key, definition)| FunctionInput {
+        key: NameBytes::new(key), source: definition.function.signature_node(),
+        compiled: u32::from(definition.compiled.is_some()),
+        requirement: match definition.execution { Requirement::Invocation => 0, Requirement::Domain => 1, Requirement::Host => 2 },
+    }).collect::<Vec<_>>();
+    let mut states = vec![BodyState::default(); functions.len()];
+    let mut lookup = Lookup { world, functions: &functions, inputs, calls: Vec::new() };
+    unsafe { scan(functions.as_ptr(), functions.len() as u64, states.as_mut_ptr(),
+        (&mut lookup as *mut Lookup<'_>).cast(), self::lookup) };
+    unsafe { solve(functions.as_ptr(), functions.len() as u64, states.as_mut_ptr(),
+        lookup.calls.as_mut_ptr(), lookup.calls.len() as u64, less_call) };
+    drop(lookup);
+    drop(functions);
+    // All source and key borrows finish before the original definitions are updated.
+    for (definition, state) in world.functions.values_mut().zip(states) {
+        std::sync::Arc::make_mut(definition).execution = match state.requirement {
+            2 => Requirement::Host, 1 => Requirement::Domain, _ => Requirement::Invocation,
         };
     }
 }
