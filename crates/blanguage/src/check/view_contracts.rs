@@ -653,6 +653,17 @@ impl BorrowEvaluation<'_>{
             return;
         }
         if !access.is_some_and(super::Access::writes){return;}
+        // This opaque write already contributes the same possible external
+        // contents for every queried word, without replacing earlier contents.
+        if written.is_none()
+            && borrow.sources.when(&Origin::External) == bounds::Condition::constant(true)
+        {
+            let when = &usage.path;
+            if when.possible() {
+                result.write(&Borrow::source(Origin::External), &bounds::Condition::execution(when), false);
+            }
+            return;
+        }
         let targets=self.evaluate(borrow);
         for(source,selected)in targets.sources.entries().rev(){
             let when=bounds::Clause::both(&usage.path,&selected);
