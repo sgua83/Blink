@@ -517,3 +517,99 @@ extern "C" X64CommandLine parse_x64_arguments(address arguments, u64 count) on c
     line.error = CompileError::None;
     return line;
 }
+
+struct MsvcWriter { address data; u64 units; };
+
+void msvc_unit(inout MsvcWriter writer, u16 value) on cpu {
+    unsafe_position<u16>(unsafe_address(address_bits(writer.data) + writer.units * 2u64)) = value;
+    writer.units += 1u64;
+}
+
+void msvc_ascii<const N:u32 in {4,5,6,7,8,9,12,18}>(inout MsvcWriter writer, read array<u8,N> text) on cpu {
+    u32 index = 0;
+    while (index < N) {
+        msvc_unit(writer, u16(text[index]));
+        index += 1;
+    }
+}
+
+void msvc_flag<const N:u32 in {4,6,7,8,9,12,18}>(inout MsvcWriter writer, read array<u8,N> flag) on cpu {
+    msvc_ascii(writer, flag);
+    msvc_unit(writer, u16(0));
+}
+
+void msvc_text(inout MsvcWriter writer, address text, MsvcText span) on cpu {
+    u64 index = 0u64;
+    while (index < span.units) {
+        address unit = unsafe_address(address_bits(text) + (span.start + index) * 2u64);
+        msvc_unit(writer, unsafe_position<u16>(unit));
+        index += 1u64;
+    }
+    msvc_unit(writer, u16(0));
+}
+
+MsvcText msvc_span(MsvcGroup group, u64 index) on cpu {
+    return unsafe_position<MsvcText>(
+        unsafe_address(address_bits(group.spans) + index * size_of<MsvcText>()));
+}
+
+void msvc_decimal(inout MsvcWriter writer, u64 number) on cpu {
+    u64 value = number;
+    u64 scale = 10000000000000000000u64;
+    bool started = false;
+    while (scale != 0u64) {
+        u64 digit = value / scale;
+        started = started || digit != 0u64;
+        if (started) { msvc_unit(writer, u16(48u64 + digit)); }
+        value -= digit * scale;
+        scale /= 10u64;
+    }
+    msvc_unit(writer, u16(0));
+}
+
+extern "C" u64 write_msvc_arguments(MsvcArguments input, address output) on cpu {
+    MsvcWriter writer = MsvcWriter(output, 0u64);
+    msvc_flag(writer, "/NOLOGO");
+    msvc_flag(writer, "/MACHINE:X64");
+    msvc_flag(writer, "/OPT:REF");
+    msvc_flag(writer, "/OPT:ICF");
+    msvc_flag(writer, "/NOEXP");
+    msvc_ascii(writer, "/OUT:");
+    msvc_text(writer, input.text, input.output);
+    u64 index = 0u64;
+    while (index < input.inputs.count) {
+        msvc_text(writer, input.text, msvc_span(input.inputs, index));
+        index += 1u64;
+    }
+    if (input.stack_reserve == 0u64) {
+        msvc_flag(writer, "/DLL");
+    } else {
+        msvc_flag(writer, "/SUBSYSTEM:CONSOLE");
+        msvc_ascii(writer, "/STACK:");
+        msvc_decimal(writer, input.stack_reserve);
+    }
+    if (input.import_library.units == 0u64) {
+        msvc_flag(writer, "/NOIMPLIB");
+    } else {
+        msvc_ascii(writer, "/IMPLIB:");
+        msvc_text(writer, input.text, input.import_library);
+    }
+    index = 0u64;
+    while (index < input.search_paths.count) {
+        msvc_ascii(writer, "/LIBPATH:");
+        msvc_text(writer, input.text, msvc_span(input.search_paths, index));
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < input.libraries.count) {
+        msvc_text(writer, input.text, msvc_span(input.libraries, index));
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < input.exports.count) {
+        msvc_ascii(writer, "/EXPORT:");
+        msvc_text(writer, input.text, msvc_span(input.exports, index));
+        index += 1u64;
+    }
+    return writer.units;
+}

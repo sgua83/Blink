@@ -56,7 +56,40 @@ struct HostProcessOutput {
     status: u32,
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct MsvcText {
+    start: u64,
+    units: u64,
+}
+
+#[repr(C)]
+struct MsvcGroup {
+    spans: *const MsvcText,
+    count: u64,
+}
+
+impl From<&[MsvcText]> for MsvcGroup {
+    fn from(spans: &[MsvcText]) -> Self {
+        Self { spans: spans.as_ptr(), count: spans.len() as u64 }
+    }
+}
+
+#[repr(C)]
+struct MsvcArguments {
+    text: *const u16,
+    output: MsvcText,
+    inputs: MsvcGroup,
+    import_library: MsvcText,
+    search_paths: MsvcGroup,
+    libraries: MsvcGroup,
+    exports: MsvcGroup,
+    stack_reserve: u64,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.cli::write_msvc_arguments"]
+    fn write_msvc_arguments(input: MsvcArguments, output: *mut u16) -> u64;
     #[link_name = "bootstrap.host_sdk::run_host_process"]
     fn run_host_process(
         executable: *const u16,
@@ -106,13 +139,22 @@ fn host_process(
     let executable = host_path(program)?;
     let mut units = Vec::new();
     for argument in arguments {
-        let argument = argument.as_ref();
-        if argument.as_encoded_bytes().contains(&0) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "nul byte found in provided data").into());
-        }
-        units.extend(argument.encode_wide());
+        append_wide(&mut units, argument.as_ref())?;
         units.push(0);
     }
+    run_host_units(&executable, &units)
+}
+
+fn append_wide(units: &mut Vec<u16>, argument: &OsStr) -> io::Result<MsvcText> {
+    if argument.as_encoded_bytes().contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "nul byte found in provided data"));
+    }
+    let start = units.len();
+    units.extend(argument.encode_wide());
+    Ok(MsvcText { start: start as u64, units: (units.len() - start) as u64 })
+}
+
+fn run_host_units(executable: &[u16], units: &[u16]) -> Result<(ExitStatus, FileBytes, FileBytes)> {
     let result = unsafe {
         run_host_process(executable.as_ptr(), executable.len() - 1, units.as_ptr(), units.len())
     };
@@ -170,10 +212,43 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         vec![join(&vc, "lib/x64"), join(&sdk, "um/x64"), join(&sdk, "ucrt/x64")],
     ))
 }
-fn path_argument(prefix: &str, path: &Path) -> OsString {
-    let mut argument = OsString::from(prefix);
-    argument.push(path);
-    argument
+fn link_process(
+    linker: &Path, output: &Path, inputs: &[PathBuf], search_paths: &[PathBuf],
+    archives: &[Archive], stack_reserve: u64, import_library: bool,
+) -> Result<(ExitStatus, FileBytes, FileBytes)> {
+    let executable = host_path(linker)?;
+    let mut text = Vec::new();
+    let output_path = append_wide(&mut text, output.as_os_str())?;
+    let inputs: Vec<_> = inputs.iter().map(|path| append_wide(&mut text, path.as_os_str()))
+        .collect::<io::Result<_>>()?;
+    let import_path = if import_library {
+        let path = crate::source_path::with_extension_units(output, &[b'l' as u16, b'i' as u16, b'b' as u16]);
+        append_wide(&mut text, path.as_os_str())?
+    } else {
+        MsvcText::default()
+    };
+    let search_paths: Vec<_> = search_paths.iter().map(|path| append_wide(&mut text, path.as_os_str()))
+        .collect::<io::Result<_>>()?;
+    let libraries: Vec<_> = archives.iter().flat_map(|archive| &archive.libraries)
+        .collect::<std::collections::BTreeSet<_>>().into_iter()
+        .map(|name| append_wide(&mut text, OsStr::new(name))).collect::<io::Result<_>>()?;
+    let exports: Vec<_> = archives.iter().flat_map(|archive| &archive.exports)
+        .collect::<std::collections::BTreeSet<_>>().into_iter()
+        .map(|name| append_wide(&mut text, OsStr::new(name))).collect::<io::Result<_>>()?;
+    let request = MsvcArguments {
+        text: text.as_ptr(), output: output_path, inputs: inputs.as_slice().into(),
+        import_library: import_path, search_paths: search_paths.as_slice().into(),
+        libraries: libraries.as_slice().into(), exports: exports.as_slice().into(), stack_reserve,
+    };
+    // B writes the fixed options, one terminator per argument and the path/export prefixes.
+    let capacity = 128 + text.len() + inputs.len() + search_paths.len() * 10
+        + libraries.len() + exports.len() * 9;
+    let mut arguments = Vec::with_capacity(capacity);
+    unsafe {
+        let used = write_msvc_arguments(request, arguments.as_mut_ptr());
+        arguments.set_len(used as usize);
+    }
+    run_host_units(&executable, &arguments)
 }
 
 fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io::Result<()> {
@@ -223,37 +298,12 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
             let path = join(directory, format!(".blink-link-{id}-resources.obj"));
             write_input(&mut temporary, path, &binding.coff_bytes()?)?;
         }
-        let mut arguments: Vec<_> = ["/NOLOGO", "/MACHINE:X64", "/OPT:REF", "/OPT:ICF", "/NOEXP"]
-            .into_iter().map(OsString::from).collect();
-        arguments.push(path_argument("/OUT:", path));
-        arguments.extend(temporary.iter().map(|path| path.as_os_str().to_owned()));
-        if let Some(crate::object::Object { kind: crate::object::Kind::Application { stack_bytes }, .. }) = objects.first().copied() {
-            arguments.push("/SUBSYSTEM:CONSOLE".into());
-            arguments.push(format!("/STACK:{}", super::pe::stack_reserve(*stack_bytes)).into());
-        } else {
-            arguments.push("/DLL".into());
-        }
-        if import_library {
-            let import_path = crate::source_path::with_extension_units(
-                path, &[b'l' as u16, b'i' as u16, b'b' as u16],
-            );
-            arguments.push(path_argument("/IMPLIB:", &import_path));
-        } else {
-            arguments.push("/NOIMPLIB".into());
-        }
-        arguments.extend(libraries.iter().map(|lib| path_argument("/LIBPATH:", lib)));
-        let libraries = archives
-            .iter()
-            .flat_map(|archive| &archive.libraries)
-            .collect::<std::collections::BTreeSet<_>>();
-        let exports = archives
-            .iter()
-            .flat_map(|archive| &archive.exports)
-            .collect::<std::collections::BTreeSet<_>>();
-        arguments.extend(libraries.into_iter().map(|name| OsString::from(name.as_str())));
-        arguments.extend(exports.into_iter().map(|name| OsString::from(format!("/EXPORT:{name}"))));
-
-        let (status, stdout, stderr) = host_process(&linker, arguments)?;
+        let stack_reserve = match &objects[0].kind {
+            crate::object::Kind::Application { stack_bytes } => super::pe::stack_reserve(*stack_bytes),
+            _ => 0,
+        };
+        let (status, stdout, stderr) = link_process(
+            &linker, path, &temporary, &libraries, archives, stack_reserve, import_library)?;
         if status.success() {
             return Ok(());
         }
