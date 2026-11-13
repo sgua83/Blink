@@ -1545,6 +1545,30 @@ extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, addre
     return PrefixIndexWords(at, index + 1, index, count, active, label, groups_x, groups_y);
 }
 
+extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offsets, address body) on cpu {
+    u64 at = 0u64;
+    u32 node = input.node;
+    u32 next = input.next;
+    if (input.scale != 0) {
+        at = words_four(body, at, 132, input.index_type, next, node, input.scale);
+        node = next;
+        next += 1;
+    }
+    for (part in 0..input.count) {
+        u32 offset = read_word(offsets, part);
+        u32 index = node;
+        if (offset != 0) {
+            at = words_four(body, at, 128, input.index_type, next, node, offset);
+            index = next;
+            next += 1;
+        }
+        at = words_four(body, at, 65, input.pointer_type, next, input.variable, index);
+        put(offsets, u64(part), next);
+        next += 1;
+    }
+    return SharedAddressWords(at, next);
+}
+
 extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {
     u64 at = 0u64;
     u32 next = input.next;

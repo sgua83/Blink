@@ -327,6 +327,21 @@ struct AppendWords {
 
 extern "C" AppendWords encode_append_reservation(AppendEmission input, address body) on cpu;
 
+struct SharedAddress {
+    u32 index_type;
+    u32 pointer_type;
+    u32 variable;
+    u32 node;
+    u32 scale;
+    u32 count;
+    u32 next;
+};
+struct SharedAddressWords { u64 words; u32 next; };
+
+// The input slots carry constant offset IDs, with zero for the first plane.
+// The same slots receive the resulting pointers. A zero scale denotes one word.
+extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offsets, address body) on cpu;
+
 struct PrivateAddress {
     u32 index_type;
     u32 pointer_type;

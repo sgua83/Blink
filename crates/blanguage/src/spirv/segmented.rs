@@ -31,22 +31,6 @@ impl Emitter<'_> {
             .map(|word| self.address_scalar(Scalar::U32, binding, index, word * 4))
             .collect()
     }
-    fn segment_node(
-        &mut self,
-        scan: &Segment<'_>,
-        shared: u32,
-        pointer: u32,
-        node: u32,
-    ) -> Vec<u32> {
-        (0..scan.summary_words() as u32)
-            .map(|word| {
-                let base = self.constant(Scalar::U32, word * 64);
-                let index = self.id();
-                self.emit(128, &[self.types[&Scalar::U32], index, node, base]);
-                self.shared_at(pointer, shared, index)
-            })
-            .collect()
-    }
     fn segment_identity(&mut self, scan: &Segment<'_>) -> Vec<u32> {
         let zero = self.constant(Scalar::U32, 0);
         let mut words=vec![zero;scan.summary_words()];
@@ -161,7 +145,7 @@ impl Emitter<'_> {
                 result
             })
             .collect();
-        let own = self.segment_node(scan, shared, pointer, local);
+        let own = self.shared_planes(shared, pointer, local, scan.summary_words());
         self.segment_write(&own, &input);
         self.scan_barrier();
         for width in [1, 2, 4, 8, 16, 32] {
@@ -328,7 +312,7 @@ impl Emitter<'_> {
             self.emit(245, &[u, result, *value, read, *identity, before]);
             *value = result;
         }
-        let own = self.segment_node(scan, shared, pointer, local);
+        let own = self.shared_planes(shared, pointer, local, scan.summary_words());
         self.segment_write(&own, &input);
         self.scan_barrier();
         let base = self.id();
@@ -352,7 +336,7 @@ impl Emitter<'_> {
         self.emit(250, &[owner, save, saved]);
         self.emit(248, &[save]);
         let last = self.constant(Scalar::U32, 63);
-        let root = self.segment_node(scan, shared, pointer, last);
+        let root = self.shared_planes(shared, pointer, last, scan.summary_words());
         if pass != Pass::ScanRootAdd {
             let total = self.segment_read(&root);
             let target = self.segment_address(scan, self.program.buffers.len(), group);
@@ -493,8 +477,8 @@ impl Emitter<'_> {
         let width = self.constant(Scalar::U32, width);
         let other = self.id();
         self.emit(130, &[u, other, local, width]);
-        let a_ptr = self.segment_node(scan, shared, pointer, other);
-        let b_ptr = self.segment_node(scan, shared, pointer, local);
+        let a_ptr = self.shared_planes(shared, pointer, other, scan.summary_words());
+        let b_ptr = self.shared_planes(shared, pointer, local, scan.summary_words());
         let a = self.segment_read(&a_ptr);
         let b = self.segment_read(&b_ptr);
         let mut merged = if down {

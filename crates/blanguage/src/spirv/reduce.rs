@@ -76,7 +76,7 @@ impl Emitter<'_> {
         let own: Vec<_> = trees.iter()
             .map(|tree| {
                 let at = self.tree_parts(*tree,local);
-                self.store_raw(tree.scalar, Scalar::U32,&at,identity,false);
+                self.store_raw(tree.scalar, Scalar::U32, at.as_ref(), identity, false);
                 at
             })
             .collect();
@@ -95,7 +95,7 @@ impl Emitter<'_> {
                 } else {
                     r.source_word + offset
                 });
-            self.store_raw(scalar, Scalar::U32,at,raw,false);
+            self.store_raw(scalar, Scalar::U32, at.as_ref(), raw, false);
         }
         self.emit(249, &[merged]);
         self.emit(248, &[merged]);
@@ -121,7 +121,7 @@ impl Emitter<'_> {
                 None
             };
             for (component, at) in own.iter().enumerate() {
-                let a = self.load_raw(scalar, Scalar::U32,at,false);
+                let a = self.load_raw(scalar, Scalar::U32, at.as_ref(), false);
                 let bv = self.tree_load(trees[component],other);
                 let value = self.collective_pair(scalar, reduction.operator, a, bv);
                 let value = if let Some(valid) = valid {
@@ -131,7 +131,7 @@ impl Emitter<'_> {
                 } else {
                     value
                 };
-                self.store_raw(scalar, Scalar::U32,at,value,false);
+                self.store_raw(scalar, Scalar::U32, at.as_ref(), value, false);
             }
             self.emit(249, &[end]);
             self.emit(248, &[end]);
@@ -141,7 +141,7 @@ impl Emitter<'_> {
         self.emit(170, &[b, first, local, zero]);
         self.reduction_output(r, &reduction.ty, &own, first);
     }
-    pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, own: &[Vec<u32>], first: u32) {
+    pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, own: &[impl AsRef<[u32]>], first: u32) {
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
@@ -179,6 +179,7 @@ impl Emitter<'_> {
         for (label, final_pass) in [(final_write, true), (partial_write, false)] {
             self.emit(248, &[label]);
             for (component, at) in own.iter().enumerate() {
+                let at = at.as_ref();
                 let (scalar,offset)=ty.components[component];
                 let value = if scalar.size() < 4 {
                     let mut raw = self.load_raw(Scalar::U32, Scalar::U32, at, false);

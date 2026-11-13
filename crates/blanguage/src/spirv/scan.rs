@@ -1,5 +1,27 @@
 //! 64 线程 work-efficient Blelloch 独占扫描，工作组间由设备递归前缀传播。
 use super::*;
+#[repr(C)]
+struct SharedAddress {
+    index_type: u32,
+    pointer_type: u32,
+    variable: u32,
+    node: u32,
+    scale: u32,
+    count: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct SharedAddressWords {
+    words: u64,
+    next: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::shared_addresses"]
+    fn emit_shared_addresses(input: SharedAddress, offsets: *mut u32, body: *mut u32) -> SharedAddressWords;
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct SharedTree {
     pub shared: u32,
@@ -8,6 +30,17 @@ pub(super) struct SharedTree {
     pub scalar: Scalar,
     pub operator: CollectiveOperator,
 }
+pub(super) struct TreeParts {
+    ids: [u32; 2],
+    count: usize,
+}
+
+impl AsRef<[u32]> for TreeParts {
+    fn as_ref(&self) -> &[u32] {
+        &self.ids[..self.count]
+    }
+}
+
 impl Emitter<'_> {
     pub(super) fn scan_input_binding(&self, fields: &Reduction) -> usize {
         if fields.source == fields.target
@@ -25,11 +58,37 @@ impl Emitter<'_> {
         }
     }
 
-    pub(super) fn shared_at(&mut self, pointer: u32, shared: u32, index: u32) -> u32 {
-        let at = self.id();
-        self.emit(65, &[pointer, at, shared, index]);
-        at
+    fn shared_addresses(&mut self, shared: u32, pointer: u32, node: u32, stride: u32, offsets: &mut [u32]) {
+        let scale = if stride == 1 { 0 } else { self.constant(Scalar::U32, stride) };
+        for offset in offsets.iter_mut() {
+            if *offset != 0 {
+                *offset = self.constant(Scalar::U32, *offset);
+            }
+        }
+        let input = SharedAddress {
+            index_type: self.types[&Scalar::U32],
+            pointer_type: pointer,
+            variable: shared,
+            node,
+            scale,
+            count: offsets.len() as u32,
+            next: self.next,
+        };
+        let start = self.body.len();
+        self.body.reserve(5 + 10 * offsets.len());
+        self.next = unsafe {
+            let result = emit_shared_addresses(input, offsets.as_mut_ptr(), self.body.as_mut_ptr().add(start));
+            self.body.set_len(start + result.words as usize);
+            result.next
+        };
     }
+
+    pub(super) fn shared_planes(&mut self, shared: u32, pointer: u32, node: u32, count: usize) -> Vec<u32> {
+        let mut offsets = (0..count as u32).map(|word| word * 64).collect::<Vec<_>>();
+        self.shared_addresses(shared, pointer, node, 1, &mut offsets);
+        offsets
+    }
+
     pub(super) fn scan_barrier(&mut self) {
         let scope = self.constant(Scalar::U32, 2);
         let semantics = self.constant(Scalar::U32, 0x108);
@@ -187,29 +246,23 @@ impl Emitter<'_> {
         self.emit(170, &[self.types[&Scalar::Bool], selected, bits, mask]);
         self.scan_tree_step(trees, local, width, selected, down, remaining);
     }
-    pub(super) fn tree_parts(&mut self, tree: SharedTree, node: u32) -> Vec<u32> {
-        let node = if tree.scalar.size()<=4 {node} else {
-            let words=self.constant(Scalar::U32,tree.scalar.size().div_ceil(4));
-            let scaled=self.id();self.emit(132,&[self.types[&Scalar::U32],scaled,node,words]);scaled
-        };
-        (0..tree.scalar.size().div_ceil(4)).map(|part| {
-        let at = if tree.base_word + part == 0 {
-            node
-        } else {
-            let base = self.constant(Scalar::U32, tree.base_word + part);
-            let at = self.id();
-            self.emit(128, &[self.types[&Scalar::U32], at, base, node]);
-            at
-        };
-        self.shared_at(tree.pointer, tree.shared, at)
-        }).collect()
+    pub(super) fn tree_parts(&mut self, tree: SharedTree, node: u32) -> TreeParts {
+        let count = tree.scalar.size().div_ceil(4) as usize;
+        let mut ids = [tree.base_word, tree.base_word + 1];
+        self.shared_addresses(tree.shared, tree.pointer, node, count as u32, &mut ids[..count]);
+        TreeParts { ids, count }
     }
+
     pub(super) fn tree_load(&mut self, tree: SharedTree, node: u32) -> u32 {
-        let pointers=self.tree_parts(tree,node);self.load_raw(tree.scalar, Scalar::U32,&pointers,false)
+        let pointers = self.tree_parts(tree, node);
+        self.load_raw(tree.scalar, Scalar::U32, pointers.as_ref(), false)
     }
+
     pub(super) fn tree_store(&mut self, tree: SharedTree, node: u32, value: u32) {
-        let pointers=self.tree_parts(tree,node);self.store_raw(tree.scalar, Scalar::U32,&pointers,value,false);
+        let pointers = self.tree_parts(tree, node);
+        self.store_raw(tree.scalar, Scalar::U32, pointers.as_ref(), value, false);
     }
+
     pub(super) fn scan_tree_step(
         &mut self,
         trees: &[SharedTree],

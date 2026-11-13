@@ -35,16 +35,6 @@ impl Emitter<'_> {
             }
         }
     }
-    fn custom_node(&mut self, k: usize, shared: u32, pointer: u32, node: u32) -> Vec<u32> {
-        (0..k)
-            .map(|i| {
-                let base = self.constant(Scalar::U32, i as u32 * 64);
-                let at = self.id();
-                self.emit(128, &[self.types[&Scalar::U32], at, base, node]);
-                self.shared_at(pointer, shared, at)
-            })
-            .collect()
-    }
     fn custom_address(&mut self, words: usize, binding: usize, index: u32) -> Vec<u32> {
         (0..words as u32)
             .map(|word| self.address_scalar(Scalar::U32, binding, index, word * 4))
@@ -111,7 +101,7 @@ impl Emitter<'_> {
         for _ in k..words {
             identity.push(self.constant(Scalar::U32, 0));
         }
-        let own = self.custom_node(words, shared, pointer, local);
+        let own = self.shared_planes(shared, pointer, local, words);
         self.custom_write(&own, &identity);
         let read = self.id();
         let end = self.id();
@@ -270,8 +260,8 @@ impl Emitter<'_> {
         let valid = self.id();
         self.emit(176, &[b, valid, right_start, remaining]);
         let words = summary.words(r.ty.size.div_ceil(4) as usize);
-        let a = self.custom_node(words, shared, pointer, other);
-        let z = self.custom_node(words, shared, pointer, local);
+        let a = self.shared_planes(shared, pointer, other, words);
+        let z = self.shared_planes(shared, pointer, local, words);
         let left = self.custom_read(&a);
         let right = self.custom_read(&z);
         if down {
@@ -360,9 +350,11 @@ impl Emitter<'_> {
         }
         let owner = self.custom_owner(local, active, count);
         let last = self.constant(Scalar::U32, 63);
-        let words = self.custom_node(r.ty.size.div_ceil(4) as usize, shared, pointer, last);
-        let root:Vec<Vec<_>>=r.ty.components.iter().map(|(scalar,offset)|
-            (0..scalar.size().div_ceil(4)).map(|part|words[(offset/4+part) as usize]).collect()).collect();
+        let words = self.shared_planes(shared, pointer, last, r.ty.size.div_ceil(4) as usize);
+        let root: Vec<_> = r.ty.components.iter().map(|(scalar, offset)| {
+            let start = (offset / 4) as usize;
+            &words[start..start + scalar.size().div_ceil(4) as usize]
+        }).collect();
         self.reduction_output(&r.fields, &r.ty, &root, owner);
         Ok(())
     }
@@ -401,7 +393,7 @@ impl Emitter<'_> {
         self.emit(250, &[owner, save, saved]);
         self.emit(248, &[save]);
         let last = self.constant(Scalar::U32, 63);
-        let root = self.custom_node(words, shared, pointer, last);
+        let root = self.shared_planes(shared, pointer, last, words);
         let total = self.custom_read(&root);
         let target = self.custom_address(words, self.program.buffers.len(), group);
         self.custom_write(&target, &total);
@@ -527,7 +519,7 @@ impl Emitter<'_> {
         self.emit(250, &[owner, save, saved]);
         self.emit(248, &[save]);
         let last = self.constant(Scalar::U32, 63);
-        let root = self.custom_node(words, shared, pointer, last);
+        let root = self.shared_planes(shared, pointer, last, words);
         if pass != Pass::ScanRootAdd {
             let total = self.custom_read(&root);
             let target = self.custom_address(words, self.program.buffers.len(), group);
