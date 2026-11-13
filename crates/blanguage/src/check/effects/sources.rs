@@ -13,12 +13,13 @@ pub(super) enum Local {
 enum ExpressionType {
     Value(Ty),
     Tile(Ty),
+    Texture(Option<u32>),
 }
 impl ExpressionType {
     fn value(self) -> Option<Ty> {
         match self {
             Self::Value(ty) => Some(ty),
-            Self::Tile(_) => None,
+            Self::Tile(_) | Self::Texture(_) => None,
         }
     }
 }
@@ -48,6 +49,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         let ty = match ty {
             ExpressionType::Value(ty) => ty,
             ExpressionType::Tile(element) => return Ok(Some(element)),
+            ExpressionType::Texture(_) => return Ok(None),
         };
         if let Some(reference)=ty.dataset {
             return self.world.ty(&reference,self.lexical.source(),span,self.lexical.module(),self.lexical.imports()).map(Some);
@@ -85,12 +87,20 @@ impl<'b, 'w> Scope<'b, 'w> {
                 Binding::DataReference(data) => Some(Ty::owned_dataset((data.element_layout().1.clone()).syntax(), data.count)),
                 Binding::Data(view) => Some(Ty::owned_dataset((builder.dataset_layout(view).1.clone()).syntax(), builder.program.buffers[view.binding].count)),
                 Binding::Tile(view) => return Ok(Some(ExpressionType::Tile(view.ty.clone()))),
+                Binding::Texture(resource) => return Ok(Some(ExpressionType::Texture(resource.shape(builder.program)))),
                 other => other.stored_place().map(|place| place.ty().clone()),
             };
             return Ok(ty.map(ExpressionType::Value));
         }
         if let Some(param) = self.lexical.parameters().find(|param| param.name() == name) {
             let mut ty = param.bound(self.world)?.ty;
+            if ty.is_texture_resource() {
+                return texture::shape(self.world, &ty, context, param.span())
+                    .map(|count| Some(ExpressionType::Texture(count)));
+            }
+            if ty.is_acceleration() {
+                return Ok(None);
+            }
             if ty.tile {
                 ty.tile = false;
                 let (source, module, imports) = context;
@@ -159,7 +169,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? {
             return match ty {
                 ExpressionType::Value(ty) => self.returned(ty, span),
-                ExpressionType::Tile(_) => Ok(None),
+                ExpressionType::Tile(_) | ExpressionType::Texture(_) => Ok(None),
             };
         }
         if name == "address_of" && explicit.is_none() { return Ok(Ty::builtin("address")); }
@@ -187,15 +197,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         }
         match self.world.resolve(name, self.lexical.module(), self.lexical.imports(), true) {
             crate::frontend::NameResolution::Unique(key) => {
-                let types = args.iter().map(|arg| self.ty(&arg, limit)).collect::<Result<Vec<_>>>()?;
-                let actuals = types.iter().map(|ty| match ty {
-                    Some(ExpressionType::Tile(element)) => generics::Actual::value(element),
-                    Some(ExpressionType::Value(ty)) => generics::Actual {
-                        ty: Some(std::borrow::Cow::Borrowed(ty)),
-                        count: ty.dataset.as_ref().and(ty.values.first().copied()),
-                    },
-                    None => generics::Actual { ty: None, count: None },
-                }).collect::<Vec<_>>();
+                let actuals = self.call_actuals(args, limit)?;
                 let instance = generics::specialize(self.world, &key, &actuals, explicit, (self.lexical.source(), self.lexical.module(), self.lexical.imports()), span)?;
                 let definition=&instance.definition;
                 let context=(&definition.source,definition.module.as_str(),definition.imports.as_ref());
@@ -226,6 +228,7 @@ impl<'b, 'w> Scope<'b, 'w> {
             ExprKind::Bool(_) => Some(Ty::scalar(Scalar::Bool)),
             ExprKind::Member(base, name) => match self.ty(&base, limit)? {
                 Some(ExpressionType::Tile(_)) if matches!(name, "length" | "lane") => Some(Ty::scalar(Scalar::U32)),
+                Some(ExpressionType::Texture(Some(_))) if name == "length" => Some(Ty::scalar(Scalar::U32)),
                 Some(ExpressionType::Value(ty)) => ty.field(name).map(|(_, ty)| ty.clone()),
                 _ => None,
             },
@@ -245,6 +248,20 @@ impl<'b, 'w> Scope<'b, 'w> {
             ExprKind::FunctionRef(..) => None,
         };
         Ok(value.map(ExpressionType::Value))
+    }
+    pub(super) fn call_actuals(&self, args: &Expressions, limit: usize) -> Result<Vec<generics::Actual<'static>>> {
+        args.iter().map(|arg| {
+            let (ty, count) = match self.ty(&arg, limit)? {
+                Some(ExpressionType::Value(ty)) => {
+                    let count = ty.dataset.as_ref().and(ty.values.first().copied());
+                    (Some(ty), count)
+                }
+                Some(ExpressionType::Tile(element)) => (Some(element), None),
+                Some(ExpressionType::Texture(count)) => (None, count),
+                None => (None, None),
+            };
+            Ok(generics::Actual { ty: ty.map(std::borrow::Cow::Owned), count })
+        }).collect()
     }
     fn value_type(&self, expr: &Expr, limit: usize) -> Result<Option<Ty>> {
         self.ty(expr, limit).map(|ty| ty.and_then(ExpressionType::value))

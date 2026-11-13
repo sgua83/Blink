@@ -3241,7 +3241,7 @@ CPU mip交接至原staging并成功提交后可退出，staging及原图像保�
 
 ### 固定纹理资源数组与逐元素选择
 
-`read array<texture2d,N>`／`read array<texture3d,N>` 在计算入口、普通函数及 cooperative 参数中声明固定长度、维度一致的只读纹理集合，N 是正 u32 编译期形状，可用模块 const 或已实例化的有限／开放 const 参数。它是资源接口，不具有普通内联 array 的值布局，不能嵌套或放入记录、dataset、view、tile、局部普通值、返回值；普通数值数组的原规则保持。集合中的每张纹理可以有不同宽高和 mip 链；该接口表达独立图像的描述符集合。
+`read array<texture2d,N>`／`read array<texture3d,N>` 在计算入口、普通函数及 cooperative 参数中声明固定长度、维度一致的只读纹理集合，N 是正 u32 编译期形状，可用模块 const 或有限／开放 const 参数。调用可用实参资源数组的固定长度推导 N。它是资源接口，不具有普通内联 array 的值布局，不能嵌套或放入记录、dataset、view、tile、局部普通值、返回值；普通数值数组的原规则保持。集合中的每张纹理可以有不同宽高和 mip 链；该接口表达独立图像的描述符集合。
 
 `maps.length` 是静态 u32 常量，`maps[index]` 选择资源，可直接采样或传给匹配维度的只读纹理形参；整组可借用给相同维度与长度的资源数组形参。下标必须为 u32，常量范围、数值范围、length 条件和函数 `requires index(index,maps)` 沿用原证明。越界或无证明报 B137，错误形状／资源权限报 B239；源程序没有隐式下标修正，运行时直接执行已证明的访问。带写效果的下标只求值一次，CPU 后续 mip 与 texel 读取也使用同一索引结果。
 

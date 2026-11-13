@@ -850,6 +850,11 @@ impl<'b, 'w> Scope<'b, 'w> {
         let definition=&instance.definition;let builder=self.builder.unwrap();let mut inputs=BTreeMap::new();let mut offset=application::pointer_type().components.len();
         for(index,(parameter,arg))in instance.parameters(self.world).zip(args).enumerate() {
             let parameter=parameter?;
+            if parameter.ty.is_texture_resource() {
+                // The native call already passes one texture descriptor address.
+                offset += 1;
+                continue;
+            }
             let ty=cooperative::parameter_type(self.world,&parameter,(&definition.source,&definition.module,&definition.imports,definition.function.kind()),builder.program.target)?;
             if parameter.ty.dataset {
                 let descriptor=Builder::borrowed_dataset_parameter_type(parameter.access,definition.execution);
@@ -888,11 +893,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         let Some(key)=self.world.resolve(name,self.lexical.module(),self.lexical.imports(),true).unique()else{return Ok(None);};
         let function=&self.world.functions[&key].function;
         if function.c_abi()||function.kind()!=FunctionKind::Value||function.target()==Target::Gpu{return Ok(None);}
-        let types=args.iter().map(|arg|self.expression(&arg)).collect::<Result<Vec<_>>>()?;
-        let actuals=types.iter().map(|ty|generics::Actual{
-            ty:ty.as_ref().map(std::borrow::Cow::Borrowed),
-            count:ty.as_ref().and_then(|ty|ty.dataset.as_ref().and(ty.values.first().copied())),
-        }).collect::<Vec<_>>();
+        let actuals = self.call_actuals(&args, self.bindings.len())?;
         let explicit=explicit.as_ref().map(|arguments|self.lexical.bindings().arguments(self.world,arguments,
             (self.lexical.source(),self.lexical.module(),self.lexical.imports()),call.span())).transpose()?;
         generics::specialize(self.world,&key,&actuals,explicit.as_deref(),
