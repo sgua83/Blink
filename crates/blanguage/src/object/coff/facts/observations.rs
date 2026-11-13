@@ -25,25 +25,25 @@ const MAGIC: &[u8; 8] = b"BLCF\x0a\0\0\0";
 
 fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     let section = &facts.sections[index];
-    let mut bytes = Vec::new();
-    hash::field(&mut bytes, unsafe { section.row.bytes.borrowed() });
-    hash::field(&mut bytes, &section.row.flags.to_le_bytes());
-    hash::field(&mut bytes, &(section.relocations.len() as u64).to_le_bytes());
+    let mut digest = hash::Digest::new();
+    digest.field(unsafe { section.row.bytes.borrowed() });
+    digest.field(&section.row.flags.to_le_bytes());
+    digest.field(&(section.relocations.len() as u64).to_le_bytes());
     for relocation in &section.relocations {
         let symbol = facts.symbols[relocation.symbol].as_ref().unwrap();
-        hash::field(&mut bytes, &(relocation.offset as u64).to_le_bytes());
-        hash::field(&mut bytes, &relocation.kind.to_le_bytes());
-        hash::field(&mut bytes, unsafe { symbol.name.borrowed() });
-        hash::field(&mut bytes, &symbol.section.to_le_bytes());
-        hash::field(&mut bytes, &symbol.value.to_le_bytes());
+        digest.field(&(relocation.offset as u64).to_le_bytes());
+        digest.field(&relocation.kind.to_le_bytes());
+        digest.field(unsafe { symbol.name.borrowed() });
+        digest.field(&symbol.section.to_le_bytes());
+        digest.field(&symbol.value.to_le_bytes());
     }
-    let ranges = spans.iter().filter(|s| s.section == index).collect::<Vec<_>>();
-    hash::field(&mut bytes, &(ranges.len() as u64).to_le_bytes());
+    let ranges = spans.iter().filter(|span| span.section == index);
+    digest.field(&(ranges.clone().count() as u64).to_le_bytes());
     for range in ranges {
-        hash::field(&mut bytes, &(range.start as u64).to_le_bytes());
-        hash::field(&mut bytes, &(range.end as u64).to_le_bytes());
+        digest.field(&(range.start as u64).to_le_bytes());
+        digest.field(&(range.end as u64).to_le_bytes());
     }
-    hash::digest(&bytes)
+    digest.finish()
 }
 impl<S> Layout<S> {
     pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {

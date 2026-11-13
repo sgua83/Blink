@@ -13,6 +13,7 @@ struct DigestState {
     u64 pending;
     u64 length;
 };
+extern "C" void digest_field(inout DigestState state, DigestField field) on cpu;
 extern "C" DigestState sha256_start() on cpu;
 extern "C" void sha256_update(inout DigestState state,address input,u64 length) on cpu;
 extern "C" void sha256_finish(inout DigestState state,address output) on cpu;

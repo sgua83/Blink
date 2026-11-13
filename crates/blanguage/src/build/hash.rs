@@ -12,6 +12,8 @@ unsafe extern "C" {
     fn sha256_start() -> Digest;
     #[link_name = "bootstrap.build_digest::sha256_update"]
     fn sha256_update(state: &mut Digest, input: *const u8, length: usize);
+    #[link_name = "bootstrap.build_digest::digest_field"]
+    fn digest_field(state: &mut Digest, field: super::ByteField);
     #[link_name = "bootstrap.build_digest::sha256_finish"]
     fn sha256_finish(state: &mut Digest, output: *mut u8);
     #[link_name = "bootstrap.build_digest::sha256"]
@@ -30,8 +32,7 @@ impl Digest {
     }
 
     pub(crate) fn field(&mut self, bytes: &[u8]) {
-        self.update(&(bytes.len() as u64).to_le_bytes());
-        self.update(bytes);
+        unsafe { digest_field(self, bytes.into()) }
     }
 
     pub(crate) fn finish(mut self) -> [u8; 32] {
@@ -60,8 +61,4 @@ pub(super) fn fields(fields: &[super::ByteField]) -> [u8; 32] {
 
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-pub fn field(target: &mut Vec<u8>, bytes: &[u8]) {
-    target.extend((bytes.len() as u64).to_le_bytes());
-    target.extend(bytes);
 }

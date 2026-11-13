@@ -160,7 +160,7 @@ extern "C" void sha256(address input,u64 length,address output) on cpu {
     sha256_finish(state,output);
 }
 
-void digest_field(inout DigestState state,DigestField field) on cpu {
+extern "C" void digest_field(inout DigestState state, DigestField field) on cpu {
     // The compiler host is little endian.
     u64 prefix=field.length;
     sha256_update(state,address_of(prefix),8u64);
