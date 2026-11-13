@@ -208,9 +208,9 @@ fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
     stages
 }
 
-fn optimize_stages(worker: &crate::compiler::Worker, stages: Vec<(Stage, bool)>) -> std::io::Result<Vec<(Stage, bool)>> {
+fn optimize_stages(worker: &crate::compiler::Worker, stages: Vec<(Stage, bool)>, bindings: usize) -> std::io::Result<Vec<(Stage, bool)>> {
     crate::parallel::try_map(worker, stages, |_| (), |_, (mut stage, changed)| {
-        if changed { optimize_stage(&mut stage); }
+        if changed { optimize_stage(&mut stage, bindings); }
         Ok::<_, std::convert::Infallible>((stage, false))
     }).map_err(|error| match error {
         crate::parallel::Error::Resource(error) => error,
@@ -219,8 +219,9 @@ fn optimize_stages(worker: &crate::compiler::Worker, stages: Vec<(Stage, bool)>)
 }
 
 pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std::io::Result<()> {
+    let bindings = program.buffers.len();
     let input = std::mem::take(&mut program.stages).into_iter().map(|stage| (stage, true));
-    let mut stages = optimize_stages(worker, fuse(input))?;
+    let mut stages = optimize_stages(worker, fuse(input), bindings)?;
     let mut removed = Vec::new();
     let mut boundary = false;
     stages.retain_mut(|(stage, _)| {
@@ -242,13 +243,13 @@ pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std:
             reason: GenerationReason::EmptyMapRemoval,
             trigger: Some(GenerationAnchor::EmptyMapRemoval { retained, stages: removed }),
         }));
-        stages = optimize_stages(worker, fuse(stages))?;
+        stages = optimize_stages(worker, fuse(stages), bindings)?;
     }
     program.stages = stages.into_iter().map(|(stage, _)| stage).collect();
     Ok(())
 }
 
-fn optimize_stage(stage: &mut Stage) {
+fn optimize_stage(stage: &mut Stage, bindings: usize) {
     if let Operation::CustomReduce(r)
     | Operation::CustomScan(CustomScan { values: r, .. })
     | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values: r, .. }) =
@@ -308,60 +309,120 @@ fn optimize_stage(stage: &mut Stage) {
         }
     }
     if matches!(stage.operation, Operation::Map) {
-        let mut reads = BTreeSet::new();
-        let mut writes = BTreeSet::new();
-        visit(&stage.code, &mut |i| match &(i).kind {
-            InstKind::Call(call) => {
-                for arg in &call.arguments {
-                    if let CallArgument::Reference { access, address, .. } = arg {
-                        for alias in address.aliases() {
-                            if let MemoryAlias::Data(binding) = alias {
-                                if access.reads() { reads.insert(binding); }
-                                if access.writes() { writes.insert(binding); }
-                            }
-                        }
-                    }
-                }
-                for effect in &call.memory {
-                    if let MemoryAlias::Data(binding) = effect.alias {
-                        if effect.access.reads() { reads.insert(binding); }
-                        if effect.access.writes() { writes.insert(binding); }
-                    }
-                }
-            }
-            InstKind::Append(a) => {
-                reads.insert(a.count.binding);
-                writes.extend([a.target, a.count.binding]);
-            }
-            InstKind::Atomic(a) => {
-                for alias in a.target.aliases() {
-                    if let MemoryAlias::Data(binding) = alias {
-                        if a.op.reads() { reads.insert(binding); }
-                        if a.op.writes() { writes.insert(binding); }
-                    }
-                }
-            }
-            InstKind::LoadIndexed { source, .. } => {
-                reads.extend(source.aliases().filter_map(|a| match a { MemoryAlias::Data(b) => Some(b), _ => None }));
-            }
-            InstKind::Load { binding, .. } => { reads.insert(*binding); }
-            InstKind::StoreIndexed { source, .. } => {
-                writes.extend(source.aliases().filter_map(|a| match a { MemoryAlias::Data(b) => Some(b), _ => None }));
-            }
-            InstKind::Store { binding, .. } => { writes.insert(*binding); }
-            _ => {}
-        });
-        reads.extend(stage.input_words().keys().map(|(source, _)| *source));
-        reads.extend(stage.prefix.map(|p| p.binding));
-        reads.extend(stage.selection.map(|s| s.binding));
-        stage.reads = reads.into_iter().collect();
-        stage.writes = writes.into_iter().collect();
-        stage.write_regions.retain(|binding, _| stage.writes.contains(binding));
-        stage
-            .cross_access
-            .retain(|r| stage.reads.contains(r) || stage.writes.contains(r));
+        map_bindings(stage, bindings);
     }
     compact_slots(&mut stage.code, &mut stage.registers, &mut stage.locals, &mut [], &mut []);
+}
+
+const BINDING_READ: u8 = 1;
+const BINDING_WRITE: u8 = 2;
+
+fn binding_access(reads: bool, writes: bool) -> u8 {
+    u8::from(reads) * BINDING_READ | u8::from(writes) * BINDING_WRITE
+}
+
+#[repr(C)]
+struct BindingUse {
+    binding: usize,
+    access: u8,
+}
+
+#[repr(C)]
+struct MapAccess {
+    uses: *const BindingUse,
+    use_count: usize,
+    flags: *mut u8,
+    binding_count: usize,
+    reads: *mut usize,
+    writes: *mut usize,
+    cross: *mut usize,
+    cross_count: usize,
+}
+
+#[repr(C)]
+struct MapAccessCounts {
+    reads: usize,
+    writes: usize,
+    cross: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.stage_fusion::map_access"]
+    fn map_access(input: MapAccess) -> MapAccessCounts;
+}
+
+fn map_bindings(stage: &mut Stage, bindings: usize) {
+    let mut uses = Vec::new();
+    let mut record = |alias, access| {
+        if let MemoryAlias::Data(binding) = alias {
+            uses.push(BindingUse { binding, access });
+        }
+    };
+    visit(&stage.code, &mut |inst| match &inst.kind {
+        InstKind::Call(call) => {
+            for argument in &call.arguments {
+                if let CallArgument::Reference { access, address, .. } = argument {
+                    let mode = binding_access(access.reads(), access.writes());
+                    for alias in address.aliases() {
+                        record(alias, mode);
+                    }
+                }
+            }
+            for effect in &call.memory {
+                let mode = binding_access(effect.access.reads(), effect.access.writes());
+                record(effect.alias, mode);
+            }
+        }
+        InstKind::Append(append) => {
+            record(MemoryAlias::Data(append.count.binding), BINDING_READ | BINDING_WRITE);
+            record(MemoryAlias::Data(append.target), BINDING_WRITE);
+        }
+        InstKind::Atomic(atomic) => {
+            let mode = binding_access(atomic.op.reads(), atomic.op.writes());
+            for alias in atomic.target.aliases() {
+                record(alias, mode);
+            }
+        }
+        InstKind::LoadIndexed { source, .. } => {
+            for alias in source.aliases() {
+                record(alias, BINDING_READ);
+            }
+        }
+        InstKind::StoreIndexed { source, .. } => {
+            for alias in source.aliases() {
+                record(alias, BINDING_WRITE);
+            }
+        }
+        InstKind::Load { binding, .. } => record(MemoryAlias::Data(*binding), BINDING_READ),
+        InstKind::Store { binding, .. } => record(MemoryAlias::Data(*binding), BINDING_WRITE),
+        _ => {}
+    });
+    for binding in stage.input_words().into_keys().map(|(binding, _)| binding)
+        .chain(stage.prefix.map(|field| field.binding))
+        .chain(stage.selection.map(|field| field.binding))
+    {
+        record(MemoryAlias::Data(binding), BINDING_READ);
+    }
+
+    let mut flags = vec![0; bindings];
+    stage.reads.clear();
+    stage.reads.reserve(bindings);
+    stage.writes.clear();
+    stage.writes.reserve(bindings);
+    let input = MapAccess {
+        uses: uses.as_ptr(), use_count: uses.len(), flags: flags.as_mut_ptr(),
+        binding_count: bindings, reads: stage.reads.as_mut_ptr(), writes: stage.writes.as_mut_ptr(),
+        cross: stage.cross_access.as_mut_ptr(), cross_count: stage.cross_access.len(),
+    };
+    // All use and cross indices refer to this Program's bindings. B writes
+    // each output binding at most once and compacts the original cross list.
+    unsafe {
+        let counts = map_access(input);
+        stage.reads.set_len(counts.reads);
+        stage.writes.set_len(counts.writes);
+        stage.cross_access.truncate(counts.cross);
+    }
+    stage.write_regions.retain(|binding, _| flags[*binding] & BINDING_WRITE != 0);
 }
 
 pub(crate) fn value_code(value: &mut ValueCode) {

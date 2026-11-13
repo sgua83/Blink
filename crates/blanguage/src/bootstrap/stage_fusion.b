@@ -205,3 +205,49 @@ extern "C" u64 plan_selection(SelectionPlan input, address context,
     }
     return count;
 }
+
+address binding_flag(address flags, u64 binding) on cpu {
+    return unsafe_address(address_bits(flags) + binding);
+}
+
+void write_binding(address output, u64 index, u64 binding) on cpu {
+    unsafe_position<u64>(unsafe_address(address_bits(output) + index * 8u64)) = binding;
+}
+
+extern "C" MapAccessCounts map_access(MapAccess input) on cpu {
+    u64 at = 0u64;
+    while (at < input.use_count) {
+        address row = unsafe_address(address_bits(input.uses) + at * size_of<BindingUse>());
+        BindingUse item = unsafe_position<BindingUse>(row);
+        address flag = binding_flag(input.flags, item.binding);
+        unsafe_position<u8>(flag) = unsafe_position<u8>(flag) | item.access;
+        at += 1u64;
+    }
+
+    u64 reads = 0u64;
+    u64 writes = 0u64;
+    u64 binding = 0u64;
+    while (binding < input.binding_count) {
+        u8 flag = unsafe_position<u8>(binding_flag(input.flags, binding));
+        if ((flag & u8(1)) != u8(0)) {
+            write_binding(input.reads, reads, binding);
+            reads += 1u64;
+        }
+        if ((flag & u8(2)) != u8(0)) {
+            write_binding(input.writes, writes, binding);
+            writes += 1u64;
+        }
+        binding += 1u64;
+    }
+    u64 cross = 0u64;
+    at = 0u64;
+    while (at < input.cross_count) {
+        binding = binding_at(input.cross, at);
+        if (unsafe_position<u8>(binding_flag(input.flags, binding)) != u8(0)) {
+            write_binding(input.cross, cross, binding);
+            cross += 1u64;
+        }
+        at += 1u64;
+    }
+    return MapAccessCounts(reads, writes, cross);
+}

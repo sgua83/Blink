@@ -69,3 +69,20 @@ struct SelectionPlan {
 // has space for min(yes.count, no.count, following.count) rows.
 extern "C" u64 plan_selection(SelectionPlan input, address context,
     cfn<SelectionNode,address,FusionBlock,u64> read) on cpu requires nonzero(read);
+
+struct BindingUse { u64 binding; u8 access; };
+struct MapAccess {
+    address uses;
+    u64 use_count;
+    address flags;
+    u64 binding_count;
+    address reads;
+    address writes;
+    address cross;
+    u64 cross_count;
+};
+struct MapAccessCounts { u64 reads; u64 writes; u64 cross; };
+
+// The caller owns zeroed flags and one output slot per program binding.
+// Cross-element bindings are filtered in place.
+extern "C" MapAccessCounts map_access(MapAccess input) on cpu;
