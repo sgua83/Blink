@@ -215,15 +215,6 @@ void write_binding(address output, u64 index, u64 binding) on cpu {
 }
 
 extern "C" MapAccessCounts map_access(MapAccess input) on cpu {
-    u64 at = 0u64;
-    while (at < input.use_count) {
-        address row = unsafe_address(address_bits(input.uses) + at * size_of<BindingUse>());
-        BindingUse item = unsafe_position<BindingUse>(row);
-        address flag = binding_flag(input.flags, item.binding);
-        unsafe_position<u8>(flag) = unsafe_position<u8>(flag) | item.access;
-        at += 1u64;
-    }
-
     u64 reads = 0u64;
     u64 writes = 0u64;
     u64 binding = 0u64;
@@ -240,7 +231,7 @@ extern "C" MapAccessCounts map_access(MapAccess input) on cpu {
         binding += 1u64;
     }
     u64 cross = 0u64;
-    at = 0u64;
+    u64 at = 0u64;
     while (at < input.cross_count) {
         binding = binding_at(input.cross, at);
         if (unsafe_position<u8>(binding_flag(input.flags, binding)) != u8(0)) {

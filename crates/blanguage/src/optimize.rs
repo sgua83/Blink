@@ -365,16 +365,8 @@ fn binding_access(reads: bool, writes: bool) -> u8 {
 }
 
 #[repr(C)]
-struct BindingUse {
-    binding: usize,
-    access: u8,
-}
-
-#[repr(C)]
 struct MapAccess {
-    uses: *const BindingUse,
-    use_count: usize,
-    flags: *mut u8,
+    flags: *const u8,
     binding_count: usize,
     reads: *mut usize,
     writes: *mut usize,
@@ -395,10 +387,10 @@ unsafe extern "C" {
 }
 
 fn map_bindings(stage: &mut Stage, bindings: usize) {
-    let mut uses = Vec::new();
+    let mut flags = vec![0; bindings];
     let mut record = |alias, access| {
         if let MemoryAlias::Data(binding) = alias {
-            uses.push(BindingUse { binding, access });
+            flags[binding] |= access;
         }
     };
     visit(&stage.code, &mut |inst| match &inst.kind {
@@ -447,17 +439,16 @@ fn map_bindings(stage: &mut Stage, bindings: usize) {
         record(MemoryAlias::Data(binding), BINDING_READ);
     }
 
-    let mut flags = vec![0; bindings];
     stage.reads.clear();
     stage.reads.reserve(bindings);
     stage.writes.clear();
     stage.writes.reserve(bindings);
     let input = MapAccess {
-        uses: uses.as_ptr(), use_count: uses.len(), flags: flags.as_mut_ptr(),
+        flags: flags.as_ptr(),
         binding_count: bindings, reads: stage.reads.as_mut_ptr(), writes: stage.writes.as_mut_ptr(),
         cross: stage.cross_access.as_mut_ptr(), cross_count: stage.cross_access.len(),
     };
-    // All use and cross indices refer to this Program's bindings. B writes
+    // The flags and cross indices refer to this Program's bindings. B writes
     // each output binding at most once and compacts the original cross list.
     unsafe {
         let counts = map_access(input);
