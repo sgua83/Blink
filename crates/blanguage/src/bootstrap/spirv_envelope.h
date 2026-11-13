@@ -94,6 +94,23 @@ extern "C" u64 scalar_cast(CastEmission input, address body) on cpu;
 extern "C" u64 select_words(address body, u64 at, u32 result_type, u32 result,
                             u32 condition, u32 yes, u32 no) on cpu;
 
+enum CollectiveOperation:u32 { Sum=0; Min=1; Max=2; BitAnd=3; BitOr=4; BitXor=5; };
+struct CollectivePair {
+    CollectiveOperation operation;
+    BuiltinScalar scalar;
+    u32 raw_type;
+    u32 value_type;
+    u32 bool_type;
+    u32 left;
+    u32 right;
+    u32 next;
+};
+struct CollectiveWords { u64 body; u64 decorations; u32 next; u32 value; };
+
+// The inputs and result carry the original unsigned payload bits. The emitter
+// supplies the next ID and room for nineteen body and three decoration words.
+extern "C" CollectiveWords collective_pair(CollectivePair input, address body, address decorations) on cpu;
+
 struct DivisionEmission {
     u32 integer_type;
     u32 magnitude_type;

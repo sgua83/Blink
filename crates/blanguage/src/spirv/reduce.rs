@@ -1,60 +1,58 @@
 //! 全域数值归约：分量共用 64 路树的同步，递归结果在设备驻留。
 use super::{scan::SharedTree, *};
+
+#[repr(C)]
+struct CollectivePair {
+    operation: u32,
+    scalar: ScalarCode,
+    raw_type: u32,
+    value_type: u32,
+    bool_type: u32,
+    left: u32,
+    right: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct CollectiveWords {
+    body: u64,
+    decorations: u64,
+    next: u32,
+    value: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::collective_pair"]
+    fn emit_collective_pair(input: CollectivePair, body: *mut u32, decorations: *mut u32) -> CollectiveWords;
+}
+
 impl Emitter<'_> {
     pub(super) fn collective_pair(
-        &mut self,
-        scalar: Scalar,
-        operator: CollectiveOperator,
-        a: u32,
-        b: u32,
+        &mut self, scalar: Scalar, operator: CollectiveOperator, left: u32, right: u32,
     ) -> u32 {
-        let u = self.raw_type(scalar);
-        let bitwise = match operator {
-            CollectiveOperator::BitAnd => Some(199),
-            CollectiveOperator::BitOr => Some(197),
-            CollectiveOperator::BitXor => Some(198),
-            CollectiveOperator::Sum | CollectiveOperator::Min | CollectiveOperator::Max => None,
+        let input = CollectivePair {
+            operation: operator as u32,
+            scalar: scalar.into(),
+            raw_type: self.raw_type(scalar),
+            value_type: self.types[&scalar],
+            bool_type: self.types[&Scalar::Bool],
+            left,
+            right,
+            next: self.next,
         };
-        if let Some(opcode) = bitwise {
-            let result = self.id();
-            self.emit(opcode, &[u, result, a, b]);
-            return result;
-        }
-        let (av, bv) = if scalar == Self::raw_scalar(scalar) {
-            (a, b)
-        } else {
-            let ty = self.types[&scalar];
-            let av = self.id();
-            let bv = self.id();
-            self.emit(124, &[ty, av, a]);
-            self.emit(124, &[ty, bv, b]);
-            (av, bv)
+        let body = self.body.len();
+        let decorations = self.decorations.len();
+        self.body.reserve(19);
+        self.decorations.reserve(3);
+        let result = unsafe {
+            let result = emit_collective_pair(input, self.body.as_mut_ptr().add(body),
+                self.decorations.as_mut_ptr().add(decorations));
+            self.body.set_len(body + result.body as usize);
+            self.decorations.set_len(decorations + result.decorations as usize);
+            result
         };
-        let result = self.id();
-        if operator == CollectiveOperator::Sum {
-            if scalar.is_float() {
-                let sum = self.id();
-                self.emit(129, &[self.types[&scalar], sum, av, bv]);
-                self.decorate_flag(FlagDecoration::NoContraction, sum);
-                self.emit(124, &[u, result, sum]);
-            } else {
-                self.emit(128, &[u, result, a, b]);
-            }
-        } else {
-            let min = operator == CollectiveOperator::Min;
-            let opcode = match (scalar, min) {
-                (Scalar::F32 | Scalar::F64, true) => 184,
-                (Scalar::F32 | Scalar::F64, false) => 186,
-                (_, true) if scalar.is_signed() => 177,
-                (_, false) if scalar.is_signed() => 173,
-                (_, true) => 176,
-                (_, false) => 172,
-            };
-            let choose = self.id();
-            self.emit(opcode, &[self.types[&Scalar::Bool], choose, av, bv]);
-            self.select(u, result, choose, a, b);
-        }
-        result
+        self.next = result.next;
+        result.value
     }
     pub(super) fn reduce(
         &mut self,

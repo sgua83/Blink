@@ -358,6 +358,51 @@ extern "C" BinaryWords scalar_binary(BinaryEmission input, address body, address
     return BinaryWords(at, 0u64);
 }
 
+extern "C" CollectiveWords collective_pair(CollectivePair input, address body, address decorations) on cpu {
+    CollectiveOperation operation = input.operation;
+    ScalarDefinition scalar = scalar_definition(input.scalar);
+    u32 next = input.next;
+    if (operation == CollectiveOperation::Sum && scalar.opcode == 22) {
+        u32 left = next;
+        u32 right = next + 1;
+        u32 value = next + 2;
+        u32 sum = next + 3;
+        u64 at = words_three(body, 0u64, 124, input.value_type, left, input.left);
+        at = words_three(body, at, 124, input.value_type, right, input.right);
+        at = words_four(body, at, binary_opcode(BinaryOperation::Add, scalar), input.value_type, sum, left, right);
+        at = words_three(body, at, 124, input.raw_type, value, sum);
+        u64 decorated = flag_decoration(decorations, 0u64, FlagDecoration::NoContraction, sum);
+        return CollectiveWords(at, decorated, next + 4, value);
+    }
+
+    if (operation == CollectiveOperation::Min || operation == CollectiveOperation::Max) {
+        u64 at = 0u64;
+        u32 left = input.left;
+        u32 right = input.right;
+        if (input.value_type != input.raw_type) {
+            left = next;
+            right = next + 1;
+            next += 2;
+            at = words_three(body, at, 124, input.value_type, left, input.left);
+            at = words_three(body, at, 124, input.value_type, right, input.right);
+        }
+        BinaryOperation comparison = operation == CollectiveOperation::Min
+            ? BinaryOperation::Less : BinaryOperation::Greater;
+        u32 value = next;
+        u32 choose = next + 1;
+        at = words_four(body, at, comparison_opcode(comparison, scalar), input.bool_type, choose, left, right);
+        at = select_words(body, at, input.raw_type, value, choose, input.left, input.right);
+        return CollectiveWords(at, 0u64, next + 2, value);
+    }
+
+    BinaryOperation binary = BinaryOperation::Add;
+    if (operation == CollectiveOperation::BitAnd) { binary = BinaryOperation::And; }
+    if (operation == CollectiveOperation::BitOr) { binary = BinaryOperation::Or; }
+    if (operation == CollectiveOperation::BitXor) { binary = BinaryOperation::Xor; }
+    u64 at = words_four(body, 0u64, binary_opcode(binary, scalar), input.raw_type, next, input.left, input.right);
+    return CollectiveWords(at, 0u64, next + 1, next);
+}
+
 u32 cast_opcode(BuiltinScalar from, BuiltinScalar to, ScalarDefinition source, ScalarDefinition target) on cpu {
     if (source.opcode == 22) {
         if (target.opcode == 21) { return target.signed != 0 ? 110 : 109; }
