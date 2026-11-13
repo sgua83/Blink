@@ -327,14 +327,8 @@ pub(crate) fn arguments<'a>(
         {
             return Err(error("where 实际谓词容量不能小于原始域容量"));
         }
-        let sources: std::collections::BTreeSet<_> = stage
-            .input_words()
-            .into_iter()
-            .map(|(source, _)| source)
-            .filter(|source| *source != stage.domain)
-            .collect();
-        for source in sources {
-            if length(source) < length(stage.domain) {
+        for &(source, _) in stage.input_words() {
+            if source != stage.domain && length(source) < length(stage.domain) {
                 return Err(error("tile 实际源容量不能小于阶段域容量"));
             }
         }

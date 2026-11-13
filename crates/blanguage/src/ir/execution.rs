@@ -256,8 +256,9 @@ impl ExecutionStage {
     pub fn shared_bytes(&self) -> u64 {
         self.shared_bytes
     }
-    pub fn input_words(&self) -> BTreeSet<(usize, u32)> {
-        self.inputs.clone()
+    /// 借用本计划持有的实际输入字；集合不复制，寿命归原执行计划。
+    pub fn input_words(&self) -> &BTreeSet<(usize, u32)> {
+        &self.inputs
     }
 }
 #[derive(Clone, Debug)]
