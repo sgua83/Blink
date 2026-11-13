@@ -382,8 +382,7 @@ impl Emitter<'_> {
                 }
                 InstKind::TextureBindingAddress { dst, texture } => {
                     self.texture_binding_address(*texture);
-                    self.bytes(&[0x4c, 0x89, 0xf8]);
-                    self.store(*dst);
+                    self.copy_scalar(self.location(*dst), allocation::Location::Gpr(15), Scalar::U64);
                 }
                 InstKind::TextureSample { .. } | InstKind::Cleanup { .. } => return Err("原生操作尚未降低到CPU执行IR"),
                 InstKind::TextureSize {
@@ -415,10 +414,9 @@ impl Emitter<'_> {
                     coordinate,
                     byte,
                 } => {
-                    self.texture_texel(*texture, *level, coordinate, if *byte { 0 } else { 2 });
+                    self.texture_texel(*texture, *level, coordinate, if *byte { 1 } else { 4 });
                     if *byte {
-                        self.bytes(&[0x41, 0x0f, 0xb6, 0x07]);
-                        self.store(*dst);
+                        self.texture_read_byte(*dst);
                     } else {
                         self.read_scalar(*dst, 15, 0);
                     }
@@ -429,7 +427,7 @@ impl Emitter<'_> {
                     level,
                     coordinate,
                 } => {
-                    self.texture_texel(*texture, *level, coordinate, 4);
+                    self.texture_texel(*texture, *level, coordinate, 16);
                     for (i, dst) in result.iter().enumerate() {
                         self.read_scalar(*dst, 15, i as u32 * 4);
                     }

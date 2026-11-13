@@ -1,5 +1,29 @@
 //! CPU 采样降低为原生标量 IR；每次取样不调用宿主纹理函数。
 use super::*;
+use allocation::Location;
+use operands::MoveLocation;
+
+#[repr(C)]
+struct TextureTexelAddress {
+    level: MoveLocation,
+    coordinates: [MoveLocation; 3],
+    dimensions: u32,
+    texel_bytes: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::texture_table_address"]
+    fn encode_texture_table_address(offset: u64, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::texture_descriptor"]
+    fn encode_texture_descriptor(output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::texture_level_address"]
+    fn encode_texture_level_address(level: MoveLocation, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::texture_texel_address"]
+    fn encode_texture_texel_address(input: TextureTexelAddress, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::texture_read_byte"]
+    fn encode_texture_read_byte(dst: MoveLocation, output: *mut u8) -> u64;
+}
+
 struct Lower<'a> {
     registers: &'a mut Vec<Scalar>,
     origin: std::sync::Arc<GeneratedOrigin>,
@@ -399,45 +423,48 @@ pub(super) fn lower(stage: &mut Stage) {
 impl Emitter<'_> {
     pub(super) fn texture_binding_address(&mut self, texture: TextureSource) {
         if let Some(parameter) = texture.parameter {
-            self.load(parameter);
-            self.bytes(&[0x49, 0x89, 0xc7]);
+            self.copy_scalar(Location::Gpr(15), self.location(parameter), Scalar::U64);
         } else {
-            let offset = (self.buffers.len() + self.textures[..texture.binding].iter().map(|binding| binding.elements() as usize).sum::<usize>()) as u64 * u64::from(BUFFER_BYTES);
-            if offset > i32::MAX as u64 {
-                self.bytes(&[0x49, 0xbf]);
-                self.bytes(&offset.to_le_bytes());
-                self.bytes(&[0x4d, 0x01, 0xe7]);
-            } else {
-                self.bytes(&[0x4d, 0x8d, 0xbc, 0x24]);
-                self.u32(offset as u32);
-            }
+            let preceding: usize = self.textures[..texture.binding].iter()
+                .map(|binding| binding.elements() as usize)
+                .sum();
+            let offset = (self.buffers.len() + preceding) as u64 * u64::from(BUFFER_BYTES);
+            self.emit_bytes(16, |output| unsafe { encode_texture_table_address(offset, output) });
         }
         if let Some(element) = texture.element {
             self.load(element);
-            self.bytes(&[0x48, 0xc1, 0xe0, BUFFER_BYTES.trailing_zeros() as u8]);
-            self.bytes(&[0x49, 0x01, 0xc7]);
+            self.offset_address(BUFFER_BYTES);
         }
     }
+
     pub(super) fn texture_pointer(&mut self, texture: TextureSource) {
         self.texture_binding_address(texture);
-        self.bytes(&[0x4d, 0x8b, 0x3f]);
+        self.emit_bytes(8, |output| unsafe { encode_texture_descriptor(output) });
     }
+
     pub(super) fn texture_level(&mut self, texture: TextureSource, level: Reg) {
-        self.texture_pointer(texture);
-        self.bytes(&[0x4d, 0x8b, 0x7f, 8]);
-        self.load(level);
-        self.bytes(&[0x48, 0x6b, 0xc0, 24, 0x49, 0x01, 0xc7]);
+        self.texture_binding_address(texture);
+        let level = self.location(level).into();
+        self.emit_bytes(40, |output| unsafe { encode_texture_level_address(level, output) });
     }
-    pub(super) fn texture_texel(&mut self, texture: TextureSource, level: Reg, coordinate: &[Reg], shift: u8) {
-        self.texture_level(texture, level);
-        self.load(coordinate[coordinate.len() - 1]);
-        for axis in (0..coordinate.len() - 1).rev() {
-            self.bytes(&[0x41, 0x8b, 0x4f, axis as u8 * 4]);
-            self.bytes(&[0x48, 0x0f, 0xaf, 0xc1, 0x48, 0x89, 0xc2]);
-            self.load(coordinate[axis]);
-            self.bytes(&[0x48, 0x01, 0xd0]);
-        }
-        if shift != 0 { self.bytes(&[0x48, 0xc1, 0xe0, shift]); }
-        self.bytes(&[0x4d, 0x8b, 0x7f, 16, 0x49, 0x01, 0xc7]);
+
+    pub(super) fn texture_texel(
+        &mut self, texture: TextureSource, level: Reg, coordinate: &[Reg], texel_bytes: u32,
+    ) {
+        self.texture_binding_address(texture);
+        let input = TextureTexelAddress {
+            level: self.location(level).into(),
+            coordinates: std::array::from_fn(|axis| {
+                coordinate.get(axis).map_or(Location::Immediate(0), |&reg| self.location(reg)).into()
+            }),
+            dimensions: coordinate.len() as u32,
+            texel_bytes,
+        };
+        self.emit_bytes(96, |output| unsafe { encode_texture_texel_address(input, output) });
+    }
+
+    pub(super) fn texture_read_byte(&mut self, dst: Reg) {
+        let dst = self.location(dst).into();
+        self.emit_bytes(24, |output| unsafe { encode_texture_read_byte(dst, output) });
     }
 }
