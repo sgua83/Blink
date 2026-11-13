@@ -123,10 +123,10 @@ pub(crate) fn compile(resources: &crate::application::Resources,worker:&crate::c
     Ok((bytes,code,imports))
 }
 
-fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
-    let mut bytes = ABI.to_vec();
-    bytes.extend(value.bytes());
-    bytes
+pub(crate) fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
+    let mut writer = Writer(ABI.to_vec());
+    value.encode(&mut writer);
+    writer.0
 }
 fn decode_compiler_output<T: Decode>(bytes: &[u8]) -> codec::Result<T> {
     let bytes = bytes.strip_prefix(ABI).ok_or("不支持的模块资源 ABI")?;

@@ -10,7 +10,7 @@ pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
 pub(crate) use inputs::Inputs;
 pub use identity::{Declaration, Inputs as InputFacts, Selection, SourceInput, SourceInputs};
 pub use object::{ObjectCompilation, ObjectKind, compile_object};
-use crate::{file_bytes::FileBytes, module::codec::Encode};
+use crate::file_bytes::FileBytes;
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
 use std::{
     io::ErrorKind,
@@ -98,7 +98,7 @@ fn compile_in(
                 if inputs.imports == references(&world.declarations, imported, &image, &inputs.declarations) {
                     if imported.is_some() {
                         link_inputs(&mut image, dependencies, borrowed, &imports)?;
-                        let encoded = encode_image(&image);
+                        let encoded = resource::compiler_output(&image);
                         if stored_image != encoded {
                             write_artifact(&artifact, identity, &encoded)?;
                         }
@@ -134,7 +134,7 @@ fn compile_in(
     let imports_identity = references(&world.declarations, imported, &image, &declarations);
     if imported.is_some() { link_inputs(&mut image, dependencies, borrowed, &imports)?; }
     let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
-    let encoded = encode_image(&image);
+    let encoded = resource::compiler_output(&image);
     crate::file_bytes::create_dir_all(output)?;
     write_artifact(&artifact, &identity, &encoded)?;
     Ok(images(image, artifact, false))
@@ -179,11 +179,6 @@ fn link_inputs(
         }
     }
     Ok(())
-}
-fn encode_image(image: &resource::Module) -> Vec<u8> {
-    let mut encoded = resource::ABI.to_vec();
-    encoded.extend(image.bytes());
-    encoded
 }
 #[repr(C)]
 struct ByteField {
