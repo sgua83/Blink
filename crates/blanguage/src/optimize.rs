@@ -6,6 +6,63 @@ mod selection;
 mod value_flow;
 pub(crate) use invariant::prepare_reduction;
 
+#[repr(C)]
+struct BindingSpan {
+    data: *const usize,
+    count: usize,
+}
+
+impl From<&[usize]> for BindingSpan {
+    fn from(bindings: &[usize]) -> Self {
+        Self { data: bindings.as_ptr(), count: bindings.len() }
+    }
+}
+
+#[repr(C)]
+struct StageBindings {
+    reads: BindingSpan,
+    writes: BindingSpan,
+    cross: BindingSpan,
+}
+
+impl From<&Stage> for StageBindings {
+    fn from(stage: &Stage) -> Self {
+        Self {
+            reads: stage.reads.as_slice().into(),
+            writes: stage.writes.as_slice().into(),
+            cross: stage.cross_access.as_slice().into(),
+        }
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.stage_fusion::cross_dependency"]
+    fn cross_dependency(left: StageBindings, right: StageBindings) -> u32;
+    #[link_name = "bootstrap.stage_fusion::merge_bindings"]
+    fn merge_bindings(output: *mut usize, left_count: usize, right: BindingSpan) -> usize;
+}
+
+fn union_bindings(left: &mut Vec<usize>, right: Vec<usize>) {
+    if right.is_empty() {
+        return;
+    }
+    if left.is_empty() {
+        *left = right;
+        return;
+    }
+    let left_count = left.len();
+    let total = left_count + right.len();
+    left.reserve(right.len());
+    let output = left.as_mut_ptr();
+    // B initializes the suffix of this allocation; move only the produced union.
+    unsafe {
+        let start = merge_bindings(output, left_count, right.as_slice().into());
+        let count = total - start;
+        output.add(start).copy_to(output, count);
+        left.set_len(count);
+    }
+}
+
 fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
     let mut stages: Vec<(Stage, bool)> = Vec::new();
     for (mut stage, needs_optimization) in input {
@@ -22,8 +79,7 @@ fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
                 && previous.prefix == stage.prefix
                 && previous.selection == stage.selection
                 && !stage.boundary_before
-                && !cross_dependency(previous, &stage)
-                && !cross_dependency(&stage, previous)
+                && unsafe { cross_dependency((&*previous).into(), (&stage).into()) } == 0
             {
                 let following = OperationOrigin {
                     source_site: stage.operation_source.clone(),
@@ -49,8 +105,8 @@ fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
                 previous.registers.extend(stage.registers);
                 previous.locals.extend(stage.locals.into_iter().map(|(end, ty)| (end + local, ty)));
                 previous.code.extend(stage.code);
-                previous.reads.extend(stage.reads);
-                previous.writes.extend(stage.writes);
+                union_bindings(&mut previous.reads, stage.reads);
+                union_bindings(&mut previous.writes, stage.writes);
                 previous.prefix_guarantees.retain(|relation| !stage.write_regions.get(&relation.count.binding).is_some_and(|written|
                     written.iter().any(|&(start,end)| start < relation.count.word + 4 && relation.count.word < end)));
                 previous.prefix_guarantees.extend(stage.prefix_guarantees);
@@ -66,13 +122,7 @@ fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
                 for (binding, written) in stage.write_regions {
                     previous.write_regions.entry(binding).or_default().extend(written);
                 }
-                previous.cross_access.extend(stage.cross_access);
-                previous.reads.sort_unstable();
-                previous.reads.dedup();
-                previous.writes.sort_unstable();
-                previous.writes.dedup();
-                previous.cross_access.sort_unstable();
-                previous.cross_access.dedup();
+                union_bindings(&mut previous.cross_access, stage.cross_access);
                 *changed = true;
                 continue;
             }
@@ -311,12 +361,6 @@ pub(crate) fn value_code(value: &mut ValueCode) {
     }
     value.registers = registers;
     value.locals = locals;
-}
-fn cross_dependency(a: &Stage, b: &Stage) -> bool {
-    a.cross_access.iter().any(|r| {
-        (a.writes.contains(r) && (b.reads.contains(r) || b.writes.contains(r)))
-            || (a.reads.contains(r) && b.writes.contains(r))
-    })
 }
 pub(crate) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
     for i in code {

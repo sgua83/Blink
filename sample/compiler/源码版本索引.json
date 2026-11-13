@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "2745329449fda7409787a7f34a85b018a873430c34d09d5f1ddf2e757810e719"
+      "sha256": "0a28ccd2686021e5134a5fa7118a9bd2dd58154f8223aa41343335b301f00765"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -221,6 +221,14 @@
     {
       "path": "crates/blanguage/src/bootstrap/spirv_envelope.h",
       "sha256": "4d01a66a201198691bf6e481aedbae66ba9a4ed5a800dcff3deac9bba8a0d308"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/stage_fusion.b",
+      "sha256": "f60a77273b398b779cb11c31ac7a048f815a33d6d813f9cf9fb9e8775f1373d9"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/stage_fusion.h",
+      "sha256": "32d5c23c7e592f312a3e5e0c6f90230f0822d35b91f10be612d9f7bc0fc728b0"
     },
     {
       "path": "crates/blanguage/src/bootstrap/static_uses.b",
@@ -704,7 +712,7 @@
     },
     {
       "path": "crates/blanguage/src/optimize.rs",
-      "sha256": "7a19e71c516e43a352f03558f7566d2c859e7b43c84b537b219f293a96223a69"
+      "sha256": "c42087eb175d93ab04554cf47182cea7a2a0a542afac837b5d4d7c48cf944043"
     },
     {
       "path": "crates/blanguage/src/optimize/invariant.rs",
