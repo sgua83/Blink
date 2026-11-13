@@ -40,3 +40,6 @@ extern "C" void encode(MetadataInput input,address output) on cpu;
 // A null output measures the result. Zero means the original bytes are sufficient.
 extern "C" u64 rust_link_binding(MetadataBytes binding,MetadataBytes prefix,
     MetadataBytes library,address output) on cpu;
+
+// The caller owns the output sized for the magic, two lengths, and both fields.
+extern "C" void encode_build_image(u64 magic,MetadataBytes identity,MetadataBytes image,address output) on cpu;

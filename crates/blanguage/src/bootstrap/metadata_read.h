@@ -24,3 +24,6 @@ extern "C" MetaRequirement requirement(inout MetaCursor cursor) on cpu;
 extern "C" MetaBinding binding(inout MetaCursor cursor) on cpu;
 extern "C" MetaFrame frame(inout MetaCursor cursor) on cpu;
 extern "C" MetaCall call(inout MetaCursor cursor) on cpu;
+
+struct BuildImage {ReadBytes identity;ReadBytes image;u32 status;};
+extern "C" BuildImage read_build_image(ReadBytes input,u64 magic) on cpu;

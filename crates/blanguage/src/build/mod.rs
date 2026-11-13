@@ -10,7 +10,7 @@ pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
 pub(crate) use inputs::Inputs;
 pub use identity::{Declaration, Inputs as InputFacts, Selection, SourceInput, SourceInputs};
 pub use object::{ObjectCompilation, ObjectKind, compile_object};
-use crate::module::codec::{Encode, Reader, Writer};
+use crate::module::codec::Encode;
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
 use std::{
     fs,
@@ -29,7 +29,7 @@ pub struct Compilation {
     /// 根代码是否复用；当前模块代码仍由原链接器消费。
     pub reused: bool,
 }
-const MAGIC: &[u8; 8] = b"BLBI\x01\0\0\0";
+const BUILD_IMAGE_MAGIC: u64 = u64::from_le_bytes(*b"BLBI\x01\0\0\0");
 
 /// output 是调用方拥有的生成目录；按本次实际装入的源码和编译器实现复用入口。
 pub fn compile_entry(
@@ -195,22 +195,71 @@ fn encode_image(image: &resource::Module) -> Vec<u8> {
     encoded.extend(image.bytes());
     encoded
 }
+#[repr(C)]
+struct ImageBytes {
+    bytes: *const u8,
+    length: usize,
+}
+
+impl From<&[u8]> for ImageBytes {
+    fn from(bytes: &[u8]) -> Self {
+        Self { bytes: bytes.as_ptr(), length: bytes.len() }
+    }
+}
+
+#[repr(u32)]
+#[expect(dead_code, reason = "the B decoder produces every status")]
+enum BuildImageStatus {
+    Read = 0,
+    Unsupported = 1,
+    Truncated = 2,
+    Trailing = 3,
+}
+
+#[repr(C)]
+struct BuildImage {
+    identity: ImageBytes,
+    image: ImageBytes,
+    status: BuildImageStatus,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.metadata::encode_build_image"]
+    fn encode_build_image(magic: u64, identity: ImageBytes, image: ImageBytes, output: *mut u8);
+    #[link_name = "bootstrap.metadata_read::read_build_image"]
+    fn read_build_image(input: ImageBytes, magic: u64) -> BuildImage;
+}
+
 fn write_artifact(path: &Path, identity: &[u8], image: &[u8]) -> Result<()> {
-    let mut writer = Writer(MAGIC.to_vec());
-    (identity, image).encode(&mut writer);
-    publish(path, &writer.0)
+    let length = 3 * size_of::<u64>() + identity.len() + image.len();
+    let mut bytes = Vec::with_capacity(length);
+    unsafe {
+        encode_build_image(BUILD_IMAGE_MAGIC, identity.into(), image.into(), bytes.as_mut_ptr());
+        bytes.set_len(length);
+    }
+    publish(path, &bytes)
 }
+
+fn read_envelope(bytes: &[u8]) -> Result<Option<(&[u8], &[u8])>> {
+    let fields = unsafe { read_build_image(bytes.into(), BUILD_IMAGE_MAGIC) };
+    match fields.status {
+        BuildImageStatus::Read => {
+            // B returns two ranges borrowed from this same input snapshot.
+            let slice = |field: ImageBytes| unsafe {
+                std::slice::from_raw_parts(field.bytes, field.length)
+            };
+            Ok(Some((slice(fields.identity), slice(fields.image))))
+        }
+        BuildImageStatus::Unsupported => Ok(None),
+        BuildImageStatus::Truncated => Err(std::io::Error::other("模块接口被截断").into()),
+        BuildImageStatus::Trailing => Err(std::io::Error::other("模块接口有未消费内容").into()),
+    }
+}
+
 fn decode(bytes: &[u8]) -> Result<(&[u8], &[u8])> {
-    let bytes = bytes.strip_prefix(MAGIC).ok_or("不支持的入口构建映像")?;
-    let mut reader = Reader::new(bytes);
-    let fields: crate::module::codec::Result<_> = (|| {
-        let identity = reader.byte_slice()?;
-        let image = reader.byte_slice()?;
-        reader.finish()?;
-        Ok((identity, image))
-    })();
-    fields.map_err(|e| std::io::Error::other(e.to_string()).into())
+    read_envelope(bytes)?.ok_or_else(|| "不支持的入口构建映像".into())
 }
+
 /// Reads the request and consumed source identities stored in an actual artifact.
 /// No source files, compiler workers, native code or device are opened.
 pub fn input_facts(path: &Path) -> Result<InputFacts> {
@@ -225,13 +274,12 @@ pub fn input_facts_with_sha256(path: &Path) -> Result<(InputFacts, String)> {
 }
 
 fn decode_input_facts(bytes: &[u8]) -> Result<InputFacts> {
-    let identity = if bytes.starts_with(MAGIC) {
-        decode(bytes)?.0
-    } else {
-        crate::object::ObjectReader::new(bytes)
+    let identity = match read_envelope(bytes)? {
+        Some((identity, _)) => identity,
+        None => crate::object::ObjectReader::new(bytes)
             .and_then(|reader| reader.build_inputs())
             .map_err(|error| std::io::Error::other(error.to_string()))?
-            .ok_or("该对象未保存构建输入")?
+            .ok_or("该对象未保存构建输入")?,
     };
     identity::decode(identity)?
         .ok_or_else(|| "产物未保存当前结构化构建输入；不能从旧摘要还原".into())

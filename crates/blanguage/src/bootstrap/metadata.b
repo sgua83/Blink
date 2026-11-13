@@ -240,3 +240,9 @@ extern "C" u64 rust_link_binding(MetadataBytes binding,MetadataBytes prefix,
     }
     return written+remaining;
 }
+
+extern "C" void encode_build_image(u64 magic,MetadataBytes identity,MetadataBytes image,address output) on cpu {
+    u64 at=wide_word(output,0u64,magic);
+    at=resource_field(output,at,identity);
+    resource_field(output,at,image);
+}

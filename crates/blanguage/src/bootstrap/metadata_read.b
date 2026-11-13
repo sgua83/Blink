@@ -119,3 +119,15 @@ extern "C" MetaCall call(inout MetaCursor cursor) on cpu {
     }
     return MetaCall(kind.value,offset,reason,0);
 }
+
+extern "C" BuildImage read_build_image(ReadBytes input,u64 magic) on cpu {
+    MetaCursor cursor=MetaCursor(input,0u64);
+    MetaWord signature=number(cursor,8u64,1);
+    if(signature.error!=0 || signature.value!=magic){return BuildImage(empty(),empty(),1);}
+    MetaField identity=resource_range(cursor,false);
+    if(identity.error!=0){return BuildImage(empty(),empty(),2);}
+    MetaField image=resource_range(cursor,false);
+    if(image.error!=0){return BuildImage(empty(),empty(),2);}
+    u32 status=cursor.position==input.length ? 0 : 3;
+    return BuildImage(identity.value,image.value,status);
+}
