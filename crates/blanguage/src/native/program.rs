@@ -73,8 +73,8 @@ pub(crate) fn link_inputs<P>(
     let (local, external) = module_symbols(image);
     let roots = external.into_iter().map(|name| {
         let contract = imports.get(name).ok_or_else(|| format!("缺少模块函数接口 {name}"))?;
-        Ok((name.to_owned(), (*contract).clone()))
-    }).collect::<Result<std::collections::BTreeMap<_, _>, String>>()?;
+        Ok(crate::linker::RootView::new(name, contract))
+    }).collect::<Result<Vec<_>, String>>()?;
     let (types, programs) = match &image.resources {
         Some(module) => (u32::try_from(module.types.len()).map_err(|e| e.to_string())?,
             u32::try_from(module.images.len()).map_err(|e| e.to_string())?),

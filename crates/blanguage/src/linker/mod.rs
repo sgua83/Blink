@@ -2,6 +2,7 @@
 mod combine;
 mod selection;
 use selection::select;
+pub(crate) use selection::RootView;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod msvc;
 mod imports;
@@ -12,10 +13,7 @@ pub(crate) mod native;
 use crate::{
     object::{Input, Kind, Object},
 };
-use std::{
-    collections::BTreeMap,
-    path::Path,
-};
+use std::path::Path;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub fn link(input: &Path, output: &Path) -> Result<()> {
     link_inputs(&[input], output)
@@ -59,7 +57,7 @@ impl std::ops::Deref for Source<'_> {
 }
 enum Roots<'a> {
     Entry,
-    Symbols(&'a BTreeMap<String, Vec<u8>>, u32, u32),
+    Symbols(&'a [RootView<'a>], u32, u32),
 }
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(Inputs { sources: vec![Source::Owned(object)], libraries: Vec::new() }, path)

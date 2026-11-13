@@ -3,7 +3,7 @@
 use super::{Inputs,Result,Roots,Source,resources};
 use crate::object::{self,Object,Kind,Target,Library};
 use resources::ImportBytes as Bytes;
-use std::ffi::c_void;
+use std::{ffi::c_void, marker::PhantomData};
 #[derive(Clone,Copy)]#[repr(C)]
 struct ObjectView {
     kind:u64,name:Bytes,section_start:u64,section_count:u64,symbol_start:u64,symbol_count:u64,
@@ -25,7 +25,16 @@ struct FrameView {section:u64,present:u64,keep:u64,mapping:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 struct LocalView {slot:Bytes,name:Bytes}
 #[derive(Clone,Copy)]#[repr(C)]
-struct RootView {name:Bytes,contract:Bytes}
+pub(crate) struct RootView<'a> {
+    name: Bytes,
+    contract: Bytes,
+    owner: PhantomData<&'a [u8]>,
+}
+impl<'a> RootView<'a> {
+    pub(crate) fn new(name: &'a str, contract: &'a [u8]) -> Self {
+        Self { name: Bytes::new(name), contract: borrowed(contract), owner: PhantomData }
+    }
+}
 #[derive(Clone,Copy)]#[repr(C)]
 struct View {
     objects:*mut ObjectView,object_count:u64,sections:*mut SectionView,section_count:u64,
@@ -34,7 +43,7 @@ struct View {
     locals:*mut LocalView,runtime:*mut Bytes,archives:*mut u64,library_count:u64,
 }
 #[derive(Clone,Copy)]#[repr(C)]
-struct Params {native_mode:u64,roots:*const RootView,root_count:u64,types:u64,programs:u64,runtime_library:Bytes,runtime_symbols:*const Bytes,runtime_symbol_count:u64}
+struct Params<'a> {native_mode:u64,roots:*const RootView<'a>,root_count:u64,types:u64,programs:u64,runtime_library:Bytes,runtime_symbols:*const Bytes,runtime_symbol_count:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 struct Reply {view:View,object:u64,error:u64}
 #[derive(Clone,Copy)]#[repr(C)]
@@ -47,7 +56,7 @@ type ResourceBinding=unsafe extern "C" fn(*mut c_void,ResourceRequest)->Reply;
 type Slot=unsafe extern "C" fn(*mut c_void,Bytes)->Bytes;
 unsafe extern "C" {
     #[link_name="bootstrap.native_select::choose"]
-    fn choose(input:View,params:Params,context:*mut c_void,extract:Extract,native_archive:NativeArchive,resources:ResourceBinding,slot:Slot)->SelectionResult;
+    fn choose(input:View,params:Params<'_>,context:*mut c_void,extract:Extract,native_archive:NativeArchive,resources:ResourceBinding,slot:Slot)->SelectionResult;
 }
 fn borrowed(bytes:&[u8])->Bytes {Bytes{bytes:bytes.as_ptr(),length:bytes.len() as u64}}
 fn text(bytes:&Bytes)->&str {unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.bytes,bytes.length as usize))}}
@@ -191,8 +200,8 @@ unsafe extern "C" fn binding(context:*mut c_void,request:ResourceRequest)->Reply
 }
 pub(super) fn select(inputs: Inputs<'_>, roots: Roots<'_>)->Result<Vec<Object>> {
     let(native_mode,types,programs,roots)=match roots{
-        Roots::Entry=>(0,0,0,Vec::new()),
-        Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots.iter().map(|(name,contract)|RootView{name:Bytes::new(name),contract:borrowed(contract)}).collect()),
+        Roots::Entry=>(0,0,0,&[][..]),
+        Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots),
     };
     let runtime=crate::resource::MODULE_RUNTIME_SYMBOLS.iter().map(|name|Bytes::new(name)).collect::<Vec<_>>();
     let params=Params{native_mode,types,programs,roots:roots.as_ptr(),root_count:roots.len() as u64,runtime_library:Bytes::new(crate::application::RUNTIME_LIBRARY),runtime_symbols:runtime.as_ptr(),runtime_symbol_count:runtime.len() as u64};
