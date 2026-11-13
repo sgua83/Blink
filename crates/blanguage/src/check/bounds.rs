@@ -2827,10 +2827,11 @@ impl Clause {
                         let [left, right] = gate.children;
                         (values[id] == Some(gate.either)
                             && values[left].is_none()
-                            && values[right].is_none()).then_some((left, right, gate.either))
+                            && values[right].is_none()).then_some((left, gate.either))
                     });
-                    if let Some((left, right, truth)) = choice {
-                        alternatives.push((Alternative::Clause(right, truth), trail.len(), additions.len(), negative));
+                    if let Some((left, truth)) = choice {
+                        // The other arm is reached only when the left one cannot satisfy the gate.
+                        alternatives.push((Alternative::Clause(left, !truth), trail.len(), additions.len(), negative));
                         pending.push((left, truth));
                         continue;
                     }
