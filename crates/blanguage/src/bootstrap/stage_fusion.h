@@ -33,3 +33,6 @@ extern "C" bool can_fuse(FusionStage left, FusionStage right,
 // output contains left_count original bindings, with space for right.count more.
 // The returned index starts the sorted union in that same output buffer.
 extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right) on cpu;
+
+// Uniformity belongs to this reduction kernel. The spans borrow its original register indices.
+extern "C" bool extract_uniform(BindingSpan operands, BindingSpan results, address uniform) on cpu;

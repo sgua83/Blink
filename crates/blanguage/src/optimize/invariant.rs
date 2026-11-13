@@ -1,34 +1,56 @@
 //! 封闭集合入口只计算一次统一纯值；不跨越用户分支、循环或资源访问。
 use super::*;
 
-fn extract(code: &mut Vec<Inst>, entry: &mut Vec<Inst>, uniform: &mut BTreeSet<Reg>, partition: ReductionPartition) {
+use super::BindingSpan;
+use ReductionUniformOperation as UniformOperation;
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.stage_fusion::extract_uniform"]
+    fn extract_uniform(operands: BindingSpan, results: BindingSpan, uniform: *mut u8) -> bool;
+}
+
+fn extract(code: &mut Vec<Inst>, entry: &mut Vec<Inst>, uniform: &mut [u8], partition: ReductionPartition) {
     entry.extend(code.extract_if(.., |inst| {
-        let operation = match &inst.kind {
-            InstKind::Constant(..) => Some(ReductionUniformOperation::Constant),
-            InstKind::Uniform(..) => Some(ReductionUniformOperation::Uniform),
-            InstKind::BufferStride(..) => Some(ReductionUniformOperation::BufferStride),
-            InstKind::Unary { .. } => Some(ReductionUniformOperation::Unary),
-            InstKind::Binary { .. } => Some(ReductionUniformOperation::Binary),
-            InstKind::Cast { .. } => Some(ReductionUniformOperation::Cast),
-            InstKind::Math { .. } => Some(ReductionUniformOperation::Math),
-            InstKind::Select { .. } => Some(ReductionUniformOperation::Select),
-            InstKind::IntegerDivide { divisor: IntegerDivisor::Constant(_), .. } => Some(ReductionUniformOperation::ConstantIntegerDivide),
-            _ => None,
-        };
-        if let Some(operation) = operation {
-            let mut uniform_operand_count = 0;
-            if inst.all_operands(&mut |reg| { uniform_operand_count += 1; uniform.contains(&reg) }) {
-                uniform.extend(inst.results());
-                inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
-                    reason: GenerationReason::ReductionUniformExtract,
-                    trigger: Some(GenerationAnchor::ReductionUniformExtract {
-                        retained: OperationOrigin::from_instruction(inst), partition, operation, uniform_operand_count,
-                    }),
-                }));
-                return true;
+        let mut operands = [0; 3];
+        let (operation, inputs): (_, &[Reg]) = match &inst.kind {
+            InstKind::Constant(..) => (UniformOperation::Constant, &[]),
+            InstKind::Uniform(..) => (UniformOperation::Uniform, &[]),
+            InstKind::BufferStride(..) => (UniformOperation::BufferStride, &[]),
+            InstKind::Unary { a, .. } => (UniformOperation::Unary, std::slice::from_ref(a)),
+            InstKind::Binary { a, b, .. } => {
+                operands[..2].copy_from_slice(&[*a, *b]);
+                (UniformOperation::Binary, &operands[..2])
             }
+            InstKind::Cast { src, .. } => (UniformOperation::Cast, std::slice::from_ref(src)),
+            InstKind::Math { args, .. } => (UniformOperation::Math, args),
+            InstKind::Select { condition, a, b, .. } => {
+                operands = [*condition, *a, *b];
+                (UniformOperation::Select, &operands)
+            }
+            InstKind::IntegerDivide { divisor: IntegerDivisor::Constant(_), src, .. } =>
+                (UniformOperation::ConstantIntegerDivide, std::slice::from_ref(src)),
+            _ => return false,
+        };
+        // The eligible instructions have one result, or up to two for division.
+        let mut results = [0; 2];
+        let mut count = 0;
+        for reg in inst.results() {
+            results[count] = reg;
+            count += 1;
         }
-        false
+        if !unsafe { extract_uniform(inputs.into(), results[..count].into(), uniform.as_mut_ptr()) } {
+            return false;
+        }
+        inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+            reason: GenerationReason::ReductionUniformExtract,
+            trigger: Some(GenerationAnchor::ReductionUniformExtract {
+                retained: OperationOrigin::from_instruction(inst),
+                partition,
+                operation,
+                uniform_operand_count: inputs.len(),
+            }),
+        }));
+        true
     }));
 }
 
@@ -37,7 +59,7 @@ pub(crate) fn prepare_reduction(kernel: &mut ReductionKernel) {
     let mut project = kernel.stage.code.split_off(kernel.initialize_end);
     let mut identity = std::mem::take(&mut kernel.stage.code);
     let mut entry = Vec::new();
-    let mut uniform = BTreeSet::new();
+    let mut uniform = vec![0; kernel.stage.registers.len()];
     for (partition, code) in [
         (ReductionPartition::Identity, &mut identity),
         (ReductionPartition::Project, &mut project),

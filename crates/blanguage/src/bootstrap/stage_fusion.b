@@ -96,3 +96,21 @@ extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right)
     }
     return write_at - left_at;
 }
+
+extern "C" bool extract_uniform(BindingSpan operands, BindingSpan results, address uniform) on cpu {
+    u64 index = 0u64;
+    while (index < operands.count) {
+        u64 register = binding_at(operands.data, index);
+        if (unsafe_position<u8>(unsafe_address(address_bits(uniform) + register)) == u8(0)) {
+            return false;
+        }
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < results.count) {
+        u64 register = binding_at(results.data, index);
+        unsafe_position<u8>(unsafe_address(address_bits(uniform) + register)) = u8(1);
+        index += 1u64;
+    }
+    return true;
+}
