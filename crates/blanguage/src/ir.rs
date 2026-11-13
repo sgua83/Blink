@@ -452,6 +452,9 @@ impl Ty {
         })
     }
     pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
+    fn variant_tag(&self, bits: u32) -> u32 {
+        if self.components[0].0 == Scalar::Bool { u32::from(bits != 0) } else { bits }
+    }
     pub(crate) fn variant_payload_offset(&self) -> u32 {
         // The four-byte tag occupies the first aligned block.
         self.align
@@ -764,7 +767,7 @@ impl Ty {
             if !ty.contains_views(){return Ok(());}
             if let Some(element)=&ty.view {field(base,element);}
             else if ty.has_variants(){
-                let tag=words[base as usize/4];
+                let tag=ty.variant_tag(words[base as usize/4]);
                 let variant=ty.variants.iter().find(|variant|variant.discriminant==tag).ok_or_else(||format!("{}的活动变体编号{}没有声明的载荷",ty.name,tag))?;
                 visit(&variant.ty,base+ty.variant_payload_offset(),words,field)?;
             }else if let Some(element)=&ty.array {
@@ -794,7 +797,7 @@ impl Ty {
             if !name.is_empty() {
                 if ty.has_variants(){
                     let variant=ty.variants.iter().find(|variant|variant.name==name)?;
-                    if let Some(words)=words && words.get(offset as usize/4).copied()!=Some(variant.discriminant){return None;}
+                    if let Some(words)=words && words.get(offset as usize/4).map(|&tag|ty.variant_tag(tag))!=Some(variant.discriminant){return None;}
                     offset+=ty.variant_payload_offset();ty=&variant.ty;
                 }else{
                     let (_, at, field) = ty.fields.iter().find(|(n, _, _)| n == name)?;

@@ -390,7 +390,7 @@ read借用不转移拥有权；B模块的整份拥有聚合write／inout和view�
 CPU自包含拥有view聚合、整份拥有聚合write／inout及固定数组动态位置均按规范支持。B动态拥有元素的构造、整份移动／返回、末尾增长、尾取出及序列set按各自已实现合同交接；set的共同元素cleanup及泛型实例支持源码、独立对象和归档消费。一般多元素覆盖的完整分析、持久dataset图的B构造、应用内GPU图、完整资源阶段、异步／远端与版本迁移继续按Issues记录；普通extern C和算法DLL保持各自边界。
 
 ### 宿主持久变体view图
-原生Rust的Dataset::for_view、with_views／freeze及Device::upload／upload_with_views／download现可交接enum／Result及记录／固定数组中的实际活动view和间接子图。字段路径包含声明的分支名称，例如item.Some、entries[0].Some.rows及answer.Ok；声明路径只确定类型，实际绑定同时消费记录中的真实判别字。无view分支不要求子资源，未激活载荷不绑定，重叠的数值载荷不被地址覆盖。
+原生Rust的Dataset::for_view、with_views／freeze及Device::upload／upload_with_views／download现可交接enum／Result及记录／固定数组中的实际活动view和间接子图。字段路径包含声明的分支名称，例如item.Some、entries[0].Some.rows及answer.Ok；声明路径只确定类型，实际绑定与字段查询由原Ty沿同一tag标量解释真实判别字：Result按Bool的零／非零分别选择Ok／Err，带载荷enum按声明的u32编号精确选择；不把查询解释变成对原tag字节的改写。无view分支不要求子资源，未激活载荷不绑定，重叠的数值载荷不被地址覆盖。
 
 实际类型没有view字段时，Dataset::with_views与Device::upload_with_views接受空绑定，保持原数据、记录数及声明的字节步长；u8／u16窄元素和零字节类型不被扩大为u32记录，也不产生子资源。非空绑定仍须对应实际活动view字段，字段数量、类型、记录范围和重复绑定继续按同一资源合同检查。
 
