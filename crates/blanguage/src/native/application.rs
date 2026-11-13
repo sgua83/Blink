@@ -79,7 +79,7 @@ fn emit_value(
     };
     texture::lower(&mut stage);
     reads::place(&mut stage.code, &stage.writes);
-    let mut graph = allocation::Graph::with_live(
+    let (mut graph, _) = allocation::Graph::with_live(
         &stage,
         body.outputs
             .iter()

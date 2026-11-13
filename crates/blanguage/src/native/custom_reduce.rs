@@ -504,7 +504,7 @@ pub(super) fn emit(
         &live,
         &std::collections::BTreeSet::new(),
     ));
-    let mut graph = allocation::Graph::with_live(&stage, live);
+    let (mut graph, _) = allocation::Graph::with_live(&stage, live);
     let allocation = Allocation::new(&stage, &mut graph);
     let layout = Frame::new(&allocation, None);
     let frame = i32::try_from(layout.end.div_ceil(16) * 16)

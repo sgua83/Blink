@@ -36,6 +36,9 @@ pub(super) struct SavedRegister {
 unsafe extern "C" {
     #[link_name = "bootstrap.frame_layout::saved_registers"]
     fn saved_registers(data_end: u64, gpr: u32, xmm: u32, saves: *mut SavedRegister) -> u64;
+    #[link_name = "bootstrap.frame_layout::tile_frame"]
+    fn tile_frame(data_end: u64, width: u64, steps: u32, shared: *mut u64,
+        shared_count: usize, private: *mut u64, private_count: usize) -> u64;
 }
 
 #[derive(Default)]
@@ -300,10 +303,10 @@ impl Graph {
         // Entry values are simultaneous definitions supplied by the native caller.
         self.together(&inputs.iter().copied().map(PrivateSlot::Register).collect());
     }
-    pub fn new(stage: &Stage) -> Self {
+    pub fn new(stage: &Stage) -> (Self, Vec<TilePhase<'_>>) {
         Self::with_live(stage, BTreeSet::new())
     }
-    pub fn with_live(stage: &Stage, live: BTreeSet<PrivateSlot>) -> Self {
+    pub fn with_live(stage: &Stage, live: BTreeSet<PrivateSlot>) -> (Self, Vec<TilePhase<'_>>) {
         let slots = stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
         let private = private_spans(&stage.code);
         let addressable: BTreeSet<_> = private.iter().flat_map(|span| span.clone())
@@ -338,14 +341,13 @@ impl Graph {
             &empty,
             1,
         );
-        if stage.has_tile_steps() {
-            // 实际阶段入口会恢复整组私有值，出口则保存整组；它们必须同时可取。
-            for phase in stage.tile_phases() {
-                graph.together(&phase.live_in);
-                graph.together(&phase.preserved_out());
-            }
+        let phases = if stage.has_tile_steps() { stage.tile_phases() } else { Vec::new() };
+        // 实际阶段入口会恢复整组私有值，出口则保存整组；它们必须同时可取。
+        for phase in &phases {
+            graph.together(&phase.live_in);
+            graph.together(&phase.preserved_out());
         }
-        graph
+        (graph, phases)
     }
 
 }
@@ -492,6 +494,24 @@ impl PacketAllocation {
     }
 }
 impl Frame {
+    pub fn layout_tile(&mut self, stage: &Stage, phases: &[TilePhase<'_>]) -> u64 {
+        let shared = stage.tile_layout(false);
+        let private: BTreeSet<_> = phases.iter().flat_map(|phase| phase.live_out.iter().copied()).collect();
+        let mut shared_positions: Vec<_> = shared.values().map(|&(_, slot, _)| slot as u64).collect();
+        let mut private_positions: Vec<_> = private.iter()
+            .map(|&slot| u64::from(stage.private_scalar(slot).size())).collect();
+        // The frame owns the final maps. B borrows the two position arrays only
+        // while replacing each entry with its stack offset.
+        let end = unsafe {
+            tile_frame(self.end, u64::from(stage.workgroup_width()), u32::from(!phases.is_empty()),
+                shared_positions.as_mut_ptr(), shared_positions.len(),
+                private_positions.as_mut_ptr(), private_positions.len())
+        };
+        self.tile_shared = shared.into_keys().zip(shared_positions.into_iter().map(|offset| offset as u32)).collect();
+        self.tile_private = private.into_iter().zip(private_positions.into_iter().map(|offset| offset as u32)).collect();
+        end
+    }
+
     pub fn new(scalar: &Allocation, packet: Option<&PacketAllocation>) -> Self {
         let mut gpr = 0u32;
         let mut xmm = 0u32;

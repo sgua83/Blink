@@ -132,12 +132,6 @@ impl Stage {
         }
         phases
     }
-    pub(crate) fn tile_private_slots(&self) -> BTreeSet<PrivateSlot> {
-        self.tile_phases()
-            .iter()
-            .flat_map(|p| p.live_out.iter().copied())
-            .collect()
-    }
     pub(crate) fn private_scalar(&self, slot: PrivateSlot) -> Scalar {
         match slot {
             PrivateSlot::Register(r) => self.registers[r],

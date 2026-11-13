@@ -1642,6 +1642,8 @@ pub struct TileCollective {
 }
 mod tile;
 pub use tile::SharedWord;
+#[cfg(feature = "compiler")]
+pub(crate) use tile::TilePhase;
 pub(crate) use tile::{PrivateSlot, live_before, loop_live, private_spans};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SubgroupOp {

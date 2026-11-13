@@ -746,7 +746,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     texture::lower(&mut lowered);
     reads::place(&mut lowered.code, &lowered.writes);
     let stage = &lowered;
-    let mut graph = allocation::Graph::new(stage);
+    let (mut graph, phases) = allocation::Graph::new(stage);
     let allocation = Allocation::new(stage, &mut graph);
     let packet = packet::Plan::new(program, stage).map(|plan| {
         let allocation = PacketAllocation::new(stage, &mut graph, &plan.address_only);
@@ -757,28 +757,12 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         &allocation,
         packet.as_ref().map(|(_, allocation)| allocation),
     );
-    let mut tile_bytes = 0;
-    if stage.has_tile_scope() {
-        let shared = stage.tile_layout(false);
-        let stride = u64::from(stage.workgroup_width()) * 4;
-        tile_bytes = 4 + shared.values().map(|(_, slot, _)| (*slot as u64 + 1) * stride).max().unwrap_or(0);
-        let base = frame_layout.end + 4 + if stage.has_tile_steps() { 4 } else { 0 };
-        // 本次栈帧持有共享流的实际字节位置；发射地址只消费这一份布局。
-        frame_layout.tile_shared = shared.into_iter()
-            .map(|(word, (_, slot, _))| (word, (base + slot as u64 * stride) as u32)).collect();
-        if stage.has_tile_steps() {
-            tile_bytes += 4;
-            // 本次 CPU 栈帧拥有私有流的唯一字节布局；保存／恢复不再重建阶段活跃图。
-            for slot in stage.tile_private_slots() {
-                frame_layout.tile_private.insert(slot, (frame_layout.end + tile_bytes) as u32);
-                tile_bytes += u64::from(stage.private_scalar(slot).size().div_ceil(4) * 4)
-                    * u64::from(stage.workgroup_width());
-            }
-        }
-    }
-    let bytes = frame_layout.end
-        + if packet.is_some() && stage.selection.is_some() { 16 } else { 0 }
-        + tile_bytes;
+    let data_end = if stage.has_tile_scope() {
+        frame_layout.layout_tile(stage, &phases)
+    } else {
+        frame_layout.end
+    };
+    let bytes = data_end + if packet.is_some() && stage.selection.is_some() { 16 } else { 0 };
     let frame = i32::try_from(bytes.div_ceil(16) * 16)
         .map_err(|_| "原生 tile 栈帧超过 x64 范围函数 ABI")? as u32;
     let mut e = Emitter {
@@ -816,8 +800,8 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         e.parallel_abi(start, super::ParallelRangePart::ScalarSelection { binding: selection.binding, offset: selection.word });
         skip
     });
-    if stage.has_tile_steps() {
-        e.tile_phases()?;
+    if !phases.is_empty() {
+        e.tile_phases(phases)?;
     } else {
         if stage.has_tile_scope() {
             e.tile_input();
