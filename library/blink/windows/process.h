@@ -53,6 +53,8 @@ extern "C" i32 CreateProcessW(
 ) on cpu ensures initialized(info,returned != 0)
     from "KERNEL32.dll";
 
+extern "C" handle GetCurrentProcess() on cpu ensures memory(read) from "KERNEL32.dll";
+
 extern "C" i32 GetExitCodeProcess(handle process,write u32 code) on cpu
     ensures initialized(code,returned != 0)
     from "KERNEL32.dll";

@@ -520,7 +520,9 @@ Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的�
 
 ## Windows高精度计时的原生输出
 
-`blink.windows.time`以纯`.h`直接声明Kernel32的`QueryPerformanceCounter`与`QueryPerformanceFrequency`。Windows `BOOL`按`i32`原值返回，`LARGE_INTEGER`输出按大小8／对齐8的`i64`位置借用；`ensures initialized(output,returned != 0)`只在本次非零状态交付输出。接口不将可能失败的输出伪装为无条件初始化，也不增加包装DLL、运行时时钟服务或第二份输出。
+`blink.windows.time`直接声明Kernel32的`QueryPerformanceCounter`与`QueryPerformanceFrequency`。Windows `BOOL`按`i32`原值返回，`LARGE_INTEGER`输出按大小8／对齐8的`i64`位置借用；`ensures initialized(output,returned != 0)`只在本次非零状态交付输出。接口不将可能失败的输出伪装为无条件初始化，也不增加包装DLL、运行时时钟服务或第二份输出。
+
+`GetThreadTimes`及`GetProcessTimes`按同一ABI接收有查询权限的`handle`及四个`write FileTime`位置。创建、内核态及用户态值在返回非零时可读；退出位置的合同为`initialized(exited, false)`，成功状态本身不说明目标已退出。`FileTime`是大小8、对齐4的两个u32，`file_time_ticks`直接重组原高低字。创建值是UTC纪元计数，用户态／内核态是100ns单位的累计执行量；`QueryPerformanceCounter`仍提供独立的单调墙钟。`blink.windows.process::GetCurrentProcess`与现有`GetCurrentThread`提供本地伪句柄。[GetThreadTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes) [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
 
 计数是ticks，频率是ticks／秒；调用者决定错误处理与区间换算，原位置在调用期间借出，OS返回后仍归原调用者。签名、用法、时间语义与官方合同见[标准库计时接口](../../library/README.md#blinkwindowstime)。它不提供日历时间或GPU计时，也不表示BLEngine的Rust时间消费者已迁移。
 
