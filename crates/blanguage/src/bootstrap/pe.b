@@ -40,7 +40,7 @@ void sort_imports(PeInput input) on cpu {
     u64 root=input.import_count/2u64;while(root>0u64){root-=1u64;sift_import(input,root,input.import_count);}
     u64 end=input.import_count;while(end>1u64){end-=1u64;PeImport a=import_at(input,0u64);PeImport b=import_at(input,end);import_put(input,0u64,b);import_put(input,end,a);sift_import(input,0u64,end);}
 }
-bool absolute_less(PeAbsolute a,PeAbsolute b) on cpu {return a.page<b.page||(a.page==b.page&&a.order<b.order);}
+bool absolute_less(PeAbsolute a,PeAbsolute b) on cpu {return a.page<b.page||(a.page==b.page&&a.order_or_page_end<b.order_or_page_end);}
 void sift_absolute(PeInput input,u64 start,u64 end) on cpu {
     u64 root=start;
     while(root<end/2u64){
@@ -54,6 +54,26 @@ void sift_absolute(PeInput input,u64 start,u64 end) on cpu {
 void sort_absolutes(PeInput input) on cpu {
     u64 root=input.absolute_count/2u64;while(root>0u64){root-=1u64;sift_absolute(input,root,input.absolute_count);}
     u64 end=input.absolute_count;while(end>1u64){end-=1u64;PeAbsolute a=absolute_at(input,0u64);PeAbsolute b=absolute_at(input,end);absolute_put(input,0u64,b);absolute_put(input,end,a);sift_absolute(input,0u64,end);}
+}
+u64 absolute_page_bytes(u64 entries) on cpu {
+    return 8u64 + align(entries * 2u64, 4u64);
+}
+u64 plan_absolute_pages(PeInput input) on cpu {
+    sort_absolutes(input);
+    u64 length = 0u64;
+    u64 index = 0u64;
+    while (index < input.absolute_count) {
+        PeAbsolute first = absolute_at(input, index);
+        u64 end = index + 1u64;
+        while (end < input.absolute_count && absolute_at(input, end).page == first.page) {
+            end += 1u64;
+        }
+        first.order_or_page_end = end;
+        absolute_put(input, index, first);
+        length += absolute_page_bytes(end - index);
+        index = end;
+    }
+    return length;
 }
 // Assign a directory and a relative thunk offset in the sorted rows. Each
 // completed DLL table contributes its original null terminator to both arrays.
@@ -160,14 +180,9 @@ extern "C" PeLayout layout(PeInput input) on cpu {
         }
         i+=1u64;
     }
-    sort_absolutes(input);at=0u64;i=0u64;
-    while(i<input.absolute_count){
-        PeAbsolute first=absolute_at(input,i);u64 end=i+1u64;
-        while(end<input.absolute_count&&absolute_at(input,end).page==first.page){end+=1u64;}
-        at+=8u64+align((end-i)*2u64,4u64);i=end;
-    }
-    result.reloc_length=at;result.section_count=input.section_count+1u64;
-    if(at!=0u64){result.section_count+=1u64;}
+    result.reloc_length=plan_absolute_pages(input);
+    result.section_count=input.section_count+1u64;
+    if(result.reloc_length!=0u64){result.section_count+=1u64;}
     if(result.section_count>65535u64){return invalid(1u64);}
     result.header=align(392u64+result.section_count*40u64,512u64);at=result.header;i=0u64;
     while(i<input.section_count){
@@ -232,9 +247,8 @@ extern "C" void encode(PeInput input,PeLayout layout,address output) on cpu {
         le32(output,rh+8u64,layout.reloc_length);le32(output,rh+12u64,layout.reloc);le32(output,rh+16u64,align(layout.reloc_length,512u64));le32(output,rh+20u64,raw);le32(output,rh+36u64,1107296320u64);
         u64 cursor=raw;i=0u64;
         while(i<input.absolute_count){
-            PeAbsolute first=absolute_at(input,i);u64 end=i+1u64;
-            while(end<input.absolute_count&&absolute_at(input,end).page==first.page){end+=1u64;}
-            u64 size=8u64+align((end-i)*2u64,4u64);le32(output,cursor,first.page);le32(output,cursor+4u64,size);
+            PeAbsolute first=absolute_at(input,i);u64 end=first.order_or_page_end;
+            u64 size=absolute_page_bytes(end-i);le32(output,cursor,first.page);le32(output,cursor+4u64,size);
             u64 j=i;while(j<end){le16(output,cursor+8u64+(j-i)*2u64,absolute_at(input,j).value);j+=1u64;}
             cursor+=size;i=end;
         }

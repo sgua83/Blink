@@ -15,7 +15,9 @@ struct PeImport {
     address dll;u64 dll_length;address name;u64 name_length;u64 relocation;
     u64 lookup;u64 iat;u64 hint;u64 dll_at;u64 directory;
 };
-struct PeAbsolute {u64 page;u64 value;u64 order;};
+// The original order is used only for sorting. Layout then stores the
+// exclusive end index in the first row of each page.
+struct PeAbsolute {u64 page;u64 value;u64 order_or_page_end;};
 struct PeInput {
     address sections;u64 section_count;address relocations;
     address imports;u64 import_count;address absolutes;u64 absolute_count;u64 stack_bytes;

@@ -21,7 +21,7 @@ struct PeImport {
 }
 #[derive(Clone,Copy,Default)]
 #[repr(C)]
-struct PeAbsolute {page:u64,value:u64,order:u64}
+struct PeAbsolute {page:u64,value:u64,order_or_page_end:u64}
 #[derive(Clone,Copy)]
 #[repr(C)]
 struct PeInput {
