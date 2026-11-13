@@ -1569,7 +1569,7 @@ extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offs
     return SharedAddressWords(at, next);
 }
 
-void scan_node_address(inout StageCursor out, ScanTreeComponent component, u32 uint_type,
+void tree_node_address(inout StageCursor out, TreeComponent component, u32 uint_type,
     u32 node, address pointers) on cpu {
     SharedAddress request = SharedAddress(uint_type, component.pointer_type, component.shared,
         node, component.scale, component.count, out.next);
@@ -1578,7 +1578,7 @@ void scan_node_address(inout StageCursor out, ScanTreeComponent component, u32 u
     out.next = result.next;
 }
 
-u32 scan_node_load(inout StageCursor out, PayloadEmission input, address pointers, address shifts) on cpu {
+u32 tree_node_load(inout StageCursor out, PayloadEmission input, address pointers, address shifts) on cpu {
     PayloadEmission request = input;
     request.next = out.next;
     PayloadRead result = payload_read(request, pointers, shifts, word_at(out.body, out.words));
@@ -1587,7 +1587,7 @@ u32 scan_node_load(inout StageCursor out, PayloadEmission input, address pointer
     return result.value;
 }
 
-void scan_node_store(inout StageCursor out, PayloadEmission input, u32 value, address pointers, address shifts) on cpu {
+void tree_node_store(inout StageCursor out, PayloadEmission input, u32 value, address pointers, address shifts) on cpu {
     PayloadEmission request = input;
     request.next = out.next;
     PayloadWrite result = payload_write(request, value, pointers, shifts, address(), word_at(out.body, out.words));
@@ -1595,12 +1595,15 @@ void scan_node_store(inout StageCursor out, PayloadEmission input, u32 value, ad
     out.next = result.next;
 }
 
-extern "C" ScanTreeWords scan_tree_layer(ScanTreeLayer input, address components, u32 count,
+extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, address own,
     address body, address decorations) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.next);
     u32 node = input.lane;
+    bool reduction = address_bits(own) != 0u64;
     u32 selected;
-    if (input.tile_capacity == 0) {
+    if (reduction) {
+        selected = stage_op(out, 176, input.bool_type, node, input.stride);
+    } else if (input.tile_capacity == 0) {
         u32 bits = stage_op(out, 199, input.uint_type, node, input.selector);
         selected = stage_op(out, 170, input.bool_type, bits, input.selector);
     } else {
@@ -1610,12 +1613,12 @@ extern "C" ScanTreeWords scan_tree_layer(ScanTreeLayer input, address components
         selected = stage_op(out, 176, input.bool_type, node, input.tile_capacity);
     }
     StageBranch branch = stage_open(out, selected);
-    u32 other = stage_op(out, 130, input.uint_type, node, input.stride);
+    u32 other = stage_op(out, reduction ? 128 : 130, input.uint_type, node, input.stride);
     u32 has_right = 0;
     u64 decorated = 0u64;
     for (index in 0..count) {
-        ScanTreeComponent component = unsafe_position<ScanTreeComponent>(
-            unsafe_address(address_bits(components) + u64(index) * size_of<ScanTreeComponent>()));
+        TreeComponent component = unsafe_position<TreeComponent>(
+            unsafe_address(address_bits(components) + u64(index) * size_of<TreeComponent>()));
         array<u32,2> left_slots = array<u32,2>(component.low, component.high);
         array<u32,2> right_slots = left_slots;
         array<u32,2> shift_slots = array<u32,2>(0, component.shift);
@@ -1625,10 +1628,14 @@ extern "C" ScanTreeWords scan_tree_layer(ScanTreeLayer input, address components
         PayloadEmission payload = PayloadEmission(PayloadAccess::Local, component.raw_type, input.uint_type,
             4, component.count, out.next);
 
-        scan_node_address(out, component, input.uint_type, other, left);
-        u32 a = scan_node_load(out, payload, left, shifts);
-        scan_node_address(out, component, input.uint_type, node, right);
-        u32 b = scan_node_load(out, payload, right, shifts);
+        if (reduction) {
+            left = unsafe_address(address_bits(own) + u64(index) * size_of<TreeParts>());
+        } else {
+            tree_node_address(out, component, input.uint_type, other, left);
+        }
+        u32 a = tree_node_load(out, payload, left, shifts);
+        tree_node_address(out, component, input.uint_type, reduction ? other : node, right);
+        u32 b = tree_node_load(out, payload, right, shifts);
         bool reverse = input.down != 0 && component.operation != CollectiveOperation::Sum;
         CollectivePair pair = CollectivePair(component.operation, component.scalar, component.raw_type,
             component.value_type, input.bool_type, reverse ? b : a, reverse ? a : b, out.next);
@@ -1641,19 +1648,21 @@ extern "C" ScanTreeWords scan_tree_layer(ScanTreeLayer input, address components
         bool floating = component.scalar == BuiltinScalar::F32 || component.scalar == BuiltinScalar::F64;
         if (input.down == 0 && floating && component.operation != CollectiveOperation::Sum) {
             if (has_right == 0) {
-                u32 right_begin = stage_op(out, 128, input.uint_type, other, input.one);
+                u32 right_begin = reduction
+                    ? stage_op(out, 128, input.uint_type, input.index, input.stride)
+                    : stage_op(out, 128, input.uint_type, other, input.one);
                 has_right = stage_op(out, 176, input.bool_type, right_begin, input.remaining);
             }
             value = stage_select(out, component.raw_type, has_right, value, a);
         }
         if (input.down != 0) {
-            scan_node_store(out, payload, b, left, shifts);
+            tree_node_store(out, payload, b, left, shifts);
         }
-        scan_node_store(out, payload, value, right, shifts);
+        tree_node_store(out, payload, value, reduction ? left : right, shifts);
     }
     stage_close(out, branch);
     stage_barrier(out, input.scope, input.semantics);
-    return ScanTreeWords(out.words, decorated, out.next, branch.end);
+    return TreeWords(out.words, decorated, out.next, branch.end);
 }
 
 extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {

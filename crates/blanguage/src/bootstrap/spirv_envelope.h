@@ -342,7 +342,7 @@ struct SharedAddressWords { u64 words; u32 next; };
 // The same slots receive the resulting pointers. A zero scale denotes one word.
 extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offsets, address body) on cpu;
 
-struct ScanTreeComponent {
+struct TreeComponent {
     u32 shared;
     u32 pointer_type;
     u32 low;
@@ -355,13 +355,14 @@ struct ScanTreeComponent {
     u32 raw_type;
     u32 value_type;
 };
-struct ScanTreeLayer {
+struct TreeLayer {
     u32 uint_type;
     u32 bool_type;
     u32 lane;
     u32 stride;
     u32 selector;
     u32 tile_capacity;
+    u32 index;
     u32 remaining;
     u32 one;
     u32 scope;
@@ -369,11 +370,13 @@ struct ScanTreeLayer {
     u32 down;
     u32 next;
 };
-struct ScanTreeWords { u64 body; u64 decorations; u32 next; u32 label; };
+struct TreeWords { u64 body; u64 decorations; u32 next; u32 label; };
+struct TreeParts { array<u32,2> ids; u64 count; };
 
-// Selector is the ordinary lane mask or the tile's doubled stride.
+// Selector is the scan lane mask or the tile's doubled stride.
+// Reduction supplies the current node's initialized pointer slots in own.
 // The host provides 42 + 176*count body words and 3*count decoration words.
-extern "C" ScanTreeWords scan_tree_layer(ScanTreeLayer input, address components, u32 count,
+extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, address own,
     address body, address decorations) on cpu;
 
 struct PrivateAddress {

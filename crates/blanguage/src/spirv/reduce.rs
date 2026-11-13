@@ -1,5 +1,5 @@
 //! 全域数值归约：分量共用 64 路树的同步，递归结果在设备驻留。
-use super::{scan::SharedTree, *};
+use super::{scan::{SharedTree, TreeDomain}, *};
 
 #[repr(C)]
 struct CollectivePair {
@@ -66,7 +66,6 @@ impl Emitter<'_> {
     ) {
         let r = &reduction.fields;
         let scalar = reduction.ty.components[0].0;
-        let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
         let identity = self.raw_constant(scalar, reduction.operator.identity(scalar));
@@ -100,42 +99,10 @@ impl Emitter<'_> {
         self.emit(249, &[merged]);
         self.emit(248, &[merged]);
         self.scan_barrier();
+        let components = self.tree_components(&trees);
         for width in [32, 16, 8, 4, 2, 1] {
-            let width = self.constant(Scalar::U32, width);
-            let selected = self.id();
-            self.emit(176, &[b, selected, local, width]);
-            let run = self.id();
-            let end = self.id();
-            self.emit(247, &[end, 0]);
-            self.emit(250, &[selected, run, end]);
-            self.emit(248, &[run]);
-            let other = self.id();
-            self.emit(128, &[u, other, local, width]);
-            let valid = if reduction.operator != CollectiveOperator::Sum && scalar.is_float() {
-                let other_global = self.id();
-                self.emit(128, &[u, other_global, self.index, width]);
-                let valid = self.id();
-                self.emit(176, &[b, valid, other_global, count]);
-                Some(valid)
-            } else {
-                None
-            };
-            for (component, at) in own.iter().enumerate() {
-                let a = self.load_raw(scalar, Scalar::U32, at.as_ref(), false);
-                let bv = self.tree_load(trees[component],other);
-                let value = self.collective_pair(scalar, reduction.operator, a, bv);
-                let value = if let Some(valid) = valid {
-                    let selected = self.id();
-                    self.select(self.raw_type(scalar), selected, valid, value, a);
-                    selected
-                } else {
-                    value
-                };
-                self.store_raw(scalar, Scalar::U32, at.as_ref(), value, false);
-            }
-            self.emit(249, &[end]);
-            self.emit(248, &[end]);
-            self.scan_barrier();
+            self.tree_layer(&components, local, width,
+                TreeDomain::Reduction { index: self.index, own: &own }, false, count);
         }
         let first = self.id();
         self.emit(170, &[b, first, local, zero]);
