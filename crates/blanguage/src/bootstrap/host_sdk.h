@@ -1,4 +1,5 @@
 module bootstrap.host_sdk;
+import bootstrap.ast_storage;
 
 // The original process-heap allocation owns the selected UTF-16 span.
 struct HostWide {
@@ -25,3 +26,13 @@ struct HostInputResult { HostInputKind kind; u32 status; };
 // The path and bytes are borrowed until the synchronous file operation returns.
 extern "C" HostInputResult write_host_input(address path, usize units, address data, usize bytes) on cpu;
 extern "C" u32 remove_host_input(address path, usize units) on cpu;
+
+struct HostProcessOutput {
+    SourceBytes stdout;
+    SourceBytes stderr;
+    u32 exit_code;
+    u32 status;
+};
+
+// The caller owns the UTF-16 executable and mutable command line until return.
+extern "C" HostProcessOutput run_host_process(address executable, usize units, address command_line) on cpu;

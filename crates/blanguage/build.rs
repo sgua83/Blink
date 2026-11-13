@@ -35,8 +35,9 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         compiler.arg("-c").arg(format!("src/bootstrap/{name}.b"))
             .args(["-I", "src", "--module", "-o"]).arg(object);
         if *name == "host_sdk" {
-            compiler.args(["-I", "../../library"]).arg("--import").arg(&shared[1]);
-            for header in ["directory", "error", "file", "system", "time"] {
+            compiler.args(["-I", "../../library"]).arg("--import").arg(&shared[1])
+                .arg("--import").arg(out.join("blink_compiler_ast_storage.obj"));
+            for header in ["directory", "error", "file", "process", "process_extended", "system", "thread", "time"] {
                 println!("cargo:rerun-if-changed=../../library/blink/windows/{header}.h");
             }
         }

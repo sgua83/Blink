@@ -4,6 +4,9 @@ import blink.windows.error;
 import blink.windows.file;
 import blink.windows.system;
 import blink.windows.path_core;
+import blink.windows.process;
+import blink.windows.process_extended;
+import blink.windows.thread;
 
 const handle INVALID_SEARCH = unsafe_handle(0xffffffffffffffffu64);
 const u32 ERROR_FILE_NOT_FOUND = 2;
@@ -304,4 +307,155 @@ extern "C" u32 remove_host_input(address path, usize units) on cpu {
     u32 status = removed == i32(0) ? GetLastError() : 0;
     CloseHandle(opened.file);
     return status;
+}
+
+extern "C" i32 CreatePipe(inout handle read_end, inout handle write_end,
+    address attributes, u32 bytes) on cpu
+    from "KERNEL32.dll";
+
+const u32 DETACHED_PROCESS = 0x00000008;
+const u32 GENERIC_READ = 0x80000000;
+
+struct HostPipe { handle read_end; handle write_end; u32 status; };
+
+HostPipe host_pipe() on cpu {
+    handle read_end = handle();
+    handle write_end = handle();
+    if (CreatePipe(read_end, write_end, address(), 0) == i32(0)) {
+        return HostPipe(handle(), handle(), GetLastError());
+    }
+    if (SetHandleInformation(write_end, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == i32(0)) {
+        u32 status = GetLastError();
+        CloseHandle(read_end);
+        CloseHandle(write_end);
+        return HostPipe(handle(), handle(), status);
+    }
+    return HostPipe(read_end, write_end, 0);
+}
+
+struct HostChild { handle process; u32 status; };
+
+HostChild create_host_child(address executable, address command_line, read array<handle,3> stdio) on cpu {
+    usize size = 0u64;
+    InitializeProcThreadAttributeList(address(), 1, 0, size);
+    if (size == 0u64) { return HostChild(handle(), GetLastError()); }
+
+    handle heap = GetProcessHeap();
+    address attributes = HeapAlloc(heap, 0, size);
+    if (address_bits(attributes) == 0u64) {
+        return HostChild(handle(), u32(ERROR_NOT_ENOUGH_MEMORY));
+    }
+    if (InitializeProcThreadAttributeList(attributes, 1, 0, size) == i32(0)) {
+        u32 status = GetLastError();
+        HeapFree(heap, 0, attributes);
+        return HostChild(handle(), status);
+    }
+
+    HostChild child = HostChild(handle(), 0);
+    if (UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            address_of(stdio[0]), size_of<array<handle,3>>(), address(), address()) == i32(0)) {
+        child.status = GetLastError();
+    } else {
+        StartupInfo startup = StartupInfo(u32(size_of<StartupInfoEx>()), address(), address(), address(),
+            0, 0, 0, 0, 0, 0, 0, STARTF_USESTDHANDLES, u16(0), u16(0), address(),
+            stdio[0], stdio[1], stdio[2]);
+        StartupInfoEx extended = StartupInfoEx(startup, attributes);
+        ProcessInformation info;
+        if (blink.windows.process_extended::CreateProcessW(executable, command_line, address(), address(),
+                i32(1), EXTENDED_STARTUPINFO_PRESENT | DETACHED_PROCESS, address(), address(),
+                extended, info) == i32(0)) {
+            child.status = GetLastError();
+        } else {
+            child.process = info.process;
+            CloseHandle(info.thread);
+        }
+    }
+    DeleteProcThreadAttributeList(attributes);
+    HeapFree(heap, 0, attributes);
+    return child;
+}
+
+HostChild start_host_child(address executable, usize units, address command_line,
+    handle stdout, handle stderr) on cpu {
+    HostNativePath path = host_native_path(executable, units);
+    if (path.status != 0) { return HostChild(handle(), path.status); }
+
+    let name = array<u16,4>(u16(78), u16(85), u16(76), u16(0)); // NUL
+    handle stdin = CreateFileW(address_of(name[0]), GENERIC_READ, 7, address(), OPEN_EXISTING, 0, handle());
+    HostChild child = HostChild(handle(), 0);
+    if (stdin == INVALID_HANDLE_VALUE) {
+        child.status = GetLastError();
+    } else {
+        if (SetHandleInformation(stdin, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == i32(0)) {
+            child.status = GetLastError();
+        } else {
+            let stdio = array<handle,3>(stdin, stdout, stderr);
+            child = create_host_child(path.pattern, command_line, stdio);
+        }
+        CloseHandle(stdin);
+    }
+    if (address_bits(path.allocation) != 0u64) { release_host_wide(path.allocation); }
+    return child;
+}
+
+struct HostReadWork { handle pipe; SourceBytes bytes; };
+
+extern "C" u32 read_host_stderr(address parameter) on cpu {
+    handle pipe = unsafe_position<HostReadWork>(parameter).pipe;
+    SourceBytes bytes = read_source(pipe);
+    CloseHandle(pipe);
+    unsafe_position<HostReadWork>(parameter).bytes = bytes;
+    return 0;
+}
+
+extern "C" HostProcessOutput run_host_process(address executable, usize units, address command_line) on cpu {
+    SourceBytes empty = SourceBytes(address(), 0u64, StorageError(0, 0));
+    HostPipe stdout = host_pipe();
+    if (stdout.status != 0) { return HostProcessOutput(empty, empty, 0, stdout.status); }
+    HostPipe stderr = host_pipe();
+    if (stderr.status != 0) {
+        CloseHandle(stdout.read_end);
+        CloseHandle(stdout.write_end);
+        return HostProcessOutput(empty, empty, 0, stderr.status);
+    }
+
+    HostChild child = start_host_child(executable, units, command_line, stdout.write_end, stderr.write_end);
+    CloseHandle(stdout.write_end);
+    CloseHandle(stderr.write_end);
+    if (child.status != 0) {
+        CloseHandle(stdout.read_end);
+        CloseHandle(stderr.read_end);
+        return HostProcessOutput(empty, empty, 0, child.status);
+    }
+
+    // Each blocking reader owns its pipe end. Join before the worker's context leaves scope.
+    HostReadWork work = HostReadWork(stderr.read_end, empty);
+    handle reader = CreateThread(address(), 0u64, c_function(read_host_stderr), address_of(work), 0, address());
+    if (reader == handle()) {
+        u32 status = GetLastError();
+        CloseHandle(stdout.read_end);
+        CloseHandle(stderr.read_end);
+        WaitForSingleObject(child.process, INFINITE);
+        CloseHandle(child.process);
+        return HostProcessOutput(empty, empty, 0, status);
+    }
+    SourceBytes output = read_source(stdout.read_end);
+    CloseHandle(stdout.read_end);
+    WaitForSingleObject(reader, INFINITE);
+    CloseHandle(reader);
+
+    u32 exit_code = 0;
+    u32 status = 0;
+    if (WaitForSingleObject(child.process, INFINITE) == WAIT_FAILED) {
+        status = GetLastError();
+    } else {
+        u32 code;
+        if (GetExitCodeProcess(child.process, code) != i32(0)) {
+            exit_code = code;
+        } else {
+            status = GetLastError();
+        }
+    }
+    CloseHandle(child.process);
+    return HostProcessOutput(output, work.bytes, exit_code, status);
 }

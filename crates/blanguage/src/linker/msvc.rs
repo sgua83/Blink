@@ -1,13 +1,16 @@
 //! Rust 执行框架的静态目标库使用既有 Windows 本机链接工具；不执行源码编译。
 use super::Result;
-use crate::{object::Archive, source_path::join};
+use crate::{file_bytes::FileBytes, object::Archive, source_path::join};
 use std::{
     ffi::OsString,
     fs::File,
     io,
-    os::windows::ffi::{OsStrExt, OsStringExt},
+    os::windows::{
+        ffi::{OsStrExt, OsStringExt},
+        process::ExitStatusExt,
+    },
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, ExitStatus, Output},
 };
 fn output(command: &mut Command) -> io::Result<Output> {
     use std::os::windows::process::CommandExt;
@@ -64,7 +67,17 @@ struct HostInputResult {
     status: u32,
 }
 
+#[repr(C)]
+struct HostProcessOutput {
+    stdout: FileBytes,
+    stderr: FileBytes,
+    exit_code: u32,
+    status: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.host_sdk::run_host_process"]
+    fn run_host_process(executable: *const u16, units: usize, command_line: *mut u16) -> HostProcessOutput;
     #[link_name = "bootstrap.host_sdk::write_host_input"]
     fn write_host_input(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostInputResult;
     #[link_name = "bootstrap.host_sdk::remove_host_input"]
@@ -114,32 +127,36 @@ fn host_path(path: &Path) -> io::Result<Vec<u16>> {
 fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     let program_files = std::env::var_os("ProgramFiles(x86)").ok_or("缺少 Windows ProgramFiles(x86)")?;
     let installer = join(Path::new(&program_files), "Microsoft Visual Studio/Installer/vswhere.exe");
-    let found = output(Command::new(installer).args([
-        "-utf8",
-        "-latest",
-        "-products",
-        "*",
-        "-requires",
-        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-        "-property",
-        "installationPath",
-    ]))?;
-    if !found.status.success() {
+    let executable = host_path(&installer)?;
+    let units = executable.len() - 1;
+    let mut command_line = Vec::new();
+    command_line.push(b'"' as u16);
+    command_line.extend_from_slice(&executable[..units]);
+    command_line.extend("\" -utf8 -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath".encode_utf16());
+    command_line.push(0);
+    let found = unsafe { run_host_process(executable.as_ptr(), units, command_line.as_mut_ptr()) };
+    if found.status != 0 {
+        return Err(io::Error::from_raw_os_error(found.status as i32).into());
+    }
+    let stdout = found.stdout.into_result()?;
+    let stderr = found.stderr.into_result()?;
+    let status = ExitStatus::from_raw(found.exit_code);
+    if !status.success() {
         return Err(format!(
             "Visual Studio 工具定位失败（{}）\n{}{}",
-            found.status,
-            String::from_utf8_lossy(&found.stdout),
-            String::from_utf8_lossy(&found.stderr)
+            status,
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
         ).into());
     }
-    let installation = host_text(&found.stdout, HostText::InstallationPath, OsString::from_wide)?;
+    let installation = host_text(&stdout, HostText::InstallationPath, OsString::from_wide)?;
     if installation.is_empty() {
         return Err("未安装 Visual Studio C++ 本机工具".into());
     }
     let vs = Path::new(&installation);
     let vc = {
         let path = join(vs, "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt");
-        let bytes = crate::file_bytes::FileBytes::read(&File::open(path)?)?;
+        let bytes = FileBytes::read(&File::open(path)?)?;
         let version = host_text(&bytes, HostText::ToolVersion, OsString::from_wide)?;
         join(&join(vs, "VC/Tools/MSVC"), version)
     };

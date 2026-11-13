@@ -27,12 +27,15 @@ unsafe impl Sync for FileBytes {}
 
 impl FileBytes {
     pub(crate) fn read(file: &File) -> Result<Self, Box<dyn std::error::Error>> {
+        unsafe { read_source(file.as_raw_handle()) }.into_result()
+    }
+
+    pub(crate) fn into_result(self) -> Result<Self, Box<dyn std::error::Error>> {
         const SOURCE_READ_ERROR: u32 = 4;
-        let bytes = unsafe { read_source(file.as_raw_handle()) };
-        match bytes.error.kind {
-            0 => Ok(bytes),
-            SOURCE_READ_ERROR => Err(io::Error::from_raw_os_error(bytes.error.native_code as i32).into()),
-            kind => Err(syntax::StorageFailure { kind, native_code: bytes.error.native_code }.into()),
+        match self.error.kind {
+            0 => Ok(self),
+            SOURCE_READ_ERROR => Err(io::Error::from_raw_os_error(self.error.native_code as i32).into()),
+            kind => Err(syntax::StorageFailure { kind, native_code: self.error.native_code }.into()),
         }
     }
 }
