@@ -38,7 +38,6 @@ struct Prepared<'a> {
     root: PathBuf,
     output: PathBuf,
     kind: UnitKind<'a>,
-    providers: Vec<Dependency<'a>>,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -109,6 +108,21 @@ unsafe extern "C" {
     );
 }
 
+// The B planner transfers ownership of its process-heap allocation. Any
+// thread can free it. Workers only share the immutable slice borrowed from it.
+unsafe impl Send for GraphPlan {}
+
+impl GraphPlan {
+    fn ids(&self) -> &[usize] {
+        if self.count == 0 {
+            &[]
+        } else {
+            // The B planner returned count initialized indices in this allocation.
+            unsafe { std::slice::from_raw_parts(self.ids, self.count) }
+        }
+    }
+}
+
 impl Drop for GraphPlan {
     fn drop(&mut self) {
         unsafe { release_dependency_plan(self.ids); }
@@ -116,7 +130,9 @@ impl Drop for GraphPlan {
 }
 
 struct DependencyPlan<'a> {
-    providers: Vec<Vec<Dependency<'a>>>,
+    plan: GraphPlan,
+    provider_rows: Vec<GraphRange>,
+    externals: Vec<&'a Object>,
     schedule: Schedule,
 }
 
@@ -206,24 +222,25 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
         }
         status => return Err(std::io::Error::from_raw_os_error(status as i32).into()),
     }
-    // B owns the flat provider buffer until these rows have been transferred.
-    let ids = if plan.count == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(plan.ids, plan.count) }
-    };
-    let providers = provider_rows.into_iter().map(|row| {
-        row.slice(ids).iter().map(|&id| {
-            if id < units.len() { Dependency::Unit(id) }
-            else { Dependency::Object(externals[id - units.len()]) }
-        }).collect()
-    }).collect();
     let ready_count = unsafe { initialize_ready(ready.as_mut_ptr(), waiting.as_ptr(), waiting.len()) };
     let schedule = Schedule {
         following: following_rows, followers, waiting, ready, ready_count,
     };
-    Ok(DependencyPlan { providers, schedule })
+    Ok(DependencyPlan { plan, provider_rows, externals, schedule })
 }
+
+fn dependencies<'row, 'object>(
+    ids: &'row [usize], unit_count: usize, externals: &'row [&'object Object],
+) -> impl Iterator<Item = Dependency<'object>> + 'row {
+    ids.iter().copied().map(move |id| {
+        if id < unit_count {
+            Dependency::Unit(id)
+        } else {
+            Dependency::Object(externals[id - unit_count])
+        }
+    })
+}
+
 enum Provider<'a> {
     Built(Arc<ObjectCompilation>),
     Object(&'a Object),
@@ -245,23 +262,24 @@ pub fn compile_graph(units: &[Unit<'_>]) -> Result<Vec<Output>> {
 impl Compiler {
     pub fn build_graph(&self, units: &[Unit<'_>]) -> Result<Vec<Output>> {
         if units.is_empty() { return Ok(Vec::new()); }
-        let (prepared, inputs, schedule) = self.execute(|_| {
-        let DependencyPlan { providers, schedule } = dependency_plan(units)?;
-        let prepared = units.iter().zip(providers).map(|(unit, providers)| {
+        let (prepared, inputs, dependency_plan) = self.execute(|_| {
+        let dependency_plan = dependency_plan(units)?;
+        let prepared = units.iter().map(|unit| {
             let mut path = unit.path.to_path_buf();
             path.set_extension("h");
             let mut path = path.canonicalize()?;
             path.set_extension(unit.path.extension().unwrap_or_else(|| std::ffi::OsStr::new("b")));
             Ok(Prepared { path, root: unit.root.canonicalize()?, output: std::path::absolute(unit.output)?,
-                kind: unit.kind, providers })
+                kind: unit.kind })
         }).collect::<Result<Vec<_>>>()?;
         let mut capture = Capture::default();
         for unit in &prepared { capture.header(&unit.path)?; }
         let mut interfaces = Vec::with_capacity(prepared.len());
-        for unit in &prepared {
+        let ids = dependency_plan.plan.ids();
+        for (unit, row) in prepared.iter().zip(&dependency_plan.provider_rows) {
             let mut providers = BTreeMap::new();
-            for provider in &unit.providers {
-                let (name, interface) = match *provider {
+            for dependency in dependencies(row.slice(ids), units.len(), &dependency_plan.externals) {
+                let (name, interface) = match dependency {
                     Dependency::Unit(id) => {
                         let header = capture.header(&prepared[id].path)?;
                         (header.name().to_owned(), ProviderInterface::Unit(header))
@@ -273,11 +291,13 @@ impl Compiler {
             interfaces.push(capture.capture(&unit.path, &unit.root, &providers)?);
         }
         let inputs = capture.finish(interfaces);
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, schedule))
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, dependency_plan))
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
             crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
         })?;
+        let DependencyPlan { plan, provider_rows, externals, schedule } = dependency_plan;
+        let ids = plan.ids();
         let state = Mutex::new(State {
             schedule, outputs: (0..units.len()).map(|_| None).collect(),
             failures: Vec::new(), unfinished: units.len(),
@@ -289,8 +309,9 @@ impl Compiler {
                 loop {
                     if !state.failures.is_empty() || state.unfinished == 0 { return; }
                     if let Some(index) = state.schedule.take() {
-                        let providers = prepared[index].providers.iter().map(|dependency| match dependency {
-                            Dependency::Unit(id) => match state.outputs[*id].as_ref().unwrap() {
+                        let row = provider_rows[index].slice(ids);
+                        let providers = dependencies(row, units.len(), &externals).map(|dependency| match dependency {
+                            Dependency::Unit(id) => match state.outputs[id].as_ref().unwrap() {
                                 Output::Object(value) => Provider::Built(value.clone()),
                                 Output::Entry(_) => unreachable!(),
                             },
