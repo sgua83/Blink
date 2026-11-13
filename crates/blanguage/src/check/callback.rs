@@ -60,7 +60,7 @@ pub(super) fn signature_named<'a>(world:&World,caller:&LexicalScope,name:&str,sp
         Ok((parameter.access(), ty))
     }).collect::<Result<Vec<_>>>()?;
     let ty = world.bind_c_function_reference(
-        &result, parameters.iter().map(|(access, ty)| Ok((*access, ty))), &contracts,
+        result, parameters, &contracts,
         (context.0, f.span(), context.1, context.2),
     )?.into_ty();
     Ok((instance, ty))

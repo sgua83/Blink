@@ -1,16 +1,7 @@
-//! C函数签名只持有原TypeName名义引用；对象布局与实际C调用仍由World产生。
-use crate::{ast::*, ir::{CFunctionType, CallParameter, CallParameterKind, Scalar, Ty}, Source, World};
-use std::collections::{BTreeMap, BTreeSet};
+//! B选择并绑定C函数签名；名义引用与实际C布局沿原World和原容器交接。
+mod c_function;
+use crate::{ast::*, ir::{CFunctionType, CallParameter, Scalar, Ty}, Source, World};
 
-fn ordinary(ty: &Ty, syntax: &TypeName, source: &Source, span: Span) -> crate::Result<()> {
-    if syntax.dataset || ty.owns_resources() {
-        return source.fail(span, "B224", "cfn普通C签名不能交接Blink拥有资源");
-    }
-    if ty.contains_views() || ty.components.is_empty() {
-        return source.fail(span, "B263", "cfn需要普通非空C布局，不能交接Blink资源引用");
-    }
-    Ok(())
-}
 impl World {
     pub(crate) fn check_interface_types(&self, definition: &crate::Definition,
         bindings: &std::sync::Arc<crate::generics::Bindings>,
@@ -104,62 +95,18 @@ impl World {
         self.ty(name, source, span, module, imports)
     }
     pub(crate) fn c_function_reference(
-        &self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String],
-    ) -> crate::Result<CFunctionType> {
-        let Some((result, parameters)) = name.arguments.split_first() else {
-            return source.fail(span, "B263", "cfn<R,P...>至少需要一个返回类型");
-        };
-        let GenericArgument::Type(result) = result else { return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值"); };
-        let parameters = parameters.iter().map(|parameter| {
-            let GenericArgument::Type(parameter) = parameter else { return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值"); };
-            let access = if !parameter.dataset && !parameter.view && !parameter.tile {
-                match parameter.name.as_str() { "read" => Access::Read, "write" => Access::Write, "inout" => Access::InOut, _ => Access::Value }
-            } else { Access::Value };
-            let parameter = if access == Access::Value { parameter } else {
-                let [GenericArgument::Type(element)] = parameter.arguments.as_slice() else {
-                    return source.fail(span, "B263", "cfn位置参数使用read<T>／write<T>／inout<T>");
-                };
-                element
-            };
-            Ok((access, parameter))
-        });
-        self.bind_c_function_reference(
-            result, parameters, name.contracts.as_ref().map_or(&[], |value| value.as_slice()),
-            (source, span, module, imports),
-        )
+        &self,name:&TypeName,source:&Source,span:Span,module:&str,imports:&[String],
+    )->crate::Result<CFunctionType> {
+        c_function::reference(self,name,source,span,module,imports)
     }
-
-    pub(crate) fn bind_c_function_reference<'a>(
-        &self, result: &TypeName,
-        parameters: impl IntoIterator<Item = crate::Result<(Access, &'a TypeName)>>,
-        outputs: &[ContractPredicate],
-        (source, span, module, imports): (&Source, Span, &str, &[String]),
-    ) -> crate::Result<CFunctionType> {
-        let result = self.type_reference(result, source, span, module, imports)?;
-        let parameters = parameters.into_iter().map(|parameter| {
-            let (access, ty) = parameter?;
-            Ok((access, self.type_reference(ty, source, span, module, imports)?))
-        }).collect::<crate::Result<Vec<_>>>()?;
-        let contracts = crate::check::outputs::bind_function_contracts(
-            self, &result, &parameters, outputs, source, span, module, imports,
-        )?;
-        Ok(CFunctionType { result, parameters, contracts })
+    pub(crate) fn bind_c_function_reference(
+        &self,result:TypeName,parameters:Vec<(Access,TypeName)>,outputs:&[ContractPredicate],
+        context:(&Source,Span,&str,&[String]),
+    )->crate::Result<CFunctionType> {
+        c_function::declaration(self,result,parameters,outputs,context)
     }
-    pub(crate) fn c_function_signature(&self, function: &CFunctionType, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<(Vec<CallParameter>, Option<Ty>, bool)> {
-        let mut parameters = Vec::new();
-        for (access, syntax) in &function.parameters {
-            let ty = self.ty_inner(syntax, source, span, module, imports, &mut BTreeSet::new())?;
-            ordinary(&ty, syntax, source, span)?;
-            parameters.push(if *access == Access::Value { CallParameter::value(ty) }
-                else { CallParameter::reference(ty, *access) });
-        }
-        let never = function.result.is_never();
-        let result = if never || function.result == TypeName::named("void") { None } else {
-            let ty = self.ty_inner(&function.result, source, span, module, imports, &mut BTreeSet::new())?;
-            ordinary(&ty, &function.result, source, span)?;
-            Some(ty)
-        };
-        Ok((parameters, result, never))
+    pub(crate) fn c_function_signature(&self,function:&CFunctionType,source:&Source,span:Span,module:&str,imports:&[String])
+        ->crate::Result<(Vec<CallParameter>,Option<Ty>,bool)> {
+        c_function::signature(self,function,source,span,module,imports)
     }
-
 }
