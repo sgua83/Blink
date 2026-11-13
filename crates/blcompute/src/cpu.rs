@@ -1,5 +1,6 @@
 pub use crate::texture::{TextureInput, CpuTextureBinding, CpuTextures};
 mod dataset;
+mod observation;
 mod sort;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use crate::library::Library;
@@ -9,6 +10,7 @@ use blanguage::{
     native::{BufferAddress, NativeSymbol, RangeEntry, RangeResult},
 };
 pub use dataset::CpuDataset;
+pub use observation::{CpuRangeCall, CpuRangeTiming, CpuRangeTimings, CpuThreadTime, CpuTimePoint};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -46,9 +48,19 @@ struct RangeWork<'a> {
     errors: *mut *mut c_void,
     range_parameters: *const u32,
     range_parameter_words: usize,
+    stage: usize,
+    timing: Option<*mut CpuRangeTiming>,
 }
 impl RangeWork<'_> {
-    unsafe fn invoke(&self,address:*mut c_void,buffers:*const BufferAddress,end:u32,begin:u32,output:*mut u32)->*mut c_void {
+    unsafe fn invoke(
+        &self,
+        address: *mut c_void,
+        buffers: *const BufferAddress,
+        end: u32,
+        begin: u32,
+        output: *mut u32,
+        timing: Option<*mut CpuRangeTiming>,
+    ) -> *mut c_void {
         let mut local=self.frame.map(|(definitions,offset,words,inputs,input_domains)|{
             let frame=unsafe {crate::application::Frame::from_definitions(definitions.clone(),inputs,input_domains)};
             let values=unsafe {std::slice::from_raw_parts(self.uniforms,words)}.to_vec();
@@ -63,7 +75,24 @@ impl RangeWork<'_> {
             None=>self.uniforms,
         };
         let entry:RangeEntry=unsafe {std::mem::transmute(address)};
-        unsafe {entry(buffers,uniforms,end,begin,output)}
+        unsafe {
+            observation::measure(timing, begin, end, || entry(buffers, uniforms, end, begin, output))
+        }
+    }
+
+    unsafe fn invoke_serial(
+        &self,
+        address: *mut c_void,
+        buffers: *const BufferAddress,
+        end: u32,
+        output: *mut u32,
+        timings: &mut Option<&mut CpuRangeTimings>,
+    ) -> Result<*mut c_void> {
+        unsafe {
+            observation::capture(timings, self.stage, address as usize, 1, |timing| {
+                Ok(self.invoke(address, buffers, end, 0, output, timing))
+            })
+        }
     }
 }
 unsafe extern "system" fn execute_ranges(
@@ -102,8 +131,10 @@ unsafe extern "system" fn execute_ranges(
             } else {
                 work.partials.add(begin / work.grain * words)
             };
-            *work.errors.add(begin / work.grain) =
-                work.invoke(work.entry,buffers,end as u32,begin as u32,output);
+            let index = begin / work.grain;
+            let timing = work.timing.map(|first| first.add(index));
+            *work.errors.add(index) =
+                work.invoke(work.entry, buffers, end as u32, begin as u32, output, timing);
         }
     }
 }
@@ -608,7 +639,17 @@ impl CpuProgram {
         bindings: impl Into<Bindings<DomainBindings<CpuDataset>>>,
         values: &[Value],
     ) -> OwnedRunResult {
-        self.code.run_owned(bindings.into(), values)
+        self.code.run_owned(bindings.into(), values, None)
+    }
+
+    /// Execute the original owned run and append the native calls actually made.
+    pub fn run_owned_observed(
+        &self,
+        bindings: impl Into<Bindings<DomainBindings<CpuDataset>>>,
+        values: &[Value],
+        timings: &mut CpuRangeTimings,
+    ) -> OwnedRunResult {
+        self.code.run_owned(bindings.into(), values, Some(timings))
     }
 }
 impl CpuTemplate {
@@ -643,8 +684,19 @@ impl CpuTemplate {
         bindings: impl Into<Bindings<DomainBindings<CpuDataset>>>,
         values: &[Value],
     ) -> OwnedRunResult {
-        self.code.run_owned(bindings.into(), values)
+        self.code.run_owned(bindings.into(), values, None)
     }
+
+    /// Execute the original template and append the native calls actually made.
+    pub fn run_observed(
+        &self,
+        bindings: impl Into<Bindings<DomainBindings<CpuDataset>>>,
+        values: &[Value],
+        timings: &mut CpuRangeTimings,
+    ) -> OwnedRunResult {
+        self.code.run_owned(bindings.into(), values, Some(timings))
+    }
+
     pub(crate) fn run_projected(
         &self,
         bindings: &mut DomainBindings<crate::application::ResidentData>,
@@ -655,7 +707,7 @@ impl CpuTemplate {
         writing: impl FnOnce(),
     ) -> Result<()> {
         self.code
-            .run_mapped(bindings, textures, uniforms, order.len(), |i| order[i], writing,Some(definitions))
+            .run_mapped(bindings, textures, uniforms, order.len(), |i| order[i], writing, Some(definitions), None)
     }
 }
 #[derive(Clone, Copy)]
@@ -816,6 +868,7 @@ impl CpuCode {
         &self,
         mut bindings: Bindings<DomainBindings<CpuDataset>>,
         values: &[Value],
+        timings: Option<&mut CpuRangeTimings>,
     ) -> OwnedRunResult {
         let count = bindings.datasets.datasets.len();
         let uniforms = arguments(&self.program, bindings.datasets.datasets.iter().map(|data| {
@@ -824,7 +877,7 @@ impl CpuCode {
         }), values);
         let result = uniforms.and_then(|uniforms| {
             let descriptions = CpuTextures::new(&bindings.textures);
-            self.run_mapped(&mut bindings.datasets, &descriptions.bindings(), uniforms, count, |i| (i, 0), || {},self.definitions.as_ref())
+            self.run_mapped(&mut bindings.datasets, &descriptions.bindings(), uniforms, count, |i| (i, 0), || {}, self.definitions.as_ref(), timings)
         });
         match result {
             Ok(()) => Ok(bindings.datasets),
@@ -840,6 +893,7 @@ impl CpuCode {
         physical: impl Fn(usize) -> (usize, u32) + Copy,
         writing: impl FnOnce(),
         definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
+        timings: Option<&mut CpuRangeTimings>,
     ) -> Result<()> {
         crate::bindings::require(&bindings.datasets, &bindings.domains, &self.program, physical)?;
         for (data, binding) in (0..count)
@@ -868,7 +922,7 @@ impl CpuCode {
         self.run_buffers(&arguments, textures, uniforms, || {
             crate::bindings::invalidate(&mut bindings.domains, &self.program.write_regions, physical);
             writing();
-        },definitions,input_domains)?;
+        }, definitions, input_domains, timings)?;
         bindings.produced(&self.program, physical);
         Ok(())
     }
@@ -884,7 +938,7 @@ impl CpuCode {
             .map(CpuBuffer::owned)
             .collect::<Result<Vec<_>>>()?;
         let descriptions = CpuTextures::new(textures);
-        self.run_buffers(&buffers, &descriptions.bindings(), uniforms, || {},self.definitions.as_ref(),Vec::new())
+        self.run_buffers(&buffers, &descriptions.bindings(), uniforms, || {}, self.definitions.as_ref(), Vec::new(), None)
     }
     fn run_buffers(
         &self,
@@ -894,6 +948,7 @@ impl CpuCode {
         writing: impl FnOnce(),
         definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
         mut input_domains:Vec<crate::DomainRelation>,
+        mut timings: Option<&mut CpuRangeTimings>,
     ) -> Result<()> {
         if textures.len() != self.program.texture_count()
             || textures.iter().zip(self.program.textures().iter().flat_map(|binding|
@@ -914,7 +969,7 @@ impl CpuCode {
         // 后续失败可能已有写入，不将未完成调用发布为完整保证。
         writing();
         // Actual input facts move into this scope; declarations never create facts.
-        for (stage, code) in self.program.stages().iter().zip(&self.stages) {
+        for (stage_index, (stage, code)) in self.program.stages().iter().zip(&self.stages).enumerate() {
             crate::bindings::invalidate(&mut input_domains,&stage.write_regions,|binding|(binding,0));
             let count = if let Some(prefix) = &stage.prefix {
                 unsafe {
@@ -927,7 +982,7 @@ impl CpuCode {
                 buffers[stage.domain].count
             };
             match code {
-                StageCode::Sort(code) => sort::run(self, code, &pointers, count)?,
+                StageCode::Sort(code) => sort::run(self, code, &pointers, count, stage_index, &mut timings)?,
                 StageCode::Element { main: executable, continuation, result } => {
                     let result = *result;
                     uniforms[0] = count;
@@ -957,8 +1012,10 @@ impl CpuCode {
                         errors: std::ptr::null_mut(),
                         range_parameters: std::ptr::null(),
                         range_parameter_words: result.words(),
+                        stage: stage_index,
+                        timing: None,
                     };
-                    self.execute(&mut ranges)?;
+                    self.execute(&mut ranges, &mut timings)?;
                     if let blanguage::ir::Operation::Reduce(reduction) = &stage.operation {
                         for (scalar, offset) in &reduction.ty.components {
                             let total = partials
@@ -986,13 +1043,14 @@ impl CpuCode {
                                 inputs[*source] = BufferAddress { address: partials.as_mut_ptr(), stride: result.words() * 4 };
                                 inputs[*target] = inputs[*source];
                                 let failure = unsafe {
-                                    ranges.invoke(prefix.address,
+                                    ranges.invoke_serial(
+                                        prefix.address,
                                         inputs.as_ptr(),
                                         range_count as u32,
-                                        0,
                                         std::ptr::null_mut(),
+                                        &mut timings,
                                     )
-                                };
+                                }?;
                                 unsafe {crate::application::take_errors([failure])}?;
                                 Some(apply)
                             }
@@ -1003,13 +1061,14 @@ impl CpuCode {
                                     inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr(), stride: k * 4 };
                                     let mut output = vec![0; k];
                                     let failure = unsafe {
-                                        ranges.invoke(next.address,
+                                        ranges.invoke_serial(
+                                            next.address,
                                             inputs.as_ptr(),
                                             range_count as u32,
-                                            0,
                                             output.as_mut_ptr(),
+                                            &mut timings,
                                         )
-                                    };
+                                    }?;
                                     unsafe {crate::application::take_errors([failure])}?;
                                     for (scalar, offset) in &r.ty.components {
                                         unsafe {
@@ -1097,7 +1156,7 @@ impl CpuCode {
                             ranges.result = RangeResult::None;
                             ranges.next = AtomicUsize::new(0);
                             ranges.range_parameters = partials.as_ptr();
-                            self.execute(&mut ranges)?;
+                            self.execute(&mut ranges, &mut timings)?;
                         }
                     }
                 }
@@ -1114,14 +1173,27 @@ impl CpuCode {
         }
         Ok(())
     }
-    fn execute(&self, ranges: &mut RangeWork<'_>) -> Result<()> {
+    fn execute(
+        &self,
+        ranges: &mut RangeWork<'_>,
+        timings: &mut Option<&mut CpuRangeTimings>,
+    ) -> Result<()> {
         let mut errors = vec![std::ptr::null_mut(); ranges.count.div_ceil(ranges.grain)];
         ranges.errors = errors.as_mut_ptr();
-        let handle = unsafe { WorkHandle::new(execute_ranges, (ranges as *mut RangeWork).cast()) }?;
-        for _ in 0..self.workers.min(ranges.count) {
-            unsafe { handle.submit() };
+        unsafe {
+            observation::capture(timings, ranges.stage, ranges.entry as usize, errors.len(), |timing| {
+                let submissions = self.workers.min(ranges.count);
+                let work = std::ptr::from_mut(ranges);
+                let handle = WorkHandle::new(execute_ranges, work.cast())?;
+                (*work).timing = timing;
+                for _ in 0..submissions {
+                    handle.submit();
+                }
+                drop(handle);
+                (*work).timing = None;
+                Ok(())
+            })?;
+            crate::application::take_errors(errors)
         }
-        drop(handle);
-        unsafe {crate::application::take_errors(errors)}
     }
 }

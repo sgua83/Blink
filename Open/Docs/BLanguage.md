@@ -4481,6 +4481,8 @@ let pending = combine.submit(joined, &[])?;
 
 CPU 的拥有型 `CpuProgram::run_owned`／`CpuTemplate::run` 返回 `cpu::OwnedRunResult`：成功为 `Ok(DomainBindings<CpuDataset>)`，失败为 `Err((error, Bindings<DomainBindings<CpuDataset>>))`。错误携带原 `Box<dyn Error + Send + Sync>` 和输入经既有 `Into` 转换后实际持有的同一组数据、域关系及全部纹理；移动这些所有者，不复制载荷，不承诺转换前不同 Rust 容器的头部地址。前置拒绝保留原内容与有效域；已取得写访问后的失败交回实际部分写入及原 Count 失效结果，只有全部阶段完成才产生新保证。调用者可继续持有失败输入，或显式结束它并传播原错误；没有自动重放。成功后纹理的本次同步消费结束，返回的数据继续持有其实际所有权。`CpuDataset::Owned(Dataset)` 持有独占数据，`CpuDataset::Read(ReadDataset)` 持有原 Arc 冻结存储；`Dataset`、`ReadDataset` 可直接转为相应绑定，普通 Dataset 向量仍可作为输入。返回绑定以同一 read 接口暴露 words／布局；`CpuDataset::words_mut()` 只允许独占存储并返回 Result，冻结存储不转成可写切片。旧 `CpuProgram::run(&mut [Dataset],...)` 和 C ABI 保持，复用同一阶段执行主体。
 
+Release Rust SDK可由`CpuProgram::run_owned_observed`或`CpuTemplate::run_observed`将实际范围计时追加至调用者持有的`cpu::CpuRangeTimings`。每组记录保留实际执行计划阶段索引、当次装入入口地址及原生调用的半开范围。每个范围保留Windows线程标识、首尾QPC tick和入口返回的失败状态。`ticks_per_second`是QPC频率，线程用户态与内核态累计值以100ns为单位，查询失败则返回Windows错误码。CPU入口完成前由原工作者持有写入位置，原调用返回后由调用者读取记录及原结果，入口地址只描述当次装入。已经调用的失败范围仍有记录，前置拒绝或空执行没有调用记录。普通入口无需采样，等待及整次执行的耗时可在各自边界测量。
+
 `DomainBindings<CpuDataset>::freeze(&[count_binding])` 保留原 payload、实际地址、子资源与域关系，原 `ReadDataset::binding()` 也可直接产生 CPU read 绑定。partition／join／rebind 的只读别名规则与 GPU 相同；独立 CPU 消费者可持有同一只读 Count，实际调用归还前数据与子资源一直由原所有者持有。额外独占输出需要转为 CpuDataset，例如 `owned.rebind(&[0,1,2],vec![output.into()])`。不以 Count 数值相同恢复关系，也不允许共享绑定进入 write／inout／atomic 参数。
 
 显式 `Device::upload_domains` 接收 CPU 带域绑定，`download_domains` 返回 `DomainBindings<CpuDataset>`；在一次传输原有的局部映射内，根绑定和 view 子资源按同一实际冻结所有者共享目标，只读能力保持。多个 Count 别名不分别分配数据页／CPU 数组；内容相同的独立来源仍分别传输。CPU 地址与 GPU 页表地址由目标真实所有者生成，映射随操作结束释放，没有隐式迁移、跨操作缓存或统一地址空间。单个 `Device::download` 仍返回显式读回的新 Dataset，不交付原有效域；拥有型 CPU 结果继续保留实际关系。
