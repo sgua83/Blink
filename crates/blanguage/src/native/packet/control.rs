@@ -181,23 +181,3 @@ impl Uniformity<'_> {
         condition_flow
     }
 }
-
-pub(super) fn remove_address_indices(code: &mut Vec<Step<'_>>, indices: &BTreeSet<Reg>) {
-    code.retain(|step| !matches!(&step.kind, StepKind::Index(r) if indices.contains(r)));
-    for step in code {
-        match &mut step.kind {
-            StepKind::If { yes, no, .. } => {
-                remove_address_indices(yes, indices);
-                remove_address_indices(no, indices);
-            }
-            StepKind::Loop {
-                condition, body, ..
-            } => {
-                remove_address_indices(condition, indices);
-                remove_address_indices(body, indices);
-            }
-            StepKind::Scope(body) => remove_address_indices(body, indices),
-            _ => {}
-        }
-    }
-}

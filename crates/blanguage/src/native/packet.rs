@@ -111,22 +111,15 @@ impl<'a> Plan<'a> {
         }
         let uniform = control::uniform_registers(stage);
         let mut indices = BTreeSet::new();
-        control::visit(&stage.code, &mut |inst| {
-            if let InstKind::Index(dst) = &(inst).kind {
-                indices.insert(*dst);
-            }
-        });
-        let mut code = Self::block(program, stage, &stage.code, &uniform, &indices)?;
         let mut values = BTreeSet::new();
         control::visit(&stage.code, &mut |inst| match &(inst).kind {
+            InstKind::Index(dst) => { indices.insert(*dst); }
             InstKind::Load { .. } => {}
-            InstKind::Store { value, .. } => {
-                values.insert(*value);
-            }
+            InstKind::Store { value, .. } => { values.insert(*value); }
             _ => { inst.all_operands(&mut |reg| { values.insert(reg); true }); }
         });
         let address_only = indices.difference(&values).copied().collect();
-        control::remove_address_indices(&mut code, &address_only);
+        let code = Self::block(program, stage, &stage.code, &uniform, &indices, &address_only)?;
         Some(Self { code, address_only })
     }
 
@@ -136,11 +129,13 @@ impl<'a> Plan<'a> {
         instructions: &'a [Inst],
         uniform: &[bool],
         indices: &BTreeSet<Reg>,
+        address_only: &BTreeSet<Reg>,
     ) -> Option<Vec<Step<'a>>> {
         let mut code = Vec::new();
         for inst in instructions {
             let step = match &(inst).kind {
                 InstKind::Constant(dst, _, bits) => StepKind::Constant(*dst, *bits as u32),
+                InstKind::Index(dst) if address_only.contains(dst) => continue,
                 InstKind::Index(dst) => StepKind::Index(*dst),
                 InstKind::Uniform(dst, offset) => StepKind::Uniform(*dst, *offset),
                 InstKind::LoadLocal(dst, slot) => {
@@ -244,8 +239,8 @@ impl<'a> Plan<'a> {
                     }
                     StepKind::If {
                         condition: *condition,
-                        yes: Self::block(program, stage, yes, uniform, indices)?,
-                        no: Self::block(program, stage, no, uniform, indices)?,
+                        yes: Self::block(program, stage, yes, uniform, indices, address_only)?,
+                        no: Self::block(program, stage, no, uniform, indices, address_only)?,
                     }
                 }
                 InstKind::Loop {
@@ -257,13 +252,13 @@ impl<'a> Plan<'a> {
                         return None;
                     }
                     StepKind::Loop {
-                        condition: Self::block(program, stage, condition, uniform, indices)?,
+                        condition: Self::block(program, stage, condition, uniform, indices, address_only)?,
                         test: *test,
-                        body: Self::block(program, stage, body, uniform, indices)?,
+                        body: Self::block(program, stage, body, uniform, indices, address_only)?,
                     }
                 }
                 InstKind::Scope(body) => {
-                    StepKind::Scope(Self::block(program, stage, body, uniform, indices)?)
+                    StepKind::Scope(Self::block(program, stage, body, uniform, indices, address_only)?)
                 }
                 InstKind::Exit => StepKind::Exit,
                 InstKind::Break => StepKind::Break,
