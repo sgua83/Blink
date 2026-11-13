@@ -140,12 +140,15 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
     digest.field(sdk.as_os_str().as_encoded_bytes());
     let variables = std::env::vars_os().filter(|(name, _)| {
         let name = name.to_string_lossy().to_ascii_uppercase();
-        matches!(name.as_str(), "PATH" | "RUSTC" | "RUSTFLAGS" | "RUSTC_WRAPPER"
-            | "RUSTC_WORKSPACE_WRAPPER" | "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN"
-            | "CARGO_HOME" | "CARGO_INCREMENTAL" | "CARGO_ENCODED_RUSTFLAGS"
-            | "LIB" | "LIBPATH" | "INCLUDE" | "SYSTEMROOT")
-            || name.starts_with("CARGO_PROFILE_") || name.starts_with("CARGO_TARGET_")
-            || (name.starts_with("CARGO_BUILD_") && name != "CARGO_BUILD_JOBS")
+        // compile() fixes jobs, profile and target-dir with explicit Cargo arguments.
+        !matches!(name.as_str(), "CARGO_BUILD_JOBS" | "CARGO_BUILD_PROFILE"
+            | "CARGO_TARGET_DIR" | "CARGO_BUILD_TARGET_DIR")
+            && (matches!(name.as_str(), "PATH" | "RUSTC" | "RUSTFLAGS" | "RUSTC_WRAPPER"
+                | "RUSTC_WORKSPACE_WRAPPER" | "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN"
+                | "CARGO_HOME" | "CARGO_INCREMENTAL" | "CARGO_ENCODED_RUSTFLAGS"
+                | "LIB" | "LIBPATH" | "INCLUDE" | "SYSTEMROOT")
+                || name.starts_with("CARGO_PROFILE_") || name.starts_with("CARGO_TARGET_")
+                || name.starts_with("CARGO_BUILD_"))
     }).collect::<std::collections::BTreeMap<_, _>>();
     for (name, value) in variables {
         digest.field(name.as_encoded_bytes());
