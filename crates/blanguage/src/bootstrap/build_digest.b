@@ -136,33 +136,40 @@ void finish_digest(inout array<u32,8> state,address tail,u64 remainder,u64 lengt
     }
 }
 
-extern "C" void sha256(address input,u64 length,address output) on cpu {
-    array<u32,8> state=initial_state();
-    array<u64,16> scratch=array<u64,16>(
+extern "C" DigestState sha256_start() on cpu {
+    array<u64,16> tail=array<u64,16>(
         0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,
         0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64);
-    address tail=address_of(scratch[0]);
-    u64 pending=absorb(state,tail,0u64,input,length);
-    finish_digest(state,tail,pending,length,output);
+    return DigestState(initial_state(),tail,0u64,0u64);
+}
+
+extern "C" void sha256_update(inout DigestState state,address input,u64 length) on cpu {
+    address tail=address_of(state.tail[0]);
+    state.pending=absorb(state.words,tail,state.pending,input,length);
+    state.length+=length;
+}
+
+extern "C" void sha256_finish(inout DigestState state,address output) on cpu {
+    address tail=address_of(state.tail[0]);
+    finish_digest(state.words,tail,state.pending,state.length,output);
+}
+
+extern "C" void sha256(address input,u64 length,address output) on cpu {
+    DigestState state=sha256_start();
+    sha256_update(state,input,length);
+    sha256_finish(state,output);
 }
 
 extern "C" void sha256_fields(address fields,u64 count,address output) on cpu {
-    array<u32,8> state=initial_state();
-    array<u64,16> scratch=array<u64,16>(
-        0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,
-        0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64);
-    address tail=address_of(scratch[0]);
-    u64 pending=0u64;
-    u64 length=0u64;
+    DigestState state=sha256_start();
     u64 index=0u64;
     while(index<count){
         DigestField field=unsafe_position<DigestField>(at(fields,index*size_of<DigestField>()));
         // The compiler host is little endian. Borrow the field length as the next eight bytes.
         u64 prefix=field.length;
-        pending=absorb(state,tail,pending,address_of(prefix),8u64);
-        pending=absorb(state,tail,pending,field.bytes,field.length);
-        length+=8u64+field.length;
+        sha256_update(state,address_of(prefix),8u64);
+        sha256_update(state,field.bytes,field.length);
         index+=1u64;
     }
-    finish_digest(state,tail,pending,length,output);
+    sha256_finish(state,output);
 }

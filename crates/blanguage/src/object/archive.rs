@@ -111,19 +111,19 @@ pub(crate) fn compile(
 
 // 构建输入来自原原生生产者；不是资源ABI或另一份运行时状态。
 pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
-    use crate::build::hash;
+    use crate::{build::hash::Digest, file_bytes::FileBytes};
     use std::{collections::BTreeSet, fs, io::ErrorKind};
-    fn optional(bytes: &mut Vec<u8>, path: &Path) -> std::io::Result<bool> {
-        hash::field(bytes, path.as_os_str().as_encoded_bytes());
-        match fs::read(path) {
-            Ok(value) => { hash::field(bytes, b"present"); hash::field(bytes, &value); Ok(true) }
-            Err(error) if error.kind() == ErrorKind::NotFound => { hash::field(bytes, b"absent"); Ok(false) }
+    fn optional(digest: &mut Digest, path: &Path) -> std::io::Result<bool> {
+        digest.field(path.as_os_str().as_encoded_bytes());
+        match FileBytes::read_path(path) {
+            Ok(value) => { digest.field(b"present"); digest.field(&value); Ok(true) }
+            Err(error) if error.kind() == ErrorKind::NotFound => { digest.field(b"absent"); Ok(false) }
             Err(error) => Err(error),
         }
     }
-    fn configuration(bytes: &mut Vec<u8>, directory: &Path) -> std::io::Result<()> {
-        if !optional(bytes, &directory.join("config"))? {
-            optional(bytes, &directory.join("config.toml"))?;
+    fn configuration(digest: &mut Digest, directory: &Path) -> std::io::Result<()> {
+        if !optional(digest, &directory.join("config"))? {
+            optional(digest, &directory.join("config.toml"))?;
         }
         Ok(())
     }
@@ -135,8 +135,9 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
         Ok(())
     }
     let sdk = sdk_root()?;
-    let mut bytes = Vec::from(b"BlinkNativeInputs1".as_slice());
-    hash::field(&mut bytes, sdk.as_os_str().as_encoded_bytes());
+    let mut digest = Digest::new();
+    digest.update(b"BlinkNativeInputs1");
+    digest.field(sdk.as_os_str().as_encoded_bytes());
     let variables = std::env::vars_os().filter(|(name, _)| {
         let name = name.to_string_lossy().to_ascii_uppercase();
         matches!(name.as_str(), "PATH" | "RUSTC" | "RUSTFLAGS" | "RUSTC_WRAPPER"
@@ -147,16 +148,16 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
             || (name.starts_with("CARGO_BUILD_") && name != "CARGO_BUILD_JOBS")
     }).collect::<std::collections::BTreeMap<_, _>>();
     for (name, value) in variables {
-        hash::field(&mut bytes, name.as_encoded_bytes());
-        hash::field(&mut bytes, value.as_encoded_bytes());
+        digest.field(name.as_encoded_bytes());
+        digest.field(value.as_encoded_bytes());
     }
     let mut configured = BTreeSet::new();
     for directory in sdk.ancestors() {
         let cargo = directory.join(".cargo");
-        configuration(&mut bytes, &cargo)?;
+        configuration(&mut digest, &cargo)?;
         configured.insert(cargo);
-        optional(&mut bytes, &directory.join("rust-toolchain"))?;
-        optional(&mut bytes, &directory.join("rust-toolchain.toml"))?;
+        optional(&mut digest, &directory.join("rust-toolchain"))?;
+        optional(&mut digest, &directory.join("rust-toolchain.toml"))?;
     }
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(std::path::PathBuf::from);
@@ -164,25 +165,25 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
         .or_else(|| home.as_ref().map(|home| home.join(".cargo")));
     if let Some(cargo) = cargo {
         let cargo = sdk.join(cargo);
-        if !configured.contains(&cargo) { configuration(&mut bytes, &cargo)?; }
+        if !configured.contains(&cargo) { configuration(&mut digest, &cargo)?; }
     }
     let rustup = std::env::var_os("RUSTUP_HOME").map(std::path::PathBuf::from)
         .or_else(|| home.map(|home| home.join(".rustup")));
-    if let Some(rustup) = rustup { optional(&mut bytes, &sdk.join(rustup).join("settings.toml"))?; }
+    if let Some(rustup) = rustup { optional(&mut digest, &sdk.join(rustup).join("settings.toml"))?; }
     if runtime {
         let mut files = vec![sdk.join("Cargo.toml")];
-        optional(&mut bytes, &sdk.join("crates/blanguage/build-sdk.rs"))?;
+        optional(&mut digest, &sdk.join("crates/blanguage/build-sdk.rs"))?;
         for name in ["blanguage", "blcompute"] {
             let package = sdk.join("crates").join(name);
             files.push(package.join("Cargo.toml"));
-            optional(&mut bytes, &package.join("build.rs"))?;
+            optional(&mut digest, &package.join("build.rs"))?;
             sources(&package.join("src"), &mut files)?;
         }
         files.sort();
         for path in files {
-            hash::field(&mut bytes, path.as_os_str().as_encoded_bytes());
-            hash::field(&mut bytes, &fs::read(path)?);
+            digest.field(path.as_os_str().as_encoded_bytes());
+            digest.field(&FileBytes::read_path(&path)?);
         }
     }
-    Ok(hash::digest(&bytes))
+    Ok(digest.finish())
 }
