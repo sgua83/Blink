@@ -2457,6 +2457,47 @@ extern "C" u64 tile_private_copy(TilePrivateCopy input, address output) on cpu {
     return store_bits(cursor, low, u8(0), 4) - start;
 }
 
+extern "C" u64 abi_memory_value(u32 slot, u64 count, AbiMemoryMode mode, address context,
+    cfn<AbiMemoryComponent,address,u64> component, address output) on cpu requires nonzero(component) {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    u8 base = u8(4);
+    u32 offset = slot;
+    if (mode != AbiMemoryMode::StackLoad && mode != AbiMemoryMode::StackStore) {
+        MoveLocation pointer = MoveLocation(u64(slot), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+        cursor = load_bits(cursor, u8(1), pointer, true);
+        base = u8(1);
+        offset = 0;
+    }
+    bool writing = mode == AbiMemoryMode::StackStore || mode == AbiMemoryMode::IndirectResult
+        || mode == AbiMemoryMode::FallibleResult;
+    u64 index = 0u64;
+    while (index < count) {
+        AbiMemoryComponent value = component(context, index);
+        MoveLocation field = MoveLocation(u64(offset + value.offset), MOVE_MEMORY, base, NO_INDEX, u8(0));
+        u32 size = value.scalar.width / 8;
+        if (writing) {
+            cursor += write_scalar_move(field, value.location, size, unsafe_address(cursor));
+        } else {
+            cursor += read_scalar_move(value.location, field, size, value.scalar.kind == ScalarKind::Signed,
+                value.scalar.kind == ScalarKind::Boolean, unsafe_address(cursor));
+        }
+        index += 1u64;
+    }
+    if (mode == AbiMemoryMode::IndirectResult) {
+        cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(1), u8(0));
+    }
+    return cursor - start;
+}
+
+extern "C" u64 abi_stack_pointer(u32 offset, u32 slot, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation object = MoveLocation(u64(offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    MoveLocation home = MoveLocation(u64(slot), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    u64 cursor = encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(0), object);
+    return store_bits(cursor, home, u8(0), 8) - start;
+}
+
 extern "C" u64 texture_table_address(u64 offset, address output) on cpu {
     u64 start = address_bits(output);
     if (offset <= 0x7fffffffu64) {

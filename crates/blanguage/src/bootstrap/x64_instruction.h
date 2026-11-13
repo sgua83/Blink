@@ -39,6 +39,27 @@ extern "C" u64 stack_register(u8 register, bool restore, address output) on cpu;
 // the caller's outgoing slot. The caller owns nine output bytes.
 extern "C" u64 argument_register(u8 slot, u32 float_size, bool to_home, address output) on cpu;
 
+enum AbiMemoryMode:u32 {
+    StackLoad=0;
+    StackStore=1;
+    IndirectParameter=2;
+    IndirectResult=3;
+    FallibleResult=4;
+};
+
+struct AbiMemoryComponent {
+    MoveLocation location;
+    ScalarEncoding scalar;
+    u32 offset;
+};
+
+// The existing allocation and value list are read synchronously. Output has
+// sixteen bytes for the pointer sequence plus twenty-four per component.
+extern "C" u64 abi_memory_value(u32 slot, u64 count, AbiMemoryMode mode, address context,
+    cfn<AbiMemoryComponent,address,u64> component, address output) on cpu requires nonzero(component);
+// The caller owns sixteen bytes for computing and writing a frame address.
+extern "C" u64 abi_stack_pointer(u32 offset, u32 slot, address output) on cpu;
+
 // RAX holds the component before packing. Merge adds its bits to RCX.
 // The caller owns twelve output bytes.
 extern "C" u64 pack_integer_component(ScalarEncoding scalar, u32 offset, bool merge, address output) on cpu;

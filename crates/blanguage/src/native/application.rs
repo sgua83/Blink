@@ -1,5 +1,5 @@
 //! 普通函数入口／结果使用 Windows x64 ABI；栈布局与调用活跃性复用原后端。
-use super::operands::Operand;
+use super::allocation::Location;
 use super::*;
 use crate::native::{AbiRangeKind, FunctionAbi};
 pub(crate) fn emit(body: &ValueCode) -> Result<NativeCode, &'static str> {
@@ -15,7 +15,7 @@ pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'sta
         Some(&function.name),
     )
 }
-use super::external::{float_size, indirect};
+use super::external::{AbiMemoryMode, float_size, indirect};
 fn emit_value(
     body: &ValueCode,
     parameters: &[CallParameter],
@@ -151,33 +151,26 @@ fn emit_value(
     let home = frame + if scratch { 8 } else { 0 } + 8;
     if let Some(at) = result_pointer {
         let start = e.code.len();
-        e.instruction(None, &[0x8b], true, 0, Operand::memory(4, home));
-        e.instruction(None, &[0x89], true, 0, Operand::memory(4, at));
+        e.copy_scalar(Location::Stack(at), Location::Stack(home), Scalar::U64);
         e.abi_range(start, AbiRangeKind::ResultAddressSave { stack_offset: at });
     }
-    let mut inputs = body.inputs.iter();
+    let mut inputs = body.inputs.as_slice();
     for (slot, (i, parameter)) in parameters.enumerate() {
         let start = e.code.len();
         let slot = slot + usize::from(hidden);
         let address = home + slot as u32 * 8;
         match &parameter.kind {
             CallParameterKind::Value(ty) => {
-                let base = if indirect(ty) {
-                    e.instruction(None, &[0x8b], true, 1, Operand::memory(4, address));
-                    1
-                } else {
-                    4
-                };
-                for (_, offset) in &ty.components {
-                    let dst = *inputs.next().unwrap();
-                    e.read_scalar(dst, base, if base == 4 { address + offset } else { *offset });
-                }
+                let (values, rest) = inputs.split_at(ty.components.len());
+                inputs = rest;
+                let mode = if indirect(ty) { AbiMemoryMode::IndirectParameter } else { AbiMemoryMode::StackLoad };
+                e.abi_memory_value(address, ty, values, mode);
             }
             CallParameterKind::Reference { .. } => {
-                for offset in [0, 4] {
-                    let dst = *inputs.next().unwrap();
-                    e.read_scalar(dst, 4, address + offset);
-                }
+                let (values, rest) = inputs.split_at(2);
+                inputs = rest;
+                e.read_scalar(values[0], 4, address);
+                e.read_scalar(values[1], 4, address + 4);
             }
         }
         e.abi_range(start, AbiRangeKind::ParameterInput { slot,
@@ -189,11 +182,8 @@ fn emit_value(
     if let Some(ty) = result {
         let start = e.code.len();
         let kind = if let Some(at) = result_pointer {
-            e.instruction(None, &[0x8b], true, 1, Operand::memory(4, at));
-            for ((_, offset), reg) in ty.components.iter().zip(&body.outputs) {
-                e.write_scalar(*reg, 1, *offset);
-            }
-            e.bytes(&[0x48, 0x89, 0xc8]);
+            let mode = if fallible { AbiMemoryMode::FallibleResult } else { AbiMemoryMode::IndirectResult };
+            e.abi_memory_value(at, ty, &body.outputs, mode);
             AbiRangeKind::IndirectResult { stack_offset: at }
         } else if float_size(ty) != 0 {
             e.float(body.outputs[0], 0);

@@ -1,8 +1,9 @@
 //! Windows x64普通B与C ABI：实际机器参数先进入调用槽，再交给参数寄存器。
-use super::operands::Operand;
+use super::operands::MoveLocation;
 use super::*;
 use crate::builtin_types::ScalarEncoding;
 use allocation::Location;
+use std::ffi::c_void;
 pub(super) struct Layout {
     pub bytes: u64,
     pub result: Option<u64>,
@@ -21,7 +22,46 @@ struct CallPlan { bytes: u64, result: u64, copies: u64, target: u64, hidden: u64
 struct ValueCopy { offset: u64, end: u64, present: u64 }
 #[repr(C)]
 struct SymbolEncoding { length: u64, field: u64 }
+#[repr(u32)]
+pub(super) enum AbiMemoryMode {
+    StackLoad,
+    StackStore,
+    IndirectParameter,
+    IndirectResult,
+    FallibleResult,
+}
+
+#[repr(C)]
+struct AbiMemoryComponent {
+    location: MoveLocation,
+    scalar: ScalarEncoding,
+    offset: u32,
+}
+
+struct MemoryValue<'a> {
+    allocation: &'a Allocation,
+    registers: &'a [Scalar],
+    components: &'a [(Scalar, u32)],
+    values: &'a [Reg],
+}
+
+unsafe extern "C" fn memory_component(context: *const c_void, index: u64) -> AbiMemoryComponent {
+    let input = unsafe { &*context.cast::<MemoryValue<'_>>() };
+    let index = index as usize;
+    let reg = input.values[index];
+    AbiMemoryComponent {
+        location: input.allocation.location(PrivateSlot::Register(reg)).into(),
+        scalar: input.registers[reg].into(),
+        offset: input.components[index].1,
+    }
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::abi_memory_value"]
+    fn encode_abi_memory_value(slot: u32, count: u64, mode: AbiMemoryMode, context: *const c_void,
+        component: unsafe extern "C" fn(*const c_void, u64) -> AbiMemoryComponent, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::abi_stack_pointer"]
+    fn encode_abi_stack_pointer(offset: u32, slot: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.call_layout::indirect"]
     fn indirect_value(size: u32, alignment: u32) -> bool;
     #[link_name = "bootstrap.call_layout::copy_value"]
@@ -71,6 +111,30 @@ impl Layout {
     }
 }
 impl Emitter<'_> {
+    pub(super) fn abi_memory_value(
+        &mut self, slot: u32, ty: &Ty, values: &[Reg], mode: AbiMemoryMode,
+    ) {
+        let count = ty.components.len().min(values.len());
+        self.code.reserve(16 + 24 * count);
+        let start = self.code.len();
+        let input = MemoryValue {
+            allocation: &self.allocation,
+            registers: &self.stage.registers,
+            components: &ty.components,
+            values,
+        };
+        let context = (&input as *const MemoryValue<'_>).cast();
+        unsafe {
+            let output = self.code.as_mut_ptr().add(start);
+            let length = encode_abi_memory_value(slot, count as u64, mode, context, memory_component, output);
+            self.code.set_len(start + length as usize);
+        }
+    }
+
+    fn abi_stack_pointer(&mut self, offset: u32, slot: u32) {
+        self.emit_bytes(16, |output| unsafe { encode_abi_stack_pointer(offset, slot, output) });
+    }
+
     pub(super) fn argument_register(&mut self, slot: usize, float_size: u32, to_home: bool) {
         self.emit_bytes(9, |output| unsafe {
             encode_argument_register(slot as u8, float_size, u32::from(to_home), output)
@@ -155,8 +219,7 @@ impl Emitter<'_> {
             self.copy_scalar(Location::Stack(layout.target.unwrap() as u32), self.location(reg), Scalar::U64);
         }
         if let Some(at) = layout.result {
-            self.borrow_address(4, at as u32, None);
-            self.instruction(None, &[0x89], true, 0, Operand::memory(4, 0));
+            self.abi_stack_pointer(at as u32, 0);
         }
         let arguments = call.arguments.iter()
             .filter(|arg| !matches!(arg, CallArgument::Value { ty, .. } if ty.size == 0));
@@ -166,18 +229,15 @@ impl Emitter<'_> {
             match arg {
                 CallArgument::Reference { address, .. } => {
                     self.reference_address(address)?;
-                    self.instruction(None, &[0x89], true, 0, Operand::memory(4, slot));
+                    self.copy_scalar(Location::Stack(slot), Location::Gpr(0), Scalar::U64);
                 }
                 CallArgument::Value { ty, values, .. } => {
                     let copy = unsafe { copy_value(copies, ty.size, ty.align) };
                     copies = copy.end;
                     let base = if copy.present != 0 { copy.offset as u32 } else { slot };
-                    for ((_, offset), value) in ty.components.iter().zip(values) {
-                        self.write_scalar(*value, 4, base + *offset);
-                    }
+                    self.abi_memory_value(base, ty, values, AbiMemoryMode::StackStore);
                     if copy.present != 0 {
-                        self.borrow_address(4, copy.offset as u32, None);
-                        self.instruction(None, &[0x89], true, 0, Operand::memory(4, slot));
+                        self.abi_stack_pointer(copy.offset as u32, slot);
                     }
                 }
             }
@@ -208,9 +268,7 @@ impl Emitter<'_> {
         } else { None };
         if let Some(ty) = call.result.as_ref().filter(|ty| ty.size != 0) {
             if let Some(at) = layout.result {
-                for ((_, offset), reg) in ty.components.iter().zip(&call.values) {
-                    self.read_scalar(*reg, 4, at as u32 + *offset);
-                }
+                self.abi_memory_value(at as u32, ty, &call.values, AbiMemoryMode::StackLoad);
             } else if float_size(ty) != 0 {
                 self.store_float(call.values[0]);
             } else {
