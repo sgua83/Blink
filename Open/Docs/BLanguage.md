@@ -1062,7 +1062,7 @@ bc code target/cache/entry.blbi --observations target/entry.blcr
 bc code --image target/deployment.blri --observations target/entry.blcr
 ```
 
-SDK由`build::code_facts(path, Some(material))`或显式BLRI模式的`build::image_code_facts(execution_bytes, Some(material))`交接同一JSON；纯GPU不需要CPU范围材料，传None并省略CLI的--observations即可。CLI在Compiler初始化前只读装入原编码，显式提供CPU材料时沿原恢复，不读取B源码、不调用编译器／驱动、不分配可执行内存或运行代码；读取、编码、错配及范围错误直接失败，不输出部分成功。BLBI结果kind=build_code，programs／templates保留各原索引；BLRI结果kind=execution_image_code，images保留原索引。CPU项target=cpu，code为原native::ProgramImage::code_json；GPU项target=gpu，code为原spirv::ProgramImage::code_json，各模块独立ID／偏移。材料仍只配对CPU代码，纯GPU误提供CPU材料明确失败；CPU缺失材料不猜范围。所有代码地址／模块偏移均为相对值，不代表装载现场。普通COFF／最终PE、源码来源及实际装载地址分别沿C-021.7.9.5.3／.9、.7、.13交付。
+SDK由`build::code_facts(path, Some(material))`或显式BLRI模式的`build::image_code_facts(execution_bytes, Some(material))`交接同一JSON；纯GPU不需要CPU范围材料，传None并省略CLI的--observations即可。CLI在Compiler初始化前只读装入原编码，显式提供CPU材料时沿原恢复，不读取B源码、不调用编译器／驱动、不分配可执行内存或运行代码；读取、编码、错配及范围错误直接失败，不输出部分成功。BLBI结果kind=build_code，programs／templates保留各原索引；BLRI结果kind=execution_image_code，images保留原索引。代码与源码范围查询的artifact_sha256是该次实际读取的完整BLBI或BLRI字节SHA-256；提取出的BLRI有自己的产物身份。CPU项target=cpu，code为原native::ProgramImage::code_json；GPU项target=gpu，code为原spirv::ProgramImage::code_json，各模块独立ID／偏移。材料仍只配对CPU代码，纯GPU误提供CPU材料明确失败；CPU缺失材料不猜范围。所有代码地址／模块偏移均为相对值，不代表装载现场。普通COFF／最终PE、源码来源及实际装载地址分别沿C-021.7.9.5.3／.9、.7、.13交付。
 
 
 ### CPU映像机器区间反查原来源
@@ -1092,7 +1092,7 @@ bc code --object target/module.obj --function exact-qualified-symbol
 
 Rust SDK使用`object::code_facts(bytes, object::CodeSelection::CodeSections)`，或Section(number)／Function(name)。直接消费调用者拥有的原COFF字节，复用原B `bootstrap.coff_read`的headers／section／symbol／relocation，不经过Object逻辑节映射或符号归一化，不要求Blink私有元数据／合同，不读取B源码、构建输入含义、内嵌归档成员或重编、链接、装载／执行代码。CLI沿现有code入口在Compiler初始化前分派。观察、归档、模块导入和Blink链接共用COFF符号表读取，主记录及其辅助记录须位于文件头声明的符号表范围内。节的`byte_length`表示实际文件内容长度。未初始化节需要装载零区时，`zero_fill_bytes`给出零字节数。输出是独立字符串，查询结束不保活原产物或执行资源。
 
-结果kind=coff_code、bitness=64、address_basis=section_relative；header_bytes为原20字节COFF头。section_number是从1开始的原物理节号，symbol_index是从0开始、包含辅助记录占位的原符号表索引，均区别于Object内部逻辑节索引；原符号／字符串表文件位置及完整string_table_bytes保留。sections始终列出全部原节的header_bytes、特征、实际长度及文件位置；默认只为原代码特征位选择的节展开bytes／regions／relocations，--section可明确选择任意物理节。--function只按精确、唯一且有定义的原函数符号选择其所在节，保留原symbol_index／value，不推测该符号的新函数末端或截掉同节其他字节。
+结果kind=coff_code、bitness=64、address_basis=section_relative；header_bytes为原20字节COFF头。代码与源码范围查询的artifact_sha256来自该次实际读取的完整COFF字节，可与同产物的bc inputs结果关联。section_number是从1开始的原物理节号，symbol_index是从0开始、包含辅助记录占位的原符号表索引，均区别于Object内部逻辑节索引；原符号／字符串表文件位置及完整string_table_bytes保留。sections始终列出全部原节的header_bytes、特征、实际长度及文件位置；默认只为原代码特征位选择的节展开bytes／regions／relocations，--section可明确选择任意物理节。--function只按精确、唯一且有定义的原函数符号选择其所在节，保留原symbol_index／value，不推测该符号的新函数末端或截掉同节其他字节。
 
 symbols返回全部主记录的原name／name_bytes、带符号section_number、value、storage_class、原读取器的function标记、18字节record_bytes及全部auxiliary_bytes／数量；符号文件位置与原表索引保持。节与符号名称沿现有UTF-8读取，原节名沿头内拼写，当前未展开长节名索引，不宣称支持全部COFF扩展或BigObj。relocations交接原节内offset_bytes、type、symbol_index及原目标name／section_number／value，不先规范化成另一个符号或把占位操作数当最终调用地址。原记录字节保留读取器当前未解释的字段；这些实现范围不成为语言和未来目标的永久边界。
 
@@ -5096,7 +5096,7 @@ SDK使用blanguage::build::compile_object，或在同一Compiler上调用build_o
 
 ### 实际构建输入查询
 
-`bc inputs <compiled.obj|entry.blbi>`只读取产物内的原构建输入并向标准输出交接JSON，不创建Compiler、读取B源文件、装入／执行代码或调用编译后端。它不接收编译资源选项，也不重新构建；读取或编码错误直接失败，没有当前结构化记录时不能从摘要恢复原输入。Rust SDK由`blanguage::build::input_facts(path)`交接同一记录的事实，不查询当前源码补填。
+`bc inputs <compiled.obj|entry.blbi>`只读取产物内的原构建输入并向标准输出交接JSON，不创建Compiler、读取B源文件、装入／执行代码或调用编译后端。它不接收编译资源选项，也不重新构建；读取或编码错误直接失败，没有当前结构化记录时不能从摘要恢复原输入。Rust SDK由`blanguage::build::input_facts(path)`交接同一记录的事实，不查询当前源码补填。CLI的artifact_sha256是本次实际读取的整个产物的SHA-256。SDK的`blanguage::build::input_facts_with_sha256(path)`同时返回构建输入和这一摘要。该摘要与同一COFF或BLBI的代码／范围查询一致；同一对象中的具体实例仍沿原精确符号及物理位置区分。
 
 查询包含原入口／接口路径、模块根、原工作目录、模块名、compiler生产身份、max_parameter_bytes及实际选择：application的entry、module的显式instances、algorithm_library的entry／prefix、entry_image的entry／CPU或GPU target。未在请求中指定的目标不由查询猜测。路径保留Rust原OsStr编码字节及可无损表示的UTF-8文本，不能表示时text为null而原encoded_bytes仍完整；来源名称可以是相对路径或嵌入接口标记，不能一律假定为当前目录下的文件。
 

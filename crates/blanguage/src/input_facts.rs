@@ -12,9 +12,11 @@ fn path(out: &mut String, value: &[u8]) {
     bytes(out, value);
     out.push('}');
 }
-fn encode(input: &InputFacts) -> String {
+fn encode(input: &InputFacts, artifact_sha256: &str) -> String {
     let value = &input.source;
-    let mut out = String::from("{\"kind\":\"build_inputs\",\"path_encoding\":\"rust_os_str_encoded_bytes\",\"input\":");
+    let mut out = String::from("{\"kind\":\"build_inputs\",\"artifact_sha256\":");
+    string(&mut out, artifact_sha256);
+    out.push_str(",\"path_encoding\":\"rust_os_str_encoded_bytes\",\"input\":");
     path(&mut out, &value.path);
     out.push_str(",\"root\":"); path(&mut out, &value.root);
     out.push_str(",\"working_directory\":"); path(&mut out, &value.working_directory);
@@ -94,8 +96,8 @@ fn encode(input: &InputFacts) -> String {
     out
 }
 pub fn print(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let value = blanguage::build::input_facts(path)
+    let (value, artifact_sha256) = blanguage::build::input_facts_with_sha256(path)
         .map_err(|error| -> Box<dyn std::error::Error> { error })?;
-    println!("{}", encode(&value));
+    println!("{}", encode(&value, &artifact_sha256));
     Ok(())
 }

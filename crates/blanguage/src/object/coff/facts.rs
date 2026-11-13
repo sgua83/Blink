@@ -1,5 +1,6 @@
 //! Borrowed physical COFF facts, using the existing B structural reader.
 use super::*;
+use crate::build::hash;
 use std::fmt::Write;
 
 #[derive(Clone, Copy, Debug)]
@@ -245,7 +246,8 @@ fn query(bytes: &[u8], selection: CodeSelection<'_>, material: Option<&[u8]>) ->
     let (selected, selection_json) = facts.selected(selection)?;
     let (spans, tables) = facts.ranges()?;
     let material = material.map(|bytes| observations::Material::read(&facts, &spans, bytes)).transpose()?;
-    let mut values = vec![("kind", text("coff_code")), ("bitness", "64".into()), ("address_basis", text("section_relative")),
+    let mut values = vec![("kind", text("coff_code")),
+        ("artifact_sha256", hex(&hash::digest(bytes))), ("bitness", "64".into()), ("address_basis", text("section_relative")),
         ("header_bytes", hex(&bytes[..20])), ("symbol_table_file_offset_bytes", facts.table.offset.to_string()),
         ("string_table_file_offset_bytes", (facts.table.strings.bytes as usize - bytes.as_ptr() as usize).to_string()),
         ("string_table_bytes", hex(unsafe { facts.table.strings.borrowed() })),
@@ -281,7 +283,8 @@ pub fn source_facts(bytes: &[u8], selection: CodeSelection<'_>, range: std::ops:
             ("function_abi", layout.map_or_else(|| "null".into(), |layout| layout.function_abi(Some(&range)))),
             ("operation_ranges", layout.map_or_else(|| "null".into(), |layout| layout.operation_ranges(Some(&range))))]))
     }).collect::<Result<Vec<_>>>()?;
-    Ok(object(&[("kind", text("coff_source_ranges")), ("address_basis", text("section_relative")),
+    Ok(object(&[("kind", text("coff_source_ranges")), ("artifact_sha256", hex(&hash::digest(bytes))),
+        ("address_basis", text("section_relative")),
         ("range_unit", text("byte")), ("range_kind", text("half_open")),
         ("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
         ("selection", selection_json), ("sections", array(sections))]))

@@ -214,11 +214,21 @@ fn decode(bytes: &[u8]) -> Result<(&[u8], &[u8])> {
 /// Reads the request and consumed source identities stored in an actual artifact.
 /// No source files, compiler workers, native code or device are opened.
 pub fn input_facts(path: &Path) -> Result<InputFacts> {
+    decode_input_facts(&fs::read(path)?)
+}
+
+/// Returns the original build facts and SHA-256 of the same artifact bytes.
+pub fn input_facts_with_sha256(path: &Path) -> Result<(InputFacts, String)> {
     let bytes = fs::read(path)?;
+    let facts = decode_input_facts(&bytes)?;
+    Ok((facts, hash::hex(&hash::digest(&bytes))))
+}
+
+fn decode_input_facts(bytes: &[u8]) -> Result<InputFacts> {
     let identity = if bytes.starts_with(MAGIC) {
-        decode(&bytes)?.0
+        decode(bytes)?.0
     } else {
-        crate::object::ObjectReader::new(&bytes)
+        crate::object::ObjectReader::new(bytes)
             .and_then(|reader| reader.build_inputs())
             .map_err(|error| std::io::Error::other(error.to_string()))?
             .ok_or("该对象未保存构建输入")?
@@ -238,8 +248,11 @@ pub fn execution_image(path: &Path) -> Result<Vec<u8>> {
 /// # Safety
 /// 文件必须是可信编译器产生且未修改的完整原生映像，保持资源ABI及真实前缀合同。
 pub unsafe fn load(path: &Path) -> Result<Compilation> {
-    let bytes = fs::read(path)?;
-    let (_, image) = decode(&bytes)?;
+    unsafe { load_bytes(path, &fs::read(path)?) }
+}
+
+unsafe fn load_bytes(path: &Path, bytes: &[u8]) -> Result<Compilation> {
+    let (_, image) = decode(bytes)?;
     let module = unsafe { resource::from_compiler_output(image) }
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(images(module, path.into(), true))

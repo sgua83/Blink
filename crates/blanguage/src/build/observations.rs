@@ -116,9 +116,11 @@ fn image_json<P>(images: &[resource::Image<P>], selected: Option<&std::ops::Rang
 /// Reads saved CPU ranges and original GPU modules without sources, workers or execution.
 /// Pairing checks equality, not authenticity; material must come from the original producer.
 pub fn code_facts(path: &Path, material: Option<&[u8]>) -> Result<String> {
-    let mut compilation = unsafe { super::load(path) }?;
+    let bytes = std::fs::read(path)?;
+    let mut compilation = unsafe { super::load_bytes(path, &bytes) }?;
     if let Some(material) = material { compilation.restore_code_observations(material)?; }
-    Ok(format!("{{\"kind\":\"build_code\",\"programs\":{},\"templates\":{}}}",
+    Ok(format!("{{\"kind\":\"build_code\",\"artifact_sha256\":\"{}\",\"programs\":{},\"templates\":{}}}",
+        hash::hex(&hash::digest(&bytes)),
         image_json(&compilation.programs, None)?, image_json(&compilation.templates, None)?))
 }
 /// Reads an explicitly selected BLRI; no executable memory or runtime resource is created.
@@ -126,14 +128,18 @@ pub fn image_code_facts(execution: &[u8], material: Option<&[u8]>) -> Result<Str
     let mut module = unsafe { resource::from_compiler_output(execution) }
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     if let Some(material) = material { module.restore_code_observations(material)?; }
-    Ok(format!("{{\"kind\":\"execution_image_code\",\"images\":{}}}", image_json(&module.images, None)?))
+    Ok(format!("{{\"kind\":\"execution_image_code\",\"artifact_sha256\":\"{}\",\"images\":{}}}",
+        hash::hex(&hash::digest(execution)),
+        image_json(&module.images, None)?))
 }
 
 /// Queries original CPU sources from a BLBI, retaining each original code container.
 pub fn source_facts(path: &Path, range: std::ops::Range<usize>, material: Option<&[u8]>) -> Result<String> {
-    let mut compilation = unsafe { super::load(path) }?;
+    let bytes = std::fs::read(path)?;
+    let mut compilation = unsafe { super::load_bytes(path, &bytes) }?;
     if let Some(material) = material { compilation.restore_code_observations(material)?; }
-    Ok(format!("{{\"kind\":\"build_source_ranges\",\"range_unit\":\"byte\",\"range_kind\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"programs\":{},\"templates\":{}}}",
+    Ok(format!("{{\"kind\":\"build_source_ranges\",\"artifact_sha256\":\"{}\",\"range_unit\":\"byte\",\"range_kind\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"programs\":{},\"templates\":{}}}",
+        hash::hex(&hash::digest(&bytes)),
         range.start, range.end, image_json(&compilation.programs, Some(&range))?, image_json(&compilation.templates, Some(&range))?))
 }
 /// Queries original CPU sources from an explicitly selected BLRI; no executable memory is created.
@@ -141,6 +147,7 @@ pub fn image_source_facts(execution: &[u8], range: std::ops::Range<usize>, mater
     let mut module = unsafe { resource::from_compiler_output(execution) }
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     if let Some(material) = material { module.restore_code_observations(material)?; }
-    Ok(format!("{{\"kind\":\"execution_image_source_ranges\",\"range_unit\":\"byte\",\"range_kind\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"images\":{}}}",
+    Ok(format!("{{\"kind\":\"execution_image_source_ranges\",\"artifact_sha256\":\"{}\",\"range_unit\":\"byte\",\"range_kind\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"images\":{}}}",
+        hash::hex(&hash::digest(execution)),
         range.start, range.end, image_json(&module.images, Some(&range))?))
 }
