@@ -2296,7 +2296,8 @@ impl Clause {
             (ClauseNode::Facts(a), ClauseNode::Facts(b)) => {
                 Self::facts(a.union(b).copied().collect())
             }
-            _ if Arc::ptr_eq(&a.0, &b.0) => a.clone(),
+            _ if Arc::ptr_eq(&a.0, &b.0) || a.has_direct_conjunct(b) => a.clone(),
+            _ if b.has_direct_conjunct(a) => b.clone(),
             _ => Self::node(ClauseNode::Both(a.clone(), b.clone())),
         }
     }
@@ -2361,13 +2362,16 @@ impl Clause {
                 b.clone()
             }
             _ if Arc::ptr_eq(&a.0, &b.0) => a.clone(),
-            _ if matches!(a.query_inputs(), Some((left,right,false))
-                if Arc::ptr_eq(&left.0,&b.0)||Arc::ptr_eq(&right.0,&b.0)) => b.clone(),
-            _ if matches!(b.query_inputs(), Some((left,right,false))
-                if Arc::ptr_eq(&left.0,&a.0)||Arc::ptr_eq(&right.0,&a.0)) => a.clone(),
+            _ if a.has_direct_conjunct(b) => b.clone(),
+            _ if b.has_direct_conjunct(a) => a.clone(),
             _ => Self::node(ClauseNode::Either(a.clone(), b.clone())),
         }
     }
+    fn has_direct_conjunct(&self, clause: &Self) -> bool {
+        matches!(self.query_inputs(), Some((left, right, false))
+            if Arc::ptr_eq(&left.0, &clause.0) || Arc::ptr_eq(&right.0, &clause.0))
+    }
+
     fn query_inputs(&self) -> Option<(&Self, &Self, bool)> {
         match &**self.0 {
             ClauseNode::Both(a, b) => Some((a, b, false)),
