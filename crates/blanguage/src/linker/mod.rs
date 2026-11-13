@@ -88,7 +88,7 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
     let (objects, archives) = prepare(inputs)?;
     let object = &objects[0];
     let output = std::path::absolute(path)?;
-    std::fs::create_dir_all(output.parent().unwrap())?;
+    file_bytes::create_dir_all(output.parent().unwrap())?;
     match &object.kind {
         Kind::Module { .. } => unreachable!(),
         Kind::Application { .. } => {

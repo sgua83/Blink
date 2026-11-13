@@ -48,6 +48,8 @@ impl HostWriteResult {
 }
 
 unsafe extern "C" {
+    #[link_name = "blink.windows.path_core::create_output_directories"]
+    fn create_output_directories(path: *const u16, units: usize) -> u32;
     #[link_name = "bootstrap.host_sdk::write_host_input"]
     fn write_host_input(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostWriteResult;
     #[link_name = "bootstrap.host_sdk::write_host_output"]
@@ -112,4 +114,17 @@ pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> io::Result<HostWriteResult
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let path = host_path(path)?;
     unsafe { write_host_output(path.as_ptr(), path.len() - 1, bytes.as_ptr(), bytes.len()) }.into_result()
+}
+
+pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
+    if path.parent().is_none() {
+        return Ok(());
+    }
+    let units = host_path(path)?;
+    let status = unsafe { create_output_directories(units.as_ptr(), units.len() - 1) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(status as i32))
+    }
 }

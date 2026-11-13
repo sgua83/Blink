@@ -1,4 +1,5 @@
 module blink.windows.path_core;
+import blink.windows.path;
 
 // Synchronous borrowed UTF16. The caller keeps all input, scratch and output
 // storage alive through preparation and encoding; no address is retained.
@@ -29,3 +30,10 @@ extern "C" void extension_encode(UnitSpan path,UnitSpan extension,
     ExtensionPlan plan,address output) on cpu;
 // name has two writable units after its original length.
 extern "C" void module_tail(address name,u64 length,u16 suffix) on cpu;
+
+// The input retains its NUL terminator. A nonempty allocation belongs to this call.
+struct NativePath { address name; address allocation; u32 status; };
+NativePath native_path(address path,usize units,bool prefer_verbatim) on cpu;
+void release_native_path(NativePath path) on cpu;
+result<void,DirectoryError> directory_tree(address path,usize units,bool prefer_verbatim) on cpu;
+extern "C" u32 create_output_directories(address path,usize units) on cpu;

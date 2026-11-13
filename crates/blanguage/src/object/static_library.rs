@@ -312,7 +312,7 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     }
     let output = encode(&members, &symbols)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::file_bytes::create_dir_all(parent)?;
     }
     crate::file_bytes::write(&path, &output)?;
     Ok(())

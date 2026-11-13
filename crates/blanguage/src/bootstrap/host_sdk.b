@@ -11,7 +11,6 @@ import blink.windows.thread;
 const handle INVALID_SEARCH = unsafe_handle(0xffffffffffffffffu64);
 const u32 ERROR_FILE_NOT_FOUND = 2;
 const u32 ERROR_NO_MORE_FILES = 18;
-const u32 ERROR_FILENAME_EXCED_RANGE = 206;
 const u32 FILE_ATTRIBUTE_DIRECTORY = 0x10;
 
 extern "C" handle FindFirstFileExW(address pattern, i32 information, write FindData data,
@@ -160,66 +159,14 @@ bool select_sdk_version(SdkVersionName name, SdkVersionName selected) on cpu {
     return !equal_prefix || selected_index > selected.units;
 }
 
-struct HostNativePath {
-    address pattern;
-    address allocation;
-    u32 status;
-};
-
-address extended_search_path(address full, usize units) on cpu {
-    LexicalPrefix prefix = lexical_prefix(UnitSpan(full, units), false);
-    if (prefix.literal || prefix.end == 0u64) { return full; }
-    if (prefix.end == 2u64) {
-        address start = unsafe_address(address_bits(full) - 8u64);
-        unsafe_position<array<u16,4>>(start) = array<u16,4>(u16(92), u16(92), u16(63), u16(92));
-        return start;
-    }
-    if (wide_unit(full, 2u64) == 46 && lexical_separator(u16(wide_unit(full, 3u64)), false)) {
-        unsafe_position<u16>(unsafe_address(address_bits(full) + 4u64)) = u16(63);
-        return full;
-    }
-
-    // The two initial UNC slashes are replaced by the eight-unit extended prefix.
-    address start = unsafe_address(address_bits(full) - 12u64);
-    unsafe_position<array<u16,8>>(start) = array<u16,8>(
-        u16(92), u16(92), u16(63), u16(92), u16(85), u16(78), u16(67), u16(92));
-    return start;
-}
-
-HostNativePath host_native_path(address pattern, usize units) on cpu {
-    bool nt = units >= 4u64 && wide_unit(pattern, 0u64) == 92 && wide_unit(pattern, 1u64) == 63 &&
-        wide_unit(pattern, 2u64) == 63 && wide_unit(pattern, 3u64) == 92;
-    LexicalPrefix prefix = lexical_prefix(UnitSpan(pattern, units), nt);
-    bool absolute = prefix.end > 2u64 || (prefix.end == 2u64 && units > 2u64 &&
-        lexical_separator(u16(wide_unit(pattern, 2u64)), false));
-    if (prefix.literal || (absolute && units < 247u64)) {
-        return HostNativePath(pattern, address(), 0);
-    }
-
-    // One Win32-sized buffer resolves a relative path against the current directory once.
-    // Six leading units leave room to replace a UNC prefix in the same allocation.
-    u32 capacity = 32768;
-    handle heap = GetProcessHeap();
-    address allocation = HeapAlloc(heap, 0, (usize(capacity) + 6u64) * 2u64);
-    if (address_bits(allocation) == 0u64) { return HostNativePath(address(), address(), u32(ERROR_NOT_ENOUGH_MEMORY)); }
-    address full = unsafe_address(address_bits(allocation) + 12u64);
-    u32 written = GetFullPathNameW(pattern, capacity, full, address());
-    if (written == 0 || written >= capacity) {
-        u32 status = written == 0 ? GetLastError() : ERROR_FILENAME_EXCED_RANGE;
-        HeapFree(heap, 0, allocation);
-        return HostNativePath(address(), address(), status);
-    }
-    return HostNativePath(extended_search_path(full, usize(written)), allocation, 0);
-}
-
 extern "C" SdkVersionResult find_sdk_version(address pattern, usize units, address selected) on cpu {
-    HostNativePath path = host_native_path(pattern, units);
+    NativePath path = native_path(pattern, units, true);
     if (path.status != 0) { return SdkVersionResult(0, path.status); }
     FindData data;
     // FindExInfoBasic omits the unused alternate filename.
-    handle search = FindFirstFileExW(path.pattern, i32(1), data, i32(0), address(), 0);
+    handle search = FindFirstFileExW(path.name, i32(1), data, i32(0), address(), 0);
     u32 open_status = search == INVALID_SEARCH ? GetLastError() : 0;
-    if (address_bits(path.allocation) != 0u64) { release_host_wide(path.allocation); }
+    release_native_path(path);
     if (search == INVALID_SEARCH) {
         if (open_status == ERROR_FILE_NOT_FOUND) { return SdkVersionResult(0, 0); }
         return SdkVersionResult(0, open_status);
@@ -265,12 +212,12 @@ const i32 FILE_ALLOCATION_INFO = i32(5);
 struct HostFileOpen { handle file; u32 status; };
 
 HostFileOpen open_host_file(address path, usize units, u32 access, u32 creation, u32 flags) on cpu {
-    HostNativePath name = host_native_path(path, units);
+    NativePath name = native_path(path, units, true);
     if (name.status != 0) { return HostFileOpen(INVALID_HANDLE_VALUE, name.status); }
 
-    handle file = CreateFileW(name.pattern, access, 7, address(), creation, flags, handle());
+    handle file = CreateFileW(name.name, access, 7, address(), creation, flags, handle());
     u32 status = file == INVALID_HANDLE_VALUE || creation == OPEN_ALWAYS ? GetLastError() : 0;
-    if (address_bits(name.allocation) != 0u64) { release_host_wide(name.allocation); }
+    release_native_path(name);
     return HostFileOpen(file, status);
 }
 
@@ -476,7 +423,7 @@ address host_command_line(address executable, usize units, address arguments, us
 
 HostChild start_host_child(address executable, usize units, address arguments,
     usize argument_units, handle stdout, handle stderr) on cpu {
-    HostNativePath path = host_native_path(executable, units);
+    NativePath path = native_path(executable, units, true);
     if (path.status != 0) { return HostChild(handle(), path.status); }
 
     let name = array<u16,4>(u16(78), u16(85), u16(76), u16(0)); // NUL
@@ -493,13 +440,13 @@ HostChild start_host_child(address executable, usize units, address arguments,
             if (address_bits(command_line) == 0u64) {
                 child.status = u32(ERROR_NOT_ENOUGH_MEMORY);
             } else {
-                child = create_host_child(path.pattern, command_line, stdio);
+                child = create_host_child(path.name, command_line, stdio);
                 release_host_wide(command_line);
             }
         }
         CloseHandle(stdin);
     }
-    if (address_bits(path.allocation) != 0u64) { release_host_wide(path.allocation); }
+    release_native_path(path);
     return child;
 }
 

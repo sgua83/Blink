@@ -22,6 +22,11 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         for extension in ["b", "h"] {
             println!("cargo:rerun-if-changed={source}.{extension}");
         }
+        if name == "path_core" {
+            for header in ["error", "file", "path", "system"] {
+                println!("cargo:rerun-if-changed=../../library/blink/windows/{header}.h");
+            }
+        }
         let compiled = Command::new(seed.join("bin/bc.exe"))
             .arg("-c").arg(format!("{source}.b"))
             .args(["-I", "../../library", "--module", "-o"]).arg(&object).status()?;

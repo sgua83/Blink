@@ -220,92 +220,10 @@ result<dataset<u16>,JoinError> join(read dataset<u16> base,read dataset<u16> pat
     return Ok(output);
 }
 
-extern "C" i32 CreateDirectoryW(address path,address security) on cpu from "KERNEL32.dll";
-extern "C" i32 GetFileInformationByHandleEx(handle file,u32 kind,address data,
-    u32 bytes) on cpu from "KERNEL32.dll";
-
-result<bool,DirectoryError> directory_target(address path) on cpu {
-    handle file=CreateFileW(path,0,7,address(),3,33554432,handle());
-    if (file == INVALID_HANDLE_VALUE) {
-        return Err(DirectoryError::Open(GetLastError()));
-    }
-    dataset<u64> info=dataset<u64>(3);
-    i32 queried=GetFileInformationByHandleEx(file,1,address_of(info[0]),24);
-    u32 query_error=0;
-    if (queried == 0) { query_error=GetLastError(); }
-    i32 closed=CloseHandle(file);
-    u32 close_error=0;
-    if (closed == 0) { close_error=GetLastError(); }
-    if (queried == 0) {
-        if (closed == 0) {
-            return Err(DirectoryError::QueryAndClose(
-                DirectoryQueryCloseError(query_error,DirectoryCloseError(file,close_error))));
-        }
-        return Err(DirectoryError::Query(query_error));
-    }
-    if (closed == 0) { return Err(DirectoryError::Close(DirectoryCloseError(file,close_error))); }
-    return Ok(((info[2] >> 40) & 255u64) != 0u64);
-}
-
-result<void,DirectoryError> directory_create(address path) on cpu {
-    if (CreateDirectoryW(path,address()) != 0) { return Ok(); }
-    u32 code=GetLastError();
-    if (code == 183) {
-        if (try(directory_target(path))) { return Ok(); }
-    }
-    return Err(DirectoryError::Create(code));
-}
-
-result<void,DirectoryError> directory_component(address path) on cpu {
-    if (verbatim(path) || canonical_nt_prefix(path)) { return directory_create(path); }
-    match (native_name(path,false)) {
-        Ok(name) { return directory_create(address_of(name[0])); }
-        Err(error) { return Err(DirectoryError::Input(error)); }
-    }
-}
-
 result<void,DirectoryError> create_dir_all(address path) on cpu {
-    if (unsafe_position<u16>(path) == u16(0)) { return Ok(); }
-    dataset<u16> units;
-    bool nt=canonical_nt_prefix(path);
-    match (copy_verbatim(path)) {
-        Ok(raw) { units=raw; }
-        Err(error) { return Err(DirectoryError::Input(error)); }
+    u64 units=0u64;
+    while (unsafe_position<u16>(unsafe_address(address_bits(path)+units*2u64)) != u16(0)) {
+        units+=1u64;
     }
-    u32 length=units.length;
-    blink.windows.path_core::UnitSpan input=unit_span(units);
-    blink.windows.path_core::LexicalPrefix prefix=blink.windows.path_core::lexical_prefix(input,nt);
-    u32 body=u32(prefix.end);
-    if (body < units.length) {
-        if (blink.windows.path_core::lexical_separator(units[body],prefix.literal)) { body+=1; }
-    }
-    if (body == length) {
-        if (try(directory_target(path))) { return Ok(); }
-        return Err(DirectoryError::NotDirectory());
-    }
-    u64 capacity=blink.windows.path_core::component_capacity(input,prefix.literal);
-    dataset<blink.windows.path_core::JoinComponent> parts=dataset<blink.windows.path_core::JoinComponent>(u32(capacity));
-    address components=address();
-    if (parts.length > 0) { components=address_of(parts[0]); }
-    u64 count=blink.windows.path_core::join_components(input,u64(body),prefix.literal,prefix.literal,components,0u64);
-    if (count == 0u64) { return directory_component(path); }
-    parts=resize(parts,u32(count),blink.windows.path_core::JoinComponent(false,0u64,0u64,0u64));
-    dataset<u16> terminated;
-    match (terminated_name(units)) {
-        Ok(prepared) { terminated=prepared; }
-        Err(error) { return Err(DirectoryError::Input(error)); }
-    }
-    u32 next=0;
-    for (end in body..terminated.length) {
-        if (next < parts.length) {
-            if (u64(end) == parts[next].start+parts[next].length) {
-                u16 saved=terminated[end];
-                terminated[end]=u16(0);
-                try(directory_component(address_of(terminated[0])));
-                terminated[end]=saved;
-                next+=1;
-            }
-        }
-    }
-    return Ok();
+    return directory_tree(path,units,false);
 }

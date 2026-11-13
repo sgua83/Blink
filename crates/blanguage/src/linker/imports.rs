@@ -81,7 +81,7 @@ pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     }
     let output = object::library_bytes(&members, &symbols)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::file_bytes::create_dir_all(parent)?;
     }
     crate::file_bytes::write(&path, &output)?;
     Ok(())

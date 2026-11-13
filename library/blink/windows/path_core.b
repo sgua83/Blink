@@ -1,4 +1,7 @@
 module blink.windows.path_core;
+import blink.windows.error;
+import blink.windows.file;
+import blink.windows.system;
 
 u16 unit(UnitSpan path,u64 index) on cpu {
     return unsafe_position<u16>(unsafe_address(address_bits(path.data)+index*2u64));
@@ -286,4 +289,176 @@ extern "C" void module_tail(address name,u64 length,u16 suffix) on cpu {
         index+=1u64;
     }
     put(name,length,u16(46));put(name,length+1u64,suffix);
+}
+
+extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
+extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
+extern "C" i32 HeapFree(handle heap,u32 flags,address data) on cpu from "KERNEL32.dll";
+extern "C" i32 CreateDirectoryW(address path,address security) on cpu from "KERNEL32.dll";
+extern "C" i32 GetFileInformationByHandleEx(handle file,u32 kind,address data,
+    u32 bytes) on cpu from "KERNEL32.dll";
+
+const u32 ERROR_NOT_ENOUGH_MEMORY = 8;
+const u32 ERROR_ALREADY_EXISTS = 183;
+const u32 ERROR_FILENAME_EXCED_RANGE = 206;
+
+bool nt_namespace(UnitSpan path) on cpu {
+    return path.length >= 4u64 && unit(path,0u64) == u16(92) && unit(path,1u64) == u16(63) &&
+        unit(path,2u64) == u16(63) && unit(path,3u64) == u16(92);
+}
+
+address extended_native_path(UnitSpan full) on cpu {
+    LexicalPrefix prefix = lexical_prefix(full,false);
+    if (prefix.literal || prefix.end == 0u64) { return full.data; }
+    if (prefix.end == 2u64) {
+        address start = unsafe_address(address_bits(full.data) - 8u64);
+        unsafe_position<array<u16,4>>(start) = array<u16,4>(u16(92),u16(92),u16(63),u16(92));
+        return start;
+    }
+    if (unit(full,2u64) == u16(46) && lexical_separator(unit(full,3u64),false)) {
+        put(full.data,2u64,u16(63));
+        return full.data;
+    }
+    // The original UNC slashes share the last two units of the extended prefix.
+    address start = unsafe_address(address_bits(full.data) - 12u64);
+    unsafe_position<array<u16,8>>(start) = array<u16,8>(
+        u16(92),u16(92),u16(63),u16(92),u16(85),u16(78),u16(67),u16(92));
+    return start;
+}
+
+NativePath native_path(address path,usize units,bool prefer_verbatim) on cpu {
+    UnitSpan input = UnitSpan(path,units);
+    LexicalPrefix prefix = lexical_prefix(input,nt_namespace(input));
+    bool absolute = prefix.end > 2u64 || (prefix.end == 2u64 && units > 2u64 &&
+        lexical_separator(unit(input,2u64),false));
+    if (prefix.literal || (prefer_verbatim && absolute && units < 247u64)) {
+        return NativePath(path,address(),0);
+    }
+
+    // Six leading units can extend a UNC prefix in the same allocation.
+    u32 capacity = 32768;
+    handle heap = GetProcessHeap();
+    address allocation = HeapAlloc(heap,0,(usize(capacity)+6u64)*2u64);
+    if (address_bits(allocation) == 0u64) {
+        return NativePath(address(),address(),ERROR_NOT_ENOUGH_MEMORY);
+    }
+    address full = unsafe_address(address_bits(allocation)+12u64);
+    u32 written = GetFullPathNameW(path,capacity,full,address());
+    if (written == 0 || written >= capacity) {
+        u32 status = written == 0 ? GetLastError() : ERROR_FILENAME_EXCED_RANGE;
+        HeapFree(heap,0,allocation);
+        return NativePath(address(),address(),status);
+    }
+    // Ordinary names retain Win32 device rules below the legacy directory limit.
+    address name = !prefer_verbatim && written < 247 ? full : extended_native_path(UnitSpan(full,usize(written)));
+    return NativePath(name,allocation,0);
+}
+
+void release_native_path(NativePath path) on cpu {
+    if (address_bits(path.allocation) != 0u64) { HeapFree(GetProcessHeap(),0,path.allocation); }
+}
+
+result<bool,DirectoryError> directory_target(address path) on cpu {
+    handle file = CreateFileW(path,0,7,address(),3,33554432,handle());
+    if (file == INVALID_HANDLE_VALUE) {
+        return Err(DirectoryError::Open(GetLastError()));
+    }
+    array<u64,3> info = array<u64,3>(0u64,0u64,0u64);
+    i32 queried = GetFileInformationByHandleEx(file,1,address_of(info[0]),24);
+    u32 query_error = queried == 0 ? GetLastError() : 0;
+    i32 closed = CloseHandle(file);
+    u32 close_error = closed == 0 ? GetLastError() : 0;
+    if (queried == 0) {
+        if (closed == 0) {
+            return Err(DirectoryError::QueryAndClose(
+                DirectoryQueryCloseError(query_error,DirectoryCloseError(file,close_error))));
+        }
+        return Err(DirectoryError::Query(query_error));
+    }
+    if (closed == 0) { return Err(DirectoryError::Close(DirectoryCloseError(file,close_error))); }
+    return Ok(((info[2] >> 40) & 255u64) != 0u64);
+}
+
+result<void,DirectoryError> directory_create(address path) on cpu {
+    if (CreateDirectoryW(path,address()) != 0) { return Ok(); }
+    u32 code = GetLastError();
+    if (code == ERROR_ALREADY_EXISTS) {
+        if (try(directory_target(path))) { return Ok(); }
+    }
+    return Err(DirectoryError::Create(code));
+}
+
+result<void,DirectoryError> directory_component(address path,usize units,bool prefer_verbatim) on cpu {
+    NativePath name = native_path(path,units,prefer_verbatim);
+    if (name.status != 0) { return Err(DirectoryError::Input(AbsoluteError::System(name.status))); }
+    result<void,DirectoryError> outcome = directory_create(name.name);
+    release_native_path(name);
+    return outcome;
+}
+
+result<void,DirectoryError> directory_tree(address path,usize units,bool prefer_verbatim) on cpu {
+    if (units == 0u64) { return Ok(); }
+    UnitSpan input = UnitSpan(path,units);
+    LexicalPrefix prefix = lexical_prefix(input,nt_namespace(input));
+    u64 body = prefix.end;
+    if (body < units && lexical_separator(unit(input,body),prefix.literal)) { body += 1u64; }
+    if (body == units) {
+        if (try(directory_target(path))) { return Ok(); }
+        return Err(DirectoryError::NotDirectory());
+    }
+
+    u64 parts_bytes = component_capacity(input,prefix.literal)*size_of<JoinComponent>();
+    handle heap = GetProcessHeap();
+    address storage = HeapAlloc(heap,0,parts_bytes+(units+1u64)*2u64);
+    if (address_bits(storage) == 0u64) {
+        return Err(DirectoryError::Input(AbsoluteError::System(ERROR_NOT_ENOUGH_MEMORY)));
+    }
+    u64 count = join_components(input,body,prefix.literal,prefix.literal,storage,0u64);
+    if (count == 0u64) {
+        HeapFree(heap,0,storage);
+        return directory_component(path,units,prefer_verbatim);
+    }
+    address copy = unsafe_address(address_bits(storage)+parts_bytes);
+    copy_units(input,0u64,units,copy,0u64);
+    put(copy,units,u16(0));
+
+    u64 index = 0u64;
+    while (index < count) {
+        JoinComponent component = part(storage,index);
+        u64 end = component.start+component.length;
+        u16 saved = unit(UnitSpan(copy,units+1u64),end);
+        put(copy,end,u16(0));
+        result<void,DirectoryError> outcome = directory_component(copy,end,prefer_verbatim);
+        put(copy,end,saved);
+        match (outcome) {
+            Ok() { index += 1u64; }
+            Err(error) { HeapFree(heap,0,storage); return Err(error); }
+        }
+    }
+    HeapFree(heap,0,storage);
+    return Ok();
+}
+
+extern "C" u32 create_output_directories(address path,usize units) on cpu {
+    match (directory_tree(path,units,true)) {
+        Ok() { return 0; }
+        Err(error) {
+            match (error) {
+                Input(cause) {
+                    match (cause) {
+                        System(code) { return code; }
+                        BufferTooSmall(required) { return ERROR_FILENAME_EXCED_RANGE; }
+                        LengthOverflow() { return ERROR_FILENAME_EXCED_RANGE; }
+                    }
+                }
+                Create(code) { return code; }
+                Close(cause) { return cause.code; }
+                // Existing entries that cannot be identified as directories retain the create error.
+                Open(code) { return ERROR_ALREADY_EXISTS; }
+                Query(code) { return ERROR_ALREADY_EXISTS; }
+                QueryAndClose(cause) { return ERROR_ALREADY_EXISTS; }
+                NotDirectory() { return ERROR_ALREADY_EXISTS; }
+            }
+        }
+    }
 }
