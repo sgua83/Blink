@@ -311,8 +311,9 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
         symbols.extend(object.symbols.into_iter().map(|s| (index, s.name)));
     }
     let output = encode(&members, &symbols)?;
-    let path = std::path::absolute(path)?;
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(path, output)?;
     Ok(())
 }

@@ -80,8 +80,9 @@ pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
         members.push(member);
     }
     let output = object::library_bytes(&members, &symbols)?;
-    let path = std::path::absolute(path)?;
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(path, output)?;
     Ok(())
 }

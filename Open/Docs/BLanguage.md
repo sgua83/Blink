@@ -1828,7 +1828,7 @@ CPU并行范围可接收普通CPU函数返回的拥有dataset，并在该范围�
 
 无需Frame的B extern `"C"`入口可由`blink --host-archive <module.obj|library.lib>... -o <host.lib>`交给C／C++／Rust原生宿主静态链接。该产物保留原B对象字节，并为实际DLL／函数增加原生COFF导入成员；实际导入槽拥有其COMDAT关联材料，宿主链接只保留真实引用的组，未调用函数不带入DLL，不同DLL的同名函数保留各自身份。宿主库用于原生链接，B编译导入继续使用原--archive模块库；原生IAT成员不伪造B接口。该命令不读取B实现、不编译执行框架、不创建或托管Frame，也不把签名或符号地址当作外部代码／资源寿命保证。
 
-Rust SDK的`blanguage::object::Input::read(...).objects()`、`blanguage::object::archive(...)`、`blanguage::linker::link_inputs(...)`及原生宿主产物入口`blanguage::linker::host_archive(...)`分别复用同一输入、归档和链接所有者。当前支持Microsoft COFF双链接成员目录中的B模块；成员保留原B对象元数据，资源模块遵守实际资源C ABI与映像版本。一般外部C静态库绑定、符号泛型模板、完整版本依赖及热更新继续开放。
+Rust SDK的`blanguage::object::Input::read(...).objects()`、`blanguage::object::archive(...)`、`blanguage::linker::link_inputs(...)`及原生宿主产物入口`blanguage::linker::host_archive(...)`分别复用同一输入、归档和链接所有者。两类归档写出直接使用调用者的原路径，只按实际父目录关系创建目录，沿原Result交回文件I/O结果；不把事先绝对化作为归档写出前置。当前支持Microsoft COFF双链接成员目录中的B模块；成员保留原B对象元数据，资源模块遵守实际资源C ABI与映像版本。一般外部C静态库绑定、符号泛型模板、完整版本依赖及热更新继续开放。
 
 ## 独立模块的整域CPU／GPU入口
 现有模块编译也支持dataset借用及普通uniform组成的整域函数。库中的普通返回类型声明保持同一语法，例如`void step(inout dataset<Item> items, u32 amount) on compute;`；模块编译交付CPU与GPU的实际代码及入口，应用通过已编译接口调用：
