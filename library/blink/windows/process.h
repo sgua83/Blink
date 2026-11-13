@@ -65,6 +65,7 @@ extern "C" i32 SetHandleInformation(handle object,u32 mask,u32 flags) on cpu
     from "KERNEL32.dll";
 
 const u32 PROCESS_VM_READ=0x00000010;
+const u32 PROCESS_QUERY_INFORMATION=0x00000400;
 const u32 PROCESS_QUERY_LIMITED_INFORMATION=0x00001000;
 
 extern "C" handle OpenProcess(u32 access,i32 inherit_handle,u32 process_id) on cpu
@@ -72,6 +73,28 @@ extern "C" handle OpenProcess(u32 access,i32 inherit_handle,u32 process_id) on c
 
 extern "C" i32 ReadProcessMemory(
     handle process,address source,address buffer,usize bytes,inout usize transferred
+) on cpu from "KERNEL32.dll";
+
+const u32 MEM_COMMIT=0x00001000;
+const u32 MEM_RESERVE=0x00002000;
+const u32 MEM_FREE=0x00010000;
+const u32 MEM_PRIVATE=0x00020000;
+const u32 MEM_MAPPED=0x00040000;
+const u32 MEM_IMAGE=0x01000000;
+
+struct MemoryBasicInformation {
+    address base_address;
+    address allocation_base;
+    u32 allocation_protect;
+    u16 partition_id;
+    usize region_size;
+    u32 state;
+    u32 protect;
+    u32 type;
+};
+
+extern "C" usize VirtualQueryEx(
+    handle process,address location,inout MemoryBasicInformation info,usize bytes
 ) on cpu from "KERNEL32.dll";
 
 struct ProcessMemoryCountersEx {

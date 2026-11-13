@@ -386,6 +386,10 @@ application、可写command_line、可选安全属性、environment与directory�
 
 `blink.windows.process::ReadProcessMemory(handle process,address source,address buffer,usize bytes,inout usize transferred)`直接调用Kernel32。`source`按指定进程的地址空间解释，`buffer`由B调用者保持可写且容量足以覆盖实际请求，`bytes`与`transferred`保留原Windows x64的SIZE_T。通过`OpenProcess(PROCESS_VM_READ,i32(0),pid)`取得读取权限，真实句柄仍由调用者关闭。调用者在每次请求前初始化`transferred`，读取原返回状态和实际复制量；零返回后立即读取`GetLastError()`。跨入不可读区间可失败，实际已复制的前缀按原返回计数解释，未复制位置属于原调用者缓冲。时点、同步及类型解释由观察程序沿已有接口组织。[Windows ReadProcessMemory](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-readprocessmemory) [进程访问权限](https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights)
 
+`blink.windows.process::VirtualQueryEx`以原Windows x64 C ABI查询指定进程的虚拟地址。句柄需要`PROCESS_QUERY_INFORMATION`，原调用者在最后一次查询后关闭实际`OpenProcess`句柄。`MemoryBasicInformation`按Windows SDK布局为48字节、对齐8，字段偏移为0／8／16／20／24／32／36／40。调用者交接已初始化的`inout`记录及原缓冲字节数，返回原实际写入字节数，零时直接读取`GetLastError()`。
+
+`base_address`及`region_size`表示从所查页起具有相同属性的连续区间，`allocation_base`是所属分配或映像的起点。状态与映射类型分别读取；`MEM_FREE`时分配起点、初始保护、当前保护和类型无定义，`MEM_RESERVE`时当前保护无定义。查询交接当时的OS页属性，程序的逻辑资源归属、源代码及符号沿各自实际所有者取得。[VirtualQueryEx](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualqueryex) [MEMORY_BASIC_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-memory_basic_information)
+
 ## blink.windows.process_extended
 
 本模块是纯接口，导入blink.windows.process的原结构与句柄规则；无需空.b。`StartupInfoEx { StartupInfo startup; address attributes; }`对应STARTUPINFOEXW，Windows x64大小112、对齐8，attributes偏移104。使用`u32(size_of<StartupInfoEx>())`设置startup.cb，creation_flags包含`EXTENDED_STARTUPINFO_PRESENT`。模块内CreateProcessW以read StartupInfoEx读取完整扩展结构，以原BOOL非零保证write ProcessInformation初始化；基础模块的同名函数保持read StartupInfo。两者都是同一个Kernel32原生导出，B用原模块限定名区分，例如`blink.windows.process_extended::CreateProcessW(...)`，没有包装函数、动态分发或截断指针。
