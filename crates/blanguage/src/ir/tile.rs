@@ -15,6 +15,22 @@ impl SharedWord {
         }
     }
 }
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct TilePlacement {
+    begin: i64,
+    end: i64,
+    width: usize,
+    plane: usize,
+    slot: usize,
+}
+
+#[cfg(feature = "compiler")]
+unsafe extern "C" {
+    #[link_name = "bootstrap.stage_fusion::place_tile"]
+    fn place_tile(rows: *mut TilePlacement, count: usize, narrow: *mut i64, wide: *mut i64);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum PrivateSlot {
     Register(Reg),
@@ -132,6 +148,7 @@ impl Stage {
         }
     }
     // (实际单元类型，所属类型平面的槽，单元内字节)；CPU继续使用原u32字流。
+    #[cfg(feature = "compiler")]
     pub(crate) fn tile_layout(&self, wide: bool) -> BTreeMap<SharedWord, (Scalar, usize, u32)> {
         fn loads(stage: &Stage, code: &[Inst], phase: i64, last: &mut BTreeMap<SharedWord, i64>, groups: &mut Vec<Vec<SharedWord>>) {
             for inst in code {
@@ -271,25 +288,30 @@ impl Stage {
             .collect();
         units.extend(words.into_iter().map(|(b, w, e)| (b, vec![w], e)));
         units.sort_unstable();
-        let mut ends = BTreeMap::<Scalar, Vec<i64>>::new();
-        let mut layout = BTreeMap::new();
-        for (begin, group, end) in units {
+        let byte = |word: SharedWord| match word {
+            SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,
+        };
+        let mut capacity = [0; 2];
+        let mut placements: Vec<_> = units.iter().map(|(begin, group, end)| {
             let unit = if wide { cells[&group[0]].0 } else { Scalar::U32 };
-            let byte = |word: SharedWord| match word {
-                SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,
-            };
+            let width = ((byte(*group.last().unwrap()) - byte(group[0])) / unit.size() + 1) as usize;
+            let plane = usize::from(unit == Scalar::U64);
+            capacity[plane] += width;
+            TilePlacement { begin: *begin, end: *end, width, plane, slot: 0 }
+        }).collect();
+        let mut narrow = Vec::<i64>::with_capacity(capacity[0]);
+        let mut wide_slots = Vec::<i64>::with_capacity(capacity[1]);
+        // B initializes each plane as it assigns rows. A row adds at most its
+        // width to the occupied extent, so the sum of widths bounds all writes.
+        unsafe {
+            place_tile(placements.as_mut_ptr(), placements.len(), narrow.as_mut_ptr(), wide_slots.as_mut_ptr());
+        }
+        let mut layout = BTreeMap::new();
+        for ((_, group, _), placement) in units.into_iter().zip(placements) {
+            let unit = [Scalar::U32, Scalar::U64][placement.plane];
             let first = byte(group[0]);
-            let width = ((byte(*group.last().unwrap()) - first) / unit.size() + 1) as usize;
-            let ends = ends.entry(unit).or_default();
-            // 动态字段保持声明字节步长；各类型平面仍由同一阶段生命周期复用。
-            let slot = (0..=ends.len())
-                .find(|start| (*start..*start + width)
-                    .all(|i| ends.get(i).is_none_or(|previous| *previous < begin)))
-                .unwrap();
-            ends.resize(ends.len().max(slot + width), i64::MIN);
-            ends[slot..slot + width].fill(end);
             for word in group {
-                layout.insert(word, (unit, slot + ((byte(word) - first) / unit.size()) as usize, 0));
+                layout.insert(word, (unit, placement.slot + ((byte(word) - first) / unit.size()) as usize, 0));
             }
         }
         if wide {
@@ -300,6 +322,7 @@ impl Stage {
             layout
         }
     }
+    #[cfg(feature = "compiler")]
     pub fn tile_data_bytes(&self) -> u64 {
         self.tile_layout(false).values().map(|(_, slot, _)| slot).max().map_or(0, |slot| {
             (*slot as u64 + 1) * self.workgroup_width() as u64 * 4
@@ -323,6 +346,7 @@ impl Stage {
             .unwrap_or(0);
         (self.workgroup_width() as u64).next_power_of_two() * u64::from(bytes_per_lane)
     }
+    #[cfg(feature = "compiler")]
     pub fn tile_bytes(&self) -> u64 {
         self.tile_data_bytes() + self.tile_scratch_bytes()
     }

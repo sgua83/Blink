@@ -251,3 +251,45 @@ extern "C" MapAccessCounts map_access(MapAccess input) on cpu {
     }
     return MapAccessCounts(reads, writes, cross);
 }
+
+address tile_end(address plane, u64 slot) on cpu {
+    return unsafe_address(address_bits(plane) + slot * size_of<i64>());
+}
+
+extern "C" void place_tile(address rows, u64 count, address narrow, address wide) on cpu {
+    u64 narrow_used = 0u64;
+    u64 wide_used = 0u64;
+    u64 index = 0u64;
+    while (index < count) {
+        address row = unsafe_address(address_bits(rows) + index * size_of<TilePlacement>());
+        TilePlacement item = unsafe_position<TilePlacement>(row);
+        address plane = narrow;
+        u64 used = narrow_used;
+        if (item.plane != 0u64) {
+            plane = wide;
+            used = wide_used;
+        }
+        u64 slot = 0u64;
+        u64 next = 0u64;
+        while (next < used && next < slot + item.width) {
+            if (unsafe_position<i64>(tile_end(plane, next)) >= item.begin) {
+                slot = next + 1u64;
+            }
+            next += 1u64;
+        }
+        next = slot;
+        while (next < slot + item.width) {
+            unsafe_position<i64>(tile_end(plane, next)) = item.end;
+            next += 1u64;
+        }
+        used = max(used, next);
+        if (item.plane == 0u64) {
+            narrow_used = used;
+        } else {
+            wide_used = used;
+        }
+        item.slot = slot;
+        unsafe_position<TilePlacement>(row) = item;
+        index += 1u64;
+    }
+}

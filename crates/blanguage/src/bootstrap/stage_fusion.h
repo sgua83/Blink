@@ -86,3 +86,15 @@ struct MapAccessCounts { u64 reads; u64 writes; u64 cross; };
 // The caller owns zeroed flags and one output slot per program binding.
 // Cross-element bindings are filtered in place.
 extern "C" MapAccessCounts map_access(MapAccess input) on cpu;
+
+struct TilePlacement {
+    i64 begin;
+    i64 end;
+    u64 width;
+    u64 plane;
+    u64 slot;
+};
+
+// Rows are in the original lifetime order. Each scratch plane has capacity
+// for the sum of its row widths. Only assigned slots have been initialized.
+extern "C" void place_tile(address rows, u64 count, address narrow, address wide) on cpu;

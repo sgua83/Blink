@@ -2129,6 +2129,7 @@ impl Program {
     pub fn stages(&self) -> &[Stage] {
         &self.stages
     }
+    #[cfg(feature = "compiler")]
     pub fn describe(&self) -> String {
         let mut out = format!(
             "program {} on {:?}\npush_constants={} bytes, source_stages={}, executable_stages={}\n",
