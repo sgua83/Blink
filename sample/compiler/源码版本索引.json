@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "0a28ccd2686021e5134a5fa7118a9bd2dd58154f8223aa41343335b301f00765"
+      "sha256": "36c6d270721d46a0e005a34e7c8759f1fbdb2d666be99616cbe3df2ad01a9517"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -20,7 +20,7 @@
     },
     {
       "path": "crates/blanguage/src/bin/blink.rs",
-      "sha256": "08b895f7ba9a7a5c53a4f532628d7878d688a966de30fa30418615b1c60b1569"
+      "sha256": "3432b193adcb29e2309cf0350334f461c2692d527250a914418b528c1db4388b"
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.b",
@@ -117,6 +117,14 @@
     {
       "path": "crates/blanguage/src/bootstrap/lexer.h",
       "sha256": "f52f2a01f46cae964be1f585d58af3ea05b17805d84d8a3606841bf22ad7766b"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/link_cli.b",
+      "sha256": "663bdedba50e771180c7b5e669d7caf2f7cd44cd91a278be208c8140f1c66de8"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/link_cli.h",
+      "sha256": "82738d18da641b6920803e3516928f9254cf453fd910c4f6d4669daf05de1b12"
     },
     {
       "path": "crates/blanguage/src/bootstrap/metadata.b",
