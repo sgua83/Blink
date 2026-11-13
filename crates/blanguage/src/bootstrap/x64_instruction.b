@@ -643,9 +643,8 @@ u64 shift_result_component(u64 at, u32 offset, u8 operation) on cpu {
     return immediate + 1u64;
 }
 
-extern "C" u64 pack_integer_component(ScalarEncoding scalar, u32 offset, bool merge, address output) on cpu {
-    u64 start = address_bits(output);
-    u64 cursor = start;
+u64 pack_integer_component(u64 at, ScalarEncoding scalar, u32 offset, bool merge) on cpu {
+    u64 cursor = at;
     if (scalar.kind == ScalarKind::Signed && scalar.width < 32) {
         put_byte(cursor, u8(0x25));
         write_word(cursor + 1u64, (1 << scalar.width) - 1);
@@ -655,21 +654,16 @@ extern "C" u64 pack_integer_component(ScalarEncoding scalar, u32 offset, bool me
     if (merge) {
         cursor = register_instruction(cursor, u16(0x09), u8(0), true, u8(0), u8(1));
     }
-    return cursor - start;
+    return cursor;
 }
 
-extern "C" u64 unpack_integer_component(ScalarEncoding scalar, u32 offset, bool packed, address output) on cpu {
-    u64 start = address_bits(output);
-    u64 cursor = start;
-    if (packed) {
-        cursor = load_bits(cursor, u8(0), move_gpr(u8(1)), true);
-    }
-    cursor = shift_result_component(cursor, offset, u8(5));
+u64 unpack_integer_component(u64 at, ScalarEncoding scalar, u32 offset) on cpu {
+    u64 cursor = shift_result_component(at, offset, u8(5));
     if (scalar.kind == ScalarKind::Boolean) {
         cursor = register_instruction(cursor, u16(0x85), u8(0), false, u8(0), u8(0));
         cursor = comparison_result(cursor, move_gpr(u8(0)), BinaryOperation::NotEqual, false, false);
     }
-    return cursor - start;
+    return cursor;
 }
 
 u64 integer_immediate(u64 at, u8 extension, u8 left, u64 bits, bool wide) on cpu {
@@ -2540,8 +2534,11 @@ extern "C" u64 tile_private_copy(TilePrivateCopy input, address output) on cpu {
     return store_bits(cursor, low, u8(0), 4) - start;
 }
 
-extern "C" u64 abi_memory_value(u32 slot, u64 count, AbiMemoryMode mode, address context,
-    cfn<AbiMemoryComponent,address,u64> component, address output) on cpu requires nonzero(component) {
+extern "C" u64 abi_value(u32 slot, u64 count, AbiMemoryMode mode, address context,
+    cfn<AbiValueComponent,address,u64> component, address output) on cpu requires nonzero(component) {
+    if (mode == AbiMemoryMode::PackIntegerResult || mode == AbiMemoryMode::UnpackIntegerResult) {
+        return abi_integer_result(count, mode == AbiMemoryMode::PackIntegerResult, context, component, output);
+    }
     u64 start = address_bits(output);
     u64 cursor = start;
     u8 base = u8(4);
@@ -2556,7 +2553,7 @@ extern "C" u64 abi_memory_value(u32 slot, u64 count, AbiMemoryMode mode, address
         || mode == AbiMemoryMode::FallibleResult;
     u64 index = 0u64;
     while (index < count) {
-        AbiMemoryComponent value = component(context, index);
+        AbiValueComponent value = component(context, index);
         MoveLocation field = MoveLocation(u64(offset + value.offset), MOVE_MEMORY, base, NO_INDEX, u8(0));
         u32 size = value.scalar.width / 8;
         if (writing) {
@@ -2569,6 +2566,46 @@ extern "C" u64 abi_memory_value(u32 slot, u64 count, AbiMemoryMode mode, address
     }
     if (mode == AbiMemoryMode::IndirectResult) {
         cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(1), u8(0));
+    }
+    return cursor - start;
+}
+
+u64 abi_integer_result(u64 count, bool pack, address context,
+    cfn<AbiValueComponent,address,u64> component, address output) on cpu requires nonzero(component) {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    MoveLocation rax = move_gpr(u8(0));
+    MoveLocation rcx = move_gpr(u8(1));
+    bool multiple = count > 1u64;
+    if (pack) {
+        if (count == 0u64) {
+            return move_immediate(cursor, u8(0), 0u64, false) - start;
+        }
+        u64 index = 0u64;
+        while (index < count) {
+            AbiValueComponent value = component(context, index);
+            MoveEncoding moved = copy_scalar_move(rax, value.location, value.scalar.width / 8,
+                value.scalar.kind == ScalarKind::Signed, unsafe_address(cursor));
+            cursor = pack_integer_component(cursor + moved.length, value.field_scalar,
+                value.offset, index != 0u64);
+            if (index == 0u64 && multiple) {
+                cursor = load_bits(cursor, u8(1), rax, true);
+            }
+            index += 1u64;
+        }
+        if (multiple) { cursor = load_bits(cursor, u8(0), rcx, true); }
+    } else {
+        if (multiple) { cursor = load_bits(cursor, u8(1), rax, true); }
+        u64 index = 0u64;
+        while (index < count) {
+            AbiValueComponent value = component(context, index);
+            if (multiple) { cursor = load_bits(cursor, u8(0), rcx, true); }
+            cursor = unpack_integer_component(cursor, value.field_scalar, value.offset);
+            MoveEncoding moved = copy_scalar_move(value.location, rax, value.scalar.width / 8,
+                value.scalar.kind == ScalarKind::Signed, unsafe_address(cursor));
+            cursor += moved.length;
+            index += 1u64;
+        }
     }
     return cursor - start;
 }

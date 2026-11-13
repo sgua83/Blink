@@ -28,37 +28,41 @@ pub(super) enum AbiMemoryMode {
     IndirectParameter,
     IndirectResult,
     FallibleResult,
+    PackIntegerResult,
+    UnpackIntegerResult,
 }
 
 #[repr(C)]
-struct AbiMemoryComponent {
+struct AbiValueComponent {
     location: MoveLocation,
     scalar: ScalarEncoding,
+    field_scalar: ScalarEncoding,
     offset: u32,
 }
 
-struct MemoryValue<'a> {
+struct AbiValue<'a> {
     allocation: &'a Allocation,
     registers: &'a [Scalar],
     components: &'a [(Scalar, u32)],
     values: &'a [Reg],
 }
 
-unsafe extern "C" fn memory_component(context: *const c_void, index: u64) -> AbiMemoryComponent {
-    let input = unsafe { &*context.cast::<MemoryValue<'_>>() };
+unsafe extern "C" fn abi_component(context: *const c_void, index: u64) -> AbiValueComponent {
+    let input = unsafe { &*context.cast::<AbiValue<'_>>() };
     let index = index as usize;
     let reg = input.values[index];
-    AbiMemoryComponent {
+    AbiValueComponent {
         location: input.allocation.location(PrivateSlot::Register(reg)).into(),
         scalar: input.registers[reg].into(),
+        field_scalar: input.components[index].0.into(),
         offset: input.components[index].1,
     }
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::abi_memory_value"]
-    fn encode_abi_memory_value(slot: u32, count: u64, mode: AbiMemoryMode, context: *const c_void,
-        component: unsafe extern "C" fn(*const c_void, u64) -> AbiMemoryComponent, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::abi_value"]
+    fn encode_abi_value(slot: u32, count: u64, mode: AbiMemoryMode, context: *const c_void,
+        component: unsafe extern "C" fn(*const c_void, u64) -> AbiValueComponent, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::abi_stack_pointer"]
     fn encode_abi_stack_pointer(offset: u32, slot: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::argument_register"]
@@ -67,12 +71,6 @@ unsafe extern "C" {
     fn encode_symbol_target(invoke: u32, output: *mut u8) -> SymbolEncoding;
     #[link_name = "bootstrap.x64_instruction::call_slot"]
     fn encode_call_slot(offset: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::pack_integer_component"]
-    fn encode_pack_integer_component(scalar: ScalarEncoding, offset: u32,
-        merge: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::unpack_integer_component"]
-    fn encode_unpack_integer_component(scalar: ScalarEncoding, offset: u32,
-        packed: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.call_layout::plan"]
     fn call_plan(context: *const c_void, count: usize, result: AbiType, flags: u32,
         argument: unsafe extern "C" fn(*const c_void, usize) -> AbiType, positions: *mut ArgumentSlot) -> CallPlan;
@@ -103,22 +101,26 @@ pub(super) fn outgoing_bytes(call: &Call) -> u64 {
     plan_call(call, std::ptr::null_mut()).bytes
 }
 impl Emitter<'_> {
-    pub(super) fn abi_memory_value(
+    pub(super) fn abi_value(
         &mut self, slot: u32, ty: &Ty, values: &[Reg], mode: AbiMemoryMode,
     ) {
         let count = ty.components.len().min(values.len());
-        self.code.reserve(16 + 24 * count);
+        let per_component = match mode {
+            AbiMemoryMode::PackIntegerResult | AbiMemoryMode::UnpackIntegerResult => 48,
+            _ => 24,
+        };
+        self.code.reserve(16 + per_component * count);
         let start = self.code.len();
-        let input = MemoryValue {
+        let input = AbiValue {
             allocation: &self.allocation,
             registers: &self.stage.registers,
             components: &ty.components,
             values,
         };
-        let context = (&input as *const MemoryValue<'_>).cast();
+        let context = (&input as *const AbiValue<'_>).cast();
         unsafe {
             let output = self.code.as_mut_ptr().add(start);
-            let length = encode_abi_memory_value(slot, count as u64, mode, context, memory_component, output);
+            let length = encode_abi_value(slot, count as u64, mode, context, abi_component, output);
             self.code.set_len(start + length as usize);
         }
     }
@@ -172,39 +174,6 @@ impl Emitter<'_> {
             self.calls.push(Some(offset));
         }
     }
-    pub(super) fn pack_integer_result(&mut self, ty: &Ty, outputs: &[Reg]) {
-        let components = ty.components.iter().zip(outputs);
-        let count = components.len();
-        if count == 0 {
-            self.copy_scalar(Location::Gpr(0), Location::Immediate(0), Scalar::U32);
-            return;
-        }
-        for (index, ((scalar, offset), reg)) in components.enumerate() {
-            self.load(*reg);
-            self.emit_bytes(12, |output| unsafe {
-                encode_pack_integer_component((*scalar).into(), *offset, u32::from(index != 0), output)
-            });
-            if index == 0 && count > 1 {
-                self.copy_scalar(Location::Gpr(1), Location::Gpr(0), Scalar::U64);
-            }
-        }
-        if count > 1 {
-            self.copy_scalar(Location::Gpr(0), Location::Gpr(1), Scalar::U64);
-        }
-    }
-    fn unpack_integer_result(&mut self, ty: &Ty, outputs: &[Reg]) {
-        let components = ty.components.iter().zip(outputs);
-        let packed = components.len() > 1;
-        if packed {
-            self.copy_scalar(Location::Gpr(1), Location::Gpr(0), Scalar::U64);
-        }
-        for ((scalar, offset), reg) in components {
-            self.emit_bytes(15, |output| unsafe {
-                encode_unpack_integer_component((*scalar).into(), *offset, u32::from(packed), output)
-            });
-            self.store(*reg);
-        }
-    }
     pub(super) fn native_call(&mut self, call: &Call) -> Result<(), &'static str> {
         let mut arguments = Vec::with_capacity(call.arguments.len());
         let layout = plan_call(call, arguments.as_mut_ptr());
@@ -224,7 +193,7 @@ impl Emitter<'_> {
                     self.copy_scalar(Location::Stack(home), Location::Gpr(0), Scalar::U64);
                 }
                 CallArgument::Value { ty, values, .. } => {
-                    self.abi_memory_value(row.payload as u32, ty, values, AbiMemoryMode::StackStore);
+                    self.abi_value(row.payload as u32, ty, values, AbiMemoryMode::StackStore);
                     if row.indirect != 0 {
                         self.abi_stack_pointer(row.payload as u32, home);
                     }
@@ -256,11 +225,11 @@ impl Emitter<'_> {
         } else { None };
         if let Some(ty) = call.result.as_ref().filter(|ty| ty.size != 0) {
             if layout.hidden != 0 {
-                self.abi_memory_value(layout.result as u32, ty, &call.values, AbiMemoryMode::StackLoad);
+                self.abi_value(layout.result as u32, ty, &call.values, AbiMemoryMode::StackLoad);
             } else if float_size(ty) != 0 {
                 self.store_float(call.values[0]);
             } else {
-                self.unpack_integer_result(ty, &call.values);
+                self.abi_value(0, ty, &call.values, AbiMemoryMode::UnpackIntegerResult);
             }
         }
         if let Some(at) = failed { self.patch(at, self.code.len()); }

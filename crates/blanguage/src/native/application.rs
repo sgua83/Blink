@@ -205,7 +205,7 @@ fn emit_value(
                 let (values, rest) = inputs.split_at(ty.components.len());
                 inputs = rest;
                 let mode = if row.indirect != 0 { AbiMemoryMode::IndirectParameter } else { AbiMemoryMode::StackLoad };
-                e.abi_memory_value(address, ty, values, mode);
+                e.abi_value(address, ty, values, mode);
             }
             CallParameterKind::Reference { .. } => {
                 let (values, rest) = inputs.split_at(2);
@@ -224,13 +224,13 @@ fn emit_value(
         let start = e.code.len();
         let kind = if let Some(at) = result_pointer {
             let mode = if fallible { AbiMemoryMode::FallibleResult } else { AbiMemoryMode::IndirectResult };
-            e.abi_memory_value(at, ty, &body.outputs, mode);
+            e.abi_value(at, ty, &body.outputs, mode);
             AbiRangeKind::IndirectResult { stack_offset: at }
         } else if float_size(ty) != 0 {
             e.float(body.outputs[0], 0);
             AbiRangeKind::FloatResult
         } else {
-            e.pack_integer_result(ty, &body.outputs);
+            e.abi_value(0, ty, &body.outputs, AbiMemoryMode::PackIntegerResult);
             AbiRangeKind::IntegerResult
         };
         e.abi_range(start, kind);

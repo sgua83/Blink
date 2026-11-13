@@ -45,27 +45,24 @@ enum AbiMemoryMode:u32 {
     IndirectParameter=2;
     IndirectResult=3;
     FallibleResult=4;
+    PackIntegerResult=5;
+    UnpackIntegerResult=6;
 };
 
-struct AbiMemoryComponent {
+struct AbiValueComponent {
     MoveLocation location;
     ScalarEncoding scalar;
+    ScalarEncoding field_scalar;
     u32 offset;
 };
 
 // The existing allocation and value list are read synchronously. Output has
-// sixteen bytes for the pointer sequence plus twenty-four per component.
-extern "C" u64 abi_memory_value(u32 slot, u64 count, AbiMemoryMode mode, address context,
-    cfn<AbiMemoryComponent,address,u64> component, address output) on cpu requires nonzero(component);
+// sixteen bytes for the pointer sequence plus forty-eight per component.
+extern "C" u64 abi_value(u32 slot, u64 count, AbiMemoryMode mode, address context,
+    cfn<AbiValueComponent,address,u64> component, address output) on cpu requires nonzero(component);
 // The caller owns sixteen bytes for computing and writing a frame address.
 extern "C" u64 abi_stack_pointer(u32 offset, u32 slot, address output) on cpu;
 
-// RAX holds the component before packing. Merge adds its bits to RCX.
-// The caller owns twelve output bytes.
-extern "C" u64 pack_integer_component(ScalarEncoding scalar, u32 offset, bool merge, address output) on cpu;
-// Read from the saved RCX bits for multiple components, or directly from RAX.
-// The caller owns fifteen output bytes. The extracted component is in RAX.
-extern "C" u64 unpack_integer_component(ScalarEncoding scalar, u32 offset, bool packed, address output) on cpu;
 extern "C" u64 stack_probe_size() on cpu;
 // The caller owns the code image through end plus stack_probe_size bytes.
 extern "C" u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu;
