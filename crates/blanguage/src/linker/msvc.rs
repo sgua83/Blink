@@ -4,7 +4,7 @@ use crate::{object::Archive, source_path::join};
 use std::{
     ffi::OsString,
     fs::File,
-    io::{self, Write},
+    io,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -50,7 +50,25 @@ struct SdkVersionResult {
     status: u32,
 }
 
+#[repr(u32)]
+enum HostInputKind {
+    Written,
+    OpenError,
+    WriteError,
+    NoProgress,
+}
+
+#[repr(C)]
+struct HostInputResult {
+    kind: HostInputKind,
+    status: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.host_sdk::write_host_input"]
+    fn write_host_input(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostInputResult;
+    #[link_name = "bootstrap.host_sdk::remove_host_input"]
+    fn remove_host_input(path: *const u16, units: usize) -> u32;
     #[link_name = "bootstrap.host_sdk::find_sdk_version"]
     fn find_sdk_version(pattern: *const u16, units: usize, selected: *mut u16) -> SdkVersionResult;
     #[link_name = "bootstrap.host_sdk::read_sdk_root"]
@@ -82,6 +100,15 @@ fn host_text<T>(bytes: &[u8], kind: HostText, copy: impl FnOnce(&[u16]) -> T) ->
         return Err(io::Error::from_raw_os_error(decoded.status).into());
     }
     Ok(decoded.consume(copy)?)
+}
+
+fn host_path(path: &Path) -> io::Result<Vec<u16>> {
+    let mut units: Vec<_> = path.as_os_str().encode_wide().collect();
+    if units.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file name contained an unexpected NUL byte"));
+    }
+    units.push(0);
+    Ok(units)
 }
 
 fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
@@ -117,14 +144,9 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         join(&join(vs, "VC/Tools/MSVC"), version)
     };
     let lib = join(&sdk_root()?, "Lib");
-    let mut pattern: Vec<_> = join(&lib, "*").as_os_str().encode_wide().collect();
-    if pattern.contains(&0) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file name contained an unexpected NUL byte").into());
-    }
-    let units = pattern.len();
-    pattern.push(0);
+    let pattern = host_path(&join(&lib, "*"))?;
     let mut version = [0u16; 260];
-    let selected = unsafe { find_sdk_version(pattern.as_ptr(), units, version.as_mut_ptr()) };
+    let selected = unsafe { find_sdk_version(pattern.as_ptr(), pattern.len() - 1, version.as_mut_ptr()) };
     if selected.status != 0 {
         return Err(io::Error::from_raw_os_error(selected.status as i32).into());
     }
@@ -144,9 +166,16 @@ fn path_argument(prefix: &str, path: &Path) -> OsString {
 }
 
 fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io::Result<()> {
-    let mut file = File::create_new(&path)?;
+    let name = host_path(&path)?;
+    let written = unsafe { write_host_input(name.as_ptr(), name.len() - 1, bytes.as_ptr(), bytes.len()) };
+    let result = match written.kind {
+        HostInputKind::OpenError => return Err(io::Error::from_raw_os_error(written.status as i32)),
+        HostInputKind::Written => Ok(()),
+        HostInputKind::WriteError => Err(io::Error::from_raw_os_error(written.status as i32)),
+        HostInputKind::NoProgress => Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write whole buffer")),
+    };
     temporary.push(path);
-    file.write_all(bytes)
+    result
 }
 
 pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {
@@ -249,8 +278,11 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
         ).into())
     })();
     for path in temporary {
-        let removed = std::fs::remove_file(path).map_err(Into::into);
-        result = result.and(removed);
+        let removed = host_path(&path).and_then(|name| {
+            let status = unsafe { remove_host_input(name.as_ptr(), name.len() - 1) };
+            if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status as i32)) }
+        });
+        result = result.and(removed.map_err(Into::into));
     }
     result
 }

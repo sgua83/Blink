@@ -1,6 +1,8 @@
 module bootstrap.host_sdk;
 import blink.windows.directory;
 import blink.windows.error;
+import blink.windows.file;
+import blink.windows.system;
 import blink.windows.path_core;
 
 const handle INVALID_SEARCH = unsafe_handle(0xffffffffffffffffu64);
@@ -155,7 +157,7 @@ bool select_sdk_version(SdkVersionName name, SdkVersionName selected) on cpu {
     return !equal_prefix || selected_index > selected.units;
 }
 
-struct SdkSearchPath {
+struct HostNativePath {
     address pattern;
     address allocation;
     u32 status;
@@ -181,14 +183,14 @@ address extended_search_path(address full, usize units) on cpu {
     return start;
 }
 
-SdkSearchPath sdk_search_path(address pattern, usize units) on cpu {
+HostNativePath host_native_path(address pattern, usize units) on cpu {
     bool nt = units >= 4u64 && wide_unit(pattern, 0u64) == 92 && wide_unit(pattern, 1u64) == 63 &&
         wide_unit(pattern, 2u64) == 63 && wide_unit(pattern, 3u64) == 92;
     LexicalPrefix prefix = lexical_prefix(UnitSpan(pattern, units), nt);
     bool absolute = prefix.end > 2u64 || (prefix.end == 2u64 && units > 2u64 &&
         lexical_separator(u16(wide_unit(pattern, 2u64)), false));
     if (prefix.literal || (absolute && units < 247u64)) {
-        return SdkSearchPath(pattern, address(), 0);
+        return HostNativePath(pattern, address(), 0);
     }
 
     // One Win32-sized buffer resolves a relative path against the current directory once.
@@ -196,19 +198,19 @@ SdkSearchPath sdk_search_path(address pattern, usize units) on cpu {
     u32 capacity = 32768;
     handle heap = GetProcessHeap();
     address allocation = HeapAlloc(heap, 0, (usize(capacity) + 6u64) * 2u64);
-    if (address_bits(allocation) == 0u64) { return SdkSearchPath(address(), address(), u32(ERROR_NOT_ENOUGH_MEMORY)); }
+    if (address_bits(allocation) == 0u64) { return HostNativePath(address(), address(), u32(ERROR_NOT_ENOUGH_MEMORY)); }
     address full = unsafe_address(address_bits(allocation) + 12u64);
     u32 written = GetFullPathNameW(pattern, capacity, full, address());
     if (written == 0 || written >= capacity) {
         u32 status = written == 0 ? GetLastError() : ERROR_FILENAME_EXCED_RANGE;
         HeapFree(heap, 0, allocation);
-        return SdkSearchPath(address(), address(), status);
+        return HostNativePath(address(), address(), status);
     }
-    return SdkSearchPath(extended_search_path(full, usize(written)), allocation, 0);
+    return HostNativePath(extended_search_path(full, usize(written)), allocation, 0);
 }
 
 extern "C" SdkVersionResult find_sdk_version(address pattern, usize units, address selected) on cpu {
-    SdkSearchPath path = sdk_search_path(pattern, units);
+    HostNativePath path = host_native_path(pattern, units);
     if (path.status != 0) { return SdkVersionResult(0, path.status); }
     FindData data;
     // FindExInfoBasic omits the unused alternate filename.
@@ -245,4 +247,61 @@ extern "C" SdkVersionResult find_sdk_version(address pattern, usize units, addre
     }
     if (status != ERROR_NO_MORE_FILES) { return SdkVersionResult(0, status); }
     return SdkVersionResult(u32(selected_units), 0);
+}
+
+const u32 FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+const u32 GENERIC_READ_WRITE = 0xc0000000;
+const u32 CREATE_NEW = 1;
+const u32 DELETE_ACCESS = 65536;
+const u32 OPEN_EXISTING = 3;
+
+struct HostInputFile { handle file; u32 status; };
+
+HostInputFile open_host_input(address path, usize units, u32 access, u32 creation) on cpu {
+    HostNativePath name = host_native_path(path, units);
+    if (name.status != 0) { return HostInputFile(INVALID_HANDLE_VALUE, name.status); }
+
+    handle file = CreateFileW(name.pattern, access, 7, address(), creation, FILE_FLAG_OPEN_REPARSE_POINT, handle());
+    u32 status = file == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    if (address_bits(name.allocation) != 0u64) { release_host_wide(name.allocation); }
+    return HostInputFile(file, status);
+}
+
+extern "C" HostInputResult write_host_input(address path, usize units, address data, usize bytes) on cpu {
+    HostInputFile opened = open_host_input(path, units, GENERIC_READ_WRITE, CREATE_NEW);
+    if (opened.file == INVALID_HANDLE_VALUE) {
+        return HostInputResult(HostInputKind::OpenError, opened.status);
+    }
+
+    HostInputResult result = HostInputResult(HostInputKind::Written, 0);
+    usize completed = 0u64;
+    while (completed < bytes) {
+        usize remaining = bytes - completed;
+        u32 request = remaining > 0xffffffffu64 ? 0xffffffff : u32(remaining);
+        address buffer = unsafe_address(address_bits(data) + completed);
+        u32 written = 0;
+        if (WriteFile(opened.file, buffer, request, written, address()) == i32(0)) {
+            result = HostInputResult(HostInputKind::WriteError, GetLastError());
+            break;
+        }
+        if (written == 0) {
+            result = HostInputResult(HostInputKind::NoProgress, 0);
+            break;
+        }
+        completed += usize(written);
+    }
+    CloseHandle(opened.file);
+    return result;
+}
+
+extern "C" u32 remove_host_input(address path, usize units) on cpu {
+    HostInputFile opened = open_host_input(path, units, DELETE_ACCESS, OPEN_EXISTING);
+    if (opened.file == INVALID_HANDLE_VALUE) { return opened.status; }
+
+    // FILE_DISPOSITION_INFO_EX: delete the file, using POSIX semantics and ignoring its read-only attribute.
+    u32 disposition = 19;
+    i32 removed = SetFileInformationByHandle(opened.file, i32(21), address_of(disposition), u32(size_of<u32>()));
+    u32 status = removed == i32(0) ? GetLastError() : 0;
+    CloseHandle(opened.file);
+    return status;
 }
