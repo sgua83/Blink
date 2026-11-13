@@ -152,8 +152,8 @@ impl Graph {
         Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(value,bounds::Condition::constant(true)).map(|(value,_)|value).unwrap_or_default())}).collect())
     }
     pub(super) fn loops(function:&Function,state:&State,known:&States)->BTreeMap<LoopInput,Borrow>{let mut b=Self::builder(function,state,known);let roots=state.loops.keys().map(|input|(*input,b.key(Key::Loop(*input)))).collect::<Vec<_>>();let graph=Arc::new(b.graph);roots.into_iter().map(|(input,root)|(input,Borrow::source(Origin::Relation(graph.clone(),root)))).collect()}
-    pub(super) fn bind(&self,root:usize,function:&Function,state:&State,known:&States)->(Self,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None);(b.graph,root)}
-    pub(super) fn bind_incoming(&self,root:usize,memory:usize,snapshots:Option<Arc<[ValueSnapshot]>>,function:&Function,state:&State,known:&States)->(Self,usize){let mut b=Self::builder(function,state,known);let frame=b.read_frame(memory);let graph=self.incoming(memory,snapshots);let root=b.import(&graph,root,frame);(b.graph,root)}
+    pub(super) fn bind(&self,root:usize,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None);(Arc::new(b.graph),root)}
+    pub(super) fn bind_incoming(&self,root:usize,memory:usize,snapshots:Option<Arc<[ValueSnapshot]>>,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let frame=b.read_frame(memory);let graph=self.incoming(memory,snapshots);let root=b.import(&graph,root,frame);(Arc::new(b.graph),root)}
     fn frames_at(&self,id:usize)->BTreeSet<usize>{let mut found=BTreeSet::new();for edge in &self.nodes[id].edges{if let Op::Read{frame,..}|Op::Initial{frame,..}=edge.op{let mut at=frame;while let Some(id)=at{if !found.insert(id){break;}at=self.frames[id].parent;}}}found}
     fn read_feedback(&self,root:usize)->bool{
         let mut todo=vec![(root,false)];let mut seen=BTreeSet::new();
@@ -166,15 +166,49 @@ impl Graph {
         }false
     }
     fn reachable(&self,root:usize)->BTreeSet<usize>{let mut todo=vec![root];let mut found=BTreeSet::new();while let Some(id)=todo.pop(){if found.insert(id){todo.extend(self.nodes[id].edges.iter().map(|e|e.from));for f in self.frames_at(id){for w in &self.frames[f].writes{todo.push(w.target);todo.extend(w.fields.iter().flatten().map(|(_,v)|*v));}}}}found}
-    fn order(&self,reachable:&BTreeSet<usize>)->Vec<usize>{
-        let mut counts=BTreeMap::new();let mut users:BTreeMap<usize,Vec<usize>>=BTreeMap::new();
-        for &id in reachable.difference(&self.variables){
-            let mut dependencies=self.nodes[id].edges.iter().map(|e|e.from).collect::<BTreeSet<_>>();
-            for f in self.frames_at(id){for w in &self.frames[f].writes{dependencies.insert(w.target);dependencies.extend(w.fields.iter().flatten().map(|(_,id)|*id));}}
-            dependencies.retain(|id|!self.variables.contains(id));counts.insert(id,dependencies.len());for from in dependencies{users.entry(from).or_default().push(id);}
+    fn order(&self, reachable: &BTreeSet<usize>) -> Vec<(usize, bool)> {
+        let mut counts = BTreeMap::new();
+        let mut users: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for &id in reachable.difference(&self.variables) {
+            let edges = &self.nodes[id].edges;
+            let mut dependencies = edges.iter().map(|edge| edge.from).collect::<BTreeSet<_>>();
+            for frame in self.frames_at(id) {
+                for write in &self.frames[frame].writes {
+                    dependencies.insert(write.target);
+                    dependencies.extend(write.fields.iter().flatten().map(|(_, id)| *id));
+                }
+            }
+
+            // A read can also use the evaluation scope's current loop bindings.
+            let mut feedback = edges.iter().any(|edge| matches!(edge.op, Op::Read { .. }));
+            dependencies.retain(|dependency| {
+                let variable = self.variables.contains(dependency);
+                feedback |= variable;
+                !variable
+            });
+            counts.insert(id, (dependencies.len(), feedback));
+            for dependency in dependencies {
+                users.entry(dependency).or_default().push(id);
+            }
         }
-        let mut ready=counts.iter().filter_map(|(id,count)|(*count==0).then_some(*id)).collect::<Vec<_>>();let mut order=Vec::new();
-        while let Some(id)=ready.pop(){order.push(id);for next in users.get(&id).into_iter().flatten(){let count=counts.get_mut(next).unwrap();*count-=1;if *count==0{ready.push(*next);}}}order
+
+        let mut ready = counts.iter().filter_map(|(&id, &(count, _))| {
+            (count == 0).then_some(id)
+        }).collect::<Vec<_>>();
+        let mut order = Vec::new();
+        while let Some(id) = ready.pop() {
+            let feedback = counts[&id].1;
+            order.push((id, feedback));
+            for &user in users.get(&id).into_iter().flatten() {
+                let (count, changes) = counts.get_mut(&user).unwrap();
+                *changes |= feedback;
+                *count -= 1;
+                if *count == 0 {
+                    ready.push(user);
+                }
+            }
+        }
+        order
     }
     pub(in crate::check) fn selected(&self,root:usize)->Self{
         let reach=self.reachable(root);let order=std::iter::once(root).chain(reach.iter().copied().filter(|id|*id!=root)).collect::<Vec<_>>();let indices=order.iter().enumerate().map(|(i,id)|(*id,i)).collect::<BTreeMap<_,_>>();let frames=reach.iter().flat_map(|id|self.frames_at(*id)).collect::<BTreeSet<_>>();let fi=frames.iter().enumerate().map(|(i,id)|(*id,i)).collect::<BTreeMap<_,_>>();
@@ -249,12 +283,51 @@ impl Graph {
             other=>Borrow::source(other),
         })
     }
-    pub(super) fn solve(&self,root:usize,evaluation:&mut BorrowEvaluation<'_>)->Borrow{
-        let reachable=self.reachable(root);let order=self.order(&reachable);let relation=Arc::new(self.clone());let mut variables=self.variables.intersection(&reachable).map(|id|(*id,Borrow::default())).collect::<BTreeMap<_,_>>();
-        loop{
-            let mut scope=BorrowEvaluation{function:evaluation.function,state:evaluation.state,known:evaluation.known,expand_loops:evaluation.expand_loops,deferred_reads:evaluation.deferred_reads,loop_bindings:evaluation.loop_bindings.clone(),values:BTreeMap::new()};scope.loop_bindings.push(self.inputs.iter().filter_map(|(input,id)|variables.get(id).map(|v|(*input,v.clone()))).collect());
-            let mut query=Query{graph:self,relation:relation.clone(),variables:&variables,values:BTreeMap::new(),evaluation:&mut scope,normal:bounds::Normalizer::new()};for id in &order{let value=query.definition(*id);query.values.insert(*id,value);}let next=variables.keys().map(|id|(*id,query.definition(*id))).collect::<BTreeMap<_,_>>();
-            if next==variables{let value=query.node(root);let residual=self.residual(&query);return self.rebind(&value,&residual);}variables=next;
+    pub(super) fn solve(self: &Arc<Self>, root: usize, evaluation: &mut BorrowEvaluation<'_>) -> Borrow {
+        let reachable = self.reachable(root);
+        let (mut stable, feedback): (Vec<_>, Vec<_>) =
+            self.order(&reachable).into_iter().partition(|&(_, changes)| !changes);
+        let mut variables = self.variables.intersection(&reachable)
+            .map(|&id| (id, Borrow::default())).collect::<BTreeMap<_, _>>();
+        let mut values = BTreeMap::new();
+        loop {
+            let mut scope = BorrowEvaluation {
+                function: evaluation.function,
+                state: evaluation.state,
+                known: evaluation.known,
+                expand_loops: evaluation.expand_loops,
+                deferred_reads: evaluation.deferred_reads,
+                loop_bindings: evaluation.loop_bindings.clone(),
+                values: BTreeMap::new(),
+            };
+            scope.loop_bindings.push(self.inputs.iter().filter_map(|(input, id)| {
+                variables.get(id).map(|value| (*input, value.clone()))
+            }).collect());
+
+            let mut query = Query {
+                graph: self,
+                relation: Arc::clone(self),
+                variables: &variables,
+                values,
+                evaluation: &mut scope,
+                normal: bounds::Normalizer::new(),
+            };
+            for (id, _) in stable.drain(..).chain(feedback.iter().copied()) {
+                let value = query.definition(id);
+                query.values.insert(id, value);
+            }
+            let next = variables.keys().map(|&id| (id, query.definition(id)))
+                .collect::<BTreeMap<_, _>>();
+            if next == variables {
+                let value = query.node(root);
+                let residual = self.residual(&query);
+                return self.rebind(&value, &residual);
+            }
+            values = query.values;
+            for &(id, _) in &feedback {
+                values.remove(&id);
+            }
+            variables = next;
         }
     }
 }
