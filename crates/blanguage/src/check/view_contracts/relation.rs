@@ -192,9 +192,34 @@ impl Graph {
         let graph=Arc::new(b.graph);let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()};
         Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(value,bounds::Condition::constant(true)).map(|(value,_)|value).unwrap_or_default())}).collect())
     }
-    pub(super) fn loops(function:&Function,state:&State,known:&States)->BTreeMap<LoopInput,Borrow>{let mut b=Self::builder(function,state,known);let roots=state.loops.keys().map(|input|(*input,b.key(Key::Loop(*input)))).collect::<Vec<_>>();let graph=Arc::new(b.graph);roots.into_iter().map(|(input,root)|(input,Borrow::source(Origin::Relation(graph.clone(),root)))).collect()}
+    pub(super) fn loops(function:&Function,state:&State,known:&States)->BTreeMap<LoopInput,Borrow>{let mut b=Self::builder(function,state,known);let roots=state.loops.keys().map(|input|(*input,b.key(Key::Loop(*input)))).collect::<Vec<_>>();b.graph.remove_identity_feedback();let graph=Arc::new(b.graph);roots.into_iter().map(|(input,root)|(input,Borrow::source(Origin::Relation(graph.clone(),root)))).collect()}
     pub(super) fn bind(&self,root:usize,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None);(Arc::new(b.graph),root)}
     pub(super) fn bind_incoming(&self,root:usize,memory:usize,snapshots:Option<Arc<[ValueSnapshot]>>,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let frame=b.read_frame(memory);let graph=self.incoming(memory,snapshots);let root=b.import(&graph,root,frame);(Arc::new(b.graph),root)}
+    fn remove_identity_feedback(&mut self) {
+        for &variable in &self.variables {
+            let mut edges = std::mem::take(&mut self.nodes[variable].edges);
+            edges.retain(|edge| {
+                let mut edge = edge;
+                while edge.op == Op::Identity {
+                    if edge.from == variable {
+                        return false;
+                    }
+                    if self.variables.contains(&edge.from) {
+                        break;
+                    }
+                    let next = &self.nodes[edge.from];
+                    let [next_edge] = next.edges.as_slice() else { break; };
+                    if !next.seeds.empty() {
+                        break;
+                    }
+                    edge = next_edge;
+                }
+                true
+            });
+            self.nodes[variable].edges = edges;
+        }
+    }
+
     fn frames_at(&self,id:usize)->BTreeSet<usize>{let mut found=BTreeSet::new();for edge in &self.nodes[id].edges{if let Op::Read{frame,..}|Op::Initial{frame,..}=edge.op{let mut at=frame;while let Some(id)=at{if !found.insert(id){break;}at=self.frames[id].parent;}}}found}
     fn read_feedback(&self,root:usize)->bool{
         let mut todo=vec![(root,false)];let mut seen=BTreeSet::new();
