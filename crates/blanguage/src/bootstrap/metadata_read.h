@@ -27,3 +27,10 @@ extern "C" MetaCall call(inout MetaCursor cursor) on cpu;
 
 struct BuildImage {ReadBytes identity;ReadBytes image;u32 status;};
 extern "C" BuildImage read_build_image(ReadBytes input,u64 magic) on cpu;
+
+// BLBO readers borrow the original snapshot. Header mismatch returns no range.
+extern "C" ReadBytes manifest_body(ReadBytes input, u64 magic) on cpu;
+extern "C" MetaWord manifest_number(inout MetaCursor cursor, bool wide) on cpu;
+
+enum ManifestFieldKind : u32 { Bytes = 0; Text = 1; Digest = 2; OptionalDigest = 3; };
+extern "C" MetaField manifest_field(inout MetaCursor cursor, ManifestFieldKind kind) on cpu;

@@ -16,16 +16,19 @@ MetaWord number(inout MetaCursor cursor,u64 width,u32 error) on cpu {
 extern "C" MetaWord word(inout MetaCursor cursor) on cpu {
     return number(cursor,4u64,1);
 }
+MetaField take_range(inout MetaCursor cursor, u64 length, bool text) on cpu {
+    if (length > cursor.input.length - cursor.position) {
+        if (text && length > 18446744073709551615u64 - cursor.position) { return MetaField(empty(),9); }
+        return MetaField(empty(),8);
+    }
+    ReadBytes field = ReadBytes(at(cursor.input.bytes,cursor.position),length);
+    cursor.position += length;
+    return MetaField(field,0);
+}
 MetaField resource_range(inout MetaCursor cursor,bool text) on cpu {
     MetaWord length=number(cursor,8u64,8);
     if(length.error!=0){return MetaField(empty(),length.error);}
-    if(length.value>cursor.input.length-cursor.position){
-        if(text && length.value>18446744073709551615u64-cursor.position){return MetaField(empty(),9);}
-        return MetaField(empty(),8);
-    }
-    ReadBytes field=ReadBytes(at(cursor.input.bytes,cursor.position),length.value);
-    cursor.position+=length.value;
-    return MetaField(field,0);
+    return take_range(cursor,length.value,text);
 }
 extern "C" MetaField resource_text(inout MetaCursor cursor) on cpu {
     return resource_range(cursor,true);
@@ -130,4 +133,27 @@ extern "C" BuildImage read_build_image(ReadBytes input,u64 magic) on cpu {
     if(image.error!=0){return BuildImage(empty(),empty(),2);}
     u32 status=cursor.position==input.length ? 0 : 3;
     return BuildImage(identity.value,image.value,status);
+}
+
+extern "C" ReadBytes manifest_body(ReadBytes input, u64 magic) on cpu {
+    MetaCursor cursor = MetaCursor(input,0u64);
+    MetaWord signature = number(cursor,8u64,8);
+    if (signature.error != 0 || signature.value != magic) { return empty(); }
+    return ReadBytes(at(input.bytes,cursor.position),input.length-cursor.position);
+}
+
+extern "C" MetaWord manifest_number(inout MetaCursor cursor, bool wide) on cpu {
+    return number(cursor,wide ? 8u64 : 4u64,8);
+}
+
+extern "C" MetaField manifest_field(inout MetaCursor cursor, ManifestFieldKind kind) on cpu {
+    if (kind == ManifestFieldKind::Text || kind == ManifestFieldKind::Bytes) {
+        return resource_range(cursor,kind == ManifestFieldKind::Text);
+    }
+    if (kind == ManifestFieldKind::OptionalDigest) {
+        MetaWord present = number(cursor,1u64,8);
+        if (present.error != 0 || present.value == 0u64) { return MetaField(empty(),present.error); }
+        if (present.value != 1u64) { return MetaField(empty(),10); }
+    }
+    return take_range(cursor,32u64,false);
 }

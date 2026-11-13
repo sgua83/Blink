@@ -1,6 +1,5 @@
 //! 构建输入只交接已消费的声明与实际实现；COFF和入口映像共用同一编码。
 use super::{ByteField, hash, Result};
-use crate::module::codec::{Decode, Reader};
 use std::{collections::BTreeMap, io::Error, path::Path};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Declaration {
@@ -28,21 +27,6 @@ impl Declaration {
     }
 }
 
-impl Decode for Declaration {
-    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
-        Ok(match u32::decode(reader)? {
-            0 => Self::Constant(Decode::decode(reader)?),
-            1 => Self::Record(Decode::decode(reader)?),
-            2 => Self::TypeSet(Decode::decode(reader)?),
-            3 => Self::External(Decode::decode(reader)?),
-            4 => Self::ValueName { name: Decode::decode(reader)?, module: Decode::decode(reader)?, imports: Decode::decode(reader)? },
-            5 => Self::RecordName { name: Decode::decode(reader)?, module: Decode::decode(reader)?, imports: Decode::decode(reader)? },
-            6 => Self::TypeSetName { name: Decode::decode(reader)?, module: Decode::decode(reader)?, imports: Decode::decode(reader)? },
-            7 => Self::Implementation(Decode::decode(reader)?),
-            _ => return Err("模块枚举编码错误：Declaration".into()),
-        })
-    }
-}
 const MAGIC: &[u8; 8] = b"BLBO\x0c\0\0\0";
 /// The original build request, not a target inferred from a file extension.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,17 +36,6 @@ pub enum Selection {
     Library { entry: String, prefix: String },
     Entry { entry: String, target: String },
 }
-impl Decode for Selection {
-    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
-        Ok(match u32::decode(reader)? {
-            0 => Self::Application(Decode::decode(reader)?),
-            1 => Self::Module(Decode::decode(reader)?),
-            2 => Self::Library { entry: Decode::decode(reader)?, prefix: Decode::decode(reader)? },
-            3 => Self::Entry { entry: Decode::decode(reader)?, target: Decode::decode(reader)? },
-            _ => return Err("模块枚举编码错误：Selection".into()),
-        })
-    }
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceInput {
     pub module: String,
@@ -71,16 +44,6 @@ pub struct SourceInput {
     pub scope: String,
     /// Hash of the source portion named by scope, not necessarily the full file.
     pub fingerprint: [u8; 32],
-}
-impl Decode for SourceInput {
-    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
-        Ok(Self {
-            module: Decode::decode(reader)?,
-            path: Decode::decode(reader)?,
-            scope: Decode::decode(reader)?,
-            fingerprint: Decode::decode(reader)?,
-        })
-    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceInputs {
@@ -93,21 +56,6 @@ pub struct SourceInputs {
     pub selection: Selection,
     pub sources: Vec<SourceInput>,
     pub requirements: Vec<(String, String)>,
-}
-impl Decode for SourceInputs {
-    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
-        Ok(Self {
-            path: Decode::decode(reader)?,
-            root: Decode::decode(reader)?,
-            working_directory: Decode::decode(reader)?,
-            module: Decode::decode(reader)?,
-            compiler: Decode::decode(reader)?,
-            max_parameter_bytes: Decode::decode(reader)?,
-            selection: Decode::decode(reader)?,
-            sources: Decode::decode(reader)?,
-            requirements: Decode::decode(reader)?,
-        })
-    }
 }
 impl SourceInputs {
     pub(super) fn same_code(&self, other: &Self) -> bool {
@@ -123,16 +71,6 @@ pub struct Inputs {
     pub imports: [u8; 32],
     pub native: Option<[u8; 32]>,
     pub declarations: Vec<Declaration>,
-}
-impl Decode for Inputs {
-    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
-        Ok(Self {
-            source: Decode::decode(reader)?,
-            imports: Decode::decode(reader)?,
-            native: Decode::decode(reader)?,
-            declarations: Decode::decode(reader)?,
-        })
-    }
 }
 #[repr(C)]
 struct BuildSymbol {
@@ -402,9 +340,169 @@ pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
         selection, sources, requirements,
     })
 }
+#[repr(C)]
+struct ManifestCursor {
+    input: ByteField,
+    position: usize,
+}
+
+#[repr(C)]
+struct ManifestReadWord {
+    value: u64,
+    error: u32,
+}
+
+#[repr(C)]
+struct ManifestReadField {
+    value: ByteField,
+    error: u32,
+}
+
+#[repr(u32)]
+enum ManifestFieldKind {
+    Bytes,
+    Text,
+    Digest,
+    OptionalDigest,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.metadata_read::manifest_body"]
+    fn manifest_body(input: ByteField, magic: u64) -> ByteField;
+    #[link_name = "bootstrap.metadata_read::manifest_number"]
+    fn manifest_number(cursor: &mut ManifestCursor, wide: u32) -> ManifestReadWord;
+    #[link_name = "bootstrap.metadata_read::manifest_field"]
+    fn manifest_field(cursor: &mut ManifestCursor, kind: ManifestFieldKind) -> ManifestReadField;
+}
+
+struct ManifestReader<'a> {
+    cursor: ManifestCursor,
+    input: std::marker::PhantomData<&'a [u8]>,
+}
+
+impl<'a> ManifestReader<'a> {
+    fn new(input: &'a [u8]) -> Option<Self> {
+        let input = unsafe { manifest_body(input.into(), u64::from_le_bytes(*MAGIC)) };
+        (!input.bytes.is_null()).then_some(Self {
+            cursor: ManifestCursor { input, position: 0 },
+            input: std::marker::PhantomData,
+        })
+    }
+
+    fn check(error: u32) -> std::io::Result<()> {
+        match error {
+            0 => Ok(()),
+            9 => Err(Error::other("模块接口长度溢出")),
+            10 => Err(Error::other("模块布尔值编码错误")),
+            _ => Err(Error::other("模块接口被截断")),
+        }
+    }
+
+    fn slice(&self, bytes: ByteField) -> &'a [u8] {
+        // Successful fields borrow the same original snapshot as the cursor.
+        unsafe { std::slice::from_raw_parts(bytes.bytes, bytes.length) }
+    }
+
+    fn word(&mut self) -> std::io::Result<u32> {
+        let row = unsafe { manifest_number(&mut self.cursor, 0) };
+        Self::check(row.error)?;
+        Ok(row.value as u32)
+    }
+
+    fn bytes(&mut self) -> std::io::Result<Vec<u8>> {
+        let row = unsafe { manifest_field(&mut self.cursor, ManifestFieldKind::Bytes) };
+        Self::check(row.error)?;
+        Ok(self.slice(row.value).to_vec())
+    }
+
+    fn text(&mut self) -> std::io::Result<String> {
+        let row = unsafe { manifest_field(&mut self.cursor, ManifestFieldKind::Text) };
+        Self::check(row.error)?;
+        std::str::from_utf8(self.slice(row.value)).map(str::to_owned).map_err(Error::other)
+    }
+
+    fn list<T>(&mut self, mut read: impl FnMut(&mut Self) -> std::io::Result<T>) -> std::io::Result<Vec<T>> {
+        let count = unsafe { manifest_number(&mut self.cursor, 1) };
+        Self::check(count.error)?;
+        (0..count.value).map(|_| read(self)).collect()
+    }
+
+    fn digest(&mut self, kind: ManifestFieldKind) -> std::io::Result<ByteField> {
+        let row = unsafe { manifest_field(&mut self.cursor, kind) };
+        Self::check(row.error)?;
+        Ok(row.value)
+    }
+
+    fn required_digest(&mut self) -> std::io::Result<[u8; 32]> {
+        let bytes = self.digest(ManifestFieldKind::Digest)?;
+        Ok(self.slice(bytes).try_into().unwrap())
+    }
+
+    fn native_digest(&mut self) -> std::io::Result<Option<[u8; 32]>> {
+        let bytes = self.digest(ManifestFieldKind::OptionalDigest)?;
+        Ok((!bytes.bytes.is_null()).then(|| self.slice(bytes).try_into().unwrap()))
+    }
+
+    fn declaration(&mut self) -> std::io::Result<Declaration> {
+        Ok(match self.word()? {
+            0 => Declaration::Constant(self.text()?),
+            1 => Declaration::Record(self.text()?),
+            2 => Declaration::TypeSet(self.text()?),
+            3 => Declaration::External(self.text()?),
+            4 => Declaration::ValueName { name: self.text()?, module: self.text()?, imports: self.list(Self::text)? },
+            5 => Declaration::RecordName { name: self.text()?, module: self.text()?, imports: self.list(Self::text)? },
+            6 => Declaration::TypeSetName { name: self.text()?, module: self.text()?, imports: self.list(Self::text)? },
+            7 => Declaration::Implementation(self.text()?),
+            _ => return Err(Error::other("模块枚举编码错误：Declaration")),
+        })
+    }
+
+    fn selection(&mut self) -> std::io::Result<Selection> {
+        Ok(match self.word()? {
+            0 => Selection::Application(self.text()?),
+            1 => Selection::Module(self.list(Self::text)?),
+            2 => Selection::Library { entry: self.text()?, prefix: self.text()? },
+            3 => Selection::Entry { entry: self.text()?, target: self.text()? },
+            _ => return Err(Error::other("模块枚举编码错误：Selection")),
+        })
+    }
+
+    fn source(&mut self) -> std::io::Result<SourceInput> {
+        Ok(SourceInput {
+            module: self.text()?,
+            path: self.bytes()?,
+            scope: self.text()?,
+            fingerprint: self.required_digest()?,
+        })
+    }
+
+    fn inputs(mut self) -> std::io::Result<Inputs> {
+        let source = SourceInputs {
+            path: self.bytes()?,
+            root: self.bytes()?,
+            working_directory: self.bytes()?,
+            module: self.text()?,
+            compiler: self.text()?,
+            max_parameter_bytes: self.word()?,
+            selection: self.selection()?,
+            sources: self.list(Self::source)?,
+            requirements: self.list(|reader| Ok((reader.text()?, reader.text()?)))?,
+        };
+        let inputs = Inputs {
+            source,
+            imports: self.required_digest()?,
+            native: self.native_digest()?,
+            declarations: self.list(Self::declaration)?,
+        };
+        if self.cursor.position != self.cursor.input.length {
+            return Err(Error::other("模块接口有未消费内容"));
+        }
+        Ok(inputs)
+    }
+}
+
 pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
-    bytes.strip_prefix(MAGIC).map(Inputs::from_bytes).transpose()
-        .map_err(|value| Error::other(value.to_string()).into())
+    Ok(ManifestReader::new(bytes).map(ManifestReader::inputs).transpose()?)
 }
 #[repr(C)]
 struct ManifestSelection {
