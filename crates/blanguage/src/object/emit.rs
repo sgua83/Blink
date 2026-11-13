@@ -31,7 +31,17 @@ struct PrintEncoding {
     write: u32,
 }
 
+#[repr(C)]
+struct RuntimeFunctionFields {
+    begin: u32,
+    end: u32,
+    unwind: u32,
+    relocation: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.unwind::runtime_function"]
+    fn runtime_function(end: u32, output: *mut u8) -> RuntimeFunctionFields;
     #[link_name = "bootstrap.x64_instruction::print_helper"]
     fn print_helper(scalar: ScalarEncoding, output: *mut u8, unwind: *mut u8) -> PrintEncoding;
     #[link_name = "bootstrap.x64_instruction::import_transfer"]
@@ -40,9 +50,6 @@ unsafe extern "C" {
     fn application_entry(output: *mut u8) -> ApplicationEntry;
 }
 
-fn put32(v: &mut [u8], at: usize, n: u32) {
-    v[at..at + 4].copy_from_slice(&n.to_le_bytes());
-}
 fn put64(v: &mut [u8], at: usize, n: u64) {
     v[at..at + 8].copy_from_slice(&n.to_le_bytes());
 }
@@ -69,12 +76,20 @@ fn function(sections: &mut Vec<Section>, frames: &mut Vec<Frame>, name: String, 
         let pdata = text + 1;
         let xdata = text + 2;
         sections[text].associated = vec![pdata, xdata];
-        let mut bytes = vec![0; 12];
-        put32(&mut bytes, 4, end);
+        let mut bytes = Vec::with_capacity(12);
+        let fields = unsafe {
+            let fields = runtime_function(end, bytes.as_mut_ptr());
+            bytes.set_len(12);
+            fields
+        };
         sections.push(Section {
             name: ".pdata".into(), bytes, flags: 0x40301040,
-            relocations: [(0, text), (4, text), (8, xdata)].into_iter()
-                .map(|(offset, section)| Relocation { offset, kind: 3, target: Target::Section(section, 0) }).collect(),
+            relocations: [(fields.begin, text), (fields.end, text), (fields.unwind, xdata)].into_iter()
+                .map(|(offset, section)| Relocation {
+                    offset: offset as usize,
+                    kind: fields.relocation as u16,
+                    target: Target::Section(section, 0),
+                }).collect(),
             associated: Vec::new(), layout: None,
         });
         sections.push(Section {

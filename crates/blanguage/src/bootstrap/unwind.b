@@ -67,3 +67,14 @@ extern "C" u64 unwind_write(address operations, u64 count, u8 prolog, address ou
     }
     return bytes;
 }
+
+extern "C" RuntimeFunctionFields runtime_function(u32 end, address output) on cpu {
+    u64 start = address_bits(output);
+    for (byte in 0..4) {
+        u64 offset = u64(byte);
+        unsafe_position<u8>(unsafe_address(start + offset)) = u8(0);
+        unsafe_position<u8>(unsafe_address(start + 4u64 + offset)) = u8(end >> (byte * 8));
+        unsafe_position<u8>(unsafe_address(start + 8u64 + offset)) = u8(0);
+    }
+    return RuntimeFunctionFields(0, 4, 8, 3);
+}
