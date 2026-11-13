@@ -101,7 +101,7 @@ impl Emitter<'_> {
                 self.emit(171, &[b, keep, value, zero]);
                 let one = self.constant(Scalar::U32, 1);
                 let selected = self.id();
-                self.emit(169, &[u, selected, keep, one, zero]);
+                self.select(u, selected, keep, one, zero);
                 selected
             } else {
                 value
@@ -251,7 +251,7 @@ impl Emitter<'_> {
                     &[self.types[&Scalar::Bool], has_right, right_begin, remaining],
                 );
                 let sum = self.id();
-                self.emit(169, &[self.raw_type(tree.scalar), sum, has_right, combined, left]);
+                self.select(self.raw_type(tree.scalar), sum, has_right, combined, left);
                 sum
             } else {
                 combined
@@ -294,7 +294,7 @@ impl Emitter<'_> {
             let combined = self.collective_pair(*scalar, scan.operator, prefix, value);
             let result = if let Some(first) = first {
                 let result = self.id();
-                self.emit(169, &[self.raw_type(*scalar), result, first, prefix, combined]);
+                self.select(self.raw_type(*scalar), result, first, prefix, combined);
                 result
             } else {
                 combined

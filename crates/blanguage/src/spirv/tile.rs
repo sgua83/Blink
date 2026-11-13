@@ -19,7 +19,7 @@ impl Emitter<'_> {
         let tail = self.id();
         self.emit(176, &[self.types[&Scalar::Bool], tail, remaining, width]);
         self.tile_length = self.id();
-        self.emit(169, &[u, self.tile_length, tail, remaining, width]);
+        self.select(u, self.tile_length, tail, remaining, width);
         let mut inputs = self.stage.input_words();
         for (key, (unit, _, part)) in &self.tile_layout {
             if *unit == Scalar::U64 && *part == 0 {

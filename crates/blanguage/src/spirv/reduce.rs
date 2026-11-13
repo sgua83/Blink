@@ -52,7 +52,7 @@ impl Emitter<'_> {
             };
             let choose = self.id();
             self.emit(opcode, &[self.types[&Scalar::Bool], choose, av, bv]);
-            self.emit(169, &[u, result, choose, a, b]);
+            self.select(u, result, choose, a, b);
         }
         result
     }
@@ -128,7 +128,7 @@ impl Emitter<'_> {
                 let value = self.collective_pair(scalar, reduction.operator, a, bv);
                 let value = if let Some(valid) = valid {
                     let selected = self.id();
-                    self.emit(169, &[self.raw_type(scalar), selected, valid, value, a]);
+                    self.select(self.raw_type(scalar), selected, valid, value, a);
                     selected
                 } else {
                     value

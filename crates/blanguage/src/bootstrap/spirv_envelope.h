@@ -91,6 +91,8 @@ extern "C" BinaryWords scalar_binary(BinaryEmission input, address body, address
 // Zero and one are the original constant IDs for a conversion involving bool.
 // Storage has room for six body words.
 extern "C" u64 scalar_cast(CastEmission input, address body) on cpu;
+extern "C" u64 select_words(address body, u64 at, u32 result_type, u32 result,
+                            u32 condition, u32 yes, u32 no) on cpu;
 
 struct DivisionEmission {
     u32 integer_type;

@@ -86,7 +86,7 @@ impl Emitter<'_> {
             let b=self.join_words(*scalar,&right[word..word+n], Scalar::U32);
             let merged = self.collective_pair(*scalar, scan.operator, a, b);
             let tail = self.id();
-            self.emit(169, &[self.raw_type(*scalar), tail, head, b, merged]);
+            self.select(self.raw_type(*scalar), tail, head, b, merged);
             values[word..word+n].copy_from_slice(&self.split_words(*scalar,tail, Scalar::U32));
         }
         let heads = self.id();
@@ -148,7 +148,7 @@ impl Emitter<'_> {
             self.emit(171, &[b, is_head, input[k], zero]);
             let one = self.constant(Scalar::U32, 1);
             input[k] = self.id();
-            self.emit(169, &[u, input[k], is_head, one, zero]);
+            self.select(u, input[k], is_head, one, zero);
         }
         self.emit(249, &[read_end]);
         self.emit(248, &[read_end]);
@@ -228,7 +228,7 @@ impl Emitter<'_> {
                 let current = self.join_words(*scalar, &result[word..word+n], Scalar::U32);
                 let empty = self.raw_constant(*scalar, scan.operator.identity(*scalar));
                 let value = self.id();
-                self.emit(169, &[self.raw_type(*scalar), value, is_head, empty, current]);
+                self.select(self.raw_type(*scalar), value, is_head, empty, current);
                 self.store_raw_buffer(*scalar, r.target, self.index, r.target_word + offset, value);
             }
             let no_previous = self.id();
@@ -316,7 +316,7 @@ impl Emitter<'_> {
             let is_head = self.id();
             self.emit(166, &[b, is_head, head, first]);
             let flag = self.id();
-            self.emit(169, &[u, flag, is_head, one, zero]);
+            self.select(u, flag, is_head, one, zero);
             input[k] = flag;
             input.push(flag);
             input
@@ -514,7 +514,7 @@ impl Emitter<'_> {
             );
             for (value, left) in merged.iter_mut().zip(&a) {
                 let result = self.id();
-                self.emit(169, &[u, result, has_right, *value, *left]);
+                self.select(u, result, has_right, *value, *left);
                 *value = result;
             }
         }
@@ -554,7 +554,7 @@ impl Emitter<'_> {
                     .zip(prefix)
                     .map(|(value, prefix)| {
                         let result = self.id();
-                        self.emit(169, &[u, result, first, prefix, value]);
+                        self.select(u, result, first, prefix, value);
                         result
                     })
                     .collect::<Vec<_>>()
@@ -607,7 +607,7 @@ impl Emitter<'_> {
                 let first = self.id();
                 self.emit(170, &[b, first, local, zero]);
                 let result = self.id();
-                self.emit(169, &[self.raw_type(*scalar), result, first, prefix, merged]);
+                self.select(self.raw_type(*scalar), result, first, prefix, merged);
                 result
             } else {
                 merged

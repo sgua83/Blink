@@ -163,7 +163,7 @@ impl Emitter<'_> {
                 self.emit(166, &[self.types[&Scalar::Bool], head, explicit, first]);
             }
             let flag = self.id();
-            self.emit(169, &[u, flag, head, one, zero]);
+            self.select(u, flag, head, one, zero);
             self.custom_write(&own[k..k + 1], &[flag]);
             if matches!(summary, Summary::Counted(_)) {
                 let count = if tail {
@@ -432,7 +432,7 @@ impl Emitter<'_> {
                 .take(k)
                 .map(|(v, i)| {
                     let result = self.id();
-                    self.emit(169, &[u, result, is_head, *i, *v]);
+                    self.select(u, result, is_head, *i, *v);
                     result
                 })
                 .collect();

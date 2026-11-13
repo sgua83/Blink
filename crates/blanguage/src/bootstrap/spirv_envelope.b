@@ -370,13 +370,7 @@ u32 cast_opcode(BuiltinScalar from, BuiltinScalar to, ScalarDefinition source, S
 
 extern "C" u64 scalar_cast(CastEmission input, address body) on cpu {
     if (input.from == BuiltinScalar::Bool) {
-        put(body, 0u64, instruction(169, 6));
-        put(body, 1u64, input.result_type);
-        put(body, 2u64, input.result);
-        put(body, 3u64, input.value);
-        put(body, 4u64, input.one);
-        put(body, 5u64, input.zero);
-        return 6u64;
+        return select_words(body, 0u64, input.result_type, input.result, input.value, input.one, input.zero);
     }
     ScalarDefinition source = scalar_definition(input.from);
     if (input.to == BuiltinScalar::Bool) {
@@ -507,6 +501,11 @@ u64 words_five(address body, u64 at, u32 opcode, u32 a, u32 b, u32 c, u32 d, u32
     put(body, at + 4u64, d);
     put(body, at + 5u64, e);
     return at + 6u64;
+}
+
+extern "C" u64 select_words(address body, u64 at, u32 result_type, u32 result,
+                            u32 condition, u32 yes, u32 no) on cpu {
+    return words_five(body, at, 169, result_type, result, condition, yes, no);
 }
 
 struct PageOrigin { u64 words; u32 next; u32 table; u32 stride; u32 field; };
@@ -976,7 +975,7 @@ extern "C" AppendWords encode_append_reservation(AppendEmission input, address b
     u32 accepted = desired + 1;
     at = words_four(body, at, 130, uint_type, available, capacity, old);
     at = words_four(body, at, 176, bool_type, partial, available, size);
-    at = words_five(body, at, 169, uint_type, amount, partial, available, size);
+    at = select_words(body, at, uint_type, amount, partial, available, size);
     at = words_four(body, at, 128, uint_type, desired, old, amount);
     at += encode_atomic(AtomicEmission(AtomicOperation::CompareExchange, BuiltinScalar::U32,
                         uint_type, observed, input.counter, input.device_scope, zero,
@@ -1021,7 +1020,7 @@ DispatchValue dispatch_ceil(address body, DispatchValue cursor, DispatchScalars 
     u64 at = words_four(body, cursor.words, 134, uint_type, quotient, value, divisor);
     at = words_four(body, at, 137, uint_type, remainder, value, divisor);
     at = words_four(body, at, 171, types.bool_type, partial, remainder, types.zero);
-    at = words_five(body, at, 169, uint_type, carry, partial, types.one, types.zero);
+    at = select_words(body, at, uint_type, carry, partial, types.one, types.zero);
     at = words_four(body, at, 128, uint_type, result, quotient, carry);
     return DispatchValue(at, result + 1, result);
 }
@@ -1033,7 +1032,7 @@ DispatchValue dispatch_groups(address body, DispatchValue cursor, DispatchScalar
     u32 empty = groups.next;
     u32 nonzero = empty + 1;
     u64 at = words_four(body, groups.words, 170, types.bool_type, empty, groups.value, types.zero);
-    at = words_five(body, at, 169, types.uint_type, nonzero, empty, types.one, groups.value);
+    at = select_words(body, at, types.uint_type, nonzero, empty, types.one, groups.value);
     return DispatchValue(at, nonzero + 1, nonzero);
 }
 
@@ -1103,7 +1102,7 @@ u32 sort_ballot(inout StageCursor out, u32 ty, u32 vector, u32 scope, u32 predic
 
 u32 sort_select(inout StageCursor out, u32 ty, u32 condition, u32 yes, u32 no) on cpu {
     u32 result = out.next;
-    out.words = words_five(out.body, out.words, 169, ty, result, condition, yes, no);
+    out.words = select_words(out.body, out.words, ty, result, condition, yes, no);
     out.next = result + 1;
     return result;
 }
@@ -1223,7 +1222,7 @@ DispatchValue dispatch_min(address body, DispatchValue cursor, DispatchScalars t
     u32 less = cursor.next;
     u32 result = less + 1;
     u64 at = words_four(body, cursor.words, 176, types.bool_type, less, a, b);
-    at = words_five(body, at, 169, types.uint_type, result, less, a, b);
+    at = select_words(body, at, types.uint_type, result, less, a, b);
     return DispatchValue(at, result + 1, result);
 }
 
@@ -1402,7 +1401,7 @@ StageWords emit_scatter(ScatterInput input, read ScatterTarget target, address b
     StageBranch last_branch = stage_open(out, last);
     u32 chosen = out.next;
     out.next += 1;
-    out.words = words_five(body, out.words, 169, flag.u32_type, chosen, keep, flag.one, flag.zero);
+    out.words = select_words(body, out.words, flag.u32_type, chosen, keep, flag.one, flag.zero);
     u32 total = stage_op(out, 128, flag.u32_type, prefix, chosen);
     scatter_count(out, flag, target, total);
     stage_close(out, last_branch);
@@ -1483,7 +1482,7 @@ extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, addre
         u32 group_limit = nonzero_count + 1;
         u32 present = group_limit + 1;
         at = words_four(body, at, 170, bool_type, empty, count, input.zero);
-        at = words_five(body, at, 169, uint_type, nonzero_count, empty, input.one, count);
+        at = select_words(body, at, uint_type, nonzero_count, empty, input.one, count);
         at = words_three(body, at, 113, wide_type, group_limit, nonzero_count);
         at = words_four(body, at, 176, bool_type, present, group_first, group_limit);
 

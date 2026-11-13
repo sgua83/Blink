@@ -653,6 +653,9 @@ unsafe extern "C" {
     fn scalar_binary(input: BinaryEmission, body: *mut u32, decorations: *mut u32) -> BinaryWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_cast"]
     fn scalar_cast(input: CastEmission, body: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::select_words"]
+    fn select_words(body: *mut u32, at: u64, result_type: u32, result: u32,
+                    condition: u32, yes: u32, no: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::integer_division"]
     fn integer_division(input: DivisionEmission, body: *mut u32) -> DivisionWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_unary"]
@@ -900,6 +903,14 @@ impl Emitter<'_> {
             self.current_label = args[0];
         }
         op(&mut self.body, code, args);
+    }
+    fn select(&mut self, result_type: u32, result: u32, condition: u32, yes: u32, no: u32) {
+        let at = self.body.len();
+        self.body.reserve(6);
+        unsafe {
+            let words = select_words(self.body.as_mut_ptr().add(at), 0, result_type, result, condition, yes, no);
+            self.body.set_len(at + words as usize);
+        }
     }
     fn value(&self, r: Reg) -> u32 {
         self.regs[r]
@@ -1307,20 +1318,8 @@ impl Emitter<'_> {
                         self.body.set_len(at + words as usize);
                     }
                 }
-                InstKind::Select {
-                    dst,
-                    condition,
-                    a,
-                    b,
-                } => self.emit(
-                    169,
-                    &[
-                        self.ty(*dst),
-                        self.value(*dst),
-                        self.value(*condition),
-                        self.value(*a),
-                        self.value(*b),
-                    ],
+                InstKind::Select { dst, condition, a, b } => self.select(
+                    self.ty(*dst), self.value(*dst), self.value(*condition), self.value(*a), self.value(*b),
                 ),
                 InstKind::If { condition, yes, no } => {
                     let yes_label = self.id();
@@ -1454,7 +1453,7 @@ impl Emitter<'_> {
             let bits = self.id();
             let one = self.constant(Scalar::U32, 1);
             let zero = self.constant(Scalar::U32, 0);
-            self.emit(169, &[self.types[&Scalar::U32], bits, value, one, zero]);
+            self.select(self.types[&Scalar::U32], bits, value, one, zero);
             bits
         } else if scalar != Self::raw_scalar(scalar) {
             let bits = self.id();
