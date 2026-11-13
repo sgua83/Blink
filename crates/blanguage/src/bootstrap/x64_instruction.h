@@ -74,7 +74,6 @@ struct DivisionPlan {
     u8 shift;
     u8 mode;
 };
-extern "C" DivisionPlan division_plan(u32 divisor, bool signed) on cpu requires nonzero(divisor);
 
 struct MoveLocation {
     u64 value;
@@ -131,7 +130,6 @@ extern "C" BinaryEncoding value_select(MoveLocation dst, MoveLocation condition,
 struct DivisionOutputs { MoveLocation first; MoveLocation second; u32 kind; };
 // The packet caller already has its numerator in EAX and divisor in ECX.
 // Output has room for the original eleven-byte signed sequence.
-extern "C" u64 divide_value_instruction(bool signed, address output) on cpu;
 // Full scalar division entries borrow 128 output bytes. The 32-bit constant is
 // the original nonzero divisor normalized by its Scalar, including its sign.
 extern "C" u64 divide_constant32(DivisionOutputs result, MoveLocation src, u32 divisor,
@@ -144,11 +142,15 @@ enum PacketMathOperation:u32 { Sqrt=0; Abs=1; Min=2; Max=3; };
 // EAX/ECX follow that allocation. Constant has 24 output bytes; load/store 16;
 // from_word and multiply 64; the full numeric entries have 256 bytes.
 extern "C" u64 packet_constant(u8 dst, u32 bits, address output) on cpu;
-extern "C" u64 packet_load(MoveLocation src, u8 dst, address output) on cpu;
 extern "C" u64 packet_store(MoveLocation dst, u8 src, address output) on cpu;
+
+// The caller owns 256 output bytes and proves the divisor nonzero in every lane.
+extern "C" u64 packet_divide_value(DivisionOutputs result, MoveLocation src,
+    MoveLocation divisor, bool signed, address output) on cpu;
+extern "C" u64 packet_divide_constant(DivisionOutputs result, MoveLocation src,
+    u32 divisor, bool signed, address output) on cpu requires nonzero(divisor);
 extern "C" u64 packet_copy(MoveLocation dst, MoveLocation src, address output) on cpu;
 extern "C" u64 packet_from_word(bool boolean, u8 dst, address output) on cpu;
-extern "C" u64 packet_multiply(bool broadcast, address output) on cpu;
 extern "C" u64 packet_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
     ScalarEncoding scalar, BinaryOperation operation, bool uniform_count, address output) on cpu;
 extern "C" u64 packet_unary(MoveLocation dst, MoveLocation src, ValueUnaryOperation operation, address output) on cpu;

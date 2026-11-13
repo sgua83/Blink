@@ -355,16 +355,12 @@ impl From<PacketPlace> for operands::MoveLocation {
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::packet_constant"]
     fn encode_packet_constant(dst: u8, bits: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_load"]
-    fn encode_packet_load(src: operands::MoveLocation, dst: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_store"]
     fn encode_packet_store(dst: operands::MoveLocation, src: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_copy"]
     fn encode_packet_copy(dst: operands::MoveLocation, src: operands::MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_from_word"]
     fn encode_packet_from_word(boolean: u32, dst: u8, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_multiply"]
-    fn encode_packet_multiply(broadcast: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_binary"]
     fn encode_packet_binary(dst: operands::MoveLocation, left: operands::MoveLocation, right: operands::MoveLocation,
         scalar: crate::builtin_types::ScalarEncoding, operation: crate::builtin_types::ScalarBinaryOp,
@@ -391,10 +387,6 @@ impl Emitter<'_> {
     }
     fn packet_constant(&mut self, xmm: u8, bits: u32) {
         self.emit_bytes(24, |output| unsafe { encode_packet_constant(xmm, bits, output) });
-    }
-    fn packet_load(&mut self, allocation: &PacketAllocation, slot: PrivateSlot, xmm: u8) {
-        let source = allocation.location(slot).into();
-        self.emit_bytes(16, |output| unsafe { encode_packet_load(source, xmm, output) });
     }
     fn packet_store(&mut self, allocation: &PacketAllocation, slot: PrivateSlot, xmm: u8) {
         let destination = allocation.location(slot).into();
