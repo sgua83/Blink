@@ -5102,6 +5102,8 @@ SDK使用blanguage::build::compile_object，或在同一Compiler上调用build_o
 
 `blanguage::build::load_with_sha256(path)`在原入口映像装入读取中交回`(Compilation, String)`。摘要覆盖产生这份`Compilation`的完整BLBI字节，可以与同一次实际产物的构建输入、代码和源码范围查询关联。调用方将原映像交给现有CPU／GPU执行者，另持该摘要；文件名、源码名和运行地址各按自身的原事实解释。原`load`保留无需摘要的入口，两个入口使用同一映像解码与可信输入合同。
 
+`Compiler::build_object_observed`沿同一对象构建入口绑定一份观察回调。原普通函数借用求解实际开始或返回时，`compiler::BorrowSolveEvent`借用参与的具体函数名、已读取的源码及半开字节范围。回调在原工作者同步执行，源码借用止于本次回调；并行工作可并行通知。`Finished { succeeded }`只交接原求解返回，构建调用继续交付实际对象或诊断。复用已有对象及求解前失败不产生求解事件。
+
 查询包含原入口／接口路径、模块根、原工作目录、模块名、compiler生产身份、max_parameter_bytes及实际选择：application的entry、module的显式instances、algorithm_library的entry／prefix、entry_image的entry／CPU或GPU target。未在请求中指定的目标不由查询猜测。路径保留Rust原OsStr编码字节及可无损表示的UTF-8文本，不能表示时text为null而原encoded_bytes仍完整；来源名称可以是相对路径或嵌入接口标记，不能一律假定为当前目录下的文件。
 
 每个sources条目交接原模块／来源路径、scope和fingerprint。full_source覆盖原完整源码；preamble覆盖模块前部；preamble_and_function_signatures覆盖前部与原必要函数声明，不含实现正文。imports_fingerprint交接原实际导入与声明／实现引用的整体摘要，native_fingerprint交接原附属本机代码摘要，没有该类附属输入时为null；declarations保留原消费类别／键与名称查询的module／imports上下文。实际使用正文仍由该原引用集合及摘要参与复用，不能把每个sources.fingerprint解释为整文件内容哈希。公开参与要求来自原模块推导合同，不能作为设备选择或原生运行结果。Rust的InputFacts直接交接原记录，source字段为上述请求／来源，imports／native为原摘要，declarations为原Declaration数据；不另建查询清单。完整源码内容、IR、汇编、运行内存和GPU现场分别由其对应能力交付，不由此查询冒称完成。

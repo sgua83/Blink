@@ -21,6 +21,18 @@ pub fn compile_object(
     crate::Compiler::available()?.build_object(path, root, dependencies, kind, output)
 }
 impl crate::Compiler {
+    /// Builds one object using the normal inputs, cache and compiler workers.
+    /// If this request executes an ordinary-function borrow solve, the observer
+    /// receives its start and return on the worker, with the actual function
+    /// names and source spans. The return describes the solve, not the build.
+    pub fn build_object_observed(
+        &self, path: &Path, root: &Path, dependencies: &[Object], kind: ObjectKind<'_>, output: &Path,
+        observe: impl for<'a> Fn(crate::compiler::BorrowSolveEvent<'a>) + Send + Sync + 'static,
+    ) -> Result<ObjectCompilation> {
+        let mut compiler = self.clone();
+        compiler.borrow_solve_observer = Some(std::sync::Arc::new(observe));
+        compiler.build_object(path, root, dependencies, kind, output)
+    }
     pub fn build_object(
         &self, path: &Path, root: &Path, dependencies: &[Object], kind: ObjectKind<'_>, output: &Path,
     ) -> Result<ObjectCompilation> {

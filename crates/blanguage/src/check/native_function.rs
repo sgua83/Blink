@@ -2117,7 +2117,23 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             functions.insert(name,&unit.view_model);
         }
     }
-    let outputs=view_contracts::solve(&functions,closed,|function,id|module.owns_input(function,id))?;
+    let solve = || view_contracts::solve(&functions, closed, |function, id| module.owns_input(function, id));
+    let outputs = if let Some(observe) = &world.worker.compiler().borrow_solve_observer {
+        use crate::compiler::{BorrowSolveEvent, BorrowSolveFunction, BorrowSolvePhase};
+        let participating: Vec<_> = functions.keys().map(|name| {
+            let unit = module.units[name].as_ref().unwrap();
+            BorrowSolveFunction { name, source: &unit.source, span: unit.span }
+        }).collect();
+        observe(BorrowSolveEvent { phase: BorrowSolvePhase::Started, functions: &participating });
+        let result = solve();
+        observe(BorrowSolveEvent {
+            phase: BorrowSolvePhase::Finished { succeeded: result.is_ok() },
+            functions: &participating,
+        });
+        result
+    } else {
+        solve()
+    }?;
     for (name,memory)in &outputs.memory {
         let aliases=returned_input_aliases(module,name);
         let unit=module.units.get_mut(name).unwrap().as_mut().unwrap();

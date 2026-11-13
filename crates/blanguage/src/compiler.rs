@@ -15,10 +15,37 @@ pub struct Processor {
     pub group: u16,
     pub number: u8,
 }
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BorrowSolvePhase {
+    Started,
+    Finished { succeeded: bool },
+}
+
+/// A function participating in this invocation of the ordinary borrow solver.
+#[cfg(feature = "compiler")]
+pub struct BorrowSolveFunction<'a> {
+    pub name: &'a str,
+    pub source: &'a crate::ast::Source,
+    pub span: crate::ast::Span,
+}
+
+/// The sources are borrowed from the original compilation for this callback.
+#[cfg(feature = "compiler")]
+pub struct BorrowSolveEvent<'a> {
+    pub phase: BorrowSolvePhase,
+    pub functions: &'a [BorrowSolveFunction<'a>],
+}
+
+#[cfg(feature = "compiler")]
+pub(crate) type BorrowSolveObserver = dyn for<'a> Fn(BorrowSolveEvent<'a>) + Send + Sync;
+
 #[derive(Clone)]
 pub struct Compiler {
     resources: Arc<Resources>,
     max_parameter_bytes: u32,
+    #[cfg(feature = "compiler")]
+    pub(crate) borrow_solve_observer: Option<Arc<BorrowSolveObserver>>,
 }
 struct Resources {
     workers: usize,
@@ -73,7 +100,10 @@ impl Compiler {
             released: Condvar::new(),
             #[cfg(all(feature = "installed", feature = "compiler"))]
             sdk_input: Mutex::new(None),
-        }) }
+        }),
+            #[cfg(feature = "compiler")]
+            borrow_solve_observer: None,
+        }
     }
     pub fn workers(&self) -> usize { self.resources.workers }
     /// 本次新生成参数布局的字节上限；不会查询或改变执行设备。

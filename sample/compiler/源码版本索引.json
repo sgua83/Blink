@@ -380,7 +380,7 @@
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "dba25b89f92723d68f306a1770c598f46c5fc170c6e77ca73b9d83f931c2ef6c"
+      "sha256": "75ef2c217aa2dc58b8ce7d6928222338f0113e1392b28af5e749b77af3b7dc75"
     },
     {
       "path": "crates/blanguage/src/check/native_function/contract.rs",
