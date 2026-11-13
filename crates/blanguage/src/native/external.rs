@@ -5,20 +5,40 @@ use crate::builtin_types::ScalarEncoding;
 use allocation::Location;
 use std::ffi::c_void;
 #[repr(C)]
-pub(super) struct AbiType { size: u32, alignment: u32, value: u64 }
+pub(super) struct AbiType { size: u32, alignment: u32, float_size: u32, value: u32 }
 impl AbiType {
-    pub(super) fn value(ty: &Ty) -> Self { Self { size: ty.size, alignment: ty.align, value: 1 } }
+    pub(super) fn value(ty: &Ty) -> Self {
+        // Built-in scalar names are canonical. Declared types carry their qualified names.
+        let float_size = match ty.name.as_str() {
+            "f32" => 4,
+            "f64" => 8,
+            _ => 0,
+        };
+        Self { size: ty.size, alignment: ty.align, float_size, value: 1 }
+    }
 
-    pub(super) fn reference() -> Self { Self { size: 0, alignment: 1, value: 0 } }
+    pub(super) fn reference() -> Self { Self { size: 0, alignment: 1, float_size: 0, value: 0 } }
 
     pub(super) fn result(ty: Option<&Ty>) -> Self {
         ty.map_or_else(Self::reference, Self::value)
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+#[allow(dead_code)]
+pub(super) enum ResultLocation { None, Integer, Float, Indirect }
+
 #[repr(C)]
-struct CallPlan { bytes: u64, result: u64, target: u64, hidden: u64, arguments: usize }
+struct CallPlan {
+    bytes: u64,
+    result: u64,
+    target: u64,
+    arguments: usize,
+    result_location: ResultLocation,
+}
+
 #[repr(C)]
-struct ArgumentSlot { index: usize, home: u64, payload: u64, indirect: u64 }
+struct ArgumentSlot { index: usize, home: u64, payload: u64, indirect: u32, float_size: u32 }
 #[repr(C)]
 struct SymbolEncoding { length: u64, field: u64 }
 #[repr(u32)]
@@ -79,15 +99,6 @@ unsafe extern "C" fn argument_type(context: *const c_void, index: usize) -> AbiT
     match &unsafe { &*context.cast::<Call>() }.arguments[index] {
         CallArgument::Value { ty, .. } => AbiType::value(ty),
         CallArgument::Reference { .. } => AbiType::reference(),
-    }
-}
-pub(super) fn float_size(ty: &Ty) -> u32 {
-    if *ty == Ty::scalar(Scalar::F32) {
-        4
-    } else if *ty == Ty::scalar(Scalar::F64) {
-        8
-    } else {
-        0
     }
 }
 fn plan_call(call: &Call, positions: *mut ArgumentSlot) -> CallPlan {
@@ -182,7 +193,7 @@ impl Emitter<'_> {
         if let CallTarget::Indirect(reg) = call.target {
             self.copy_scalar(Location::Stack(layout.target as u32), self.location(reg), Scalar::U64);
         }
-        if layout.hidden != 0 {
+        if layout.result_location == ResultLocation::Indirect {
             self.abi_stack_pointer(layout.result as u32, 0);
         }
         for row in &arguments {
@@ -200,15 +211,11 @@ impl Emitter<'_> {
                 }
             }
         }
-        if layout.hidden != 0 {
+        if layout.result_location == ResultLocation::Indirect {
             self.argument_register(0, 0, false);
         }
         for row in arguments.iter().take_while(|row| row.home < 32) {
-            let size = match &call.arguments[row.index] {
-                CallArgument::Value { ty, .. } => float_size(ty),
-                CallArgument::Reference { .. } => 0,
-            };
-            self.argument_register((row.home / 8) as usize, size, false);
+            self.argument_register((row.home / 8) as usize, row.float_size, false);
         }
         match &call.target {
             CallTarget::Indirect(_) => {
@@ -223,13 +230,14 @@ impl Emitter<'_> {
             self.store(error);
             Some(self.jump(Branch::Nonzero64))
         } else { None };
-        if let Some(ty) = call.result.as_ref().filter(|ty| ty.size != 0) {
-            if layout.hidden != 0 {
-                self.abi_value(layout.result as u32, ty, &call.values, AbiMemoryMode::StackLoad);
-            } else if float_size(ty) != 0 {
-                self.store_float(call.values[0]);
-            } else {
-                self.abi_value(0, ty, &call.values, AbiMemoryMode::UnpackIntegerResult);
+        if let Some(ty) = &call.result {
+            match layout.result_location {
+                ResultLocation::Indirect =>
+                    self.abi_value(layout.result as u32, ty, &call.values, AbiMemoryMode::StackLoad),
+                ResultLocation::Float => self.store_float(call.values[0]),
+                ResultLocation::Integer =>
+                    self.abi_value(0, ty, &call.values, AbiMemoryMode::UnpackIntegerResult),
+                ResultLocation::None => {}
             }
         }
         if let Some(at) = failed { self.patch(at, self.code.len()); }

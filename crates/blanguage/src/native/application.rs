@@ -15,7 +15,7 @@ pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'sta
         Some(&function.name),
     )
 }
-use super::external::{AbiMemoryMode, AbiType, float_size};
+use super::external::{AbiMemoryMode, AbiType, ResultLocation};
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -23,14 +23,15 @@ struct FunctionFrame {
     bytes: u64,
     home: u64,
     result: u64,
-    hidden: u64,
+    result_location: ResultLocation,
 }
 
 #[repr(C)]
 struct ParameterSlot {
     index: usize,
     home: u64,
-    indirect: u64,
+    indirect: u32,
+    float_size: u32,
 }
 
 unsafe extern "C" {
@@ -123,11 +124,10 @@ fn emit_value(
     }
     const SCRATCH_REGISTER: u8 = 15;
     let scratch = scratch(&stage.code);
-    let result = result.filter(|ty| ty.size != 0);
     let flags = u32::from(fallible) | (u32::from(scratch) << 1);
     let plan = unsafe { function_frame(layout.end, AbiType::result(result), flags) };
     let frame = i32::try_from(plan.bytes).map_err(|_| "应用栈帧超出x64地址编码")? as u32;
-    let hidden = plan.hidden != 0;
+    let hidden = plan.result_location == ResultLocation::Indirect;
     let result_pointer = hidden.then_some(plan.result as u32);
     let mut e = Emitter {
         unwind: Vec::new(),
@@ -155,7 +155,7 @@ fn emit_value(
     let mut slots = Vec::with_capacity(parameters.len());
     let context = (&parameters as *const &[CallParameter]).cast();
     let count = unsafe {
-        parameter_slots(context, parameters.len(), plan.hidden, parameter_type, slots.as_mut_ptr())
+        parameter_slots(context, parameters.len(), u64::from(hidden), parameter_type, slots.as_mut_ptr())
     };
     // The B planner initialized one row per parameter with a physical slot.
     unsafe { slots.set_len(count); }
@@ -167,12 +167,8 @@ fn emit_value(
     for row in slots.iter().take_while(|row| row.home < 32) {
         let start = e.code.len();
         let parameter = &parameters[row.index];
-        let size = match &parameter.kind {
-            CallParameterKind::Value(ty) => float_size(ty),
-            CallParameterKind::Reference { .. } => 0,
-        };
         let slot = (row.home / 8) as usize;
-        e.argument_register(slot, size, true);
+        e.argument_register(slot, row.float_size, true);
         e.abi_range(start, AbiRangeKind::ParameterHome {
             slot, parameter_index: row.index, origin: parameter.origin.clone(),
         });
@@ -222,18 +218,24 @@ fn emit_value(
     e.block(&stage.code)?;
     if let Some(ty) = result {
         let start = e.code.len();
-        let kind = if let Some(at) = result_pointer {
-            let mode = if fallible { AbiMemoryMode::FallibleResult } else { AbiMemoryMode::IndirectResult };
-            e.abi_value(at, ty, &body.outputs, mode);
-            AbiRangeKind::IndirectResult { stack_offset: at }
-        } else if float_size(ty) != 0 {
-            e.float(body.outputs[0], 0);
-            AbiRangeKind::FloatResult
-        } else {
-            e.abi_value(0, ty, &body.outputs, AbiMemoryMode::PackIntegerResult);
-            AbiRangeKind::IntegerResult
+        let kind = match plan.result_location {
+            ResultLocation::None => None,
+            ResultLocation::Indirect => {
+                let at = plan.result as u32;
+                let mode = if fallible { AbiMemoryMode::FallibleResult } else { AbiMemoryMode::IndirectResult };
+                e.abi_value(at, ty, &body.outputs, mode);
+                Some(AbiRangeKind::IndirectResult { stack_offset: at })
+            }
+            ResultLocation::Float => {
+                e.float(body.outputs[0], 0);
+                Some(AbiRangeKind::FloatResult)
+            }
+            ResultLocation::Integer => {
+                e.abi_value(0, ty, &body.outputs, AbiMemoryMode::PackIntegerResult);
+                Some(AbiRangeKind::IntegerResult)
+            }
         };
-        e.abi_range(start, kind);
+        if let Some(kind) = kind { e.abi_range(start, kind); }
     }
     if fallible {
         let start = e.code.len();
