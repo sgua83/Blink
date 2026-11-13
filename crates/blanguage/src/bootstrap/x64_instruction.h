@@ -297,6 +297,30 @@ struct ReductionCode {
     array<u64,4> literals;
 };
 
+struct TileCollectiveInput {
+    u64 identity;
+    ScalarEncoding scalar;
+    ReductionOperator operation;
+    bool exclusive;
+    u32 input_offset;
+    u32 output_offset;
+    u32 length_offset;
+    u32 plane_stride;
+    u32 input_high_delta;
+};
+
+struct TileCollectiveCode {
+    u64 length;
+    u64 identity_start;
+    u64 loop_start;
+    u64 accumulate_start;
+    u64 fill_start;
+    u64 fill_loop_start;
+};
+
+// The caller owns 128 output bytes. Positions are relative to the first byte.
+extern "C" TileCollectiveCode tile_collective(TileCollectiveInput input, address output) on cpu;
+
 // R12 has already been saved. The caller owns 256 output bytes and the literal pool.
 extern "C" ReductionCode reduce_range(ReductionRange input, address output) on cpu;
 

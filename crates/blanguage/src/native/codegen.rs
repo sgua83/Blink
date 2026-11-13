@@ -348,12 +348,18 @@ impl Emitter<'_> {
         }
     }
     fn abi_range(&mut self, start: usize, kind: super::AbiRangeKind) {
+        self.record_abi_range(start..self.code.len(), kind);
+    }
+    fn record_abi_range(&mut self, range: std::ops::Range<usize>, kind: super::AbiRangeKind) {
         if let Some(abi) = &mut self.function_abi {
-            abi.ranges.push(super::AbiRange { start, end: self.code.len(), kind });
+            abi.ranges.push(super::AbiRange { start: range.start, end: range.end, kind });
         }
     }
     fn parallel_abi(&mut self, start: usize, part: super::ParallelRangePart) {
-        self.abi_range(start, super::AbiRangeKind::ParallelRange { part, origin: OperationOrigin {
+        self.parallel_abi_range(start..self.code.len(), part);
+    }
+    fn parallel_abi_range(&mut self, range: std::ops::Range<usize>, part: super::ParallelRangePart) {
+        self.record_abi_range(range, super::AbiRangeKind::ParallelRange { part, origin: OperationOrigin {
             source_site: self.stage.operation_source.clone(), generated_origin: self.stage.generated_origin.clone(),
         } });
     }

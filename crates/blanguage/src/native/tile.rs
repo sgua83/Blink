@@ -2,6 +2,36 @@
 use super::*;
 use crate::native::{ParallelRangePart, TileCollectivePart};
 use super::allocation::Location;
+use crate::builtin_types::ScalarEncoding;
+
+#[repr(C)]
+struct TileCollectiveInput {
+    identity: u64,
+    scalar: ScalarEncoding,
+    operation: u32,
+    exclusive: u32,
+    input_offset: u32,
+    output_offset: u32,
+    length_offset: u32,
+    plane_stride: u32,
+    input_high_delta: u32,
+}
+
+#[repr(C)]
+struct TileCollectiveCode {
+    length: u64,
+    identity_start: u64,
+    loop_start: u64,
+    accumulate_start: u64,
+    fill_start: u64,
+    fill_loop_start: u64,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::tile_collective"]
+    fn encode_tile_collective(input: TileCollectiveInput, output: *mut u8) -> TileCollectiveCode;
+}
+
 impl Emitter<'_> {
     fn tile_length_slot(&self) -> u32 {
         self.frame.end as u32
@@ -211,137 +241,64 @@ impl Emitter<'_> {
         Ok(())
     }
     pub(super) fn tile_collective(&mut self, collective: &TileCollective) {
-        for (word, result) in &collective.results {
-            let start = self.code.len();
-            self.bytes(&[0x4c, 0x8d, 0x94, 0x24]);
-            let input_offset = self.shared_stream(self.stage.shared_word(collective.tile, *word))
-                + match self.stage.shared_word(collective.tile, *word) { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 };
-            self.u32(input_offset);
-            self.bytes(&[0x4c, 0x8d, 0x9c, 0x24]);
-            let output_offset = self.private_stream(PrivateSlot::Register(*result));
-            self.u32(output_offset);
-            self.bytes(&[0x8b, 0x8c, 0x24]);
+        for &(word, result) in &collective.results {
+            let source = self.stage.shared_word(collective.tile, word);
+            let byte = match source {
+                SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4,
+            };
+            let input_offset = self.shared_stream(source) + byte;
+            let output_offset = self.private_stream(PrivateSlot::Register(result));
             let length_offset = self.tile_length_slot();
-            self.u32(length_offset);
-            let scalar = self.stage.registers[*result];
-            let plane_stride = self.stage.workgroup_width()*4;
-            self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
-                part: TileCollectivePart::Setup { input_offset, output_offset, length_offset, plane_stride } });
-            let float = scalar.is_float();
-            let wide = scalar.size() == 8;
+            let scalar = self.stage.registers[result];
+            let plane_stride = self.stage.workgroup_width() * 4;
             let operator = collective.op.operator();
             let identity = operator.identity(scalar);
-            let high_delta = if wide {
-                (self.shared_stream(self.stage.shared_word(collective.tile, *word + 4)) as i64
-                    - self.shared_stream(self.stage.shared_word(collective.tile, *word)) as i64) as u32
-            } else { 0 };
-            let store = |e: &mut Self| {
-                if float && !wide {
-                    e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x03]);
-                } else {
-                    if float { e.copy_scalar(allocation::Location::Gpr(0), allocation::Location::Xmm(0), scalar); }
-                    e.bytes(&[0x41, 0x89, 0x03]);
-                    if wide {
-                        e.bytes(&[0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 32, 0x41, 0x89, 0x93]);
-                        e.u32(plane_stride);
-                    }
-                }
+            let exclusive = collective.op.exclusive();
+            let input_high_delta = if scalar.size() == 8 {
+                let high = self.stage.shared_word(collective.tile, word + 4);
+                self.shared_stream(high).wrapping_sub(self.shared_stream(source))
+            } else {
+                0
+            };
+            let input = TileCollectiveInput {
+                identity,
+                scalar: scalar.into(),
+                operation: reduce::reduction_operator(operator),
+                exclusive: u32::from(exclusive),
+                input_offset,
+                output_offset,
+                length_offset,
+                plane_stride,
+                input_high_delta,
             };
             let start = self.code.len();
-            if identity == 0 {
-                self.bytes(if float {
-                    &[0x0f, 0x57, 0xc0]
-                } else {
-                    &[0x31, 0xc0]
-                });
-            } else {
-                if wide {self.bytes(&[0x48]);}
-                self.bytes(&[0xb8]);
-                if wide {self.bytes(&identity.to_le_bytes());} else {self.u32(identity as u32);}
-                if float {
-                    self.instruction(Some(0x66), &[0x0f, 0x6e], wide, 0, operands::Operand::Register(0));
-                }
+            self.code.reserve(128);
+            let encoding = unsafe {
+                let output = self.code.as_mut_ptr().add(start);
+                let encoding = encode_tile_collective(input, output);
+                self.code.set_len(start + encoding.length as usize);
+                encoding
+            };
+            let identity_start = start + encoding.identity_start as usize;
+            let loop_start = start + encoding.loop_start as usize;
+            let accumulate_start = start + encoding.accumulate_start as usize;
+            let fill_start = start + encoding.fill_start as usize;
+            let range_part = |part| ParallelRangePart::TileCollective {
+                tile: collective.tile, word, result, scalar, operation: collective.op, part,
+            };
+            self.parallel_abi_range(start..identity_start, range_part(TileCollectivePart::Setup {
+                input_offset, output_offset, length_offset, plane_stride,
+            }));
+            self.parallel_abi_range(identity_start..loop_start,
+                range_part(TileCollectivePart::Identity { bits: identity }));
+            if exclusive {
+                self.parallel_abi_range(loop_start..accumulate_start, range_part(TileCollectivePart::ScanOutput));
             }
-            self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
-                part: TileCollectivePart::Identity { bits: identity } });
-            let begin = self.code.len();
-            if collective.op.exclusive() {
-                let start = self.code.len();
-                store(self);
-                self.bytes(&[0x49, 0x83, 0xc3, 0x04]);
-                self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
-                    part: TileCollectivePart::ScanOutput });
-            }
-            let start = self.code.len();
-            if float && wide {
-                self.instruction(None, &[0x8b], false, 2, operands::Operand::memory(10, 0));
-                self.instruction(None, &[0x8b], false, 8, operands::Operand::memory(10, high_delta));
-                self.bytes(&[0x49, 0xc1, 0xe0, 32, 0x4c, 0x09, 0xc2]);
-                self.copy_scalar(allocation::Location::Xmm(1), allocation::Location::Gpr(2), scalar);
-                let opcode = match operator { CollectiveOperator::Min=>0x5d, CollectiveOperator::Max=>0x5f, _=>0x58 };
-                self.instruction(Some(0xf2), &[0x0f, opcode], false, 0, operands::Operand::Register(1));
-            } else if float {
-                self.bytes(&[
-                    0xf3,
-                    0x41,
-                    0x0f,
-                    match operator {
-                        CollectiveOperator::Sum => Some(0x58),
-                        CollectiveOperator::Min => Some(0x5d),
-                        CollectiveOperator::Max => Some(0x5f),
-                        CollectiveOperator::BitAnd
-                        | CollectiveOperator::BitOr
-                        | CollectiveOperator::BitXor => None,
-                    }
-                    .unwrap(),
-                    0x02,
-                ]);
-            } else {
-                let operand = if wide {
-                    self.instruction(None, &[0x8b], false, 2, operands::Operand::memory(10, 0));
-                    self.instruction(None, &[0x8b], false, 8, operands::Operand::memory(10, high_delta));
-                    self.bytes(&[0x49, 0xc1, 0xe0, 32, 0x4c, 0x09, 0xc2]);
-                    operands::Operand::Register(2)
-                } else { operands::Operand::memory(10, 0) };
-                let prefix = (scalar.size() == 2).then_some(0x66);
-                let byte = u8::from(scalar.size() == 1);
-                let opcode = match operator {
-                    CollectiveOperator::Sum => Some(0x03),
-                    CollectiveOperator::BitAnd => Some(0x23),
-                    CollectiveOperator::BitOr => Some(0x0b),
-                    CollectiveOperator::BitXor => Some(0x33),
-                    CollectiveOperator::Min | CollectiveOperator::Max => None,
-                };
-                if let Some(opcode) = opcode {
-                    self.instruction(prefix, &[opcode - byte], wide, 0, operand);
-                } else {
-                    let condition = match (scalar.is_signed(), operator == CollectiveOperator::Min) {
-                        (false,true)=>0x47,(true,true)=>0x4f,(false,false)=>0x42,(true,false)=>0x4c,
-                    };
-                    self.instruction(prefix, &[0x3b - byte], wide, 0, operand);
-                    if byte != 0 {
-                        let skip = self.jump(Branch::Flags(0x80 + (condition ^ 1) - 0x40));
-                        self.instruction(None, &[0x8a], false, 0, operand);
-                        self.patch(skip, self.code.len());
-                    } else { self.instruction(prefix, &[0x0f, condition], wide, 0, operand); }
-                }
-            }
-            self.bytes(&[0x49, 0x83, 0xc2, 0x04, 0xff, 0xc9]);
-            let again = self.jump(Branch::Flags(0x85));
-            self.patch(again, begin);
-            self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
-                part: TileCollectivePart::Accumulate { input_high_delta: high_delta, loop_start: begin } });
-            if !collective.op.exclusive() {
-                let start = self.code.len();
-                self.bytes(&[0x8b, 0x8c, 0x24]);
-                self.u32(length_offset);
-                let fill = self.code.len();
-                store(self);
-                self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
-                let again = self.jump(Branch::Flags(0x85));
-                self.patch(again, fill);
-                self.parallel_abi(start, ParallelRangePart::TileCollective { tile: collective.tile, word: *word, result: *result, scalar, operation: collective.op,
-                    part: TileCollectivePart::Fill { length_offset, loop_start: fill } });
+            self.parallel_abi_range(accumulate_start..fill_start,
+                range_part(TileCollectivePart::Accumulate { input_high_delta, loop_start }));
+            if !exclusive {
+                let loop_start = start + encoding.fill_loop_start as usize;
+                self.parallel_abi(fill_start, range_part(TileCollectivePart::Fill { length_offset, loop_start }));
             }
         }
     }

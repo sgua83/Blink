@@ -2418,6 +2418,99 @@ u64 collective_accumulate(u64 at, ReductionOperator operation, ScalarEncoding sc
     return cursor;
 }
 
+u64 tile_collective_store(u64 at, ScalarEncoding scalar, u32 plane_stride) on cpu {
+    MoveLocation low = MoveLocation(0u64, MOVE_MEMORY, u8(11), NO_INDEX, u8(0));
+    bool wide = scalar.width == 64;
+    bool floating = scalar.kind == ScalarKind::Float;
+    u64 cursor = at;
+    if (floating && !wide) {
+        cursor = store_float(cursor, low, u8(0), false);
+    } else {
+        if (floating) {
+            cursor = register_instruction(cursor, u16(0x7e0f), u8(0x66), true, u8(0), u8(0));
+        }
+        // Every lane occupies one 32-bit word in each result plane.
+        cursor = store_bits(cursor, low, u8(0), 4);
+        if (wide) {
+            cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(0), u8(2));
+            cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(5), u8(2));
+            put_byte(cursor, u8(32));
+            MoveLocation high = MoveLocation(u64(plane_stride), MOVE_MEMORY, u8(11), NO_INDEX, u8(0));
+            cursor = store_bits(cursor + 1u64, high, u8(2), 4);
+        }
+    }
+    return cursor;
+}
+
+u64 tile_collective_advance(u64 at, u8 pointer) on cpu {
+    u64 immediate = register_instruction(at, u16(0x83), u8(0), true, u8(0), pointer);
+    put_byte(immediate, u8(4));
+    return immediate + 1u64;
+}
+
+u64 tile_collective_repeat(u64 at, u64 begin) on cpu {
+    u64 cursor = register_instruction(at, u16(0xff), u8(0), false, u8(1), u8(1));
+    u64 back = condition_field(cursor, u8(0x85));
+    patch_relative(unsafe_address(back), back, begin);
+    return back + 4u64;
+}
+
+extern "C" TileCollectiveCode tile_collective(TileCollectiveInput input, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation source = MoveLocation(u64(input.input_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    MoveLocation target = MoveLocation(u64(input.output_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    MoveLocation length = MoveLocation(u64(input.length_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    u64 cursor = encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(10), source);
+    cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(11), target);
+    u64 identity = load_bits(cursor, u8(1), length, false);
+
+    bool wide = input.scalar.width == 64;
+    bool floating = input.scalar.kind == ScalarKind::Float;
+    if (input.identity == 0u64) {
+        u16 opcode = floating ? u16(0x570f) : u16(0x31);
+        cursor = register_instruction(identity, opcode, u8(0), false, u8(0), u8(0));
+    } else {
+        cursor = move_immediate(identity, u8(0), input.identity, wide);
+        if (floating) {
+            cursor = register_instruction(cursor, u16(0x6e0f), u8(0x66), wide, u8(0), u8(0));
+        }
+    }
+
+    u64 begin = cursor;
+    if (input.exclusive) {
+        cursor = tile_collective_store(cursor, input.scalar, input.plane_stride);
+        cursor = tile_collective_advance(cursor, u8(11));
+    }
+    u64 accumulate = cursor;
+    MoveLocation operand = MoveLocation(0u64, MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+    if (wide) {
+        MoveLocation high = MoveLocation(u64(input.input_high_delta), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+        cursor = load_bits(cursor, u8(2), operand, false);
+        cursor = load_bits(cursor, u8(8), high, false);
+        cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(4), u8(8));
+        put_byte(cursor, u8(32));
+        cursor = register_instruction(cursor + 1u64, u16(0x09), u8(0), true, u8(8), u8(2));
+        operand = move_gpr(u8(2));
+        if (floating) {
+            cursor = register_instruction(cursor, u16(0x6e0f), u8(0x66), true, u8(1), u8(2));
+            operand = packet_register(u8(1));
+        }
+    }
+    cursor = collective_accumulate(cursor, input.operation, input.scalar, u8(0), operand);
+    cursor = tile_collective_advance(cursor, u8(10));
+    u64 fill = tile_collective_repeat(cursor, begin);
+    u64 fill_loop = fill;
+    cursor = fill;
+    if (!input.exclusive) {
+        fill_loop = load_bits(cursor, u8(1), length, false);
+        cursor = tile_collective_store(fill_loop, input.scalar, input.plane_stride);
+        cursor = tile_collective_advance(cursor, u8(11));
+        cursor = tile_collective_repeat(cursor, fill_loop);
+    }
+    return TileCollectiveCode(cursor - start, identity - start, begin - start,
+        accumulate - start, fill - start, fill_loop - start);
+}
+
 extern "C" ReductionCode reduce_range(ReductionRange input, address output) on cpu {
     u64 start = address_bits(output);
     MoveLocation stride = MoveLocation(u64(input.source + input.stride_offset), MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
