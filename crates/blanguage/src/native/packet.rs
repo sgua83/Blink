@@ -352,7 +352,18 @@ impl From<PacketPlace> for operands::MoveLocation {
         }
     }
 }
+#[repr(C)]
+struct SparseRangeEncoding {
+    length: u64,
+    tail_field: u64,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::sparse_collect"]
+    fn encode_sparse_collect(data_offset: u32, stride_offset: u32, word: u32, slots: u32,
+        output: *mut u8) -> SparseRangeEncoding;
+    #[link_name = "bootstrap.x64_instruction::sparse_tail"]
+    fn encode_sparse_tail(slots: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_constant"]
     fn encode_packet_constant(dst: u8, bits: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_store"]
@@ -400,33 +411,25 @@ impl Emitter<'_> {
         let begin = self.code.len();
         let sparse = self.stage.selection.is_some();
         let tail = if let Some(selection) = self.stage.selection {
-            // 四个真实选中位置只在本范围栈帧内存在，不物化全域稀疏索引。
-            self.bytes(&[0x31, 0xc9]); // ecx = 已收集 lane 数
-            let collect = self.code.len();
-            self.bytes(&[0x44, 0x39, 0xf3]);
-            let tail = self.jump(Branch::Flags(0x83));
-            self.buffer_selection(selection.binding, selection.word);
-            let skip = self.jump(Branch::Flags(0x84));
-            self.bytes(&[0x89, 0x9c, 0x8c]); // indices[ecx] = ebx
-            self.u32(self.frame.end as u32);
-            self.bytes(&[0xff, 0xc1]);
-            self.patch(skip, self.code.len());
-            self.bytes(&[0xff, 0xc3, 0x83, 0xf9, 0x04]);
-            let again = self.jump(Branch::Flags(0x85));
-            self.patch(again, collect);
+            let data = selection.binding as u32 * BUFFER_BYTES;
+            self.code.reserve(96);
+            let encoding = unsafe {
+                let encoding = encode_sparse_collect(data, data + BUFFER_STRIDE, selection.word,
+                    self.frame.end as u32, self.code.as_mut_ptr().add(begin));
+                self.code.set_len(begin + encoding.length as usize);
+                encoding
+            };
             self.parallel_abi(begin, crate::native::ParallelRangePart::PacketCollect { binding: selection.binding, offset: selection.word });
-            tail
+            begin + encoding.tail_field as usize
         } else {
-            // 用 64 位检查 index+4；u32 域末端附近也不让加法提前回绕。
-            self.bytes(&[0x89, 0xd8, 0x48, 0x83, 0xc0, 0x04, 0x4c, 0x39, 0xf0]);
-            let tail = self.jump(Branch::Flags(0x87));
+            let tail = self.range_bounds(true);
             self.parallel_abi(begin, crate::native::ParallelRangePart::PacketBounds);
             tail
         };
         self.packet_block(&plan.code, allocation);
         if !sparse {
             let start = self.code.len();
-            self.bytes(&[0x83, 0xc3, 0x04]);
+            self.range_advance(4);
             self.parallel_abi(start, crate::native::ParallelRangePart::PacketAdvance);
         }
         let start = self.code.len();
@@ -436,16 +439,8 @@ impl Emitter<'_> {
         self.patch(tail, self.code.len());
         if sparse {
             let start = self.code.len();
-            self.bytes(&[0x85, 0xc9]);
-            let empty = self.jump(Branch::Flags(0x84));
-            self.instruction(
-                None,
-                &[0x8b],
-                false,
-                3,
-                Operand::memory(4, self.frame.end as u32),
-            );
-            self.patch(empty, self.code.len());
+            let slots = self.frame.end as u32;
+            self.emit_bytes(16, |output| unsafe { encode_sparse_tail(slots, output) });
             self.parallel_abi(start, crate::native::ParallelRangePart::PacketTail);
         }
     }

@@ -1737,14 +1737,88 @@ extern "C" u64 buffer_advance(u32 stride_offset, u8 target, address output) on c
     return buffer_field_at(start, stride_offset, u16(0x03), target) - start;
 }
 
-extern "C" u64 buffer_selection(u32 data_offset, u32 stride_offset, u32 word, address output) on cpu {
-    u64 start = address_bits(output);
-    u64 cursor = buffer_field_at(start, data_offset, u16(0x8b), u8(15));
+u64 buffer_selection_at(u64 at, u32 data_offset, u32 stride_offset, u32 word) on cpu {
+    u64 cursor = buffer_field_at(at, data_offset, u16(0x8b), u8(15));
     cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(3), u8(0));
     cursor = buffer_index_at(cursor, stride_offset, u8(0), NO_INDEX);
     cursor = encode_operand_instruction(cursor, u16(0x83), u8(0), false, u8(7), buffer_element_operand(word));
     put_byte(cursor, u8(0));
-    return cursor + 1u64 - start;
+    return cursor + 1u64;
+}
+
+extern "C" u64 buffer_selection(u32 data_offset, u32 stride_offset, u32 word, address output) on cpu {
+    u64 start = address_bits(output);
+    return buffer_selection_at(start, data_offset, stride_offset, word) - start;
+}
+
+extern "C" u64 range_arguments(address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = register_instruction(start, u16(0x89), u8(0), true, u8(1), u8(12));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(2), u8(13));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(8), u8(14));
+    return register_instruction(cursor, u16(0x89), u8(0), false, u8(9), u8(3)) - start;
+}
+
+u64 range_exit_field(u64 at, bool packet) on cpu {
+    if (packet) {
+        // EBX and R14D are assigned as 32-bit values by the range ABI.
+        // Compute the packet end in 64 bits before comparing.
+        MoveLocation end = MoveLocation(4u64, MOVE_MEMORY, u8(3), NO_INDEX, u8(0));
+        u64 cursor = encode_operand_instruction(at, u16(0x8d), u8(0), true, u8(0), end);
+        cursor = register_instruction(cursor, u16(0x39), u8(0), true, u8(14), u8(0));
+        return condition_field(cursor, u8(0x87));
+    }
+    u64 cursor = register_instruction(at, u16(0x39), u8(0), false, u8(14), u8(3));
+    return condition_field(cursor, u8(0x83));
+}
+
+extern "C" u64 range_bounds(bool packet, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 field = range_exit_field(start, packet);
+    write_word(field, 0);
+    return field + 4u64 - start;
+}
+
+u64 range_step_at(u64 at, u8 reg, u8 count) on cpu {
+    if (count == u8(1)) { return register_instruction(at, u16(0xff), u8(0), false, u8(0), reg); }
+    u64 immediate = register_instruction(at, u16(0x83), u8(0), false, u8(0), reg);
+    put_byte(immediate, count);
+    return immediate + 1u64;
+}
+
+extern "C" u64 range_advance(u8 count, address output) on cpu {
+    u64 start = address_bits(output);
+    return range_step_at(start, u8(3), count) - start;
+}
+
+extern "C" SparseRangeEncoding sparse_collect(u32 data_offset, u32 stride_offset,
+    u32 word, u32 slots, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 collect = register_instruction(start, u16(0x31), u8(0), false, u8(1), u8(1));
+    u64 tail = range_exit_field(collect, false);
+    write_word(tail, 0);
+    u64 cursor = buffer_selection_at(tail + 4u64, data_offset, stride_offset, word);
+    u64 skip = condition_field(cursor, u8(0x84));
+    MoveLocation slot = MoveLocation(u64(slots), MOVE_MEMORY, u8(4), u8(1), u8(2));
+    cursor = store_bits(skip + 4u64, slot, u8(3), 4);
+    cursor = range_step_at(cursor, u8(1), u8(1));
+    patch_relative(unsafe_address(skip), skip - start, cursor - start);
+    cursor = range_step_at(cursor, u8(3), u8(1));
+    cursor = register_instruction(cursor, u16(0x83), u8(0), false, u8(7), u8(1));
+    put_byte(cursor, u8(4));
+    u64 back = condition_field(cursor + 1u64, u8(0x85));
+    patch_relative(unsafe_address(back), back - start, collect - start);
+    return SparseRangeEncoding(back + 4u64 - start, tail - start);
+}
+
+extern "C" u64 sparse_tail(u32 slots, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = register_instruction(start, u16(0x85), u8(0), false, u8(1), u8(1));
+    u64 empty = condition_field(cursor, u8(0x84));
+    MoveLocation first = MoveLocation(u64(slots), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    cursor = load_bits(empty + 4u64, u8(3), first, false);
+    patch_relative(unsafe_address(empty), empty - start, cursor - start);
+    return cursor - start;
 }
 
 u64 packet_memory_at(u64 at, PacketMemory memory, u8 lane) on cpu {

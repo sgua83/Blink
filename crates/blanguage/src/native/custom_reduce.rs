@@ -531,13 +531,12 @@ pub(super) fn emit(
     e.enter(frame);
     e.block(&stage.code[..initialize_end])?;
     let begin = e.code.len();
-    e.bytes(&[0x44, 0x39, 0xf3]);
-    let end = e.jump(Branch::Flags(0x83));
+    let end = e.range_bounds(false);
     if apply && head.is_some() {
         e.breaks.push(Vec::new());
     }
     e.block(&stage.code[initialize_end..loop_end])?;
-    e.bytes(&[0xff, 0xc3]);
+    e.range_advance(1);
     let back = e.jump(Branch::Always);
     e.patch(back, begin);
     e.patch(end, e.code.len());

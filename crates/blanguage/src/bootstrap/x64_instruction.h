@@ -187,6 +187,23 @@ extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output
 extern "C" u64 buffer_advance(u32 stride_offset, u8 target, address output) on cpu;
 // Read the selection field for EBX and leave the comparison flags.
 extern "C" u64 buffer_selection(u32 data_offset, u32 stride_offset, u32 word, address output) on cpu;
+
+// The caller owns twelve bytes for the range ABI register moves.
+extern "C" u64 range_arguments(address output) on cpu;
+// The caller owns sixteen bytes. The final four bytes are the exit rel32.
+extern "C" u64 range_bounds(bool packet, address output) on cpu;
+extern "C" u64 range_advance(u8 count, address output) on cpu;
+
+struct SparseRangeEncoding {
+    u64 length;
+    u64 tail_field;
+};
+
+// The caller owns 96 bytes and supplies the existing four-index stack slot.
+extern "C" SparseRangeEncoding sparse_collect(u32 data_offset, u32 stride_offset,
+    u32 word, u32 slots, address output) on cpu;
+// Restore the first pending index when the final group was incomplete.
+extern "C" u64 sparse_tail(u32 slots, address output) on cpu;
 // Packet inputs use their original allocated XMM/stack lanes; no source is retained.
 // packet_lane needs 16 bytes; either packet view entry needs 64 bytes.
 extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu;

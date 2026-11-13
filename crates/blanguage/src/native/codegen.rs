@@ -87,6 +87,12 @@ unsafe extern "C" {
     fn patch_relative(field: *mut u8, offset: u64, target: u64);
     #[link_name = "bootstrap.x64_instruction::encode_branch"]
     fn encode_branch(condition: u8, test_bits: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::range_arguments"]
+    fn encode_range_arguments(output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::range_bounds"]
+    fn encode_range_bounds(packet: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::range_advance"]
+    fn encode_range_advance(count: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::buffer_load"]
     fn encode_buffer_load(offset: u32, target: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::buffer_index"]
@@ -208,9 +214,7 @@ impl Emitter<'_> {
         self.push_registers(Self::RANGE_SAVED_REGISTERS);
         self.allocate_frame(frame);
         self.preserve_registers(false);
-        self.bytes(&[
-            0x49, 0x89, 0xcc, 0x49, 0x89, 0xd5, 0x45, 0x89, 0xc6, 0x44, 0x89, 0xcb,
-        ]);
+        self.emit_bytes(12, |output| unsafe { encode_range_arguments(output) });
     }
     fn leave(&mut self, frame: u32) {
         self.bytes(&[0x31, 0xc0]);
@@ -240,6 +244,13 @@ impl Emitter<'_> {
         };
         self.emit_bytes(9, |output| unsafe { encode_branch(condition, test_bits, output) });
         self.code.len() - 4
+    }
+    fn range_bounds(&mut self, packet: bool) -> usize {
+        self.emit_bytes(16, |output| unsafe { encode_range_bounds(u32::from(packet), output) });
+        self.code.len() - 4
+    }
+    fn range_advance(&mut self, count: u8) {
+        self.emit_bytes(3, |output| unsafe { encode_range_advance(count, output) });
     }
     fn patch(&mut self, at: usize, target: usize) {
         let field = &mut self.code[at..at + 4];
@@ -760,8 +771,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         e.packet_loop(&plan, &allocation);
     }
     let begin = e.code.len();
-    e.bytes(&[0x44, 0x39, 0xf3]);
-    let end = e.jump(Branch::Flags(0x83));
+    let end = e.range_bounds(false);
     e.parallel_abi(begin, super::ParallelRangePart::ScalarBounds);
     let skip_selection = stage.selection.map(|selection| {
         let start = e.code.len();
@@ -781,7 +791,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
             e.patch(skip, e.code.len());
         }
         let start = e.code.len();
-        e.bytes(&[0xff, 0xc3]);
+        e.range_advance(1);
         e.parallel_abi(start, super::ParallelRangePart::ScalarAdvance);
     }
     let start = e.code.len();
