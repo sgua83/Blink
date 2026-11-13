@@ -16,3 +16,18 @@ struct DigestState {
 extern "C" DigestState sha256_start() on cpu;
 extern "C" void sha256_update(inout DigestState state,address input,u64 length) on cpu;
 extern "C" void sha256_finish(inout DigestState state,address output) on cpu;
+
+struct BuildSymbol {
+    DigestField name; DigestField contract; DigestField declaration;
+    u32 bound; u32 requirement;
+};
+struct BuildRegion { u64 start; u64 length; };
+struct BuildReference {
+    BuildRegion key; BuildRegion query; DigestField source;
+    u32 kind; u32 execution;
+};
+struct BuildReferences {
+    address symbols; u64 symbol_count; address references; u64 reference_count;
+    address encoded;
+};
+extern "C" void sha256_references(BuildReferences input,address output) on cpu;

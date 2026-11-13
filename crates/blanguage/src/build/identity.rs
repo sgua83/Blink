@@ -106,8 +106,8 @@ struct BuildReferences {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.metadata::encode_build_references"]
-    fn encode_build_references(input: BuildReferences, output: *mut u8) -> usize;
+    #[link_name = "bootstrap.build_digest::sha256_references"]
+    fn sha256_references(input: BuildReferences, output: *mut u8);
 }
 
 fn build_region(encoded: &mut Writer, write: impl FnOnce(&mut Writer)) -> BuildRegion {
@@ -209,22 +209,16 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
     let mut encoded = Writer(Vec::new());
     let references: Vec<_> = used.iter()
         .map(|entry| build_reference(declarations, entry, &mut encoded)).collect();
-    // The symbol has at most five length prefixes and three status bytes.
-    // A declaration has at most four prefixes and two status bytes.
-    let capacity = 16 + encoded.0.len()
-        + symbols.iter().map(|row| 43 + row.name.length + row.contract.length + row.declaration.length).sum::<usize>()
-        + references.iter().map(|row| 34 + row.source.length).sum::<usize>();
     let input = BuildReferences {
         symbols: symbols.as_ptr(), symbol_count: symbols.len(),
         references: references.as_ptr(), reference_count: references.len(),
         encoded: encoded.0.as_ptr(),
     };
-    let mut bytes = Vec::with_capacity(capacity);
+    let mut digest = std::mem::MaybeUninit::<[u8; 32]>::uninit();
     unsafe {
-        let length = encode_build_references(input, bytes.as_mut_ptr());
-        bytes.set_len(length);
+        sha256_references(input, digest.as_mut_ptr().cast());
+        digest.assume_init()
     }
-    hash::digest(&bytes)
 }
 
 struct SourceRegions<'a> {

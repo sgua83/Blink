@@ -160,15 +160,73 @@ extern "C" void sha256(address input,u64 length,address output) on cpu {
     sha256_finish(state,output);
 }
 
-extern "C" void sha256_fields(address fields,u64 count,address output) on cpu {
-    DigestState state=sha256_start();
+void digest_field(inout DigestState state,DigestField field) on cpu {
+    // The compiler host is little endian.
+    u64 prefix=field.length;
+    sha256_update(state,address_of(prefix),8u64);
+    sha256_update(state,field.bytes,field.length);
+}
+
+void digest_fields(inout DigestState state,address fields,u64 count) on cpu {
     u64 index=0u64;
     while(index<count){
         DigestField field=unsafe_position<DigestField>(at(fields,index*size_of<DigestField>()));
-        // The compiler host is little endian. Borrow the field length as the next eight bytes.
-        u64 prefix=field.length;
-        sha256_update(state,address_of(prefix),8u64);
-        sha256_update(state,field.bytes,field.length);
+        digest_field(state,field);
+        index+=1u64;
+    }
+}
+
+extern "C" void sha256_fields(address fields,u64 count,address output) on cpu {
+    DigestState state=sha256_start();
+    digest_fields(state,fields,count);
+    sha256_finish(state,output);
+}
+
+DigestField build_region(address bytes,BuildRegion region) on cpu {
+    return DigestField(at(bytes,region.start),region.length);
+}
+
+extern "C" void sha256_references(BuildReferences input,address output) on cpu {
+    DigestState state=sha256_start();
+    u64 index=0u64;
+    DigestField empty=DigestField(unsafe_address(0u64),0u64);
+    while(index<input.symbol_count){
+        BuildSymbol symbol=unsafe_position<BuildSymbol>(at(input.symbols,index*size_of<BuildSymbol>()));
+        u8 bound=u8(symbol.bound);
+        u16 requirement=u16(0);
+        u64 requirement_length=1u64;
+        if(symbol.requirement!=0){
+            requirement=u16(1)|u16((symbol.requirement-1)<<8);
+            requirement_length=2u64;
+        }
+        array<DigestField,5> fields=array<DigestField,5>(
+            symbol.name,DigestField(address_of(bound),1u64),symbol.contract,symbol.declaration,
+            DigestField(address_of(requirement),requirement_length));
+        digest_fields(state,address_of(fields[0]),symbol.bound==0 ? 2u64 : 5u64);
+        index+=1u64;
+    }
+    u64 count=input.reference_count;
+    digest_field(state,DigestField(address_of(count),8u64));
+    index=0u64;
+    while(index<input.reference_count){
+        BuildReference row=unsafe_position<BuildReference>(at(input.references,index*size_of<BuildReference>()));
+        u8 present=u8(row.kind==0 ? 0 : 1);
+        u8 execution=u8(row.execution);
+        array<DigestField,4> fields=array<DigestField,4>(
+            build_region(input.encoded,row.key),DigestField(address_of(present),1u64),empty,empty);
+        u64 field_count=2u64;
+        if(row.kind==2){
+            fields[1]=build_region(input.encoded,row.query);
+        }else if(row.kind==3){
+            fields[1]=DigestField(address_of(execution),1u64);
+            fields[2]=DigestField(address_of(present),1u64);
+            fields[3]=row.source;
+            field_count=4u64;
+        }else if(row.kind!=0){
+            fields[2]=row.source;
+            field_count=3u64;
+        }
+        digest_fields(state,address_of(fields[0]),field_count);
         index+=1u64;
     }
     sha256_finish(state,output);

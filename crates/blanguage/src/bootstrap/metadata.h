@@ -43,18 +43,3 @@ extern "C" u64 rust_link_binding(MetadataBytes binding,MetadataBytes prefix,
 
 // The caller owns the output sized for the magic, two lengths, and both fields.
 extern "C" void encode_build_image(u64 magic,MetadataBytes identity,MetadataBytes image,address output) on cpu;
-
-struct BuildSymbol {
-    MetadataBytes name; MetadataBytes contract; MetadataBytes declaration;
-    u32 bound; u32 requirement;
-};
-struct BuildRegion { u64 start; u64 length; };
-struct BuildReference {
-    BuildRegion key; BuildRegion query; MetadataBytes source;
-    u32 kind; u32 execution;
-};
-struct BuildReferences {
-    address symbols; u64 symbol_count; address references; u64 reference_count;
-    address encoded;
-};
-extern "C" u64 encode_build_references(BuildReferences input,address output) on cpu;
