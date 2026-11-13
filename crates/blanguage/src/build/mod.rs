@@ -251,6 +251,17 @@ pub unsafe fn load(path: &Path) -> Result<Compilation> {
     unsafe { load_bytes(path, &fs::read(path)?) }
 }
 
+/// Loads an execution artifact and returns the SHA-256 of the exact BLBI bytes
+/// used to decode it. The digest identifies that read, even if the path is reused.
+///
+/// # Safety
+/// The file must satisfy the same trust and execution contracts as [load].
+pub unsafe fn load_with_sha256(path: &Path) -> Result<(Compilation, String)> {
+    let bytes = fs::read(path)?;
+    let compilation = unsafe { load_bytes(path, &bytes) }?;
+    Ok((compilation, hash::hex(&hash::digest(&bytes))))
+}
+
 unsafe fn load_bytes(path: &Path, bytes: &[u8]) -> Result<Compilation> {
     let (_, image) = decode(bytes)?;
     let module = unsafe { resource::from_compiler_output(image) }

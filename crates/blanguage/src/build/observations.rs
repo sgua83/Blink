@@ -116,11 +116,10 @@ fn image_json<P>(images: &[resource::Image<P>], selected: Option<&std::ops::Rang
 /// Reads saved CPU ranges and original GPU modules without sources, workers or execution.
 /// Pairing checks equality, not authenticity; material must come from the original producer.
 pub fn code_facts(path: &Path, material: Option<&[u8]>) -> Result<String> {
-    let bytes = std::fs::read(path)?;
-    let mut compilation = unsafe { super::load_bytes(path, &bytes) }?;
+    let (mut compilation, artifact_sha256) = unsafe { super::load_with_sha256(path) }?;
     if let Some(material) = material { compilation.restore_code_observations(material)?; }
     Ok(format!("{{\"kind\":\"build_code\",\"artifact_sha256\":\"{}\",\"programs\":{},\"templates\":{}}}",
-        hash::hex(&hash::digest(&bytes)),
+        artifact_sha256,
         image_json(&compilation.programs, None)?, image_json(&compilation.templates, None)?))
 }
 /// Reads an explicitly selected BLRI; no executable memory or runtime resource is created.
@@ -135,11 +134,10 @@ pub fn image_code_facts(execution: &[u8], material: Option<&[u8]>) -> Result<Str
 
 /// Queries original CPU sources from a BLBI, retaining each original code container.
 pub fn source_facts(path: &Path, range: std::ops::Range<usize>, material: Option<&[u8]>) -> Result<String> {
-    let bytes = std::fs::read(path)?;
-    let mut compilation = unsafe { super::load_bytes(path, &bytes) }?;
+    let (mut compilation, artifact_sha256) = unsafe { super::load_with_sha256(path) }?;
     if let Some(material) = material { compilation.restore_code_observations(material)?; }
     Ok(format!("{{\"kind\":\"build_source_ranges\",\"artifact_sha256\":\"{}\",\"range_unit\":\"byte\",\"range_kind\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"programs\":{},\"templates\":{}}}",
-        hash::hex(&hash::digest(&bytes)),
+        artifact_sha256,
         range.start, range.end, image_json(&compilation.programs, Some(&range))?, image_json(&compilation.templates, Some(&range))?))
 }
 /// Queries original CPU sources from an explicitly selected BLRI; no executable memory is created.

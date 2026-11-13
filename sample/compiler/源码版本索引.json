@@ -296,11 +296,11 @@
     },
     {
       "path": "crates/blanguage/src/build/mod.rs",
-      "sha256": "b772b0b87a85a5cc6c6c35e6c8ea5c0aa4b70b161e0ff3ff7dc2d3eb8a9fd474"
+      "sha256": "ab31c86dc129abad881936587e32a126919c8fc9b8ab8fc147671e4fa43b89f8"
     },
     {
       "path": "crates/blanguage/src/build/observations.rs",
-      "sha256": "ac9794067d9d963ce51abb6d08708f14461fbc4635bbd5004be5258ff0499e3b"
+      "sha256": "064bfa242e357e35d55ef3875959de671e608d12984ba26e56c7abe705c05550"
     },
     {
       "path": "crates/blanguage/src/check.rs",
