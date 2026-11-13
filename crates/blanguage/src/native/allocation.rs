@@ -9,11 +9,19 @@ pub(super) enum Location {
     Xmm(u8),
     Stack(u32),
 }
+#[repr(C)]
+#[derive(Default)]
+struct ColorLayout {
+    end: u64,
+    gpr: u32,
+    xmm: u32,
+}
+
 #[derive(Default)]
 pub(super) struct Allocation {
     locations: Vec<ColorPlace>,
     registers: usize,
-    data_end: u64,
+    layout: ColorLayout,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum PacketPlace {
@@ -23,7 +31,7 @@ pub(super) enum PacketPlace {
 pub(super) struct PacketAllocation {
     locations: Vec<ColorPlace>,
     registers: usize,
-    data_end: u64,
+    layout: ColorLayout,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -402,7 +410,7 @@ unsafe extern "C" {
         mode: u32, base: u64,
         node: unsafe extern "C" fn(*const c_void, u64) -> ColorNode,
         next: unsafe extern "C" fn(*const c_void, u64, bool, u64) -> u64,
-    ) -> u64;
+    ) -> ColorLayout;
     #[link_name = "bootstrap.coloring::record_definition"]
     fn record_definition(place: *mut ColorPlace, literal: u32, bits: u64);
     #[link_name = "bootstrap.coloring::place_private"]
@@ -426,7 +434,7 @@ unsafe extern "C" fn color_next(graph: *const c_void, id: u64, affinity: bool, a
         else { set.range((Excluded(after as usize), Unbounded)).next() };
     next.map_or(graph.edges.len() as u64, |id| *id as u64)
 }
-fn color_locations(graph: &Graph, places: &mut [ColorPlace], mode: u32, base: u64) -> u64 {
+fn color_locations(graph: &Graph, places: &mut [ColorPlace], mode: u32, base: u64) -> ColorLayout {
     let mut order = Vec::<[u64; 3]>::with_capacity(places.len());
     // B borrows the graph and writes the final locations. The order rows are
     // scratch through coloring and byte layout and are never read by Rust.
@@ -439,7 +447,7 @@ fn color_locations(graph: &Graph, places: &mut [ColorPlace], mode: u32, base: u6
 impl Allocation {
     pub fn new(stage: &Stage, graph: &mut Graph) -> Self {
         let mut locations = std::mem::take(&mut graph.locations);
-        let mut data_end = color_locations(
+        let mut layout = color_locations(
             graph, &mut locations, u32::from(stage.has_tile_scope()), graph.outgoing_bytes,
         );
         for span in &graph.private {
@@ -451,15 +459,15 @@ impl Allocation {
                 place.value = u64::from(*offset);
             }
             // B lays out only this declaration's borrowed location slice.
-            data_end = unsafe {
-                place_private(places.as_mut_ptr(), places.len(), data_end,
+            layout.end = unsafe {
+                place_private(places.as_mut_ptr(), places.len(), layout.end,
                     u64::from(ty.size), u64::from(ty.align.max(16)))
             };
         }
         Self {
             locations,
             registers: stage.registers.len(),
-            data_end,
+            layout,
         }
     }
     pub fn location(&self, slot: PrivateSlot) -> Location {
@@ -479,11 +487,11 @@ impl PacketAllocation {
             graph.weights[*r] = 0;
         }
         let mut locations = vec![ColorPlace::new(16, false); graph.edges.len()];
-        let data_end = color_locations(graph, &mut locations, 2, 0);
+        let layout = color_locations(graph, &mut locations, 2, 0);
         Self {
             locations,
             registers: stage.registers.len(),
-            data_end,
+            layout,
         }
     }
     pub fn location(&self, slot: PrivateSlot) -> PacketPlace {
@@ -513,26 +521,12 @@ impl Frame {
     }
 
     pub fn new(scalar: &Allocation, packet: Option<&PacketAllocation>) -> Self {
-        let mut gpr = 0u32;
-        let mut xmm = 0u32;
-        for &location in &scalar.locations {
-            match location.scalar() {
-                // The allocator assigns only RBP, RSI, and RDI from the nonvolatile GPRs.
-                Location::Gpr(register @ 5..=7) => gpr |= 1 << register,
-                Location::Xmm(register) => xmm |= 1 << register,
-                _ => {}
-            }
-        }
-        let mut data_end = scalar.data_end;
+        let ColorLayout { end: mut data_end, mut gpr, mut xmm } = scalar.layout;
         if let Some(packet) = packet {
-            data_end = data_end.max(packet.data_end);
-            for &place in &packet.locations {
-                if let PacketPlace::Register(register) = place.packet() {
-                    xmm |= 1 << register;
-                }
-            }
+            data_end = data_end.max(packet.layout.end);
+            gpr |= packet.layout.gpr;
+            xmm |= packet.layout.xmm;
         }
-        xmm &= 0xffc0; // XMM6–15 are nonvolatile.
         let count = (gpr.count_ones() + xmm.count_ones()) as usize;
         let mut saved = Vec::with_capacity(count);
         // B writes one row for each bit in these same masks.

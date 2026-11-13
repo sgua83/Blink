@@ -83,7 +83,7 @@ u64 layout_spills(address places, u64 count, address scratch, u64 spills, u64 ba
     return end;
 }
 
-extern "C" u64 color(address graph, u64 count, address places, address order, u32 mode, u64 base,
+extern "C" ColorLayout color(address graph, u64 count, address places, address order, u32 mode, u64 base,
     cfn<ColorNode,address,u64> node,
     cfn<u64,address,u64,bool,u64> next) on cpu
     requires nonzero(node) requires nonzero(next) {
@@ -99,6 +99,8 @@ extern "C" u64 color(address graph, u64 count, address places, address order, u3
     }
     sort_rows<array<u64,3>>(order, pending, address(), c_function(priority_before));
     u32 spills = 0;
+    u32 saved_gpr = 0;
+    u32 saved_xmm = 0;
     u64 at = 0u64;
     while (at < pending) {
         id = unsafe_position<array<u64,3>>(order_at(order, at))[2];
@@ -153,6 +155,11 @@ extern "C" u64 color(address graph, u64 count, address places, address order, u3
         if (chosen != 16) {
             unsafe_position<ColorPlace>(destination).value = u64(chosen);
             unsafe_position<ColorPlace>(destination).kind = bank;
+            // Addressable fields receive their final stack positions after coloring.
+            if (unsafe_position<ColorPlace>(destination).width != 0) {
+                if (bank == GPR) { saved_gpr |= (1 << chosen) & 0xe0; }
+                else { saved_xmm |= (1 << chosen) & 0xffc0; }
+            }
         } else {
             sort_rows<u32>(order, occupied, address(), c_function(spill_before));
             u32 slot = 0;
@@ -163,8 +170,9 @@ extern "C" u64 color(address graph, u64 count, address places, address order, u3
         }
         at += 1u64;
     }
-    if (spills == 0) { return base; }
-    return layout_spills(places, count, order, u64(spills), base);
+    u64 end = base;
+    if (spills != 0) { end = layout_spills(places, count, order, u64(spills), base); }
+    return ColorLayout(end, saved_gpr, saved_xmm);
 }
 
 extern "C" u64 place_private(address places, u64 count, u64 data_end, u64 bytes, u64 alignment)
