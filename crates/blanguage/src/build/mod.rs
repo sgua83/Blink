@@ -78,25 +78,16 @@ fn compile_in(
     let imported = if dependencies.is_empty() && borrowed.is_empty() { None } else { Some(&imports) };
     let (world, module) = crate::read_world(&path, &root, imported, &[], worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
-    let mut request = Vec::new();
-    for value in [
-        path.as_os_str().as_encoded_bytes(),
-        root.as_os_str().as_encoded_bytes(),
-        entry.as_bytes(),
-    ] {
-        hash::field(&mut request, value);
-    }
-    hash::field(
-        &mut request,
-        if target == Target::Cpu {
-            b"cpu"
-        } else {
-            b"gpu"
-        },
-    );
-    let artifact = output.join(format!("{}.blbi", hash::hex(&hash::digest(&request))));
+    let target_name = if target == Target::Cpu { "cpu" } else { "gpu" };
+    let request = [
+        path.as_os_str().as_encoded_bytes().into(),
+        root.as_os_str().as_encoded_bytes().into(),
+        entry.as_bytes().into(),
+        target_name.as_bytes().into(),
+    ];
+    let artifact = output.join(format!("{}.blbi", hash::hex(&hash::fields(&request))));
     let source = identity::sources(&path, &root,
-        Selection::Entry { entry: entry.into(), target: if target == Target::Cpu { "cpu" } else { "gpu" }.into() },
+        Selection::Entry { entry: entry.into(), target: target_name.into() },
         worker.compiler().max_parameter_bytes(), &world, &module, false)?;
     match FileBytes::read_path(&artifact) {
         Ok(bytes) => {

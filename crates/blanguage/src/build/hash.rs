@@ -2,6 +2,8 @@
 unsafe extern "C" {
     #[link_name = "bootstrap.build_digest::sha256"]
     fn sha256(input: *const u8, length: usize, output: *mut u8);
+    #[link_name = "bootstrap.build_digest::sha256_fields"]
+    fn sha256_fields(fields: *const super::ByteField, count: usize, output: *mut u8);
 }
 
 pub fn digest(bytes: &[u8]) -> [u8; 32] {
@@ -11,6 +13,14 @@ pub fn digest(bytes: &[u8]) -> [u8; 32] {
         output.assume_init()
     }
 }
+pub(super) fn fields(fields: &[super::ByteField]) -> [u8; 32] {
+    let mut output = std::mem::MaybeUninit::<[u8; 32]>::uninit();
+    unsafe {
+        sha256_fields(fields.as_ptr(), fields.len(), output.as_mut_ptr().cast());
+        output.assume_init()
+    }
+}
+
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

@@ -273,11 +273,6 @@ impl<'a> SourceRegions<'a> {
     }
 }
 
-unsafe extern "C" {
-    #[link_name = "bootstrap.metadata::encode_build_fields"]
-    fn encode_build_fields(fields: *const ByteField, count: usize, output: *mut u8);
-}
-
 fn push_field(fields: &mut Vec<ByteField>, value: &str) {
     fields.push(value.as_bytes().into());
 }
@@ -294,7 +289,6 @@ pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
         .map(|(_, source, implementation)| (source.path.as_path(), implementation)));
     let mut sources = Vec::new();
     let mut fields = Vec::<ByteField>::new();
-    let mut bytes = Vec::<u8>::new();
     for (name, source, implementation) in source_rows() {
         let partial = name != module || implementation;
         fields.clear();
@@ -313,19 +307,12 @@ pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
         } else {
             push_field(&mut fields, &source.text);
         }
-        let length = fields.iter().map(|field| size_of::<u64>() + field.length).sum();
-        bytes.clear();
-        bytes.reserve(length);
-        unsafe {
-            encode_build_fields(fields.as_ptr(), fields.len(), bytes.as_mut_ptr());
-            bytes.set_len(length);
-        }
         sources.push(SourceInput {
             module: name.clone(), path: source.path.as_os_str().as_encoded_bytes().to_vec(),
             scope: if !partial { "full_source" } else if implementation {
                 "preamble_and_function_signatures"
             } else { "preamble" }.into(),
-            fingerprint: hash::digest(&bytes),
+            fingerprint: hash::fields(&fields),
         });
     }
     let requirements = if exports {

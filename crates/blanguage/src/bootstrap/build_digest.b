@@ -78,28 +78,47 @@ void put_byte(address output,u64 offset,u8 value) on cpu {
     unsafe_position<u8>(at(output,offset))=value;
 }
 
-extern "C" void sha256(address input,u64 length,address output) on cpu {
-    array<u32,8> state=array<u32,8>(
+array<u32,8> initial_state() on cpu {
+    return array<u32,8>(
         0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
         0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19);
+}
+
+void copy_bytes(address output,address input,u64 length) on cpu {
+    u64 index=0u64;
+    while(index<length){
+        put_byte(output,index,u8(byte(input,index)));
+        index+=1u64;
+    }
+}
+
+u64 absorb(inout array<u32,8> state,address tail,u64 pending,address input,u64 length) on cpu {
     u64 offset=0u64;
+    if(pending!=0u64){
+        u64 room=64u64-pending;
+        u64 copied=length<room ? length : room;
+        copy_bytes(at(tail,pending),input,copied);
+        if(copied<room){return pending+copied;}
+        compress(state,tail);
+        offset=copied;
+    }
     while(length-offset>=64u64){
         compress(state,at(input,offset));
         offset+=64u64;
     }
-
-    array<u64,16> padded=array<u64,16>(
-        0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,
-        0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64);
-    address tail=address_of(padded[0]);
     u64 remainder=length-offset;
-    u64 index=0u64;
-    while(index<remainder){
-        put_byte(tail,index,u8(byte(input,offset+index)));
-        index+=1u64;
-    }
+    copy_bytes(tail,at(input,offset),remainder);
+    return remainder;
+}
+
+void finish_digest(inout array<u32,8> state,address tail,u64 remainder,u64 length,address output) on cpu {
     put_byte(tail,remainder,u8(128));
     u64 end=remainder<56u64 ? 64u64 : 128u64;
+    u64 offset=remainder+1u64;
+    while(offset<end-8u64){
+        put_byte(tail,offset,u8(0));
+        offset+=1u64;
+    }
     u64 bits=length*8u64;
     for (part in 0..8) {
         put_byte(tail,end-1u64-u64(part),u8(bits>>(u64(part)*8u64)));
@@ -115,4 +134,35 @@ extern "C" void sha256(address input,u64 length,address output) on cpu {
         put_byte(output,start+2u64,u8(value>>8));
         put_byte(output,start+3u64,u8(value));
     }
+}
+
+extern "C" void sha256(address input,u64 length,address output) on cpu {
+    array<u32,8> state=initial_state();
+    array<u64,16> scratch=array<u64,16>(
+        0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,
+        0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64);
+    address tail=address_of(scratch[0]);
+    u64 pending=absorb(state,tail,0u64,input,length);
+    finish_digest(state,tail,pending,length,output);
+}
+
+extern "C" void sha256_fields(address fields,u64 count,address output) on cpu {
+    array<u32,8> state=initial_state();
+    array<u64,16> scratch=array<u64,16>(
+        0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,
+        0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64);
+    address tail=address_of(scratch[0]);
+    u64 pending=0u64;
+    u64 length=0u64;
+    u64 index=0u64;
+    while(index<count){
+        DigestField field=unsafe_position<DigestField>(at(fields,index*size_of<DigestField>()));
+        // The compiler host is little endian. Borrow the field length as the next eight bytes.
+        u64 prefix=field.length;
+        pending=absorb(state,tail,pending,address_of(prefix),8u64);
+        pending=absorb(state,tail,pending,field.bytes,field.length);
+        length+=8u64+field.length;
+        index+=1u64;
+    }
+    finish_digest(state,tail,pending,length,output);
 }
