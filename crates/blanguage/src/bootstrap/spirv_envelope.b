@@ -1302,6 +1302,27 @@ extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address offset
     return levels;
 }
 
+extern "C" StageWords write_sort_key(SortKeyWrite input, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    u32 key = input.key;
+    if (input.shift != 0) {
+        u32 negative = stage_op(out, 194, input.type_id, input.sign, input.shift);
+        u32 mask = stage_op(out, 130, input.type_id, input.zero, negative);
+        if (input.bias != 0) {
+            mask = stage_op(out, 197, input.type_id, mask, input.bias);
+        }
+        key = stage_op(out, 198, input.type_id, key, mask);
+    } else if (input.bias != 0) {
+        key = stage_op(out, 198, input.type_id, key, input.bias);
+    }
+    if (input.inverted != 0) {
+        key = stage_op(out, 198, input.type_id, key, input.inverted);
+    }
+    out.words = words_four(body, out.words, 62, input.key_pointer, key, 2, 4);
+    out.words = words_four(body, out.words, 62, input.index_pointer, input.original, 2, 4);
+    return StageWords(out.words, out.next, input.label);
+}
+
 extern "C" StageWords encode_sort_gather(PageAddress indices, address layout, u32 active, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, indices.next);
     StageBranch run = stage_open(out, active);

@@ -463,6 +463,23 @@ struct SortRankEmission {
 struct StageWords { u64 words; u32 next; u32 label; };
 extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on cpu;
 
+struct SortKeyWrite {
+    u32 type_id;
+    u32 key;
+    u32 sign;
+    u32 zero;
+    u32 shift;
+    u32 bias;
+    u32 inverted;
+    u32 key_pointer;
+    u32 index_pointer;
+    u32 original;
+    u32 next;
+    u32 label;
+};
+
+extern "C" StageWords write_sort_key(SortKeyWrite input, address body) on cpu;
+
 extern "C" StageWords encode_sort_gather(PageAddress indices, address layout, u32 active, address body) on cpu;
 
 struct PrefixIndexEmission {

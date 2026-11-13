@@ -224,11 +224,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/spirv_envelope.b",
-      "sha256": "5abdb592ba7fd0237a1589a4edd9792afb9dbf2acf0219711136a789998b32a8"
+      "sha256": "84f957521f9ee5c21896656b5305b1c89e4b4212f7c55f0fe5c9b652c184d0b5"
     },
     {
       "path": "crates/blanguage/src/bootstrap/spirv_envelope.h",
-      "sha256": "4d01a66a201198691bf6e481aedbae66ba9a4ed5a800dcff3deac9bba8a0d308"
+      "sha256": "911f62d7c83248dd39f5542e1281838e4bf4fe23c69db48347bca71e70cd9a54"
     },
     {
       "path": "crates/blanguage/src/bootstrap/stage_fusion.b",
@@ -768,7 +768,7 @@
     },
     {
       "path": "crates/blanguage/src/spirv/sort.rs",
-      "sha256": "dcb85560fdf3dda9351e6cec0f60a2faf910353b75705daa6508f8599a8c22cc"
+      "sha256": "8916b86ff4c80862c5ea81f88428f3adce9817d4fffae1121c98c751e2e9e990"
     },
     {
       "path": "crates/blanguage/src/spirv/tile.rs",
