@@ -615,9 +615,8 @@ fn content_write_overlap(query:Option<(&address::Origin,u32)>,position:Option<&P
         &&content_word(origin,at).zip(content_word(target,word)).is_some_and(|((_,a),(_,b))|a==b))
         ||position.zip(content_position(target,word).as_ref()).is_some_and(|(a,b)|a==b);
 
-    let affected=complete||position.is_some_and(|position|{
-        let borrow=Borrow::source(Origin::Position(Arc::new(target.clone()))).restricted(when);
-        address::MemoryEffect::of(&borrow,super::Access::Write,None).written_bytes(position,Scalar::U64,None)!=0
+    let affected = complete || position.is_some_and(|position| {
+        address::MemoryEffect::position_may_write(target, when, position)
     });
     (affected,complete)
 }
@@ -645,8 +644,11 @@ impl BorrowEvaluation<'_>{
                 let target=self.evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments));
                 let stored=self.evaluate(&call_content_sources(stored,call,&call.arguments).at_call(&call.arguments));
                 for(source,selected)in target.sources.entries().rev(){
-                    if let Origin::Position(origin)=source {
-                        apply_content_write(result,query,position,origin,*word,&stored,&bounds::Clause::both(&when,&selected));
+                    if let Origin::Position(origin) = source {
+                        let path = bounds::Clause::both(&when, &selected);
+                        if path.possible() {
+                            apply_content_write(result, query, position, origin, *word, &stored, &path);
+                        }
                     }
                 }
             }

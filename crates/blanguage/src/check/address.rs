@@ -365,11 +365,15 @@ pub(super) fn external_memory(borrow: &view::Borrow) -> bool {
 fn source_has_external_memory(source: &view::Source, when: &bounds::Clause) -> bool {
     match source {
         view::Source::External => true,
-        view::Source::Position(origin) => match &origin.root {
-            Root::External(_) => origin.memory_positions(when).is_none(),
-            Root::Derived(borrow) => external_memory(borrow),
-            _ => false,
-        },
+        view::Source::Position(origin) => position_has_external_memory(origin, when),
+        _ => false,
+    }
+}
+
+fn position_has_external_memory(origin: &Origin, when: &bounds::Clause) -> bool {
+    match &origin.root {
+        Root::External(_) => origin.memory_positions(when).is_none(),
+        Root::Derived(borrow) => external_memory(borrow),
         _ => false,
     }
 }
@@ -446,6 +450,12 @@ impl MemoryEffect {
             }))
         })
     }
+    // The content producer has already selected this position on a feasible write path.
+    pub(super) fn position_may_write(origin: &Origin, when: &bounds::Clause, position: &Position) -> bool {
+        position_has_external_memory(origin, when)
+            || origin.writable && Self::origin_written_bytes(origin, when, position, Scalar::U64, None) != 0
+    }
+
     pub(super) fn written_bytes(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
         self.accessed_bytes(position,scalar,index,Access::writes)
     }
