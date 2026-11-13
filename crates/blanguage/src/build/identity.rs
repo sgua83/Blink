@@ -1,6 +1,6 @@
 //! 构建输入只交接已消费的声明与实际实现；COFF和入口映像共用同一编码。
 use super::{ByteField, hash, Result};
-use crate::module::codec::{Decode, Encode, record, variants};
+use crate::module::codec::{Decode, Encode, Writer, record, variants};
 use std::{collections::BTreeMap, io::Error, path::Path};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Declaration {
@@ -63,73 +63,166 @@ pub struct Inputs {
     pub declarations: Vec<Declaration>,
 }
 record!(Inputs { source, imports, native, declarations });
-pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbols: impl IntoIterator<Item = &'a str>, used: &[Declaration]) -> [u8; 32] {
-    let mut bytes = Vec::new();
-    for symbol in symbols {
-        hash::field(&mut bytes, symbol.as_bytes());
-        // 实例与域入口复用原源声明，名字规则来自generics::key／domain::symbol。
-        let end = symbol.find(['<', '#']).unwrap_or(symbol.len());
-        let declaration = declarations.functions.get(&symbol[..end]);
-        let input = imported.and_then(|imports| imports.modules.values()
-            .find(|input| input.definitions.contains_key(symbol)));
-        match (input, declaration) {
-            (Some(input), Some(declaration)) => {
-                hash::field(&mut bytes, &[1]);
-                hash::field(&mut bytes, &input.definitions[symbol]);
-                let span = declaration.function.span();
-                hash::field(&mut bytes, declaration.source.text[span.start..span.end].as_bytes());
-                match input.requirements.get(&symbol[..end]) {
-                    Some(requirement) => hash::field(&mut bytes, &[1, match requirement {
-                        crate::execution::Requirement::Invocation => 0,
-                        crate::execution::Requirement::Domain => 1,
-                        crate::execution::Requirement::Host => 2,
-                    }]),
-                    None => hash::field(&mut bytes, &[0]),
-                }
-            }
-            _ => hash::field(&mut bytes, &[0]),
-        }
-    }
-    hash::field(&mut bytes, &(used.len() as u64).to_le_bytes());
-    for entry in used {
-        hash::field(&mut bytes, &entry.bytes());
-        let input = match entry {
-            Declaration::ValueName { name, module, imports } | Declaration::RecordName { name, module, imports } => {
-                match declarations.resolve(name, module, imports, matches!(entry, Declaration::ValueName { .. })) {
-                    crate::frontend::NameResolution::Missing => hash::field(&mut bytes, &None::<String>.bytes()),
-                    crate::frontend::NameResolution::Unique(name) => hash::field(&mut bytes, &Some(name).bytes()),
-                    crate::frontend::NameResolution::Ambiguous => hash::field(&mut bytes, &[2]),
-                }
-                continue;
-            }
-            Declaration::TypeSetName { name, module, imports } => {
-                hash::field(&mut bytes, &declarations.resolve_type_set(name, module, imports).bytes());
-                continue;
-            }
-            Declaration::Constant(key) => declarations.functions.get(key)
-                .filter(|definition| definition.function.kind() == crate::ast::FunctionKind::Constant)
-                .map(|definition| (&definition.source, definition.function.span())),
-            Declaration::Record(key) => declarations.records.get(key)
-                .map(|(record, source, ..)| (source, record.span())),
-            Declaration::TypeSet(key) => declarations.type_sets.get(key)
-                .map(|(set, source, ..)| (source, set.span())),
-            Declaration::External(key) => declarations.functions.get(key)
-                .filter(|definition| definition.function.external().is_some())
-                .map(|definition| (&definition.source, definition.function.span())),
-            Declaration::Implementation(key) => declarations.functions.get(key)
-                .filter(|definition| definition.function.body().is_some())
-                .map(|definition| {
-                    hash::field(&mut bytes, &[definition.execution as u8]);
-                    (&definition.source, definition.function.span())
-                }),
+#[repr(C)]
+struct BuildSymbol {
+    name: ByteField,
+    contract: ByteField,
+    declaration: ByteField,
+    bound: u32,
+    requirement: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct BuildRegion {
+    start: usize,
+    length: usize,
+}
+
+#[repr(u32)]
+enum BuildReferenceKind {
+    Missing,
+    Source,
+    Query,
+    Implementation,
+}
+
+#[repr(C)]
+struct BuildReference {
+    key: BuildRegion,
+    query: BuildRegion,
+    source: ByteField,
+    kind: BuildReferenceKind,
+    execution: u32,
+}
+
+#[repr(C)]
+struct BuildReferences {
+    symbols: *const BuildSymbol,
+    symbol_count: usize,
+    references: *const BuildReference,
+    reference_count: usize,
+    encoded: *const u8,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.metadata::encode_build_references"]
+    fn encode_build_references(input: BuildReferences, output: *mut u8) -> usize;
+}
+
+fn build_region(encoded: &mut Writer, write: impl FnOnce(&mut Writer)) -> BuildRegion {
+    let start = encoded.0.len();
+    write(encoded);
+    BuildRegion { start, length: encoded.0.len() - start }
+}
+
+fn build_symbol(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbol: &str)
+    -> BuildSymbol
+{
+    let empty = &[][..];
+    let mut result = BuildSymbol {
+        name: symbol.as_bytes().into(), contract: empty.into(), declaration: empty.into(),
+        bound: 0, requirement: 0,
+    };
+    // Instances and domain entry points use the original declaration name.
+    let end = symbol.find(['<', '#']).unwrap_or(symbol.len());
+    let name = &symbol[..end];
+    let declaration = declarations.functions.get(name);
+    let input = imported.and_then(|imports| imports.modules.values().find_map(|input| {
+        input.definitions.get(symbol).map(|contract| (input, contract))
+    }));
+    if let (Some(declaration), Some((input, contract))) = (declaration, input) {
+        let span = declaration.function.span();
+        result.contract = contract.as_slice().into();
+        result.declaration = declaration.source.text[span.start..span.end].as_bytes().into();
+        result.bound = 1;
+        result.requirement = match input.requirements.get(name) {
+            None => 0,
+            Some(crate::execution::Requirement::Invocation) => 1,
+            Some(crate::execution::Requirement::Domain) => 2,
+            Some(crate::execution::Requirement::Host) => 3,
         };
-        match input {
-            Some((source, span)) => {
-                hash::field(&mut bytes, &[1]);
-                hash::field(&mut bytes, source.text[span.start..span.end].as_bytes());
-            }
-            None => hash::field(&mut bytes, &[0]),
+    }
+    result
+}
+
+fn build_reference(declarations: &crate::Declarations, entry: &Declaration, encoded: &mut Writer)
+    -> BuildReference
+{
+    let mut row = BuildReference {
+        key: build_region(encoded, |writer| entry.encode(writer)),
+        query: BuildRegion::default(), source: (&[][..]).into(),
+        kind: BuildReferenceKind::Missing, execution: 0,
+    };
+    let input = match entry {
+        Declaration::ValueName { name, module, imports } | Declaration::RecordName { name, module, imports } => {
+            row.kind = BuildReferenceKind::Query;
+            row.query = build_region(encoded, |writer| {
+                match declarations.resolve(name, module, imports, matches!(entry, Declaration::ValueName { .. })) {
+                    crate::frontend::NameResolution::Missing => None::<String>.encode(writer),
+                    crate::frontend::NameResolution::Unique(name) => Some(name).encode(writer),
+                    crate::frontend::NameResolution::Ambiguous => 2u8.encode(writer),
+                }
+            });
+            return row;
         }
+        Declaration::TypeSetName { name, module, imports } => {
+            row.kind = BuildReferenceKind::Query;
+            row.query = build_region(encoded, |writer| {
+                declarations.resolve_type_set(name, module, imports).encode(writer);
+            });
+            return row;
+        }
+        Declaration::Constant(key) => declarations.functions.get(key)
+            .filter(|definition| definition.function.kind() == crate::ast::FunctionKind::Constant)
+            .map(|definition| (&definition.source, definition.function.span())),
+        Declaration::Record(key) => declarations.records.get(key)
+            .map(|(record, source, ..)| (source, record.span())),
+        Declaration::TypeSet(key) => declarations.type_sets.get(key)
+            .map(|(set, source, ..)| (source, set.span())),
+        Declaration::External(key) => declarations.functions.get(key)
+            .filter(|definition| definition.function.external().is_some())
+            .map(|definition| (&definition.source, definition.function.span())),
+        Declaration::Implementation(key) => declarations.functions.get(key)
+            .filter(|definition| definition.function.body().is_some())
+            .map(|definition| {
+                row.execution = definition.execution as u32;
+                (&definition.source, definition.function.span())
+            }),
+    };
+    if let Some((source, span)) = input {
+        row.source = source.text[span.start..span.end].as_bytes().into();
+        row.kind = if matches!(entry, Declaration::Implementation(_)) {
+            BuildReferenceKind::Implementation
+        } else {
+            BuildReferenceKind::Source
+        };
+    }
+    row
+}
+
+pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
+    symbols: impl IntoIterator<Item = &'a str>, used: &[Declaration],
+) -> [u8; 32] {
+    let symbols: Vec<_> = symbols.into_iter()
+        .map(|symbol| build_symbol(declarations, imported, symbol)).collect();
+    let mut encoded = Writer(Vec::new());
+    let references: Vec<_> = used.iter()
+        .map(|entry| build_reference(declarations, entry, &mut encoded)).collect();
+    // The symbol has at most five length prefixes and three status bytes.
+    // A declaration has at most four prefixes and two status bytes.
+    let capacity = 16 + encoded.0.len()
+        + symbols.iter().map(|row| 43 + row.name.length + row.contract.length + row.declaration.length).sum::<usize>()
+        + references.iter().map(|row| 34 + row.source.length).sum::<usize>();
+    let input = BuildReferences {
+        symbols: symbols.as_ptr(), symbol_count: symbols.len(),
+        references: references.as_ptr(), reference_count: references.len(),
+        encoded: encoded.0.as_ptr(),
+    };
+    let mut bytes = Vec::with_capacity(capacity);
+    unsafe {
+        let length = encode_build_references(input, bytes.as_mut_ptr());
+        bytes.set_len(length);
     }
     hash::digest(&bytes)
 }

@@ -46,3 +46,18 @@ extern "C" void encode_build_image(u64 magic,MetadataBytes identity,MetadataByte
 
 // Output has one 64-bit length and the actual bytes for each borrowed field.
 extern "C" void encode_build_fields(address fields,u64 count,address output) on cpu;
+
+struct BuildSymbol {
+    MetadataBytes name; MetadataBytes contract; MetadataBytes declaration;
+    u32 bound; u32 requirement;
+};
+struct BuildRegion { u64 start; u64 length; };
+struct BuildReference {
+    BuildRegion key; BuildRegion query; MetadataBytes source;
+    u32 kind; u32 execution;
+};
+struct BuildReferences {
+    address symbols; u64 symbol_count; address references; u64 reference_count;
+    address encoded;
+};
+extern "C" u64 encode_build_references(BuildReferences input,address output) on cpu;

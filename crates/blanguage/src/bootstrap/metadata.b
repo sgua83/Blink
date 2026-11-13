@@ -255,3 +255,54 @@ extern "C" void encode_build_fields(address fields,u64 count,address output) on 
         index+=1u64;
     }
 }
+
+u64 build_tag(address output,u64 at,u8 tag) on cpu {
+    u64 begin=wide_word(output,at,1u64);
+    unsafe_position<u8>(unsafe_address(address_bits(output)+begin))=tag;
+    return begin+1u64;
+}
+
+MetadataBytes build_region(address bytes,BuildRegion region) on cpu {
+    return MetadataBytes(unsafe_address(address_bits(bytes)+region.start),region.length);
+}
+
+extern "C" u64 encode_build_references(BuildReferences input,address output) on cpu {
+    u64 at=0u64;
+    u64 index=0u64;
+    while(index<input.symbol_count){
+        BuildSymbol symbol=unsafe_position<BuildSymbol>(
+            unsafe_address(address_bits(input.symbols)+index*size_of<BuildSymbol>()));
+        at=resource_field(output,at,symbol.name);
+        at=build_tag(output,at,u8(symbol.bound));
+        if(symbol.bound!=0){
+            at=resource_field(output,at,symbol.contract);
+            at=resource_field(output,at,symbol.declaration);
+            if(symbol.requirement==0){
+                at=build_tag(output,at,u8(0));
+            }else{
+                u64 begin=wide_word(output,at,2u64);
+                unsafe_position<u8>(unsafe_address(address_bits(output)+begin))=u8(1);
+                unsafe_position<u8>(unsafe_address(address_bits(output)+begin+1u64))=u8(symbol.requirement-1);
+                at=begin+2u64;
+            }
+        }
+        index+=1u64;
+    }
+    u64 begin=wide_word(output,at,8u64);
+    at=wide_word(output,begin,input.reference_count);
+    index=0u64;
+    while(index<input.reference_count){
+        BuildReference row=unsafe_position<BuildReference>(
+            unsafe_address(address_bits(input.references)+index*size_of<BuildReference>()));
+        at=resource_field(output,at,build_region(input.encoded,row.key));
+        if(row.kind==2){
+            at=resource_field(output,at,build_region(input.encoded,row.query));
+        }else{
+            if(row.kind==3){at=build_tag(output,at,u8(row.execution));}
+            at=build_tag(output,at,u8(row.kind==0 ? 0 : 1));
+            if(row.kind!=0){at=resource_field(output,at,row.source);}
+        }
+        index+=1u64;
+    }
+    return at;
+}
