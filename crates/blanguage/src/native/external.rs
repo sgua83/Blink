@@ -7,10 +7,12 @@ use std::ffi::c_void;
 #[repr(C)]
 pub(super) struct AbiType { size: u32, alignment: u32, value: u64 }
 impl AbiType {
-    fn value(ty: &Ty) -> Self { Self { size: ty.size, alignment: ty.align, value: 1 } }
+    pub(super) fn value(ty: &Ty) -> Self { Self { size: ty.size, alignment: ty.align, value: 1 } }
+
+    pub(super) fn reference() -> Self { Self { size: 0, alignment: 1, value: 0 } }
 
     pub(super) fn result(ty: Option<&Ty>) -> Self {
-        ty.map_or(Self { size: 0, alignment: 1, value: 0 }, Self::value)
+        ty.map_or_else(Self::reference, Self::value)
     }
 }
 #[repr(C)]
@@ -59,8 +61,6 @@ unsafe extern "C" {
         component: unsafe extern "C" fn(*const c_void, u64) -> AbiMemoryComponent, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::abi_stack_pointer"]
     fn encode_abi_stack_pointer(offset: u32, slot: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.call_layout::indirect"]
-    fn indirect_value(size: u32, alignment: u32) -> bool;
     #[link_name = "bootstrap.x64_instruction::argument_register"]
     fn encode_argument_register(slot: u8, float_size: u32, to_home: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::symbol_target"]
@@ -80,11 +80,8 @@ unsafe extern "C" {
 unsafe extern "C" fn argument_type(context: *const c_void, index: usize) -> AbiType {
     match &unsafe { &*context.cast::<Call>() }.arguments[index] {
         CallArgument::Value { ty, .. } => AbiType::value(ty),
-        CallArgument::Reference { .. } => AbiType { size: 0, alignment: 1, value: 0 },
+        CallArgument::Reference { .. } => AbiType::reference(),
     }
-}
-pub(super) fn indirect(ty: &Ty) -> bool {
-    unsafe { indirect_value(ty.size, ty.align) }
 }
 pub(super) fn float_size(ty: &Ty) -> u32 {
     if *ty == Ty::scalar(Scalar::F32) {

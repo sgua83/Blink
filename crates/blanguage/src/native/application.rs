@@ -15,7 +15,8 @@ pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'sta
         Some(&function.name),
     )
 }
-use super::external::{AbiMemoryMode, AbiType, float_size, indirect};
+use super::external::{AbiMemoryMode, AbiType, float_size};
+use std::ffi::c_void;
 
 #[repr(C)]
 struct FunctionFrame {
@@ -25,10 +26,29 @@ struct FunctionFrame {
     hidden: u64,
 }
 
+#[repr(C)]
+struct ParameterSlot {
+    index: usize,
+    home: u64,
+    indirect: u64,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.call_layout::parameter_slots"]
+    fn parameter_slots(context: *const c_void, count: usize, first_slot: u64,
+        parameter: unsafe extern "C" fn(*const c_void, usize) -> AbiType,
+        positions: *mut ParameterSlot) -> usize;
     #[link_name = "bootstrap.call_layout::function_frame"]
     fn function_frame(data_end: u64, result: AbiType, flags: u32) -> FunctionFrame;
 }
+unsafe extern "C" fn parameter_type(context: *const c_void, index: usize) -> AbiType {
+    let parameters = unsafe { &*context.cast::<&[CallParameter]>() };
+    match &parameters[index].kind {
+        CallParameterKind::Value(ty) => AbiType::value(ty),
+        CallParameterKind::Reference { .. } => AbiType::reference(),
+    }
+}
+
 fn emit_value(
     body: &ValueCode,
     parameters: &[CallParameter],
@@ -132,22 +152,29 @@ fn emit_value(
     };
     // Home every register argument before allocation, probing or input moves may overwrite it.
     // These are the Windows x64 caller-provided home slots, not another parameter copy owner.
-    let parameters = parameters.iter().enumerate()
-        .filter(|(_, parameter)| !matches!(&parameter.kind, CallParameterKind::Value(ty) if ty.size == 0));
-    for (slot, value) in hidden.then_some(None).into_iter()
-        .chain(parameters.clone().map(Some)).take(4).enumerate()
-    {
+    let mut slots = Vec::with_capacity(parameters.len());
+    let context = (&parameters as *const &[CallParameter]).cast();
+    let count = unsafe {
+        parameter_slots(context, parameters.len(), plan.hidden, parameter_type, slots.as_mut_ptr())
+    };
+    // The B planner initialized one row per parameter with a physical slot.
+    unsafe { slots.set_len(count); }
+    if hidden {
         let start = e.code.len();
-        let size = match value.map(|(_, parameter)| &parameter.kind) {
-            Some(CallParameterKind::Value(ty)) => float_size(ty),
-            _ => 0,
+        e.argument_register(0, 0, true);
+        e.abi_range(start, AbiRangeKind::HiddenResultHome { slot: 0 });
+    }
+    for row in slots.iter().take_while(|row| row.home < 32) {
+        let start = e.code.len();
+        let parameter = &parameters[row.index];
+        let size = match &parameter.kind {
+            CallParameterKind::Value(ty) => float_size(ty),
+            CallParameterKind::Reference { .. } => 0,
         };
+        let slot = (row.home / 8) as usize;
         e.argument_register(slot, size, true);
-        e.abi_range(start, match value {
-            None => AbiRangeKind::HiddenResultHome { slot },
-            Some((index, parameter)) => AbiRangeKind::ParameterHome {
-                slot, parameter_index: index, origin: parameter.origin.clone(),
-            },
+        e.abi_range(start, AbiRangeKind::ParameterHome {
+            slot, parameter_index: row.index, origin: parameter.origin.clone(),
         });
     }
     if scratch {
@@ -168,15 +195,16 @@ fn emit_value(
         e.abi_range(start, AbiRangeKind::ResultAddressSave { stack_offset: at });
     }
     let mut inputs = body.inputs.as_slice();
-    for (slot, (i, parameter)) in parameters.enumerate() {
+    for row in slots {
         let start = e.code.len();
-        let slot = slot + usize::from(hidden);
-        let address = home + slot as u32 * 8;
+        let parameter = &parameters[row.index];
+        let slot = (row.home / 8) as usize;
+        let address = home + row.home as u32;
         match &parameter.kind {
             CallParameterKind::Value(ty) => {
                 let (values, rest) = inputs.split_at(ty.components.len());
                 inputs = rest;
-                let mode = if indirect(ty) { AbiMemoryMode::IndirectParameter } else { AbiMemoryMode::StackLoad };
+                let mode = if row.indirect != 0 { AbiMemoryMode::IndirectParameter } else { AbiMemoryMode::StackLoad };
                 e.abi_memory_value(address, ty, values, mode);
             }
             CallParameterKind::Reference { .. } => {
@@ -187,7 +215,7 @@ fn emit_value(
             }
         }
         e.abi_range(start, AbiRangeKind::ParameterInput { slot,
-                parameter_index: i, origin: parameter.origin.clone() });
+                parameter_index: row.index, origin: parameter.origin.clone() });
     }
     // 最外退出属于本函数，嵌套Scope继续拥有各自的Exit。
     e.exits.push(Vec::new());

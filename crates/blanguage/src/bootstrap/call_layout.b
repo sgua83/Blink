@@ -3,10 +3,18 @@ module bootstrap.call_layout;
 u32 padded(u32 size, u32 alignment) on cpu {
     return (size + alignment - 1) & ~(alignment - 1);
 }
-extern "C" bool indirect(u32 size, u32 alignment) on cpu {
+bool indirect(u32 size, u32 alignment) on cpu {
     u32 bytes = padded(size, alignment);
     return bytes != 0 && bytes != 1 && bytes != 2 && bytes != 4 && bytes != 8;
 }
+bool has_slot(AbiType value) on cpu {
+    return value.value == 0u64 || value.size != 0;
+}
+
+u64 slot_home(u64 first_slot, u64 position) on cpu {
+    return (first_slot + position) * 8u64;
+}
+
 struct ValueCopy { u64 offset; u64 end; u64 present; };
 
 ValueCopy copy_value(u64 start, u32 size, u32 alignment) on cpu {
@@ -37,7 +45,7 @@ extern "C" CallPlan plan(address context, u64 count, AbiType result, u32 flags,
     u64 index = 0u64;
     while (index < count) {
         AbiType value = argument(context, index);
-        if (value.value == 0u64 || value.size != 0) { slots += 1u64; }
+        if (has_slot(value)) { slots += 1u64; }
         index += 1u64;
     }
     u64 arguments = slots;
@@ -55,8 +63,8 @@ extern "C" CallPlan plan(address context, u64 count, AbiType result, u32 flags,
     index = 0u64;
     while (index < count) {
         AbiType value = argument(context, index);
-        if (value.value == 0u64 || value.size != 0) {
-            u64 home = (first_slot + position) * 8u64;
+        if (has_slot(value)) {
+            u64 home = slot_home(first_slot, position);
             ValueCopy copy = ValueCopy(home, bytes, 0u64);
             if (value.value != 0u64) {
                 copy = copy_value(bytes, value.size, value.alignment);
@@ -78,4 +86,22 @@ extern "C" CallPlan plan(address context, u64 count, AbiType result, u32 flags,
         bytes += 8u64;
     }
     return CallPlan((bytes + 15u64) & ~15u64, result_at, target, first_slot, arguments);
+}
+
+extern "C" u64 parameter_slots(address context, u64 count, u64 first_slot,
+    cfn<AbiType,address,u64> parameter, address positions) on cpu requires nonzero(parameter) {
+    u64 position = 0u64;
+    u64 index = 0u64;
+    while (index < count) {
+        AbiType value = parameter(context, index);
+        if (has_slot(value)) {
+            bool indirect_value = value.value != 0u64 && indirect(value.size, value.alignment);
+            address row = unsafe_address(address_bits(positions) + position * size_of<ParameterSlot>());
+            unsafe_position<ParameterSlot>(row) = ParameterSlot(
+                index, slot_home(first_slot, position), indirect_value ? 1u64 : 0u64);
+            position += 1u64;
+        }
+        index += 1u64;
+    }
+    return position;
 }
