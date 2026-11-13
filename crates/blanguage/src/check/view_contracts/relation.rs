@@ -418,7 +418,7 @@ struct Query<'g,'e,'f>{graph:&'g Graph,relation:Arc<Graph>,variables:&'g BTreeMa
 impl Query<'_,'_,'_>{
     fn node(&self,id:usize)->Borrow{self.variables.get(&id).unwrap_or_else(||&self.values[&id]).clone()}
     fn definition(&mut self, id: usize) -> Borrow {
-        let Node { seeds, edges } = self.graph.nodes[id].clone();
+        let Node { seeds, edges } = self.local_definition(id);
         let mut value = Borrow { sources: seeds.sources, ..Borrow::default() };
         for edge in edges {
             let from = self.node(edge.from);
@@ -431,16 +431,6 @@ impl Query<'_,'_,'_>{
     fn deferred(&self,id:usize)->Borrow{Borrow::source(Origin::Relation(self.relation.clone(),id))}
     fn apply(&mut self,id:usize,from_id:usize,op:&Op,from:&Borrow)->Borrow{
         if let Op::Read{word,epoch,frame}=op{return self.read(id,from_id,from,*word,epoch,*frame);}
-        if let Op::Initial { .. } = op {
-            let node = self.local_definition(id);
-            let mut value = node.seeds;
-            for edge in node.edges {
-                let incoming = self.node(edge.from);
-                let path = edge.when.assume(&bounds::Clause::default(), true);
-                value.sources.union(&incoming.sources.restricted(&path));
-            }
-            return value;
-        }
         from.map_sources(|source|match op{Op::Identity=>Borrow::source(source),Op::Resources=>Borrow::source(source).resources(),Op::Owners=>Borrow::source(source).owners(),Op::Select(indices)=>Borrow::source(source).select_elements(indices),Op::Element{fields,index}=>Borrow::element(Borrow::source(source),fields.clone(),*index),Op::Projection(fields)=>Borrow::projection(Borrow::source(source),fields.clone()),Op::Position(p)=>p.map_borrows(|_|Borrow::source(source)).normalize(),Op::Read{..}|Op::Initial{..}=>Borrow::default()})
     }
     fn local_definition(&self,id:usize)->Node{
