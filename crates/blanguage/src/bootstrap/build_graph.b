@@ -118,7 +118,8 @@ bool expand_providers(GraphInput input,GraphOutput output,Scratch work,handle he
                 id=edge.index;
                 inherited=range_at(output.providers,id);
             }
-            u64 child=0u64;
+            // Once a provider is present, its inherited range is already present.
+            u64 child=u64(word(work.seen,id)==stamp)*inherited.count;
             while (child<=inherited.count) {
                 u64 provider=child<inherited.count ? word(providers.ids,inherited.start+child) : id;
                 if (!append_provider(providers,heap,work.seen,stamp,provider)) { return false; }
