@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "36c6d270721d46a0e005a34e7c8759f1fbdb2d666be99616cbe3df2ad01a9517"
+      "sha256": "0814a7e30ebc2c1d0e4a004a888c86047d2dd474ea9d8cddc9fced94a636e88d"
     },
     {
       "path": "crates/blanguage/src/application.rs",
@@ -20,7 +20,7 @@
     },
     {
       "path": "crates/blanguage/src/bin/blink.rs",
-      "sha256": "3432b193adcb29e2309cf0350334f461c2692d527250a914418b528c1db4388b"
+      "sha256": "c3c4b3d531f8d467cb6047cb92fd0b4af5e56530d14fc5727bb1b4dc4e40c494"
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.b",
@@ -53,6 +53,14 @@
     {
       "path": "crates/blanguage/src/bootstrap/call_layout.h",
       "sha256": "def5e2b148d4778f7eb626f09f670dd3d26514a2eb59eac0b4e43c40133f1eaa"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/cli.b",
+      "sha256": "6b3ab1c6ba9f7edd2a09df4a059946d157c496740f0ff3a6b70e9f894c513147"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/cli.h",
+      "sha256": "0be3f37e172ce69c687bae5d92b76c4da83877c71ed5592c24289048113f8e15"
     },
     {
       "path": "crates/blanguage/src/bootstrap/coff.b",
@@ -117,14 +125,6 @@
     {
       "path": "crates/blanguage/src/bootstrap/lexer.h",
       "sha256": "f52f2a01f46cae964be1f585d58af3ea05b17805d84d8a3606841bf22ad7766b"
-    },
-    {
-      "path": "crates/blanguage/src/bootstrap/link_cli.b",
-      "sha256": "663bdedba50e771180c7b5e669d7caf2f7cd44cd91a278be208c8140f1c66de8"
-    },
-    {
-      "path": "crates/blanguage/src/bootstrap/link_cli.h",
-      "sha256": "82738d18da641b6920803e3516928f9254cf453fd910c4f6d4669daf05de1b12"
     },
     {
       "path": "crates/blanguage/src/bootstrap/metadata.b",
@@ -577,6 +577,10 @@
     {
       "path": "crates/blanguage/src/linker/selection.rs",
       "sha256": "c6fa1c54a942963629badca1635d83f14b547aa8e6d652349787e3991021e177"
+    },
+    {
+      "path": "crates/blanguage/src/main.rs",
+      "sha256": "a1c70f9ca5d56ce8e2cea698f16d229f1039e572f5ab69347d4358f0ad750601"
     },
     {
       "path": "crates/blanguage/src/module/domain.rs",

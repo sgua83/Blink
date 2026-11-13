@@ -7,7 +7,118 @@ mod json;
 mod layout_facts;
 mod x64_facts;
 mod spirv_facts;
-use std::{path::PathBuf, process::ExitCode};
+
+use std::{ffi::OsString, num::NonZeroUsize, path::{Path, PathBuf}, process::ExitCode};
+
+#[repr(C)]
+struct Argument {
+    bytes: *const u8,
+    length: u64,
+    text: u64,
+}
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum CompileCommand {
+    Unknown, Version, Help, Inputs, X64, Image, Code, Spirv, Layout, Ir, Object, Check, Build,
+}
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum CompileError {
+    None, MissingResourceOperand, ResourceText, DuplicateJobs, DuplicateCpus,
+    DuplicateParameterLimit, EmptyNumber, InvalidNumber, Overflow, ZeroJobs,
+    CpuSyntax, ResourceConflict, InputsUsage, CommandText, MissingSource,
+    UnknownCommand, MissingOptionOperand, OptionText, UnknownOption, BudgetText,
+    EntryText, InstanceText, BudgetWithoutReport, MissingOutput,
+}
+
+#[repr(C)]
+struct CompileCommandLine {
+    command: CompileCommand,
+    prefix_error: CompileError,
+    error: CompileError,
+    max_parameter_bytes: u32,
+    command_index: usize,
+    error_index: usize,
+    source_index: usize,
+    output_index: usize,
+    root_index: usize,
+    entry_index: usize,
+    program_index: usize,
+    report_index: usize,
+    budget: u64,
+    has_budget: u64,
+    as_module: u64,
+    jobs: usize,
+    cpu_count: usize,
+    has_parameter_limit: u64,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.cli::parse_compile_arguments"]
+    fn parse_compile_arguments(
+        arguments: *const Argument,
+        count: usize,
+        roles: *mut u8,
+        cpus: *mut u32,
+    ) -> CompileCommandLine;
+}
+
+impl CompileError {
+    fn result(self, args: &[OsString], index: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let message = match self {
+            Self::None => return Ok(()),
+            Self::MissingResourceOperand => return Err(format!("{}缺少参数", args[index].to_string_lossy()).into()),
+            Self::ResourceText => "编译资源参数不是UTF-8文本",
+            Self::DuplicateJobs => "--jobs不能重复指定",
+            Self::DuplicateCpus => "--cpus不能重复指定",
+            Self::DuplicateParameterLimit => "--max-parameter-bytes不能重复指定",
+            Self::EmptyNumber => "cannot parse integer from empty string",
+            Self::InvalidNumber => "invalid digit found in string",
+            Self::Overflow => "number too large to fit in target type",
+            Self::ZeroJobs => "number would be zero for non-zero type",
+            Self::CpuSyntax => "CPU写为组:编号",
+            Self::ResourceConflict => "--jobs与--cpus选择一种编译资源声明",
+            Self::InputsUsage => "用法：bc inputs <compiled.obj|entry.blbi>",
+            Self::CommandText => "命令不是UTF-8文本",
+            Self::MissingSource => "缺少 .b 文件",
+            Self::UnknownCommand => return Err(format!(
+                "未知命令 {}；编译使用 bc -c，链接使用 blink", args[index].to_string_lossy()
+            ).into()),
+            Self::MissingOptionOperand => "编译选项缺少参数",
+            Self::OptionText => "编译选项不是UTF-8文本",
+            Self::UnknownOption => return Err(format!("未知编译选项 {}", args[index].to_string_lossy()).into()),
+            Self::BudgetText => "栈预算不是UTF-8文本",
+            Self::EntryText => "入口不是UTF-8文本",
+            Self::InstanceText => "实例不是UTF-8文本",
+            Self::BudgetWithoutReport => "--stack-budget需要--stack-report输出",
+            Self::MissingOutput => "缺少 -o 目标文件路径",
+        };
+        Err(message.into())
+    }
+}
+
+impl CompileCommandLine {
+    fn compiler(&self, cpus: &[u32]) -> std::io::Result<blanguage::Compiler> {
+        let compiler = if self.cpu_count != 0 {
+            let processors = cpus[..self.cpu_count].iter().map(|&cpu| blanguage::Processor {
+                group: (cpu >> 8) as u16,
+                number: cpu as u8,
+            }).collect();
+            blanguage::Compiler::on_processors(processors)?
+        } else if let Some(jobs) = NonZeroUsize::new(self.jobs) {
+            blanguage::Compiler::with_workers(jobs)
+        } else {
+            blanguage::Compiler::available()?
+        };
+        Ok(if self.has_parameter_limit != 0 {
+            compiler.with_max_parameter_bytes(self.max_parameter_bytes)
+        } else {
+            compiler
+        })
+    }
+}
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -17,142 +128,60 @@ fn main() -> ExitCode {
         }
     }
 }
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() == 1 && args[0] == "--version" {
-        println!("Blink compiler {}", include_str!("../../../VERSION").trim());
-        return Ok(());
-    }
-    if args.first().is_some_and(|arg| arg == "inputs") {
-        if args.len() != 2 { return Err("用法：bc inputs <compiled.obj|entry.blbi>".into()); }
-        return input_facts::print(std::path::Path::new(&args[1]));
-    }
-    if args.first().is_some_and(|arg| arg == "x64") { return x64_facts::print(&args); }
-    if args.first().is_some_and(|arg| arg == "image") { return image_export::export(&args); }
-    if args.first().is_some_and(|arg| arg == "code") { return code_facts::print(&args); }
-    if args.first().is_some_and(|arg| arg == "spirv") { return spirv_facts::print(&args); }
-    let mut jobs = None;
-    let mut cpus = None;
-    let mut max_parameter_bytes = None;
-    while args.first().is_some_and(|arg| matches!(arg.to_str(), Some("--jobs" | "--cpus" | "--max-parameter-bytes"))) {
-        let option = args.remove(0);
-        if args.is_empty() { return Err(format!("{}缺少参数", option.to_string_lossy()).into()); }
-        let value = args.remove(0);
-        let value = value.to_str().ok_or("编译资源参数不是UTF-8文本")?;
-        if option == "--jobs" {
-            if jobs.is_some() { return Err("--jobs不能重复指定".into()); }
-            jobs = Some(value.parse::<std::num::NonZeroUsize>()?);
-        } else if option == "--cpus" {
-            if cpus.is_some() { return Err("--cpus不能重复指定".into()); }
-            cpus = Some(value.split(',').map(|cpu| {
-                let (group, number) = cpu.split_once(':').ok_or("CPU写为组:编号")?;
-                Ok::<_, Box<dyn std::error::Error>>(blanguage::Processor {
-                    group: group.parse()?, number: number.parse()?,
-                })
-            }).collect::<Result<Vec<_>, _>>()?);
-        } else {
-            if max_parameter_bytes.is_some() { return Err("--max-parameter-bytes不能重复指定".into()); }
-            max_parameter_bytes = Some(value.parse::<u32>()?);
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let arguments: Vec<_> = args.iter().map(|arg| {
+        let bytes = arg.as_encoded_bytes();
+        Argument { bytes: bytes.as_ptr(), length: bytes.len() as u64, text: u64::from(arg.to_str().is_some()) }
+    }).collect();
+    let longest = arguments.iter().map(|arg| arg.length as usize).max().unwrap_or(0);
+    // The smallest processor spelling is g:n, with one comma between entries.
+    let mut cpus = vec![0; (longest + 1) / 4];
+    let mut roles = vec![0; args.len()];
+    // B borrows the original argument bytes and writes only within the two buffers.
+    let line = unsafe {
+        parse_compile_arguments(arguments.as_ptr(), args.len(), roles.as_mut_ptr(), cpus.as_mut_ptr())
+    };
+    line.prefix_error.result(&args, line.error_index)?;
+    match line.command {
+        CompileCommand::Version => {
+            println!("Blink compiler {}", include_str!("../../../VERSION").trim());
+            return Ok(());
         }
-    }
-    if jobs.is_some() && cpus.is_some() { return Err("--jobs与--cpus选择一种编译资源声明".into()); }
-    if args.is_empty() || args[0] == "--help" {
-        println!(
+        CompileCommand::Help => {
+            println!(
             "Blink compiler\nbc --version\nbc inputs <compiled.obj|entry.blbi>\nbc image <entry.blbi> -o <deployment.blri>\nbc code <entry.blbi> [--observations <ranges.blcr>]\nbc code --image <deployment.blri> [--observations <ranges.blcr>]\nbc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol]\nbc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]\nbc spirv <module.spv>\nbc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]\nbc layout <module.h|module.b> <type> [-I module-root] [--field path]\nGlobal compile options before command: [--jobs N | --cpus group:number,...] [--max-parameter-bytes N]\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>] [--stack-report report.txt [--stack-budget bytes]]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
         );
-        return Ok(());
-    }
-    let compiler = if let Some(cpus) = cpus {
-        blanguage::Compiler::on_processors(cpus)?
-    } else if let Some(jobs) = jobs {
-        blanguage::Compiler::with_workers(jobs)
-    } else {
-        blanguage::Compiler::available()?
-    };
-    let compiler = if let Some(bytes) = max_parameter_bytes { compiler.with_max_parameter_bytes(bytes) } else { compiler };
-    let command = args[0].to_str().ok_or("命令不是UTF-8文本")?;
-    if command == "layout" { return layout_facts::print(&compiler, &args); }
-    if command == "ir" { return ir_facts::print(&compiler, &args); }
-    let path = PathBuf::from(args.get(1).ok_or("缺少 .b 文件")?);
-    if command == "-c" {
-        let parent = path.parent().unwrap();
-        let mut root = if parent.as_os_str().is_empty() {
-            PathBuf::from(".")
-        } else {
-            parent.to_path_buf()
-        };
-        let mut output = None;
-        let mut stack_report = None;
-        let mut stack_budget = None;
-        let mut entry = "main";
-        let mut program = None;
-        let mut module = false;
-        let mut imports = Vec::new();
-        let mut instances = Vec::new();
-        let mut i = 2;
-        while i < args.len() {
-            if args[i] == "--module" {
-                module = true;
-                i += 1;
-                continue;
-            }
-            let value = args.get(i + 1).ok_or("编译选项缺少参数")?;
-            match args[i].to_str().ok_or("编译选项不是UTF-8文本")? {
-                "-o" => output = Some(PathBuf::from(value)),
-                "--stack-report" => stack_report = Some(PathBuf::from(value)),
-                "--stack-budget" => stack_budget = Some(value.to_str().ok_or("栈预算不是UTF-8文本")?.parse::<u64>()?),
-                "-I" => root = PathBuf::from(value),
-                "--entry" => entry = value.to_str().ok_or("入口不是UTF-8文本")?,
-                "--program" => program = Some(value.to_str().ok_or("入口不是UTF-8文本")?),
-                "--import" => imports
-                    .extend(blanguage::object::Input::read(&PathBuf::from(value))?.objects()?),
-                "--instance" => instances.push(value.to_str().ok_or("实例不是UTF-8文本")?.to_owned()),
-                other => return Err(format!("未知编译选项 {other}").into()),
-            }
-            i += 2;
+            return Ok(());
         }
-        if stack_budget.is_some() && stack_report.is_none() { return Err("--stack-budget需要--stack-report输出".into()); }
-        let output = output.ok_or("缺少 -o 目标文件路径")?;
-        let kind = if module {
-            blanguage::build::ObjectKind::Module(&instances)
-        } else if let Some(entry) = program {
-            let prefix = output.file_stem().and_then(|value| value.to_str())
-                .ok_or("目标文件名不是UTF-8")?;
-            blanguage::build::ObjectKind::Library { entry, prefix }
-        } else {
-            blanguage::build::ObjectKind::Application(entry)
-        };
-        let compiled = compiler.build_object(&path, &root, &imports, kind, &output)
-            .map_err(|error| -> Box<dyn std::error::Error> { error })?;
-        if let Some(path) = stack_report {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            #[cfg(windows)]
-            let _object_input = {
-                use std::os::windows::fs::OpenOptionsExt;
-                std::fs::OpenOptions::new().read(true).share_mode(1).open(&compiled.artifact)?
-            };
-            std::fs::write(path, compiled.object.stack_report(stack_budget))?;
+        CompileCommand::Inputs => {
+            line.error.result(&args, line.error_index)?;
+            return input_facts::print(Path::new(&args[line.source_index]));
         }
-        println!("object {} -> {}{}", compiled.object.name(), output.display(),
-            if compiled.reused { " (reused)" } else { "" });
-        return Ok(());
+        CompileCommand::X64 => return x64_facts::print(&args),
+        CompileCommand::Image => return image_export::export(&args),
+        CompileCommand::Code => return code_facts::print(&args),
+        CompileCommand::Spirv => return spirv_facts::print(&args),
+        _ => {}
     }
-    if !matches!(command, "check" | "build") {
-        return Err(format!("未知命令 {command}；编译使用 bc -c，链接使用 blink").into());
+
+    let compiler = line.compiler(&cpus)?;
+    match line.command {
+        CompileCommand::Layout => return layout_facts::print(&compiler, &args[line.command_index..]),
+        CompileCommand::Ir => return ir_facts::print(&compiler, &args[line.command_index..]),
+        CompileCommand::Object => return build_object(&compiler, &args, &roles, &line),
+        _ => line.error.result(&args, line.error_index)?,
     }
-    let has_output = command == "build";
-    let root = if has_output { args.get(3) } else { args.get(2) }
-        .map(PathBuf::from)
-        .unwrap_or_else(|| path.parent().unwrap().into());
-    let selected = args.get(if has_output { 4 } else { 3 });
-    let compilation = if let Some(entry) = selected {
+    let path = PathBuf::from(&args[line.source_index]);
+    let root = args.get(line.root_index).map(PathBuf::from).unwrap_or_else(|| path.parent().unwrap().into());
+    let has_output = matches!(line.command, CompileCommand::Build);
+    let compilation = if let Some(entry) = args.get(line.entry_index) {
         compiler.compile_entry(&path, &root, entry.to_str().ok_or("入口不是UTF-8文本")?)?
-    } else if command == "check" {
-        compiler.check(&path, &root)?
-    } else {
+    } else if has_output {
         compiler.compile(&path, &root)?
+    } else {
+        compiler.check(&path, &root)?
     };
     if !compilation.open_generics.is_empty() {
         println!(
@@ -169,29 +198,72 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     for p in &programs {
         print!("{}", p.describe());
     }
-    match command {
-        "check" => {
-            if programs.is_empty() {
-                println!("library {} checked", path.display());
-            }
+    if has_output {
+        let out = PathBuf::from(args.get(line.output_index).ok_or("缺少输出目录")?);
+        std::fs::create_dir_all(&out)?;
+        for (index, p) in programs.iter().enumerate() {
+            // 类型的限定名保留在 layout；导出文件不使用 Windows 禁止的尖括号。
+            let stem = if let Some((base, _)) = p.name().split_once('<') {
+                format!("{}.instance-{index}", base.replace("::", "_").replace('.', "_"))
+            } else {
+                p.name().replace("::", "_").replace('.', "_")
+            };
+            export::program(&compiler, p, &out, &stem)?;
         }
-        "build" => {
-            let out = PathBuf::from(args.get(2).ok_or("缺少输出目录")?);
-            std::fs::create_dir_all(&out)?;
-            for (index, p) in programs.iter().enumerate() {
-                // 类型的限定名保留在 layout；导出文件不使用 Windows 禁止的尖括号。
-                let stem = if let Some((base, _)) = p.name().split_once('<') {
-                    format!(
-                        "{}.instance-{index}",
-                        base.replace("::", "_").replace('.', "_")
-                    )
-                } else {
-                    p.name().replace("::", "_").replace('.', "_")
-                };
-                export::program(&compiler, p, &out, &stem)?;
-            }
-        }
-        _ => return Err(format!("未知命令 {command}").into()),
+    } else if programs.is_empty() {
+        println!("library {} checked", path.display());
     }
+    Ok(())
+}
+
+fn build_object(
+    compiler: &blanguage::Compiler,
+    args: &[OsString],
+    roles: &[u8],
+    line: &CompileCommandLine,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = PathBuf::from(&args[line.source_index]);
+    let parent = path.parent().unwrap();
+    let root = args.get(line.root_index).map(PathBuf::from).unwrap_or_else(|| {
+        if parent.as_os_str().is_empty() { PathBuf::from(".") } else { parent.to_path_buf() }
+    });
+    let mut imports = Vec::new();
+    let mut instances = Vec::new();
+    // Imports encountered before a syntax error still perform their original I/O first.
+    for (arg, role) in args.iter().zip(roles) {
+        match role {
+            1 => imports.extend(blanguage::object::Input::read(Path::new(arg))?.objects()?),
+            2 => instances.push(arg.to_str().ok_or("实例不是UTF-8文本")?.to_owned()),
+            _ => {}
+        }
+    }
+    line.error.result(args, line.error_index)?;
+    let output = PathBuf::from(&args[line.output_index]);
+    let kind = if line.as_module != 0 {
+        blanguage::build::ObjectKind::Module(&instances)
+    } else if let Some(entry) = args.get(line.program_index) {
+        let entry = entry.to_str().ok_or("入口不是UTF-8文本")?;
+        let prefix = output.file_stem().and_then(|value| value.to_str()).ok_or("目标文件名不是UTF-8")?;
+        blanguage::build::ObjectKind::Library { entry, prefix }
+    } else {
+        let entry = args.get(line.entry_index).and_then(|entry| entry.to_str()).unwrap_or("main");
+        blanguage::build::ObjectKind::Application(entry)
+    };
+    let compiled = compiler.build_object(&path, &root, &imports, kind, &output)
+        .map_err(|error| -> Box<dyn std::error::Error> { error })?;
+    if let Some(path) = args.get(line.report_index).map(PathBuf::from) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        #[cfg(windows)]
+        let _object_input = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().read(true).share_mode(1).open(&compiled.artifact)?
+        };
+        let budget = (line.has_budget != 0).then_some(line.budget);
+        std::fs::write(path, compiled.object.stack_report(budget))?;
+    }
+    println!("object {} -> {}{}", compiled.object.name(), output.display(),
+        if compiled.reused { " (reused)" } else { "" });
     Ok(())
 }

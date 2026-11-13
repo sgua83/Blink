@@ -429,7 +429,7 @@ extern "C" ArchiveSelection library_take(address library,address name,u64 length
 
 ### 4.6 链接怎样只保留真实消费者
 
-blink 从进程取得原 OsString，B 的 bootstrap.link_cli 解析产物、预算、输入顺序和输出索引。Rust 依索引交接原路径，实际链接和归档读取已有Object和Library。bootstrap.native_select选择唯一应用或算法入口，沿真实符号、合同、重定位和关联节形成存活闭包；算法DLL保留本身全部入口节，原始CPU SDK则从明确的符号合同出发。定义和待处理节只有本次B选择拥有一份。
+bc 和 blink 从进程取得原 OsString，共用 B 的 bootstrap.cli。bc 由 B 解析命令、资源参数、编译选项与路径索引，Rust 依原顺序初始化编译器、加载导入并生成产物。blink 由 B 解析产物、预算、输入顺序和输出索引，Rust 依索引交接原路径，链接和归档读取已有Object和Library。bootstrap.native_select选择唯一应用或算法入口，沿真实符号、合同、重定位和关联节形成存活闭包；算法DLL保留本身全部入口节，原始CPU SDK则从明确的符号合同出发。定义和待处理节只有本次B选择拥有一份。
 
 源码节选：`crates/blanguage/src/bootstrap/native_select.b:114`。
 

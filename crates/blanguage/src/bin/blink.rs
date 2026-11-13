@@ -42,7 +42,7 @@ struct LinkCommandLine {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.link_cli::parse_arguments"]
+    #[link_name = "bootstrap.cli::parse_link_arguments"]
     fn parse_arguments(
         arguments: *const LinkArgument,
         count: usize,
