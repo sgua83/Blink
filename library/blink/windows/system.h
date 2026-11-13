@@ -47,3 +47,23 @@ extern "C" i32 SleepConditionVariableSRW(address condition,address lock,u32 mill
     from "KERNEL32.dll";
 extern "C" void WakeConditionVariable(address condition) on cpu
     from "KERNEL32.dll";
+
+struct SystemMemoryCounters {
+    u32 size;
+    usize commit_pages;
+    usize commit_limit_pages;
+    usize peak_commit_pages;
+    usize physical_pages;
+    usize available_physical_pages;
+    usize cache_pages;
+    usize kernel_pages;
+    usize paged_kernel_pages;
+    usize nonpaged_kernel_pages;
+    usize page_bytes;
+    u32 handles;
+    u32 processes;
+    u32 threads;
+};
+
+i32 system_memory_counters(write SystemMemoryCounters counters) on cpu
+    ensures initialized(counters,returned != 0);

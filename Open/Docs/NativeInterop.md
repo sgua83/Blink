@@ -290,6 +290,8 @@ compiler Rust SDK可用`spirv::module_json(&[u32])`取得原模块全部指令�
 
 标准库`blink.windows.system`直接声明Kernel32的GetNativeSystemInfo及其SystemInfo输出记录。Windows x64真实结构的两个u16、u32、两个address、usize及后续窄／普通整数按原Ty布局交接，大小48、对齐8；接口来源、全部字段偏移与实际B消费者见[标准库](../../library/README.md#blinkwindowssystem)及[系统信息应用](../../sample/applications/README.md#读取windows系统信息)。纯类型与extern声明模块使用.h，不需要空.b或Rust转发包装。
 
+`blink.windows.system::system_memory_counters(write SystemMemoryCounters counters)`读取Windows x64原`PERFORMANCE_INFORMATION`。记录大小104、对齐8，`size`和末尾句柄、进程、线程数为u32，其余计数为`usize`。提交、提交上限、开机以来的原峰值、物理内存、缓存和内核池按页交接，`page_bytes`按字节交接。非零i32状态才交付已初始化记录，零状态可立即读取`GetLastError()`。调用者按实际时点比较原全机计数与进程私有提交。[Windows 系统计数查询](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getperformanceinfo) [原始计数字段](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-performance_information)
+
 本次同步write借用只在OS调用期间有效，输出仍归原B位置；系统报告的最小／最大应用地址不是新分配的资源。数量和掩码的处理器组语义遵守原Windows合同。其他系统结构、地址保留／释放、回调及引擎业务采用按各自真实接口继续建设，不把这个具体模块视为完整Windows SDK。
 
 共用WaitForSingleObject／CloseHandle和INFINITE／WAIT_*／STILL_ACTIVE常量由同一纯.h blink.windows.system声明，进程、线程和文件消费者显式导入system。等待的原u32结果按真实对象解释，关闭的i32 BOOL及即时OS错误保持；不为等待／关闭带入命令行或文本实现，也不复制原声明。等待尚未完成时保持该句柄，最后真实消费者结束后关闭一次；专用句柄使用其原匹配API。

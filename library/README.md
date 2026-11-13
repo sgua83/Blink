@@ -121,7 +121,9 @@ target/release/blink.exe --archive target/unicode.obj target/sequence.obj target
 
 ## blink.windows.system
 
-`blink.windows.system`是Windows x64系统信息、共用句柄及独占同步接口，只有一份`.h`。普通记录`SystemInfo`和`extern "C" void GetNativeSystemInfo(write SystemInfo info) on cpu`直接交接原Kernel32输出，没有B转发实现或常驻服务。记录未初始化时可作为这个完整write输出；同步返回后记录仍由原B调用者持有。
+`blink.windows.system`提供Windows x64系统信息、共用句柄及独占同步接口。普通记录`SystemInfo`和`extern "C" void GetNativeSystemInfo(write SystemInfo info) on cpu`直接交接原Kernel32输出，没有B转发实现或常驻服务。记录未初始化时可作为这个完整write输出；同步返回后记录仍由原B调用者持有。
+
+`blink.windows.system::system_memory_counters(write SystemMemoryCounters counters)`读取Windows x64原`PERFORMANCE_INFORMATION`。记录大小104、对齐8，`size`和末尾句柄、进程、线程数为u32，其余计数为`usize`。提交、提交上限、开机以来的原峰值、物理内存、缓存和内核池按页交接，`page_bytes`按字节交接。非零i32状态才交付已初始化记录，零状态可立即读取`GetLastError()`。调用者按实际时点比较原全机计数与进程私有提交。[Windows 系统计数查询](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getperformanceinfo) [原始计数字段](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-performance_information)
 
 ```b
 import blink.windows.system;
