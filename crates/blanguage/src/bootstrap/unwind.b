@@ -36,19 +36,7 @@ Encoding encode(Operation operation) on cpu {
     return Encoding(opcode + u8(1), 4, operation.amount);
 }
 
-extern "C" u64 unwind_size(address operations, u64 count) on cpu {
-    u64 bytes = 4u64;
-    u64 index = 0u64;
-    while (index < count) {
-        address at = unsafe_address(address_bits(operations) + index * size_of<Operation>());
-        Encoding code = encode(unsafe_position<Operation>(at));
-        bytes += 2u64 + u64(code.extra);
-        index += 1u64;
-    }
-    return ((bytes + 3u64) / 4u64) * 4u64;
-}
-
-extern "C" void unwind_write(address operations, u64 count, u8 prolog, address output) on cpu {
+extern "C" u64 unwind_write(address operations, u64 count, u8 prolog, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start + 4u64;
     u64 index = count;
@@ -75,5 +63,7 @@ extern "C" void unwind_write(address operations, u64 count, u8 prolog, address o
     if ((bytes & 2u64) != 0u64) {
         unsafe_position<u8>(unsafe_address(cursor)) = u8(0);
         unsafe_position<u8>(unsafe_address(cursor + 1u64)) = u8(0);
+        return bytes + 2u64;
     }
+    return bytes;
 }

@@ -27,21 +27,17 @@ impl Operation {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.unwind::unwind_size"]
-    fn unwind_size(operations: *const Operation, count: u64) -> u64;
     #[link_name = "bootstrap.unwind::unwind_write"]
-    fn unwind_write(operations: *const Operation, count: u64, prolog: u8, output: *mut u8);
+    fn unwind_write(operations: *const Operation, count: u64, prolog: u8, output: *mut u8) -> u64;
 }
 
 pub(crate) fn encode(prolog: u8, operations: &[Operation]) -> Vec<u8> {
-    // Callers record operations as the prologue instructions are emitted.
-    // Both B calls borrow the same rows. The writer initializes the complete record.
-    let count = operations.len() as u64;
-    let length = unsafe { unwind_size(operations.as_ptr(), count) } as usize;
-    let mut bytes = Vec::with_capacity(length);
+    // Four header bytes and up to three two-byte slots per operation.
+    let capacity = 4 + (6 * operations.len()).next_multiple_of(4);
+    let mut bytes = Vec::with_capacity(capacity);
     unsafe {
-        unwind_write(operations.as_ptr(), count, prolog, bytes.as_mut_ptr());
-        bytes.set_len(length);
+        let length = unwind_write(operations.as_ptr(), operations.len() as u64, prolog, bytes.as_mut_ptr());
+        bytes.set_len(length as usize);
     }
     bytes
 }

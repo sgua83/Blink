@@ -7,7 +7,7 @@ struct Operation {
     u32 amount;
 };
 
-// Operations are in prologue instruction order. The caller owns the
-// input and provides exactly unwind_size bytes for the finished record.
-extern "C" u64 unwind_size(address operations, u64 count) on cpu;
-extern "C" void unwind_write(address operations, u64 count, u8 prolog, address output) on cpu;
+// Operations are in prologue instruction order. The caller owns the output.
+// Capacity is the 4-byte header plus at most 6 bytes per operation, rounded up
+// to a 4-byte boundary. The result is the number of initialized bytes.
+extern "C" u64 unwind_write(address operations, u64 count, u8 prolog, address output) on cpu;
