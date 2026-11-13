@@ -113,12 +113,12 @@ pub(super) fn record(
     let n = data[s.source].count;
     let args = arguments.map(|a| a.allocation.descriptor());
     for key in (0..s.keys.len()).rev() {
-        let mut pass_infos = infos.to_vec();
-        pass_infos[s.target] = (&storage.pairs[0].allocation).descriptor();
+        let bindings = [Some((s.target, storage.pairs[0].allocation.descriptor()))];
         let set = descriptor_set(
             commands,
             c,
-            &pass_infos,
+            infos,
+            &bindings,
             accelerations,
             None,
             args,
@@ -144,13 +144,15 @@ pub(super) fn record(
             commands.barrier(0x800, 0x800, 0x40, 0x60);
             let input = &storage.pairs[pass % 2].allocation;
             let target = &storage.pairs[(pass + 1) % 2].allocation;
-            pass_infos = infos.to_vec();
-            pass_infos[s.source] = (input).descriptor();
-            pass_infos[s.target] = (target).descriptor();
+            let bindings = [
+                Some((s.source, input.descriptor())),
+                Some((s.target, target.descriptor())),
+            ];
             let set = descriptor_set(
                 commands,
                 c,
-                &pass_infos,
+                infos,
+                &bindings,
                 accelerations,
                 Some((&storage.histogram.allocation).descriptor()),
                 args,
@@ -195,7 +197,8 @@ pub(super) fn record(
             let set = descriptor_set(
                 commands,
                 c,
-                &pass_infos,
+                infos,
+                &bindings,
                 accelerations,
                 Some((&storage.prefixes.allocation).descriptor()),
                 args,
@@ -220,6 +223,7 @@ pub(super) fn record(
         commands,
         c,
         infos,
+        &[],
         accelerations,
         Some((&storage.pairs[0].allocation).descriptor()),
         args,

@@ -52,6 +52,7 @@ pub(super) fn record(
         commands,
         c,
         infos,
+        &[],
         accelerations,
         Some((indices).descriptor()),
         Some((&args.allocation).descriptor()),

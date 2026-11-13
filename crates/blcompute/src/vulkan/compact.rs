@@ -50,6 +50,7 @@ pub(super) fn record(
         commands,
         c,
         infos,
+        &[],
         accelerations,
         Some((prefix).descriptor()),
         scratch.arguments.as_ref().map(|a| a.allocation.descriptor()),

@@ -38,6 +38,7 @@ pub(super) fn prepare(
         commands,
         c,
         infos,
+        &[],
         accelerations,
         None,
         Some((&args.allocation).descriptor()),

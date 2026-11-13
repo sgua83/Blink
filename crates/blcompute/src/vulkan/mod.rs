@@ -1727,6 +1727,7 @@ fn descriptor_set(
     commands: &mut Commands,
     compiled: &Compiled,
     infos: &[VkDescriptorBufferInfo],
+    replacements: &[Option<(usize, VkDescriptorBufferInfo)>],
     accelerations: &[Acceleration],
     auxiliary: Option<VkDescriptorBufferInfo>,
     indirect: Option<VkDescriptorBufferInfo>,
@@ -1750,6 +1751,9 @@ fn descriptor_set(
             .iter()
             .enumerate()
             .map(|(i, info)| {
+                let info = replacements.iter().rev().flatten()
+                    .find(|(binding, _)| *binding == i)
+                    .map_or(info, |(_, replacement)| replacement);
                 let mut w: VkWriteDescriptorSet = zero();
                 w.sType = 35;
                 w.dstSet = set;
@@ -1793,16 +1797,14 @@ fn descriptor_set(
             writes.push(w);
             offset += texture.elements() as usize;
         }
-        let auxiliary_infos: Vec<_> = [
+        let auxiliary_infos = [
             (infos.len(), auxiliary),
             (compiled.program.indirect_buffer(), indirect),
             (compiled.program.selection_buffer(), selection),
             (compiled.program.scan_source_buffer(), scan_source),
-        ]
-        .into_iter()
-        .filter_map(|(binding, info)| info.map(|info| (binding, info)))
-        .collect();
-        for (binding, info) in &auxiliary_infos {
+        ];
+        for (binding, info) in auxiliary_infos.iter()
+            .filter_map(|(binding, info)| info.as_ref().map(|info| (*binding, info))) {
             let mut w: VkWriteDescriptorSet = zero();
             w.sType = 35;
             w.dstSet = set;
@@ -2408,6 +2410,7 @@ impl GpuProgram {
                     &mut commands,
                     c,
                     &infos,
+                    &[],
                     &accelerations,
                     None,
                     None,
@@ -2715,13 +2718,15 @@ impl GpuProgram {
                                     } else {
                                         scratch[scratch_indices[i]].as_ref().unwrap().buffers[pass % 2].allocation.descriptor()
                                     };
-                                    let mut pass_infos = infos.clone();
-                                    pass_infos[reduction.source] = source;
-                                    pass_infos[reduction.target] = target;
+                                    let bindings = [
+                                        Some((reduction.source, source)),
+                                        Some((reduction.target, target)),
+                                    ];
                                     let pass_set = descriptor_set(
                                         &mut commands,
                                         c,
-                                        &pass_infos,
+                                        &infos,
+                                        &bindings,
                                         &accelerations,
                                         None,
                                         scratch[scratch_indices[i]]
