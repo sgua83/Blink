@@ -1514,13 +1514,15 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
             if calls.peek().is_some_and(|call|call.memory==memory){
                 let call=calls.next().unwrap();
                 for access in &known[&call.function].interface.access {
-                    let (borrows,when,access,written)=match access_at_call(access,call,&call.path,function,&known[name],&known).substitute_values(&resolved) {
+                    let (borrows,when,access,written)=match access_at_call(access,call,&call.path,function,&known[name],&known) {
                         Access::Memory{borrows,when,access}|Access::Dataset{borrows,when,access,..}=> (borrows,when,access,None),
                         Access::Position{borrows,when,position} if position.written.is_some()||position.initialized=> (borrows,when,match(position.written.is_some(),position.initialized){(true,true)=>super::Access::InOut,(true,false)=>super::Access::Write,_=>super::Access::Read},position.written),
                         _=>continue,
                     };
-                    let borrow=borrows.restricted(&when.assume(&bounds::Clause::default(),true));
-                    effect.union(address::MemoryEffect::of(&borrow,access,written.as_ref()));
+                    let path = when.substituted_case(true, &resolved);
+                    let borrow = borrows.substitute_values(&resolved).restricted(&path);
+                    let written = written.as_ref().map(|proof| proof.substitute_values(&resolved));
+                    effect.union(address::MemoryEffect::of(&borrow, access, written.as_ref()));
                 }
             }else{
                 let rest=std::iter::from_fn(||{

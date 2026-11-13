@@ -786,8 +786,11 @@ impl Proof {
         for address in self.addresses.iter().flatten(){if let address::Identity::Value(values)=address{for id in values{identity(*id);}}}
         ids.into_inner()
     }
-    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,Proof>)->Self {
-        let bindings = self.scalar_identities().into_iter().map(|id| {
+    fn value_bindings(
+        identities: impl IntoIterator<Item = ValueIdentity>,
+        values: &BTreeMap<ValueIdentity, Proof>,
+    ) -> BTreeMap<ValueIdentity, Proof> {
+        identities.into_iter().map(|id| {
             let proof = values.get(&id).cloned().unwrap_or_else(|| {
                 Proof::default().with_identity(id).with_view_borrow(
                     0,
@@ -795,7 +798,11 @@ impl Proof {
                 )
             });
             (id, proof)
-        }).collect();
+        }).collect()
+    }
+
+    pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
+        let bindings = Self::value_bindings(self.scalar_identities(), values);
         let views = self.views.iter().map(|borrow| borrow.substitute_values(values)).collect();
         let mut proof = self.project_call(&bindings, views, vec![None; self.addresses.len()]);
         for (slot, address) in proof.addresses.iter_mut().zip(&self.addresses) {
@@ -2144,7 +2151,7 @@ impl Clause {
         Self::facts(values.into_iter().flat_map(|(scalar,id,proof)|proof.clone().with_identity(id).facts(&Ty::scalar(scalar))).collect())
     }
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,Proof>)->Self {
-        Condition::guard(self.clone()).substitute_values(values).assume(&Clause::default(),true)
+        Condition::guard(self.clone()).substituted_case(true, values)
     }
 
     fn node(value: ClauseNode) -> Self {
@@ -3035,9 +3042,21 @@ impl Condition {
     fn identities(&self,identity:&impl Fn(ValueIdentity)->ValueIdentity) {
         for clause in Clause::ordered(&self.cases){if let ClauseNode::Facts(facts)=&**clause.0{for fact in facts{fact.map(identity);}}}
     }
-    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,Proof>)->Self {
-        let proof=Proof::condition(self.clone()).substitute_values(values);
-        proof.conditions.into_iter().next().flatten().map(|value|*value).unwrap()
+    fn value_bindings(&self, values: &BTreeMap<ValueIdentity, Proof>) -> BTreeMap<ValueIdentity, Proof> {
+        let identities = std::cell::RefCell::new(BTreeSet::new());
+        self.identities(&|id| {
+            identities.borrow_mut().insert(id);
+            id
+        });
+        Proof::value_bindings(identities.into_inner(), values)
+    }
+
+    pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
+        self.at_call(&self.value_bindings(values))
+    }
+
+    pub(super) fn substituted_case(&self, truth: bool, values: &BTreeMap<ValueIdentity, Proof>) -> Clause {
+        self.projected_case(truth, &self.value_bindings(values))
     }
 
     pub(super) fn element_index(depth:usize,index:Operand)->Self {
