@@ -1,6 +1,6 @@
 //! 构建输入只交接已消费的声明与实际实现；COFF和入口映像共用同一编码。
 use super::{ByteField, hash, Result};
-use std::{collections::BTreeMap, io::Error, path::Path};
+use std::{collections::BTreeMap, io::Error};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Declaration {
     Constant(String),
@@ -246,17 +246,17 @@ struct SourceRegion {
 struct SourceDeclaration {
     region: usize,
     start: usize,
-    signature_end: usize,
     next_signature: usize,
+    name: ByteField,
+    signature: ByteField,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.build_digest::plan_source_regions"]
     fn plan_source_regions(regions: *mut SourceRegion, declarations: *mut SourceDeclaration, count: usize);
-}
-
-fn push_field(fields: &mut Vec<ByteField>, value: &str) {
-    fields.push(value.as_bytes().into());
+    #[link_name = "bootstrap.build_digest::sha256_source"]
+    fn sha256_source(prefix: ByteField, declarations: *const SourceDeclaration,
+        first_signature: usize, output: &mut [u8; 32]);
 }
 
 pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
@@ -281,66 +281,52 @@ pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
     }
 
     let mut declarations = Vec::new();
-    let mut signature_names = Vec::new();
-    fn collect_regions<'a>(
-        world: &'a crate::World, paths: &BTreeMap<&Path, usize>,
-        declarations: &mut Vec<SourceDeclaration>, signature_names: &mut Vec<&'a str>,
-    ) {
-        let mut record = |path: &Path, start, signature: Option<(&'a str, usize)>| {
-            if let Some(&region) = paths.get(path) {
-                declarations.push(SourceDeclaration {
-                    region, start, signature_end: signature.map_or(usize::MAX, |(_, end)| end),
-                    next_signature: 0,
-                });
-                signature_names.push(signature.map_or("", |(name, _)| name));
-            }
-        };
-        let declarations_for_source = &world.declarations;
-        for (name, definition) in &declarations_for_source.functions {
-            let ordinary = definition.function.kind() != crate::ast::FunctionKind::Constant
-                && definition.function.external().is_none();
-            record(&definition.source.path, definition.function.span().start,
-                ordinary.then(|| (name.as_str(), definition.function.signature_end())));
+    let mut record = |source: &crate::ast::Source, start, signature: Option<(&str, usize)>| {
+        if let Some(&region) = paths.get(source.path.as_path()) {
+            let (name, signature) = if let Some((name, end)) = signature
+                && regions[region].include_signatures != 0
+            {
+                (name.as_bytes().into(), source.text[start..end].trim_end().as_bytes().into())
+            } else {
+                (b"".as_slice().into(), ByteField { bytes: std::ptr::null(), length: 0 })
+            };
+            declarations.push(SourceDeclaration { region, start, next_signature: 0, name, signature });
         }
-        for (record_type, owner, ..) in declarations_for_source.records.values() {
-            record(&owner.path, record_type.span().start, None);
-        }
-        for (set, owner, ..) in declarations_for_source.type_sets.values() {
-            record(&owner.path, set.span().start, None);
-        }
+    };
+    for (name, definition) in &world.declarations.functions {
+        let ordinary = definition.function.kind() != crate::ast::FunctionKind::Constant
+            && definition.function.external().is_none();
+        record(&definition.source, definition.function.span().start,
+            ordinary.then(|| (name.as_str(), definition.function.signature_end())));
     }
-    collect_regions(world, &paths, &mut declarations, &mut signature_names);
+    for (record_type, source, ..) in world.declarations.records.values() {
+        record(source, record_type.span().start, None);
+    }
+    for (set, source, ..) in world.declarations.type_sets.values() {
+        record(source, set.span().start, None);
+    }
     unsafe { plan_source_regions(regions.as_mut_ptr(), declarations.as_mut_ptr(), declarations.len()) };
 
     let mut sources = Vec::new();
-    let mut fields = Vec::<ByteField>::new();
     for (name, source, implementation) in source_rows() {
         let partial = name != module || implementation;
-        fields.clear();
-        if partial {
+        let (scope, prefix, first_signature) = if partial {
             let region = &regions[paths[source.path.as_path()]];
             let end = if region.preamble_end == usize::MAX { source.text.len() } else { region.preamble_end };
-            push_field(&mut fields, source.text[..end].trim_end());
-            if implementation {
-                // Every ordinary signature is checked, including unused open templates.
-                // Body dependencies remain in the actual consumed-declaration fingerprint.
-                let mut signature = region.first_signature;
-                while signature != 0 {
-                    let declaration = &declarations[signature - 1];
-                    push_field(&mut fields, signature_names[signature - 1]);
-                    push_field(&mut fields, source.text[declaration.start..declaration.signature_end].trim_end());
-                    signature = declaration.next_signature;
-                }
-            }
+            let scope = if implementation { "preamble_and_function_signatures" } else { "preamble" };
+            let signature = if implementation { region.first_signature } else { 0 };
+            (scope, source.text[..end].trim_end(), signature)
         } else {
-            push_field(&mut fields, &source.text);
+            ("full_source", &*source.text, 0)
+        };
+        // Source text and declaration names remain owned by the world for this call.
+        let mut fingerprint = [0; 32];
+        unsafe {
+            sha256_source(prefix.as_bytes().into(), declarations.as_ptr(), first_signature, &mut fingerprint);
         }
         sources.push(SourceInput {
             module: name.clone(), path: source.path.as_os_str().as_encoded_bytes().to_vec(),
-            scope: if !partial { "full_source" } else if implementation {
-                "preamble_and_function_signatures"
-            } else { "preamble" }.into(),
-            fingerprint: hash::fields(&fields),
+            scope: scope.into(), fingerprint,
         });
     }
     let requirements = if exports {

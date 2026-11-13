@@ -262,11 +262,26 @@ extern "C" void plan_source_regions(address regions,address declarations,u64 cou
         if (declaration.start < region.preamble_end) {
             region.preamble_end = declaration.start;
         }
-        if (region.include_signatures != 0u64 && declaration.signature_end != 0xffffffffffffffffu64) {
+        if (region.include_signatures != 0u64 && address_bits(declaration.signature.bytes) != 0u64) {
             declaration.next_signature = region.first_signature;
             region.first_signature = index + 1u64;
             unsafe_position<SourceDeclaration>(declaration_at) = declaration;
         }
         unsafe_position<SourceRegion>(region_at) = region;
     }
+}
+
+extern "C" void sha256_source(DigestField prefix, address declarations,
+    u64 first_signature, address output) on cpu {
+    DigestState state = sha256_start();
+    digest_field(state, prefix);
+    u64 signature = first_signature;
+    while (signature != 0u64) {
+        SourceDeclaration row = unsafe_position<SourceDeclaration>(
+            at(declarations, (signature - 1u64) * size_of<SourceDeclaration>()));
+        digest_field(state, row.name);
+        digest_field(state, row.signature);
+        signature = row.next_signature;
+    }
+    sha256_finish(state, output);
 }

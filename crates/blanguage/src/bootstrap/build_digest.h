@@ -43,10 +43,15 @@ struct SourceRegion {
 struct SourceDeclaration {
     u64 region;
     u64 start;
-    u64 signature_end;
     u64 next_signature;
+    DigestField name;
+    DigestField signature;
 };
 
 // Declarations are in original order. A zero link ends a region's signature
 // list; nonzero links are one-based indices into this call's original rows.
 extern "C" void plan_source_regions(address regions,address declarations,u64 count) on cpu;
+
+// The caller owns the original source, declaration rows and borrowed fields.
+extern "C" void sha256_source(DigestField prefix, address declarations,
+    u64 first_signature, address output) on cpu;
