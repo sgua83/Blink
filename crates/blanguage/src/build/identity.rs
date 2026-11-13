@@ -233,50 +233,24 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
     digest.finish()
 }
 
-struct SourceRegions<'a> {
-    preamble_end: Option<usize>,
-    include_signatures: bool,
-    signatures: Vec<(&'a str, std::ops::Range<usize>)>,
+#[repr(C)]
+struct SourceRegion {
+    preamble_end: usize,
+    include_signatures: usize,
+    first_signature: usize,
 }
 
-impl<'a> SourceRegions<'a> {
-    fn for_sources(declarations: &'a crate::Declarations, paths: impl Iterator<Item = (&'a Path, bool)>)
-        -> BTreeMap<&'a Path, Self>
-    {
-        let mut regions = BTreeMap::<&Path, Self>::new();
-        for (path, implementation) in paths {
-            let region = regions.entry(path).or_insert_with(|| Self {
-                preamble_end: None, include_signatures: false, signatures: Vec::new(),
-            });
-            region.include_signatures |= implementation;
-        }
-        for (name, definition) in &declarations.functions {
-            if let Some(region) = regions.get_mut(definition.source.path.as_path()) {
-                let start = definition.function.span().start;
-                region.include(start);
-                if region.include_signatures && definition.function.kind() != crate::ast::FunctionKind::Constant
-                    && definition.function.external().is_none()
-                {
-                    region.signatures.push((name, start..definition.function.signature_end()));
-                }
-            }
-        }
-        for (record, owner, ..) in declarations.records.values() {
-            if let Some(region) = regions.get_mut(owner.path.as_path()) {
-                region.include(record.span().start);
-            }
-        }
-        for (set, owner, ..) in declarations.type_sets.values() {
-            if let Some(region) = regions.get_mut(owner.path.as_path()) {
-                region.include(set.span().start);
-            }
-        }
-        regions
-    }
+#[repr(C)]
+struct SourceDeclaration {
+    region: usize,
+    start: usize,
+    signature_end: usize,
+    next_signature: usize,
+}
 
-    fn include(&mut self, start: usize) {
-        self.preamble_end = Some(self.preamble_end.map_or(start, |end| end.min(start)));
-    }
+unsafe extern "C" {
+    #[link_name = "bootstrap.build_digest::plan_source_regions"]
+    fn plan_source_regions(regions: *mut SourceRegion, declarations: *mut SourceDeclaration, count: usize);
 }
 
 fn push_field(fields: &mut Vec<ByteField>, value: &str) {
@@ -290,24 +264,70 @@ pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
     let source_rows = || world.interfaces.iter().map(|(name, module)| (name, &module.source, false))
         .chain(world.sources.iter().filter(|(name, source)| source.path != world.interfaces[*name].source.path)
             .map(|(name, source)| (name, source, true)));
-    let regions = SourceRegions::for_sources(&world.declarations, source_rows()
-        .filter(|(name, _, implementation)| *name != module || *implementation)
-        .map(|(_, source, implementation)| (source.path.as_path(), implementation)));
+    let mut paths = BTreeMap::new();
+    let mut regions = Vec::new();
+    for (name, source, implementation) in source_rows() {
+        if name == module && !implementation { continue; }
+        let index = *paths.entry(source.path.as_path()).or_insert_with(|| {
+            let index = regions.len();
+            regions.push(SourceRegion {
+                preamble_end: usize::MAX, include_signatures: 0, first_signature: 0,
+            });
+            index
+        });
+        regions[index].include_signatures |= usize::from(implementation);
+    }
+
+    let mut declarations = Vec::new();
+    let mut signature_names = Vec::new();
+    fn collect_regions<'a>(
+        world: &'a crate::World, paths: &BTreeMap<&Path, usize>,
+        declarations: &mut Vec<SourceDeclaration>, signature_names: &mut Vec<&'a str>,
+    ) {
+        let mut record = |path: &Path, start, signature: Option<(&'a str, usize)>| {
+            if let Some(&region) = paths.get(path) {
+                declarations.push(SourceDeclaration {
+                    region, start, signature_end: signature.map_or(usize::MAX, |(_, end)| end),
+                    next_signature: 0,
+                });
+                signature_names.push(signature.map_or("", |(name, _)| name));
+            }
+        };
+        let declarations_for_source = &world.declarations;
+        for (name, definition) in &declarations_for_source.functions {
+            let ordinary = definition.function.kind() != crate::ast::FunctionKind::Constant
+                && definition.function.external().is_none();
+            record(&definition.source.path, definition.function.span().start,
+                ordinary.then(|| (name.as_str(), definition.function.signature_end())));
+        }
+        for (record_type, owner, ..) in declarations_for_source.records.values() {
+            record(&owner.path, record_type.span().start, None);
+        }
+        for (set, owner, ..) in declarations_for_source.type_sets.values() {
+            record(&owner.path, set.span().start, None);
+        }
+    }
+    collect_regions(world, &paths, &mut declarations, &mut signature_names);
+    unsafe { plan_source_regions(regions.as_mut_ptr(), declarations.as_mut_ptr(), declarations.len()) };
+
     let mut sources = Vec::new();
     let mut fields = Vec::<ByteField>::new();
     for (name, source, implementation) in source_rows() {
         let partial = name != module || implementation;
         fields.clear();
         if partial {
-            let region = &regions[source.path.as_path()];
-            let end = region.preamble_end.unwrap_or(source.text.len());
+            let region = &regions[paths[source.path.as_path()]];
+            let end = if region.preamble_end == usize::MAX { source.text.len() } else { region.preamble_end };
             push_field(&mut fields, source.text[..end].trim_end());
             if implementation {
                 // Every ordinary signature is checked, including unused open templates.
                 // Body dependencies remain in the actual consumed-declaration fingerprint.
-                for (name, range) in &region.signatures {
-                    push_field(&mut fields, name);
-                    push_field(&mut fields, source.text[range.clone()].trim_end());
+                let mut signature = region.first_signature;
+                while signature != 0 {
+                    let declaration = &declarations[signature - 1];
+                    push_field(&mut fields, signature_names[signature - 1]);
+                    push_field(&mut fields, source.text[declaration.start..declaration.signature_end].trim_end());
+                    signature = declaration.next_signature;
                 }
             }
         } else {

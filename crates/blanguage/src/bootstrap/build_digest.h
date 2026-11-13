@@ -32,3 +32,20 @@ struct BuildReference {
 extern "C" void sha256_reference_symbols(inout DigestState state, address symbols,
     u64 symbol_count, u64 reference_count) on cpu;
 extern "C" void sha256_reference(inout DigestState state, BuildReference row) on cpu;
+
+struct SourceRegion {
+    u64 preamble_end;
+    u64 include_signatures;
+    u64 first_signature;
+};
+
+struct SourceDeclaration {
+    u64 region;
+    u64 start;
+    u64 signature_end;
+    u64 next_signature;
+};
+
+// Declarations are in original order. A zero link ends a region's signature
+// list; nonzero links are one-based indices into this call's original rows.
+extern "C" void plan_source_regions(address regions,address declarations,u64 count) on cpu;

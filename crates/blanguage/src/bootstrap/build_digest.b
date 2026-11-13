@@ -250,3 +250,23 @@ extern "C" void sha256_reference(inout DigestState state, BuildReference row) on
     digest_field(state, DigestField(address_of(present), 1u64));
     if (present != u8(0)) { digest_field(state, row.value); }
 }
+
+extern "C" void plan_source_regions(address regions,address declarations,u64 count) on cpu {
+    u64 index = count;
+    while (index != 0u64) {
+        index -= 1u64;
+        address declaration_at = at(declarations,index * size_of<SourceDeclaration>());
+        SourceDeclaration declaration = unsafe_position<SourceDeclaration>(declaration_at);
+        address region_at = at(regions,declaration.region * size_of<SourceRegion>());
+        SourceRegion region = unsafe_position<SourceRegion>(region_at);
+        if (declaration.start < region.preamble_end) {
+            region.preamble_end = declaration.start;
+        }
+        if (region.include_signatures != 0u64 && declaration.signature_end != 0xffffffffffffffffu64) {
+            declaration.next_signature = region.first_signature;
+            region.first_signature = index + 1u64;
+            unsafe_position<SourceDeclaration>(declaration_at) = declaration;
+        }
+        unsafe_position<SourceRegion>(region_at) = region;
+    }
+}
