@@ -37,7 +37,7 @@ impl Decode for Graph{fn decode(r:&mut crate::module::codec::Reader<'_>)->crate:
 }}
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 enum Key { Loop(LoopInput), Read(ContentRead), Call(CallResult) }
-struct Builder<'a> { function:&'a Function,state:&'a State,known:&'a States,keys:BTreeMap<Key,usize>,prefix:Vec<Option<usize>>,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
+struct Builder<'a> { function:&'a Function,state:&'a State<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:Vec<Option<usize>>,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}
     fn edge(&mut self,to:usize,from:usize,op:Op,when:bounds::Clause){self.graph.nodes[to].edges.push(Edge{from,op,when:bounds::Condition::guard(when)})}
@@ -123,7 +123,13 @@ impl Builder<'_> {
         for id in frames.into_iter().rev(){
             let writes=self.graph.frames[id].writes.iter().map(|w|Write{target:w.target,fields:w.fields.clone(),when:normal.condition(&bounds::Condition::paths(w.when.assume(path,true),w.when.assume(path,false)))}).collect();
             let frame=Frame{parent,writes};let id=match self.graph.frames.iter().position(|f|*f==frame){Some(id)=>id,None=>{let id=self.graph.frames.len();self.graph.frames.push(frame);id}};parent=Some(id);
-        }parent
+        }
+        if let Some(observe) = self.known.observe {
+            observe(self.state.name, crate::compiler::BorrowSolveStorage::ReadFrame {
+                memory, tables: normal.storage(),
+            });
+        }
+        parent
     }
     fn key(&mut self,key:Key)->usize{
         if let Some(&id)=self.keys.get(&key){return id;}
@@ -171,7 +177,7 @@ impl Builder<'_> {
     }
 }
 impl Graph {
-    fn builder<'a>(function:&'a Function,state:&'a State,known:&'a States)->Builder<'a>{Builder{function,state,known,keys:BTreeMap::new(),prefix:vec![None],graph:Self::default(),parameters:BTreeMap::new()}}
+    fn builder<'a>(function:&'a Function,state:&'a State<'a>,known:&'a States<'a>)->Builder<'a>{Builder{function,state,known,keys:BTreeMap::new(),prefix:vec![None],graph:Self::default(),parameters:BTreeMap::new()}}
     pub(super) fn recursive_inputs(name:&str,function:&Function,state:&State,known:&States)->Option<BTreeMap<ValueIdentity,Borrow>>{
         if !function.calls.iter().any(|call|call.function==name){return None;}
         let mut b=Self::builder(function,state,known);let mut roots=BTreeMap::new();
@@ -284,7 +290,7 @@ impl Graph {
         }
     }
     fn private(&self,source:&Origin)->bool{!self.references(source)&&Borrow::source(source.clone()).has_local()}
-    fn residual(&self,query:&Query<'_,'_,'_>)->Self{
+    fn residual(&self,root:usize,query:&Query<'_,'_,'_>)->Self{
         let mut residual=self.clone();let mut normal=bounds::Normalizer::new();
         for &id in query.values.keys(){if self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Initial{..})){residual.nodes[id]=query.local_definition(id);}}
         for(id,node)in residual.nodes.iter_mut().enumerate(){
@@ -303,7 +309,13 @@ impl Graph {
             for write in &frame.writes{for(_,id)in write.fields.iter().flatten(){for(source,when)in query.node(*id).sources.entries(){
                 if self.private(source){residual.nodes[*id].seeds.sources.insert_normalized(source.clone(),when,&mut normal);}
             }}}
-        }residual
+        }
+        if let Some(observe) = query.evaluation.known.observe {
+            observe(query.evaluation.state.name, crate::compiler::BorrowSolveStorage::Residual {
+                root, tables: normal.storage(),
+            });
+        }
+        residual
     }
     fn rebind<'r>(&self,value:&Borrow,residual:&impl Fn()->&'r Graph)->Borrow{
         value.map_sources(|source|match source{
@@ -353,10 +365,21 @@ impl Graph {
             }
             let next = variables.keys().map(|&id| (id, query.definition(id)))
                 .collect::<BTreeMap<_, _>>();
+            if let Some(observe) = query.evaluation.known.observe {
+                use crate::compiler::{AnalysisStorage, BorrowSolveStorage};
+                observe(query.evaluation.state.name, BorrowSolveStorage::Relation {
+                    root,
+                    nodes: AnalysisStorage::vector(&self.nodes),
+                    frames: AnalysisStorage::vector(&self.frames),
+                    resolved: AnalysisStorage::entries::<usize, Borrow>(query.values.len(), None),
+                    previous_inputs: AnalysisStorage::entries::<usize, Borrow>(variables.len(), None),
+                    next_inputs: AnalysisStorage::entries::<usize, Borrow>(next.len(), None),
+                });
+            }
             if variables.iter().all(|(id, previous)| next[id].sources.equivalent(&previous.sources)) {
                 let value = query.node(root);
                 let residual = std::cell::OnceCell::new();
-                return self.rebind(&value, &|| residual.get_or_init(|| self.residual(&query)));
+                return self.rebind(&value, &|| residual.get_or_init(|| self.residual(root, &query)));
             }
             values = query.values;
             for &(id, _) in &feedback {

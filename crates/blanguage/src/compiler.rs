@@ -17,9 +17,58 @@ pub struct Processor {
 }
 #[cfg(feature = "compiler")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BorrowSolvePhase {
+pub enum BorrowSolvePhase<'a> {
     Started,
     Finished { succeeded: bool },
+    Storage { function: &'a str, storage: BorrowSolveStorage },
+}
+
+/// Initialized element count and reserved element capacity of the original
+/// container. Tree containers do not expose a capacity.
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnalysisStorage {
+    pub len: usize,
+    pub capacity: Option<usize>,
+    pub element_bytes: usize,
+}
+
+#[cfg(feature = "compiler")]
+impl AnalysisStorage {
+    pub(crate) fn vector<T>(values: &Vec<T>) -> Self {
+        Self { len: values.len(), capacity: Some(values.capacity()), element_bytes: std::mem::size_of::<T>() }
+    }
+
+    pub(crate) fn entries<K, V>(len: usize, capacity: Option<usize>) -> Self {
+        Self { len, capacity, element_bytes: std::mem::size_of::<(K, V)>() }
+    }
+}
+
+/// A read of storage at its existing producer, before that producer releases it.
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BorrowSolveStorage {
+    Relation {
+        root: usize,
+        nodes: AnalysisStorage,
+        frames: AnalysisStorage,
+        resolved: AnalysisStorage,
+        previous_inputs: AnalysisStorage,
+        next_inputs: AnalysisStorage,
+    },
+    ReadFrame { memory: usize, tables: ConditionStorage },
+    Residual { root: usize, tables: ConditionStorage },
+}
+
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConditionStorage {
+    pub decisions: AnalysisStorage,
+    pub unique: AnalysisStorage,
+    pub operations: AnalysisStorage,
+    pub negatives: AnalysisStorage,
+    pub imported: AnalysisStorage,
+    pub emitted: AnalysisStorage,
 }
 
 /// A function participating in this invocation of the ordinary borrow solver.
@@ -33,7 +82,7 @@ pub struct BorrowSolveFunction<'a> {
 /// The sources are borrowed from the original compilation for this callback.
 #[cfg(feature = "compiler")]
 pub struct BorrowSolveEvent<'a> {
-    pub phase: BorrowSolvePhase,
+    pub phase: BorrowSolvePhase<'a>,
     pub functions: &'a [BorrowSolveFunction<'a>],
 }
 

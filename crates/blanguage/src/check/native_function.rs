@@ -2116,7 +2116,7 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             functions.insert(name,&unit.view_model);
         }
     }
-    let solve = || view_contracts::solve(&functions, closed, |function, id| module.owns_input(function, id));
+    let owns_input = |function: &str, id| module.owns_input(function, id);
     let outputs = if let Some(observe) = &world.worker.compiler().borrow_solve_observer {
         use crate::compiler::{BorrowSolveEvent, BorrowSolveFunction, BorrowSolvePhase};
         let participating: Vec<_> = functions.keys().map(|name| {
@@ -2124,14 +2124,18 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             BorrowSolveFunction { name, source: &unit.source, span: unit.span }
         }).collect();
         observe(BorrowSolveEvent { phase: BorrowSolvePhase::Started, functions: &participating });
-        let result = solve();
+        let storage = |function: &str, storage| observe(BorrowSolveEvent {
+            phase: BorrowSolvePhase::Storage { function, storage },
+            functions: &participating,
+        });
+        let result = view_contracts::solve(&functions, closed, owns_input, Some(&storage));
         observe(BorrowSolveEvent {
             phase: BorrowSolvePhase::Finished { succeeded: result.is_ok() },
             functions: &participating,
         });
         result
     } else {
-        solve()
+        view_contracts::solve(&functions, closed, owns_input, None)
     }?;
     for (name,memory)in &outputs.memory {
         let aliases=returned_input_aliases(module,name);
@@ -2812,7 +2816,7 @@ fn resolve_range_views(
         .collect::<BTreeMap<_, _>>();
     let functions = names.iter().map(|(name, index)| (name.clone(), &scopes[index].view_model))
         .collect::<BTreeMap<_, _>>();
-    let solved = view_contracts::solve(&functions, closed, |_, _| false)?;
+    let solved = view_contracts::solve(&functions, closed, |_, _| false, None)?;
     for (name, memory) in &solved.memory {
         let stage = &mut program.stages[names[name]];
         address::apply_memory(&mut stage.code, memory, &stage.locals);

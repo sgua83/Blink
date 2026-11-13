@@ -452,8 +452,24 @@ impl Function {
     }
 }
 #[derive(Clone,Default,PartialEq,Eq)]
-struct State { loops:BTreeMap<LoopInput,Borrow>, entries:Option<BTreeMap<ValueIdentity,Borrow>>, interface:Interface }
-type States=BTreeMap<String,State>;
+struct State<'a> { name: &'a str, loops:BTreeMap<LoopInput,Borrow>, entries:Option<BTreeMap<ValueIdentity,Borrow>>, interface:Interface }
+type StorageObserver<'a> = dyn Fn(&str, crate::compiler::BorrowSolveStorage) + 'a;
+
+#[derive(Clone)]
+struct States<'a> {
+    functions: BTreeMap<String, State<'a>>,
+    observe: Option<&'a StorageObserver<'a>>,
+}
+
+impl<'a> std::ops::Deref for States<'a> {
+    type Target = BTreeMap<String, State<'a>>;
+    fn deref(&self) -> &Self::Target { &self.functions }
+}
+
+impl std::ops::DerefMut for States<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.functions }
+}
+
 
 // Loop sources are solved only for actual output, contract and memory consumers.
 fn position_roots(position:&Position,roots:&mut Vec<Borrow>) {
@@ -628,7 +644,7 @@ enum LoopSources {
 }
 
 struct BorrowEvaluation<'a>{
-    function:&'a Function,state:&'a State,known:&'a States,expand_loops:bool,deferred_reads:bool,
+    function:&'a Function,state:&'a State<'a>,known:&'a States<'a>,expand_loops:bool,deferred_reads:bool,
     loop_bindings:Vec<BTreeMap<LoopInput,Borrow>>,
     values:BTreeMap<(LoopSources,ContentRead),Borrow>,
 }
@@ -1216,7 +1232,7 @@ fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut Sta
     loop {
         let mut next=known.clone();
         for(name,function)in functions {next.get_mut(name).unwrap().interface.initialization=initializations(function,&known[name],known,true);}
-        if *known==next{break;}*known=next;
+        if known.functions==next.functions{break;}*known=next;
     }
     // Descend from those candidates using normal-return guarantees, never possible-source unions.
     loop {
@@ -1228,7 +1244,7 @@ fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut Sta
                 when.active().then(||address::Initialization{source:old.source.clone(),when})
             }).collect();
         }
-        if *known==next{break;}*known=next;
+        if known.functions==next.functions{break;}*known=next;
     }
 }
 fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_input:&impl Fn(&str,ValueIdentity)->bool) {
@@ -1335,7 +1351,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                 *access.when_mut()=when;access
             }).collect();
         }
-        if *known==next{break;}*known=next;
+        if known.functions==next.functions{break;}*known=next;
     }
 }
 
@@ -1396,7 +1412,7 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
             }
             result.interface.access=stored_outputs(&mut evaluation,&exposed);
         }
-        if *known==next{break;}*known=next;
+        if known.functions==next.functions{break;}*known=next;
     }
 }
 struct LoopConditions {
@@ -1480,10 +1496,17 @@ fn solve_loop_value(
 }
 
 pub(super) struct Solved {pub interfaces:BTreeMap<String,Interface>,pub memory:BTreeMap<String,BTreeMap<address::MemoryTarget,address::MemoryEffect>>,pub values:BTreeMap<String,BTreeMap<ValueIdentity,bounds::Proof>>}
-pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String,Interface>,owns_input:impl Fn(&str,ValueIdentity)->bool)->Result<Solved>{
+pub(super) fn solve(
+    functions:&BTreeMap<String,&Function>, closed:BTreeMap<String,Interface>,
+    owns_input:impl Fn(&str,ValueIdentity)->bool, observe: Option<&StorageObserver<'_>>,
+) -> Result<Solved> {
     let loops=used_loops(functions,&closed);
-    let mut known=closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect::<States>();
+    let mut known = States {
+        functions: closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect(),
+        observe,
+    };
     for(name,function)in functions{known.insert(name.clone(),State{
+        name,
         loops:loops[name].iter().map(|input|(*input,Borrow::default())).collect(),
         entries:None,
         interface:Interface{outputs:function.outputs.keys().map(|output|(output.clone(),Borrow::default())).collect(),access:BTreeSet::new(),initialization:Vec::new()},
@@ -1624,7 +1647,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
             }
         }
     }
-    let interfaces=known.into_iter().map(|(name,state)|{
+    let interfaces=known.functions.into_iter().map(|(name,state)|{
         let mut interface=state.interface;
         if let Some(values)=scalar_values.get_mut(&name){
             let function=functions[&name];

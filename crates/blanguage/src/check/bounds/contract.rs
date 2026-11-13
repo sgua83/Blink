@@ -28,6 +28,19 @@ impl Normalizer {
             operations:HashMap::new(), negatives:HashMap::from([(0,1),(1,0)]), clauses:HashMap::new(),
             emitted:HashMap::from([(0,Clause::impossible()),(1,Clause::default())]) }
     }
+    pub(in crate::check) fn storage(&self) -> crate::compiler::ConditionStorage {
+        use crate::compiler::{AnalysisStorage, ConditionStorage};
+        ConditionStorage {
+            decisions: AnalysisStorage::vector(&self.nodes),
+            unique: AnalysisStorage::entries::<Decision, usize>(self.unique.len(), None),
+            operations: AnalysisStorage::entries::<(bool, usize, usize), usize>(
+                self.operations.len(), Some(self.operations.capacity())),
+            negatives: AnalysisStorage::entries::<usize, usize>(self.negatives.len(), Some(self.negatives.capacity())),
+            imported: AnalysisStorage::entries::<usize, (Clause, usize)>(self.clauses.len(), Some(self.clauses.capacity())),
+            emitted: AnalysisStorage::entries::<usize, Clause>(self.emitted.len(), Some(self.emitted.capacity())),
+        }
+    }
+
     pub(in crate::check) fn scalar(&mut self, id:ValueIdentity, scalar:Scalar) {
         self.types.entry(id).and_modify(|old| { if *old!=Some(scalar) { *old=None; } }).or_insert(Some(scalar));
     }
