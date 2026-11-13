@@ -97,8 +97,6 @@ unsafe extern "C" {
     fn encode_buffer_load(offset: u32, target: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::buffer_index"]
     fn encode_buffer_index(stride_offset: u32, index: u8, base: u8, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::buffer_advance"]
-    fn encode_buffer_advance(stride_offset: u32, target: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::buffer_selection"]
     fn encode_buffer_selection(data_offset: u32, stride_offset: u32, word: u32, output: *mut u8) -> u64;
 }
@@ -278,10 +276,6 @@ impl Emitter<'_> {
     }
     fn offset_buffer_address(&mut self, binding: usize) {
         self.buffer_index(binding, 0, Some(15));
-    }
-    fn buffer_advance(&mut self, binding: usize, target: u8) {
-        let stride = binding as u32 * BUFFER_BYTES + BUFFER_STRIDE;
-        self.emit_bytes(8, |output| unsafe { encode_buffer_advance(stride, target, output) });
     }
     fn buffer_selection(&mut self, binding: usize, word: u32) {
         let data = binding as u32 * BUFFER_BYTES;

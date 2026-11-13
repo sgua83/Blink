@@ -27,7 +27,29 @@ struct TileCollectiveCode {
     fill_loop_start: u64,
 }
 
+#[repr(C)]
+struct TileInputBoundaryCode {
+    length: u64,
+    skip_field: u64,
+}
+
+#[repr(C)]
+struct TileInputCopy {
+    data_offset: u32,
+    stride_offset: u32,
+    source_offset: u32,
+    storage_offset: u32,
+    length_offset: u32,
+    unit_bytes: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::tile_lane"]
+    fn encode_tile_lane(width: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::tile_input_boundary"]
+    fn encode_tile_input_boundary(width: u32, length_offset: u32, output: *mut u8) -> TileInputBoundaryCode;
+    #[link_name = "bootstrap.x64_instruction::tile_input_copy"]
+    fn encode_tile_input_copy(input: TileInputCopy, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_collective"]
     fn encode_tile_collective(input: TileCollectiveInput, output: *mut u8) -> TileCollectiveCode;
 }
@@ -48,9 +70,8 @@ impl Emitter<'_> {
         self.store(dst);
     }
     pub(super) fn tile_lane(&mut self, dst: Reg) {
-        self.bytes(&[0x89, 0xd8, 0x31, 0xd2, 0xb9]);
-        self.u32(self.stage.workgroup_width());
-        self.bytes(&[0xf7, 0xf1, 0x89, 0xd0]);
+        let width = self.stage.workgroup_width();
+        self.emit_bytes(16, |output| unsafe { encode_tile_lane(width, output) });
         self.store(dst);
     }
     pub(super) fn tile_load(&mut self, dst: Reg, tile: usize, index: Reg, word: u32, offset: Option<Reg>) {
@@ -89,40 +110,33 @@ impl Emitter<'_> {
     pub(super) fn tile_input(&mut self) {
         let start = self.code.len();
         let width = self.stage.workgroup_width();
-        self.bytes(&[0x89, 0xd8, 0x31, 0xd2, 0xb9]);
-        self.u32(width);
-        self.bytes(&[0xf7, 0xf1, 0x85, 0xd2]);
-        let skip = self.jump(Branch::Flags(0x85));
-        // r14d 是对齐的范围末端；只有全局最后一块可以是不完整 tile。
-        self.bytes(&[0x44, 0x89, 0xf0, 0x29, 0xd8, 0xb9]);
-        self.u32(width);
-        self.bytes(&[0x39, 0xc8, 0x0f, 0x47, 0xc1, 0x89, 0x84, 0x24]);
-        self.u32(self.tile_length_slot());
+        let length_offset = self.tile_length_slot();
+        self.code.reserve(48);
+        let boundary = unsafe {
+            let output = self.code.as_mut_ptr().add(start);
+            let boundary = encode_tile_input_boundary(width, length_offset, output);
+            self.code.set_len(start + boundary.length as usize);
+            boundary
+        };
+        let skip = start + boundary.skip_field as usize;
         self.parallel_abi(start, ParallelRangePart::TileInputBoundary { width });
-        for ((source, word), fragments) in self.stage.input_words() {
-          for (byte, unit) in fragments {
-            let start = self.code.len();
-            self.buffer_load(source as u32 * BUFFER_BYTES, 10);
-            self.copy(Location::Gpr(0), Location::Gpr(3));
-            self.buffer_index(source, 0, Some(10));
-            self.bytes(&[0x4c, 0x8d, 0x9c, 0x24]);
-            let storage_offset = self.shared_stream(SharedWord::Input { binding: source, word }) + byte % 4;
-            self.u32(storage_offset);
-            self.bytes(&[0x8b, 0x8c, 0x24]);
-            self.u32(self.tile_length_slot());
-            let begin = self.code.len();
-            if unit.size() < 4 {
-                self.instruction(None, &[0x0f, 0xb6 + u8::from(unit.size() == 2)], false, 0, operands::Operand::memory(10, byte));
-            } else {
-                self.instruction(None, &[0x8b], false, 0, operands::Operand::memory(10, byte));
+
+        for ((binding, word), fragments) in self.stage.input_words() {
+            let data_offset = binding as u32 * BUFFER_BYTES;
+            let stride_offset = data_offset + BUFFER_STRIDE;
+            let storage = self.shared_stream(SharedWord::Input { binding, word });
+            for (source_offset, unit) in fragments {
+                let storage_offset = storage + source_offset % 4;
+                let unit_bytes = unit.size();
+                let input = TileInputCopy {
+                    data_offset, stride_offset, source_offset, storage_offset, length_offset, unit_bytes,
+                };
+                let start = self.code.len();
+                self.emit_bytes(80, |output| unsafe { encode_tile_input_copy(input, output) });
+                self.parallel_abi(start, ParallelRangePart::TileInputCopy {
+                    binding, source_offset, storage_offset, unit_bytes,
+                });
             }
-            self.write_value_address(Location::Gpr(0), Memory::new(11, 0), unit.size());
-            self.buffer_advance(source, 10);
-            self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
-            let again = self.jump(Branch::Flags(0x85));
-            self.patch(again, begin);
-            self.parallel_abi(start, ParallelRangePart::TileInputCopy { binding: source, source_offset: byte, storage_offset, unit_bytes: unit.size() });
-          }
         }
         self.patch(skip, self.code.len());
     }

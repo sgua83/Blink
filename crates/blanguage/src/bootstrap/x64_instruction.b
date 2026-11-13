@@ -1732,11 +1732,6 @@ extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output
     return buffer_index_at(start, stride_offset, index, base) - start;
 }
 
-extern "C" u64 buffer_advance(u32 stride_offset, u8 target, address output) on cpu {
-    u64 start = address_bits(output);
-    return buffer_field_at(start, stride_offset, u16(0x03), target) - start;
-}
-
 u64 buffer_selection_at(u64 at, u32 data_offset, u32 stride_offset, u32 word) on cpu {
     u64 cursor = buffer_field_at(at, data_offset, u16(0x8b), u8(15));
     cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(3), u8(0));
@@ -2442,17 +2437,68 @@ u64 tile_collective_store(u64 at, ScalarEncoding scalar, u32 plane_stride) on cp
     return cursor;
 }
 
-u64 tile_collective_advance(u64 at, u8 pointer) on cpu {
+u64 tile_stream_advance(u64 at, u8 pointer) on cpu {
     u64 immediate = register_instruction(at, u16(0x83), u8(0), true, u8(0), pointer);
     put_byte(immediate, u8(4));
     return immediate + 1u64;
 }
 
-u64 tile_collective_repeat(u64 at, u64 begin) on cpu {
+u64 tile_counted_back_edge(u64 at, u64 begin) on cpu {
     u64 cursor = register_instruction(at, u16(0xff), u8(0), false, u8(1), u8(1));
     u64 back = condition_field(cursor, u8(0x85));
     patch_relative(unsafe_address(back), back, begin);
     return back + 4u64;
+}
+
+u64 tile_lane_remainder(u64 at, u32 width) on cpu {
+    u64 cursor = register_instruction(at, u16(0x89), u8(0), false, u8(3), u8(0));
+    cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(2), u8(2));
+    cursor = move_immediate(cursor, u8(1), u64(width), false);
+    return register_instruction(cursor, u16(0xf7), u8(0), false, u8(6), u8(1));
+}
+
+extern "C" u64 tile_lane(u32 width, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = tile_lane_remainder(start, width);
+    return register_instruction(cursor, u16(0x89), u8(0), false, u8(2), u8(0)) - start;
+}
+
+extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offset, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = tile_lane_remainder(start, width);
+    cursor = register_instruction(cursor, u16(0x85), u8(0), false, u8(2), u8(2));
+    u64 skip = condition_field(cursor, u8(0x85));
+    write_word(skip, 0);
+    // R14D is the aligned range's exclusive end. Its last tile can be partial.
+    cursor = register_instruction(skip + 4u64, u16(0x89), u8(0), false, u8(14), u8(0));
+    cursor = register_instruction(cursor, u16(0x29), u8(0), false, u8(3), u8(0));
+    cursor = register_instruction(cursor, u16(0x39), u8(0), false, u8(1), u8(0));
+    cursor = register_instruction(cursor, u16(0x470f), u8(0), false, u8(0), u8(1));
+    MoveLocation length = MoveLocation(u64(length_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    cursor = store_bits(cursor, length, u8(0), 4);
+    return TileInputBoundaryCode(cursor - start, skip - start);
+}
+
+extern "C" u64 tile_input_copy(TileInputCopy input, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = buffer_field_at(start, input.data_offset, u16(0x8b), u8(10));
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(3), u8(0));
+    cursor = buffer_index_at(cursor, input.stride_offset, u8(0), u8(10));
+    MoveLocation storage = MoveLocation(u64(input.storage_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(11), storage);
+    MoveLocation length = MoveLocation(u64(input.length_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    u64 begin = load_bits(cursor, u8(1), length, false);
+    MoveLocation source = MoveLocation(u64(input.source_offset), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+    if (input.unit_bytes == 4) {
+        cursor = load_bits(begin, u8(0), source, false);
+    } else {
+        cursor = load_extended(begin, u8(0), source, input.unit_bytes, false);
+    }
+    MoveLocation target = MoveLocation(0u64, MOVE_MEMORY, u8(11), NO_INDEX, u8(0));
+    cursor = store_bits(cursor, target, u8(0), input.unit_bytes);
+    cursor = buffer_field_at(cursor, input.stride_offset, u16(0x03), u8(10));
+    cursor = tile_stream_advance(cursor, u8(11));
+    return tile_counted_back_edge(cursor, begin) - start;
 }
 
 extern "C" TileCollectiveCode tile_collective(TileCollectiveInput input, address output) on cpu {
@@ -2479,7 +2525,7 @@ extern "C" TileCollectiveCode tile_collective(TileCollectiveInput input, address
     u64 begin = cursor;
     if (input.exclusive) {
         cursor = tile_collective_store(cursor, input.scalar, input.plane_stride);
-        cursor = tile_collective_advance(cursor, u8(11));
+        cursor = tile_stream_advance(cursor, u8(11));
     }
     u64 accumulate = cursor;
     MoveLocation operand = MoveLocation(0u64, MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
@@ -2497,15 +2543,15 @@ extern "C" TileCollectiveCode tile_collective(TileCollectiveInput input, address
         }
     }
     cursor = collective_accumulate(cursor, input.operation, input.scalar, u8(0), operand);
-    cursor = tile_collective_advance(cursor, u8(10));
-    u64 fill = tile_collective_repeat(cursor, begin);
+    cursor = tile_stream_advance(cursor, u8(10));
+    u64 fill = tile_counted_back_edge(cursor, begin);
     u64 fill_loop = fill;
     cursor = fill;
     if (!input.exclusive) {
         fill_loop = load_bits(cursor, u8(1), length, false);
         cursor = tile_collective_store(fill_loop, input.scalar, input.plane_stride);
-        cursor = tile_collective_advance(cursor, u8(11));
-        cursor = tile_collective_repeat(cursor, fill_loop);
+        cursor = tile_stream_advance(cursor, u8(11));
+        cursor = tile_counted_back_edge(cursor, fill_loop);
     }
     return TileCollectiveCode(cursor - start, identity - start, begin - start,
         accumulate - start, fill - start, fill_loop - start);

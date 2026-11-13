@@ -184,7 +184,6 @@ extern "C" u64 buffer_load(u32 offset, u8 target, address output) on cpu;
 // Scale an index by the stored u64 stride. Base 255 leaves the scaled index
 // available as an operand; otherwise add it to the given pointer register.
 extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output) on cpu;
-extern "C" u64 buffer_advance(u32 stride_offset, u8 target, address output) on cpu;
 // Read the selection field for EBX and leave the comparison flags.
 extern "C" u64 buffer_selection(u32 data_offset, u32 stride_offset, u32 word, address output) on cpu;
 
@@ -296,6 +295,27 @@ struct ReductionCode {
     u64 length;
     array<u64,4> literals;
 };
+
+struct TileInputBoundaryCode {
+    u64 length;
+    u64 skip_field;
+};
+
+struct TileInputCopy {
+    u32 data_offset;
+    u32 stride_offset;
+    u32 source_offset;
+    u32 storage_offset;
+    u32 length_offset;
+    u32 unit_bytes;
+};
+
+// The caller owns 16 bytes for tile_lane and 48 for tile_input_boundary.
+// The boundary's skip field is a rel32 over the complete input copy.
+extern "C" u64 tile_lane(u32 width, address output) on cpu;
+extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offset, address output) on cpu;
+// The caller owns 80 bytes for the loop over the actual lanes in the tile.
+extern "C" u64 tile_input_copy(TileInputCopy input, address output) on cpu;
 
 struct TileCollectiveInput {
     u64 identity;

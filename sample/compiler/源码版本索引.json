@@ -256,11 +256,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/x64_instruction.b",
-      "sha256": "aef422be33afdc751ddd94c34cb49202c6cfc670aa0734f9c7f89bea68dbc2f8"
+      "sha256": "1facbed7b237cc46638e0b22f77ccf8d5a0cfb0b8c84169e0f398bf73ae23cd2"
     },
     {
       "path": "crates/blanguage/src/bootstrap/x64_instruction.h",
-      "sha256": "60cdfc96897f679c59ece921b6330e4eb7e367c93fbf9a8cae3bff8f3d716086"
+      "sha256": "67576cd2b87b3cf8a58ca37f6de271d2fd941f78c95239c18231d7743ce25616"
     },
     {
       "path": "crates/blanguage/src/build/compiler_identity.rs",
@@ -596,7 +596,7 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "sha256": "034bc14225cf3deedebfd64970f42b8b0c0a3772fc2e5d1619a24a07e2868c8b"
+      "sha256": "55d51b5ccd0e5a483fd54db182e3088ca7a8d85750bd578325d0bf0a5169bd46"
     },
     {
       "path": "crates/blanguage/src/native/compact.rs",
@@ -672,7 +672,7 @@
     },
     {
       "path": "crates/blanguage/src/native/tile.rs",
-      "sha256": "4cb4289d1a2a10487506f894643a47f22cd2a1241d6f7e4fabc2e8cf6e1ae675"
+      "sha256": "5ecdc639e9a5fe70f74b305cf498023761c3b5e082ead8844d539186c62591fb"
     },
     {
       "path": "crates/blanguage/src/native/unwind.rs",
@@ -1116,8 +1116,8 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "start_line": 204,
-      "end_line": 214,
+      "start_line": 202,
+      "end_line": 212,
       "sha256": "c1495d3dca286d879830f2ac43289b4cb3bf98e9be0d9f2c3dd26c8d7a395c05"
     },
     {
@@ -1134,8 +1134,8 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "start_line": 212,
-      "end_line": 225,
+      "start_line": 210,
+      "end_line": 223,
       "sha256": "d7b08c8c4bfe80a818a8fa5c340199b307d8b9eede7a91166792dc5f39f3602e"
     },
     {
@@ -1152,8 +1152,8 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "start_line": 718,
-      "end_line": 729,
+      "start_line": 712,
+      "end_line": 723,
       "sha256": "899f7d7a790ddff8dc5181282b3142292e9198e3b2743a2cd6d94a85814f7f03"
     },
     {
