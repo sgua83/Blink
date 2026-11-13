@@ -81,11 +81,11 @@ fn compile_in(
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let mut request = Vec::new();
     for value in [
-        path.to_str().ok_or("入口路径不是UTF-8")?,
-        root.to_str().ok_or("模块根不是UTF-8")?,
-        entry,
+        path.as_os_str().as_encoded_bytes(),
+        root.as_os_str().as_encoded_bytes(),
+        entry.as_bytes(),
     ] {
-        hash::field(&mut request, value.as_bytes());
+        hash::field(&mut request, value);
     }
     hash::field(
         &mut request,

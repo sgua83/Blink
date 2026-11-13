@@ -5126,7 +5126,7 @@ let program = blcompute::cpu::CpuProgram::from_image(
 
 CPU使用`Target::Cpu`、`into_cpu()`及原`CpuProgram::from_image`；模板保留在`templates`，GPU继续交给`load_template`，不会作为无前置条件入口。`Program`／`Template`是持有最终映像的原`resource::Image`类型，接口仍为ExecutionPlan／ProgramInterface；不构造空IR或在装入时调用后端。
 
-生成目录由调用方明确指定。artifact为BLBI1文件，reused表示本次是否复用了根编译结果；请求中的路径、模块根、大小写敏感入口及实际CPU／GPU后端区分位置。入口与COFF共用原World的声明／实际实现依赖记录，编译器生产身份、必要接口／声明、实际定义及目标决定是否重编，mtime和文件大小不充当身份。未消费实现改变可复用，实际依赖、可选实现有无或导入改变沿真实输入重新生成。产物不存在时正常编译，已存在但读取／解码错误直接报告，不隐式重编。
+生成目录由调用方明确指定。artifact为BLBI1文件，reused表示本次是否复用了根编译结果；请求中的路径、模块根、大小写敏感入口及实际CPU／GPU后端区分位置。源码路径与模块根按原生路径编码参与请求键，不因Windows路径含非Unicode代码单元而拒绝或有损替换；源文本和入口名称仍按原UTF-8语言规则处理。入口与COFF共用原World的声明／实际实现依赖记录，编译器生产身份、必要接口／声明、实际定义及目标决定是否重编，mtime和文件大小不充当身份。未消费实现改变可复用，实际依赖、可选实现有无或导入改变沿真实输入重新生成。产物不存在时正常编译，已存在但读取／解码错误直接报告，不隐式重编。
 
 可信编译产物可通过`unsafe blanguage::build::load(path)`脱离源码读取，再交给原CPU／GPU装入入口；调用方必须保证文件确由可信编译器生成、代码和合同完整未修改。原机器码、SPIR-V、布局、依赖及前缀合同保持。缓存替换不改变已经装入的代码版本和真实资源所有者。
 
