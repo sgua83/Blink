@@ -86,8 +86,8 @@ MetadataBinding ordered_binding_at(MetadataInput input, u64 index) on cpu {
 MetadataFrame frame_at(MetadataInput input,u64 index) on cpu {
     return unsafe_position<MetadataFrame>(unsafe_address(address_bits(input.frames)+index*FRAME_BYTES));
 }
-MetadataCall call_at(MetadataFrame frame,u64 index) on cpu {
-    return unsafe_position<MetadataCall>(unsafe_address(address_bits(frame.calls)+index*CALL_BYTES));
+MetadataCall call_at(MetadataInput input,u64 index) on cpu {
+    return unsafe_position<MetadataCall>(unsafe_address(address_bits(input.calls)+index*CALL_BYTES));
 }
 MetadataLayout invalid(u32 error) on cpu {return MetadataLayout(0u64,error);}
 
@@ -147,6 +147,7 @@ extern "C" MetadataLayout layout(MetadataInput input) on cpu {
         if(at>4294967295u64){return invalid(3);}i+=1u64;
     }
     at+=4u64;i=0u64;
+    u64 call_index=0u64;
     while(i<input.frame_count){
         MetadataFrame frame=frame_at(input,i);
         if(frame.name.length>4294967295u64){return invalid(2);}
@@ -157,9 +158,9 @@ extern "C" MetadataLayout layout(MetadataInput input) on cpu {
             at+=8u64;
         }
         if(at>4294967295u64){return invalid(3);}
-        u64 j=0u64;
-        while(j<frame.call_count){
-            MetadataCall call=call_at(frame,j);
+        u64 call_end=call_index+frame.call_count;
+        while(call_index<call_end){
+            MetadataCall call=call_at(input,call_index);
             at+=4u64;
             if(call.kind<2u64){
                 if(call.offset>4294967295u64){return invalid(2);}
@@ -168,7 +169,7 @@ extern "C" MetadataLayout layout(MetadataInput input) on cpu {
                 if(call.reason.length>4294967295u64){return invalid(2);}
                 at+=4u64+call.reason.length;
             }
-            if(at>4294967295u64){return invalid(3);}j+=1u64;
+            if(at>4294967295u64){return invalid(3);}call_index+=1u64;
         }
         i+=1u64;
     }
@@ -246,17 +247,18 @@ extern "C" void encode(MetadataInput input,address output) on cpu {
         at=bytes(output,at,binding.name);at=bytes(output,at,binding.value);i+=1u64;
     }
     at=word(output,at,input.frame_count);i=0u64;
+    u64 call_index=0u64;
     while(i<input.frame_count){
         MetadataFrame frame=frame_at(input,i);
         at=bytes(output,at,frame.name);at=word(output,at,frame.has_coff);
         if(frame.has_coff!=0u64){at=word(output,at,frame.section);at=word(output,at,frame.start);}
         at=word(output,at,frame.local);at=word(output,at,frame.call_count);
-        u64 j=0u64;
-        while(j<frame.call_count){
-            MetadataCall call=call_at(frame,j);at=word(output,at,call.kind);
+        u64 call_end=call_index+frame.call_count;
+        while(call_index<call_end){
+            MetadataCall call=call_at(input,call_index);at=word(output,at,call.kind);
             if(call.kind<2u64){at=word(output,at,call.offset);}
             else if(call.kind==3u64){at=bytes(output,at,call.reason);}
-            j+=1u64;
+            call_index+=1u64;
         }
         i+=1u64;
     }

@@ -416,7 +416,7 @@ struct MetadataCall { kind: u64, offset: u64, reason: MetadataBytes }
 #[repr(C)]
 struct MetadataFrame {
     name: MetadataBytes, has_coff: u64, section: u64, start: u64, local: u64,
-    calls: *const MetadataCall, call_count: usize,
+    call_count: usize,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -440,7 +440,7 @@ struct MetadataInput {
     exports: *const MetadataBytes, export_count: usize,
     resource: MetadataResource,
     bindings: *const MetadataBinding, binding_order: *const usize, binding_count: usize,
-    frames: *const MetadataFrame, frame_count: usize,
+    frames: *const MetadataFrame, frame_count: usize, calls: *const MetadataCall,
 }
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -532,22 +532,23 @@ fn metadata(o: &Object) -> Result<Vec<u8>> {
             },
         }).collect::<Vec<_>>()
     } else { Vec::new() };
-    let calls = o.stack.iter().map(|frame| frame.calls.iter().map(|call| {
-        let (kind, offset, reason) = match call {
-            stack::Call::Reference { offset, tail } => (u64::from(*tail), *offset as u64, empty),
-            stack::Call::Indirect => (2, 0, empty),
-            stack::Call::Unreported(reason) => (3, 0, MetadataBytes::new(reason.as_bytes())),
-        };
-        MetadataCall { kind, offset, reason }
-    }).collect::<Vec<_>>()).collect::<Vec<_>>();
-    let frames = o.stack.iter().zip(&calls).map(|(frame, calls)| {
+    let mut calls = Vec::with_capacity(o.stack.iter().map(|frame| frame.calls.len()).sum());
+    let frames = o.stack.iter().map(|frame| {
+        calls.extend(frame.calls.iter().map(|call| {
+            let (kind, offset, reason) = match call {
+                stack::Call::Reference { offset, tail } => (u64::from(*tail), *offset as u64, empty),
+                stack::Call::Indirect => (2, 0, empty),
+                stack::Call::Unreported(reason) => (3, 0, MetadataBytes::new(reason.as_bytes())),
+            };
+            MetadataCall { kind, offset, reason }
+        }));
         let (has_coff, section, start) = match frame.coff {
             Some((section, start)) => (1, section as u64, u64::from(start)),
             None => (0, 0, 0),
         };
         MetadataFrame {
             name: MetadataBytes::new(frame.name.as_bytes()), has_coff, section, start,
-            local: u64::from(frame.local), calls: calls.as_ptr(), call_count: calls.len(),
+            local: u64::from(frame.local), call_count: frame.calls.len(),
         }
     }).collect::<Vec<_>>();
     let mut input = MetadataInput {
@@ -557,7 +558,7 @@ fn metadata(o: &Object) -> Result<Vec<u8>> {
         libraries: libraries.as_ptr(), library_count: libraries.len(),
         exports: exports.as_ptr(), export_count: exports.len(), resource,
         bindings: bindings.as_ptr(), binding_order: binding_order.as_ptr(), binding_count: order.count,
-        frames: frames.as_ptr(), frame_count: frames.len(),
+        frames: frames.as_ptr(), frame_count: frames.len(), calls: calls.as_ptr(),
     };
     match &o.kind {
         Kind::Application { stack_bytes } => input.stack_bytes = u64::from(*stack_bytes),
