@@ -13,6 +13,7 @@ struct CombineSection {
     u64 owner;u64 group;u64 begin;u64 size;u64 padding;
 };
 struct CombineSymbol {address name;u64 name_length;u64 section;u64 value;};
+struct CombineName {address name;u64 length;};
 struct CombineRelocation {
     u64 source;u64 offset;u64 target_kind;u64 section;u64 value;address name;u64 name_length;
 };
@@ -23,5 +24,5 @@ struct CombineInput {
     address frames;address calls;address order;
 };
 struct CombinePlan {u64 groups;u64 symbols;u64 stack_bytes;u64 error;u64 at;};
-extern "C" CombinePlan prepare(CombineInput input) on cpu;
+extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count) on cpu;
 extern "C" void encode(CombineInput input,address outputs) on cpu;

@@ -1,7 +1,7 @@
 //! B owns grouping, layout, symbol/stack/relocation rebasing and payload copying.
 //! The original objects stay alive until synchronous encoding ends. Rust keeps
 //! the final Object, symbol map and resource owners; no input payload is cloned.
-use super::Result;
+use super::{Result, resources::ImportBytes};
 use crate::object::{Kind,Object,Section,Target,stack::Call};
 use std::collections::BTreeMap;
 
@@ -29,12 +29,14 @@ struct CombineInput {
 struct CombinePlan {groups:u64,symbols:u64,stack_bytes:u64,error:u64,at:u64}
 unsafe extern "C" {
     #[link_name="bootstrap.combine::prepare"]
-    fn combine_prepare(input:CombineInput)->CombinePlan;
+    fn combine_prepare(input: CombineInput, local: *const ImportBytes, local_count: usize) -> CombinePlan;
     #[link_name="bootstrap.combine::encode"]
     fn combine_encode(input:CombineInput,outputs:*const *mut u8);
 }
 
-pub(super) fn objects(objects:Vec<Object>,symbols_out:Option<&mut BTreeMap<String,(usize,u32)>>)->Result<Object> {
+pub(super) fn objects(
+    objects: Vec<Object>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
+) -> Result<Object> {
     let name=objects[0].name.clone();
     let mut inputs=Vec::with_capacity(objects.len());
     let mut rows=Vec::new();let mut symbols=Vec::new();let mut relocations=Vec::new();
@@ -76,7 +78,9 @@ pub(super) fn objects(objects:Vec<Object>,symbols_out:Option<&mut BTreeMap<Strin
         sections:rows.as_mut_ptr(),section_count:rows.len() as u64,symbols:symbols.as_mut_ptr(),symbol_count:symbols.len() as u64,
         relocations:relocations.as_mut_ptr(),relocation_count:relocations.len() as u64,frames:frames.as_mut_ptr(),
         calls:calls.as_mut_ptr(),order:order.as_mut_ptr()};
-    let plan=unsafe{combine_prepare(input)};
+    let local: Vec<_> = module.as_ref().into_iter().flat_map(|(names, _)| names.iter())
+        .map(|name| ImportBytes::new(name)).collect();
+    let plan = unsafe { combine_prepare(input, local.as_ptr(), local.len()) };
     match plan.error {
         0=>{},1=>return Err("合并节偏移超出32位范围".into()),
         2=>return Err("模块符号地址溢出".into()),3=>return Err("栈函数节地址溢出".into()),4=>return Err("模块节地址溢出".into()),
@@ -85,7 +89,16 @@ pub(super) fn objects(objects:Vec<Object>,symbols_out:Option<&mut BTreeMap<Strin
             // This is the original String's borrowed UTF-8, still owned by objects.
             let name=unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(row.name,row.name_length as usize))};
             return Err(format!("未定义模块符号 {name}").into());
-        },code=>return Err(format!("COFF节组合失败 {code}").into()),
+        },
+        6 => {
+            let symbol = &symbols[usize::try_from(plan.at)?];
+            // The original object still owns this selected symbol name.
+            let name = unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(symbol.name, symbol.name_length as usize))
+            };
+            return Err(format!("重复定义模块符号 {name}").into());
+        },
+        code=>return Err(format!("COFF节组合失败 {code}").into()),
     }
     let mut sections=Vec::with_capacity(usize::try_from(plan.groups)?);
     for (i,(section,row)) in objects.iter().flat_map(|object|&object.sections).zip(&rows).enumerate(){
@@ -96,7 +109,7 @@ pub(super) fn objects(objects:Vec<Object>,symbols_out:Option<&mut BTreeMap<Strin
     unsafe{combine_encode(input,outputs.as_ptr());}
     // Encoding writes every byte, including the real alignment gaps, exactly once.
     for (i,row) in rows.iter().enumerate(){if row.owner==i as u64{unsafe{sections[usize::try_from(row.group)?].bytes.set_len(usize::try_from(row.size)?);}}}
-    if let Some(defined)=symbols_out{for &index in &order[..usize::try_from(plan.symbols)?]{
+    if let Some((_, defined))=module{for &index in &order[..usize::try_from(plan.symbols)?]{
         let symbol=&symbols[usize::try_from(index)?];
         let name=unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(symbol.name,symbol.name_length as usize))};
         defined.insert(name.to_owned(),(usize::try_from(symbol.section)?,u32::try_from(symbol.value)?));

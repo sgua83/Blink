@@ -11,10 +11,7 @@ pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], r
     let objects = select(linked, Roots::Symbols(roots, types, programs))?;
     if objects.is_empty() { return Ok(None); }
     let mut symbols = BTreeMap::new();
-    let object = combine::objects(objects,Some(&mut symbols))?;
-    for name in symbols.keys() {
-        if local.binary_search(&name.as_str()).is_ok() { return Err(format!("重复定义模块符号 {name}").into()); }
-    }
+    let object = combine::objects(objects, Some((local, &mut symbols)))?;
     let sections = object.sections.into_iter().map(|section| {
         let relocations = section.relocations.into_iter().map(|relocation| {
             let target = match relocation.target {
