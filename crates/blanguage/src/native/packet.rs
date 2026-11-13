@@ -1,6 +1,7 @@
 //! 四个独立元素的 SSE2 降低；计划只包含已证明的访问与可表达指令，尾部共用标量 IR。
 use super::*;
 use allocation::{PacketAllocation, PacketPlace};
+use memory::{PacketAddress, PacketViewAddress, packet_dataset_address, packet_view_address};
 use std::collections::BTreeSet;
 #[path="packet/control.rs"]
 mod control;
@@ -17,19 +18,6 @@ enum Math {
     Min,
     Max,
 }
-enum Address {
-    Element,
-    Uniform(Reg),
-}
-
-enum ReadSource {
-    Dataset(usize),
-    View {
-        address: [Reg; 2],
-        stride: ElementStride,
-        uniform: bool,
-    },
-}
 // The temporary lowering step borrows its original instruction; it owns no source copy.
 struct Step<'a> {
     instruction: &'a Inst,
@@ -43,21 +31,23 @@ enum StepKind<'a> {
     Load {
         dst: Reg,
         binding: usize,
-        index: Address,
-        word: u32,
-    },
-    Gather {
-        dst: Reg,
-        source: ReadSource,
         index: Reg,
         word: u32,
-        broadcast: bool,
+        mode: PacketAddress,
+    },
+    ViewLoad {
+        dst: Reg,
+        address: [Reg; 2],
+        stride: ElementStride,
+        index: Reg,
+        word: u32,
+        mode: PacketViewAddress,
     },
     Store {
         binding: usize,
-        index: Address,
         word: u32,
         value: Reg,
+        mode: PacketAddress,
     },
     Unary {
         dst: Reg,
@@ -159,88 +149,38 @@ impl<'a> Plan<'a> {
                 InstKind::StoreLocal(slot, src) => {
                     StepKind::Copy(PrivateSlot::Local(*slot), PrivateSlot::Register(*src))
                 }
-                InstKind::Load {
-                    dst,
-                    binding,
-                    index,
-                    word,
-                } => {
-                    let broadcast = uniform[*index] && !stage.writes.contains(binding);
-                    let element = indices.contains(index);
-                    if !broadcast && !element && stage.writes.contains(binding) {
-                        return None;
-                    }
-                    let stride = program.buffers[*binding].stride as u64;
-                    let last =
-                        *word as u64 * 4 + if element && !broadcast { 3 * stride } else { 0 };
-                    if stride > i32::MAX as u64 || last > i32::MAX as u64 {
-                        return None;
-                    }
-                    if broadcast || element {
-                        StepKind::Load {
-                            dst: *dst,
-                            binding: *binding,
-                            index: if broadcast {
-                                Address::Uniform(*index)
-                            } else {
-                                Address::Element
-                            },
-                            word: *word,
-                        }
-                    } else {
-                        StepKind::Gather {
-                            dst: *dst,
-                            source: ReadSource::Dataset(*binding),
-                            index: *index,
-                            word: *word,
-                            broadcast: false,
-                        }
+                InstKind::Load { dst, binding, index, word } => {
+                    let mode = packet_dataset_address(
+                        program.buffers[*binding].stride,
+                        *word,
+                        stage.selection.is_some(),
+                        stage.writes.contains(binding),
+                        indices.contains(index),
+                        uniform[*index],
+                    )?;
+                    StepKind::Load { dst: *dst, binding: *binding, index: *index, word: *word, mode }
+                }
+                InstKind::ViewLoad { dst, address, index, stride, word } => {
+                    let mode = packet_view_address(
+                        *word,
+                        uniform[address[0]] && uniform[address[1]],
+                        uniform[*index],
+                        stride.all_operands(&mut |reg| uniform[reg]),
+                    )?;
+                    StepKind::ViewLoad {
+                        dst: *dst, address: *address, stride: *stride, index: *index, word: *word, mode,
                     }
                 }
-                InstKind::ViewLoad {
-                    dst,
-                    address,
-                    index,
-                    stride,
-                    word,
-                } => {
-                    if *word as u64 * 4 > i32::MAX as u64 {
-                        return None;
-                    }
-                    let same_address = uniform[address[0]] && uniform[address[1]];
-                    let broadcast = same_address && uniform[*index] && stride.all_operands(&mut |reg| uniform[reg]);
-                    StepKind::Gather {
-                        dst: *dst,
-                        source: ReadSource::View {
-                            address: *address,
-                            stride: *stride,
-                            uniform: same_address,
-                        },
-                        index: *index,
-                        word: *word,
-                        broadcast,
-                    }
-                }
-                InstKind::Store {
-                    binding,
-                    index,
-                    word,
-                    value,
-                } => {
-                    if !indices.contains(index) {
-                        return None;
-                    }
-                    if *word as u64 * 4 + 3 * program.buffers[*binding].stride as u64
-                        > i32::MAX as u64
-                    {
-                        return None;
-                    }
-                    StepKind::Store {
-                        binding: *binding,
-                        index: Address::Element,
-                        word: *word,
-                        value: *value,
-                    }
+                InstKind::Store { binding, index, word, value } => {
+                    let mode = packet_dataset_address(
+                        program.buffers[*binding].stride,
+                        *word,
+                        stage.selection.is_some(),
+                        true,
+                        indices.contains(index),
+                        false,
+                    )?;
+                    StepKind::Store { binding: *binding, word: *word, value: *value, mode }
                 }
                 InstKind::Unary { dst, op, a } => StepKind::Unary {
                     dst: *dst,
@@ -468,17 +408,12 @@ impl Emitter<'_> {
                     let source = allocation.location(*src).into();
                     self.emit_bytes(32, |output| unsafe { encode_packet_copy(destination, source, output) });
                 }
-                StepKind::Load { dst, binding, index, word } =>
-                    self.packet_read(allocation, *dst, *binding, index, *word),
-                StepKind::Store { binding, index, word, value } =>
-                    self.packet_write(allocation, *value, *binding, index, *word),
-                StepKind::Gather {
-                    dst,
-                    source,
-                    index,
-                    word,
-                    broadcast,
-                } => self.packet_gather(allocation, *dst, source, *index, *word, *broadcast),
+                StepKind::Load { dst, binding, index, word, mode } =>
+                    self.packet_read(allocation, *dst, *binding, *index, *word, *mode),
+                StepKind::Store { binding, word, value, mode } =>
+                    self.packet_write(allocation, *value, *binding, *word, *mode),
+                StepKind::ViewLoad { dst, address, stride, index, word, mode } =>
+                    self.packet_view(allocation, *dst, *address, *stride, *index, *word, *mode),
                 StepKind::Unary { dst, op, a } => {
                     let destination = allocation.location(Register(*dst)).into();
                     let source = allocation.location(Register(*a)).into();

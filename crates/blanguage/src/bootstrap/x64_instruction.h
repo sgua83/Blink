@@ -236,22 +236,29 @@ extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on
 extern "C" AddressEncoding packet_view_memory(u8 base, MoveLocation index, u8 lane, u64 stride, u32 offset, address output) on cpu;
 extern "C" AddressEncoding packet_view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u8 lane, u32 offset, address output) on cpu;
 
-// Full packet payload emission borrows 512 bytes for read/write and 1024 for gather.
-// Layout and eligibility remain with the original buffer, frame and IR owners.
+// The plan passes IR facts and retains the returned addressing mode through emission.
+enum PacketAddress:u32 { Unsupported=0; Dense=1; Contiguous=2; Selected=3; Uniform=4; Gather=5; };
+enum PacketViewAddress:u32 { Unsupported=0; Varying=1; Shared=2; Broadcast=3; };
+extern "C" PacketAddress packet_dataset_address(u32 stride, u32 word, bool selected,
+    bool writes_binding, bool element, bool uniform) on cpu;
+extern "C" PacketViewAddress packet_view_address(u32 word, bool uniform_base,
+    bool uniform_index, bool uniform_stride) on cpu;
+
+// The caller supplies 512 bytes for a dataset operation and 1024 for a view read.
 struct PacketMemory {
     MoveLocation index;
     u32 data_offset; u32 stride_offset; u32 frame_offset; u32 offset;
-    u32 index_kind; u32 contiguous;
+    PacketAddress mode;
 };
-struct PacketGather {
+struct PacketView {
     MoveLocation index; MoveLocation base_low; MoveLocation base_high;
     MoveLocation stride_low; MoveLocation stride_high;
     u64 stride;
-    u32 data_offset; u32 stride_offset; u32 offset; u32 kind; u32 uniform; u32 broadcast;
+    u32 offset; bool dynamic_stride; PacketViewAddress mode;
 };
 extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, address output) on cpu;
 extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address output) on cpu;
-extern "C" u64 packet_gather(MoveLocation dst, PacketGather input, bool boolean, address output) on cpu;
+extern "C" u64 packet_view(MoveLocation dst, PacketView input, bool boolean, address output) on cpu;
 
 enum AtomicOperation:u32 {
     Load=0; Store=1; Add=2; Sub=3; Exchange=4; CompareExchange=5;
