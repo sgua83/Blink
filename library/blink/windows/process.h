@@ -64,10 +64,15 @@ const u32 HANDLE_FLAG_INHERIT=0x00000001;
 extern "C" i32 SetHandleInformation(handle object,u32 mask,u32 flags) on cpu
     from "KERNEL32.dll";
 
+const u32 PROCESS_VM_READ=0x00000010;
 const u32 PROCESS_QUERY_LIMITED_INFORMATION=0x00001000;
 
 extern "C" handle OpenProcess(u32 access,i32 inherit_handle,u32 process_id) on cpu
     from "KERNEL32.dll";
+
+extern "C" i32 ReadProcessMemory(
+    handle process,address source,address buffer,usize bytes,inout usize transferred
+) on cpu from "KERNEL32.dll";
 
 struct ProcessMemoryCountersEx {
     u32 size;
