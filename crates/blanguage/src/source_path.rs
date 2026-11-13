@@ -29,15 +29,24 @@ unsafe extern "C" {
 }
 
 pub(crate) fn module(root: &Path, name: &str, suffix: u16) -> PathBuf {
-    let base: Vec<u16> = root.as_os_str().encode_wide().collect();
     let mut tail: Vec<u16> = name.encode_utf16().collect();
     let name_length = tail.len();
     tail.resize(name_length + 2, 0);
     // The validated module name and both path inputs remain owned here until
     // synchronous encoding ends. Scratch holds the original C-layout components.
     unsafe { module_tail(tail.as_mut_ptr(), name_length as u64, suffix); }
-    let left = UnitSpan::of(&base);
-    let right = UnitSpan::of(&tail);
+    join_encoded(root, &tail)
+}
+
+pub(crate) fn join(base: &Path, tail: impl AsRef<Path>) -> PathBuf {
+    let tail: Vec<u16> = tail.as_ref().as_os_str().encode_wide().collect();
+    join_encoded(base, &tail)
+}
+
+fn join_encoded(base: &Path, tail: &[u16]) -> PathBuf {
+    let units: Vec<u16> = base.as_os_str().encode_wide().collect();
+    let left = UnitSpan::of(&units);
+    let right = UnitSpan::of(tail);
     let mut scratch = Vec::<JoinComponent>::with_capacity(unsafe { join_scratch(left, right) } as usize);
     let plan = unsafe { join_prepare(left, right, scratch.as_mut_ptr()) };
     let length = plan.length as usize;

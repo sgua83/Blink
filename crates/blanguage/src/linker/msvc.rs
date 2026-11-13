@@ -1,6 +1,6 @@
 //! Rust 执行框架的静态目标库使用既有 Windows 本机链接工具；不执行源码编译。
 use super::Result;
-use crate::object::Archive;
+use crate::{object::Archive, source_path::join};
 use std::{
     ffi::OsString,
     fs::File,
@@ -85,7 +85,7 @@ fn host_text<T>(bytes: &[u8], kind: HostText, copy: impl FnOnce(&[u16]) -> T) ->
 }
 
 fn sdk_search_pattern(directory: &Path) -> io::Result<Vec<u16>> {
-    let pattern = directory.join("*");
+    let pattern = join(directory, "*");
     let mut units: Vec<_> = pattern.as_os_str().encode_wide().collect();
     if units.contains(&0) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "file name contained an unexpected NUL byte"));
@@ -112,10 +112,8 @@ fn sdk_search_pattern(directory: &Path) -> io::Result<Vec<u16>> {
 }
 
 fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
-    let installer = PathBuf::from(
-        std::env::var_os("ProgramFiles(x86)").ok_or("缺少 Windows ProgramFiles(x86)")?,
-    )
-    .join("Microsoft Visual Studio/Installer/vswhere.exe");
+    let program_files = std::env::var_os("ProgramFiles(x86)").ok_or("缺少 Windows ProgramFiles(x86)")?;
+    let installer = join(Path::new(&program_files), "Microsoft Visual Studio/Installer/vswhere.exe");
     let found = output(Command::new(installer).args([
         "-utf8",
         "-latest",
@@ -140,12 +138,12 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     }
     let vs = Path::new(&installation);
     let vc = {
-        let path = vs.join("VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt");
+        let path = join(vs, "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt");
         let bytes = crate::file_bytes::FileBytes::read(&File::open(path)?)?;
         let version = host_text(&bytes, HostText::ToolVersion, OsString::from_wide)?;
-        vs.join("VC/Tools/MSVC").join(version)
+        join(&join(vs, "VC/Tools/MSVC"), version)
     };
-    let lib = sdk_root()?.join("Lib");
+    let lib = join(&sdk_root()?, "Lib");
     let pattern = sdk_search_pattern(&lib)?;
     let mut version = [0u16; 260];
     let selected = unsafe { find_sdk_version(pattern.as_ptr(), version.as_mut_ptr()) };
@@ -155,10 +153,10 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     if selected.units == 0 {
         return Err("Windows SDK 没有已安装的本机库".into());
     }
-    let sdk = lib.join(OsString::from_wide(&version[..selected.units as usize]));
+    let sdk = join(&lib, OsString::from_wide(&version[..selected.units as usize]));
     Ok((
-        vc.join("bin/Hostx64/x64/link.exe"),
-        vec![vc.join("lib/x64"), sdk.join("um/x64"), sdk.join("ucrt/x64")],
+        join(&vc, "bin/Hostx64/x64/link.exe"),
+        vec![join(&vc, "lib/x64"), join(&sdk, "um/x64"), join(&sdk, "ucrt/x64")],
     ))
 }
 fn path_argument(prefix: &str, path: &Path) -> OsString {
@@ -187,11 +185,11 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
     let mut result = (|| {
         let directory = path.parent().unwrap();
         for (index, archive) in archives.iter().enumerate() {
-            let path = directory.join(format!(".blink-link-{id}-{index}.lib"));
+            let path = join(directory, format!(".blink-link-{id}-{index}.lib"));
             write_input(&mut temporary, path, &archive.bytes)?;
         }
         for (index, object) in objects.iter().enumerate() {
-            let path = directory.join(format!(".blink-link-{id}-code-{index}.obj"));
+            let path = join(directory, format!(".blink-link-{id}-code-{index}.obj"));
             write_input(&mut temporary, path, &object.coff_bytes()?)?;
         }
         // Same import-slot owner as the explicit native-host archive product.
@@ -208,12 +206,12 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
                 symbols.push((members.len(), symbol));
                 members.push(member);
             }
-            let path = directory.join(format!(".blink-link-{id}-imports.lib"));
+            let path = join(directory, format!(".blink-link-{id}-imports.lib"));
             let bytes = crate::object::library_bytes(&members, &symbols)?;
             write_input(&mut temporary, path, &bytes)?;
         }
         if let Some(binding) = binding {
-            let path = directory.join(format!(".blink-link-{id}-resources.obj"));
+            let path = join(directory, format!(".blink-link-{id}-resources.obj"));
             write_input(&mut temporary, path, &binding.coff_bytes()?)?;
         }
         let mut command = Command::new(linker);
