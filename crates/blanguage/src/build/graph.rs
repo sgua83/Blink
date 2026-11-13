@@ -67,7 +67,7 @@ struct GraphEdge {
 #[repr(C)]
 struct GraphInput {
     units: *const GraphUnit,
-    edges: *const GraphEdge,
+    edges: *mut GraphEdge,
     count: usize,
     external_count: usize,
 }
@@ -196,7 +196,7 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
         build_dependency_plan(
             GraphInput {
                 units: input_units.as_ptr(),
-                edges: edges.as_ptr(),
+                edges: edges.as_mut_ptr(),
                 count: units.len(),
                 external_count: externals.len(),
             },

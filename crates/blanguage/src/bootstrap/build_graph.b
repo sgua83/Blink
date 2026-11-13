@@ -133,27 +133,26 @@ bool expand_providers(GraphInput input,GraphOutput output,Scratch work,handle he
     return true;
 }
 
-void direct_dependencies(GraphInput input,GraphOutput output,Scratch work,bool emit) on cpu {
-    u64 index=0u64;
-    while (index<input.count) {
-        // Provider expansion uses the first count stamps. Count and emit use separate ranges.
-        u64 stamp=(emit ? 2u64 : 1u64)*input.count+index+1u64;
-        GraphRange direct=unit_at(input,index).dependencies;
-        u64 count=0u64;
-        u64 at=0u64;
-        while (at<direct.count) {
-            GraphEdge edge=edge_at(input,direct.start+at);
-            if (edge.external==0u64 && word(work.seen,edge.index)!=stamp) {
-                put_word(work.seen,edge.index,stamp);
-                u64 cursor=word(work.states,edge.index);
-                if (emit) { put_word(output.followers,cursor,index); }
-                put_word(work.states,edge.index,cursor+1u64);
-                count+=1u64;
+void compact_direct_dependencies(GraphInput input, GraphOutput output, Scratch work) on cpu {
+    u64 index = 0u64;
+    while (index < input.count) {
+        // Provider expansion used stamps 1..count. This pass visits each edge once.
+        u64 stamp = input.count + index + 1u64;
+        GraphRange direct = unit_at(input, index).dependencies;
+        u64 count = 0u64;
+        u64 at = 0u64;
+        while (at < direct.count) {
+            GraphEdge edge = edge_at(input, direct.start + at);
+            if (edge.external == 0u64 && word(work.seen, edge.index) != stamp) {
+                put_word(work.seen, edge.index, stamp);
+                put_word(work.states, edge.index, word(work.states, edge.index) + 1u64);
+                unsafe_position<GraphEdge>(offset(input.edges, (direct.start + count) * size_of<GraphEdge>())) = edge;
+                count += 1u64;
             }
-            at+=1u64;
+            at += 1u64;
         }
-        if (!emit) { put_word(output.waiting,index,count); }
-        index+=1u64;
+        put_word(output.waiting, index, count);
+        index += 1u64;
     }
 }
 
@@ -179,7 +178,7 @@ extern "C" GraphPlan plan(GraphInput input,GraphOutput output) on cpu {
     // The traversal's state words now serve as incoming counts and write cursors.
     u64 index=0u64;
     while (index<input.count) { put_word(work.states,index,0u64); index+=1u64; }
-    direct_dependencies(input,output,work,false);
+    compact_direct_dependencies(input, output, work);
     u64 start=0u64;
     index=0u64;
     while (index<input.count) {
@@ -189,7 +188,20 @@ extern "C" GraphPlan plan(GraphInput input,GraphOutput output) on cpu {
         start+=count;
         index+=1u64;
     }
-    direct_dependencies(input,output,work,true);
+    index = 0u64;
+    while (index < input.count) {
+        GraphRange direct = unit_at(input, index).dependencies;
+        u64 count = word(output.waiting, index);
+        u64 at = 0u64;
+        while (at < count) {
+            u64 provider = edge_at(input, direct.start + at).index;
+            u64 cursor = word(work.states, provider);
+            put_word(output.followers, cursor, index);
+            put_word(work.states, provider, cursor + 1u64);
+            at += 1u64;
+        }
+        index += 1u64;
+    }
     HeapFree(heap,0,memory);
     return GraphPlan(providers.ids,providers.count,0u64,0u64);
 }

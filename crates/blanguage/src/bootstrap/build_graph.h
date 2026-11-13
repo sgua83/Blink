@@ -4,6 +4,7 @@ struct GraphRange { u64 start; u64 count; };
 struct GraphUnit { GraphRange dependencies; u64 object; };
 struct GraphEdge { u64 index; u64 external; };
 
+// After provider expansion, plan compacts direct unit edges in the caller's edge buffer.
 struct GraphInput { address units; address edges; u64 count; u64 external_count; };
 struct GraphOutput { address providers; address following; address waiting; address followers; };
 
