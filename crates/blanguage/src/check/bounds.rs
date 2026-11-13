@@ -2383,8 +2383,9 @@ impl Clause {
         Arc::as_ptr(&self.0) as usize
     }
     // 按子节点在先的顺序只访问每个共享节点一次，不展开路径的笛卡尔积。
-    fn ordered(roots: &[Self]) -> Vec<&Self> {
-        let mut pending: Vec<_> = roots.iter().rev().map(|root| (root, false)).collect();
+    fn ordered<'a>(roots: impl IntoIterator<Item = &'a Self>) -> Vec<&'a Self> {
+        let mut pending: Vec<_> = roots.into_iter().map(|root| (root, false)).collect();
+        pending.reverse();
         let mut visited = HashSet::new();
         let mut ordered = Vec::new();
         while let Some((clause, ready)) = pending.pop() {
@@ -2958,7 +2959,9 @@ fn maximums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<(ValueIde
     result
 }
 impl PartialEq for Condition {
-    fn eq(&self,other:&Self)->bool { self.cmp(other)==std::cmp::Ordering::Equal }
+    fn eq(&self, other: &Self) -> bool {
+        same_condition_roots(self.cases.each_ref(), other.cases.each_ref())
+    }
 }
 impl Eq for Condition {}
 impl PartialOrd for Condition {
@@ -5112,14 +5115,52 @@ impl crate::module::codec::Decode for ScalarRanges {
     }
 }
 // 所有逻辑分量及其两个结果共享节点表；编码不受 Arc 的物理共享方式影响。
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum EncodedClause {
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EncodedClause<F> {
     Impossible,
-    Facts(Facts),
+    Facts(F),
     Both(usize, usize),
     Either(usize, usize),
 }
-crate::module::codec::variants!(EncodedClause{0=>Impossible,1=>Facts(facts),2=>Both(a,b),3=>Either(a,b)});
+crate::module::codec::variants!(@<F> EncodedClause<F>{0=>Impossible,1=>Facts(facts),2=>Both(a,b),3=>Either(a,b)});
+
+fn condition_node_ids<'a>(
+    roots: impl IntoIterator<Item = &'a Clause>,
+    mut record: impl FnMut(EncodedClause<&'a Facts>),
+) -> BTreeMap<usize, usize> {
+    let mut unique = BTreeMap::new();
+    let mut indices = BTreeMap::new();
+    for clause in Clause::ordered(roots) {
+        let node = match &**clause.0 {
+            ClauseNode::Impossible => EncodedClause::Impossible,
+            ClauseNode::Facts(facts) => EncodedClause::Facts(facts),
+            ClauseNode::Both(a, b) => EncodedClause::Both(indices[&a.key()], indices[&b.key()]),
+            ClauseNode::Branch(parent, condition, truth) => EncodedClause::Both(
+                indices[&parent.key()],
+                indices[&condition.cases[usize::from(*truth)].key()],
+            ),
+            ClauseNode::Either(a, b) => EncodedClause::Either(indices[&a.key()], indices[&b.key()]),
+        };
+        let next = unique.len();
+        let index = match node {
+            EncodedClause::Both(a, b) | EncodedClause::Either(a, b) if a == b => a,
+            node => *unique.entry(node).or_insert_with(|| {
+                record(node);
+                next
+            }),
+        };
+        indices.insert(clause.key(), index);
+    }
+    indices
+}
+
+fn same_condition_roots<const N: usize>(left: [&Clause; N], right: [&Clause; N]) -> bool {
+    if left.iter().zip(&right).all(|(a, b)| Arc::ptr_eq(&a.0, &b.0)) {
+        return true;
+    }
+    let indices = condition_node_ids(left.into_iter().chain(right), |_| {});
+    left.map(|root| indices[&root.key()]) == right.map(|root| indices[&root.key()])
+}
 impl crate::module::codec::Encode for Proof {
     fn encode(&self, w: &mut crate::module::codec::Writer) {
         self.origins.encode(w);
@@ -5132,40 +5173,12 @@ impl crate::module::codec::Encode for Proof {
         if width != 0 {
             // 沿用原条件存在位；旧标量格式为 2，分量载体为 3，双方明确拒绝混用。
             3u8.encode(w);
-            let roots: Vec<_> = self.conditions[..width]
+            let roots = self.conditions[..width]
                 .iter()
                 .flatten()
-                .flat_map(|condition| condition.cases.iter().cloned())
-                .collect();
+                .flat_map(|condition| condition.cases.iter());
             let mut nodes = Vec::new();
-            let mut unique = BTreeMap::new();
-            let mut indices = BTreeMap::new();
-            for clause in Clause::ordered(&roots) {
-                let node = match &**clause.0 {
-                    ClauseNode::Impossible => EncodedClause::Impossible,
-                    ClauseNode::Facts(facts) => EncodedClause::Facts(facts.clone()),
-                    ClauseNode::Both(a, b) => {
-                        EncodedClause::Both(indices[&a.key()], indices[&b.key()])
-                    }
-                    ClauseNode::Branch(parent, condition, truth) => EncodedClause::Both(
-                        indices[&parent.key()],
-                        indices[&condition.cases[usize::from(*truth)].key()],
-                    ),
-                    ClauseNode::Either(a, b) => {
-                        EncodedClause::Either(indices[&a.key()], indices[&b.key()])
-                    }
-                };
-                // 结构子索引已经同一时，合取／析取没有新的关系需要编码。
-                let index = match node {
-                    EncodedClause::Both(a, b) | EncodedClause::Either(a, b) if a == b => a,
-                    node => *unique.entry(node.clone()).or_insert_with(|| {
-                        let index = nodes.len();
-                        nodes.push(node);
-                        index
-                    }),
-                };
-                indices.insert(clause.key(), index);
-            }
+            let indices = condition_node_ids(roots, |node| nodes.push(node));
             nodes.encode(w);
             self.conditions[..width]
                 .iter()
@@ -5202,7 +5215,7 @@ impl crate::module::codec::Decode for Proof {
                     .ok_or_else(|| "模块条件节点引用无效".into())
             }
             let mut nodes = Vec::new();
-            for encoded in Vec::<EncodedClause>::decode(r)? {
+            for encoded in Vec::<EncodedClause<Facts>>::decode(r)? {
                 nodes.push(match encoded {
                     EncodedClause::Impossible => Clause::impossible(),
                     EncodedClause::Facts(facts) => Clause::facts(facts),
