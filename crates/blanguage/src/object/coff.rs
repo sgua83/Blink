@@ -78,7 +78,7 @@ unsafe extern "C" {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct ReadBytes { bytes: *const u8, length: usize }
 impl ReadBytes {
     fn new(bytes: &[u8]) -> Self { Self { bytes: bytes.as_ptr(), length: bytes.len() } }
@@ -145,6 +145,12 @@ struct ObjectSection {
 }
 #[repr(C)]
 struct ObjectSectionResult { value: ObjectSection, error: ReadError }
+#[repr(C)]
+#[derive(Default)]
+struct ObjectParts {
+    metadata: ReadBytes,
+    runtime: ReadBytes,
+}
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ObjectRows { values: *const ObjectSection, count: usize }
@@ -224,7 +230,8 @@ struct ObjectRelocation { record: ReadRelocation, target: ObjectTarget }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.object_read::logical_section"]
-    fn object_logical_section(input: ReadBytes, headers: ReadBytes, index: usize, mapped: *mut u64) -> ObjectSectionResult;
+    fn object_logical_section(input: ReadBytes, headers: ReadBytes, index: usize,
+        mapped: &mut u64, parts: &mut ObjectParts) -> ObjectSectionResult;
     #[link_name = "bootstrap.object_read::object_symbol"]
     fn object_symbol(input: ReadBytes, table: ReadSymbols, index: usize,
         definitions: *mut SectionDefinition, definition_count: usize) -> ObjectSymbolResult;
@@ -701,28 +708,30 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         input.error.check()?;
         Ok(if input.present == 0 { None } else { Some(unsafe { input.bytes.borrowed() }) })
     }
-    fn section_rows(&self) -> impl Iterator<Item = Result<ObjectSection>> + '_ {
+    fn section_rows<'rows>(&'rows self, parts: &'rows mut ObjectParts)
+        -> impl Iterator<Item = Result<ObjectSection>> + 'rows
+    {
         let input = ReadBytes::new(self.bytes.as_ref());
         let headers = ReadBytes::new(self.headers);
         let mut mapped = 0u64;
         (0..self.headers.len() / 40).map(move |index| {
-            let row = unsafe { object_logical_section(input, headers, index, &mut mapped) };
+            let row = unsafe { object_logical_section(input, headers, index, &mut mapped, parts) };
             row.error.check()?;
             std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
             Ok(row.value)
         })
     }
+    fn metadata(&self, bytes: ReadBytes) -> Result<&'a [u8]> {
+        // B borrows this range from the same validated section rows.
+        if bytes.bytes.is_null() { return Err("缺少 Blink 目标文件元数据".into()); }
+        Ok(unsafe { bytes.borrowed() })
+    }
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
-        let mut metadata = None;
-        for row in self.section_rows() {
-            let row = row?;
-            if metadata.is_none() && unsafe { row.name.borrowed() } == META.as_bytes() {
-                metadata = Some(unsafe { row.bytes.borrowed() });
-            }
-        }
+        let mut parts = ObjectParts::default();
+        for row in self.section_rows(&mut parts) { row?; }
         let (name, kind, mut bindings, _, _) = read_metadata(
-            metadata.ok_or("缺少 Blink 目标文件元数据")?, None, false,
+            self.metadata(parts.metadata)?, None, false,
         )?;
         let input = ReadBytes::new(self.bytes.as_ref());
         let table = unsafe { read_symbols(input) };
@@ -844,17 +853,16 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
         symbols[i] = row.value;
         i = row.next;
     }
-    let raw = reader.section_rows().collect::<Result<Vec<_>>>()?;
+    let mut parts = ObjectParts::default();
+    let raw = reader.section_rows(&mut parts).collect::<Result<Vec<_>>>()?;
     let (name, kind, mut bindings, stack, archive) = match native {
         Some(name) => (name.to_owned(), Kind::Module { interface: String::new(), requirements: BTreeMap::new(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),
         None => {
-            let section = |name: &str| raw.iter().find(|row| unsafe { row.name.borrowed() } == name.as_bytes())
-                .map(|row| unsafe { row.bytes.borrowed() });
-            let archive = section(ARCHIVE).map(|bytes| {
-                let start = bytes.as_ptr().addr() - b.as_ptr().addr();
-                b.slice(start..start + bytes.len())
+            let archive = (!parts.runtime.bytes.is_null()).then(|| {
+                let start = parts.runtime.bytes.addr() - b.as_ptr().addr();
+                b.slice(start..start + parts.runtime.length)
             });
-            read_metadata(section(META).ok_or("缺少 Blink 目标文件元数据")?, archive, true)?
+            read_metadata(reader.metadata(parts.metadata)?, archive, true)?
         }
     };
     let mut sections = Vec::new();

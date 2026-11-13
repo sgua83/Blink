@@ -7,6 +7,7 @@ struct ObjectSection {
     ReadBytes name;ReadBytes bytes;u64 flags;u64 relocations;u64 relocation_count;u64 mapped;u64 zero_fill;
 };
 struct ObjectSectionResult {ObjectSection value;u32 error;};
+struct ObjectParts { ReadBytes metadata; ReadBytes runtime; };
 struct ObjectRows {address values;u64 count;};
 struct ObjectSymbol {ReadBytes name;u32 value;i16 section;u8 external;u8 function;};
 struct ObjectSymbols {address values;u64 count;};
@@ -16,7 +17,9 @@ struct ObjectAssociation {u64 present;u64 owner;u32 error;};
 struct ObjectTarget {
     u64 kind;u64 section;u64 value;ReadBytes dll;ReadBytes name;u32 error;
 };
-extern "C" ObjectSectionResult logical_section(ReadBytes input,ReadBytes headers,u64 index,inout u64 mapped) on cpu;
+// parts borrows the first metadata and runtime sections of this same input.
+extern "C" ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 index,
+    inout u64 mapped, inout ObjectParts parts) on cpu;
 extern "C" ObjectSymbolResult object_symbol(
     ReadBytes input,ReadSymbols table,u64 index,address definitions,u64 definition_count
 ) on cpu;

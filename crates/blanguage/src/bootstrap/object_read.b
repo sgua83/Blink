@@ -19,15 +19,19 @@ bool matches<const N: u32>(ReadBytes value,read array<u8,N> pattern,bool whole) 
 ObjectSection row_at(ObjectRows rows,u64 index) on cpu {
     return unsafe_position<ObjectSection>(unsafe_address(address_bits(rows.values)+index*OBJECT_SECTION_BYTES));
 }
-extern "C" ObjectSectionResult logical_section(ReadBytes input,ReadBytes headers,u64 index,inout u64 mapped) on cpu {
+extern "C" ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 index,
+    inout u64 mapped, inout ObjectParts parts) on cpu {
     ReadSection row=section(input,headers,index);
     ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64,row.zero_fill);
     if(row.error!=0){return ObjectSectionResult(value,row.error);}
     array<u8,7> meta=array<u8,7>(u8(46),u8(98),u8(108),u8(109),u8(101),u8(116),u8(97));array<u8,5> runtime=array<u8,5>(u8(46),u8(98),u8(108),u8(114),u8(116));array<u8,8> build=array<u8,8>(u8(46),u8(98),u8(108),u8(98),u8(117),u8(105),u8(108),u8(100));
-    if(!matches<7>(row.name,meta,true) &&
-       !matches<5>(row.name,runtime,true) &&
-       !matches<8>(row.name,build,true)){
-        mapped+=1u64;value.mapped=mapped;
+    if (matches<7>(row.name,meta,true)) {
+        if (address_bits(parts.metadata.bytes) == 0u64) { parts.metadata = row.bytes; }
+    } else if (matches<5>(row.name,runtime,true)) {
+        if (address_bits(parts.runtime.bytes) == 0u64) { parts.runtime = row.bytes; }
+    } else if (!matches<8>(row.name,build,true)) {
+        mapped += 1u64;
+        value.mapped = mapped;
     }
     return ObjectSectionResult(value,0);
 }
