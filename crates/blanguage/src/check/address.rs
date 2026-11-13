@@ -222,7 +222,7 @@ impl Origin {
         if borrow.empty()||borrow.pending(){return None;}
         let mut regions=Vec::new();
         for(source,when)in borrow.sources.entries(){
-            let when=bounds::Condition::guard(when).assume(path,true);if !when.possible(){continue;}
+            let when=bounds::Clause::both(path, &when);if !when.possible(){continue;}
             let view::Source::Position(parent)=source else{return None;};
             let parent_regions=parent.memory_regions(&when)?;
             for((scalar,word),at)in self.layout.parts.iter().zip(self.words.iter()) {
