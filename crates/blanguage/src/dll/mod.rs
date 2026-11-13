@@ -60,6 +60,9 @@ enum FieldType {
     Handle,
 }
 fn fields(ty: &Ty, name: &str, base: u32, out: &mut Vec<(String, FieldType, u32)>) -> Result<()> {
+    if ty.size == 0 {
+        return Ok(());
+    }
     if ty.is_handle() {
         out.push((name.into(), FieldType::Handle, base));
     } else if !ty.fields.is_empty() {
@@ -176,8 +179,6 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     let mut values = String::from("let mut values = Vec::new();\n");
     for b in p.buffers() {
         let n = identifier(&b.name)?;
-        let t = format!("{prefix}_data_{n}");
-        layout(&t, &b.ty, &mut c, &mut types)?;
         if let Some(count) = b.count {
             writeln!(c, "#define {upper}_{}_COUNT {count}u", constant_name(&n))?;
             writeln!(
@@ -186,32 +187,38 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
                 constant_name(&n)
             )?;
         }
-        let write = b.access.writes();
-        let ct = if write { "" } else { "const " };
-        let rt = if write { "mut" } else { "const" };
-        cp.push(format!("{ct}{t} *data_{n}"));
+        let data = if b.ty.size == 0 {
+            safe_r.push(format!("count_{n}: u32"));
+            safe_args.push(format!("count_{n}"));
+            "std::ptr::null_mut()".to_owned()
+        } else {
+            let t = format!("{prefix}_data_{n}");
+            layout(&t, &b.ty, &mut c, &mut types)?;
+            let write = b.access.writes();
+            let ct = if write { "" } else { "const " };
+            let rt = if write { "mut" } else { "const" };
+            cp.push(format!("{ct}{t} *data_{n}"));
+            rp.push(format!("data_{n}: *{rt} {t}"));
+            args.push(format!("data_{n}"));
+            safe_r.push(format!(
+                "data_{n}: &{}[{t}]",
+                if write { "mut " } else { "" }
+            ));
+            safe_args.push(format!(
+                "data_{n}.{}()",
+                if write { "as_mut_ptr" } else { "as_ptr" }
+            ));
+            safe_args.push(format!(
+                "u32::try_from(data_{n}.len()).map_err(|e| e.to_string())?"
+            ));
+            format!("data_{n}{}.cast()", if write { "" } else { ".cast_mut()" })
+        };
         cp.push(format!("uint32_t count_{n}"));
-        rp.push(format!("data_{n}: *{rt} {t}"));
         rp.push(format!("count_{n}: u32"));
-        args.push(format!("data_{n}"));
         args.push(format!("count_{n}"));
-        safe_r.push(format!(
-            "data_{n}: &{}[{t}]",
-            if write { "mut " } else { "" }
-        ));
-        safe_args.push(format!(
-            "data_{n}.{}()",
-            if write { "as_mut_ptr" } else { "as_ptr" }
-        ));
-        safe_args.push(format!(
-            "u32::try_from(data_{n}.len()).map_err(|e| e.to_string())?"
-        ));
-        buffers.push(
-            format!("FfiBuffer {{data: data_{n}.cast_mut().cast(), count: count_{n}}}")
-                .replace(".cast_mut()", if write { "" } else { ".cast_mut()" }),
-        );
+        buffers.push(format!("FfiBuffer {{data: {data}, count: count_{n}}}"));
     }
-    for (i, u) in p.uniforms().iter().enumerate() {
+    for (i, u) in p.uniforms().iter().enumerate().filter(|(_, u)| u.ty.size != 0) {
         let n = identifier(&u.name)?;
         let t = format!("{prefix}_uniform_{n}");
         layout(&t, &u.ty, &mut c, &mut types)?;

@@ -12,7 +12,7 @@ use blanguage::{
 use blanguage::ExecutableProgram;
 use std::ffi::{c_char, c_void};
 
-/// 指针指向 count 个编译器声明的完整记录；记录的字段与布局来自生成的头文件。
+/// count 为完整记录数；零尺寸记录不需要数据指针。字段与布局来自生成的头文件。
 pub struct Buffer {
     pub data: *mut c_void,
     pub count: u32,
@@ -44,7 +44,8 @@ impl LibraryProgram {
     /// 一次同步调用拥有本次数据；返回前 GPU 已完成且输出已交还调用方。
     ///
     /// # Safety
-    /// 每个非空指针须指向 count 个有效记录，read/inout 字段须已初始化；输出须可写。
+    /// 有载荷且数量非零时，指针须指向 count 个有效记录；零尺寸记录允许 NULL。
+    /// read/inout 字段须已初始化，输出须可写。
     /// 可写区间不能与其他参数重叠。调用期间宿主不得访问这些存储；同一 handle
     /// 的全部调用与释放必须在创建线程串行执行。生成的 Rust 包装器编码这些借用约束。
     pub unsafe fn run(&mut self, buffers: &[Buffer], values: &[Value]) -> Result<()> {
@@ -54,7 +55,7 @@ impl LibraryProgram {
         }
         let mut datasets = Vec::new();
         for (i, (buffer, layout)) in buffers.iter().zip(p.buffers()).enumerate() {
-            if buffer.count != 0 && buffer.data.is_null() {
+            if layout.ty.size != 0 && buffer.count != 0 && buffer.data.is_null() {
                 return Err(error(format!("{} 的非空数据指针为空", layout.name)));
             }
             let mut data = Dataset::new(p, i, buffer.count)?;

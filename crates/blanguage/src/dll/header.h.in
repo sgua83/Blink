@@ -1,7 +1,9 @@
 
 /* 0=CPU, 1=GPU. Return 0 on success, -1 on error (UTF-8).
    Handle calls/destroy: serial, on its creating thread.
-   Data pointers: count valid records, writable ranges must not overlap.
+   Datasets carry a record count; zero-size elements have no data pointer.
+   Zero-size uniforms have no parameter. Other pointers address valid records;
+   writable ranges must not overlap.
    run is synchronous, including GPU upload, completion and output download.
    error may be NULL only when capacity=0. destroy accepts NULL. */
 typedef struct @PREFIX@_handle @PREFIX@_handle;
