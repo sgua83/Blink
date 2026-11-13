@@ -54,7 +54,8 @@ enum CompileError:u32 {
     EntryText=20; InstanceText=21; BudgetWithoutReport=22; MissingOutput=23;
     CodeUsage=24; ObjectCodeUsage=25; IrUsage=26; IrModeRepeated=27; IrFunctionRepeated=28;
     IrStageRepeated=29; IrOption=30; IrFunctionMode=31; IrStageMode=32; IrInstanceMode=33;
-    IrImportMode=34;
+    IrImportMode=34; LayoutUsage=35; LayoutOption=36; X64Usage=37; X64Option=38;
+    X64Repeated=39; ImageUsage=40; SpirvUsage=41;
 };
 
 struct CompileCommandLine {
@@ -115,3 +116,23 @@ struct IrCommandLine {
 // The original source operand is handled before the options. The role buffer
 // keeps imports and instances encountered before a later syntax error.
 extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, address roles) on cpu;
+
+struct LayoutCommandLine {
+    CompileError error;
+    u64 error_index;
+    u64 root_index;
+    u64 field_index;
+};
+
+struct X64CommandLine {
+    CompileError error;
+    u64 error_index;
+    u64 ip;
+    u64 offset;
+    u64 length;
+    u64 has_length;
+};
+
+// The original source operand is canonicalized before these options are consumed.
+extern "C" LayoutCommandLine parse_layout_arguments(address arguments, u64 count) on cpu;
+extern "C" X64CommandLine parse_x64_arguments(address arguments, u64 count) on cpu;

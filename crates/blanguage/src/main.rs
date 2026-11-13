@@ -33,6 +33,7 @@ enum CompileError {
     EntryText, InstanceText, BudgetWithoutReport, MissingOutput, CodeUsage, ObjectCodeUsage,
     IrUsage, IrModeRepeated, IrFunctionRepeated, IrStageRepeated, IrOption, IrFunctionMode,
     IrStageMode, IrInstanceMode, IrImportMode,
+    LayoutUsage, LayoutOption, X64Usage, X64Option, X64Repeated, ImageUsage, SpirvUsage,
 }
 
 #[repr(C)]
@@ -107,6 +108,13 @@ impl CompileError {
             Self::IrStageMode => "--stage需要--program",
             Self::IrInstanceMode => "--instance用于模块；入口实例直接写在--entry／--program值中",
             Self::IrImportMode => "此并行入口编译API不接受已编译导入；可用--module查询模块的函数和资源程序",
+            Self::LayoutUsage => layout_facts::USAGE,
+            Self::LayoutOption => return Err(format!("未知布局选项 {}；{}", args[index].to_string_lossy(), layout_facts::USAGE).into()),
+            Self::X64Usage => x64_facts::USAGE,
+            Self::X64Option => return Err(format!("未知x64查询选项 {}；{}", args[index].to_string_lossy(), x64_facts::USAGE).into()),
+            Self::X64Repeated => return Err(format!("{}不能重复指定", args[index].to_string_lossy()).into()),
+            Self::ImageUsage => "用法：bc image <entry.blbi> -o <deployment.blri>",
+            Self::SpirvUsage => "usage: bc spirv <module.spv>",
         };
         Err(message.into())
     }
@@ -172,16 +180,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             line.error.result(&args, line.error_index)?;
             return input_facts::print(Path::new(&args[line.source_index]));
         }
-        CompileCommand::X64 => return x64_facts::print(&args),
-        CompileCommand::Image => return image_export::export(&args),
+        CompileCommand::X64 => return x64_facts::print(&args, &arguments),
+        CompileCommand::Image => {
+            line.error.result(&args, line.error_index)?;
+            return image_export::export(Path::new(&args[line.source_index]), Path::new(&args[line.output_index]));
+        }
         CompileCommand::Code => return code_facts::print(&args, &arguments),
-        CompileCommand::Spirv => return spirv_facts::print(&args),
+        CompileCommand::Spirv => {
+            line.error.result(&args, line.error_index)?;
+            return spirv_facts::print(Path::new(&args[line.source_index]));
+        }
         _ => {}
     }
 
     let compiler = line.compiler(&cpus)?;
     match line.command {
-        CompileCommand::Layout => return layout_facts::print(&compiler, &args[line.command_index..]),
+        CompileCommand::Layout => return layout_facts::print(
+            &compiler, &args[line.command_index..], &arguments[line.command_index..],
+        ),
         CompileCommand::Ir => return ir_facts::print(
             &compiler, &args[line.command_index..], &arguments[line.command_index..], &mut roles[line.command_index..],
         ),

@@ -1,24 +1,37 @@
 //! A selected static type/field query through the existing compiler owner.
+use super::{Argument, CompileError};
 use crate::json::string;
-use std::{fmt::Write, path::PathBuf};
+use std::{ffi::OsString, fmt::Write, path::PathBuf};
 
-pub fn print(compiler: &blanguage::Compiler, args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
-    let usage = "用法：bc layout <module.h|module.b> <type> [-I module-root] [--field path]";
-    let path = PathBuf::from(args.get(1).ok_or(usage)?).canonicalize()?;
-    let request = args.get(2).ok_or(usage)?.to_str().ok_or(usage)?;
-    let mut root = path.parent().unwrap().to_path_buf();
-    let mut field = None;
-    let mut i = 3;
-    while i < args.len() {
-        let value = args.get(i + 1).ok_or(usage)?;
-        match args[i].to_str().ok_or(usage)? {
-            "-I" => root = PathBuf::from(value),
-            "--field" => field = Some(value.to_str().ok_or(usage)?),
-            other => return Err(format!("未知布局选项 {other}；{usage}").into()),
-        }
-        i += 2;
-    }
-    let root = root.canonicalize()?;
+pub(super) const USAGE: &str = "用法：bc layout <module.h|module.b> <type> [-I module-root] [--field path]";
+
+#[repr(C)]
+struct LayoutCommandLine {
+    error: CompileError,
+    error_index: usize,
+    root_index: usize,
+    field_index: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.cli::parse_layout_arguments"]
+    fn parse_layout_arguments(arguments: *const Argument, count: usize) -> LayoutCommandLine;
+}
+
+pub(super) fn print(
+    compiler: &blanguage::Compiler, args: &[OsString], arguments: &[Argument],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = PathBuf::from(args.get(1).ok_or(USAGE)?).canonicalize()?;
+    let line = unsafe { parse_layout_arguments(arguments.as_ptr(), arguments.len()) };
+    line.error.result(args, line.error_index)?;
+    // The B parser has checked that the type operand and selected field are text.
+    let text = |index: usize| unsafe { std::str::from_utf8_unchecked(args[index].as_encoded_bytes()) };
+    let request = text(2);
+    let field = (line.field_index != args.len()).then(|| text(line.field_index));
+    let root = match args.get(line.root_index) {
+        Some(root) => PathBuf::from(root).canonicalize()?,
+        None => path.parent().unwrap().canonicalize()?,
+    };
     let (root_type, offset, layout) = compiler.type_layout_json(&path, &root, request, field)?;
     let mut out = String::from("{\"kind\":\"type_layout\",\"phase\":\"checked_type\",");
     crate::json::path(&mut out, "source_path", &path);

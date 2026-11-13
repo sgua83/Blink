@@ -34,7 +34,7 @@ LinkCommand product(CliArgument argument) on cpu {
 enum NumberError:u32 { None=0; Empty=1; Invalid=2; Overflow=3; };
 struct ParsedNumber { u64 value; NumberError error; };
 
-ParsedNumber unsigned_decimal(CliArgument argument, u64 begin, u64 end, u64 maximum) on cpu {
+ParsedNumber unsigned_number<const Radix:u32 in {10,16}>(CliArgument argument, u64 begin, u64 end, u64 maximum) on cpu {
     if (begin == end) { return ParsedNumber(0u64, NumberError::Empty); }
     u64 index = begin;
     if (argument_byte(argument, index) == 43) { index += 1u64; }
@@ -42,10 +42,16 @@ ParsedNumber unsigned_decimal(CliArgument argument, u64 begin, u64 end, u64 maxi
     u64 value = 0u64;
     while (index < end) {
         u8 byte = argument_byte(argument, index);
-        if (byte < 48 || byte > 57) { return ParsedNumber(0u64, NumberError::Invalid); }
-        u64 digit = u64(byte) - 48u64;
-        if (value > (maximum - digit) / 10u64) { return ParsedNumber(0u64, NumberError::Overflow); }
-        value = value * 10u64 + digit;
+        u64 digit;
+        if (byte >= 48 && byte <= 57) {
+            digit = u64(byte) - 48u64;
+        } else {
+            u8 lower = byte | u8(32);
+            if (Radix != 16 || lower < 97 || lower > 102) { return ParsedNumber(0u64, NumberError::Invalid); }
+            digit = u64(lower) - 87u64;
+        }
+        if (value > (maximum - digit) / u64(Radix)) { return ParsedNumber(0u64, NumberError::Overflow); }
+        value = value * u64(Radix) + digit;
         index += 1u64;
     }
     return ParsedNumber(value, NumberError::None);
@@ -53,7 +59,7 @@ ParsedNumber unsigned_decimal(CliArgument argument, u64 begin, u64 end, u64 maxi
 
 LinkBudget parse_budget(CliArgument argument) on cpu {
     if (argument.text == 0u64) { return LinkBudget(0u64, LinkArgumentError::BudgetText); }
-    ParsedNumber number = unsigned_decimal(argument, 0u64, argument.length, 18446744073709551615u64);
+    ParsedNumber number = unsigned_number<10>(argument, 0u64, argument.length, 18446744073709551615u64);
     if (number.error == NumberError::Empty) { return LinkBudget(0u64, LinkArgumentError::EmptyBudget); }
     if (number.error == NumberError::Invalid) { return LinkBudget(0u64, LinkArgumentError::InvalidBudget); }
     if (number.error == NumberError::Overflow) { return LinkBudget(0u64, LinkArgumentError::BudgetOverflow); }
@@ -150,9 +156,9 @@ ParsedCpus parse_cpus(CliArgument argument, address cpus) on cpu {
             end += 1u64;
         }
         if (colon == argument.length) { return ParsedCpus(0u64, CompileError::CpuSyntax); }
-        ParsedNumber group = unsigned_decimal(argument, begin, colon, 65535u64);
+        ParsedNumber group = unsigned_number<10>(argument, begin, colon, 65535u64);
         if (group.error != NumberError::None) { return ParsedCpus(0u64, compile_number_error(group.error)); }
-        ParsedNumber number = unsigned_decimal(argument, colon + 1u64, end, 255u64);
+        ParsedNumber number = unsigned_number<10>(argument, colon + 1u64, end, 255u64);
         if (number.error != NumberError::None) { return ParsedCpus(0u64, compile_number_error(number.error)); }
         unsafe_position<u32>(unsafe_address(address_bits(cpus) + count * size_of<u32>())) =
             u32(group.value * 256u64 + number.value);
@@ -200,7 +206,7 @@ CompileCommandLine parse_object_options(address arguments, u64 count, address ro
         else if (is_token(option, "--stack-report")) { result.report_index = operand; }
         else if (is_token(option, "--stack-budget")) {
             if (argument.text == 0u64) { result.error = CompileError::BudgetText; return result; }
-            ParsedNumber budget = unsigned_decimal(argument, 0u64, argument.length, 18446744073709551615u64);
+            ParsedNumber budget = unsigned_number<10>(argument, 0u64, argument.length, 18446744073709551615u64);
             if (budget.error != NumberError::None) { result.error = compile_number_error(budget.error); return result; }
             result.budget = budget.value;
             result.has_budget = 1u64;
@@ -233,9 +239,18 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
     if (count == 1u64 && is_token(first, "--version")) { result.command = CompileCommand::Version; return result; }
     result.command = early_command(first);
     if (result.command != CompileCommand::Unknown) {
-        if (result.command == CompileCommand::Inputs) {
-            if (count != 2u64) { result.error = CompileError::InputsUsage; }
-            else { result.source_index = 1u64; }
+        if (result.command == CompileCommand::Inputs || result.command == CompileCommand::Spirv) {
+            if (count == 2u64) { result.source_index = 1u64; }
+            else {
+                result.error = result.command == CompileCommand::Inputs ? CompileError::InputsUsage : CompileError::SpirvUsage;
+            }
+        } else if (result.command == CompileCommand::Image) {
+            if (count != 4u64 || !is_token(argument_at(arguments, 2u64), "-o")) {
+                result.error = CompileError::ImageUsage;
+            } else {
+                result.source_index = 1u64;
+                result.output_index = 3u64;
+            }
         }
         return result;
     }
@@ -251,7 +266,7 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
         if (argument.text == 0u64) { result.prefix_error = CompileError::ResourceText; return result; }
         if (option == ResourceOption::Jobs) {
             if (result.jobs != 0u64) { result.prefix_error = CompileError::DuplicateJobs; return result; }
-            ParsedNumber jobs = unsigned_decimal(argument, 0u64, argument.length, 18446744073709551615u64);
+            ParsedNumber jobs = unsigned_number<10>(argument, 0u64, argument.length, 18446744073709551615u64);
             if (jobs.error != NumberError::None) { result.prefix_error = compile_number_error(jobs.error); return result; }
             if (jobs.value == 0u64) { result.prefix_error = CompileError::ZeroJobs; return result; }
             result.jobs = jobs.value;
@@ -262,7 +277,7 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
             result.cpu_count = selected.count;
         } else {
             if (result.has_parameter_limit != 0u64) { result.prefix_error = CompileError::DuplicateParameterLimit; return result; }
-            ParsedNumber maximum = unsigned_decimal(argument, 0u64, argument.length, 4294967295u64);
+            ParsedNumber maximum = unsigned_number<10>(argument, 0u64, argument.length, 4294967295u64);
             if (maximum.error != NumberError::None) { result.prefix_error = compile_number_error(maximum.error); return result; }
             result.max_parameter_bytes = u32(maximum.value);
             result.has_parameter_limit = 1u64;
@@ -327,12 +342,12 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
                 colon += 1u64;
             }
             if (colon == value.length) { return line; }
-            ParsedNumber start = unsigned_decimal(value, 0u64, colon, 18446744073709551615u64);
+            ParsedNumber start = unsigned_number<10>(value, 0u64, colon, 18446744073709551615u64);
             if (start.error != NumberError::None) {
                 line.error = compile_number_error(start.error);
                 return line;
             }
-            ParsedNumber end = unsigned_decimal(value, colon + 1u64, value.length, 18446744073709551615u64);
+            ParsedNumber end = unsigned_number<10>(value, colon + 1u64, value.length, 18446744073709551615u64);
             if (end.error != NumberError::None) {
                 line.error = compile_number_error(end.error);
                 return line;
@@ -343,7 +358,7 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
         } else if (line.input == CodeInput::Object && !line.has_section && line.function_index == count) {
             if (value.text == 0u64) { return line; }
             if (is_token(option, "--section")) {
-                ParsedNumber section = unsigned_decimal(value, 0u64, value.length, 18446744073709551615u64);
+                ParsedNumber section = unsigned_number<10>(value, 0u64, value.length, 18446744073709551615u64);
                 if (section.error != NumberError::None) {
                     line.error = compile_number_error(section.error);
                     return line;
@@ -397,7 +412,7 @@ extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, addres
             line.function_index = operand;
         } else if (is_token(option, "--stage")) {
             if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
-            ParsedNumber stage = unsigned_decimal(value, 0u64, value.length, 18446744073709551615u64);
+            ParsedNumber stage = unsigned_number<10>(value, 0u64, value.length, 18446744073709551615u64);
             if (stage.error != NumberError::None) {
                 line.error = compile_number_error(stage.error);
                 return line;
@@ -428,5 +443,77 @@ extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, addres
     } else if (has_imports && line.mode == IrMode::Program) {
         line.error = CompileError::IrImportMode;
     }
+    return line;
+}
+
+extern "C" LayoutCommandLine parse_layout_arguments(address arguments, u64 count) on cpu {
+    LayoutCommandLine line = LayoutCommandLine(CompileError::LayoutUsage, count, count, count);
+    if (count == 2u64 || argument_at(arguments, 2u64).text == 0u64) { return line; }
+    u64 index = 3u64;
+    while (index < count) {
+        u64 operand = index + 1u64;
+        if (operand == count) { return line; }
+        CliArgument option = argument_at(arguments, index);
+        if (option.text == 0u64) { return line; }
+        if (is_token(option, "-I")) {
+            line.root_index = operand;
+        } else if (is_token(option, "--field")) {
+            if (argument_at(arguments, operand).text == 0u64) { return line; }
+            line.field_index = operand;
+        } else {
+            line.error = CompileError::LayoutOption;
+            line.error_index = index;
+            return line;
+        }
+        index += 2u64;
+    }
+    line.error = CompileError::None;
+    return line;
+}
+
+extern "C" X64CommandLine parse_x64_arguments(address arguments, u64 count) on cpu {
+    X64CommandLine line = X64CommandLine(CompileError::X64Usage, count, 0u64, 0u64, 0u64, 0u64);
+    bool has_ip = false;
+    bool has_offset = false;
+    u64 index = 2u64;
+    while (index < count) {
+        u64 operand = index + 1u64;
+        if (operand == count) { return line; }
+        CliArgument option = argument_at(arguments, index);
+        if (option.text == 0u64) { return line; }
+        bool ip = is_token(option, "--ip");
+        bool offset = is_token(option, "--offset");
+        bool length = is_token(option, "--length");
+        line.error_index = index;
+        if (!ip && !offset && !length) {
+            line.error = CompileError::X64Option;
+            return line;
+        }
+        CliArgument value = argument_at(arguments, operand);
+        if (value.text == 0u64) { return line; }
+        bool hex = value.length >= 2u64 && argument_byte(value, 0u64) == 48 && argument_byte(value, 1u64) == 120;
+        ParsedNumber number = hex ? unsigned_number<16>(value, 2u64, value.length, 18446744073709551615u64) :
+            unsigned_number<10>(value, 0u64, value.length, 18446744073709551615u64);
+        if (number.error != NumberError::None) {
+            line.error = compile_number_error(number.error);
+            return line;
+        }
+        if ((ip && has_ip) || (offset && has_offset) || (length && line.has_length != 0u64)) {
+            line.error = CompileError::X64Repeated;
+            return line;
+        }
+        if (ip) {
+            line.ip = number.value;
+            has_ip = true;
+        } else if (offset) {
+            line.offset = number.value;
+            has_offset = true;
+        } else {
+            line.length = number.value;
+            line.has_length = 1u64;
+        }
+        index += 2u64;
+    }
+    line.error = CompileError::None;
     return line;
 }

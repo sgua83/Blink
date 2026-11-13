@@ -1,32 +1,35 @@
 //! A file/range adapter; it does not infer instruction boundaries from a container format.
-use std::{path::PathBuf, fmt::Write};
+use super::{Argument, CompileError};
+use std::{ffi::OsString, fmt::Write, path::PathBuf};
 
-fn integer(value: &str) -> Result<u64, std::num::ParseIntError> {
-    if let Some(value) = value.strip_prefix("0x") { u64::from_str_radix(value, 16) }
-    else { value.parse() }
+pub(super) const USAGE: &str = "用法：bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]";
+
+#[repr(C)]
+struct X64CommandLine {
+    error: CompileError,
+    error_index: usize,
+    ip: u64,
+    offset: u64,
+    length: u64,
+    has_length: u64,
 }
-pub fn print(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
-    let usage = "用法：bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]";
-    let path = PathBuf::from(args.get(1).ok_or(usage)?).canonicalize()?;
-    let mut ip = None; let mut offset = None; let mut length = None;
-    let mut i = 2;
-    while i < args.len() {
-        let value = args.get(i + 1).ok_or(usage)?;
-        let option = args[i].to_str().ok_or(usage)?;
-        let selected = match option {
-            "--ip" => &mut ip, "--offset" => &mut offset, "--length" => &mut length,
-            other => return Err(format!("未知x64查询选项 {other}；{usage}").into()),
-        };
-        if selected.replace(integer(value.to_str().ok_or(usage)?)?).is_some() { return Err(format!("{option}不能重复指定").into()); }
-        i += 2;
-    }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.cli::parse_x64_arguments"]
+    fn parse_x64_arguments(arguments: *const Argument, count: usize) -> X64CommandLine;
+}
+
+pub(super) fn print(args: &[OsString], arguments: &[Argument]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = PathBuf::from(args.get(1).ok_or(USAGE)?).canonicalize()?;
+    let line = unsafe { parse_x64_arguments(arguments.as_ptr(), arguments.len()) };
+    line.error.result(args, line.error_index)?;
     let raw = std::fs::read(&path)?;
-    let offset = usize::try_from(offset.unwrap_or(0))?;
-    let length = if let Some(length) = length { usize::try_from(length)? }
+    let offset = usize::try_from(line.offset)?;
+    let length = if line.has_length != 0 { usize::try_from(line.length)? }
         else { raw.len().checked_sub(offset).ok_or("指令范围起点超出文件")? };
     let end = offset.checked_add(length).ok_or("指令范围溢出")?;
     let bytes = raw.get(offset..end).ok_or("指令范围超出文件")?;
-    let ip = ip.unwrap_or(0);
+    let ip = line.ip;
     let decode = blanguage::native::instructions_json(bytes, ip.wrapping_add(offset as u64))?;
     let mut out = String::from("{\"kind\":\"x64_query\",");
     crate::json::path(&mut out, "source_path", &path);
