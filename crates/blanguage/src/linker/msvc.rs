@@ -1,6 +1,6 @@
 //! Rust 执行框架的静态目标库使用既有 Windows 本机链接工具；不执行源码编译。
 use super::Result;
-use crate::{file_bytes::FileBytes, object::Archive, source_path::join};
+use crate::{file_bytes::{self, FileBytes, host_path}, object::Archive, source_path::join};
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
@@ -48,20 +48,6 @@ struct SdkVersionResult {
     status: u32,
 }
 
-#[repr(u32)]
-enum HostInputKind {
-    Written,
-    OpenError,
-    WriteError,
-    NoProgress,
-}
-
-#[repr(C)]
-struct HostInputResult {
-    kind: HostInputKind,
-    status: u32,
-}
-
 #[repr(C)]
 struct HostProcessOutput {
     stdout: FileBytes,
@@ -78,8 +64,6 @@ unsafe extern "C" {
         arguments: *const u16,
         argument_units: usize,
     ) -> HostProcessOutput;
-    #[link_name = "bootstrap.host_sdk::write_host_input"]
-    fn write_host_input(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostInputResult;
     #[link_name = "bootstrap.host_sdk::remove_host_input"]
     fn remove_host_input(path: *const u16, units: usize) -> u32;
     #[link_name = "bootstrap.host_sdk::find_sdk_version"]
@@ -113,15 +97,6 @@ fn host_text<T>(bytes: &[u8], kind: HostText, copy: impl FnOnce(&[u16]) -> T) ->
         return Err(io::Error::from_raw_os_error(decoded.status).into());
     }
     Ok(decoded.consume(copy)?)
-}
-
-fn host_path(path: &Path) -> io::Result<Vec<u16>> {
-    let mut units: Vec<_> = path.as_os_str().encode_wide().collect();
-    if units.contains(&0) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file name contained an unexpected NUL byte"));
-    }
-    units.push(0);
-    Ok(units)
 }
 
 fn host_process(
@@ -202,16 +177,11 @@ fn path_argument(prefix: &str, path: &Path) -> OsString {
 }
 
 fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io::Result<()> {
-    let name = host_path(&path)?;
-    let written = unsafe { write_host_input(name.as_ptr(), name.len() - 1, bytes.as_ptr(), bytes.len()) };
-    let result = match written.kind {
-        HostInputKind::OpenError => return Err(io::Error::from_raw_os_error(written.status as i32)),
-        HostInputKind::Written => Ok(()),
-        HostInputKind::WriteError => Err(io::Error::from_raw_os_error(written.status as i32)),
-        HostInputKind::NoProgress => Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write whole buffer")),
-    };
-    temporary.push(path);
-    result
+    let written = file_bytes::write_new(&path, bytes)?;
+    if written.created() {
+        temporary.push(path);
+    }
+    written.into_result()
 }
 
 pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {

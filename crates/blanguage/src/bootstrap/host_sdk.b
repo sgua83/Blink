@@ -254,51 +254,77 @@ extern "C" SdkVersionResult find_sdk_version(address pattern, usize units, addre
 
 const u32 FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
 const u32 GENERIC_READ_WRITE = 0xc0000000;
+const u32 GENERIC_WRITE = 0x40000000;
 const u32 CREATE_NEW = 1;
 const u32 DELETE_ACCESS = 65536;
 const u32 OPEN_EXISTING = 3;
+const u32 OPEN_ALWAYS = 4;
+const u32 ERROR_ALREADY_EXISTS = 183;
+const i32 FILE_ALLOCATION_INFO = i32(5);
 
-struct HostInputFile { handle file; u32 status; };
+struct HostFileOpen { handle file; u32 status; };
 
-HostInputFile open_host_input(address path, usize units, u32 access, u32 creation) on cpu {
+HostFileOpen open_host_file(address path, usize units, u32 access, u32 creation, u32 flags) on cpu {
     HostNativePath name = host_native_path(path, units);
-    if (name.status != 0) { return HostInputFile(INVALID_HANDLE_VALUE, name.status); }
+    if (name.status != 0) { return HostFileOpen(INVALID_HANDLE_VALUE, name.status); }
 
-    handle file = CreateFileW(name.pattern, access, 7, address(), creation, FILE_FLAG_OPEN_REPARSE_POINT, handle());
-    u32 status = file == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    handle file = CreateFileW(name.pattern, access, 7, address(), creation, flags, handle());
+    u32 status = file == INVALID_HANDLE_VALUE || creation == OPEN_ALWAYS ? GetLastError() : 0;
     if (address_bits(name.allocation) != 0u64) { release_host_wide(name.allocation); }
-    return HostInputFile(file, status);
+    return HostFileOpen(file, status);
 }
 
-extern "C" HostInputResult write_host_input(address path, usize units, address data, usize bytes) on cpu {
-    HostInputFile opened = open_host_input(path, units, GENERIC_READ_WRITE, CREATE_NEW);
-    if (opened.file == INVALID_HANDLE_VALUE) {
-        return HostInputResult(HostInputKind::OpenError, opened.status);
-    }
-
-    HostInputResult result = HostInputResult(HostInputKind::Written, 0);
+HostWriteResult write_host_bytes(handle file, address data, usize bytes) on cpu {
+    HostWriteResult result = HostWriteResult(HostWriteKind::Written, 0);
     usize completed = 0u64;
     while (completed < bytes) {
         usize remaining = bytes - completed;
         u32 request = remaining > 0xffffffffu64 ? 0xffffffff : u32(remaining);
         address buffer = unsafe_address(address_bits(data) + completed);
         u32 written = 0;
-        if (WriteFile(opened.file, buffer, request, written, address()) == i32(0)) {
-            result = HostInputResult(HostInputKind::WriteError, GetLastError());
+        if (WriteFile(file, buffer, request, written, address()) == i32(0)) {
+            result = HostWriteResult(HostWriteKind::WriteError, GetLastError());
             break;
         }
         if (written == 0) {
-            result = HostInputResult(HostInputKind::NoProgress, 0);
+            result = HostWriteResult(HostWriteKind::NoProgress, 0);
             break;
         }
         completed += usize(written);
     }
-    CloseHandle(opened.file);
+    CloseHandle(file);
     return result;
 }
 
+extern "C" HostWriteResult write_host_input(address path, usize units, address data, usize bytes) on cpu {
+    HostFileOpen opened = open_host_file(path, units, GENERIC_READ_WRITE, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT);
+    if (opened.file == INVALID_HANDLE_VALUE) {
+        return HostWriteResult(HostWriteKind::OpenError, opened.status);
+    }
+    return write_host_bytes(opened.file, data, bytes);
+}
+
+extern "C" HostWriteResult write_host_output(address path, usize units, address data, usize bytes) on cpu {
+    HostFileOpen opened = open_host_file(path, units, GENERIC_WRITE, OPEN_ALWAYS, 0);
+    if (opened.file == INVALID_HANDLE_VALUE) {
+        return HostWriteResult(HostWriteKind::OpenError, opened.status);
+    }
+
+    if (opened.status == ERROR_ALREADY_EXISTS) {
+        // Truncate the existing file through its opened handle, preserving its identity.
+        i64 length = i64(0);
+        if (SetFileInformationByHandle(opened.file, FILE_ALLOCATION_INFO, address_of(length),
+                u32(size_of<i64>())) == i32(0)) {
+            u32 status = GetLastError();
+            CloseHandle(opened.file);
+            return HostWriteResult(HostWriteKind::WriteError, status);
+        }
+    }
+    return write_host_bytes(opened.file, data, bytes);
+}
+
 extern "C" u32 remove_host_input(address path, usize units) on cpu {
-    HostInputFile opened = open_host_input(path, units, DELETE_ACCESS, OPEN_EXISTING);
+    HostFileOpen opened = open_host_file(path, units, DELETE_ACCESS, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT);
     if (opened.file == INVALID_HANDLE_VALUE) { return opened.status; }
 
     // FILE_DISPOSITION_INFO_EX: delete the file, using POSIX semantics and ignoring its read-only attribute.

@@ -83,6 +83,6 @@ pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, output)?;
+    crate::file_bytes::write(&path, &output)?;
     Ok(())
 }

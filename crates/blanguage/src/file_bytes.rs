@@ -3,7 +3,11 @@ use std::{
     fs::File,
     io,
     ops::Deref,
-    os::windows::io::{AsRawHandle, RawHandle},
+    os::windows::{
+        ffi::OsStrExt,
+        io::{AsRawHandle, RawHandle},
+    },
+    path::Path,
 };
 
 #[repr(C)]
@@ -13,7 +17,41 @@ pub(crate) struct FileBytes {
     error: syntax::wire::StorageError,
 }
 
+#[repr(u32)]
+enum HostWriteKind {
+    Written,
+    OpenError,
+    WriteError,
+    NoProgress,
+}
+
+#[repr(C)]
+pub(crate) struct HostWriteResult {
+    kind: HostWriteKind,
+    status: u32,
+}
+
+impl HostWriteResult {
+    pub(crate) fn created(&self) -> bool {
+        !matches!(self.kind, HostWriteKind::OpenError)
+    }
+
+    pub(crate) fn into_result(self) -> io::Result<()> {
+        match self.kind {
+            HostWriteKind::Written => Ok(()),
+            HostWriteKind::OpenError | HostWriteKind::WriteError => {
+                Err(io::Error::from_raw_os_error(self.status as i32))
+            }
+            HostWriteKind::NoProgress => Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write whole buffer")),
+        }
+    }
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.host_sdk::write_host_input"]
+    fn write_host_input(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostWriteResult;
+    #[link_name = "bootstrap.host_sdk::write_host_output"]
+    fn write_host_output(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostWriteResult;
     #[link_name = "bootstrap.ast_storage::read_source"]
     fn read_source(file: RawHandle) -> FileBytes;
     #[link_name = "bootstrap.ast_storage::release_source"]
@@ -55,4 +93,23 @@ impl Drop for FileBytes {
             panic!("无法释放 B 文件缓冲");
         }
     }
+}
+
+pub(crate) fn host_path(path: &Path) -> io::Result<Vec<u16>> {
+    let mut units: Vec<_> = path.as_os_str().encode_wide().collect();
+    if units.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file name contained an unexpected NUL byte"));
+    }
+    units.push(0);
+    Ok(units)
+}
+
+pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> io::Result<HostWriteResult> {
+    let path = host_path(path)?;
+    Ok(unsafe { write_host_input(path.as_ptr(), path.len() - 1, bytes.as_ptr(), bytes.len()) })
+}
+
+pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let path = host_path(path)?;
+    unsafe { write_host_output(path.as_ptr(), path.len() - 1, bytes.as_ptr(), bytes.len()) }.into_result()
 }

@@ -83,6 +83,8 @@ fn link_objects(inputs: Inputs<'_>, _: &Path) -> Result<()> {
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
+    use crate::file_bytes;
+
     let (objects, archives) = prepare(inputs)?;
     let object = &objects[0];
     let output = std::path::absolute(path)?;
@@ -92,7 +94,7 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
         Kind::Application { .. } => {
             if archives.is_empty() {
                 let object = combine::objects(objects,None)?;
-                std::fs::write(&output, pe::link(&object)?)?;
+                file_bytes::write(&output, &pe::link(&object)?)?;
             } else {
                 msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, false)?;
             }
@@ -112,14 +114,14 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
             msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, true)?;
             let mut header_path = output.clone();
             header_path.set_extension("abi.h");
-            std::fs::write(header_path, header)?;
+            file_bytes::write(&header_path, header.as_bytes())?;
             let binding = binding.replace(
                 &format!("#[link(name=\"{prefix}\")]"),
                 &format!("#[link(name=\"{library}\")]"),
             );
             let mut binding_path = output;
             binding_path.set_extension("rs");
-            std::fs::write(binding_path, binding)?;
+            file_bytes::write(&binding_path, binding.as_bytes())?;
         }
     }
     Ok(())
