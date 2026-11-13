@@ -1145,7 +1145,7 @@ u32 sort_ballot(inout StageCursor out, u32 ty, u32 vector, u32 scope, u32 predic
     return stage_op(out, 81, ty, vote, 0);
 }
 
-u32 sort_select(inout StageCursor out, u32 ty, u32 condition, u32 yes, u32 no) on cpu {
+u32 stage_select(inout StageCursor out, u32 ty, u32 condition, u32 yes, u32 no) on cpu {
     u32 result = out.next;
     out.words = select_words(out.body, out.words, ty, result, condition, yes, no);
     out.next = result + 1;
@@ -1159,7 +1159,7 @@ u32 sort_unary(inout StageCursor out, u32 op, u32 ty, u32 value) on cpu {
     return result;
 }
 
-void sort_barrier(inout StageCursor out, u32 scope, u32 semantics) on cpu {
+void stage_barrier(inout StageCursor out, u32 scope, u32 semantics) on cpu {
     out.words = words_three(out.body, out.words, 224, scope, scope, semantics);
 }
 
@@ -1198,7 +1198,7 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
         u32 set = stage_op(out, 171, b, masked, zero);
         u32 selected = sort_ballot(out, u, input.ballot_type, input.subgroup_scope, set);
         u32 inverted = sort_unary(out, 200, u, selected);
-        u32 matching = sort_select(out, u, set, selected, inverted);
+        u32 matching = stage_select(out, u, set, selected, inverted);
         equal = stage_op(out, 199, u, equal, matching);
     }
     u32 bit = stage_op(out, 196, u, types.one, lane);
@@ -1213,7 +1213,7 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
     u32 cell = stage_op(out, 65, input.shared_pointer, input.shared, local);
     out.words = words_two(body, out.words, 62, cell, zero);
     stage_close(out, clear);
-    sort_barrier(out, input.workgroup_scope, input.shared_semantics);
+    stage_barrier(out, input.workgroup_scope, input.shared_semantics);
 
     u32 first = stage_op(out, 170, b, rank, zero);
     u32 leader = stage_op(out, 167, b, first, active);
@@ -1223,7 +1223,7 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
     u32 cell_out = stage_op(out, 65, input.shared_pointer, input.shared, own_bin);
     out.words = words_two(body, out.words, 62, cell_out, total);
     stage_close(out, write);
-    sort_barrier(out, input.workgroup_scope, input.shared_semantics);
+    stage_barrier(out, input.workgroup_scope, input.shared_semantics);
 
     DispatchValue groups = dispatch_groups(body, DispatchValue(out.words, out.next, 0), types, input.count, input.width, true);
     out.words = groups.words;
@@ -1249,7 +1249,7 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
     u32 prior_bin = stage_op(out, 65, input.shared_pointer, input.shared, digit);
     u32 prior_wave = stage_load(out, u, prior_bin, false);
     u32 is_first_wave = stage_op(out, 170, b, wave, zero);
-    u32 previous = sort_select(out, u, is_first_wave, zero, prior_wave);
+    u32 previous = stage_select(out, u, is_first_wave, zero, prior_wave);
     u32 own_rank = stage_op(out, 128, u, rank, previous);
     u32 row = stage_op(out, 132, u, digit, groups.value);
     u32 slot = stage_op(out, 128, u, row, group);
@@ -1567,6 +1567,93 @@ extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offs
         next += 1;
     }
     return SharedAddressWords(at, next);
+}
+
+void scan_node_address(inout StageCursor out, ScanTreeComponent component, u32 uint_type,
+    u32 node, address pointers) on cpu {
+    SharedAddress request = SharedAddress(uint_type, component.pointer_type, component.shared,
+        node, component.scale, component.count, out.next);
+    SharedAddressWords result = shared_addresses(request, pointers, word_at(out.body, out.words));
+    out.words += result.words;
+    out.next = result.next;
+}
+
+u32 scan_node_load(inout StageCursor out, PayloadEmission input, address pointers, address shifts) on cpu {
+    PayloadEmission request = input;
+    request.next = out.next;
+    PayloadRead result = payload_read(request, pointers, shifts, word_at(out.body, out.words));
+    out.words += result.words;
+    out.next = result.next;
+    return result.value;
+}
+
+void scan_node_store(inout StageCursor out, PayloadEmission input, u32 value, address pointers, address shifts) on cpu {
+    PayloadEmission request = input;
+    request.next = out.next;
+    PayloadWrite result = payload_write(request, value, pointers, shifts, address(), word_at(out.body, out.words));
+    out.words += result.words;
+    out.next = result.next;
+}
+
+extern "C" ScanTreeWords scan_tree_layer(ScanTreeLayer input, address components, u32 count,
+    address body, address decorations) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    u32 node = input.lane;
+    u32 selected;
+    if (input.tile_capacity == 0) {
+        u32 bits = stage_op(out, 199, input.uint_type, node, input.selector);
+        selected = stage_op(out, 170, input.bool_type, bits, input.selector);
+    } else {
+        u32 one_based = stage_op(out, 128, input.uint_type, node, input.one);
+        u32 scaled = stage_op(out, 132, input.uint_type, one_based, input.selector);
+        node = stage_op(out, 130, input.uint_type, scaled, input.one);
+        selected = stage_op(out, 176, input.bool_type, node, input.tile_capacity);
+    }
+    StageBranch branch = stage_open(out, selected);
+    u32 other = stage_op(out, 130, input.uint_type, node, input.stride);
+    u32 has_right = 0;
+    u64 decorated = 0u64;
+    for (index in 0..count) {
+        ScanTreeComponent component = unsafe_position<ScanTreeComponent>(
+            unsafe_address(address_bits(components) + u64(index) * size_of<ScanTreeComponent>()));
+        array<u32,2> left_slots = array<u32,2>(component.low, component.high);
+        array<u32,2> right_slots = left_slots;
+        array<u32,2> shift_slots = array<u32,2>(0, component.shift);
+        address left = address_of(left_slots[0]);
+        address right = address_of(right_slots[0]);
+        address shifts = address_of(shift_slots[0]);
+        PayloadEmission payload = PayloadEmission(PayloadAccess::Local, component.raw_type, input.uint_type,
+            4, component.count, out.next);
+
+        scan_node_address(out, component, input.uint_type, other, left);
+        u32 a = scan_node_load(out, payload, left, shifts);
+        scan_node_address(out, component, input.uint_type, node, right);
+        u32 b = scan_node_load(out, payload, right, shifts);
+        bool reverse = input.down != 0 && component.operation != CollectiveOperation::Sum;
+        CollectivePair pair = CollectivePair(component.operation, component.scalar, component.raw_type,
+            component.value_type, input.bool_type, reverse ? b : a, reverse ? a : b, out.next);
+        CollectiveWords combined = collective_pair(pair, word_at(out.body, out.words), word_at(decorations, decorated));
+        out.words += combined.body;
+        decorated += combined.decorations;
+        out.next = combined.next;
+
+        u32 value = combined.value;
+        bool floating = component.scalar == BuiltinScalar::F32 || component.scalar == BuiltinScalar::F64;
+        if (input.down == 0 && floating && component.operation != CollectiveOperation::Sum) {
+            if (has_right == 0) {
+                u32 right_begin = stage_op(out, 128, input.uint_type, other, input.one);
+                has_right = stage_op(out, 176, input.bool_type, right_begin, input.remaining);
+            }
+            value = stage_select(out, component.raw_type, has_right, value, a);
+        }
+        if (input.down != 0) {
+            scan_node_store(out, payload, b, left, shifts);
+        }
+        scan_node_store(out, payload, value, right, shifts);
+    }
+    stage_close(out, branch);
+    stage_barrier(out, input.scope, input.semantics);
+    return ScanTreeWords(out.words, decorated, out.next, branch.end);
 }
 
 extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {

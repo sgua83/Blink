@@ -17,9 +17,51 @@ struct SharedAddressWords {
     next: u32,
 }
 
+#[repr(C)]
+pub(super) struct ScanTreeComponent {
+    shared: u32,
+    pointer_type: u32,
+    low: u32,
+    high: u32,
+    scale: u32,
+    shift: u32,
+    count: u32,
+    operation: u32,
+    scalar: ScalarCode,
+    raw_type: u32,
+    value_type: u32,
+}
+
+#[repr(C)]
+struct ScanTreeLayer {
+    uint_type: u32,
+    bool_type: u32,
+    lane: u32,
+    stride: u32,
+    selector: u32,
+    tile_capacity: u32,
+    remaining: u32,
+    one: u32,
+    scope: u32,
+    semantics: u32,
+    down: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct ScanTreeWords {
+    body: u64,
+    decorations: u64,
+    next: u32,
+    label: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::shared_addresses"]
     fn emit_shared_addresses(input: SharedAddress, offsets: *mut u32, body: *mut u32) -> SharedAddressWords;
+    #[link_name = "bootstrap.spirv_envelope::scan_tree_layer"]
+    fn emit_scan_tree_layer(input: ScanTreeLayer, components: *const ScanTreeComponent, count: u32,
+        body: *mut u32, decorations: *mut u32) -> ScanTreeWords;
 }
 
 #[derive(Clone, Copy)]
@@ -180,8 +222,9 @@ impl Emitter<'_> {
             .collect();
         for (tree,input) in trees.iter().zip(inputs) {self.tree_store(*tree,local,input);}
         self.scan_barrier();
+        let components = self.scan_tree_components(&trees);
         for width in [1, 2, 4, 8, 16, 32] {
-            self.scan_tree(&trees, local, width, false, remaining);
+            self.scan_tree_layer(&components, local, width, None, false, remaining);
         }
         let last = self.constant(Scalar::U32, 63);
         let is_last = self.id();
@@ -207,7 +250,7 @@ impl Emitter<'_> {
         self.emit(248, &[saved]);
         self.scan_barrier();
         for width in [32, 16, 8, 4, 2, 1] {
-            self.scan_tree(&trees, local, width, true, remaining);
+            self.scan_tree_layer(&components, local, width, None, true, remaining);
         }
         let write = self.id();
         let end = self.id();
@@ -230,22 +273,6 @@ impl Emitter<'_> {
         self.emit(249, &[end]);
         self.emit(248, &[end]);
     }
-    fn scan_tree(
-        &mut self,
-        trees: &[SharedTree],
-        local: u32,
-        width: u32,
-        down: bool,
-        remaining: u32,
-    ) {
-        let u = self.types[&Scalar::U32];
-        let mask = self.constant(Scalar::U32, width * 2 - 1);
-        let bits = self.id();
-        self.emit(199, &[u, bits, local, mask]);
-        let selected = self.id();
-        self.emit(170, &[self.types[&Scalar::Bool], selected, bits, mask]);
-        self.scan_tree_step(trees, local, width, selected, down, remaining);
-    }
     pub(super) fn tree_parts(&mut self, tree: SharedTree, node: u32) -> TreeParts {
         let count = tree.scalar.size().div_ceil(4) as usize;
         let mut ids = [tree.base_word, tree.base_word + 1];
@@ -263,61 +290,64 @@ impl Emitter<'_> {
         self.store_raw(tree.scalar, Scalar::U32, pointers.as_ref(), value, false);
     }
 
-    pub(super) fn scan_tree_step(
-        &mut self,
-        trees: &[SharedTree],
-        node: u32,
-        width: u32,
-        selected: u32,
-        down: bool,
-        remaining: u32,
-    ) {
-        let u = self.types[&Scalar::U32];
-        let run = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[selected, run, end]);
-        self.emit(248, &[run]);
-        for tree in trees {
-            let tree = *tree;
-            let width = self.constant(Scalar::U32, width);
-            let other = self.id();
-            self.emit(130, &[u, other, node, width]);
-            let a = self.tree_load(tree,other);
-            let bv = self.tree_load(tree,node);
-            let (left, right) = if down && tree.operator != CollectiveOperator::Sum {
-                (bv, a)
+    pub(super) fn scan_tree_components(&mut self, trees: &[SharedTree]) -> Vec<ScanTreeComponent> {
+        trees.iter().map(|tree| {
+            let count = tree.scalar.size().div_ceil(4);
+            let low = if tree.base_word == 0 { 0 } else { self.constant(Scalar::U32, tree.base_word) };
+            let (high, scale, shift) = if count == 2 {
+                (self.constant(Scalar::U32, tree.base_word + 1),
+                 self.constant(Scalar::U32, 2), self.constant(Scalar::U32, 32))
             } else {
-                (a, bv)
+                (0, 0, 0)
             };
-            let combined = self.collective_pair(tree.scalar, tree.operator, left, right);
-            let sum = if tree.scalar.is_float()
-                && tree.operator != CollectiveOperator::Sum
-                && !down
-            {
-                let one = self.constant(Scalar::U32, 1);
-                let right_begin = self.id();
-                self.emit(128, &[u, right_begin, other, one]);
-                let has_right = self.id();
-                self.emit(
-                    176,
-                    &[self.types[&Scalar::Bool], has_right, right_begin, remaining],
-                );
-                let sum = self.id();
-                self.select(self.raw_type(tree.scalar), sum, has_right, combined, left);
-                sum
-            } else {
-                combined
-            };
-            if down {
-                self.tree_store(tree,other,bv);
+            ScanTreeComponent {
+                shared: tree.shared,
+                pointer_type: tree.pointer,
+                low, high, scale, shift, count,
+                operation: tree.operator as u32,
+                scalar: tree.scalar.into(),
+                raw_type: self.raw_type(tree.scalar),
+                value_type: self.types[&tree.scalar],
             }
-            self.tree_store(tree,node,sum);
-        }
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
-        self.scan_barrier();
+        }).collect()
     }
+
+    pub(super) fn scan_tree_layer(&mut self, components: &[ScanTreeComponent], lane: u32,
+        width: u32, tile_capacity: Option<u32>, down: bool, remaining: u32,
+    ) {
+        let (selector, tile_capacity) = match tile_capacity {
+            Some(capacity) => (self.constant(Scalar::U32, width * 2), self.constant(Scalar::U32, capacity)),
+            None => (self.constant(Scalar::U32, width * 2 - 1), 0),
+        };
+        let input = ScanTreeLayer {
+            uint_type: self.types[&Scalar::U32],
+            bool_type: self.types[&Scalar::Bool],
+            lane,
+            stride: self.constant(Scalar::U32, width),
+            selector,
+            tile_capacity,
+            remaining,
+            one: if tile_capacity != 0 || (!down && remaining != 0) { self.constant(Scalar::U32, 1) } else { 0 },
+            scope: self.constant(Scalar::U32, 2),
+            semantics: self.constant(Scalar::U32, 0x108),
+            down: u32::from(down),
+            next: self.next,
+        };
+        let body = self.body.len();
+        let decorations = self.decorations.len();
+        self.body.reserve(42 + 176 * components.len());
+        self.decorations.reserve(3 * components.len());
+        let result = unsafe {
+            let result = emit_scan_tree_layer(input, components.as_ptr(), components.len() as u32,
+                self.body.as_mut_ptr().add(body), self.decorations.as_mut_ptr().add(decorations));
+            self.body.set_len(body + result.body as usize);
+            self.decorations.set_len(decorations + result.decorations as usize);
+            result
+        };
+        self.next = result.next;
+        self.current_label = result.label;
+    }
+
     pub(super) fn scan_add(&mut self, scan: &Scan, root: bool) {
         let r = &scan.values;
         let u = self.types[&Scalar::U32];

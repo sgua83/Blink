@@ -66,9 +66,10 @@ impl Emitter<'_> {
                 }
             }
             self.tile_barrier();
+            let components = self.scan_tree_components(&trees);
             let mut stride = 1;
             while stride < padded {
-                self.tile_tree_step(&trees, stride, padded, false);
+                self.scan_tree_layer(&components, self.tile_lane, stride, Some(padded), false, self.tile_length);
                 stride *= 2;
             }
             let final_index = if collective.op.exclusive() {
@@ -89,7 +90,7 @@ impl Emitter<'_> {
                 self.scan_barrier();
                 let mut stride = padded / 2;
                 while stride != 0 {
-                    self.tile_tree_step(&trees, stride, padded, true);
+                    self.scan_tree_layer(&components, self.tile_lane, stride, Some(padded), true, self.tile_length);
                     stride /= 2;
                 }
                 self.tile_lane
@@ -104,20 +105,5 @@ impl Emitter<'_> {
             // 各 lane 已取得本批所有分量，后续集合才可重用同一工作区。
             self.tile_barrier();
         }
-    }
-    fn tile_tree_step(&mut self, trees: &[SharedTree], stride: u32, padded: u32, down: bool) {
-        let u = self.types[&Scalar::U32];
-        let one = self.constant(Scalar::U32, 1);
-        let scale = self.constant(Scalar::U32, stride * 2);
-        let plus = self.id();
-        self.emit(128, &[u, plus, self.tile_lane, one]);
-        let next = self.id();
-        self.emit(132, &[u, next, plus, scale]);
-        let node = self.id();
-        self.emit(130, &[u, node, next, one]);
-        let count = self.constant(Scalar::U32, padded);
-        let selected = self.id();
-        self.emit(176, &[self.types[&Scalar::Bool], selected, node, count]);
-        self.scan_tree_step(trees, node, stride, selected, down, self.tile_length);
     }
 }
