@@ -258,7 +258,7 @@ impl Graph {
                         self.outgoing_bytes =
                             self.outgoing_bytes
                                 .max(if let InstKind::Call(call) = &(inst).kind {
-                                    super::external::Layout::new(call).bytes
+                                    super::external::outgoing_bytes(call)
                                 } else {
                                     32
                                 });

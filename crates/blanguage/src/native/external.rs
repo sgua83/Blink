@@ -4,13 +4,6 @@ use super::*;
 use crate::builtin_types::ScalarEncoding;
 use allocation::Location;
 use std::ffi::c_void;
-pub(super) struct Layout {
-    pub bytes: u64,
-    pub result: Option<u64>,
-    copies: u64,
-    pub hidden: bool,
-    target: Option<u64>,
-}
 #[repr(C)]
 pub(super) struct AbiType { size: u32, alignment: u32, value: u64 }
 impl AbiType {
@@ -21,9 +14,9 @@ impl AbiType {
     }
 }
 #[repr(C)]
-struct CallPlan { bytes: u64, result: u64, copies: u64, target: u64, hidden: u64 }
+struct CallPlan { bytes: u64, result: u64, target: u64, hidden: u64, arguments: usize }
 #[repr(C)]
-struct ValueCopy { offset: u64, end: u64, present: u64 }
+struct ArgumentSlot { index: usize, home: u64, payload: u64, indirect: u64 }
 #[repr(C)]
 struct SymbolEncoding { length: u64, field: u64 }
 #[repr(u32)]
@@ -68,8 +61,6 @@ unsafe extern "C" {
     fn encode_abi_stack_pointer(offset: u32, slot: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.call_layout::indirect"]
     fn indirect_value(size: u32, alignment: u32) -> bool;
-    #[link_name = "bootstrap.call_layout::copy_value"]
-    fn copy_value(start: u64, size: u32, alignment: u32) -> ValueCopy;
     #[link_name = "bootstrap.x64_instruction::argument_register"]
     fn encode_argument_register(slot: u8, float_size: u32, to_home: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::symbol_target"]
@@ -83,11 +74,11 @@ unsafe extern "C" {
     fn encode_unpack_integer_component(scalar: ScalarEncoding, offset: u32,
         packed: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.call_layout::plan"]
-    fn call_plan(context: *const Call, count: u64, result: AbiType, flags: u32,
-        argument: unsafe extern "C" fn(*const Call, u64) -> AbiType) -> CallPlan;
+    fn call_plan(context: *const c_void, count: usize, result: AbiType, flags: u32,
+        argument: unsafe extern "C" fn(*const c_void, usize) -> AbiType, positions: *mut ArgumentSlot) -> CallPlan;
 }
-unsafe extern "C" fn argument_type(call: *const Call, index: u64) -> AbiType {
-    match &unsafe { &*call }.arguments[index as usize] {
+unsafe extern "C" fn argument_type(context: *const c_void, index: usize) -> AbiType {
+    match &unsafe { &*context.cast::<Call>() }.arguments[index] {
         CallArgument::Value { ty, .. } => AbiType::value(ty),
         CallArgument::Reference { .. } => AbiType { size: 0, alignment: 1, value: 0 },
     }
@@ -104,15 +95,15 @@ pub(super) fn float_size(ty: &Ty) -> u32 {
         0
     }
 }
-impl Layout {
-    pub(super) fn new(call: &Call) -> Self {
-        let result = AbiType::result(call.result.as_ref());
-        let flags = u32::from(call.error.is_some()) | (u32::from(matches!(call.target, CallTarget::Indirect(_))) << 1);
-        let plan = unsafe { call_plan(call, call.arguments.len() as u64, result, flags, argument_type) };
-        let hidden = plan.hidden != 0;
-        Self { bytes: plan.bytes, result: hidden.then_some(plan.result), copies: plan.copies,
-            hidden, target: (flags & 2 != 0).then_some(plan.target) }
-    }
+fn plan_call(call: &Call, positions: *mut ArgumentSlot) -> CallPlan {
+    let result = AbiType::result(call.result.as_ref());
+    let flags = u32::from(call.error.is_some()) | (u32::from(matches!(call.target, CallTarget::Indirect(_))) << 1);
+    let context = (call as *const Call).cast();
+    unsafe { call_plan(context, call.arguments.len(), result, flags, argument_type, positions) }
+}
+
+pub(super) fn outgoing_bytes(call: &Call) -> u64 {
+    plan_call(call, std::ptr::null_mut()).bytes
 }
 impl Emitter<'_> {
     pub(super) fn abi_memory_value(
@@ -218,48 +209,44 @@ impl Emitter<'_> {
         }
     }
     pub(super) fn native_call(&mut self, call: &Call) -> Result<(), &'static str> {
-        let layout = Layout::new(call);
+        let mut arguments = Vec::with_capacity(call.arguments.len());
+        let layout = plan_call(call, arguments.as_mut_ptr());
+        // B initialized only the rows with physical argument slots.
+        unsafe { arguments.set_len(layout.arguments); }
         if let CallTarget::Indirect(reg) = call.target {
-            self.copy_scalar(Location::Stack(layout.target.unwrap() as u32), self.location(reg), Scalar::U64);
+            self.copy_scalar(Location::Stack(layout.target as u32), self.location(reg), Scalar::U64);
         }
-        if let Some(at) = layout.result {
-            self.abi_stack_pointer(at as u32, 0);
+        if layout.hidden != 0 {
+            self.abi_stack_pointer(layout.result as u32, 0);
         }
-        let arguments = call.arguments.iter()
-            .filter(|arg| !matches!(arg, CallArgument::Value { ty, .. } if ty.size == 0));
-        let mut copies = layout.copies;
-        for (slot, arg) in arguments.clone().enumerate() {
-            let slot = (slot + usize::from(layout.hidden)) as u32 * 8;
-            match arg {
+        for row in &arguments {
+            let home = row.home as u32;
+            match &call.arguments[row.index] {
                 CallArgument::Reference { address, .. } => {
                     self.reference_address(address)?;
-                    self.copy_scalar(Location::Stack(slot), Location::Gpr(0), Scalar::U64);
+                    self.copy_scalar(Location::Stack(home), Location::Gpr(0), Scalar::U64);
                 }
                 CallArgument::Value { ty, values, .. } => {
-                    let copy = unsafe { copy_value(copies, ty.size, ty.align) };
-                    copies = copy.end;
-                    let base = if copy.present != 0 { copy.offset as u32 } else { slot };
-                    self.abi_memory_value(base, ty, values, AbiMemoryMode::StackStore);
-                    if copy.present != 0 {
-                        self.abi_stack_pointer(copy.offset as u32, slot);
+                    self.abi_memory_value(row.payload as u32, ty, values, AbiMemoryMode::StackStore);
+                    if row.indirect != 0 {
+                        self.abi_stack_pointer(row.payload as u32, home);
                     }
                 }
             }
         }
-        if layout.hidden {
+        if layout.hidden != 0 {
             self.argument_register(0, 0, false);
         }
-        for (slot, arg) in arguments.enumerate().take(4 - usize::from(layout.hidden)) {
-            let slot = slot + usize::from(layout.hidden);
-            let size = match arg {
+        for row in arguments.iter().take_while(|row| row.home < 32) {
+            let size = match &call.arguments[row.index] {
                 CallArgument::Value { ty, .. } => float_size(ty),
                 CallArgument::Reference { .. } => 0,
             };
-            self.argument_register(slot, size, false);
+            self.argument_register((row.home / 8) as usize, size, false);
         }
         match &call.target {
             CallTarget::Indirect(_) => {
-                let offset = layout.target.unwrap() as u32;
+                let offset = layout.target as u32;
                 self.emit_bytes(7, |output| unsafe { encode_call_slot(offset, output) });
                 self.calls.push(None);
             }
@@ -271,8 +258,8 @@ impl Emitter<'_> {
             Some(self.jump(Branch::Nonzero64))
         } else { None };
         if let Some(ty) = call.result.as_ref().filter(|ty| ty.size != 0) {
-            if let Some(at) = layout.result {
-                self.abi_memory_value(at as u32, ty, &call.values, AbiMemoryMode::StackLoad);
+            if layout.hidden != 0 {
+                self.abi_memory_value(layout.result as u32, ty, &call.values, AbiMemoryMode::StackLoad);
             } else if float_size(ty) != 0 {
                 self.store_float(call.values[0]);
             } else {
