@@ -40,55 +40,153 @@ struct Prepared<'a> {
     kind: UnitKind<'a>,
     providers: Vec<Dependency<'a>>,
 }
+#[repr(C)]
 #[derive(Clone, Copy, Default)]
-enum Visit {
-    #[default]
-    Unvisited,
-    Visiting,
-    Complete,
+struct GraphRange {
+    start: usize,
+    count: usize,
 }
 
-#[derive(Default)]
-struct Expansion<'a> {
-    visit: Visit,
-    providers: Vec<Dependency<'a>>,
-}
-
-fn expand<'a, 'graph>(
-    index: usize, unit: &Unit<'a>, units: &[Unit<'a>], expanded: &'graph mut [Expansion<'a>],
-) -> Result<&'graph [Dependency<'a>]> {
-    match expanded[index].visit {
-        Visit::Unvisited => {}
-        Visit::Visiting => return Err(format!("构建依赖形成循环：单元{index} {}", unit.path.display()).into()),
-        Visit::Complete => return Ok(&expanded[index].providers),
+impl GraphRange {
+    fn slice<T>(self, values: &[T]) -> &[T] {
+        &values[self.start..self.start + self.count]
     }
+}
 
-    expanded[index].visit = Visit::Visiting;
-    let mut providers = Vec::new();
-    let mut seen = BTreeSet::new();
-    for dependency in unit.dependencies {
-        let inherited = match dependency {
-            Dependency::Unit(id) => {
-                let source = units.get(*id).ok_or_else(|| std::io::Error::other(format!("构建单元引用越界：{id}")))?;
-                if !matches!(source.kind, UnitKind::Object(_)) {
-                    return Err(format!("单元{id}的入口映像不是COFF模块提供者").into());
+#[repr(C)]
+struct GraphUnit {
+    dependencies: GraphRange,
+    object: usize,
+}
+
+#[repr(C)]
+struct GraphEdge {
+    index: usize,
+    external: usize,
+}
+
+#[repr(C)]
+struct GraphInput {
+    units: *const GraphUnit,
+    edges: *const GraphEdge,
+    count: usize,
+    external_count: usize,
+}
+
+#[repr(C)]
+struct GraphOutput {
+    providers: *mut GraphRange,
+    following: *mut GraphRange,
+    waiting: *mut usize,
+    followers: *mut usize,
+}
+
+const OUT_OF_RANGE: u64 = 1;
+const DEPENDENCY_CYCLE: u64 = 2;
+const ENTRY_PROVIDER: u64 = 3;
+
+#[repr(C)]
+struct GraphPlan {
+    ids: *const usize,
+    count: usize,
+    status: u64,
+    unit: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.build_graph::plan"]
+    fn build_dependency_plan(input: GraphInput, output: GraphOutput) -> GraphPlan;
+    #[link_name = "bootstrap.build_graph::release_plan"]
+    fn release_dependency_plan(ids: *const usize);
+}
+
+impl Drop for GraphPlan {
+    fn drop(&mut self) {
+        unsafe { release_dependency_plan(self.ids); }
+    }
+}
+
+struct DependencyPlan<'a> {
+    providers: Vec<Vec<Dependency<'a>>>,
+    following: Vec<Vec<usize>>,
+    waiting: Vec<usize>,
+}
+
+fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
+    let mut edges = Vec::new();
+    let mut externals = Vec::new();
+    let mut external_indices = BTreeMap::new();
+    let input_units: Vec<_> = units.iter().map(|unit| {
+        let start = edges.len();
+        for dependency in unit.dependencies {
+            let edge = match dependency {
+                Dependency::Unit(index) => GraphEdge { index: *index, external: 0 },
+                Dependency::Object(object) => {
+                    let index = *external_indices.entry(*object as *const Object).or_insert_with(|| {
+                        let index = externals.len();
+                        externals.push(*object);
+                        index
+                    });
+                    GraphEdge { index, external: 1 }
                 }
-                expand(*id, source, units, expanded)?
-            }
-            Dependency::Object(_) => &[],
-        };
-        for &value in inherited.iter().chain(std::iter::once(dependency)) {
-            let key = match value {
-                Dependency::Unit(id) => (false, id),
-                Dependency::Object(object) => (true, object as *const Object as usize),
             };
-            if seen.insert(key) { providers.push(value); }
+            edges.push(edge);
         }
-    }
-    expanded[index] = Expansion { visit: Visit::Complete, providers };
-    Ok(&expanded[index].providers)
-}
+        GraphUnit {
+            dependencies: GraphRange { start, count: edges.len() - start },
+            object: usize::from(matches!(unit.kind, UnitKind::Object(_))),
+        }
+    }).collect();
 
+    let mut provider_rows = vec![GraphRange::default(); units.len()];
+    let mut following_rows = vec![GraphRange::default(); units.len()];
+    let mut waiting = vec![0; units.len()];
+    let mut followers = vec![0; edges.len()];
+    let plan = unsafe {
+        build_dependency_plan(
+            GraphInput {
+                units: input_units.as_ptr(),
+                edges: edges.as_ptr(),
+                count: units.len(),
+                external_count: externals.len(),
+            },
+            GraphOutput {
+                providers: provider_rows.as_mut_ptr(),
+                following: following_rows.as_mut_ptr(),
+                waiting: waiting.as_mut_ptr(),
+                followers: followers.as_mut_ptr(),
+            },
+        )
+    };
+    let index = plan.unit;
+    match plan.status {
+        0 => {}
+        OUT_OF_RANGE => {
+            return Err(std::io::Error::other(format!("构建单元引用越界：{index}")).into());
+        }
+        DEPENDENCY_CYCLE => {
+            return Err(format!("构建依赖形成循环：单元{index} {}", units[index].path.display()).into());
+        }
+        ENTRY_PROVIDER => {
+            return Err(format!("单元{index}的入口映像不是COFF模块提供者").into());
+        }
+        status => return Err(std::io::Error::from_raw_os_error(status as i32).into()),
+    }
+    // B owns the flat provider buffer until these rows have been transferred.
+    let ids = if plan.count == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(plan.ids, plan.count) }
+    };
+    let providers = provider_rows.into_iter().map(|row| {
+        row.slice(ids).iter().map(|&id| {
+            if id < units.len() { Dependency::Unit(id) }
+            else { Dependency::Object(externals[id - units.len()]) }
+        }).collect()
+    }).collect();
+    let following = following_rows.into_iter().map(|row| row.slice(&followers).to_vec()).collect();
+    Ok(DependencyPlan { providers, following, waiting })
+}
 enum Provider<'a> {
     Built(Arc<ObjectCompilation>),
     Object(&'a Object),
@@ -112,16 +210,14 @@ impl Compiler {
     pub fn build_graph(&self, units: &[Unit<'_>]) -> Result<Vec<Output>> {
         if units.is_empty() { return Ok(Vec::new()); }
         let (prepared, inputs, following, waiting) = self.execute(|_| {
-        let mut expanded = Vec::with_capacity(units.len());
-        expanded.resize_with(units.len(), Expansion::default);
-        for (index, unit) in units.iter().enumerate() { expand(index, unit, units, &mut expanded)?; }
-        let prepared = units.iter().zip(expanded).map(|(unit, expansion)| {
+        let DependencyPlan { providers, following, waiting } = dependency_plan(units)?;
+        let prepared = units.iter().zip(providers).map(|(unit, providers)| {
             let mut path = unit.path.to_path_buf();
             path.set_extension("h");
             let mut path = path.canonicalize()?;
             path.set_extension(unit.path.extension().unwrap_or_else(|| std::ffi::OsStr::new("b")));
             Ok(Prepared { path, root: unit.root.canonicalize()?, output: std::path::absolute(unit.output)?,
-                kind: unit.kind, providers: expansion.providers })
+                kind: unit.kind, providers })
         }).collect::<Result<Vec<_>>>()?;
         let mut capture = Capture::default();
         for unit in &prepared { capture.header(&unit.path)?; }
@@ -141,14 +237,6 @@ impl Compiler {
             interfaces.push(capture.capture(&unit.path, &unit.root, &providers)?);
         }
         let inputs = capture.finish(interfaces);
-        let mut following = vec![Vec::new(); units.len()];
-        let waiting = units.iter().enumerate().map(|(index, unit)| {
-            let dependencies = unit.dependencies.iter().filter_map(|dependency| match dependency {
-                Dependency::Unit(id) => Some(*id), Dependency::Object(_) => None,
-            }).collect::<BTreeSet<_>>();
-            for id in &dependencies { following[*id].push(index); }
-            dependencies.len()
-        }).collect::<Vec<_>>();
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, following, waiting))
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
