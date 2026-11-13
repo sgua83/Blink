@@ -1264,11 +1264,10 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         false
     }
     let feedback=functions.keys().filter(|name|feeds_back(name,functions)).map(|name|name.as_str()).collect::<BTreeSet<_>>();
-    fn insert(accesses:&mut BTreeMap<Access,bounds::Condition>,mut access:Access,normalize:bool) {
+    fn insert(accesses:&mut BTreeMap<Access,bounds::Condition>,mut access:Access) {
         let when=std::mem::replace(access.when_mut(),bounds::Condition::constant(true));
         accesses.entry(access).and_modify(|old|{if *old!=when {
-            let joined=old.clone().logical(when.clone(),true);
-            *old=if normalize{normalized_condition(joined)}else{joined};
+            *old=old.clone().logical(when.clone(),true);
         }}).or_insert(when);
     }
 
@@ -1279,18 +1278,18 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             let state=&known[name];
             let parameters=residency::input_parameters(&function.parameters,function.input_width);
             let mut access=BTreeMap::new();
-            for value in state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})) {insert(&mut access,value.clone(),normalize);}
+            for value in state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})) {insert(&mut access,value.clone());}
             for usage in &function.uses {
                 if let Requirement::Initialized{read,code,..}=&usage.requirement {
                     let read=resolved_read(read,&usage.path,function,state,known);
                     if *code=="B229" {
-                        if let Some(value)=function.initialization_access(&read,bounds::Condition::guard(usage.path.clone())){insert(&mut access,value,normalize);}
+                        if let Some(value)=function.initialization_access(&read,bounds::Condition::guard(usage.path.clone())){insert(&mut access,value);}
                         continue;
                     }
                     for(source,when)in read.borrow().sources.entries() {
                         if let Origin::Position(origin)=source {
                             if let Some(value)=function.address_access(Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),written:None,writable:false,initialized:true}},
-                                bounds::Condition::guard(usage.path.clone()).logical(bounds::Condition::guard(when),false)){insert(&mut access,value,normalize);}
+                                bounds::Condition::guard(usage.path.clone()).logical(bounds::Condition::guard(when),false)){insert(&mut access,value);}
                         }
                     }
                     continue;
@@ -1308,7 +1307,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,*access,*atomic,bounds::Condition::guard(usage.path.clone()),&|id|owns_input(name,id)),
                     _=>None,
                 };
-                if let Some(value)=value{insert(&mut access,value,normalize);}
+                if let Some(value)=value{insert(&mut access,value);}
             }
             for call in function.calls.iter().filter(|call|call.function!=*name||state.entries.is_none()) {
                 let live_task_places=evaluate(&call.live_task_places,function,state,known,true);
@@ -1318,7 +1317,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     && let Some((accessed,when,mode))=value.accessed()
                     && let Some(exclusion)=function.access(accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when.clone())
                 {
-                    insert(&mut access,exclusion,normalize);
+                    insert(&mut access,exclusion);
                 }
                 let value=match value {
                     Access::Position{mut position,borrows,when}=>{
@@ -1336,7 +1335,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     Access::Resource{resources,borrows,kind,when}=>function.access(resources,borrows,kind,when),
                     Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,when,&|id|owns_input(name,id)),
                 };
-                if let Some(value)=value{insert(&mut access,value,normalize);}
+                if let Some(value)=value{insert(&mut access,value);}
             }}
             if let Some(entries)=&state.entries{
                 let invoked=function.calls.iter().filter(|call|call.function==*name).map(|call|bounds::Condition::execution(&call.path).guard_at_call(&parameters)).reduce(|a,b|a.logical(b,true)).unwrap();
@@ -1349,10 +1348,10 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     Access::Resource{resources,borrows,when,kind}=>Access::Resource{resources:resources.at_call(&inputs),borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),kind},
                     Access::Dataset{borrows,when,index,access,atomic}=>Access::Dataset{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),index:index.and_then(|i|i.at_call(&inputs)),access,atomic},
                     Access::Stored{..}=>continue,
-                };let mut value=value;let when=value.when_mut();*when=when.clone().logical(invoked.clone(),false);insert(&mut access,value,normalize);}
+                };let mut value=value;let when=value.when_mut();*when=when.clone().logical(invoked.clone(),false);insert(&mut access,value);}
             }
             let access = access.into_iter().map(|(mut access, when)| {
-                *access.when_mut() = when;
+                *access.when_mut() = if normalize { normalized_condition(when) } else { when };
                 access
             }).collect::<BTreeSet<_>>();
             if access != state.interface.access {
