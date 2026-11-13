@@ -325,166 +325,109 @@ extern "C" void encode_build_image(u64 magic,MetadataBytes identity,MetadataByte
 
 struct ManifestWriter { address output; u64 cursor; };
 
-void manifest_word(inout ManifestWriter writer, u32 value) on cpu {
-    word(writer.output, writer.cursor, u64(value));
+void manifest_word<const Emit: u32>(inout ManifestWriter writer, u32 value) on cpu {
+    if (Emit != 0) { word(writer.output, writer.cursor, u64(value)); }
     writer.cursor += 4u64;
 }
 
-void manifest_count(inout ManifestWriter writer, u64 value) on cpu {
-    wide_word(writer.output, writer.cursor, value);
+void manifest_count<const Emit: u32>(inout ManifestWriter writer, u64 value) on cpu {
+    if (Emit != 0) { wide_word(writer.output, writer.cursor, value); }
     writer.cursor += 8u64;
 }
 
-void manifest_payload(inout ManifestWriter writer, MetadataBytes value) on cpu {
-    copy(writer.output, writer.cursor, value);
+void manifest_payload<const Emit: u32>(inout ManifestWriter writer, MetadataBytes value) on cpu {
+    if (Emit != 0) { copy(writer.output, writer.cursor, value); }
     writer.cursor += value.length;
 }
 
-void manifest_field(inout ManifestWriter writer, MetadataBytes value) on cpu {
-    manifest_count(writer, value.length);
-    manifest_payload(writer, value);
+void manifest_field<const Emit: u32>(inout ManifestWriter writer, MetadataBytes value) on cpu {
+    manifest_count<Emit>(writer, value.length);
+    manifest_payload<Emit>(writer, value);
 }
 
-void manifest_fields(inout ManifestWriter writer, address values, u64 start, u64 count) on cpu {
-    manifest_count(writer, count);
+void manifest_fields<const Emit: u32>(inout ManifestWriter writer, address values, u64 start, u64 count) on cpu {
+    manifest_count<Emit>(writer, count);
     u64 index = 0u64;
     while (index < count) {
-        manifest_field(writer, bytes_at(values, start + index));
+        manifest_field<Emit>(writer, bytes_at(values, start + index));
         index += 1u64;
     }
 }
 
-void manifest_request(inout ManifestWriter writer, ManifestSelection selection) on cpu {
-    manifest_word(writer, selection.tag);
+void manifest_request<const Emit: u32>(inout ManifestWriter writer, ManifestSelection selection) on cpu {
+    manifest_word<Emit>(writer, selection.tag);
     if (selection.tag == 1) {
-        manifest_fields(writer, selection.instances, 0u64, selection.instance_count);
+        manifest_fields<Emit>(writer, selection.instances, 0u64, selection.instance_count);
     } else {
-        manifest_field(writer, selection.first);
-        if (selection.tag != 0) { manifest_field(writer, selection.second); }
+        manifest_field<Emit>(writer, selection.first);
+        if (selection.tag != 0) { manifest_field<Emit>(writer, selection.second); }
     }
 }
 
-void manifest_sources(inout ManifestWriter writer, BuildManifest input) on cpu {
-    manifest_count(writer, input.source_count);
+void manifest_sources<const Emit: u32>(inout ManifestWriter writer, BuildManifest input) on cpu {
+    manifest_count<Emit>(writer, input.source_count);
     u64 index = 0u64;
     while (index < input.source_count) {
         address row = unsafe_address(address_bits(input.sources) + index * size_of<ManifestSource>());
         ManifestSource source = unsafe_position<ManifestSource>(row);
-        manifest_field(writer, source.module_name);
-        manifest_field(writer, source.path);
-        manifest_field(writer, source.scope);
-        manifest_payload(writer, MetadataBytes(source.fingerprint, 32u64));
+        manifest_field<Emit>(writer, source.module_name);
+        manifest_field<Emit>(writer, source.path);
+        manifest_field<Emit>(writer, source.scope);
+        manifest_payload<Emit>(writer, MetadataBytes(source.fingerprint, 32u64));
         index += 1u64;
     }
 
-    manifest_count(writer, input.requirement_count);
+    manifest_count<Emit>(writer, input.requirement_count);
     index = 0u64;
     while (index < input.requirement_count) {
         address row = unsafe_address(address_bits(input.requirements) + index * size_of<ManifestRequirement>());
         ManifestRequirement requirement = unsafe_position<ManifestRequirement>(row);
-        manifest_field(writer, requirement.name);
-        manifest_field(writer, requirement.kind);
+        manifest_field<Emit>(writer, requirement.name);
+        manifest_field<Emit>(writer, requirement.kind);
         index += 1u64;
     }
 }
 
-void manifest_declarations(inout ManifestWriter writer, BuildManifest input) on cpu {
-    manifest_count(writer, input.declaration_count);
+void manifest_declarations<const Emit: u32>(inout ManifestWriter writer, BuildManifest input) on cpu {
+    manifest_count<Emit>(writer, input.declaration_count);
     u64 index = 0u64;
     while (index < input.declaration_count) {
         address row = unsafe_address(address_bits(input.declarations) + index * size_of<ManifestDeclaration>());
         ManifestDeclaration declaration = unsafe_position<ManifestDeclaration>(row);
-        manifest_word(writer, declaration.tag);
-        manifest_field(writer, declaration.name);
+        manifest_word<Emit>(writer, declaration.tag);
+        manifest_field<Emit>(writer, declaration.name);
         if (declaration.tag >= 4 && declaration.tag <= 6) {
-            manifest_field(writer, declaration.module_name);
-            manifest_fields(writer, input.declaration_imports, declaration.import_start, declaration.import_count);
+            manifest_field<Emit>(writer, declaration.module_name);
+            manifest_fields<Emit>(writer, input.declaration_imports, declaration.import_start, declaration.import_count);
         }
         index += 1u64;
     }
 }
 
-u64 manifest_field_length(MetadataBytes field) on cpu {
-    return 8u64 + field.length;
-}
-
-u64 manifest_list_length(address values, u64 start, u64 count) on cpu {
-    u64 length = 8u64;
-    u64 index = 0u64;
-    while (index < count) {
-        length += manifest_field_length(bytes_at(values, start + index));
-        index += 1u64;
-    }
-    return length;
+u64 write_build_manifest<const Emit: u32>(u64 magic, BuildManifest input, address output) on cpu {
+    ManifestWriter writer = ManifestWriter(output, 0u64);
+    manifest_count<Emit>(writer, magic);
+    manifest_field<Emit>(writer, input.path);
+    manifest_field<Emit>(writer, input.root);
+    manifest_field<Emit>(writer, input.working_directory);
+    manifest_field<Emit>(writer, input.module_name);
+    manifest_field<Emit>(writer, input.compiler);
+    manifest_word<Emit>(writer, input.max_parameter_bytes);
+    manifest_request<Emit>(writer, input.selection);
+    manifest_sources<Emit>(writer, input);
+    manifest_payload<Emit>(writer, MetadataBytes(input.imports_digest, 32u64));
+    bool has_native = address_bits(input.native_digest) != 0u64;
+    if (Emit != 0) { unsafe_position<u8>(unsafe_address(address_bits(output) + writer.cursor)) = u8(has_native); }
+    writer.cursor += 1u64;
+    if (has_native) { manifest_payload<Emit>(writer, MetadataBytes(input.native_digest, 32u64)); }
+    manifest_declarations<Emit>(writer, input);
+    return writer.cursor;
 }
 
 extern "C" u64 build_manifest_length(BuildManifest input) on cpu {
-    u64 length = 8u64; // BLBO magic and version
-    length += manifest_field_length(input.path) + manifest_field_length(input.root);
-    length += manifest_field_length(input.working_directory) + manifest_field_length(input.module_name);
-    length += manifest_field_length(input.compiler) + 4u64; // parameter-byte limit
-
-    length += 4u64; // selection tag
-    ManifestSelection selection = input.selection;
-    if (selection.tag == 1) {
-        length += manifest_list_length(selection.instances, 0u64, selection.instance_count);
-    } else {
-        length += manifest_field_length(selection.first);
-        if (selection.tag != 0) { length += manifest_field_length(selection.second); }
-    }
-
-    length += 8u64; // source count
-    u64 index = 0u64;
-    while (index < input.source_count) {
-        address row = unsafe_address(address_bits(input.sources) + index * size_of<ManifestSource>());
-        ManifestSource source = unsafe_position<ManifestSource>(row);
-        length += manifest_field_length(source.module_name) + manifest_field_length(source.path);
-        length += manifest_field_length(source.scope) + 32u64;
-        index += 1u64;
-    }
-
-    length += 8u64; // requirement count
-    index = 0u64;
-    while (index < input.requirement_count) {
-        address row = unsafe_address(address_bits(input.requirements) + index * size_of<ManifestRequirement>());
-        ManifestRequirement requirement = unsafe_position<ManifestRequirement>(row);
-        length += manifest_field_length(requirement.name) + manifest_field_length(requirement.kind);
-        index += 1u64;
-    }
-
-    length += 33u64; // imports digest and native digest presence
-    if (address_bits(input.native_digest) != 0u64) { length += 32u64; }
-    length += 8u64; // declaration count
-    index = 0u64;
-    while (index < input.declaration_count) {
-        address row = unsafe_address(address_bits(input.declarations) + index * size_of<ManifestDeclaration>());
-        ManifestDeclaration declaration = unsafe_position<ManifestDeclaration>(row);
-        length += 4u64 + manifest_field_length(declaration.name);
-        if (declaration.tag >= 4 && declaration.tag <= 6) {
-            length += manifest_field_length(declaration.module_name);
-            length += manifest_list_length(input.declaration_imports, declaration.import_start, declaration.import_count);
-        }
-        index += 1u64;
-    }
-    return length;
+    return write_build_manifest<0>(0u64, input, unsafe_address(0u64));
 }
 
 extern "C" u64 encode_build_manifest(u64 magic, BuildManifest input, address output) on cpu {
-    ManifestWriter writer = ManifestWriter(output, 0u64);
-    manifest_count(writer, magic);
-    manifest_field(writer, input.path);
-    manifest_field(writer, input.root);
-    manifest_field(writer, input.working_directory);
-    manifest_field(writer, input.module_name);
-    manifest_field(writer, input.compiler);
-    manifest_word(writer, input.max_parameter_bytes);
-    manifest_request(writer, input.selection);
-    manifest_sources(writer, input);
-    manifest_payload(writer, MetadataBytes(input.imports_digest, 32u64));
-    bool has_native = address_bits(input.native_digest) != 0u64;
-    unsafe_position<u8>(unsafe_address(address_bits(output) + writer.cursor)) = u8(has_native);
-    writer.cursor += 1u64;
-    if (has_native) { manifest_payload(writer, MetadataBytes(input.native_digest, 32u64)); }
-    manifest_declarations(writer, input);
-    return writer.cursor;
+    return write_build_manifest<1>(magic, input, output);
 }
