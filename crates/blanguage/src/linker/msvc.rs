@@ -2,7 +2,7 @@
 use super::Result;
 use crate::{file_bytes::FileBytes, object::Archive, source_path::join};
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs::File,
     io,
     os::windows::{
@@ -10,13 +10,8 @@ use std::{
         process::ExitStatusExt,
     },
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Output},
+    process::ExitStatus,
 };
-fn output(command: &mut Command) -> io::Result<Output> {
-    use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x00000008;
-    command.creation_flags(DETACHED_PROCESS).output()
-}
 #[repr(C)]
 struct HostWide {
     data: *const u16,
@@ -77,7 +72,12 @@ struct HostProcessOutput {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.host_sdk::run_host_process"]
-    fn run_host_process(executable: *const u16, units: usize, command_line: *mut u16) -> HostProcessOutput;
+    fn run_host_process(
+        executable: *const u16,
+        units: usize,
+        arguments: *const u16,
+        argument_units: usize,
+    ) -> HostProcessOutput;
     #[link_name = "bootstrap.host_sdk::write_host_input"]
     fn write_host_input(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostInputResult;
     #[link_name = "bootstrap.host_sdk::remove_host_input"]
@@ -124,23 +124,42 @@ fn host_path(path: &Path) -> io::Result<Vec<u16>> {
     Ok(units)
 }
 
+fn host_process(
+    program: &Path,
+    arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
+) -> Result<(ExitStatus, FileBytes, FileBytes)> {
+    let executable = host_path(program)?;
+    let mut units = Vec::new();
+    for argument in arguments {
+        let argument = argument.as_ref();
+        if argument.as_encoded_bytes().contains(&0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "nul byte found in provided data").into());
+        }
+        units.extend(argument.encode_wide());
+        units.push(0);
+    }
+    let result = unsafe {
+        run_host_process(executable.as_ptr(), executable.len() - 1, units.as_ptr(), units.len())
+    };
+    if result.status != 0 {
+        return Err(io::Error::from_raw_os_error(result.status as i32).into());
+    }
+    Ok((ExitStatus::from_raw(result.exit_code), result.stdout.into_result()?, result.stderr.into_result()?))
+}
+
 fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     let program_files = std::env::var_os("ProgramFiles(x86)").ok_or("缺少 Windows ProgramFiles(x86)")?;
     let installer = join(Path::new(&program_files), "Microsoft Visual Studio/Installer/vswhere.exe");
-    let executable = host_path(&installer)?;
-    let units = executable.len() - 1;
-    let mut command_line = Vec::new();
-    command_line.push(b'"' as u16);
-    command_line.extend_from_slice(&executable[..units]);
-    command_line.extend("\" -utf8 -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath".encode_utf16());
-    command_line.push(0);
-    let found = unsafe { run_host_process(executable.as_ptr(), units, command_line.as_mut_ptr()) };
-    if found.status != 0 {
-        return Err(io::Error::from_raw_os_error(found.status as i32).into());
-    }
-    let stdout = found.stdout.into_result()?;
-    let stderr = found.stderr.into_result()?;
-    let status = ExitStatus::from_raw(found.exit_code);
+    let (status, stdout, stderr) = host_process(&installer, [
+        "-utf8",
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "-property",
+        "installationPath",
+    ])?;
     if !status.success() {
         return Err(format!(
             "Visual Studio 工具定位失败（{}）\n{}{}",
@@ -238,32 +257,24 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
             let path = join(directory, format!(".blink-link-{id}-resources.obj"));
             write_input(&mut temporary, path, &binding.coff_bytes()?)?;
         }
-        let mut command = Command::new(linker);
-        command
-            .args([
-                "/NOLOGO",
-                "/MACHINE:X64",
-                "/OPT:REF",
-                "/OPT:ICF",
-                "/NOEXP",
-            ])
-            .arg(path_argument("/OUT:", path))
-            .args(&temporary);
+        let mut arguments: Vec<_> = ["/NOLOGO", "/MACHINE:X64", "/OPT:REF", "/OPT:ICF", "/NOEXP"]
+            .into_iter().map(OsString::from).collect();
+        arguments.push(path_argument("/OUT:", path));
+        arguments.extend(temporary.iter().map(|path| path.as_os_str().to_owned()));
         if let Some(crate::object::Object { kind: crate::object::Kind::Application { stack_bytes }, .. }) = objects.first().copied() {
-            command.arg("/SUBSYSTEM:CONSOLE").arg(format!("/STACK:{}", super::pe::stack_reserve(*stack_bytes)));
+            arguments.push("/SUBSYSTEM:CONSOLE".into());
+            arguments.push(format!("/STACK:{}", super::pe::stack_reserve(*stack_bytes)).into());
         } else {
-            command.arg("/DLL");
+            arguments.push("/DLL".into());
         }
         if import_library {
             let mut import_path = path.to_path_buf();
             import_path.set_extension("lib");
-            command.arg(path_argument("/IMPLIB:", &import_path));
+            arguments.push(path_argument("/IMPLIB:", &import_path));
         } else {
-            command.arg("/NOIMPLIB");
+            arguments.push("/NOIMPLIB".into());
         }
-        for lib in libraries {
-            command.arg(path_argument("/LIBPATH:", &lib));
-        }
+        arguments.extend(libraries.iter().map(|lib| path_argument("/LIBPATH:", lib)));
         let libraries = archives
             .iter()
             .flat_map(|archive| &archive.libraries)
@@ -272,18 +283,16 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
             .iter()
             .flat_map(|archive| &archive.exports)
             .collect::<std::collections::BTreeSet<_>>();
-        for name in libraries {
-            command.arg(name);
-        }
-        for name in exports {
-            command.arg(format!("/EXPORT:{name}"));
-        }
-        let linked = output(&mut command)?;
-        if linked.status.success() {
+        arguments.extend(libraries.into_iter().map(|name| OsString::from(name.as_str())));
+        arguments.extend(exports.into_iter().map(|name| OsString::from(format!("/EXPORT:{name}"))));
+
+        let (status, stdout, stderr) = host_process(&linker, arguments)?;
+        if status.success() {
             return Ok(());
         }
-        let mut diagnostics = linked.stdout;
-        diagnostics.extend(linked.stderr);
+        let mut diagnostics = Vec::with_capacity(stdout.len() + stderr.len());
+        diagnostics.extend_from_slice(&stdout);
+        diagnostics.extend_from_slice(&stderr);
         let details = match host_text(&diagnostics, HostText::LinkOutput, String::from_utf16)
             .and_then(|text| Ok(text?)) {
             Ok(text) => text,
@@ -291,7 +300,7 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
         };
         Err(format!(
             "本机链接工具失败（{}）：{path:?}\n{details}",
-            linked.status
+            status
         ).into())
     })();
     for path in temporary {

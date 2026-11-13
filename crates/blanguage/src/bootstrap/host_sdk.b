@@ -375,8 +375,81 @@ HostChild create_host_child(address executable, address command_line, read array
     return child;
 }
 
-HostChild start_host_child(address executable, usize units, address command_line,
-    handle stdout, handle stderr) on cpu {
+
+struct HostCommandLine { address data; usize units; };
+
+void append_host_unit(inout HostCommandLine line, u32 unit) on cpu {
+    address destination = unsafe_address(address_bits(line.data) + line.units * 2u64);
+    unsafe_position<u16>(destination) = u16(unit);
+    line.units += 1u64;
+}
+
+void append_host_slashes(inout HostCommandLine line, usize count) on cpu {
+    usize remaining = count;
+    while (remaining != 0u64) {
+        append_host_unit(line, 92);
+        remaining -= 1u64;
+    }
+}
+
+void append_host_argument(inout HostCommandLine line, address arguments, usize first,
+    usize end, bool quoted) on cpu {
+    append_host_unit(line, 32);
+    if (quoted) { append_host_unit(line, 34); }
+
+    usize backslashes = 0u64;
+    usize index = first;
+    while (index < end) {
+        u32 unit = wide_unit(arguments, index);
+        if (unit == 34) {
+            // The child parses an odd backslash count before a literal quote.
+            append_host_slashes(line, backslashes + 1u64);
+        }
+        append_host_unit(line, unit);
+        backslashes = unit == 92 ? backslashes + 1u64 : 0u64;
+        index += 1u64;
+    }
+    if (quoted) {
+        append_host_slashes(line, backslashes);
+        append_host_unit(line, 34);
+    }
+}
+
+address host_command_line(address executable, usize units, address arguments, usize argument_units) on cpu {
+    // Each argument may double its units and use three units for space and quotes.
+    // The input already reserves one terminator per argument.
+    usize capacity = units + 3u64 + argument_units * 3u64;
+    address data = HeapAlloc(GetProcessHeap(), 0, capacity * 2u64);
+    if (address_bits(data) == 0u64) { return data; }
+
+    HostCommandLine line = HostCommandLine(data, 0u64);
+    append_host_unit(line, 34);
+    usize index = 0u64;
+    while (index < units) {
+        append_host_unit(line, wide_unit(executable, index));
+        index += 1u64;
+    }
+    append_host_unit(line, 34);
+
+    usize first = 0u64;
+    while (first < argument_units) {
+        usize end = first;
+        bool quoted = false;
+        u32 unit = wide_unit(arguments, end);
+        while (unit != 0) {
+            quoted = quoted || unit == 32 || unit == 9;
+            end += 1u64;
+            unit = wide_unit(arguments, end);
+        }
+        append_host_argument(line, arguments, first, end, quoted || end == first);
+        first = end + 1u64;
+    }
+    append_host_unit(line, 0);
+    return data;
+}
+
+HostChild start_host_child(address executable, usize units, address arguments,
+    usize argument_units, handle stdout, handle stderr) on cpu {
     HostNativePath path = host_native_path(executable, units);
     if (path.status != 0) { return HostChild(handle(), path.status); }
 
@@ -390,7 +463,13 @@ HostChild start_host_child(address executable, usize units, address command_line
             child.status = GetLastError();
         } else {
             let stdio = array<handle,3>(stdin, stdout, stderr);
-            child = create_host_child(path.pattern, command_line, stdio);
+            address command_line = host_command_line(executable, units, arguments, argument_units);
+            if (address_bits(command_line) == 0u64) {
+                child.status = u32(ERROR_NOT_ENOUGH_MEMORY);
+            } else {
+                child = create_host_child(path.pattern, command_line, stdio);
+                release_host_wide(command_line);
+            }
         }
         CloseHandle(stdin);
     }
@@ -408,7 +487,8 @@ extern "C" u32 read_host_stderr(address parameter) on cpu {
     return 0;
 }
 
-extern "C" HostProcessOutput run_host_process(address executable, usize units, address command_line) on cpu {
+extern "C" HostProcessOutput run_host_process(address executable, usize units,
+    address arguments, usize argument_units) on cpu {
     SourceBytes empty = SourceBytes(address(), 0u64, StorageError(0, 0));
     HostPipe stdout = host_pipe();
     if (stdout.status != 0) { return HostProcessOutput(empty, empty, 0, stdout.status); }
@@ -419,7 +499,8 @@ extern "C" HostProcessOutput run_host_process(address executable, usize units, a
         return HostProcessOutput(empty, empty, 0, stderr.status);
     }
 
-    HostChild child = start_host_child(executable, units, command_line, stdout.write_end, stderr.write_end);
+    HostChild child = start_host_child(executable, units, arguments, argument_units,
+        stdout.write_end, stderr.write_end);
     CloseHandle(stdout.write_end);
     CloseHandle(stderr.write_end);
     if (child.status != 0) {

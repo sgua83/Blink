@@ -34,5 +34,6 @@ struct HostProcessOutput {
     u32 status;
 };
 
-// The caller owns the UTF-16 executable and mutable command line until return.
-extern "C" HostProcessOutput run_host_process(address executable, usize units, address command_line) on cpu;
+// The caller borrows a NUL-terminated executable and consecutive NUL-terminated UTF-16 arguments.
+extern "C" HostProcessOutput run_host_process(address executable, usize units,
+    address arguments, usize argument_units) on cpu;
