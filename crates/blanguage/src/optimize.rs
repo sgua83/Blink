@@ -298,7 +298,8 @@ fn optimize_stage(stage: &mut Stage) {
             }
             true
         });
-        if selection::run(&mut stage.code, &stage.registers, stage.domain) {
+        let local_count = stage.locals.last_key_value().map_or(0, |(&end, _)| end);
+        if selection::run(&mut stage.code, &stage.registers, stage.domain, local_count) {
             changed = true;
             value_flow::run(&mut stage.code, &stage.registers);
         }

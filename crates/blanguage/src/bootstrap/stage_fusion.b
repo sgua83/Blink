@@ -136,3 +136,72 @@ extern "C" void number_used_slots(address slots, u64 count) on cpu {
     }
     return;
 }
+
+address selection_slot(address slots, u64 index) on cpu {
+    return unsafe_address(address_bits(slots) + index * size_of<SelectionSlot>());
+}
+
+bool selection_allowed(SelectionPlan input, SelectionNode node) on cpu {
+    if (node.kind == SelectionKind::LocalRead) {
+        return unsafe_position<SelectionSlot>(selection_slot(input.slots, node.first)).yes == 0u64;
+    }
+    if (node.kind == SelectionKind::DataRead) {
+        address at = unsafe_address(address_bits(input.indices) + node.second);
+        return node.first == input.domain && unsafe_position<u8>(at) != u8(0);
+    }
+    if (node.kind == SelectionKind::Arithmetic) { return node.first == 0u64; }
+    return node.kind != SelectionKind::Ordered;
+}
+
+extern "C" u64 plan_selection(SelectionPlan input, address context,
+    cfn<SelectionNode,address,FusionBlock,u64> read) on cpu requires nonzero(read) {
+    u64 count = 0u64;
+    u64 index = 0u64;
+    while (index < input.yes.count) {
+        SelectionNode node = read(context, input.yes, index);
+        if (node.kind == SelectionKind::LocalWrite) {
+            address at = selection_slot(input.slots, node.first);
+            SelectionSlot slot = unsafe_position<SelectionSlot>(at);
+            if (slot.yes == 0u64) { count += 1u64; }
+            unsafe_position<SelectionSlot>(at) = SelectionSlot(node.second + 1u64, 0u64);
+        }
+        index += 1u64;
+    }
+    if (count == 0u64 || count > input.no.count || count > input.following.count) { return 0u64; }
+
+    u64 matched = 0u64;
+    index = 0u64;
+    while (index < input.no.count) {
+        SelectionNode node = read(context, input.no, index);
+        if (!selection_allowed(input, node)) { return 0u64; }
+        if (node.kind == SelectionKind::LocalWrite) {
+            address at = selection_slot(input.slots, node.first);
+            SelectionSlot slot = unsafe_position<SelectionSlot>(at);
+            if (slot.yes == 0u64) { return 0u64; }
+            if (slot.no == 0u64) { matched += 1u64; }
+            unsafe_position<SelectionSlot>(at) = SelectionSlot(slot.yes, node.second + 1u64);
+        }
+        index += 1u64;
+    }
+    if (count != matched) { return 0u64; }
+    index = 0u64;
+    while (index < input.yes.count) {
+        if (!selection_allowed(input, read(context, input.yes, index))) { return 0u64; }
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < count) {
+        SelectionNode node = read(context, input.following, index);
+        if (node.kind != SelectionKind::LocalRead) { return 0u64; }
+        address at = selection_slot(input.slots, node.first);
+        SelectionSlot slot = unsafe_position<SelectionSlot>(at);
+        if (slot.yes == 0u64) { return 0u64; }
+        address target = unsafe_address(address_bits(input.values) + index * size_of<SelectionValue>());
+        unsafe_position<SelectionValue>(target) = SelectionValue(
+            node.first, node.second, slot.yes - 1u64, slot.no - 1u64);
+        // A second read of the same slot is not one of the matched outputs.
+        unsafe_position<SelectionSlot>(at) = SelectionSlot(0u64, 0u64);
+        index += 1u64;
+    }
+    return count;
+}

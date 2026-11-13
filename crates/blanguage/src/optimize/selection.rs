@@ -1,141 +1,145 @@
 //! 只对可安全提前求值的计算／当前元素读取消除分支；外部访问与协作保留控制流。
 use super::*;
-fn branch_values(code: &[Inst]) -> BTreeMap<usize, Reg> {
-    code.iter()
-        .filter_map(|i| {
-            if let InstKind::StoreLocal(slot, value) = &(i).kind {
-                Some((*slot, *value))
-            } else {
-                None
-            }
-        })
-        .collect()
+
+#[repr(u32)]
+enum SelectionKind { Pure, LocalRead, LocalWrite, DataRead, Arithmetic, Ordered }
+
+#[repr(C)]
+struct SelectionNode {
+    first: usize,
+    second: usize,
+    kind: SelectionKind,
 }
-fn speculatable(
-    inst: &Inst,
-    registers: &[Scalar],
-    written: &BTreeSet<usize>,
+
+#[repr(C)]
+struct SelectionValue {
+    slot: usize,
+    destination: Reg,
+    yes: Reg,
+    no: Reg,
+}
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct SelectionSlot {
+    yes: usize,
+    no: usize,
+}
+
+#[repr(C)]
+struct SelectionPlan {
+    yes: FusionBlock,
+    no: FusionBlock,
+    following: FusionBlock,
     domain: usize,
-    indices: &BTreeSet<Reg>,
-) -> bool {
-    match &(inst).kind {
+    indices: *const u8,
+    slots: *mut SelectionSlot,
+    values: *mut SelectionValue,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.stage_fusion::plan_selection"]
+    fn plan_selection(
+        input: SelectionPlan, context: *const std::ffi::c_void,
+        read: unsafe extern "C" fn(*const std::ffi::c_void, FusionBlock, usize) -> SelectionNode,
+    ) -> usize;
+}
+
+unsafe extern "C" fn read_node(
+    context: *const std::ffi::c_void, block: FusionBlock, index: usize,
+) -> SelectionNode {
+    use SelectionKind::*;
+    let registers = unsafe { &*context.cast::<&[Scalar]>() };
+    let code = unsafe { std::slice::from_raw_parts(block.instructions.cast::<Inst>(), block.count) };
+    let (kind, first, second) = match &code[index].kind {
         InstKind::Constant(..)
         | InstKind::Index(_)
         | InstKind::Uniform(..)
         | InstKind::BufferStride(..)
-        | InstKind::IntegerDivide {
-            divisor: IntegerDivisor::Constant(_),
-            ..
-        }
+        | InstKind::IntegerDivide { divisor: IntegerDivisor::Constant(_), .. }
         | InstKind::Select { .. }
-        | InstKind::StoreLocal(..) => true,
-        InstKind::LoadLocal(_, slot) => !written.contains(slot),
-        InstKind::Load { binding, index, .. } => *binding == domain && indices.contains(index),
-        // f32 取负／abs 只改变符号位，不触发浮点算术的异常状态。
-        InstKind::Unary { .. }
-        | InstKind::Math {
-            op: MathOp::Abs, ..
-        } => true,
-        InstKind::Binary { a, .. } => !registers[*a].is_float(),
-        InstKind::Cast { dst, src } => !registers[*dst].is_float() && !registers[*src].is_float(),
-        _ => false,
-    }
-}
-fn merge(
-    inst: &Inst,
-    following: &[Inst],
-    registers: &[Scalar],
-    domain: usize,
-    indices: &BTreeSet<Reg>,
-) -> Option<(Vec<Inst>, usize)> {
-    let InstKind::If { condition, yes, no } = &(inst).kind else {
-        return None;
+        | InstKind::Unary { .. }
+        | InstKind::Math { op: MathOp::Abs, .. } => (Pure, 0, 0),
+        InstKind::LoadLocal(dst, slot) => (LocalRead, *slot, *dst),
+        InstKind::StoreLocal(slot, value) => (LocalWrite, *slot, *value),
+        InstKind::Load { binding, index, .. } => (DataRead, *binding, *index),
+        InstKind::Binary { a, .. } => (Arithmetic, usize::from(registers[*a].is_float()), 0),
+        InstKind::Cast { dst, src } =>
+            (Arithmetic, usize::from(registers[*dst].is_float() || registers[*src].is_float()), 0),
+        _ => (Ordered, 0, 0),
     };
-    let a = branch_values(yes);
-    let b = branch_values(no);
-    if a.is_empty() || a.keys().ne(b.keys()) {
-        return None;
-    }
-    let written = a.keys().copied().collect();
-    if !yes
-        .iter()
-        .chain(no)
-        .all(|i| speculatable(i, registers, &written, domain, indices))
-    {
-        return None;
-    }
-    let mut loaded = BTreeSet::new();
-    let mut results = Vec::new();
-    for i in following.get(..a.len())? {
-        let InstKind::LoadLocal(dst, slot) = &(i).kind else {
-            return None;
-        };
-        if !a.contains_key(slot) || !loaded.insert(*slot) {
-            return None;
-        }
-        results.push((*dst, *slot));
-    }
-    let mut code: Vec<_> = yes
-        .iter()
-        .chain(no)
-        .filter(|i| !matches!(&(i).kind, InstKind::StoreLocal(..)))
-        .cloned()
-        .collect();
-    for (dst, slot) in results {
-        code.push(Inst::new(InstKind::Select {
-            dst,
-            condition: *condition,
-            a: a[&slot],
-            b: b[&slot],
-        }));
-        // 后续循环仍可能消费这个可变槽；值转发与 DCE 决定是否需要真实存储。
-        code.push(Inst::new(InstKind::StoreLocal(slot, dst)));
-    }
-    Some((code, a.len()))
+    SelectionNode { first, second, kind }
 }
-pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar], domain: usize) -> bool {
-    let mut indices = BTreeSet::new();
+
+fn plan(
+    yes: &[Inst], no: &[Inst], following: &[Inst], registers: &[Scalar], domain: usize,
+    indices: &[u8], slots: &mut [SelectionSlot],
+) -> Vec<SelectionValue> {
+    let mut values = Vec::with_capacity(yes.len().min(no.len()).min(following.len()));
+    slots.fill(SelectionSlot::default());
+    let input = SelectionPlan {
+        yes: yes.into(), no: no.into(), following: following.into(), domain,
+        indices: indices.as_ptr(), slots: slots.as_mut_ptr(), values: values.as_mut_ptr(),
+    };
+    // The B planner borrows the original IR and initializes exactly the returned rows.
+    unsafe {
+        let count = plan_selection(input, (&registers as *const &[Scalar]).cast(), read_node);
+        values.set_len(count);
+    }
+    values
+}
+
+pub(super) fn run(
+    code: &mut Vec<Inst>, registers: &[Scalar], domain: usize, local_count: usize,
+) -> bool {
+    let mut indices = vec![0; registers.len()];
     visit(code, &mut |i| {
-        if let InstKind::Index(r) = &(i).kind {
-            indices.insert(*r);
+        if let InstKind::Index(reg) = i.kind {
+            indices[reg] = 1;
         }
     });
-    block(code, registers, domain, &indices)
+    let mut slots = vec![SelectionSlot::default(); local_count];
+    block(code, registers, domain, &indices, &mut slots)
 }
+
 fn block(
-    code: &mut Vec<Inst>,
-    registers: &[Scalar],
-    domain: usize,
-    indices: &BTreeSet<Reg>,
+    code: &mut Vec<Inst>, registers: &[Scalar], domain: usize,
+    indices: &[u8], slots: &mut [SelectionSlot],
 ) -> bool {
     let mut changed = false;
     let mut source = std::mem::take(code).into_iter();
     while let Some(mut inst) = source.next() {
-        match &mut (inst).kind {
-            InstKind::Scope(body) => changed |= block(body, registers, domain, indices),
+        match &mut inst.kind {
+            InstKind::Scope(body) => changed |= block(body, registers, domain, indices, slots),
             InstKind::If { yes, no, .. } => {
-                changed |= block(yes, registers, domain, indices);
-                changed |= block(no, registers, domain, indices);
+                changed |= block(yes, registers, domain, indices, slots);
+                changed |= block(no, registers, domain, indices, slots);
             }
-            InstKind::Loop {
-                condition, body, ..
-            } => {
-                changed |= block(condition, registers, domain, indices);
-                changed |= block(body, registers, domain, indices);
+            InstKind::Loop { condition, body, .. } => {
+                changed |= block(condition, registers, domain, indices, slots);
+                changed |= block(body, registers, domain, indices, slots);
             }
             _ => {}
         }
-        if let Some((converted, count)) =
-            merge(&inst, source.as_slice(), registers, domain, indices)
-        {
-            code.extend(converted);
-            for _ in 0..count {
-                source.next();
+        if let InstKind::If { condition, yes, no } = &mut inst.kind {
+            let values = plan(yes, no, source.as_slice(), registers, domain, indices, slots);
+            if !values.is_empty() {
+                code.extend(std::mem::take(yes).into_iter().chain(std::mem::take(no))
+                    .filter(|inst| !matches!(inst.kind, InstKind::StoreLocal(..))));
+                for value in values {
+                    let dst = value.destination;
+                    code.push(Inst::new(InstKind::Select {
+                        dst, condition: *condition, a: value.yes, b: value.no,
+                    }));
+                    // A later loop can still read this mutable slot.
+                    code.push(Inst::new(InstKind::StoreLocal(value.slot, dst)));
+                    source.next();
+                }
+                changed = true;
+                continue;
             }
-            changed = true;
-        } else {
-            code.push(inst);
         }
+        code.push(inst);
     }
     changed
 }
