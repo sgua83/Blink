@@ -31,6 +31,8 @@ enum CompileError {
     CpuSyntax, ResourceConflict, InputsUsage, CommandText, MissingSource,
     UnknownCommand, MissingOptionOperand, OptionText, UnknownOption, BudgetText,
     EntryText, InstanceText, BudgetWithoutReport, MissingOutput, CodeUsage, ObjectCodeUsage,
+    IrUsage, IrModeRepeated, IrFunctionRepeated, IrStageRepeated, IrOption, IrFunctionMode,
+    IrStageMode, IrInstanceMode, IrImportMode,
 }
 
 #[repr(C)]
@@ -96,6 +98,15 @@ impl CompileError {
             Self::MissingOutput => "缺少 -o 目标文件路径",
             Self::CodeUsage => "usage: bc code <entry.blbi> [--observations <ranges.blcr>] [--source-range start:end] | bc code --image <deployment.blri> [--observations <ranges.blcr>] [--source-range start:end]",
             Self::ObjectCodeUsage => "usage: bc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol] [--source-range start:end]",
+            Self::IrUsage => ir_facts::USAGE,
+            Self::IrModeRepeated => "IR编译模式只能指定一次",
+            Self::IrFunctionRepeated => "--function不能重复指定",
+            Self::IrStageRepeated => "--stage不能重复指定",
+            Self::IrOption => return Err(format!("未知IR选项 {}；{}", args[index].to_string_lossy(), ir_facts::USAGE).into()),
+            Self::IrFunctionMode => "--function用于普通应用／模块，--stage用于--program",
+            Self::IrStageMode => "--stage需要--program",
+            Self::IrInstanceMode => "--instance用于模块；入口实例直接写在--entry／--program值中",
+            Self::IrImportMode => "此并行入口编译API不接受已编译导入；可用--module查询模块的函数和资源程序",
         };
         Err(message.into())
     }
@@ -171,7 +182,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let compiler = line.compiler(&cpus)?;
     match line.command {
         CompileCommand::Layout => return layout_facts::print(&compiler, &args[line.command_index..]),
-        CompileCommand::Ir => return ir_facts::print(&compiler, &args[line.command_index..]),
+        CompileCommand::Ir => return ir_facts::print(
+            &compiler, &args[line.command_index..], &arguments[line.command_index..], &mut roles[line.command_index..],
+        ),
         CompileCommand::Object => return build_object(&compiler, &args, &roles, &line),
         _ => line.error.result(&args, line.error_index)?,
     }

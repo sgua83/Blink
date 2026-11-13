@@ -363,3 +363,70 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
     line.error = CompileError::None;
     return line;
 }
+
+extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, address roles) on cpu {
+    IrCommandLine line = IrCommandLine(
+        IrMode::Module, CompileError::None, count, count, count, count, 0u64, 0u64);
+    bool explicit_mode = false;
+    bool has_imports = false;
+    bool has_instances = false;
+    u64 index = 2u64;
+    while (index < count) {
+        CliArgument option = argument_at(arguments, index);
+        if (is_token(option, "--module")) {
+            if (explicit_mode) { line.error = CompileError::IrModeRepeated; return line; }
+            explicit_mode = true;
+            index += 1u64;
+            continue;
+        }
+
+        u64 operand = index + 1u64;
+        if (operand == count || option.text == 0u64) { line.error = CompileError::IrUsage; return line; }
+        CliArgument value = argument_at(arguments, operand);
+        if (is_token(option, "-I")) {
+            line.root_index = operand;
+        } else if (is_token(option, "--entry") || is_token(option, "--program")) {
+            if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
+            if (explicit_mode) { line.error = CompileError::IrModeRepeated; return line; }
+            explicit_mode = true;
+            line.mode = is_token(option, "--entry") ? IrMode::Application : IrMode::Program;
+            line.entry_index = operand;
+        } else if (is_token(option, "--function")) {
+            if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
+            if (line.function_index != count) { line.error = CompileError::IrFunctionRepeated; return line; }
+            line.function_index = operand;
+        } else if (is_token(option, "--stage")) {
+            if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
+            ParsedNumber stage = unsigned_decimal(value, 0u64, value.length, 18446744073709551615u64);
+            if (stage.error != NumberError::None) {
+                line.error = compile_number_error(stage.error);
+                return line;
+            }
+            if (line.has_stage != 0u64) { line.error = CompileError::IrStageRepeated; return line; }
+            line.stage = stage.value;
+            line.has_stage = 1u64;
+        } else if (is_token(option, "--import")) {
+            unsafe_position<u8>(unsafe_address(address_bits(roles) + operand)) = u8(1);
+            has_imports = true;
+        } else if (is_token(option, "--instance")) {
+            if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
+            unsafe_position<u8>(unsafe_address(address_bits(roles) + operand)) = u8(2);
+            has_instances = true;
+        } else {
+            line.error = CompileError::IrOption;
+            line.error_index = index;
+            return line;
+        }
+        index += 2u64;
+    }
+    if (line.function_index != count && (line.has_stage != 0u64 || line.mode == IrMode::Program)) {
+        line.error = CompileError::IrFunctionMode;
+    } else if (line.has_stage != 0u64 && line.mode != IrMode::Program) {
+        line.error = CompileError::IrStageMode;
+    } else if (has_instances && line.mode != IrMode::Module) {
+        line.error = CompileError::IrInstanceMode;
+    } else if (has_imports && line.mode == IrMode::Program) {
+        line.error = CompileError::IrImportMode;
+    }
+    return line;
+}

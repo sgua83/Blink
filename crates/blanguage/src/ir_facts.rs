@@ -1,75 +1,84 @@
 //! Selects original compilation consumers, then prints their actual IR values.
+use super::{Argument, CompileError};
 use crate::json::string;
-use std::{fmt::Write, path::PathBuf};
+use std::{ffi::OsString, fmt::Write, path::PathBuf};
 
-pub fn print(compiler: &blanguage::Compiler, args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
-    let usage = "用法：bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]";
-    let path = PathBuf::from(args.get(1).ok_or(usage)?).canonicalize()?;
-    let mut root = path.parent().unwrap().to_path_buf();
-    let mut mode = None;
-    let mut function = None;
-    let mut stage = None;
+pub(super) const USAGE: &str = "用法：bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]";
+
+#[repr(u32)]
+enum IrMode {
+    Module,
+    Application,
+    Program,
+}
+
+#[repr(C)]
+struct IrCommandLine {
+    mode: IrMode,
+    error: CompileError,
+    error_index: usize,
+    root_index: usize,
+    entry_index: usize,
+    function_index: usize,
+    stage: usize,
+    has_stage: u64,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.cli::parse_ir_arguments"]
+    fn parse_ir_arguments(arguments: *const Argument, count: usize, roles: *mut u8) -> IrCommandLine;
+}
+
+pub(super) fn print(
+    compiler: &blanguage::Compiler, args: &[OsString], arguments: &[Argument], roles: &mut [u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = PathBuf::from(args.get(1).ok_or(USAGE)?).canonicalize()?;
+    let line = unsafe { parse_ir_arguments(arguments.as_ptr(), arguments.len(), roles.as_mut_ptr()) };
+    // Every returned text index has been checked by the parser against the original argument.
+    let text = |index: usize| unsafe { std::str::from_utf8_unchecked(args[index].as_encoded_bytes()) };
     let mut import_paths = Vec::new();
     let mut instances = Vec::new();
-    let mut i = 2;
-    while i < args.len() {
-        if args[i] == "--module" {
-            if mode.replace(("module", "")).is_some() { return Err("IR编译模式只能指定一次".into()); }
-            i += 1; continue;
+    // Preserve path errors from imports encountered before the reported syntax error.
+    for (index, (&role, arg)) in roles.iter().zip(args).enumerate() {
+        match role {
+            1 => import_paths.push(PathBuf::from(arg).canonicalize()?),
+            2 => instances.push(text(index).to_owned()),
+            _ => {}
         }
-        let value = args.get(i + 1).ok_or(usage)?;
-        match args[i].to_str().ok_or(usage)? {
-            "-I" => root = PathBuf::from(value),
-            "--entry" | "--program" => {
-                if mode.replace((if args[i] == "--entry" { "application" } else { "program" }, value.to_str().ok_or(usage)?)).is_some() {
-                    return Err("IR编译模式只能指定一次".into());
-                }
-            }
-            "--function" => {
-                if function.replace(value.to_str().ok_or(usage)?).is_some() { return Err("--function不能重复指定".into()); }
-            }
-            "--stage" => {
-                if stage.replace(value.to_str().ok_or(usage)?.parse::<usize>()?).is_some() { return Err("--stage不能重复指定".into()); }
-            }
-            "--import" => import_paths.push(PathBuf::from(value).canonicalize()?),
-            "--instance" => instances.push(value.to_str().ok_or(usage)?.to_owned()),
-            other => return Err(format!("未知IR选项 {other}；{usage}").into()),
-        }
-        i += 2;
     }
-    let (mode, entry) = mode.unwrap_or(("module", ""));
-    if function.is_some() && (stage.is_some() || mode == "program") {
-        return Err("--function用于普通应用／模块，--stage用于--program".into());
-    }
-    if stage.is_some() && mode != "program" { return Err("--stage需要--program".into()); }
-    if !instances.is_empty() && mode != "module" { return Err("--instance用于模块；入口实例直接写在--entry／--program值中".into()); }
-    if !import_paths.is_empty() && mode == "program" { return Err("此并行入口编译API不接受已编译导入；可用--module查询模块的函数和资源程序".into()); }
-    let root = root.canonicalize()?;
+    line.error.result(args, line.error_index)?;
+    let root = match args.get(line.root_index) {
+        Some(root) => PathBuf::from(root).canonicalize()?,
+        None => path.parent().unwrap().canonicalize()?,
+    };
+    let entry = if line.entry_index == args.len() { "" } else { text(line.entry_index) };
+    let function = (line.function_index != args.len()).then(|| text(line.function_index));
+    let stage = (line.has_stage != 0).then_some(line.stage);
     let mut imports = Vec::new();
     for path in &import_paths { imports.extend(blanguage::object::Input::read(path)?.objects()?); }
-    let (phase, value) = match mode {
-        "application" => {
+    let (mode, phase, value) = match line.mode {
+        IrMode::Application => {
             let application = compiler.compile_application_with_modules(&path, &root, entry, &imports)?;
             let value = if let Some(function) = function {
                 application.function_ir_json(function).ok_or_else(|| format!("本次应用没有保留普通函数 {function}"))?
             } else { application.ir_json() };
-            ("finalized_application_ir", value)
+            ("application", "finalized_application_ir", value)
         }
-        "program" => {
+        IrMode::Program => {
             let compilation = compiler.compile_entry(&path, &root, entry)?;
             let program = compilation.programs.iter().map(|p| &**p)
                 .chain(compilation.templates.iter().map(|p| &**p)).next().ok_or("本次入口没有并行IR")?;
             let value = if let Some(stage) = stage {
                 program.stages().get(stage).ok_or_else(|| format!("本次入口只有{}个优化后阶段，没有阶段{stage}", program.stages().len()))?.ir_json()
             } else { program.ir_json() };
-            ("optimized_program_ir", value)
+            ("program", "optimized_program_ir", value)
         }
-        _ => {
+        IrMode::Module => {
             let module = compiler.compile_native_module(&path, &root, &imports, &instances)?;
             let value = if let Some(function) = function {
                 module.function_ir_json(function).ok_or_else(|| format!("本次模块没有保留普通函数 {function}"))?
             } else { module.ir_json() };
-            ("finalized_module_ir", value)
+            ("module", "finalized_module_ir", value)
         }
     };
     let mut out = String::from("{\"kind\":\"ir_query\",\"phase\":"); string(&mut out, phase);

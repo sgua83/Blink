@@ -52,7 +52,9 @@ enum CompileError:u32 {
     CpuSyntax=10; ResourceConflict=11; InputsUsage=12; CommandText=13; MissingSource=14;
     UnknownCommand=15; MissingOptionOperand=16; OptionText=17; UnknownOption=18; BudgetText=19;
     EntryText=20; InstanceText=21; BudgetWithoutReport=22; MissingOutput=23;
-    CodeUsage=24; ObjectCodeUsage=25;
+    CodeUsage=24; ObjectCodeUsage=25; IrUsage=26; IrModeRepeated=27; IrFunctionRepeated=28;
+    IrStageRepeated=29; IrOption=30; IrFunctionMode=31; IrStageMode=32; IrInstanceMode=33;
+    IrImportMode=34;
 };
 
 struct CompileCommandLine {
@@ -96,3 +98,20 @@ struct CodeCommandLine {
 
 // Returns indices into the original arguments for paths and the exact function name.
 extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on cpu;
+
+enum IrMode:u32 { Module=0; Application=1; Program=2; };
+
+struct IrCommandLine {
+    IrMode mode;
+    CompileError error;
+    u64 error_index;
+    u64 root_index;
+    u64 entry_index;
+    u64 function_index;
+    u64 stage;
+    u64 has_stage;
+};
+
+// The original source operand is handled before the options. The role buffer
+// keeps imports and instances encountered before a later syntax error.
+extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, address roles) on cpu;
