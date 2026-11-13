@@ -122,3 +122,17 @@ extern "C" bool extract_uniform(BindingSpan operands, BindingSpan results, addre
     }
     return true;
 }
+
+extern "C" void number_used_slots(address slots, u64 count) on cpu {
+    u64 used = 0u64;
+    u64 index = 0u64;
+    while (index < count) {
+        address at = unsafe_address(address_bits(slots) + index * size_of<u64>());
+        if (unsafe_position<u64>(at) != 0u64) {
+            used += 1u64;
+            unsafe_position<u64>(at) = used;
+        }
+        index += 1u64;
+    }
+    return;
+}

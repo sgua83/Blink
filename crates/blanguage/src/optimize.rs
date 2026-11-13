@@ -127,6 +127,8 @@ unsafe extern "C" {
         read: unsafe extern "C" fn(FusionBlock, usize) -> FusionNode) -> u32;
     #[link_name = "bootstrap.stage_fusion::merge_bindings"]
     fn merge_bindings(output: *mut usize, left_count: usize, right: BindingSpan) -> usize;
+    #[link_name = "bootstrap.stage_fusion::number_used_slots"]
+    fn number_used_slots(slots: *mut usize, count: usize);
 }
 
 fn union_bindings(left: &mut Vec<usize>, right: Vec<usize>) {
@@ -358,35 +360,9 @@ fn optimize_stage(stage: &mut Stage) {
             .cross_access
             .retain(|r| stage.reads.contains(r) || stage.writes.contains(r));
     }
-    let mut used = BTreeSet::new();
-    let mut slots = BTreeSet::new();
-    visit(&stage.code, &mut |i| {
-        used.extend(i.results());
-        i.all_operands(&mut |reg| { used.insert(reg); true });
-        slots.extend(i.local_reads());
-        slots.extend(i.local_writes());
-    });
-    slots.extend(private_spans(&stage.code).into_iter().flatten());
-    let registers: Vec<_> = used.iter().map(|r| stage.registers[*r]).collect();
-    let mut locals = BTreeMap::new();
-    let mut local = BTreeMap::new();
-    for (end, ty) in &stage.locals {
-        let begin = end - ty.components.len();
-        if slots.range(begin..*end).count() == ty.components.len() {
-            for slot in begin..*end { local.insert(slot, local.len()); }
-            locals.insert(local.len(), ty.clone());
-        } else {
-            for slot in slots.range(begin..*end) {
-                local.insert(*slot, local.len());
-                locals.insert(local.len(), Ty::scalar(ty.components[slot - begin].0));
-            }
-        }
-    }
-    let regs: BTreeMap<_, _> = used.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
-    map(&mut stage.code, &|r| regs[&r], &|s| local[&s]);
-    stage.registers = registers;
-    stage.locals = locals;
+    compact_slots(&mut stage.code, &mut stage.registers, &mut stage.locals, &mut [], &mut []);
 }
+
 pub(crate) fn value_code(value: &mut ValueCode) {
     value_flow::run_value(value);
     let mut needed = value
@@ -404,38 +380,66 @@ pub(crate) fn value_code(value: &mut ValueCode) {
         &value.registers,
     );
     GeneratedOrigin::eliminated_operations(&mut value.generated_origin, removed);
-    let mut used: BTreeSet<_> = value.inputs.iter().chain(&value.outputs).copied().collect();
-    let mut slots = BTreeSet::new();
-    visit(&value.code, &mut |i| {
-        used.extend(i.results());
-        i.all_operands(&mut |reg| { used.insert(reg); true });
-        slots.extend(i.local_reads());
-        slots.extend(i.local_writes());
+    compact_slots(
+        &mut value.code, &mut value.registers, &mut value.locals,
+        &mut value.inputs, &mut value.outputs,
+    );
+}
+
+fn compact_slots(
+    code: &mut [Inst], registers: &mut Vec<Scalar>, locals: &mut BTreeMap<usize, Ty>,
+    inputs: &mut [Reg], outputs: &mut [Reg],
+) {
+    let mut regs = vec![0; registers.len()];
+    let mut slots = vec![0; locals.last_key_value().map_or(0, |(&end, _)| end)];
+    for &reg in inputs.iter().chain(outputs.iter()) {
+        regs[reg] = 1;
+    }
+    visit(code, &mut |inst| {
+        for reg in inst.results() {
+            regs[reg] = 1;
+        }
+        inst.all_operands(&mut |reg| {
+            regs[reg] = 1;
+            true
+        });
+        for slot in inst.local_reads().into_iter().chain(inst.local_writes()) {
+            slots[slot] = 1;
+        }
     });
-    slots.extend(private_spans(&value.code).into_iter().flatten());
-    let registers = used.iter().map(|r| value.registers[*r]).collect();
-    let mut locals = BTreeMap::new();
-    let mut local = BTreeMap::new();
-    for (end, ty) in &value.locals {
+    for span in private_spans(code) {
+        slots[span].fill(1);
+    }
+    // Both buffers contain exactly one writable word per original logical slot.
+    unsafe {
+        number_used_slots(regs.as_mut_ptr(), regs.len());
+        number_used_slots(slots.as_mut_ptr(), slots.len());
+    }
+
+    let mut register_map = regs.iter();
+    registers.retain(|_| *register_map.next().unwrap() != 0);
+
+    for (end, ty) in std::mem::take(locals) {
         let begin = end - ty.components.len();
-        if slots.range(begin..*end).count() == ty.components.len() {
-            for slot in begin..*end { local.insert(slot, local.len()); }
-            locals.insert(local.len(), ty.clone());
+        let positions = &slots[begin..end];
+        let first = positions.first().copied().unwrap_or(0);
+        let last = positions.last().copied().unwrap_or(0);
+        if first != 0 && last == first + positions.len() - 1 {
+            locals.insert(last, ty);
         } else {
-            for slot in slots.range(begin..*end) {
-                local.insert(*slot, local.len());
-                locals.insert(local.len(), Ty::scalar(ty.components[slot - begin].0));
+            for (&position, &(scalar, _)) in positions.iter().zip(&ty.components) {
+                if position != 0 {
+                    locals.insert(position, Ty::scalar(scalar));
+                }
             }
         }
     }
-    let regs: BTreeMap<_, _> = used.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
-    map(&mut value.code, &|r| regs[&r], &|s| local[&s]);
-    for r in value.inputs.iter_mut().chain(&mut value.outputs) {
-        *r = regs[r];
+    map(code, &|reg| regs[reg] - 1, &|slot| slots[slot] - 1);
+    for reg in inputs.iter_mut().chain(outputs) {
+        *reg = regs[*reg] - 1;
     }
-    value.registers = registers;
-    value.locals = locals;
 }
+
 pub(crate) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
     for i in code {
         f(i);
