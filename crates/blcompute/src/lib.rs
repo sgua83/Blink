@@ -164,7 +164,7 @@ impl Dataset {
         path: &std::path::Path,
     ) -> Result<Self> {
         use std::io::Read;
-        let mut input = std::io::BufReader::new(std::fs::File::open(path)?);
+        let mut input = std::fs::File::open(path)?;
         let mut header = [0u8; 24];
         input.read_exact(&mut header)?;
         if &header[..8] != b"BLDATA\0\0" {
@@ -187,8 +187,8 @@ impl Dataset {
             unsafe extern "system" {
                 fn GetFileType(file: *mut std::ffi::c_void) -> u32;
             }
-            match unsafe { GetFileType(input.get_ref().as_raw_handle()) } {
-                1 => Some(input.get_ref().metadata()?.len()), // FILE_TYPE_DISK
+            match unsafe { GetFileType(input.as_raw_handle()) } {
+                1 => Some(input.metadata()?.len()), // FILE_TYPE_DISK
                 0 => {
                     let error = std::io::Error::last_os_error();
                     if error.raw_os_error() != Some(0) { return Err(error.into()); }
@@ -199,7 +199,7 @@ impl Dataset {
         };
         #[cfg(not(windows))]
         let file_bytes = {
-            let metadata = input.get_ref().metadata()?;
+            let metadata = input.metadata()?;
             metadata.is_file().then_some(metadata.len())
         };
         if file_bytes.is_some_and(|bytes| bytes < header.len() as u64 + length as u64) {
@@ -208,10 +208,13 @@ impl Dataset {
             ).into());
         }
         let mut data = Self::with_type(ty.clone(), word(12))?;
-        for (index, word) in data.words.iter_mut().enumerate() {
-            let mut bytes = [0; 4];
-            input.read_exact(&mut bytes[..(length - index * 4).min(4)])?;
-            *word = u32::from_le_bytes(bytes);
+        // 已初始化的原字存储覆盖完整逻辑载荷；末字未读填充保持零。
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(data.words.as_mut_ptr().cast::<u8>(), length)
+        };
+        input.read_exact(bytes)?;
+        for word in &mut data.words {
+            *word = u32::from_le(*word);
         }
         let mut trailing = [0u8; 1];
         if input.read(&mut trailing)? != 0 {
