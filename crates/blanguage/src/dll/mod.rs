@@ -36,10 +36,7 @@ fn constant_name(name: &str) -> String {
     out
 }
 fn plain(ty: &Ty) -> bool {
-    !ty.owns_resources()
-        && ty.view.is_none()
-        && ty.fields.iter().all(|(_, _, t)| plain(t))
-        && ty.array.as_ref().is_none_or(|t| plain(t))
+    !ty.owns_resources() && !ty.contains_views()
 }
 fn scalar(s: Scalar) -> (&'static str, &'static str) {
     match s {

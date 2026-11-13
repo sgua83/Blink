@@ -5220,7 +5220,7 @@ bc build、算法目标文件编译和 SDK 使用同一份程序映像；阶段�
 
 `bc -c ... --program name` 接收一个公开、具体且无 requires 前置条件的 计算函数；泛型使用既有 compile_entry 的具体入口语法。编译输出 .obj，再由 `blink input.obj -o output.dll` 输出 .dll、.lib、.abi.h 和 .rs。B 的 .h 仍是语言接口，.abi.h 是供 C/C++ 编译器包含的头文件。接口字段布局来自原 Ty，dataset 传指针与完整记录元素数，uniform 传生成类型的只读指针。当前接受不含 view 的纯值类型、向量／矩阵、记录和固定内联数组；纹理、AS 与条件模板明确拒绝。内部集合、阶段和 prefix 仍由 B 编译器检查并执行。
 
-C ABI create／run 返回 0 或 -1，错误缓冲区容量包含结尾NUL：容量0不写入，允许NULL；容量1只写NUL；这两种没有文本载荷空间的调用不格式化错误。更大容量按完整UTF-8字符截断并以NUL结束，成功写空文本，原错误由本次状态调用消费并释放；destroy释放DLL自己创建的handle。run 为同步、包含数据交付的完整调用。有载荷的dataset以指针和u32完整记录数交接，零尺寸元素dataset只传u32数量，仍参与原CPU／GPU逻辑范围及执行；零尺寸uniform不产生机器参数，嵌套零尺寸字段不生成载荷成员。C/C++头文件、转发及Rust绑定共用这份实际参数表，须与DLL配套重新生成。C++使用RAII；Rust绑定对有载荷数据提供切片，对零尺寸数据直接接收数量，并保持Result、Drop与创建线程所有权。Rust 仍可直接调用原有 compile_entry、CpuProgram、Device、GpuProgram 和所有权 API。B 调用宿主 DLL 使用前述 CPU extern C 声明，不改变这里由宿主持有的算法入口与资源。详见 [原生集成](NativeInterop.md)。
+C ABI create／run 返回 0 或 -1，错误缓冲区容量包含结尾NUL：容量0不写入，允许NULL；容量1只写NUL；这两种没有文本载荷空间的调用不格式化错误。更大容量按完整UTF-8字符截断并以NUL结束，成功写空文本，原错误由本次状态调用消费并释放；destroy释放DLL自己创建的handle。run 为同步、包含数据交付的完整调用。算法DLL纯值准入直接采用原Ty的拥有资源和view查询：固定零长度数组不引入元素资源，变体及Result按各可能载荷判断。实际拥有资源或可能含view的完整类型继续使用原生Rust资源绑定。有载荷的dataset以指针和u32完整记录数交接，零尺寸元素dataset只传u32数量，仍参与原CPU／GPU逻辑范围及执行；零尺寸uniform不产生机器参数，嵌套零尺寸字段不生成载荷成员。C/C++头文件、转发及Rust绑定共用这份实际参数表，须与DLL配套重新生成。C++使用RAII；Rust绑定对有载荷数据提供切片，对零尺寸数据直接接收数量，并保持Result、Drop与创建线程所有权。Rust 仍可直接调用原有 compile_entry、CpuProgram、Device、GpuProgram 和所有权 API。B 调用宿主 DLL 使用前述 CPU extern C 声明，不改变这里由宿主持有的算法入口与资源。详见 [原生集成](NativeInterop.md)。
 
 ### Rust Dataset的单标量字段写入
 
