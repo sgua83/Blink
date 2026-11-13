@@ -43,7 +43,22 @@ struct TileInputCopy {
     unit_bytes: u32,
 }
 
+#[repr(C)]
+struct TilePrivateCopy {
+    location: operands::MoveLocation,
+    scalar: ScalarEncoding,
+    storage_offset: u32,
+    plane_stride: u32,
+    restore: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::tile_lane_pointer"]
+    fn encode_tile_lane_pointer(base_offset: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::tile_phase_advance"]
+    fn encode_tile_phase_advance(base_offset: u32, length_offset: u32, bytes_back: u64, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::tile_private_copy"]
+    fn encode_tile_private_copy(input: TilePrivateCopy, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_lane"]
     fn encode_tile_lane(width: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_input_boundary"]
@@ -141,51 +156,41 @@ impl Emitter<'_> {
         self.patch(skip, self.code.len());
     }
     fn tile_lane_pointer(&mut self) {
-        // r10 = rsp + 4 * (全局 index - tile base)。所有共享／私有流再加固定偏移。
-        self.bytes(&[0x89, 0xd8, 0x2b, 0x84, 0x24]);
-        self.u32(self.tile_base_slot());
-        self.bytes(&[0x4c, 0x8d, 0x14, 0x84]);
+        let base_offset = self.tile_base_slot();
+        self.emit_bytes(16, |output| unsafe { encode_tile_lane_pointer(base_offset, output) });
     }
+
     fn private_stream(&self, slot: PrivateSlot) -> u32 {
         self.frame.tile_private[&slot]
     }
-    fn tile_restore(&mut self, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>) {
-        let start = self.code.len();
-        self.tile_lane_pointer();
-        self.parallel_abi(start, ParallelRangePart::TilePrivatePointer { phase, restore: true });
-        for slot in slots {
-            let start = self.code.len();
-            let storage_offset = self.private_stream(*slot);
-            self.bytes(&[0x41, 0x8b, 0x82]);
-            self.u32(storage_offset);
-            let scalar = self.stage.private_scalar(*slot);
-            if scalar.size() == 8 {
-                self.bytes(&[0x41, 0x8b, 0x8a]);
-                self.u32(storage_offset + self.stage.workgroup_width()*4);
-                self.bytes(&[0x48, 0xc1, 0xe1, 32, 0x48, 0x09, 0xc8]);
-            }
-            self.copy_scalar(self.allocation.location(*slot), Location::Gpr(0), scalar);
-            let (local, slot) = match *slot { PrivateSlot::Register(index) => (false, index), PrivateSlot::Local(index) => (true, index) };
-            self.parallel_abi(start, ParallelRangePart::TilePrivate { phase, restore: true, local, slot, storage_offset, scalar });
+
+    fn tile_private(&mut self, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>, restore: bool) {
+        if slots.is_empty() {
+            return;
         }
-    }
-    fn tile_save(&mut self, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>) {
         let start = self.code.len();
         self.tile_lane_pointer();
-        self.parallel_abi(start, ParallelRangePart::TilePrivatePointer { phase, restore: false });
-        for slot in slots {
+        self.parallel_abi(start, ParallelRangePart::TilePrivatePointer { phase, restore });
+        let plane_stride = self.stage.workgroup_width() * 4;
+        for &slot in slots {
+            let storage_offset = self.private_stream(slot);
+            let scalar = self.stage.private_scalar(slot);
+            let input = TilePrivateCopy {
+                location: self.allocation.location(slot).into(),
+                scalar: scalar.into(),
+                storage_offset,
+                plane_stride,
+                restore: u32::from(restore),
+            };
             let start = self.code.len();
-            let storage_offset = self.private_stream(*slot);
-            let scalar = self.stage.private_scalar(*slot);
-            self.copy_scalar(Location::Gpr(0), self.allocation.location(*slot), scalar);
-            self.bytes(&[0x41, 0x89, 0x82]);
-            self.u32(storage_offset);
-            if scalar.size() == 8 {
-                self.bytes(&[0x48, 0xc1, 0xe8, 32, 0x41, 0x89, 0x82]);
-                self.u32(storage_offset + self.stage.workgroup_width()*4);
-            }
-            let (local, slot) = match *slot { PrivateSlot::Register(index) => (false, index), PrivateSlot::Local(index) => (true, index) };
-            self.parallel_abi(start, ParallelRangePart::TilePrivate { phase, restore: false, local, slot, storage_offset, scalar });
+            self.emit_bytes(64, |output| unsafe { encode_tile_private_copy(input, output) });
+            let (local, slot) = match slot {
+                PrivateSlot::Register(index) => (false, index),
+                PrivateSlot::Local(index) => (true, index),
+            };
+            self.parallel_abi(start, ParallelRangePart::TilePrivate {
+                phase, restore, local, slot, storage_offset, scalar,
+            });
         }
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
@@ -218,17 +223,15 @@ impl Emitter<'_> {
     pub(super) fn tile_phases(&mut self) -> Result<(), &'static str> {
         let start = self.code.len();
         let storage_offset = self.tile_base_slot();
-        self.bytes(&[0x89, 0x9c, 0x24]);
-        self.u32(storage_offset);
+        self.copy(Location::Stack(storage_offset), Location::Gpr(3));
         self.parallel_abi(start, ParallelRangePart::TileBase { storage_offset });
         self.tile_input();
         for (phase_index, phase) in self.stage.tile_phases().into_iter().enumerate() {
             let start = self.code.len();
-            self.bytes(&[0x8b, 0x9c, 0x24]);
-            self.u32(self.tile_base_slot());
+            self.copy(Location::Gpr(3), Location::Stack(storage_offset));
             self.parallel_abi(start, ParallelRangePart::TilePhaseEnter { phase: phase_index });
             let begin = self.code.len();
-            self.tile_restore(phase_index, &phase.live_in);
+            self.tile_private(phase_index, &phase.live_in, true);
             self.block(phase.code)?;
             if let Some(inst @ Inst { kind: InstKind::TilePublish(publication), .. }) = phase.step {
                 let start = self.code.len();
@@ -236,14 +239,13 @@ impl Emitter<'_> {
                 self.publish_values(publication);
                 self.operation_range(inst, start, first);
             }
-            self.tile_save(phase_index, &phase.preserved_out());
+            self.tile_private(phase_index, &phase.preserved_out(), false);
             let start = self.code.len();
-            self.bytes(&[0xff, 0xc3, 0x89, 0xd8, 0x2b, 0x84, 0x24]);
-            self.u32(self.tile_base_slot());
-            self.bytes(&[0x3b, 0x84, 0x24]);
-            self.u32(self.tile_length_slot());
-            let again = self.jump(Branch::Flags(0x82));
-            self.patch(again, begin);
+            let length_offset = self.tile_length_slot();
+            let bytes_back = (start - begin) as u64;
+            self.emit_bytes(32, |output| unsafe {
+                encode_tile_phase_advance(storage_offset, length_offset, bytes_back, output)
+            });
             self.parallel_abi(start, ParallelRangePart::TilePhaseAdvance { phase: phase_index });
             if let Some(inst @ Inst { kind: InstKind::TileCollective(collective), .. }) = phase.step {
                 let start = self.code.len();

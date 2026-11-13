@@ -1954,7 +1954,7 @@ u64 atomic_update(u64 at, AtomicOperation operation, bool wide, bool signed) on 
     return cursor;
 }
 
-u64 atomic_read_split(u64 at, MoveLocation low, MoveLocation high) on cpu {
+u64 load_split_words(u64 at, MoveLocation low, MoveLocation high) on cpu {
     u64 cursor = encode_operand_instruction(at, u16(0x8b), u8(0), false, u8(0), low);
     cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(1), high);
     cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(4), u8(1));
@@ -1962,7 +1962,7 @@ u64 atomic_read_split(u64 at, MoveLocation low, MoveLocation high) on cpu {
     return register_instruction(cursor + 1u64, u16(0x09), u8(0), true, u8(1), u8(0));
 }
 
-u64 atomic_write_split(u64 at, MoveLocation low, MoveLocation high, u8 source) on cpu {
+u64 store_split_words(u64 at, MoveLocation low, MoveLocation high, u8 source) on cpu {
     u64 cursor = encode_operand_instruction(at, u16(0x89), u8(0), false, source, low);
     cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(5), source);
     put_byte(cursor, u8(32));
@@ -1972,30 +1972,30 @@ u64 atomic_write_split(u64 at, MoveLocation low, MoveLocation high, u8 source) o
 u64 atomic_split_at(u64 at, AtomicSequence input) on cpu {
     AtomicOperation operation = input.operation;
     if (operation == AtomicOperation::Load) {
-        return atomic_read_split(at, input.low, input.high);
+        return load_split_words(at, input.low, input.high);
     }
     u64 cursor = atomic_input(at, input.first, 8);
     if (operation == AtomicOperation::Store) {
-        return atomic_write_split(cursor, input.low, input.high, u8(0));
+        return store_split_words(cursor, input.low, input.high, u8(0));
     }
     cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(0), u8(2));
-    cursor = atomic_read_split(cursor, input.low, input.high);
+    cursor = load_split_words(cursor, input.low, input.high);
     if (operation == AtomicOperation::Exchange) {
-        return atomic_write_split(cursor, input.low, input.high, u8(2));
+        return store_split_words(cursor, input.low, input.high, u8(2));
     }
     if (operation == AtomicOperation::CompareExchange) {
         cursor = register_instruction(cursor, u16(0x39), u8(0), true, u8(2), u8(0));
         u64 different = condition_field(cursor, u8(0x85));
         cursor = register_instruction(different + 4u64, u16(0x89), u8(0), true, u8(0), u8(1));
         cursor = atomic_input(cursor, input.second, 8);
-        cursor = atomic_write_split(cursor, input.low, input.high, u8(0));
+        cursor = store_split_words(cursor, input.low, input.high, u8(0));
         cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(1), u8(0));
         patch_relative(unsafe_address(different), different - at, cursor - at);
         return cursor;
     }
     cursor = register_instruction(cursor, u16(0x89), u8(0), true, u8(0), u8(1));
     cursor = atomic_update(cursor, operation, true, input.scalar.kind == ScalarKind::Signed);
-    return atomic_write_split(cursor, input.low, input.high, u8(1));
+    return store_split_words(cursor, input.low, input.high, u8(1));
 }
 
 u64 atomic_contiguous_at(u64 at, AtomicSequence input) on cpu {
@@ -2411,6 +2411,49 @@ u64 collective_accumulate(u64 at, ReductionOperator operation, ScalarEncoding sc
     cursor = encode_operand_instruction(skip + 4u64, u16(0x8a), u8(0), false, register, operand);
     patch_relative(unsafe_address(skip), skip, cursor);
     return cursor;
+}
+
+u64 tile_lane_index(u64 at, u32 base_offset) on cpu {
+    u64 cursor = register_instruction(at, u16(0x89), u8(0), false, u8(3), u8(0));
+    MoveLocation base = MoveLocation(u64(base_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    return encode_operand_instruction(cursor, u16(0x2b), u8(0), false, u8(0), base);
+}
+
+extern "C" u64 tile_lane_pointer(u32 base_offset, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = tile_lane_index(start, base_offset);
+    MoveLocation lane = MoveLocation(0u64, MOVE_MEMORY, u8(4), u8(0), u8(2));
+    return encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(10), lane) - start;
+}
+
+extern "C" u64 tile_phase_advance(u32 base_offset, u32 length_offset, u64 bytes_back, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = range_step_at(start, u8(3), u8(1));
+    cursor = tile_lane_index(cursor, base_offset);
+    MoveLocation length = MoveLocation(u64(length_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    cursor = encode_operand_instruction(cursor, u16(0x3b), u8(0), false, u8(0), length);
+    u64 back = condition_field(cursor, u8(0x82));
+    patch_relative(unsafe_address(back), back, start - bytes_back);
+    return back + 4u64 - start;
+}
+
+extern "C" u64 tile_private_copy(TilePrivateCopy input, address output) on cpu {
+    u64 start = address_bits(output);
+    u32 size = input.scalar.width / 8;
+    bool signed = input.scalar.kind == ScalarKind::Signed;
+    MoveLocation low = MoveLocation(u64(input.storage_offset), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+    MoveLocation high = MoveLocation(u64(input.storage_offset + input.plane_stride), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+    MoveLocation accumulator = move_gpr(u8(0));
+    if (input.restore) {
+        u64 cursor = size == 8 ? load_split_words(start, low, high) : load_bits(start, u8(0), low, false);
+        MoveEncoding copied = copy_scalar_move(input.location, accumulator, size, signed, unsafe_address(cursor));
+        return cursor + copied.length - start;
+    }
+    MoveEncoding copied = copy_scalar_move(accumulator, input.location, size, signed, output);
+    u64 cursor = start + copied.length;
+    if (size == 8) { return store_split_words(cursor, low, high, u8(0)) - start; }
+    // Narrow values use a complete 32-bit word in the private lane stream.
+    return store_bits(cursor, low, u8(0), 4) - start;
 }
 
 u64 tile_collective_store(u64 at, ScalarEncoding scalar, u32 plane_stride) on cpu {

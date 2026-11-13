@@ -317,6 +317,21 @@ extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offse
 // The caller owns 80 bytes for the loop over the actual lanes in the tile.
 extern "C" u64 tile_input_copy(TileInputCopy input, address output) on cpu;
 
+struct TilePrivateCopy {
+    MoveLocation location;
+    ScalarEncoding scalar;
+    u32 storage_offset;
+    u32 plane_stride;
+    bool restore;
+};
+
+// The caller owns 16 bytes for the lane pointer and 32 for the phase back edge.
+// bytes_back is the distance from output to the start of the current phase loop.
+extern "C" u64 tile_lane_pointer(u32 base_offset, address output) on cpu;
+extern "C" u64 tile_phase_advance(u32 base_offset, u32 length_offset, u64 bytes_back, address output) on cpu;
+// The caller owns 64 bytes. R10 points to the current lane's word in each plane.
+extern "C" u64 tile_private_copy(TilePrivateCopy input, address output) on cpu;
+
 struct TileCollectiveInput {
     u64 identity;
     ScalarEncoding scalar;
