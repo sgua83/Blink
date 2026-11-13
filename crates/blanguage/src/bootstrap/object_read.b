@@ -17,12 +17,12 @@ bool matches<const N: u32>(ReadBytes value,read array<u8,N> pattern,bool whole) 
     return true;
 }
 ObjectSection row_at(ObjectRows rows,u64 index) on cpu {
-    return unsafe_position<ObjectSection>(unsafe_address(address_bits(rows.values)+index*OBJECT_SECTION_BYTES));
+    return unsafe_position<ObjectSection>(unsafe_address(address_bits(rows.values)+index*size_of<ObjectSection>()));
 }
 extern "C" ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 index,
     inout u64 mapped, inout ObjectParts parts) on cpu {
     ReadSection row=section(input,headers,index);
-    ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64,row.zero_fill);
+    ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64,row.zero_fill,unsafe_address(0u64),0u64);
     if(row.error!=0){return ObjectSectionResult(value,row.error);}
     array<u8,7> meta=array<u8,7>(u8(46),u8(98),u8(108),u8(109),u8(101),u8(116),u8(97));array<u8,5> runtime=array<u8,5>(u8(46),u8(98),u8(108),u8(114),u8(116));array<u8,8> build=array<u8,8>(u8(46),u8(98),u8(108),u8(98),u8(117),u8(105),u8(108),u8(100));
     if (matches<7>(row.name,meta,true)) {
@@ -121,16 +121,16 @@ address stack_frame_address(address frames,u64 index) on cpu {
 MetaCall stack_call_at(address calls,u64 index) on cpu {
     return unsafe_position<MetaCall>(unsafe_address(address_bits(calls)+index*40u64));
 }
-bool stack_relocation(ReadBytes input,ReadRelocations table,u64 offset) on cpu {
-    // Object recovery already read and validated these physical relocations.
+bool stack_relocation(ObjectSection section,u64 offset,u64 stride) on cpu {
+    u64 start=address_bits(section.decoded_relocations);
     u64 i=0u64;
-    while(i<table.count){
-        if(relocation(input,table.offset,i).offset==offset){return true;}
+    while(i<section.decoded_count){
+        if(unsafe_position<u64>(unsafe_address(start+i*stride))==offset){return true;}
         i+=1u64;
     }
     return false;
 }
-extern "C" u32 recover_stack(ReadBytes input,ObjectRows rows,address frames,u64 count,address calls,address nodes) on cpu {
+extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address calls,address nodes,u64 stride) on cpu {
     // Resolve all section identities before interpreting positions and calls.
     u64 i=0u64;
     while(i<count){
@@ -148,7 +148,6 @@ extern "C" u32 recover_stack(ReadBytes input,ObjectRows rows,address frames,u64 
     while(i<count){
         address row=stack_frame_address(frames,i);
         MetaFrame frame=unsafe_position<MetaFrame>(row);
-        ReadRelocations table=ReadRelocations(0u64,0u64,0);
         if(frame.has_coff!=0u64){
             ObjectSection section=row_at(rows,frame.section);
             if(frame.start>=section.bytes.length+section.zero_fill){return 12;}
@@ -158,7 +157,6 @@ extern "C" u32 recover_stack(ReadBytes input,ObjectRows rows,address frames,u64 
             BindingInsert inserted=put(positions,root,BindingKey(location,empty),0u64);
             if(positions.count==before){return 12;}
             root=inserted.root;
-            table=relocations(input,section.relocations,section.relocation_count,section.flags);
         }
         u64 remaining=frame.calls;
         while(remaining!=0u64){
@@ -167,7 +165,7 @@ extern "C" u32 recover_stack(ReadBytes input,ObjectRows rows,address frames,u64 
             remaining-=1u64;
             if(call.kind<2u64){
                 if(frame.has_coff==0u64){return 13;}
-                if(!stack_relocation(input,table,call.offset)){return 14;}
+                if(!stack_relocation(row_at(rows,frame.section),call.offset,stride)){return 14;}
             }
         }
         i+=1u64;

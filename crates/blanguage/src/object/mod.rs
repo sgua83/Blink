@@ -41,6 +41,8 @@ pub(crate) enum Target {
     Section(usize, u32),
     Import(Import),
 }
+// COFF stack recovery borrows the offset at the start of each owning record.
+#[repr(C)]
 pub(crate) struct Relocation {
     pub offset: usize,
     pub kind: u16,

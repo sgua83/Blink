@@ -142,6 +142,7 @@ unsafe extern "C" {
 #[derive(Clone, Copy)]
 struct ObjectSection {
     name: ReadBytes, bytes: ReadBytes, flags: u64, relocations: usize, relocation_count: usize, mapped: usize, zero_fill: usize,
+    decoded_relocations: *const u8, decoded_count: usize,
 }
 #[repr(C)]
 struct ObjectSectionResult { value: ObjectSection, error: ReadError }
@@ -332,8 +333,8 @@ unsafe extern "C" {
     fn metadata_read_call(cursor: *mut MetadataReadCursor) -> MetadataReadCall;
     #[link_name = "bootstrap.object_read::recover_stack"]
     fn object_recover_stack(
-        input: ReadBytes, rows: ObjectRows, frames: *mut MetadataReadFrame,
-        count: usize, calls: *const MetadataReadCall, nodes: *mut [u64; 9],
+        rows: ObjectRows, frames: *mut MetadataReadFrame, count: usize,
+        calls: *const MetadataReadCall, nodes: *mut [u64; 9], stride: usize,
     ) -> ObjectReadError;
 }
 
@@ -344,11 +345,11 @@ struct StackMetadata {
 }
 
 impl StackMetadata {
-    fn restore(mut self, input: ReadBytes, rows: ObjectRows) -> Result<Vec<stack::Frame>> {
+    fn restore(mut self, rows: ObjectRows) -> Result<Vec<stack::Frame>> {
         let mut nodes = vec![[0; 9]; self.frames.len()];
         unsafe {
-            object_recover_stack(input, rows, self.frames.as_mut_ptr(), self.frames.len(),
-                self.calls.as_ptr(), nodes.as_mut_ptr())
+            object_recover_stack(rows, self.frames.as_mut_ptr(), self.frames.len(),
+                self.calls.as_ptr(), nodes.as_mut_ptr(), size_of::<Relocation>())
         }.check()?;
         // read_metadata already checked UTF-8 in these borrowed fields.
         let text = |field: ReadBytes| unsafe { std::str::from_utf8_unchecked(field.borrowed()) }.to_owned();
@@ -856,7 +857,7 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
         i = row.next;
     }
     let mut parts = ObjectParts::default();
-    let raw = reader.section_rows(&mut parts).collect::<Result<Vec<_>>>()?;
+    let mut raw = reader.section_rows(&mut parts).collect::<Result<Vec<_>>>()?;
     let (name, kind, mut bindings, stack, archive) = match native {
         Some(name) => (name.to_owned(), Kind::Module { interface: String::new(), requirements: BTreeMap::new(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),
         None => {
@@ -938,8 +939,14 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
                 })
             })
             .collect::<Result<_>>()?;
+    // Relocation decoding is complete and the owning buffers are stable.
+    for row in raw.iter_mut().filter(|row| row.mapped != 0) {
+        let relocations = &sections[row.mapped - 1].relocations;
+        row.decoded_relocations = relocations.as_ptr().cast();
+        row.decoded_count = relocations.len();
+    }
     Ok(Object {
-        stack: stack.restore(input, rows)?,
+        stack: stack.restore(ObjectRows::new(&raw))?,
         name,
         symbols,
         imports: bindings,

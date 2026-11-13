@@ -2,9 +2,9 @@ module bootstrap.object_read;
 import bootstrap.coff_read;
 
 // Borrowed rows replace the original physical-to-loaded section map.
-const u64 OBJECT_SECTION_BYTES=72u64;
 struct ObjectSection {
     ReadBytes name;ReadBytes bytes;u64 flags;u64 relocations;u64 relocation_count;u64 mapped;u64 zero_fill;
+    address decoded_relocations;u64 decoded_count;
 };
 struct ObjectSectionResult {ObjectSection value;u32 error;};
 struct ObjectParts { ReadBytes metadata; ReadBytes runtime; };
@@ -28,4 +28,6 @@ struct ObjectRelocation {ReadRelocation record;ObjectTarget target;};
 extern "C" ObjectRelocation object_relocation(
     ReadBytes input,ObjectRows rows,ObjectSymbols symbols,u64 table,u64 index
 ) on cpu;
-extern "C" u32 recover_stack(ReadBytes input,ObjectRows rows,address frames,u64 count,address calls,address nodes) on cpu;
+// Decoded relocations borrow each owning section's records. Offset is their
+// first field and stride is the size of one complete owning record.
+extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address calls,address nodes,u64 stride) on cpu;
