@@ -113,17 +113,17 @@ bool expand_providers(GraphInput input,GraphOutput output,Scratch work,handle he
         while (at<direct.count) {
             GraphEdge edge=edge_at(input,direct.start+at);
             u64 id=input.count+edge.index;
+            GraphRange inherited=GraphRange(0u64,0u64);
             if (edge.external==0u64) {
                 id=edge.index;
-                GraphRange inherited=range_at(output.providers,id);
-                u64 child=0u64;
-                while (child<inherited.count) {
-                    u64 previous=word(providers.ids,inherited.start+child);
-                    if (!append_provider(providers,heap,work.seen,stamp,previous)) { return false; }
-                    child+=1u64;
-                }
+                inherited=range_at(output.providers,id);
             }
-            if (!append_provider(providers,heap,work.seen,stamp,id)) { return false; }
+            u64 child=0u64;
+            while (child<=inherited.count) {
+                u64 provider=child<inherited.count ? word(providers.ids,inherited.start+child) : id;
+                if (!append_provider(providers,heap,work.seen,stamp,provider)) { return false; }
+                child+=1u64;
+            }
             at+=1u64;
         }
         put_range(output.providers,index,GraphRange(start,providers.count-start));
