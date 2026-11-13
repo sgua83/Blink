@@ -1528,11 +1528,10 @@ impl Builder<'_> {
                 a.unresolved()||b.unresolved()
                     ||a.sources.entries().any(|(source,when)|b.overlaps_source(source,&bounds::Clause::both(path,&when)))
                     ||a.inputs.iter().any(|input|{
-                        let when=a.inputs.when(input).logical(b.inputs.when(input),false);
-                        when!=bounds::Condition::constant(false)
-                            &&(when==bounds::Condition::constant(true)||when.assume(&bounds::Clause::default(),true).overlaps(path))
+                        let when = bounds::Clause::both(&a.inputs.when(input), &b.inputs.when(input));
+                        when == bounds::Clause::default() || when.overlaps(path)
                     })
-                    ||a.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&b.calls.when(call).assume(&bounds::Clause::default(),true)))
+                    ||a.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&b.calls.when(call)))
             }
             fn ancestors(resource:&view::Borrow,write:&DataProjection<'_>,path:&bounds::Clause)->bool {
                 resource.sources.entries().any(|(source,when)|{

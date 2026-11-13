@@ -2162,28 +2162,32 @@ impl Clause {
         // 已消费Clause不再运行Drop，直接转交它原来持有的Arc。
         unsafe { ManuallyDrop::take(&mut owned.0) }
     }
+    fn negated_fact(fact: Fact) -> Option<Fact> {
+        Some(match fact {
+            Fact::Minimum(_, _, 0) => return None,
+            Fact::Maximum(_, scalar, n) if n == scalar.bit_mask() => return None,
+            Fact::Minimum(id, scalar, n) => Fact::Maximum(id, scalar, n - 1),
+            Fact::Maximum(id, scalar, n) => Fact::Minimum(id, scalar, n + 1),
+            Fact::NonZero(id) => Fact::Zero(id),
+            Fact::Zero(id) => Fact::NonZero(id),
+            Fact::Boolean(id, truth) => Fact::Boolean(id, !truth),
+            Fact::Predicate(predicate, truth) => Fact::Predicate(predicate, !truth),
+            Fact::Equal(a, b) => Fact::NotEqual(a, b),
+            Fact::NotEqual(a, b) => Fact::equal(a, b),
+            Fact::Below(a, b, strict, scalar) => Fact::Below(b, a, !strict, scalar),
+            Fact::Index(id, IndexDomain::Fixed(n)) => Fact::Minimum(id, Scalar::U32, Bits::from(n)),
+            Fact::Index(id, domain) => Fact::Outside(id, domain),
+            Fact::Outside(id, domain) => Fact::Index(id, domain),
+        })
+    }
+
     fn negate(&self)->Self{
-        fn fact(value:Fact)->Clause{match value{
-            Fact::Minimum(_, _, 0)=>Clause::impossible(),
-            Fact::Maximum(_, scalar, n) if n==scalar.bit_mask()=>Clause::impossible(),
-            Fact::Minimum(id, scalar, n)=>Clause::facts([Fact::Maximum(id, scalar, n-1)].into()),
-            Fact::Maximum(id, scalar, n)=>Clause::facts([Fact::Minimum(id, scalar, n+1)].into()),
-            Fact::NonZero(id)=>Clause::facts([Fact::Zero(id)].into()),
-            Fact::Zero(id)=>Clause::facts([Fact::NonZero(id)].into()),
-            Fact::Boolean(id,truth)=>Clause::facts([Fact::Boolean(id,!truth)].into()),
-            Fact::Predicate(predicate,truth)=>Clause::facts([Fact::Predicate(predicate,!truth)].into()),
-            Fact::Equal(a,b)=>Clause::facts([Fact::NotEqual(a,b)].into()),
-            Fact::NotEqual(a,b)=>Clause::facts([Fact::equal(a,b)].into()),
-            Fact::Below(a,b,strict,signed)=>Clause::facts([Fact::Below(b,a,!strict,signed)].into()),
-            Fact::Index(id,IndexDomain::Fixed(n))=>Clause::facts([Fact::Minimum(id, Scalar::U32, Bits::from(n))].into()),
-            Fact::Index(id,d)=>Clause::facts([Fact::Outside(id,d)].into()),
-            Fact::Outside(id,d)=>Clause::facts([Fact::Index(id,d)].into()),
-        }}
         let mut values=BTreeMap::new();
         for clause in Self::ordered(std::slice::from_ref(self)){
             let next=match &**clause.0{
                 ClauseNode::Impossible=>Self::default(),
-                ClauseNode::Facts(facts)=>facts.iter().fold(Self::impossible(),|all,value|Self::either(&all,&fact(*value))),
+                ClauseNode::Facts(facts) => facts.iter().copied().filter_map(Self::negated_fact)
+                    .fold(Self::impossible(), |all, fact| Self::either(&all, &Self::facts([fact].into()))),
                 ClauseNode::Both(a,b)=>Self::either(&values[&a.key()],&values[&b.key()]),
                 ClauseNode::Either(a,b)=>Self::both(&values[&a.key()],&values[&b.key()]),
                 ClauseNode::Branch(parent,condition,truth)=>Self::either(&values[&parent.key()],&values[&condition.cases[usize::from(*truth)].key()]),
@@ -2673,47 +2677,202 @@ impl Clause {
             }
         }
     }
-    pub(super) fn overlaps(&self,other:&Self) -> bool {
-        // 来源能否同时成立不能由各分支的共有事实代替。
-        // 只沿本次路径消费共享图；备选保留续点，不展开路径项组合。
-        fn push<'a>(goals:&mut Vec<(&'a Clause,Option<usize>)>,next:&mut Option<usize>,clause:&'a Clause){
-            goals.push((clause,*next));*next=Some(goals.len()-1);
+    pub(super) fn overlaps(&self, other: &Self) -> bool {
+        self.overlap_query(other, true)
+    }
+
+    pub(super) fn equivalent(&self, other: &Self) -> bool {
+        if same_condition_roots([self], [other]) {
+            return true;
         }
-        let mut goals=vec![(self,None),(other,Some(0))];
-        let mut next=Some(1);
-        let mut alternatives:Vec<(&Self,Option<usize>,usize,usize,usize)>=Vec::new();
-        let mut facts=Facts::new();
-        let mut additions=Vec::new();
-        let mut visited=HashSet::new();
-        let mut visits=Vec::new();
-        loop {
-            let mut impossible=false;
-            while let Some(index)=next {
-                let (clause,remaining)=goals[index];next=remaining;
-                if !visited.insert(clause.key()){continue;}
-                visits.push(clause.key());
-                match &**clause.0 {
-                    ClauseNode::Impossible=>{impossible=true;break;},
-                    ClauseNode::Facts(required)=>{
-                        let before=additions.len();
-                        for fact in required {if facts.insert(*fact){additions.push(*fact);}}
-                        if additions.len()!=before && contradictory(&facts){impossible=true;break;}
-                    },
-                    _=>{
-                        let (left,right,alternative)=clause.query_inputs().unwrap();
-                        if alternative {
-                            alternatives.push((right,next,goals.len(),additions.len(),visits.len()));
-                        } else {push(&mut goals,&mut next,right);}
-                        push(&mut goals,&mut next,left);
-                    },
+        !self.overlap_query(other, false) && !other.overlap_query(self, false)
+    }
+
+    fn overlap_query(&self, other: &Self, other_truth: bool) -> bool {
+        #[derive(Clone, Copy)]
+        struct Gate {
+            children: [usize; 2],
+            either: bool,
+        }
+
+        struct Node<'a> {
+            clause: &'a Clause,
+            gate: Option<Gate>,
+            parents: Vec<usize>,
+        }
+
+        fn index<'a>(
+            clause: &'a Clause,
+            indices: &mut HashMap<usize, usize>,
+            nodes: &mut Vec<Node<'a>>,
+        ) -> usize {
+            *indices.entry(clause.key()).or_insert_with(|| {
+                let id = nodes.len();
+                nodes.push(Node { clause, gate: None, parents: Vec::new() });
+                id
+            })
+        }
+
+        fn propagate(
+            nodes: &[Node<'_>],
+            pending: &mut Vec<(usize, bool)>,
+            values: &mut [Option<bool>],
+            trail: &mut Vec<usize>,
+        ) -> bool {
+            while let Some((id, truth)) = pending.pop() {
+                if let Some(old) = values[id] {
+                    if old != truth {
+                        return false;
+                    }
+                    continue;
+                }
+                values[id] = Some(truth);
+                trail.push(id);
+                let node = &nodes[id];
+                let own_gate = node.gate.map(|_| id);
+                for parent in own_gate.into_iter().chain(node.parents.iter().copied()) {
+                    let gate = nodes[parent].gate.unwrap();
+                    let children = gate.children.map(|child| values[child]);
+                    let result = if children.contains(&Some(gate.either)) {
+                        Some(gate.either)
+                    } else if children.iter().all(Option::is_some) {
+                        Some(!gate.either)
+                    } else {
+                        None
+                    };
+                    match (values[parent], result) {
+                        (Some(required), Some(actual)) if required != actual => return false,
+                        (None, Some(actual)) => pending.push((parent, actual)),
+                        (Some(required), None) => {
+                            for (i, child) in gate.children.into_iter().enumerate() {
+                                if children[i].is_none()
+                                    && (required != gate.either || children[1 - i].is_some())
+                                {
+                                    pending.push((child, required));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
-            if !impossible{return true;}
-            let Some((right,remaining,goal_count,fact_count,visit_count))=alternatives.pop()else{return false;};
-            for fact in additions.drain(fact_count..){facts.remove(&fact);}
-            for key in visits.drain(visit_count..){visited.remove(&key);}
-            goals.truncate(goal_count);next=remaining;
-            push(&mut goals,&mut next,right);
+            true
+        }
+
+        #[derive(Clone, Copy)]
+        enum Alternative {
+            Clause(usize, bool),
+            Fact(Fact),
+        }
+
+        let mut indices = HashMap::new();
+        let mut nodes = Vec::new();
+        let left = index(self, &mut indices, &mut nodes);
+        let right = index(other, &mut indices, &mut nodes);
+        let mut pending = Vec::new();
+        let mut at = 0;
+        while at < nodes.len() {
+            let clause = nodes[at].clause;
+            match &**clause.0 {
+                ClauseNode::Impossible => pending.push((at, false)),
+                ClauseNode::Facts(facts) if facts.is_empty() => pending.push((at, true)),
+                _ => {}
+            }
+            if let Some((a, b, either)) = clause.query_inputs() {
+                let children = [a, b].map(|child| index(child, &mut indices, &mut nodes));
+                nodes[at].gate = Some(Gate { children, either });
+                for child in children {
+                    nodes[child].parents.push(at);
+                }
+            }
+            at += 1;
+        }
+        drop(indices);
+        pending.extend([(left, true), (right, other_truth)]);
+
+        let mut values = vec![None; nodes.len()];
+        let mut trail = Vec::new();
+        let mut alternatives = Vec::new();
+        let mut facts = Facts::new();
+        let mut additions = Vec::new();
+        let mut consumed = 0;
+        let mut negative = 0;
+        let mut next_fact = None;
+
+        loop {
+            // Shared conditions settle both their operands and their consumers before
+            // the current path needs any numeric facts.
+            if propagate(&nodes, &mut pending, &mut values, &mut trail) {
+                let before = additions.len();
+                let mut add = |fact| {
+                    if facts.insert(fact) {
+                        additions.push(fact);
+                    }
+                };
+                for &id in &trail[consumed..] {
+                    if values[id] == Some(true)
+                        && let ClauseNode::Facts(required) = &**nodes[id].clause.0
+                    {
+                        required.iter().copied().for_each(&mut add);
+                    }
+                }
+                if let Some(fact) = next_fact.take() {
+                    add(fact);
+                }
+                consumed = trail.len();
+
+                if additions.len() == before || !contradictory(&facts) {
+                    let choice = trail.iter().find_map(|&id| {
+                        let gate = nodes[id].gate?;
+                        let [left, right] = gate.children;
+                        (values[id] == Some(gate.either)
+                            && values[left].is_none()
+                            && values[right].is_none()).then_some((left, right, gate.either))
+                    });
+                    if let Some((left, right, truth)) = choice {
+                        alternatives.push((Alternative::Clause(right, truth), trail.len(), additions.len(), negative));
+                        pending.push((left, truth));
+                        continue;
+                    }
+
+                    let required = trail.iter().enumerate().skip(negative).find_map(|(at, &id)| {
+                        match &**nodes[id].clause.0 {
+                            ClauseNode::Facts(required) if values[id] == Some(false) => Some((at, required)),
+                            _ => None,
+                        }
+                    });
+                    let Some((at, required)) = required else { return true; };
+                    negative = at + 1;
+                    let mut negated = required.iter().rev().copied().filter_map(Self::negated_fact);
+                    if let Some(mut first) = negated.next() {
+                        for earlier in negated {
+                            alternatives.push((Alternative::Fact(first), trail.len(), additions.len(), negative));
+                            first = earlier;
+                        }
+                        next_fact = Some(first);
+                        continue;
+                    }
+                }
+            }
+
+            let Some((alternative, node_count, fact_count, negative_from)) = alternatives.pop()
+                else { return false; };
+            pending.clear();
+            for id in trail.drain(node_count..) {
+                values[id] = None;
+            }
+            for fact in additions.drain(fact_count..) {
+                facts.remove(&fact);
+            }
+            consumed = node_count;
+            negative = negative_from;
+            next_fact = match alternative {
+                Alternative::Clause(id, truth) => {
+                    pending.push((id, truth));
+                    None
+                }
+                Alternative::Fact(fact) => Some(fact),
+            };
         }
     }
 }
@@ -2976,6 +3135,23 @@ fn maximums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<(ValueIde
     }
     result
 }
+impl PartialEq for Clause {
+    fn eq(&self, other: &Self) -> bool { same_condition_roots([self], [other]) }
+}
+impl Eq for Clause {}
+impl PartialOrd for Clause {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for Clause {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if Arc::ptr_eq(&self.0, &other.0) {
+            return std::cmp::Ordering::Equal;
+        }
+        Condition::paths(self.clone(), Self::impossible())
+            .cmp(&Condition::paths(other.clone(), Self::impossible()))
+    }
+}
+
 impl PartialEq for Condition {
     fn eq(&self, other: &Self) -> bool {
         same_condition_roots(self.cases.each_ref(), other.cases.each_ref())

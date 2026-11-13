@@ -658,7 +658,7 @@ impl BorrowEvaluation<'_>{
         // This opaque write already contributes the same possible external
         // contents for every queried word, without replacing earlier contents.
         if written.is_none()
-            && borrow.sources.when(&Origin::External) == bounds::Condition::constant(true)
+            && borrow.sources.when(&Origin::External) == bounds::Clause::default()
         {
             let when = &usage.path;
             if when.possible() {

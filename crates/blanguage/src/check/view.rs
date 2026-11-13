@@ -3,50 +3,108 @@ use super::*;
 // 循环引用只在原Proof中连接入口和实际回边；公共合同只编码闭合来源。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct LoopInput { pub level: usize, pub index: usize }
-// 同一来源边携带实际成立条件；不复制资源或建立运行时拥有状态。
+// 来源边只持有该来源实际成立的条件。不存在的边和已知不成立的边仍可区分。
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
-pub(super) struct Edges<K:Ord>(BTreeMap<K,bounds::Condition>);
+pub(super) struct Edges<K:Ord>(BTreeMap<K,bounds::Clause>);
 impl<K:Ord> Default for Edges<K>{fn default()->Self{Self(BTreeMap::new())}}
 impl<K:Ord+Clone> Edges<K>{
-    fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
-        let mut result=Self::default();
-        for(key,when)in &self.0{result.insert_when(key.clone(),when.substitute_values(values).assume(&bounds::Clause::default(),true));}
-        result
+    fn substitute_values(&self, values: &BTreeMap<ValueIdentity,bounds::Proof>) -> Self {
+        Self(self.0.iter().map(|(key, when)| (key.clone(), when.substitute_values(values))).collect())
     }
 
-    pub fn insert(&mut self,key:K){self.insert_when(key,bounds::Clause::default());}
-    pub fn insert_when(&mut self,key:K,when:bounds::Clause){
-        // 不可能边仍表明来源已知；空图表示尚无来源关系，两者不能混为一谈。
-        // 新来源边直接持有原条件图；同一来源实际合流时才规整。
-        self.0.entry(key).and_modify(|old|*old=bounds::Condition::guard(bounds::Clause::either(&old.assume(&bounds::Clause::default(),true),&when).canonical())).or_insert_with(||bounds::Condition::guard(when));
+    pub fn insert(&mut self, key: K) { self.insert_when(key, bounds::Clause::default()); }
+
+    pub fn insert_when(&mut self, key: K, when: bounds::Clause) {
+        use std::collections::btree_map::Entry;
+        match self.0.entry(key) {
+            Entry::Vacant(entry) => { entry.insert(when); }
+            Entry::Occupied(mut entry) => {
+                let joined = bounds::Clause::either(entry.get(), &when).canonical();
+                entry.insert(joined);
+            }
+        }
     }
-    pub fn union(&mut self,other:&Self){for(key,when)in &other.0{self.0.entry(key.clone()).and_modify(|old|*old=old.clone().logical(when.clone(),true)).or_insert_with(||when.clone());}}
-    pub(in crate::check) fn insert_normalized(&mut self,key:K,when:bounds::Condition,normal:&mut bounds::Normalizer){
-        let when=normal.condition(&when);
-        self.0.entry(key).and_modify(|old|*old=normal.union(old,&when)).or_insert(when);
+
+    pub fn union(&mut self, other: &Self) {
+        use std::collections::btree_map::Entry;
+        for (key, when) in &other.0 {
+            match self.0.entry(key.clone()) {
+                Entry::Vacant(entry) => { entry.insert(when.clone()); }
+                Entry::Occupied(mut entry) => {
+                    let joined = bounds::Clause::either(entry.get(), when);
+                    entry.insert(joined);
+                }
+            }
+        }
     }
-    pub fn remove(&mut self, key: &K) -> Option<bounds::Clause> {
-        self.0.remove(key).map(|when| when.assume(&bounds::Clause::default(), true))
+
+    pub(in crate::check) fn insert_normalized(&mut self, key: K, when: bounds::Clause, normal: &mut bounds::Normalizer) {
+        use std::collections::btree_map::Entry;
+        match self.0.entry(key) {
+            Entry::Vacant(entry) => { entry.insert(normal.clause(&when)); }
+            Entry::Occupied(mut entry) => {
+                let joined = normal.clause(&bounds::Clause::either(entry.get(), &when));
+                entry.insert(joined);
+            }
+        }
     }
-    pub fn contains(&self,key:&K)->bool{self.0.get(key).is_some_and(bounds::Condition::active)}
-    pub fn is_empty(&self)->bool{self.0.is_empty()}
-    pub fn iter(&self)->std::collections::btree_map::Keys<'_,K,bounds::Condition>{self.0.keys()}
-    pub fn entries(&self)->impl DoubleEndedIterator<Item=(&K,bounds::Clause)>{self.0.iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
-    pub fn into_entries(self)->impl Iterator<Item=(K,bounds::Clause)>{self.0.into_iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
-    pub fn when(&self,key:&K)->bounds::Condition{self.0.get(key).cloned().unwrap_or_else(||bounds::Condition::constant(false))}
-    fn restricted(&self,path:&bounds::Clause)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.assume(path,true));}result}
-    fn guards_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.projected_case(true, bindings));}result}
-    fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(key.clone(),when.assume(&bounds::Clause::default(),true).output_bound(bindings));}result}
+
+    pub(super) fn equivalent(&self, other: &Self) -> bool {
+        self.0.keys().eq(other.0.keys())
+            && self.0.values().zip(other.0.values())
+                .all(|(left, right)| left.equivalent(right))
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<bounds::Clause> { self.0.remove(key) }
+    pub fn contains(&self, key: &K) -> bool { self.0.get(key).is_some_and(bounds::Clause::possible) }
+    pub fn is_empty(&self) -> bool { self.0.is_empty() }
+    pub fn iter(&self) -> std::collections::btree_map::Keys<'_, K, bounds::Clause> { self.0.keys() }
+    pub fn entries(&self) -> impl DoubleEndedIterator<Item = (&K, bounds::Clause)> {
+        self.0.iter().map(|(key, when)| (key, when.clone()))
+    }
+    pub fn into_entries(self) -> impl Iterator<Item = (K, bounds::Clause)> { self.0.into_iter() }
+    pub fn when(&self, key: &K) -> bounds::Clause {
+        self.0.get(key).cloned().unwrap_or_else(bounds::Clause::impossible)
+    }
+
+    fn when_absent(&self, key: &K) -> bounds::Clause {
+        bounds::Condition::guard(self.when(key)).assume(&bounds::Clause::default(), false)
+    }
+
+    fn restrict(&mut self, path: &bounds::Clause) {
+        for when in self.0.values_mut() {
+            *when = bounds::Clause::both(when, path);
+        }
+    }
+
+    pub(super) fn restricted(&self, path: &bounds::Clause) -> Self {
+        let mut value = self.clone();
+        value.restrict(path);
+        value
+    }
+
+    fn guards_at_call(&self, bindings: &BTreeMap<ValueIdentity,bounds::Proof>) -> Self {
+        Self(self.0.iter().map(|(key, when)| {
+            let when = bounds::Condition::guard(when.clone()).projected_case(true, bindings);
+            (key.clone(), when)
+        }).collect())
+    }
+
+    fn output_bound(&self, bindings: &BTreeMap<ValueIdentity,ValueIdentity>) -> Self {
+        Self(self.0.iter().map(|(key, when)| (key.clone(), when.output_bound(bindings))).collect())
+    }
 }
 impl<K:Ord+Clone,const N:usize> From<[K;N]> for Edges<K>{fn from(values:[K;N])->Self{values.into_iter().collect()}}
 impl<K:Ord+Clone> FromIterator<K> for Edges<K>{fn from_iter<T:IntoIterator<Item=K>>(values:T)->Self{let mut result=Self::default();for value in values{result.insert(value);}result}}
-impl<'a,K:Ord> IntoIterator for &'a Edges<K>{type Item=&'a K;type IntoIter=std::collections::btree_map::Keys<'a,K,bounds::Condition>;fn into_iter(self)->Self::IntoIter{self.0.keys()}}
-impl<K:Ord> IntoIterator for Edges<K>{type Item=K;type IntoIter=std::collections::btree_map::IntoKeys<K,bounds::Condition>;fn into_iter(self)->Self::IntoIter{self.0.into_keys()}}
-impl<K:Ord+Clone+crate::module::codec::Encode> crate::module::codec::Encode for Edges<K>{
-    fn encode(&self,w:&mut crate::module::codec::Writer){crate::module::codec::Encode::encode(&self.0,w);}
-}
+impl<'a,K:Ord> IntoIterator for &'a Edges<K>{type Item=&'a K;type IntoIter=std::collections::btree_map::Keys<'a,K,bounds::Clause>;fn into_iter(self)->Self::IntoIter{self.0.keys()}}
+impl<K:Ord> IntoIterator for Edges<K>{type Item=K;type IntoIter=std::collections::btree_map::IntoKeys<K,bounds::Clause>;fn into_iter(self)->Self::IntoIter{self.0.into_keys()}}
 impl<K:Ord+Clone+crate::module::codec::Decode> crate::module::codec::Decode for Edges<K>{
-    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{let values=<BTreeMap<K,bounds::Condition> as crate::module::codec::Decode>::decode(r)?;let mut result=Self::default();for(key,when)in values{result.insert_when(key,when.assume(&bounds::Clause::default(),true));}Ok(result)}
+    fn decode(r: &mut crate::module::codec::Reader<'_>) -> crate::module::codec::Result<Self> {
+        let values = <BTreeMap<K, bounds::Condition> as crate::module::codec::Decode>::decode(r)?;
+        Ok(Self(values.into_iter().map(|(key, condition)| {
+            (key, condition.assume(&bounds::Clause::default(), true))
+        }).collect()))
+    }
 }
 #[derive(Clone,Default,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) struct Borrow{
@@ -283,7 +341,20 @@ impl Borrow{
     pub fn joined(mut self,other:Self)->Self{self.union(&other);self}
     pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)|Source::Contents{origin,..}=>origin.pending(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.pending(),Source::Relation(graph,root)=>graph.pending(*root),Source::Task{captures,outputs,initialized,..}=>captures.pending()||initialized.pending()||outputs.iter().any(Self::pending),Source::TaskOutput{task,projection}=>!matches!(projection,TaskProjection::Returned(..))||task.pending(),_=>false})}
     pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())||self.reads.entries().any(|(_,when)|when.possible())}
-    pub fn restricted(&self,path:&bounds::Clause)->Self{Self{sources:self.sources.restricted(path),inputs:self.inputs.restricted(path),calls:self.calls.restricted(path),reads:self.reads.restricted(path)}}
+    fn restricted_by(mut self, condition: &bounds::Clause) -> Self {
+        self.sources.restrict(condition);
+        self.inputs.restrict(condition);
+        self.calls.restrict(condition);
+        self.reads.restrict(condition);
+        self
+    }
+
+    pub fn restricted(&self, path: &bounds::Clause) -> Self {
+        if self.empty() {
+            return Self::default();
+        }
+        self.clone().restricted_by(path)
+    }
     pub fn selected(choice:&bounds::Condition,a:&Self,b:&Self)->Self{
         // 完整借用相同，选支不改变来源；不生产随后无人需要的路径组合。
         if a==b{return a.clone();}
@@ -292,9 +363,10 @@ impl Borrow{
     fn initialization_guards(&self, lookup:impl Fn(ValueIdentity)->Option<bounds::Proof>)->Self {
         let mut result=self.clone();
         for when in result.sources.0.values_mut() {
-            let bindings=bounds::Proof::condition(when.clone()).scalar_identities().into_iter()
+            let condition = bounds::Condition::guard(when.clone());
+            let bindings=bounds::Proof::condition(condition.clone()).scalar_identities().into_iter()
                 .filter_map(|id|lookup(id).map(|proof|(id,proof))).collect();
-            *when=when.guaranteed_at_call(&bindings);
+            *when=condition.guaranteed_at_call(&bindings).assume(&bounds::Clause::default(), true);
         }
         result
     }
@@ -311,7 +383,16 @@ impl Borrow{
         Self{sources:self.sources.output_bound(bindings),inputs:self.inputs.output_bound(bindings),
             calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings)}
     }
-    pub fn map_sources(&self,map:impl Fn(Source)->Self)->Self{let mut result=Self{inputs:self.inputs.clone(),calls:self.calls.clone(),reads:self.reads.clone(),..Self::default()};for(source,when)in self.sources.entries(){result.union(&map(source.clone()).restricted(&when));}result}
+    pub fn map_sources(&self, map: impl Fn(Source) -> Self) -> Self {
+        let mut result = Self {
+            inputs: self.inputs.clone(), calls: self.calls.clone(),
+            reads: self.reads.clone(), ..Self::default()
+        };
+        for (source, condition) in &self.sources.0 {
+            result.union(&map(source.clone()).restricted_by(condition));
+        }
+        result
+    }
     pub fn unresolved(&self)->bool {
         fn query(value:&Borrow,path:&bounds::Clause)->bool {
             value.sources.entries().any(|(source,when)|{
@@ -398,7 +479,7 @@ impl crate::module::codec::Encode for Borrow{fn encode(&self,w:&mut crate::modul
         crate::module::codec::Encode::encode(source,w);
         // Inactive只表示此槽已知没有view，不授予任何资源或位置权限。
         if matches!(source,Source::Inactive){crate::module::codec::Encode::encode(&bounds::Condition::constant(true),w);}
-        else{crate::module::codec::Encode::encode(when,w);}
+        else{crate::module::codec::Encode::encode(&bounds::Condition::guard(when.clone()),w);}
     }
 }}
 impl crate::module::codec::Decode for Borrow{fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{sources:crate::module::codec::Decode::decode(r)?,..Self::default()})}}
@@ -557,7 +638,7 @@ impl Requirement {
                     source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放")
                 } else { Ok(()) }
             },
-            Self::Return{borrow,allowed,owned,span} if !owned.pending()&&borrow.owners().sources.entries().any(|(source,when)|matches!(source,Source::Data(id)if !allowed.contains(id)&&when.overlaps(&owned.owners().sources.when(source).assume(&bounds::Clause::default(),false))))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
+            Self::Return{borrow,allowed,owned,span} if !owned.pending()&&borrow.owners().sources.entries().any(|(source,when)|matches!(source,Source::Data(id)if !allowed.contains(id)&&when.overlaps(&owned.owners().sources.when_absent(source))))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
             _=>Ok(()),
         }
     }
@@ -604,8 +685,8 @@ impl Source {
                 if fields!=other_fields{return false;}
                 if let(Some(a),Some(b))=(index,other_index){if !bounds::Condition::index_equal(*a,*b).assume(path,true).possible(){return false;}}
                 parent.sources.entries().any(|(source,when)|other.overlaps_source(source,&bounds::Clause::both(path,&when)))
-                    ||parent.inputs.entries().any(|(input,when)|bounds::Clause::both(path,&when).overlaps(&other.inputs.when(input).assume(&bounds::Clause::default(),true)))
-                    ||parent.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&other.calls.when(call).assume(&bounds::Clause::default(),true)))
+                    ||parent.inputs.entries().any(|(input,when)|bounds::Clause::both(path,&when).overlaps(&other.inputs.when(input)))
+                    ||parent.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&other.calls.when(call)))
             },
             // Different input views can still borrow the same external resource.
             (Self::Parameter(a,_),Self::Parameter(b,_))=>a==b,
@@ -836,7 +917,7 @@ impl Builder<'_> {
                             ownership=>ownership.available(),
                         };
                         let actual=resource_borrow(data).restricted(&builder.path);
-                        present&&!when.overlaps(&actual.sources.when(source).assume(&bounds::Clause::default(),false))
+                        present&&!when.overlaps(&actual.sources.when_absent(source))
                     });
                     if held{continue;}
                 }

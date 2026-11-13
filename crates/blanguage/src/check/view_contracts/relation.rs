@@ -70,26 +70,50 @@ impl Builder<'_> {
         else{self.graph.nodes[id].seeds.sources.insert(Origin::Position(Arc::new(value.clone())));}
         id
     }
-    fn frame(&mut self,memory:usize)->Option<usize>{
-        while self.prefix.len()<=memory{
-            let at=self.prefix.len()-1;let parent=*self.prefix.last().unwrap();self.prefix.push(parent);let usage=&self.function.uses[at];let mut writes=Vec::new();
-            if let Requirement::Memory{borrow,access,written,address_fields,..}=&usage.requirement{
-                if let Some(call)=self.function.calls.iter().find(|call|call.memory==at){
-                    for access in &self.known[&call.function].interface.access{
-                        if let Access::Stored{borrows,word,value,when}=access{
-                            let target=self.borrow(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments),&Epoch::Input);
-                            let value=self.borrow(&call_content_sources(value,call,&call.arguments).at_call(&call.arguments),&Epoch::Input);
-                            let when=when.at_call(&call.arguments).logical(bounds::Condition::execution(&usage.path),false);
-                            writes.push(Write{target,fields:Some(vec![(*word,value)]),when});
-                        }
-                    }
-                }else if access.is_some_and(super::super::Access::writes){
-                    let target=self.borrow(borrow,&Epoch::Input);
-                    let fields=written.as_ref().map(|value|address_fields.iter().map(|&(word,component)|(word,self.borrow(&value.view_borrow(component),&Epoch::Input))).collect());
-                    writes.push(Write{target,fields,when:bounds::Condition::execution(&usage.path)});
+    fn writes(&mut self, memory: usize) -> Vec<Write> {
+        let usage = &self.function.uses[memory];
+        let Requirement::Memory { borrow, access, written, address_fields, .. } = &usage.requirement else {
+            return Vec::new();
+        };
+        let mut writes = Vec::new();
+        if let Some(call) = self.function.calls.iter().find(|call| call.memory == memory) {
+            for access in &self.known[&call.function].interface.access {
+                if let Access::Stored { borrows, word, value, when } = access {
+                    let target = self.borrow(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments), &Epoch::Input);
+                    let value = self.borrow(&call_content_sources(value, call, &call.arguments).at_call(&call.arguments), &Epoch::Input);
+                    writes.push(Write {
+                        target,
+                        fields: Some(vec![(*word, value)]),
+                        when: when.at_call(&call.arguments),
+                    });
                 }
             }
-            if !writes.is_empty(){let id=self.graph.frames.len();self.graph.frames.push(Frame{parent,writes});self.prefix[at+1]=Some(id);}
+        } else if access.is_some_and(super::super::Access::writes) {
+            let target = self.borrow(borrow, &Epoch::Input);
+            let fields = written.as_ref().map(|value| {
+                address_fields.iter().map(|&(word, component)| {
+                    (word, self.borrow(&value.view_borrow(component), &Epoch::Input))
+                }).collect()
+            });
+            writes.push(Write { target, fields, when: bounds::Condition::constant(true) });
+        }
+        writes
+    }
+
+    fn frame(&mut self, memory: usize) -> Option<usize> {
+        while self.prefix.len() <= memory {
+            let at = self.prefix.len() - 1;
+            let parent = *self.prefix.last().unwrap();
+            self.prefix.push(parent);
+            let mut writes = self.writes(at);
+            if writes.is_empty() { continue; }
+            let execution = bounds::Condition::execution(&self.function.uses[at].path);
+            for write in &mut writes {
+                write.when = write.when.clone().logical(execution.clone(), false);
+            }
+            let id = self.graph.frames.len();
+            self.graph.frames.push(Frame { parent, writes });
+            self.prefix[at + 1] = Some(id);
         }
         self.prefix[memory]
     }
@@ -111,11 +135,22 @@ impl Builder<'_> {
             Key::Read(ContentRead::Call{memory,origin,word,snapshots})=>{let from=self.position(&origin,&Epoch::Input);self.read(id,from,word,Epoch::Local{memory,snapshots});self.graph.nodes[id].edges.last_mut().unwrap().when=bounds::Condition::execution(&self.function.uses[memory].path);},
             Key::Read(ContentRead::Snapshot{memory,position:Position::Local(slot),initial,..})=>{
                 let from=self.borrow(&initial.view_borrow(0),&Epoch::Input);
-                let before=self.frame(memory);let after=self.frame(memory+1);
-                let frame=after.filter(|id|Some(*id)!=before).map(|id|{let path=&self.function.uses[memory].path;let mut normal=bounds::Normalizer::new();let writes=self.graph.frames[id].writes.iter().map(|w|Write{target:w.target,fields:w.fields.clone(),when:normal.condition(&bounds::Condition::paths(w.when.assume(path,true),w.when.assume(path,false)))}).collect();let id=self.graph.frames.len();self.graph.frames.push(Frame{parent:None,writes});id});
+                let writes = self.writes(memory);
+                let frame = if writes.is_empty() {
+                    None
+                } else {
+                    let id = self.graph.frames.len();
+                    self.graph.frames.push(Frame { parent: None, writes });
+                    Some(id)
+                };
                 let layout=address::Layout::of(&Ty::scalar(Scalar::U64));
                 let origin=address::Origin{root:address::Root::Local{base:slot,len:1},layout:layout.clone(),base:layout,words:Arc::from([0]),positions:Arc::from([Position::Local(slot)]),writable:true,initialized:Arc::from([true])};
-                self.edge(id,from,Op::Initial{origin,frame},bounds::Clause::default());
+                let path = self.function.uses[memory].path.clone();
+                self.graph.nodes[id].edges.push(Edge {
+                    from,
+                    op: Op::Initial { origin, frame },
+                    when: bounds::Condition::paths(path, bounds::Clause::impossible()),
+                });
             },
             Key::Read(read)=>{
                 let epoch=match &read{ContentRead::Snapshot{memory,..}|ContentRead::Returned{memory}=>Epoch::Local{memory:*memory,snapshots:None},_=>Epoch::Input};
@@ -257,7 +292,7 @@ impl Graph {
             if self.variables.contains(&id)||self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Read{..})) {
                 if !query.variables.contains_key(&id)&&!query.values.contains_key(&id){continue;}
                 for(source,when)in query.node(id).sources.entries(){
-                    if !self.private(source)&&!self.references(source){node.seeds.sources.insert_normalized(source.clone(),bounds::Condition::guard(when),&mut normal);}
+                    if !self.private(source)&&!self.references(source){node.seeds.sources.insert_normalized(source.clone(),when,&mut normal);}
                 }
             }
         }
@@ -266,13 +301,14 @@ impl Graph {
             let frame=&mut residual.frames[id];
             frame.writes.retain(|write|query.node(write.target).sources.entries().any(|(source,when)|when.possible()&&!self.private(source)));
             for write in &frame.writes{for(_,id)in write.fields.iter().flatten(){for(source,when)in query.node(*id).sources.entries(){
-                if self.private(source){residual.nodes[*id].seeds.sources.insert_normalized(source.clone(),bounds::Condition::guard(when),&mut normal);}
+                if self.private(source){residual.nodes[*id].seeds.sources.insert_normalized(source.clone(),when,&mut normal);}
             }}}
         }residual
     }
-    fn rebind(&self,value:&Borrow,residual:&Graph)->Borrow{
+    fn rebind<'r>(&self,value:&Borrow,residual:&impl Fn()->&'r Graph)->Borrow{
         value.map_sources(|source|match source{
             Origin::Relation(g,root)if self.extension(&g)=>{
+                let residual = residual();
                 let mut graph=(*g).clone();graph.nodes[..self.nodes.len()].clone_from_slice(&residual.nodes);graph.frames=residual.frames.clone();
                 Borrow::source(Origin::Relation(Arc::new(graph),root))
             },
@@ -310,7 +346,6 @@ impl Graph {
                 variables: &variables,
                 values,
                 evaluation: &mut scope,
-                normal: bounds::Normalizer::new(),
             };
             for (id, _) in stable.drain(..).chain(feedback.iter().copied()) {
                 let value = query.definition(id);
@@ -318,10 +353,10 @@ impl Graph {
             }
             let next = variables.keys().map(|&id| (id, query.definition(id)))
                 .collect::<BTreeMap<_, _>>();
-            if next == variables {
+            if variables.iter().all(|(id, previous)| next[id].sources.equivalent(&previous.sources)) {
                 let value = query.node(root);
-                let residual = self.residual(&query);
-                return self.rebind(&value, &residual);
+                let residual = std::cell::OnceCell::new();
+                return self.rebind(&value, &|| residual.get_or_init(|| self.residual(&query)));
             }
             values = query.values;
             for &(id, _) in &feedback {
@@ -331,41 +366,103 @@ impl Graph {
         }
     }
 }
-struct Query<'g,'e,'f>{graph:&'g Graph,relation:Arc<Graph>,variables:&'g BTreeMap<usize,Borrow>,values:BTreeMap<usize,Borrow>,evaluation:&'e mut BorrowEvaluation<'f>,normal:bounds::Normalizer}
+struct Query<'g,'e,'f>{graph:&'g Graph,relation:Arc<Graph>,variables:&'g BTreeMap<usize,Borrow>,values:BTreeMap<usize,Borrow>,evaluation:&'e mut BorrowEvaluation<'f>}
 impl Query<'_,'_,'_>{
-    fn merge(&mut self,to:&mut Borrow,value:&Borrow){for(source,when)in value.sources.entries(){to.sources.insert_normalized(source.clone(),bounds::Condition::guard(when),&mut self.normal);}}
     fn node(&self,id:usize)->Borrow{self.variables.get(&id).unwrap_or_else(||&self.values[&id]).clone()}
-    fn definition(&mut self,id:usize)->Borrow{let node=self.graph.nodes[id].clone();let mut value=Borrow::default();self.merge(&mut value,&node.seeds);for edge in node.edges{let from=self.node(edge.from);let v=self.apply(id,edge.from,&edge.op,&from).restricted(&edge.when.assume(&bounds::Clause::default(),true));self.merge(&mut value,&v);}value}
+    fn definition(&mut self, id: usize) -> Borrow {
+        let Node { seeds, edges } = self.graph.nodes[id].clone();
+        let mut value = Borrow { sources: seeds.sources, ..Borrow::default() };
+        for edge in edges {
+            let from = self.node(edge.from);
+            let incoming = self.apply(id, edge.from, &edge.op, &from);
+            let path = edge.when.assume(&bounds::Clause::default(), true);
+            value.sources.union(&incoming.sources.restricted(&path));
+        }
+        value
+    }
     fn deferred(&self,id:usize)->Borrow{Borrow::source(Origin::Relation(self.relation.clone(),id))}
     fn apply(&mut self,id:usize,from_id:usize,op:&Op,from:&Borrow)->Borrow{
         if let Op::Read{word,epoch,frame}=op{return self.read(id,from_id,from,*word,epoch,*frame);}
-        if let Op::Initial{..}=op{let node=self.local_definition(id);let mut value=node.seeds;for edge in node.edges{self.merge(&mut value,&self.node(edge.from).restricted(&edge.when.assume(&bounds::Clause::default(),true)));}return value;}
+        if let Op::Initial { .. } = op {
+            let node = self.local_definition(id);
+            let mut value = node.seeds;
+            for edge in node.edges {
+                let incoming = self.node(edge.from);
+                let path = edge.when.assume(&bounds::Clause::default(), true);
+                value.sources.union(&incoming.sources.restricted(&path));
+            }
+            return value;
+        }
         from.map_sources(|source|match op{Op::Identity=>Borrow::source(source),Op::Resources=>Borrow::source(source).resources(),Op::Owners=>Borrow::source(source).owners(),Op::Select(indices)=>Borrow::source(source).select_elements(indices),Op::Element{fields,index}=>Borrow::element(Borrow::source(source),fields.clone(),*index),Op::Projection(fields)=>Borrow::projection(Borrow::source(source),fields.clone()),Op::Position(p)=>p.map_borrows(|_|Borrow::source(source)).normalize(),Op::Read{..}|Op::Initial{..}=>Borrow::default()})
     }
     fn local_definition(&self,id:usize)->Node{
-        let mut result=Node{seeds:self.graph.nodes[id].seeds.clone(),edges:Vec::new()};
-        for edge in &self.graph.nodes[id].edges{
+        let node = &self.graph.nodes[id];
+        let mut result = Node { seeds: node.seeds.clone(), edges: Vec::with_capacity(node.edges.len()) };
+        for edge in &node.edges {
             let Op::Initial{origin,frame}=&edge.op else{result.edges.push(edge.clone());continue;};
+            let path = edge.when.assume(&bounds::Clause::default(), true);
             let position=content_position(origin,0);let mut earlier=bounds::Condition::constant(true);let mut at=*frame;
             while let Some(fi)=at{
                 let f=&self.graph.frames[fi];at=f.parent;
-                for write in f.writes.iter().rev(){
-                    let mut hit=bounds::Clause::impossible();let mut miss=bounds::Clause::impossible();
-                    for(target,selected)in self.node(write.target).sources.entries(){
-                        let yes=write.when.assume(&selected,true);if !yes.possible(){continue;}
-                        let mut complete=false;
-                        if let Origin::Position(target)=target{
-                            // A formal input and the storage reachable from it precede this invocation's private slots.
-                            // Actual locally produced addresses remain separate Position sources and retain aliasing.
-                            if target.symbolic_input()&&!target.has_local(){miss=bounds::Clause::either(&miss,&yes);continue;}
-                            if let Some(fields)=&write.fields{for(word,value)in fields{
-                                let(affected,full)=content_write_overlap(Some((origin,0)),position.as_ref(),target,*word,&yes);
-                                if affected{result.edges.push(Edge{from:*value,op:Op::Identity,when:earlier.clone().logical(bounds::Condition::guard(yes.clone()),false).logical(edge.when.clone(),false)});hit=bounds::Clause::either(&hit,&yes);complete|=full;}
-                            }}else if address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())),super::super::Access::Write,None).written_bytes(position.as_ref().unwrap(),Scalar::U64,None)!=0{result.seeds.union(&Borrow::source(Origin::External).restricted(&earlier.assume(&yes,true)));}
-                        }else if matches!(target,Origin::External){result.seeds.union(&Borrow::source(Origin::External).restricted(&earlier.assume(&yes,true)));}
-                        if !complete{miss=bounds::Clause::either(&miss,&yes);}
+                for write in f.writes.iter().rev() {
+                    let targets = self.node(write.target);
+                    let targets = targets.sources.entries().filter_map(|(target, selected)| {
+                        let yes = write.when.assume(&bounds::Clause::both(&path, &selected), true);
+                        yes.possible().then_some((target, yes))
+                    });
+                    let Some(fields) = &write.fields else {
+                        // A possible external write contributes a source while retaining the earlier value.
+                        for (target, yes) in targets {
+                            let affected = match target {
+                                Origin::Position(target) if target.symbolic_input() && !target.has_local() => false,
+                                Origin::Position(target) => address::MemoryEffect::of(
+                                    &Borrow::source(Origin::Position(target.clone())), super::super::Access::Write, None,
+                                ).written_bytes(position.as_ref().unwrap(), Scalar::U64, None) != 0,
+                                Origin::External => true,
+                                _ => false,
+                            };
+                            if affected {
+                                result.seeds.union(&Borrow::source(Origin::External).restricted(&earlier.assume(&yes, true)));
+                            }
+                        }
+                        continue;
+                    };
+
+                    let mut hit = bounds::Clause::impossible();
+                    let mut miss = bounds::Clause::impossible();
+                    for (target, yes) in targets {
+                        let mut complete = false;
+                        if let Origin::Position(target) = target {
+                            // A formal input cannot reach this invocation's private slots.
+                            if target.symbolic_input() && !target.has_local() {
+                                miss = bounds::Clause::either(&miss, &yes);
+                                continue;
+                            }
+                            for (word, value) in fields {
+                                let (affected, full) = content_write_overlap(
+                                    Some((origin, 0)), position.as_ref(), target, *word, &yes,
+                                );
+                                if affected {
+                                    result.edges.push(Edge {
+                                        from: *value,
+                                        op: Op::Identity,
+                                        when: earlier.clone()
+                                            .logical(bounds::Condition::guard(yes.clone()), false)
+                                            .logical(edge.when.clone(), false),
+                                    });
+                                    hit = bounds::Clause::either(&hit, &yes);
+                                    complete |= full;
+                                }
+                            }
+                        } else if matches!(target, Origin::External) {
+                            result.seeds.union(&Borrow::source(Origin::External).restricted(&earlier.assume(&yes, true)));
+                        }
+                        if !complete {
+                            miss = bounds::Clause::either(&miss, &yes);
+                        }
                     }
-                    let no=bounds::Clause::either(&write.when.assume(&bounds::Clause::default(),false),&miss);earlier=earlier.logical(bounds::Condition::paths(hit,no).negate(),false);
+                    let no = bounds::Clause::either(&write.when.assume(&path, false), &miss);
+                    earlier = earlier.logical(bounds::Condition::paths(hit, no).negate(), false);
                 }
             }
             result.edges.push(Edge{from:edge.from,op:Op::Identity,when:earlier.logical(edge.when.clone(),false)});
@@ -389,7 +486,7 @@ impl Query<'_,'_,'_>{
                     let yes=write.when.assume(&path,true);if !yes.possible(){continue;}
                     let fields=write.fields.iter().flatten().filter(|(field,_)|self.same_word(from_id,word,write.target,*field)).collect::<Vec<_>>();
                     if !fields.is_empty(){
-                        let mut incoming=Borrow::default();for(_,value)in fields{let v=self.node(*value);if v.empty(){ready=false;break;}self.merge(&mut incoming,&v);}
+                        let mut incoming=Borrow::default();for(_,value)in fields{let v=self.node(*value);if v.empty(){ready=false;break;}incoming.sources.union(&v.sources);}
                         content.write(&incoming,&write.when,true);continue;
                     }
                     let targets=self.node(write.target);if targets.empty(){ready=false;break;}
@@ -401,11 +498,11 @@ impl Query<'_,'_,'_>{
                             if let Some(fields)=&write.fields{
                                 for (field,value)in fields{
                                     let(affected,full)=content_write_overlap(Some((origin,word)),position.as_ref(),target,*field,&selected);
-                                    if affected{let v=self.node(*value);if v.empty(){ready=false;break;}self.merge(&mut incoming,&v.restricted(&selected));possible=true;complete|=full;}
+                                    if affected{let v=self.node(*value);if v.empty(){ready=false;break;}incoming.sources.union(&v.sources.restricted(&selected));possible=true;complete|=full;}
                                     else if !full&&(origin.symbolic_input()||target.symbolic_input()||matches!(origin.root,address::Root::Parameter(_))||matches!(target.root,address::Root::Parameter(_))){delayed=true;}
                                 }
-                            }else if position.as_ref().is_some_and(|p|address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())).restricted(&selected),super::super::Access::Write,None).written_bytes(p,Scalar::U64,None)!=0){possible=true;self.merge(&mut incoming,&Borrow::source(Origin::External).restricted(&selected));}
-                        }else if matches!(target,Origin::External){possible=true;self.merge(&mut incoming,&Borrow::source(Origin::External).restricted(&selected));}
+                            }else if position.as_ref().is_some_and(|p|address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())).restricted(&selected),super::super::Access::Write,None).written_bytes(p,Scalar::U64,None)!=0){possible=true;incoming.sources.union(&Borrow::source(Origin::External).sources.restricted(&selected));}
+                        }else if matches!(target,Origin::External){possible=true;incoming.sources.union(&Borrow::source(Origin::External).sources.restricted(&selected));}
                         if possible{hit=bounds::Clause::either(&hit,&selected);}if !complete{miss=bounds::Clause::either(&miss,&selected);}
                     }
                     let no=bounds::Clause::either(&write.when.assume(&path,false),&miss);content.write(&incoming,&bounds::Condition::paths(hit,no),true);
@@ -415,7 +512,7 @@ impl Query<'_,'_,'_>{
             let value=if !ready{Borrow::default()}else if delayed{self.deferred(id)}else if content.earlier.as_ref().is_some_and(|p|!p.possible()){content.with_initial(Borrow::default())}else if origin.symbolic_input(){self.deferred(id)}else{
                 let base=match epoch{Epoch::Input=>input_contents(origin,word),Epoch::Local{memory,snapshots}=>self.evaluation.content_before(origin,word,*memory,snapshots.as_deref())};
                 if base.sources.iter().any(|s|matches!(s,Origin::Contents{..})){self.deferred(id)}else{content.with_initial(base)}
-            };self.merge(&mut output,&value.restricted(&path));
+            };output.sources.union(&value.sources.restricted(&path));
         }output
     }
 }
