@@ -22,9 +22,6 @@ result<bool,ExistsError> try_exists(address path) on cpu {
     return Ok(true);
 }
 
-extern "C" u32 GetFullPathNameW(address path,u32 capacity,address buffer,
-    address file_part) on cpu from "KERNEL32.dll";
-
 bool verbatim(address path) on cpu {
     usize start=address_bits(path);
     if (unsafe_position<u16>(path) == u16(92)) {

@@ -16,5 +16,5 @@ extern "C" i32 release_host_wide(address data) on cpu;
 
 struct SdkVersionResult { u32 units; u32 status; };
 
-// pattern is a terminated Win32 search path. selected holds 260 UTF-16 units.
-extern "C" SdkVersionResult find_sdk_version(address pattern, address selected) on cpu;
+// pattern borrows units UTF-16 code units followed by NUL. selected holds 260 units.
+extern "C" SdkVersionResult find_sdk_version(address pattern, usize units, address selected) on cpu;

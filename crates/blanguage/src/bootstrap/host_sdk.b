@@ -1,10 +1,12 @@
 module bootstrap.host_sdk;
 import blink.windows.directory;
 import blink.windows.error;
+import blink.windows.path_core;
 
 const handle INVALID_SEARCH = unsafe_handle(0xffffffffffffffffu64);
 const u32 ERROR_FILE_NOT_FOUND = 2;
 const u32 ERROR_NO_MORE_FILES = 18;
+const u32 ERROR_FILENAME_EXCED_RANGE = 206;
 const u32 FILE_ATTRIBUTE_DIRECTORY = 0x10;
 
 extern "C" handle FindFirstFileExW(address pattern, i32 information, write FindData data,
@@ -153,14 +155,69 @@ bool select_sdk_version(SdkVersionName name, SdkVersionName selected) on cpu {
     return !equal_prefix || selected_index > selected.units;
 }
 
-extern "C" SdkVersionResult find_sdk_version(address pattern, address selected) on cpu {
+struct SdkSearchPath {
+    address pattern;
+    address allocation;
+    u32 status;
+};
+
+address extended_search_path(address full, usize units) on cpu {
+    LexicalPrefix prefix = lexical_prefix(UnitSpan(full, units), false);
+    if (prefix.literal || prefix.end == 0u64) { return full; }
+    if (prefix.end == 2u64) {
+        address start = unsafe_address(address_bits(full) - 8u64);
+        unsafe_position<array<u16,4>>(start) = array<u16,4>(u16(92), u16(92), u16(63), u16(92));
+        return start;
+    }
+    if (wide_unit(full, 2u64) == 46 && lexical_separator(u16(wide_unit(full, 3u64)), false)) {
+        unsafe_position<u16>(unsafe_address(address_bits(full) + 4u64)) = u16(63);
+        return full;
+    }
+
+    // The two initial UNC slashes are replaced by the eight-unit extended prefix.
+    address start = unsafe_address(address_bits(full) - 12u64);
+    unsafe_position<array<u16,8>>(start) = array<u16,8>(
+        u16(92), u16(92), u16(63), u16(92), u16(85), u16(78), u16(67), u16(92));
+    return start;
+}
+
+SdkSearchPath sdk_search_path(address pattern, usize units) on cpu {
+    bool nt = units >= 4u64 && wide_unit(pattern, 0u64) == 92 && wide_unit(pattern, 1u64) == 63 &&
+        wide_unit(pattern, 2u64) == 63 && wide_unit(pattern, 3u64) == 92;
+    LexicalPrefix prefix = lexical_prefix(UnitSpan(pattern, units), nt);
+    bool absolute = prefix.end > 2u64 || (prefix.end == 2u64 && units > 2u64 &&
+        lexical_separator(u16(wide_unit(pattern, 2u64)), false));
+    if (prefix.literal || (absolute && units < 247u64)) {
+        return SdkSearchPath(pattern, address(), 0);
+    }
+
+    // One Win32-sized buffer resolves a relative path against the current directory once.
+    // Six leading units leave room to replace a UNC prefix in the same allocation.
+    u32 capacity = 32768;
+    handle heap = GetProcessHeap();
+    address allocation = HeapAlloc(heap, 0, (usize(capacity) + 6u64) * 2u64);
+    if (address_bits(allocation) == 0u64) { return SdkSearchPath(address(), address(), u32(ERROR_NOT_ENOUGH_MEMORY)); }
+    address full = unsafe_address(address_bits(allocation) + 12u64);
+    u32 written = GetFullPathNameW(pattern, capacity, full, address());
+    if (written == 0 || written >= capacity) {
+        u32 status = written == 0 ? GetLastError() : ERROR_FILENAME_EXCED_RANGE;
+        HeapFree(heap, 0, allocation);
+        return SdkSearchPath(address(), address(), status);
+    }
+    return SdkSearchPath(extended_search_path(full, usize(written)), allocation, 0);
+}
+
+extern "C" SdkVersionResult find_sdk_version(address pattern, usize units, address selected) on cpu {
+    SdkSearchPath path = sdk_search_path(pattern, units);
+    if (path.status != 0) { return SdkVersionResult(0, path.status); }
     FindData data;
     // FindExInfoBasic omits the unused alternate filename.
-    handle search = FindFirstFileExW(pattern, i32(1), data, i32(0), address(), 0);
+    handle search = FindFirstFileExW(path.pattern, i32(1), data, i32(0), address(), 0);
+    u32 open_status = search == INVALID_SEARCH ? GetLastError() : 0;
+    if (address_bits(path.allocation) != 0u64) { release_host_wide(path.allocation); }
     if (search == INVALID_SEARCH) {
-        u32 status = GetLastError();
-        if (status == ERROR_FILE_NOT_FOUND) { return SdkVersionResult(0, 0); }
-        return SdkVersionResult(0, status);
+        if (open_status == ERROR_FILE_NOT_FOUND) { return SdkVersionResult(0, 0); }
+        return SdkVersionResult(0, open_status);
     }
 
     usize selected_units = 0u64;

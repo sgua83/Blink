@@ -6,7 +6,7 @@ use std::{
     fs::File,
     io::{self, Write},
     os::windows::ffi::{OsStrExt, OsStringExt},
-    path::{Component, Path, PathBuf, Prefix},
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 fn output(command: &mut Command) -> io::Result<Output> {
@@ -52,7 +52,7 @@ struct SdkVersionResult {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.host_sdk::find_sdk_version"]
-    fn find_sdk_version(pattern: *const u16, selected: *mut u16) -> SdkVersionResult;
+    fn find_sdk_version(pattern: *const u16, units: usize, selected: *mut u16) -> SdkVersionResult;
     #[link_name = "bootstrap.host_sdk::read_sdk_root"]
     fn read_sdk_root() -> HostWide;
     #[link_name = "bootstrap.host_sdk::decode_host_text"]
@@ -82,33 +82,6 @@ fn host_text<T>(bytes: &[u8], kind: HostText, copy: impl FnOnce(&[u16]) -> T) ->
         return Err(io::Error::from_raw_os_error(decoded.status).into());
     }
     Ok(decoded.consume(copy)?)
-}
-
-fn sdk_search_pattern(directory: &Path) -> io::Result<Vec<u16>> {
-    let pattern = join(directory, "*");
-    let mut units: Vec<_> = pattern.as_os_str().encode_wide().collect();
-    if units.contains(&0) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file name contained an unexpected NUL byte"));
-    }
-    const VERBATIM: &str = r"\\?\";
-    let verbatim = units.starts_with(&[92, 92, 63, 92]) || units.starts_with(&[92, 63, 63, 92]);
-    if !verbatim && (units.len() >= 247 || !pattern.is_absolute()) {
-        let absolute = std::path::absolute(&pattern)?;
-        let (prefix, skip) = match absolute.components().next() {
-            Some(Component::Prefix(prefix)) => match prefix.kind() {
-                Prefix::Disk(_) => (VERBATIM, 0),
-                Prefix::UNC(..) => (r"\\?\UNC\", 2),
-                Prefix::DeviceNS(_) => (VERBATIM, 4),
-                _ => ("", 0),
-            },
-            _ => ("", 0),
-        };
-        units.clear();
-        units.extend(prefix.encode_utf16());
-        units.extend(absolute.as_os_str().encode_wide().skip(skip));
-    }
-    units.push(0);
-    Ok(units)
 }
 
 fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
@@ -144,9 +117,14 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         join(&join(vs, "VC/Tools/MSVC"), version)
     };
     let lib = join(&sdk_root()?, "Lib");
-    let pattern = sdk_search_pattern(&lib)?;
+    let mut pattern: Vec<_> = join(&lib, "*").as_os_str().encode_wide().collect();
+    if pattern.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "file name contained an unexpected NUL byte").into());
+    }
+    let units = pattern.len();
+    pattern.push(0);
     let mut version = [0u16; 260];
-    let selected = unsafe { find_sdk_version(pattern.as_ptr(), version.as_mut_ptr()) };
+    let selected = unsafe { find_sdk_version(pattern.as_ptr(), units, version.as_mut_ptr()) };
     if selected.status != 0 {
         return Err(io::Error::from_raw_os_error(selected.status as i32).into());
     }

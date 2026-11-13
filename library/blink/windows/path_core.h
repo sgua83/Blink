@@ -11,6 +11,9 @@ struct ExtensionScan {
 struct JoinComponent { bool from_base; u64 start; u64 length; u64 kind; };
 struct JoinPlan { u64 length; u64 components; u64 base_length; u64 separator; };
 struct ExtensionPlan { u64 length; u64 copy; u64 append; };
+extern "C" u32 GetFullPathNameW(address path,u32 capacity,address buffer,
+    address file_part) on cpu from "KERNEL32.dll";
+
 bool lexical_separator(u16 unit,bool literal) on cpu;
 LexicalPrefix lexical_prefix(UnitSpan path,bool nt_prefix) on cpu;
 u64 component_capacity(UnitSpan path,bool literal) on cpu;
