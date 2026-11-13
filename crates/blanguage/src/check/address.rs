@@ -157,6 +157,7 @@ impl Origin {
             let value=match source {
                 view::Source::Position(parent) if parent.layout==self.base =>
                     view::Borrow::source(view::Source::Position(Arc::new(parent.project(self)))),
+                view::Source::Inactive => view::Borrow::source(view::Source::Inactive),
                 view::Source::External => {
                     let mut value=self.clone();value.root=Root::External(Identity::Value(Vec::new()));value.base=value.layout.clone();
                     value.words=value.layout.parts.iter().map(|(_,at)|*at).collect();value.initialized=vec![true;value.layout.parts.len()].into();
