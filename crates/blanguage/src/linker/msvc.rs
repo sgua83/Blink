@@ -210,15 +210,11 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
             .flat_map(|section| &section.relocations)
             .filter_map(|relocation| match &relocation.target {
                 crate::object::Target::Import(import) => Some(import), _ => None,
-            }).collect::<std::collections::BTreeSet<_>>();
-        if !imports.is_empty() {
-            let mut members = Vec::new();
-            let mut symbols = Vec::new();
-            for import in imports {
-                let (member, symbol) = super::imports::member(import)?;
-                symbols.push((members.len(), symbol));
-                members.push(member);
-            }
+            });
+        let mut members = Vec::new();
+        let mut symbols = Vec::new();
+        super::imports::append_members(imports, &mut members, &mut symbols)?;
+        if !members.is_empty() {
             let path = join(directory, format!(".blink-link-{id}-imports.lib"));
             let bytes = crate::object::library_bytes(&members, &symbols)?;
             write_input(&mut temporary, path, &bytes)?;

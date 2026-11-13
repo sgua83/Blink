@@ -121,6 +121,34 @@ extern "C" u64 order_imports(address names, u64 count) on cpu {
     return unique;
 }
 
+struct NamePair { NameBytes first; NameBytes second; };
+
+i32 compare_pair(NamePair left, NamePair right) on cpu {
+    i32 first = compare_name(left.first, right.first);
+    return first != 0 ? first : compare_name(left.second, right.second);
+}
+
+extern "C" bool pair_before(address left, address right, address context) on cpu {
+    return compare_pair(unsafe_position<NamePair>(left), unsafe_position<NamePair>(right)) < i32(0);
+}
+
+extern "C" u64 order_name_pairs(address pairs, u64 count) on cpu {
+    sort_rows<NamePair>(pairs, count, address(), c_function(pair_before));
+    u64 unique = 0u64;
+    u64 index = 0u64;
+    NamePair previous = NamePair(empty(), empty());
+    while (index < count) {
+        NamePair pair = unsafe_position<NamePair>(row_at<NamePair>(pairs, index));
+        if (unique == 0u64 || compare_pair(previous, pair) != 0) {
+            unsafe_position<NamePair>(row_at<NamePair>(pairs, unique)) = pair;
+            previous = pair;
+            unique += 1u64;
+        }
+        index += 1u64;
+    }
+    return unique;
+}
+
 extern "C" void pair_functions(address names, u64 declarations, u64 implementations, address output) on cpu {
     u64 count = declarations + implementations;
     sort_rows<FunctionName>(names, count, address(), c_function(name_before));

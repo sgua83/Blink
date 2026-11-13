@@ -2,7 +2,7 @@
 use super::Result;
 use crate::object::{self,Import,Kind,LibraryMember,Relocation,Section,Symbol,Target};
 use super::resources::ImportBytes;
-use std::{collections::BTreeSet,path::Path};
+use std::{marker::PhantomData, path::Path};
 
 #[derive(Clone,Copy)]
 #[repr(C)]
@@ -19,14 +19,37 @@ struct NativeImportOutput {sections:*mut NativeImportSection,relocations:*mut Na
 #[derive(Clone,Copy)]
 #[repr(C)]
 struct NativeImportPlan {slot:u64,stem:u64,member:u64,hint:u64,relocations:u64,root:u64,error:u64}
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct ImportKey<'a> {
+    dll: ImportBytes,
+    name: ImportBytes,
+    owner: PhantomData<&'a Import>,
+}
+
+impl<'a> From<&'a Import> for ImportKey<'a> {
+    fn from(import: &'a Import) -> Self {
+        Self { dll: ImportBytes::new(&import.dll), name: ImportBytes::new(&import.name), owner: PhantomData }
+    }
+}
+
+impl ImportKey<'_> {
+    fn symbol(&self) -> &str {
+        // This view borrows the original String. Ordering moves complete rows.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.name.bytes, self.name.length as usize)) }
+    }
+}
+
 unsafe extern "C" {
+    #[link_name="bootstrap.names::order_name_pairs"]
+    fn order_import_keys(pairs: *mut ImportKey<'_>, count: u64) -> u64;
     #[link_name="bootstrap.native_import::plan_import"]
     fn plan_import(input:NativeImportInput,output:NativeImportOutput)->NativeImportPlan;
     #[link_name="bootstrap.native_import::encode_import"]
     fn encode_import(input:NativeImportInput,output:NativeImportOutput,plan:NativeImportPlan);
 }
-pub(super) fn member(import:&Import)->Result<(LibraryMember,String)> {
-    let input=NativeImportInput{dll:ImportBytes::new(&import.dll),name:ImportBytes::new(&import.name),runtime:ImportBytes::new(crate::application::RUNTIME_LIBRARY)};
+fn member(import: ImportKey<'_>) -> Result<(LibraryMember, String)> {
+    let input=NativeImportInput{dll:import.dll,name:import.name,runtime:ImportBytes::new(crate::application::RUNTIME_LIBRARY)};
     let mut rows=[NativeImportSection{name:0,length:0,flags:0,owner:0,bytes:std::ptr::null_mut()};6];
     let mut relocations=[NativeImportRelocation{section:0,offset:0,kind:0,target:0,target_section:0,value:0};5];
     let mut output=NativeImportOutput{sections:rows.as_mut_ptr(),relocations:relocations.as_mut_ptr(),slot:std::ptr::null_mut(),stem:std::ptr::null_mut(),member:std::ptr::null_mut()};
@@ -49,7 +72,7 @@ pub(super) fn member(import:&Import)->Result<(LibraryMember,String)> {
     for row in &relocations[..usize::try_from(plan.relocations)?]{
         let target=match row.target{
             0=>Target::Section(usize::try_from(row.target_section)?,u32::try_from(row.value)?),
-            1=>Target::Symbol(import.name.clone()),code=>return Err(format!("未知原生导入目标 {code}").into()),
+            1=>Target::Symbol(import.symbol().to_owned()),code=>return Err(format!("未知原生导入目标 {code}").into()),
         };
         sections[usize::try_from(row.section)?].relocations.push(Relocation{offset:usize::try_from(row.offset)?,kind:u16::try_from(row.kind)?,target});
     }
@@ -59,12 +82,27 @@ pub(super) fn member(import:&Import)->Result<(LibraryMember,String)> {
     Ok((LibraryMember::new(member,bytes),symbol.name))
 }
 
+pub(super) fn append_members<'a>(
+    imports: impl IntoIterator<Item = &'a Import>,
+    members: &mut Vec<LibraryMember>,
+    symbols: &mut Vec<(usize, String)>,
+) -> Result<()> {
+    let mut keys: Vec<_> = imports.into_iter().map(ImportKey::from).collect();
+    let count = unsafe { order_import_keys(keys.as_mut_ptr(), keys.len() as u64) } as usize;
+    for key in keys.into_iter().take(count) {
+        let (member, symbol) = member(key)?;
+        symbols.push((members.len(), symbol));
+        members.push(member);
+    }
+    Ok(())
+}
+
 /// 保存已编译模块及其原生导入材料，供C／C++／Rust静态宿主链接。
 /// 不读取B源码、不生成执行代码；原生IAT成员不作为B接口模块装入。
 pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     let mut members = object::library_members(inputs)?;
     let mut symbols = Vec::new();
-    let mut imports = BTreeSet::new();
+    let mut imports = Vec::new();
     for (index, member) in members.iter().enumerate() {
         let object = member.object(false)?;
         if !matches!(object.kind, Kind::Module { .. }) {
@@ -74,11 +112,7 @@ pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
         imports.extend(object.sections.into_iter().flat_map(|section| section.relocations)
             .filter_map(|relocation| match relocation.target { Target::Import(import) => Some(import), _ => None }));
     }
-    for import in imports {
-        let (member, symbol) = self::member(&import)?;
-        symbols.push((members.len(), symbol));
-        members.push(member);
-    }
+    append_members(&imports, &mut members, &mut symbols)?;
     let output = object::library_bytes(&members, &symbols)?;
     if let Some(parent) = path.parent() {
         crate::file_bytes::create_dir_all(parent)?;

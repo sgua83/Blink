@@ -8,6 +8,8 @@ extern "C" NameResult resolve(NameBytes name,NameBytes module,address imports,u6
     address candidate,address context,cfn<NameHit,address,NameBytes> lookup) on cpu requires nonzero(lookup);
 
 extern "C" u64 order_imports(address names, u64 count) on cpu;
+// Each row borrows two UTF-8 name spans. The unique rows occupy the prefix.
+extern "C" u64 order_name_pairs(address pairs, u64 count) on cpu;
 
 struct FunctionName {
     NameBytes name;
