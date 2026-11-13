@@ -110,10 +110,10 @@ struct BuildReference {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.build_digest::sha256_reference_symbols"]
-    fn sha256_reference_symbols(
-        digest: &mut hash::Digest, symbols: *const BuildSymbol, count: usize, reference_count: usize,
-    );
+    #[link_name = "bootstrap.build_digest::sha256_reference_symbol"]
+    fn sha256_reference_symbol(digest: &mut hash::Digest, symbol: BuildSymbol);
+    #[link_name = "bootstrap.build_digest::sha256_reference_count"]
+    fn sha256_reference_count(digest: &mut hash::Digest, count: usize);
     #[link_name = "bootstrap.build_digest::sha256_reference"]
     fn sha256_reference(digest: &mut hash::Digest, row: BuildReference);
 }
@@ -222,10 +222,12 @@ fn digest_reference(
 pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
     symbols: impl IntoIterator<Item = &'a str>, used: &[Declaration],
 ) -> [u8; 32] {
-    let symbols: Vec<_> = symbols.into_iter()
-        .map(|symbol| build_symbol(declarations, imported, symbol)).collect();
     let mut digest = hash::Digest::new();
-    unsafe { sha256_reference_symbols(&mut digest, symbols.as_ptr(), symbols.len(), used.len()) };
+    for symbol in symbols {
+        let row = build_symbol(declarations, imported, symbol);
+        unsafe { sha256_reference_symbol(&mut digest, row) };
+    }
+    unsafe { sha256_reference_count(&mut digest, used.len()) };
     let mut import_fields = Vec::new();
     for entry in used {
         digest_reference(&mut digest, declarations, entry, &mut import_fields);

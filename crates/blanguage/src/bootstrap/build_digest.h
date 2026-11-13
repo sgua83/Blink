@@ -29,8 +29,8 @@ struct BuildReference {
 };
 
 // The caller borrows each original field only for the synchronous digest update.
-extern "C" void sha256_reference_symbols(inout DigestState state, address symbols,
-    u64 symbol_count, u64 reference_count) on cpu;
+extern "C" void sha256_reference_symbol(inout DigestState state, BuildSymbol symbol) on cpu;
+extern "C" void sha256_reference_count(inout DigestState state, u64 count) on cpu;
 extern "C" void sha256_reference(inout DigestState state, BuildReference row) on cpu;
 
 struct SourceRegion {

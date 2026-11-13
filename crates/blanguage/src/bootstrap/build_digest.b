@@ -182,25 +182,25 @@ extern "C" void sha256_fields(address fields,u64 count,address output) on cpu {
     sha256_finish(state,output);
 }
 
-extern "C" void sha256_reference_symbols(inout DigestState state, address symbols,
-    u64 symbol_count, u64 reference_count) on cpu {
-    u64 index = 0u64;
-    while (index < symbol_count) {
-        BuildSymbol symbol = unsafe_position<BuildSymbol>(at(symbols, index * size_of<BuildSymbol>()));
-        u8 bound = u8(symbol.bound);
-        u16 requirement = u16(0);
-        u64 requirement_length = 1u64;
-        if (symbol.requirement != 0) {
-            requirement = u16(1) | u16((symbol.requirement - 1) << 8);
-            requirement_length = 2u64;
-        }
-        array<DigestField,5> fields = array<DigestField,5>(
-            symbol.name, DigestField(address_of(bound), 1u64), symbol.contract, symbol.declaration,
-            DigestField(address_of(requirement), requirement_length));
-        digest_fields(state, address_of(fields[0]), symbol.bound == 0 ? 2u64 : 5u64);
-        index += 1u64;
+extern "C" void sha256_reference_symbol(inout DigestState state, BuildSymbol symbol) on cpu {
+    u8 bound = u8(symbol.bound);
+    digest_field(state, symbol.name);
+    digest_field(state, DigestField(address_of(bound), 1u64));
+    if (bound == u8(0)) { return; }
+
+    digest_field(state, symbol.contract);
+    digest_field(state, symbol.declaration);
+    u16 requirement = u16(0);
+    u64 requirement_length = 1u64;
+    if (symbol.requirement != 0) {
+        requirement = u16(1) | u16((symbol.requirement - 1) << 8);
+        requirement_length = 2u64;
     }
-    digest_field(state, DigestField(address_of(reference_count), 8u64));
+    digest_field(state, DigestField(address_of(requirement), requirement_length));
+}
+
+extern "C" void sha256_reference_count(inout DigestState state, u64 count) on cpu {
+    digest_field(state, DigestField(address_of(count), 8u64));
 }
 
 void digest_length(inout DigestState state, u64 length) on cpu {
