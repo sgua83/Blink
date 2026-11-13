@@ -56,6 +56,10 @@ target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 
 实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。当前对象与资源ABI版本见[语言规范](../Open/Docs/BLanguage.md#已编译模块的资源abi)；缺失实例拒绝，链接不重读B源码。拥有元素的完整库操作、递归容器、持久view图、完整字符串、借用字符切片和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。
 
+## blink.text
+
+`blink.text`以普通B函数提供`decimal_u64(u64 value)`和`decimal_i64(i64 value)`。返回独立拥有的CPU `dataset<u8>`，内容是有效UTF-8的十进制数字，负值带前导减号，零为单字节0。长度只覆盖实际数字及符号，前后缀、换行、终止NUL与输出目标由调用者决定。函数覆盖完整u64／i64范围，沿原dataset规则分配和释放。 可用`blink.sequence`拼接记录，用`blink.windows.file::write_bytes`交给已有输出句柄。可直接从源码编译，也可沿普通模块对象或归档导入。
+
 ## blink.unicode
 
 `blink.unicode`以纯B实现严格UTF-8／UTF-16标量编解码、标量长度、UTF-8／UTF-16借用切片、拥有切片和整段转换。以`import blink.unicode;`导入，源码根仍为`-I library`。标量接口可在普通CPU函数和CPU并行域调用；拥有输出的切片与整段转换属于普通CPU资源组织。

@@ -5699,6 +5699,8 @@ dataset声明、重赋值及拥有字段投影统一消费原Returned求值；�
 
 ## UTF-8／UTF-16编解码、标量长度、借用／拥有切片与整段转换
 
+`blink.text`以普通B函数提供`decimal_u64(u64 value)`和`decimal_i64(i64 value)`。返回独立拥有的CPU `dataset<u8>`，内容是有效UTF-8的十进制数字，负值带前导减号，零为单字节0。长度只覆盖实际数字及符号，前后缀、换行、终止NUL与输出目标由调用者决定。函数覆盖完整u64／i64范围，沿原dataset规则分配和释放。
+
 正式B模块`blink.unicode`以普通CPU函数实现`decode_utf8`、`decode_utf16`、`encode_utf8`和`encode_utf16`，以及`to_utf16(read dataset<u8>)`和`to_utf8(read dataset<u16>)`。标量解码Result交回value及实际next位置，或含原位置与原因的DecodeError；UTF-8位置以字节计，UTF-16以逻辑u16代码单元计。标量编码将合法u32交回按实际单位数区分的固定载荷变体，非法值在Err保留。
 
 `blink.unicode_scalar`共享普通CPU纯值的Unicode标量判断及UTF-8字节位布局。`is_scalar(u32 value)`判定合法Unicode标量；`utf8_units(u32 value)`只消费已验证的合法标量，交回`Utf8Units {u32 length;u32 bits;}`，length为实际1至4字节，bits按低字节在前保存UTF-8单元。它不持有文本或Frame，不替代`encode_utf8`对任意u32的Err／Ok合同；原UTF-8接口、整段转换及源文本解码消费同一位布局，非法输入不依赖该纯值函数交付编码结果。独立Unicode对象的实际依赖包含该纯值模块，归档和分立对象命令见标准库README。
