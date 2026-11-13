@@ -442,6 +442,35 @@ unsafe extern "C" {
     fn metadata_layout(input: MetadataInput) -> MetadataLayout;
     #[link_name = "bootstrap.metadata::encode"]
     fn metadata_encode(input: MetadataInput, output: *mut u8);
+    #[link_name = "bootstrap.metadata::rust_link_binding"]
+    fn bind_rust_library(
+        binding: MetadataBytes,
+        prefix: MetadataBytes,
+        library: MetadataBytes,
+        output: *mut u8,
+    ) -> usize;
+}
+
+pub(crate) fn rust_link_binding<'a>(
+    binding: &'a str,
+    prefix: &str,
+    library: &str,
+) -> std::borrow::Cow<'a, [u8]> {
+    use std::borrow::Cow;
+
+    let input = MetadataBytes::new(binding.as_bytes());
+    let prefix = MetadataBytes::new(prefix.as_bytes());
+    let library = MetadataBytes::new(library.as_bytes());
+    let length = unsafe { bind_rust_library(input, prefix, library, std::ptr::null_mut()) };
+    if length == 0 {
+        return Cow::Borrowed(binding.as_bytes());
+    }
+    let mut output = Vec::with_capacity(length);
+    unsafe {
+        let written = bind_rust_library(input, prefix, library, output.as_mut_ptr());
+        output.set_len(written);
+    }
+    Cow::Owned(output)
 }
 
 fn metadata(o: &Object) -> Result<Vec<u8>> {

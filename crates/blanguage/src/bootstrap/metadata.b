@@ -187,3 +187,56 @@ extern "C" void encode(MetadataInput input,address output) on cpu {
         i+=1u64;
     }
 }
+
+bool text_at(MetadataBytes text,u64 at,MetadataBytes expected) on cpu {
+    u64 index=0u64;
+    while (index<expected.length) {
+        u8 actual=unsafe_position<u8>(unsafe_address(address_bits(text.bytes)+at+index));
+        u8 wanted=unsafe_position<u8>(unsafe_address(address_bits(expected.bytes)+index));
+        if (actual!=wanted) { return false; }
+        index+=1u64;
+    }
+    return true;
+}
+
+extern "C" u64 rust_link_binding(MetadataBytes binding,MetadataBytes prefix,
+    MetadataBytes library,address output) on cpu {
+    if (prefix.length==library.length && text_at(prefix,0u64,library)) { return 0u64; }
+
+    // Match the exact generated Rust directive: #[link(name="...")]
+    let opening=array<u8,13>(u8(35),u8(91),u8(108),u8(105),u8(110),u8(107),u8(40),
+        u8(110),u8(97),u8(109),u8(101),u8(61),u8(34));
+    let closing=array<u8,3>(u8(34),u8(41),u8(93));
+    let open=MetadataBytes(address_of(opening[0]),13u64);
+    let close=MetadataBytes(address_of(closing[0]),3u64);
+    u64 directive_bytes=open.length+prefix.length+close.length;
+    bool render=address_bits(output)!=0u64;
+
+    u64 at=0u64;
+    u64 copied=0u64;
+    u64 written=0u64;
+    while (at+directive_bytes<=binding.length) {
+        u64 name=at+open.length;
+        if (text_at(binding,at,open) && text_at(binding,name,prefix) &&
+                text_at(binding,name+prefix.length,close)) {
+            u64 unchanged=name-copied;
+            if (render) {
+                address start=unsafe_address(address_bits(binding.bytes)+copied);
+                copy(output,written,MetadataBytes(start,unchanged));
+                copy(output,written+unchanged,library);
+            }
+            written+=unchanged+library.length;
+            copied=name+prefix.length;
+            at+=directive_bytes;
+        } else {
+            at+=1u64;
+        }
+    }
+    if (copied==0u64) { return 0u64; }
+    u64 remaining=binding.length-copied;
+    if (render) {
+        address start=unsafe_address(address_bits(binding.bytes)+copied);
+        copy(output,written,MetadataBytes(start,remaining));
+    }
+    return written+remaining;
+}

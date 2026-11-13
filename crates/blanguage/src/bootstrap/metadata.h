@@ -36,3 +36,7 @@ struct MetadataInput {
 struct MetadataLayout {u64 length;u32 error;};
 extern "C" MetadataLayout layout(MetadataInput input) on cpu;
 extern "C" void encode(MetadataInput input,address output) on cpu;
+
+// A null output measures the result. Zero means the original bytes are sufficient.
+extern "C" u64 rust_link_binding(MetadataBytes binding,MetadataBytes prefix,
+    MetadataBytes library,address output) on cpu;

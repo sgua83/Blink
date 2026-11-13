@@ -113,12 +113,9 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
                 &output, &[b'a' as u16, b'b' as u16, b'i' as u16, b'.' as u16, b'h' as u16],
             );
             file_bytes::write(&header_path, header.as_bytes())?;
-            let binding = binding.replace(
-                &format!("#[link(name=\"{prefix}\")]"),
-                &format!("#[link(name=\"{library}\")]"),
-            );
+            let binding = crate::object::rust_link_binding(binding, prefix, &library);
             let binding_path = source_path::with_extension_units(&output, &[b'r' as u16, b's' as u16]);
-            file_bytes::write(&binding_path, binding.as_bytes())?;
+            file_bytes::write(&binding_path, &binding)?;
         }
     }
     Ok(())
