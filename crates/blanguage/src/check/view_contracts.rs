@@ -1096,10 +1096,14 @@ fn refreshed_at_call(borrow:&Borrow,call:&Call,path:&bounds::Clause,function:&Fu
     })
 }
 
+fn borrow_at_call(borrow: &Borrow, call: &Call, arguments: &BTreeMap<ValueIdentity, bounds::Proof>) -> Borrow {
+    call_content_sources(borrow, call, arguments).at_call(arguments)
+}
+
 fn access_at_call(access:&Access,call:&Call,path:&bounds::Clause,function:&Function,state:&State,known:&States)->Access{
     let apply=|access:&Access,arguments:&BTreeMap<ValueIdentity,bounds::Proof>|{
     let(Access::Resource{borrows,when,..}|Access::Position{borrows,when,..}|Access::Memory{borrows,when,..}|Access::Dataset{borrows,when,..}|Access::Initialized{borrows,when,..}|Access::Stored{borrows,when,..})=access;
-    let borrows=call_content_sources(borrows,call,arguments).at_call(arguments);
+    let borrows=borrow_at_call(borrows, call, arguments);
     let when=bounds::Clause::both(path, &when.projected_case(true, arguments));
     let borrows=if matches!(access,Access::Initialized{..}){evaluate(&borrows,function,state,known,true)}else{refreshed_at_call(&borrows,call,path,function,state,known)};
     let when=bounds::Condition::guard(when);
@@ -1539,14 +1543,26 @@ pub(super) fn solve(
             if calls.peek().is_some_and(|call|call.memory==memory){
                 let call=calls.next().unwrap();
                 for access in &known[&call.function].interface.access {
-                    let (borrows,when,access,written)=match access_at_call(access,call,&call.path,function,&known[name],&known) {
-                        Access::Memory{borrows,when,access}|Access::Dataset{borrows,when,access,..}=> (borrows,when,access,None),
-                        Access::Position{borrows,when,position} if position.written.is_some()||position.initialized=> (borrows,when,match(position.written.is_some(),position.initialized){(true,true)=>super::Access::InOut,(true,false)=>super::Access::Write,_=>super::Access::Read},position.written),
-                        _=>continue,
+                    let (borrows, when, access, written) = match access {
+                        Access::Memory { borrows, when, access } | Access::Dataset { borrows, when, access, .. } =>
+                            (borrows, when, *access, None),
+                        Access::Position { borrows, when, position } => {
+                            let access = match (&position.written, position.initialized) {
+                                (Some(_), true) => super::Access::InOut,
+                                (Some(_), false) => super::Access::Write,
+                                (None, true) => super::Access::Read,
+                                (None, false) => continue,
+                            };
+                            (borrows, when, access, position.written.as_ref())
+                        }
+                        _ => continue,
                     };
-                    let path = when.substituted_case(true, &resolved);
+                    let borrows = borrow_at_call(borrows, call, &call.arguments);
+                    let borrows = refreshed_at_call(&borrows, call, &call.path, function, &known[name], &known);
+                    let path = bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
+                        .substitute_values(&resolved);
                     let borrow = borrows.substitute_values(&resolved).restricted(&path);
-                    let written = written.as_ref().map(|proof| proof.substitute_values(&resolved));
+                    let written = written.map(|proof| proof.at_call(&call.arguments).substitute_values(&resolved));
                     effect.union(address::MemoryEffect::of(&borrow, access, written.as_ref()));
                 }
             }else{
