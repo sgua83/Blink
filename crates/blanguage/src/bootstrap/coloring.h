@@ -10,3 +10,7 @@ extern "C" u64 color(address graph, u64 count, address places, address order, u3
     cfn<ColorNode,address,u64> node,
     cfn<u64,address,u64,bool,u64> next) on cpu
     requires nonzero(node) requires nonzero(next);
+
+// The supplied places already contain the declaration's field byte offsets.
+extern "C" u64 place_private(address places, u64 count, u64 data_end, u64 bytes, u64 alignment)
+    on cpu requires nonzero(alignment);

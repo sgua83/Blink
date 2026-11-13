@@ -164,3 +164,16 @@ extern "C" u64 color(address graph, u64 count, address places, address order, u3
     if (spills == 0) { return base; }
     return layout_spills(places, count, order, u64(spills), base);
 }
+
+extern "C" u64 place_private(address places, u64 count, u64 data_end, u64 bytes, u64 alignment)
+    on cpu requires nonzero(alignment) {
+    u64 base = ((data_end + alignment - 1u64) / alignment) * alignment;
+    u64 index = 0u64;
+    while (index < count) {
+        address at = place_at(places, index);
+        unsafe_position<ColorPlace>(at).value += base;
+        unsafe_position<ColorPlace>(at).kind = STACK;
+        index += 1u64;
+    }
+    return base + bytes;
+}

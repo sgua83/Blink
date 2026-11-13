@@ -46,6 +46,7 @@ pub(super) struct Frame {
     pub tile_private: std::collections::BTreeMap<PrivateSlot, u32>,
 }
 pub(super) struct Graph {
+    private: Vec<std::ops::Range<usize>>,
     addressable: BTreeSet<usize>,
     edges: Vec<BTreeSet<usize>>,
     affinities: Vec<BTreeSet<usize>>,
@@ -293,11 +294,11 @@ impl Graph {
     }
     pub fn with_live(stage: &Stage, live: BTreeSet<PrivateSlot>) -> Self {
         let slots = stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
+        let private = private_spans(&stage.code);
         let mut graph = Graph {
-            addressable: private_spans(&stage.code)
-                .into_iter()
-                .flat_map(|r| r.map(|s| stage.registers.len() + s))
-                .collect(),
+            addressable: private.iter().flat_map(|span| span.clone())
+                .map(|slot| stage.registers.len() + slot).collect(),
+            private,
             edges: vec![BTreeSet::new(); slots],
             affinities: vec![BTreeSet::new(); slots],
             weights: vec![0; slots],
@@ -380,6 +381,9 @@ unsafe extern "C" {
         node: unsafe extern "C" fn(*const c_void, u64) -> ColorNode,
         next: unsafe extern "C" fn(*const c_void, u64, bool, u64) -> u64,
     ) -> u64;
+    #[link_name = "bootstrap.coloring::place_private"]
+    fn place_private(places: *mut ColorPlace, count: usize, data_end: u64, bytes: u64,
+        alignment: u64) -> u64;
 }
 unsafe extern "C" fn color_node(graph: *const c_void, id: u64) -> ColorNode {
     let graph = unsafe { &*graph.cast::<Graph>() };
@@ -461,16 +465,19 @@ impl Allocation {
         let mut data_end = color_locations(
             graph, &mut locations, u32::from(stage.has_tile_scope()), graph.outgoing_bytes,
         );
-        for span in private_spans(&stage.code) {
+        for span in &graph.private {
             let ty = &stage.locals[&span.end];
-            let align = u64::from(ty.align.max(16));
-            data_end = data_end.div_ceil(align) * align;
-            for (slot, (_, offset)) in span.clone().zip(&ty.components) {
-                let place = &mut locations[stage.registers.len() + slot];
-                place.kind = ColorPlace::STACK;
-                place.value = data_end + u64::from(*offset);
+            let first = stage.registers.len() + span.start;
+            let count = span.len().min(ty.components.len());
+            let places = &mut locations[first..first + count];
+            for (place, (_, offset)) in places.iter_mut().zip(&ty.components) {
+                place.value = u64::from(*offset);
             }
-            data_end += u64::from(ty.size);
+            // B lays out only this declaration's borrowed location slice.
+            data_end = unsafe {
+                place_private(places.as_mut_ptr(), places.len(), data_end,
+                    u64::from(ty.size), u64::from(ty.align.max(16)))
+            };
         }
         Self {
             locations,
