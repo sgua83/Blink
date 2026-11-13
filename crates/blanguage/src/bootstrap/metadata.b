@@ -246,3 +246,12 @@ extern "C" void encode_build_image(u64 magic,MetadataBytes identity,MetadataByte
     at=resource_field(output,at,identity);
     resource_field(output,at,image);
 }
+
+extern "C" void encode_build_fields(address fields,u64 count,address output) on cpu {
+    u64 at=0u64;
+    u64 index=0u64;
+    while(index<count){
+        at=resource_field(output,at,bytes_at(fields,index));
+        index+=1u64;
+    }
+}

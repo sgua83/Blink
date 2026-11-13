@@ -43,3 +43,6 @@ extern "C" u64 rust_link_binding(MetadataBytes binding,MetadataBytes prefix,
 
 // The caller owns the output sized for the magic, two lengths, and both fields.
 extern "C" void encode_build_image(u64 magic,MetadataBytes identity,MetadataBytes image,address output) on cpu;
+
+// Output has one 64-bit length and the actual bytes for each borrowed field.
+extern "C" void encode_build_fields(address fields,u64 count,address output) on cpu;

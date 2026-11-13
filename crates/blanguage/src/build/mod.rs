@@ -195,12 +195,12 @@ fn encode_image(image: &resource::Module) -> Vec<u8> {
     encoded
 }
 #[repr(C)]
-struct ImageBytes {
+struct ByteField {
     bytes: *const u8,
     length: usize,
 }
 
-impl From<&[u8]> for ImageBytes {
+impl From<&[u8]> for ByteField {
     fn from(bytes: &[u8]) -> Self {
         Self { bytes: bytes.as_ptr(), length: bytes.len() }
     }
@@ -217,16 +217,16 @@ enum BuildImageStatus {
 
 #[repr(C)]
 struct BuildImage {
-    identity: ImageBytes,
-    image: ImageBytes,
+    identity: ByteField,
+    image: ByteField,
     status: BuildImageStatus,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.metadata::encode_build_image"]
-    fn encode_build_image(magic: u64, identity: ImageBytes, image: ImageBytes, output: *mut u8);
+    fn encode_build_image(magic: u64, identity: ByteField, image: ByteField, output: *mut u8);
     #[link_name = "bootstrap.metadata_read::read_build_image"]
-    fn read_build_image(input: ImageBytes, magic: u64) -> BuildImage;
+    fn read_build_image(input: ByteField, magic: u64) -> BuildImage;
 }
 
 fn write_artifact(path: &Path, identity: &[u8], image: &[u8]) -> Result<()> {
@@ -244,7 +244,7 @@ fn read_envelope(bytes: &[u8]) -> Result<Option<(&[u8], &[u8])>> {
     match fields.status {
         BuildImageStatus::Read => {
             // B returns two ranges borrowed from this same input snapshot.
-            let slice = |field: ImageBytes| unsafe {
+            let slice = |field: ByteField| unsafe {
                 std::slice::from_raw_parts(field.bytes, field.length)
             };
             Ok(Some((slice(fields.identity), slice(fields.image))))

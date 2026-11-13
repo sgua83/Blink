@@ -1,7 +1,7 @@
 //! 构建输入只交接已消费的声明与实际实现；COFF和入口映像共用同一编码。
-use super::{hash, Result};
+use super::{ByteField, hash, Result};
 use crate::module::codec::{Decode, Encode, record, variants};
-use std::io::Error;
+use std::{collections::BTreeMap, io::Error, path::Path};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Declaration {
     Constant(String),
@@ -134,49 +134,99 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
     hash::digest(&bytes)
 }
 
-fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, source: &crate::ast::Source,
-    partial: bool, signatures: bool,
-) {
-    if !partial {
-        hash::field(bytes, source.text.as_bytes());
-        return;
-    }
-    let mut spans = declarations.functions.values()
-        .filter(|definition| definition.source.path == source.path)
-        .map(|definition| definition.function.span()).collect::<Vec<_>>();
-    for (record, ..) in declarations.records.values().filter(|(_, owner, ..)| owner.path == source.path) {
-        spans.push(record.span());
-    }
-    for (set, ..) in declarations.type_sets.values().filter(|(_, owner, ..)| owner.path == source.path) {
-        spans.push(set.span());
-    }
-    let end = spans.iter().map(|span| span.start).min().unwrap_or(source.text.len());
-    hash::field(bytes, source.text[..end].trim_end().as_bytes());
-    if signatures {
-        // Every source declaration is checked, including unused open templates;
-        // its implementation is consumed only by actual instances or body checks.
-        for (name, definition) in declarations.functions.iter().filter(|(_, definition)| {
-            definition.source.path == source.path && definition.function.kind() != crate::ast::FunctionKind::Constant
-                && definition.function.external().is_none()
-        }) {
-            let function = &definition.function;
-            hash::field(bytes, name.as_bytes());
-            hash::field(bytes, source.text[function.span().start..function.signature_end()].trim_end().as_bytes());
+struct SourceRegions<'a> {
+    preamble_end: Option<usize>,
+    include_signatures: bool,
+    signatures: Vec<(&'a str, std::ops::Range<usize>)>,
+}
+
+impl<'a> SourceRegions<'a> {
+    fn for_sources(declarations: &'a crate::Declarations, paths: impl Iterator<Item = (&'a Path, bool)>)
+        -> BTreeMap<&'a Path, Self>
+    {
+        let mut regions = BTreeMap::<&Path, Self>::new();
+        for (path, implementation) in paths {
+            let region = regions.entry(path).or_insert_with(|| Self {
+                preamble_end: None, include_signatures: false, signatures: Vec::new(),
+            });
+            region.include_signatures |= implementation;
         }
+        for (name, definition) in &declarations.functions {
+            if let Some(region) = regions.get_mut(definition.source.path.as_path()) {
+                let start = definition.function.span().start;
+                region.include(start);
+                if region.include_signatures && definition.function.kind() != crate::ast::FunctionKind::Constant
+                    && definition.function.external().is_none()
+                {
+                    region.signatures.push((name, start..definition.function.signature_end()));
+                }
+            }
+        }
+        for (record, owner, ..) in declarations.records.values() {
+            if let Some(region) = regions.get_mut(owner.path.as_path()) {
+                region.include(record.span().start);
+            }
+        }
+        for (set, owner, ..) in declarations.type_sets.values() {
+            if let Some(region) = regions.get_mut(owner.path.as_path()) {
+                region.include(set.span().start);
+            }
+        }
+        regions
+    }
+
+    fn include(&mut self, start: usize) {
+        self.preamble_end = Some(self.preamble_end.map_or(start, |end| end.min(start)));
     }
 }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.metadata::encode_build_fields"]
+    fn encode_build_fields(fields: *const ByteField, count: usize, output: *mut u8);
+}
+
+fn push_field(fields: &mut Vec<ByteField>, value: &str) {
+    fields.push(value.as_bytes().into());
+}
+
 pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
     selection: Selection, max_parameter_bytes: u32, world: &crate::World,
     module: &str, exports: bool,
 ) -> Result<SourceInputs> {
+    let source_rows = || world.interfaces.iter().map(|(name, module)| (name, &module.source, false))
+        .chain(world.sources.iter().filter(|(name, source)| source.path != world.interfaces[*name].source.path)
+            .map(|(name, source)| (name, source, true)));
+    let regions = SourceRegions::for_sources(&world.declarations, source_rows()
+        .filter(|(name, _, implementation)| *name != module || *implementation)
+        .map(|(_, source, implementation)| (source.path.as_path(), implementation)));
     let mut sources = Vec::new();
-    for (name, source) in world.interfaces.iter().map(|(name, module)| (name, &module.source))
-        .chain(world.sources.iter().filter(|(name, source)| source.path != world.interfaces[*name].source.path))
-    {
-        let implementation = source.path != world.interfaces[name].source.path;
+    let mut fields = Vec::<ByteField>::new();
+    let mut bytes = Vec::<u8>::new();
+    for (name, source, implementation) in source_rows() {
         let partial = name != module || implementation;
-        let mut bytes = Vec::new();
-        source_identity(&mut bytes, &world.declarations, source, partial, implementation);
+        fields.clear();
+        if partial {
+            let region = &regions[source.path.as_path()];
+            let end = region.preamble_end.unwrap_or(source.text.len());
+            push_field(&mut fields, source.text[..end].trim_end());
+            if implementation {
+                // Every ordinary signature is checked, including unused open templates.
+                // Body dependencies remain in the actual consumed-declaration fingerprint.
+                for (name, range) in &region.signatures {
+                    push_field(&mut fields, name);
+                    push_field(&mut fields, source.text[range.clone()].trim_end());
+                }
+            }
+        } else {
+            push_field(&mut fields, &source.text);
+        }
+        let length = fields.iter().map(|field| size_of::<u64>() + field.length).sum();
+        bytes.clear();
+        bytes.reserve(length);
+        unsafe {
+            encode_build_fields(fields.as_ptr(), fields.len(), bytes.as_mut_ptr());
+            bytes.set_len(length);
+        }
         sources.push(SourceInput {
             module: name.clone(), path: source.path.as_os_str().as_encoded_bytes().to_vec(),
             scope: if !partial { "full_source" } else if implementation {
