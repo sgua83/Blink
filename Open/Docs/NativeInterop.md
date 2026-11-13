@@ -145,7 +145,7 @@ program.run(&mut values)?;
 // values: [3.0, 5.0, 7.0, 9.0]
 ```
 
-纯 C 使用 map_create、map_run、map_destroy，返回值 0 表示成功、-1 表示失败；错误文本写入调用方提供的 UTF-8 缓冲区。见 map.c。C++ 包装器把错误转为 std::runtime_error，Rust 包装器转为 Result。没有跨 DLL 传递 Rust Vec、String、C++ 对象或其分配器。
+纯C使用map_create、map_run、map_destroy，返回值0表示成功、-1表示失败。错误缓冲区容量包含结尾NUL：0时不写入且可传NULL，1时只写NUL；两者不生产错误文本。容量更大时保留完整UTF-8字符并以NUL结束，成功交付空文本。状态不依赖是否接收文本，原错误由本次状态调用消费并释放。见 map.c。C++ 包装器把错误转为 std::runtime_error，Rust 包装器转为 Result。没有跨 DLL 传递 Rust Vec、String、C++ 对象或其分配器。
 
 Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、GpuProgram 等类型。CPU集合的逻辑范围数量和摘要物理字数分别交接；零尺寸普通结果仍沿原执行、错误与完成关系运行，其摘要及步长为零，不由载荷长度恢复范围数量。native.rs 已分别执行 CPU 和 GPU；需要跨提交保留设备数据、view／纹理／加速结构与真实资源所有权时，继续使用原生 API。源码和已编译接口的普通名称沿同一可见声明规则选择；多个不同可见同名声明需要明确限定，不能被改成内建调用。名称选择发生在原编译边界，现有C ABI、执行映像、资源与代码寿命不增加运行时名称查询。
 

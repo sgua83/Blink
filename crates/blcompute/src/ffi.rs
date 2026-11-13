@@ -151,16 +151,18 @@ pub unsafe fn uniform_values(data: *const c_void, ty: &blanguage::ir::Ty) -> Vec
         .collect()
 }
 
-/// 写入调用方拥有的 UTF-8 错误缓冲区。0 成功，-1 失败；容量包含结尾 NUL。
+/// 交回0成功或-1失败；可选UTF-8缓冲容量包含结尾NUL。
+/// 容量0不生产或写入文本，容量1只写NUL；其余按完整字符截断。
 ///
 /// # Safety
 /// capacity > 0 时 message 必须指向 capacity 个可写字节；可用 null + 0 放弃文本。
 pub unsafe fn status(result: Result<()>, message: *mut c_char, capacity: usize) -> i32 {
-    let (code, text) = match result {
-        Ok(()) => (0, String::new()),
-        Err(e) => (-1, e.to_string()),
-    };
-    if capacity != 0 {
+    let code = if result.is_ok() { 0 } else { -1 };
+    if capacity > 1 {
+        let text = match result {
+            Ok(()) => String::new(),
+            Err(e) => e.to_string(),
+        };
         let mut end = text.len().min(capacity - 1);
         while !text.is_char_boundary(end) {
             end -= 1;
@@ -169,6 +171,8 @@ pub unsafe fn status(result: Result<()>, message: *mut c_char, capacity: usize) 
             std::ptr::copy_nonoverlapping(text.as_ptr(), message.cast(), end);
             *message.add(end) = 0;
         }
+    } else if capacity == 1 {
+        unsafe { *message = 0; }
     }
     code
 }
