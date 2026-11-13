@@ -49,10 +49,13 @@ impl<K:Ord+Clone> Edges<K>{
         }
     }
 
-    pub(super) fn equivalent(&self, other: &Self) -> bool {
+    pub(super) fn same_sources(&self, other: &Self) -> bool {
         self.0.keys().eq(other.0.keys())
-            && self.0.values().zip(other.0.values())
-                .all(|(left, right)| left.equivalent(right))
+    }
+
+    pub(super) fn equivalent_paths(&self, other: &Self) -> bool {
+        self.0.values().zip(other.0.values())
+            .all(|(left, right)| left.equivalent(right))
     }
 
     pub fn remove(&mut self, key: &K) -> Option<bounds::Clause> { self.0.remove(key) }

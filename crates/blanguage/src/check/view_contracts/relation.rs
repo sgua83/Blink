@@ -401,7 +401,9 @@ impl Graph {
                     next_inputs: AnalysisStorage::entries::<usize, Borrow>(next.len(), None),
                 });
             }
-            if variables.iter().all(|(id, previous)| next[id].sources.equivalent(&previous.sources)) {
+            if variables.iter().all(|(id, previous)| next[id].sources.same_sources(&previous.sources))
+                && variables.iter().all(|(id, previous)| next[id].sources.equivalent_paths(&previous.sources))
+            {
                 let value = query.node(root);
                 let residual = std::cell::OnceCell::new();
                 return self.rebind(&value, &|| residual.get_or_init(|| self.residual(root, &query)));
