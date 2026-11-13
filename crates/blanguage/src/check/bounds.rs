@@ -1073,7 +1073,7 @@ impl Proof {
             .flat_map(|condition| condition.cases.iter().cloned())
             .collect();
         if !roots.is_empty() {
-            let projected=Clause::at_calls(&roots,bindings);
+            let projected=Clause::at_calls(&roots,bindings,None);
             for(slot,value)in translated.conditions.iter_mut().flatten().flat_map(|condition|condition.cases.iter_mut()).zip(projected){*slot=value;}
         }
         // 输出仍是入口快照时，继续交接调用者已经持有的分量条件。
@@ -2083,19 +2083,25 @@ impl Drop for Clause {
     }
 }
 impl Clause {
-    fn at_calls(roots:&[Self],bindings:&BTreeMap<ValueIdentity,Proof>)->Vec<Self> {
+    fn at_calls(
+        roots: &[Self],
+        bindings: &BTreeMap<ValueIdentity, Proof>,
+        numeric_context: Option<&Self>,
+    ) -> Vec<Self> {
+        let needs_numeric = |facts: &Facts| facts.iter().any(|value| match value {
+            Fact::Below(a, b, _, _) => Proof::call_identity(*a, bindings)
+                .zip(Proof::call_identity(*b, bindings)).is_none(),
+            Fact::Index(id, IndexDomain::Computed(expression)) =>
+                Proof::call_identity(*id, bindings).and_then(|_| expression.at_call(bindings)).is_none(),
+            _ => false,
+        });
         let mut clauses = BTreeMap::new();
         let mut private_numeric = false;
         for clause in Clause::ordered(roots) {
             let mapped = match &**clause.0 {
                 ClauseNode::Impossible => Clause::impossible(),
                 ClauseNode::Facts(facts) => {
-                    private_numeric |= facts.iter().any(|value| match value {
-                        Fact::Below(a, b, _, _) => Proof::call_identity(*a, bindings).zip(Proof::call_identity(*b, bindings)).is_none(),
-                        Fact::Index(id, IndexDomain::Computed(expression)) =>
-                            Proof::call_identity(*id, bindings).and_then(|_| expression.at_call(bindings)).is_none(),
-                        _ => false,
-                    });
+                    private_numeric = private_numeric || needs_numeric(facts);
                     facts.iter().fold(Clause::facts(Facts::new()), |current, value| {
                         Clause::both(&current, &Proof::call_fact(*value, bindings))
                     })
@@ -2111,7 +2117,12 @@ impl Clause {
             };
             clauses.insert(clause.key(), mapped);
         }
-        if private_numeric {
+        // The other case can trigger numeric projection without itself being projected.
+        if private_numeric || numeric_context.is_some_and(|root| {
+            Clause::ordered(std::slice::from_ref(root)).into_iter().any(|clause| {
+                matches!(&**clause.0, ClauseNode::Facts(facts) if needs_numeric(facts))
+            })
+        }) {
             let mut roots=roots.to_vec();
             // Consume the original numeric condition before private snapshots leave scope.
             roots.sort_by_key(Clause::key);
@@ -3090,13 +3101,22 @@ impl Condition {
         }
         conditions.remove(&path.key()).unwrap()
     }
-    pub(super) fn guaranteed_at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self {
-        let value=self.at_call(bindings);
-        Self::guard(value.cases[0].clone()).negate()
+    pub(super) fn projected_case(&self, truth: bool, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
+        let index = usize::from(truth);
+        Clause::at_calls(
+            std::slice::from_ref(&self.cases[index]),
+            bindings,
+            Some(&self.cases[1 - index]),
+        ).pop().unwrap()
     }
-    pub(super) fn guard_at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self{
-        // 先投影真实输入关系，再求补集；不可用的私有布尔不能成为接口条件。
-        let value=self.at_call(bindings);Self::guard(value.cases[1].clone())
+
+    pub(super) fn guaranteed_at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
+        Self::guard(self.projected_case(false, bindings)).negate()
+    }
+
+    pub(super) fn guard_at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
+        // Project actual input relations before forming their complement.
+        Self::guard(self.projected_case(true, bindings))
     }
     pub(super) fn covers(&self,other:&Self)->bool{!self.cases[0].overlaps(&other.cases[1])}
     pub(super) fn overlaps(&self,other:&Self)->bool{Clause::both(&self.cases[1],&other.cases[1]).possible()}
@@ -3113,7 +3133,7 @@ impl Condition {
     pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&**case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self{
-        let cases=Clause::at_calls(&self.cases,bindings);
+        let cases=Clause::at_calls(&self.cases,bindings,None);
         Self{cases:std::array::from_fn(|i|cases[i].clone())}
     }
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{

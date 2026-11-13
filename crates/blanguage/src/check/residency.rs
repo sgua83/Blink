@@ -414,7 +414,7 @@ pub(super) fn infer(inputs:&Inputs,parameters:&BTreeMap<ValueIdentity,bounds::Pr
         function:call.function.clone(),
         arguments:call.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(parameters,input.depth())))).collect(),
         bindings:call.bindings.iter().map(|(id,proof)|(*id,proof.at_call(parameters))).collect(),
-        path:bounds::Condition::guard(call.path.clone()).guard_at_call(parameters).assume(&bounds::Clause::default(),true).canonical(),
+        path:bounds::Condition::guard(call.path.clone()).projected_case(true, parameters).canonical(),
         source:None,span:Span::default(),
     }).collect();
     Ok(Contract{required,calls})
@@ -530,13 +530,13 @@ fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Opti
         work.push(Work::Leave(key));
         let contract=&known[&call.function];
         for((input,target),guards)in &contract.required{let bindings=scoped_indices(&call.bindings,input.depth());for guard in guards{
-            let path=guard.guard_at_call(&bindings).assume(&call.path,true);
+            let path=bounds::Clause::both(&call.path, &guard.projected_case(true, &bindings));
             let selection=input.selection().into_iter().map(|(index,proof)|(index,proof.at_call(&bindings))).collect();
             let Some(value)=argument_value(&call.arguments,input,&selection)else{continue};let value=evaluate(&value,outputs,&path);
             if !query_consume(&mut required,&mut deferred,wanted,&value,*target,&path){return source.fail(span,"B266",format!("函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
         }}
         for next in contract.calls.iter().rev(){
-            let path=bounds::Condition::guard(next.path.clone()).guard_at_call(&call.bindings).assume(&call.path,true);
+            let path=bounds::Clause::both(&call.path, &bounds::Condition::guard(next.path.clone()).projected_case(true, &call.bindings));
             let arguments=bind_arguments(&next.arguments,&call.arguments,&call.bindings,outputs);
             let bindings=next.bindings.iter().map(|(id,proof)|(*id,proof.at_call(&call.bindings))).collect();
             work.push(Work::Enter(Call{function:next.function.clone(),arguments,bindings,path,source:None,span:Span::default()}));

@@ -913,7 +913,7 @@ impl Builder<'_> {
                 view_contracts::Access::Position{borrows,when,position}if position.written.is_some()=>(borrows,when,Access::Write,position.written.as_ref()),
                 _=>continue,
             };
-            let path=when.guard_at_call(arguments).assume(&bounds::Clause::default(),true);
+            let path=when.projected_case(true, arguments);
             if !path.possible(){continue;}
             if borrows.content_inputs(){return None;}
             let borrow=borrows.guards_at_call(arguments).map_sources(|source|match &source {
@@ -1785,8 +1785,7 @@ impl Builder<'_> {
                     let at_call=|source:&view::Source|projected.get(source).cloned()
                         .unwrap_or_else(||source.clone().at_call(&bindings));
                     let selected=self.select_task_return_sources(&borrow,component,source,|source,when| {
-                        let when=bounds::Condition::guard(when.clone()).guard_at_call(&bindings)
-                            .assume(&bounds::Clause::default(),true);
+                        let when=bounds::Condition::guard(when.clone()).projected_case(true, &bindings);
                         at_call(source).restricted(&when)
                     });
                     if let Some(selected)=selected {
@@ -2317,15 +2316,15 @@ let mut regions=BTreeSet::new();
 for effect in contract.view_access.as_ref().unwrap() {
     let view_contracts::Access::Dataset{borrows,when,access,..}=effect else{continue};
     if !access.writes(){continue;}
-    let path=when.guard_at_call(&context.arguments).assume(&context.path,true);
+    let path=bounds::Clause::both(&context.path, &when.projected_case(true, &context.arguments));
     if !path.possible(){continue;}
     for(source,when)in borrows.sources.entries() {
-        let path=bounds::Condition::guard(when).guard_at_call(&context.arguments).assume(&path,true);
+        let path=bounds::Clause::both(&path, &bounds::Condition::guard(when).projected_case(true, &context.arguments));
         if !path.possible(){continue;}
         let view::Source::Position(origin)=source else{continue};
         for(source,when)in origin.resources().sources.entries() {
             if !matches!(source,view::Source::Data(ValueIdentity::Register(input))|view::Source::Parameter(ValueIdentity::Register(input),_)if *input==borrow.input){continue;}
-            if !bounds::Condition::guard(when).guard_at_call(&context.arguments).assume(&path,true).possible(){continue;}
+            if !bounds::Clause::both(&path, &bounds::Condition::guard(when).projected_case(true, &context.arguments)).possible(){continue;}
             regions.extend(origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar,_),word)|(*word,scalar.size())));
         }
     }

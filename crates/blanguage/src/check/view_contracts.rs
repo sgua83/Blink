@@ -360,8 +360,8 @@ impl Function {
         });
         if !selected.active(){return None;}
         let bindings=residency::input_parameters(&self.parameters,self.input_width);
-        let when=when.guard_at_call(&bindings);
-        when.active().then(||(selected.guards_at_call(&bindings),when))
+        let when = when.projected_case(true, &bindings);
+        when.possible().then(|| (selected.guards_at_call(&bindings), bounds::Condition::guard(when)))
     }
     fn initialization_access(&self,read:&address::InitializationRead,when:bounds::Condition)->Option<Access>{
         if read.missing().is_empty(){return None;}
@@ -641,7 +641,7 @@ impl BorrowEvaluation<'_>{
         if let Some(call)=function.calls.iter().find(|call|!call.deferred&&call.memory==memory){
             for access in known[&call.function].interface.access.iter().rev(){
                 let Access::Stored{borrows,word,value:stored,when}=access else{continue;};
-                let when=when.guard_at_call(&call.arguments).assume(&usage.path,true);
+                let when=bounds::Clause::both(&usage.path, &when.projected_case(true, &call.arguments));
                 let target=self.evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments));
                 let stored=self.evaluate(&call_content_sources(stored,call,&call.arguments).at_call(&call.arguments));
                 for(source,selected)in target.sources.entries().rev(){
@@ -714,7 +714,7 @@ impl BorrowEvaluation<'_>{
             if let Some(call)=function.calls.iter().find(|call|call.memory==memory){
                 for access in &known[&call.function].interface.access{
                     let Access::Stored{borrows,word,when,..}=access else{continue;};
-                    let path=when.guard_at_call(&call.arguments).assume(&usage.path,true);
+                    let path=bounds::Clause::both(&usage.path, &when.projected_case(true, &call.arguments));
                     let target=self.evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments)).restricted(&path);
                     for(source,when)in target.sources.entries(){if when.possible()&&let Origin::Position(origin)=source{result.insert((origin.clone(),*word));}}
                 }
@@ -981,9 +981,9 @@ fn resolved_application_position(input:LoopInput,index:Option<ownership::Applica
         let mut bindings=invariant.clone();bindings.extend(definition.control.bindings(producer));
         let mut source_path=producer.path.clone();
         if let Some(test)=&definition.control.test {
-            source_path=test.at_call(&bindings).assume(&source_path,true);
+            source_path=bounds::Clause::both(&source_path, &test.projected_case(true, &bindings));
         }
-        let read_path=bounds::Condition::guard(path.clone()).guard_at_call(&bindings).assume(&bounds::Clause::default(),true);
+        let read_path=bounds::Condition::guard(path.clone()).projected_case(true, &bindings);
         source_path=bounds::Clause::both(&source_path,&read_path);
         if !source_path.possible(){continue;}
         let Some(data)=producer.env.get(&resource.name).and_then(|binding|view::data_at(binding,&resource.path))else{continue;};
@@ -1082,7 +1082,7 @@ fn access_at_call(access:&Access,call:&Call,path:&bounds::Clause,function:&Funct
     let apply=|access:&Access,arguments:&BTreeMap<ValueIdentity,bounds::Proof>|{
     let(Access::Resource{borrows,when,..}|Access::Position{borrows,when,..}|Access::Memory{borrows,when,..}|Access::Dataset{borrows,when,..}|Access::Initialized{borrows,when,..}|Access::Stored{borrows,when,..})=access;
     let borrows=call_content_sources(borrows,call,arguments).at_call(arguments);
-    let when=when.guard_at_call(arguments).assume(path,true);
+    let when=bounds::Clause::both(path, &when.projected_case(true, arguments));
     let borrows=if matches!(access,Access::Initialized{..}){evaluate(&borrows,function,state,known,true)}else{refreshed_at_call(&borrows,call,path,function,state,known)};
     let when=bounds::Condition::guard(when);
     match access {
@@ -1665,7 +1665,7 @@ impl Builder<'_> {
         let mut memory=Vec::new();
         for access in access {
             if let Access::Initialized{borrows,initialized,when}=access {
-                let path=when.guard_at_call(arguments).assume(&self.path,true);
+                let path=bounds::Clause::both(&self.path, &when.projected_case(true, arguments));
                 if path.possible(){
                     let borrows=borrows.at_call(arguments);
                     let initialized=initialized.iter().map(|fact|fact.at_call(arguments)).collect::<Vec<_>>();
@@ -1675,7 +1675,7 @@ impl Builder<'_> {
                 continue;
             }
             let Access::Dataset{borrows,when,index,access,atomic}=access else {continue};
-            let path=when.guard_at_call(arguments).assume(&self.path,true);
+            let path=bounds::Clause::both(&self.path, &when.projected_case(true, arguments));
             if !path.possible(){continue;}
             let cross=!matches!(index.and_then(|index|index.at_call(arguments)),Some(bounds::Operand::Value(ValueIdentity::Register(index))) if index==self.global_index);
             let borrow=self.current_address_borrow(&borrows.at_call(arguments)).restricted(&path);

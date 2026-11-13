@@ -616,7 +616,7 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
             None if builder.world.stored_borrows(&data.ty,builder.scope.source(),builder.scope.span(),builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),cleanup)?=>view::Borrow::source(view::Source::Unresolved),
             None=>view::Borrow::default(),
         };
-        Ok(if let application::Ownership::Conditional(when)=&data.ownership{out.restricted(&when.condition().at_call(&bindings).assume(&bounds::Clause::default(),true))}else{out})
+        Ok(if let application::Ownership::Conditional(when)=&data.ownership{out.restricted(&when.condition().projected_case(true, &bindings))}else{out})
     }
     fn owned(builder:&Builder<'_>,value:&owned_values::OwnedValue,path:&[Step],excluded:&BTreeSet<Path>,stored:bool,omitted:&BTreeMap<usize,owned_presence::Presence>,bindings:Option<&BTreeMap<ValueIdentity,bounds::Proof>>,passed:&[(usize,Vec<u32>)],transferred:&[Transfer<'_>],cleanup:bool,root:bool)->Result<view::Borrow>{
         let mut out=if cleanup{
