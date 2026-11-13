@@ -21,7 +21,6 @@ i32 compare(address a,u64 na,address b,u64 nb) on cpu {
     if(na<nb){return -1;}if(na>nb){return i32(1);}return i32(0);
 }
 bool same_dll(PeImport a,PeImport b) on cpu {return compare(a.dll,a.dll_length,b.dll,b.dll_length)==0;}
-bool same_import(PeImport a,PeImport b) on cpu {return same_dll(a,b)&&compare(a.name,a.name_length,b.name,b.name_length)==0;}
 bool import_less(PeImport a,PeImport b) on cpu {
     i32 dll=compare(a.dll,a.dll_length,b.dll,b.dll_length);if(dll!=0){return dll<0;}
     i32 name=compare(a.name,a.name_length,b.name,b.name_length);if(name!=0){return name<0;}
@@ -56,13 +55,71 @@ void sort_absolutes(PeInput input) on cpu {
     u64 root=input.absolute_count/2u64;while(root>0u64){root-=1u64;sift_absolute(input,root,input.absolute_count);}
     u64 end=input.absolute_count;while(end>1u64){end-=1u64;PeAbsolute a=absolute_at(input,0u64);PeAbsolute b=absolute_at(input,end);absolute_put(input,0u64,b);absolute_put(input,end,a);sift_absolute(input,0u64,end);}
 }
-u64 group_end(PeInput input,u64 begin) on cpu {
-    PeImport first=import_at(input,begin);u64 end=begin+1u64;
-    while(end<input.import_count&&same_dll(first,import_at(input,end))){end+=1u64;}return end;
-}
-u64 unique_count(PeInput input,u64 begin,u64 end) on cpu {
-    u64 count=1u64;u64 i=begin+1u64;
-    while(i<end){if(!same_import(import_at(input,i-1u64),import_at(input,i))){count+=1u64;}i+=1u64;}return count;
+// Assign a directory and a relative thunk offset in the sorted rows. Each
+// completed DLL table contributes its original null terminator to both arrays.
+void plan_imports(PeInput input, inout PeLayout result) on cpu {
+    sort_imports(input);
+    u64 groups = 0u64;
+    u64 slots = 0u64;
+    u64 slot = 0u64;
+    u64 index = 0u64;
+    while (index < input.import_count) {
+        PeImport value = import_at(input, index);
+        bool first_dll = index == 0u64;
+        bool first_name = first_dll;
+        if (index != 0u64) {
+            PeImport previous = import_at(input, index - 1u64);
+            first_dll = !same_dll(previous, value);
+            first_name = first_dll || compare(previous.name, previous.name_length, value.name, value.name_length) != 0;
+            if (first_dll) { slots += 1u64; }
+        }
+        if (first_dll) { groups += 1u64; }
+        if (first_name) {
+            slot = slots;
+            slots += 1u64;
+        }
+        value.directory = (groups - 1u64) * 20u64;
+        value.lookup = slot * 8u64;
+        import_put(input, index, value);
+        index += 1u64;
+    }
+    if (groups != 0u64) { slots += 1u64; }
+    result.import_directory_size = (groups + 1u64) * 20u64;
+    u64 lookup = align(result.import_directory_size, 8u64);
+    u64 iat = lookup + slots * 8u64;
+    result.iat_start = result.idata + iat;
+    result.iat_size = slots * 8u64;
+    u64 at = iat + result.iat_size;
+
+    u64 directory = 0u64;
+    u64 thunk = 0u64;
+    u64 dll_at = 0u64;
+    u64 hint = 0u64;
+    index = 0u64;
+    while (index < input.import_count) {
+        PeImport value = import_at(input, index);
+        if (index == 0u64 || value.directory != directory) {
+            directory = value.directory;
+            dll_at = at;
+            at += value.dll_length + 1u64;
+        }
+        if (index == 0u64 || value.lookup != thunk) {
+            thunk = value.lookup;
+            at = align(at, 2u64);
+            hint = at;
+            at += value.name_length + 3u64;
+        }
+        value.lookup = lookup + thunk;
+        value.iat = iat + thunk;
+        value.dll_at = dll_at;
+        value.hint = hint;
+        import_put(input, index, value);
+        PeRelocation relocation = relocation_at(input, value.relocation);
+        relocation.target = result.idata + value.iat;
+        relocation_put(input, value.relocation, relocation);
+        index += 1u64;
+    }
+    result.idata_length = at;
 }
 PeLayout invalid(u64 code) on cpu {
     return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code);
@@ -80,38 +137,11 @@ extern "C" PeLayout layout(PeInput input) on cpu {
         rva+=align(section.byte_length,4096u64);if(rva>4294967295u64){return invalid(1u64);}i+=1u64;
     }
     if(!pdata){return invalid(4u64);}
-    result.idata=rva;sort_imports(input);
-    u64 groups=0u64;i=0u64;
-    while(i<input.import_count){groups+=1u64;i=group_end(input,i);}
-    result.import_directory_size=(groups+1u64)*20u64;
-    u64 at=align(result.import_directory_size,8u64);i=0u64;
-    while(i<input.import_count){
-        u64 end=group_end(input,i);PeImport first=import_at(input,i);first.lookup=at;import_put(input,i,first);
-        at+=(unique_count(input,i,end)+1u64)*8u64;i=end;
-    }
-    result.iat_start=result.idata+at;i=0u64;
-    while(i<input.import_count){
-        u64 end=group_end(input,i);PeImport first=import_at(input,i);first.iat=at;import_put(input,i,first);
-        at+=(unique_count(input,i,end)+1u64)*8u64;i=end;
-    }
-    result.iat_size=result.idata+at-result.iat_start;i=0u64;u64 group=0u64;
-    while(i<input.import_count){
-        u64 end=group_end(input,i);PeImport first=import_at(input,i);u64 dll_at=at;at+=first.dll_length+1u64;
-        u64 lookup=first.lookup;u64 iat=first.iat;u64 hint=0u64;u64 j=i;u64 slot=0u64;
-        while(j<end){
-            PeImport value=import_at(input,j);
-            if(j==i||!same_import(import_at(input,j-1u64),value)){
-                at=align(at,2u64);hint=at;at+=value.name_length+3u64;if(j!=i){slot+=1u64;}
-            }
-            value.lookup=lookup+slot*8u64;value.iat=iat+slot*8u64;value.hint=hint;value.dll_at=dll_at;value.directory=group*20u64;import_put(input,j,value);
-            PeRelocation relocation=relocation_at(input,value.relocation);relocation.target=result.idata+value.iat;relocation_put(input,value.relocation,relocation);
-            j+=1u64;
-        }
-        group+=1u64;i=end;
-    }
-    result.idata_length=at;
-    if(result.idata+at>4294967295u64){return invalid(1u64);}
-    result.reloc=result.idata+align(at,4096u64);
+    result.idata = rva;
+    plan_imports(input, result);
+    u64 at = result.idata_length;
+    if (result.idata + at > 4294967295u64) { return invalid(1u64); }
+    result.reloc = result.idata + align(at, 4096u64);
     u64 absolute=0u64;i=0u64;
     while(i<input.section_count){
         PeSection section=section_at(input,i);u64 j=0u64;
@@ -183,13 +213,13 @@ extern "C" void encode(PeInput input,PeLayout layout,address output) on cpu {
     u64 idata=raw;i=0u64;
     while(i<input.import_count){
         PeImport value=import_at(input,i);bool first=i==0u64;
-        if(i!=0u64){first=!same_dll(import_at(input,i-1u64),value);}
+        if(i!=0u64){first=import_at(input,i-1u64).directory!=value.directory;}
         if(first){
             le32(output,idata+value.directory,layout.idata+value.lookup);
             le32(output,idata+value.directory+12u64,layout.idata+value.dll_at);le32(output,idata+value.directory+16u64,layout.idata+value.iat);
             copy(output,idata+value.dll_at,value.dll,value.dll_length);
         }
-        bool unique=i==0u64;if(i!=0u64){unique=!same_import(import_at(input,i-1u64),value);}
+        bool unique=i==0u64;if(i!=0u64){unique=import_at(input,i-1u64).lookup!=value.lookup;}
         if(unique){
             le64(output,idata+value.lookup,layout.idata+value.hint);le64(output,idata+value.iat,layout.idata+value.hint);
             copy(output,idata+value.hint+2u64,value.name,value.name_length);
