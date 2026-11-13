@@ -152,6 +152,58 @@ fn union_bindings(left: &mut Vec<usize>, right: Vec<usize>) {
     }
 }
 
+#[repr(C)]
+struct StageWrite {
+    binding: usize,
+    start: u32,
+    end: u32,
+}
+
+#[repr(C)]
+struct StageGuarantee {
+    binding: usize,
+    start: u64,
+    end: u64,
+    retained: u64,
+}
+
+impl StageGuarantee {
+    fn new(binding: usize, offset: u32, bytes: u32) -> Self {
+        let start = u64::from(offset);
+        Self { binding, start, end: start + u64::from(bytes), retained: 0 }
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.stage_fusion::retain_stage_guarantees"]
+    fn mark_stage_guarantees(writes: *mut StageWrite, write_count: usize,
+        guarantees: *mut StageGuarantee, guarantee_count: usize);
+}
+
+fn retain_stage_guarantees(previous: &mut Stage, write_regions: &BTreeMap<usize, BTreeSet<(u32, u32)>>) {
+    if write_regions.is_empty()
+        || (previous.prefix_guarantees.is_empty() && previous.element_guarantees.is_empty()) {
+        return;
+    }
+    let mut writes = write_regions.iter().flat_map(|(&binding, ranges)| {
+        ranges.iter().map(move |&(start, end)| StageWrite { binding, start, end })
+    }).collect::<Vec<_>>();
+    let mut guarantees = previous.prefix_guarantees.iter()
+        .map(|relation| StageGuarantee::new(relation.count.binding, relation.count.word, 4))
+        .chain(previous.element_guarantees.iter().map(|fact| match fact {
+            ElementFact::Range(range) => StageGuarantee::new(range.binding, range.offset, range.scalar.size()),
+            ElementFact::Index { binding, offset, .. } => StageGuarantee::new(*binding, *offset, 4),
+        })).collect::<Vec<_>>();
+    // Both slices are borrowed only for this call. B preserves the order of the
+    // guarantee rows, so the original Stage can retain its own payloads.
+    unsafe {
+        mark_stage_guarantees(writes.as_mut_ptr(), writes.len(), guarantees.as_mut_ptr(), guarantees.len());
+    }
+    let mut retained = guarantees.into_iter().map(|row| row.retained != 0);
+    previous.prefix_guarantees.retain(|_| retained.next().unwrap());
+    previous.element_guarantees.retain(|_| retained.next().unwrap());
+}
+
 fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
     let mut stages: Vec<(Stage, bool)> = Vec::new();
     for (mut stage, needs_optimization) in input {
@@ -183,17 +235,8 @@ fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
                 previous.code.extend(stage.code);
                 union_bindings(&mut previous.reads, stage.reads);
                 union_bindings(&mut previous.writes, stage.writes);
-                previous.prefix_guarantees.retain(|relation| !stage.write_regions.get(&relation.count.binding).is_some_and(|written|
-                    written.iter().any(|&(start,end)| start < relation.count.word + 4 && relation.count.word < end)));
+                retain_stage_guarantees(previous, &stage.write_regions);
                 previous.prefix_guarantees.extend(stage.prefix_guarantees);
-                previous.element_guarantees.retain(|fact| {
-                    let (binding, offset, bytes) = match fact {
-                        ElementFact::Range(range) => (range.binding, range.offset, range.scalar.size()),
-                        ElementFact::Index { binding, offset, .. } => (*binding, *offset, 4),
-                    };
-                    !stage.write_regions.get(&binding).is_some_and(|written| written.iter().any(|&(start,end)|
-                        u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset) + u64::from(bytes)))
-                });
                 previous.element_guarantees.extend(stage.element_guarantees);
                 for (binding, written) in stage.write_regions {
                     previous.write_regions.entry(binding).or_default().extend(written);

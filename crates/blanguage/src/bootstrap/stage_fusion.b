@@ -293,3 +293,62 @@ extern "C" void place_tile(address rows, u64 count, address narrow, address wide
         index += 1u64;
     }
 }
+
+address stage_write_at(address writes, u64 index) on cpu {
+    return unsafe_address(address_bits(writes) + index * size_of<StageWrite>());
+}
+
+u64 coalesce_stage_writes(address writes, u64 count) on cpu {
+    u64 used = 0u64;
+    u64 index = 0u64;
+    while (index < count) {
+        StageWrite next = unsafe_position<StageWrite>(stage_write_at(writes, index));
+        bool merged = false;
+        if (used != 0u64) {
+            address tail = stage_write_at(writes, used - 1u64);
+            StageWrite prior = unsafe_position<StageWrite>(tail);
+            if (prior.binding == next.binding && next.start <= prior.end) {
+                prior.end = max(prior.end, next.end);
+                unsafe_position<StageWrite>(tail) = prior;
+                merged = true;
+            }
+        }
+        if (!merged) {
+            unsafe_position<StageWrite>(stage_write_at(writes, used)) = next;
+            used += 1u64;
+        }
+        index += 1u64;
+    }
+    return used;
+}
+
+bool overwrites_stage_guarantee(address writes, u64 count, StageGuarantee guarantee) on cpu {
+    u64 begin = 0u64;
+    u64 end = count;
+    while (begin < end) {
+        u64 middle = begin + (end - begin) / 2u64;
+        StageWrite write = unsafe_position<StageWrite>(stage_write_at(writes, middle));
+        if (write.binding < guarantee.binding
+            || (write.binding == guarantee.binding && u64(write.end) <= guarantee.start)) {
+            begin = middle + 1u64;
+        } else {
+            end = middle;
+        }
+    }
+    if (begin == count) { return false; }
+    StageWrite write = unsafe_position<StageWrite>(stage_write_at(writes, begin));
+    return write.binding == guarantee.binding && u64(write.start) < guarantee.end;
+}
+
+extern "C" void retain_stage_guarantees(address writes, u64 write_count,
+    address guarantees, u64 guarantee_count) on cpu {
+    u64 count = coalesce_stage_writes(writes, write_count);
+    u64 index = 0u64;
+    while (index < guarantee_count) {
+        address row = unsafe_address(address_bits(guarantees) + index * size_of<StageGuarantee>());
+        StageGuarantee guarantee = unsafe_position<StageGuarantee>(row);
+        guarantee.retained = u64(!overwrites_stage_guarantee(writes, count, guarantee));
+        unsafe_position<StageGuarantee>(row) = guarantee;
+        index += 1u64;
+    }
+}

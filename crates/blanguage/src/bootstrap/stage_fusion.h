@@ -98,3 +98,20 @@ struct TilePlacement {
 // Rows are in the original lifetime order. Each scratch plane has capacity
 // for the sum of its row widths. Only assigned slots have been initialized.
 extern "C" void place_tile(address rows, u64 count, address narrow, address wide) on cpu;
+
+struct StageWrite {
+    u64 binding;
+    u32 start;
+    u32 end;
+};
+struct StageGuarantee {
+    u64 binding;
+    u64 start;
+    u64 end;
+    u64 retained;
+};
+
+// Writes are ordered by binding, then by start and end. B coalesces them in
+// this temporary buffer and marks the original guarantee order in place.
+extern "C" void retain_stage_guarantees(address writes, u64 write_count,
+    address guarantees, u64 guarantee_count) on cpu;
