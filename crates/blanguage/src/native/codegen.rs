@@ -321,11 +321,8 @@ impl Emitter<'_> {
                 self.offset_address(*stride);
             }
             IndexedSource::Tile { tile, index } => {
-                self.load(*index);
-                self.bytes(&[0x4c, 0x8d, 0xbc, 0x84]);
-                self.u32(
-                    self.shared_stream(self.stage.shared_word(*tile, 0)),
-                );
+                let storage = self.shared_stream(self.stage.shared_word(*tile, 0));
+                self.tile_index_base(*index, storage);
                 return self.stage.workgroup_width();
             }
         }

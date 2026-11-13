@@ -165,12 +165,11 @@ extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocat
 // B retains no address after return; the emitter owns the code and memory operand.
 struct AddressEncoding { u64 length; u32 offset; u8 base; u8 index; u8 shift; };
 // value_memory needs 32 output bytes; view_memory and its dynamic form need 64.
-// scaled_memory, scale_index and offset_address need 16 output bytes.
+// scaled_memory and offset_address need 16 output bytes.
 extern "C" AddressEncoding value_memory(u8 base, MoveLocation index, u32 stride, u32 offset, address output) on cpu;
 extern "C" AddressEncoding view_memory(u8 base, MoveLocation index, u64 stride, u32 offset, address output) on cpu;
 extern "C" AddressEncoding view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u32 offset, address output) on cpu;
 extern "C" AddressEncoding scaled_memory(u8 base, u8 index, u32 stride, u32 offset, address output) on cpu;
-extern "C" u64 scale_index(u8 index, u32 stride, address output) on cpu;
 extern "C" u64 offset_address(u32 stride, address output) on cpu;
 
 // Combine two allocated 32-bit address words in R15. The caller owns 24 bytes.
@@ -316,6 +315,29 @@ extern "C" u64 tile_lane(u32 width, address output) on cpu;
 extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offset, address output) on cpu;
 // The caller owns 80 bytes for the loop over the actual lanes in the tile.
 extern "C" u64 tile_input_copy(TileInputCopy input, address output) on cpu;
+
+struct TilePublishInput {
+    MoveLocation location;
+    ScalarEncoding scalar;
+    u32 low_offset;
+    u32 high_offset;
+};
+
+struct TilePublishCode {
+    u64 length;
+    u64 value_end;
+    u64 high_start;
+    u64 high_store;
+};
+
+// The lane is in EAX. The caller owns 12 bytes for the shared plane base.
+extern "C" u64 tile_index_base(u32 storage_offset, address output) on cpu;
+// R15 holds the lane base and EAX the logical byte offset. The caller owns 40 bytes.
+extern "C" u64 tile_field_address(u32 width, u32 byte_offset, address output) on cpu;
+// The caller owns 48 bytes for reading the two shared words into the original value location.
+extern "C" u64 tile_read_split(MoveLocation dst, MoveLocation low, MoveLocation high, address output) on cpu;
+// R10 holds the lane base. Absent plane offsets are u32::MAX. The caller owns 48 bytes.
+extern "C" TilePublishCode tile_publish_value(TilePublishInput input, address output) on cpu;
 
 struct TilePrivateCopy {
     MoveLocation location;

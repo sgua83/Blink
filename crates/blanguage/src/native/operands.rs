@@ -128,8 +128,6 @@ unsafe extern "C" {
     fn encode_view_memory_dynamic(base: u8, index: MoveLocation, low: MoveLocation, high: MoveLocation, offset: u32, output: *mut u8) -> AddressEncoding;
     #[link_name = "bootstrap.x64_instruction::scaled_memory"]
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::scale_index"]
-    fn encode_scale_index(index: u8, stride: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::offset_address"]
     fn encode_offset_address(stride: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::address_pair"]
@@ -210,9 +208,6 @@ impl Emitter<'_> {
     }
     pub(super) fn scaled_memory(&mut self, base: u8, index: u8, stride: u32, offset: u32) -> Memory {
         self.emit_address(16, |output| unsafe { encode_scaled_memory(base, index, stride, offset, output) })
-    }
-    pub(super) fn scale_index(&mut self, register: u8, stride: u32) {
-        self.emit_bytes(16, |output| unsafe { encode_scale_index(register, stride, output) });
     }
     // The original R15 base and zero-extended RAX index remain owned by this emitter.
     pub(super) fn address_pair(&mut self, [low, high]: [Reg; 2]) {

@@ -1687,11 +1687,6 @@ extern "C" AddressEncoding packet_view_memory_dynamic(u8 base, MoveLocation inde
     return view_memory_dynamic_at(base, index, low, high, offset, true, lane, output);
 }
 
-extern "C" u64 scale_index(u8 index, u32 stride, address output) on cpu {
-    u64 start = address_bits(output);
-    return address_scale_at(start, index, stride) - start;
-}
-
 extern "C" u64 offset_address(u32 stride, address output) on cpu {
     u64 start = address_bits(output);
     u8 shift = address_shift(stride);
@@ -1955,18 +1950,24 @@ u64 atomic_update(u64 at, AtomicOperation operation, bool wide, bool signed) on 
 }
 
 u64 load_split_words(u64 at, MoveLocation low, MoveLocation high) on cpu {
-    u64 cursor = encode_operand_instruction(at, u16(0x8b), u8(0), false, u8(0), low);
-    cursor = encode_operand_instruction(cursor, u16(0x8b), u8(0), false, u8(1), high);
+    // Indexed tile loads can use EAX in both addresses. Read the high word first.
+    u64 cursor = load_bits(at, u8(1), high, false);
+    cursor = load_bits(cursor, u8(0), low, false);
     cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(4), u8(1));
     put_byte(cursor, u8(32));
     return register_instruction(cursor + 1u64, u16(0x09), u8(0), true, u8(1), u8(0));
 }
 
+u64 shift_high_word(u64 at, u8 source) on cpu {
+    u64 immediate = register_instruction(at, u16(0xc1), u8(0), true, u8(5), source);
+    put_byte(immediate, u8(32));
+    return immediate + 1u64;
+}
+
 u64 store_split_words(u64 at, MoveLocation low, MoveLocation high, u8 source) on cpu {
-    u64 cursor = encode_operand_instruction(at, u16(0x89), u8(0), false, source, low);
-    cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(5), source);
-    put_byte(cursor, u8(32));
-    return encode_operand_instruction(cursor + 1u64, u16(0x89), u8(0), false, source, high);
+    u64 cursor = store_bits(at, low, source, 4);
+    cursor = shift_high_word(cursor, source);
+    return store_bits(cursor, high, source, 4);
 }
 
 u64 atomic_split_at(u64 at, AtomicSequence input) on cpu {
@@ -2454,6 +2455,59 @@ extern "C" u64 tile_private_copy(TilePrivateCopy input, address output) on cpu {
     if (size == 8) { return store_split_words(cursor, low, high, u8(0)) - start; }
     // Narrow values use a complete 32-bit word in the private lane stream.
     return store_bits(cursor, low, u8(0), 4) - start;
+}
+
+extern "C" u64 tile_index_base(u32 storage_offset, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation lane = MoveLocation(u64(storage_offset), MOVE_MEMORY, u8(4), u8(0), u8(2));
+    return encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(15), lane) - start;
+}
+
+extern "C" u64 tile_field_address(u32 width, u32 byte_offset, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    if (byte_offset != 0) {
+        put_byte(cursor, u8(0x05));
+        write_word(cursor + 1u64, byte_offset);
+        cursor += 5u64;
+    }
+    cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(0), u8(1));
+    cursor = register_instruction(cursor, u16(0x83), u8(0), false, u8(4), u8(1));
+    put_byte(cursor, u8(3));
+    cursor = register_instruction(cursor + 1u64, u16(0x83), u8(0), false, u8(4), u8(0));
+    put_byte(cursor, u8(0xfc));
+    // Keep the byte within its 32-bit word; scale only the word-plane displacement.
+    cursor = address_scale_at(cursor + 1u64, u8(0), width);
+    cursor = register_instruction(cursor, u16(0x01), u8(0), true, u8(1), u8(0));
+    return register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(15)) - start;
+}
+
+extern "C" u64 tile_read_split(MoveLocation dst, MoveLocation low, MoveLocation high, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = load_split_words(start, low, high);
+    MoveEncoding copied = copy_scalar_move(dst, move_gpr(u8(0)), 8, false, unsafe_address(cursor));
+    return cursor + copied.length - start;
+}
+
+extern "C" TilePublishCode tile_publish_value(TilePublishInput input, address output) on cpu {
+    u64 start = address_bits(output);
+    u32 size = input.scalar.width / 8;
+    MoveEncoding loaded = copy_scalar_move(move_gpr(u8(0)), input.location, size,
+        input.scalar.kind == ScalarKind::Signed, output);
+    u64 value_end = start + loaded.length;
+    u64 cursor = value_end;
+    if (input.low_offset != 0xffffffff) {
+        MoveLocation low = MoveLocation(u64(input.low_offset), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+        cursor = store_bits(cursor, low, u8(0), size == 8 ? 4 : size);
+    }
+    u64 high_start = cursor;
+    u64 high_store = cursor;
+    if (input.high_offset != 0xffffffff) {
+        high_store = shift_high_word(cursor, u8(0));
+        MoveLocation high = MoveLocation(u64(input.high_offset), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+        cursor = store_bits(high_store, high, u8(0), 4);
+    }
+    return TilePublishCode(cursor - start, value_end - start, high_start - start, high_store - start);
 }
 
 u64 tile_collective_store(u64 at, ScalarEncoding scalar, u32 plane_stride) on cpu {

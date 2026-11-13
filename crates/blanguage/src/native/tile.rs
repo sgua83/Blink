@@ -52,7 +52,32 @@ struct TilePrivateCopy {
     restore: u32,
 }
 
+#[repr(C)]
+struct TilePublishInput {
+    location: operands::MoveLocation,
+    scalar: ScalarEncoding,
+    low_offset: u32,
+    high_offset: u32,
+}
+
+#[repr(C)]
+struct TilePublishCode {
+    length: u64,
+    value_end: u64,
+    high_start: u64,
+    high_store: u64,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::tile_index_base"]
+    fn encode_tile_index_base(storage_offset: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::tile_field_address"]
+    fn encode_tile_field_address(width: u32, byte_offset: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::tile_read_split"]
+    fn encode_tile_read_split(dst: operands::MoveLocation, low: operands::MoveLocation,
+        high: operands::MoveLocation, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::tile_publish_value"]
+    fn encode_tile_publish_value(input: TilePublishInput, output: *mut u8) -> TilePublishCode;
     #[link_name = "bootstrap.x64_instruction::tile_lane_pointer"]
     fn encode_tile_lane_pointer(base_offset: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_phase_advance"]
@@ -80,46 +105,47 @@ impl Emitter<'_> {
         self.frame.tile_shared[&word.aligned()]
     }
     pub(super) fn tile_length(&mut self, dst: Reg) {
-        self.bytes(&[0x8b, 0x84, 0x24]);
-        self.u32(self.tile_length_slot());
-        self.store(dst);
+        self.copy(self.location(dst), Location::Stack(self.tile_length_slot()));
     }
     pub(super) fn tile_lane(&mut self, dst: Reg) {
         let width = self.stage.workgroup_width();
         self.emit_bytes(16, |output| unsafe { encode_tile_lane(width, output) });
         self.store(dst);
     }
+    pub(super) fn tile_index_base(&mut self, index: Reg, storage_offset: u32) {
+        self.load(index);
+        self.emit_bytes(12, |output| unsafe { encode_tile_index_base(storage_offset, output) });
+    }
+
     pub(super) fn tile_load(&mut self, dst: Reg, tile: usize, index: Reg, word: u32, offset: Option<Reg>) {
         let scalar = self.stage.registers[dst];
         let (memory, high) = if let Some(offset) = offset {
             let source = IndexedSource::Tile { tile, index };
             if scalar.size() < 4 {
-                self.indexed_base(&source);
+                let width = self.indexed_base(&source);
                 self.load(offset);
-                let bias = match self.stage.tiles[tile].source { TileSource::Input { word, .. } => word % 4, TileSource::Published => 0 };
-                self.bytes(&[0x05]); self.u32(word + bias);
-                self.bytes(&[0x89, 0xc1, 0x83, 0xe1, 3, 0x83, 0xe0, 0xfc]);
-                self.scale_index(0, self.stage.workgroup_width());
-                self.bytes(&[0x48, 0x01, 0xc8, 0x49, 0x01, 0xc7]);
+                let bias = match self.stage.tiles[tile].source {
+                    TileSource::Input { word, .. } => word % 4,
+                    TileSource::Published => 0,
+                };
+                self.emit_bytes(40, |output| unsafe { encode_tile_field_address(width, word + bias, output) });
                 (Memory::new(15, 0), Memory::new(15, 0))
             } else {
                 let memory = self.indexed_memory(&source, offset, word);
                 (memory, memory.offset(self.stage.workgroup_width()*4))
             }
         } else {
-            self.load(index);
-            self.bytes(&[0x49, 0x89, 0xe7]);
-            self.offset_address(4);
+            self.tile_index_base(index, 0);
             let bias = match self.stage.shared_word(tile, word) { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 };
             let low = Memory::new(15, self.shared_stream(self.stage.shared_word(tile, word)) + bias);
             let high = if scalar.size() == 8 { Memory::new(15, self.shared_stream(self.stage.shared_word(tile, word + 4))) } else { low };
             (low, high)
         };
         if scalar.size() == 8 {
-            self.instruction(None, &[0x8b], false, 1, high.into());
-            self.instruction(None, &[0x8b], false, 0, memory.into());
-            self.bytes(&[0x48, 0xc1, 0xe1, 32, 0x48, 0x09, 0xc8]);
-            self.store(dst);
+            let dst = self.location(dst).into();
+            self.emit_bytes(48, |output| unsafe {
+                encode_tile_read_split(dst, memory.into(), high.into(), output)
+            });
         } else { self.read_scalar_address(dst, memory); }
     }
     pub(super) fn tile_input(&mut self) {
@@ -194,29 +220,58 @@ impl Emitter<'_> {
         }
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
+        let stage = self.stage;
+        let tile = publication.tile;
+        let used = stage.storage_words();
+        let mut values = publication.values.iter().filter_map(|&(word, value)| {
+            let scalar = stage.registers[value];
+            let low = SharedWord::Published { tile, word };
+            let high = SharedWord::Published { tile, word: word + 4 };
+            let low = used.contains(&low).then_some(low);
+            let high = (scalar.size() == 8 && used.contains(&high)).then_some(high);
+            (low.is_some() || high.is_some()).then_some((word, value, scalar, low, high))
+        }).peekable();
+        if values.peek().is_none() {
+            return;
+        }
         let start = self.code.len();
         self.tile_lane_pointer();
-        self.parallel_abi(start, ParallelRangePart::TilePublishPointer { tile: publication.tile });
-        let used = self.stage.storage_words();
-        for (word, value) in &publication.values {
+        self.parallel_abi(start, ParallelRangePart::TilePublishPointer { tile });
+        for (word, value, scalar, low, high) in values {
+            let low = low.map(|field| self.shared_stream(field) + word % 4);
+            let high = high.map(|field| self.shared_stream(field) + word % 4);
+            let input = TilePublishInput {
+                location: self.location(value).into(),
+                scalar: scalar.into(),
+                low_offset: low.unwrap_or(u32::MAX),
+                high_offset: high.unwrap_or(u32::MAX),
+            };
             let start = self.code.len();
-            self.load(*value);
-            let scalar = self.stage.registers[*value];
-            self.parallel_abi(start, ParallelRangePart::TilePublishLoad { tile: publication.tile, word: *word, value: *value, scalar });
-            for part in 0..scalar.size().div_ceil(4) {
-                if part != 0 {
-                    let start = self.code.len();
-                    self.bytes(&[0x48, 0xc1, 0xe8, 32]);
-                    self.parallel_abi(start, ParallelRangePart::TilePublishShift { tile: publication.tile, word: *word, value: *value, scalar, part });
-                }
-                let shared = SharedWord::Published { tile: publication.tile, word: *word + part * 4 };
-                if used.contains(&shared) {
-                    let at = self.shared_stream(shared) + word % 4;
-                    let unit_bytes = scalar.size().min(4);
-                    let start = self.code.len();
-                    self.write_value_address(Location::Gpr(0), Memory::new(10, at), unit_bytes);
-                    self.parallel_abi(start, ParallelRangePart::TilePublishStore { tile: publication.tile, word: *word, value: *value, scalar, part, storage_offset: at, unit_bytes });
-                }
+            self.code.reserve(48);
+            let encoding = unsafe {
+                let output = self.code.as_mut_ptr().add(start);
+                let encoding = encode_tile_publish_value(input, output);
+                self.code.set_len(start + encoding.length as usize);
+                encoding
+            };
+            let value_end = start + encoding.value_end as usize;
+            let high_start = start + encoding.high_start as usize;
+            let high_store = start + encoding.high_store as usize;
+            self.parallel_abi_range(start..value_end, ParallelRangePart::TilePublishLoad {
+                tile, word, value, scalar,
+            });
+            if let Some(storage_offset) = low {
+                self.parallel_abi_range(value_end..high_start, ParallelRangePart::TilePublishStore {
+                    tile, word, value, scalar, part: 0, storage_offset, unit_bytes: scalar.size().min(4),
+                });
+            }
+            if let Some(storage_offset) = high {
+                self.parallel_abi_range(high_start..high_store, ParallelRangePart::TilePublishShift {
+                    tile, word, value, scalar, part: 1,
+                });
+                self.parallel_abi(high_store, ParallelRangePart::TilePublishStore {
+                    tile, word, value, scalar, part: 1, storage_offset, unit_bytes: 4,
+                });
             }
         }
     }

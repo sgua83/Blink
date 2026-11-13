@@ -40,8 +40,7 @@ impl Emitter<'_> {
                     Memory::new(15, atomic.word)
                 }
                 IndexedSource::Tile { tile, index } => {
-                    self.load(index);
-                    self.bytes(&[0x4c, 0x8d, 0x3c, 0x84]); // r15 = rsp + index * 4
+                    self.tile_index_base(index, 0);
                     Memory::new(15, self.shared_stream(self.stage.shared_word(tile, atomic.word)))
                 }
                 IndexedSource::View { .. } | IndexedSource::Pointer { .. } => {
