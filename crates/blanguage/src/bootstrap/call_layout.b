@@ -15,13 +15,6 @@ u64 slot_home(u64 first_slot, u64 position) on cpu {
     return (first_slot + position) * 8u64;
 }
 
-struct ValueCopy { u64 offset; u64 end; u64 present; };
-
-ValueCopy copy_value(u64 start, u32 size, u32 alignment) on cpu {
-    if (!indirect(size, alignment)) { return ValueCopy(0u64, start, 0u64); }
-    u64 at = (start + 15u64) & ~15u64;
-    return ValueCopy(at, at + u64(padded(size, alignment)), 1u64);
-}
 ResultLocation result_location(AbiType result, u32 flags) on cpu {
     if (result.size == 0) { return ResultLocation::None; }
     if ((flags & 1) != 0 || indirect(result.size, result.alignment)) {
@@ -47,45 +40,46 @@ extern "C" CallPlan plan(address context, u64 count, AbiType result, u32 flags,
     cfn<AbiType,address,u64> argument, address positions) on cpu requires nonzero(argument) {
     ResultLocation location = result_location(result, flags);
     bool hidden = location == ResultLocation::Indirect;
-    u64 slots = 0u64;
+    u64 first_slot = hidden ? 1u64 : 0u64;
+    // Payloads are measured from the end of the 16-byte-aligned home area.
+    u64 bytes = hidden ? u64(padded(result.size, result.alignment)) : 0u64;
+    bool emit_positions = address_bits(positions) != 0u64;
+    u64 arguments = 0u64;
     u64 index = 0u64;
     while (index < count) {
         AbiType value = argument(context, index);
-        if (has_slot(value)) { slots += 1u64; }
-        index += 1u64;
-    }
-    u64 arguments = slots;
-    u64 first_slot = hidden ? 1u64 : 0u64;
-    slots += first_slot;
-    // Windows x64 owns four home slots even when fewer arguments are present.
-    if (slots < 4u64) { slots = 4u64; }
-    u64 bytes = (slots * 8u64 + 15u64) & ~15u64;
-    u64 result_at = 0u64;
-    if (hidden) {
-        result_at = bytes;
-        bytes += u64(padded(result.size, result.alignment));
-    }
-    u64 position = 0u64;
-    index = 0u64;
-    while (index < count) {
-        AbiType value = argument(context, index);
         if (has_slot(value)) {
-            u64 home = slot_home(first_slot, position);
-            ValueCopy copy = ValueCopy(home, bytes, 0u64);
-            if (value.value != 0) {
-                copy = copy_value(bytes, value.size, value.alignment);
+            u64 home = slot_home(first_slot, arguments);
+            u64 payload = home;
+            bool copied = value.value != 0 && indirect(value.size, value.alignment);
+            if (copied) {
+                payload = (bytes + 15u64) & ~15u64;
+                bytes = payload + u64(padded(value.size, value.alignment));
             }
-            if (address_bits(positions) != 0u64) {
-                u64 payload = copy.present == 0u64 ? home : copy.offset;
-                address row = unsafe_address(address_bits(positions) + position * size_of<ArgumentSlot>());
+            if (emit_positions) {
+                address row = unsafe_address(address_bits(positions) + arguments * size_of<ArgumentSlot>());
                 unsafe_position<ArgumentSlot>(row) = ArgumentSlot(
-                    index, home, payload, u32(copy.present), value.float_size);
+                    index, home, payload, copied ? 1 : 0, value.float_size);
             }
-            bytes = copy.end;
-            position += 1u64;
+            arguments += 1u64;
         }
         index += 1u64;
     }
+    // Windows x64 owns four home slots even when fewer arguments are present.
+    u64 slots = max(4u64, first_slot + arguments);
+    u64 homes = (slots * 8u64 + 15u64) & ~15u64;
+    if (emit_positions) {
+        u64 position = 0u64;
+        while (position < arguments) {
+            address row = unsafe_address(address_bits(positions) + position * size_of<ArgumentSlot>());
+            if (unsafe_position<ArgumentSlot>(row).indirect != 0) {
+                unsafe_position<ArgumentSlot>(row).payload += homes;
+            }
+            position += 1u64;
+        }
+    }
+    u64 result_at = hidden ? homes : 0u64;
+    bytes += homes;
     u64 target = 0u64;
     if ((flags & 2) != 0) {
         bytes = (bytes + 7u64) & ~7u64;
