@@ -1,3 +1,4 @@
+mod type_reference;
 mod loading;
 pub(crate) use loading::load;
 use crate::{file_bytes::FileBytes, *};
@@ -592,82 +593,7 @@ impl Declarations {
 }
 impl World {
     pub(crate) fn type_reference(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<TypeName> {
-        use crate::builtin_types::{Builtin, Kind};
-        let builtin = Builtin::recognize(&name.name);
-        if builtin.kind == Kind::CFunction && !name.dataset && !name.view && !name.tile {
-            return self.c_function_reference(name, source, span, module, imports)
-                .map(ir::CFunctionType::into_syntax);
-        }
-        if name.is_texture() || name.is_acceleration() {
-            let mut syntax = name.clone();
-            syntax.canonical = false;
-            return Ok(syntax);
-        }
-        let mut resolved = std::borrow::Cow::Borrowed(name.name.as_str());
-        let mut canonical = false;
-        let (types, count, code) = match builtin.kind {
-            Kind::Array => (1, 2, "B238"),
-            Kind::Result => (2, 2, "B269"),
-            Kind::Owned => (1, 2, "B224"),
-            Kind::Task | Kind::TaskStartError => (1, 1, "B224"),
-            Kind::Void | Kind::Never => (0, 0, "B228"),
-            _ => {
-                if let Some(builtin) = builtin.canonical(&name.name) {
-                    resolved = std::borrow::Cow::Borrowed(builtin);
-                    (0, 0, "B232")
-                } else {
-                    let key = if name.canonical {
-                        self.records.get_key_value(&name.name).map(|(key, _)| key.clone())
-                    } else { self.resolve(&name.name, module, imports, false).unique() };
-                    let Some(key) = key else { return source.fail(span, "B031", format!("未知或不明确的类型 {}", name.name)); };
-                    let record = &self.record(&key).0;
-                    resolved = std::borrow::Cow::Owned(key);
-                    canonical = true;
-                    (record.types().len(), record.types().len() + record.values().len(), "B232")
-                }
-            }
-        };
-        if name.arguments.len() != count {
-            return source.fail(span, code, format!("类型 {resolved} 需要 {count} 个类型及const实参，实际为 {}", name.arguments.len()));
-        }
-        let mut arguments = Vec::with_capacity(count);
-        for (index, argument) in name.arguments.iter().enumerate() {
-            let argument = if builtin.kind == Kind::Owned && index == 1 {
-                let GenericArgument::Type(function) = argument else {
-                    return source.fail(span, "B224", "owned<T,F>需要载荷类型与静态释放函数");
-                };
-                if function.dataset || function.tile || function.view || !function.arguments.is_empty() {
-                    return source.fail(span, "B224", "释放函数由载荷推导泛型，声明处使用函数名称");
-                }
-                let key = if function.canonical && self.functions.contains_key(&function.name) { Some(function.name.clone()) }
-                    else { self.resolve(&function.name, module, imports, true).unique() };
-                let Some(key) = key else { return source.fail(span, "B158", format!("未知或未导出的释放函数 {}", function.name)); };
-                let mut function = TypeName::named(key);
-                function.canonical = true;
-                GenericArgument::Type(function)
-            } else if index < types {
-                let GenericArgument::Type(ty) = argument else { return source.fail(span, code, "此位置需要类型实参"); };
-                GenericArgument::Type(self.type_reference(ty, source, span, module, imports)?)
-            } else {
-                let value = argument.shape().ok_or_else(|| crate::Diagnostic {
-                    source: source.clone(), span, code: "B235", message: "const实参需要u32编译期表达式".into(),
-                })?;
-                let value = self.shape(&Some(value), source, span, module, imports)?.unwrap();
-                GenericArgument::Value(Shape::Literal(value))
-            };
-            arguments.push(argument);
-        }
-        let count = self.shape(&name.count, source, span, module, imports)?.map(Shape::Literal);
-        Ok(TypeName {
-            name: resolved.into_owned(),
-            canonical,
-            arguments,
-            dataset: name.dataset,
-            view: name.view,
-            tile: name.tile,
-            count,
-            contracts: name.contracts.clone(),
-        })
+        type_reference::bind(self,name,source,span,module,imports)
     }
     fn write_type_layout_json(&self, out: &mut String, value: &ir::Ty, source: &Source, span: Span,
         module: &str, imports: &[String], active: &mut BTreeSet<String>) -> Result<()> {
