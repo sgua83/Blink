@@ -35,7 +35,7 @@ struct MetadataInput {
     address frames;u64 frame_count;
 };
 struct BindingOrder {u64 count;u64 conflict;};
-// Rows borrow original object contracts, definitions first and then imports.
+// Rows borrow original object contracts. Definitions precede unique imports sorted by name.
 // order has room for count indices. The returned prefix is in name order.
 // conflict is the original input index of the first conflicting import, or count.
 extern "C" BindingOrder order_bindings(address bindings,u64 definitions,u64 count,address order) on cpu;

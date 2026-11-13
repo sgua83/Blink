@@ -25,32 +25,58 @@ extern "C" bool binding_before(address left, address right, address bindings) on
     return names < 0 || (names == 0 && a < b);
 }
 extern "C" BindingOrder order_bindings(address bindings, u64 definitions, u64 count, address order) on cpu {
+    // Place the definition permutation after enough space for all imports.
+    // Each output consumes at least one input, so the write cursor stays
+    // behind the unread definition indices throughout the merge.
+    u64 definition_start = count - definitions;
+    address definition_order = unsafe_address(address_bits(order) + definition_start * 8u64);
     u64 at = 0u64;
-    while (at < count) {
-        put_binding_index(order, at, at);
+    while (at < definitions) {
+        put_binding_index(definition_order, at, at);
         at += 1u64;
     }
-    sort_rows<u64>(order, count, bindings, c_function(binding_before));
+    sort_rows<u64>(definition_order, definitions, bindings, c_function(binding_before));
 
     u64 unique = 0u64;
+    u64 imported = definitions;
     at = 0u64;
-    while (at < count) {
-        u64 selected = binding_index(order, at);
+    while (at < definitions) {
+        u64 selected = binding_index(definition_order, at);
         MetadataBinding binding = binding_at(bindings, selected);
+        i32 relation = i32(1);
+        if (imported < count) {
+            relation = compare_binding_bytes(binding_at(bindings, imported).name, binding.name);
+        }
+        if (relation < 0) {
+            put_binding_index(order, unique, imported);
+            unique += 1u64;
+            imported += 1u64;
+            continue;
+        }
+
         at += 1u64;
-        while (at < count) {
-            u64 index = binding_index(order, at);
+        while (at < definitions) {
+            u64 index = binding_index(definition_order, at);
             MetadataBinding next = binding_at(bindings, index);
             if (compare_binding_bytes(binding.name, next.name) != 0) { break; }
-            if (index >= definitions && compare_binding_bytes(binding.value, next.value) != 0) {
-                return BindingOrder(unique, index);
-            }
             selected = index;
             binding = next;
             at += 1u64;
         }
+        if (relation == 0) {
+            if (compare_binding_bytes(binding.value, binding_at(bindings, imported).value) != 0) {
+                return BindingOrder(unique, imported);
+            }
+            selected = imported;
+            imported += 1u64;
+        }
         put_binding_index(order, unique, selected);
         unique += 1u64;
+    }
+    while (imported < count) {
+        put_binding_index(order, unique, imported);
+        unique += 1u64;
+        imported += 1u64;
     }
     return BindingOrder(unique, count);
 }

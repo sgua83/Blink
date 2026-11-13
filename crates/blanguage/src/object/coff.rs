@@ -502,6 +502,7 @@ fn metadata(o: &Object) -> Result<Vec<u8>> {
         code: code.as_ptr(),
         code_count: code.len(),
     };
+    // B sorts the definition prefix and merges the original ordered, unique imports.
     let bindings = o.symbols.iter().map(|symbol| (symbol.name.as_str(), symbol.contract.as_slice()))
         .chain(o.imports.iter().map(|(name, contract)| (name.as_str(), contract.as_slice())))
         .map(|(name, value)| MetadataBinding {
