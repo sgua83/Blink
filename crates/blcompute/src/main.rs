@@ -6,7 +6,7 @@ fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync>
 }
 
 fn main() -> Result<()> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--version" {
         println!("Blink runner {}", include_str!("../../../VERSION").trim());
         return Ok(());
@@ -22,7 +22,7 @@ fn main() -> Result<()> {
     compute(args, capture_timestamps)
 }
 
-fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
+fn compute(args: &[std::ffi::OsString], capture_timestamps: bool) -> Result<()> {
     use blanguage::{ast::Access, ir::Scalar};
     let backend = &args[0];
     if backend != "cpu" && backend != "gpu" {
@@ -32,7 +32,8 @@ fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
         return Err(error("--gpu-timestamps只用于gpu执行"));
     }
     let module = Path::new(args.get(1).ok_or_else(|| error("缺少 .b 模块"))?);
-    let name = args.get(2).ok_or_else(|| error("缺少 program 名称"))?;
+    let name = args.get(2).ok_or_else(|| error("缺少 program 名称"))?
+        .to_str().ok_or_else(|| error("program 名称不是UTF-8文本"))?;
     let root = Path::new(args.get(3).ok_or_else(|| error("缺少模块根目录"))?);
     let out = Path::new(args.get(4).ok_or_else(|| error("缺少输出目录"))?);
     let compilation = blanguage::compile_entry(module, root, name)?;
@@ -64,8 +65,8 @@ fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
     }
     let mut datasets = Vec::new();
     for (i, source) in args[5..data_end].iter().enumerate() {
-        datasets.push(if let Some(count) = source.strip_prefix(':') {
-            Dataset::new(&program, i, count.parse()?)?
+        datasets.push(if let Some(count) = source.as_encoded_bytes().strip_prefix(b":") {
+            Dataset::new(&program, i, std::str::from_utf8(count)?.parse()?)?
         } else {
             Dataset::read_data(&program, i, Path::new(source))?
         });
@@ -93,7 +94,8 @@ fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
         for (scalar, _) in &uniform.ty.components {
             let value = arguments
                 .next()
-                .ok_or_else(|| error(format!("缺少参数 {}", uniform.name)))?;
+                .ok_or_else(|| error(format!("缺少参数 {}", uniform.name)))?
+                .to_str().ok_or_else(|| error(format!("参数 {} 不是UTF-8文本", uniform.name)))?;
             values.push(match scalar {
                 Scalar::F32 => Value::F32(value.parse()?), Scalar::F64 => Value::F64(value.parse()?),
                 Scalar::U32 => Value::U32(value.parse()?),
