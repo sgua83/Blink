@@ -56,15 +56,42 @@ struct FusionNode {
     ordered: u32,
 }
 
+#[derive(Default)]
+#[repr(C)]
+struct DomainField {
+    binding: usize,
+    word: u32,
+    present: u32,
+}
+
+impl From<Option<(usize, u32)>> for DomainField {
+    fn from(field: Option<(usize, u32)>) -> Self {
+        field.map_or_else(Self::default, |(binding, word)| Self { binding, word, present: 1 })
+    }
+}
+
 #[repr(C)]
 struct FusionStage {
     bindings: StageBindings,
     body: FusionBlock,
+    domain: usize,
+    prefix: DomainField,
+    selection: DomainField,
+    map: u32,
+    boundary_before: u32,
 }
 
 impl From<&Stage> for FusionStage {
     fn from(stage: &Stage) -> Self {
-        Self { bindings: stage.into(), body: stage.code.as_slice().into() }
+        Self {
+            bindings: stage.into(),
+            body: stage.code.as_slice().into(),
+            domain: stage.domain,
+            prefix: stage.prefix.map(|field| (field.binding, field.word)).into(),
+            selection: stage.selection.map(|field| (field.binding, field.word)).into(),
+            map: u32::from(matches!(stage.operation, Operation::Map)),
+            boundary_before: u32::from(stage.boundary_before),
+        }
     }
 }
 
@@ -127,14 +154,7 @@ fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
     let mut stages: Vec<(Stage, bool)> = Vec::new();
     for (mut stage, needs_optimization) in input {
         if let Some((previous, changed)) = stages.last_mut() {
-            if matches!(previous.operation, Operation::Map)
-                && matches!(stage.operation, Operation::Map)
-                && previous.domain == stage.domain
-                && previous.prefix == stage.prefix
-                && previous.selection == stage.selection
-                && !stage.boundary_before
-                && unsafe { can_fuse((&*previous).into(), (&stage).into(), read_fusion_node) } != 0
-            {
+            if unsafe { can_fuse((&*previous).into(), (&stage).into(), read_fusion_node) } != 0 {
                 let following = OperationOrigin {
                     source_site: stage.operation_source.clone(),
                     generated_origin: stage.generated_origin.take(),

@@ -20,12 +20,22 @@ struct FusionNode {
     u64 next;
     bool ordered;
 };
+struct DomainField {
+    u64 binding;
+    u32 word;
+    u32 present;
+};
 struct FusionStage {
     StageBindings bindings;
     FusionBlock body;
+    u64 domain;
+    DomainField prefix;
+    DomainField selection;
+    u32 map;
+    u32 boundary_before;
 };
 
-// Both inputs borrow the original checked Map, including its sorted bindings.
+// Both inputs borrow the original checked stage, including its sorted bindings.
 // read returns the next nested block or ordered operation from the original IR.
 extern "C" bool can_fuse(FusionStage left, FusionStage right,
     cfn<FusionNode,FusionBlock,u64> read) on cpu requires nonzero(read);

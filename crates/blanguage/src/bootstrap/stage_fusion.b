@@ -63,9 +63,17 @@ bool has_ordered_operation(FusionBlock block, cfn<FusionNode,FusionBlock,u64> re
     return false;
 }
 
+bool same_domain_field(DomainField left, DomainField right) on cpu {
+    return left.present == right.present && left.binding == right.binding && left.word == right.word;
+}
+
 extern "C" bool can_fuse(FusionStage left, FusionStage right,
     cfn<FusionNode,FusionBlock,u64> read) on cpu requires nonzero(read) {
-    return !cross_dependency(left.bindings, right.bindings) &&
+    return left.map != 0 && right.map != 0 && left.domain == right.domain &&
+        right.boundary_before == 0 &&
+        same_domain_field(left.prefix, right.prefix) &&
+        same_domain_field(left.selection, right.selection) &&
+        !cross_dependency(left.bindings, right.bindings) &&
         !has_ordered_operation(left.body, read) && !has_ordered_operation(right.body, read);
 }
 
