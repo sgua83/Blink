@@ -1273,7 +1273,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
     }
 
     loop {
-        let mut next=known.clone();
+        let mut changed = Vec::new();
         for(name,function)in functions {
             let normalize=feedback.contains(name.as_str());
             let state=&known[name];
@@ -1351,11 +1351,20 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     Access::Stored{..}=>continue,
                 };let mut value=value;let when=value.when_mut();*when=when.clone().logical(invoked.clone(),false);insert(&mut access,value,normalize);}
             }
-            next.get_mut(name).unwrap().interface.access=access.into_iter().map(|(mut access,when)| {
-                *access.when_mut()=when;access
-            }).collect();
+            let access = access.into_iter().map(|(mut access, when)| {
+                *access.when_mut() = when;
+                access
+            }).collect::<BTreeSet<_>>();
+            if access != state.interface.access {
+                changed.push((name, access));
+            }
         }
-        if known.functions==next.functions{break;}*known=next;
+        if changed.is_empty() {
+            break;
+        }
+        for (name, access) in changed {
+            known.get_mut(name).unwrap().interface.access = access;
+        }
     }
 }
 
