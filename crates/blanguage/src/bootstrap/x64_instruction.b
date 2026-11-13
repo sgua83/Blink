@@ -1220,14 +1220,32 @@ u64 packet_bool_at(u64 at, u8 dst) on cpu {
     return packet_instruction(cursor, u8(0x66), u8(0xdb), dst, u8(3));
 }
 
-extern "C" u64 packet_constant(u8 dst, u32 bits, address output) on cpu {
+extern "C" u64 packet_constant(MoveLocation dst, u32 bits, address output) on cpu {
     u64 start = address_bits(output);
-    return packet_constant_at(start, dst, bits) - start;
+    u8 target = packet_destination(dst);
+    u64 cursor = packet_constant_at(start, target, bits);
+    return packet_store_at(cursor, dst, target) - start;
 }
 
-extern "C" u64 packet_store(MoveLocation dst, u8 src, address output) on cpu {
+extern "C" u64 packet_index(MoveLocation dst, bool sparse, u32 slots, address output) on cpu {
     u64 start = address_bits(output);
-    return packet_store_at(start, dst, src) - start;
+    u8 target = packet_destination(dst);
+    u64 cursor = start;
+    if (sparse) {
+        MoveLocation indices = MoveLocation(u64(slots), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+        cursor = packet_load_at(start, indices, target);
+    } else {
+        // Expand four packed bytes to dwords, then add the broadcast range index.
+        cursor = move_immediate(start, u8(0), 0x03020100u64, false);
+        cursor = packet_instruction(cursor, u8(0x66), u8(0x6e), target, u8(0));
+        cursor = packet_constant_at(cursor, u8(1), 0);
+        cursor = packet_instruction(cursor, u8(0x66), u8(0x60), target, u8(1));
+        cursor = packet_instruction(cursor, u8(0x66), u8(0x61), target, u8(1));
+        cursor = packet_instruction(cursor, u8(0x66), u8(0x6e), u8(1), u8(3));
+        cursor = packet_shuffle_at(cursor, u8(1), u8(1), u8(0));
+        cursor = packet_instruction(cursor, u8(0x66), u8(0xfe), target, u8(1));
+    }
+    return packet_store_at(cursor, dst, target) - start;
 }
 
 extern "C" u64 packet_copy(MoveLocation dst, MoveLocation src, address output) on cpu {
@@ -1240,13 +1258,22 @@ extern "C" u64 packet_copy(MoveLocation dst, MoveLocation src, address output) o
     return packet_store_at(cursor, dst, temporary) - start;
 }
 
-extern "C" u64 packet_from_word(bool boolean, u8 dst, address output) on cpu {
-    u64 start = address_bits(output);
-    if (!boolean) { return 0u64; }
-    u64 cursor = packet_constant_at(start, u8(1), 0);
+u64 packet_from_word_at(u64 at, bool boolean, u8 dst) on cpu {
+    if (!boolean) { return at; }
+    u64 cursor = packet_constant_at(at, u8(1), 0);
     cursor = packet_instruction(cursor, u8(0x66), u8(0x76), dst, u8(1));
     cursor = packet_constant_at(cursor, u8(1), 1);
-    return packet_instruction(cursor, u8(0x66), u8(0xfe), dst, u8(1)) - start;
+    return packet_instruction(cursor, u8(0x66), u8(0xfe), dst, u8(1));
+}
+
+extern "C" u64 packet_uniform(MoveLocation dst, u32 offset, bool boolean, address output) on cpu {
+    u64 start = address_bits(output);
+    u8 target = packet_destination(dst);
+    MoveLocation word = MoveLocation(u64(offset), MOVE_MEMORY, u8(13), NO_INDEX, u8(0));
+    u64 cursor = encode_operand_instruction(start, u16(0x6e0f), u8(0x66), false, target, word);
+    cursor = packet_shuffle_at(cursor, target, target, u8(0));
+    cursor = packet_from_word_at(cursor, boolean, target);
+    return packet_store_at(cursor, dst, target) - start;
 }
 
 u64 packet_shift_immediate_at(u64 at, u8 opcode, u8 operation, u8 xmm, u8 count) on cpu {
@@ -1863,7 +1890,7 @@ extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, 
     }
     cursor = packet_combine_at(cursor, target, broadcast);
     if (done != 0u64) { patch_relative(unsafe_address(done), done, cursor); }
-    cursor += packet_from_word(boolean, target, unsafe_address(cursor));
+    cursor = packet_from_word_at(cursor, boolean, target);
     return packet_store_at(cursor, dst, target) - start;
 }
 
@@ -1924,7 +1951,7 @@ extern "C" u64 packet_gather(MoveLocation dst, PacketGather input, bool boolean,
         cursor = encode_operand_instruction(cursor, u16(0x6e0f), u8(0x66), false, lane, operand);
     }
     cursor = packet_combine_at(cursor, u8(0), input.broadcast != 0);
-    cursor += packet_from_word(boolean, u8(0), unsafe_address(cursor));
+    cursor = packet_from_word_at(cursor, boolean, u8(0));
     return packet_store_at(cursor, dst, u8(0)) - start;
 }
 

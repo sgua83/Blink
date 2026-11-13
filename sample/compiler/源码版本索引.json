@@ -256,11 +256,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/x64_instruction.b",
-      "sha256": "49fddff2d07a1f6cb4c6d5b7108dd5331d4cf48d44bdf2f9a1e337c833ada993"
+      "sha256": "538fc85e8a199b1df81ec679aa7268c3e6e97f24f4dd870a201291d21310bf19"
     },
     {
       "path": "crates/blanguage/src/bootstrap/x64_instruction.h",
-      "sha256": "76e93a357a58cb90e711b1c8b397cd73c00b93392c143cc901c7507434ac3185"
+      "sha256": "c481c5d8ed31b4fb32b25ee8bce18737fbed101cb8fe3ad777d0fdd68e90939a"
     },
     {
       "path": "crates/blanguage/src/build/compiler_identity.rs",
@@ -640,7 +640,7 @@
     },
     {
       "path": "crates/blanguage/src/native/packet.rs",
-      "sha256": "3bf3fd9d14260187a77a21e28d1e4ae4777548352f12abd13e825f98d536ea6c"
+      "sha256": "67706ea4040ff4cd08ef25ebf750e4341dace8a70437b1c57aa379a4886a4e51"
     },
     {
       "path": "crates/blanguage/src/native/packet/memory.rs",

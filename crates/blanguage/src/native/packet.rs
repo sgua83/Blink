@@ -1,7 +1,6 @@
 //! 四个独立元素的 SSE2 降低；计划只包含已证明的访问与可表达指令，尾部共用标量 IR。
 use super::*;
 use allocation::{PacketAllocation, PacketPlace};
-use operands::Operand;
 use std::collections::BTreeSet;
 #[path="packet/control.rs"]
 mod control;
@@ -336,14 +335,6 @@ impl<'a> Plan<'a> {
         Some(code)
     }
 }
-impl From<PacketPlace> for Operand {
-    fn from(place: PacketPlace) -> Self {
-        match place {
-            PacketPlace::Register(r) => Operand::Register(r),
-            PacketPlace::Stack(offset) => Operand::memory(4, offset),
-        }
-    }
-}
 impl From<PacketPlace> for operands::MoveLocation {
     fn from(place: PacketPlace) -> Self {
         match place {
@@ -365,13 +356,13 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::sparse_tail"]
     fn encode_sparse_tail(slots: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_constant"]
-    fn encode_packet_constant(dst: u8, bits: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_store"]
-    fn encode_packet_store(dst: operands::MoveLocation, src: u8, output: *mut u8) -> u64;
+    fn encode_packet_constant(dst: operands::MoveLocation, bits: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_index"]
+    fn encode_packet_index(dst: operands::MoveLocation, sparse: u32, slots: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::packet_uniform"]
+    fn encode_packet_uniform(dst: operands::MoveLocation, offset: u32, boolean: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_copy"]
     fn encode_packet_copy(dst: operands::MoveLocation, src: operands::MoveLocation, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_from_word"]
-    fn encode_packet_from_word(boolean: u32, dst: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_binary"]
     fn encode_packet_binary(dst: operands::MoveLocation, left: operands::MoveLocation, right: operands::MoveLocation,
         scalar: crate::builtin_types::ScalarEncoding, operation: crate::builtin_types::ScalarBinaryOp,
@@ -389,24 +380,6 @@ unsafe extern "C" {
         left: operands::MoveLocation, right: operands::MoveLocation, output: *mut u8) -> u64;
 }
 impl Emitter<'_> {
-    fn packed(&mut self, prefix: Option<u8>, opcode: u8, dst: u8, src: u8) {
-        self.instruction(prefix, &[0x0f, opcode], false, dst, Operand::Register(src));
-    }
-    fn shuffle(&mut self, dst: u8, src: u8, pattern: u8) {
-        self.packed(Some(0x66), 0x70, dst, src);
-        self.bytes(&[pattern]);
-    }
-    fn packet_constant(&mut self, xmm: u8, bits: u32) {
-        self.emit_bytes(24, |output| unsafe { encode_packet_constant(xmm, bits, output) });
-    }
-    fn packet_store(&mut self, allocation: &PacketAllocation, slot: PrivateSlot, xmm: u8) {
-        let destination = allocation.location(slot).into();
-        self.emit_bytes(16, |output| unsafe { encode_packet_store(destination, xmm, output) });
-    }
-    fn packet_from_word(&mut self, dst: Reg, xmm: u8) {
-        let boolean = u32::from(self.stage.registers[dst] == Scalar::Bool);
-        self.emit_bytes(64, |output| unsafe { encode_packet_from_word(boolean, xmm, output) });
-    }
     pub(super) fn packet_loop(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) {
         let begin = self.code.len();
         let sparse = self.stage.selection.is_some();
@@ -507,60 +480,22 @@ impl Emitter<'_> {
                     self.patch(at, *self.continues.last().unwrap());
                 }
                 StepKind::Constant(dst, bits) => {
-                    let target = match allocation.location(Register(*dst)) {
-                        PacketPlace::Register(r) => r,
-                        _ => 0,
-                    };
-                    self.packet_constant(target, *bits);
-                    self.packet_store(allocation, Register(*dst), target);
+                    let location = allocation.location(Register(*dst)).into();
+                    self.emit_bytes(24, |output| unsafe { encode_packet_constant(location, *bits, output) });
                 }
                 StepKind::Index(dst) => {
-                    if sparse {
-                        self.instruction(
-                            None,
-                            &[0x0f, 0x28],
-                            false,
-                            0,
-                            Operand::memory(4, self.frame.end as u32),
-                        );
-                        self.packet_store(allocation, Register(*dst), 0);
-                        continue;
-                    }
-                    // 从 [0,1,2,3] 加广播的真实范围起点形成源语言索引。
-                    for (i, xmm) in [0, 1, 2, 3].into_iter().enumerate() {
-                        self.bytes(&[0xb8]);
-                        self.u32(i as u32);
-                        self.instruction(
-                            Some(0x66),
-                            &[0x0f, 0x6e],
-                            false,
-                            xmm,
-                            Operand::Register(0),
-                        );
-                    }
-                    self.packed(Some(0x66), 0x62, 0, 1);
-                    self.packed(Some(0x66), 0x62, 2, 3);
-                    self.packed(Some(0x66), 0x6c, 0, 2);
-                    self.instruction(Some(0x66), &[0x0f, 0x6e], false, 1, Operand::Register(3));
-                    self.shuffle(1, 1, 0);
-                    self.packed(Some(0x66), 0xfe, 0, 1);
-                    self.packet_store(allocation, Register(*dst), 0);
+                    let location = allocation.location(Register(*dst)).into();
+                    let slots = self.frame.end as u32;
+                    self.emit_bytes(48, |output| unsafe {
+                        encode_packet_index(location, u32::from(sparse), slots, output)
+                    });
                 }
                 StepKind::Uniform(dst, offset) => {
-                    let target = match allocation.location(Register(*dst)) {
-                        PacketPlace::Register(r) => r,
-                        _ => 0,
-                    };
-                    self.instruction(
-                        Some(0x66),
-                        &[0x0f, 0x6e],
-                        false,
-                        target,
-                        Operand::memory(13, *offset),
-                    );
-                    self.shuffle(target, target, 0);
-                    self.packet_from_word(*dst, target);
-                    self.packet_store(allocation, Register(*dst), target);
+                    let location = allocation.location(Register(*dst)).into();
+                    let boolean = u32::from(self.stage.registers[*dst] == Scalar::Bool);
+                    self.emit_bytes(64, |output| unsafe {
+                        encode_packet_uniform(location, *offset, boolean, output)
+                    });
                 }
                 StepKind::Copy(dst, src) => {
                     let destination = allocation.location(*dst).into();

@@ -161,9 +161,13 @@ extern "C" u64 divide_value(DivisionOutputs result, MoveLocation src, MoveLocati
 enum PacketMathOperation:u32 { Sqrt=0; Abs=1; Min=2; Max=3; };
 // Packet entries borrow the existing four-lane allocation; scratch XMM0..3 and
 // EAX/ECX follow that allocation. Constant has 24 output bytes; load/store 16;
-// from_word and multiply 64; the full numeric entries have 256 bytes.
-extern "C" u64 packet_constant(u8 dst, u32 bits, address output) on cpu;
-extern "C" u64 packet_store(MoveLocation dst, u8 src, address output) on cpu;
+// multiply 64; the full numeric entries have 256 bytes.
+// Constants, indices and uniforms write the assigned vector register or stack slot.
+extern "C" u64 packet_constant(MoveLocation dst, u32 bits, address output) on cpu;
+// The caller owns 48 bytes; EBX is the dense range index, slots is the sparse group.
+extern "C" u64 packet_index(MoveLocation dst, bool sparse, u32 slots, address output) on cpu;
+// The caller owns 64 bytes. The uniform table is in R13.
+extern "C" u64 packet_uniform(MoveLocation dst, u32 offset, bool boolean, address output) on cpu;
 
 // The caller owns 256 output bytes and proves the divisor nonzero in every lane.
 extern "C" u64 packet_divide_value(DivisionOutputs result, MoveLocation src,
@@ -171,7 +175,6 @@ extern "C" u64 packet_divide_value(DivisionOutputs result, MoveLocation src,
 extern "C" u64 packet_divide_constant(DivisionOutputs result, MoveLocation src,
     u32 divisor, bool signed, address output) on cpu requires nonzero(divisor);
 extern "C" u64 packet_copy(MoveLocation dst, MoveLocation src, address output) on cpu;
-extern "C" u64 packet_from_word(bool boolean, u8 dst, address output) on cpu;
 extern "C" u64 packet_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
     ScalarEncoding scalar, BinaryOperation operation, bool uniform_count, address output) on cpu;
 extern "C" u64 packet_unary(MoveLocation dst, MoveLocation src, ValueUnaryOperation operation, address output) on cpu;
