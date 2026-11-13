@@ -6,7 +6,7 @@ import blink.windows.path;
 struct UnitSpan { address data; u64 length; };
 struct LexicalPrefix { u64 end; bool literal; };
 struct ExtensionScan {
-    bool found; u64 stem; u64 size; bool only_dots;
+    bool found; u64 start; u64 stem; u64 size; bool only_dots;
     bool has_dot; u64 dot; u64 end;
 };
 struct JoinComponent { bool from_base; u64 start; u64 length; u64 kind; };
@@ -25,6 +25,7 @@ extern "C" u64 join_scratch(UnitSpan base,UnitSpan path) on cpu;
 extern "C" JoinPlan join_prepare(UnitSpan base,UnitSpan path,address scratch) on cpu;
 extern "C" void join_encode(UnitSpan base,UnitSpan path,address scratch,
     JoinPlan plan,address output) on cpu;
+extern "C" UnitSpan file_stem(UnitSpan path) on cpu;
 extern "C" ExtensionPlan extension_prepare(UnitSpan path,u64 extension_length) on cpu;
 extern "C" void extension_encode(UnitSpan path,UnitSpan extension,
     ExtensionPlan plan,address output) on cpu;
@@ -32,8 +33,9 @@ extern "C" void extension_encode(UnitSpan path,UnitSpan extension,
 extern "C" void module_tail(address name,u64 length,u16 suffix) on cpu;
 
 // The input retains its NUL terminator. A nonempty allocation belongs to this call.
-struct NativePath { address name; address allocation; u32 status; };
+struct NativePath { address name; address allocation; usize units; u32 status; };
+extern "C" NativePath absolute_path(address path,usize units) on cpu;
 NativePath native_path(address path,usize units,bool prefer_verbatim) on cpu;
-void release_native_path(NativePath path) on cpu;
+extern "C" void release_native_path(NativePath path) on cpu;
 result<void,DirectoryError> directory_tree(address path,usize units,bool prefer_verbatim) on cpu;
 extern "C" u32 create_output_directories(address path,usize units) on cpu;

@@ -85,6 +85,7 @@ ExtensionScan extension_component(ExtensionScan input,bool literal) on cpu {
         }
         else {
             scan.found=true;
+            scan.start=scan.end-scan.size;
             scan.stem=scan.end;
             if (scan.has_dot) { scan.stem=scan.dot; }
         }
@@ -100,7 +101,7 @@ ExtensionScan extension_name(UnitSpan path,LexicalPrefix prefix) on cpu {
     if (body < path.length) {
         if (lexical_separator(unit(path,body),false)) { body+=1u64; }
     }
-    ExtensionScan scan=ExtensionScan(false,0u64,0u64,true,false,0u64,0u64);
+    ExtensionScan scan=ExtensionScan(false,0u64,0u64,0u64,true,false,0u64,0u64);
     u64 index=body;
     while (index < path.length) {
         u16 unit=unit(path,index);
@@ -121,6 +122,13 @@ ExtensionScan extension_name(UnitSpan path,LexicalPrefix prefix) on cpu {
     return extension_component(scan,prefix.literal);
 }
 
+
+extern "C" UnitSpan file_stem(UnitSpan path) on cpu {
+    ExtensionScan name=extension_name(path,lexical_prefix(path,false));
+    if (!name.found) { return UnitSpan(address(),0u64); }
+    address stem=unsafe_address(address_bits(path.data)+name.start*2u64);
+    return UnitSpan(stem,name.stem-name.start);
+}
 
 extern "C" ExtensionPlan extension_prepare(UnitSpan path,u64 extension_length) on cpu {
     ExtensionScan name=extension_name(path,lexical_prefix(path,false));
@@ -307,23 +315,45 @@ bool nt_namespace(UnitSpan path) on cpu {
         unit(path,2u64) == u16(63) && unit(path,3u64) == u16(92);
 }
 
-address extended_native_path(UnitSpan full) on cpu {
+UnitSpan extended_native_path(UnitSpan full) on cpu {
     LexicalPrefix prefix = lexical_prefix(full,false);
-    if (prefix.literal || prefix.end == 0u64) { return full.data; }
+    if (prefix.literal || prefix.end == 0u64) { return full; }
     if (prefix.end == 2u64) {
         address start = unsafe_address(address_bits(full.data) - 8u64);
         unsafe_position<array<u16,4>>(start) = array<u16,4>(u16(92),u16(92),u16(63),u16(92));
-        return start;
+        return UnitSpan(start,full.length+4u64);
     }
     if (unit(full,2u64) == u16(46) && lexical_separator(unit(full,3u64),false)) {
         put(full.data,2u64,u16(63));
-        return full.data;
+        return full;
     }
     // The original UNC slashes share the last two units of the extended prefix.
     address start = unsafe_address(address_bits(full.data) - 12u64);
     unsafe_position<array<u16,8>>(start) = array<u16,8>(
         u16(92),u16(92),u16(63),u16(92),u16(85),u16(78),u16(67),u16(92));
-    return start;
+    return UnitSpan(start,full.length+6u64);
+}
+
+extern "C" NativePath absolute_path(address path,usize units) on cpu {
+    if (lexical_prefix(UnitSpan(path,units),false).literal) {
+        return NativePath(path,address(),units,0);
+    }
+
+    // Six leading units can extend a UNC prefix in the same allocation.
+    u32 capacity = 32768;
+    handle heap = GetProcessHeap();
+    address allocation = HeapAlloc(heap,0,(usize(capacity)+6u64)*2u64);
+    if (address_bits(allocation) == 0u64) {
+        return NativePath(address(),address(),0u64,ERROR_NOT_ENOUGH_MEMORY);
+    }
+    address full = unsafe_address(address_bits(allocation)+12u64);
+    u32 written = GetFullPathNameW(path,capacity,full,address());
+    if (written == 0 || written >= capacity) {
+        u32 status = written == 0 ? GetLastError() : ERROR_FILENAME_EXCED_RANGE;
+        HeapFree(heap,0,allocation);
+        return NativePath(address(),address(),0u64,status);
+    }
+    return NativePath(full,allocation,usize(written),0);
 }
 
 NativePath native_path(address path,usize units,bool prefer_verbatim) on cpu {
@@ -332,29 +362,20 @@ NativePath native_path(address path,usize units,bool prefer_verbatim) on cpu {
     bool absolute = prefix.end > 2u64 || (prefix.end == 2u64 && units > 2u64 &&
         lexical_separator(unit(input,2u64),false));
     if (prefix.literal || (prefer_verbatim && absolute && units < 247u64)) {
-        return NativePath(path,address(),0);
+        return NativePath(path,address(),units,0);
     }
 
-    // Six leading units can extend a UNC prefix in the same allocation.
-    u32 capacity = 32768;
-    handle heap = GetProcessHeap();
-    address allocation = HeapAlloc(heap,0,(usize(capacity)+6u64)*2u64);
-    if (address_bits(allocation) == 0u64) {
-        return NativePath(address(),address(),ERROR_NOT_ENOUGH_MEMORY);
+    NativePath resolved = absolute_path(path,units);
+    if (resolved.status != 0) { return resolved; }
+    if (prefer_verbatim || resolved.units >= 247u64) {
+        UnitSpan extended = extended_native_path(UnitSpan(resolved.name,resolved.units));
+        resolved.name = extended.data;
+        resolved.units = extended.length;
     }
-    address full = unsafe_address(address_bits(allocation)+12u64);
-    u32 written = GetFullPathNameW(path,capacity,full,address());
-    if (written == 0 || written >= capacity) {
-        u32 status = written == 0 ? GetLastError() : ERROR_FILENAME_EXCED_RANGE;
-        HeapFree(heap,0,allocation);
-        return NativePath(address(),address(),status);
-    }
-    // Ordinary names retain Win32 device rules below the legacy directory limit.
-    address name = !prefer_verbatim && written < 247 ? full : extended_native_path(UnitSpan(full,usize(written)));
-    return NativePath(name,allocation,0);
+    return resolved;
 }
 
-void release_native_path(NativePath path) on cpu {
+extern "C" void release_native_path(NativePath path) on cpu {
     if (address_bits(path.allocation) != 0u64) { HeapFree(GetProcessHeap(),0,path.allocation); }
 }
 

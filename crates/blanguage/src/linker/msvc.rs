@@ -238,8 +238,9 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
             arguments.push("/DLL".into());
         }
         if import_library {
-            let mut import_path = path.to_path_buf();
-            import_path.set_extension("lib");
+            let import_path = crate::source_path::with_extension_units(
+                path, &[b'l' as u16, b'i' as u16, b'b' as u16],
+            );
             arguments.push(path_argument("/IMPLIB:", &import_path));
         } else {
             arguments.push("/NOIMPLIB".into());

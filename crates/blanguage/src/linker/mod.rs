@@ -83,11 +83,11 @@ fn link_objects(inputs: Inputs<'_>, _: &Path) -> Result<()> {
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
-    use crate::file_bytes;
+    use crate::{file_bytes, source_path};
 
     let (objects, archives) = prepare(inputs)?;
     let object = &objects[0];
-    let output = std::path::absolute(path)?;
+    let output = source_path::absolute(path)?;
     file_bytes::create_dir_all(output.parent().unwrap())?;
     match &object.kind {
         Kind::Module { .. } => unreachable!(),
@@ -107,20 +107,17 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
             if archives.is_empty() {
                 return Err("DLL 目标文件没有静态目标库".into());
             }
-            let library = output
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or("DLL 文件名不是 UTF-8")?;
+            let library = source_path::file_stem(&output).ok_or("DLL 文件名不是 UTF-8")?;
             msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, true)?;
-            let mut header_path = output.clone();
-            header_path.set_extension("abi.h");
+            let header_path = source_path::with_extension_units(
+                &output, &[b'a' as u16, b'b' as u16, b'i' as u16, b'.' as u16, b'h' as u16],
+            );
             file_bytes::write(&header_path, header.as_bytes())?;
             let binding = binding.replace(
                 &format!("#[link(name=\"{prefix}\")]"),
                 &format!("#[link(name=\"{library}\")]"),
             );
-            let mut binding_path = output;
-            binding_path.set_extension("rs");
+            let binding_path = source_path::with_extension_units(&output, &[b'r' as u16, b's' as u16]);
             file_bytes::write(&binding_path, binding.as_bytes())?;
         }
     }

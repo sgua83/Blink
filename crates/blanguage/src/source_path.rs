@@ -1,5 +1,5 @@
 //! Windows encoding and caller-owned buffers for the shared B path algorithms.
-use std::{ffi::OsString, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}};
+use std::{ffi::OsString, io, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -13,7 +13,21 @@ struct JoinComponent { from_base: bool, start: u64, length: u64, kind: u64 }
 struct JoinPlan { length: u64, components: u64, base_length: u64, separator: u64 }
 #[repr(C)]
 struct ExtensionPlan { length: u64, copy: u64, append: u64 }
+#[repr(C)]
+struct NativePath {
+    name: *const u16,
+    allocation: *mut u16,
+    units: usize,
+    status: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "blink.windows.path_core::absolute_path"]
+    fn absolute_path(path: *const u16, units: usize) -> NativePath;
+    #[link_name = "blink.windows.path_core::release_native_path"]
+    fn release_native_path(path: NativePath);
+    #[link_name = "blink.windows.path_core::file_stem"]
+    fn file_stem_units(path: UnitSpan) -> UnitSpan;
     #[link_name = "blink.windows.path_core::module_tail"]
     fn module_tail(name: *mut u16, length: u64, suffix: u16);
     #[link_name = "blink.windows.path_core::join_scratch"]
@@ -59,15 +73,47 @@ fn join_encoded(base: &Path, tail: &[u16]) -> PathBuf {
 }
 
 pub(crate) fn with_extension(path: &Path, suffix: u16) -> PathBuf {
+    with_extension_units(path, &[suffix])
+}
+
+pub(crate) fn with_extension_units(path: &Path, tail: &[u16]) -> PathBuf {
     let units: Vec<u16> = path.as_os_str().encode_wide().collect();
     let input = UnitSpan::of(&units);
-    let tail = [suffix];
-    let plan = unsafe { extension_prepare(input, 1) };
+    let plan = unsafe { extension_prepare(input, tail.len() as u64) };
     let length = plan.length as usize;
     let mut output = Vec::<u16>::with_capacity(length);
     unsafe {
-        extension_encode(input, UnitSpan::of(&tail), plan, output.as_mut_ptr());
+        extension_encode(input, UnitSpan::of(tail), plan, output.as_mut_ptr());
         output.set_len(length);
     }
     PathBuf::from(OsString::from_wide(&output))
+}
+
+pub(crate) fn absolute(path: &Path) -> io::Result<PathBuf> {
+    let path = path.as_os_str();
+    if path.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot make an empty path absolute"));
+    }
+    if path.as_encoded_bytes().contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "strings passed to WinAPI cannot contain NULs"));
+    }
+    let units: Vec<u16> = path.encode_wide().chain([0]).collect();
+    let resolved = unsafe { absolute_path(units.as_ptr(), units.len() - 1) };
+    if resolved.status != 0 {
+        return Err(io::Error::from_raw_os_error(resolved.status as i32));
+    }
+    // The resolved name is borrowed from the input or owned by the Windows heap.
+    let name = OsString::from_wide(unsafe { std::slice::from_raw_parts(resolved.name, resolved.units) });
+    unsafe { release_native_path(resolved); }
+    Ok(PathBuf::from(name))
+}
+
+pub(crate) fn file_stem(path: &Path) -> Option<String> {
+    let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let stem = unsafe { file_stem_units(UnitSpan::of(&units)) };
+    if stem.length == 0 {
+        return None;
+    }
+    let units = unsafe { std::slice::from_raw_parts(stem.data, stem.length as usize) };
+    String::from_utf16(units).ok()
 }
