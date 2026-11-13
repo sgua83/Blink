@@ -474,3 +474,18 @@ struct SegmentedScanRange {
 
 // R12 and R13 are saved by the caller for either pass.
 extern "C" u64 segmented_scan_range(SegmentedScanRange input, u32 add, address output) on cpu;
+
+struct PrintEncoding {
+    u32 length;
+    u32 unwind_length;
+    u32 local;
+    u32 create_locale;
+    u32 format;
+    u32 free_locale;
+    u32 stdout_handle;
+    u32 write;
+};
+
+// The caller owns 224 code bytes and 12 unwind bytes. UCRT offsets are zero
+// for integer and boolean output. Other fields are relative to output.
+extern "C" PrintEncoding print_helper(ScalarEncoding scalar, address output, address unwind) on cpu;

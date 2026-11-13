@@ -1,4 +1,5 @@
 module bootstrap.x64_instruction;
+import bootstrap.unwind;
 
 const u8 OPCODE_REGISTER = u8(0);
 const u8 DIRECT_REGISTER = u8(1);
@@ -3353,4 +3354,180 @@ extern "C" u64 segmented_scan_range(SegmentedScanRange input, u32 add, address o
     put_byte(cursor + 5u64, u8(0x5c));
     put_byte(cursor + 6u64, u8(0xc3));
     return cursor + 7u64 - start;
+}
+
+MoveLocation output_stack(u64 offset) on cpu {
+    return MoveLocation(offset, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+}
+
+u64 output_address(u64 at, u8 register, u64 offset) on cpu {
+    return encode_operand_instruction(at, u16(0x8d), u8(0), true, register, output_stack(offset));
+}
+
+void patch_output_jump(u64 field, u64 target) on cpu {
+    patch_relative(unsafe_address(field), field, target);
+}
+
+extern "C" PrintEncoding print_helper(ScalarEncoding scalar, address output, address unwind) on cpu {
+    u64 start = address_bits(output);
+    bool signed = scalar.kind == ScalarKind::Signed;
+    bool wide = scalar.width == 64;
+    bool floating = scalar.kind == ScalarKind::Float;
+    u32 frame = floating ? 120 : (signed ? 80 : 88);
+    u64 cursor = start;
+    cursor += stack_register(u8(3), false, unsafe_address(cursor)); // RBX
+    Operation rbx = Operation(u8(cursor - start), u8(3), u16(0), 0);
+    cursor += stack_register(u8(6), false, unsafe_address(cursor)); // RSI
+    Operation rsi = Operation(u8(cursor - start), u8(6), u16(0), 0);
+    Operation rdi = Operation(u8(0), u8(7), u16(0), 0);
+    if (signed) {
+        cursor += stack_register(u8(7), false, unsafe_address(cursor));
+        rdi.offset = u8(cursor - start);
+    }
+    cursor = register_instruction(cursor, u16(0x83), u8(0), true, u8(5), u8(4));
+    put_byte(cursor, u8(frame));
+    cursor += 1u64;
+    u8 prolog = u8(cursor - start);
+    Operation allocation = Operation(prolog, u8(0), u16(1), frame);
+    array<Operation,4> operations = array<Operation,4>(rbx, rsi, signed ? rdi : allocation, allocation);
+    u64 unwind_length = unwind_write(address_of(operations), signed ? 4u64 : 3u64, prolog, unwind);
+
+    u64 locale_failure = 0u64;
+    u64 format_failure = 0u64;
+    u32 create = 0;
+    u32 format = 0;
+    u32 destroy = 0;
+    if (floating) {
+        // The print intrinsic passes the original bits in RCX. C's %g receives a double.
+        cursor = register_instruction(cursor, u16(0x6e0f), u8(0x66), wide, u8(0), u8(1));
+        if (!wide) {
+            cursor = register_instruction(cursor, u16(0x5a0f), u8(0xf3), false, u8(0), u8(0));
+        }
+        cursor = encode_operand_instruction(cursor, u16(0x110f), u8(0xf2), false, u8(0), output_stack(56u64));
+        cursor = store_immediate(cursor, output_stack(64u64), 67u64, 2); // "C"
+        // "%.17g\n" or "%.9g\n", followed by NUL.
+        cursor = store_immediate(cursor, output_stack(72u64), wide ? 0x37312e25u64 : 0x67392e25u64, 4);
+        cursor = store_immediate(cursor, output_stack(76u64), wide ? 0x0a67u64 : 10u64, 4);
+        cursor = move_immediate(cursor, u8(1), 4u64, false); // LC_NUMERIC
+        cursor = output_address(cursor, u8(2), 64u64);
+        SymbolEncoding call = import_transfer(false, unsafe_address(cursor));
+        create = u32(cursor - start + call.field);
+        cursor += call.length;
+        cursor = register_instruction(cursor, u16(0x85), u8(0), true, u8(0), u8(0));
+        locale_failure = condition_field(cursor, u8(0x84));
+        cursor = store_bits(locale_failure + 4u64, move_gpr(u8(6)), u8(0), 8);
+        cursor = move_immediate(cursor, u8(1), 2u64, false);
+        cursor = output_address(cursor, u8(2), 80u64);
+        cursor = move_immediate(cursor, u8(8), 32u64, false);
+        cursor = output_address(cursor, u8(9), 72u64);
+        cursor = store_bits(cursor, output_stack(32u64), u8(6), 8);
+        cursor = output_address(cursor, u8(0), 56u64);
+        cursor = store_bits(cursor, output_stack(40u64), u8(0), 8);
+        call = import_transfer(false, unsafe_address(cursor));
+        format = u32(cursor - start + call.field);
+        cursor += call.length;
+        cursor = store_bits(cursor, move_gpr(u8(3)), u8(0), 4);
+        cursor = store_bits(cursor, move_gpr(u8(1)), u8(6), 8);
+        call = import_transfer(false, unsafe_address(cursor));
+        destroy = u32(cursor - start + call.field);
+        cursor += call.length;
+        cursor = register_instruction(cursor, u16(0x85), u8(0), false, u8(3), u8(3));
+        format_failure = condition_field(cursor, u8(0x88));
+        cursor = output_address(format_failure + 4u64, u8(6), 80u64);
+    } else if (scalar.kind == ScalarKind::Boolean) {
+        cursor = register_instruction(cursor, u16(0x85), u8(0), false, u8(1), u8(1));
+        u64 no = condition_field(cursor, u8(0x84));
+        cursor = store_immediate(no + 4u64, output_stack(48u64), 0x65757274u64, 4); // "true"
+        cursor = store_immediate(cursor, output_stack(52u64), 10u64, 1);
+        cursor = move_immediate(cursor, u8(3), 5u64, false);
+        u64 end = jump_field(cursor);
+        patch_output_jump(no, end + 4u64);
+        cursor = store_immediate(end + 4u64, output_stack(48u64), 0x736c6166u64, 4); // "fals"
+        cursor = store_immediate(cursor, output_stack(52u64), 0x0a65u64, 2);
+        cursor = move_immediate(cursor, u8(3), 6u64, false);
+        patch_output_jump(end, cursor);
+        cursor = output_address(cursor, u8(6), 48u64);
+    } else {
+        u32 width = wide ? 8 : 4;
+        cursor = store_bits(cursor, move_gpr(u8(0)), u8(1), width);
+        if (signed) {
+            cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(7), u8(7));
+            cursor = register_instruction(cursor, u16(0x85), u8(0), wide, u8(0), u8(0));
+            u64 positive = condition_field(cursor, u8(0x89));
+            cursor = register_instruction(positive + 4u64, u16(0xf7), u8(0), wide, u8(3), u8(0));
+            cursor = move_immediate(cursor, u8(7), 1u64, false);
+            patch_output_jump(positive, cursor);
+        }
+        MoveLocation digit = MoveLocation(0u64, MOVE_MEMORY, u8(6), NO_INDEX, u8(0));
+        cursor = output_address(cursor, u8(6), wide ? 72u64 : 64u64);
+        cursor = store_immediate(cursor, digit, 10u64, 1);
+        cursor = move_immediate(cursor, u8(3), 1u64, false);
+        cursor = move_immediate(cursor, u8(1), 10u64, false);
+        // Convert the unsigned magnitude backwards into the existing stack buffer.
+        u64 begin = cursor;
+        cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(2), u8(2));
+        cursor = register_instruction(cursor, u16(0xf7), u8(0), wide, u8(6), u8(1));
+        cursor = register_instruction(cursor, u16(0x80), u8(0), false, u8(0), u8(2));
+        put_byte(cursor, u8(48));
+        cursor = register_instruction(cursor + 1u64, u16(0xff), u8(0), true, u8(1), u8(6));
+        // MOV [RSI],DL. No REX prefix is needed for DL.
+        put_byte(cursor, u8(0x88));
+        put_byte(cursor + 1u64, u8(0x16));
+        cursor = register_instruction(cursor + 2u64, u16(0xff), u8(0), false, u8(0), u8(3));
+        cursor = register_instruction(cursor, u16(0x85), u8(0), wide, u8(0), u8(0));
+        u64 back = condition_field(cursor, u8(0x85));
+        patch_output_jump(back, begin);
+        cursor = back + 4u64;
+        if (signed) {
+            cursor = register_instruction(cursor, u16(0x85), u8(0), false, u8(7), u8(7));
+            u64 positive = condition_field(cursor, u8(0x84));
+            cursor = register_instruction(positive + 4u64, u16(0xff), u8(0), true, u8(1), u8(6));
+            cursor = store_immediate(cursor, digit, 45u64, 1);
+            cursor = register_instruction(cursor, u16(0xff), u8(0), false, u8(0), u8(3));
+            patch_output_jump(positive, cursor);
+        }
+    }
+
+    cursor = move_immediate(cursor, u8(1), 0xfffffff5u64, false); // STD_OUTPUT_HANDLE
+    SymbolEncoding call = import_transfer(false, unsafe_address(cursor));
+    u32 handle = u32(cursor - start + call.field);
+    cursor += call.length;
+    cursor = store_bits(cursor, move_gpr(u8(1)), u8(0), 8);
+    cursor = store_bits(cursor, move_gpr(u8(2)), u8(6), 8);
+    cursor = store_bits(cursor, move_gpr(u8(8)), u8(3), 4);
+    cursor = output_address(cursor, u8(9), 44u64);
+    cursor = encode_operand_instruction(cursor, u16(0xc7), u8(0), true, u8(0), output_stack(32u64));
+    write_word(cursor, 0); // lpOverlapped
+    cursor += 4u64;
+    call = import_transfer(false, unsafe_address(cursor));
+    u32 write = u32(cursor - start + call.field);
+    cursor += call.length;
+    cursor = register_instruction(cursor, u16(0x85), u8(0), false, u8(0), u8(0));
+    u64 write_failure = condition_field(cursor, u8(0x84));
+    cursor = encode_operand_instruction(write_failure + 4u64, u16(0x39), u8(0), false, u8(3), output_stack(44u64));
+    // SETE AL; MOVZX EAX,AL.
+    put_byte(cursor, u8(0x0f));
+    put_byte(cursor + 1u64, u8(0x94));
+    put_byte(cursor + 2u64, u8(0xc0));
+    put_byte(cursor + 3u64, u8(0x0f));
+    put_byte(cursor + 4u64, u8(0xb6));
+    put_byte(cursor + 5u64, u8(0xc0));
+    u64 finish = jump_field(cursor + 6u64);
+    u64 failure = finish + 4u64;
+    if (floating) {
+        patch_output_jump(locale_failure, failure);
+        patch_output_jump(format_failure, failure);
+    }
+    patch_output_jump(write_failure, failure);
+    cursor = register_instruction(failure, u16(0x31), u8(0), false, u8(0), u8(0));
+    patch_output_jump(finish, cursor);
+    cursor = register_instruction(cursor, u16(0x83), u8(0), true, u8(0), u8(4));
+    put_byte(cursor, u8(frame));
+    cursor += 1u64;
+    if (signed) { cursor += stack_register(u8(7), true, unsafe_address(cursor)); }
+    cursor += stack_register(u8(6), true, unsafe_address(cursor));
+    cursor += stack_register(u8(3), true, unsafe_address(cursor));
+    put_byte(cursor, u8(0xc3));
+    return PrintEncoding(u32(cursor + 1u64 - start), u32(unwind_length),
+        frame + (signed ? 24 : 16), create, format, destroy, handle, write);
 }

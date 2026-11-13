@@ -1,6 +1,7 @@
 //! 应用编译产物：入口、标准输出、导入跳板和展开信息都在编译阶段生成。
 use super::{Import, Relocation, Result, Section, Target, stack::{Frame, Call}};
 use crate::native::{NativeCode, NativeSymbol, unwind_info, UnwindOperation};
+use crate::builtin_types::ScalarEncoding;
 use super::coff::facts::observations::Layout;
 use std::collections::{BTreeMap, BTreeSet};
 #[repr(C)]
@@ -18,7 +19,21 @@ struct ApplicationEntry {
     exit_field: u32,
 }
 
+#[repr(C)]
+struct PrintEncoding {
+    length: u32,
+    unwind_length: u32,
+    local: u32,
+    create_locale: u32,
+    format: u32,
+    free_locale: u32,
+    stdout_handle: u32,
+    write: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::print_helper"]
+    fn print_helper(scalar: ScalarEncoding, output: *mut u8, unwind: *mut u8) -> PrintEncoding;
     #[link_name = "bootstrap.x64_instruction::import_transfer"]
     fn import_transfer(tail: u32, output: *mut u8) -> SymbolEncoding;
     #[link_name = "bootstrap.x64_instruction::application_entry"]
@@ -30,10 +45,6 @@ fn put32(v: &mut [u8], at: usize, n: u32) {
 }
 fn put64(v: &mut [u8], at: usize, n: u64) {
     v[at..at + 8].copy_from_slice(&n.to_le_bytes());
-}
-fn relative(v: &mut [u8], at: usize, target: usize) -> Result<()> {
-    put32(v, at, i32::try_from(target as i64 - at as i64 - 4)? as u32);
-    Ok(())
 }
 fn kernel(name: &'static str) -> Import {
     Import {
@@ -79,151 +90,34 @@ struct Helper {
     patches: Vec<(usize, Import)>,
     unwind: Vec<u8>,
 }
-fn jmp(v: &mut Vec<u8>, condition: Option<u8>) -> usize {
-    if let Some(c) = condition {
-        v.extend([0x0f, c]);
-    } else {
-        v.push(0xe9);
-    }
-    let at = v.len();
-    v.extend([0; 4]);
-    at
-}
 fn transfer(v: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import, tail: bool) {
     let mut bytes = [0; 6];
     let encoded = unsafe { import_transfer(u32::from(tail), bytes.as_mut_ptr()) };
     patches.push((v.len() + encoded.field as usize, import));
     v.extend_from_slice(&bytes[..encoded.length as usize]);
 }
-fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
-    let signed = scalar.is_signed();
-    let wide = scalar.size() == 8;
-    let boolean = scalar == crate::ir::Scalar::Bool;
-    let float = scalar.is_float();
-    let saved = if signed { vec![3, 6, 7] } else { vec![3, 6] };
-    let frame = if float {
-        120u8
-    } else if signed {
-        80u8
-    } else {
-        88u8
+fn print(scalar: crate::ir::Scalar) -> Helper {
+    let mut bytes = Vec::with_capacity(224);
+    let mut unwind = Vec::with_capacity(12);
+    let encoded = unsafe {
+        let encoded = print_helper(scalar.into(), bytes.as_mut_ptr(), unwind.as_mut_ptr());
+        bytes.set_len(encoded.length as usize);
+        unwind.set_len(encoded.unwind_length as usize);
+        encoded
     };
-    let mut v = Vec::new();
-    let mut operations = Vec::new();
-    let mut patches = Vec::new();
-    let mut failures = Vec::new();
-    for &reg in &saved {
-        v.push(0x50 + reg);
-        let at = v.len() as u8;
-        operations.push(UnwindOperation::push(at, reg));
-    }
-    v.extend([0x48, 0x83, 0xec, frame]);
-    let at = v.len() as u8;
-    operations.push(UnwindOperation::allocate(at, u32::from(frame)));
-    let unwind = unwind_info(at, &operations);
-    if float {
-        // Intrinsics receive original bits; only f32 needs promotion for C's %g.
-        v.extend([0x66]);
-        if scalar == crate::ir::Scalar::F64 { v.push(0x48); }
-        v.extend([0x0f, 0x6e, 0xc1]);
-        if scalar == crate::ir::Scalar::F32 { v.extend([0xf3, 0x0f, 0x5a, 0xc0]); }
-        v.extend([0xf2, 0x0f, 0x11, 0x44, 0x24, 0x38,
-            0x66, 0xc7, 0x44, 0x24, 0x40, b'C', 0,
-            0xc7, 0x44, 0x24, 0x48, b'%', b'.', if scalar == crate::ir::Scalar::F64 { b'1' } else { b'9' }, if scalar == crate::ir::Scalar::F64 { b'7' } else { b'g' },
-            0xc7, 0x44, 0x24, 0x4c]);
-        v.extend(if scalar == crate::ir::Scalar::F64 { [b'g',10,0,0] } else { [10,0,0,0] });
-        v.extend([0xb9, 4, 0, 0, 0, 0x48, 0x8d, 0x54, 0x24, 0x40]);
-        transfer(&mut v, &mut patches, ucrt("_create_locale"), false);
-        v.extend([0x48, 0x85, 0xc0]);
-        failures.push(jmp(&mut v, Some(0x84)));
-        v.extend([
-            0x48, 0x89, 0xc6, 0xb9, 2, 0, 0, 0, 0x48, 0x8d, 0x54, 0x24, 0x50, 0x41, 0xb8, 32, 0, 0,
-            0, 0x4c, 0x8d, 0x4c, 0x24, 0x48, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x8d, 0x44, 0x24,
-            0x38, 0x48, 0x89, 0x44, 0x24, 0x28,
+    let mut patches = Vec::with_capacity(if encoded.create_locale == 0 { 2 } else { 5 });
+    if encoded.create_locale != 0 {
+        patches.extend([
+            (encoded.create_locale as usize, ucrt("_create_locale")),
+            (encoded.format as usize, ucrt("__stdio_common_vsprintf")),
+            (encoded.free_locale as usize, ucrt("_free_locale")),
         ]);
-        transfer(&mut v, &mut patches, ucrt("__stdio_common_vsprintf"), false);
-        v.extend([0x89, 0xc3, 0x48, 0x89, 0xf1]);
-        transfer(&mut v, &mut patches, ucrt("_free_locale"), false);
-        v.extend([0x85, 0xdb]);
-        failures.push(jmp(&mut v, Some(0x88)));
-        v.extend([0x48, 0x8d, 0x74, 0x24, 0x50]);
-    } else if boolean {
-        v.extend([0x85, 0xc9]);
-        let no = jmp(&mut v, Some(0x84));
-        v.extend([0xc7, 0x44, 0x24, 0x30]);
-        v.extend(u32::from_le_bytes(*b"true").to_le_bytes());
-        v.extend([0xc6, 0x44, 0x24, 0x34, 10, 0xbb, 5, 0, 0, 0]);
-        let end = jmp(&mut v, None);
-        let target = v.len();
-        relative(&mut v, no, target)?;
-        v.extend([0xc7, 0x44, 0x24, 0x30]);
-        v.extend(u32::from_le_bytes(*b"fals").to_le_bytes());
-        v.extend([0x66, 0xc7, 0x44, 0x24, 0x34, b'e', 10, 0xbb, 6, 0, 0, 0]);
-        let target = v.len();
-        relative(&mut v, end, target)?;
-        v.extend([0x48, 0x8d, 0x74, 0x24, 0x30]);
-    } else {
-        if wide { v.push(0x48); }
-        v.extend([0x89, 0xc8]);
-        if signed {
-            v.extend([0x31, 0xff]);
-            if wide { v.push(0x48); }
-            v.extend([0x85, 0xc0]);
-            let positive = jmp(&mut v, Some(0x89));
-            if wide { v.push(0x48); }
-            v.extend([0xf7, 0xd8, 0xbf, 1, 0, 0, 0]);
-            let target = v.len();
-            relative(&mut v, positive, target)?;
-        }
-        v.extend([
-            0x48, 0x8d, 0x74, 0x24, if wide { 0x48 } else { 0x40 }, 0xc6, 0x06, 10, 0xbb, 1, 0, 0, 0, 0xb9, 10, 0, 0, 0,
-        ]);
-        let begin = v.len();
-        v.extend([0x31, 0xd2]);
-        if wide { v.push(0x48); }
-        v.extend([0xf7, 0xf1, 0x80, 0xc2, b'0', 0x48, 0xff, 0xce, 0x88, 0x16, 0xff, 0xc3]);
-        if wide { v.push(0x48); }
-        v.extend([0x85, 0xc0]);
-        let back = jmp(&mut v, Some(0x85));
-        relative(&mut v, back, begin)?;
-        if signed {
-            v.extend([0x85, 0xff]);
-            let positive = jmp(&mut v, Some(0x84));
-            v.extend([0x48, 0xff, 0xce, 0xc6, 0x06, b'-', 0xff, 0xc3]);
-            let target = v.len();
-            relative(&mut v, positive, target)?;
-        }
     }
-    v.extend([0xb9]);
-    v.extend((-11i32).to_le_bytes());
-    transfer(&mut v, &mut patches, kernel("GetStdHandle"), false);
-    v.extend([
-        0x48, 0x89, 0xc1, 0x48, 0x89, 0xf2, 0x41, 0x89, 0xd8, 0x4c, 0x8d, 0x4c, 0x24, 0x2c, 0x48,
-        0xc7, 0x44, 0x24, 0x20, 0, 0, 0, 0,
+    patches.extend([
+        (encoded.stdout_handle as usize, kernel("GetStdHandle")),
+        (encoded.write as usize, kernel("WriteFile")),
     ]);
-    transfer(&mut v, &mut patches, kernel("WriteFile"), false);
-    v.extend([0x85, 0xc0]);
-    failures.push(jmp(&mut v, Some(0x84)));
-    v.extend([0x39, 0x5c, 0x24, 0x2c, 0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0]);
-    let finish = jmp(&mut v, None);
-    let target = v.len();
-    for failed in failures {
-        relative(&mut v, failed, target)?;
-    }
-    v.extend([0x31, 0xc0]);
-    let target = v.len();
-    relative(&mut v, finish, target)?;
-    v.extend([0x48, 0x83, 0xc4, frame]);
-    for &reg in saved.iter().rev() {
-        v.push(0x58 + reg);
-    }
-    v.push(0xc3);
-    Ok(Helper {
-        local: u32::from(frame) + saved.len() as u32 * 8,
-        bytes: v,
-        patches,
-        unwind,
-    })
+    Helper { local: encoded.local, bytes, patches, unwind }
 }
 pub(crate) fn application(
     native: NativeCode,
@@ -303,7 +197,7 @@ fn functions(
                 function(&mut sections, &mut frames, format!("{op:?}"), 0, calls, bytes, None, Some(Layout::ImportThunk))
             }
             NativeSymbol::Print(scalar) => {
-                let helper = print(*scalar)?;
+                let helper = print(*scalar);
                 patches = helper.patches;
                 let end = u32::try_from(helper.bytes.len())?;
                 let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false }).collect();
