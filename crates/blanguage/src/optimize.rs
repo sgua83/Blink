@@ -35,9 +35,69 @@ impl From<&Stage> for StageBindings {
     }
 }
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct FusionBlock {
+    instructions: *const std::ffi::c_void,
+    count: usize,
+}
+
+impl From<&[Inst]> for FusionBlock {
+    fn from(code: &[Inst]) -> Self {
+        Self { instructions: code.as_ptr().cast(), count: code.len() }
+    }
+}
+
+#[repr(C)]
+struct FusionNode {
+    first: FusionBlock,
+    second: FusionBlock,
+    next: usize,
+    ordered: u32,
+}
+
+#[repr(C)]
+struct FusionStage {
+    bindings: StageBindings,
+    body: FusionBlock,
+}
+
+impl From<&Stage> for FusionStage {
+    fn from(stage: &Stage) -> Self {
+        Self { bindings: stage.into(), body: stage.code.as_slice().into() }
+    }
+}
+
+unsafe extern "C" fn read_fusion_node(block: FusionBlock, next: usize) -> FusionNode {
+    let code = unsafe { std::slice::from_raw_parts(block.instructions.cast::<Inst>(), block.count) };
+    for (offset, inst) in code[next..].iter().enumerate() {
+        let (first, second, ordered): (&[Inst], &[Inst], u32) = match &inst.kind {
+            InstKind::Scope(body) => (body, &[], 0),
+            InstKind::If { yes, no, .. } => (yes, no, 0),
+            InstKind::Loop { condition, body, .. } => (condition, body, 0),
+            InstKind::Append(_)
+            | InstKind::Subgroup { .. }
+            | InstKind::Print { .. }
+            | InstKind::Call(_)
+            | InstKind::TileLength(_)
+            | InstKind::TileLane(_)
+            | InstKind::TilePublish(_)
+            | InstKind::TileBarrier
+            | InstKind::TileCollective(_)
+            | InstKind::TileLoad { .. }
+            | InstKind::LoadIndexed { source: IndexedSource::Tile { .. }, .. }
+            | InstKind::Atomic(Atomic { target: IndexedSource::Tile { .. }, .. }) => (&[], &[], 1),
+            _ => continue,
+        };
+        return FusionNode { first: first.into(), second: second.into(), next: next + offset + 1, ordered };
+    }
+    FusionNode { first: (&[] as &[Inst]).into(), second: (&[] as &[Inst]).into(), next: block.count, ordered: 0 }
+}
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.stage_fusion::cross_dependency"]
-    fn cross_dependency(left: StageBindings, right: StageBindings) -> u32;
+    #[link_name = "bootstrap.stage_fusion::can_fuse"]
+    fn can_fuse(left: FusionStage, right: FusionStage,
+        read: unsafe extern "C" fn(FusionBlock, usize) -> FusionNode) -> u32;
     #[link_name = "bootstrap.stage_fusion::merge_bindings"]
     fn merge_bindings(output: *mut usize, left_count: usize, right: BindingSpan) -> usize;
 }
@@ -69,17 +129,11 @@ fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
         if let Some((previous, changed)) = stages.last_mut() {
             if matches!(previous.operation, Operation::Map)
                 && matches!(stage.operation, Operation::Map)
-                && previous.subgroup_operations().is_empty()
-                && stage.subgroup_operations().is_empty()
-                && !previous.has_external_effects()
-                && !stage.has_external_effects()
-                && !previous.has_tile_scope()
-                && !stage.has_tile_scope()
                 && previous.domain == stage.domain
                 && previous.prefix == stage.prefix
                 && previous.selection == stage.selection
                 && !stage.boundary_before
-                && unsafe { cross_dependency((&*previous).into(), (&stage).into()) } == 0
+                && unsafe { can_fuse((&*previous).into(), (&stage).into(), read_fusion_node) } != 0
             {
                 let following = OperationOrigin {
                     source_site: stage.operation_source.clone(),

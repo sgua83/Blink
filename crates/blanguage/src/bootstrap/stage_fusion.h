@@ -10,8 +10,25 @@ struct StageBindings {
     BindingSpan cross;
 };
 
-// Each span borrows the strictly increasing bindings of one checked Map.
-extern "C" bool cross_dependency(StageBindings left, StageBindings right) on cpu;
+struct FusionBlock {
+    address instructions;
+    u64 count;
+};
+struct FusionNode {
+    FusionBlock first;
+    FusionBlock second;
+    u64 next;
+    bool ordered;
+};
+struct FusionStage {
+    StageBindings bindings;
+    FusionBlock body;
+};
+
+// Both inputs borrow the original checked Map, including its sorted bindings.
+// read returns the next nested block or ordered operation from the original IR.
+extern "C" bool can_fuse(FusionStage left, FusionStage right,
+    cfn<FusionNode,FusionBlock,u64> read) on cpu requires nonzero(read);
 
 // output contains left_count original bindings, with space for right.count more.
 // The returned index starts the sorted union in that same output buffer.

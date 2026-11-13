@@ -1679,20 +1679,6 @@ pub struct SubgroupCapabilities {
     pub extended_types: bool,
 }
 impl Stage {
-    pub(crate) fn has_external_effects(&self) -> bool {
-        fn contains(code: &[Inst]) -> bool {
-            code.iter().any(|inst| match &(inst).kind {
-                InstKind::Print { .. } | InstKind::Call(_) => true,
-                InstKind::Scope(body) => contains(body),
-                InstKind::If { yes, no, .. } => contains(yes) || contains(no),
-                InstKind::Loop {
-                    condition, body, ..
-                } => contains(condition) || contains(body),
-                _ => false,
-            })
-        }
-        contains(&self.code)
-    }
     /// 对实际消费的命中字段发射设备读取；未消费的顶点和矩阵不生成读取。
     pub fn ray_result_queries(
         &self,

@@ -13,7 +13,7 @@ bool contains_at(BindingSpan span, inout u64 at, u64 binding) on cpu {
     return false;
 }
 
-extern "C" bool cross_dependency(StageBindings left, StageBindings right) on cpu {
+bool cross_dependency(StageBindings left, StageBindings right) on cpu {
     u64 left_cross = 0u64;
     u64 right_cross = 0u64;
     u64 left_read = 0u64;
@@ -47,6 +47,26 @@ extern "C" bool cross_dependency(StageBindings left, StageBindings right) on cpu
         }
     }
     return false;
+}
+
+bool has_ordered_operation(FusionBlock block, cfn<FusionNode,FusionBlock,u64> read) on cpu
+    requires nonzero(read) {
+    u64 next = 0u64;
+    while (next < block.count) {
+        FusionNode node = read(block, next);
+        if (node.ordered || has_ordered_operation(node.first, read) ||
+            has_ordered_operation(node.second, read)) {
+            return true;
+        }
+        next = node.next;
+    }
+    return false;
+}
+
+extern "C" bool can_fuse(FusionStage left, FusionStage right,
+    cfn<FusionNode,FusionBlock,u64> read) on cpu requires nonzero(read) {
+    return !cross_dependency(left.bindings, right.bindings) &&
+        !has_ordered_operation(left.body, read) && !has_ordered_operation(right.body, read);
 }
 
 extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right) on cpu {
