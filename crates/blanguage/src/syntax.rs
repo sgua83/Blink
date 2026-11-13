@@ -45,6 +45,15 @@ impl Drop for Owner {
         if let Err(error)=checked(result) {panic!("{error}");}
     }
 }
+// A synchronous native adapter borrows the same source owner; it does not
+// publish another tree or retain a raw B view after the source consumer ends.
+#[derive(Clone,Copy)]
+pub(crate) struct SourceView<'a> {owner:&'a Arc<Owner>}
+impl<'a> SourceView<'a> {
+    pub(crate) fn storage(self)->wire::StorageView {self.owner.view()}
+    pub(crate) fn text(self,value:wire::Text)->&'a str {self.owner.text(value)}
+    pub(crate) fn node<T>(self,offset:u64)->Node<T> {Node{owner:self.owner.clone(),offset,marker:PhantomData}}
+}
 pub(crate) struct Builder {owner:Owner}
 impl Builder {
     pub fn new(source:Option<Source>)->Result<Self> {
@@ -58,7 +67,10 @@ impl Builder {
 }
 
 pub(crate) struct Node<T> {owner:Arc<Owner>,offset:u64,marker:PhantomData<T>}
-impl<T> Node<T> {pub fn same_node(&self,other:&Self)->bool{Arc::ptr_eq(&self.owner,&other.owner)&&self.offset==other.offset}}
+impl<T> Node<T> {
+    pub fn same_node(&self,other:&Self)->bool{Arc::ptr_eq(&self.owner,&other.owner)&&self.offset==other.offset}
+    pub(crate) fn source_view(&self)->SourceView<'_> {SourceView{owner:&self.owner}}
+}
 impl<T> Clone for Node<T> {fn clone(&self)->Self {Self{owner:self.owner.clone(),offset:self.offset,marker:PhantomData}}}
 impl<T> fmt::Debug for Node<T> {
     fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result {f.debug_struct(std::any::type_name::<T>()).field("offset",&self.offset).finish()}
@@ -78,6 +90,8 @@ pub(crate) struct List<T> {owner:Arc<Owner>,value:wire::Slice,marker:PhantomData
 impl<T> Clone for List<T> {fn clone(&self)->Self {Self{owner:self.owner.clone(),value:self.value,marker:PhantomData}}}
 impl<T> fmt::Debug for List<T> {fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result{f.debug_list().entries(self.iter()).finish()}}
 impl<T> List<T> {
+    pub(crate) fn source_view(&self)->SourceView<'_> {SourceView{owner:&self.owner}}
+    pub(crate) fn source_slice(&self)->wire::Slice {self.value}
     pub fn len(&self)->usize {self.value.count as usize}
     pub fn is_empty(&self)->bool {self.value.count==0}
     pub fn get(&self,index:usize)->Option<Node<T>> {
