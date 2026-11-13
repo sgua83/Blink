@@ -1,5 +1,5 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
-use super::{Compilation, Inputs, ObjectCompilation, ObjectKind, Result, inputs::ProviderInterface};
+use super::{Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, ProviderInterface}};
 use crate::{Compiler, ast::Target, object::Object};
 use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex}, thread};
 #[derive(Clone, Copy)]
@@ -123,22 +123,24 @@ impl Compiler {
             Ok(Prepared { path, root: unit.root.canonicalize()?, output: std::path::absolute(unit.output)?,
                 kind: unit.kind, providers: expansion.providers })
         }).collect::<Result<Vec<_>>>()?;
-        let mut inputs = Inputs::default();
-        for unit in &prepared { inputs.header(&unit.path)?; }
+        let mut capture = Capture::default();
+        for unit in &prepared { capture.header(&unit.path)?; }
+        let mut interfaces = Vec::with_capacity(prepared.len());
         for unit in &prepared {
             let mut providers = BTreeMap::new();
             for provider in &unit.providers {
                 let (name, interface) = match *provider {
                     Dependency::Unit(id) => {
-                        let header = inputs.header(&prepared[id].path)?;
+                        let header = capture.header(&prepared[id].path)?;
                         (header.name().to_owned(), ProviderInterface::Unit(header))
                     }
                     Dependency::Object(object) => (object.name().to_owned(), ProviderInterface::Object(object)),
                 };
                 providers.entry(name).or_insert(interface);
             }
-            inputs.capture(&unit.path, &unit.root, &providers)?;
+            interfaces.push(capture.capture(&unit.path, &unit.root, &providers)?);
         }
+        let inputs = capture.finish(interfaces);
         let mut following = vec![Vec::new(); units.len()];
         let waiting = units.iter().enumerate().map(|(index, unit)| {
             let dependencies = unit.dependencies.iter().filter_map(|dependency| match dependency {
@@ -179,10 +181,10 @@ impl Compiler {
             let unit = &prepared[index];
             let result = self.execute(|worker| match unit.kind {
                 UnitKind::Object(kind) => super::object::compile(worker, &unit.path, &unit.root,
-                    providers.iter().map(Provider::object), kind, &unit.output, Some(&inputs))
+                    providers.iter().map(Provider::object), kind, &unit.output, Some(&inputs[index]))
                     .map(|value| Output::Object(Arc::new(value))),
                 UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
-                    entry, target, &unit.output, Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(), Some(&inputs)).map(Output::Entry),
+                    entry, target, &unit.output, Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(), Some(&inputs[index])).map(Output::Entry),
             }).map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
