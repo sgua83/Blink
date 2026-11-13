@@ -36,12 +36,6 @@ use std::{
 pub use texture::{Texture, TextureCopyLevel, TextureInput};
 use texture::{BufferImageCopy, ImageBarrier, Subresource, SubresourceRange};
 
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn LoadLibraryW(name: *const u16) -> *mut c_void;
-    fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *const c_void;
-    fn FreeLibrary(module: *mut c_void) -> i32;
-}
 type Gipa = unsafe extern "system" fn(VkInstance, *const c_char) -> *const c_void;
 type Gdpa = unsafe extern "system" fn(VkDevice, *const c_char) -> *const c_void;
 type DestroyInstance = unsafe extern "system" fn(VkInstance, *const c_void);
@@ -63,29 +57,17 @@ unsafe fn function<F: Copy>(address: *const c_void, name: &CStr) -> Result<F> {
     Ok(unsafe { std::mem::transmute_copy(&address) })
 }
 struct Library {
-    handle: *mut c_void,
+    _library: crate::library::Library,
     gipa: Gipa,
 }
 impl Library {
     fn new() -> Result<Self> {
-        let name: Vec<_> = "vulkan-1.dll\0".encode_utf16().collect();
-        let handle = unsafe { LoadLibraryW(name.as_ptr()) };
-        if handle.is_null() {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let address = unsafe { GetProcAddress(handle, c"vkGetInstanceProcAddr".as_ptr()) };
-        let gipa = unsafe { function(address, c"vkGetInstanceProcAddr") }?;
-        Ok(Self { handle, gipa })
+        let library = crate::library::Library::load("vulkan-1.dll")?;
+        let gipa: Gipa = unsafe { std::mem::transmute(library.symbol(c"vkGetInstanceProcAddr")?) };
+        Ok(Self { _library: library, gipa })
     }
     unsafe fn get<F: Copy>(&self, instance: VkInstance, name: &CStr) -> Result<F> {
         unsafe { function((self.gipa)(instance, name.as_ptr()), name) }
-    }
-}
-impl Drop for Library {
-    fn drop(&mut self) {
-        unsafe {
-            FreeLibrary(self.handle);
-        }
     }
 }
 struct InstanceOwner {

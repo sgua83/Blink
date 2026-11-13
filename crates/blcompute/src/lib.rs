@@ -1,6 +1,7 @@
 //! 编译程序的设备执行、数据存储与生命周期所有者。
 pub mod application;
 mod bindings;
+mod library;
 pub mod cpu;
 pub mod ffi;
 mod texture;

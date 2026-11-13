@@ -2,6 +2,7 @@ pub use crate::texture::{TextureInput, CpuTextureBinding, CpuTextures};
 mod dataset;
 mod sort;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
+use crate::library::Library;
 use blanguage::{
     ExecutableProgram, TemplateProgram,
     ir::{Bits, CollectiveOperator, ExecutionPlan as Program, Scalar, Ty},
@@ -21,9 +22,6 @@ unsafe extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
     fn RtlAddFunctionTable(table: *mut RuntimeFunction, count: u32, base: u64) -> u8;
     fn RtlDeleteFunctionTable(table: *mut RuntimeFunction) -> u8;
-    fn LoadLibraryW(name: *const u16) -> *mut c_void;
-    fn GetProcAddress(module: *mut c_void, name: *const std::ffi::c_char) -> *const c_void;
-    fn FreeLibrary(module: *mut c_void) -> i32;
     fn CreateThreadpoolWork(
         callback: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void),
         context: *mut c_void,
@@ -171,32 +169,6 @@ struct Allocation {
     functions: Vec<std::ptr::NonNull<RuntimeFunction>>,
     _libraries: Vec<Library>,
 }
-struct Library(*mut c_void);
-impl Library {
-    fn load(name: &str) -> Result<Self> {
-        let name: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
-        let handle = unsafe { LoadLibraryW(name.as_ptr()) };
-        if handle.is_null() {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(Self(handle))
-    }
-    fn symbol(&self, name: &str) -> Result<*const ()> {
-        let name = std::ffi::CString::new(name)?;
-        let address = unsafe { GetProcAddress(self.0, name.as_ptr()) };
-        if address.is_null() {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(address.cast())
-    }
-}
-impl Drop for Library {
-    fn drop(&mut self) {
-        unsafe {
-            FreeLibrary(self.0);
-        }
-    }
-}
 fn external_symbol(
     libraries: &mut std::collections::BTreeMap<String, Library>, name: &blanguage::ast::ExternalName,
 ) -> Result<*const ()> {
@@ -208,7 +180,7 @@ fn external_symbol(
         libraries.insert(name.library.clone(), Library::load(&name.library)
             .map_err(|error| crate::error(format!("加载 {} 失败：{error}", name.library)))?);
     }
-    libraries[&name.library].symbol(&name.symbol)
+    libraries[&name.library].symbol(&std::ffi::CString::new(name.symbol.as_str())?)
         .map_err(|error| crate::error(format!("解析 {}!{} 失败：{error}", name.library, name.symbol)))
 }
 
