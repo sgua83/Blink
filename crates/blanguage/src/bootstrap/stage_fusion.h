@@ -115,3 +115,10 @@ struct StageGuarantee {
 // this temporary buffer and marks the original guarantee order in place.
 extern "C" void retain_stage_guarantees(address writes, u64 write_count,
     address guarantees, u64 guarantee_count) on cpu;
+
+struct LocalValue { u64 slot; u64 value; };
+
+// Both inputs are sorted by slot. The left buffer receives their identical
+// slot/value pairs in slot order and the return value is its new length.
+extern "C" u64 intersect_local_values(address left, u64 left_count,
+    address right, u64 right_count) on cpu;

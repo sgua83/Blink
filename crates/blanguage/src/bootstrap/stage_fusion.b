@@ -352,3 +352,25 @@ extern "C" void retain_stage_guarantees(address writes, u64 write_count,
         index += 1u64;
     }
 }
+
+address local_value_at(address values, u64 index) on cpu {
+    return unsafe_address(address_bits(values) + index * size_of<LocalValue>());
+}
+
+extern "C" u64 intersect_local_values(address left, u64 left_count,
+    address right, u64 right_count) on cpu {
+    u64 kept = 0u64;
+    u64 a = 0u64;
+    u64 b = 0u64;
+    while (a < left_count && b < right_count) {
+        LocalValue lhs = unsafe_position<LocalValue>(local_value_at(left, a));
+        LocalValue rhs = unsafe_position<LocalValue>(local_value_at(right, b));
+        if (lhs.slot == rhs.slot && lhs.value == rhs.value) {
+            unsafe_position<LocalValue>(local_value_at(left, kept)) = lhs;
+            kept += 1u64;
+        }
+        if (lhs.slot <= rhs.slot) { a += 1u64; }
+        if (rhs.slot <= lhs.slot) { b += 1u64; }
+    }
+    return kept;
+}

@@ -1,7 +1,19 @@
 //! 已知局部值直接进入 SSA 使用点；分支合流与循环携带的实际状态保留在局部槽。
 use super::*;
 
-type LocalValues = BTreeMap<usize, Reg>;
+#[repr(C)]
+struct LocalValue {
+    slot: usize,
+    value: Reg,
+}
+
+type LocalValues = Vec<LocalValue>;
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.stage_fusion::intersect_local_values"]
+    fn intersect_local_values(left: *mut LocalValue, left_count: usize,
+        right: *const LocalValue, right_count: usize) -> usize;
+}
 // Only pending origin facts for this invocation; SSA keys never enter retained metadata.
 type Reuses = BTreeMap<Reg, Vec<RetainedUse>>;
 enum RetainedUse {
@@ -14,7 +26,11 @@ enum RetainedUse {
 fn merge(target: &mut Option<LocalValues>, other: Option<LocalValues>) {
     if let Some(other) = other {
         if let Some(target) = target {
-            target.retain(|slot, value| other.get(slot) == Some(value));
+            // These are distinct, sorted snapshots. B compacts only the original left slice.
+            let kept = unsafe {
+                intersect_local_values(target.as_mut_ptr(), target.len(), other.as_ptr(), other.len())
+            };
+            target.truncate(kept);
         } else {
             *target = Some(other);
         }
@@ -24,15 +40,11 @@ fn merge(target: &mut Option<LocalValues>, other: Option<LocalValues>) {
 #[derive(Default)]
 struct Flow {
     next: Option<LocalValues>,
-    breaks: Option<LocalValues>,
-    continues: Option<LocalValues>,
     exits: Option<LocalValues>,
 }
 impl Flow {
     fn join(&mut self, other: Self) {
         merge(&mut self.next, other.next);
-        merge(&mut self.breaks, other.breaks);
-        merge(&mut self.continues, other.continues);
         merge(&mut self.exits, other.exits);
     }
 }
@@ -78,14 +90,14 @@ impl Values {
     fn local_values(&self) -> LocalValues {
         self.locals
             .iter()
-            .map(|(slot, value)| (*slot, self.root(*value)))
+            .map(|(&slot, &value)| LocalValue { slot, value: self.root(value) })
             .collect()
     }
     fn resume(&mut self, flow: &mut Flow, step: Flow) -> bool {
-        flow.join(step);
-        let next = flow.next.take();
-        let continuing = next.is_some();
-        self.locals = next.unwrap_or_default();
+        merge(&mut flow.exits, step.exits);
+        let continuing = step.next.is_some();
+        self.locals = step.next.into_iter().flatten()
+            .map(|entry| (entry.slot, entry.value)).collect();
         self.memory.clear();
         continuing
     }
@@ -222,14 +234,7 @@ impl Values {
                     merge(&mut flow.exits, Some(self.local_values()));
                     continuing = false;
                 }
-                InstKind::Break => {
-                    merge(&mut flow.breaks, Some(self.local_values()));
-                    continuing = false;
-                }
-                InstKind::Continue => {
-                    merge(&mut flow.continues, Some(self.local_values()));
-                    continuing = false;
-                }
+                InstKind::Break | InstKind::Continue => continuing = false,
                 InstKind::Atomic(a) => {
                     if a.op.writes() { self.invalidate(a.target.aliases()); }
                     self.memory.clear();
@@ -323,8 +328,6 @@ impl Values {
                     *test = cycle.root(*test);
                     let mut loop_flow = Flow {
                         next: condition_flow.next.as_ref().map(|_| after),
-                        breaks: condition_flow.breaks,
-                        continues: condition_flow.continues,
                         exits: condition_flow.exits,
                     };
                     if condition_flow.next.is_some() {
