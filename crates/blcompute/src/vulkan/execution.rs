@@ -1,6 +1,6 @@
 //! 原生完成点、命令资源及物理数据的使用寿命；共享分支只共享执行事实。
 use super::*;
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::Arc};
 
 /// 已提交执行的原生完成与时间戳；不拥有另一份数据或帧计数。
 /// 数据及AS继续通过原物理最后使用点保持到实际GPU消费结束。
@@ -14,7 +14,54 @@ impl GpuCompletion {
     }
     pub fn wait(self) -> Result<Option<GpuTimings>> {
         self.execution.wait()?;
-        self.queries.as_ref().map(|queries| queries.read()).transpose()
+        self.queries.as_ref().map(|queries| queries.timings()).transpose()
+    }
+
+    /// 等待本次提交结束，交回显式请求的原设备时间戳与实际阶段。
+    pub fn wait_timestamps(self) -> Result<Option<GpuTimestamps>> {
+        self.execution.wait()?;
+        self.queries
+            .as_ref()
+            .map(|queries| queries.timestamps(&self.execution.point))
+            .transpose()
+    }
+}
+
+/// 同一完成提交的设备时间戳。设备与序号只在原存活逻辑设备内关联。
+pub struct GpuTimestamps {
+    pub device: usize,
+    pub sequence: u64,
+    /// 每个设备tick对应的纳秒数。
+    pub period_ns: f32,
+    /// 原计算队列实际使用的低位位数。
+    pub valid_bits: u32,
+    program: Arc<Program>,
+    stamps: Vec<u64>,
+}
+
+/// 原提交的一轮及该轮实际阶段，序号从零开始。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuStageTimestamps {
+    pub step: usize,
+    pub stage: usize,
+    pub start_ticks: u64,
+    pub end_ticks: u64,
+}
+impl GpuTimestamps {
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
+
+    pub fn stages(&self) -> impl ExactSizeIterator<Item = GpuStageTimestamps> + '_ {
+        let stage_count = self.program.stages().len();
+        self.stamps.chunks_exact(2).enumerate().map(move |(index, pair)| {
+            GpuStageTimestamps {
+                step: index / stage_count,
+                stage: index % stage_count,
+                start_ticks: pair[0],
+                end_ticks: pair[1],
+            }
+        })
     }
 }
 
@@ -112,16 +159,19 @@ pub(super) struct QueryPool {
     inner: Rc<Inner>,
     handle: u64,
     count: u32,
+    program: Arc<Program>,
 }
 impl QueryPool {
-    pub fn take(commands: &mut Commands, count: u32) -> Rc<Self> {
+    pub fn take(commands: &mut Commands, count: u32, program: Arc<Program>) -> Rc<Self> {
         Rc::new(Self {
             inner: commands.inner.clone(),
             handle: std::mem::replace(&mut commands.queries, 0),
             count,
+            program,
         })
     }
-    pub fn read(&self) -> Result<GpuTimings> {
+
+    fn read(&self) -> Result<Vec<u64>> {
         let count = self.count as usize;
         let mut stamps = vec![0u64; count];
         unsafe {
@@ -139,6 +189,22 @@ impl QueryPool {
                 "vkGetQueryPoolResults",
             )?;
         }
+        Ok(stamps)
+    }
+
+    fn timestamps(&self, point: &Completion) -> Result<GpuTimestamps> {
+        Ok(GpuTimestamps {
+            device: point.inner.owner.device as usize,
+            sequence: point.sequence.get(),
+            period_ns: self.inner.properties.limits.timestampPeriod,
+            valid_bits: self.inner.timestamp_bits,
+            program: self.program.clone(),
+            stamps: self.read()?,
+        })
+    }
+
+    pub(super) fn timings(&self) -> Result<GpuTimings> {
+        let stamps = self.read()?;
         let bits = self.inner.timestamp_bits;
         let mask = if bits == 64 {
             u64::MAX
@@ -147,7 +213,7 @@ impl QueryPool {
         };
         let period = self.inner.properties.limits.timestampPeriod as f64;
         Ok(GpuTimings {
-            elapsed_ms: (stamps[count - 1].wrapping_sub(stamps[0]) & mask) as f64 * period
+            elapsed_ms: (stamps[stamps.len() - 1].wrapping_sub(stamps[0]) & mask) as f64 * period
                 / 1_000_000.0,
             stage_ms: stamps
                 .chunks_exact(2)

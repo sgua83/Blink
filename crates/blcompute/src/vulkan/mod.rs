@@ -18,7 +18,7 @@ use blanguage::{
     ExecutableProgram, TemplateProgram,
     ir::{DeviceRequirements, ExecutionPlan as Program, ProgramInterface, Ty},
 };
-pub use execution::GpuCompletion;
+pub use execution::{GpuCompletion, GpuStageTimestamps, GpuTimestamps};
 use execution::{Completion, Execution, ExecutionResources, QueryPool};
 pub use memory::{MemoryBudget, MemoryHeapBudget};
 pub use present::{PresentStatus, Swapchain};
@@ -2257,8 +2257,9 @@ impl GpuProgram {
         // 同一串行提交中，完成消费的同容量 where 工作区由后续阶段复用。
         let mut scratch_indices = Vec::new();
         let mut selected_storage = BTreeMap::new();
+        let stage_count = c.program.stages().len();
         let query_count = if self.capture_timestamps {
-            u32::try_from(c.pipelines.len() as u64 * 2 * steps.get() as u64)?
+            u32::try_from(stage_count as u64 * 2 * steps.get() as u64)?
         } else { 0 };
         let mut extra_sets = 0u64;
         for stage in c.program.stages() {
@@ -2463,7 +2464,7 @@ impl GpuProgram {
                         let count = data[stage.domain].count;
                         uniforms[0] = count;
                         let query = self.capture_timestamps
-                            .then(|| (step as usize * c.pipelines.len() + i) as u32 * 2);
+                            .then(|| (step as usize * stage_count + i) as u32 * 2);
                         (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
                         (f.vkCmdBindDescriptorSets)(
                             commands.command,
@@ -2775,7 +2776,8 @@ impl GpuProgram {
             }
         }
         commands.submit()?;
-        let queries = (query_count != 0).then(|| QueryPool::take(&mut commands, query_count));
+        let queries = (query_count != 0)
+            .then(|| QueryPool::take(&mut commands, query_count, c.program.clone()));
         let execution = Execution::new(
             ExecutionResources::Compute {
                 commands,
@@ -2976,7 +2978,7 @@ impl Submission {
     pub fn wait(mut self) -> std::result::Result<Completed, (Box<dyn std::error::Error + Send + Sync>, Self)> {
         let result = (|| {
             self.execution.wait()?;
-            self.queries.as_ref().map(|queries| queries.read()).transpose()
+            self.queries.as_ref().map(|queries| queries.timings()).transpose()
         })();
         let timings = match result {
             Ok(timings) => timings,
