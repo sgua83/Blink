@@ -223,6 +223,25 @@ u64 jump_field(u64 at) on cpu {
     return at + 1u64;
 }
 
+extern "C" u64 jump_to(u64 offset, u64 target, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 field = jump_field(start);
+    patch_relative(unsafe_address(field), offset + 1u64, target);
+    return 5u64;
+}
+
+extern "C" void patch_branches(address image, u64 target, address fields, u64 count) on cpu {
+    u64 base = address_bits(image);
+    u64 cursor = address_bits(fields);
+    u64 index = 0u64;
+    while (index < count) {
+        u64 offset = unsafe_position<u64>(unsafe_address(cursor));
+        patch_relative(unsafe_address(base + offset), offset, target);
+        cursor += 8u64;
+        index += 1u64;
+    }
+}
+
 extern "C" u64 encode_branch(u8 condition, u32 test_bits, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;

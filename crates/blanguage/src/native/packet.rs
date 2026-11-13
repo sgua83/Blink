@@ -380,7 +380,7 @@ unsafe extern "C" {
         left: operands::MoveLocation, right: operands::MoveLocation, output: *mut u8) -> u64;
 }
 impl Emitter<'_> {
-    pub(super) fn packet_loop(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) {
+    pub(super) fn packet_loop(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) -> Result<(), &'static str> {
         let begin = self.code.len();
         let sparse = self.stage.selection.is_some();
         let tail = if let Some(selection) = self.stage.selection {
@@ -399,16 +399,15 @@ impl Emitter<'_> {
             self.parallel_abi(begin, crate::native::ParallelRangePart::PacketBounds);
             tail
         };
-        self.packet_block(&plan.code, allocation);
+        self.packet_block(&plan.code, allocation)?;
         if !sparse {
             let start = self.code.len();
             self.range_advance(4);
             self.parallel_abi(start, crate::native::ParallelRangePart::PacketAdvance);
         }
         let start = self.code.len();
-        let again = self.jump(Branch::Always);
+        self.jump_to(begin);
         self.parallel_abi(start, crate::native::ParallelRangePart::PacketBackEdge);
-        self.patch(again, begin);
         self.patch(tail, self.code.len());
         if sparse {
             let start = self.code.len();
@@ -416,9 +415,10 @@ impl Emitter<'_> {
             self.emit_bytes(16, |output| unsafe { encode_sparse_tail(slots, output) });
             self.parallel_abi(start, crate::native::ParallelRangePart::PacketTail);
         }
+        Ok(())
     }
 
-    fn packet_block(&mut self, code: &[Step<'_>], allocation: &PacketAllocation) {
+    fn packet_block(&mut self, code: &[Step<'_>], allocation: &PacketAllocation) -> Result<(), &'static str> {
         use PrivateSlot::Register;
         let sparse = self.stage.selection.is_some();
         for step in code {
@@ -427,46 +427,13 @@ impl Emitter<'_> {
             match &step.kind {
                 StepKind::If { condition, yes, no } => {
                     self.packet_lane(allocation, *condition, 0, 0);
-                    let other = self.jump(Branch::Zero32);
-                    self.packet_block(yes, allocation);
-                    if no.is_empty() {
-                        self.patch(other, self.code.len());
-                    } else {
-                        let end = self.jump(Branch::Always);
-                        self.patch(other, self.code.len());
-                        self.packet_block(no, allocation);
-                        self.patch(end, self.code.len());
-                    }
+                    self.emit_if(yes, no, |e, body| e.packet_block(body, allocation))?;
                 }
-                StepKind::Loop {
-                    condition,
-                    test,
-                    body,
-                } => {
-                    let begin = self.code.len();
-                    self.packet_block(condition, allocation);
-                    self.packet_lane(allocation, *test, 0, 0);
-                    let end = self.jump(Branch::Zero32);
-                    self.breaks.push(Vec::new());
-                    self.continues.push(begin);
-                    self.packet_block(body, allocation);
-                    self.continues.pop();
-                    let back = self.jump(Branch::Always);
-                    self.patch(back, begin);
-                    let target = self.code.len();
-                    self.patch(end, target);
-                    for at in self.breaks.pop().unwrap() {
-                        self.patch(at, target);
-                    }
+                StepKind::Loop { condition, test, body } => {
+                    self.emit_loop(condition, body, |e, code| e.packet_block(code, allocation),
+                        |e| e.packet_lane(allocation, *test, 0, 0))?;
                 }
-                StepKind::Scope(body) => {
-                    self.exits.push(Vec::new());
-                    self.packet_block(body, allocation);
-                    let target = self.code.len();
-                    for at in self.exits.pop().unwrap() {
-                        self.patch(at, target);
-                    }
-                }
+                StepKind::Scope(body) => self.emit_scope(body, |e, code| e.packet_block(code, allocation))?,
                 StepKind::Exit => {
                     let at = self.jump(Branch::Always);
                     self.exits.last_mut().unwrap().push(at);
@@ -476,8 +443,7 @@ impl Emitter<'_> {
                     self.breaks.last_mut().unwrap().push(at);
                 }
                 StepKind::Continue => {
-                    let at = self.jump(Branch::Always);
-                    self.patch(at, *self.continues.last().unwrap());
+                    self.jump_to(*self.continues.last().unwrap());
                 }
                 StepKind::Constant(dst, bits) => {
                     let location = allocation.location(Register(*dst)).into();
@@ -562,5 +528,6 @@ impl Emitter<'_> {
             }
             self.operation_range(step.instruction, start, first);
         }
+        Ok(())
     }
 }

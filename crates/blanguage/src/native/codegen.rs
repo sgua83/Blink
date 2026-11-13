@@ -87,6 +87,10 @@ unsafe extern "C" {
     fn patch_relative(field: *mut u8, offset: u64, target: u64);
     #[link_name = "bootstrap.x64_instruction::encode_branch"]
     fn encode_branch(condition: u8, test_bits: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::jump_to"]
+    fn encode_jump_to(offset: u64, target: u64, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::patch_branches"]
+    fn patch_branches(image: *mut u8, target: u64, fields: *const usize, count: u64);
     #[link_name = "bootstrap.x64_instruction::range_arguments"]
     fn encode_range_arguments(output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::range_bounds"]
@@ -105,6 +109,7 @@ enum Branch {
     Always,
     Flags(u8),
     Zero32,
+    Nonzero32,
     Nonzero64,
 }
 
@@ -216,8 +221,7 @@ impl Emitter<'_> {
     }
     fn leave(&mut self, frame: u32) {
         self.bytes(&[0x31, 0xc0]);
-        let exit=self.code.len();
-        for at in std::mem::take(&mut self.exits[0]){self.patch(at,exit);}
+        self.close_exits();
         self.preserve_registers(true);
         if frame != 0 {
             self.release_frame(frame);
@@ -238,6 +242,7 @@ impl Emitter<'_> {
             Branch::Always => (0, 0),
             Branch::Flags(condition) => (condition, 0),
             Branch::Zero32 => (0x84, 32),
+            Branch::Nonzero32 => (0x85, 32),
             Branch::Nonzero64 => (0x85, 64),
         };
         self.emit_bytes(9, |output| unsafe { encode_branch(condition, test_bits, output) });
@@ -254,6 +259,77 @@ impl Emitter<'_> {
         let field = &mut self.code[at..at + 4];
         unsafe { patch_relative(field.as_mut_ptr(), at as u64, target as u64); }
     }
+    fn jump_to(&mut self, target: usize) {
+        let start = self.code.len();
+        self.emit_bytes(5, |output| unsafe { encode_jump_to(start as u64, target as u64, output) });
+    }
+
+    fn patch_scope(&mut self, fields: &[usize]) {
+        if !fields.is_empty() {
+            let target = self.code.len() as u64;
+            unsafe { patch_branches(self.code.as_mut_ptr(), target, fields.as_ptr(), fields.len() as u64) };
+        }
+    }
+
+    fn close_exits(&mut self) {
+        let fields = self.exits.pop().unwrap();
+        self.patch_scope(&fields);
+    }
+
+    fn close_breaks(&mut self) {
+        let fields = self.breaks.pop().unwrap();
+        self.patch_scope(&fields);
+    }
+
+    fn emit_scope<I>(
+        &mut self, body: &[I], emit: impl FnOnce(&mut Self, &[I]) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        self.exits.push(Vec::new());
+        emit(self, body)?;
+        self.close_exits();
+        Ok(())
+    }
+
+    fn emit_if<I>(
+        &mut self, yes: &[I], no: &[I], emit: impl Fn(&mut Self, &[I]) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        let (body, alternate, condition) = if yes.is_empty() {
+            (no, yes, Branch::Nonzero32)
+        } else {
+            (yes, no, Branch::Zero32)
+        };
+        let other = self.jump(condition);
+        emit(self, body)?;
+        if alternate.is_empty() {
+            self.patch(other, self.code.len());
+        } else {
+            let end = self.jump(Branch::Always);
+            self.patch(other, self.code.len());
+            emit(self, alternate)?;
+            self.patch(end, self.code.len());
+        }
+        Ok(())
+    }
+
+    fn emit_loop<I>(
+        &mut self, condition: &[I], body: &[I],
+        emit: impl Fn(&mut Self, &[I]) -> Result<(), &'static str>,
+        test: impl FnOnce(&mut Self),
+    ) -> Result<(), &'static str> {
+        let begin = self.code.len();
+        emit(self, condition)?;
+        test(self);
+        let end = self.jump(Branch::Zero32);
+        self.breaks.push(Vec::new());
+        self.continues.push(begin);
+        emit(self, body)?;
+        self.continues.pop();
+        self.jump_to(begin);
+        self.patch(end, self.code.len());
+        self.close_breaks();
+        Ok(())
+    }
+
     fn buffer_load(&mut self, offset: u32, target: u8) {
         self.emit_bytes(8, |output| unsafe { encode_buffer_load(offset, target, output) });
     }
@@ -432,14 +508,7 @@ impl Emitter<'_> {
                         self.read_scalar(*dst, 15, i as u32 * 4);
                     }
                 }
-                InstKind::Scope(body) => {
-                    self.exits.push(Vec::new());
-                    self.block(body)?;
-                    let target = self.code.len();
-                    for at in self.exits.pop().unwrap() {
-                        self.patch(at, target);
-                    }
-                }
+                InstKind::Scope(body) => self.emit_scope(body, Self::block)?,
                 InstKind::Exit => {
                     let at = self.jump(Branch::Always);
                     self.exits.last_mut().unwrap().push(at);
@@ -616,45 +685,17 @@ impl Emitter<'_> {
                 }
                 InstKind::If { condition, yes, no } => {
                     self.load(*condition);
-                    let other = self.jump(Branch::Zero32);
-                    self.block(yes)?;
-                    if no.is_empty() {
-                        self.patch(other, self.code.len());
-                    } else {
-                        let end = self.jump(Branch::Always);
-                        self.patch(other, self.code.len());
-                        self.block(no)?;
-                        self.patch(end, self.code.len());
-                    }
+                    self.emit_if(yes, no, Self::block)?;
                 }
-                InstKind::Loop {
-                    condition,
-                    test,
-                    body,
-                } => {
-                    let begin = self.code.len();
-                    self.block(condition)?;
-                    self.load(*test);
-                    let end = self.jump(Branch::Zero32);
-                    self.breaks.push(Vec::new());
-                    self.continues.push(begin);
-                    self.block(body)?;
-                    self.continues.pop();
-                    let back = self.jump(Branch::Always);
-                    self.patch(back, begin);
-                    let target = self.code.len();
-                    self.patch(end, target);
-                    for b in self.breaks.pop().unwrap() {
-                        self.patch(b, target);
-                    }
+                InstKind::Loop { condition, test, body } => {
+                    self.emit_loop(condition, body, Self::block, |e| e.load(*test))?;
                 }
                 InstKind::Break => {
                     let at = self.jump(Branch::Always);
                     self.breaks.last_mut().unwrap().push(at);
                 }
                 InstKind::Continue => {
-                    let at = self.jump(Branch::Always);
-                    self.patch(at, *self.continues.last().unwrap());
+                    self.jump_to(*self.continues.last().unwrap());
                 }
             }
             self.operation_range(inst, start, first);
@@ -763,7 +804,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     e.enter(frame);
     e.parallel_abi(start, super::ParallelRangePart::Enter { frame_bytes: frame });
     if let Some((plan, allocation)) = packet {
-        e.packet_loop(&plan, &allocation);
+        e.packet_loop(&plan, &allocation)?;
     }
     let begin = e.code.len();
     let end = e.range_bounds(false);
@@ -790,9 +831,8 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         e.parallel_abi(start, super::ParallelRangePart::ScalarAdvance);
     }
     let start = e.code.len();
-    let back = e.jump(Branch::Always);
+    e.jump_to(begin);
     e.parallel_abi(start, super::ParallelRangePart::ScalarBackEdge);
-    e.patch(back, begin);
     e.patch(end, e.code.len());
     let start = e.code.len();
     e.leave(frame);

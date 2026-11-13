@@ -74,6 +74,10 @@ extern "C" u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu
 extern "C" TailRange append_literal(address image, u64 end, u64 bits, u32 width, address references, u64 count) on cpu;
 // The field address refers to the four-byte displacement at offset in the image.
 extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu;
+// Known-target jump: output has five bytes and offset is its function-relative start.
+extern "C" u64 jump_to(u64 offset, u64 target, address output) on cpu;
+// fields is the scope's existing array of u64 function-relative rel32 positions.
+extern "C" void patch_branches(address image, u64 target, address fields, u64 count) on cpu;
 
 // condition is zero for JMP; test_bits is zero for flags, or 32/64 for EAX/RAX.
 // The caller owns nine output bytes. The returned length includes the rel32.

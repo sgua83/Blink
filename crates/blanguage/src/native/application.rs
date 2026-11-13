@@ -199,8 +199,7 @@ fn emit_value(
         e.bytes(&[0x31, 0xc0]);
         e.abi_range(start, AbiRangeKind::FallibleSuccessStatus);
     }
-    let target=e.code.len();
-    for at in e.exits.pop().unwrap(){e.patch(at,target);}
+    e.close_exits();
     let start = e.code.len();
     e.preserve_registers(true);
     e.abi_range(start, AbiRangeKind::NonvolatileRestore);

@@ -537,13 +537,10 @@ pub(super) fn emit(
     }
     e.block(&stage.code[initialize_end..loop_end])?;
     e.range_advance(1);
-    let back = e.jump(Branch::Always);
-    e.patch(back, begin);
+    e.jump_to(begin);
     e.patch(end, e.code.len());
     if apply && head.is_some() {
-        for jump in e.breaks.pop().unwrap() {
-            e.patch(jump, e.code.len());
-        }
+        e.close_breaks();
     }
     e.block(&stage.code[loop_end..])?;
     // 五个固定保存寄存器之后，从原 ABI 的第五参数取得摘要目标。
