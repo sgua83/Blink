@@ -230,8 +230,16 @@ impl Dataset {
             file.write_all(&word.to_le_bytes())?;
         }
         let length = self.stride as usize * self.count as usize;
-        for (index, word) in self.words.iter().enumerate() {
-            file.write_all(&word.to_le_bytes()[..(length - index * 4).min(4)])?;
+        if cfg!(target_endian = "little") {
+            // 原字存储已是文件字节序；只交付逻辑载荷，不包含末字额外填充。
+            let bytes = unsafe {
+                std::slice::from_raw_parts(self.words.as_ptr().cast::<u8>(), length)
+            };
+            file.write_all(bytes)?;
+        } else {
+            for (index, word) in self.words.iter().enumerate() {
+                file.write_all(&word.to_le_bytes()[..(length - index * 4).min(4)])?;
+            }
         }
         file.flush()?;
         Ok(())
