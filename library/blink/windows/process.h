@@ -63,3 +63,24 @@ const u32 HANDLE_FLAG_INHERIT=0x00000001;
 
 extern "C" i32 SetHandleInformation(handle object,u32 mask,u32 flags) on cpu
     from "KERNEL32.dll";
+
+const u32 PROCESS_QUERY_LIMITED_INFORMATION=0x00001000;
+
+extern "C" handle OpenProcess(u32 access,i32 inherit_handle,u32 process_id) on cpu
+    from "KERNEL32.dll";
+
+struct ProcessMemoryCountersEx {
+    u32 size;
+    u32 page_fault_count;
+    usize peak_working_set_bytes;
+    usize working_set_bytes;
+    usize peak_paged_pool_bytes;
+    usize paged_pool_bytes;
+    usize peak_nonpaged_pool_bytes;
+    usize nonpaged_pool_bytes;
+    usize commit_bytes;
+    usize peak_commit_bytes;
+    usize private_commit_bytes;
+};
+
+result<ProcessMemoryCountersEx,u32> process_memory_counters(handle process) on cpu;

@@ -528,6 +528,8 @@ Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的�
 
 ## Windows线程错误码的原生交接
 
+`blink.windows.process::process_memory_counters(handle)`直接读取Windows的`PROCESS_MEMORY_COUNTERS_EX`，返回`result<ProcessMemoryCountersEx,u32>`。固定布局为80字节、对齐8，`size`和`page_fault_count`为u32，其余九项为Windows x64的`usize`字节计数。`working_set_bytes`为当前工作集，`private_commit_bytes`为当前私有提交，`peak_commit_bytes`为进程寿命内的原提交峰值。成功返回本次独立值，失败返回同一调用的`GetLastError()`。当前进程可用`GetCurrentProcess()`伪句柄，其他本机进程可用`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,i32(0),pid)`，其真实句柄由调用者在最后一次查询后`CloseHandle`。采样周期、差值和窗口峰值由B程序选择。[Windows 进程内存查询](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo) [内存计数字段](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex)
+
 `blink.windows.error`以纯`.h`直接声明Kernel32的`u32 GetLastError()`与`void SetLastError(u32 code)`，Windows DWORD按完整32位无符号值交接。GetLastError的B声明以`ensures memory(read)`交接真实只读的不透明访问；它读取当前OS线程错误槽，不承诺固定返回、纯函数或取消调用。SetLastError保留原声明效果并真实改变该槽，后续读取取得改变后的值。唯一可变错误槽属于原OS线程，库不创建全局last-error、宿主转发或清除策略；读取得到的普通u32快照由原调用者保存和使用。
 
 调用者只在原API规定的返回条件下立即读取，必须先于打印、释放或其他可能改写线程错误的调用。清零同样由真实API合同决定，不自动包住所有系统入口。模块不提供错误字符串或通用错误对象，不替应用退出进程；完整用法与官方合同见[标准库错误码接口](../../library/README.md#blinkwindowserror)。B接口可用和BLEngine原Rust错误处理已迁移分别记录。

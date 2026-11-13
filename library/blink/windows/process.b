@@ -1,4 +1,5 @@
 module blink.windows.process;
+import blink.windows.error;
 
 extern "C" address GetCommandLineW() on cpu from "KERNEL32.dll";
 
@@ -134,4 +135,20 @@ Arguments parse_command_line(read dataset<u16> line) on cpu {
 Arguments arguments() on cpu {
     dataset<u16> line=command_line();
     return parse_command_line(line);
+}
+
+const u32 PROCESS_MEMORY_COUNTERS_EX_SIZE=80;
+
+extern "C" i32 K32GetProcessMemoryInfo(
+    handle process,write ProcessMemoryCountersEx counters,u32 bytes
+) on cpu
+    ensures initialized(counters,returned != 0 && bytes == PROCESS_MEMORY_COUNTERS_EX_SIZE)
+    from "KERNEL32.dll";
+
+result<ProcessMemoryCountersEx,u32> process_memory_counters(handle process) on cpu {
+    ProcessMemoryCountersEx counters;
+    if (K32GetProcessMemoryInfo(process,counters,PROCESS_MEMORY_COUNTERS_EX_SIZE) == 0) {
+        return Err(GetLastError());
+    }
+    return Ok(counters);
 }

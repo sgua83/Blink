@@ -374,6 +374,8 @@ application、可写command_line、可选安全属性、environment与directory�
 
 已编译消费者须提供实际模块依赖：process.obj／lib交付本模块的完整接口和普通B函数，依赖它的模块与应用分别用`--import`导入，并把对应对象／归档交给blink链接；不能只交桥接模块而漏掉其process依赖。基础记录只能交给基础创建接口；扩展结构及选择性继承由下节的准确入口交接，不向基础记录交付扩展启动标志。更高层命令构造、I/O捕获、异步任务及编译器实际迁移仍按原具体Issues推进。
 
+`blink.windows.process::process_memory_counters(handle)`直接读取Windows的`PROCESS_MEMORY_COUNTERS_EX`，返回`result<ProcessMemoryCountersEx,u32>`。固定布局为80字节、对齐8，`size`和`page_fault_count`为u32，其余九项为Windows x64的`usize`字节计数。`working_set_bytes`为当前工作集，`private_commit_bytes`为当前私有提交，`peak_commit_bytes`为进程寿命内的原提交峰值。成功返回本次独立值，失败返回同一调用的`GetLastError()`。当前进程可用`GetCurrentProcess()`伪句柄，其他本机进程可用`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,i32(0),pid)`，其真实句柄由调用者在最后一次查询后`CloseHandle`。采样周期、差值和窗口峰值由B程序选择。[Windows 进程内存查询](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo) [内存计数字段](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex)
+
 ## blink.windows.process_extended
 
 本模块是纯接口，导入blink.windows.process的原结构与句柄规则；无需空.b。`StartupInfoEx { StartupInfo startup; address attributes; }`对应STARTUPINFOEXW，Windows x64大小112、对齐8，attributes偏移104。使用`u32(size_of<StartupInfoEx>())`设置startup.cb，creation_flags包含`EXTENDED_STARTUPINFO_PRESENT`。模块内CreateProcessW以read StartupInfoEx读取完整扩展结构，以原BOOL非零保证write ProcessInformation初始化；基础模块的同名函数保持read StartupInfo。两者都是同一个Kernel32原生导出，B用原模块限定名区分，例如`blink.windows.process_extended::CreateProcessW(...)`，没有包装函数、动态分发或截断指针。
