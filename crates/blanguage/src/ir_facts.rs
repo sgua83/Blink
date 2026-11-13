@@ -2,7 +2,7 @@
 use crate::json::string;
 use std::{fmt::Write, path::PathBuf};
 
-pub fn print(compiler: &blanguage::Compiler, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn print(compiler: &blanguage::Compiler, args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
     let usage = "用法：bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]";
     let path = PathBuf::from(args.get(1).ok_or(usage)?).canonicalize()?;
     let mut root = path.parent().unwrap().to_path_buf();
@@ -18,21 +18,21 @@ pub fn print(compiler: &blanguage::Compiler, args: &[String]) -> Result<(), Box<
             i += 1; continue;
         }
         let value = args.get(i + 1).ok_or(usage)?;
-        match args[i].as_str() {
+        match args[i].to_str().ok_or(usage)? {
             "-I" => root = PathBuf::from(value),
             "--entry" | "--program" => {
-                if mode.replace((if args[i] == "--entry" { "application" } else { "program" }, value.as_str())).is_some() {
+                if mode.replace((if args[i] == "--entry" { "application" } else { "program" }, value.to_str().ok_or(usage)?)).is_some() {
                     return Err("IR编译模式只能指定一次".into());
                 }
             }
             "--function" => {
-                if function.replace(value.as_str()).is_some() { return Err("--function不能重复指定".into()); }
+                if function.replace(value.to_str().ok_or(usage)?).is_some() { return Err("--function不能重复指定".into()); }
             }
             "--stage" => {
-                if stage.replace(value.parse::<usize>()?).is_some() { return Err("--stage不能重复指定".into()); }
+                if stage.replace(value.to_str().ok_or(usage)?.parse::<usize>()?).is_some() { return Err("--stage不能重复指定".into()); }
             }
             "--import" => import_paths.push(PathBuf::from(value).canonicalize()?),
-            "--instance" => instances.push(value.clone()),
+            "--instance" => instances.push(value.to_str().ok_or(usage)?.to_owned()),
             other => return Err(format!("未知IR选项 {other}；{usage}").into()),
         }
         i += 2;
@@ -73,8 +73,8 @@ pub fn print(compiler: &blanguage::Compiler, args: &[String]) -> Result<(), Box<
         }
     };
     let mut out = String::from("{\"kind\":\"ir_query\",\"phase\":"); string(&mut out, phase);
-    out.push_str(",\"source_path\":"); string(&mut out, path.to_str().ok_or("源码路径不是UTF-8")?);
-    out.push_str(",\"module_root\":"); string(&mut out, root.to_str().ok_or("模块根不是UTF-8")?);
+    out.push(','); crate::json::path(&mut out, "source_path", &path);
+    out.push(','); crate::json::path(&mut out, "module_root", &root);
     out.push_str(",\"mode\":"); string(&mut out, mode);
     out.push_str(",\"entry\":"); if entry.is_empty() { out.push_str("null"); } else { string(&mut out, entry); }
     out.push_str(",\"function\":"); if let Some(function) = function { string(&mut out, function); } else { out.push_str("null"); }
@@ -82,7 +82,12 @@ pub fn print(compiler: &blanguage::Compiler, args: &[String]) -> Result<(), Box<
     out.push_str(",\"imports\":[");
     for (i, path) in import_paths.iter().enumerate() {
         if i != 0 { out.push(','); }
-        string(&mut out, path.to_str().ok_or("导入路径不是UTF-8")?);
+        if let Some(path) = path.to_str() { string(&mut out, path); } else { out.push_str("null"); }
+    }
+    out.push_str("],\"imports_encoded_bytes\":[");
+    for (i, path) in import_paths.iter().enumerate() {
+        if i != 0 { out.push(','); }
+        crate::json::bytes(&mut out, path.as_os_str().as_encoded_bytes());
     }
     out.push_str("],\"instances\":[");
     for (i, value) in instances.iter().enumerate() { if i != 0 { out.push(','); } string(&mut out, value); }

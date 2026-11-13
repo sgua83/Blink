@@ -1,4 +1,4 @@
-pub fn print(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn print(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
     let [_, source] = args else { return Err("usage: bc spirv <module.spv>".into()); };
     let bytes = std::fs::read(source)?;
     if bytes.len() % 4 != 0 { return Err(format!("SPIR-V file ends with an incomplete word at byte {}", bytes.len() / 4 * 4).into()); }

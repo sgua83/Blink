@@ -18,7 +18,7 @@ fn main() -> ExitCode {
     }
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let mut args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--version" {
         println!("Blink compiler {}", include_str!("../../../VERSION").trim());
         return Ok(());
@@ -34,10 +34,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut jobs = None;
     let mut cpus = None;
     let mut max_parameter_bytes = None;
-    while args.first().is_some_and(|arg| matches!(arg.as_str(), "--jobs" | "--cpus" | "--max-parameter-bytes")) {
+    while args.first().is_some_and(|arg| matches!(arg.to_str(), Some("--jobs" | "--cpus" | "--max-parameter-bytes"))) {
         let option = args.remove(0);
-        if args.is_empty() { return Err(format!("{option}缺少参数").into()); }
+        if args.is_empty() { return Err(format!("{}缺少参数", option.to_string_lossy()).into()); }
         let value = args.remove(0);
+        let value = value.to_str().ok_or("编译资源参数不是UTF-8文本")?;
         if option == "--jobs" {
             if jobs.is_some() { return Err("--jobs不能重复指定".into()); }
             jobs = Some(value.parse::<std::num::NonZeroUsize>()?);
@@ -69,7 +70,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         blanguage::Compiler::available()?
     };
     let compiler = if let Some(bytes) = max_parameter_bytes { compiler.with_max_parameter_bytes(bytes) } else { compiler };
-    let command = &args[0];
+    let command = args[0].to_str().ok_or("命令不是UTF-8文本")?;
     if command == "layout" { return layout_facts::print(&compiler, &args); }
     if command == "ir" { return ir_facts::print(&compiler, &args); }
     let path = PathBuf::from(args.get(1).ok_or("缺少 .b 文件")?);
@@ -96,16 +97,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             let value = args.get(i + 1).ok_or("编译选项缺少参数")?;
-            match args[i].as_str() {
+            match args[i].to_str().ok_or("编译选项不是UTF-8文本")? {
                 "-o" => output = Some(PathBuf::from(value)),
                 "--stack-report" => stack_report = Some(PathBuf::from(value)),
-                "--stack-budget" => stack_budget = Some(value.parse::<u64>()?),
+                "--stack-budget" => stack_budget = Some(value.to_str().ok_or("栈预算不是UTF-8文本")?.parse::<u64>()?),
                 "-I" => root = PathBuf::from(value),
-                "--entry" => entry = value,
-                "--program" => program = Some(value.as_str()),
+                "--entry" => entry = value.to_str().ok_or("入口不是UTF-8文本")?,
+                "--program" => program = Some(value.to_str().ok_or("入口不是UTF-8文本")?),
                 "--import" => imports
                     .extend(blanguage::object::Input::read(&PathBuf::from(value))?.objects()?),
-                "--instance" => instances.push(value.clone()),
+                "--instance" => instances.push(value.to_str().ok_or("实例不是UTF-8文本")?.to_owned()),
                 other => return Err(format!("未知编译选项 {other}").into()),
             }
             i += 2;
@@ -138,7 +139,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if compiled.reused { " (reused)" } else { "" });
         return Ok(());
     }
-    if !matches!(command.as_str(), "check" | "build") {
+    if !matches!(command, "check" | "build") {
         return Err(format!("未知命令 {command}；编译使用 bc -c，链接使用 blink").into());
     }
     let has_output = command == "build";
@@ -147,7 +148,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| path.parent().unwrap().into());
     let selected = args.get(if has_output { 4 } else { 3 });
     let compilation = if let Some(entry) = selected {
-        compiler.compile_entry(&path, &root, entry)?
+        compiler.compile_entry(&path, &root, entry.to_str().ok_or("入口不是UTF-8文本")?)?
     } else if command == "check" {
         compiler.check(&path, &root)?
     } else {
@@ -168,7 +169,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     for p in &programs {
         print!("{}", p.describe());
     }
-    match command.as_str() {
+    match command {
         "check" => {
             if programs.is_empty() {
                 println!("library {} checked", path.display());

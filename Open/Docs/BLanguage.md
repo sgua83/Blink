@@ -201,6 +201,8 @@ size_of<T>()和align_of<T>()分别返回具体类型已有值表示的字节大�
 
 ## 类型与字段布局的结构查询
 
+bc的文件／目录参数保持操作系统原生路径编码，包括源码、模块根、导入、产物、观察材料与输出路径；不会仅因Windows路径含非Unicode代码单元而在命令分派前中止。选项、类型／入口／实例／符号及数值仍按各自文本语义解析。layout／ir／x64命令上下文及image输入／输出的JSON路径字段保持可表示的字符串，否则为null；对应的`<字段>_encoded_bytes`为该路径原生OsStr编码的十六进制字节，IR的`imports_encoded_bytes`与`imports`按同一次序对应。`bc inputs`保持原有`text`／`encoded_bytes`结构；原始字节与显示文本不互相冒充，不使用替换字符恢复路径。算法库对象文件名同时作为导出符号前缀时仍须满足既有文本ABI要求。
+
 `bc layout <module.h|module.b> <type> [-I module-root] [--field path]`读取本次明确源码模块，沿原Parser、World和Ty取得具体值类型，以单个JSON对象输出。它不生成CPU／GPU代码、不创建运行资源，也不读取目标程序的运行值；源码／接口装入、可见性、泛型／const、布局和合同仍使用原规则。纯类型接口不需要空.b；有真实函数的模块继续遵守原实现装入规则。查询成功只说明本次类型描述可取得，不保证该类型在所有存储、调用或目标上均已能执行。
 
 ```powershell
@@ -235,7 +237,7 @@ bc ir src/app.b -I src --entry main --import target/math.obj
 
 --function使用完整、区分大小写的实际函数实例名，只从本次模块／应用保留的functions选择；缺失函数直接失败，不重编另一函数或推测已内联函数体。--stage是本次--program的零起优化后阶段编号，越界直接失败；优化合并后的阶段数可以少于source_stages。未选函数／阶段时返回该编译结果的完整当前IR；未实例化的开放泛型没有伪造函数体。
 
-结果是单个JSON：kind=ir_query，source_path／module_root为本次绝对路径；mode、entry、function、stage、imports和instances说明实际请求。phase分别是optimized_program_ir、finalized_application_ir或finalized_module_ir，表示原入口已经完成的优化／函数及资源整理；不表示已独立提供Debug／Release或优化级别选择。ir来自原返回对象，源码查询不输出COFF、EXE或入口映像、不创建运行资源；source_path不是完整构建输入身份。已有产物的原请求／来源继续用bc inputs；没有输入记录或IR的对象不会被查询器重新解释成历史事实。
+结果是单个JSON：kind=ir_query，source_path／module_root及其原生编码字段交接本次绝对路径，文本不可表示时原字段为null；mode、entry、function、stage、imports和instances说明实际请求。phase分别是optimized_program_ir、finalized_application_ir或finalized_module_ir，表示原入口已经完成的优化／函数及资源整理；不表示已独立提供Debug／Release或优化级别选择。ir来自原返回对象，源码查询不输出COFF、EXE或入口映像、不创建运行资源；source_path不是完整构建输入身份。已有产物的原请求／来源继续用bc inputs；没有输入记录或IR的对象不会被查询器重新解释成历史事实。
 
 Program::ir_json输出program_ir：原interface布局、source_origin／generated_origin、source_stages、accelerations／textures、prefix及长度条件和实际stages。Stage::ir_json输出stage_ir：domain、prefix／selection、operation、boundary_before、registers、locals、code、reads／writes／cross_access及tiles。ValueCode::ir_json输出value_ir，保留inputs／outputs和同一寄存器／局部值／指令；FunctionBody::ir_json输出function_ir，保留完整名称、参数值／引用类型及访问、返回类型和body。Application／Module的ir_json分别输出application_ir／module_ir，包括实际保留函数、导入名称及原资源类型／程序；应用另有原入口body，模块另有原exports。已编译导入可能只有合同和调用目标，没有提供者IR；缺失函数体不会补造。
 
@@ -5140,7 +5142,7 @@ BLBI1包络依次保存identity构建输入记录和image执行映像两段长�
 bc image target/cache/entry.blbi -o target/deployment.blri
 ```
 
-CLI在Compiler初始化之前处理，读取原映像后由OS创建新的输出文件；已有构建、缓存或部署文件保持原所有者，输出已存在、父目录不可用、真实读取／解码／写入错误均直接报告，失败不输出成功JSON。成功结果kind=execution_image_export，source_path／output_path保存本次实际参数，byte_length为原image的完整字节数；成功导出不等于装入、设备支持、实际执行或安装。扩展名只是示例，恢复以原BLRI编码及兼容身份为准，不按文件名猜格式，不接受把原始BLRI再当BLBI导入。
+CLI在Compiler初始化之前处理，读取原映像后由OS创建新的输出文件；已有构建、缓存或部署文件保持原所有者，输出已存在、父目录不可用、真实读取／解码／写入错误均直接报告，失败不输出成功JSON。成功结果kind=execution_image_export，source_path／output_path及其原生编码字段保存本次实际路径参数，byte_length为原image的完整字节数；成功导出不等于装入、设备支持、实际执行或安装。扩展名只是示例，恢复以原BLRI编码及兼容身份为准，不按文件名猜格式，不接受把原始BLRI再当BLBI导入。
 
 部署文件逐字节等于原image，包含原resource::Module的类型与CPU机器码／GPU SPIR-V、实际执行布局／顺序、必要重定位、原生展开和访问／前缀合同；不包含原identity的源码位置、工作目录和构建输入清单。原映像中运行所需的程序／类型名及系统库引用保持，不能把这些合同当调试材料删除。本入口不做符号裁剪、Shader改写或正式安装，可选观察材料的保存／装入仍沿C-021.7.9.5.2.2，平台符号选择沿原.63／.64。
 

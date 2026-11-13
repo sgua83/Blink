@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-pub fn print(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn print(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
     if args.get(1).is_some_and(|arg| arg == "--object") { return object(args); }
     let usage = "usage: bc code <entry.blbi> [--observations <ranges.blcr>] [--source-range start:end] | bc code --image <deployment.blri> [--observations <ranges.blcr>] [--source-range start:end]";
     let image = args.get(1).is_some_and(|value| value == "--image");
@@ -9,10 +9,10 @@ pub fn print(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut at = at + 1; let mut material = None; let mut range = None;
     while at < args.len() {
         let value = args.get(at + 1).ok_or(usage)?;
-        match args[at].as_str() {
+        match args[at].to_str().ok_or(usage)? {
             "--observations" if material.is_none() => material = Some(value),
             "--source-range" if range.is_none() => {
-                let (start, end) = value.split_once(':').ok_or(usage)?;
+                let (start, end) = value.to_str().ok_or(usage)?.split_once(':').ok_or(usage)?;
                 range = Some(start.parse()?..end.parse()?);
             }
             _ => return Err(usage.into()),
@@ -30,21 +30,21 @@ pub fn print(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn object(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+fn object(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
     use blanguage::object::{CodeSelection, code_facts, code_facts_with_observations, source_facts};
     let usage = "usage: bc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol] [--source-range start:end]";
     let source = args.get(2).ok_or(usage)?;
     let mut selection = None; let mut material = None; let mut range = None; let mut at = 3;
     while at < args.len() {
         let value = args.get(at + 1).ok_or(usage)?;
-        match args[at].as_str() {
+        match args[at].to_str().ok_or(usage)? {
             "--observations" if material.is_none() => material = Some(value),
             "--source-range" if range.is_none() => {
-                let (start, end) = value.split_once(':').ok_or(usage)?;
+                let (start, end) = value.to_str().ok_or(usage)?.split_once(':').ok_or(usage)?;
                 range = Some(start.parse()?..end.parse()?);
             }
-            "--section" if selection.is_none() => selection = Some(CodeSelection::Section(value.parse()?)),
-            "--function" if selection.is_none() => selection = Some(CodeSelection::Function(value)),
+            "--section" if selection.is_none() => selection = Some(CodeSelection::Section(value.to_str().ok_or(usage)?.parse()?)),
+            "--function" if selection.is_none() => selection = Some(CodeSelection::Function(value.to_str().ok_or(usage)?)),
             _ => return Err(usage.into()),
         }
         at += 2;
