@@ -1577,8 +1577,13 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                 Requirement::Initialized{borrow:read.borrow(),read,code,span:*span}.check(&usage.source)?;
                 continue;
             }
-            let symbolic=usage.requirement.mapped(|borrow|evaluate(borrow,function,state,&known,false));
-            if matches!(&symbolic,Requirement::Unborrowed{resource,borrow,..}if disjoint(resource,borrow,&function.independent,&usage.active_loops)){continue;}
+            if let Requirement::Unborrowed { resource, borrow, .. } = &usage.requirement {
+                let resource = evaluate(resource, function, state, &known, false);
+                let borrow = evaluate(borrow, function, state, &known, false);
+                if disjoint(&resource, &borrow, &function.independent, &usage.active_loops) {
+                    continue;
+                }
+            }
             usage.requirement.mapped(|borrow|evaluate(borrow,function,state,&known,true)).under_path(&path).check(&usage.source)?;
         }
         for call in &function.calls{

@@ -356,25 +356,37 @@ pub(super) enum Capture { Read, Write }
 // External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
 #[derive(Default)]
 pub(super) struct MemoryEffect {external:Option<Access>,known:Vec<(Arc<Origin>,bounds::Clause,Access,Option<bounds::Proof>)>}
-pub(super) fn external_memory(borrow:&view::Borrow)->bool {
-    borrow.sources.entries().any(|(source,when)|when.possible()&&match source {
-        view::Source::External=>true,
-        view::Source::Position(origin)=>match &origin.root {
-            Root::External(_)=>origin.memory_positions(&when).is_none(),
-            Root::Derived(borrow)=>external_memory(borrow),
-            _=>false,
-        },
-        _=>false,
+pub(super) fn external_memory(borrow: &view::Borrow) -> bool {
+    borrow.sources.entries().any(|(source, when)| {
+        when.possible() && source_has_external_memory(source, &when)
     })
 }
+
+fn source_has_external_memory(source: &view::Source, when: &bounds::Clause) -> bool {
+    match source {
+        view::Source::External => true,
+        view::Source::Position(origin) => match &origin.root {
+            Root::External(_) => origin.memory_positions(when).is_none(),
+            Root::Derived(borrow) => external_memory(borrow),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 impl MemoryEffect {
-    pub fn of(borrow:&view::Borrow,access:Access,written:Option<&bounds::Proof>)->Self {
-        let external=external_memory(borrow).then_some(access);
-        let known=borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,when)|match source{
-            view::Source::Position(origin)=>vec![(origin.clone(),when,if origin.writable{access}else{Access::Read},written.cloned())],
-            _=>Vec::new(),
-        }).collect();
-        Self{external,known}
+    pub fn of(borrow: &view::Borrow, access: Access, written: Option<&bounds::Proof>) -> Self {
+        let mut effect = Self::default();
+        for (source, when) in borrow.sources.entries().filter(|(_, when)| when.possible()) {
+            if effect.external.is_none() && source_has_external_memory(source, &when) {
+                effect.external = Some(access);
+            }
+            if let view::Source::Position(origin) = source {
+                let access = if origin.writable { access } else { Access::Read };
+                effect.known.push((origin.clone(), when, access, written.cloned()));
+            }
+        }
+        effect
     }
     pub fn union(&mut self,other:Self) {
         self.known.extend(other.known);
