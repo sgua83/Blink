@@ -159,9 +159,15 @@ extern "C" u64 plan_selection(SelectionPlan input, address context,
     u64 index = 0u64;
     while (index < input.yes.count) {
         SelectionNode node = read(context, input.yes, index);
-        if (node.kind == SelectionKind::LocalWrite) {
+        if (!selection_allowed(input, node)) { return 0u64; }
+        if (node.kind == SelectionKind::LocalRead) {
+            // Until the no arm, its slot word records reads of unwritten slots.
+            address at = selection_slot(input.slots, node.first);
+            unsafe_position<SelectionSlot>(at) = SelectionSlot(0u64, 1u64);
+        } else if (node.kind == SelectionKind::LocalWrite) {
             address at = selection_slot(input.slots, node.first);
             SelectionSlot slot = unsafe_position<SelectionSlot>(at);
+            if (slot.no != 0u64) { return 0u64; }
             if (slot.yes == 0u64) { count += 1u64; }
             unsafe_position<SelectionSlot>(at) = SelectionSlot(node.second + 1u64, 0u64);
         }
@@ -184,11 +190,6 @@ extern "C" u64 plan_selection(SelectionPlan input, address context,
         index += 1u64;
     }
     if (count != matched) { return 0u64; }
-    index = 0u64;
-    while (index < input.yes.count) {
-        if (!selection_allowed(input, read(context, input.yes, index))) { return 0u64; }
-        index += 1u64;
-    }
     index = 0u64;
     while (index < count) {
         SelectionNode node = read(context, input.following, index);
