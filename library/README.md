@@ -195,6 +195,12 @@ println(info.number_of_processors);
 
 `GetCurrentThread()`返回指代调用线程的伪句柄，按使用它的线程解释，无需关闭。`SetThreadGroupAffinity(handle thread,read GroupAffinity affinity,address previous)`要求句柄具有`THREAD_SET_INFORMATION`权限，直接调用Kernel32设置线程在指定组内的处理器亲和性。previous为零时省略旧设置，非零时指向同步调用期间有效、可写且对齐的`GroupAffinity`存储，成功后读取。原i32 BOOL为零表示失败，立即调用`blink.windows.error::GetLastError`读取原错误。实际线程的执行和结束沿已有线程句柄交接。[当前线程伪句柄](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthread)、[亲和性布局](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-group_affinity)、[处理器组绑定](https://learn.microsoft.com/en-us/windows/win32/api/processtopologyapi/nf-processtopologyapi-setthreadgroupaffinity)。
 
+## blink.windows.debug
+
+`blink.windows.debug`提供Windows x64原生调试事件。`DebugActiveProcess`按实际PID附加，`DebugBreakProcess`向已附加的进程请求断点，`WaitForDebugEventEx`取得实际停止事件，`ContinueDebugEvent`消费同一事件的PID、TID和调用者给出的Windows继续状态，`DebugActiveProcessStop`解除。等待、继续和退出策略沿同一原调试线程，`DebugSetProcessKillOnExit`由调用方显式选择。请求成功后的现场以实际收到的事件为准。继续一个事件后，后续线程退出等事件仍按Windows事件流取得并处理。零状态的原错误可立即从`GetLastError()`读取。[附加与停止事件](https://learn.microsoft.com/en-us/windows/win32/api/debugapi/nf-debugapi-debugactiveprocess) [请求断点](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-debugbreakprocess) [继续事件](https://learn.microsoft.com/en-us/windows/win32/api/debugapi/nf-debugapi-continuedebugevent) [退出策略](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-debugsetprocesskillonexit)
+
+`DebugEvent`保持原176字节／8对齐，事件代码、进程ID和线程ID位于0／4／8，`payload`从16起承接原联合存储。调用者交给`WaitForDebugEventEx`的是已初始化的`inout`记录，成功后按事件标签读取原联合的有效成员。`EXCEPTION_DEBUG_EVENT`首个字的低32位为异常代码；创建进程与装入DLL事件首个字为原文件句柄，其非零值由观察者`CloseHandle`。事件附带的原进程／线程句柄沿OS调试生命周期，独立`OpenProcess`取得的读取句柄由调用方关闭。[DEBUG_EVENT布局](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-debug_event) [等待与句柄归属](https://learn.microsoft.com/en-us/windows/win32/api/debugapi/nf-debugapi-waitfordebugeventex)
+
 ## blink.windows.time
 
 Windows x64的高精度区间计时接口只有`time.h`，直接导入Kernel32的原生函数，无B转发实现：
