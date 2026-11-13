@@ -49,3 +49,29 @@ extern "C" u64 rust_link_binding(MetadataBytes binding,MetadataBytes prefix,
 
 // The caller owns the output sized for the magic, two lengths, and both fields.
 extern "C" void encode_build_image(u64 magic,MetadataBytes identity,MetadataBytes image,address output) on cpu;
+
+struct ManifestSelection {
+    MetadataBytes first; MetadataBytes second;
+    address instances; u64 instance_count; u32 tag;
+};
+struct ManifestSource {
+    MetadataBytes module_name; MetadataBytes path; MetadataBytes scope; address fingerprint;
+};
+struct ManifestRequirement { MetadataBytes name; MetadataBytes kind; };
+struct ManifestDeclaration {
+    MetadataBytes name; MetadataBytes module_name;
+    u64 import_start; u64 import_count; u32 tag;
+};
+struct BuildManifest {
+    MetadataBytes path; MetadataBytes root; MetadataBytes working_directory;
+    MetadataBytes module_name; MetadataBytes compiler;
+    u32 max_parameter_bytes; ManifestSelection selection;
+    address sources; u64 source_count;
+    address requirements; u64 requirement_count;
+    address imports_digest; address native_digest;
+    address declarations; u64 declaration_count; address declaration_imports;
+};
+
+// The caller owns the final BLBO buffer sized by build_manifest_length.
+extern "C" u64 build_manifest_length(BuildManifest input) on cpu;
+extern "C" u64 encode_build_manifest(u64 magic, BuildManifest input, address output) on cpu;

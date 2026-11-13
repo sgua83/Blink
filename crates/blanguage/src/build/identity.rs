@@ -1,6 +1,6 @@
 //! 构建输入只交接已消费的声明与实际实现；COFF和入口映像共用同一编码。
 use super::{ByteField, hash, Result};
-use crate::module::codec::{Decode, Encode, Writer, record, variants};
+use crate::module::codec::{Decode, Reader};
 use std::{collections::BTreeMap, io::Error, path::Path};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Declaration {
@@ -13,7 +13,36 @@ pub enum Declaration {
     RecordName { name: String, module: String, imports: Vec<String> },
     TypeSetName { name: String, module: String, imports: Vec<String> },
 }
-variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name), 3 => External(name), 4 => ValueName { name, module, imports }, 5 => RecordName { name, module, imports }, 6 => TypeSetName { name, module, imports }, 7 => Implementation(name) });
+impl Declaration {
+    fn fields(&self) -> (u32, &str, Option<(&str, &[String])>) {
+        match self {
+            Self::Constant(name) => (0, name, None),
+            Self::Record(name) => (1, name, None),
+            Self::TypeSet(name) => (2, name, None),
+            Self::External(name) => (3, name, None),
+            Self::ValueName { name, module, imports } => (4, name, Some((module, imports))),
+            Self::RecordName { name, module, imports } => (5, name, Some((module, imports))),
+            Self::TypeSetName { name, module, imports } => (6, name, Some((module, imports))),
+            Self::Implementation(name) => (7, name, None),
+        }
+    }
+}
+
+impl Decode for Declaration {
+    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
+        Ok(match u32::decode(reader)? {
+            0 => Self::Constant(Decode::decode(reader)?),
+            1 => Self::Record(Decode::decode(reader)?),
+            2 => Self::TypeSet(Decode::decode(reader)?),
+            3 => Self::External(Decode::decode(reader)?),
+            4 => Self::ValueName { name: Decode::decode(reader)?, module: Decode::decode(reader)?, imports: Decode::decode(reader)? },
+            5 => Self::RecordName { name: Decode::decode(reader)?, module: Decode::decode(reader)?, imports: Decode::decode(reader)? },
+            6 => Self::TypeSetName { name: Decode::decode(reader)?, module: Decode::decode(reader)?, imports: Decode::decode(reader)? },
+            7 => Self::Implementation(Decode::decode(reader)?),
+            _ => return Err("模块枚举编码错误：Declaration".into()),
+        })
+    }
+}
 const MAGIC: &[u8; 8] = b"BLBO\x0c\0\0\0";
 /// The original build request, not a target inferred from a file extension.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,7 +52,17 @@ pub enum Selection {
     Library { entry: String, prefix: String },
     Entry { entry: String, target: String },
 }
-variants!(Selection { 0 => Application(entry), 1 => Module(instances), 2 => Library { entry, prefix }, 3 => Entry { entry, target } });
+impl Decode for Selection {
+    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
+        Ok(match u32::decode(reader)? {
+            0 => Self::Application(Decode::decode(reader)?),
+            1 => Self::Module(Decode::decode(reader)?),
+            2 => Self::Library { entry: Decode::decode(reader)?, prefix: Decode::decode(reader)? },
+            3 => Self::Entry { entry: Decode::decode(reader)?, target: Decode::decode(reader)? },
+            _ => return Err("模块枚举编码错误：Selection".into()),
+        })
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceInput {
     pub module: String,
@@ -33,7 +72,16 @@ pub struct SourceInput {
     /// Hash of the source portion named by scope, not necessarily the full file.
     pub fingerprint: [u8; 32],
 }
-record!(SourceInput { module, path, scope, fingerprint });
+impl Decode for SourceInput {
+    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
+        Ok(Self {
+            module: Decode::decode(reader)?,
+            path: Decode::decode(reader)?,
+            scope: Decode::decode(reader)?,
+            fingerprint: Decode::decode(reader)?,
+        })
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceInputs {
     pub path: Vec<u8>,
@@ -46,7 +94,21 @@ pub struct SourceInputs {
     pub sources: Vec<SourceInput>,
     pub requirements: Vec<(String, String)>,
 }
-record!(SourceInputs { path, root, working_directory, module, compiler, max_parameter_bytes, selection, sources, requirements });
+impl Decode for SourceInputs {
+    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
+        Ok(Self {
+            path: Decode::decode(reader)?,
+            root: Decode::decode(reader)?,
+            working_directory: Decode::decode(reader)?,
+            module: Decode::decode(reader)?,
+            compiler: Decode::decode(reader)?,
+            max_parameter_bytes: Decode::decode(reader)?,
+            selection: Decode::decode(reader)?,
+            sources: Decode::decode(reader)?,
+            requirements: Decode::decode(reader)?,
+        })
+    }
+}
 impl SourceInputs {
     pub(super) fn same_code(&self, other: &Self) -> bool {
         self.path == other.path && self.root == other.root
@@ -62,7 +124,16 @@ pub struct Inputs {
     pub native: Option<[u8; 32]>,
     pub declarations: Vec<Declaration>,
 }
-record!(Inputs { source, imports, native, declarations });
+impl Decode for Inputs {
+    fn decode(reader: &mut Reader<'_>) -> crate::codec::Result<Self> {
+        Ok(Self {
+            source: Decode::decode(reader)?,
+            imports: Decode::decode(reader)?,
+            native: Decode::decode(reader)?,
+            declarations: Decode::decode(reader)?,
+        })
+    }
+}
 #[repr(C)]
 struct BuildSymbol {
     name: ByteField,
@@ -144,17 +215,7 @@ fn digest_reference(
     import_fields: &mut Vec<ByteField>,
 ) {
     use crate::frontend::NameResolution;
-    // Tags follow the persisted Declaration codec above.
-    let (tag, name, query) = match entry {
-        Declaration::Constant(name) => (0, name, None),
-        Declaration::Record(name) => (1, name, None),
-        Declaration::TypeSet(name) => (2, name, None),
-        Declaration::External(name) => (3, name, None),
-        Declaration::ValueName { name, module, imports } => (4, name, Some((module, imports))),
-        Declaration::RecordName { name, module, imports } => (5, name, Some((module, imports))),
-        Declaration::TypeSetName { name, module, imports } => (6, name, Some((module, imports))),
-        Declaration::Implementation(name) => (7, name, None),
-    };
+    let (tag, name, query) = entry.fields();
     let mut row = BuildReference {
         name: name.as_bytes().into(),
         module_name: (&[][..]).into(),
@@ -345,8 +406,118 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
     bytes.strip_prefix(MAGIC).map(Inputs::from_bytes).transpose()
         .map_err(|value| Error::other(value.to_string()).into())
 }
+#[repr(C)]
+struct ManifestSelection {
+    first: ByteField,
+    second: ByteField,
+    instances: *const ByteField,
+    instance_count: usize,
+    tag: u32,
+}
+
+#[repr(C)]
+struct ManifestSource {
+    module_name: ByteField,
+    path: ByteField,
+    scope: ByteField,
+    fingerprint: *const u8,
+}
+
+#[repr(C)]
+struct ManifestRequirement {
+    name: ByteField,
+    kind: ByteField,
+}
+
+#[repr(C)]
+struct ManifestDeclaration {
+    name: ByteField,
+    module_name: ByteField,
+    import_start: usize,
+    import_count: usize,
+    tag: u32,
+}
+
+#[repr(C)]
+struct BuildManifest {
+    path: ByteField,
+    root: ByteField,
+    working_directory: ByteField,
+    module_name: ByteField,
+    compiler: ByteField,
+    max_parameter_bytes: u32,
+    selection: ManifestSelection,
+    sources: *const ManifestSource,
+    source_count: usize,
+    requirements: *const ManifestRequirement,
+    requirement_count: usize,
+    imports_digest: *const u8,
+    native_digest: *const u8,
+    declarations: *const ManifestDeclaration,
+    declaration_count: usize,
+    declaration_imports: *const ByteField,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.metadata::build_manifest_length"]
+    fn build_manifest_length(input: &BuildManifest) -> usize;
+    #[link_name = "bootstrap.metadata::encode_build_manifest"]
+    fn encode_build_manifest(magic: u64, input: &BuildManifest, output: *mut u8) -> usize;
+}
+
 impl Inputs {
     pub(super) fn encode(&self) -> Vec<u8> {
-        let mut bytes = MAGIC.to_vec(); bytes.extend(self.bytes()); bytes
+        let field = |text: &str| ByteField::from(text.as_bytes());
+        let source = &self.source;
+        let (tag, first, second, instances) = match &source.selection {
+            Selection::Application(entry) => (0, entry.as_str(), "", &[][..]),
+            Selection::Module(instances) => (1, "", "", instances.as_slice()),
+            Selection::Library { entry, prefix } => (2, entry.as_str(), prefix.as_str(), &[][..]),
+            Selection::Entry { entry, target } => (3, entry.as_str(), target.as_str(), &[][..]),
+        };
+        let instances: Vec<_> = instances.iter().map(|name| field(name)).collect();
+        let selection = ManifestSelection {
+            first: field(first), second: field(second), instances: instances.as_ptr(),
+            instance_count: instances.len(), tag,
+        };
+        let sources: Vec<_> = source.sources.iter().map(|source| ManifestSource {
+            module_name: field(&source.module), path: source.path.as_slice().into(),
+            scope: field(&source.scope), fingerprint: source.fingerprint.as_ptr(),
+        }).collect();
+        let requirements: Vec<_> = source.requirements.iter().map(|(name, kind)| {
+            ManifestRequirement { name: field(name), kind: field(kind) }
+        }).collect();
+        let mut imports = Vec::new();
+        let declarations: Vec<_> = self.declarations.iter().map(|declaration| {
+            let (tag, name, query) = declaration.fields();
+            let (module, names) = query.unwrap_or(("", &[]));
+            let start = imports.len();
+            imports.extend(names.iter().map(|name| field(name)));
+            ManifestDeclaration {
+                name: field(name), module_name: field(module), import_start: start,
+                import_count: names.len(), tag,
+            }
+        }).collect();
+        let input = BuildManifest {
+            path: source.path.as_slice().into(), root: source.root.as_slice().into(),
+            working_directory: source.working_directory.as_slice().into(),
+            module_name: field(&source.module), compiler: field(&source.compiler),
+            max_parameter_bytes: source.max_parameter_bytes, selection,
+            sources: sources.as_ptr(), source_count: sources.len(),
+            requirements: requirements.as_ptr(), requirement_count: requirements.len(),
+            imports_digest: self.imports.as_ptr(),
+            native_digest: self.native.as_ref().map_or(std::ptr::null(), |digest| digest.as_ptr()),
+            declarations: declarations.as_ptr(), declaration_count: declarations.len(),
+            declaration_imports: imports.as_ptr(),
+        };
+        let magic = u64::from_le_bytes(*MAGIC);
+        // The same borrowed fields stay live through measurement and the final write.
+        unsafe {
+            let length = build_manifest_length(&input);
+            let mut output = Vec::with_capacity(length);
+            let written = encode_build_manifest(magic, &input, output.as_mut_ptr());
+            output.set_len(written);
+            output
+        }
     }
 }
