@@ -73,6 +73,17 @@ extern "C" ReadSymbol symbol(ReadBytes input,ReadSymbols table,u64 index) on cpu
     u64 function=0u64;if(little(bytes,14u64,2u64)==32u64){function=1u64;}
     return ReadSymbol(name,section,little(bytes,8u64,4u64),storage,function,auxiliary,selection,owner,next,0);
 }
+extern "C" ReadRange next_export(ReadBytes input, ReadSymbols table, inout u64 index) on cpu {
+    while (index < table.count) {
+        ReadSymbol row = symbol(input, table, index);
+        if (row.error != 0) { return ReadRange(empty(), row.error); }
+        index = row.next;
+        if (row.storage == 2u64 && row.section > i64(0)) {
+            return ReadRange(row.name, 0);
+        }
+    }
+    return ReadRange(empty(), 0);
+}
 extern "C" ReadSection section(ReadBytes input,ReadBytes headers,u64 index) on cpu {
     address bytes=at(headers.bytes,index*40u64);
     u64 flags=little(bytes,36u64,4u64);

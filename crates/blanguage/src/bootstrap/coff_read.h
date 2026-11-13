@@ -17,6 +17,7 @@ extern "C" ReadRange headers(ReadBytes input) on cpu;
 extern "C" ReadBuild build_inputs(ReadBytes input,ReadBytes headers) on cpu;
 extern "C" ReadSymbols symbols(ReadBytes input) on cpu;
 extern "C" ReadSymbol symbol(ReadBytes input,ReadSymbols table,u64 index) on cpu;
+extern "C" ReadRange next_export(ReadBytes input, ReadSymbols table, inout u64 index) on cpu;
 extern "C" ReadSection section(ReadBytes input,ReadBytes headers,u64 index) on cpu;
 extern "C" ReadRelocations relocations(ReadBytes input,u64 offset,u64 count,u64 flags) on cpu;
 extern "C" ReadRelocation relocation(ReadBytes input,u64 offset,u64 index) on cpu;

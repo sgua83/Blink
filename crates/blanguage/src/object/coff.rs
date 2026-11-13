@@ -130,6 +130,8 @@ unsafe extern "C" {
     fn read_symbols(input: ReadBytes) -> ReadSymbols;
     #[link_name = "bootstrap.coff_read::symbol"]
     fn read_symbol(input: ReadBytes, table: ReadSymbols, index: usize) -> ReadSymbol;
+    #[link_name = "bootstrap.coff_read::next_export"]
+    fn next_export(input: ReadBytes, table: ReadSymbols, index: &mut usize) -> ReadRange;
     #[link_name = "bootstrap.coff_read::relocations"]
     fn read_relocations(input: ReadBytes, offset: usize, count: usize, flags: u64) -> ReadRelocations;
     #[link_name = "bootstrap.coff_read::relocation"]
@@ -726,16 +728,14 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         let table = unsafe { read_symbols(input) };
         table.error.check()?;
         let mut definitions = BTreeMap::new();
-        let mut i = 0;
-        while i < table.count {
-            let row = unsafe { read_symbol(input, table, i) };
+        let mut index = 0;
+        loop {
+            let row = unsafe { next_export(input, table, &mut index) };
             row.error.check()?;
-            if row.storage == 2 && row.section > 0 {
-                let symbol = std::str::from_utf8(unsafe { row.name.borrowed() })?;
-                let (name, contract) = bindings.remove_entry(symbol).ok_or("导出符号缺少模块接口合同")?;
-                definitions.insert(name, contract);
-            }
-            i = row.next;
+            if row.bytes.bytes.is_null() { break; }
+            let symbol = std::str::from_utf8(unsafe { row.bytes.borrowed() })?;
+            let (name, contract) = bindings.remove_entry(symbol).ok_or("导出符号缺少模块接口合同")?;
+            definitions.insert(name, contract);
         }
         definitions.extend(bindings);
         Ok((name, kind, definitions))
