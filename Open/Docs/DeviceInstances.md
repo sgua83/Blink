@@ -28,7 +28,7 @@ float3x4 自然大小为 48、对齐为 16；Transform<64> 大小为 64、对齐
 | unsafe Device::top_level_device(data) | 消费GpuDataset所有权，读取实际GPU页异步提交TLAS构建；输入须属于该设备并持有原生实例所有权 |
 | Device::download(data) | 返回矩阵等逻辑数据；原生实例的 48..64 字节清零，不将设备地址序列化为可执行资源 |
 
-实例输入以已有 GpuDataset 持有数据页、原生地址数组及唯一 BLAS 引用集合。框架填入 mask／flags／BLAS 引用，B 只写 matrix。48 字节矩阵与 16 字节原生尾部对应 [Vulkan 实例布局](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureInstanceKHR.html)。构建使用 [arrayOfPointers](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureGeometryInstancesDataKHR.html)，地址数组按真实数据页生成，允许实例跨多个数据页，无需逐记录复制命令或矩阵读回。
+实例输入以已有 GpuDataset 持有数据页、原生地址数组及唯一 BLAS 引用集合。框架填入 mask／flags／BLAS 引用，B 只写 matrix。宿主和设备矩阵实例都允许 GPU 查询按各自的背面剔除参数进行遍历。48 字节矩阵与 16 字节原生尾部对应 [Vulkan 实例布局](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureInstanceKHR.html)。构建使用 [arrayOfPointers](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureGeometryInstancesDataKHR.html)，地址数组按真实数据页生成，允许实例跨多个数据页，无需逐记录复制命令或矩阵读回。
 
 唯一输入入口 top_level_device 沿用 GpuDataset 的真实最后使用点，并消费其唯一所有权。页表、实例页、地址数组交给本次构建完成点；不在函数内等待GPU，也不下载或重新打包矩阵。原队列记录Compute／Transfer到构建的访问依赖，后续查询记录构建到计算的访问依赖。API返回不表示本次构建已经完成，GPU自主调度仍未实现；显式新版本refit见下文。
 

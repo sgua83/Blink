@@ -480,8 +480,9 @@ impl Inst {
                 operands && value.target.all_operands(f) && value.offset.iter().all(|reg| f(*reg))
             }
             InstKind::TilePublish(value) => value.values.iter().all(|(_, reg)| f(*reg)),
-            InstKind::RayQuery { origin, direction, minimum, maximum, .. } =>
-                origin.iter().chain(direction).all(|reg| f(*reg)) && f(*minimum) && f(*maximum),
+            InstKind::RayQuery { origin, direction, minimum, maximum, cull_back_faces, .. } =>
+                origin.iter().chain(direction).all(|reg| f(*reg))
+                    && f(*minimum) && f(*maximum) && cull_back_faces.iter().all(|reg| f(*reg)),
             InstKind::LoadIndexed { source, offset, .. } => source.all_operands(f) && f(*offset),
             InstKind::StoreIndexed { source, offset, value, .. } =>
                 source.all_operands(f) && f(*offset) && f(*value),

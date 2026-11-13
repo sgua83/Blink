@@ -1233,6 +1233,7 @@ pub enum InstKind {
         direction: [Reg; 3],
         minimum: Reg,
         maximum: Reg,
+        cull_back_faces: Option<Reg>,
         result: RayResult,
     },
     Constant(Reg, Scalar, Bits),

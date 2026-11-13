@@ -4870,11 +4870,11 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn ray_query_call(&mut self, name: &str, args: &Expressions, span: Span) -> Result<Option<Value>> {
-        if args.len() != 5 {
+        if !matches!(args.len(), 5 | 6) {
             return self.fail(
                 span,
                 "B183",
-                "光线查询需要 acceleration、origin、minimum、direction、maximum",
+                "光线查询需要 acceleration、origin、minimum、direction、maximum，以及可选的 bool cull_back_faces",
             );
         }
         let argument=args.at(0);
@@ -4900,6 +4900,16 @@ impl<'a> Builder<'a> {
         self.require_same(&Ty::scalar(Scalar::F32), &minimum.ty, args.at(2).span())?;
         self.require_same(&origin.ty, &direction.ty, args.at(3).span())?;
         self.require_same(&minimum.ty, &maximum.ty, args.at(4).span())?;
+        let cull_back_faces = if args.len() == 6 {
+            let arg = args.at(5);
+            let Some(value) = self.expr(&arg)? else {
+                return Ok(None);
+            };
+            self.require_same(&Ty::scalar(Scalar::Bool), &value.ty, arg.span())?;
+            Some(value.regs[0])
+        } else {
+            None
+        };
         let ty = if name == "trace_any" {
             Ty::scalar(Scalar::Bool)
         } else {
@@ -4917,6 +4927,7 @@ impl<'a> Builder<'a> {
             direction: direction.regs.as_slice().try_into().unwrap(),
             minimum: minimum.regs[0],
             maximum: maximum.regs[0],
+            cull_back_faces,
             result,
         });
         return Ok(Some(Value {

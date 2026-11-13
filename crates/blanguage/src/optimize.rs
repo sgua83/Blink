@@ -554,6 +554,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
             direction,
             minimum,
             maximum,
+            cull_back_faces,
             ..
         } => {
             origin
@@ -562,6 +563,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
                 .for_each(|v| *v = r(*v));
             *minimum = r(*minimum);
             *maximum = r(*maximum);
+            *cull_back_faces = cull_back_faces.map(r);
         }
         InstKind::LoadIndexed { source, offset, .. } => {
             source.map(r);

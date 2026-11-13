@@ -673,7 +673,7 @@ impl Device {
             words.extend(instance.transform.map(f32::to_bits));
             words.extend([
                 0xff000000,
-                0x01000000,
+                0,
                 instance.model.0.address as u32,
                 (instance.model.0.address >> 32) as u32,
             ]);
@@ -745,7 +745,7 @@ impl Device {
             }
             record[12..16].copy_from_slice(&[
                 0xff000000,
-                0x01000000,
+                0,
                 model.0.address as u32,
                 (model.0.address >> 32) as u32,
             ]);

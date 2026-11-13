@@ -1116,8 +1116,8 @@ impl Emitter<'_> {
                     let raw = self.load_physical(scalar, source, self.value(*index), *word, 0);
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                InstKind::RayQuery { scene, origin, direction, minimum, maximum, result } => {
-                    self.ray(*scene, origin, direction, *minimum, *maximum, result);
+                InstKind::RayQuery { scene, origin, direction, minimum, maximum, cull_back_faces, result } => {
+                    self.ray(*scene, origin, direction, *minimum, *maximum, *cull_back_faces, result);
                 }
                 InstKind::PositionAddress { .. }
                 | InstKind::BufferStride(..)
@@ -1523,6 +1523,7 @@ impl Emitter<'_> {
         direction: &[Reg; 3],
         minimum: Reg,
         maximum: Reg,
+        cull_back_faces: Option<Reg>,
         result: &RayResult,
     ) {
         let mut results = [0; 39];
@@ -1541,6 +1542,15 @@ impl Emitter<'_> {
         if (object_to_world || world_to_object) && self.ray_transform_type == 0 {
             self.ray_transform_type = self.declare_type(TypeShape::Matrix, self.vec3_type, 4);
         }
+        let base_flags = if closest { 1 } else { 5 };
+        let mut flags = self.constant(Scalar::U32, base_flags);
+        if let Some(cull) = cull_back_faces {
+            const CULL_BACK_FACING_TRIANGLES: u32 = 0x10;
+            let cull_flags = self.constant(Scalar::U32, base_flags | CULL_BACK_FACING_TRIANGLES);
+            let selected = self.id();
+            self.select(self.types[&Scalar::U32], selected, self.value(cull), cull_flags, flags);
+            flags = selected;
+        }
         let input = RayEmission {
             acceleration_type: self.acceleration_type,
             acceleration: self.accelerations[scene],
@@ -1554,7 +1564,7 @@ impl Emitter<'_> {
             direction: direction.map(|reg| self.value(reg)),
             minimum: self.value(minimum),
             maximum: self.value(maximum),
-            flags: self.constant(Scalar::U32, if closest { 1 } else { 5 }),
+            flags,
             mask: self.constant(Scalar::U32, 255),
             committed: self.constant(Scalar::U32, 1),
             zero: self.constant(Scalar::U32, 0),

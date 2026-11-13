@@ -176,7 +176,7 @@ fn instruction(value: &Inst) -> String {
         Print { dst, value } => node("Print", &[("dst", number(dst)), ("value", number(value))]),
         Call(value) => call(value),
         ViewLoad { dst, address, index, stride, word } => node("ViewLoad", &[("dst", number(dst)), ("address", numbers(address)), ("index", number(index)), ("stride", element_stride(stride)), ("word", number(word))]),
-        RayQuery { scene, origin, direction, minimum, maximum, result } => node("RayQuery", &[("scene", number(scene)), ("origin", numbers(origin)), ("direction", numbers(direction)), ("minimum", number(minimum)), ("maximum", number(maximum)), ("result", match result { RayResult::Any(r) => node("Any", &[("register", number(r))]), RayResult::Closest(r) => node("Closest", &[("registers", numbers(r))]) })]),
+        RayQuery { scene, origin, direction, minimum, maximum, cull_back_faces, result } => node("RayQuery", &[("scene", number(scene)), ("origin", numbers(origin)), ("direction", numbers(direction)), ("minimum", number(minimum)), ("maximum", number(maximum)), ("cull_back_faces", optional(cull_back_faces.as_ref(), |v| number(v))), ("result", match result { RayResult::Any(r) => node("Any", &[("register", number(r))]), RayResult::Closest(r) => node("Closest", &[("registers", numbers(r))]) })]),
         Constant(dst, scalar, bits) => node("Constant", &[("dst", number(dst)), ("scalar", name(scalar)), ("bits", text(&format!("0x{bits:016x}")))]),
         FunctionAddress(dst, value) => node("FunctionAddress", &[("dst", number(dst)), ("target", target(value))]),
         PositionAddress { dst, address } => node("PositionAddress", &[("dst", number(dst)), ("address", reference(address))]),
