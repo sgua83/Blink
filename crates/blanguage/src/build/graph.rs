@@ -1,7 +1,7 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
 use super::{Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, ProviderInterface}};
 use crate::{Compiler, ast::Target, object::Object};
-use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex}, thread};
+use std::{collections::BTreeMap, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex}, thread};
 #[derive(Clone, Copy)]
 pub enum Dependency<'a> {
     Unit(usize),
@@ -98,6 +98,15 @@ unsafe extern "C" {
     fn build_dependency_plan(input: GraphInput, output: GraphOutput) -> GraphPlan;
     #[link_name = "bootstrap.build_graph::release_plan"]
     fn release_dependency_plan(ids: *const usize);
+    #[link_name = "bootstrap.build_schedule::initialize_ready"]
+    fn initialize_ready(ready: *mut usize, waiting: *const usize, length: usize) -> usize;
+    #[link_name = "bootstrap.build_schedule::take_ready"]
+    fn take_ready(ready: *mut usize, count: &mut usize) -> usize;
+    #[link_name = "bootstrap.build_schedule::complete_unit"]
+    fn complete_unit(
+        ready: *mut usize, count: &mut usize, waiting: *mut usize,
+        followers: *const usize, length: usize,
+    );
 }
 
 impl Drop for GraphPlan {
@@ -108,8 +117,32 @@ impl Drop for GraphPlan {
 
 struct DependencyPlan<'a> {
     providers: Vec<Vec<Dependency<'a>>>,
-    following: Vec<Vec<usize>>,
+    schedule: Schedule,
+}
+
+struct Schedule {
+    following: Vec<GraphRange>,
+    followers: Vec<usize>,
     waiting: Vec<usize>,
+    ready: Vec<usize>,
+    ready_count: usize,
+}
+
+impl Schedule {
+    fn take(&mut self) -> Option<usize> {
+        let index = unsafe { take_ready(self.ready.as_mut_ptr(), &mut self.ready_count) };
+        (index != usize::MAX).then_some(index)
+    }
+
+    fn complete(&mut self, index: usize) {
+        let followers = self.following[index].slice(&self.followers);
+        unsafe {
+            complete_unit(
+                self.ready.as_mut_ptr(), &mut self.ready_count, self.waiting.as_mut_ptr(),
+                followers.as_ptr(), followers.len(),
+            );
+        }
+    }
 }
 
 fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
@@ -142,6 +175,7 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
     let mut following_rows = vec![GraphRange::default(); units.len()];
     let mut waiting = vec![0; units.len()];
     let mut followers = vec![0; edges.len()];
+    let mut ready = vec![0; units.len()];
     let plan = unsafe {
         build_dependency_plan(
             GraphInput {
@@ -184,8 +218,11 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
             else { Dependency::Object(externals[id - units.len()]) }
         }).collect()
     }).collect();
-    let following = following_rows.into_iter().map(|row| row.slice(&followers).to_vec()).collect();
-    Ok(DependencyPlan { providers, following, waiting })
+    let ready_count = unsafe { initialize_ready(ready.as_mut_ptr(), waiting.as_ptr(), waiting.len()) };
+    let schedule = Schedule {
+        following: following_rows, followers, waiting, ready, ready_count,
+    };
+    Ok(DependencyPlan { providers, schedule })
 }
 enum Provider<'a> {
     Built(Arc<ObjectCompilation>),
@@ -197,8 +234,7 @@ impl Provider<'_> {
     }
 }
 struct State {
-    ready: BTreeSet<usize>,
-    waiting: Vec<usize>,
+    schedule: Schedule,
     outputs: Vec<Option<Output>>,
     failures: Vec<(Option<usize>, Box<dyn std::error::Error + Send + Sync>)>,
     unfinished: usize,
@@ -209,8 +245,8 @@ pub fn compile_graph(units: &[Unit<'_>]) -> Result<Vec<Output>> {
 impl Compiler {
     pub fn build_graph(&self, units: &[Unit<'_>]) -> Result<Vec<Output>> {
         if units.is_empty() { return Ok(Vec::new()); }
-        let (prepared, inputs, following, waiting) = self.execute(|_| {
-        let DependencyPlan { providers, following, waiting } = dependency_plan(units)?;
+        let (prepared, inputs, schedule) = self.execute(|_| {
+        let DependencyPlan { providers, schedule } = dependency_plan(units)?;
         let prepared = units.iter().zip(providers).map(|(unit, providers)| {
             let mut path = unit.path.to_path_buf();
             path.set_extension("h");
@@ -237,14 +273,13 @@ impl Compiler {
             interfaces.push(capture.capture(&unit.path, &unit.root, &providers)?);
         }
         let inputs = capture.finish(interfaces);
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, following, waiting))
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, schedule))
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
             crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
         })?;
         let state = Mutex::new(State {
-            ready: waiting.iter().enumerate().filter_map(|(index, count)| (*count == 0).then_some(index)).collect(),
-            waiting, outputs: (0..units.len()).map(|_| None).collect(),
+            schedule, outputs: (0..units.len()).map(|_| None).collect(),
             failures: Vec::new(), unfinished: units.len(),
         });
         let changed = Condvar::new();
@@ -253,7 +288,7 @@ impl Compiler {
                 let mut state = state.lock().unwrap();
                 loop {
                     if !state.failures.is_empty() || state.unfinished == 0 { return; }
-                    if let Some(index) = state.ready.pop_first() {
+                    if let Some(index) = state.schedule.take() {
                         let providers = prepared[index].providers.iter().map(|dependency| match dependency {
                             Dependency::Unit(id) => match state.outputs[*id].as_ref().unwrap() {
                                 Output::Object(value) => Provider::Built(value.clone()),
@@ -282,10 +317,7 @@ impl Compiler {
             match result {
                 Ok(output) => {
                     state.outputs[index] = Some(output);
-                    for id in &following[index] {
-                        state.waiting[*id] -= 1;
-                        if state.waiting[*id] == 0 { state.ready.insert(*id); }
-                    }
+                    state.schedule.complete(index);
                 }
                 Err(error) => state.failures.push((Some(index), error)),
             }
