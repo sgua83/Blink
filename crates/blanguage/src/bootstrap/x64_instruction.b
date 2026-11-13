@@ -442,6 +442,32 @@ extern "C" SymbolEncoding symbol_target(bool invoke, address output) on cpu {
     return SymbolEncoding(end - start, field - start);
 }
 
+extern "C" SymbolEncoding import_transfer(bool tail, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation slot = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+    u64 end = encode_operand_instruction(start, u16(0xff), u8(0), false, tail ? u8(4) : u8(2), slot);
+    return SymbolEncoding(end - start, end - start - 4u64);
+}
+
+extern "C" ApplicationEntry application_entry(address output) on cpu {
+    u64 start = address_bits(output);
+    // Four Win64 home slots plus alignment at the process entry.
+    u8 frame = u8(40);
+    u64 prolog = register_instruction(start, u16(0x83), u8(0), true, u8(5), u8(4));
+    put_byte(prolog, frame);
+    prolog += 1u64;
+
+    put_byte(prolog, u8(0xe8));
+    u64 main_field = prolog + 1u64;
+    write_word(main_field, 0);
+
+    // Pass main's return value in ECX to ExitProcess.
+    u64 exit = store_bits(main_field + 4u64, move_gpr(u8(1)), u8(0), 4);
+    SymbolEncoding call = import_transfer(false, unsafe_address(exit));
+    return ApplicationEntry(u32(exit - start + call.length), u32(frame), u32(prolog - start),
+                            u32(main_field - start), u32(exit - start + call.field));
+}
+
 extern "C" u64 call_slot(u32 offset, address output) on cpu {
     u64 start = address_bits(output);
     MoveLocation target = MoveLocation(u64(offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));

@@ -88,6 +88,21 @@ struct SymbolEncoding {
 // The caller owns twelve bytes. Field locates the zeroed ABS64 address in
 // the emitted sequence, with or without a following call through RAX.
 extern "C" SymbolEncoding symbol_target(bool invoke, address output) on cpu;
+// RIP-relative indirect call or tail jump through an import address slot.
+// The caller owns six bytes. Field locates the zeroed REL32 displacement.
+extern "C" SymbolEncoding import_transfer(bool tail, address output) on cpu;
+
+struct ApplicationEntry {
+    u32 length;
+    u32 frame;
+    u32 prolog;
+    u32 main_field;
+    u32 exit_field;
+};
+
+// The caller owns seventeen output bytes. Offsets are relative to the entry.
+extern "C" ApplicationEntry application_entry(address output) on cpu;
+
 // Call through an existing outgoing stack slot. The caller owns seven bytes.
 extern "C" u64 call_slot(u32 offset, address output) on cpu;
 

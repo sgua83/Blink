@@ -3,6 +3,28 @@ use super::{Import, Relocation, Result, Section, Target, stack::{Frame, Call}};
 use crate::native::{NativeCode, NativeSymbol, unwind_info, UnwindOperation};
 use super::coff::facts::observations::Layout;
 use std::collections::{BTreeMap, BTreeSet};
+#[repr(C)]
+struct SymbolEncoding {
+    length: u64,
+    field: u64,
+}
+
+#[repr(C)]
+struct ApplicationEntry {
+    length: u32,
+    frame: u32,
+    prolog: u32,
+    main_field: u32,
+    exit_field: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::import_transfer"]
+    fn import_transfer(tail: u32, output: *mut u8) -> SymbolEncoding;
+    #[link_name = "bootstrap.x64_instruction::application_entry"]
+    fn application_entry(output: *mut u8) -> ApplicationEntry;
+}
+
 fn put32(v: &mut [u8], at: usize, n: u32) {
     v[at..at + 4].copy_from_slice(&n.to_le_bytes());
 }
@@ -67,11 +89,11 @@ fn jmp(v: &mut Vec<u8>, condition: Option<u8>) -> usize {
     v.extend([0; 4]);
     at
 }
-fn call(v: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import) {
-    v.extend([0xff, 0x15]);
-    let at = v.len();
-    v.extend([0; 4]);
-    patches.push((at, import));
+fn transfer(v: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import, tail: bool) {
+    let mut bytes = [0; 6];
+    let encoded = unsafe { import_transfer(u32::from(tail), bytes.as_mut_ptr()) };
+    patches.push((v.len() + encoded.field as usize, import));
+    v.extend_from_slice(&bytes[..encoded.length as usize]);
 }
 fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
     let signed = scalar.is_signed();
@@ -111,7 +133,7 @@ fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
             0xc7, 0x44, 0x24, 0x4c]);
         v.extend(if scalar == crate::ir::Scalar::F64 { [b'g',10,0,0] } else { [10,0,0,0] });
         v.extend([0xb9, 4, 0, 0, 0, 0x48, 0x8d, 0x54, 0x24, 0x40]);
-        call(&mut v, &mut patches, ucrt("_create_locale"));
+        transfer(&mut v, &mut patches, ucrt("_create_locale"), false);
         v.extend([0x48, 0x85, 0xc0]);
         failures.push(jmp(&mut v, Some(0x84)));
         v.extend([
@@ -119,9 +141,9 @@ fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
             0, 0x4c, 0x8d, 0x4c, 0x24, 0x48, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x8d, 0x44, 0x24,
             0x38, 0x48, 0x89, 0x44, 0x24, 0x28,
         ]);
-        call(&mut v, &mut patches, ucrt("__stdio_common_vsprintf"));
+        transfer(&mut v, &mut patches, ucrt("__stdio_common_vsprintf"), false);
         v.extend([0x89, 0xc3, 0x48, 0x89, 0xf1]);
-        call(&mut v, &mut patches, ucrt("_free_locale"));
+        transfer(&mut v, &mut patches, ucrt("_free_locale"), false);
         v.extend([0x85, 0xdb]);
         failures.push(jmp(&mut v, Some(0x88)));
         v.extend([0x48, 0x8d, 0x74, 0x24, 0x50]);
@@ -174,12 +196,12 @@ fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
     }
     v.extend([0xb9]);
     v.extend((-11i32).to_le_bytes());
-    call(&mut v, &mut patches, kernel("GetStdHandle"));
+    transfer(&mut v, &mut patches, kernel("GetStdHandle"), false);
     v.extend([
         0x48, 0x89, 0xc1, 0x48, 0x89, 0xf2, 0x41, 0x89, 0xd8, 0x4c, 0x8d, 0x4c, 0x24, 0x2c, 0x48,
         0xc7, 0x44, 0x24, 0x20, 0, 0, 0, 0,
     ]);
-    call(&mut v, &mut patches, kernel("WriteFile"));
+    transfer(&mut v, &mut patches, kernel("WriteFile"), false);
     v.extend([0x85, 0xc0]);
     failures.push(jmp(&mut v, Some(0x84)));
     v.extend([0x39, 0x5c, 0x24, 0x2c, 0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0]);
@@ -202,12 +224,6 @@ fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
         patches,
         unwind,
     })
-}
-fn thunk(text: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import) {
-    text.extend([0xff, 0x25]);
-    let at = text.len();
-    text.extend([0; 4]);
-    patches.push((at, import));
 }
 pub(crate) fn application(
     native: NativeCode,
@@ -236,18 +252,21 @@ fn functions(
     let mut images = Vec::new();
     let mut symbols = BTreeMap::new();
     if let Some((name, native)) = native {
-        let mut bytes = vec![0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1];
-        let mut patches = Vec::new();
-        call(&mut bytes, &mut patches, kernel("ExitProcess"));
-        let end = u32::try_from(bytes.len())?;
-        let calls = std::iter::once(Call::Reference { offset: 5, tail: false }).chain(patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false })).collect();
-        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, unwind_info(4, &[UnwindOperation::allocate(4, 40)]))), Some(Layout::Startup));
+        let mut bytes = vec![0; 17];
+        let layout = unsafe { application_entry(bytes.as_mut_ptr()) };
+        bytes.truncate(layout.length as usize);
+        let calls = [layout.main_field, layout.exit_field].into_iter()
+            .map(|offset| Call::Reference { offset: offset as usize, tail: false }).collect();
+        let unwind = unwind_info(layout.prolog as u8, &[UnwindOperation::allocate(layout.prolog as u8, layout.frame)]);
+        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), layout.frame, calls, bytes,
+            Some((layout.length, unwind)), Some(Layout::Startup));
         let calls = native.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
         let main = function(&mut sections, &mut frames, format!("entry {name}"), native.stack_bytes, calls, native.bytes, Some((native.function_end.try_into()?, native.unwind)), native.tail_regions.map(|tails| Layout::Function { tails, references: native.tail_references, sources: native.sources }));
         symbols.insert("main".into(), (main, 0));
-        sections[entry].relocations.push(Relocation { offset: 5, kind: 4, target: Target::Section(main, 0) });
-        sections[entry].relocations.extend(patches.into_iter()
-            .map(|(offset, import)| Relocation { offset, kind: 4, target: Target::Import(import) }));
+        sections[entry].relocations.extend([
+            Relocation { offset: layout.main_field as usize, kind: 4, target: Target::Section(main, 0) },
+            Relocation { offset: layout.exit_field as usize, kind: 4, target: Target::Import(kernel("ExitProcess")) },
+        ]);
         images.push((main, native.relocations));
     }
     let mut targets = BTreeMap::new();
@@ -272,14 +291,14 @@ fn functions(
             NativeSymbol::Function(_) => unreachable!(),
             NativeSymbol::External(name) => {
                 let mut bytes = Vec::new();
-                thunk(&mut bytes, &mut patches, Import {
+                transfer(&mut bytes, &mut patches, Import {
                     dll: name.library.clone(),
                     name: if name.library == crate::application::RUNTIME_LIBRARY
                         && ["blink_allocate_","blink_run_","blink_complete_"].iter().any(|prefix|
                             name.symbol.strip_prefix(prefix).is_some_and(|index|index.parse::<usize>().is_ok())) {
                         format!("{prefix}_{}", name.symbol.strip_prefix("blink_").unwrap())
                     } else { name.symbol.clone() },
-                });
+                }, true);
                 let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: true }).collect();
                 function(&mut sections, &mut frames, format!("{op:?}"), 0, calls, bytes, None, Some(Layout::ImportThunk))
             }
