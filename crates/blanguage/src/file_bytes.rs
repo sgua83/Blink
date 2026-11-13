@@ -82,16 +82,20 @@ unsafe impl Send for FileBytes {}
 unsafe impl Sync for FileBytes {}
 
 impl FileBytes {
-    pub(crate) fn read(file: &File) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(crate) fn read_path(path: &Path) -> io::Result<Self> {
+        Self::read(&File::open(path)?)
+    }
+
+    pub(crate) fn read(file: &File) -> io::Result<Self> {
         unsafe { read_source(file.as_raw_handle()) }.into_result()
     }
 
-    pub(crate) fn into_result(self) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(crate) fn into_result(self) -> io::Result<Self> {
         const SOURCE_READ_ERROR: u32 = 4;
         match self.error.kind {
             0 => Ok(self),
-            SOURCE_READ_ERROR => Err(io::Error::from_raw_os_error(self.error.native_code as i32).into()),
-            kind => Err(syntax::StorageFailure { kind, native_code: self.error.native_code }.into()),
+            SOURCE_READ_ERROR => Err(io::Error::from_raw_os_error(self.error.native_code as i32)),
+            kind => Err(io::Error::other(syntax::StorageFailure { kind, native_code: self.error.native_code })),
         }
     }
 }

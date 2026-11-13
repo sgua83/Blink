@@ -10,10 +10,9 @@ pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
 pub(crate) use inputs::Inputs;
 pub use identity::{Declaration, Inputs as InputFacts, Selection, SourceInput, SourceInputs};
 pub use object::{ObjectCompilation, ObjectKind, compile_object};
-use crate::module::codec::Encode;
+use crate::{file_bytes::FileBytes, module::codec::Encode};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
 use std::{
-    fs,
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -99,7 +98,7 @@ fn compile_in(
     let source = identity::sources(&path, &root,
         Selection::Entry { entry: entry.into(), target: if target == Target::Cpu { "cpu" } else { "gpu" }.into() },
         worker.compiler().max_parameter_bytes(), &world, &module, false)?;
-    match fs::read(&artifact) {
+    match FileBytes::read_path(&artifact) {
         Ok(bytes) => {
             let (identity, stored_image) = decode(&bytes)?;
             if let Some(inputs) = identity::decode(identity)? && inputs.source.same_code(&source) {
@@ -263,12 +262,12 @@ fn decode(bytes: &[u8]) -> Result<(&[u8], &[u8])> {
 /// Reads the request and consumed source identities stored in an actual artifact.
 /// No source files, compiler workers, native code or device are opened.
 pub fn input_facts(path: &Path) -> Result<InputFacts> {
-    decode_input_facts(&fs::read(path)?)
+    decode_input_facts(&FileBytes::read_path(path)?)
 }
 
 /// Returns the original build facts and SHA-256 of the same artifact bytes.
 pub fn input_facts_with_sha256(path: &Path) -> Result<(InputFacts, String)> {
-    let bytes = fs::read(path)?;
+    let bytes = FileBytes::read_path(path)?;
     let facts = decode_input_facts(&bytes)?;
     Ok((facts, hash::hex(&hash::digest(&bytes))))
 }
@@ -288,7 +287,7 @@ fn decode_input_facts(bytes: &[u8]) -> Result<InputFacts> {
 /// Does not interpret build inputs, recompile, load code, or change the source artifact.
 /// Code trust and execution contracts remain with the resource decoder and runtime.
 pub fn execution_image(path: &Path) -> Result<Vec<u8>> {
-    let bytes = fs::read(path)?;
+    let bytes = FileBytes::read_path(path)?;
     Ok(decode(&bytes)?.1.to_vec())
 }
 /// 独立执行可只装入产物，不读取B源码或调用编译器后端。
@@ -296,7 +295,7 @@ pub fn execution_image(path: &Path) -> Result<Vec<u8>> {
 /// # Safety
 /// 文件必须是可信编译器产生且未修改的完整原生映像，保持资源ABI及真实前缀合同。
 pub unsafe fn load(path: &Path) -> Result<Compilation> {
-    unsafe { load_bytes(path, &fs::read(path)?) }
+    unsafe { load_bytes(path, &FileBytes::read_path(path)?) }
 }
 
 /// Loads an execution artifact and returns the SHA-256 of the exact BLBI bytes
@@ -305,7 +304,7 @@ pub unsafe fn load(path: &Path) -> Result<Compilation> {
 /// # Safety
 /// The file must satisfy the same trust and execution contracts as [load].
 pub unsafe fn load_with_sha256(path: &Path) -> Result<(Compilation, String)> {
-    let bytes = fs::read(path)?;
+    let bytes = FileBytes::read_path(path)?;
     let compilation = unsafe { load_bytes(path, &bytes) }?;
     Ok((compilation, hash::hex(&hash::digest(&bytes))))
 }
