@@ -182,52 +182,71 @@ extern "C" void sha256_fields(address fields,u64 count,address output) on cpu {
     sha256_finish(state,output);
 }
 
-DigestField build_region(address bytes,BuildRegion region) on cpu {
-    return DigestField(at(bytes,region.start),region.length);
+extern "C" void sha256_reference_symbols(inout DigestState state, address symbols,
+    u64 symbol_count, u64 reference_count) on cpu {
+    u64 index = 0u64;
+    while (index < symbol_count) {
+        BuildSymbol symbol = unsafe_position<BuildSymbol>(at(symbols, index * size_of<BuildSymbol>()));
+        u8 bound = u8(symbol.bound);
+        u16 requirement = u16(0);
+        u64 requirement_length = 1u64;
+        if (symbol.requirement != 0) {
+            requirement = u16(1) | u16((symbol.requirement - 1) << 8);
+            requirement_length = 2u64;
+        }
+        array<DigestField,5> fields = array<DigestField,5>(
+            symbol.name, DigestField(address_of(bound), 1u64), symbol.contract, symbol.declaration,
+            DigestField(address_of(requirement), requirement_length));
+        digest_fields(state, address_of(fields[0]), symbol.bound == 0 ? 2u64 : 5u64);
+        index += 1u64;
+    }
+    digest_field(state, DigestField(address_of(reference_count), 8u64));
 }
 
-extern "C" void sha256_references(BuildReferences input,address output) on cpu {
-    DigestState state=sha256_start();
-    u64 index=0u64;
-    DigestField empty=DigestField(unsafe_address(0u64),0u64);
-    while(index<input.symbol_count){
-        BuildSymbol symbol=unsafe_position<BuildSymbol>(at(input.symbols,index*size_of<BuildSymbol>()));
-        u8 bound=u8(symbol.bound);
-        u16 requirement=u16(0);
-        u64 requirement_length=1u64;
-        if(symbol.requirement!=0){
-            requirement=u16(1)|u16((symbol.requirement-1)<<8);
-            requirement_length=2u64;
+void digest_length(inout DigestState state, u64 length) on cpu {
+    sha256_update(state, address_of(length), 8u64);
+}
+
+void digest_reference_name(inout DigestState state, u64 key_length, u32 tag, DigestField name) on cpu {
+    digest_length(state, key_length);
+    sha256_update(state, address_of(tag), 4u64);
+    digest_field(state, name);
+}
+
+extern "C" void sha256_reference(inout DigestState state, BuildReference row) on cpu {
+    // Match the existing Declaration variant and length-prefixed UTF-8 fields.
+    u64 key_length = 12u64 + row.name.length;
+    if (row.kind == ReferenceKind::Query) {
+        key_length += 16u64 + row.module_name.length;
+        u64 index = 0u64;
+        while (index < row.import_count) {
+            DigestField import_name = unsafe_position<DigestField>(at(row.imports, index * size_of<DigestField>()));
+            key_length += 8u64 + import_name.length;
+            index += 1u64;
         }
-        array<DigestField,5> fields=array<DigestField,5>(
-            symbol.name,DigestField(address_of(bound),1u64),symbol.contract,symbol.declaration,
-            DigestField(address_of(requirement),requirement_length));
-        digest_fields(state,address_of(fields[0]),symbol.bound==0 ? 2u64 : 5u64);
-        index+=1u64;
-    }
-    u64 count=input.reference_count;
-    digest_field(state,DigestField(address_of(count),8u64));
-    index=0u64;
-    while(index<input.reference_count){
-        BuildReference row=unsafe_position<BuildReference>(at(input.references,index*size_of<BuildReference>()));
-        u8 present=u8(row.kind==0 ? 0 : 1);
-        u8 execution=u8(row.execution);
-        array<DigestField,4> fields=array<DigestField,4>(
-            build_region(input.encoded,row.key),DigestField(address_of(present),1u64),empty,empty);
-        u64 field_count=2u64;
-        if(row.kind==2){
-            fields[1]=build_region(input.encoded,row.query);
-        }else if(row.kind==3){
-            fields[1]=DigestField(address_of(execution),1u64);
-            fields[2]=DigestField(address_of(present),1u64);
-            fields[3]=row.source;
-            field_count=4u64;
-        }else if(row.kind!=0){
-            fields[2]=row.source;
-            field_count=3u64;
+        digest_reference_name(state, key_length, row.tag, row.name);
+        digest_field(state, row.module_name);
+        digest_length(state, row.import_count);
+        digest_fields(state, row.imports, row.import_count);
+
+        // A unique name follows its one-byte status with a length-prefixed string.
+        u8 resolution = u8(row.resolution);
+        if (resolution == u8(1)) {
+            digest_length(state, 9u64 + row.value.length);
+            sha256_update(state, address_of(resolution), 1u64);
+            digest_field(state, row.value);
+        } else {
+            digest_field(state, DigestField(address_of(resolution), 1u64));
         }
-        digest_fields(state,address_of(fields[0]),field_count);
-        index+=1u64;
+        return;
     }
-    sha256_finish(state,output);
+
+    digest_reference_name(state, key_length, row.tag, row.name);
+    if (row.kind == ReferenceKind::Implementation) {
+        u8 execution = u8(row.execution);
+        digest_field(state, DigestField(address_of(execution), 1u64));
+    }
+    u8 present = u8(row.kind != ReferenceKind::Missing);
+    digest_field(state, DigestField(address_of(present), 1u64));
+    if (present != u8(0)) { digest_field(state, row.value); }
 }

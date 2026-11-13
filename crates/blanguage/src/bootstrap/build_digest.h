@@ -21,13 +21,14 @@ struct BuildSymbol {
     DigestField name; DigestField contract; DigestField declaration;
     u32 bound; u32 requirement;
 };
-struct BuildRegion { u64 start; u64 length; };
+enum ReferenceKind : u32 { Missing = 0; Source = 1; Query = 2; Implementation = 3; };
 struct BuildReference {
-    BuildRegion key; BuildRegion query; DigestField source;
-    u32 kind; u32 execution;
+    DigestField name; DigestField module_name; DigestField value;
+    address imports; u64 import_count;
+    u32 tag; ReferenceKind kind; u32 execution; u32 resolution;
 };
-struct BuildReferences {
-    address symbols; u64 symbol_count; address references; u64 reference_count;
-    address encoded;
-};
-extern "C" void sha256_references(BuildReferences input,address output) on cpu;
+
+// The caller borrows each original field only for the synchronous digest update.
+extern "C" void sha256_reference_symbols(inout DigestState state, address symbols,
+    u64 symbol_count, u64 reference_count) on cpu;
+extern "C" void sha256_reference(inout DigestState state, BuildReference row) on cpu;

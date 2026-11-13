@@ -72,13 +72,6 @@ struct BuildSymbol {
     requirement: u32,
 }
 
-#[repr(C)]
-#[derive(Default)]
-struct BuildRegion {
-    start: usize,
-    length: usize,
-}
-
 #[repr(u32)]
 enum BuildReferenceKind {
     Missing,
@@ -87,33 +80,33 @@ enum BuildReferenceKind {
     Implementation,
 }
 
-#[repr(C)]
-struct BuildReference {
-    key: BuildRegion,
-    query: BuildRegion,
-    source: ByteField,
-    kind: BuildReferenceKind,
-    execution: u32,
+#[repr(u32)]
+enum NameQuery {
+    Missing,
+    Unique,
+    Ambiguous,
 }
 
 #[repr(C)]
-struct BuildReferences {
-    symbols: *const BuildSymbol,
-    symbol_count: usize,
-    references: *const BuildReference,
-    reference_count: usize,
-    encoded: *const u8,
+struct BuildReference {
+    name: ByteField,
+    module_name: ByteField,
+    value: ByteField,
+    imports: *const ByteField,
+    import_count: usize,
+    tag: u32,
+    kind: BuildReferenceKind,
+    execution: u32,
+    resolution: NameQuery,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.build_digest::sha256_references"]
-    fn sha256_references(input: BuildReferences, output: *mut u8);
-}
-
-fn build_region(encoded: &mut Writer, write: impl FnOnce(&mut Writer)) -> BuildRegion {
-    let start = encoded.0.len();
-    write(encoded);
-    BuildRegion { start, length: encoded.0.len() - start }
+    #[link_name = "bootstrap.build_digest::sha256_reference_symbols"]
+    fn sha256_reference_symbols(
+        digest: &mut hash::Digest, symbols: *const BuildSymbol, count: usize, reference_count: usize,
+    );
+    #[link_name = "bootstrap.build_digest::sha256_reference"]
+    fn sha256_reference(digest: &mut hash::Digest, row: BuildReference);
 }
 
 fn build_symbol(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbol: &str)
@@ -146,33 +139,58 @@ fn build_symbol(declarations: &crate::Declarations, imported: Option<&crate::mod
     result
 }
 
-fn build_reference(declarations: &crate::Declarations, entry: &Declaration, encoded: &mut Writer)
-    -> BuildReference
-{
-    let mut row = BuildReference {
-        key: build_region(encoded, |writer| entry.encode(writer)),
-        query: BuildRegion::default(), source: (&[][..]).into(),
-        kind: BuildReferenceKind::Missing, execution: 0,
+fn digest_reference(
+    digest: &mut hash::Digest, declarations: &crate::Declarations, entry: &Declaration,
+    import_fields: &mut Vec<ByteField>,
+) {
+    use crate::frontend::NameResolution;
+    // Tags follow the persisted Declaration codec above.
+    let (tag, name, query) = match entry {
+        Declaration::Constant(name) => (0, name, None),
+        Declaration::Record(name) => (1, name, None),
+        Declaration::TypeSet(name) => (2, name, None),
+        Declaration::External(name) => (3, name, None),
+        Declaration::ValueName { name, module, imports } => (4, name, Some((module, imports))),
+        Declaration::RecordName { name, module, imports } => (5, name, Some((module, imports))),
+        Declaration::TypeSetName { name, module, imports } => (6, name, Some((module, imports))),
+        Declaration::Implementation(name) => (7, name, None),
     };
+    let mut row = BuildReference {
+        name: name.as_bytes().into(),
+        module_name: (&[][..]).into(),
+        value: (&[][..]).into(),
+        imports: std::ptr::null(),
+        import_count: 0,
+        tag,
+        kind: BuildReferenceKind::Missing,
+        execution: 0,
+        resolution: NameQuery::Missing,
+    };
+    if let Some((module, imports)) = query {
+        import_fields.clear();
+        import_fields.extend(imports.iter().map(|name| ByteField::from(name.as_bytes())));
+        row.kind = BuildReferenceKind::Query;
+        row.module_name = module.as_bytes().into();
+        row.imports = import_fields.as_ptr();
+        row.import_count = import_fields.len();
+        let resolved = if matches!(entry, Declaration::TypeSetName { .. }) {
+            declarations.resolve_type_set(name, module, imports)
+                .map_or(NameResolution::Missing, NameResolution::Unique)
+        } else {
+            declarations.resolve(name, module, imports, matches!(entry, Declaration::ValueName { .. }))
+        };
+        row.resolution = match &resolved {
+            NameResolution::Missing => NameQuery::Missing,
+            NameResolution::Unique(name) => {
+                row.value = name.as_bytes().into();
+                NameQuery::Unique
+            }
+            NameResolution::Ambiguous => NameQuery::Ambiguous,
+        };
+        unsafe { sha256_reference(digest, row) };
+        return;
+    }
     let input = match entry {
-        Declaration::ValueName { name, module, imports } | Declaration::RecordName { name, module, imports } => {
-            row.kind = BuildReferenceKind::Query;
-            row.query = build_region(encoded, |writer| {
-                match declarations.resolve(name, module, imports, matches!(entry, Declaration::ValueName { .. })) {
-                    crate::frontend::NameResolution::Missing => None::<String>.encode(writer),
-                    crate::frontend::NameResolution::Unique(name) => Some(name).encode(writer),
-                    crate::frontend::NameResolution::Ambiguous => 2u8.encode(writer),
-                }
-            });
-            return row;
-        }
-        Declaration::TypeSetName { name, module, imports } => {
-            row.kind = BuildReferenceKind::Query;
-            row.query = build_region(encoded, |writer| {
-                declarations.resolve_type_set(name, module, imports).encode(writer);
-            });
-            return row;
-        }
         Declaration::Constant(key) => declarations.functions.get(key)
             .filter(|definition| definition.function.kind() == crate::ast::FunctionKind::Constant)
             .map(|definition| (&definition.source, definition.function.span())),
@@ -189,16 +207,17 @@ fn build_reference(declarations: &crate::Declarations, entry: &Declaration, enco
                 row.execution = definition.execution as u32;
                 (&definition.source, definition.function.span())
             }),
+        Declaration::ValueName { .. } | Declaration::RecordName { .. } | Declaration::TypeSetName { .. } => unreachable!(),
     };
     if let Some((source, span)) = input {
-        row.source = source.text[span.start..span.end].as_bytes().into();
+        row.value = source.text[span.start..span.end].as_bytes().into();
         row.kind = if matches!(entry, Declaration::Implementation(_)) {
             BuildReferenceKind::Implementation
         } else {
             BuildReferenceKind::Source
         };
     }
-    row
+    unsafe { sha256_reference(digest, row) };
 }
 
 pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
@@ -206,19 +225,13 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
 ) -> [u8; 32] {
     let symbols: Vec<_> = symbols.into_iter()
         .map(|symbol| build_symbol(declarations, imported, symbol)).collect();
-    let mut encoded = Writer(Vec::new());
-    let references: Vec<_> = used.iter()
-        .map(|entry| build_reference(declarations, entry, &mut encoded)).collect();
-    let input = BuildReferences {
-        symbols: symbols.as_ptr(), symbol_count: symbols.len(),
-        references: references.as_ptr(), reference_count: references.len(),
-        encoded: encoded.0.as_ptr(),
-    };
-    let mut digest = std::mem::MaybeUninit::<[u8; 32]>::uninit();
-    unsafe {
-        sha256_references(input, digest.as_mut_ptr().cast());
-        digest.assume_init()
+    let mut digest = hash::Digest::new();
+    unsafe { sha256_reference_symbols(&mut digest, symbols.as_ptr(), symbols.len(), used.len()) };
+    let mut import_fields = Vec::new();
+    for entry in used {
+        digest_reference(&mut digest, declarations, entry, &mut import_fields);
     }
+    digest.finish()
 }
 
 struct SourceRegions<'a> {
