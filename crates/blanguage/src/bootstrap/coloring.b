@@ -15,8 +15,8 @@ address place_at(address places, u64 index) on cpu {
 address order_at(address rows, u64 index) on cpu {
     return unsafe_address(address_bits(rows) + index * size_of<array<u64,3>>());
 }
-address spill_at(address rows, u64 index) on cpu {
-    return unsafe_address(address_bits(rows) + index * 4u64);
+address spill_mark(address rows, u32 slot) on cpu {
+    return unsafe_address(address_bits(rows) + u64(slot) * size_of<u64>());
 }
 extern "C" bool priority_before(address left, address right, address context) on cpu {
     array<u64,3> a = unsafe_position<array<u64,3>>(left);
@@ -25,20 +25,6 @@ extern "C" bool priority_before(address left, address right, address context) on
     if (a[1] != b[1]) { return a[1] > b[1]; }
     return a[2] < b[2];
 }
-extern "C" bool spill_before(address left, address right, address context) on cpu {
-    return unsafe_position<u32>(left) < unsafe_position<u32>(right);
-}
-bool spill_used(address rows, u64 count, u32 value) on cpu {
-    u64 low = 0u64;
-    u64 high = count;
-    while (low < high) {
-        u64 middle = low + (high - low) / 2u64;
-        u32 at = unsafe_position<u32>(spill_at(rows, middle));
-        if (at < value) { low = middle + 1u64; } else { high = middle; }
-    }
-    return low < count && unsafe_position<u32>(spill_at(rows, low)) == value;
-}
-
 // After coloring, every order row is dead. Reuse that memory first for the
 // maximum width of each spill color, then for its final stack offset.
 u64 layout_spills(address places, u64 count, address scratch, u64 spills, u64 base) on cpu {
@@ -116,16 +102,13 @@ extern "C" ColorLayout color(address graph, u64 count, address places, address o
         if (mode == 2) { bank = XMM; allowed = 0xfff0; }
 
         u32 used = 0;
-        u64 occupied = 0u64;
+        u64 visit = at + 1u64;
         u64 neighbor = next(graph, id, false, count);
         while (neighbor != count) {
             ColorPlace place = unsafe_position<ColorPlace>(place_at(places, neighbor));
             if (place.kind == bank) { used |= 1 << u32(place.value); }
             if (place.kind == STACK) {
-                // Only earlier nonfixed nodes can have stack colors. Their
-                // order rows are dead; the unprocessed suffix remains intact.
-                unsafe_position<u32>(spill_at(order, occupied)) = u32(place.value);
-                occupied += 1u64;
+                unsafe_position<u64>(spill_mark(order, u32(place.value))) = visit;
             }
             neighbor = next(graph, id, false, neighbor);
         }
@@ -161,10 +144,16 @@ extern "C" ColorLayout color(address graph, u64 count, address places, address o
                 else { saved_xmm |= (1 << chosen) & 0xffc0; }
             }
         } else {
-            sort_rows<u32>(order, occupied, address(), c_function(spill_before));
             u32 slot = 0;
-            while (spill_used(order, occupied, slot)) { slot += 1; }
-            if (spills < slot + 1) { spills = slot + 1; }
+            while (slot < spills && unsafe_position<u64>(spill_mark(order, slot)) == visit) {
+                slot += 1;
+            }
+            if (slot == spills) {
+                // At most one color per processed node. The current order row
+                // has been read, so the marks still fit in the consumed rows.
+                unsafe_position<u64>(spill_mark(order, slot)) = 0u64;
+                spills += 1;
+            }
             unsafe_position<ColorPlace>(destination).value = u64(slot);
             unsafe_position<ColorPlace>(destination).kind = STACK;
         }
