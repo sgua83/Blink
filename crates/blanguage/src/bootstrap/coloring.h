@@ -14,3 +14,6 @@ extern "C" u64 color(address graph, u64 count, address places, address order, u3
 // The supplied places already contain the declaration's field byte offsets.
 extern "C" u64 place_private(address places, u64 count, u64 data_end, u64 bytes, u64 alignment)
     on cpu requires nonzero(alignment);
+
+// Every definition updates its original machine place before coloring.
+extern "C" void record_definition(address place, u32 literal, u64 bits) on cpu;

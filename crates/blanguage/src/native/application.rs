@@ -87,7 +87,7 @@ fn emit_value(
             .collect(),
     );
     graph.function_inputs(&body.inputs);
-    let allocation = Allocation::new(&stage, &graph);
+    let allocation = Allocation::new(&stage, &mut graph);
     let layout = Frame::new(&allocation, None);
     fn scratch(code: &[Inst]) -> bool {
         code.iter().any(|i| match &(i).kind {

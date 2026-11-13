@@ -1,10 +1,12 @@
 module bootstrap.coloring;
 import bootstrap.names;
 
+const u32 UNSEEN = 0;
 const u32 IMMEDIATE = 1;
 const u32 GPR = 2;
 const u32 XMM = 3;
 const u32 STACK = 4;
+const u32 VARYING = 5;
 
 address place_at(address places, u64 index) on cpu {
     return unsafe_address(address_bits(places) + index * size_of<ColorPlace>());
@@ -176,4 +178,15 @@ extern "C" u64 place_private(address places, u64 count, u64 data_end, u64 bytes,
         index += 1u64;
     }
     return base + bytes;
+}
+
+extern "C" void record_definition(address place, u32 literal, u64 bits) on cpu {
+    u32 kind = unsafe_position<ColorPlace>(place).kind;
+    if (literal != 0 && (kind == UNSEEN
+        || (kind == IMMEDIATE && unsafe_position<ColorPlace>(place).value == bits))) {
+        unsafe_position<ColorPlace>(place).kind = IMMEDIATE;
+        unsafe_position<ColorPlace>(place).value = bits;
+    } else {
+        unsafe_position<ColorPlace>(place).kind = VARYING;
+    }
 }

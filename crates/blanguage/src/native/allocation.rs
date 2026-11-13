@@ -46,6 +46,7 @@ pub(super) struct Frame {
     pub tile_private: std::collections::BTreeMap<PrivateSlot, u32>,
 }
 pub(super) struct Graph {
+    locations: Vec<ColorPlace>,
     private: Vec<std::ops::Range<usize>>,
     addressable: BTreeSet<usize>,
     edges: Vec<BTreeSet<usize>>,
@@ -220,8 +221,18 @@ impl Graph {
                         self.affinities[dst].insert(src);
                         self.affinities[src].insert(dst);
                     }
-                    let mut definitions: Vec<_> =
-                        inst.results().into_iter().map(Register).collect();
+                    let literal = match &inst.kind {
+                        InstKind::Constant(_, _, bits) => Some(*bits),
+                        _ => None,
+                    };
+                    let mut definitions = Vec::new();
+                    for dst in inst.results() {
+                        unsafe {
+                            record_definition(&mut self.locations[dst], u32::from(literal.is_some()),
+                                literal.unwrap_or_default());
+                        }
+                        definitions.push(Register(dst));
+                    }
                     if let InstKind::StoreLocal(slot, _) = &(inst).kind {
                         definitions.push(Local(*slot));
                     }
@@ -295,9 +306,19 @@ impl Graph {
     pub fn with_live(stage: &Stage, live: BTreeSet<PrivateSlot>) -> Self {
         let slots = stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
         let private = private_spans(&stage.code);
+        let addressable: BTreeSet<_> = private.iter().flat_map(|span| span.clone())
+            .map(|slot| stage.registers.len() + slot).collect();
+        let locations = stage.registers.iter()
+            .chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
+            .enumerate()
+            .map(|(id, scalar)| {
+                let width = if addressable.contains(&id) { 0 } else { scalar.size() as u8 };
+                ColorPlace::new(width, scalar.is_float())
+            })
+            .collect();
         let mut graph = Graph {
-            addressable: private.iter().flat_map(|span| span.clone())
-                .map(|slot| stage.registers.len() + slot).collect(),
+            locations,
+            addressable,
             private,
             edges: vec![BTreeSet::new(); slots],
             affinities: vec![BTreeSet::new(); slots],
@@ -349,7 +370,6 @@ impl ColorPlace {
     const GPR: u32 = 2;
     const XMM: u32 = 3;
     const STACK: u32 = 4;
-    const VARYING: u32 = 5;
 
     fn new(width: u8, floating: bool) -> Self {
         Self { value: 0, kind: Self::UNSEEN, width, floating: u8::from(floating) }
@@ -381,6 +401,8 @@ unsafe extern "C" {
         node: unsafe extern "C" fn(*const c_void, u64) -> ColorNode,
         next: unsafe extern "C" fn(*const c_void, u64, bool, u64) -> u64,
     ) -> u64;
+    #[link_name = "bootstrap.coloring::record_definition"]
+    fn record_definition(place: *mut ColorPlace, literal: u32, bits: u64);
     #[link_name = "bootstrap.coloring::place_private"]
     fn place_private(places: *mut ColorPlace, count: usize, data_end: u64, bytes: u64,
         alignment: u64) -> u64;
@@ -413,55 +435,8 @@ fn color_locations(graph: &Graph, places: &mut [ColorPlace], mode: u32, base: u6
 }
 
 impl Allocation {
-    pub fn new(stage: &Stage, graph: &Graph) -> Self {
-        // A register may be defined in several structured blocks. Only identical
-        // literal definitions have no mutable storage; locals remain real slots.
-        fn literals(code: &[Inst], values: &mut [ColorPlace]) {
-            for inst in code {
-                let literal = match &(inst).kind {
-                    InstKind::Constant(_, _, bits) => Some(*bits),
-                    _ => None,
-                };
-                for dst in inst.results() {
-                    let place = &mut values[dst];
-                    if let Some(bits) = literal {
-                        if place.kind == ColorPlace::UNSEEN
-                            || (place.kind == ColorPlace::IMMEDIATE && place.value == bits)
-                        {
-                            place.kind = ColorPlace::IMMEDIATE;
-                            place.value = bits;
-                            continue;
-                        }
-                    }
-                    place.kind = ColorPlace::VARYING;
-                }
-                match &(inst).kind {
-                    InstKind::If { yes, no, .. } => {
-                        literals(yes, values);
-                        literals(no, values);
-                    }
-                    InstKind::Loop {
-                        condition, body, ..
-                    } => {
-                        literals(condition, values);
-                        literals(body, values);
-                    }
-                    InstKind::Scope(body) => literals(body, values),
-                    _ => {}
-                }
-            }
-        }
-        let mut locations: Vec<_> = stage
-            .registers
-            .iter()
-            .chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
-            .enumerate()
-            .map(|(id, scalar)| {
-                let width = if graph.addressable.contains(&id) { 0 } else { scalar.size() as u8 };
-                ColorPlace::new(width, scalar.is_float())
-            })
-            .collect();
-        literals(&stage.code, &mut locations);
+    pub fn new(stage: &Stage, graph: &mut Graph) -> Self {
+        let mut locations = std::mem::take(&mut graph.locations);
         let mut data_end = color_locations(
             graph, &mut locations, u32::from(stage.has_tile_scope()), graph.outgoing_bytes,
         );

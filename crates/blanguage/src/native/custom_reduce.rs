@@ -504,8 +504,8 @@ pub(super) fn emit(
         &live,
         &std::collections::BTreeSet::new(),
     ));
-    let graph = allocation::Graph::with_live(&stage, live);
-    let allocation = Allocation::new(&stage, &graph);
+    let mut graph = allocation::Graph::with_live(&stage, live);
+    let allocation = Allocation::new(&stage, &mut graph);
     let layout = Frame::new(&allocation, None);
     let frame = i32::try_from(layout.end.div_ceil(16) * 16)
         .map_err(|_| "原生集合栈帧超过 x64 范围函数 ABI")? as u32;

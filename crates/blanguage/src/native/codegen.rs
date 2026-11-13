@@ -747,7 +747,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     reads::place(&mut lowered.code, &lowered.writes);
     let stage = &lowered;
     let mut graph = allocation::Graph::new(stage);
-    let allocation = Allocation::new(stage, &graph);
+    let allocation = Allocation::new(stage, &mut graph);
     let packet = packet::Plan::new(program, stage).map(|plan| {
         let allocation = PacketAllocation::new(stage, &mut graph, &plan.address_only);
         (plan, allocation)
