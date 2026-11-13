@@ -294,3 +294,72 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
     }
     return result;
 }
+
+extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on cpu {
+    CodeCommandLine line = CodeCommandLine(
+        CodeInput::Entry, CompileError::CodeUsage,
+        1u64, count, count, 0u64, 0u64, 0u64, false, false);
+    if (count <= 1u64) { return line; }
+    CliArgument input = argument_at(arguments, 1u64);
+    if (is_token(input, "--object")) {
+        line.input = CodeInput::Object;
+        line.error = CompileError::ObjectCodeUsage;
+        line.source_index = 2u64;
+    } else if (is_token(input, "--image")) {
+        line.input = CodeInput::Image;
+        line.source_index = 2u64;
+    }
+    if (line.source_index == count) { return line; }
+
+    u64 index = line.source_index + 1u64;
+    while (index < count) {
+        u64 operand = index + 1u64;
+        if (operand == count) { return line; }
+        CliArgument option = argument_at(arguments, index);
+        CliArgument value = argument_at(arguments, operand);
+        if (is_token(option, "--observations") && line.observations_index == count) {
+            line.observations_index = operand;
+        } else if (is_token(option, "--source-range") && !line.has_range) {
+            if (value.text == 0u64) { return line; }
+            u64 colon = 0u64;
+            while (colon < value.length) {
+                if (argument_byte(value, colon) == 58) { break; }
+                colon += 1u64;
+            }
+            if (colon == value.length) { return line; }
+            ParsedNumber start = unsigned_decimal(value, 0u64, colon, 18446744073709551615u64);
+            if (start.error != NumberError::None) {
+                line.error = compile_number_error(start.error);
+                return line;
+            }
+            ParsedNumber end = unsigned_decimal(value, colon + 1u64, value.length, 18446744073709551615u64);
+            if (end.error != NumberError::None) {
+                line.error = compile_number_error(end.error);
+                return line;
+            }
+            line.range_start = start.value;
+            line.range_end = end.value;
+            line.has_range = true;
+        } else if (line.input == CodeInput::Object && !line.has_section && line.function_index == count) {
+            if (value.text == 0u64) { return line; }
+            if (is_token(option, "--section")) {
+                ParsedNumber section = unsigned_decimal(value, 0u64, value.length, 18446744073709551615u64);
+                if (section.error != NumberError::None) {
+                    line.error = compile_number_error(section.error);
+                    return line;
+                }
+                line.section = section.value;
+                line.has_section = true;
+            } else if (is_token(option, "--function")) {
+                line.function_index = operand;
+            } else {
+                return line;
+            }
+        } else {
+            return line;
+        }
+        index += 2u64;
+    }
+    line.error = CompileError::None;
+    return line;
+}

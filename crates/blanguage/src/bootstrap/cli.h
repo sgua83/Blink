@@ -52,6 +52,7 @@ enum CompileError:u32 {
     CpuSyntax=10; ResourceConflict=11; InputsUsage=12; CommandText=13; MissingSource=14;
     UnknownCommand=15; MissingOptionOperand=16; OptionText=17; UnknownOption=18; BudgetText=19;
     EntryText=20; InstanceText=21; BudgetWithoutReport=22; MissingOutput=23;
+    CodeUsage=24; ObjectCodeUsage=25;
 };
 
 struct CompileCommandLine {
@@ -77,3 +78,21 @@ struct CompileCommandLine {
 
 // The caller owns count role bytes and enough CPU slots for the longest argument.
 extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, address roles, address cpus) on cpu;
+
+enum CodeInput:u32 { Entry=0; Image=1; Object=2; };
+
+struct CodeCommandLine {
+    CodeInput input;
+    CompileError error;
+    u64 source_index;
+    u64 observations_index;
+    u64 function_index;
+    u64 section;
+    u64 range_start;
+    u64 range_end;
+    bool has_section;
+    bool has_range;
+};
+
+// Returns indices into the original arguments for paths and the exact function name.
+extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on cpu;

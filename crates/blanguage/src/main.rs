@@ -30,7 +30,7 @@ enum CompileError {
     DuplicateParameterLimit, EmptyNumber, InvalidNumber, Overflow, ZeroJobs,
     CpuSyntax, ResourceConflict, InputsUsage, CommandText, MissingSource,
     UnknownCommand, MissingOptionOperand, OptionText, UnknownOption, BudgetText,
-    EntryText, InstanceText, BudgetWithoutReport, MissingOutput,
+    EntryText, InstanceText, BudgetWithoutReport, MissingOutput, CodeUsage, ObjectCodeUsage,
 }
 
 #[repr(C)]
@@ -94,6 +94,8 @@ impl CompileError {
             Self::InstanceText => "实例不是UTF-8文本",
             Self::BudgetWithoutReport => "--stack-budget需要--stack-report输出",
             Self::MissingOutput => "缺少 -o 目标文件路径",
+            Self::CodeUsage => "usage: bc code <entry.blbi> [--observations <ranges.blcr>] [--source-range start:end] | bc code --image <deployment.blri> [--observations <ranges.blcr>] [--source-range start:end]",
+            Self::ObjectCodeUsage => "usage: bc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol] [--source-range start:end]",
         };
         Err(message.into())
     }
@@ -161,7 +163,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         CompileCommand::X64 => return x64_facts::print(&args),
         CompileCommand::Image => return image_export::export(&args),
-        CompileCommand::Code => return code_facts::print(&args),
+        CompileCommand::Code => return code_facts::print(&args, &arguments),
         CompileCommand::Spirv => return spirv_facts::print(&args),
         _ => {}
     }

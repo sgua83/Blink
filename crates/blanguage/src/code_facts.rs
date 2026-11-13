@@ -1,62 +1,72 @@
-use std::{fs, path::Path};
+use super::{Argument, CompileError};
+use blanguage::object::{CodeSelection, code_facts, code_facts_with_observations, source_facts};
+use std::{ffi::OsString, fs, ops::Range, path::Path};
 
-pub fn print(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.get(1).is_some_and(|arg| arg == "--object") { return object(args); }
-    let usage = "usage: bc code <entry.blbi> [--observations <ranges.blcr>] [--source-range start:end] | bc code --image <deployment.blri> [--observations <ranges.blcr>] [--source-range start:end]";
-    let image = args.get(1).is_some_and(|value| value == "--image");
-    let at = if image { 2 } else { 1 };
-    let source = args.get(at).ok_or(usage)?;
-    let mut at = at + 1; let mut material = None; let mut range = None;
-    while at < args.len() {
-        let value = args.get(at + 1).ok_or(usage)?;
-        match args[at].to_str().ok_or(usage)? {
-            "--observations" if material.is_none() => material = Some(value),
-            "--source-range" if range.is_none() => {
-                let (start, end) = value.to_str().ok_or(usage)?.split_once(':').ok_or(usage)?;
-                range = Some(start.parse()?..end.parse()?);
-            }
-            _ => return Err(usage.into()),
-        }
-        at += 2;
-    }
-    let material = material.map(fs::read).transpose()?;
-    let facts = match (image, range) {
-        (true, Some(range)) => blanguage::build::image_source_facts(&fs::read(source)?, range, material.as_deref()),
-        (false, Some(range)) => blanguage::build::source_facts(Path::new(source), range, material.as_deref()),
-        (true, None) => blanguage::build::image_code_facts(&fs::read(source)?, material.as_deref()),
-        (false, None) => blanguage::build::code_facts(Path::new(source), material.as_deref()),
-    }.map_err(|e| e.to_string())?;
+#[derive(PartialEq, Eq)]
+#[repr(u32)]
+enum CodeInput {
+    Entry,
+    Image,
+    Object,
+}
+
+#[repr(C)]
+struct CodeCommandLine {
+    input: CodeInput,
+    error: CompileError,
+    source_index: usize,
+    observations_index: usize,
+    function_index: usize,
+    section: usize,
+    range_start: usize,
+    range_end: usize,
+    has_section: u32,
+    has_range: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.cli::parse_code_arguments"]
+    fn parse_code_arguments(arguments: *const Argument, count: usize) -> CodeCommandLine;
+}
+
+pub(super) fn print(args: &[OsString], arguments: &[Argument]) -> Result<(), Box<dyn std::error::Error>> {
+    // B borrows the same argument storage used by the compiler command dispatch.
+    let line = unsafe { parse_code_arguments(arguments.as_ptr(), arguments.len()) };
+    line.error.result(args, line.source_index)?;
+    let source = Path::new(&args[line.source_index]);
+    let observations = args.get(line.observations_index).map(Path::new);
+    let range = (line.has_range != 0).then_some(line.range_start..line.range_end);
+    let facts = if line.input == CodeInput::Object {
+        let selection = if let Some(name) = args.get(line.function_index) {
+            // B returns a function index only for an argument marked as UTF-8 text.
+            CodeSelection::Function(unsafe { std::str::from_utf8_unchecked(name.as_encoded_bytes()) })
+        } else if line.has_section != 0 {
+            CodeSelection::Section(line.section)
+        } else {
+            CodeSelection::CodeSections
+        };
+        object(source, observations, selection, range)?
+    } else {
+        let material = observations.map(fs::read).transpose()?;
+        match (line.input == CodeInput::Image, range) {
+            (true, Some(range)) => blanguage::build::image_source_facts(&fs::read(source)?, range, material.as_deref()),
+            (false, Some(range)) => blanguage::build::source_facts(source, range, material.as_deref()),
+            (true, None) => blanguage::build::image_code_facts(&fs::read(source)?, material.as_deref()),
+            (false, None) => blanguage::build::code_facts(source, material.as_deref()),
+        }.map_err(|error| error.to_string())?
+    };
     println!("{facts}");
     Ok(())
 }
 
-fn object(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
-    use blanguage::object::{CodeSelection, code_facts, code_facts_with_observations, source_facts};
-    let usage = "usage: bc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol] [--source-range start:end]";
-    let source = args.get(2).ok_or(usage)?;
-    let mut selection = None; let mut material = None; let mut range = None; let mut at = 3;
-    while at < args.len() {
-        let value = args.get(at + 1).ok_or(usage)?;
-        match args[at].to_str().ok_or(usage)? {
-            "--observations" if material.is_none() => material = Some(value),
-            "--source-range" if range.is_none() => {
-                let (start, end) = value.to_str().ok_or(usage)?.split_once(':').ok_or(usage)?;
-                range = Some(start.parse()?..end.parse()?);
-            }
-            "--section" if selection.is_none() => selection = Some(CodeSelection::Section(value.to_str().ok_or(usage)?.parse()?)),
-            "--function" if selection.is_none() => selection = Some(CodeSelection::Function(value.to_str().ok_or(usage)?)),
-            _ => return Err(usage.into()),
-        }
-        at += 2;
-    }
-    let selection = selection.unwrap_or(CodeSelection::CodeSections);
+fn object(
+    source: &Path, observations: Option<&Path>, selection: CodeSelection<'_>, range: Option<Range<usize>>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let bytes = fs::read(source)?;
-    let material = material.map(fs::read).transpose()?;
-    let facts = match (range, material.as_deref()) {
+    let material = observations.map(fs::read).transpose()?;
+    Ok(match (range, material.as_deref()) {
         (Some(range), material) => source_facts(&bytes, selection, range, material)?,
         (None, Some(material)) => code_facts_with_observations(&bytes, selection, material)?,
         (None, None) => code_facts(&bytes, selection)?,
-    };
-    println!("{facts}");
-    Ok(())
+    })
 }
