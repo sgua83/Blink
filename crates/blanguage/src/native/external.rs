@@ -12,9 +12,13 @@ pub(super) struct Layout {
     target: Option<u64>,
 }
 #[repr(C)]
-struct AbiType { size: u32, alignment: u32, value: u64 }
+pub(super) struct AbiType { size: u32, alignment: u32, value: u64 }
 impl AbiType {
     fn value(ty: &Ty) -> Self { Self { size: ty.size, alignment: ty.align, value: 1 } }
+
+    pub(super) fn result(ty: Option<&Ty>) -> Self {
+        ty.map_or(Self { size: 0, alignment: 1, value: 0 }, Self::value)
+    }
 }
 #[repr(C)]
 struct CallPlan { bytes: u64, result: u64, copies: u64, target: u64, hidden: u64 }
@@ -102,7 +106,7 @@ pub(super) fn float_size(ty: &Ty) -> u32 {
 }
 impl Layout {
     pub(super) fn new(call: &Call) -> Self {
-        let result = call.result.as_ref().map_or(AbiType { size: 0, alignment: 1, value: 0 }, AbiType::value);
+        let result = AbiType::result(call.result.as_ref());
         let flags = u32::from(call.error.is_some()) | (u32::from(matches!(call.target, CallTarget::Indirect(_))) << 1);
         let plan = unsafe { call_plan(call, call.arguments.len() as u64, result, flags, argument_type) };
         let hidden = plan.hidden != 0;

@@ -12,9 +12,25 @@ extern "C" ValueCopy copy_value(u64 start, u32 size, u32 alignment) on cpu {
     u64 at = (start + 15u64) & ~15u64;
     return ValueCopy(at, at + u64(padded(size, alignment)), 1u64);
 }
+bool hidden_result(AbiType result, bool fallible) on cpu {
+    return result.size != 0 && (fallible || indirect(result.size, result.alignment));
+}
+
+extern "C" FunctionFrame function_frame(u64 data_end, AbiType result, u32 flags) on cpu {
+    bool hidden = hidden_result(result, (flags & 1) != 0);
+    bool scratch = (flags & 2) != 0;
+    u64 result_at = 0u64;
+    if (hidden) { result_at = (data_end + 7u64) & ~7u64; }
+    u64 data_bytes = data_end + (hidden ? 8u64 : 0u64);
+    u64 bytes = (data_bytes + 15u64) & ~15u64;
+    if (!scratch && bytes != 0u64) { bytes += 8u64; }
+    u64 home = bytes + (scratch ? 16u64 : 8u64);
+    return FunctionFrame(bytes, home, result_at, hidden ? 1u64 : 0u64);
+}
+
 extern "C" CallPlan plan(address context, u64 count, AbiType result, u32 flags,
     cfn<AbiType,address,u64> argument) on cpu requires nonzero(argument) {
-    bool hidden = result.size != 0 && ((flags & 1) != 0 || indirect(result.size, result.alignment));
+    bool hidden = hidden_result(result, (flags & 1) != 0);
     u64 slots = 0u64;
     u64 index = 0u64;
     while (index < count) {

@@ -15,7 +15,20 @@ pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'sta
         Some(&function.name),
     )
 }
-use super::external::{AbiMemoryMode, float_size, indirect};
+use super::external::{AbiMemoryMode, AbiType, float_size, indirect};
+
+#[repr(C)]
+struct FunctionFrame {
+    bytes: u64,
+    home: u64,
+    result: u64,
+    hidden: u64,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.call_layout::function_frame"]
+    fn function_frame(data_end: u64, result: AbiType, flags: u32) -> FunctionFrame;
+}
 fn emit_value(
     body: &ValueCode,
     parameters: &[CallParameter],
@@ -91,11 +104,11 @@ fn emit_value(
     const SCRATCH_REGISTER: u8 = 15;
     let scratch = scratch(&stage.code);
     let result = result.filter(|ty| ty.size != 0);
-    let hidden = result.is_some_and(|ty| fallible || indirect(ty));
-    let result_pointer = hidden.then_some(layout.end.div_ceil(8) as u32 * 8);
-    let bytes = (layout.end + if hidden { 8 } else { 0 }).div_ceil(16) * 16;
-    let frame = i32::try_from(bytes + if !scratch && bytes != 0 { 8 } else { 0 })
-        .map_err(|_| "应用栈帧超出x64地址编码")? as u32;
+    let flags = u32::from(fallible) | (u32::from(scratch) << 1);
+    let plan = unsafe { function_frame(layout.end, AbiType::result(result), flags) };
+    let frame = i32::try_from(plan.bytes).map_err(|_| "应用栈帧超出x64地址编码")? as u32;
+    let hidden = plan.hidden != 0;
+    let result_pointer = hidden.then_some(plan.result as u32);
     let mut e = Emitter {
         unwind: Vec::new(),
         prolog: 0,
@@ -148,7 +161,7 @@ fn emit_value(
     let start = e.code.len();
     e.preserve_registers(false);
     e.abi_range(start, AbiRangeKind::NonvolatileSave);
-    let home = frame + if scratch { 8 } else { 0 } + 8;
+    let home = plan.home as u32;
     if let Some(at) = result_pointer {
         let start = e.code.len();
         e.copy_scalar(Location::Stack(at), Location::Stack(home), Scalar::U64);
