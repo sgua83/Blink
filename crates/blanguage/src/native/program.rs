@@ -53,18 +53,19 @@ impl crate::Compiler {
 }
 
 /// Local definitions and actual external calls belong to the already generated root image.
-pub(crate) fn module_symbols<P>(image: &ProgramImage<P>) -> (std::collections::BTreeSet<&str>, std::collections::BTreeSet<&str>) {
+pub(crate) fn module_symbols<P>(image: &ProgramImage<P>) -> (Vec<&str>, Vec<&str>) {
     let local = image.functions().iter().chain(image.resources.iter()
         .flat_map(|module| &module.images).filter_map(|image| match image {
             crate::resource::Image::Cpu(image) => Some(image), _ => None,
         }).flat_map(|image| image.functions().iter()))
-        .map(|(name, _)| name.as_str()).collect::<std::collections::BTreeSet<_>>();
-    let external = image.code().flat_map(|code| &code.relocations).filter_map(|relocation| {
-        if let super::NativeSymbol::Function(name) = &relocation.target && !local.contains(name.as_str()) {
-            Some(name.as_str())
-        } else { None }
-    }).collect();
-    (local, external)
+        .map(|(name, _)| name.as_str());
+    let references = image.code().flat_map(|code| &code.relocations).filter_map(|relocation| {
+        match &relocation.target {
+            super::NativeSymbol::Function(name) => Some(name.as_str()),
+            _ => None,
+        }
+    });
+    crate::names::module_names(local, references)
 }
 pub(crate) fn link_inputs<P>(
     image: &mut ProgramImage<P>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],

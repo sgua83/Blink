@@ -2,7 +2,7 @@
 use super::{Inputs, Result, RootView, Roots, Source, combine, select};
 use crate::{native::{ModuleCode, ModuleSection, ModuleRelocation, ModuleTarget}, object::{Input, Target}};
 use std::collections::BTreeMap;
-pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], roots: &[RootView<'_>], local: &std::collections::BTreeSet<&str>, types: u32, programs: u32) -> Result<Option<ModuleCode>> {
+pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], roots: &[RootView<'_>], local: &[&str], types: u32, programs: u32) -> Result<Option<ModuleCode>> {
     let mut linked = Inputs::default();
     for input in inputs {
         linked.push(input);
@@ -13,7 +13,7 @@ pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], r
     let mut symbols = BTreeMap::new();
     let object = combine::objects(objects,Some(&mut symbols))?;
     for name in symbols.keys() {
-        if local.contains(name.as_str()) { return Err(format!("重复定义模块符号 {name}").into()); }
+        if local.binary_search(&name.as_str()).is_ok() { return Err(format!("重复定义模块符号 {name}").into()); }
     }
     let sections = object.sections.into_iter().map(|section| {
         let relocations = section.relocations.into_iter().map(|relocation| {

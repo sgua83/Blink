@@ -11,6 +11,12 @@ impl Bytes {
     }
 }
 #[repr(C)]
+struct ModuleNameCounts {
+    local: usize,
+    external: usize,
+}
+
+#[repr(C)]
 struct FunctionName {
     name: Bytes,
     ordinal: u64,
@@ -21,6 +27,10 @@ struct Hit { name:Bytes, owner:Bytes, public:u64, present:u64 }
 struct Resolution { name:Bytes, count:u64 }
 pub(crate) struct Declaration<'a> { pub name:&'a str, pub owner:&'a str, pub public:bool }
 unsafe extern "C" {
+    #[link_name = "bootstrap.names::classify_module_names"]
+    fn classify_module_names(
+        local: *mut Bytes, local_count: usize, references: *mut Bytes, reference_count: usize,
+    ) -> ModuleNameCounts;
     #[link_name = "bootstrap.names::dependency_active"]
     fn dependency_active(path: *const Bytes, count: u64, key: Bytes) -> bool;
     #[link_name = "bootstrap.names::order_imports"]
@@ -115,4 +125,21 @@ pub(crate) fn function_pairs(
         pair_functions(names.as_mut_ptr(), declarations.len() as u64, implementations.len() as u64, pairs.as_mut_ptr());
     }
     Some(pairs)
+}
+
+pub(crate) fn module_names<'a>(
+    local: impl IntoIterator<Item = &'a str>, references: impl IntoIterator<Item = &'a str>,
+) -> (Vec<&'a str>, Vec<&'a str>) {
+    let mut local: Vec<_> = local.into_iter().map(Bytes::new).collect();
+    let mut references: Vec<_> = references.into_iter().map(Bytes::new).collect();
+    // These synchronous operations only rearrange the original borrowed names.
+    let counts = unsafe {
+        classify_module_names(local.as_mut_ptr(), local.len(), references.as_mut_ptr(), references.len())
+    };
+    local.truncate(counts.local);
+    references.truncate(counts.external);
+    (
+        local.into_iter().map(|name| unsafe { name.text() }).collect(),
+        references.into_iter().map(|name| unsafe { name.text() }).collect(),
+    )
 }

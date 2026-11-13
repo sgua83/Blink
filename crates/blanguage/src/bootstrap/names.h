@@ -23,3 +23,10 @@ extern "C" bool dependency_active(address path, u64 count, NameBytes key) on cpu
 
 void sort_rows<T>(address rows, u64 count, address context,
     cfn<bool,address,address,address> less) on cpu requires nonzero(less);
+
+struct ModuleNameCounts { u64 local; u64 external; };
+
+// Both caller-owned spans borrow emitted symbol names. The output prefixes
+// contain unique local names and referenced names outside the local set.
+extern "C" ModuleNameCounts classify_module_names(address local,u64 local_count,
+    address references,u64 reference_count) on cpu;

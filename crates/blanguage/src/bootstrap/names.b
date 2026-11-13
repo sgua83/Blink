@@ -179,3 +179,24 @@ extern "C" void pair_functions(address names, u64 declarations, u64 implementati
         first = end;
     }
 }
+
+extern "C" ModuleNameCounts classify_module_names(address local,u64 local_count,
+    address references,u64 reference_count) on cpu {
+    u64 defined = order_imports(local,local_count);
+    u64 used = order_imports(references,reference_count);
+    u64 next = 0u64;
+    u64 external = 0u64;
+    u64 index = 0u64;
+    while (index < used) {
+        NameBytes name = import_at(references,index);
+        while (next < defined && compare_name(import_at(local,next),name) < 0) {
+            next += 1u64;
+        }
+        if (next == defined || !equal(import_at(local,next),name)) {
+            unsafe_position<NameBytes>(row_at<NameBytes>(references,external)) = name;
+            external += 1u64;
+        }
+        index += 1u64;
+    }
+    return ModuleNameCounts(defined,external);
+}
