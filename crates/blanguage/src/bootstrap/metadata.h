@@ -1,4 +1,5 @@
 module bootstrap.metadata;
+import bootstrap.names;
 // Windows x64 C ABI: borrowed fields and array strides.
 const u64 BYTES_BYTES=16u64;
 const u64 REQUIREMENT_BYTES=24u64;
@@ -30,9 +31,14 @@ struct MetadataInput {
     address libraries;u64 library_count;
     address exports;u64 export_count;
     MetadataResource resource;
-    address bindings;u64 binding_count;
+    address bindings;address binding_order;u64 binding_count;
     address frames;u64 frame_count;
 };
+struct BindingOrder {u64 count;u64 conflict;};
+// Rows borrow original object contracts, definitions first and then imports.
+// order has room for count indices. The returned prefix is in name order.
+// conflict is the original input index of the first conflicting import, or count.
+extern "C" BindingOrder order_bindings(address bindings,u64 definitions,u64 count,address order) on cpu;
 struct MetadataLayout {u64 length;u32 error;};
 extern "C" MetadataLayout layout(MetadataInput input) on cpu;
 extern "C" void encode(MetadataInput input,address output) on cpu;

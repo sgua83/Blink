@@ -6,8 +6,56 @@ MetadataBytes bytes_at(address values,u64 index) on cpu {
 MetadataRequirement requirement_at(MetadataInput input,u64 index) on cpu {
     return unsafe_position<MetadataRequirement>(unsafe_address(address_bits(input.requirements)+index*REQUIREMENT_BYTES));
 }
-MetadataBinding binding_at(MetadataInput input,u64 index) on cpu {
-    return unsafe_position<MetadataBinding>(unsafe_address(address_bits(input.bindings)+index*BINDING_BYTES));
+MetadataBinding binding_at(address bindings, u64 index) on cpu {
+    return unsafe_position<MetadataBinding>(unsafe_address(address_bits(bindings) + index * BINDING_BYTES));
+}
+u64 binding_index(address order, u64 index) on cpu {
+    return unsafe_position<u64>(unsafe_address(address_bits(order) + index * 8u64));
+}
+void put_binding_index(address order, u64 index, u64 value) on cpu {
+    unsafe_position<u64>(unsafe_address(address_bits(order) + index * 8u64)) = value;
+}
+i32 compare_binding_bytes(MetadataBytes left, MetadataBytes right) on cpu {
+    return compare_name(NameBytes(left.bytes, left.length), NameBytes(right.bytes, right.length));
+}
+extern "C" bool binding_before(address left, address right, address bindings) on cpu {
+    u64 a = unsafe_position<u64>(left);
+    u64 b = unsafe_position<u64>(right);
+    i32 names = compare_binding_bytes(binding_at(bindings, a).name, binding_at(bindings, b).name);
+    return names < 0 || (names == 0 && a < b);
+}
+extern "C" BindingOrder order_bindings(address bindings, u64 definitions, u64 count, address order) on cpu {
+    u64 at = 0u64;
+    while (at < count) {
+        put_binding_index(order, at, at);
+        at += 1u64;
+    }
+    sort_rows<u64>(order, count, bindings, c_function(binding_before));
+
+    u64 unique = 0u64;
+    at = 0u64;
+    while (at < count) {
+        u64 selected = binding_index(order, at);
+        MetadataBinding binding = binding_at(bindings, selected);
+        at += 1u64;
+        while (at < count) {
+            u64 index = binding_index(order, at);
+            MetadataBinding next = binding_at(bindings, index);
+            if (compare_binding_bytes(binding.name, next.name) != 0) { break; }
+            if (index >= definitions && compare_binding_bytes(binding.value, next.value) != 0) {
+                return BindingOrder(unique, index);
+            }
+            selected = index;
+            binding = next;
+            at += 1u64;
+        }
+        put_binding_index(order, unique, selected);
+        unique += 1u64;
+    }
+    return BindingOrder(unique, count);
+}
+MetadataBinding ordered_binding_at(MetadataInput input, u64 index) on cpu {
+    return binding_at(input.bindings, binding_index(input.binding_order, index));
 }
 MetadataFrame frame_at(MetadataInput input,u64 index) on cpu {
     return unsafe_position<MetadataFrame>(unsafe_address(address_bits(input.frames)+index*FRAME_BYTES));
@@ -67,7 +115,7 @@ extern "C" MetadataLayout layout(MetadataInput input) on cpu {
     if(at>4294967295u64){return invalid(3);}
     at+=4u64;i=0u64;
     while(i<input.binding_count){
-        MetadataBinding value=binding_at(input,i);
+        MetadataBinding value=ordered_binding_at(input,i);
         if(value.name.length>4294967295u64 || value.value.length>4294967295u64){return invalid(2);}
         at+=8u64+value.name.length+value.value.length;
         if(at>4294967295u64){return invalid(3);}i+=1u64;
@@ -168,7 +216,7 @@ extern "C" void encode(MetadataInput input,address output) on cpu {
     while(i<input.export_count){at=bytes(output,at,bytes_at(input.exports,i));i+=1u64;}
     at=encode_resource(output,at,input.resource);at=word(output,at,input.binding_count);i=0u64;
     while(i<input.binding_count){
-        MetadataBinding binding=binding_at(input,i);
+        MetadataBinding binding=ordered_binding_at(input,i);
         at=bytes(output,at,binding.name);at=bytes(output,at,binding.value);i+=1u64;
     }
     at=word(output,at,input.frame_count);i=0u64;

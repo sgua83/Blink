@@ -401,6 +401,8 @@ struct MetadataRequirement { name: MetadataBytes, kind: u64 }
 #[repr(C)]
 struct MetadataBinding { name: MetadataBytes, value: MetadataBytes }
 #[repr(C)]
+struct BindingOrder { count: usize, conflict: usize }
+#[repr(C)]
 struct MetadataCall { kind: u64, offset: u64, reason: MetadataBytes }
 #[repr(C)]
 struct MetadataFrame {
@@ -428,7 +430,7 @@ struct MetadataInput {
     libraries: *const MetadataBytes, library_count: usize,
     exports: *const MetadataBytes, export_count: usize,
     resource: MetadataResource,
-    bindings: *const MetadataBinding, binding_count: usize,
+    bindings: *const MetadataBinding, binding_order: *const usize, binding_count: usize,
     frames: *const MetadataFrame, frame_count: usize,
 }
 #[repr(u32)]
@@ -438,6 +440,10 @@ enum MetadataError { None, Count, Field, SectionSize }
 #[derive(Clone, Copy)]
 struct MetadataLayout { length: usize, error: MetadataError }
 unsafe extern "C" {
+    #[link_name = "bootstrap.metadata::order_bindings"]
+    fn metadata_order_bindings(
+        bindings: *const MetadataBinding, definitions: usize, count: usize, order: *mut usize,
+    ) -> BindingOrder;
     #[link_name = "bootstrap.metadata::layout"]
     fn metadata_layout(input: MetadataInput) -> MetadataLayout;
     #[link_name = "bootstrap.metadata::encode"]
@@ -487,20 +493,21 @@ fn metadata(o: &Object) -> Result<Vec<u8>> {
         code: code.as_ptr(),
         code_count: code.len(),
     };
-    let mut bindings = BTreeMap::new();
-    for symbol in &o.symbols {
-        bindings.insert(symbol.name.as_str(), symbol.contract.as_slice());
+    let bindings = o.symbols.iter().map(|symbol| (symbol.name.as_str(), symbol.contract.as_slice()))
+        .chain(o.imports.iter().map(|(name, contract)| (name.as_str(), contract.as_slice())))
+        .map(|(name, value)| MetadataBinding {
+            name: MetadataBytes::new(name.as_bytes()), value: MetadataBytes::new(value),
+        }).collect::<Vec<_>>();
+    let mut binding_order = Vec::with_capacity(bindings.len());
+    let order = unsafe {
+        metadata_order_bindings(bindings.as_ptr(), o.symbols.len(), bindings.len(), binding_order.as_mut_ptr())
+    };
+    if order.conflict != bindings.len() {
+        let name = bindings[order.conflict].name;
+        // The binding name borrows the original symbol or import String.
+        let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name.bytes, name.length)) };
+        return Err(format!("对象内模块接口冲突 {name}").into());
     }
-    for (name, contract) in &o.imports {
-        if let Some(expected) = bindings.insert(name.as_str(), contract.as_slice())
-            && expected != contract.as_slice()
-        {
-            return Err(format!("对象内模块接口冲突 {name}").into());
-        }
-    }
-    let bindings = bindings.iter().map(|(name, value)| MetadataBinding {
-        name: MetadataBytes::new(name.as_bytes()), value: MetadataBytes::new(value),
-    }).collect::<Vec<_>>();
     let libraries = o.archive.iter().flat_map(|a| &a.libraries)
         .map(|name| MetadataBytes::new(name.as_bytes())).collect::<Vec<_>>();
     let exports = o.archive.iter().flat_map(|a| &a.exports)
@@ -539,7 +546,7 @@ fn metadata(o: &Object) -> Result<Vec<u8>> {
         requirements: requirements.as_ptr(), requirement_count: requirements.len(),
         libraries: libraries.as_ptr(), library_count: libraries.len(),
         exports: exports.as_ptr(), export_count: exports.len(), resource,
-        bindings: bindings.as_ptr(), binding_count: bindings.len(),
+        bindings: bindings.as_ptr(), binding_order: binding_order.as_ptr(), binding_count: order.count,
         frames: frames.as_ptr(), frame_count: frames.len(),
     };
     match &o.kind {
