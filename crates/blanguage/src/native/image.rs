@@ -231,8 +231,8 @@ impl<P, C> ProgramImage<P, C> {
     }
     pub fn functions(&self) -> &[(String, C)] { &self.functions }
     pub fn module_code(&self) -> Option<&super::ModuleCode> { self.module_code.as_ref() }
-    fn own_code(&self) -> impl Iterator<Item = &C> {
-        self.stages.iter().flat_map(|stage| {
+    fn own_code<'a>(stages: &'a [StageCode<C>], functions: &'a [(String, C)]) -> impl Iterator<Item = &'a C> {
+        stages.iter().flat_map(|stage| {
             let (initialize, entries): (&[C], [Option<&C>; 3]) = match stage {
                 StageCode::Sort(code) => (&code.initialize, [Some(&code.histogram), Some(&code.scatter), Some(&code.gather)]),
                 StageCode::Element { main, continuation, .. } => {
@@ -246,12 +246,20 @@ impl<P, C> ProgramImage<P, C> {
                 }
             };
             initialize.iter().chain(entries.into_iter().flatten())
-        }).chain(self.functions.iter().map(|(_, code)| code))
+        }).chain(functions.iter().map(|(_, code)| code))
+    }
+    fn cpu_resources(resources: Option<&crate::resource::Module<C>>) -> impl Iterator<Item = &ProgramImage<crate::TemplateProgram, C>> {
+        resources.into_iter().flat_map(|module| &module.images)
+            .filter_map(|image| match image { crate::resource::Image::Cpu(image) => Some(image), _ => None })
+    }
+    fn image_code<'a>(
+        stages: &'a [StageCode<C>], functions: &'a [(String, C)], resources: Option<&'a crate::resource::Module<C>>,
+    ) -> impl Iterator<Item = &'a C> {
+        Self::own_code(stages, functions).chain(Self::cpu_resources(resources)
+            .flat_map(|image| Self::own_code(&image.stages, &image.functions)))
     }
     pub fn code(&self) -> impl Iterator<Item = &C> {
-        self.own_code().chain(self.resources.iter().flat_map(|module| &module.images)
-            .filter_map(|image| match image { crate::resource::Image::Cpu(image) => Some(image), _ => None })
-            .flat_map(|image| image.own_code()))
+        Self::image_code(&self.stages, &self.functions, self.resources.as_ref())
     }
     pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode<C>>, Vec<(String, C)>, Option<crate::resource::Module<C>>) {
         (self.program, self.stages, self.functions, self.resources)
@@ -311,6 +319,22 @@ pub enum RegionKind {
 
 #[cfg(feature = "compiler")]
 impl<P> ProgramImage<P> {
+    pub(crate) fn module_link(&mut self) -> super::program::ModuleLink<'_> {
+        let resources = self.resources.as_ref();
+        let local = self.functions.iter().chain(Self::cpu_resources(resources)
+            .flat_map(|image| &image.functions)).map(|(name, _)| name.as_str());
+        let references = Self::image_code(&self.stages, &self.functions, resources)
+            .flat_map(|code| &code.relocations).filter_map(|relocation| {
+                match &relocation.target {
+                    NativeSymbol::Function(name) => Some(name.as_str()),
+                    _ => None,
+                }
+            });
+        let (local, external) = crate::names::module_names(local, references);
+        let (types, programs) = resources.map_or((0, 0), |module| (module.types.len(), module.images.len()));
+        super::program::ModuleLink { local, external, types, programs, output: &mut self.module_code }
+    }
+
     fn own_code_mut<'a>(stages: &'a mut [StageCode], functions: &'a mut [(String, NativeCode)]) -> impl Iterator<Item = &'a mut NativeCode> {
         stages.iter_mut().flat_map(|stage| {
             let (initialize, entries): (&mut [NativeCode], [Option<&mut NativeCode>; 3]) = match stage {

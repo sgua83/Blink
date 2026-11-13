@@ -40,7 +40,7 @@ impl crate::Compiler {
             let imports = source.imports.iter().chain(source.resources.iter()
                 .flat_map(|resources| &resources.programs).flat_map(|(_, program)| &program.imports))
                 .map(|(name, contract)| (name.as_str(), contract)).collect();
-            link_inputs(&mut image, inputs, &[], &imports)?;
+            link_inputs(image.module_link(), inputs, &[], &imports)?;
             Ok::<_, String>(image)
         }).map_err(|error| error.to_string()).map(|mut image| {
             let modules = image.module_code.take();
@@ -52,36 +52,26 @@ impl crate::Compiler {
     }
 }
 
-/// Local definitions and actual external calls belong to the already generated root image.
-pub(crate) fn module_symbols<P>(image: &ProgramImage<P>) -> (Vec<&str>, Vec<&str>) {
-    let local = image.functions().iter().chain(image.resources.iter()
-        .flat_map(|module| &module.images).filter_map(|image| match image {
-            crate::resource::Image::Cpu(image) => Some(image), _ => None,
-        }).flat_map(|image| image.functions().iter()))
-        .map(|(name, _)| name.as_str());
-    let references = image.code().flat_map(|code| &code.relocations).filter_map(|relocation| {
-        match &relocation.target {
-            super::NativeSymbol::Function(name) => Some(name.as_str()),
-            _ => None,
-        }
-    });
-    crate::names::module_names(local, references)
+/// Names borrow the original root code. Only the linked output can change.
+pub(crate) struct ModuleLink<'a> {
+    pub(crate) local: Vec<&'a str>,
+    pub(crate) external: Vec<&'a str>,
+    pub(crate) types: usize,
+    pub(crate) programs: usize,
+    pub(crate) output: &'a mut Option<crate::native::ModuleCode>,
 }
-pub(crate) fn link_inputs<P>(
-    image: &mut ProgramImage<P>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],
+
+pub(crate) fn link_inputs(
+    image: ModuleLink<'_>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],
     imports: &std::collections::BTreeMap<&str, &Vec<u8>>,
 ) -> Result<(), String> {
-    let (local, external) = module_symbols(image);
-    let roots = external.into_iter().map(|name| {
+    let roots = image.external.into_iter().map(|name| {
         let contract = imports.get(name).ok_or_else(|| format!("缺少模块函数接口 {name}"))?;
         Ok(crate::linker::RootView::new(name, contract))
     }).collect::<Result<Vec<_>, String>>()?;
-    let (types, programs) = match &image.resources {
-        Some(module) => (u32::try_from(module.types.len()).map_err(|e| e.to_string())?,
-            u32::try_from(module.images.len()).map_err(|e| e.to_string())?),
-        None => (0, 0),
-    };
-    image.module_code = crate::linker::native::modules(inputs, borrowed, &roots, &local, types, programs)
+    let types = u32::try_from(image.types).map_err(|error| error.to_string())?;
+    let programs = u32::try_from(image.programs).map_err(|error| error.to_string())?;
+    *image.output = crate::linker::native::modules(inputs, borrowed, &roots, &image.local, types, programs)
         .map_err(|error| error.to_string())?;
     Ok(())
 }

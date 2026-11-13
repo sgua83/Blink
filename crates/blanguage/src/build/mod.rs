@@ -10,7 +10,7 @@ pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
 pub(crate) use inputs::Inputs;
 pub use identity::{Declaration, Inputs as InputFacts, Selection, SourceInput, SourceInputs};
 pub use object::{ObjectCompilation, ObjectKind, compile_object};
-use crate::file_bytes::FileBytes;
+use crate::{file_bytes::FileBytes, native::program::ModuleLink};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
 use std::{
     io::ErrorKind,
@@ -95,9 +95,10 @@ fn compile_in(
             if let Some(inputs) = identity::decode(identity)? && inputs.source.same_code(&source) {
                 let mut image = unsafe { resource::from_compiler_output(stored_image) }
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
-                if inputs.imports == references(&world.declarations, imported, &image, &inputs.declarations) {
+                let links = entry_links(&mut image);
+                if inputs.imports == references(&world.declarations, imported, &links, &inputs.declarations) {
                     if imported.is_some() {
-                        link_inputs(&mut image, dependencies, borrowed, &imports)?;
+                        link_inputs(links, dependencies, borrowed, &imports)?;
                         let encoded = resource::compiler_output(&image);
                         if stored_image != encoded {
                             write_artifact(&artifact, identity, &encoded)?;
@@ -131,8 +132,9 @@ fn compile_in(
         images: compiled_images,
     };
     let declarations = used_declarations(&world);
-    let imports_identity = references(&world.declarations, imported, &image, &declarations);
-    if imported.is_some() { link_inputs(&mut image, dependencies, borrowed, &imports)?; }
+    let links = entry_links(&mut image);
+    let imports_identity = references(&world.declarations, imported, &links, &declarations);
+    if imported.is_some() { link_inputs(links, dependencies, borrowed, &imports)?; }
     let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
     let encoded = resource::compiler_output(&image);
     crate::file_bytes::create_dir_all(output)?;
@@ -157,29 +159,34 @@ fn used_declarations(world: &crate::frontend::World) -> Vec<Declaration> {
     used.into_iter().collect()
 }
 
+fn entry_links(image: &mut resource::Module) -> Vec<ModuleLink<'_>> {
+    image.images.iter_mut().filter_map(|image| match image {
+        resource::Image::Cpu(image) => Some(image.module_link()),
+        resource::Image::Gpu(_) => None,
+    }).collect()
+}
+
 fn references(
     declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
-    image: &resource::Module, used: &[Declaration],
+    links: &[ModuleLink<'_>], used: &[Declaration],
 ) -> [u8; 32] {
-    let symbols = image.images.iter().filter_map(|image| match image {
-        resource::Image::Cpu(image) => Some(image), _ => None,
-    }).flat_map(|image| crate::native::program::module_symbols(image).1);
+    let symbols = links.iter().flat_map(|link| link.external.iter().copied());
     identity::references(declarations, imported, symbols, used)
 }
+
 fn link_inputs(
-    image: &mut resource::Module, mut inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object], imports: &crate::module::Imports,
+    links: Vec<ModuleLink<'_>>, mut inputs: Vec<crate::object::Input>,
+    borrowed: &[&crate::object::Object], imports: &crate::module::Imports,
 ) -> Result<()> {
     let contracts = imports.modules.values().flat_map(|module| module.definitions.iter())
         .map(|(name, contract)| (name.as_str(), contract)).collect();
-    // A selected entry produces one CPU or GPU image; its nested resources stay owned by it.
-    for image in &mut image.images {
-        if let resource::Image::Cpu(image) = image {
-            crate::native::program::link_inputs(image, std::mem::take(&mut inputs), borrowed, &contracts)
-                .map_err(std::io::Error::other)?;
-        }
+    for image in links {
+        crate::native::program::link_inputs(image, std::mem::take(&mut inputs), borrowed, &contracts)
+            .map_err(std::io::Error::other)?;
     }
     Ok(())
 }
+
 #[repr(C)]
 struct ByteField {
     bytes: *const u8,
