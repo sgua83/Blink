@@ -282,6 +282,60 @@ extern "C" u32 remove_host_input(address path, usize units) on cpu {
     return status;
 }
 
+
+const u32 ERROR_ACCESS_DENIED = 5;
+const u32 ERROR_SHARING_VIOLATION = 32;
+
+struct HostReplacement { u32 status; bool moved; };
+
+HostReplacement replace_host_file(address source,usize source_units,
+    address target,usize target_units) on cpu {
+    NativePath from = native_path(source,source_units,true);
+    if (from.status!=0) { return HostReplacement(from.status,false); }
+    NativePath to = native_path(target,target_units,true);
+    if (to.status!=0) {
+        release_native_path(from);
+        return HostReplacement(to.status,false);
+    }
+    result<void,RenameError> outcome = rename_path(from.name,UnitSpan(to.name,to.units));
+    release_native_path(to);
+    release_native_path(from);
+    match (outcome) {
+        Ok() { return HostReplacement(0,true); }
+        Err(error) {
+            match (error) {
+                LengthOverflow() { return HostReplacement(206,false); }
+                Nul(index) { return HostReplacement(123,false); }
+                Change(change) {
+                    u32 status = 0;
+                    match (change) {
+                        Open(code) { return HostReplacement(code,false); }
+                        Apply(code) { status=code; }
+                        Close(cause) { return HostReplacement(cause.code,true); }
+                        ApplyAndClose(cause) { status=cause.code; }
+                    }
+                    // The build interface reports a denied destination replacement as access denied.
+                    return HostReplacement(status==ERROR_SHARING_VIOLATION ? ERROR_ACCESS_DENIED : status,false);
+                }
+            }
+        }
+    }
+}
+
+extern "C" HostPublishResult publish_host_file(address target,usize target_units,
+    address temporary,usize temporary_units,address data,usize bytes) on cpu {
+    HostWriteResult written = write_host_input(temporary,temporary_units,data,bytes);
+    if (written.kind==HostWriteKind::OpenError) { return HostPublishResult(written,0,0); }
+
+    u32 replacement = 0;
+    if (written.kind==HostWriteKind::Written) {
+        HostReplacement result = replace_host_file(temporary,temporary_units,target,target_units);
+        replacement=result.status;
+        if (result.moved) { return HostPublishResult(written,replacement,0); }
+    }
+    return HostPublishResult(written,replacement,remove_host_input(temporary,temporary_units));
+}
+
 extern "C" i32 CreatePipe(inout handle read_end, inout handle write_end,
     address attributes, u32 bytes) on cpu
     from "KERNEL32.dll";

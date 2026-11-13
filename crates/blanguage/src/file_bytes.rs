@@ -47,7 +47,23 @@ impl HostWriteResult {
     }
 }
 
+#[repr(C)]
+struct HostPublishResult {
+    written: HostWriteResult,
+    replacement: u32,
+    cleanup: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.host_sdk::publish_host_file"]
+    fn publish_host_file(
+        target: *const u16,
+        target_units: usize,
+        temporary: *const u16,
+        temporary_units: usize,
+        data: *const u8,
+        bytes: usize,
+    ) -> HostPublishResult;
     #[link_name = "blink.windows.path_core::create_output_directories"]
     fn create_output_directories(path: *const u16, units: usize) -> u32;
     #[link_name = "bootstrap.host_sdk::write_host_input"]
@@ -127,4 +143,26 @@ pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
     } else {
         Err(io::Error::from_raw_os_error(status as i32))
     }
+}
+
+pub(crate) fn publish(path: &Path, temporary: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temporary = host_path(temporary)?;
+    let path = host_path(path)?;
+    let published = unsafe {
+        publish_host_file(
+            path.as_ptr(), path.len() - 1, temporary.as_ptr(), temporary.len() - 1,
+            bytes.as_ptr(), bytes.len(),
+        )
+    };
+    let result = published.written.into_result().and_then(|()| {
+        if published.replacement == 0 { Ok(()) }
+        else { Err(io::Error::from_raw_os_error(published.replacement as i32)) }
+    });
+    result.map_err(|error| {
+        if published.cleanup == 0 { error }
+        else {
+            let cleanup = io::Error::from_raw_os_error(published.cleanup as i32);
+            io::Error::other(format!("{error}；删除未完成产物：{cleanup}"))
+        }
+    })
 }

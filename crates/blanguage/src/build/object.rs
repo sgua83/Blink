@@ -54,7 +54,7 @@ pub(super) fn compile<'a>(
     header_path.set_extension("h");
     let path = if inputs.is_some() { header_path } else { header_path.canonicalize()? };
     let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
-    let artifact = std::path::absolute(output)?;
+    let artifact = crate::source_path::absolute(output)?;
     let imports = crate::module::Imports::new(dependencies).map_err(|value| crate::ast::Diagnostic {
             source: crate::ast::Source { path: source_path.clone(), text: "".into() },
             span: crate::ast::Span::default(), code: "B270", message: value.to_string(),
@@ -114,7 +114,7 @@ pub(super) fn compile<'a>(
     let imports = identity::references(definitions, imported, object.imports.keys().map(String::as_str), &declarations);
     let stored = identity::Inputs { source, imports, native, declarations }.encode();
     let bytes = object.build_bytes(&stored).map_err(error)?;
-    fs::create_dir_all(artifact.parent().unwrap())?;
+    crate::file_bytes::create_dir_all(artifact.parent().unwrap())?;
     publish(&artifact, &bytes)?;
     Ok(ObjectCompilation { object, artifact, reused: false })
 }

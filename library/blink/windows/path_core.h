@@ -1,5 +1,6 @@
 module blink.windows.path_core;
 import blink.windows.path;
+import blink.windows.file;
 
 // Synchronous borrowed UTF16. The caller keeps all input, scratch and output
 // storage alive through preparation and encoding; no address is retained.
@@ -39,3 +40,7 @@ NativePath native_path(address path,usize units,bool prefer_verbatim) on cpu;
 extern "C" void release_native_path(NativePath path) on cpu;
 result<void,DirectoryError> directory_tree(address path,usize units,bool prefer_verbatim) on cpu;
 extern "C" u32 create_output_directories(address path,usize units) on cpu;
+
+result<void,FileChangeError> change_file(address path,i32 information_class,
+    address information,u32 bytes,u32 flags) on cpu;
+result<void,RenameError> rename_path(address source,UnitSpan target) on cpu;

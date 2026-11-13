@@ -483,3 +483,60 @@ extern "C" u32 create_output_directories(address path,usize units) on cpu {
         }
     }
 }
+
+result<void,FileChangeError> change_file(address path,i32 information_class,
+    address information,u32 bytes,u32 flags) on cpu {
+    handle file=CreateFileW(path,65536,7,address(),3,flags,handle());
+    if (file == INVALID_HANDLE_VALUE) {
+        return Err(FileChangeError::Open(GetLastError()));
+    }
+    i32 applied=SetFileInformationByHandle(file,information_class,information,bytes);
+    u32 apply_error=0;
+    if (applied == 0) { apply_error=GetLastError(); }
+    i32 closed=CloseHandle(file);
+    u32 close_error=0;
+    if (closed == 0) { close_error=GetLastError(); }
+    if (applied == 0) {
+        if (closed == 0) {
+            return Err(FileChangeError::ApplyAndClose(FileApplyCloseError(
+                apply_error,CloseError(file,close_error))));
+        }
+        return Err(FileChangeError::Apply(apply_error));
+    }
+    if (closed == 0) { return Err(FileChangeError::Close(CloseError(file,close_error))); }
+    return Ok();
+}
+
+
+result<void,RenameError> rename_path(address source,UnitSpan target) on cpu {
+    // FILE_RENAME_INFO has a 20-byte name offset on Windows x64.
+    u64 name_bytes=target.length*2u64;
+    u64 bytes=(name_bytes+29u64)&(0u64-8u64);
+    if (bytes>4294967295u64) { return Err(RenameError::LengthOverflow()); }
+
+    handle heap=GetProcessHeap();
+    address information=HeapAlloc(heap,8,bytes);
+    if (address_bits(information)==0u64) {
+        return Err(RenameError::Change(FileChangeError::Apply(ERROR_NOT_ENOUGH_MEMORY)));
+    }
+    // Replace the destination with POSIX rename semantics.
+    unsafe_position<u32>(information)=3;
+    unsafe_position<u32>(unsafe_address(address_bits(information)+16u64))=u32(name_bytes);
+    address name=unsafe_address(address_bits(information)+20u64);
+    u64 index=0u64;
+    while (index<target.length) {
+        u16 current=unit(target,index);
+        if (current==u16(0)) {
+            HeapFree(heap,0,information);
+            return Err(RenameError::Nul(u32(index)));
+        }
+        put(name,index,current);
+        index+=1u64;
+    }
+    result<void,FileChangeError> outcome=change_file(source,i32(22),information,u32(bytes),35651584);
+    HeapFree(heap,0,information);
+    match (outcome) {
+        Ok() { return Ok(); }
+        Err(error) { return Err(RenameError::Change(error)); }
+    }
+}

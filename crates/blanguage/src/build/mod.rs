@@ -14,7 +14,7 @@ use crate::module::codec::{Encode, Reader, Writer};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
 use std::{
     fs,
-    io::{ErrorKind, Write},
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -145,7 +145,7 @@ fn compile_in(
     if imported.is_some() { link_inputs(&mut image, dependencies, borrowed, &imports)?; }
     let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
     let encoded = encode_image(&image);
-    fs::create_dir_all(output)?;
+    crate::file_bytes::create_dir_all(output)?;
     write_artifact(&artifact, &identity, &encoded)?;
     Ok(images(image, artifact, false))
 }
@@ -303,20 +303,8 @@ fn images(module: resource::Module, artifact: PathBuf, reused: bool) -> Compilat
 }
 fn publish(path: &Path, bytes: &[u8]) -> Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let mut temporary = path.to_path_buf();
-    temporary.set_extension(format!(
-        "{}.{}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let mut file = fs::File::create_new(&temporary)?;
-    let result = file.write_all(bytes);
-    drop(file);
-    if let Err(error) = result.and_then(|_| fs::rename(&temporary, path)) {
-        fs::remove_file(&temporary).map_err(|cleanup| {
-            std::io::Error::other(format!("{error}；删除未完成产物：{cleanup}"))
-        })?;
-        return Err(error.into());
-    }
-    Ok(())
+    let name = format!("{}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+    let extension: Vec<_> = name.encode_utf16().collect();
+    let temporary = crate::source_path::with_extension_units(path, &extension);
+    Ok(crate::file_bytes::publish(path, &temporary, bytes)?)
 }
