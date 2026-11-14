@@ -2109,9 +2109,7 @@ impl Clause {
                 ClauseNode::Impossible => Clause::impossible(),
                 ClauseNode::Facts(facts) => {
                     private_numeric = private_numeric || needs_numeric(facts);
-                    facts.iter().fold(Clause::facts(Facts::new()), |current, value| {
-                        Clause::both(&current, &Proof::call_fact(*value, bindings))
-                    })
+                    Clause::call_facts(facts.iter().copied(), bindings)
                 },
                 ClauseNode::Both(a, b) => Clause::both(&clauses[&a.key()], &clauses[&b.key()]),
                 ClauseNode::Branch(parent, condition, truth) => Clause::both(
@@ -2136,9 +2134,10 @@ impl Clause {
             roots.dedup_by_key(|root| root.key());
             for root in &roots {
                 let numeric = match root.required() {
-                    Some(facts) => facts.into_iter()
-                        .filter(|value| matches!(value, Fact::Minimum(..) | Fact::Maximum(..)))
-                        .fold(Clause::default(), |current, value| Clause::both(&current, &Proof::call_fact(value, bindings))),
+                    Some(facts) => Clause::call_facts(
+                        facts.into_iter().filter(|value| matches!(value, Fact::Minimum(..) | Fact::Maximum(..))),
+                        bindings,
+                    ),
                     None => Clause::impossible(),
                 };
                 let mapped = clauses.get_mut(&root.key()).unwrap();
@@ -2146,6 +2145,21 @@ impl Clause {
             }
         }
         roots.iter().map(|root|clauses[&root.key()].clone()).collect()
+    }
+    fn call_facts(facts: impl IntoIterator<Item = Fact>, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
+        let mut facts = facts.into_iter().map(|fact| Proof::call_fact(fact, bindings));
+        let mut projected = Facts::new();
+        for clause in facts.by_ref() {
+            match &**clause.0 {
+                ClauseNode::Impossible => return clause,
+                ClauseNode::Facts(value) => projected.extend(value.iter().copied()),
+                _ => {
+                    let initial = Self::both(&Self::facts(projected), &clause);
+                    return facts.fold(initial, |all, clause| Self::both(&all, &clause));
+                }
+            }
+        }
+        Self::facts(projected)
     }
     pub(super) fn values<'a>(values:impl IntoIterator<Item=(Scalar,ValueIdentity,&'a Proof)>)->Self {
         Self::facts(values.into_iter().flat_map(|(scalar,id,proof)|proof.clone().with_identity(id).facts(&Ty::scalar(scalar))).collect())
