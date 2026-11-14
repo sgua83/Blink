@@ -549,18 +549,18 @@ rename的准备长度错误为LengthOverflow，NUL名称框架错误为Nul(u32)�
 
 平台依据：[SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)、[FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info)及实际Windows SDK的FILE_DISPOSITION_INFO_EX／FILE_INFO_BY_HANDLE_CLASS定义。其他平台与文件系统能力按原Issues记录，不构成永久语言边界。
 
-独立模块先交付实际泛型实例，再分别编译其消费者：
+独立文件模块按实际调用依赖生成对象，并把这份交付需要的对象组合成一个标准库：
 
 ```powershell
 target/release/bc.exe -c library/blink/sequence.b -I library --module --instance 'push<u8>' --instance 'push<u16>' --instance 'extend<u8>' -o target/sequence.obj
-target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
-target/release/bc.exe -c library/blink/unicode.b -I library --module --import target/sequence.lib -o target/unicode.obj
-target/release/blink.exe --archive target/unicode.obj -o target/unicode.lib
-target/release/bc.exe -c library/blink/windows/file.b -I library --module --import target/sequence.lib --import target/unicode.lib -o target/file.obj
-target/release/blink.exe --archive target/file.obj -o target/file.lib
+target/release/bc.exe -c library/blink/unicode_scalar.b -I library --module -o target/unicode_scalar.obj
+target/release/bc.exe -c library/blink/unicode.b -I library --module --import target/sequence.obj --import target/unicode_scalar.obj -o target/unicode.obj
+target/release/bc.exe -c library/blink/windows/path_core.b -I library --module -o target/path_core.obj
+target/release/bc.exe -c library/blink/windows/file.b -I library --module --import target/sequence.obj --import target/unicode_scalar.obj --import target/unicode.obj --import target/path_core.obj -o target/file.obj
+target/release/blink.exe --archive target/file.obj target/sequence.obj target/unicode_scalar.obj target/unicode.obj target/path_core.obj -o target/file.lib
 ```
 
-调用方分别--import这三份实际归档并链接，不需要提供者.h／.b或-I；也可以按同一正式archive入口将实际对象组合成一个库。开放sequence声明不等于已交付其所有类型实例，未导出的实例仍按原规则拒绝；链接不重新编译源码。编译器Rust装入、对象输出和缓存发布尚未迁移；目录创建与编译器／SDK目录枚举采用继续按Issues各自具体子项推进。
+调用方用`--import target/file.lib`编译并与同一归档链接，无需提供者.h／.b或提供者源码搜索路径；自身模块声明仍按原入口提供。同一归档包含文件接口、共享路径实现、Unicode／标量编码及这次实际交付的序列实例，不再另行加入本块的重复对象或旧分立归档。开放sequence声明不等于已交付其所有类型实例，未导出的实例仍按原规则拒绝；链接不重新编译源码。
 
 ## blink.windows.path
 
