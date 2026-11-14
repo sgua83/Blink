@@ -1,6 +1,6 @@
 //! COFF 节、符号与 AMD64 重定位；Blink 元数据不替代标准重定位表。
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
@@ -293,6 +293,11 @@ struct MetadataReadHeader {
     requirements: u64, stack: u64, error: MetadataReadError,
 }
 #[repr(C)]
+struct MetadataReadPrefix {
+    header: MetadataReadHeader, requirements: ReadBytes, libraries: ReadBytes, exports: ReadBytes,
+    resource: ReadBytes, binding_count: u64,
+}
+#[repr(C)]
 struct MetadataReadRequirement { name: ReadBytes, kind: ReadRequirementKind, error: MetadataReadError }
 #[repr(C)]
 struct MetadataReadBinding { name: ReadBytes, value: ReadBytes, error: MetadataReadError }
@@ -321,8 +326,8 @@ unsafe extern "C" {
     fn metadata_read_word(cursor: *mut MetadataReadCursor) -> MetadataReadWord;
     #[link_name = "bootstrap.metadata_read::bytes"]
     fn metadata_read_bytes(cursor: *mut MetadataReadCursor) -> MetadataReadField;
-    #[link_name = "bootstrap.metadata_read::header"]
-    fn metadata_read_header(cursor: *mut MetadataReadCursor, format: u64) -> MetadataReadHeader;
+    #[link_name = "bootstrap.metadata_read::prefix"]
+    fn metadata_read_prefix(cursor: *mut MetadataReadCursor, format: u64) -> MetadataReadPrefix;
     #[link_name = "bootstrap.metadata_read::requirement"]
     fn metadata_read_requirement(cursor: *mut MetadataReadCursor) -> MetadataReadRequirement;
     #[link_name = "bootstrap.metadata_read::binding"]
@@ -729,6 +734,31 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         if bytes.bytes.is_null() { return Err("缺少 Blink 目标文件元数据".into()); }
         Ok(unsafe { bytes.borrowed() })
     }
+    /// 复用判等只消费实际导入名称，不恢复未采用的旧代码或合同值。
+    pub(crate) fn import_names(&self) -> Result<impl Iterator<Item = &'a str>> {
+        let mut parts = ObjectParts::default();
+        for row in self.section_rows(&mut parts) { row?; }
+        let mut cursor = MetadataReadCursor::new(self.metadata(parts.metadata)?);
+        let prefix = unsafe { metadata_read_prefix(&mut cursor, u64::from(FORMAT)) };
+        prefix.header.error.check()?;
+        let mut names = BTreeSet::new();
+        for _ in 0..prefix.binding_count {
+            let value = unsafe { metadata_read_binding(&mut cursor) };
+            value.error.check()?;
+            names.insert(std::str::from_utf8(unsafe { value.name.borrowed() })?);
+        }
+        let input = ReadBytes::new(self.bytes.as_ref());
+        let table = unsafe { read_symbols(input) };
+        table.error.check()?;
+        let mut index = 0;
+        loop {
+            let row = unsafe { next_export(input, table, &mut index) };
+            row.error.check()?;
+            if row.bytes.bytes.is_null() { break; }
+            names.remove(std::str::from_utf8(unsafe { row.bytes.borrowed() })?);
+        }
+        Ok(names.into_iter())
+    }
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
         let mut parts = ObjectParts::default();
@@ -764,14 +794,16 @@ fn read_metadata(
     meta: &[u8], archive: Option<super::ObjectBytes>, keep_stack: bool,
 ) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, StackMetadata, Option<Archive>)> {
     let mut c = MetadataReadCursor::new(meta);
-    let header = unsafe { metadata_read_header(&mut c, u64::from(FORMAT)) };
+    let prefix = unsafe { metadata_read_prefix(&mut c, u64::from(FORMAT)) };
+    let header = prefix.header;
     header.error.check()?;
     let name = read_text(header.name)?;
     let kind = match header.kind {
         ReadObjectKind::Module => {
             let interface = read_text(header.interface)?;
+            let mut cursor = MetadataReadCursor::new(unsafe { prefix.requirements.borrowed() });
             let requirements = (0..header.requirements).map(|_| {
-                let value = unsafe { metadata_read_requirement(&mut c) };
+                let value = unsafe { metadata_read_requirement(&mut cursor) };
                 value.error.check()?;
                 let requirement = match value.kind {
                     ReadRequirementKind::Invocation => crate::execution::Requirement::Invocation,
@@ -780,7 +812,7 @@ fn read_metadata(
                 };
                 Ok((read_text(value.name)?, requirement))
             }).collect::<Result<_>>()?;
-            Kind::Module { interface, requirements, stack_bytes: c.word()? }
+            Kind::Module { interface, requirements, stack_bytes: header.stack as u32 }
         }
         ReadObjectKind::Application => Kind::Application { stack_bytes: header.stack as u32 },
         ReadObjectKind::Library => Kind::Library {
@@ -788,9 +820,9 @@ fn read_metadata(
         },
     };
     let keep_archive = archive.is_some();
-    let libraries = c.strings(keep_archive)?;
-    let exports = c.strings(keep_archive)?;
-    let mut resource = MetadataReadCursor::new(unsafe { c.bytes()?.borrowed() });
+    let libraries = MetadataReadCursor::new(unsafe { prefix.libraries.borrowed() }).strings(keep_archive)?;
+    let exports = MetadataReadCursor::new(unsafe { prefix.exports.borrowed() }).strings(keep_archive)?;
+    let mut resource = MetadataReadCursor::new(unsafe { prefix.resource.borrowed() });
     let head = unsafe { metadata_read_resource_head(&mut resource) };
     head.error.check()?;
     let resources = if head.present != 0 {
@@ -813,7 +845,7 @@ fn read_metadata(
         None
     };
     let mut bindings = BTreeMap::new();
-    for _ in 0..c.word()? {
+    for _ in 0..prefix.binding_count {
         let value = unsafe { metadata_read_binding(&mut c) };
         value.error.check()?;
         bindings.insert(read_text(value.name)?, crate::check::canonical_function_contract(unsafe { value.value.borrowed() })?);

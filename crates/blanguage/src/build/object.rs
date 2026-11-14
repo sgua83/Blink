@@ -82,10 +82,11 @@ pub(super) fn compile<'a>(
                 && let Some(stored) = identity::decode(bytes)?
             {
                 if stored.source.same_code(&source) {
-                    let object = reader.object().map_err(error)?;
-                    if stored.imports == identity::references(definitions, imported, object.imports.keys().map(String::as_str), &stored.declarations) {
+                    let names = reader.import_names().map_err(error)?;
+                    if stored.imports == identity::references(definitions, imported, names, &stored.declarations) {
                         let native = stored.native.map(|_| crate::object::native_inputs(runtime)).transpose()?;
                         if stored.native == native {
+                            let object = reader.object().map_err(error)?;
                             return Ok(ObjectCompilation { object, artifact, reused: true });
                         }
                     }

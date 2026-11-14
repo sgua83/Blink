@@ -94,6 +94,49 @@ extern "C" MetaBinding binding(inout MetaCursor cursor) on cpu {
     MetaField name=bytes(cursor);if(name.error!=0){return MetaBinding(empty(),empty(),name.error);}
     MetaField value=bytes(cursor);return MetaBinding(name.value,value.value,value.error);
 }
+ReadBytes since(MetaCursor cursor,u64 start) on cpu {
+    return ReadBytes(at(cursor.input.bytes,start),cursor.position-start);
+}
+MetaField name_group(inout MetaCursor cursor) on cpu {
+    u64 start=cursor.position;
+    MetaWord count=word(cursor);if(count.error!=0){return MetaField(empty(),count.error);}
+    u64 i=0u64;
+    while(i<count.value){
+        MetaField name=bytes(cursor);if(name.error!=0){return name;}
+        i+=1u64;
+    }
+    return MetaField(since(cursor,start),0);
+}
+extern "C" MetaPrefix prefix(inout MetaCursor cursor,u64 format) on cpu {
+    MetaPrefix value=MetaPrefix(header(cursor,format),empty(),empty(),empty(),empty(),0u64);
+    if(value.header.error!=0){return value;}
+    u64 start=cursor.position;
+    if(value.header.kind==2u64){
+        u64 i=0u64;
+        while(i<value.header.requirements){
+            MetaRequirement item=requirement(cursor);
+            if(item.error!=0){value.header.error=item.error;return value;}
+            i+=1u64;
+        }
+        value.requirements=since(cursor,start);
+        MetaWord stack=word(cursor);
+        if(stack.error!=0){value.header.error=stack.error;return value;}
+        value.header.stack=stack.value;
+    }
+    MetaField libraries=name_group(cursor);
+    if(libraries.error!=0){value.header.error=libraries.error;return value;}
+    value.libraries=libraries.value;
+    MetaField exports=name_group(cursor);
+    if(exports.error!=0){value.header.error=exports.error;return value;}
+    value.exports=exports.value;
+    MetaField resource=bytes(cursor);
+    if(resource.error!=0){value.header.error=resource.error;return value;}
+    value.resource=resource.value;
+    MetaWord count=word(cursor);
+    if(count.error!=0){value.header.error=count.error;return value;}
+    value.binding_count=count.value;
+    return value;
+}
 MetaFrame bad_frame(u32 error) on cpu {return MetaFrame(empty(),0u64,0u64,0u64,0u64,0u64,error);}
 extern "C" MetaFrame frame(inout MetaCursor cursor) on cpu {
     MetaField name=bytes(cursor);if(name.error!=0){return bad_frame(name.error);}

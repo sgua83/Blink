@@ -10,6 +10,12 @@ struct MetaHeader {
 };
 struct MetaRequirement {ReadBytes name;u64 kind;u32 error;};
 struct MetaBinding {ReadBytes name;ReadBytes value;u32 error;};
+// Borrowed format ranges; cursor continues at the first binding.
+struct MetaPrefix {
+    MetaHeader header;ReadBytes requirements;ReadBytes libraries;ReadBytes exports;
+    ReadBytes resource;u64 binding_count;
+};
+extern "C" MetaPrefix prefix(inout MetaCursor cursor,u64 format) on cpu;
 struct MetaFrame {ReadBytes name;u64 has_coff;u64 section;u64 start;u64 local;u64 calls;u32 error;};
 struct MetaCall {u64 kind;u64 offset;ReadBytes reason;u32 error;};
 struct MetaResourceHead {u64 present;ReadBytes prefix;u32 error;};
