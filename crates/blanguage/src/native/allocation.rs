@@ -67,254 +67,21 @@ pub(super) struct Graph {
     outgoing_bytes: u64,
     registers: usize,
 }
+#[path = "allocation/graph.rs"]
+mod graph;
 impl Graph {
-    fn id(&self, slot: PrivateSlot) -> usize {
-        match slot {
-            PrivateSlot::Register(r) => r,
-            PrivateSlot::Local(s) => self.registers + s,
-        }
-    }
-    fn edge(&mut self, a: usize, b: usize) {
-        if a != b && !self.addressable.contains(&a) && !self.addressable.contains(&b) {
-            self.edges[a].insert(b);
-            self.edges[b].insert(a);
-        }
-    }
-    fn together(&mut self, live: &BTreeSet<PrivateSlot>) {
-        let allocated: Vec<_> = live
-            .iter()
-            .map(|slot| self.id(*slot))
-            .filter(|id| !self.addressable.contains(id))
-            .collect();
-        for (i, &a) in allocated.iter().enumerate() {
-            for &b in &allocated[..i] {
-                self.edge(a, b);
-            }
-        }
-    }
-    fn block(
-        &mut self,
-        code: &[Inst],
-        registers: &[Scalar],
-        mut live: BTreeSet<PrivateSlot>,
-        break_live: &BTreeSet<PrivateSlot>,
-        continue_live: &BTreeSet<PrivateSlot>,
-        exit_live: &BTreeSet<PrivateSlot>,
-        weight: u64,
-    ) -> BTreeSet<PrivateSlot> {
-        use PrivateSlot::{Local, Register};
-        for inst in code.iter().rev() {
-            match &(inst).kind {
-                InstKind::If { condition, yes, no } => {
-                    let a = self.block(
-                        yes,
-                        registers,
-                        live.clone(),
-                        break_live,
-                        continue_live,
-                        exit_live,
-                        weight,
-                    );
-                    live = self.block(
-                        no,
-                        registers,
-                        live,
-                        break_live,
-                        continue_live,
-                        exit_live,
-                        weight,
-                    );
-                    live.extend(a);
-                    live.insert(Register(*condition));
-                    self.weights[*condition] = self.weights[*condition].saturating_add(weight);
-                }
-                InstKind::Loop {
-                    condition,
-                    test,
-                    body,
-                } => {
-                    let header = loop_live(
-                        condition,
-                        *test,
-                        body,
-                        &live,
-                        break_live,
-                        continue_live,
-                        exit_live,
-                    );
-                    let nested = weight.saturating_mul(8);
-                    let mut before_body = self.block(
-                        body,
-                        registers,
-                        header.clone(),
-                        &live,
-                        &header,
-                        exit_live,
-                        nested,
-                    );
-                    before_body.extend(live);
-                    before_body.insert(Register(*test));
-                    self.weights[*test] = self.weights[*test].saturating_add(nested);
-                    live = self.block(
-                        condition,
-                        registers,
-                        before_body,
-                        break_live,
-                        continue_live,
-                        exit_live,
-                        nested,
-                    );
-                }
-                InstKind::Scope(body) => {
-                    live = self.block(
-                        body,
-                        registers,
-                        live.clone(),
-                        break_live,
-                        continue_live,
-                        &live,
-                        weight,
-                    )
-                }
-                InstKind::Raise(error) => {live.clear();live.insert(Register(*error));self.weights[*error]=self.weights[*error].saturating_add(weight);}
-                InstKind::Exit => live = exit_live.clone(),
-                InstKind::Break => live = break_live.clone(),
-                InstKind::Continue => live = continue_live.clone(),
-                _ => {
-                    let transfer = match &(inst).kind {
-                        InstKind::LoadLocal(dst, slot) => Some((Register(*dst), Local(*slot))),
-                        InstKind::StoreLocal(slot, src) => Some((Local(*slot), Register(*src))),
-                        InstKind::Cast { dst, src }
-                            if operands::bit_copy(registers[*src], registers[*dst]) =>
-                        {
-                            Some((Register(*dst), Register(*src)))
-                        }
-                        _ => None,
-                    }
-                    .filter(|(dst, src)| {
-                        !self.addressable.contains(&self.id(*dst))
-                            && !self.addressable.contains(&self.id(*src))
-                    });
-                    let preferred = transfer.or_else(|| match &(inst).kind {
-                        InstKind::Unary { dst, a, .. } => Some((Register(*dst), Register(*a))),
-                        InstKind::Binary { dst, op, a, b } => {
-                            let source = if let BinaryOp::Compare(comparison) = op {
-                                let reverse = if registers[*a].is_float() {
-                                    matches!(
-                                        comparison,
-                                        Comparison::Greater | Comparison::GreaterEqual
-                                    )
-                                } else {
-                                    matches!(
-                                        comparison,
-                                        Comparison::Less | Comparison::GreaterEqual
-                                    )
-                                };
-                                if reverse { *b } else { *a }
-                            } else {
-                                *a
-                            };
-                            Some((Register(*dst), Register(source)))
-                        }
-                        InstKind::Select { dst, b, .. } => Some((Register(*dst), Register(*b))),
-                        InstKind::Math { dst, op, args }
-                            if matches!(
-                                op,
-                                MathOp::Abs | MathOp::Min | MathOp::Max | MathOp::Sqrt
-                            ) =>
-                        {
-                            Some((Register(*dst), Register(args[0])))
-                        }
-                        _ => None,
-                    });
-                    if let Some((dst, src)) = preferred {
-                        let (dst, src) = (self.id(dst), self.id(src));
-                        self.affinities[dst].insert(src);
-                        self.affinities[src].insert(dst);
-                    }
-                    let literal = match &inst.kind {
-                        InstKind::Constant(_, _, bits) => Some(*bits),
-                        _ => None,
-                    };
-                    let mut definitions = Vec::new();
-                    for dst in inst.results() {
-                        unsafe {
-                            record_definition(&mut self.locations[dst], u32::from(literal.is_some()),
-                                literal.unwrap_or_default());
-                        }
-                        definitions.push(Register(dst));
-                    }
-                    if let InstKind::StoreLocal(slot, _) = &(inst).kind {
-                        definitions.push(Local(*slot));
-                    }
-                    for dst in &definitions {
-                        let id = self.id(*dst);
-                        if !self.addressable.contains(&id) {
-                            for other in &live {
-                                // 复制后的两份值相同；其他定义和写入仍建立真实干涉。
-                                if transfer != Some((*dst, *other)) {
-                                    self.edge(id, self.id(*other));
-                                }
-                            }
-                        }
-                        self.weights[id] = self.weights[id].saturating_add(weight);
-                    }
-                    for dst in &definitions {
-                        live.remove(dst);
-                    }
-                    if matches!(
-                        &(inst).kind,
-                        InstKind::Print { .. }
-                            | InstKind::Call(_)
-                            | InstKind::Math {
-                                op: MathOp::Sin
-                                    | MathOp::Cos
-                                    | MathOp::Floor
-                                    | MathOp::Exp
-                                    | MathOp::Exp2
-                                    | MathOp::Log
-                                    | MathOp::Log2
-                                    | MathOp::Pow,
-                                ..
-                            }
-                    ) {
-                        self.outgoing_bytes =
-                            self.outgoing_bytes
-                                .max(if let InstKind::Call(call) = &(inst).kind {
-                                    super::external::outgoing_bytes(call)
-                                } else {
-                                    32
-                                });
-                        let preserved: Vec<_> = live.iter().map(|slot| self.id(*slot)).collect();
-                        self.across_call.extend(preserved);
-                    }
-                    inst.all_operands(&mut |reg| {
-                        let slot = Register(reg);
-                        let id = self.id(slot);
-                        self.weights[id] = self.weights[id].saturating_add(weight);
-                        live.insert(slot);
-                        true
-                    });
-                    for slot in inst.local_reads().into_iter().map(Local) {
-                        let id = self.id(slot);
-                        self.weights[id] = self.weights[id].saturating_add(weight);
-                        live.insert(slot);
-                    }
-                }
-            }
-        }
-        live
-    }
+    fn together(&mut self, live: &BTreeSet<PrivateSlot>) { graph::together(self, live); }
 }
+
 impl Graph {
     pub(super) fn function_inputs(&mut self,inputs:&[Reg]) {
         // Entry values are simultaneous definitions supplied by the native caller.
-        self.together(&inputs.iter().copied().map(PrivateSlot::Register).collect());
+        graph::inputs(self, inputs);
     }
     pub fn new(stage: &Stage) -> (Self, Vec<TilePhase<'_>>) {
         Self::with_live(stage, BTreeSet::new())
     }
-    pub fn with_live(stage: &Stage, live: BTreeSet<PrivateSlot>) -> (Self, Vec<TilePhase<'_>>) {
+    pub fn with_live(stage: &Stage, mut live: BTreeSet<PrivateSlot>) -> (Self, Vec<TilePhase<'_>>) {
         let slots = stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
         let private = private_spans(&stage.code);
         let addressable: BTreeSet<_> = private.iter().flat_map(|span| span.clone())
@@ -340,15 +107,9 @@ impl Graph {
         };
         let empty = BTreeSet::new();
         graph.together(&live);
-        graph.block(
-            &stage.code,
-            &stage.registers,
-            live,
-            &empty,
-            &empty,
-            &empty,
-            1,
-        );
+        graph::analyze(&mut graph, &stage.code, &stage.registers, &mut live,
+            &empty, &empty, &empty, 1);
+        drop(live);
         let phases = if stage.has_tile_steps() { stage.tile_phases() } else { Vec::new() };
         // 实际阶段入口会恢复整组私有值，出口则保存整组；它们必须同时可取。
         for phase in &phases {
@@ -411,8 +172,6 @@ unsafe extern "C" {
         node: unsafe extern "C" fn(*const c_void, u64) -> ColorNode,
         next: unsafe extern "C" fn(*const c_void, u64, bool, u64) -> u64,
     ) -> ColorLayout;
-    #[link_name = "bootstrap.coloring::record_definition"]
-    fn record_definition(place: *mut ColorPlace, literal: u32, bits: u64);
     #[link_name = "bootstrap.coloring::place_private"]
     fn place_private(places: *mut ColorPlace, count: usize, data_end: u64, bytes: u64,
         alignment: u64) -> u64;
