@@ -1271,44 +1271,53 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         }}).or_insert(when);
     }
 
+    // Borrow sources, stored writes and initialization are fixed before this stage.
+    // Only the access requirements propagated through calls change between rounds.
+    let direct = functions.iter().map(|(name, function)| {
+        let state = &known[name];
+        let parameters = residency::input_parameters(&function.parameters, function.input_width);
+        let mut access=BTreeMap::new();
+        for value in state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})) {insert(&mut access,value.clone());}
+        for usage in &function.uses {
+            if let Requirement::Initialized{read,code,..}=&usage.requirement {
+                let read=resolved_read(read,&usage.path,function,state,known);
+                if *code=="B229" {
+                    if let Some(value)=function.initialization_access(&read,bounds::Condition::guard(usage.path.clone())){insert(&mut access,value);}
+                    continue;
+                }
+                for(source,when)in read.borrow().sources.entries() {
+                    if let Origin::Position(origin)=source {
+                        if let Some(value)=function.address_access(Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),written:None,writable:false,initialized:true}},
+                            bounds::Condition::guard(usage.path.clone()).logical(bounds::Condition::guard(when),false)){insert(&mut access,value);}
+                    }
+                }
+                continue;
+            }
+            let value=match &usage.requirement {
+                Requirement::Unborrowed{resource,borrow,kind,..}=>function.access(
+                    evaluate(resource,function,state,known,true),evaluate(borrow,function,state,known,true),
+                    *kind,bounds::Condition::guard(usage.path.clone())),
+                Requirement::Address{borrow,layout,written,writable,initialized,..}=>function.address_access(
+                    evaluate(borrow,function,state,known,true),
+                    |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),written:written.as_ref().map(|proof|proof.at_call(&parameters)),writable:*writable,initialized:*initialized}},
+                    bounds::Condition::guard(usage.path.clone())),
+                Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if !function.calls.iter().any(|call|!call.deferred&&call.memory==*memory)=>
+                    function.address_access(evaluate(borrow,function,state,known,true),|borrows,when|Access::Memory{borrows,when,access:*access},bounds::Condition::guard(usage.path.clone())),
+                Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,*access,*atomic,bounds::Condition::guard(usage.path.clone()),&|id|owns_input(name,id)),
+                _=>None,
+            };
+            if let Some(value)=value{insert(&mut access,value);}
+        }
+        (name, access)
+    }).collect::<BTreeMap<_, _>>();
+
     loop {
         let mut changed = Vec::new();
         for(name,function)in functions {
             let normalize=feedback.contains(name.as_str());
             let state=&known[name];
             let parameters=residency::input_parameters(&function.parameters,function.input_width);
-            let mut access=BTreeMap::new();
-            for value in state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})) {insert(&mut access,value.clone());}
-            for usage in &function.uses {
-                if let Requirement::Initialized{read,code,..}=&usage.requirement {
-                    let read=resolved_read(read,&usage.path,function,state,known);
-                    if *code=="B229" {
-                        if let Some(value)=function.initialization_access(&read,bounds::Condition::guard(usage.path.clone())){insert(&mut access,value);}
-                        continue;
-                    }
-                    for(source,when)in read.borrow().sources.entries() {
-                        if let Origin::Position(origin)=source {
-                            if let Some(value)=function.address_access(Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),written:None,writable:false,initialized:true}},
-                                bounds::Condition::guard(usage.path.clone()).logical(bounds::Condition::guard(when),false)){insert(&mut access,value);}
-                        }
-                    }
-                    continue;
-                }
-                let value=match &usage.requirement {
-                    Requirement::Unborrowed{resource,borrow,kind,..}=>function.access(
-                        evaluate(resource,function,state,known,true),evaluate(borrow,function,state,known,true),
-                        *kind,bounds::Condition::guard(usage.path.clone())),
-                    Requirement::Address{borrow,layout,written,writable,initialized,..}=>function.address_access(
-                        evaluate(borrow,function,state,known,true),
-                        |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),written:written.as_ref().map(|proof|proof.at_call(&parameters)),writable:*writable,initialized:*initialized}},
-                        bounds::Condition::guard(usage.path.clone())),
-                    Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if !function.calls.iter().any(|call|!call.deferred&&call.memory==*memory)=>
-                        function.address_access(evaluate(borrow,function,state,known,true),|borrows,when|Access::Memory{borrows,when,access:*access},bounds::Condition::guard(usage.path.clone())),
-                    Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,*access,*atomic,bounds::Condition::guard(usage.path.clone()),&|id|owns_input(name,id)),
-                    _=>None,
-                };
-                if let Some(value)=value{insert(&mut access,value);}
-            }
+            let mut access=direct[name].clone();
             for call in function.calls.iter().filter(|call|call.function!=*name||state.entries.is_none()) {
                 let live_task_places=evaluate(&call.live_task_places,function,state,known,true);
                 let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
