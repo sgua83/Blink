@@ -28,6 +28,7 @@ mod flow;
 pub(crate) mod generics;
 mod matrix;
 mod operators;
+mod numeric_literal;
 mod owned_records;
 mod user_owned;
 mod owned_borrows;
@@ -2014,71 +2015,8 @@ fn finish_checked_function(
         functions: b.functions,
     }))
 }
-#[repr(C)]
-struct ParsedUnsigned { value: u64, error: u32 }
-
-unsafe extern "C" {
-    #[link_name = "bootstrap.cli::decimal_number"]
-    fn decimal_number(bytes: *const u8, length: usize, maximum: u64) -> ParsedUnsigned;
-    #[link_name = "bootstrap.cli::hexadecimal_number"]
-    fn hexadecimal_number(bytes: *const u8, length: usize, maximum: u64) -> ParsedUnsigned;
-}
-
-fn unsigned_literal(text: &str, maximum: u64) -> Option<u64> {
-    let parsed = unsafe {
-        if let Some(hex) = text.strip_prefix("0x") {
-            hexadecimal_number(hex.as_ptr(), hex.len(), maximum)
-        } else {
-            decimal_number(text.as_ptr(), text.len(), maximum)
-        }
-    };
-    (parsed.error == 0).then_some(parsed.value)
-}
-
 fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, Bits)> {
-    if !n.starts_with("0x") && let Some(text) = n.strip_suffix("f64") {
-        let value = text.parse::<f64>().map_err(|_| Diagnostic {
-            source: source.clone(), span, code: "B121",
-            message: format!("非法 f64 常量 {n}"),
-        })?;
-        if !value.is_finite() {
-            return source.fail(span, "B122", "浮点常量超出有限 f64 范围");
-        }
-        return Ok((Ty::scalar(Scalar::F64), value.to_bits()));
-    }
-    if let Some(text) = n.strip_suffix("u64") {
-        let bits = unsigned_literal(text, u64::MAX).ok_or_else(|| Diagnostic {
-            source: source.clone(), span, code: "B123",
-            message: format!("非法 u64 常量 {n}"),
-        })?;
-        return Ok((Ty::scalar(Scalar::U64), bits));
-    }
-    if !n.starts_with("0x")
-        && (n.contains('.') || n.contains('e') || n.contains('E') || n.ends_with('f'))
-    {
-        let value = n
-            .trim_end_matches('f')
-            .parse::<f32>()
-            .map_err(|_| Diagnostic {
-                source: source.clone(),
-                span,
-                code: "B121",
-                message: format!("非法 f32 常量 {n}"),
-            })?;
-        if !value.is_finite() {
-            return source.fail(span, "B122", "浮点常量超出有限 f32 范围");
-        }
-        Ok((Ty::scalar(Scalar::F32), Bits::from(value.to_bits())))
-    } else {
-        let text = n.trim_end_matches('u');
-        let bits = unsigned_literal(text, u64::from(u32::MAX)).ok_or_else(|| Diagnostic {
-            source: source.clone(),
-            span,
-            code: "B123",
-            message: format!("非法 u32 常量 {n}"),
-        })?;
-        Ok((Ty::scalar(Scalar::U32), bits))
-    }
+    numeric_literal::number(source, span, n, false)
 }
 // 原检查事实只保持到该Call的真实失败出口，不进入资源ABI或执行映像。
 #[derive(Clone)]
@@ -3762,7 +3700,7 @@ impl<'a> Builder<'a> {
         self.unary_value(op, value, span).map(Some)
     }
     fn negative_number(&mut self, literal: &str, span: Span) -> Result<Value> {
-        let (ty, bits) = operators::negative_number(self.scope.source(), span, literal)?;
+        let (ty, bits) = numeric_literal::number(self.scope.source(), span, literal, true)?;
         let scalar = ty.components[0].0;
         let mut value = self.constant_value(ty, vec![bits], None);
         value.literal = scalar.size() == 4;

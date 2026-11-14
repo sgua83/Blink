@@ -6,19 +6,6 @@ pub(super) fn same(a: &Ty, b: &Ty, source: &Source, span: Span) -> Result<()> {
         source.fail(span, "B124", format!("类型不匹配：需要 {}，实际为 {}", a.name, b.name))
     }
 }
-pub(super) fn negative_number(source: &Source, span: Span, text: &str) -> Result<(Ty, Bits)> {
-    let (ty, bits) = number(source, span, text)?;
-    let (scalar, bits) = match ty.components[0].0 {
-        Scalar::F32 => (Scalar::F32, bits ^ 0x80000000),
-        Scalar::F64 => (Scalar::F64, bits ^ 0x8000000000000000),
-        Scalar::U32 if bits <= 0x80000000 =>
-            (Scalar::I32, Scalar::I32.truncate(0u64.wrapping_sub(bits))),
-        Scalar::U64 if bits <= 0x8000000000000000 =>
-            (Scalar::I64, 0u64.wrapping_sub(bits)),
-        _ => return source.fail(span, "B180", "负整数字面量超出其有符号类型范围"),
-    };
-    Ok((Ty::scalar(scalar), bits))
-}
 pub(super) struct Numeric {
     pub scalar: Scalar,
     pub cast_left: bool,

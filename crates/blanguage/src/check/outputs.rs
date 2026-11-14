@@ -803,7 +803,7 @@ fn identity<'a>(value: &'a OutputCondition,
         },
         OutputCondition::Unary(op, operand) => {
             if op == "-" && let OutputCondition::Number(text) = operand.as_ref() {
-                let (ty, bits) = operators::negative_number(source, span, text)?;
+                let (ty, bits) = super::numeric_literal::number(source, span, text, true)?;
                 let literal = ty.components[0].0.size() == 4;
                 constant(ty, vec![bits], literal)
             } else {
@@ -958,7 +958,7 @@ fn condition_type(value: &OutputCondition,
         OutputCondition::Bool(_) => (Ty::scalar(Scalar::Bool), false),
         OutputCondition::Unary(op, value) => {
             if op == "-" && let OutputCondition::Number(text) = value.as_ref() {
-                let (ty, _) = operators::negative_number(source, span, text)?;
+                let (ty, _) = super::numeric_literal::number(source, span, text, true)?;
                 let literal = ty.components[0].0.size() == 4;
                 (ty, literal)
             } else {
