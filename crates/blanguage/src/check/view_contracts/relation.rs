@@ -192,7 +192,23 @@ impl Graph {
         let graph=Arc::new(b.graph);let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()};
         Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(value).unwrap_or_default())}).collect())
     }
-    pub(super) fn loops(function:&Function,state:&State,known:&States)->BTreeMap<LoopInput,Borrow>{let mut b=Self::builder(function,state,known);let roots=state.loops.keys().map(|input|(*input,b.key(Key::Loop(*input)))).collect::<Vec<_>>();b.graph.remove_identity_feedback();let graph=Arc::new(b.graph);roots.into_iter().map(|(input,root)|(input,Borrow::source(Origin::Relation(graph.clone(),root)))).collect()}
+    pub(super) fn loops(
+        inputs: &BTreeSet<LoopInput>, function: &Function, state: &State, known: &States,
+    ) -> Option<Arc<Self>> {
+        if inputs.is_empty() {
+            return None;
+        }
+        let mut builder = Self::builder(function, state, known);
+        for &input in inputs {
+            builder.key(Key::Loop(input));
+        }
+        builder.graph.remove_identity_feedback();
+        Some(Arc::new(builder.graph))
+    }
+
+    pub(super) fn input_root(&self, input: LoopInput) -> usize {
+        self.inputs[&input]
+    }
     pub(super) fn bind(&self,root:usize,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None);(Arc::new(b.graph),root)}
     pub(super) fn bind_incoming(&self,root:usize,memory:usize,snapshots:Option<Arc<[ValueSnapshot]>>,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let frame=b.read_frame(memory);let graph=self.incoming(memory,snapshots);let root=b.import(&graph,root,frame);(Arc::new(b.graph),root)}
     fn remove_identity_feedback(&mut self) {

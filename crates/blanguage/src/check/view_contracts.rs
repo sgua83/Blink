@@ -454,7 +454,12 @@ impl Function {
     }
 }
 #[derive(Clone,Default,PartialEq,Eq)]
-struct State<'a> { name: &'a str, loops:BTreeMap<LoopInput,Borrow>, entries:Option<BTreeMap<ValueIdentity,Borrow>>, interface:Interface }
+struct State<'a> {
+    name: &'a str,
+    loops: Option<Arc<relation::Graph>>,
+    entries: Option<BTreeMap<ValueIdentity, Borrow>>,
+    interface: Interface,
+}
 type StorageObserver<'a> = dyn Fn(&str, crate::compiler::BorrowSolveStorage) + 'a;
 
 struct States<'a> {
@@ -885,8 +890,12 @@ impl BorrowEvaluation<'_>{
             value.union(&resolved.restricted(&when));
         }
         for(input,when)in borrow.inputs.entries(){if matches!(sources,LoopSources::Resolved){
-            let bound=self.loop_bindings.iter().rev().find_map(|scope|scope.get(input)).cloned();
-            let next=match bound{Some(bound)=>bound,None=>self.evaluate_sources(&state.loops[input],sources)};
+            let bound = self.loop_bindings.iter().rev().find_map(|scope| scope.get(input));
+            let next = match (bound, state.loops.as_ref()) {
+                (Some(bound), _) => bound.clone(),
+                (None, Some(graph)) => self.relation(graph, graph.input_root(*input), sources),
+                (None, None) => Borrow::default(),
+            };
             value.union(&next.restricted(&when));
         }else{value.inputs.insert_when(*input,when.clone());}}
         for(read,when)in borrow.reads.entries(){if matches!(sources,LoopSources::Deferred){value.reads.insert_when(read.clone(),when);}else{value.union(&self.content_read(read,sources).restricted(&when));}}
@@ -1516,13 +1525,18 @@ fn stored_outputs(evaluation:&mut BorrowEvaluation<'_>,exposed:&BTreeMap<Origin,
     stored.into_iter().map(|((borrows,word),value)|Access::Stored{borrows,word,value,when:bounds::Condition::constant(true)}).collect()
 }
 
-fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTreeSet<(String,Output)>){
+fn converge(
+    functions: &BTreeMap<String, &Function>,
+    known: &mut States,
+    loop_inputs: &BTreeMap<String, BTreeSet<LoopInput>>,
+    unknown: &BTreeSet<(String, Output)>,
+) {
     loop{
         let mut changed = Vec::new();
         for(name,function)in functions{
             let state=&known[name];
             let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()};
-            let loops = relation::Graph::loops(function,state,known);
+            let loops = relation::Graph::loops(&loop_inputs[name], function, state, known);
             let entries = relation::Graph::recursive_inputs(name,function,state,known);
             let forwards=|output:&Output,definition:&Borrow|matches!(output,Output::Returned(_))&&definition.calls.iter().any(|result|function.calls[result.call].function==*name&&result.output==*output);
             let entry_bindings=entries.as_ref().filter(|_|function.outputs.iter().any(|(output,definition)|forwards(output,definition))).map(|entries|{
@@ -1756,20 +1770,20 @@ fn solve<'a>(
     functions: &'a BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
     owns_input: impl Fn(&str, ValueIdentity) -> bool, observe: Option<&'a StorageObserver<'a>>,
 ) -> Result<Solved<'a>> {
-    let loops=used_loops(functions,&closed);
+    let loop_inputs = used_loops(functions, &closed);
     let mut known = States {
         functions: closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect(),
         observe,
     };
     for(name,function)in functions{known.insert(name.clone(),State{
         name,
-        loops:loops[name].iter().map(|input|(*input,Borrow::default())).collect(),
+        loops: None,
         entries:None,
         interface:Interface{outputs:function.outputs.keys().map(|output|(output.clone(),Borrow::default())).collect(),access:BTreeSet::new(),initialization:Vec::new()},
     });}
-    converge(functions,&mut known,&BTreeSet::new());
+    converge(functions, &mut known, &loop_inputs, &BTreeSet::new());
     let unknown=functions.iter().flat_map(|(name,function)|function.outputs.keys().filter_map(|output|known[name].interface.outputs[output].empty().then_some((name.clone(),output.clone())))).collect::<BTreeSet<_>>();
-    if !unknown.is_empty(){converge(functions,&mut known,&unknown);}
+    if !unknown.is_empty(){converge(functions, &mut known, &loop_inputs, &unknown);}
     converge_initializations(functions,&mut known);
     converge_access(functions,&mut known,&owns_input);
     let mut memory=BTreeMap::new();let mut scalar_values=BTreeMap::new();
