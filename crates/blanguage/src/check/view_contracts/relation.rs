@@ -486,9 +486,18 @@ impl Query<'_,'_,'_>{
                                     result.edges.push(Edge {
                                         from: *value,
                                         op: Op::Identity,
-                                        when: earlier.clone()
-                                            .logical(bounds::Condition::guard(yes.clone()), false)
-                                            .logical(edge.when.clone(), false),
+                                        when: {
+                                            let visible = earlier.clone()
+                                                .logical(bounds::Condition::guard(yes.clone()), false);
+                                            // The selected write already includes the read path.
+                                            bounds::Condition::paths(
+                                                visible.assume(&bounds::Clause::default(), true),
+                                                bounds::Clause::either(
+                                                    &visible.assume(&bounds::Clause::default(), false),
+                                                    &edge.when.assume(&bounds::Clause::default(), false),
+                                                ),
+                                            )
+                                        },
                                     });
                                     hit = bounds::Clause::either(&hit, &yes);
                                     complete |= full;
