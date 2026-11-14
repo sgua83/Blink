@@ -1791,15 +1791,33 @@ fn solve<'a>(
                     }
                 }
             }
-            if let Some(snapshots)=snapshots {
-                let path = usage.path.substitute_values(&resolved);
-                let scope = bounds::proof_scope(&path, &BTreeMap::new());
-                for(component,snapshot)in snapshots.iter().enumerate(){
-                    let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluation.evaluate(borrow).substitute_values(&resolved)),layout.clone(),*word),position=>position.clone()};
-                    let index=snapshot.index.and_then(|index|match index{bounds::Operand::Value(id)if resolved.contains_key(&id)=>index.at_call(&resolved),index=>Some(index)});
-                    let proof=snapshot.proof.substitute_values(&resolved);
-                    let proof=effect.written_value(&position,snapshot.scalar,index,&scope(&Ty::scalar(snapshot.scalar), proof));
-                    let identity=ValueIdentity::MemoryValue(memory,component);resolved.insert(identity,proof.with_identity(identity));
+            if let Some(snapshots) = snapshots {
+                let scope = (!effect.has_external_write()).then(|| {
+                    let path = usage.path.substitute_values(&resolved);
+                    bounds::proof_scope(&path, &BTreeMap::new())
+                });
+                for (component, snapshot) in snapshots.iter().enumerate() {
+                    let proof = if let Some(scope) = &scope {
+                        let position = match &snapshot.position {
+                            Position::Borrowed(borrow, layout, word) => Position::Borrowed(
+                                Arc::new(evaluation.evaluate(borrow).substitute_values(&resolved)),
+                                layout.clone(),
+                                *word,
+                            ),
+                            position => position.clone(),
+                        };
+                        let index = snapshot.index.and_then(|index| match index {
+                            bounds::Operand::Value(id) if resolved.contains_key(&id) => index.at_call(&resolved),
+                            index => Some(index),
+                        });
+                        let proof = snapshot.proof.substitute_values(&resolved);
+                        effect.written_value(&position, snapshot.scalar, index,
+                            &scope(&Ty::scalar(snapshot.scalar), proof))
+                    } else {
+                        bounds::Proof::default()
+                    };
+                    let identity = ValueIdentity::MemoryValue(memory, component);
+                    resolved.insert(identity, proof.with_identity(identity));
                 }
             }
             values.entry(*target).or_default().record(effect);

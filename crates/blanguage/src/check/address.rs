@@ -478,9 +478,13 @@ impl MemoryEffect {
         if self.external.is_some_and(&select){return ((1u16<<scalar.size())-1) as u8;}
         self.known.iter().filter(|(_,_,access,_)|select(*access)).fold(0,|bytes,(origin,when,_,_)|bytes|Self::origin_written_bytes(origin,when,position,scalar,index))
     }
+    pub(super) fn has_external_write(&self) -> bool {
+        self.external.is_some_and(Access::writes)
+    }
+
     // A possible write joins its value with the old value; it is never a must-write guarantee.
     pub(super) fn written_value(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>,previous:&bounds::Proof)->bounds::Proof {
-        if self.external.is_some_and(Access::writes) {
+        if self.has_external_write() {
             return bounds::Proof::default();
         }
         let mut writes = self.known.iter().filter(|(_, _, access, _)| access.writes())
