@@ -257,27 +257,6 @@ impl Emitter<'_> {
         self.close_scan_tree(end);
         Ok(())
     }
-    fn custom_remaining(&mut self, local: u32, count: u32) -> u32 {
-        let u = self.types[&Scalar::U32];
-        let base = self.id();
-        self.emit(130, &[u, base, self.index, local]);
-        let remaining = self.id();
-        self.emit(130, &[u, remaining, count, base]);
-        remaining
-    }
-    fn custom_owner(&mut self, local: u32, active: u32, count: u32) -> u32 {
-        let b = self.types[&Scalar::Bool];
-        let zero = self.constant(Scalar::U32, 0);
-        let first = self.id();
-        self.emit(170, &[b, first, local, zero]);
-        let empty = self.id();
-        self.emit(170, &[b, empty, count, zero]);
-        let needed = self.id();
-        self.emit(166, &[b, needed, active, empty]);
-        let owner = self.id();
-        self.emit(167, &[b, owner, first, needed]);
-        owner
-    }
     pub(super) fn custom_reduce(
         &mut self,
         r: &CustomReduction,
@@ -300,7 +279,7 @@ impl Emitter<'_> {
             Summary::Plain,
             false,
         )?;
-        let remaining = self.custom_remaining(local, count);
+        let remaining = self.group_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
             self.custom_tree(
                 r,
@@ -314,7 +293,7 @@ impl Emitter<'_> {
                 Summary::Plain,
             )?;
         }
-        let owner = self.custom_owner(local, active, count);
+        let (owner, _) = self.collective_writer(local, active, count);
         let last = self.constant(Scalar::U32, 63);
         let words = self.shared_planes(shared, pointer, last, r.ty.size.div_ceil(4) as usize);
         let root: Vec<_> = r.ty.components.iter().map(|(scalar, offset)| {
@@ -343,13 +322,13 @@ impl Emitter<'_> {
             r, kernel, tail, local, shared, pointer, active, summary, false,
         )?;
         let head = input.first().copied();
-        let remaining = self.custom_remaining(local, count);
+        let remaining = self.group_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
             self.custom_tree(
                 r, kernel, local, shared, pointer, width, remaining, false, summary,
             )?;
         }
-        let owner = self.custom_owner(local, active, count);
+        let (owner, _) = self.collective_writer(local, active, count);
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[self.types[&Scalar::U32], group, self.index, width]);
@@ -472,13 +451,13 @@ impl Emitter<'_> {
             summary,
             pass == Pass::ScanRootAdd,
         )?;
-        let remaining = self.custom_remaining(local, count);
+        let remaining = self.group_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
             self.custom_tree(
                 r, kernel, local, shared, pointer, width, remaining, false, summary,
             )?;
         }
-        let owner = self.custom_owner(local, active, count);
+        let (owner, _) = self.collective_writer(local, active, count);
         let save = self.id();
         let saved = self.id();
         self.emit(247, &[saved, 0]);

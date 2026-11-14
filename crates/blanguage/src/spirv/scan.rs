@@ -78,6 +78,10 @@ struct TreeWords {
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::shared_addresses"]
     fn emit_shared_addresses(input: SharedAddress, offsets: *mut u32, body: *mut u32) -> SharedAddressWords;
+    #[link_name = "bootstrap.spirv_envelope::group_remaining"]
+    fn emit_group_remaining(body: *mut u32, uint_type: u32, index: u32, lane: u32, count: u32, first: u32);
+    #[link_name = "bootstrap.spirv_envelope::collective_writer"]
+    fn emit_collective_writer(body: *mut u32, bool_type: u32, lane: u32, active: u32, count: u32, zero: u32, first: u32);
     #[link_name = "bootstrap.spirv_envelope::open_scan_tree"]
     fn emit_open_scan_tree(input: ScanTreeInput, body: *mut u32) -> ScanTreeOpen;
     #[link_name = "bootstrap.spirv_envelope::tree_layer"]
@@ -159,6 +163,33 @@ impl Emitter<'_> {
         offsets
     }
 
+    pub(super) fn group_remaining(&mut self, lane: u32, count: u32) -> u32 {
+        let at = self.body.len();
+        let first = self.next;
+        self.body.reserve(10);
+        unsafe {
+            emit_group_remaining(self.body.as_mut_ptr().add(at), self.types[&Scalar::U32],
+                self.index, lane, count, first);
+            self.body.set_len(at + 10);
+        }
+        self.next += 2;
+        first + 1
+    }
+
+    pub(super) fn collective_writer(&mut self, lane: u32, active: u32, count: u32) -> (u32, u32) {
+        let zero = self.constant(Scalar::U32, 0);
+        let at = self.body.len();
+        let first = self.next;
+        self.body.reserve(20);
+        unsafe {
+            emit_collective_writer(self.body.as_mut_ptr().add(at), self.types[&Scalar::Bool],
+                lane, active, count, zero, first);
+            self.body.set_len(at + 20);
+        }
+        self.next += 4;
+        (first + 3, first + 1)
+    }
+
     pub(super) fn open_scan_tree(&mut self, lane: u32, width: u32) -> (u32, u32) {
         let mask = self.constant(Scalar::U32, width * 2 - 1);
         let first = self.next;
@@ -206,11 +237,7 @@ impl Emitter<'_> {
         // 全域扫描的尾组与 tile 共用树；有效长度属于当前实际工作域。
         let remaining =
             if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
-                let group_begin = self.id();
-                self.emit(130, &[u, group_begin, self.index, local]);
-                let available = self.id();
-                self.emit(130, &[u, available, count, group_begin]);
-                available
+                self.group_remaining(local, count)
             } else {
                 0
             };

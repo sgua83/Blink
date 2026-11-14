@@ -12,10 +12,7 @@ impl Emitter<'_> {
         let width = self.constant(Scalar::U32, self.workgroup_width);
         self.tile_lane = self.id();
         self.emit(137, &[u, self.tile_lane, self.index, width]);
-        let base = self.id();
-        self.emit(130, &[u, base, self.index, self.tile_lane]);
-        let remaining = self.id();
-        self.emit(130, &[u, remaining, count, base]);
+        let remaining = self.group_remaining(self.tile_lane, count);
         let tail = self.id();
         self.emit(176, &[self.types[&Scalar::Bool], tail, remaining, width]);
         self.tile_length = self.id();

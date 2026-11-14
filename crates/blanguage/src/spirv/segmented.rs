@@ -87,11 +87,7 @@ impl Emitter<'_> {
         let identity = self.segment_identity(scan);
         let remaining =
             if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
-                let group_begin = self.id();
-                self.emit(130, &[u, group_begin, self.index, local]);
-                let available = self.id();
-                self.emit(130, &[u, available, count, group_begin]);
-                Some(available)
+                Some(self.group_remaining(local, count))
             } else {
                 None
             };
@@ -295,21 +291,11 @@ impl Emitter<'_> {
         let own = self.shared_planes(shared, pointer, local, scan.summary_words());
         self.write_summary_words(&own, &input);
         self.scan_barrier();
-        let base = self.id();
-        self.emit(130, &[u, base, self.index, local]);
-        let remaining = self.id();
-        self.emit(130, &[u, remaining, count, base]);
+        let remaining = self.group_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
             self.segment_tree(scan, local, shared, pointer, width, false, Some(remaining));
         }
-        let local_first = self.id();
-        self.emit(170, &[b, local_first, local, zero]);
-        let empty = self.id();
-        self.emit(170, &[b, empty, count, zero]);
-        let needed = self.id();
-        self.emit(166, &[b, needed, active, empty]);
-        let owner = self.id();
-        self.emit(167, &[b, owner, needed, local_first]);
+        let (owner, empty) = self.collective_writer(local, active, count);
         let save = self.id();
         let saved = self.id();
         self.emit(247, &[saved, 0]);

@@ -1641,6 +1641,20 @@ void tree_node_store(inout StageCursor out, PayloadEmission input, u32 value, ad
     out.next = result.next;
 }
 
+extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu {
+    StageCursor out = StageCursor(body, 0u64, first);
+    u32 begin = stage_op(out, 130, uint_type, index, lane);
+    stage_op(out, 130, uint_type, count, begin);
+}
+
+extern "C" void collective_writer(address body, u32 bool_type, u32 lane, u32 active, u32 count, u32 zero, u32 first) on cpu {
+    StageCursor out = StageCursor(body, 0u64, first);
+    u32 first_lane = stage_op(out, 170, bool_type, lane, zero);
+    u32 empty = stage_op(out, 170, bool_type, count, zero);
+    u32 needed = stage_op(out, 166, bool_type, active, empty);
+    stage_op(out, 167, bool_type, first_lane, needed);
+}
+
 StageBranch scan_tree_branch(inout StageCursor out, u32 uint_type, u32 bool_type, u32 lane, u32 mask) on cpu {
     u32 bits = stage_op(out, 199, uint_type, lane, mask);
     u32 selected = stage_op(out, 170, bool_type, bits, mask);
