@@ -1156,7 +1156,7 @@ fn access_at_call<'a>(access:&Access,call:&Call,path:&bounds::Clause,evaluation:
     let borrows=if matches!(access,Access::Initialized{..}){borrows}else{refreshed_at_call(borrows,path,initialized)};
     match access {
         Access::Resource{resources,kind,..}=>Access::Resource{resources:evaluation.evaluate(&borrow_at_call(resources,call,arguments)),borrows,kind:*kind,when},
-        Access::Position{position,..}=>Access::Position{borrows,when,position:PositionAccess{written:position.written.as_ref().map(|proof|proof.at_call(arguments)),..position.clone()}},
+        Access::Position{position,..}=>Access::Position{borrows,when,position:position.clone()},
         Access::Memory{access,..}=>Access::Memory{borrows,when,access:*access},
         // The value belongs to content reads. Access consumers use only the write location.
         Access::Stored{word,value,..}=>Access::Stored{borrows,when,word:*word,value:value.clone()},
@@ -1441,7 +1441,8 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                             Access::Position{mut position,borrows,when}=>{
                                 if call.deferred { position.written=None; }
                                 if position.written.is_none()&&!position.initialized&&!position.writable{continue;}
-                                position.written=position.written.as_ref().map(|proof|proof.at_call(&parameters));
+                                position.written=position.written.as_ref()
+                                    .map(|proof|proof.at_call(&call.arguments).at_call(&parameters));
                                 function.address_access(borrows,|borrows,when|Access::Position{borrows,when,position},&when)
                             },
                             Access::Stored{..}=>continue,
@@ -1934,7 +1935,7 @@ fn solve<'a>(
                     }.check(&call.source, None)?;
                 }
                 let requirement=match value {
-                    Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,written:position.written,writable:position.writable,initialized:position.initialized,span:call.span},
+                    Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,written:None,writable:position.writable,initialized:position.initialized,span:call.span},
                     Access::Resource{resources,borrows,kind,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),kind,span:call.span},
                     Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}=>continue,
                     Access::Initialized{borrows,initialized,..}=>{
