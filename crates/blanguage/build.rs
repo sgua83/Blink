@@ -17,7 +17,8 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("缺少OUT_DIR")?);
     let mut shared = Vec::new();
     for (name, source) in [("unicode_scalar", "../../library/blink/unicode_scalar"),
-        ("path_core", "../../library/blink/windows/path_core")] {
+        ("path_core", "../../library/blink/windows/path_core"),
+        ("process_core", "../../library/blink/windows/process_core")] {
         let object = out.join(format!("blink_compiler_{name}.obj"));
         for extension in ["b", "h"] {
             println!("cargo:rerun-if-changed={source}.{extension}");
@@ -26,6 +27,9 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             for header in ["error", "file", "path", "system"] {
                 println!("cargo:rerun-if-changed=../../library/blink/windows/{header}.h");
             }
+        }
+        if name == "process_core" {
+            println!("cargo:rerun-if-changed=../../library/blink/windows/process.h");
         }
         let compiled = Command::new(seed.join("bin/bc.exe"))
             .arg("-c").arg(format!("{source}.b"))

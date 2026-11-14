@@ -1,3 +1,4 @@
+mod process_arguments;
 mod export;
 mod input_facts;
 mod image_export;
@@ -151,7 +152,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let args = process_arguments::read();
     let arguments: Vec<_> = args.iter().map(|arg| {
         let bytes = arg.as_encoded_bytes();
         Argument { bytes: bytes.as_ptr(), length: bytes.len() as u64, text: u64::from(arg.to_str().is_some()) }

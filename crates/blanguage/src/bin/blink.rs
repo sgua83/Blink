@@ -1,3 +1,5 @@
+#[path = "../process_arguments.rs"]
+mod process_arguments;
 use std::{path::PathBuf, process::ExitCode};
 
 #[repr(C)]
@@ -60,7 +62,7 @@ fn main() -> ExitCode {
     }
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let args = process_arguments::read();
     let arguments = args.iter().map(|arg| {
         let bytes = arg.as_encoded_bytes();
         LinkArgument { bytes: bytes.as_ptr(), length: bytes.len(), text: u64::from(arg.to_str().is_some()) }
