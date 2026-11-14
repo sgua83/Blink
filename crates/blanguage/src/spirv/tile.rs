@@ -150,9 +150,7 @@ impl Emitter<'_> {
         self.load_raw(scalar, unit, &[pointer], false)
     }
     pub(super) fn tile_barrier(&mut self) {
-        let scope = self.constant(Scalar::U32, 2);
-        let semantics = self.constant(Scalar::U32, 0x148);
-        self.emit(224, &[scope, scope, semantics]);
+        self.workgroup_barrier(0x148);
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
         let mut components = Vec::new();

@@ -533,6 +533,7 @@ struct SortRankEmission {
 };
 struct StageWords { u64 words; u32 next; u32 label; };
 extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on cpu;
+extern "C" u64 workgroup_barrier(address body, u64 at, u32 scope, u32 semantics) on cpu;
 
 struct SortKeyWrite {
     u32 type_id;

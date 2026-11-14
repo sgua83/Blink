@@ -1159,8 +1159,12 @@ u32 sort_unary(inout StageCursor out, u32 op, u32 ty, u32 value) on cpu {
     return result;
 }
 
+extern "C" u64 workgroup_barrier(address body, u64 at, u32 scope, u32 semantics) on cpu {
+    return words_three(body, at, 224, scope, scope, semantics);
+}
+
 void stage_barrier(inout StageCursor out, u32 scope, u32 semantics) on cpu {
-    out.words = words_three(out.body, out.words, 224, scope, scope, semantics);
+    out.words = workgroup_barrier(out.body, out.words, scope, semantics);
 }
 
 extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on cpu {

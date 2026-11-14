@@ -616,6 +616,8 @@ unsafe extern "C" {
     fn emit_private_address(
         input: PrivateAddress, parts: *const u32, pointers: *mut u32, body: *mut u32,
     ) -> PrivateAddressWords;
+    #[link_name = "bootstrap.spirv_envelope::workgroup_barrier"]
+    fn encode_workgroup_barrier(body: *mut u32, at: u64, scope: u32, semantics: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::encode_sort_rank"]
     fn encode_sort_rank(input: SortRankEmission, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::encode_dispatch_grid"]
@@ -903,6 +905,16 @@ impl Emitter<'_> {
             self.current_label = args[0];
         }
         op(&mut self.body, code, args);
+    }
+    fn workgroup_barrier(&mut self, memory_semantics: u32) {
+        let scope = self.constant(Scalar::U32, 2);
+        let semantics = self.constant(Scalar::U32, memory_semantics);
+        let at = self.body.len();
+        self.body.reserve(4);
+        unsafe {
+            let end = encode_workgroup_barrier(self.body.as_mut_ptr(), at as u64, scope, semantics);
+            self.body.set_len(end as usize);
+        }
     }
     fn select(&mut self, result_type: u32, result: u32, condition: u32, yes: u32, no: u32) {
         let at = self.body.len();

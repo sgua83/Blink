@@ -140,9 +140,7 @@ impl Emitter<'_> {
     }
 
     pub(super) fn scan_barrier(&mut self) {
-        let scope = self.constant(Scalar::U32, 2);
-        let semantics = self.constant(Scalar::U32, 0x108);
-        self.emit(224, &[scope, scope, semantics]);
+        self.workgroup_barrier(0x108);
     }
     pub(super) fn scan(
         &mut self,
