@@ -1859,7 +1859,8 @@ fn extend_computed_roots<'a>(
 fn extend_equality_roots<'a>(
     roots: &mut BTreeMap<ValueIdentity, ValueIdentity>,
     facts: impl IntoIterator<Item = &'a Fact>,
-) {
+) -> bool {
+    let mut changed = false;
     // Facts 及其 union 按 Fact 排序；Equal 是首个事实类别。
     for fact in facts.into_iter().take_while(|fact| matches!(fact, Fact::Equal(..))) {
         if let Fact::Equal(a, b) = *fact {
@@ -1869,6 +1870,7 @@ fn extend_equality_roots<'a>(
             let b_root = b_group.unwrap_or(b);
             let root = a_root.min(b_root);
             if a_root != b_root {
+                changed = true;
                 let merged = a_root.max(b_root);
                 // 只改被合并组；其成员身份不可能小于该组的最小代表值。
                 for (_, current) in roots.range_mut(merged..) {
@@ -1885,9 +1887,7 @@ fn extend_equality_roots<'a>(
             }
         }
     }
-}
-fn has_equality_inputs(facts: &Facts) -> bool {
-    facts.iter().any(|fact| matches!(fact, Fact::Equal(..) | Fact::Index(_, IndexDomain::Computed(_))))
+    changed
 }
 
 // environment 在本轮固定点内不变；节点合并本路径新增的相等与整数运算关系。
@@ -2714,7 +2714,7 @@ impl Clause {
         loop {
             // 共同环境的别名事实只在原环境所有者处生产一次。
             let environment_members = equality_members(&environment_roots);
-            let inherited_equality = {
+            {
                 let empty = Facts::new();
                 let inherited = equivalent_facts(
                     &environment,
@@ -2726,8 +2726,7 @@ impl Clause {
                 if !inherited.is_empty() {
                     environment.to_mut().extend(inherited.iter().copied());
                 }
-                has_equality_inputs(&inherited)
-            };
+            }
             for result in &mut facts {
                 result.remaining = result.users;
                 result.value = None;
@@ -2796,8 +2795,11 @@ impl Clause {
             if !unchanged {
                 environment.to_mut().extend(required.iter().copied());
             }
-            if inherited_equality || has_equality_inputs(&required) {
-                environment_roots = equality_roots(environment.iter());
+            // The prior roots already close the original environment. Inherited
+            // facts only copy a computed result to an existing member of its group.
+            let merged = extend_equality_roots(&mut environment_roots, required.iter());
+            if merged || required.iter().any(|fact| matches!(fact, Fact::Index(_, IndexDomain::Computed(_)))) {
+                extend_computed_roots(&mut environment_roots, environment.iter());
             }
             let numeric = integer_relation_facts(&environment, &environment_roots)?;
             if unchanged && numeric.is_empty() {
