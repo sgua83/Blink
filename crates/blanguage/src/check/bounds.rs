@@ -2763,10 +2763,9 @@ impl Clause {
             true
         }
 
-        #[derive(Clone, Copy)]
-        enum Alternative {
+        enum Alternative<'a> {
             Clause(usize, bool),
-            Fact(Fact),
+            Fact(&'a Fact, std::collections::btree_set::Iter<'a, Fact>),
         }
 
         let mut indices = HashMap::new();
@@ -2820,9 +2819,10 @@ impl Clause {
                         required.iter().copied().for_each(&mut add);
                     }
                 }
-                if let Some(fact) = next_fact.take() {
+                let remaining = next_fact.take().and_then(|(fact, remaining)| {
                     add(fact);
-                }
+                    remaining
+                });
                 consumed = trail.len();
 
                 if additions.len() == before || !contradictory(&facts) {
@@ -2840,21 +2840,28 @@ impl Clause {
                         continue;
                     }
 
-                    let required = trail.iter().enumerate().skip(negative).find_map(|(at, &id)| {
-                        match &**nodes[id].clause.0 {
-                            ClauseNode::Facts(required) if values[id] == Some(false) => Some((at, required)),
-                            _ => None,
-                        }
+                    let required = remaining.or_else(|| {
+                        trail.iter().enumerate().skip(negative).find_map(|(at, &id)| {
+                            match &**nodes[id].clause.0 {
+                                ClauseNode::Facts(required) if values[id] == Some(false) => {
+                                    negative = at + 1;
+                                    Some(required.iter())
+                                }
+                                _ => None,
+                            }
+                        })
                     });
-                    let Some((at, required)) = required else { return true; };
-                    negative = at + 1;
-                    let mut negated = required.iter().rev().copied().filter_map(Self::negated_fact);
-                    if let Some(mut first) = negated.next() {
-                        for earlier in negated {
-                            alternatives.push((Alternative::Fact(first), trail.len(), additions.len(), negative));
-                            first = earlier;
+                    let Some(mut required) = required else { return true; };
+                    if let Some((fact, negated)) = required.find_map(|fact| {
+                        Self::negated_fact(*fact).map(|negated| (fact, negated))
+                    }) {
+                        // A false conjunction uses the first false fact. Advance
+                        // to the next fact only on the disjoint path where this one holds.
+                        if required.len() != 0 {
+                            alternatives.push((Alternative::Fact(fact, required),
+                                trail.len(), additions.len(), negative));
                         }
-                        next_fact = Some(first);
+                        next_fact = Some((negated, None));
                         continue;
                     }
                 }
@@ -2876,7 +2883,7 @@ impl Clause {
                     pending.push((id, truth));
                     None
                 }
-                Alternative::Fact(fact) => Some(fact),
+                Alternative::Fact(fact, required) => Some((*fact, Some(required))),
             };
         }
     }
