@@ -32,3 +32,11 @@ struct FoldedCast {
 };
 
 extern "C" FoldedCast cast(ScalarEncoding source, ScalarEncoding target, u64 bits) on cpu;
+
+// All records contain actual scalar values. The interval reader borrows the
+// caller's original storage only until this synchronous query returns.
+struct BitRange { u64 lower; u64 upper; };
+struct BitPattern { u64 mask; u64 value; };
+struct RangeQuery { u64 order_bias; BitRange range; BitPattern known; BitPattern required; };
+extern "C" bool covers_range(read RangeQuery query, address intervals, u64 count,
+    cfn<BitRange,address,u64> interval) on cpu requires nonzero(interval);

@@ -194,3 +194,69 @@ extern "C" FoldedCast cast(ScalarEncoding source, ScalarEncoding target, u64 bit
     }
     return FoldedCast(truncate(bits, target.width), 1);
 }
+
+u32 conflict_width(u64 bits) on cpu {
+    u64 value = bits;
+    u32 width = 1;
+    if (value >= 4294967296u64) { value = value >> 32u64; width += 32; }
+    if (value >= 65536u64) { value = value >> 16u64; width += 16; }
+    if (value >= 256u64) { value = value >> 8u64; width += 8; }
+    if (value >= 16u64) { value = value >> 4u64; width += 4; }
+    if (value >= 4u64) { value = value >> 2u64; width += 2; }
+    if (value >= 2u64) { width += 1; }
+    return width;
+}
+
+bool bits_intersect(BitRange range, BitPattern bits, u64 order_bias) on cpu {
+    u64 fixed = (bits.value ^ order_bias) & bits.mask;
+    u64 value = range.lower;
+    while (value <= range.upper) {
+        u64 conflict = (value ^ fixed) & bits.mask;
+        if (conflict == 0u64) { return true; }
+        u32 carry = conflict_width(conflict);
+        u64 increment = (fixed & (1u64 << u64(carry - 1))) == 0u64 ? 1u64 : 0u64;
+        // The search can move beyond the complete u64 domain. Only that
+        // carry is needed; no wide value or enumerated machine values remain.
+        if (carry == 64) {
+            if (increment != 0u64) { return false; }
+            value = fixed;
+        } else {
+            u64 high = (value >> u64(carry)) + increment;
+            if ((high >> (64u64 - u64(carry))) != 0u64) { return false; }
+            value = (high << u64(carry)) | fixed;
+        }
+    }
+    return false;
+}
+
+bool implies_bits(read RangeQuery query) on cpu {
+    u64 mask = query.required.mask;
+    while (mask != 0u64) {
+        u64 bit = mask & (0u64 - mask);
+        mask = mask ^ bit;
+        if ((query.known.mask & bit) != 0u64 && ((query.known.value ^ query.required.value) & bit) == 0u64) { continue; }
+        u64 opposite = (query.known.value & ~bit) | ((query.required.value ^ bit) & bit);
+        if (bits_intersect(query.range, BitPattern(query.known.mask | bit, opposite), query.order_bias)) { return false; }
+    }
+    return true;
+}
+
+extern "C" bool covers_range(read RangeQuery query, address intervals, u64 count,
+    cfn<BitRange,address,u64> interval) on cpu requires nonzero(interval) {
+    u64 cursor = query.range.lower;
+    u64 index = 0u64;
+    while (index < count) {
+        BitRange required = interval(intervals, index);
+        if (cursor < required.lower) {
+            u64 upper = min(query.range.upper, required.lower - 1u64);
+            if (bits_intersect(BitRange(cursor, upper), query.known, query.order_bias)) { return false; }
+        }
+        // required.upper+1 is unnecessary once the current range ends here,
+        // including MAX_U64; proceed directly to the same required-bit query.
+        if (cursor > query.range.upper || required.upper >= query.range.upper) { return implies_bits(query); }
+        cursor = max(cursor, required.upper + 1u64);
+        index += 1u64;
+    }
+    if (bits_intersect(BitRange(cursor, query.range.upper), query.known, query.order_bias)) { return false; }
+    return implies_bits(query);
+}

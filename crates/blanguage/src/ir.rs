@@ -1,3 +1,5 @@
+#[cfg(feature = "compiler")]
+mod scalar_ranges;
 use crate::ast::{Access, Target, TextureDimension};
 use std::{collections::{BTreeMap, BTreeSet}, num::NonZeroU64};
 #[cfg(feature = "compiler")]
@@ -94,6 +96,7 @@ impl Scalar {
     pub const fn truncate(self, bits: Bits) -> Bits {
         bits & (Bits::MAX >> (64 - self.bit_width()))
     }
+    #[cfg(not(feature = "compiler"))]
     fn bits_intersect(self,(lower,upper):(Bits,Bits),(mask,value):(Bits,Bits))->bool {
         let mask=u128::from(mask);
         let fixed=u128::from((value^self.order_bias())&mask as Bits);
@@ -109,6 +112,11 @@ impl Scalar {
         false
     }
     /// The actual ordered interval and fixed raw bits must imply the required set.
+    #[cfg(feature = "compiler")]
+    pub fn covers_range(self, range: (Bits, Bits), known_bits: (Bits, Bits), intervals: &[(Bits, Bits)], required_bits: (Bits, Bits)) -> bool {
+        scalar_ranges::covers(self, range, known_bits, intervals, required_bits)
+    }
+    #[cfg(not(feature = "compiler"))]
     pub fn covers_range(self,range:(Bits,Bits),known_bits:(Bits,Bits),intervals:&[(Bits,Bits)],required_bits:(Bits,Bits))->bool {
         let (lower,upper)=range;
         let mut cursor=u128::from(lower);
