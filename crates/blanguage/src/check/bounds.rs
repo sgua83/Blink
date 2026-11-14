@@ -2378,6 +2378,18 @@ impl Clause {
             _ if Arc::ptr_eq(&a.0, &b.0) => a.clone(),
             _ if a.has_direct_conjunct(b) => b.clone(),
             _ if b.has_direct_conjunct(a) => a.clone(),
+            (ClauseNode::Both(left, right), ClauseNode::Both(first, second))
+                if Arc::ptr_eq(&left.0, &first.0) =>
+                Self::both(left, &Self::either(right, second)),
+            (ClauseNode::Both(left, right), ClauseNode::Both(first, second))
+                if Arc::ptr_eq(&left.0, &second.0) =>
+                Self::both(left, &Self::either(right, first)),
+            (ClauseNode::Both(left, right), ClauseNode::Both(first, second))
+                if Arc::ptr_eq(&right.0, &first.0) =>
+                Self::both(right, &Self::either(left, second)),
+            (ClauseNode::Both(left, right), ClauseNode::Both(first, second))
+                if Arc::ptr_eq(&right.0, &second.0) =>
+                Self::both(right, &Self::either(left, first)),
             _ => Self::node(ClauseNode::Either(a.clone(), b.clone())),
         }
     }
