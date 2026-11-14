@@ -519,9 +519,9 @@ JSON根reason及锚点kind均为indexed_read_reuse，锚点含retained和reused�
 
 #### 未消费普通值结果的删除来源
 
-原dce在非Atomic／Append／Print／Call的指令确有结果、且所有结果均不在原needed集合时删除整条普通值操作；单／多结果均沿原规则，整数除法的专门裁剪、私有写及结构删除分别归原职责。原ValueCode／Stage的generated_origin交接GenerationReason::UnusedOperations及GenerationAnchor::EliminatedOperations { retained, operations }，retained保留可选原根GeneratedOrigin，ValueCode.entry_origin及Stage.operation_source独立保持。原优化、活跃性、副作用、数值及完成不因材料改变，没有删除时不增加包装。
+同一B消除算法在非Atomic／Append／Print／Call的指令确有结果、且所有结果均不在原needed集合时删除整条普通值操作；结果枚举只交“有结果／有活跃结果”两个32位事实，是否继续由同一B续接决定，不生产未消费的完整计数；单／多结果均沿原规则，整数除法的专门裁剪、私有写及结构删除分别归原职责。原ValueCode／Stage的generated_origin交接GenerationReason::UnusedOperations及GenerationAnchor::EliminatedOperations { retained, operations }，retained保留可选原根GeneratedOrigin，ValueCode.entry_origin及Stage.operation_source独立保持。原优化、活跃性、副作用、数值及完成不因材料改变，没有删除时不增加包装。
 
-operations中每个EliminatedOperation代表本次dce真正删除的一条IR操作。ValueResults变体保存有结果操作的result_types及可选integer_division_results，result_types()返回Some，按当时Inst::results顺序交回实际Scalar列表；DirectPrivateWrite／IndexedPrivateWrite变体没有结果值，该getter返回None，私有写不伪造结果列表。origin()借用各自同一操作的OperationOrigin。它不保存旧Inst、操作数、常量值、旧Reg或物理位置，不将一条IR操作扩大为整个源表达式、实际运行次数、最终设备指令数或性能收益；一次源操作可能降成多个逻辑分量，多个来源也可能已合在一个被删除操作的已有来源里。递归沿原Scope／If／Loop实际调用归回同一根，列表顺序是本次删除遍历收集顺序，不是运行时间线或稳定身份。
+operations中每个EliminatedOperation代表本次消除真正删除的一条IR操作。ValueResults变体保存有结果操作的result_types及可选integer_division_results，result_types()返回Some，按当时Inst::results顺序交回实际Scalar列表；DirectPrivateWrite／IndexedPrivateWrite变体没有结果值，该getter返回None，私有写不伪造结果列表。origin()借用各自同一操作的OperationOrigin。它不保存旧Inst、操作数、常量值、旧Reg或物理位置，不将一条IR操作扩大为整个源表达式、实际运行次数、最终设备指令数或性能收益；一次源操作可能降成多个逻辑分量，多个来源也可能已合在一个被删除操作的已有来源里。递归沿Scope／If／Loop把本次删除直接交给同一原根输出Vec，列表顺序仍是该次遍历的收集顺序，不是运行时间线或稳定身份。
 
 GeneratedOrigin的JSON reason为unused_operations，锚点kind为eliminated_operations，字段为retained及operations；ValueResults的kind为eliminated_value，字段为result_types、integer_division_results及origin，类型拼写与本次IR寄存器类型相同。普通值的integer_division_results为null，整数除法删除时为原商／余数角色数组，见下节。多源单一trigger()／syntax()／origin()／instance()为空，各来源从明确成员读取；未知来源仍为null。Frame输入前缀真正移除时，原remove_input_prefix沿保留根继续调整LocalInputForward输入引用，旧共享快照和已取得删除来源保持；不改原Frame判断或ABI。
 
@@ -538,7 +538,7 @@ bc ir sample/applications/datasets.b -I sample --entry main
 
 #### 整数商余结果裁剪的来源
 
-原dce只按实际needed筛选IntegerDivisionResult的quotient／remainder。Both真正改成单商或单余数时，同一保留Inst.generated_origin使用GenerationReason::IntegerDivisionResultPrune及GenerationAnchor::IntegerDivisionResultPrune { retained, input_results, output_results }。retained是本次裁剪前的OperationOrigin，原source_site不变；两个角色列表直接来自本次原结果及保留结果的IntegerDivisionResult::outputs，成员为IntegerDivisionOp::Quotient／Remainder，顺序为商后余数。原src、divisor、结果Reg、数值和控制保持，结果未改变时不生成材料。
+同一B消除算法只按实际needed筛选IntegerDivisionResult的quotient／remainder。Both真正改成单商或单余数时，同一保留Inst.generated_origin使用GenerationReason::IntegerDivisionResultPrune及GenerationAnchor::IntegerDivisionResultPrune { retained, input_results, output_results }。retained是本次裁剪前的OperationOrigin，原source_site不变；两个角色列表直接来自本次原结果及保留结果的IntegerDivisionResult::outputs，成员为IntegerDivisionOp::Quotient／Remainder，顺序为商后余数。原src、divisor、结果Reg、数值和控制保持，结果未改变时不生成材料。
 
 JSON根reason与锚点kind均为integer_division_result_prune，字段为retained、input_results、output_results；角色拼写为quotient／remainder。原IntegerDivisionPair及其他生成材料保留在retained中，只说明此前发生的变换，不据此推定当前仍有两个结果或又执行过一次配对。多源单一trigger()／syntax()／origin()／instance()为空，来源从明确成员读取；未知成员仍为null。材料不保存旧Inst、输入值／Reg、常量、物理位置或另一结果表，SDK／JSON借用同一保留节点。
 
@@ -548,9 +548,9 @@ JSON根reason与锚点kind均为integer_division_result_prune，字段为retaine
 
 #### 未消费直接私有槽写的删除来源
 
-原dce确认StoreLocal(slot,value)的Local(slot)不在同一needed集合时，沿原删除点交接EliminatedOperation::DirectPrivateWrite { scalar, origin }。scalar直接来自当时registers[value]，表示这次写实际输入的Scalar；origin保留同一写的source_site与generated_origin。原写仍照常删除，RHS的Call／Print／Atomic等可观察求值继续沿原效果规则保留；不将本项扩大为外部存储或索引范围写删除。
+同一B消除算法确认StoreLocal(slot,value)的Local(slot)不在同一needed集合时，沿原删除点交接EliminatedOperation::DirectPrivateWrite { scalar, origin }。scalar直接来自当时registers[value]，表示这次写实际输入的Scalar；origin保留同一写的source_site与generated_origin。原写仍照常删除，RHS的Call／Print／Atomic等可观察求值继续沿原效果规则保留；不将本项扩大为外部存储或索引范围写删除。
 
-该变体与ValueResults沿原同一Vec、同一递归及GenerationReason::UnusedOperations／GenerationAnchor::EliminatedOperations { retained, operations }交给原ValueCode／Stage.generated_origin；空Map仍由原Program接收。JSON成员kind为eliminated_private_write，target为direct，字段scalar及origin；原有值结果成员kind继续为eliminated_value。SDK直接匹配公开枚举变体，result_types()对直接写为None，integer_division_results()也为None，不假造值结果或另一删除列表。
+该变体与ValueResults沿本次同一根输出Vec及GenerationReason::UnusedOperations／GenerationAnchor::EliminatedOperations { retained, operations }交给原ValueCode／Stage.generated_origin；空Map仍由原Program接收。JSON成员kind为eliminated_private_write，target为direct，字段scalar及origin；原有值结果成员kind继续为eliminated_value。SDK直接匹配公开枚举变体，result_types()对直接写为None，integer_division_results()也为None，不假造值结果或另一删除列表。
 
 一条直接槽写是一个实际Scalar逻辑分量，其字节宽度由Scalar决定，不固定为四字节。原Local／Reg只服务当次IR，压缩重映射后可能不存在；材料不保存这些临时编号，不据此声称仍有物理位置、原存储身份、运行地址／值、执行次数或性能收益。静态来源不等同于运行采集，未知来源仍为null。此类型仅compiler，最后真实IR消费者后释放，不保留旧Inst／IR、值、声明布局、槽映射、活跃性表或运行资源，不改变原许可、数值和完成。
 
@@ -558,9 +558,9 @@ JSON根reason与锚点kind均为integer_division_result_prune，字段为retaine
 
 #### 索引私有写删除的来源
 
-原dce确认StoreLocalIndexed的base..base+len没有needed Local时，在原删除点交接EliminatedOperation::IndexedPrivateWrite { component_count, index_type, byte_offset, scalar, origin }。component_count是原len的逻辑分量数，index_type是原index寄存器的Scalar，byte_offset是原word的静态字节偏移，scalar是原value寄存器的写入Scalar；origin持有同一写的原source_site／generated_origin。index项沿原IR表达字节偏移，不自动当作源数组元素下标；其实际值与运行地址没有采集，不能由类型或偏移推算为已取得。
+同一B消除算法确认StoreLocalIndexed的base..base+len没有needed Local时，在原删除点交接EliminatedOperation::IndexedPrivateWrite { component_count, index_type, byte_offset, scalar, origin }。component_count是原len的逻辑分量数，index_type是原index寄存器的Scalar，byte_offset是原word的静态字节偏移，scalar是原value寄存器的写入Scalar；origin持有同一写的原source_site／generated_origin。index项沿原IR表达字节偏移，不自动当作源数组元素下标；其实际值与运行地址没有采集，不能由类型或偏移推算为已取得。
 
-该变体沿同一删除Vec、递归及UnusedOperations／EliminatedOperations根交给ValueCode／Stage；空Map继续由Program接收。JSON成员kind为eliminated_private_write，target为indexed，字段为component_count、index_type、byte_offset、scalar、origin。直接写成员仍以target=direct区分，值删除仍为eliminated_value；SDK匹配同一公开枚举，result_types()及integer_division_results()对本变体为None，origin()借用原材料，不增加另一删除列表。
+该变体沿本次同一根输出Vec及UnusedOperations／EliminatedOperations根交给ValueCode／Stage；空Map继续由Program接收。JSON成员kind为eliminated_private_write，target为indexed，字段为component_count、index_type、byte_offset、scalar、origin。直接写成员仍以target=direct区分，值删除仍为eliminated_value；SDK匹配同一公开枚举，result_types()及integer_division_results()对本变体为None，origin()借用原材料，不增加另一删除列表。
 
 逻辑范围、实际写宽度与字段字节位置分开。例如array<u32,4>可对应component_count=4、byte_offset=0、scalar=U32；含u32 tag和u64 amount的Pair按现行布局组成array<Pair,3>时，写amount可对应component_count=6、byte_offset=8、scalar=U64，一次写八字节不等于六个数组元素或六个四字节字。材料记录删除时原局部范围的长度，不保留临时起点base／Local／Reg、不与压缩后的同号槽重新绑定，不能将已删除范围冒充当前存储身份。原声明布局及运行地址观察仍由各自原所有者负责，不复制旧IR、值、布局、槽表或活跃性图。
 

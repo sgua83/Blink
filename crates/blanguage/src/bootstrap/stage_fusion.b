@@ -430,3 +430,123 @@ extern "C" void private_before(FusionBlock code,address live,address break_live,
         }
     }
 }
+
+extern "C" u32 dce_result(inout DceResults results,address needed,u64 reg,
+    cfn<u32,address,u32,u64> contains) on cpu requires nonzero(contains) {
+    results.present=1;
+    results.needed=contains(needed,0,reg);
+    return results.needed==0 ? 1 : 0;
+}
+extern "C" u32 dce_result_needed(address needed,u64 reg,
+    cfn<u32,address,u32,u64> contains) on cpu requires nonzero(contains) {
+    return contains(needed,0,reg);
+}
+bool dce_any_local(address needed,u64 first,u64 length,
+    cfn<u32,address,u32,u64> contains) on cpu requires nonzero(contains) {
+    u64 index=0u64;
+    while(index<length){
+        if(contains(needed,1,first+index)!=0){return true;}
+        index+=1u64;
+    }
+    return false;
+}
+bool dce_scope_observable(FusionBlock code,address after,DceHost host) on cpu
+    requires nonzero(host.read_node) requires nonzero(host.read_block)
+    requires nonzero(host.results) requires nonzero(host.contains) requires nonzero(host.change)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.eliminate_block)
+    requires nonzero(host.live_before) requires nonzero(host.loop_live) requires nonzero(host.record)
+    requires nonzero(host.prune_division) requires nonzero(host.prune_collective) {
+    u64 index=0u64;
+    while(index<code.count){
+        DceNode node=host.read_node(code,index);
+        if(node.kind==DceKind::LocalWrite){
+            if(host.contains(after,1,node.first_slot)!=0){return true;}
+        } else if(node.kind==DceKind::IndexedWrite){
+            if(dce_any_local(after,node.first_slot,node.second_slot,host.contains)){return true;}
+        } else if(node.kind==DceKind::Scope){
+            if(dce_scope_observable(node.first,after,host)){return true;}
+        } else if(node.kind==DceKind::If){
+            if(dce_scope_observable(node.first,after,host)||dce_scope_observable(node.second,after,host)){return true;}
+        } else if((node.flags&2)!=0){return true;}
+        else {
+            DceResults results=host.results(node.instruction,after);
+            if(results.needed!=0){return true;}
+        }
+        index+=1u64;
+    }
+    return false;
+}
+
+extern "C" bool eliminate_instruction(address instruction,address needed,
+    address break_live,address continue_live,address exit_live,address empty,
+    address context,DceHost host) on cpu
+    requires nonzero(host.read_node) requires nonzero(host.read_block)
+    requires nonzero(host.results) requires nonzero(host.contains) requires nonzero(host.change)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.eliminate_block)
+    requires nonzero(host.live_before) requires nonzero(host.loop_live) requires nonzero(host.record)
+    requires nonzero(host.prune_division) requires nonzero(host.prune_collective) {
+    DceNode node=host.read_node(FusionBlock(instruction,1u64),0u64);
+    if(node.kind==DceKind::Collective){host.prune_collective(node.payload,needed);}
+    if(node.kind==DceKind::Division){
+        u32 retained=0;
+        if((node.flags&4)!=0 && host.contains(needed,0,node.quotient)!=0){retained|=1;}
+        if((node.flags&8)!=0 && host.contains(needed,0,node.remainder)!=0){retained|=2;}
+        if(retained==0){
+            host.record(context,instruction,DceRemoval(DceRemovalKind::Division,0u64,0u64,0u64,0u64,node.payload));
+            return false;
+        }
+        if(retained!=((node.flags>>2)&3)){
+            DceDivisionChoice choice;
+            if(retained==1){choice=DceDivisionChoice::Quotient;}
+            else if(retained==2){choice=DceDivisionChoice::Remainder;}
+            else {choice=DceDivisionChoice::Both;}
+            host.prune_division(instruction,node.payload,choice,node.quotient,node.remainder);
+        }
+    }
+    if((node.flags&1)==0){
+        DceResults results=host.results(instruction,needed);
+        if(results.present!=0 && results.needed==0){
+            host.record(context,instruction,DceRemoval(DceRemovalKind::Values,0u64,0u64,0u64,0u64,unsafe_address(0u64)));
+            return false;
+        }
+    }
+    if(node.kind==DceKind::LocalWrite && host.contains(needed,1,node.first_slot)==0){
+        host.record(context,instruction,DceRemoval(DceRemovalKind::DirectWrite,node.value,0u64,0u64,0u64,unsafe_address(0u64)));
+        return false;
+    }
+    if(node.kind==DceKind::IndexedWrite && !dce_any_local(needed,node.first_slot,node.second_slot,host.contains)){
+        host.record(context,instruction,DceRemoval(DceRemovalKind::IndexedWrite,node.value,node.index,node.second_slot,node.word,unsafe_address(0u64)));
+        return false;
+    }
+    if(node.kind==DceKind::Scope){
+        address after=host.clone_set(needed);
+        host.eliminate_block(node.first_code,needed,break_live,continue_live,after,context);
+        bool observable=dce_scope_observable(host.read_block(node.first_code),after,host);
+        if(!observable){host.change(LiveSetAction::Copy,needed,after,0u64);}
+        host.drop_set(after);
+        if(!observable){return false;}
+    } else if(node.kind==DceKind::If){
+        address first=host.clone_set(needed);
+        host.eliminate_block(node.first_code,first,break_live,continue_live,exit_live,context);
+        host.eliminate_block(node.second_code,needed,break_live,continue_live,exit_live,context);
+        FusionBlock yes=host.read_block(node.first_code);
+        FusionBlock no=host.read_block(node.second_code);
+        if(yes.count==0u64 && no.count==0u64){host.drop_set(first);return false;}
+        host.change(LiveSetAction::Union,needed,first,0u64);
+        host.drop_set(first);
+        host.change(LiveSetAction::InsertRegister,needed,unsafe_address(0u64),node.first_slot);
+    } else if(node.kind==DceKind::Loop){
+        address header=host.loop_live(node.first,node.first_slot,node.second,needed,break_live,continue_live,exit_live);
+        address before_body=host.clone_set(header);
+        host.eliminate_block(node.second_code,before_body,needed,header,exit_live,context);
+        host.change(LiveSetAction::Union,before_body,needed,0u64);
+        host.change(LiveSetAction::InsertRegister,before_body,unsafe_address(0u64),node.first_slot);
+        host.eliminate_block(node.first_code,before_body,break_live,continue_live,exit_live,context);
+        host.change(LiveSetAction::Swap,needed,before_body,0u64);
+        host.drop_set(before_body);
+        host.drop_set(header);
+    } else {
+        host.live_before(FusionBlock(instruction,1u64),needed,break_live,continue_live,exit_live);
+    }
+    return true;
+}

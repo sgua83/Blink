@@ -154,3 +154,56 @@ extern "C" void private_loop(FusionBlock condition, u64 test, FusionBlock body,
 // operand list. B chooses each gen/kill action in this fixed continuation.
 extern "C" void private_reference(LiveReferenceKind kind, address live, u64 slot,
     cfn<void,LiveSetAction,address,address,u64> change) on cpu requires nonzero(change);
+
+enum DceKind:u32 { Ordinary=0; Scope=1; If=2; Loop=3; LocalWrite=4; IndexedWrite=5; Division=6; Collective=7; };
+enum DceRemovalKind:u32 { Values=0; Division=1; DirectWrite=2; IndexedWrite=3; };
+enum DceDivisionChoice:u32 { Quotient=1; Remainder=2; Both=3; };
+struct DceNode {
+    address instruction;
+    FusionBlock first;
+    FusionBlock second;
+    address first_code;
+    address second_code;
+    address payload;
+    u64 first_slot;
+    u64 second_slot;
+    u64 index;
+    u64 word;
+    u64 value;
+    u64 quotient;
+    u64 remainder;
+    DceKind kind;
+    u32 flags; // exempt results=1, observable effect=2, quotient=4, remainder=8
+};
+struct DceResults { u32 present; u32 needed; };
+struct DceRemoval { DceRemovalKind kind; u64 value; u64 index; u64 length; u64 word; address division; };
+struct DceHost {
+    cfn<DceNode,FusionBlock,u64> read_node;
+    cfn<FusionBlock,address> read_block;
+    cfn<DceResults,address,address> results;
+    cfn<u32,address,u32,u64> contains;
+    cfn<void,LiveSetAction,address,address,u64> change;
+    cfn<address,address> clone_set;
+    cfn<void,address> drop_set;
+    cfn<void,address,address,address,address,address,address> eliminate_block;
+    cfn<void,FusionBlock,address,address,address,address> live_before;
+    cfn<address,FusionBlock,u64,FusionBlock,address,address,address,address> loop_live;
+    cfn<void,address,address,DceRemoval> record;
+    cfn<void,address,address,DceDivisionChoice,u64,u64> prune_division;
+    cfn<void,address,address> prune_collective;
+};
+
+// The IR owner enumerates actual results and moves retained instructions.
+// B owns every elimination and propagation decision during that borrow.
+extern "C" u32 dce_result(inout DceResults results,address needed,u64 reg,
+    cfn<u32,address,u32,u64> contains) on cpu requires nonzero(contains);
+extern "C" u32 dce_result_needed(address needed,u64 reg,
+    cfn<u32,address,u32,u64> contains) on cpu requires nonzero(contains);
+extern "C" bool eliminate_instruction(address instruction,address needed,
+    address break_live,address continue_live,address exit_live,address empty,
+    address context,DceHost host) on cpu
+    requires nonzero(host.read_node) requires nonzero(host.read_block)
+    requires nonzero(host.results) requires nonzero(host.contains) requires nonzero(host.change)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.eliminate_block)
+    requires nonzero(host.live_before) requires nonzero(host.loop_live) requires nonzero(host.record)
+    requires nonzero(host.prune_division) requires nonzero(host.prune_collective);

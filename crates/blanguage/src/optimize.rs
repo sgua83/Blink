@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod invariant;
 mod selection;
 mod value_flow;
+mod eliminate;
 pub(crate) use invariant::prepare_reduction;
 
 #[repr(C)]
@@ -307,7 +308,7 @@ fn optimize_stage(stage: &mut Stage, bindings: usize) {
     }
     value_flow::run(&mut stage.code, &stage.registers);
     loop {
-        let removed = dce(
+        let removed = eliminate::run(
             &mut stage.code,
             &mut BTreeSet::new(),
             &BTreeSet::new(),
@@ -467,7 +468,7 @@ pub(crate) fn value_code(value: &mut ValueCode) {
         .copied()
         .map(PrivateSlot::Register)
         .collect();
-    let removed = dce(
+    let removed = eliminate::run(
         &mut value.code,
         &mut needed,
         &BTreeSet::new(),
@@ -753,168 +754,4 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
         _ => {}
     }
 }
-fn dce(
-    code: &mut Vec<Inst>,
-    needed: &mut BTreeSet<PrivateSlot>,
-    break_live: &BTreeSet<PrivateSlot>,
-    continue_live: &BTreeSet<PrivateSlot>,
-    exit_live: &BTreeSet<PrivateSlot>,
-    registers: &[Scalar],
-) -> Vec<EliminatedOperation> {
-    use PrivateSlot::{Local, Register};
-    let mut out = Vec::new();
-    let mut removed = Vec::new();
-    for mut i in std::mem::take(code).into_iter().rev() {
-        if let InstKind::TileCollective(c) = &mut (i).kind {
-            c.results.retain(|(_, r)| needed.contains(&Register(*r)));
-        }
-        if let InstKind::IntegerDivide { result, .. } = &mut (i).kind {
-            let original = *result;
-            let q = result.quotient().filter(|r| needed.contains(&Register(*r)));
-            let r = result
-                .remainder()
-                .filter(|r| needed.contains(&Register(*r)));
-            let Some(retained) = IntegerDivisionResult::from_parts(q, r) else {
-                removed.push(EliminatedOperation::ValueResults {
-                    result_types: original.outputs().map(|(_, reg)| registers[reg]).collect(),
-                    integer_division_results: Some(original.outputs().map(|(result, _)| result).collect()),
-                    origin: OperationOrigin::from_instruction(&i),
-                });
-                continue;
-            };
-            *result = retained;
-            if original != retained {
-                let origin = OperationOrigin::from_instruction(&i);
-                i.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
-                    reason: GenerationReason::IntegerDivisionResultPrune,
-                    trigger: Some(GenerationAnchor::IntegerDivisionResultPrune {
-                        retained: origin,
-                        input_results: original.outputs().map(|(result, _)| result).collect(),
-                        output_results: retained.outputs().map(|(result, _)| result).collect(),
-                    }),
-                }));
-            }
-        }
-        if !matches!(
-            &(i).kind,
-            InstKind::Atomic(_) | InstKind::Append(_) | InstKind::Print { .. } | InstKind::Call(_)
-        ) {
-            let mut results = i.results().peekable();
-            if results.peek().is_some()
-                && !results.any(|r| needed.contains(&Register(r)))
-            {
-                removed.push(EliminatedOperation::ValueResults {
-                    result_types: i.results().map(|reg| registers[reg]).collect(),
-                    integer_division_results: None,
-                    origin: OperationOrigin::from_instruction(&i),
-                });
-                continue;
-            }
-        }
-        match &i.kind {
-            InstKind::StoreLocal(slot, value) if !needed.contains(&Local(*slot)) => {
-                removed.push(EliminatedOperation::DirectPrivateWrite {
-                    scalar: registers[*value],
-                    origin: OperationOrigin::from_instruction(&i),
-                });
-                continue;
-            }
-            InstKind::StoreLocalIndexed { base, len, index, word, value }
-                if !(*base..*base + *len).any(|s| needed.contains(&Local(s))) => {
-                removed.push(EliminatedOperation::IndexedPrivateWrite {
-                    component_count: *len,
-                    index_type: registers[*index],
-                    byte_offset: *word,
-                    scalar: registers[*value],
-                    origin: OperationOrigin::from_instruction(&i),
-                });
-                continue;
-            }
-            _ => {}
-        }
-        match &mut (i).kind {
-            InstKind::Scope(body) => {
-                let after = needed.clone();
-                removed.extend(dce(body, needed, break_live, continue_live, &after, registers));
-                if !scope_observable(body, &after) {
-                    *needed = after;
-                    continue;
-                }
-            }
-            InstKind::If { condition, yes, no } => {
-                let mut a = needed.clone();
-                removed.extend(dce(yes, &mut a, break_live, continue_live, exit_live, registers));
-                removed.extend(dce(no, needed, break_live, continue_live, exit_live, registers));
-                if yes.is_empty() && no.is_empty() {
-                    continue;
-                }
-                needed.extend(a);
-                needed.insert(Register(*condition));
-            }
-            InstKind::Loop {
-                condition,
-                test,
-                body,
-            } => {
-                let header = loop_live(
-                    condition,
-                    *test,
-                    body,
-                    needed,
-                    break_live,
-                    continue_live,
-                    exit_live,
-                );
-                let mut before_body = header.clone();
-                removed.extend(dce(body, &mut before_body, needed, &header, exit_live, registers));
-                before_body.extend(needed.iter().copied());
-                before_body.insert(Register(*test));
-                removed.extend(dce(
-                    condition,
-                    &mut before_body,
-                    break_live,
-                    continue_live,
-                    exit_live,
-                    registers,
-                ));
-                *needed = before_body;
-            }
-            _ => {
-                *needed = live_before(
-                    std::slice::from_ref(&i),
-                    std::mem::take(needed),
-                    break_live,
-                    continue_live,
-                    exit_live,
-                )
-            }
-        }
-        out.push(i);
-    }
-    out.reverse();
-    *code = out;
-    removed
-}
-fn scope_observable(code: &[Inst], after: &BTreeSet<PrivateSlot>) -> bool {
-    code.iter().any(|inst| match &(inst).kind {
-        InstKind::StoreLocal(slot, _) => after.contains(&PrivateSlot::Local(*slot)),
-        InstKind::StoreLocalIndexed { base, len, .. } => {
-            (*base..*base + *len).any(|s| after.contains(&PrivateSlot::Local(s)))
-        }
-        InstKind::Scope(body) => scope_observable(body, after),
-        InstKind::If { yes, no, .. } => scope_observable(yes, after) || scope_observable(no, after),
-        InstKind::Loop { .. }
-        | InstKind::StoreIndexed { .. }
-        | InstKind::Store { .. }
-        | InstKind::Atomic(_)
-        | InstKind::Append(_)
-        | InstKind::Print { .. }
-        | InstKind::Call(_)
-        | InstKind::TilePublish(_)
-        | InstKind::TileCollective(_)
-        | InstKind::TileBarrier => true,
-        _ => inst
-            .results()
-            .any(|r| after.contains(&PrivateSlot::Register(r))),
-    })
-}
+
