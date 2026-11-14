@@ -114,8 +114,9 @@ impl Member {
         coff::Reader::new(&self.bytes).and_then(|reader|reader.host_links())
             .map_err(|error|format!("静态库成员 {}：{error}",self.name).into())
     }
-    pub(crate) fn object(&self,native:bool)->Result<Object> {
-        member_object(&self.name,&self.bytes,native)
+    pub(crate) fn archive_symbols(&self)->Result<Option<Vec<String>>> {
+        coff::Reader::new(&self.bytes).and_then(|reader|reader.archive_symbols())
+            .map_err(|error|format!("静态库成员 {}：{error}",self.name).into())
     }
 }
 fn member_object(name:&str,bytes:&ObjectBytes,native:bool)->Result<Object> {
@@ -295,11 +296,9 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     let members = members(inputs)?;
     let mut symbols = Vec::new();
     for (index, member) in members.iter().enumerate() {
-        let object = member.object(false)?;
-        if !matches!(object.kind, Kind::Module { .. }) {
-            return Err(format!("{} 不是独立模块产物", member.name).into());
-        }
-        symbols.extend(object.symbols.into_iter().map(|s| (index, s.name)));
+        let names = member.archive_symbols()?
+            .ok_or_else(||format!("{} 不是独立模块产物",member.name))?;
+        symbols.extend(names.into_iter().map(|name| (index, name)));
     }
     let output = encode(&members, &symbols)?;
     if let Some(parent) = path.parent() {

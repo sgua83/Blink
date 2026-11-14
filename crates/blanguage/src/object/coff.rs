@@ -246,6 +246,13 @@ unsafe extern "C" {
 fn object_index(rows: &[ObjectSection], index: usize) -> Option<usize> {
     rows.get(index)?.mapped.checked_sub(1)
 }
+fn export_names(rows: &[ObjectSection], symbols: &[ObjectSymbol]) -> Result<Vec<String>> {
+    symbols.iter().filter(|symbol| symbol.external != 0 && symbol.section > 0)
+        .map(|symbol| {
+            object_index(rows, symbol.section as usize - 1).ok_or("导出符号引用不可装载的节")?;
+            Ok(unsafe { std::str::from_utf8_unchecked(symbol.name.borrowed()) }.to_owned())
+        }).collect()
+}
 
 fn read_text(bytes: ReadBytes) -> Result<String> {
     Ok(std::str::from_utf8(unsafe { bytes.borrowed() })?.to_owned())
@@ -793,9 +800,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
             Ok((record, target))
         }))
     }
-    /// Native archive consumers need the original names and import relocations.
-    /// Members keep their bytes; B contracts, stack and code are not restored.
-    pub(crate) fn host_links(&self) -> Result<Option<(Vec<String>, Vec<Import>)>> {
+    fn module_symbols(&self) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>)>> {
         let mut parts = ObjectParts::default();
         let raw = self.section_rows(&mut parts).collect::<Result<Vec<_>>>()?;
         let mut cursor = MetadataReadCursor::new(self.metadata(parts.metadata)?);
@@ -805,11 +810,16 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         // The existing B reader omits section-definition output for this empty
         // receiver. The actual COFF symbol view remains the only symbol source.
         let symbols = self.symbol_rows(&mut [])?;
-        let names = symbols.iter().filter(|symbol| symbol.external != 0 && symbol.section > 0)
-            .map(|symbol| {
-                object_index(&raw, symbol.section as usize - 1).ok_or("导出符号引用不可装载的节")?;
-                Ok(unsafe { std::str::from_utf8_unchecked(symbol.name.borrowed()) }.to_owned())
-            }).collect::<Result<Vec<_>>>()?;
+        Ok(Some((raw, symbols)))
+    }
+    /// B archives preserve member bytes and only produce the physical export directory.
+    pub(crate) fn archive_symbols(&self) -> Result<Option<Vec<String>>> {
+        self.module_symbols()?.map(|(raw, symbols)| export_names(&raw, &symbols)).transpose()
+    }
+    /// Native archives additionally consume the actual DLL import relocations.
+    pub(crate) fn host_links(&self) -> Result<Option<(Vec<String>, Vec<Import>)>> {
+        let Some((raw, symbols)) = self.module_symbols()? else { return Ok(None); };
+        let names = export_names(&raw, &symbols)?;
         let mut imports = Vec::new();
         for row in raw.iter().filter(|row| row.mapped != 0) {
             for value in self.relocations(&raw, &symbols, row)? {
