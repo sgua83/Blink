@@ -15,20 +15,16 @@ extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on c
 
 struct ArchiveRange {u64 start;u64 length;};
 struct ArchiveReadMember {u32 offset;ArchiveRange name;ArchiveRange body;};
-struct ArchiveReadSymbol {u32 member;ArchiveRange name;};
 struct ArchiveReadResult {u32 error;u64 at;};
 extern "C" bool has_signature(address bytes, u64 length) on cpu;
-extern "C" ArchiveReadResult decode(address bytes,u64 length,address context,
-    cfn<u32,address,ArchiveReadMember> member,cfn<u32,address,ArchiveReadSymbol> symbol) on cpu
-    requires nonzero(member) requires nonzero(symbol);
+// A successful load transfers the directory. Its ranges borrow the original
+// archive until library_destroy. validate checks only the UTF-8 name range.
+struct ArchiveLoad { address library; ArchiveReadResult read; };
+extern "C" ArchiveLoad load(address bytes, u64 length, address context,
+    cfn<u32,address,ArchiveRange> validate) on cpu requires nonzero(validate);
 
-// One B-owned library directory. Its byte ranges borrow the caller's original
-// immutable archive until library_destroy. No Rust container crosses this ABI.
 struct ArchiveMemberState {ArchiveReadMember member;u32 available;};
 struct ArchiveSelection {u32 result;u64 index;};
-extern "C" address library_create(address bytes) on cpu;
-extern "C" u32 library_add_member(address library,ArchiveReadMember member) on cpu;
-extern "C" u32 library_add_symbol(address library,ArchiveReadSymbol symbol) on cpu;
 extern "C" u64 library_member_count(address library) on cpu;
 extern "C" ArchiveMemberState library_member(address library,u64 index) on cpu;
 extern "C" ArchiveSelection library_take(address library,address name,u64 length) on cpu;

@@ -139,29 +139,25 @@ impl ArchiveRange {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ArchiveReadMember { offset: u32, name: ArchiveRange, body: ArchiveRange }
-#[repr(C)]
-struct ArchiveReadSymbol { member: u32, name: ArchiveRange }
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum ArchiveReadError {
     None, Truncated, Header, Decimal, MissingDirectory, ZeroIndex,
-    IndexRange, StringOffset, UnterminatedString, UnterminatedName, MemberOffset, Receiver,
+    IndexRange, StringOffset, UnterminatedString, UnterminatedName, MemberOffset, Receiver, Allocation,
 }
 #[repr(C)]
 struct ArchiveReadResult { error: ArchiveReadError, at: usize }
+#[repr(C)]
+struct ArchiveLoad {
+    library: *mut std::ffi::c_void,
+    read: ArchiveReadResult,
+}
 unsafe extern "C" {
     #[link_name = "bootstrap.archive::has_signature"]
     fn archive_has_signature(bytes: *const u8, length: usize) -> bool;
-    #[link_name = "bootstrap.archive::decode"]
-    fn archive_decode(bytes: *const u8, length: usize, context: *mut std::ffi::c_void,
-        member: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveReadMember) -> u32,
-        symbol: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveReadSymbol) -> u32) -> ArchiveReadResult;
-    #[link_name="bootstrap.archive::library_create"]
-    fn library_create(bytes:*const u8)->*mut std::ffi::c_void;
-    #[link_name="bootstrap.archive::library_add_member"]
-    fn library_add_member(library:*mut std::ffi::c_void,member:ArchiveReadMember)->u32;
-    #[link_name="bootstrap.archive::library_add_symbol"]
-    fn library_add_symbol(library:*mut std::ffi::c_void,symbol:ArchiveReadSymbol)->u32;
+    #[link_name = "bootstrap.archive::load"]
+    fn archive_load(bytes: *const u8, length: usize, context: *mut std::ffi::c_void,
+        validate: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveRange) -> u32) -> ArchiveLoad;
     #[link_name="bootstrap.archive::library_member_count"]
     fn library_member_count(library:*mut std::ffi::c_void)->usize;
     #[link_name="bootstrap.archive::library_member"]
@@ -175,30 +171,20 @@ unsafe extern "C" {
 struct ArchiveMemberState {member:ArchiveReadMember,available:u32}
 #[repr(C)]
 struct ArchiveSelection {result:u32,index:usize}
-// The synchronous receiver interprets UTF-8. B retains only the ranges into
-// Library's immutable input, and owns directory insertion and release.
-struct ArchiveRead<'a> {library:&'a mut Library,received:Result<()>}
-unsafe extern "C" fn read_member(context:*mut std::ffi::c_void,member:ArchiveReadMember)->u32 {
-    let read=unsafe{&mut *(context as *mut ArchiveRead<'_>)};
-    let result=(||->Result<()>{
-        std::str::from_utf8(member.name.bytes(&read.library.bytes))?;
-        if unsafe{library_add_member(read.library.directory.as_ptr(),member)}==0 {
-            return Err("静态库目录内存分配失败".into());
-        }
-        Ok(())
-    })();
-    match result {Ok(())=>1,Err(error)=>{read.received=Err(error);0}}
+struct ArchiveNames<'a> {
+    bytes: &'a [u8],
+    error: Option<std::str::Utf8Error>,
 }
-unsafe extern "C" fn read_symbol(context:*mut std::ffi::c_void,symbol:ArchiveReadSymbol)->u32 {
-    let read=unsafe{&mut *(context as *mut ArchiveRead<'_>)};
-    let result=(||->Result<()>{
-        std::str::from_utf8(symbol.name.bytes(&read.library.bytes))?;
-        if unsafe{library_add_symbol(read.library.directory.as_ptr(),symbol)}==0 {
-            return Err("静态库目录内存分配失败".into());
+
+unsafe extern "C" fn validate_name(context: *mut std::ffi::c_void, name: ArchiveRange) -> u32 {
+    let names = unsafe { &mut *context.cast::<ArchiveNames<'_>>() };
+    match std::str::from_utf8(name.bytes(names.bytes)) {
+        Ok(_) => 1,
+        Err(error) => {
+            names.error = Some(error);
+            0
         }
-        Ok(())
-    })();
-    match result {Ok(())=>1,Err(error)=>{read.received=Err(error);0}}
+    }
 }
 fn archive_read_result(result: ArchiveReadResult) -> Result<()> {
     let message=match result.error {
@@ -214,6 +200,7 @@ fn archive_read_result(result: ArchiveReadResult) -> Result<()> {
         ArchiveReadError::UnterminatedName => "静态库成员名未终止",
         ArchiveReadError::MemberOffset => "静态库成员偏移超出 COFF 格式",
         ArchiveReadError::Receiver => "静态库输出接收失败",
+        ArchiveReadError::Allocation => return Err("静态库目录内存分配失败".into()),
     };
     Err(format!("{message}（归档字节偏移 {}）",result.at).into())
 }
@@ -222,15 +209,15 @@ impl Library {
         Self::decode(bytes, true)
     }
     fn decode(bytes: ObjectBytes, native: bool) -> Result<Self> {
-        let directory=NonNull::new(unsafe{library_create(bytes.as_ptr())})
-            .ok_or("静态库目录内存分配失败")?;
-        let mut library=Self{directory,bytes,native};
-        let mut read=ArchiveRead{library:&mut library,received:Ok(())};
-        let result=unsafe{archive_decode(read.library.bytes.as_ptr(),read.library.bytes.len(),
-            &mut read as *mut ArchiveRead<'_> as *mut std::ffi::c_void,read_member,read_symbol)};
-        read.received?;
-        archive_read_result(result)?;
-        Ok(library)
+        let mut names = ArchiveNames { bytes: &bytes, error: None };
+        let result = unsafe {
+            archive_load(bytes.as_ptr(), bytes.len(), (&mut names as *mut ArchiveNames<'_>).cast(), validate_name)
+        };
+        if let Some(error) = names.error { return Err(error.into()); }
+        archive_read_result(result.read)?;
+        // Successful load transfers the directory while the original bytes stay owned here.
+        let directory = unsafe { NonNull::new_unchecked(result.library) };
+        Ok(Self { directory, bytes, native })
     }
     fn member_count(&self)->usize {unsafe{library_member_count(self.directory.as_ptr())}}
     fn member(&self,index:usize)->ArchiveMemberState {unsafe{library_member(self.directory.as_ptr(),index)}}
