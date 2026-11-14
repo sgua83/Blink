@@ -51,6 +51,8 @@ address_of(place)取得现有连续CPU普通位置的真实地址，不先读取
 
 Windows x64已选且已建立停止／读取范围的CPU线程，由[blink.windows.context](../../library/README.md#blinkwindowscontext)直接交接原Context64／FXSAVE布局与XState定位。普通B的capture_thread在一份Frame缓冲完成原大小查询、实际对齐初始化、特征选择及GetThreadContext，返回唯一拥有缓冲、实际Context偏移、原有效特征mask及捕获前后QPC ticks；原始位按实际flags／mask解释，未置位的INITIALIZED扩展区域、reserved和未采集组不冒称已读值。线程／句柄和停止／恢复归调用者；错误阶段及原OS码保留，函数不隐藏暂停、重试或完整上下文副本。快照数据不延长原线程／代码寿命，源码变量与实际代码绑定仍沿其各自接口。
 
+Windows x64的已选线程数据断点通过同一Context64、原SetThreadContext及THREAD_SET_CONTEXT权限设置实际调试寄存器，由既有调试事件取得EXCEPTION_SINGLE_STEP和真实DR6／目标内存。槽、访问种类、1／2／4／8字节对齐范围、原状态保存／恢复及继续由原普通B调试程序管理；一次设置非零不代替实际命中，数据陷阱PC不伪装成访问前指令或源码变量位置。实际限制及用法见[标准库原接口](../../library/README.md#blinkwindowscontext)。库不新增Rust转发、断点表、自动暂停、软件补丁或另一调试服务；目标代码、线程及存储的寿命保持。
+
 Windows x64已选CPU现场的单帧推进由[blink.windows.unwind](../../library/README.md#blinkwindowsunwind)以原C ABI直接交给DbgHelp.dll的StackWalk64。调用者保持真实进程／线程、原栈、原生展开记录、可修改CONTEXT和同一StackFrame64游标；首次成功可能仍为初始帧，后续按原更新结果逐帧使用，原零返回不伪造成完整栈尾或GetLastError中的确定原因。四个cfn回调按原SDK可空签名交接，具名原生查询通过c_function传入；符号处理资源沿相同进程标识初始化、使用及清理。数据及代码的最后消费者、目标停止／恢复与DbgHelp调用顺序仍归原所有者，库不新增转发实现、锁、调度器或状态表。原现场快照经InitializeContext／CopyContext交给独立可修改的展开游标，保留原观测数据；源码关联和完整回溯程序仍分别提供。
 
 ## 原生C函数地址的签名值

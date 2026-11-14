@@ -87,6 +87,7 @@ struct Context64 {
 extern "C" i32 InitializeContext(address buffer,u32 flags,inout address context,
     inout u32 bytes) on cpu from "KERNEL32.dll";
 extern "C" i32 GetThreadContext(handle thread,address context) on cpu from "KERNEL32.dll";
+extern "C" i32 SetThreadContext(handle thread,address context) on cpu from "KERNEL32.dll";
 extern "C" u64 GetEnabledXStateFeatures() on cpu from "KERNEL32.dll";
 extern "C" i32 SetXStateFeaturesMask(address context,u64 features) on cpu from "KERNEL32.dll";
 extern "C" i32 GetXStateFeaturesMask(address context,write u64 features) on cpu

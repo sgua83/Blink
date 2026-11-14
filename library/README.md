@@ -211,7 +211,7 @@ println(info.number_of_processors);
 
 `blink.windows.debug`提供Windows x64原生调试事件。`DebugActiveProcess`按实际PID附加，`DebugBreakProcess`向已附加的进程请求断点，`WaitForDebugEventEx`取得实际停止事件，`ContinueDebugEvent`消费同一事件的PID、TID和调用者给出的Windows继续状态，`DebugActiveProcessStop`解除。等待、继续和退出策略沿同一原调试线程，`DebugSetProcessKillOnExit`由调用方显式选择。请求成功后的现场以实际收到的事件为准。继续一个事件后，后续线程退出等事件仍按Windows事件流取得并处理。零状态的原错误可立即从`GetLastError()`读取。[附加与停止事件](https://learn.microsoft.com/en-us/windows/win32/api/debugapi/nf-debugapi-debugactiveprocess) [请求断点](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-debugbreakprocess) [继续事件](https://learn.microsoft.com/en-us/windows/win32/api/debugapi/nf-debugapi-continuedebugevent) [退出策略](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-debugsetprocesskillonexit)
 
-`DebugEvent`保持原176字节／8对齐，事件代码、进程ID和线程ID位于0／4／8，`payload`从16起承接原联合存储。调用者交给`WaitForDebugEventEx`的是已初始化的`inout`记录，成功后按事件标签读取原联合的有效成员。`EXCEPTION_DEBUG_EVENT`首个字的低32位为异常代码；创建进程与装入DLL事件首个字为原文件句柄，其非零值由观察者`CloseHandle`。事件附带的原进程／线程句柄沿OS调试生命周期，独立`OpenProcess`取得的读取句柄由调用方关闭。[DEBUG_EVENT布局](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-debug_event) [等待与句柄归属](https://learn.microsoft.com/en-us/windows/win32/api/debugapi/nf-debugapi-waitfordebugeventex)
+`DebugEvent`保持原176字节／8对齐，事件代码、进程ID和线程ID位于0／4／8，`payload`从16起承接原联合存储。调用者交给`WaitForDebugEventEx`的是已初始化的`inout`记录，成功后按事件标签读取原联合的有效成员。`EXCEPTION_DEBUG_EVENT`首个字的低32位为异常代码，payload[2]为原异常地址，payload[19]的低32位为first-chance；`EXCEPTION_SINGLE_STEP`为0x80000004，实际数据断点还需结合线程及DR6确认；创建进程与装入DLL事件首个字为原文件句柄，其非零值由观察者`CloseHandle`。事件附带的原进程／线程句柄沿OS调试生命周期，独立`OpenProcess`取得的读取句柄由调用方关闭。[DEBUG_EVENT布局](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-debug_event) [等待与句柄归属](https://learn.microsoft.com/en-us/windows/win32/api/debugapi/nf-debugapi-waitfordebugeventex)
 
 ## blink.windows.context
 
@@ -225,7 +225,13 @@ flags可按原`CONTEXT_CONTROL`、`INTEGER`、`SEGMENTS`、`FLOATING_POINT`、`D
 
 `ContextError`按实际失败阶段保留原u32 OS码：Size、Initialize、Features、Before、Capture、After、Availability，分别为大小查询、实际初始化、特征设置、前QPC、现场读取、后QPC及有效mask查询。函数不重试、不把失败变成空成功、不另造寄存器表或完整CONTEXT副本；错误路径沿原Frame释放本次缓冲。调用者不得用当前线程GetThreadContext的非零返回冒称有效当前线程快照。
 
-`InitializeContext`、`GetThreadContext`、`GetEnabledXStateFeatures`、`SetXStateFeaturesMask`、`GetXStateFeaturesMask`、`LocateXStateFeature`及`CopyContext`均为原Kernel32 C ABI声明。需要展开而又保留观测快照时，调用者用InitializeContext初始化独立的可修改游标，再按原flags／features用CopyContext交接所需上下文，由`blink.windows.unwind`在该游标推进；这份存储属于实际展开消费者，不是捕获缓存。[上下文复制](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copycontext)
+`InitializeContext`、`GetThreadContext`、`SetThreadContext`、`GetEnabledXStateFeatures`、`SetXStateFeaturesMask`、`GetXStateFeaturesMask`、`LocateXStateFeature`及`CopyContext`均为原Kernel32 C ABI声明。需要展开而又保留观测快照时，调用者用InitializeContext初始化独立的可修改游标，再按原flags／features用CopyContext交接所需上下文，由`blink.windows.unwind`在该游标推进；这份存储属于实际展开消费者，不是捕获缓存。[上下文复制](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copycontext)
+
+`SetThreadContext(handle thread,address context)`按原C ABI同步设置ContextFlags指定的组，句柄须有`THREAD_SET_CONTEXT`权限，线程须处于调用方已建立的真实停止范围；函数自身不暂停、继续或取得线程所有权。原i32为零时立即读取GetLastError；OS可规范化其所有的特权／全局位，不能要求所有保留位逐字不变。写调试寄存器时使用`CONTEXT_DEBUG_REGISTERS`，不顺带写回之前读取的PC、栈或其他寄存器组。[设置原现场](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setthreadcontext)
+
+Windows x64数据访问断点直接使用原DR0至DR3、DR6和DR7：四个槽分别保存实际目标地址，DR7的本地启用位为2×slot，访问条件在16＋4×slot起的两位，长度在18＋4×slot起的两位。写条件为01，读写为11；长度编码00／01／11／10对应1／2／4／8字节，地址按实际长度对齐。纯读按硬件实际是读写，不伪称任意范围、跨线程或内核写入也受同一槽监控。普通B调试程序保存原所选槽与控制位，在原Context64位置修改并调用SetThreadContext，不增加一份断点状态权威。例如0号槽的一字节写入，把原DR7的`0xf0003`位清除再置`0x10001`，DR0设为目标地址，DR6只清除本次消费的命中位；其余原槽及必要状态保留。[原硬件字段](https://cdrdv2-public.intel.com/874240/325462-090-sdm-vol-1-2abcd-3abcd-4.pdf) [Windows范围](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/controlling-breakpoint-flags-and-parameters)
+
+原`blink.windows.debug`事件交接`EXCEPTION_SINGLE_STEP`（0x80000004）。在事件仍待继续时，按实际进程／线程、异常原因、DR6及所选地址读取真实Context和存储；单步异常码本身不证明命中本断点，数据断点现场保留原陷阱PC，不推造访问前指令或源码变量位置。目标代码、地址存储和调试槽归原所有者；在实际最后使用或目标存储失效前清除／恢复原选定状态，再沿同一事件调用ContinueDebugEvent。设置成功、真实命中、清除与目标继续分别取得实际结果，库不加循环、隐藏暂停／重放、软件补丁、缓存或自动调试服务。[原事件停止范围](https://learn.microsoft.com/en-us/windows/win32/debug/writing-the-debugger-s-main-loop)
 
 模块可按普通B编译为对象并归档；使用方保留头模块，通过`--import`消费该库，不需要提供方B实现：
 
