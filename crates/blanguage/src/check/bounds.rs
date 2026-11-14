@@ -1859,21 +1859,27 @@ fn additional_equality_roots<'a>(
     extend_computed_roots(&mut roots, environment.union(additions));
     Cow::Owned(roots)
 }
-fn equivalent_facts<'a>(environment: &Facts, mut facts: QueryFacts<'a>, roots: &Cow<'_, BTreeMap<ValueIdentity, ValueIdentity>>) -> QueryFacts<'a> {
-    // 等价组为空时没有别名事实需要派生，不读取无关事实集。
-    if roots.is_empty() {
+type EqualityMembers<'a> = Vec<(&'a ValueIdentity, &'a ValueIdentity)>;
+
+fn equality_members(roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> EqualityMembers<'_> {
+    let mut members: Vec<_> = roots.iter().map(|(id, group)| (group, id)).collect();
+    members.sort_unstable_by_key(|(group, _)| *group);
+    members
+}
+
+fn equivalent_facts<'a>(
+    environment: &Facts,
+    mut facts: QueryFacts<'a>,
+    roots: &BTreeMap<ValueIdentity, ValueIdentity>,
+    members: &[(&ValueIdentity, &ValueIdentity)],
+    include_environment: bool,
+) -> QueryFacts<'a> {
+    if members.is_empty() {
         return facts;
     }
     let mut inferred = Facts::new();
-    // 仅将原关系表的借用引用排成同组连续的顺序。
-    let mut members: Vec<_> = roots.iter().map(|(id, group)| (group, id)).collect();
-    members.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-    // 原根的环境由本轮所有者交接；分支新根继续投影环境。
     let empty = Facts::new();
-    let source_environment = match roots {
-        Cow::Borrowed(_) => &empty,
-        Cow::Owned(_) => environment,
-    };
+    let source_environment = if include_environment { environment } else { &empty };
     for fact in source_environment.union(&facts) {
         if let Some(identity) = fact.identity()
             && let Some(root) = roots.get(&identity)
@@ -2627,12 +2633,15 @@ impl Clause {
         let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
         loop {
             // 共同环境的别名事实只在原环境所有者处生产一次。
-            let environment_roots = Cow::Owned(equality_roots(environment.iter()));
+            let environment_roots = equality_roots(environment.iter());
+            let environment_members = equality_members(&environment_roots);
             {
                 let inherited = equivalent_facts(
                     &environment,
                     Arc::new(Cow::Owned(Facts::new())),
                     &environment_roots,
+                    &environment_members,
+                    true,
                 );
                 if !inherited.is_empty() {
                     environment.to_mut().extend(inherited.iter().copied());
@@ -2684,7 +2693,7 @@ impl Clause {
                 let a = Self::take_query(&mut facts, left);
                 let b = Self::take_query(&mut facts, right);
                 let required = if alternative {
-                    either_facts(&environment, &environment_roots, a, b)
+                    either_facts(&environment, &environment_roots, &environment_members, a, b)
                 } else {
                     match (a, b) {
                         (Some(a), Some(b)) => {
@@ -3090,13 +3099,23 @@ fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<Que
     Arc::make_mut(&mut a).to_mut().extend(b.iter().copied());
     Some(a)
 }
-fn either_facts<'a>(environment: &Facts, environment_roots: &BTreeMap<ValueIdentity, ValueIdentity>, a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Option<QueryFacts<'a>> {
+fn either_facts<'a>(
+    environment: &Facts,
+    environment_roots: &BTreeMap<ValueIdentity, ValueIdentity>,
+    environment_members: &[(&ValueIdentity, &ValueIdentity)],
+    a: Option<QueryFacts<'a>>,
+    b: Option<QueryFacts<'a>>,
+) -> Option<QueryFacts<'a>> {
     match (a, b) {
         (Some(a), Some(b)) => {
             let left = additional_equality_roots(environment, environment_roots, &a);
             let right = additional_equality_roots(environment, environment_roots, &b);
-            let a = equivalent_facts(environment, a, &left);
-            let b = equivalent_facts(environment, b, &right);
+            let expand = |facts, roots: &Cow<'_, BTreeMap<ValueIdentity, ValueIdentity>>| match roots {
+                Cow::Borrowed(_) => equivalent_facts(environment, facts, roots, environment_members, false),
+                Cow::Owned(_) => equivalent_facts(environment, facts, roots, &equality_members(roots), true),
+            };
+            let a = expand(a, &left);
+            let b = expand(b, &right);
             let mut common: Facts = a.intersection(&b).copied().collect();
             let mut groups = BTreeMap::new();
             for (identity, left_root) in left.iter() {
