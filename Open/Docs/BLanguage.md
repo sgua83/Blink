@@ -469,7 +469,7 @@ Inst::new继续构造没有来源材料的普通节点；原直接发射、原�
 
 #### 整数商余配对合并的来源
 
-原Values::block把同src／IntegerDivisor的Quotient与Remainder配对后，合并Inst的generated_origin.reason为integer_division_pair，Rust枚举为GenerationReason::IntegerDivisionPair。anchor()取得GenerationAnchor::IntegerDivisionPair { quotient, remainder }；每一路OperationOrigin提供source_site()、generated_origin()及ir_json()，只借用或序列化原输入已取得的来源。JSON锚点kind为integer_division_inputs，两个成员各为kind=operation_origin、source_site及generated_origin，未知材料为null。输入先余数后商时，成员仍按商／余数角色排列；原生成来源若存在也按原不可变材料共享，不丢弃或猜补。
+原B值流优化把同src／IntegerDivisor的Quotient与Remainder配对后，合并Inst的generated_origin.reason为integer_division_pair，Rust枚举为GenerationReason::IntegerDivisionPair。anchor()取得GenerationAnchor::IntegerDivisionPair { quotient, remainder }；每一路OperationOrigin提供source_site()、generated_origin()及ir_json()，只借用或序列化原输入已取得的来源。JSON锚点kind为integer_division_inputs，两个成员各为kind=operation_origin、source_site及generated_origin，未知材料为null。输入先余数后商时，成员仍按商／余数角色排列；原生成来源若存在也按原不可变材料共享，不丢弃或猜补。
 
 合并节点没有唯一直接语法来源，其source_site()为空；该多输入锚点的syntax()／origin()／instance()及外层trigger()均为空，不任取一路代表完整变换。两路SourceSite保留自己的真实定义快照、实际实例、inlined_at及domain_path。当前解析器对二元除法／余数Expr.span通常只覆盖左操作数起始token，例如value，不扩大为整段value/divisor或value%divisor；查询使用真实UTF8字节范围及原快照，不重读之后改写或移走的磁盘源码。
 
@@ -477,7 +477,7 @@ Inst::new继续构造没有来源材料的普通节点；原直接发射、原�
 
 #### 相同表达式结果复用的来源
 
-原Values::block在整数Divide键或普通Constant／Index／Uniform／BufferStride／Unary／Binary／Cast／Math／Select键真实命中并产生别名时，沿原保留结果Inst交接GenerationReason::ExpressionReuse，JSON reason为expression_reuse。GenerationAnchor::ExpressionReuse { retained, reused }的retained为保留操作原有的OperationOrigin，reused为各实际复用输入的ExpressionReuse；已有source_site及generated_origin不可变共享，未知材料为null，不根据函数名、最终形态或当前磁盘文件猜补。
+原B值流优化在整数Divide键或普通Constant／Index／Uniform／BufferStride／Unary／Binary／Cast／Math／Select键真实命中并产生别名时，沿原保留结果Inst交接GenerationReason::ExpressionReuse，JSON reason为expression_reuse。GenerationAnchor::ExpressionReuse { retained, reused }的retained为保留操作原有的OperationOrigin，reused为各实际复用输入的ExpressionReuse；已有source_site及generated_origin不可变共享，未知材料为null，不根据函数名、最终形态或当前磁盘文件猜补。
 
 ExpressionReuse::result()取得实际被复用的结果角色ReuseResult::Value／Quotient／Remainder；input_results()借用该输入操作在本次复用发生前实际产生的结果集合：普通纯值为[value]，单商／余数为[quotient]／[remainder]，Both为[quotient,remainder]。origin()借用该被删除操作的OperationOrigin，ir_json()输出kind=expression_reuse_input、result、input_results及origin。锚点JSON为kind=expression_reuse、retained和reused数组；它记录实际键相等及结果替代，不允许据此推定任意数值重排。输入结果集合不从先前integer_division_pair来源或最终Both／单结果反推；部分复用后可能再次配对，后续DCE也可能裁剪，保留事实不声称那些结果仍存在或已在运行中被消费。
 
@@ -487,7 +487,7 @@ ExpressionReuse::result()取得实际被复用的结果角色ReuseResult::Value�
 
 #### 局部读取到实际定义与输入的来源
 
-原Values::block仅在LoadLocal命中原locals、实际写aliases并消除该读取时交接GenerationReason::LocalReadForward，JSON reason为local_read_forward。写入／失效、分支／循环及继续关系沿原算法，材料不增加复用、保活操作或重排许可。普通指令定义与直接ValueCode输入按各自真实拥有者表达，不为没有定义Inst的输入伪造指令。
+原B值流优化仅在LoadLocal命中原locals、实际写aliases并消除该读取时交接GenerationReason::LocalReadForward，JSON reason为local_read_forward。写入／失效、分支／循环及继续关系沿原算法，材料不增加复用、保活操作或重排许可。普通指令定义与直接ValueCode输入按各自真实拥有者表达，不为没有定义Inst的输入伪造指令。
 
 替代值由普通Inst定义时，原Inst.generated_origin采用GenerationAnchor::LocalReadForward { retained, reads }。retained为原OperationOrigin，reads的LocalReadForward逐项提供result_index()、result_count()、result()和origin()：序号及数量取本次值流交接时该定义实际Inst::results顺序，序号零基；ReuseResult::Value表示普通分量，Quotient／Remainder另区分整数结果。多结果Call可以各有自己的序号；后续配对、裁剪及删除不由这些字段反推，它们不是最终机器寄存器或运行次数。JSON锚点kind为local_read_forward、result_index_base为0；各读取kind为local_read_forward_input，含result_index、result_count、result及原origin。原Inst.source_site仍描述保留操作自己的直接语法，读取来源分别沿origin取得。
 
@@ -747,7 +747,7 @@ Call.memory独立交接各MemoryAccess的alias与access，JSON为memory数组内
 
 Break离开最近的Loop，Continue转到该Loop的下一次检查；Exit只离开最近的Scope，不是通用的循环退出或整个并行实例终止。现有JSON以Break／Continue／Scope／Exit及实际嵌套结构表达，作用范围由原结构解释，不另建目标图。写事实沿同一原操作查询：StoreLocal给出逻辑槽，StoreLocalIndexed给出底层逻辑范围及字节寻址，StoreIndexed与可能写的Atomic给出原别名，Call同时给出引用访问和memory效果。类型／布局、可能范围、实际一次写宽度及运行命中分别理解；原子Load和只读调用效果不能当作局部写。
 
-当前Values::block对同一Loop的condition与body沿原visit／Inst::local_writes汇总可能写，并停止沿用对应入口旧值。该保守分析不证明循环必运行，也不固定为语言的永久优化范围；written及locals是原分析存活期内的临时状态，不保存为逐轮来源历史。SDK公开字段及原ValueCode／Stage／FunctionBody的JSON提供同一原IR，查询结果随实际消费者释放，不持有运行资源或复制控制权威。真实删除／替换来源、合流、按需分析现场观察、B可编程入口及运行时状态继续按各原任务交接，不由本节静态查询代替；最终IR也不冒称保存了此前全部内部分析过程。
+当前B值流优化对同一Loop的condition与body沿原visit／Inst::local_writes汇总可能写，并停止沿用对应入口旧值。该保守分析不证明循环必运行，也不固定为语言的永久优化范围；written及locals是原分析存活期内的临时状态，不保存为逐轮来源历史。SDK公开字段及原ValueCode／Stage／FunctionBody的JSON提供同一原IR，查询结果随实际消费者释放，不持有运行资源或复制控制权威。真实删除／替换来源、合流、按需分析现场观察、B可编程入口及运行时状态继续按各原任务交接，不由本节静态查询代替；最终IR也不冒称保存了此前全部内部分析过程。
 
 #### 控制合流与实际读取替代
 
