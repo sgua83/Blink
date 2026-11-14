@@ -725,16 +725,6 @@ impl<'a> CpuBuffer<'a> {
         }
         data.require_views()
     }
-    fn projected(self, expected: &blanguage::ir::Buffer, offset: u32) -> Result<Self> {
-        let ty = self.ty.field_layout_at(offset, &expected.ty)
-            .ok_or_else(|| error(format!("绑定 {} 的字段类型或偏移与原存储不一致", expected.name)))?;
-        Ok(Self {
-            ty,
-            pointer: self.pointer.cast::<u8>().wrapping_add(offset as usize).cast(),
-            writable:self.writable&&expected.access!=blanguage::ast::Access::Read,
-            ..self
-        })
-    }
     fn owned(data: &'a mut Dataset) -> Result<Self> {
         Self::require_storage(data)?;
         Ok(Self {
@@ -913,12 +903,18 @@ impl CpuCode {
             .iter_mut()
             .map(CpuStorage::cpu_buffer)
             .collect::<Result<Vec<_>>>()?;
-        // 只复制原指针描述符，不重复借用或复制实际数据。
+        // arguments已核对同一存储类型与偏移；这里只交接原指针描述符。
         let arguments = (0..count).map(|i| {
             let (physical, offset) = physical(i);
             let expected = &self.program.buffers()[i];
-            buffers[physical].projected(expected, offset)
-        }).collect::<Result<Vec<_>>>()?;
+            let buffer = buffers[physical];
+            CpuBuffer {
+                ty: &expected.ty,
+                pointer: buffer.pointer.cast::<u8>().wrapping_add(offset as usize).cast(),
+                writable: buffer.writable && expected.access != blanguage::ast::Access::Read,
+                ..buffer
+            }
+        }).collect::<Vec<_>>();
         self.run_buffers(&arguments, textures, uniforms, || {
             crate::bindings::invalidate(&mut bindings.domains, &self.program.write_regions, physical);
             writing();
