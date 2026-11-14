@@ -595,23 +595,23 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
 }
 pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
     let meta = metadata(o)?;
-    let mut extra = vec![(META, meta.as_slice(), 0x840, &[][..])];
-    if let Some(build) = build { extra.push((BUILD, build, 0x840, &[])); }
-    if let Some(archive) = &o.archive { extra.push((ARCHIVE, &archive.bytes, 0x840, &[])); }
-    encode_sections(&o.name, &o.sections, &o.symbols, &extra)
+    let extra = std::iter::once((META, meta.as_slice(), 0x840, &[][..]))
+        .chain(build.map(|bytes| (BUILD, bytes, 0x840, &[][..])))
+        .chain(o.archive.as_ref().map(|archive| (ARCHIVE, archive.bytes.as_ref(), 0x840, &[][..])));
+    encode_sections(&o.name, &o.sections, &o.symbols, extra)
 }
 
 pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Symbol]) -> Result<Vec<u8>> {
-    encode_sections(name, source, declared, &[])
+    encode_sections(name, source, declared, std::iter::empty())
 }
 
-fn encode_sections(
-    name: &str, source: &[Section], declared: &[Symbol],
-    extra: &[(&str, &[u8], u32, &[Relocation])],
+fn encode_sections<'a>(
+    name: &str, source: &'a [Section], declared: &[Symbol],
+    extra: impl Iterator<Item = (&'a str, &'a [u8], u32, &'a [Relocation])>,
 ) -> Result<Vec<u8>> {
     let sections = source.iter().map(|section|
         (section.name.as_str(), section.bytes.as_slice(), section.flags, section.relocations.as_slice())
-    ).chain(extra.iter().copied()).collect::<Vec<_>>();
+    ).chain(extra);
     let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {
             let empty = BindingBytes::new(&[]);
@@ -655,12 +655,12 @@ fn encode_sections(
         relocations.set_len(plan.relocations);
     }
     let mut at = 0;
-    let mut sections = sections.iter().map(|(name, bytes, flags, source)| {
+    let mut sections = sections.map(|(name, bytes, flags, source)| {
         let bound = &relocations[at..at + source.len()];
         at += source.len();
         CoffSectionView {
             name: name.as_ptr(), name_length: name.len(),
-            bytes: bytes.as_ptr(), byte_length: bytes.len(), flags: u64::from(*flags),
+            bytes: bytes.as_ptr(), byte_length: bytes.len(), flags: u64::from(flags),
             relocations: bound.as_ptr(), relocation_count: bound.len(), offset: 0, relocation_offset: 0,
         }
     }).collect::<Vec<_>>();
