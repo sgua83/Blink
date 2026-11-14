@@ -444,19 +444,7 @@ impl Emitter<'_> {
         remaining: Option<u32>,
     ) {
         let u = self.types[&Scalar::U32];
-        let mask = self.constant(Scalar::U32, width * 2 - 1);
-        let bits = self.id();
-        self.emit(199, &[u, bits, local, mask]);
-        let selected = self.id();
-        self.emit(170, &[self.types[&Scalar::Bool], selected, bits, mask]);
-        let run = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[selected, run, end]);
-        self.emit(248, &[run]);
-        let width = self.constant(Scalar::U32, width);
-        let other = self.id();
-        self.emit(130, &[u, other, local, width]);
+        let (other, end) = self.open_scan_tree(local, width);
         let a_ptr = self.shared_planes(shared, pointer, other, scan.summary_words());
         let b_ptr = self.shared_planes(shared, pointer, local, scan.summary_words());
         let a = self.read_summary_words(&a_ptr);
@@ -486,9 +474,7 @@ impl Emitter<'_> {
             self.write_summary_words(&a_ptr, &b);
         }
         self.write_summary_words(&b_ptr, &merged);
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
-        self.scan_barrier();
+        self.close_scan_tree(end);
     }
     pub(super) fn segmented_add(&mut self, scan: &Scan) {
         let r = &scan.values;

@@ -33,6 +33,24 @@ pub(super) struct TreeComponent {
 }
 
 #[repr(C)]
+struct ScanTreeInput {
+    uint_type: u32,
+    bool_type: u32,
+    lane: u32,
+    mask: u32,
+    stride: u32,
+    first: u32,
+    other: u32,
+}
+
+#[repr(C)]
+struct ScanTreeOpen {
+    words: u64,
+    run: u32,
+    end: u32,
+}
+
+#[repr(C)]
 struct TreeLayer {
     uint_type: u32,
     bool_type: u32,
@@ -60,6 +78,8 @@ struct TreeWords {
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::shared_addresses"]
     fn emit_shared_addresses(input: SharedAddress, offsets: *mut u32, body: *mut u32) -> SharedAddressWords;
+    #[link_name = "bootstrap.spirv_envelope::open_scan_tree"]
+    fn emit_open_scan_tree(input: ScanTreeInput, body: *mut u32) -> ScanTreeOpen;
     #[link_name = "bootstrap.spirv_envelope::tree_layer"]
     fn emit_tree_layer(input: TreeLayer, components: *const TreeComponent, count: u32,
         own: *const TreeParts, body: *mut u32, decorations: *mut u32) -> TreeWords;
@@ -137,6 +157,33 @@ impl Emitter<'_> {
         let mut offsets = (0..count as u32).map(|word| word * 64).collect::<Vec<_>>();
         self.shared_addresses(shared, pointer, node, 1, &mut offsets);
         offsets
+    }
+
+    pub(super) fn open_scan_tree(&mut self, lane: u32, width: u32) -> (u32, u32) {
+        let mask = self.constant(Scalar::U32, width * 2 - 1);
+        let first = self.next;
+        self.next += 4;
+        let stride = self.constant(Scalar::U32, width);
+        let other = self.id();
+        let input = ScanTreeInput {
+            uint_type: self.types[&Scalar::U32],
+            bool_type: self.types[&Scalar::Bool],
+            lane, mask, stride, first, other,
+        };
+        let at = self.body.len();
+        self.body.reserve(24);
+        let branch = unsafe {
+            let branch = emit_open_scan_tree(input, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + branch.words as usize);
+            branch
+        };
+        self.current_label = branch.run;
+        (other, branch.end)
+    }
+
+    pub(super) fn close_scan_tree(&mut self, end: u32) {
+        self.emit_control(4, |body| unsafe { next_control_block(end, end, 1, body) });
+        self.scan_barrier();
     }
 
     pub(super) fn scan_barrier(&mut self) {

@@ -1641,24 +1641,38 @@ void tree_node_store(inout StageCursor out, PayloadEmission input, u32 value, ad
     out.next = result.next;
 }
 
+StageBranch scan_tree_branch(inout StageCursor out, u32 uint_type, u32 bool_type, u32 lane, u32 mask) on cpu {
+    u32 bits = stage_op(out, 199, uint_type, lane, mask);
+    u32 selected = stage_op(out, 170, bool_type, bits, mask);
+    return stage_open(out, selected);
+}
+
+extern "C" ScanTreeOpen open_scan_tree(ScanTreeInput input, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.first);
+    StageBranch branch = scan_tree_branch(out, input.uint_type, input.bool_type, input.lane, input.mask);
+    out.next = input.other;
+    stage_op(out, 130, input.uint_type, input.lane, input.stride);
+    return ScanTreeOpen(out.words, branch.run, branch.end);
+}
+
 extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, address own,
     address body, address decorations) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.next);
     u32 node = input.lane;
     bool reduction = address_bits(own) != 0u64;
-    u32 selected;
+    StageBranch branch;
     if (reduction) {
-        selected = stage_op(out, 176, input.bool_type, node, input.stride);
+        u32 selected = stage_op(out, 176, input.bool_type, node, input.stride);
+        branch = stage_open(out, selected);
     } else if (input.tile_capacity == 0) {
-        u32 bits = stage_op(out, 199, input.uint_type, node, input.selector);
-        selected = stage_op(out, 170, input.bool_type, bits, input.selector);
+        branch = scan_tree_branch(out, input.uint_type, input.bool_type, node, input.selector);
     } else {
         u32 one_based = stage_op(out, 128, input.uint_type, node, input.one);
         u32 scaled = stage_op(out, 132, input.uint_type, one_based, input.selector);
         node = stage_op(out, 130, input.uint_type, scaled, input.one);
-        selected = stage_op(out, 176, input.bool_type, node, input.tile_capacity);
+        u32 selected = stage_op(out, 176, input.bool_type, node, input.tile_capacity);
+        branch = stage_open(out, selected);
     }
-    StageBranch branch = stage_open(out, selected);
     u32 other = stage_op(out, reduction ? 128 : 130, input.uint_type, node, input.stride);
     u32 has_right = 0;
     u64 decorated = 0u64;

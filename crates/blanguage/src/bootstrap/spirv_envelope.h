@@ -361,6 +361,11 @@ struct TreeComponent {
     u32 raw_type;
     u32 value_type;
 };
+struct ScanTreeInput { u32 uint_type; u32 bool_type; u32 lane; u32 mask; u32 stride; u32 first; u32 other; };
+struct ScanTreeOpen { u64 words; u32 run; u32 end; };
+// first starts the four branch IDs. other is the neighboring-node result ID.
+extern "C" ScanTreeOpen open_scan_tree(ScanTreeInput input, address body) on cpu;
+
 struct TreeLayer {
     u32 uint_type;
     u32 bool_type;

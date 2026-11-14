@@ -221,19 +221,7 @@ impl Emitter<'_> {
     ) -> Result<(), &'static str> {
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
-        let mask = self.constant(Scalar::U32, width * 2 - 1);
-        let bits = self.id();
-        self.emit(199, &[u, bits, local, mask]);
-        let selected = self.id();
-        self.emit(170, &[b, selected, bits, mask]);
-        let run = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[selected, run, end]);
-        self.emit(248, &[run]);
-        let width = self.constant(Scalar::U32, width);
-        let other = self.id();
-        self.emit(130, &[u, other, local, width]);
+        let (other, end) = self.open_scan_tree(local, width);
         let one = self.constant(Scalar::U32, 1);
         let right_start = self.id();
         self.emit(128, &[u, right_start, other, one]);
@@ -266,9 +254,7 @@ impl Emitter<'_> {
         }
         self.emit(249, &[merged]);
         self.emit(248, &[merged]);
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
-        self.scan_barrier();
+        self.close_scan_tree(end);
         Ok(())
     }
     fn custom_remaining(&mut self, local: u32, count: u32) -> u32 {
