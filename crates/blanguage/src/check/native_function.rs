@@ -2048,7 +2048,7 @@ fn returned_input_aliases(module:&Module,name:&str)->Vec<(usize,usize)> {
                 let mut stored=false;
                 let same=walk(&body.code,&mut|inst|match &inst.kind {
                     InstKind::StoreLocal(target,value)if target==slot=>{stored=true;same(module,name,*value,input,active)},
-                    _=>!inst.local_writes().contains(slot),
+                    _=>!inst.local_writes().any(|written| written == *slot),
                 });
                 stored&&same
             },

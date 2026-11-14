@@ -281,8 +281,12 @@ unsafe extern "C" fn aliases(values: *mut Values, source: *const IndexedSource) 
     }
 }
 unsafe extern "C" fn written(values: *mut Values, first: *const Vec<Inst>, second: *const Vec<Inst>) {
-    let mut written = BTreeSet::new(); for block in [unsafe { &*first }, unsafe { &*second }] { super::super::visit(block, &mut |inst| written.extend(inst.local_writes())); }
-    for slot in written { unsafe { &mut *values }.locals.remove(&slot); }
+    let values = unsafe { &mut *values };
+    for block in [unsafe { &*first }, unsafe { &*second }] {
+        super::super::visit(block, &mut |inst| {
+            for slot in inst.local_writes() { values.locals.remove(&slot); }
+        });
+    }
 }
 unsafe extern "C" fn call(values: *mut Values, call: *const Call) {
     let call = unsafe { &*call };

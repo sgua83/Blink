@@ -217,10 +217,10 @@ impl Call {
             }
         }
     }
-    pub(crate) fn locals(&self, writing: bool) -> Vec<usize> {
+    pub(crate) fn locals(&self, writing: bool) -> impl Iterator<Item = usize> + '_ {
         self.arguments
             .iter()
-            .flat_map(|arg| {
+            .filter_map(move |arg| {
                 if let CallArgument::Reference {
                     address, access, ..
                 } = arg
@@ -230,14 +230,14 @@ impl Call {
                         access.reads()
                     })
                 {
-                    address.local_ranges().flatten().collect()
+                    Some(address)
                 } else {
-                    Vec::new()
+                    None
                 }
             })
-            .chain(self.memory.iter().filter(|effect|
+            .flat_map(|address| address.local_ranges().flatten())
+            .chain(self.memory.iter().filter(move |effect|
                 if writing { effect.access.writes() } else { effect.access.reads() }
             ).flat_map(|effect| effect.alias.local_range().into_iter().flatten()))
-            .collect()
     }
 }

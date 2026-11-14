@@ -431,7 +431,7 @@ pub(crate) fn live_before(
                     live.remove(&Register(dst));
                 }
                 inst.all_operands(&mut |reg| { live.insert(Register(reg)); true });
-                live.extend(inst.local_reads().into_iter().map(Local));
+                live.extend(inst.local_reads().map(Local));
             }
         }
     }
@@ -552,25 +552,37 @@ impl Inst {
             _ => true,
         }
     }
-    pub(crate) fn local_reads(&self) -> Vec<usize> {
-        match &self.kind {
-            InstKind::Call(call) => call.locals(false),
-            InstKind::LoadLocal(_, slot) => vec![*slot],
-            InstKind::LoadLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
-            InstKind::LoadIndexed { source, .. } => source.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
-            InstKind::Atomic(a) if a.op.reads() => a.target.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
-            _ => Vec::new(),
-        }
+    pub(crate) fn local_reads(&self) -> impl Iterator<Item = usize> + '_ {
+        self.local_slots(false)
     }
-    pub(crate) fn local_writes(&self) -> Vec<usize> {
-        match &self.kind {
-            InstKind::Call(call) => call.locals(true),
-            InstKind::StoreLocal(slot, _) => vec![*slot],
-            InstKind::StoreLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
-            InstKind::StoreIndexed { source, .. } => source.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
-            InstKind::Atomic(a) if a.op.writes() => a.target.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
-            _ => Vec::new(),
-        }
+    pub(crate) fn local_writes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.local_slots(true)
+    }
+    fn local_slots(&self, writing: bool) -> impl Iterator<Item = usize> + '_ {
+        let (slot, range) = match (&self.kind, writing) {
+            (InstKind::LoadLocal(_, slot), false) | (InstKind::StoreLocal(slot, _), true) =>
+                (Some(*slot), None),
+            (InstKind::LoadLocalIndexed { base, len, .. }, false)
+            | (InstKind::StoreLocalIndexed { base, len, .. }, true) =>
+                (None, Some(*base..*base + *len)),
+            _ => (None, None),
+        };
+        let call = match &self.kind { InstKind::Call(call) => Some(call), _ => None };
+        let indexed = match (&self.kind, writing) {
+            (InstKind::LoadIndexed { source, .. }, false)
+            | (InstKind::StoreIndexed { source, .. }, true) => Some(source),
+            _ => None,
+        };
+        let atomic = match &self.kind {
+            InstKind::Atomic(a) if if writing { a.op.writes() } else { a.op.reads() } => Some(&a.target),
+            _ => None,
+        };
+        slot.into_iter().chain(range.into_iter().flatten())
+            .chain(call.into_iter().flat_map(move |call| call.locals(writing)))
+            .chain(indexed.into_iter().flat_map(|source| source.aliases())
+                .filter_map(MemoryAlias::local_range).flatten())
+            .chain(atomic.into_iter().flat_map(|target| target.aliases())
+                .filter_map(MemoryAlias::local_range).flatten())
     }
 }
 pub(crate) fn private_spans(code: &[Inst]) -> Vec<std::ops::Range<usize>> {

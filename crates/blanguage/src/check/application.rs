@@ -454,7 +454,7 @@ impl ApplicationLoads<'_, '_> {
         }
     }
     fn writes_local(&self,inst:&Inst,slot:usize)->bool {
-        if inst.local_writes().contains(&slot){return true;}
+        if inst.local_writes().any(|written| written == slot){return true;}
         if let InstKind::Call(call)=&inst.kind {
             return self.call_memory_writes(call,|borrow|self.0.address_write_positions(borrow).is_none_or(|positions|positions.iter().any(|written|owned_presence::Presence::selected(written,&Position::Local(slot))!=owned_presence::Presence::None)));
         }
@@ -729,14 +729,14 @@ impl Builder<'_> {
                 InstKind::Scope(body)|InstKind::Cleanup{body,..}=>writes(loads,body,position,scalar,index),
                 InstKind::Call(call)=>{
                     let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut,None).written_bytes(position,scalar,index)!=0);
-                    position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().contains(slot)))
+                    position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().any(|written| written == *slot)))
                         ||loads.call_memory_writes(call,affected)
                         ||call.memory_use.is_some_and(|first|loads.0.view_model.uses.iter().skip(first+1)
                             .take_while(|usage|matches!(&usage.requirement,view::Requirement::Memory{target:address::MemoryTarget::Call(at),..}if *at==first))
                             .any(|usage|matches!(&usage.requirement,view::Requirement::Memory{borrow,access:Some(access),..}if access.writes()&&affected(&loads.0.current_address_borrow(borrow)))))
                 },
                 InstKind::Store{..}|InstKind::StoreIndexed{..}|InstKind::Atomic(_)|InstKind::Append(_)=>true,
-                _=>position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().contains(slot))),
+                _=>position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().any(|written| written == *slot))),
             })
         }
         writes(&ApplicationLoads(self),code,position,place.ty().components[component].0,index)

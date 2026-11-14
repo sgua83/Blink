@@ -500,7 +500,7 @@ fn compact_slots(
             regs[reg] = 1;
             true
         });
-        for slot in inst.local_reads().into_iter().chain(inst.local_writes()) {
+        for slot in inst.local_reads().chain(inst.local_writes()) {
             slots[slot] = 1;
         }
     });
