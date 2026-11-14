@@ -924,9 +924,15 @@ fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds:
     index.and_then(|index|index.map(|id|match id{ValueIdentity::ElementIndex(_)=>Some(id),_=>function.parameters.get(&id).copied().filter(|id|function.input(*id))}))
 }
 fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&BTreeMap<Origin,Borrow>)->Borrow {
-    canonical_relation(borrow,function,resource,exposed,false)
+    let parameters = function.parameters.iter()
+        .map(|(local, input)| (*local, bounds::Proof::default().with_identity(*input)))
+        .collect();
+    canonical_relation(borrow, function, resource, exposed, &parameters, false)
 }
-fn canonical_relation(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&BTreeMap<Origin,Borrow>,initialization:bool)->Borrow {
+fn canonical_relation(
+    borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
+    parameters: &BTreeMap<ValueIdentity, bounds::Proof>, initialization: bool,
+) -> Borrow {
     // Impossible source edges carry known absence, not a live private owner.
     // Keep that knowledge in the existing Inactive representation at the ABI.
     let known=!borrow.sources.is_empty();
@@ -934,9 +940,8 @@ fn canonical_relation(borrow:Borrow,function:&Function,resource:Option<&Borrow>,
     for(source,when)in borrow.sources.entries(){if when.possible(){sources.insert_when(source.clone(),when);}}
     if known&&sources.is_empty(){sources.insert(Origin::Inactive);}
     let borrow=Borrow{sources,..borrow};
-    let parameters=function.parameters.iter().map(|(a,b)|(*a,bounds::Proof::default().with_identity(*b))).collect();
     let address=|origin:&address::Origin|{
-        let mut value=origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,exposed));
+        let mut value=origin.map_borrows(|borrow|canonical_relation(borrow.clone(),function,None,exposed,parameters,false));
             if let address::Root::External(address::Identity::Value(ids))=&mut value.root {
                 *ids=ids.iter().filter_map(|id|function.parameters.get(id).copied().filter(|id|function.input(*id))).collect();
             }
@@ -962,34 +967,34 @@ fn canonical_relation(borrow:Borrow,function:&Function,resource:Option<&Borrow>,
             else{Borrow::source(Origin::Unresolved)}
         }
         Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().map(|id|Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,function)).collect())).unwrap_or(Origin::Unresolved)),
-        Origin::Element{parent,fields,index}=>Borrow::element(canonical(*parent,function,None,exposed),fields,input_index(index,function)),
-        Origin::Projection{parent,fields}=>Borrow::projection(canonical(*parent,function,None,exposed),fields),
+        Origin::Element{parent,fields,index}=>Borrow::element(canonical_relation(*parent,function,None,exposed,parameters,false),fields,input_index(index,function)),
+        Origin::Projection{parent,fields}=>Borrow::projection(canonical_relation(*parent,function,None,exposed,parameters,false),fields),
         Origin::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Origin::Task{
-            captures:Box::new(canonical(*captures,function,None,exposed)),
-            initialized:Box::new(canonical_relation(*initialized,function,None,exposed,true)),
-            outputs:outputs.into_iter().map(|output|canonical(output,function,None,exposed)).collect(),
-            completions:completions.iter().map(|completion|completion.map_task(|task|canonical(task.clone(),function,None,exposed))).collect(),
+            captures:Box::new(canonical_relation(*captures,function,None,exposed,parameters,false)),
+            initialized:Box::new(canonical_relation(*initialized,function,None,exposed,parameters,true)),
+            outputs:outputs.into_iter().map(|output|canonical_relation(output,function,None,exposed,parameters,false)).collect(),
+            completions:completions.iter().map(|completion|completion.map_task(|task|canonical_relation(task.clone(),function,None,exposed,parameters,false))).collect(),
             guards:guards.into_iter().map(|mut guard|{
-                guard.target=canonical(guard.target,function,None,exposed);
-                guard.map_arguments(|proof|proof.at_call(&parameters));
+                guard.target=canonical_relation(guard.target,function,None,exposed,parameters,false);
+                guard.map_arguments(|proof|proof.at_call(parameters));
                 guard.map_inputs(|word|word.map(|id|function.parameters.get(&id).copied()));
                 guard
             }).collect(),
         }),
-        Origin::TaskOutput{task,projection}=>canonical(*task,function,None,exposed).task_projection(projection.map_result(|id|function.parameters.get(&id).copied())),
+        Origin::TaskOutput{task,projection}=>canonical_relation(*task,function,None,exposed,parameters,false).task_projection(projection.map_result(|id|function.parameters.get(&id).copied())),
         Origin::Position(origin)=>Borrow::source(Origin::Position(Arc::new(address(&origin)))),
         Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(address(&origin)),word}),
-        Origin::Relation(graph,root)=>Borrow::source(Origin::Relation(Arc::new(graph.canonical(function,exposed)),root)),
+        Origin::Relation(graph,root)=>Borrow::source(Origin::Relation(Arc::new(graph.canonical(function,exposed,parameters)),root)),
         Origin::Unresolved|Origin::Inactive|Origin::External=>Borrow::source(source),
     }};
     if initialization {
-        return borrow.initialization_at_call(&parameters).map_sources(renamed);
+        return borrow.initialization_at_call(parameters).map_sources(renamed);
     }
     match resource {
         // 拥有输出的来源改名不附加条件，先投影正式输入关系。
-        Some(_)=>borrow.guards_at_call(&parameters).map_sources(renamed),
+        Some(_)=>borrow.guards_at_call(parameters).map_sources(renamed),
         // 借用输出需先合成实际拥有者条件，保留来源相关性。
-        None=>borrow.map_sources(renamed).guards_at_call(&parameters),
+        None=>borrow.map_sources(renamed).guards_at_call(parameters),
     }
 }
 

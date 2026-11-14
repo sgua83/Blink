@@ -303,7 +303,32 @@ impl Graph {
     pub(in crate::check) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.substitute_values(values);for e in &mut n.edges{e.when=e.when.substitute_values(values);match &mut e.op{Op::Position(p)=>*p=p.substitute_values(values),Op::Element{index,..}=>*index=Origin::index_substitute(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.substitute_values(values);}}v}
     pub(in crate::check) fn output_bound(&self,values:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.output_bound(values);for e in &mut n.edges{e.when=bounds::Condition::guard(e.when.assume(&bounds::Clause::default(),true).output_bound(values));if let Op::Position(p)=&mut e.op{*p=p.bind_outputs(values);}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.output_bound(values);}}v}
     pub(in crate::check) fn normalize(&mut self,normal:&mut bounds::Normalizer){for n in &mut self.nodes{n.seeds.normalize_contract(normal);for e in &mut n.edges{e.when=normal.condition(&e.when);if let Op::Position(p)=&mut e.op{normal.origin(p);}}}for f in &mut self.frames{for w in &mut f.writes{w.when=normal.condition(&w.when);}}}
-    pub(in crate::check) fn canonical(&self,function:&Function,exposed:&BTreeMap<Origin,Borrow>)->Self{let mut v=self.public();let parameters=residency::input_parameters(&function.parameters,function.input_width);for n in &mut v.nodes{n.seeds=canonical(n.seeds.clone(),function,None,exposed);for e in &mut n.edges{e.when=e.when.guard_at_call(&parameters);if let Op::Position(p)=&mut e.op{let value=canonical(Borrow::source(Origin::Position(Arc::new(p.clone()))),function,None,exposed);if let Some(Origin::Position(at))=value.sources.iter().next(){*p=at.as_ref().clone();}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(&parameters);}}v}
+    pub(super) fn canonical(
+        &self, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
+        parameters: &BTreeMap<ValueIdentity, bounds::Proof>,
+    ) -> Self {
+        let mut public = self.public();
+        let input_parameters = residency::input_parameters(&function.parameters, function.input_width);
+        for node in &mut public.nodes {
+            node.seeds = canonical_relation(node.seeds.clone(), function, None, exposed, parameters, false);
+            for edge in &mut node.edges {
+                edge.when = edge.when.guard_at_call(&input_parameters);
+                if let Op::Position(origin) = &mut edge.op {
+                    let borrow = Borrow::source(Origin::Position(Arc::new(origin.clone())));
+                    let value = canonical_relation(borrow, function, None, exposed, parameters, false);
+                    if let Some(Origin::Position(position)) = value.sources.iter().next() {
+                        *origin = position.as_ref().clone();
+                    }
+                }
+            }
+        }
+        for frame in &mut public.frames {
+            for write in &mut frame.writes {
+                write.when = write.when.at_call(&input_parameters);
+            }
+        }
+        public
+    }
     fn extension(&self,other:&Graph)->bool{other.nodes.get(..self.nodes.len())==Some(self.nodes.as_slice())&&other.frames==self.frames&&other.variables==self.variables&&other.inputs==self.inputs}
     fn references(&self,source:&Origin)->bool{
         let borrow=|b:&Borrow|b.sources.iter().any(|s|self.references(s));

@@ -468,11 +468,11 @@
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "sha256": "a1142a954ed843ca136a150e3dee22744d6b4bc084b13d05c8256a6f94ea8832"
+      "sha256": "674996d412db651c236e82310cf9b3d11d38c2a52cc67be099f70679629973ea"
     },
     {
       "path": "crates/blanguage/src/check/view_contracts/relation.rs",
-      "sha256": "43bcf30190d19bf1f3b74db18e31731d41c0940a842b7e5f194b38fcef0e4692"
+      "sha256": "c0ae7e81967805cc72a0b6c4bc10d1af406b4a7f10b607ce20620d914b1f1f0d"
     },
     {
       "path": "crates/blanguage/src/check/view_liveness.rs",
