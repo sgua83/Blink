@@ -213,6 +213,25 @@ println(info.number_of_processors);
 
 `DebugEvent`保持原176字节／8对齐，事件代码、进程ID和线程ID位于0／4／8，`payload`从16起承接原联合存储。调用者交给`WaitForDebugEventEx`的是已初始化的`inout`记录，成功后按事件标签读取原联合的有效成员。`EXCEPTION_DEBUG_EVENT`首个字的低32位为异常代码；创建进程与装入DLL事件首个字为原文件句柄，其非零值由观察者`CloseHandle`。事件附带的原进程／线程句柄沿OS调试生命周期，独立`OpenProcess`取得的读取句柄由调用方关闭。[DEBUG_EVENT布局](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-debug_event) [等待与句柄归属](https://learn.microsoft.com/en-us/windows/win32/api/debugapi/nf-debugapi-waitfordebugeventex)
 
+## blink.windows.unwind
+
+`blink.windows.unwind`以Windows x64原C ABI直接提供`StackWalk64`和必要的`SymInitializeW`、`SymFunctionTableAccess64`、`SymGetModuleBase64`、`SymCleanup`。只需导入头模块，没有B转发实现或Rust中转。`Address64`、`KdHelp64`、`StackFrame64`分别为16／112／264字节，均8对齐；字段保持SDK原布局。`StackFrame64`的pc、return_address、frame、stack、backing_store位于0／16／32／48／64，function_table_entry为80，parameters为88，far_call／virtual_frame为120／124，reserved为128，kernel_help为152。[原生帧结构](https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/ns-dbghelp-stackframe64)
+
+调用方持有已选目标的真实进程／线程、可读栈和可修改的目标架构`CONTEXT`。初始帧的其余状态置零，将pc、frame、stack的offset分别设为实际RIP、RBP和RSP，mode使用`ADDR_MODE_FLAT`；机器类型为`IMAGE_FILE_MACHINE_AMD64`。`CONTEXT`仍是原Windows布局和对齐的存储，不是StackFrame64，原上下文可由调用方另行保存。首次成功可能仍报告种子帧；后续调用保留并更新同一帧与上下文，按原状态逐帧推进，不能将初始化当上一帧。原i32返回零只表示本次没有成功取得下一记录，不证明完整栈尾或确定错误；StackWalk64通常不设置GetLastError。[StackWalk64](https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/nf-dbghelp-stackwalk64)
+
+四类回调均保持SDK原可空cfn ABI；实际自定义回调使用准确签名，读回调的最后参数指向u32字节数。使用DbgHelp原符号处理时，以相同process标识完成初始化、查询和清理，常用调用直接传入`c_function(SymFunctionTableAccess64)`和`c_function(SymGetModuleBase64)`。例如，调用方已持有frame与context时：
+
+```b
+import blink.windows.unwind;
+
+let read_memory=cfn<i32,handle,u64,address,u32,address>();
+let translate=cfn<u64,handle,handle,address>();
+i32 status=StackWalk64(IMAGE_FILE_MACHINE_AMD64,process,thread,frame,context,
+    read_memory,c_function(SymFunctionTableAccess64),c_function(SymGetModuleBase64),translate);
+```
+
+这些语句位于普通CPU函数内。符号处理初始化成功后，其资源由调用方保持到最后一次相关查询完成，再调用SymCleanup；函数表地址和帧内部辅助状态不取得独立所有权。DbgHelp调用次序及其原并发约束归同一调用者，库不加隐藏锁或常驻状态。目标停止／恢复、代码和栈的寿命、回溯深度、循环与过滤继续由原程序管理。[符号处理的初始化与结束](https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/nf-dbghelp-syminitializew)
+
 ## blink.windows.time
 
 Windows x64的高精度区间计时接口只有`time.h`，直接导入Kernel32的原生函数，无B转发实现：

@@ -49,6 +49,8 @@ address_of(place)取得现有连续CPU普通位置的真实地址，不先读取
 
 算法DLL的CPU／GPU后端使用编译阶段已生成的原生映像，和应用包装共用resource编码；生成的Rust包装只嵌入映像字节，不重建类型、执行计划和阶段对象源码。映像保留同一入口类别、目标、版本与真实代码合同，实际装入、调用及释放仍归原运行库和宿主。
 
+Windows x64已选CPU现场的单帧推进由[blink.windows.unwind](../../library/README.md#blinkwindowsunwind)以原C ABI直接交给DbgHelp.dll的StackWalk64。调用者保持真实进程／线程、原栈、原生展开记录、可修改CONTEXT和同一StackFrame64游标；首次成功可能仍为初始帧，后续按原更新结果逐帧使用，原零返回不伪造成完整栈尾或GetLastError中的确定原因。四个cfn回调按原SDK可空签名交接，具名原生查询通过c_function传入；符号处理资源沿相同进程标识初始化、使用及清理。数据及代码的最后消费者、目标停止／恢复与DbgHelp调用顺序仍归原所有者，库不新增转发实现、锁、调度器或状态表。实际寄存器选择、源码关联和完整回溯程序与该原生平台接口分别提供。
+
 ## 原生C函数地址的签名值
 
 cfn<R,P...>表示当前Windows x64 C ABI的一份函数地址值，大小8字节、对齐8字节，一个U64物理分量。R为普通C值、void或never；P为普通按值类型，或read<T>、write<T>、inout<T>位置参数。T沿原普通非空C布局，不包含Blink拥有资源或view，也不接受atomic参数。返回类型、参数顺序、类型和访问方式共同组成签名身份；同宽但签名不同的函数值不是同一类型。
