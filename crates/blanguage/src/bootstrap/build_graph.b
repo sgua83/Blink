@@ -112,14 +112,15 @@ bool expand_providers(GraphInput input,GraphOutput output,Scratch work,handle he
         u64 at=0u64;
         while (at<direct.count) {
             GraphEdge edge=edge_at(input,direct.start+at);
-            u64 id=input.count+edge.index;
+            u64 external=u64(edge.external!=0u64);
+            u64 id=edge.index+external*input.count;
+            u64 delivered=u64(word(work.seen,id)==stamp);
             GraphRange inherited=GraphRange(0u64,0u64);
-            if (edge.external==0u64) {
-                id=edge.index;
+            if ((external|delivered)==0u64) {
                 inherited=range_at(output.providers,id);
             }
-            // Once a provider is present, its inherited range is already present.
-            u64 child=u64(word(work.seen,id)==stamp)*inherited.count;
+            // A delivered provider needs neither its range nor another append.
+            u64 child=delivered;
             while (child<=inherited.count) {
                 u64 provider=child<inherited.count ? word(providers.ids,inherited.start+child) : id;
                 if (!append_provider(providers,heap,work.seen,stamp,provider)) { return false; }
