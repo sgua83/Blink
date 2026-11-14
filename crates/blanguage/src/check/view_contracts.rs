@@ -1166,7 +1166,29 @@ fn exposed_resources<'a>(function:&Function,physical:impl Iterator<Item=(&'a Out
     }
     exposed
 }
-fn initializations(function:&Function,state:&State,known:&States,candidates:bool)->Vec<address::Initialization> {
+struct InitializationExitPaths {
+    parameters: BTreeMap<ValueIdentity, bounds::Proof>,
+    exits: Vec<(bounds::Clause, bounds::Condition)>,
+}
+
+impl InitializationExitPaths {
+    fn new(function: &Function) -> Self {
+        let parameters = function.parameters.iter().map(|(source, target)| {
+            (*source, bounds::Proof::default().with_identity(*target))
+        }).collect();
+        let exits = function.initialization.iter().filter_map(|effect| {
+            let when = match effect {
+                address::InitializationEffect::Position(fact) => &fact.when,
+                address::InitializationEffect::Call { when, .. } | address::InitializationEffect::Iteration { when, .. } => when,
+            };
+            let path = when.projected_case(true, &parameters);
+            path.possible().then(|| (path.clone(), bounds::Condition::guard(path)))
+        }).collect();
+        Self { parameters, exits }
+    }
+}
+
+fn initializations(function:&Function,state:&State,known:&States,exit_paths:Option<&InitializationExitPaths>)->Vec<address::Initialization> {
     let exposed=exposed_resources(function,function.resource_names.keys().map(|output|(output,evaluate(&function.outputs[output],function,state,known,true))));
     // Reading a fixed input before this function's first write already requires those bytes on entry.
     // Re-exporting the same bytes as newly initialized adds no fact for any legitimate caller.
@@ -1212,21 +1234,18 @@ fn initializations(function:&Function,state:&State,known:&States,candidates:bool
                 address::InitializationSource::Task(canonical(borrow,function,None,&exposed))
             },
         };
-        if candidates{fact.when=bounds::Condition::constant(true);}
+        if exit_paths.is_none(){fact.when=bounds::Condition::constant(true);}
         Some(fact)
     }));
-    if candidates{return facts;}
-    let parameters=function.parameters.iter().map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect();
-    let exits=function.initialization.iter().map(|effect|match effect {address::InitializationEffect::Position(fact)=>&fact.when,address::InitializationEffect::Call{when,..}|address::InitializationEffect::Iteration{when,..}=>when}).map(|when|when.guard_at_call(&parameters)).collect::<Vec<_>>();
+    let Some(exit_paths) = exit_paths else { return facts; };
     facts.into_iter().filter_map(|mut fact|{
-        fact.when=normalized_condition(function.initialization_when(&fact).guaranteed_at_call(&parameters));
+        fact.when=normalized_condition(function.initialization_when(&fact).guaranteed_at_call(&exit_paths.parameters));
         // Original normal exits form a finite induction domain; recursive scalar substitutions
         // cannot manufacture an unbounded chain of successively expanded path formulas.
         let mut when=bounds::Condition::constant(false);
         if fact.when.truth_in(&bounds::Clause::default())==Some(true){when=bounds::Condition::constant(true);}
-        else{for exit in &exits{
-            let path=exit.assume(&bounds::Clause::default(),true);
-            if path.possible()&&fact.when.truth_in(&path)==Some(true){when=when.logical(exit.clone(),true);}
+        else{for (path, exit) in &exit_paths.exits{
+            if fact.when.truth_in(path)==Some(true){when=when.logical(exit.clone(),true);}
         }}
         fact.when=normalized_condition(when);
         fact.when.active().then_some(fact)
@@ -1235,20 +1254,32 @@ fn initializations(function:&Function,state:&State,known:&States,candidates:bool
 fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut States) {
     // First grow written locations, then retain only guarantees on normal return.
     for candidates in [true, false] {
+        // Original exit paths depend on the declaration and parameter identities.
+        let exit_paths: BTreeMap<_, _> = if candidates {
+            BTreeMap::new()
+        } else {
+            functions.iter().filter(|(name, _)| !known[*name].interface.initialization.is_empty())
+                .map(|(name, function)| (name, InitializationExitPaths::new(function))).collect()
+        };
         loop {
             let mut changed = Vec::new();
             for (name, function) in functions {
                 let state = &known[name];
-                let facts = initializations(function, state, known, candidates);
-                let facts = if candidates {
-                    facts
-                } else {
+                let old = &state.interface.initialization;
+                if !candidates && old.is_empty() {
+                    continue;
+                }
+                let paths = exit_paths.get(name);
+                let facts = initializations(function, state, known, paths);
+                let facts = if paths.is_some() {
                     let guarantees: BTreeMap<_, _> = facts.into_iter()
                         .map(|fact| (fact.source, fact.when)).collect();
-                    state.interface.initialization.iter().filter_map(|old| {
+                    old.iter().filter_map(|old| {
                         let when = normalized_condition(old.when.clone().logical(guarantees.get(&old.source)?.clone(), false));
                         when.active().then(|| address::Initialization { source: old.source.clone(), when })
                     }).collect()
+                } else {
+                    facts
                 };
                 if facts != state.interface.initialization {
                     changed.push((name, facts));
