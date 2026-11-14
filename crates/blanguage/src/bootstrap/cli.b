@@ -31,9 +31,6 @@ LinkCommand product(CliArgument argument) on cpu {
 }
 
 
-enum NumberError:u32 { None=0; Empty=1; Invalid=2; Overflow=3; };
-struct ParsedNumber { u64 value; NumberError error; };
-
 ParsedNumber unsigned_number<const Radix:u32 in {10,16}>(CliArgument argument, u64 begin, u64 end, u64 maximum) on cpu {
     if (begin == end) { return ParsedNumber(0u64, NumberError::Empty); }
     u64 index = begin;
@@ -55,6 +52,14 @@ ParsedNumber unsigned_number<const Radix:u32 in {10,16}>(CliArgument argument, u
         index += 1u64;
     }
     return ParsedNumber(value, NumberError::None);
+}
+
+extern "C" ParsedNumber decimal_number(address bytes, u64 length, u64 maximum) on cpu {
+    return unsigned_number<10>(CliArgument(bytes, length, 1u64), 0u64, length, maximum);
+}
+
+extern "C" ParsedNumber hexadecimal_number(address bytes, u64 length, u64 maximum) on cpu {
+    return unsigned_number<16>(CliArgument(bytes, length, 1u64), 0u64, length, maximum);
 }
 
 LinkBudget parse_budget(CliArgument argument) on cpu {

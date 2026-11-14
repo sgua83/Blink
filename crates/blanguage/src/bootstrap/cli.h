@@ -152,3 +152,11 @@ struct MsvcArguments {
 // The caller owns all spans and a buffer sized for the input units, argument
 // terminators, path/export prefixes and 128 units of fixed options.
 extern "C" u64 write_msvc_arguments(MsvcArguments input, address output) on cpu;
+
+enum NumberError:u32 { None=0; Empty=1; Invalid=2; Overflow=3; };
+struct ParsedNumber { u64 value; NumberError error; };
+
+// Borrowed ASCII digits, with an optional leading plus and no radix prefix.
+// Compiler literals and CLI arguments share the same numeric interpretation.
+extern "C" ParsedNumber decimal_number(address bytes, u64 length, u64 maximum) on cpu;
+extern "C" ParsedNumber hexadecimal_number(address bytes, u64 length, u64 maximum) on cpu;
