@@ -5,6 +5,9 @@ use super::*;
 use application::Ownership;
 use owned_presence::Presence;
 use returns::Returned;
+#[path="outputs/contract_condition.rs"]
+mod contract_condition;
+use contract_condition::{bind_constants,condition_type};
 
 #[derive(Clone, Copy)]
 enum Clauses<'a> {
@@ -693,176 +696,6 @@ pub(super) fn range_constants(
     intervals.iter().map(|(lower, upper)| Ok((endpoint(lower)?, endpoint(upper)?))).collect()
 }
 
-fn bind_constants(
-    world: &World,
-    definition: Contract<'_>,
-    value: &OutputCondition,
-    span: Span,
-) -> Result<OutputCondition> {
-    Ok(match value {
-        OutputCondition::Name(name)
-            if name != "returned" && !definition.has_parameter(name) =>
-        {
-            let key = world.resolve(name, definition.module, definition.imports, true).unique()
-                .filter(|key| world.functions[key].function.kind() == FunctionKind::Constant)
-                .ok_or_else(|| Diagnostic {
-                    source: definition.source.clone(), span, code: "B225",
-                    message: format!("输出条件没有编译期常量 {name}"),
-                })?;
-            if definition.public && !world.functions[&key].public {
-                return definition.source.fail(span, "B225", "公开输出条件的模块常量必须在接口中可见");
-            }
-            let (ty, bits, generated_origin) = constant::evaluate(world, &key, &[])?;
-            OutputCondition::Constant(OutputConstant { ty, bits, generated_origin })
-        }
-        OutputCondition::StaticU32(value) => OutputCondition::Constant(OutputConstant::new(
-            Ty::scalar(Scalar::U32), vec![Bits::from(*value)],
-        )),
-        OutputCondition::Member(base, field) => {
-            let base = bind_constants(world, definition, base, span)?;
-            if let OutputCondition::Constant(value) = base {
-                let selected = if value.ty.has_variants() {
-                    let Some(variant) = value.ty.variants.iter().find(|v| v.name == *field) else {
-                        return definition.source.fail(span, "B225", "输出条件使用声明的变体名称");
-                    };
-                    OutputConstant { ty: Ty::scalar(Scalar::Bool),
-                        bits: vec![Bits::from(value.bits[0] == Bits::from(variant.discriminant))],
-                        generated_origin: value.generated_origin }
-                } else if value.ty.array.is_some() && field == "length" {
-                    OutputConstant { ty: Ty::scalar(Scalar::U32),
-                        bits: vec![Bits::from(value.ty.values[0])], generated_origin: value.generated_origin }
-                } else {
-                    let (ty, components) = member_type(&value.ty, field, definition.source, span)?;
-                    OutputConstant { ty, bits: components.iter().map(|i| value.bits[*i]).collect(),
-                        generated_origin: value.generated_origin }
-                };
-                OutputCondition::Constant(selected)
-            } else {
-                OutputCondition::Member(Box::new(base), field.clone())
-            }
-        }
-        OutputCondition::Unary(op, value) => OutputCondition::Unary(
-            op.clone(), Box::new(bind_constants(world, definition, value, span)?)),
-        OutputCondition::Binary(op, a, b) => OutputCondition::Binary(
-            op.clone(), Box::new(bind_constants(world, definition, a, span)?),
-            Box::new(bind_constants(world, definition, b, span)?)),
-        value => value.clone(),
-    })
-}
-
-// Only the original type/literal relation is transient here. The signature
-// stores typed constants, not source spelling or another run-time state.
-struct IdentityTerm<'a> {
-    value: OutputCondition,
-    original: &'a OutputCondition,
-    ty: Option<Ty>,
-    literal: bool,
-}
-impl IdentityTerm<'_> {
-    fn ty(&self, path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span) -> Result<Ty> {
-        if let Some(ty) = &self.ty { Ok(ty.clone()) }
-        else { condition_type(&self.value, path, source, span).map(|(ty, _)| ty) }
-    }
-    fn cast(&mut self, scalar: Scalar) {
-        if let OutputCondition::Constant(value) = &self.value {
-            let from = value.ty.components[0].0;
-            let bits = value.bits.iter().map(|bits| constant::cast(from, scalar, *bits))
-                .collect::<Option<Vec<_>>>();
-            let ty = Ty::vector(scalar, value.bits.len());
-            self.ty = Some(ty.clone());
-            // A conversion without a compile-time value remains the original
-            // expression and uses its existing lowering; no invented bits.
-            self.value = match bits {
-                Some(bits) => OutputCondition::Constant(OutputConstant { ty, bits,
-                    generated_origin: value.generated_origin.clone() }),
-                None => self.original.clone(),
-            };
-        }
-    }
-}
-fn identity<'a>(value: &'a OutputCondition,
-    path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span,
-) -> Result<IdentityTerm<'a>> {
-    let constant = |ty: Ty, bits: Vec<Bits>, literal| IdentityTerm {
-        value: OutputCondition::Constant(OutputConstant::new(ty.clone(), bits)),
-        original: value, ty: Some(ty), literal,
-    };
-    Ok(match value {
-        OutputCondition::Number(text) => {
-            let (ty, bits) = number(source, span, text)?;
-            let literal = ty.components[0].0.size() == 4;
-            constant(ty, vec![bits], literal)
-        }
-        OutputCondition::Bool(value) => constant(Ty::scalar(Scalar::Bool), vec![Bits::from(*value)], false),
-        OutputCondition::StaticU32(value) => constant(Ty::scalar(Scalar::U32), vec![Bits::from(*value)], false),
-        OutputCondition::Constant(constant) => IdentityTerm {
-            value: value.clone(), original: value, ty: Some(constant.ty.clone()), literal: false,
-        },
-        OutputCondition::Name(_) | OutputCondition::Member(..) => IdentityTerm {
-            value: value.clone(), original: value, ty: None, literal: false,
-        },
-        OutputCondition::Unary(op, operand) => {
-            if op == "-" && let OutputCondition::Number(text) = operand.as_ref() {
-                let (ty, bits) = super::numeric_literal::number(source, span, text, true)?;
-                let literal = ty.components[0].0.size() == 4;
-                constant(ty, vec![bits], literal)
-            } else {
-                let operand = identity(operand, path, source, span)?;
-                if operand.literal && let OutputCondition::Constant(value) = &operand.value {
-                    let ty = operand.ty(path, source, span)?;
-                    let operation = operators::unary(op, &ty, source, span)?;
-                    let bits = value.bits.iter().copied().map(|bits| operation
-                        .map_or(bits, |op| constant::unary(op, ty.components[0].0, bits))).collect();
-                    constant(ty, bits, true)
-                } else {
-                    IdentityTerm { value: OutputCondition::Unary(op.clone(), Box::new(operand.value)),
-                        original: value, ty: (op == "!").then(|| Ty::scalar(Scalar::Bool)), literal: false }
-                }
-            }
-        }
-        OutputCondition::Binary(op, left, right) => {
-            let mut left = identity(left, path, source, span)?;
-            let mut right = identity(right, path, source, span)?;
-            let comparison = matches!(op.as_str(), "==" | "!=" | "<" | ">" | "<=" | ">=");
-            let logical = matches!(op.as_str(), "&&" | "||");
-            let mut ty = (comparison || logical).then(|| Ty::scalar(Scalar::Bool));
-            let mut literal = false;
-            if !logical && (left.literal || right.literal) {
-                let a = left.ty(path, source, span)?;
-                let b = right.ty(path, source, span)?;
-                let (result, kind) = operators::binary(op, &a, left.literal, &b, right.literal, source, span)?;
-                match kind {
-                    operators::Binary::Numeric { operands, comparison, operation } => {
-                        literal = left.literal && right.literal && !operands.scalar.is_float() && !comparison;
-                        if operands.cast_left { left.cast(operands.scalar); }
-                        if operands.cast_right { right.cast(operands.scalar); }
-                        if literal && let (OutputCondition::Constant(a), OutputCondition::Constant(b)) = (&left.value, &right.value) {
-                            let bits = (0..result.components.len()).map(|i| {
-                                let a = a.bits[i % a.bits.len()]; let b = b.bits[i % b.bits.len()];
-                                if let Some(operation) = operation {
-                                    Ok(constant::binary(operation, operands.scalar, a, b).unwrap())
-                                } else {
-                                    let divisor = std::num::NonZeroU64::new(b).ok_or_else(|| Diagnostic {
-                                        source: source.clone(), span, code: "B152",
-                                        message: "整数除数的每个分量都必须是非零常量或在当前作用域已证明非零的值".into(),
-                                    })?;
-                                    Ok(constant::divide(operands.scalar, a, divisor, op == "%"))
-                                }
-                            }).collect::<Result<Vec<_>>>()?;
-                            return Ok(constant(result, bits, true));
-                        }
-                    }
-                    operators::Binary::Matrix(matrix::Binary::MatrixScalar { cast: true, .. }) => right.cast(Scalar::F32),
-                    operators::Binary::Matrix(matrix::Binary::ScalarMatrix { cast: true, .. }) => left.cast(Scalar::F32),
-                    _ => {}
-                }
-                ty = Some(result);
-            }
-            IdentityTerm { value: OutputCondition::Binary(op.clone(), Box::new(left.value), Box::new(right.value)),
-                original: value, ty, literal }
-        }
-    })
-}
 fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
     value: &OutputCondition, span: Span,
 ) -> Result<OutputCondition> {
@@ -888,7 +721,7 @@ fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
             message: format!("输出条件没有输入{name}") })?;
         world.output_path_type(&syntax, &fields, definition.source, span, definition.module, definition.imports)
     };
-    Ok(identity(&value, &path, definition.source, span)?.value)
+    contract_condition::identity(&value, &path, definition.source, span)
 }
 
 pub(crate) fn bind_function_contracts(
@@ -941,48 +774,6 @@ fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, 
         }
         _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
     }
-}
-fn condition_type(value: &OutputCondition,
-    path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span,
-) -> Result<(Ty, bool)> {
-    Ok(match value {
-        OutputCondition::Name(_) | OutputCondition::Member(..) =>
-            (path(value)?, false),
-        OutputCondition::Number(text) => {
-            let (ty, _) = number(source, span, text)?;
-            let literal = ty.components[0].0.size() == 4;
-            (ty, literal)
-        }
-        OutputCondition::StaticU32(_) => (Ty::scalar(Scalar::U32), false),
-        OutputCondition::Constant(value) => (value.ty.clone(), false),
-        OutputCondition::Bool(_) => (Ty::scalar(Scalar::Bool), false),
-        OutputCondition::Unary(op, value) => {
-            if op == "-" && let OutputCondition::Number(text) = value.as_ref() {
-                let (ty, _) = super::numeric_literal::number(source, span, text, true)?;
-                let literal = ty.components[0].0.size() == 4;
-                (ty, literal)
-            } else {
-                let (ty, literal) = condition_type(value, path, source, span)?;
-                operators::unary(op, &ty, source, span)?;
-                (ty, literal)
-            }
-        }
-        OutputCondition::Binary(op, a, b) => {
-            let (a, a_literal) = condition_type(a, path, source, span)?;
-            let (b, b_literal) = condition_type(b, path, source, span)?;
-            if matches!(op.as_str(), "&&" | "||") {
-                let boolean = Ty::scalar(Scalar::Bool);
-                operators::same(&boolean, &a, source, span)?;
-                operators::same(&boolean, &b, source, span)?;
-                (boolean, false)
-            } else {
-                let (ty, kind) = operators::binary(op, &a, a_literal, &b, b_literal, source, span)?;
-                let literal = matches!(kind, operators::Binary::Numeric { operands, comparison: false, .. }
-                    if a_literal && b_literal && !operands.scalar.is_float());
-                (ty, literal)
-            }
-        }
-    })
 }
 fn validate_output(world:&World,value: &str, condition: &OutputCondition,
     input: &impl Fn(&str) -> Option<(Access, Ty)>, returned: Option<&Ty>,
