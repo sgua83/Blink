@@ -634,7 +634,7 @@ impl Emitter<'_> {
         root: bool,
     ) -> Result<(), &'static str> {
         let r = &scan.values;
-        let words = scan.summary_words();
+        let words = if root { r.ty.size.div_ceil(4) as usize } else { scan.summary_words() };
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[self.types[&Scalar::U32], group, self.index, width]);
@@ -669,12 +669,12 @@ impl Emitter<'_> {
         };
         let prefix = self.summary_addresses(words, self.scan_input_binding(&r.fields), group);
         let prefix = self.read_summary_words(&prefix);
+        let target = if root { Vec::new() } else { self.summary_addresses(words, r.fields.target, self.index) };
         let values = if root {
             let values: Vec<_> = r.ty.components.iter().map(|(scalar, offset)| self.load_raw_buffer(
                 *scalar, r.fields.target, self.index, r.fields.target_word + offset)).collect();
             self.pack_words(r.ty.size, r.ty.components.iter().zip(&values).map(|((scalar, byte), value)| (*scalar, *byte, *value)))
         } else {
-            let target = self.summary_addresses(words, r.fields.target, self.index);
             self.read_summary_words(&target)
         };
         let values = self.custom_merge(
@@ -691,7 +691,6 @@ impl Emitter<'_> {
         if root {
             self.custom_store_target(r, self.index, &values);
         } else {
-            let target = self.summary_addresses(words, r.fields.target, self.index);
             self.write_summary_words(&target, &values);
         }
         if let Some(end) = end {
