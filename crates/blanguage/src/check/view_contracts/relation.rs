@@ -333,16 +333,39 @@ impl Graph {
     pub(in crate::check) fn symbolic(&self,root:usize)->bool{self.reachable(root).iter().any(|&id|self.nodes[id].seeds.sources.iter().any(|s|matches!(s,Origin::Parameter(..)|Origin::Contents{..}|Origin::Relation(..))))}
     pub(in crate::check) fn content_inputs(&self,root:usize)->bool{self.reachable(root).iter().any(|&id|self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Read{..}))||self.nodes[id].seeds.content_inputs())}
     pub(in crate::check) fn pending(&self,root:usize)->bool{self.reachable(root).iter().map(|id|&self.nodes[*id]).any(|n|n.seeds.pending()||n.seeds.sources.iter().any(|s|matches!(s,Origin::Relation(..)|Origin::Element{..}|Origin::Projection{..})||matches!(s,Origin::Position(p)if matches!(p.root,address::Root::Derived(_)|address::Root::Resource{..}|address::Root::Dataset{..}|address::Root::External(address::Identity::Storage(_))))))}
-    fn project(&self,root:usize,op:Op)->Borrow{
-        let node=&self.nodes[root];
-        if matches!(op,Op::Resources|Op::Owners)&&node.seeds.empty()&&node.edges.len()==1&&node.edges[0].op==op&&node.edges[0].when.boolean_constant()==Some(true){return Borrow::source(Origin::Relation(Arc::new(self.clone()),root));}
-        let selected=Node{seeds:Borrow::default(),edges:vec![Edge{from:root,op,when:bounds::Condition::constant(true)}]};
-        if let Some(id)=self.nodes.iter().position(|n|*n==selected){return Borrow::source(Origin::Relation(Arc::new(self.clone()),id));}
-        let mut g=self.clone();let id=g.nodes.len();g.nodes.push(selected);Borrow::source(Origin::Relation(Arc::new(g),id))
+    fn project(self: &Arc<Self>, root: usize, op: Op) -> Borrow {
+        let node = &self.nodes[root];
+        if matches!(op, Op::Resources | Op::Owners)
+            && node.seeds.empty()
+            && node.edges.len() == 1
+            && node.edges[0].op == op
+            && node.edges[0].when.boolean_constant() == Some(true)
+        {
+            return Borrow::source(Origin::Relation(Arc::clone(self), root));
+        }
+
+        let selected = Node {
+            seeds: Borrow::default(),
+            edges: vec![Edge { from: root, op, when: bounds::Condition::constant(true) }],
+        };
+        if let Some(id) = self.nodes.iter().position(|node| *node == selected) {
+            return Borrow::source(Origin::Relation(Arc::clone(self), id));
+        }
+
+        let mut graph = self.as_ref().clone();
+        let id = graph.nodes.len();
+        graph.nodes.push(selected);
+        Borrow::source(Origin::Relation(Arc::new(graph), id))
     }
-    pub(in crate::check) fn resources(&self,root:usize)->Borrow{self.project(root,Op::Resources)}
-    pub(in crate::check) fn owners(&self,root:usize)->Borrow{self.project(root,Op::Owners)}
-    pub(in crate::check) fn select(&self,root:usize,indices:&[Option<bounds::Operand>])->Borrow{self.project(root,Op::Select(indices.to_vec()))}
+    pub(in crate::check) fn resources(self: &Arc<Self>, root: usize) -> Borrow {
+        self.project(root, Op::Resources)
+    }
+    pub(in crate::check) fn owners(self: &Arc<Self>, root: usize) -> Borrow {
+        self.project(root, Op::Owners)
+    }
+    pub(in crate::check) fn select(self: &Arc<Self>, root: usize, indices: &[Option<bounds::Operand>]) -> Borrow {
+        self.project(root, Op::Select(indices.to_vec()))
+    }
     pub(in crate::check) fn seed_borrows(&self,root:usize)->Vec<&Borrow>{self.reachable(root).iter().map(|&id|&self.nodes[id].seeds).collect()}
     pub(in crate::check) fn public(&self)->Self{let mut v=self.clone();v.inputs.clear();for n in &mut v.nodes{for e in &mut n.edges{if let Op::Read{epoch,..}=&mut e.op{*epoch=Epoch::Input;}}}v}
     pub(in crate::check) fn at_call(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.at_call(values);for e in &mut n.edges{e.when=e.when.guard_at_call(values);match &mut e.op{Op::Position(p)=>*p=p.bound_at_call(values),Op::Element{index,..}=>*index=Origin::index_at_call(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(values);}}v}
