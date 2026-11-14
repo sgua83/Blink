@@ -120,6 +120,11 @@ pub(super) struct AddressEncoding {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.frame_layout::preserve_registers"]
+    fn encode_preserved_registers(
+        saved: *const allocation::SavedRegister, count: usize, offset: usize,
+        operations: *mut UnwindOperation, output: *mut u8,
+    ) -> usize;
     #[link_name = "bootstrap.x64_instruction::value_memory"]
     fn encode_value_memory(base: u8, index: MoveLocation, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
     #[link_name = "bootstrap.x64_instruction::view_memory"]
@@ -414,20 +419,28 @@ impl Emitter<'_> {
         });
     }
     pub(super) fn preserve_registers(&mut self, restore: bool) {
-        for index in 0..self.frame.saved.len() {
-            let saved = self.frame.saved[index];
-            let register = saved.register as u8;
-            let xmm = saved.bank != 0;
-            let opcode: &[u8] = if xmm {
-                &[0x0f, if restore { 0x28 } else { 0x29 }]
-            } else {
-                &[if restore { 0x8b } else { 0x89 }]
-            };
-            self.instruction(None, opcode, !xmm, register, Operand::memory(4, saved.offset));
+        let saved = &self.frame.saved;
+        if saved.is_empty() {
+            return;
+        }
+        let start = self.code.len();
+        let count = saved.len();
+        let unwind_start = self.unwind.len();
+        let operations = if restore {
+            std::ptr::null_mut()
+        } else {
+            self.unwind.reserve(count);
+            unsafe { self.unwind.as_mut_ptr().add(unwind_start) }
+        };
+        self.code.reserve(9 * count);
+        unsafe {
+            let bytes = encode_preserved_registers(
+                saved.as_ptr(), count, start, operations, self.code.as_mut_ptr().add(start),
+            );
+            self.code.set_len(start + bytes);
             if !restore {
-                let at = self.code.len() as u8;
-                self.unwind.push(UnwindOperation::save(at, register, saved.offset, xmm));
-                self.prolog = at;
+                self.unwind.set_len(unwind_start + count);
+                self.prolog = (start + bytes) as u8;
             }
         }
     }

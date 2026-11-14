@@ -1,4 +1,33 @@
 module bootstrap.frame_layout;
+import bootstrap.x64_instruction;
+import bootstrap.unwind;
+
+extern "C" u64 preserve_registers(address saved, u64 count, u64 offset,
+    address operations, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    bool restore = address_bits(operations) == 0u64;
+    array<u8,2> opcode = array<u8,2>(u8(0), u8(0));
+    u64 index = 0u64;
+    while (index < count) {
+        address row = unsafe_address(address_bits(saved) + index * size_of<SavedRegister>());
+        SavedRegister value = unsafe_position<SavedRegister>(row);
+        bool xmm = value.bank != u16(0);
+        u8 register = u8(value.register);
+        Encoding input = Encoding(value.offset, register, u8(4), u8(255), u8(0), u8(2), u8(0), u16(!xmm));
+        opcode[0] = xmm ? u8(0x0f) : (restore ? u8(0x8b) : u8(0x89));
+        opcode[1] = restore ? u8(0x28) : u8(0x29);
+        cursor += encode(input, address_of(opcode[0]), xmm ? 2u64 : 1u64, unsafe_address(cursor));
+        if (!restore) {
+            address record = unsafe_address(address_bits(operations) + index * size_of<Operation>());
+            u16 kind = xmm ? u16(3) : u16(2);
+            unsafe_position<Operation>(record) = Operation(u8(offset + cursor - start), register, kind, value.offset);
+        }
+        index += 1u64;
+    }
+    return cursor - start;
+}
+
 
 extern "C" u64 saved_registers(u64 data_end, u32 gpr_mask, u32 xmm_mask, address saves) on cpu {
     u64 end = data_end;

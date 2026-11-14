@@ -13,3 +13,8 @@ extern "C" u64 saved_registers(u64 data_end, u32 gpr_mask, u32 xmm_mask, address
 // Replace both sets of rows with their stack byte positions.
 extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps,
     address shared, u64 shared_count, address private_slots, u64 private_count) on cpu;
+
+// The caller owns nine output bytes per saved register and one unwind record
+// per save. An empty operations address denotes restoration.
+extern "C" u64 preserve_registers(address saved, u64 count, u64 offset,
+    address operations, address output) on cpu;

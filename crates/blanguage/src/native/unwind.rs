@@ -1,28 +1,20 @@
 //! Windows x64序言记录及B展开信息编码的借用交接。
 
-#[repr(u16)]
-#[derive(Clone, Copy)]
-enum Kind { Push, Allocate, SaveGpr, SaveXmm }
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct Operation {
     offset: u8,
     reg: u8,
-    kind: Kind,
+    kind: u16,
     amount: u32,
 }
 
 impl Operation {
     pub(crate) fn push(offset: u8, reg: u8) -> Self {
-        Self { offset, reg, kind: Kind::Push, amount: 0 }
+        Self { offset, reg, kind: 0, amount: 0 }
     }
     pub(crate) fn allocate(offset: u8, frame: u32) -> Self {
-        Self { offset, reg: 0, kind: Kind::Allocate, amount: frame }
-    }
-    pub(super) fn save(offset: u8, reg: u8, amount: u32, xmm: bool) -> Self {
-        let kind = if xmm { Kind::SaveXmm } else { Kind::SaveGpr };
-        Self { offset, reg, kind, amount }
+        Self { offset, reg: 0, kind: 1, amount: frame }
     }
 }
 
