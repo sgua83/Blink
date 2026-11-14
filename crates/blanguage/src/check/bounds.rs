@@ -1833,8 +1833,10 @@ fn extend_equality_roots<'a>(
     // Facts 及其 union 按 Fact 排序；Equal 是首个事实类别。
     for fact in facts.into_iter().take_while(|fact| matches!(fact, Fact::Equal(..))) {
         if let Fact::Equal(a, b) = *fact {
-            let a_root = roots.get(&a).copied().unwrap_or(a);
-            let b_root = roots.get(&b).copied().unwrap_or(b);
+            let a_group = roots.get(&a).copied();
+            let b_group = roots.get(&b).copied();
+            let a_root = a_group.unwrap_or(a);
+            let b_root = b_group.unwrap_or(b);
             let root = a_root.min(b_root);
             if a_root != b_root {
                 let merged = a_root.max(b_root);
@@ -1845,8 +1847,12 @@ fn extend_equality_roots<'a>(
                     }
                 }
             }
-            roots.insert(a, root);
-            roots.insert(b, root);
+            if a_group.is_none() {
+                roots.insert(a, root);
+            }
+            if b_group.is_none() {
+                roots.insert(b, root);
+            }
         }
     }
 }
@@ -1860,7 +1866,15 @@ fn additional_equality_roots<'a>(
     environment_roots: &'a BTreeMap<ValueIdentity, ValueIdentity>,
     additions: &Facts,
 ) -> Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>> {
-    if !has_equality_inputs(additions) {
+    let changes_roots = additions.iter().any(|fact| match *fact {
+        Fact::Equal(a, b) => match environment_roots.get(&a).zip(environment_roots.get(&b)) {
+            Some((left, right)) => left != right,
+            None => true,
+        },
+        Fact::Index(_, IndexDomain::Computed(_)) => true,
+        _ => false,
+    });
+    if !changes_roots {
         return Cow::Borrowed(environment_roots);
     }
     let mut roots = environment_roots.clone();

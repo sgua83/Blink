@@ -324,7 +324,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "e8d8a3cbcb5d07e14a8e65af39ac1e089ca7e101980b3e88961aca8ec42d94bc"
+      "sha256": "753556c5f08520bc35e674d3a48abf91f17db89311a26140a8ff1a6374190bd4"
     },
     {
       "path": "crates/blanguage/src/check/bounds/contract.rs",
