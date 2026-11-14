@@ -239,7 +239,6 @@ HostWriteResult write_host_bytes(handle file, address data, usize bytes) on cpu 
         }
         completed += usize(written);
     }
-    CloseHandle(file);
     return result;
 }
 
@@ -248,7 +247,9 @@ extern "C" HostWriteResult write_host_input(address path, usize units, address d
     if (opened.file == INVALID_HANDLE_VALUE) {
         return HostWriteResult(HostWriteKind::OpenError, opened.status);
     }
-    return write_host_bytes(opened.file, data, bytes);
+    HostWriteResult written = write_host_bytes(opened.file, data, bytes);
+    CloseHandle(opened.file);
+    return written;
 }
 
 extern "C" HostWriteResult write_host_output(address path, usize units, address data, usize bytes) on cpu {
@@ -267,7 +268,9 @@ extern "C" HostWriteResult write_host_output(address path, usize units, address 
             return HostWriteResult(HostWriteKind::WriteError, status);
         }
     }
-    return write_host_bytes(opened.file, data, bytes);
+    HostWriteResult written = write_host_bytes(opened.file, data, bytes);
+    CloseHandle(opened.file);
+    return written;
 }
 
 extern "C" u32 remove_host_input(address path, usize units) on cpu {
@@ -323,9 +326,20 @@ HostReplacement replace_host_file(address source,usize source_units,
 }
 
 extern "C" HostPublishResult publish_host_file(address target,usize target_units,
-    address temporary,usize temporary_units,address data,usize bytes) on cpu {
-    HostWriteResult written = write_host_input(temporary,temporary_units,data,bytes);
-    if (written.kind==HostWriteKind::OpenError) { return HostPublishResult(written,0,0); }
+    address temporary,usize temporary_units,address parts,usize count) on cpu {
+    HostFileOpen opened = open_host_file(temporary,temporary_units,GENERIC_READ_WRITE,CREATE_NEW,FILE_FLAG_OPEN_REPARSE_POINT);
+    if (opened.file==INVALID_HANDLE_VALUE) {
+        return HostPublishResult(HostWriteResult(HostWriteKind::OpenError,opened.status),0,0);
+    }
+    HostWriteResult written = HostWriteResult(HostWriteKind::Written,0);
+    usize index = 0u64;
+    while (index<count) {
+        HostFilePart part = unsafe_position<HostFilePart>(unsafe_address(address_bits(parts)+index*size_of<HostFilePart>()));
+        written = write_host_bytes(opened.file,part.data,part.bytes);
+        if (written.kind!=HostWriteKind::Written) { break; }
+        index+=1u64;
+    }
+    CloseHandle(opened.file);
 
     u32 replacement = 0;
     if (written.kind==HostWriteKind::Written) {

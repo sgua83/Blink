@@ -216,20 +216,18 @@ struct BuildImage {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.metadata::encode_build_image"]
-    fn encode_build_image(magic: u64, identity: ByteField, image: ByteField, output: *mut u8);
+    #[link_name = "bootstrap.metadata::build_image_header"]
+    fn build_image_header(magic: u64, identity_bytes: u64, image_bytes: u64, output: *mut u8);
     #[link_name = "bootstrap.metadata_read::read_build_image"]
     fn read_build_image(input: ByteField, magic: u64) -> BuildImage;
 }
 
 fn write_artifact(path: &Path, identity: &[u8], image: &[u8]) -> Result<()> {
-    let length = 3 * size_of::<u64>() + identity.len() + image.len();
-    let mut bytes = Vec::with_capacity(length);
+    let mut header = [0u8; 3 * size_of::<u64>()];
     unsafe {
-        encode_build_image(BUILD_IMAGE_MAGIC, identity.into(), image.into(), bytes.as_mut_ptr());
-        bytes.set_len(length);
+        build_image_header(BUILD_IMAGE_MAGIC, identity.len() as u64, image.len() as u64, header.as_mut_ptr());
     }
-    publish(path, &bytes)
+    publish(path, [&header[..16], identity, &header[16..], image])
 }
 
 fn read_envelope(bytes: &[u8]) -> Result<Option<(&[u8], &[u8])>> {
@@ -341,10 +339,10 @@ fn images(module: resource::Module, artifact: PathBuf, reused: bool) -> Compilat
         reused,
     }
 }
-fn publish(path: &Path, bytes: &[u8]) -> Result<()> {
+fn publish<const N: usize>(path: &Path, parts: [&[u8]; N]) -> Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let name = format!("{}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
     let extension: Vec<_> = name.encode_utf16().collect();
     let temporary = crate::source_path::with_extension_units(path, &extension);
-    Ok(crate::file_bytes::publish(path, &temporary, bytes)?)
+    Ok(crate::file_bytes::publish(path, &temporary, parts)?)
 }

@@ -54,6 +54,12 @@ struct HostPublishResult {
     cleanup: u32,
 }
 
+#[repr(C)]
+struct HostFilePart {
+    data: *const u8,
+    bytes: usize,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.host_sdk::publish_host_file"]
     fn publish_host_file(
@@ -61,8 +67,8 @@ unsafe extern "C" {
         target_units: usize,
         temporary: *const u16,
         temporary_units: usize,
-        data: *const u8,
-        bytes: usize,
+        parts: *const HostFilePart,
+        count: usize,
     ) -> HostPublishResult;
     #[link_name = "blink.windows.path_core::create_output_directories"]
     fn create_output_directories(path: *const u16, units: usize) -> u32;
@@ -149,13 +155,14 @@ pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
     }
 }
 
-pub(crate) fn publish(path: &Path, temporary: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn publish<const N: usize>(path: &Path, temporary: &Path, parts: [&[u8]; N]) -> io::Result<()> {
+    let parts = parts.map(|bytes| HostFilePart { data: bytes.as_ptr(), bytes: bytes.len() });
     let temporary = host_path(temporary)?;
     let path = host_path(path)?;
     let published = unsafe {
         publish_host_file(
             path.as_ptr(), path.len() - 1, temporary.as_ptr(), temporary.len() - 1,
-            bytes.as_ptr(), bytes.len(),
+            parts.as_ptr(), parts.len(),
         )
     };
     let result = published.written.into_result().and_then(|()| {

@@ -116,6 +116,6 @@ pub(super) fn compile<'a>(
     let stored = identity::Inputs { source, imports, native, declarations }.encode();
     let bytes = object.build_bytes(&stored).map_err(error)?;
     crate::file_bytes::create_dir_all(artifact.parent().unwrap())?;
-    publish(&artifact, &bytes)?;
+    publish(&artifact, [&bytes])?;
     Ok(ObjectCompilation { object, artifact, reused: false })
 }

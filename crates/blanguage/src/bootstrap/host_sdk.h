@@ -39,6 +39,7 @@ struct HostProcessOutput {
 extern "C" HostProcessOutput run_host_process(address executable, usize units,
     address arguments, usize argument_units) on cpu;
 
+struct HostFilePart { address data; usize bytes; };
 struct HostPublishResult { HostWriteResult written; u32 replacement; u32 cleanup; };
 extern "C" HostPublishResult publish_host_file(address target,usize target_units,
-    address temporary,usize temporary_units,address data,usize bytes) on cpu;
+    address temporary,usize temporary_units,address parts,usize count) on cpu;

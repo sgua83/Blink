@@ -317,10 +317,10 @@ extern "C" u64 rust_link_binding(MetadataBytes binding,MetadataBytes prefix,
     return written+remaining;
 }
 
-extern "C" void encode_build_image(u64 magic,MetadataBytes identity,MetadataBytes image,address output) on cpu {
+extern "C" void build_image_header(u64 magic,u64 identity_bytes,u64 image_bytes,address output) on cpu {
     u64 at=wide_word(output,0u64,magic);
-    at=resource_field(output,at,identity);
-    resource_field(output,at,image);
+    at=wide_word(output,at,identity_bytes);
+    wide_word(output,at,image_bytes);
 }
 
 struct ManifestWriter { address output; u64 cursor; };
