@@ -1699,6 +1699,42 @@ struct Solved<'a> {
     values: BTreeMap<String, ScalarValues>,
 }
 
+fn call_memory_effect(
+    evaluation: &mut BorrowEvaluation<'_>,
+    call: &Call,
+    resolved: &ScalarValues,
+    capture_written: bool,
+) -> address::MemoryEffect {
+    let mut effect = address::MemoryEffect::default();
+    for access in &evaluation.known[&call.function].interface.access {
+        let (borrows, when, access, written) = match access {
+            Access::Memory { borrows, when, access } | Access::Dataset { borrows, when, access, .. } =>
+                (borrows, when, *access, None),
+            Access::Position { borrows, when, position } => {
+                let access = match (&position.written, position.initialized) {
+                    (Some(_), true) => super::Access::InOut,
+                    (Some(_), false) => super::Access::Write,
+                    (None, true) => super::Access::Read,
+                    (None, false) => continue,
+                };
+                (borrows, when, access, position.written.as_ref())
+            }
+            _ => continue,
+        };
+        let borrows = borrow_at_call(borrows, call, &call.arguments);
+        let borrows = evaluation.evaluate(&borrows);
+        let path = bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
+            .substitute_values(resolved);
+        let borrow = borrows.substitute_values(resolved);
+        let sources = borrow.sources.entries()
+            .map(|(source, when)| (source, bounds::Clause::both(&when, &path)));
+        let written = written.filter(|_| capture_written)
+            .map(|proof| proof.at_call(&call.arguments).substitute_values(resolved));
+        effect.union(address::MemoryEffect::from_sources(sources, access, written.as_ref()));
+    }
+    effect
+}
+
 fn solve<'a>(
     functions: &'a BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
     owns_input: impl Fn(&str, ValueIdentity) -> bool, observe: Option<&'a StorageObserver<'a>>,
@@ -1728,9 +1764,11 @@ fn solve<'a>(
         };
         let mut values = MemoryEffects::new();
         let mut resolved=BTreeMap::new();
+        let has_feedback = function.loops.values().any(|definition| definition.value.is_some());
         loop {
-        // Only scalar loop inputs feed back; ordinary Memory uses keep their original one-pass order.
-        let previous=function.loops.values().any(|definition|definition.value.is_some()).then(||resolved.clone());values.clear();
+        // Only scalar loop inputs feed back; snapshot values keep their original order.
+        let previous = has_feedback.then(|| resolved.clone());
+        values.clear();
         let mut calls=function.calls.iter().filter(|call|!call.deferred).peekable();let mut usages=function.uses.iter().enumerate().peekable();
         while let Some((memory,usage))=usages.next(){
             if let Requirement::Dataset{values:Some(read),..}=&usage.requirement {
@@ -1747,32 +1785,10 @@ fn solve<'a>(
             let mut effect=address::MemoryEffect::default();
             if calls.peek().is_some_and(|call|call.memory==memory){
                 let call=calls.next().unwrap();
-                for access in &known[&call.function].interface.access {
-                    let (borrows, when, access, written) = match access {
-                        Access::Memory { borrows, when, access } | Access::Dataset { borrows, when, access, .. } =>
-                            (borrows, when, *access, None),
-                        Access::Position { borrows, when, position } => {
-                            let access = match (&position.written, position.initialized) {
-                                (Some(_), true) => super::Access::InOut,
-                                (Some(_), false) => super::Access::Write,
-                                (None, true) => super::Access::Read,
-                                (None, false) => continue,
-                            };
-                            (borrows, when, access, position.written.as_ref())
-                        }
-                        _ => continue,
-                    };
-                    let borrows = borrow_at_call(borrows, call, &call.arguments);
-                    let borrows = evaluation.evaluate(&borrows);
-                    let path = bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
-                        .substitute_values(&resolved);
-                    let borrow = borrows.substitute_values(&resolved);
-                    let sources = borrow.sources.entries()
-                        .map(|(source, when)| (source, bounds::Clause::both(&when, &path)));
-                    let written = written.filter(|_| snapshots.is_some())
-                        .map(|proof| proof.at_call(&call.arguments).substitute_values(&resolved));
-                    effect.union(address::MemoryEffect::from_sources(sources, access, written.as_ref()));
+                if has_feedback && snapshots.is_none() {
+                    continue;
                 }
+                effect = call_memory_effect(&mut evaluation, call, &resolved, snapshots.is_some());
             }else{
                 let rest=std::iter::from_fn(||{
                     if matches!(target,address::MemoryTarget::Call(_))&&usages.peek().is_some_and(|(_,usage)|matches!(&usage.requirement,Requirement::Memory{target:other,..}if other==target)){
@@ -1828,6 +1844,18 @@ fn solve<'a>(
             resolved.insert(id, proof);
         }
         if previous.is_none_or(|previous|resolved==previous){break;}
+        }
+        if has_feedback {
+            // Calls without snapshots only produce the final IR effect, once the values have settled.
+            for call in function.calls.iter().filter(|call| !call.deferred) {
+                let Requirement::Memory { target, snapshots, .. } = &function.uses[call.memory].requirement else {
+                    continue;
+                };
+                if snapshots.as_ref().is_none_or(|snapshots| snapshots.is_empty()) {
+                    let effect = call_memory_effect(&mut evaluation, call, &resolved, false);
+                    values.entry(*target).or_default().record(effect);
+                }
+            }
         }
         memory.insert(name.clone(),values);
         if function.pending_values(){scalar_values.insert(name.clone(),resolved);}
