@@ -85,7 +85,7 @@ target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 
 拥有切片要求`start <= end <= 标量长度`，区间按Unicode标量计数，输出保留原代码单元。合法空区间（含文本末尾）返回空拥有序列。NUL、BOM及组合标记仍分别计一个标量，不按字素簇切片；不追加NUL或变换编码。两个函数严格解码**整个输入**，第一个编码错误优先返回`SliceError::Decode(DecodeError)`，即使错误在所选区间之外或请求区间本身非法；位置与原因仍以原输入为准。完整输入合法后，反向或越界区间返回`SliceError::Range(ScalarRangeError)`，其中start／end保留原请求，length为实际标量数。半开端点避免以start加count计算末尾；空文本仅[0,0)成功。
 
-输入只读借用，成功输出是独立拥有dataset：修改或释放其中一份不改变另一份。实现沿原decoder的next选择原始代码单元，由resize增长同一输出的原Vec容量；不重新编码、不保存边界表、计数缓存或另一资源所有者。输出单元数不超过输入，沿原u32长度，不增加溢出错误分支或人为上限。解码或范围失败时不交付部分输出，本次存储由原Frame退出释放；分配／执行失败仍遵循原运行库。拥有切片不返回输入view；需要借用原存储时使用borrow_utf8／borrow_utf16。完整字符串类型仍未实现。
+输入只读借用，成功输出是独立拥有dataset：修改或释放其中一份不改变另一份。拥有切片先复用borrow_utf8／borrow_utf16完成整个输入校验和原单位区间选择，成功后按view的实际单元数一次分配并同步复制；临时view只借用到复制结束，返回结果不保留输入借用。Decode或Range直接返回，不先生产拥有输出。输出单元数不超过输入，沿原u32长度，不重编码、不保存边界表、计数缓存或另一资源所有者。输出存储沿原Frame与最后消费者释放，分配／执行失败仍遵循原运行库。需要借用原存储时直接使用borrow_utf8／borrow_utf16。完整字符串类型仍未实现。
 
 `DecodedScalar`含`value`与第一个尚未消费位置`next`。解码只借用原CPU数据，调用者在Ok分支自行采用next，输入和原offset仍由调用者持有。编码成功载荷的变体决定实际单位数；Err保留原非法u32值。UTF-16接口交接逻辑u16单位，字节序列化由实际输入／输出接口处理。
 

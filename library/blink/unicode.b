@@ -121,28 +121,9 @@ result<view<u8>,SliceError> borrow_utf8(read dataset<u8> text,u32 start,u32 end)
 }
 
 result<dataset<u8>,SliceError> slice_utf8(read dataset<u8> text,u32 start,u32 end) on cpu {
-    dataset<u8> output=dataset<u8>(0);
-    u32 offset=0;
-    u32 count=0;
-    while (offset<text.length) {
-        match (decode_utf8(text,offset)) {
-            Ok(decoded) {
-                if (count>=start && count<end) {
-                    for (unit in offset..text.length) {
-                        if (unit>=decoded.next) { break; }
-                        u32 size=output.length;
-                        output=resize(output,size+1,text[unit]);
-                    }
-                }
-                offset=decoded.next;
-            }
-            Err(error) { return Err(SliceError::Decode(error)); }
-        }
-        count+=1;
-    }
-    if (start>end || end>count) {
-        return Err(SliceError::Range(ScalarRangeError(start,end,count)));
-    }
+    view<u8> selected=try(borrow_utf8(text,start,end));
+    dataset<u8> output=dataset<u8>(selected.length);
+    for(unit in 0..selected.length){output[unit]=selected[unit];}
     return Ok(output);
 }
 
@@ -174,28 +155,9 @@ result<view<u16>,SliceError> borrow_utf16(read dataset<u16> text,u32 start,u32 e
 }
 
 result<dataset<u16>,SliceError> slice_utf16(read dataset<u16> text,u32 start,u32 end) on cpu {
-    dataset<u16> output=dataset<u16>(0);
-    u32 offset=0;
-    u32 count=0;
-    while (offset<text.length) {
-        match (decode_utf16(text,offset)) {
-            Ok(decoded) {
-                if (count>=start && count<end) {
-                    for (unit in offset..text.length) {
-                        if (unit>=decoded.next) { break; }
-                        u32 size=output.length;
-                        output=resize(output,size+1,text[unit]);
-                    }
-                }
-                offset=decoded.next;
-            }
-            Err(error) { return Err(SliceError::Decode(error)); }
-        }
-        count+=1;
-    }
-    if (start>end || end>count) {
-        return Err(SliceError::Range(ScalarRangeError(start,end,count)));
-    }
+    view<u16> selected=try(borrow_utf16(text,start,end));
+    dataset<u16> output=dataset<u16>(selected.length);
+    for(unit in 0..selected.length){output[unit]=selected[unit];}
     return Ok(output);
 }
 
