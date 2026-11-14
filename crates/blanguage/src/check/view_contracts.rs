@@ -1405,9 +1405,9 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         (name, access)
     }).collect::<BTreeMap<_, _>>();
 
-    // Closed callees supply fixed inputs to this access solve. Keep their
-    // contributions separate so every round joins them in source call order.
-    let mut closed_calls: BTreeMap<(&str, usize), Vec<Access>> = BTreeMap::new();
+    // Sources, stored writes and initialization are fixed; a call's projection
+    // changes only with its callee's access contract.
+    let mut call_accesses: BTreeMap<(&str, usize), Vec<Access>> = BTreeMap::new();
     loop {
         let mut changed = Vec::new();
         for(name,function)in functions {
@@ -1420,53 +1420,43 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                 loop_bindings: Vec::new(), values: BTreeMap::new(),
             };
             for (index, call) in function.calls.iter().enumerate().filter(|(_, call)| call.function != *name || state.entries.is_none()) {
-                let key = (name.as_str(), index);
-                if let Some(accesses) = closed_calls.get(&key) {
-                    for value in accesses {
-                        insert(&mut access, value.clone());
+                let projected = call_accesses.entry((name.as_str(), index)).or_insert_with(|| {
+                    let mut projected = Vec::new();
+                    let live_task_places=evaluation.evaluate(&call.live_task_places);
+                    let task_access=live_task_places.active();
+                    let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
+                    for requirement in &known[&call.function].interface.access {
+                        if !task_access && (matches!(requirement,Access::Stored{..})
+                            || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && (call.deferred || position.written.is_none()))) {
+                            continue;
+                        }
+                        let value=access_at_call(requirement,call,&call.path,&mut evaluation,&|| &*initialized);
+                        if task_access
+                            && let Some((accessed,when,mode))=value.accessed()
+                            && let Some(exclusion)=function.access(accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when)
+                        {
+                            projected.push(exclusion);
+                        }
+                        let value=match value {
+                            Access::Position{mut position,borrows,when}=>{
+                                if call.deferred { position.written=None; }
+                                if position.written.is_none()&&!position.initialized&&!position.writable{continue;}
+                                position.written=position.written.as_ref().map(|proof|proof.at_call(&parameters));
+                                function.address_access(borrows,|borrows,when|Access::Position{borrows,when,position},&when)
+                            },
+                            Access::Stored{..}=>continue,
+                            Access::Memory{borrows,when,access}=>function.address_access(borrows,|borrows,when|Access::Memory{borrows,when,access},&when),
+                            Access::Initialized{borrows,initialized,when}=>function.initialization_access(
+                                &output_initialization_read(&borrows,&initialized,&when),&when),
+                            Access::Resource{resources,borrows,kind,when}=>function.access(resources,borrows,kind,&when),
+                            Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,&when,&|id|owns_input(name,id)),
+                        };
+                        if let Some(value)=value{projected.push(value);}
                     }
-                    continue;
-                }
-                let mut closed = (!functions.contains_key(&call.function)).then(Vec::new);
-                let mut emit = |value: Access| {
-                    if let Some(closed) = &mut closed {
-                        closed.push(value.clone());
-                    }
-                    insert(&mut access, value);
-                };
-                let live_task_places=evaluation.evaluate(&call.live_task_places);
-                let task_access=live_task_places.active();
-                let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
-                for requirement in &known[&call.function].interface.access {
-                if !task_access && (matches!(requirement,Access::Stored{..})
-                    || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && (call.deferred || position.written.is_none()))) {
-                    continue;
-                }
-                let value=access_at_call(requirement,call,&call.path,&mut evaluation,&|| &*initialized);
-                if task_access
-                    && let Some((accessed,when,mode))=value.accessed()
-                    && let Some(exclusion)=function.access(accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when)
-                {
-                    emit(exclusion);
-                }
-                let value=match value {
-                    Access::Position{mut position,borrows,when}=>{
-                        if call.deferred { position.written=None; }
-                        if position.written.is_none()&&!position.initialized&&!position.writable{continue;}
-                        position.written=position.written.as_ref().map(|proof|proof.at_call(&parameters));
-                        function.address_access(borrows,|borrows,when|Access::Position{borrows,when,position},&when)
-                    },
-                    Access::Stored{..}=>continue,
-                    Access::Memory{borrows,when,access}=>function.address_access(borrows,|borrows,when|Access::Memory{borrows,when,access},&when),
-                    Access::Initialized{borrows,initialized,when}=>function.initialization_access(
-                        &output_initialization_read(&borrows,&initialized,&when),&when),
-                    Access::Resource{resources,borrows,kind,when}=>function.access(resources,borrows,kind,&when),
-                    Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,&when,&|id|owns_input(name,id)),
-                };
-                if let Some(value)=value{emit(value);}
-                }
-                if let Some(closed) = closed {
-                    closed_calls.insert(key, closed);
+                    projected
+                });
+                for value in projected {
+                    insert(&mut access, value.clone());
                 }
             }
             if let Some(entries)=&state.entries{
@@ -1493,6 +1483,11 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         if changed.is_empty() {
             break;
         }
+        // changed follows the sorted order of functions.
+        call_accesses.retain(|(caller, index), _| {
+            let callee = functions[*caller].calls[*index].function.as_str();
+            changed.binary_search_by_key(&callee, |(name, _)| name.as_str()).is_err()
+        });
         for (name, access) in changed {
             known.get_mut(name).unwrap().interface.access = access;
         }
