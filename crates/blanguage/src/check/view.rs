@@ -397,13 +397,17 @@ impl Borrow{
         result
     }
     pub fn unresolved(&self)->bool {
-        self.unresolved_in(&bounds::Clause::default())
+        self.unresolved_in(&mut || Some(bounds::Clause::default()))
     }
 
-    fn unresolved_in(&self, path: &bounds::Clause) -> bool {
+    fn unresolved_in(
+        &self,
+        reachable_path: &mut dyn FnMut() -> Option<bounds::Clause>,
+    ) -> bool {
         self.sources.entries().any(|(source, when)| {
             Self::source_unresolved(source, || {
-                let when = bounds::Clause::both(path, &when);
+                let path = reachable_path()?;
+                let when = bounds::Clause::both(&path, &when);
                 when.possible().then_some(when)
             })
         })
@@ -413,25 +417,24 @@ impl Borrow{
         source: &Source,
         reachable_path: impl FnOnce() -> Option<bounds::Clause>,
     ) -> bool {
+        let path = std::cell::LazyCell::new(reachable_path);
+        let mut reachable = || (*path).clone();
         match source {
-            Source::Unresolved => reachable_path().is_some(),
+            Source::Unresolved => reachable().is_some(),
             Source::Relation(graph, root) =>
-                reachable_path().is_some() && graph.unresolved(*root),
+                reachable().is_some() && graph.unresolved(*root),
             Source::Element { parent, .. } | Source::Projection { parent, .. } =>
-                reachable_path().is_some_and(|path| parent.unresolved_in(&path)),
+                parent.unresolved_in(&mut reachable),
             Source::Task { captures, outputs, initialized, .. } =>
-                reachable_path().is_some_and(|path| {
-                    captures.unresolved_in(&path) || initialized.unresolved_in(&path)
-                        || outputs.iter().any(|output| output.unresolved_in(&path))
-                }),
-            Source::TaskOutput { task, .. } =>
-                reachable_path().is_some_and(|path| task.unresolved_in(&path)),
+                captures.unresolved_in(&mut reachable)
+                    || initialized.unresolved_in(&mut reachable)
+                    || outputs.iter().any(|output| output.unresolved_in(&mut reachable)),
+            Source::TaskOutput { task, .. } => task.unresolved_in(&mut reachable),
             Source::Contents { origin, .. } =>
-                reachable_path().is_some() && (origin.has_local() || origin.resources().unresolved()),
+                reachable().is_some() && (origin.has_local() || origin.resources().unresolved()),
             Source::Position(origin) => match &origin.root {
                 address::Root::Resource { borrow, .. } | address::Root::Derived(borrow)
-                | address::Root::Dataset { borrow, .. } =>
-                    reachable_path().is_some_and(|path| borrow.unresolved_in(&path)),
+                | address::Root::Dataset { borrow, .. } => borrow.unresolved_in(&mut reachable),
                 _ => false,
             },
             _ => false,
