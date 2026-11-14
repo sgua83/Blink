@@ -1694,11 +1694,17 @@ struct Solved<'a> {
     values: BTreeMap<String, ScalarValues>,
 }
 
+enum CallMemoryUse {
+    Snapshot,
+    Ir,
+    SnapshotAndIr,
+}
+
 fn call_memory_effect(
     evaluation: &mut BorrowEvaluation<'_>,
     call: &Call,
     resolved: &ScalarValues,
-    capture_written: bool,
+    consumer: CallMemoryUse,
 ) -> address::MemoryEffect {
     let mut effect = address::MemoryEffect::default();
     for access in &evaluation.known[&call.function].interface.access {
@@ -1716,6 +1722,9 @@ fn call_memory_effect(
             }
             _ => continue,
         };
+        if matches!(consumer, CallMemoryUse::Snapshot) && !access.writes() {
+            continue;
+        }
         let borrows = borrow_at_call(borrows, call, &call.arguments);
         let borrows = evaluation.evaluate(&borrows);
         let path = bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
@@ -1723,7 +1732,7 @@ fn call_memory_effect(
         let borrow = borrows.substitute_values(resolved);
         let sources = borrow.sources.entries()
             .map(|(source, when)| (source, bounds::Clause::both(&when, &path)));
-        let written = written.filter(|_| capture_written)
+        let written = written.filter(|_| !matches!(consumer, CallMemoryUse::Ir))
             .map(|proof| proof.at_call(&call.arguments).substitute_values(resolved));
         effect.union(address::MemoryEffect::from_sources(sources, access, written.as_ref()));
     }
@@ -1778,12 +1787,15 @@ fn solve<'a>(
             let Requirement::Memory{target,snapshots,..}=&usage.requirement else{continue;};
             let snapshots = snapshots.as_ref().filter(|values| !values.is_empty());
             let mut effect=address::MemoryEffect::default();
-            if calls.peek().is_some_and(|call|call.memory==memory){
-                let call=calls.next().unwrap();
-                if has_feedback && snapshots.is_none() {
-                    continue;
-                }
-                effect = call_memory_effect(&mut evaluation, call, &resolved, snapshots.is_some());
+            let call = calls.next_if(|call| call.memory == memory);
+            if let Some(call) = call {
+                let consumer = match (has_feedback, snapshots.is_some()) {
+                    (true, false) => continue,
+                    (true, true) => CallMemoryUse::Snapshot,
+                    (false, true) => CallMemoryUse::SnapshotAndIr,
+                    (false, false) => CallMemoryUse::Ir,
+                };
+                effect = call_memory_effect(&mut evaluation, call, &resolved, consumer);
             }else{
                 let rest=std::iter::from_fn(||{
                     if matches!(target,address::MemoryTarget::Call(_))&&usages.peek().is_some_and(|(_,usage)|matches!(&usage.requirement,Requirement::Memory{target:other,..}if other==target)){
@@ -1831,7 +1843,9 @@ fn solve<'a>(
                     resolved.insert(identity, proof.with_identity(identity));
                 }
             }
-            values.entry(*target).or_default().record(effect);
+            if !has_feedback || call.is_none() {
+                values.entry(*target).or_default().record(effect);
+            }
         }
         for (input, definition) in &function.loops {
             let Some((id, _)) = definition.value else { continue; };
@@ -1841,15 +1855,14 @@ fn solve<'a>(
         if previous.is_none_or(|previous|resolved==previous){break;}
         }
         if has_feedback {
-            // Calls without snapshots only produce the final IR effect, once the values have settled.
+            // Each snapshot identity is written only by its own event.
+            // With stable bindings, the IR consumes the full effect once in original call order.
             for call in function.calls.iter().filter(|call| !call.deferred) {
-                let Requirement::Memory { target, snapshots, .. } = &function.uses[call.memory].requirement else {
+                let Requirement::Memory { target, .. } = &function.uses[call.memory].requirement else {
                     continue;
                 };
-                if snapshots.as_ref().is_none_or(|snapshots| snapshots.is_empty()) {
-                    let effect = call_memory_effect(&mut evaluation, call, &resolved, false);
-                    values.entry(*target).or_default().record(effect);
-                }
+                let effect = call_memory_effect(&mut evaluation, call, &resolved, CallMemoryUse::Ir);
+                values.entry(*target).or_default().record(effect);
             }
         }
         memory.insert(name.clone(),values);
