@@ -88,7 +88,7 @@ impl<K:Ord+Clone> Edges<K>{
 
     fn guards_at_call(&self, bindings: &BTreeMap<ValueIdentity,bounds::Proof>) -> Self {
         Self(self.0.iter().map(|(key, when)| {
-            let when = bounds::Condition::guard(when.clone()).projected_case(true, bindings);
+            let when = when.project_guard(bindings);
             (key.clone(), when)
         }).collect())
     }

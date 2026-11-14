@@ -1000,7 +1000,7 @@ fn resolved_application_position(input:LoopInput,index:Option<ownership::Applica
         if let Some(test)=&definition.control.test {
             source_path=bounds::Clause::both(&source_path, &test.projected_case(true, &bindings));
         }
-        let read_path=bounds::Condition::guard(path.clone()).projected_case(true, &bindings);
+        let read_path=path.project_guard(&bindings);
         source_path=bounds::Clause::both(&source_path,&read_path);
         if !source_path.possible(){continue;}
         let Some(data)=producer.env.get(&resource.name).and_then(|binding|view::data_at(binding,&resource.path))else{continue;};

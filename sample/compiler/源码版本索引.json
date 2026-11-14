@@ -324,7 +324,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "e496944290fa6dfb44e3a8f70439d29383e3d152cbd0f71ac9539090bd4d553a"
+      "sha256": "4167957eb992da2e96547cd6aa24f8f98ae5246f9c96d133aa5e31eeaebd74d1"
     },
     {
       "path": "crates/blanguage/src/check/bounds/contract.rs",
@@ -464,11 +464,11 @@
     },
     {
       "path": "crates/blanguage/src/check/view.rs",
-      "sha256": "2d9bf69deef1ed13cb77de7a88821097f6c96a11ebe883e38914ad0206327895"
+      "sha256": "c496d4ccf87e7be936f2828804bbe380b0a461e97300f3249345e5560c1518ee"
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "sha256": "37a67dd2b3364f07fdeb8e67a1cca2ed38da2de5182a31d74ac96f2576021b01"
+      "sha256": "4bc010673ccfb3437aed58420fc5ecaafd3e5ae9ae2a6fd41555a2aa2b5f2bb9"
     },
     {
       "path": "crates/blanguage/src/check/view_contracts/relation.rs",
