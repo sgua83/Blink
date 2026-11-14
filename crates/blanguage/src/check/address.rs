@@ -979,7 +979,7 @@ impl Builder<'_> {
         Some(positions)
     }
 
-    fn visit_address_writes(
+    pub(super) fn visit_address_writes(
         borrow: &view::Borrow,
         mut visit: impl FnMut(&Arc<Origin>, bounds::Clause, Vec<MemoryRegion>),
     ) -> Option<()> {

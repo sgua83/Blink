@@ -571,10 +571,19 @@ impl Builder<'_> {
                 Write::Move{..}=>{},
                 Write::External{..}|Write::Generator(_)=>{effect.unknown_storage=true;effect.external=true;},
                 Write::Memory{borrow,..}=>{
-                    let Some(positions)=self.address_write_positions(borrow)else{effect.unknown_storage=true;effect.external=true;continue;};
-                    for(source,_)in borrow.sources.entries().filter(|(_,when)|when.possible()) {
-                        let view::Source::Position(origin)=source else{continue;};
-                        if !origin.writable{continue;}
+                    let mut positions = Vec::new();
+                    let mut origins = Vec::new();
+                    if Self::visit_address_writes(borrow, |origin, _, regions| {
+                        if origin.writable {
+                            origins.push(origin.clone());
+                            positions.extend(regions.into_iter().map(|region| region.position));
+                        }
+                    }).is_none() {
+                        effect.unknown_storage = true;
+                        effect.external = true;
+                        continue;
+                    }
+                    for origin in origins {
                         match &origin.root {
                             address::Root::Resource{borrow,index}|address::Root::Dataset{borrow,index}=>{
                                 let parts=origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar,_),word)|(*scalar,*word)).collect::<Vec<_>>();
