@@ -1606,11 +1606,56 @@ fn solve_loop_value(
     proof
 }
 
-pub(super) struct Solved {pub interfaces:BTreeMap<String,Interface>,pub memory:BTreeMap<String,BTreeMap<address::MemoryTarget,address::MemoryEffect>>,pub values:BTreeMap<String,BTreeMap<ValueIdentity,bounds::Proof>>}
-pub(super) fn solve(
-    functions:&BTreeMap<String,&Function>, closed:BTreeMap<String,Interface>,
-    owns_input:impl Fn(&str,ValueIdentity)->bool, observe: Option<&StorageObserver<'_>>,
-) -> Result<Solved> {
+type MemoryEffects = BTreeMap<address::MemoryTarget, address::MemoryEffect>;
+type ScalarValues = BTreeMap<ValueIdentity, bounds::Proof>;
+
+pub(super) struct SolvedFunction {
+    pub interface: Interface,
+    pub memory: MemoryEffects,
+    pub values: Option<ScalarValues>,
+}
+
+pub(super) fn solve_views(
+    functions: &BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
+    owns_input: impl Fn(&str, ValueIdentity) -> bool, observe: Option<&StorageObserver<'_>>,
+) -> Result<Vec<(String, SolvedFunction)>> {
+    let Solved { mut states, memory, mut values } = solve(functions, closed, owns_input, observe)?;
+    Ok(memory.into_iter().map(|(name, memory)| {
+        let mut interface = states.remove(&name).unwrap().interface;
+        let mut values = values.remove(&name);
+        if let Some(values) = values.as_mut() {
+            let parameters = &functions[&name].parameters;
+            for proof in values.values_mut() {
+                *proof = proof.output_bound(parameters);
+            }
+            for borrow in interface.outputs.values_mut() {
+                *borrow = borrow.substitute_values(values);
+            }
+            interface.access = interface.access.iter().map(|access| access.substitute_values(values)).collect();
+            for initialization in &mut interface.initialization {
+                *initialization = initialization.substitute_values(values);
+            }
+        }
+        (name, SolvedFunction { interface, memory, values })
+    }).collect())
+}
+
+pub(super) fn solve_range_memory(
+    functions: &BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
+) -> Result<BTreeMap<String, MemoryEffects>> {
+    Ok(solve(functions, closed, |_, _| false, None)?.memory)
+}
+
+struct Solved<'a> {
+    states: BTreeMap<String, State<'a>>,
+    memory: BTreeMap<String, MemoryEffects>,
+    values: BTreeMap<String, ScalarValues>,
+}
+
+fn solve<'a>(
+    functions: &'a BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
+    owns_input: impl Fn(&str, ValueIdentity) -> bool, observe: Option<&'a StorageObserver<'a>>,
+) -> Result<Solved<'a>> {
     let loops=used_loops(functions,&closed);
     let mut known = States {
         functions: closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect(),
@@ -1793,18 +1838,7 @@ pub(super) fn solve(
             }
         }
     }
-    let interfaces=known.functions.into_iter().map(|(name,state)|{
-        let mut interface=state.interface;
-        if let Some(values)=scalar_values.get_mut(&name){
-            let function=functions[&name];
-            *values=std::mem::take(values).into_iter().map(|(id,proof)|(id,proof.output_bound(&function.parameters))).collect();
-            interface.outputs=interface.outputs.into_iter().map(|(output,borrow)|(output,borrow.substitute_values(values))).collect();
-            interface.access=interface.access.iter().map(|access|access.substitute_values(values)).collect();
-            interface.initialization=interface.initialization.iter().map(|value|value.substitute_values(values)).collect();
-        }
-        (name,interface)
-    }).collect();
-    Ok(Solved{interfaces,memory,values:scalar_values})
+    Ok(Solved { states: known.functions, memory, values: scalar_values })
 }
 
 impl Builder<'_> {

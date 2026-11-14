@@ -2128,27 +2128,26 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             phase: BorrowSolvePhase::Storage { function, storage },
             functions: &participating,
         });
-        let result = view_contracts::solve(&functions, closed, owns_input, Some(&storage));
+        let result = view_contracts::solve_views(&functions, closed, owns_input, Some(&storage));
         observe(BorrowSolveEvent {
             phase: BorrowSolvePhase::Finished { succeeded: result.is_ok() },
             functions: &participating,
         });
         result
     } else {
-        view_contracts::solve(&functions, closed, owns_input, None)
+        view_contracts::solve_views(&functions, closed, owns_input, None)
     }?;
-    for (name,memory)in &outputs.memory {
-        let aliases=returned_input_aliases(module,name);
-        let unit=module.units.get_mut(name).unwrap().as_mut().unwrap();
+    for (name, view_contracts::SolvedFunction { interface, memory, values }) in outputs {
+        let aliases=returned_input_aliases(module,&name);
+        let unit=module.units.get_mut(&name).unwrap().as_mut().unwrap();
         let contract=&mut unit.contract;
-        let interface=&outputs.interfaces[name];
         if interface.outputs.values().any(view::Borrow::has_local) {
             return unit.source.fail(unit.span,"B227","地址不能返回或输出当前函数的局部存储");
         }
-        contract.view_access=Some(interface.access.clone());
-        contract.initialization=Some(interface.initialization.clone());
-        if let Some(values)=outputs.values.get(name){
-            for model in contract.returned.iter_mut().chain(contract.written.iter_mut().flatten()){returned_values(model,values);}
+        contract.view_access=Some(interface.access);
+        contract.initialization=Some(interface.initialization);
+        if let Some(values)=values {
+            for model in contract.returned.iter_mut().chain(contract.written.iter_mut().flatten()){returned_values(model,&values);}
         }
 
         if let Some(model)=&mut contract.returned{for(component,input)in aliases{
@@ -2162,18 +2161,36 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             let origins=&mut value.proof.origins[component];let id=ValueIdentity::Register(input);
             if !origins.contains(&id){origins.push(id);}
         }}
-        for (output,borrow)in &interface.outputs {
+        for (output, borrow) in interface.outputs {
             match output {
-                view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(*component,borrow.clone());},
-                view_contracts::Output::Written(parameter,component)=>if let Some(value)=contract.written[*parameter].as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(*component,borrow.clone());},
-                view_contracts::Output::ReturnedResource(resource)=>if let Some(value)=contract.returned.as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){
-                    value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());
-                },
-                view_contracts::Output::WrittenResource(parameter,resource)=>if let Some(value)=contract.written[*parameter].as_mut().and_then(|value|view_contracts::resource_output_mut(value,resource)){value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());},
+                view_contracts::Output::Returned(component) => {
+                    if let Some(value) = contract.returned.as_mut().and_then(Returned::view_value_mut) {
+                        value.proof = value.proof.clone().with_view_borrow(component, borrow);
+                    }
+                }
+                view_contracts::Output::Written(parameter, component) => {
+                    if let Some(value) = contract.written[parameter].as_mut().and_then(Returned::view_value_mut) {
+                        value.proof = value.proof.clone().with_view_borrow(component, borrow);
+                    }
+                }
+                view_contracts::Output::ReturnedResource(resource) => {
+                    if let Some(value) = contract.returned.as_mut()
+                        .and_then(|value| view_contracts::resource_output_mut(value, &resource))
+                    {
+                        value.root.proof = value.root.proof.clone().with_view_borrow(0, borrow);
+                    }
+                }
+                view_contracts::Output::WrittenResource(parameter, resource) => {
+                    if let Some(value) = contract.written[parameter].as_mut()
+                        .and_then(|value| view_contracts::resource_output_mut(value, &resource))
+                    {
+                        value.root.proof = value.root.proof.clone().with_view_borrow(0, borrow);
+                    }
+                }
             }
         }
         if let Some(function)=&mut unit.function {
-            address::apply_memory(&mut function.body.code,memory,&function.body.locals);
+            address::apply_memory(&mut function.body.code,&memory,&function.body.locals);
         }
     }
     Ok(())
@@ -2816,10 +2833,9 @@ fn resolve_range_views(
         .collect::<BTreeMap<_, _>>();
     let functions = names.iter().map(|(name, index)| (name.clone(), &scopes[index].view_model))
         .collect::<BTreeMap<_, _>>();
-    let solved = view_contracts::solve(&functions, closed, |_, _| false, None)?;
-    for (name, memory) in &solved.memory {
-        let stage = &mut program.stages[names[name]];
-        address::apply_memory(&mut stage.code, memory, &stage.locals);
+    for (name, memory) in view_contracts::solve_range_memory(&functions, closed)? {
+        let stage = &mut program.stages[names[&name]];
+        address::apply_memory(&mut stage.code, &memory, &stage.locals);
     }
     Ok(())
 }
