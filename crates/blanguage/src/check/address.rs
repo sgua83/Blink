@@ -378,6 +378,12 @@ fn position_has_external_memory(origin: &Origin, when: &bounds::Clause) -> bool 
     }
 }
 
+fn merged_external_access(left: Option<Access>, right: Option<Access>) -> Option<Access> {
+    match (left, right) {
+        (Some(left), Some(right)) if left != right => Some(Access::InOut),
+        (left, right) => left.or(right),
+    }
+}
 impl MemoryEffect {
     pub fn of(borrow: &view::Borrow, access: Access, written: Option<&bounds::Proof>) -> Self {
         Self::from_sources(borrow.sources.entries(), access, written)
@@ -401,7 +407,7 @@ impl MemoryEffect {
     }
     pub fn union(&mut self,other:Self) {
         self.known.extend(other.known);
-        if let Some(access)=other.external{self.external=Some(match self.external{Some(old)if old!=access=>Access::InOut,_=>access});}
+        self.external = merged_external_access(self.external, other.external);
     }
     fn same_element(origin:&Origin,when:&bounds::Clause,position:&Position,index:Option<bounds::Operand>)->Option<bool> {
         let (Some(index),Position::Borrowed(borrow,layout,_))=(index,position)else{return None;};
@@ -504,14 +510,35 @@ impl MemoryEffect {
         }
         result
     }
-    fn local_effects(&self,locals:&BTreeMap<usize,Ty>)->Vec<MemoryAccess> {
-        let mut effects=self.known.iter().flat_map(|(origin,_,access,_)|origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:*access})).collect::<Vec<_>>();
-        if let Some(access)=self.external{effects.extend(locals.iter().map(|(end,ty)|MemoryAccess{alias:MemoryAlias::Local{base:*end-ty.components.len(),len:ty.components.len()},access}));}
+}
+
+/// The IR only consumes the possible aliases and their access modes.
+#[derive(Default)]
+pub(super) struct MemoryAccesses {
+    known: Vec<MemoryAccess>,
+    external: Option<Access>,
+}
+impl MemoryAccesses {
+    pub(super) fn record(&mut self, effect: MemoryEffect) {
+        self.known.extend(effect.known.into_iter().flat_map(|(origin, _, access, _)| {
+            origin.aliases().into_iter().map(move |alias| MemoryAccess { alias, access })
+        }));
+        self.external = merged_external_access(self.external, effect.external);
+    }
+
+    fn local_effects(&self, locals: &BTreeMap<usize, Ty>) -> Vec<MemoryAccess> {
+        let mut effects = self.known.clone();
+        if let Some(access) = self.external {
+            effects.extend(locals.iter().map(|(end, ty)| MemoryAccess {
+                alias: MemoryAlias::Local { base: *end - ty.components.len(), len: ty.components.len() },
+                access,
+            }));
+        }
         effects
     }
 }
-pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,MemoryEffect>,locals:&BTreeMap<usize,Ty>) {
-    fn source(source:&mut IndexedSource,memory:&BTreeMap<MemoryTarget,MemoryEffect>,locals:&BTreeMap<usize,Ty>) {
+pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,MemoryAccesses>,locals:&BTreeMap<usize,Ty>) {
+    fn source(source:&mut IndexedSource,memory:&BTreeMap<MemoryTarget,MemoryAccesses>,locals:&BTreeMap<usize,Ty>) {
         if let IndexedSource::Pointer {address,aliases,..}=source {
             *aliases=memory.get(&MemoryTarget::Value(address[0])).into_iter().flat_map(|effect|effect.local_effects(locals)).map(|effect|effect.alias).collect::<BTreeSet<_>>().into_iter().collect();
         }

@@ -1606,7 +1606,7 @@ fn solve_loop_value(
     proof
 }
 
-type MemoryEffects = BTreeMap<address::MemoryTarget, address::MemoryEffect>;
+type MemoryEffects = BTreeMap<address::MemoryTarget, address::MemoryAccesses>;
 type ScalarValues = BTreeMap<ValueIdentity, bounds::Proof>;
 
 pub(super) struct SolvedFunction {
@@ -1679,7 +1679,7 @@ fn solve<'a>(
             function, state, known: &known, expand_loops: true, deferred_reads: false,
             loop_bindings: Vec::new(), values: BTreeMap::new(),
         };
-        let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();
+        let mut values = MemoryEffects::new();
         let mut resolved=BTreeMap::new();
         loop {
         // Only scalar loop inputs feed back; ordinary Memory uses keep their original one-pass order.
@@ -1756,7 +1756,7 @@ fn solve<'a>(
                     let identity=ValueIdentity::MemoryValue(memory,component);resolved.insert(identity,proof.with_identity(identity));
                 }
             }
-            values.entry(*target).or_default().union(effect);
+            values.entry(*target).or_default().record(effect);
         }
         for (input, definition) in &function.loops {
             let Some((id, _)) = definition.value else { continue; };
