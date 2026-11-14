@@ -223,7 +223,12 @@ impl Values {
             }
             match &mut (inst).kind {
                 InstKind::Scope(body) => {
-                    let mut scoped = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
+                    let mut scoped = Self {
+                        aliases: std::mem::take(&mut self.aliases),
+                        expressions: self.expressions.clone(),
+                        locals: std::mem::take(&mut self.locals),
+                        memory: std::mem::take(&mut self.memory),
+                    };
                     let mut scope = scoped.block(body, registers, reuses);
                     self.aliases = scoped.aliases;
                     merge(&mut scope.next, scope.exits.take());
@@ -299,11 +304,16 @@ impl Values {
                 }
                 InstKind::If { yes, no, .. } => {
                     let mut y = self.clone();
-                    let mut n = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
+                    let mut n = Self {
+                        aliases: std::mem::take(&mut self.aliases),
+                        expressions: self.expressions.clone(),
+                        locals: std::mem::take(&mut self.locals),
+                        memory: std::mem::take(&mut self.memory),
+                    };
                     let mut branches = y.block(yes, registers, reuses);
                     branches.join(n.block(no, registers, reuses));
                     // 已复用的 SSA 定义也可能由外层受原分支条件控制的清理消费。
-                    self.aliases.extend(y.aliases);
+                    self.aliases = y.aliases;
                     self.aliases.extend(n.aliases);
                     // 已退出的分支不流入普通继续点；各出口只交付共同的同一 SSA 值。
                     continuing = self.resume(&mut flow, branches);
@@ -323,7 +333,12 @@ impl Values {
                     self.locals.retain(|slot, _| !written.contains(slot));
                     let after = self.local_values();
                     self.memory.clear();
-                    let mut cycle = Self { locals: std::mem::take(&mut self.locals), ..self.clone() };
+                    let mut cycle = Self {
+                        aliases: std::mem::take(&mut self.aliases),
+                        expressions: self.expressions.clone(),
+                        locals: std::mem::take(&mut self.locals),
+                        memory: BTreeMap::new(),
+                    };
                     let condition_flow = cycle.block(condition, registers, reuses);
                     *test = cycle.root(*test);
                     let mut loop_flow = Flow {
@@ -336,7 +351,7 @@ impl Values {
                         // 已写槽仍保留在原循环携带状态，不把某次迭代的定义交给循环后。
                         merge(&mut loop_flow.exits, body_flow.exits);
                     }
-                    self.aliases.extend(cycle.aliases);
+                    self.aliases = cycle.aliases;
                     continuing = self.resume(&mut flow, loop_flow);
                 }
                 InstKind::Call(call) => {
