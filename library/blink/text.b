@@ -1,4 +1,5 @@
 module blink.text;
+import blink.text_core;
 
 dataset<u8> decimal_magnitude(u64 value, bool negative) on cpu {
     u32 digits = 1;
@@ -36,4 +37,14 @@ dataset<u8> decimal_i64(i64 value) on cpu {
         return decimal_magnitude(u64(-(value + i64(1))) + 1u64, true);
     }
     return decimal_magnitude(u64(value), false);
+}
+
+result<dataset<u8>,u32> hexadecimal_bytes(read dataset<u8> data) on cpu {
+    if (data.length>2147483647) { return Err(data.length); }
+    u32 length=data.length*2;
+    dataset<u8> text=dataset<u8>(length);
+    if (data.length!=0) {
+        write_hexadecimal(address_of(data[0]),u64(data.length),address_of(text[0]));
+    }
+    return Ok(text);
 }

@@ -18,7 +18,8 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut shared = Vec::new();
     for (name, source) in [("unicode_scalar", "../../library/blink/unicode_scalar"),
         ("path_core", "../../library/blink/windows/path_core"),
-        ("process_core", "../../library/blink/windows/process_core")] {
+        ("process_core", "../../library/blink/windows/process_core"),
+        ("text_core", "../../library/blink/text_core")] {
         let object = out.join(format!("blink_compiler_{name}.obj"));
         for extension in ["b", "h"] {
             println!("cargo:rerun-if-changed={source}.{extension}");
