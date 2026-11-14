@@ -1735,6 +1735,9 @@ fn call_memory_effect(
         let written = written.filter(|_| !matches!(consumer, CallMemoryUse::Ir))
             .map(|proof| proof.at_call(&call.arguments).substitute_values(resolved));
         effect.union(address::MemoryEffect::from_sources(sources, access, written.as_ref()));
+        if matches!(consumer, CallMemoryUse::Snapshot) && effect.has_external_write() {
+            break;
+        }
     }
     effect
 }
