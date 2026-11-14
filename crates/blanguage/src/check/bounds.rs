@@ -2189,8 +2189,27 @@ impl Clause {
     pub(super) fn values<'a>(values:impl IntoIterator<Item=(Scalar,ValueIdentity,&'a Proof)>)->Self {
         Self::facts(values.into_iter().flat_map(|(scalar,id,proof)|proof.clone().with_identity(id).facts(&Ty::scalar(scalar))).collect())
     }
-    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,Proof>)->Self {
-        Condition::guard(self.clone()).substituted_case(true, values)
+    pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
+        // A synthesized complement uses only identities already in this path.
+        let identities = std::cell::RefCell::new(BTreeSet::new());
+        Self::visit_identities([self], &|id| {
+            identities.borrow_mut().insert(id);
+            id
+        });
+        self.project_guard(&Proof::value_bindings(identities.into_inner(), values))
+    }
+
+    fn visit_identities<'a>(
+        roots: impl IntoIterator<Item = &'a Self>,
+        identity: &impl Fn(ValueIdentity) -> ValueIdentity,
+    ) {
+        for clause in Self::ordered(roots) {
+            if let ClauseNode::Facts(facts) = &**clause.0 {
+                for fact in facts {
+                    fact.map(identity);
+                }
+            }
+        }
     }
 
     fn node(value: ClauseNode) -> Self {
@@ -3292,7 +3311,7 @@ impl Condition {
     }
 
     fn identities(&self,identity:&impl Fn(ValueIdentity)->ValueIdentity) {
-        for clause in Clause::ordered(&self.cases){if let ClauseNode::Facts(facts)=&**clause.0{for fact in facts{fact.map(identity);}}}
+        Clause::visit_identities(&self.cases, identity);
     }
     fn value_bindings(&self, values: &BTreeMap<ValueIdentity, Proof>) -> BTreeMap<ValueIdentity, Proof> {
         let identities = std::cell::RefCell::new(BTreeSet::new());
@@ -3305,10 +3324,6 @@ impl Condition {
 
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
         self.at_call(&self.value_bindings(values))
-    }
-
-    pub(super) fn substituted_case(&self, truth: bool, values: &BTreeMap<ValueIdentity, Proof>) -> Clause {
-        self.projected_case(truth, &self.value_bindings(values))
     }
 
     pub(super) fn element_index(depth:usize,index:Operand)->Self {
