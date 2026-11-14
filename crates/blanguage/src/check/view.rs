@@ -402,28 +402,42 @@ impl Borrow{
 
     fn unresolved_in(&self, path: &bounds::Clause) -> bool {
         self.sources.entries().any(|(source, when)| {
-            let when = bounds::Clause::both(path, &when);
-            when.possible() && Self::source_unresolved(source, &when)
+            Self::source_unresolved(source, || {
+                let when = bounds::Clause::both(path, &when);
+                when.possible().then_some(when)
+            })
         })
     }
 
-    pub(super) fn source_unresolved(source: &Source, when: &bounds::Clause) -> bool {
+    pub(super) fn source_unresolved(
+        source: &Source,
+        reachable_path: impl FnOnce() -> Option<bounds::Clause>,
+    ) -> bool {
         match source {
-            Source::Unresolved => true,
-            Source::Relation(graph, root) => graph.unresolved(*root),
-            Source::Element { parent, .. } | Source::Projection { parent, .. } => parent.unresolved_in(when),
+            Source::Unresolved => reachable_path().is_some(),
+            Source::Relation(graph, root) =>
+                reachable_path().is_some() && graph.unresolved(*root),
+            Source::Element { parent, .. } | Source::Projection { parent, .. } =>
+                reachable_path().is_some_and(|path| parent.unresolved_in(&path)),
             Source::Task { captures, outputs, initialized, .. } =>
-                captures.unresolved_in(when) || initialized.unresolved_in(when)
-                    || outputs.iter().any(|output| output.unresolved_in(when)),
-            Source::TaskOutput { task, .. } => task.unresolved_in(when),
+                reachable_path().is_some_and(|path| {
+                    captures.unresolved_in(&path) || initialized.unresolved_in(&path)
+                        || outputs.iter().any(|output| output.unresolved_in(&path))
+                }),
+            Source::TaskOutput { task, .. } =>
+                reachable_path().is_some_and(|path| task.unresolved_in(&path)),
             Source::Contents { origin, .. } =>
-                origin.has_local() || origin.resources().unresolved(),
-            Source::Position(origin) => matches!(&origin.root,
+                reachable_path().is_some() && (origin.has_local() || origin.resources().unresolved()),
+            Source::Position(origin) => match &origin.root {
                 address::Root::Resource { borrow, .. } | address::Root::Derived(borrow)
-                    | address::Root::Dataset { borrow, .. } if borrow.unresolved_in(when)),
+                | address::Root::Dataset { borrow, .. } =>
+                    reachable_path().is_some_and(|path| borrow.unresolved_in(&path)),
+                _ => false,
+            },
             _ => false,
         }
     }
+
     pub fn has_local(&self)->bool {
         fn query(value:&Borrow,path:&bounds::Clause)->bool {
             value.sources.entries().any(|(source,when)|{

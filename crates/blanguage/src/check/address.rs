@@ -977,7 +977,7 @@ impl Builder<'_> {
         for (source, when) in borrow.sources.entries().filter(|(_, when)| when.possible()) {
             match source {
                 view::Source::Position(origin) => {
-                    if view::Borrow::source_unresolved(source, &when) {
+                    if view::Borrow::source_unresolved(source, || Some(when.clone())) {
                         return None;
                     }
                     let regions = if origin.writable { origin.memory_regions(&when)? } else { Vec::new() };
