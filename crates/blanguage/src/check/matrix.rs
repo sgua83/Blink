@@ -9,41 +9,6 @@ pub(super) enum Binary {
     MatrixVector { rows: usize, columns: usize },
     VectorMatrix { rows: usize, columns: usize },
 }
-pub(super) fn binary_type(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
-    source: &Source, span: Span) -> Result<(Ty, Binary)> {
-    match (a.matrix_shape(), b.matrix_shape()) {
-        (Some((rows, columns)), Some(other))
-            if matches!(op, "+" | "-") && other == (rows, columns) =>
-                Ok((a.clone(), Binary::Elements(rows * columns))),
-        (Some((rows, inner)), Some((other, columns))) if op == "*" && inner == other =>
-            Ok((Ty::matrix(rows, columns), Binary::Product { rows, inner, columns })),
-        (Some((rows, columns)), None) => {
-            let cast = b_literal && b.components.len() == 1 && b.is_numeric();
-            let scalar = b == &Ty::scalar(Scalar::F32) || cast;
-            if scalar && matches!(op, "*" | "/") {
-                return Ok((a.clone(), Binary::MatrixScalar { count: rows * columns, cast }));
-            }
-            if op == "*" && b == &Ty::vector(Scalar::F32, columns) {
-                return Ok((Ty::vector(Scalar::F32, rows), Binary::MatrixVector { rows, columns }));
-            }
-            source.fail(span, "B237", "矩阵运算需要相容矩阵、f32 标量或匹配列数的 float 向量")
-        }
-        (None, Some((rows, columns))) => {
-            let cast = a_literal && a.components.len() == 1 && a.is_numeric();
-            let scalar = a == &Ty::scalar(Scalar::F32) || cast;
-            if op == "*" && scalar {
-                return Ok((b.clone(), Binary::ScalarMatrix { count: rows * columns, cast }));
-            }
-            if op == "*" && a == &Ty::vector(Scalar::F32, rows) {
-                return Ok((Ty::vector(Scalar::F32, columns), Binary::VectorMatrix { rows, columns }));
-            }
-            source.fail(span, "B237", "左侧需要 f32 标量或匹配行数的 float 向量，且只支持乘法")
-        }
-        _ => source.fail(span, "B237", "矩阵维度或运算不相容；乘法使用行列内积"),
-    }
-}
-
-
 impl Builder<'_> {
     fn matrix_component(value: &Value, at: usize) -> Value {
         Value {
