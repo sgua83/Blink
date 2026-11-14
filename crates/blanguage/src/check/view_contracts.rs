@@ -1629,6 +1629,11 @@ pub(super) fn solve(
     converge_access(functions,&mut known,&owns_input);
     let mut memory=BTreeMap::new();let mut scalar_values=BTreeMap::new();
     for(name,function)in functions {
+        let state = &known[name];
+        let mut evaluation = BorrowEvaluation {
+            function, state, known: &known, expand_loops: true, deferred_reads: false,
+            loop_bindings: Vec::new(), values: BTreeMap::new(),
+        };
         let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();
         let mut resolved=BTreeMap::new();
         loop {
@@ -1650,7 +1655,6 @@ pub(super) fn solve(
             let mut effect=address::MemoryEffect::default();
             if calls.peek().is_some_and(|call|call.memory==memory){
                 let call=calls.next().unwrap();
-                let state = &known[name];
                 let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, &known).positions(&call.path));
                 for access in &known[&call.function].interface.access {
                     let (borrows, when, access, written) = match access {
@@ -1668,13 +1672,15 @@ pub(super) fn solve(
                         _ => continue,
                     };
                     let borrows = borrow_at_call(borrows, call, &call.arguments);
-                    let borrows = refreshed_at_call(evaluate(&borrows, function, state, &known, true), &call.path, &|| &*initialized);
+                    let borrows = refreshed_at_call(evaluation.evaluate(&borrows), &call.path, &|| &*initialized);
                     let path = bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
                         .substitute_values(&resolved);
-                    let borrow = borrows.substitute_values(&resolved).restricted(&path);
+                    let borrow = borrows.substitute_values(&resolved);
+                    let sources = borrow.sources.entries()
+                        .map(|(source, when)| (source, bounds::Clause::both(&when, &path)));
                     let written = written.filter(|_| snapshots.is_some())
                         .map(|proof| proof.at_call(&call.arguments).substitute_values(&resolved));
-                    effect.union(address::MemoryEffect::of(&borrow, access, written.as_ref()));
+                    effect.union(address::MemoryEffect::from_sources(sources, access, written.as_ref()));
                 }
             }else{
                 let rest=std::iter::from_fn(||{
@@ -1684,10 +1690,13 @@ pub(super) fn solve(
                 });
                 for usage in std::iter::once(usage).chain(rest){
                     if let Requirement::Memory{borrow,access:Some(access),written,..}=&usage.requirement {
-                        let borrow=evaluate(borrow,function,&known[name],&known,true).substitute_values(&resolved).restricted(&usage.path.substitute_values(&resolved));
+                        let borrow = evaluation.evaluate(borrow).substitute_values(&resolved);
+                        let path = usage.path.substitute_values(&resolved);
+                        let sources = borrow.sources.entries()
+                            .map(|(source, when)| (source, bounds::Clause::both(&when, &path)));
                         let written = written.as_ref().filter(|_| snapshots.is_some())
                             .map(|proof| proof.substitute_values(&resolved));
-                        effect.union(address::MemoryEffect::of(&borrow, *access, written.as_ref()));
+                        effect.union(address::MemoryEffect::from_sources(sources, *access, written.as_ref()));
                     }
                 }
             }
@@ -1695,7 +1704,7 @@ pub(super) fn solve(
                 let path = usage.path.substitute_values(&resolved);
                 let scope = bounds::proof_scope(&path, &BTreeMap::new());
                 for(component,snapshot)in snapshots.iter().enumerate(){
-                    let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluate(borrow,function,&known[name],&known,true).substitute_values(&resolved)),layout.clone(),*word),position=>position.clone()};
+                    let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluation.evaluate(borrow).substitute_values(&resolved)),layout.clone(),*word),position=>position.clone()};
                     let index=snapshot.index.and_then(|index|match index{bounds::Operand::Value(id)if resolved.contains_key(&id)=>index.at_call(&resolved),index=>Some(index)});
                     let proof=snapshot.proof.substitute_values(&resolved);
                     let proof=effect.written_value(&position,snapshot.scalar,index,&scope(&Ty::scalar(snapshot.scalar), proof));

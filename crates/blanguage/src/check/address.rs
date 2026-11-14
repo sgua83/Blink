@@ -382,7 +382,7 @@ impl MemoryEffect {
     pub fn of(borrow: &view::Borrow, access: Access, written: Option<&bounds::Proof>) -> Self {
         Self::from_sources(borrow.sources.entries(), access, written)
     }
-    fn from_sources<'a>(
+    pub(super) fn from_sources<'a>(
         sources: impl Iterator<Item = (&'a view::Source, bounds::Clause)>,
         access: Access,
         written: Option<&bounds::Proof>,
