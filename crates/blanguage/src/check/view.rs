@@ -629,7 +629,8 @@ impl Requirement {
             Self::Nonzero{..}=>self.clone(),
         }
     }
-    pub fn check(&self,source:&crate::Source)->Result<()> {
+    pub fn check(&self, source: &crate::Source, call_path: Option<&bounds::Clause>) -> Result<()> {
+        let applies = || call_path.is_none_or(bounds::Clause::possible);
 
         if let Self::Nonzero{value,path,span}=self {
             return if bounds::integer_divisors(value,path).is_some(){Ok(())}else{source.fail(*span,"B152",bounds::INTEGER_DIVISOR_MESSAGE)};
@@ -647,11 +648,15 @@ impl Requirement {
                     continue;
                 };
                 if when.possible() {
-                    return source.fail(*span, violation.0, violation.1);
+                    return if applies() { source.fail(*span, violation.0, violation.1) } else { Ok(()) };
                 }
             }
         }
-        if self.borrow().is_some_and(Borrow::unresolved)||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.unresolved()){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Dataset{span,..}|Self::Initialized{span,..}|Self::Nonzero{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
+        if (self.borrow().is_some_and(Borrow::unresolved)
+            || matches!(self, Self::Unborrowed { resource, borrow, .. } if !borrow.empty() && resource.unresolved())) && applies()
+        {
+            return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Dataset{span,..}|Self::Initialized{span,..}|Self::Nonzero{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");
+        }
         if let Self::Initialized{read,code,span,..}=self {
             if !read.complete(){return source.fail(*span,code,"读取或返回前没有完整初始化原位置的所需分量");}
         }
@@ -930,7 +935,7 @@ impl Builder<'_> {
             return Ok(());
         }
         if requirement.borrow().is_some_and(Borrow::empty){return Ok(());}
-        requirement.under_path(&self.path).check(self.scope.source())?;
+        requirement.under_path(&self.path).check(self.scope.source(), None)?;
         if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.scope.source().clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
         Ok(())
     }

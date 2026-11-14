@@ -1882,12 +1882,12 @@ fn solve<'a>(
                 let path=bounds::Clause::both(path,&context);
                 value.proof=bounds::scoped_proof(&value.ty,value.proof.substitute_values(values),&path,&BTreeMap::new());
                 value.constant=value.constant.or_else(||value.proof.known_value(&value.ty));
-                Requirement::Nonzero{value:Box::new(value),path,span:*span}.check(&usage.source)?;
+                Requirement::Nonzero{value:Box::new(value),path,span:*span}.check(&usage.source, None)?;
                 continue;
             }
             if let Requirement::Initialized{read,code,span,..}=&usage.requirement {
                 let read=resolved_read(read,&path,function,state,&known);
-                Requirement::Initialized{borrow:read.borrow(),read,code,span:*span}.check(&usage.source)?;
+                Requirement::Initialized{borrow:read.borrow(),read,code,span:*span}.check(&usage.source, None)?;
                 continue;
             }
             if let Requirement::Unborrowed { resource, borrow, .. } = &usage.requirement {
@@ -1897,7 +1897,7 @@ fn solve<'a>(
                     continue;
                 }
             }
-            usage.requirement.mapped(|borrow|evaluate(borrow,function,state,&known,true)).under_path(&path).check(&usage.source)?;
+            usage.requirement.mapped(|borrow|evaluate(borrow,function,state,&known,true)).under_path(&path).check(&usage.source, None)?;
         }
         let mut evaluation = BorrowEvaluation {
             function, state, known: &known, expand_loops: true, deferred_reads: false,
@@ -1913,25 +1913,30 @@ fn solve<'a>(
                 }
                 let value=access_at_call(requirement,call,&path,&mut evaluation,&|| &*initialized);
                 let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..}|Access::Stored{when,..})=&value;
-                if when.possible(){
-                    let path=when.clone();
-                    if !live_task_places.empty() && let Some((accessed,_,mode))=value.accessed() {
-                        Requirement::Unborrowed{
-                            resource:accessed.restricted(&path),borrow:live_task_places.restricted(&path),
-                            kind:view::Exclusion::Position(mode),span:call.span,
-                        }.check(&call.source)?;
-                    }
-                    let requirement=match value {
-                        Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,written:position.written,writable:position.writable,initialized:position.initialized,span:call.span},
-                        Access::Resource{resources,borrows,kind,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),kind,span:call.span},
-                        Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}=>continue,
-                        Access::Initialized{borrows,initialized,..}=>{
-                            let read=output_initialization_read(&borrows,&initialized,&path);
-                            Requirement::Initialized{borrow:borrows,read,code:"B229",span:call.span}
-                        },
-                    };
-                    requirement.check(&call.source)?;
+                let has_live_task_places = !live_task_places.empty();
+                // An ordinary address call only needs reachability when it has a diagnostic.
+                let path = when.clone();
+                let diagnostic_path = match &value {
+                    Access::Position { .. } if !has_live_task_places => Some(&path),
+                    _ if !when.possible() => continue,
+                    _ => None,
+                };
+                if has_live_task_places && let Some((accessed,_,mode))=value.accessed() {
+                    Requirement::Unborrowed{
+                        resource:accessed.restricted(&path),borrow:live_task_places.restricted(&path),
+                        kind:view::Exclusion::Position(mode),span:call.span,
+                    }.check(&call.source, None)?;
                 }
+                let requirement=match value {
+                    Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,written:position.written,writable:position.writable,initialized:position.initialized,span:call.span},
+                    Access::Resource{resources,borrows,kind,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),kind,span:call.span},
+                    Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}=>continue,
+                    Access::Initialized{borrows,initialized,..}=>{
+                        let read=output_initialization_read(&borrows,&initialized,&path);
+                        Requirement::Initialized{borrow:borrows,read,code:"B229",span:call.span}
+                    },
+                };
+                requirement.check(&call.source, diagnostic_path)?;
             }
             for output in &call.outputs{
                 let borrow=known[&call.function].interface.outputs.get(output);
@@ -1980,7 +1985,7 @@ impl Builder<'_> {
                     let borrows=borrows.at_call(arguments);
                     let initialized=initialized.iter().map(|fact|fact.at_call(arguments)).collect::<Vec<_>>();
                     let read=output_initialization_read(&borrows,&initialized,&path);
-                    Requirement::Initialized{borrow:borrows,read,code:"B229",span}.check(self.scope.source())?;
+                    Requirement::Initialized{borrow:borrows,read,code:"B229",span}.check(self.scope.source(), None)?;
                 }
                 continue;
             }
