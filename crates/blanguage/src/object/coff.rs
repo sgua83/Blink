@@ -759,6 +759,69 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         }
         Ok(names.into_iter())
     }
+    fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<Vec<ObjectSymbol>> {
+        let input = ReadBytes::new(self.bytes.as_ref());
+        let table = unsafe { read_symbols(input) };
+        table.error.check()?;
+        let mut symbols = vec![ObjectSymbol::AUXILIARY; table.count];
+        let mut index = 0;
+        while index < table.count {
+            let row = unsafe { object_symbol(input, table, index, definitions.as_mut_ptr(), definitions.len()) };
+            row.error.check()?;
+            std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
+            symbols[index] = row.value;
+            index = row.next;
+        }
+        Ok(symbols)
+    }
+    fn relocations<'rows>(&'rows self, raw: &'rows [ObjectSection], symbols: &'rows [ObjectSymbol], row: &'rows ObjectSection)
+        -> Result<impl Iterator<Item = Result<(ReadRelocation, ObjectTarget)>> + 'rows>
+    {
+        let input = ReadBytes::new(self.bytes.as_ref());
+        let rows = ObjectRows::new(raw);
+        let symbols = ObjectSymbols { values: symbols.as_ptr(), count: symbols.len() };
+        let table = unsafe { read_relocations(input, row.relocations, row.relocation_count, row.flags) };
+        table.error.check()?;
+        let length = if row.zero_fill == 0 { row.bytes.length } else { row.zero_fill };
+        Ok((0..table.count).map(move |index| {
+            let ObjectRelocation { record, target } = unsafe { object_relocation(input, rows, symbols, table.offset, index) };
+            record.error.check()?;
+            if let Some(kind) = crate::native::CoffRelocationKind::of(record.kind as u16) {
+                kind.range(length, record.offset)?;
+            }
+            target.error.check()?;
+            Ok((record, target))
+        }))
+    }
+    /// Native archive consumers need the original names and import relocations.
+    /// Members keep their bytes; B contracts, stack and code are not restored.
+    pub(crate) fn host_links(&self) -> Result<Option<(Vec<String>, Vec<Import>)>> {
+        let mut parts = ObjectParts::default();
+        let raw = self.section_rows(&mut parts).collect::<Result<Vec<_>>>()?;
+        let mut cursor = MetadataReadCursor::new(self.metadata(parts.metadata)?);
+        let header = unsafe { metadata_read_prefix(&mut cursor, u64::from(FORMAT)) }.header;
+        header.error.check()?;
+        if !matches!(header.kind, ReadObjectKind::Module) { return Ok(None); }
+        // The existing B reader omits section-definition output for this empty
+        // receiver. The actual COFF symbol view remains the only symbol source.
+        let symbols = self.symbol_rows(&mut [])?;
+        let names = symbols.iter().filter(|symbol| symbol.external != 0 && symbol.section > 0)
+            .map(|symbol| {
+                object_index(&raw, symbol.section as usize - 1).ok_or("导出符号引用不可装载的节")?;
+                Ok(unsafe { std::str::from_utf8_unchecked(symbol.name.borrowed()) }.to_owned())
+            }).collect::<Result<Vec<_>>>()?;
+        let mut imports = Vec::new();
+        for row in raw.iter().filter(|row| row.mapped != 0) {
+            for value in self.relocations(&raw, &symbols, row)? {
+                let (_, target) = value?;
+                if matches!(target.kind, ObjectTargetKind::Import) {
+                    imports.push(Import { dll: read_text(target.dll)?, name: read_text(target.name)? });
+                }
+            }
+        }
+        Ok(Some((names, imports)))
+    }
+
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
         let mut parts = ObjectParts::default();
@@ -875,19 +938,8 @@ fn read_metadata(
 }
 fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) -> Result<Object> {
     let b = reader.bytes;
-    let input = ReadBytes::new(b);
-    let table = unsafe { read_symbols(input) };
-    table.error.check()?;
-    let mut symbols = vec![ObjectSymbol::AUXILIARY; table.count];
     let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
-    let mut i = 0;
-    while i < table.count {
-        let row = unsafe { object_symbol(input, table, i, definitions.as_mut_ptr(), definitions.len()) };
-        row.error.check()?;
-        std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
-        symbols[i] = row.value;
-        i = row.next;
-    }
+    let symbols = reader.symbol_rows(&mut definitions)?;
     let mut parts = ObjectParts::default();
     let mut raw = reader.section_rows(&mut parts).collect::<Result<Vec<_>>>()?;
     let (name, kind, mut bindings, stack, archive) = match native {
@@ -924,19 +976,10 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
         value.error.check()?;
         if value.present != 0 { sections[value.owner].associated.push(row.mapped - 1); }
     }
-    let symbol_rows = ObjectSymbols { values: symbols.as_ptr(), count: symbols.len() };
     for row in &raw {
         if row.mapped == 0 { continue; }
-        let table = unsafe { read_relocations(input, row.relocations, row.relocation_count, row.flags) };
-        table.error.check()?;
-        for i in 0..table.count {
-            let ObjectRelocation { record: r, target: value } =
-                unsafe { object_relocation(input, rows, symbol_rows, table.offset, i) };
-            r.error.check()?;
-            if let Some(kind)=crate::native::CoffRelocationKind::of(r.kind as u16){
-                kind.range(sections[row.mapped-1].bytes.len(),r.offset)?;
-            }
-            value.error.check()?;
+        for value in reader.relocations(&raw, &symbols, row)? {
+            let (r, value) = value?;
             let target = match value.kind {
                 ObjectTargetKind::Section => Target::Section(value.section, value.value as u32),
                 ObjectTargetKind::Import => Target::Import(Import { dll: read_text(value.dll)?, name: read_text(value.name)? }),

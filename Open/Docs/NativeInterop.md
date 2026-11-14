@@ -489,7 +489,7 @@ blink_storage_address在调用期间借用原Frame，直接返回当前有效槽
 
 `blink.sequence`用普通B接口交接拥有dataset及Result，源码使用与实例范围见[库说明](../../library/README.md)。通过`bc -c --module --instance NAME<T>`导出实际实例，`blink --archive`将独立模块对象及已有模块库生成标准COFF静态库；消费方用`--import`装入真实合同。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。没有导出的类型实例明确拒绝，不在对象消费或链接阶段读取库.b、重新生成模板或调用Rust编译器。
 
-已声明且无需Frame的B extern `"C"`入口，可通过`blink --host-archive <module.obj|library.lib>... -o <host.lib>`静态交给普通Rust／C／C++宿主。原生宿主库保持B对象字节，实际系统调用仍由B代码执行；同一链接所有者产生导入槽及其原生COFF关联材料，宿主沿真实引用选择，不经Rust逐次转发。B接口编译继续使用--archive及--import；宿主IAT成员不是B接口模块。最终原生宿主持有所选PE代码和真实DLL，输入／代码／外部资源的寿命仍由其真实拥有者承担；该产物不创建Frame，也不替代含资源模块的完整ABI交接。SDK入口为`blanguage::linker::host_archive(inputs, output)`。
+已声明且无需Frame的B extern `"C"`入口，可通过`blink --host-archive <module.obj|library.lib>... -o <host.lib>`静态交给普通Rust／C／C++宿主。宿主归档直接借用COFF中的模块类别、已定义外部符号名与实际重定位的DLL导入；B接口和完整对象读取各自承担所需的合同、栈、资源和代码拥有结果。原生宿主库保持B对象字节，实际系统调用仍由B代码执行；同一链接所有者产生导入槽及其原生COFF关联材料，宿主沿真实引用选择，不经Rust逐次转发。B接口编译继续使用--archive及--import；宿主IAT成员不是B接口模块。最终原生宿主持有所选PE代码和真实DLL，输入／代码／外部资源的寿命仍由其真实拥有者承担；该产物不创建Frame，也不替代含资源模块的完整ABI交接。SDK入口为`blanguage::linker::host_archive(inputs, output)`。
 
 模块合同传递无符号上界距离、不回绕和及拼接偏移关系；数值事实与资源版本分开。普通C不接收拥有容器，库不建立第二Frame或独立运行时容器。
 

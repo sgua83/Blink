@@ -1,6 +1,6 @@
 //! 原生宿主导入材料；B生成实际IAT及关联，Rust持有最终COFF容器。
 use super::Result;
-use crate::object::{self,Import,Kind,LibraryMember,Relocation,Section,Symbol,Target};
+use crate::object::{self,Import,LibraryMember,Relocation,Section,Symbol,Target};
 use super::resources::ImportBytes;
 use std::{marker::PhantomData, path::Path};
 
@@ -104,13 +104,10 @@ pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     for (index, member) in members.iter().enumerate() {
-        let object = member.object(false)?;
-        if !matches!(object.kind, Kind::Module { .. }) {
-            return Err(format!("{} 不是独立模块产物", member.name).into());
-        }
-        symbols.extend(object.symbols.into_iter().map(|symbol| (index, symbol.name)));
-        imports.extend(object.sections.into_iter().flat_map(|section| section.relocations)
-            .filter_map(|relocation| match relocation.target { Target::Import(import) => Some(import), _ => None }));
+        let (names, member_imports) = member.host_links()?
+            .ok_or_else(||format!("{} 不是独立模块产物",member.name))?;
+        symbols.extend(names.into_iter().map(|name|(index,name)));
+        imports.extend(member_imports);
     }
     append_members(&imports, &mut members, &mut symbols)?;
     let output = object::library_bytes(&members, &symbols)?;

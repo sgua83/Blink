@@ -110,6 +110,10 @@ impl Member {
         Self { name, bytes: ObjectBytes::generated(bytes) }
     }
     fn bytes(&self)->&[u8] { &self.bytes }
+    pub(crate) fn host_links(&self)->Result<Option<(Vec<String>,Vec<super::Import>)>> {
+        coff::Reader::new(&self.bytes).and_then(|reader|reader.host_links())
+            .map_err(|error|format!("静态库成员 {}：{error}",self.name).into())
+    }
     pub(crate) fn object(&self,native:bool)->Result<Object> {
         member_object(&self.name,&self.bytes,native)
     }
