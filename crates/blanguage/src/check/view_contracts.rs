@@ -1082,14 +1082,13 @@ fn resolved_read(read:&address::InitializationRead,path:&bounds::Clause,function
     address::InitializationRead{positions,initialized}
 }
 
-fn refreshed_at_call(borrow:&Borrow,call:&Call,path:&bounds::Clause,function:&Function,state:&State,known:&States)->Borrow {
-    let initialized=initialization_effects(&call.initialization,function,state,known).positions(path);
-    evaluate(borrow,function,state,known,true).map_sources(|source|match source {
+fn refreshed_at_call<'a>(borrow:Borrow,path:&bounds::Clause,initialized:&impl Fn()->&'a BTreeSet<Position>)->Borrow {
+    borrow.map_sources(|source|match source {
         Origin::Position(origin)=>{
             let fact=address::Initialization{source:address::InitializationSource::Position(origin.as_ref().clone()),when:bounds::Condition::constant(true)};
             let positions=fact.positions(path);
             let mut origin=origin.as_ref().clone();
-            origin.initialized=origin.initialized.iter().enumerate().map(|(i,ready)|*ready||positions.get(i).is_some_and(|position|position.initialized_by(&initialized))).collect();
+            origin.initialized=origin.initialized.iter().enumerate().map(|(i,ready)|*ready||positions.get(i).is_some_and(|position|position.initialized_by(initialized()))).collect();
             Borrow::source(Origin::Position(Arc::new(origin)))
         }
         source=>Borrow::source(source),
@@ -1100,12 +1099,13 @@ fn borrow_at_call(borrow: &Borrow, call: &Call, arguments: &BTreeMap<ValueIdenti
     call_content_sources(borrow, call, arguments).at_call(arguments)
 }
 
-fn access_at_call(access:&Access,call:&Call,path:&bounds::Clause,function:&Function,state:&State,known:&States)->Access{
+fn access_at_call<'a>(access:&Access,call:&Call,path:&bounds::Clause,function:&Function,state:&State,known:&States,initialized:&impl Fn()->&'a BTreeSet<Position>)->Access{
     let apply=|access:&Access,arguments:&BTreeMap<ValueIdentity,bounds::Proof>|{
     let(Access::Resource{borrows,when,..}|Access::Position{borrows,when,..}|Access::Memory{borrows,when,..}|Access::Dataset{borrows,when,..}|Access::Initialized{borrows,when,..}|Access::Stored{borrows,when,..})=access;
     let borrows=borrow_at_call(borrows, call, arguments);
     let when=bounds::Clause::both(path, &when.projected_case(true, arguments));
-    let borrows=if matches!(access,Access::Initialized{..}){evaluate(&borrows,function,state,known,true)}else{refreshed_at_call(&borrows,call,path,function,state,known)};
+    let borrows=evaluate(&borrows,function,state,known,true);
+    let borrows=if matches!(access,Access::Initialized{..}){borrows}else{refreshed_at_call(borrows,path,initialized)};
     let when=bounds::Condition::guard(when);
     match access {
         Access::Resource{resources,kind,..}=>Access::Resource{resources:evaluate(&call_content_sources(resources,call,arguments).at_call(arguments),function,state,known,true),borrows,kind:*kind,when},
@@ -1311,8 +1311,9 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             }
             for call in function.calls.iter().filter(|call|call.function!=*name||state.entries.is_none()) {
                 let live_task_places=evaluate(&call.live_task_places,function,state,known,true);
+                let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
                 for requirement in &known[&call.function].interface.access {
-                let value=access_at_call(requirement,call,&call.path,function,state,known);
+                let value=access_at_call(requirement,call,&call.path,function,state,known,&|| &*initialized);
                 if live_task_places.active()
                     && let Some((accessed,when,mode))=value.accessed()
                     && let Some(exclusion)=function.access(accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when.clone())
@@ -1550,6 +1551,8 @@ pub(super) fn solve(
             let mut effect=address::MemoryEffect::default();
             if calls.peek().is_some_and(|call|call.memory==memory){
                 let call=calls.next().unwrap();
+                let state = &known[name];
+                let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, &known).positions(&call.path));
                 for access in &known[&call.function].interface.access {
                     let (borrows, when, access, written) = match access {
                         Access::Memory { borrows, when, access } | Access::Dataset { borrows, when, access, .. } =>
@@ -1566,7 +1569,7 @@ pub(super) fn solve(
                         _ => continue,
                     };
                     let borrows = borrow_at_call(borrows, call, &call.arguments);
-                    let borrows = refreshed_at_call(&borrows, call, &call.path, function, &known[name], &known);
+                    let borrows = refreshed_at_call(evaluate(&borrows, function, state, &known, true), &call.path, &|| &*initialized);
                     let path = bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
                         .substitute_values(&resolved);
                     let borrow = borrows.substitute_values(&resolved).restricted(&path);
@@ -1640,8 +1643,9 @@ pub(super) fn solve(
         for call in &function.calls{
             let path=bounds::Clause::both(&call.path,&context);
             let live_task_places=evaluate(&call.live_task_places,function,state,&known,true);
+            let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, &known).positions(&path));
             for requirement in &known[&call.function].interface.access{
-                let value=access_at_call(requirement,call,&path,function,state,&known);
+                let value=access_at_call(requirement,call,&path,function,state,&known,&|| &*initialized);
                 let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..}|Access::Stored{when,..})=&value;
                 if when.active(){
                     let path=when.assume(&bounds::Clause::default(),true);
