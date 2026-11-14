@@ -1106,8 +1106,13 @@ impl Proof {
                 }
             }
         }
-        for component in 0..translated.conditions.len(){
-            if translated.component_condition(component).is_some_and(|condition|!condition.cases[0].possible()){translated.mark_nonzero(component);}
+        for component in 0..translated.conditions.len() {
+            if translated.nonzero.get(component) != Some(&true)
+                && translated.component_condition(component)
+                    .is_some_and(|condition| !condition.cases[0].possible())
+            {
+                translated.mark_nonzero(component);
+            }
         }
         translated
     }
