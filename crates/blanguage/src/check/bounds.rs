@@ -1827,30 +1827,8 @@ where I: IntoIterator<Item = &'a Fact>, I::IntoIter: Clone {
     let mut roots = BTreeMap::new();
     extend_equality_roots(&mut roots, facts.clone());
     extend_computed_roots(&mut roots, facts);
-    close_equality_roots(&mut roots);
     roots
 }
-
-fn equality_root(
-    roots: &BTreeMap<ValueIdentity, ValueIdentity>,
-    mut id: ValueIdentity,
-) -> ValueIdentity {
-    while let Some(&parent) = roots.get(&id) {
-        if parent == id { break; }
-        id = parent;
-    }
-    id
-}
-
-fn close_equality_roots(roots: &mut BTreeMap<ValueIdentity, ValueIdentity>) {
-    // Resolve the remaining links in the same table before handing it off.
-    let members: Vec<_> = roots.keys().copied().collect();
-    for member in members {
-        let root = equality_root(roots, member);
-        *roots.get_mut(&member).unwrap() = root;
-    }
-}
-
 // 同一确定运算在相等输入上产生相等结果；嵌套结果沿本次查询收敛。
 fn extend_computed_roots<'a>(
     roots: &mut BTreeMap<ValueIdentity, ValueIdentity>,
@@ -1864,37 +1842,49 @@ fn extend_computed_roots<'a>(
         let mut produced = BTreeMap::new();
         let mut equalities = Facts::new();
         for &(result, expression) in &expressions {
-            let result = equality_root(roots, result);
-            let expression = expression.map(|id| Some(equality_root(roots, id))).unwrap();
+            let result = roots.get(&result).copied().unwrap_or(result);
+            let expression = expression.map(|id| Some(roots.get(&id).copied().unwrap_or(id))).unwrap();
             match produced.entry(expression) {
                 std::collections::btree_map::Entry::Vacant(entry) => { entry.insert(result); },
                 std::collections::btree_map::Entry::Occupied(entry) if *entry.get() != result => {
                     equalities.insert(Fact::equal(*entry.get(), result));
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         if equalities.is_empty() { break; }
         extend_equality_roots(roots, &equalities);
     }
 }
-
 fn extend_equality_roots<'a>(
     roots: &mut BTreeMap<ValueIdentity, ValueIdentity>,
     facts: impl IntoIterator<Item = &'a Fact>,
 ) -> bool {
     let mut changed = false;
     // Facts 及其 union 按 Fact 排序；Equal 是首个事实类别。
-    for fact in facts {
-        let Fact::Equal(a, b) = *fact else { break; };
-        let a = equality_root(roots, a);
-        let b = equality_root(roots, b);
-        let root = a.min(b);
-        let merged = a.max(b);
-        roots.entry(root).or_insert(root);
-        if root != merged {
-            roots.insert(merged, root);
-            changed = true;
+    for fact in facts.into_iter().take_while(|fact| matches!(fact, Fact::Equal(..))) {
+        if let Fact::Equal(a, b) = *fact {
+            let a_group = roots.get(&a).copied();
+            let b_group = roots.get(&b).copied();
+            let a_root = a_group.unwrap_or(a);
+            let b_root = b_group.unwrap_or(b);
+            let root = a_root.min(b_root);
+            if a_root != b_root {
+                changed = true;
+                let merged = a_root.max(b_root);
+                // 只改被合并组；其成员身份不可能小于该组的最小代表值。
+                for (_, current) in roots.range_mut(merged..) {
+                    if *current == merged {
+                        *current = root;
+                    }
+                }
+            }
+            if a_group.is_none() {
+                roots.insert(a, root);
+            }
+            if b_group.is_none() {
+                roots.insert(b, root);
+            }
         }
     }
     changed
@@ -1920,7 +1910,6 @@ fn additional_equality_roots<'a>(
     let mut roots = environment_roots.clone();
     extend_equality_roots(&mut roots, additions);
     extend_computed_roots(&mut roots, environment.union(additions));
-    close_equality_roots(&mut roots);
     Cow::Owned(roots)
 }
 type EqualityMembers<'a> = Vec<(&'a ValueIdentity, &'a ValueIdentity)>;
@@ -2811,7 +2800,6 @@ impl Clause {
             let merged = extend_equality_roots(&mut environment_roots, required.iter());
             if merged || required.iter().any(|fact| matches!(fact, Fact::Index(_, IndexDomain::Computed(_)))) {
                 extend_computed_roots(&mut environment_roots, environment.iter());
-                close_equality_roots(&mut environment_roots);
             }
             let numeric = integer_relation_facts(&environment, &environment_roots)?;
             if unchanged && numeric.is_empty() {
