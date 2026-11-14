@@ -635,12 +635,19 @@ impl Requirement {
             return if bounds::integer_divisors(value,path).is_some(){Ok(())}else{source.fail(*span,"B152",bounds::INTEGER_DIVISOR_MESSAGE)};
         }
         if let Self::Address{borrow,layout,writable,initialized,span,..}=self {
-            for(origin_source,when)in borrow.sources.entries() {
-                if !when.possible(){continue;}
-                if let Source::Position(origin)=origin_source {
-                    if origin.layout!=*layout||!origin.layout_valid() {return source.fail(*span,"B263","地址解释的布局与原自有位置不同");}
-                    if *writable&&!origin.writable {return source.fail(*span,"B227","自有地址不能升级原只读位置的写权限");}
-                    if *initialized&&!origin.symbolic_input()&&!origin.initialized.iter().all(|ready|*ready) {return source.fail(*span,"B142","地址读取或inout需要原位置已经初始化");}
+            for (origin_source, when) in borrow.sources.entries() {
+                let Source::Position(origin) = origin_source else { continue; };
+                let violation = if origin.layout != *layout || !origin.layout_valid() {
+                    ("B263", "地址解释的布局与原自有位置不同")
+                } else if *writable && !origin.writable {
+                    ("B227", "自有地址不能升级原只读位置的写权限")
+                } else if *initialized && !origin.symbolic_input() && !origin.initialized.iter().all(|ready| *ready) {
+                    ("B142", "地址读取或inout需要原位置已经初始化")
+                } else {
+                    continue;
+                };
+                if when.possible() {
+                    return source.fail(*span, violation.0, violation.1);
                 }
             }
         }
