@@ -1,5 +1,8 @@
 //! 同一Proof区间集合中的有限浮点次序；不拥有运行资源或另一份事实表。
 use super::*;
+#[path="floating/scalar.rs"]
+mod scalar;
+pub(super) use scalar::{order,bits,comparison_possible,finite,interval,bitcast,cast,arithmetic,math,sum,negate,add_up,multiply_up,divide_up,integer_bound,conversion_error};
 
 impl Proof {
     pub(in crate::check) fn binary_requires_float_preserve(
@@ -30,237 +33,12 @@ impl Proof {
     }
 }
 
-pub(super) fn order(scalar: Scalar, bits: Bits) -> Bits {
-    let sign = 1 << (scalar.bit_width() - 1);
-    if bits & sign == 0 { bits ^ sign } else { !bits & scalar.bit_mask() }
-}
-pub(super) fn bits(scalar: Scalar, ordered: Bits) -> Bits {
-    let sign = 1 << (scalar.bit_width() - 1);
-    if ordered & sign == 0 { !ordered & scalar.bit_mask() } else { ordered ^ sign }
-}
-fn number(scalar: Scalar, ordered: Bits) -> f64 {
-    let raw = bits(scalar, ordered);
-    if scalar == Scalar::F32 { f32::from_bits(raw as u32) as f64 } else { f64::from_bits(raw) }
-}
-// Compare the actual ordered bit intervals, including permitted input denormal flushing.
-pub(super) fn comparison_possible(op: Comparison, scalar: Scalar, a: (Bits, Bits), b: (Bits, Bits), truth: bool) -> bool {
-    if a.0 > a.1 || b.0 > b.1 { return false; }
-    let raw = |value: f64| if scalar == Scalar::F32 { (value as f32).to_bits() as Bits } else { value.to_bits() };
-    let numeric = (order(scalar,raw(f64::NEG_INFINITY)),order(scalar,raw(f64::INFINITY)));
-    let normal = if scalar == Scalar::F32 { f32::MIN_POSITIVE as f64 } else { f64::MIN_POSITIVE };
-    let interval = |(lower,upper): (Bits,Bits)| {
-        let nan = lower < numeric.0 || upper > numeric.1;
-        let (lower,upper) = (lower.max(numeric.0),upper.min(numeric.1));
-        let values = (lower <= upper).then(|| {
-            let (mut lower,mut upper) = (number(scalar,lower),number(scalar,upper));
-            if lower > 0.0 && lower < normal { lower = 0.0; }
-            if upper < 0.0 && upper > -normal { upper = 0.0; }
-            (lower,upper)
-        });
-        (values,nan)
-    };
-    let ((a,an),(b,bn)) = (interval(a),interval(b));
-    if (an || bn) && truth == (op == Comparison::NotEqual) { return true; }
-    let (Some((al,ah)),Some((bl,bh))) = (a,b) else { return false; };
-    match (op,truth) {
-        (Comparison::Less,true) | (Comparison::GreaterEqual,false) => al < bh,
-        (Comparison::LessEqual,true) | (Comparison::Greater,false) => al <= bh,
-        (Comparison::Greater,true) | (Comparison::LessEqual,false) => ah > bl,
-        (Comparison::GreaterEqual,true) | (Comparison::Less,false) => ah >= bl,
-        (Comparison::Equal,true) | (Comparison::NotEqual,false) => al <= bh && bl <= ah,
-        (Comparison::Equal,false) | (Comparison::NotEqual,true) => al != ah || bl != bh || al != bl,
-    }
-}
 pub(super) fn ranges(value: &Value, component: usize) -> ScalarRanges {
     let scalar = value.ty.components[component].0;
     let ranges = value.proof.range_set(component).restrict(0, scalar.bit_mask());
     match &value.constant {
         Some(values) => { let at = order(scalar, values[component]); ranges.restrict(at, at) }
         None => ranges,
-    }
-}
-fn finite(value: &Value, component: usize) -> Option<(f64, f64)> {
-    finite_ranges(value.ty.components[component].0, ranges(value, component))
-}
-fn finite_ranges(scalar: Scalar, ranges: ScalarRanges) -> Option<(f64, f64)> {
-    let (a,b) = ranges.hull();
-    if a > b { return None; }
-    let (mut lower, mut upper) = (number(scalar,a), number(scalar,b));
-    if !lower.is_finite() || !upper.is_finite() { return None; }
-    // 原GPU入口允许次正规输入及结果归零；数值区间包含这一实际可能值。
-    let normal = if scalar == Scalar::F32 { f32::MIN_POSITIVE as f64 } else { f64::MIN_POSITIVE };
-    if lower > 0.0 && lower < normal { lower = 0.0; }
-    if upper < 0.0 && upper > -normal { upper = 0.0; }
-    Some((lower,upper))
-}
-fn rounded(scalar: Scalar, value: f64, lower: bool) -> f64 {
-    if scalar == Scalar::F64 { return value; }
-    let result = value as f32;
-    if lower && result as f64 > value { result.next_down() as f64 }
-    else if !lower && (result as f64) < value { result.next_up() as f64 }
-    else { result as f64 }
-}
-// 精确和由主值与残差交接，再向实际Scalar舍入；微小的第二项仍保留。
-fn sum_bound(scalar: Scalar, a: f64, b: f64, lower: bool) -> f64 {
-    let sum = a + b;
-    let back = sum - a;
-    let tail = (a - (sum - back)) + (b - back);
-    let value = if lower && tail < 0.0 { sum.next_down() }
-        else if !lower && tail > 0.0 { sum.next_up() } else { sum };
-    rounded(scalar,value,lower)
-}
-fn interval(scalar: Scalar, lower: f64, upper: f64) -> ScalarRanges {
-    let (mut lower, mut upper) = (rounded(scalar,lower,true), rounded(scalar,upper,false));
-    if !lower.is_finite() || !upper.is_finite() || lower > upper { return ScalarRanges::default(); }
-    let normal = if scalar == Scalar::F32 { f32::MIN_POSITIVE as f64 } else { f64::MIN_POSITIVE };
-    if lower > 0.0 && lower < normal { lower = 0.0; }
-    if upper < 0.0 && upper > -normal { upper = 0.0; }
-    if lower == 0.0 { lower = -0.0; }
-    if upper == 0.0 { upper = 0.0; }
-    let raw = |x:f64| if scalar == Scalar::F32 { (x as f32).to_bits() as Bits } else { x.to_bits() };
-    ScalarRanges::interval(order(scalar,raw(lower)),order(scalar,raw(upper)))
-}
-pub(super) fn bitcast(value: &Value, component: usize, target: Scalar) -> ScalarRanges {
-    let source = value.ty.components[component].0;
-    let (scalar, ranges, convert): (_, _, fn(Scalar, Bits) -> Bits) = if source.is_float() {
-        (source, ranges(value, component), bits)
-    } else { (target, value.component_ranges(component), order) };
-    let sign = 1 << (scalar.bit_width() - 1);
-    // Both encodings are monotone on each side of the real sign-bit boundary.
-    ranges.map(|(lower, upper)| ScalarRanges::from_intervals(
-        [(lower, upper.min(sign - 1)), (lower.max(sign), upper)].into_iter()
-            .filter(|(a, b)| a <= b).map(|(a, b)| {
-                let (a, b) = (convert(scalar, a), convert(scalar, b));
-                (a.min(b), a.max(b))
-            })))
-}
-pub(super) fn cast(value: &Value, component: usize, target: Scalar) -> ScalarRanges {
-    let source = value.ty.components[component].0;
-    if source.is_integer() && target.is_float() {
-        let (a,b) = value.component_ranges(component).hull();
-        if a > b { return ScalarRanges(Vec::new()); }
-        let decode = |n| if source.is_signed() { source.signed(n ^ source.order_bias()) as i128 } else { n as i128 };
-        let (lower,upper) = (decode(a), decode(b));
-        let convert = |n:i128, low:bool| {
-            let f = if target == Scalar::F32 { n as f32 as f64 } else { n as f64 };
-            if low && f as i128 > n {
-                if target == Scalar::F32 { (f as f32).next_down() as f64 } else { f.next_down() }
-            } else if !low && (f as i128) < n {
-                if target == Scalar::F32 { (f as f32).next_up() as f64 } else { f.next_up() }
-            } else { f }
-        };
-        return interval(target,convert(lower,true),convert(upper,false));
-    }
-    if source.is_float() && let Some((lower,upper)) = finite(value,component) {
-        if target.is_float() { return interval(target,lower,upper); }
-        if target.is_integer() {
-            let (lower,upper) = (lower.trunc() as i128,upper.trunc() as i128);
-            let minimum = if target.is_signed() { -(1i128 << (target.bit_width()-1)) } else { 0 };
-            let maximum = if target.is_signed() { (1i128 << (target.bit_width()-1))-1 } else { (1i128 << target.bit_width())-1 };
-            if lower >= minimum && upper <= maximum {
-                return ScalarRanges::interval(target.truncate(lower as Bits)^target.order_bias(),target.truncate(upper as Bits)^target.order_bias());
-            }
-        }
-    }
-    ScalarRanges::default()
-}
-pub(super) fn arithmetic(op: &str, a: &Value, b: &Value, component: usize) -> ScalarRanges {
-    let scalar = a.ty.components[0].0;
-    let Some((al,ah)) = finite(a,component % a.regs.len()) else { return ScalarRanges::default(); };
-    let Some((bl,bh)) = finite(b,component % b.regs.len()) else { return ScalarRanges::default(); };
-    let (mut lower,mut upper) = match op {
-        "+" => (sum_bound(scalar,al,bl,true),sum_bound(scalar,ah,bh,false)),
-        "-" => (sum_bound(scalar,al,-bh,true),sum_bound(scalar,ah,-bl,false)),
-        "*" => {
-            let values=[(al,bl),(al,bh),(ah,bl),(ah,bh)].map(|(a,b)| {
-                if scalar == Scalar::F32 { (a*b,a*b) }
-                else { (-multiply_up(-a,b),multiply_up(a,b)) }
-            });
-            (values.into_iter().map(|(lower,_)| lower).fold(f64::INFINITY,f64::min),
-                values.into_iter().map(|(_,upper)| upper).fold(f64::NEG_INFINITY,f64::max))
-        }
-        "/" => {
-            // Interpret the Vulkan division model in the actual scalar format.
-            let (normal, maximum) = if scalar == Scalar::F32 {
-                (f32::MIN_POSITIVE as f64, 2.0f64.powi(126))
-            } else { (f64::MIN_POSITIVE, 2.0f64.powi(1022)) };
-            if bl <= 0.0 && bh >= 0.0 || bl.abs().min(bh.abs()) < normal
-                || bl.abs().max(bh.abs()) > maximum { return ScalarRanges::default(); }
-            let values=[al/bl,al/bh,ah/bl,ah/bh];
-            (values.into_iter().fold(f64::INFINITY,f64::min),values.into_iter().fold(f64::NEG_INFINITY,f64::max))
-        }
-        _ => return ScalarRanges::default(),
-    };
-    if op == "/" {
-        if scalar == Scalar::F32 {
-            // 2.5 ULP <= 2.5*2^-23相对误差；3覆盖端点F64求值及最终向外舍入。
-            let error = |x:f64| 3.0*(x.abs()*2.0f64.powi(-23)).max(2.0f64.powi(-149));
-            lower -= error(lower); upper += error(upper);
-        } else {
-            // The binary64 reference permits 2.5 ULP; include host endpoint division.
-            let error = |x:f64| multiply_up(4.0,
-                multiply_up(x.abs(), f64::EPSILON).max(f64::from_bits(1)));
-            lower = -add_up(-lower, error(lower)); upper = add_up(upper, error(upper));
-        }
-    }
-    interval(scalar,lower,upper)
-}
-pub(super) fn math(op: MathOp, args: &[Value], component: usize) -> ScalarRanges {
-    let a = &args[0]; let scalar = a.ty.components[0].0;
-    let Some((al,ah)) = finite(a,component % a.regs.len()) else { return ScalarRanges::default(); };
-    let (lower,upper) = match op {
-        MathOp::Min | MathOp::Max => {
-            let b=&args[1];
-            let Some((bl,bh))=finite(b,component % b.regs.len()) else { return ScalarRanges::default(); };
-            if op == MathOp::Min { (al.min(bl),ah.min(bh)) } else { (al.max(bl),ah.max(bh)) }
-        }
-        MathOp::Abs => (if al<=0.0 && ah>=0.0 { 0.0 } else { al.abs().min(ah.abs()) },al.abs().max(ah.abs())),
-        MathOp::Floor => (al.floor(),ah.floor()),
-        MathOp::Log | MathOp::Log2 if al > 0.0 => {
-            // 正有限输入的对数仍有限；不以宿主数学库预测设备的精确对数区间。
-            let maximum=if scalar == Scalar::F32 { f32::MAX as f64 } else { f64::MAX };
-            (-maximum,maximum)
-        }
-        _ => return ScalarRanges::default(),
-    };
-    interval(scalar,lower,upper)
-}
-// The original FAdd tree has at most N-1 non-identity additions per result.
-pub(super) fn sum(input: &Proof, component: usize, scalar: Scalar, maximum: Bits) -> ScalarRanges {
-    let input = input.element_range(component, scalar);
-    if input.0.is_empty() { return input; }
-    let Some((lower, upper)) = finite_ranges(scalar, input) else { return ScalarRanges::default(); };
-    if maximum == 1 { return interval(scalar, lower, upper); }
-    let (epsilon, normal, finite_maximum) = if scalar == Scalar::F32 {
-        (2.0f64.powi(-23), f32::MIN_POSITIVE as f64, f32::MAX as f64)
-    } else {
-        (2.0f64.powi(-52), f64::MIN_POSITIVE, f64::MAX)
-    };
-    let mut power = maximum - 1;
-    let mut base = 1.0 + epsilon;
-    let mut factor = 1.0;
-    while power != 0 {
-        if power & 1 != 0 { factor = multiply_up(factor, base); }
-        power >>= 1;
-        if power != 0 { base = multiply_up(base, base); }
-    }
-    let count = maximum as f64;
-    let magnitude = multiply_up(count, lower.abs().max(upper.abs()));
-    // Flushing a subnormal can cost a full minimum normal, not one subnormal ULP.
-    // Below that magnitude sums lie on the selected scalar subnormal lattice.
-    let flushed = multiply_up(multiply_up(factor, count - 1.0),
-        normal.min(magnitude));
-    let error = add_up(multiply_up(add_up(factor, -1.0), magnitude), flushed);
-    // Final cancellation does not establish finiteness of earlier additions.
-    if add_up(magnitude, error) > finite_maximum { return ScalarRanges::default(); }
-    let lower = if lower >= 0.0 { lower } else { -add_up(multiply_up(-lower, count), error) };
-    let upper = if upper <= 0.0 { upper } else { add_up(multiply_up(upper, count), error) };
-    interval(scalar, lower, upper)
-}
-pub(super) fn negate(value: &Value, component: usize) -> ScalarRanges {
-    match finite(value,component) {
-        Some((lower,upper)) => interval(value.ty.components[component].0,-upper,-lower),
-        None => ScalarRanges::default(),
     }
 }
 
@@ -290,27 +68,6 @@ impl Proof {
     }
 }
 
-// Outward F64 evaluation belongs to floating range analysis, not generated code.
-fn add_up(a: f64, b: f64) -> f64 {
-    sum_bound(Scalar::F64,a,b,false)
-}
-fn multiply_up(a: f64, b: f64) -> f64 {
-    let product = a * b;
-    if a == 0.0 || b == 0.0 { product } else { product.next_up() }
-}
-fn divide_up(a: f64, b: f64) -> f64 {
-    let quotient = a / b;
-    if a == 0.0 { quotient } else { quotient.next_up() }
-}
-fn integer_bound(value: Bits, lower: bool) -> f64 {
-    let result = value as f64;
-    if lower && result as u128 > value as u128 { result.next_down() }
-    else if !lower && (result as u128) < value as u128 { result.next_up() }
-    else { result }
-}
-fn conversion_error(upper: Bits) -> f64 {
-    if upper <= 1 << 24 { 0.0 } else { 2.0f64.powi(-23) }
-}
 impl FloatingBound {
     fn coefficients(self) -> [f64; 3] { self.terms.map(f64::from_bits) }
     fn upper(self, terms: [f64; 3]) -> Self {
