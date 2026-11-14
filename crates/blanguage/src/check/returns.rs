@@ -171,60 +171,23 @@ impl ReturnContext {
         }
     }
 }
+unsafe extern "C" {
+    #[link_name = "bootstrap.return_scope::early_returns"]
+    fn source_early_returns(
+        nodes: *const std::ffi::c_void,
+        source: *const std::ffi::c_void,
+        stored: *const std::ffi::c_void,
+        body: crate::syntax::wire::Slice,
+    ) -> bool;
+}
 fn early_returns(body: &Block) -> bool {
-    propagates(body)
-        || body.iter().enumerate().any(|(i, s)| match s.kind() {
-            StmtKind::Return(_) => i + 1 != body.len(),
-            StmtKind::If(_, yes, no) => {
-                has_return(&yes) || has_return(&no)
-            }
-            StmtKind::Match(_, arms) => arms.iter().any(|arm|has_return(&arm.body())),
-            StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(&b),
-            _ => false,
-        })
-}
-fn has_return(body: &Block) -> bool {
-    body.iter().any(|s| match s.kind() {
-        StmtKind::Return(_) => true,
-        StmtKind::If(_, y, n) => has_return(&y) || has_return(&n),
-        StmtKind::Match(_, arms) => arms.iter().any(|arm|has_return(&arm.body())),
-        StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(&b),
-        _ => false,
-    })
-}
-fn propagates(body: &Block) -> bool {
-    fn expr(e: &Expr) -> bool {
-        match e.kind() {
-            ExprKind::Call(name, args) => name == "try" || args.iter().any(|argument|expr(&argument)),
-            ExprKind::Invoke(callee, args) => expr(&callee) || args.iter().any(|argument|expr(&argument)),
-            ExprKind::Specialize(_, _, args)
-            | ExprKind::Cooperate(_, _, args)
-            | ExprKind::Construct(_, args) => args.iter().any(|argument|expr(&argument)),
-            ExprKind::Target(_, e) | ExprKind::Member(e, _) | ExprKind::Unary(_, e) => expr(&e),
-            ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => expr(&a) || expr(&b),
-            ExprKind::Select(c, a, b) => expr(&c) || expr(&a) || expr(&b),
-            _ => false,
-        }
+    let storage = body.source_view().storage();
+    // The original sealed source owner remains borrowed through this query.
+    // Only the node and text regions actually consumed by B cross this ABI.
+    unsafe {
+        source_early_returns(storage.nodes.cast_const(), storage.source.cast_const(),
+            storage.text.cast_const(), body.source_slice())
     }
-    body.iter().any(|s| match s.kind() {
-        StmtKind::Let(_, _, e)
-        | StmtKind::Expr(e)
-        | StmtKind::Return(Some(e))
-        | StmtKind::Seek(_, e) => expr(&e),
-        StmtKind::Assign(a, _, b) => expr(&a) || expr(&b),
-        StmtKind::If(c, a, b) => {
-            expr(&c) || propagates(&a) || propagates(&b)
-        }
-        StmtKind::Match(value, arms) => expr(&value) || arms.iter().any(|arm|propagates(&arm.body())),
-        StmtKind::While(c, body) => expr(&c) || propagates(&body),
-        StmtKind::For(_, a, b, body) => expr(&a) || b.as_ref().is_some_and(expr) || propagates(&body),
-        StmtKind::Parallel(_, domain, body) => {
-            domain.count().as_ref().is_some_and(expr)
-                || domain.selection().as_ref().is_some_and(expr)
-                || propagates(&body)
-        }
-        _ => false,
-    })
 }
 fn owns_exit(code: &[Inst]) -> bool {
     code.iter().any(|i| match &(i).kind {
