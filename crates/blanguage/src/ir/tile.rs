@@ -1,6 +1,8 @@
 //! 发布点切分块内阶段；私有值与共享 word 分别按实际消费者安排生命周期。
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "compiler")]
+mod private_live;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SharedWord {
@@ -346,6 +348,22 @@ impl Stage {
     }
 }
 
+#[cfg(feature = "compiler")]
+pub(crate) fn loop_live(
+    condition: &[Inst], test: Reg, body: &[Inst], after: &BTreeSet<PrivateSlot>,
+    break_live: &BTreeSet<PrivateSlot>, continue_live: &BTreeSet<PrivateSlot>, exit_live: &BTreeSet<PrivateSlot>,
+) -> BTreeSet<PrivateSlot> {
+    private_live::loop_header(condition, test, body, after, break_live, continue_live, exit_live)
+}
+#[cfg(feature = "compiler")]
+pub(crate) fn live_before(
+    code: &[Inst], live: BTreeSet<PrivateSlot>, break_live: &BTreeSet<PrivateSlot>,
+    continue_live: &BTreeSet<PrivateSlot>, exit_live: &BTreeSet<PrivateSlot>,
+) -> BTreeSet<PrivateSlot> {
+    private_live::before(code, live, break_live, continue_live, exit_live)
+}
+
+#[cfg(not(feature = "compiler"))]
 pub(crate) fn loop_live(
     condition: &[Inst],
     test: Reg,
@@ -362,6 +380,7 @@ pub(crate) fn loop_live(
     live_before(condition, need, break_live, continue_live, exit_live)
 }
 
+#[cfg(not(feature = "compiler"))]
 pub(crate) fn live_before(
     code: &[Inst],
     mut live: BTreeSet<PrivateSlot>,

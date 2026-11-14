@@ -119,3 +119,38 @@ struct LocalValue { u64 slot; u64 value; };
 // slot/value pairs in slot order and the return value is its new length.
 extern "C" u64 intersect_local_values(address left, u64 left_count,
     address right, u64 right_count) on cpu;
+
+// The original IR and PrivateSlot sets stay in their native owning containers.
+// Every borrowed block and temporary clone ends with this synchronous query.
+enum LiveKind:u32 { Ordinary=0; If=1; Loop=2; Scope=3; Exit=4; Break=5; Continue=6; LocalRead=7; LocalWrite=8; };
+enum LiveSetAction:u32 { Copy=0; Union=1; InsertRegister=2; RemoveRegister=3; InsertLocal=4; RemoveLocal=5; Swap=6; };
+enum LiveReferenceKind:u32 { Result=0; Operand=1; LocalRead=2; };
+struct LiveNode {
+    FusionBlock first;
+    FusionBlock second;
+    address instruction;
+    u64 first_slot;
+    u64 second_slot;
+    LiveKind kind;
+};
+struct LiveHost {
+    cfn<LiveNode,FusionBlock,u64> read_node;
+    cfn<void,address,address> references;
+    cfn<address,address> clone_set;
+    cfn<void,address> drop_set;
+    cfn<void,LiveSetAction,address,address,u64> change;
+};
+
+extern "C" void private_before(FusionBlock code, address live, address break_live,
+    address continue_live, address exit_live, address empty, LiveHost host) on cpu
+    requires nonzero(host.read_node) requires nonzero(host.references)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
+extern "C" void private_loop(FusionBlock condition, u64 test, FusionBlock body,
+    address after, address break_live, address continue_live, address exit_live,
+    address result, address empty, LiveHost host) on cpu
+    requires nonzero(host.read_node) requires nonzero(host.references)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
+// The native IR owner enumerates its actual references without making a second
+// operand list. B chooses each gen/kill action in this fixed continuation.
+extern "C" void private_reference(LiveReferenceKind kind, address live, u64 slot,
+    cfn<void,LiveSetAction,address,address,u64> change) on cpu requires nonzero(change);

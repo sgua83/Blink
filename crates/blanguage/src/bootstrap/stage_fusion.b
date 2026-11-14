@@ -366,3 +366,67 @@ extern "C" u64 intersect_local_values(address left, u64 left_count,
     }
     return kept;
 }
+
+extern "C" void private_reference(LiveReferenceKind kind,address live,u64 slot,
+    cfn<void,LiveSetAction,address,address,u64> change) on cpu requires nonzero(change) {
+    LiveSetAction action;
+    if (kind==LiveReferenceKind::Result) { action=LiveSetAction::RemoveRegister; }
+    else if (kind==LiveReferenceKind::Operand) { action=LiveSetAction::InsertRegister; }
+    else { action=LiveSetAction::InsertLocal; }
+    change(action,live,unsafe_address(0u64),slot);
+}
+
+extern "C" void private_loop(FusionBlock condition,u64 test,FusionBlock body,
+    address after,address break_live,address continue_live,address exit_live,
+    address result,address empty,LiveHost host) on cpu
+    requires nonzero(host.read_node) requires nonzero(host.references)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
+    // Pointwise gen/kill transfers close the backedge from an empty header.
+    // after may be result: it remains borrowed until the final swap.
+    address need=host.clone_set(empty);
+    private_before(body,need,after,empty,exit_live,empty,host);
+    host.change(LiveSetAction::Union,need,after,0u64);
+    host.change(LiveSetAction::InsertRegister,need,unsafe_address(0u64),test);
+    private_before(condition,need,break_live,continue_live,exit_live,empty,host);
+    host.change(LiveSetAction::Swap,result,need,0u64);
+    host.drop_set(need);
+}
+
+extern "C" void private_before(FusionBlock code,address live,address break_live,
+    address continue_live,address exit_live,address empty,LiveHost host) on cpu
+    requires nonzero(host.read_node) requires nonzero(host.references)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
+    u64 index=code.count;
+    while (index!=0u64) {
+        index-=1u64;
+        LiveNode node=host.read_node(code,index);
+        if (node.kind==LiveKind::If) {
+            address first=host.clone_set(live);
+            private_before(node.first,first,break_live,continue_live,exit_live,empty,host);
+            private_before(node.second,live,break_live,continue_live,exit_live,empty,host);
+            host.change(LiveSetAction::Union,live,first,0u64);
+            host.drop_set(first);
+            host.change(LiveSetAction::InsertRegister,live,unsafe_address(0u64),node.first_slot);
+        } else if (node.kind==LiveKind::Loop) {
+            private_loop(node.first,node.first_slot,node.second,live,break_live,continue_live,exit_live,live,empty,host);
+        } else if (node.kind==LiveKind::Scope) {
+            address after=host.clone_set(live);
+            private_before(node.first,live,break_live,continue_live,after,empty,host);
+            host.drop_set(after);
+        } else if (node.kind==LiveKind::Exit) {
+            host.change(LiveSetAction::Copy,live,exit_live,0u64);
+        } else if (node.kind==LiveKind::Break) {
+            host.change(LiveSetAction::Copy,live,break_live,0u64);
+        } else if (node.kind==LiveKind::Continue) {
+            host.change(LiveSetAction::Copy,live,continue_live,0u64);
+        } else if (node.kind==LiveKind::LocalRead) {
+            host.change(LiveSetAction::RemoveRegister,live,unsafe_address(0u64),node.first_slot);
+            host.change(LiveSetAction::InsertLocal,live,unsafe_address(0u64),node.second_slot);
+        } else if (node.kind==LiveKind::LocalWrite) {
+            host.change(LiveSetAction::RemoveLocal,live,unsafe_address(0u64),node.first_slot);
+            host.change(LiveSetAction::InsertRegister,live,unsafe_address(0u64),node.second_slot);
+        } else {
+            host.references(node.instruction,live);
+        }
+    }
+}
