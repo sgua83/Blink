@@ -644,10 +644,40 @@ enum LoopSources {
     Resolved,
 }
 
+enum EvaluationInput {
+    Content(ContentRead),
+    Relation(Arc<relation::Graph>, usize),
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum EvaluationIdentity<'a> {
+    Content(&'a ContentRead),
+    Relation(*const relation::Graph, usize),
+}
+
+impl EvaluationInput {
+    fn identity(&self) -> EvaluationIdentity<'_> {
+        match self {
+            Self::Content(read) => EvaluationIdentity::Content(read),
+            Self::Relation(graph, root) => EvaluationIdentity::Relation(Arc::as_ptr(graph), *root),
+        }
+    }
+}
+impl PartialEq for EvaluationInput {
+    fn eq(&self, other: &Self) -> bool { self.identity() == other.identity() }
+}
+impl Eq for EvaluationInput {}
+impl PartialOrd for EvaluationInput {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for EvaluationInput {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.identity().cmp(&other.identity()) }
+}
+
 struct BorrowEvaluation<'a>{
     function:&'a Function,state:&'a State<'a>,known:&'a States<'a>,expand_loops:bool,deferred_reads:bool,
     loop_bindings:Vec<BTreeMap<LoopInput,Borrow>>,
-    values:BTreeMap<(LoopSources,ContentRead),Borrow>,
+    values: BTreeMap<(LoopSources, EvaluationInput), Borrow>,
 }
 impl BorrowEvaluation<'_>{
     fn content_event(&mut self,result:&mut ContentAtRead,query:Option<(&address::Origin,u32)>,position:Option<&Position>,memory:usize){
@@ -759,7 +789,7 @@ impl BorrowEvaluation<'_>{
     }
 
     fn content_read(&mut self,read:&ContentRead,sources:LoopSources)->Borrow{
-        let key=(sources,read.clone());
+        let key = (sources, EvaluationInput::Content(read.clone()));
         if let Some(value)=self.values.get(&key){return value.clone();}
         let function=self.function;
         let value=match read {
@@ -803,6 +833,23 @@ impl BorrowEvaluation<'_>{
         value
     }
 
+    fn relation(&mut self, graph: &Arc<relation::Graph>, root: usize, sources: LoopSources) -> Borrow {
+        // The original graph stays live with the key. A different evaluation
+        // scope owns its own results and resolves its own loop bindings.
+        let key = (sources, EvaluationInput::Relation(graph.clone(), root));
+        if let Some(value) = self.values.get(&key) {
+            return value.clone();
+        }
+        let value = if graph.pending(root) {
+            let (graph, root) = graph.bind(root, self.function, self.state, self.known);
+            graph.solve(root, self)
+        } else {
+            graph.solve(root, self)
+        };
+        self.values.insert(key, value.clone());
+        value
+    }
+
     fn evaluate(&mut self,borrow:&Borrow)->Borrow{
         let sources=if self.deferred_reads{LoopSources::Deferred}else if self.expand_loops{LoopSources::Resolved}else{LoopSources::Symbolic};
         self.evaluate_sources(borrow,sources)
@@ -815,7 +862,7 @@ impl BorrowEvaluation<'_>{
             let resolved=match source {
                 Origin::Relation(graph,root)=>{
                     if matches!(sources,LoopSources::Deferred){Borrow::source(source.clone())}else{
-                        if graph.pending(*root){let(graph,root)=graph.bind(*root,function,state,known);graph.solve(root,self)}else{graph.solve(*root,self)}
+                        self.relation(graph, *root, sources)
                     }
                 },
                 Origin::Element{parent,fields,index}=>Borrow::element(self.evaluate(parent),fields.clone(),*index),

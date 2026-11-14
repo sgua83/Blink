@@ -468,7 +468,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "sha256": "8c33e4186b5269937a4a43a00df700e0f939a0a73ea30a573cc1e2a9544fcd8e"
+      "sha256": "9f92a579f89793c875f332f5a85224eb5435875d31567ee789724bc3b4b3bbbd"
     },
     {
       "path": "crates/blanguage/src/check/view_contracts/relation.rs",
