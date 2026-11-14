@@ -51,7 +51,7 @@ impl Builder<'_> {
                 Origin::Contents{origin,word}=>{let from=self.position(origin,epoch);let n=self.empty();self.read(n,from,*word,epoch.clone());Some(n)},
                 Origin::Element{parent,fields,index}=>{let from=self.borrow(parent,epoch);let n=self.empty();self.edge(n,from,Op::Element{fields:fields.clone(),index:*index},bounds::Clause::default());Some(n)},
                 Origin::Projection{parent,fields}=>{let from=self.borrow(parent,epoch);let n=self.empty();self.edge(n,from,Op::Projection(fields.clone()),bounds::Clause::default());Some(n)},
-                Origin::Relation(graph,root)=>Some(self.import(graph,*root,None)),
+                Origin::Relation(graph,root)=>Some(self.import(graph,*root,None,&Epoch::Input)),
                 _=>None,
             };
             if let Some(from)=target{self.edge(id,from,Op::Identity,when);}else{self.graph.nodes[id].seeds.sources.insert_when(source.clone(),when);}
@@ -136,7 +136,11 @@ impl Builder<'_> {
         let id=self.empty();self.keys.insert(key.clone(),id);
         match key{
             Key::Loop(input)=>{self.graph.inputs.insert(input,id);self.graph.variables.insert(id);self.fill(id,&self.function.loops[&input].borrow.clone(),&Epoch::Input)},
-            Key::Read(ContentRead::Relation{memory,graph,root,snapshots})=>{let graph=graph.incoming(memory,snapshots);let prefix=self.read_frame(memory);let from=self.import(&graph,root,prefix);self.edge(id,from,Op::Identity,bounds::Clause::default());},
+            Key::Read(ContentRead::Relation { memory, graph, root, snapshots }) => {
+                let prefix = self.read_frame(memory);
+                let from = self.import(&graph, root, prefix, &Epoch::Local { memory, snapshots });
+                self.edge(id, from, Op::Identity, bounds::Clause::default());
+            },
             Key::Read(ContentRead::Value{memory,word,borrow,snapshots})=>{let from=self.borrow(&borrow,&Epoch::Input);self.read(id,from,word,Epoch::Local{memory,snapshots:Some(snapshots)});self.graph.nodes[id].edges.last_mut().unwrap().when=bounds::Condition::execution(&self.function.uses[memory].path);},
             Key::Read(ContentRead::Call{memory,origin,word,snapshots})=>{let from=self.position(&origin,&Epoch::Input);self.read(id,from,word,Epoch::Local{memory,snapshots});self.graph.nodes[id].edges.last_mut().unwrap().when=bounds::Condition::execution(&self.function.uses[memory].path);},
             Key::Read(ContentRead::Snapshot{memory,position:Position::Local(slot),initial,..})=>{
@@ -165,14 +169,33 @@ impl Builder<'_> {
             Key::Call(result)=>{let call=&self.function.calls[result.call];let value=self.known[&call.function].interface.outputs.get(&result.output).map(|output|call_content_sources(output,call,&call.arguments).at_call(&call.arguments)).unwrap_or_else(||Borrow::source(Origin::Unresolved));self.fill(id,&value,&Epoch::Local{memory:call.memory,snapshots:call.snapshots.clone()});},
         }id
     }
-    fn import(&mut self,graph:&Graph,root:usize,prefix:Option<usize>)->usize{
+    fn import(&mut self, graph: &Graph, root: usize, prefix: Option<usize>, entry: &Epoch) -> usize {
         let offset=self.graph.nodes.len();self.graph.nodes.resize_with(offset+graph.nodes.len(),Node::default);let frame_offset=self.graph.frames.len();
         self.graph.frames.extend(graph.frames.iter().map(|f|Frame{parent:f.parent.map(|p|frame_offset+p).or(prefix),writes:f.writes.iter().map(|w|Write{target:offset+w.target,fields:w.fields.as_ref().map(|fields|fields.iter().map(|(word,id)|(*word,offset+id)).collect()),when:w.when.clone()}).collect()}));
-        for(input,id)in &graph.inputs{self.graph.inputs.entry(*input).or_insert(offset+id);}
+        if matches!(entry, Epoch::Input) {
+            for (input, id) in &graph.inputs {
+                self.graph.inputs.entry(*input).or_insert(offset + id);
+            }
+        }
         for(i,node)in graph.nodes.iter().enumerate(){
             if graph.variables.contains(&i){self.graph.variables.insert(offset+i);}
             self.fill(offset+i,&node.seeds,&Epoch::Input);
-            self.graph.nodes[offset+i].edges.extend(node.edges.iter().map(|edge|{let mut op=edge.op.clone();if let Op::Read{frame,..}|Op::Initial{frame,..}=&mut op{*frame=frame.map(|f|frame_offset+f).or(prefix);}Edge{from:offset+edge.from,op,when:edge.when.clone()}}));
+            self.graph.nodes[offset + i].edges.extend(node.edges.iter().map(|edge| {
+                let mut op = edge.op.clone();
+                match &mut op {
+                    Op::Read { epoch, frame, .. } => {
+                        *frame = frame.map(|f| frame_offset + f).or(prefix);
+                        if let Epoch::Local { .. } = entry {
+                            *epoch = entry.clone();
+                        }
+                    }
+                    Op::Initial { frame, .. } => {
+                        *frame = frame.map(|f| frame_offset + f).or(prefix);
+                    }
+                    _ => {}
+                }
+                Edge { from: offset + edge.from, op, when: edge.when.clone() }
+            }));
         }offset+root
     }
 }
@@ -209,8 +232,16 @@ impl Graph {
     pub(super) fn input_root(&self, input: LoopInput) -> usize {
         self.inputs[&input]
     }
-    pub(super) fn bind(&self,root:usize,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None);(Arc::new(b.graph),root)}
-    pub(super) fn bind_incoming(&self,root:usize,memory:usize,snapshots:Option<Arc<[ValueSnapshot]>>,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let frame=b.read_frame(memory);let graph=self.incoming(memory,snapshots);let root=b.import(&graph,root,frame);(Arc::new(b.graph),root)}
+    pub(super) fn bind(&self,root:usize,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None,&Epoch::Input);(Arc::new(b.graph),root)}
+    pub(super) fn bind_incoming(
+        &self, root: usize, memory: usize, snapshots: Option<Arc<[ValueSnapshot]>>,
+        function: &Function, state: &State, known: &States,
+    ) -> (Arc<Self>, usize) {
+        let mut builder = Self::builder(function, state, known);
+        let prefix = builder.read_frame(memory);
+        let root = builder.import(self, root, prefix, &Epoch::Local { memory, snapshots });
+        (Arc::new(builder.graph), root)
+    }
     fn remove_identity_feedback(&mut self) {
         for &variable in &self.variables {
             let mut edges = std::mem::take(&mut self.nodes[variable].edges);
@@ -313,7 +344,6 @@ impl Graph {
     pub(in crate::check) fn owners(&self,root:usize)->Borrow{self.project(root,Op::Owners)}
     pub(in crate::check) fn select(&self,root:usize,indices:&[Option<bounds::Operand>])->Borrow{self.project(root,Op::Select(indices.to_vec()))}
     pub(in crate::check) fn seed_borrows(&self,root:usize)->Vec<&Borrow>{self.reachable(root).iter().map(|&id|&self.nodes[id].seeds).collect()}
-    pub(in crate::check) fn incoming(&self,memory:usize,snapshots:Option<Arc<[ValueSnapshot]>>)->Self{let mut v=self.clone();v.inputs.clear();for n in &mut v.nodes{for e in &mut n.edges{if let Op::Read{epoch,..}=&mut e.op{*epoch=Epoch::Local{memory,snapshots:snapshots.clone()};}}}v}
     pub(in crate::check) fn public(&self)->Self{let mut v=self.clone();v.inputs.clear();for n in &mut v.nodes{for e in &mut n.edges{if let Op::Read{epoch,..}=&mut e.op{*epoch=Epoch::Input;}}}v}
     pub(in crate::check) fn at_call(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.at_call(values);for e in &mut n.edges{e.when=e.when.guard_at_call(values);match &mut e.op{Op::Position(p)=>*p=p.bound_at_call(values),Op::Element{index,..}=>*index=Origin::index_at_call(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(values);}}v}
     pub(in crate::check) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.substitute_values(values);for e in &mut n.edges{e.when=e.when.substitute_values(values);match &mut e.op{Op::Position(p)=>*p=p.substitute_values(values),Op::Element{index,..}=>*index=Origin::index_substitute(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.substitute_values(values);}}v}
