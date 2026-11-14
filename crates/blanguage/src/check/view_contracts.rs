@@ -1727,14 +1727,18 @@ fn call_memory_effect(
         }
         let borrows = borrow_at_call(borrows, call, &call.arguments);
         let borrows = evaluation.evaluate(&borrows);
-        let path = bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
-            .substitute_values(resolved);
         let borrow = borrows.substitute_values(resolved);
-        let sources = borrow.sources.entries()
-            .map(|(source, when)| (source, bounds::Clause::both(&when, &path)));
-        let written = written.filter(|_| !matches!(consumer, CallMemoryUse::Ir))
-            .map(|proof| proof.at_call(&call.arguments).substitute_values(resolved));
-        effect.union(address::MemoryEffect::from_sources(sources, access, written.as_ref()));
+        let path = || {
+            bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
+                .substitute_values(resolved)
+        };
+        let written = std::cell::LazyCell::new(|| {
+            written.filter(|_| !matches!(consumer, CallMemoryUse::Ir))
+                .map(|proof| proof.at_call(&call.arguments).substitute_values(resolved))
+        });
+        effect.union(address::MemoryEffect::from_sources(
+            borrow.sources.entries(), path, access, || written.as_ref(),
+        ));
         if matches!(consumer, CallMemoryUse::Snapshot) && effect.has_external_write() {
             break;
         }
@@ -1808,12 +1812,14 @@ fn solve<'a>(
                 for usage in std::iter::once(usage).chain(rest){
                     if let Requirement::Memory{borrow,access:Some(access),written,..}=&usage.requirement {
                         let borrow = evaluation.evaluate(borrow).substitute_values(&resolved);
-                        let path = usage.path.substitute_values(&resolved);
-                        let sources = borrow.sources.entries()
-                            .map(|(source, when)| (source, bounds::Clause::both(&when, &path)));
-                        let written = written.as_ref().filter(|_| snapshots.is_some())
-                            .map(|proof| proof.substitute_values(&resolved));
-                        effect.union(address::MemoryEffect::from_sources(sources, *access, written.as_ref()));
+                        let path = || usage.path.substitute_values(&resolved);
+                        let written = std::cell::LazyCell::new(|| {
+                            written.as_ref().filter(|_| snapshots.is_some())
+                                .map(|proof| proof.substitute_values(&resolved))
+                        });
+                        effect.union(address::MemoryEffect::from_sources(
+                            borrow.sources.entries(), path, *access, || written.as_ref(),
+                        ));
                     }
                 }
             }

@@ -386,25 +386,39 @@ fn merged_external_access(left: Option<Access>, right: Option<Access>) -> Option
 }
 impl MemoryEffect {
     pub fn of(borrow: &view::Borrow, access: Access, written: Option<&bounds::Proof>) -> Self {
-        Self::from_sources(borrow.sources.entries(), access, written)
+        Self::from_sources(borrow.sources.entries(), bounds::Clause::default, access, || written)
     }
-    pub(super) fn from_sources<'a>(
+    pub(super) fn from_sources<'a, 'b>(
         sources: impl Iterator<Item = (&'a view::Source, bounds::Clause)>,
+        path: impl FnOnce() -> bounds::Clause,
         access: Access,
-        written: Option<&bounds::Proof>,
+        written: impl FnOnce() -> Option<&'b bounds::Proof>,
     ) -> Self {
         let mut effect = Self::default();
-        for (source, when) in sources.filter(|(_, when)| when.possible()) {
+        let path = std::cell::LazyCell::new(path);
+        let written = std::cell::LazyCell::new(written);
+        for (source, when) in sources {
+            let origin = match source {
+                view::Source::Position(origin) => Some(origin),
+                view::Source::External if effect.external.is_none() => None,
+                _ => continue,
+            };
+            let when = bounds::Clause::both(&when, &path);
+            if !when.possible() {
+                continue;
+            }
             if effect.external.is_none() && source_has_external_memory(source, &when) {
                 effect.external = Some(access);
             }
-            if let view::Source::Position(origin) = source {
+            if let Some(origin) = origin {
                 let access = if origin.writable { access } else { Access::Read };
-                effect.known.push((origin.clone(), when, access, written.cloned()));
+                let value = if access.writes() { written.cloned() } else { None };
+                effect.known.push((origin.clone(), when, access, value));
             }
         }
         effect
     }
+
     pub fn union(&mut self,other:Self) {
         self.known.extend(other.known);
         self.external = merged_external_access(self.external, other.external);
@@ -447,9 +461,7 @@ impl MemoryEffect {
                 Root::Resource{index,..}|Root::Dataset{index,..}=>*index,
                 _=>None,
             };
-            let held_sources = held.sources.entries()
-                .map(|(source, condition)| (source, bounds::Clause::both(&condition, &when)));
-            let effect = Self::from_sources(held_sources, Access::Write, None);
+            let effect = Self::from_sources(held.sources.entries(), || when.clone(), Access::Write, || None);
             let owners=origin.owners();
             // A whole dataset loan also keeps the original owned element resources readable.
             let descendant=effect.known.iter().any(|(held,active,held_access,_)| {
