@@ -465,13 +465,21 @@ impl MemoryEffect {
     }
     // A possible write joins its value with the old value; it is never a must-write guarantee.
     pub(super) fn written_value(&self,position:&Position,scalar:Scalar,index:Option<bounds::Operand>,previous:&bounds::Proof)->bounds::Proof {
-        if self.written_bytes(position,scalar,index)==0{return previous.clone();}
-        let previous=previous.numeric_facts().at_call(&BTreeMap::new());let mut result=previous.clone();
-        if self.external.is_some_and(|access|access.writes()){return bounds::Proof::default();}
-        let all=((1u16<<scalar.size())-1) as u8;
-        for(origin,when,access,written)in &self.known {
-            if !access.writes(){continue;}
-            let bytes=Self::origin_written_bytes(origin,when,position,scalar,index);if bytes==0{continue;}
+        if self.external.is_some_and(Access::writes) {
+            return bounds::Proof::default();
+        }
+        let mut writes = self.known.iter().filter(|(_, _, access, _)| access.writes())
+            .filter_map(|(origin, when, _, written)| {
+                let bytes = Self::origin_written_bytes(origin, when, position, scalar, index);
+                (bytes != 0).then_some((origin, when, written, bytes))
+            });
+        let Some(first) = writes.next() else {
+            return previous.clone();
+        };
+        let previous = previous.numeric_facts().at_call(&BTreeMap::new());
+        let mut result = previous.clone();
+        let all = ((1u16 << scalar.size()) - 1) as u8;
+        for (origin, when, written, bytes) in std::iter::once(first).chain(writes) {
             let incoming=written.as_ref().and_then(|proof|{
                 let regions=origin.memory_regions(when)?;let mut incoming=None;
                 for region in regions.iter().filter(|region|region.written_bytes(position,scalar)!=0){
