@@ -190,7 +190,7 @@ impl Graph {
         }}}
         if !roots.values().any(|root|b.graph.read_feedback(*root)){return None;}
         let graph=Arc::new(b.graph);let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()};
-        Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(value,bounds::Condition::constant(true)).map(|(value,_)|value).unwrap_or_default())}).collect())
+        Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(value).unwrap_or_default())}).collect())
     }
     pub(super) fn loops(function:&Function,state:&State,known:&States)->BTreeMap<LoopInput,Borrow>{let mut b=Self::builder(function,state,known);let roots=state.loops.keys().map(|input|(*input,b.key(Key::Loop(*input)))).collect::<Vec<_>>();b.graph.remove_identity_feedback();let graph=Arc::new(b.graph);roots.into_iter().map(|(input,root)|(input,Borrow::source(Origin::Relation(graph.clone(),root)))).collect()}
     pub(super) fn bind(&self,root:usize,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None);(Arc::new(b.graph),root)}
