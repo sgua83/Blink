@@ -1481,7 +1481,7 @@ impl Builder<'_> {
         }else{match self.native_call_memory(name,&view_arguments,|_|false) {
             Some(mut memory)=>{
                 let borrow=memory.iter().fold(view::Borrow::default(),|mut result,(borrow,_,_)|{result.union(borrow);result}).restricted(&self.path);
-                let snapshots=if borrow.pending()&&self.address_write_positions(&borrow).is_none(){
+                let snapshots=if borrow.pending()&&!self.resolved_address_write(&borrow){
                     Some(self.capture_address_values(memory_use,address::Capture::Write).into())
                 }else{
                     for(source,_,_)in &mut memory{*source=source.restricted(&self.path);}

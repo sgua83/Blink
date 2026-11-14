@@ -886,20 +886,57 @@ fn resource_metadata(ty:&Ty,resources:Vec<Vec<usize>>)->Vec<std::ops::Range<u32>
     }).collect()
 }
 impl Builder<'_> {
-    pub(super) fn address_write_positions(&self,borrow:&view::Borrow)->Option<Vec<Position>> {
-        self.address_write_regions(borrow).map(|regions|regions.into_iter().map(|region|region.position).collect())
+    pub(super) fn address_write_positions(&self, borrow: &view::Borrow) -> Option<Vec<Position>> {
+        let mut positions = Vec::new();
+        Self::visit_address_writes(borrow, |_, _, regions| {
+            positions.extend(regions.into_iter().map(|region| region.position));
+        })?;
+        Some(positions)
     }
-    fn address_write_regions(&self,borrow:&view::Borrow)->Option<Vec<MemoryRegion>> {
-        if !borrow.inputs.is_empty()||!borrow.calls.is_empty()||!borrow.reads.is_empty()||borrow.unresolved(){return None;}
-        let mut positions=Vec::new();
-        for(source,when)in borrow.sources.entries().filter(|(_,when)|when.possible()) {
+
+    fn visit_address_writes(
+        borrow: &view::Borrow,
+        mut visit: impl FnMut(&Arc<Origin>, bounds::Clause, Vec<MemoryRegion>),
+    ) -> Option<()> {
+        if !borrow.inputs.is_empty() || !borrow.calls.is_empty() || !borrow.reads.is_empty() {
+            return None;
+        }
+        for (source, when) in borrow.sources.entries().filter(|(_, when)| when.possible()) {
             match source {
-                view::Source::Position(origin)if origin.writable=>positions.extend(origin.memory_regions(&when)?),
-                view::Source::Position(_)|view::Source::Inactive=>{},
-                _=>return None,
+                view::Source::Position(origin) => {
+                    if view::Borrow::source_unresolved(source, &when) {
+                        return None;
+                    }
+                    let regions = if origin.writable { origin.memory_regions(&when)? } else { Vec::new() };
+                    visit(origin, when, regions);
+                }
+                view::Source::Inactive => {}
+                _ => return None,
             }
         }
-        Some(positions)
+        Some(())
+    }
+
+    pub(super) fn resolved_address_write(&self, borrow: &view::Borrow) -> bool {
+        Self::visit_address_writes(borrow, |_, _, _| {}).is_some()
+    }
+
+    pub(super) fn address_write_effect(&self, borrow: &view::Borrow) -> Option<MemoryEffect> {
+        let mut effect = MemoryEffect::default();
+        Self::visit_address_writes(borrow, |origin, when, _| {
+            let external = effect.external.is_none() && match &origin.root {
+                // Writable external positions already resolved their regions above.
+                Root::External(_) if origin.writable => false,
+                _ => position_has_external_memory(origin, &when),
+            };
+            if external {
+                effect.external = Some(Access::Write);
+            }
+            if origin.writable {
+                effect.known.push((origin.clone(), when, Access::Write, None));
+            }
+        })?;
+        Some(effect)
     }
     // Numeric reads name physical storage, independently of initialization markers.
     pub(super) fn value_memory_location(&self,place:&Place)->(Vec<Position>,Option<bounds::Operand>) {
@@ -917,11 +954,16 @@ impl Builder<'_> {
             (place.data_positions().into_iter().map(|position|resource_position(position,&resource)).collect(),Some(*index_value))
         }else{(self.positions(place),None)}
     }
-    pub(super) fn memory_write_components(&self,borrow:&view::Borrow,place:&Place)->Vec<usize> {
-        if self.address_write_positions(borrow).is_none(){return (0..place.ty().components.len()).collect();}
-        let effect=MemoryEffect::of(borrow,Access::Write,None);let(positions,index)=self.value_memory_location(place);
-        positions.iter().zip(&place.ty().components).enumerate().filter_map(|(component,(position,(scalar,_)))|{
-            (effect.written_bytes(position,*scalar,index)!=0).then_some(component)
+    pub(super) fn memory_write_components(
+        &self, borrow: &view::Borrow, place: &Place, outside_element: bool,
+    ) -> Vec<usize> {
+        let Some(effect) = self.address_write_effect(borrow) else {
+            return (0..place.ty().components.len()).collect();
+        };
+        let (positions, index) = self.value_memory_location(place);
+        let written = if outside_element { MemoryEffect::outside_element_bytes } else { MemoryEffect::written_bytes };
+        positions.iter().zip(&place.ty().components).enumerate().filter_map(|(component, (position, (scalar, _)))| {
+            (written(&effect, position, *scalar, index) != 0).then_some(component)
         }).collect()
     }
     pub(super) fn address_write_components(&self,positions:&[Position],place:&Place)->Vec<usize> {
@@ -948,7 +990,7 @@ impl Builder<'_> {
         for(source,access,written)in memory{if let Some(access)=access.filter(|access|access.writes()){
             let source=self.current_address_borrow(source);effect.union(MemoryEffect::of(&source,access,written.as_ref()));
         }}
-        match self.address_write_regions(&borrow) {None=>{
+        if !self.resolved_address_write(&borrow) {
         let data=self.env.values().flat_map(Binding::application_resources)
             .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
         for data in data {self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown)?;}
@@ -962,7 +1004,7 @@ impl Builder<'_> {
                 if let Binding::OwnedValue(owner)=binding {owner.value.constant=None;}
             }
         }
-        },Some(_)=>{
+        }else{
         self.update_address_elements(&borrow,&effect)?;
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
@@ -988,7 +1030,6 @@ impl Builder<'_> {
                 _=>{},
             }
 
-        }
         }
         }
         Ok(())
@@ -1164,7 +1205,7 @@ impl Builder<'_> {
             if access.is_some_and(|access|access.writes()){written.union(&borrow);}
             self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,access,written:None,snapshots:None,span,address_fields:Arc::from([])})?;
         }
-        if written.pending()&&self.address_write_positions(&written).is_none(){
+        if written.pending()&&!self.resolved_address_write(&written){
             let snapshots=self.capture_address_values(usage,address::Capture::Write);
             if let view::Requirement::Memory{snapshots:target,..}=&mut self.view_model.uses[usage].requirement{*target=Some(snapshots.into());}
         }else{let memory=[(written,Some(Access::Write),None)];self.write_address_values(&memory[0].0,&memory)?;}
