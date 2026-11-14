@@ -1845,13 +1845,17 @@ fn extend_equality_roots<'a>(
         }
     }
 }
+fn has_equality_inputs(facts: &Facts) -> bool {
+    facts.iter().any(|fact| matches!(fact, Fact::Equal(..) | Fact::Index(_, IndexDomain::Computed(_))))
+}
+
 // environment 在本轮固定点内不变；节点合并本路径新增的相等与整数运算关系。
 fn additional_equality_roots<'a>(
     environment: &Facts,
     environment_roots: &'a BTreeMap<ValueIdentity, ValueIdentity>,
     additions: &Facts,
 ) -> Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>> {
-    if !additions.iter().any(|fact| matches!(fact, Fact::Equal(..) | Fact::Index(_, IndexDomain::Computed(_)))) {
+    if !has_equality_inputs(additions) {
         return Cow::Borrowed(environment_roots);
     }
     let mut roots = environment_roots.clone();
@@ -2616,7 +2620,8 @@ impl Clause {
         self.required_in(&Facts::new())
     }
     fn required_in<'a>(&'a self, environment: &'a Facts) -> Option<Facts> {
-        if contradictory(environment) {
+        let mut environment_roots = equality_roots(environment);
+        if contradictory_with_roots(environment, &environment_roots) {
             return None;
         }
         // Resolve graph identities once; rounds consume the same query-owned slots.
@@ -2652,9 +2657,8 @@ impl Clause {
         let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
         loop {
             // 共同环境的别名事实只在原环境所有者处生产一次。
-            let environment_roots = equality_roots(environment.iter());
             let environment_members = equality_members(&environment_roots);
-            {
+            let inherited_equality = {
                 let inherited = equivalent_facts(
                     &environment,
                     Arc::new(Cow::Owned(Facts::new())),
@@ -2665,7 +2669,8 @@ impl Clause {
                 if !inherited.is_empty() {
                     environment.to_mut().extend(inherited.iter().copied());
                 }
-            }
+                has_equality_inputs(&inherited)
+            };
             for result in &mut facts {
                 result.remaining = result.users;
                 result.value = None;
@@ -2735,12 +2740,16 @@ impl Clause {
             if !unchanged {
                 environment.to_mut().extend(required.iter().copied());
             }
-            let numeric = integer_relation_facts(&environment)?;
+            if inherited_equality || has_equality_inputs(&required) {
+                environment_roots = equality_roots(environment.iter());
+            }
+            let numeric = integer_relation_facts(&environment, &environment_roots)?;
             if unchanged && numeric.is_empty() {
                 return Some(environment.into_owned());
             }
+            // The integer solver emits bounds, which leave the equality roots intact.
             environment.to_mut().extend(numeric);
-            if contradictory(&environment) {
+            if contradictory_with_roots(&environment, &environment_roots) {
                 return None;
             }
         }
@@ -2962,7 +2971,9 @@ impl Clause {
     }
 }
 fn contradictory(facts: &Facts) -> bool {
-    let roots = equality_roots(facts);
+    contradictory_with_roots(facts, &equality_roots(facts))
+}
+fn contradictory_with_roots(facts: &Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> bool {
     let root = |id| roots.get(&id).copied().unwrap_or(id);
     let canonical = |fact: Fact| match fact {
         Fact::Equal(a, b) => Fact::equal(root(a), root(b)),
@@ -3754,7 +3765,7 @@ impl IntegerAffine {
 }
 struct IntegerQuery<'a> {
     facts: &'a Facts,
-    roots: BTreeMap<ValueIdentity, ValueIdentity>,
+    roots: Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>>,
     lower: BTreeMap<(ValueIdentity, Scalar), Bits>,
     upper: BTreeMap<(ValueIdentity, Scalar), Bits>,
     coefficients: BTreeMap<(ValueIdentity, Scalar), IntegerAffine>,
@@ -3762,7 +3773,10 @@ struct IntegerQuery<'a> {
 }
 impl<'a> IntegerQuery<'a> {
     fn new(facts: &'a Facts) -> Self {
-        let roots = equality_roots(facts);
+        Self::with_roots(facts, Cow::Owned(equality_roots(facts)))
+    }
+
+    fn with_roots(facts: &'a Facts, roots: Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>>) -> Self {
         let mut lower = BTreeMap::new();
         let mut upper = BTreeMap::new();
         for ((id, scalar), value) in minimums(facts) {
@@ -3993,8 +4007,8 @@ impl<'a> IntegerQuery<'a> {
         }
     }
 }
-fn integer_relation_facts(facts: &Facts) -> Option<Facts> {
-    let mut query = IntegerQuery::new(facts);
+fn integer_relation_facts(facts: &Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> Option<Facts> {
+    let mut query = IntegerQuery::with_roots(facts, Cow::Borrowed(roots));
     let mut output = Facts::new();
     for fact in facts {
         match *fact {
