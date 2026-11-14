@@ -1111,7 +1111,8 @@ fn access_at_call<'a>(access:&Access,call:&Call,path:&bounds::Clause,function:&F
         Access::Resource{resources,kind,..}=>Access::Resource{resources:evaluate(&call_content_sources(resources,call,arguments).at_call(arguments),function,state,known,true),borrows,kind:*kind,when},
         Access::Position{position,..}=>Access::Position{borrows,when,position:PositionAccess{written:position.written.as_ref().map(|proof|proof.at_call(arguments)),..position.clone()}},
         Access::Memory{access,..}=>Access::Memory{borrows,when,access:*access},
-        Access::Stored{word,value,..}=>Access::Stored{borrows,when,word:*word,value:evaluate(&call_content_sources(value,call,arguments).at_call(arguments),function,state,known,true)},
+        // The value belongs to content reads. Access consumers use only the write location.
+        Access::Stored{word,value,..}=>Access::Stored{borrows,when,word:*word,value:value.clone()},
         Access::Initialized{initialized,..}=>Access::Initialized{borrows,when,initialized:initialized.iter().map(|fact|fact.at_call(arguments)).collect()},
         Access::Dataset{index,access,atomic,..}=>Access::Dataset{borrows,when,index:index.and_then(|index|index.at_call(arguments)),access:*access,atomic:*atomic},
     }
@@ -1320,10 +1321,15 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             let mut access=direct[name].clone();
             for call in function.calls.iter().filter(|call|call.function!=*name||state.entries.is_none()) {
                 let live_task_places=evaluate(&call.live_task_places,function,state,known,true);
+                let task_access=live_task_places.active();
                 let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
                 for requirement in &known[&call.function].interface.access {
+                if !task_access && (matches!(requirement,Access::Stored{..})
+                    || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && (call.deferred || position.written.is_none()))) {
+                    continue;
+                }
                 let value=access_at_call(requirement,call,&call.path,function,state,known,&|| &*initialized);
-                if live_task_places.active()
+                if task_access
                     && let Some((accessed,when,mode))=value.accessed()
                     && let Some(exclusion)=function.access(accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when.clone())
                 {
@@ -1658,11 +1664,14 @@ pub(super) fn solve(
             let live_task_places=evaluate(&call.live_task_places,function,state,&known,true);
             let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, &known).positions(&path));
             for requirement in &known[&call.function].interface.access{
+                if live_task_places.empty() && matches!(requirement,Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}) {
+                    continue;
+                }
                 let value=access_at_call(requirement,call,&path,function,state,&known,&|| &*initialized);
                 let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..}|Access::Stored{when,..})=&value;
                 if when.active(){
                     let path=when.assume(&bounds::Clause::default(),true);
-                    if let Some((accessed,_,mode))=value.accessed() {
+                    if !live_task_places.empty() && let Some((accessed,_,mode))=value.accessed() {
                         Requirement::Unborrowed{
                             resource:accessed.restricted(&path),borrow:live_task_places.restricted(&path),
                             kind:view::Exclusion::Position(mode),span:call.span,
