@@ -1747,7 +1747,6 @@ fn solve<'a>(
             let mut effect=address::MemoryEffect::default();
             if calls.peek().is_some_and(|call|call.memory==memory){
                 let call=calls.next().unwrap();
-                let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, &known).positions(&call.path));
                 for access in &known[&call.function].interface.access {
                     let (borrows, when, access, written) = match access {
                         Access::Memory { borrows, when, access } | Access::Dataset { borrows, when, access, .. } =>
@@ -1764,7 +1763,7 @@ fn solve<'a>(
                         _ => continue,
                     };
                     let borrows = borrow_at_call(borrows, call, &call.arguments);
-                    let borrows = refreshed_at_call(evaluation.evaluate(&borrows), &call.path, &|| &*initialized);
+                    let borrows = evaluation.evaluate(&borrows);
                     let path = bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
                         .substitute_values(&resolved);
                     let borrow = borrows.substitute_values(&resolved);
