@@ -1910,7 +1910,11 @@ fn additional_equality_roots<'a>(
     let mut roots = environment_roots.clone();
     extend_equality_roots(&mut roots, additions);
     extend_computed_roots(&mut roots, environment.union(additions));
-    Cow::Owned(roots)
+    if roots == *environment_roots {
+        Cow::Borrowed(environment_roots)
+    } else {
+        Cow::Owned(roots)
+    }
 }
 type EqualityMembers<'a> = Vec<(&'a ValueIdentity, &'a ValueIdentity)>;
 
@@ -1925,25 +1929,34 @@ fn equivalent_facts<'a>(
     mut facts: QueryFacts<'a>,
     roots: &BTreeMap<ValueIdentity, ValueIdentity>,
     members: &[(&ValueIdentity, &ValueIdentity)],
-    include_environment: bool,
+    inherited_roots: Option<&BTreeMap<ValueIdentity, ValueIdentity>>,
 ) -> QueryFacts<'a> {
     if members.is_empty() {
         return facts;
     }
     let mut inferred = Facts::new();
-    let empty = Facts::new();
-    let source_environment = if include_environment { environment } else { &empty };
-    for fact in source_environment.union(&facts) {
-        if let Some(identity) = fact.identity()
-            && let Some(root) = roots.get(&identity)
-        {
-            let begin = members.partition_point(|(group, _)| *group < root);
-            let end = members.partition_point(|(group, _)| *group <= root);
-            inferred.extend(members[begin..end].iter()
-                .filter(|(_, id)| **id != identity)
-                .map(|(_, id)| fact.at(**id))
-                .filter(|fact| !environment.contains(fact) && !facts.contains(fact)));
+    let inherited = inherited_roots.into_iter().flat_map(|previous| {
+        environment.iter().map(move |fact| (fact, Some(previous)))
+    });
+    for (fact, previous) in facts.iter().map(|fact| (fact, None)).chain(inherited) {
+        let Some(identity) = fact.identity() else { continue; };
+        let Some(root) = roots.get(&identity) else { continue; };
+        // The round already closed the environment over its old groups.
+        // Each group's representative carries its facts into newly joined groups.
+        let previous_root = previous.and_then(|previous| previous.get(&identity));
+        if previous_root.is_some_and(|root| *root != identity) {
+            continue;
         }
+        let begin = members.partition_point(|(group, _)| *group < root);
+        let end = members.partition_point(|(group, _)| *group <= root);
+        inferred.extend(members[begin..end].iter()
+            .filter(|(_, id)| {
+                **id != identity && previous_root.is_none_or(|root| {
+                    previous.and_then(|previous| previous.get(*id)) != Some(root)
+                })
+            })
+            .map(|(_, id)| fact.at(**id))
+            .filter(|fact| !environment.contains(fact) && !facts.contains(fact)));
     }
     if !inferred.is_empty() {
         facts.extend(inferred);
@@ -2711,6 +2724,7 @@ impl Clause {
         drop(indices);
         let mut pending = Vec::new();
         let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
+        let unexpanded = BTreeMap::new();
         loop {
             // 共同环境的别名事实只在原环境所有者处生产一次。
             let environment_members = equality_members(&environment_roots);
@@ -2721,7 +2735,7 @@ impl Clause {
                     QueryFacts::Borrowed(&empty),
                     &environment_roots,
                     &environment_members,
-                    true,
+                    Some(&unexpanded),
                 );
                 if !inherited.is_empty() {
                     environment.to_mut().extend(inherited.iter().copied());
@@ -3199,8 +3213,8 @@ fn either_facts<'a>(
             let left = additional_equality_roots(environment, environment_roots, &a);
             let right = additional_equality_roots(environment, environment_roots, &b);
             let expand = |facts, roots: &Cow<'_, BTreeMap<ValueIdentity, ValueIdentity>>| match roots {
-                Cow::Borrowed(_) => equivalent_facts(environment, facts, roots, environment_members, false),
-                Cow::Owned(_) => equivalent_facts(environment, facts, roots, &equality_members(roots), true),
+                Cow::Borrowed(_) => equivalent_facts(environment, facts, roots, environment_members, None),
+                Cow::Owned(_) => equivalent_facts(environment, facts, roots, &equality_members(roots), Some(environment_roots)),
             };
             let a = expand(a, &left);
             let b = expand(b, &right);
