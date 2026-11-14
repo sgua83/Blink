@@ -746,9 +746,15 @@ pub(super) fn borrow_in_path(borrow:&view::Borrow,path:&bounds::Clause)->view::B
     fn edges<K:Ord+Clone>(values:&view::Edges<K>,path:&bounds::Clause)->view::Edges<K>{
         let mut result=view::Edges::default();
         for(key,when)in values.entries() {
-            let condition=bounds::Condition::guard(when.clone());
-            if !condition.assume(path,true).possible(){continue;}
-            let when=if condition.truth_in(path)==Some(true){bounds::Clause::default()}else{when};
+            if !bounds::Clause::both(path, &when).possible() {
+                continue;
+            }
+            let condition = bounds::Condition::guard(when.clone());
+            let when = if condition.assume(path, false).possible() {
+                when
+            } else {
+                bounds::Clause::default()
+            };
             result.insert_when(key.clone(),when);
         }
         result
@@ -824,18 +830,37 @@ fn dataset_positions(borrow:&view::Borrow,index:Option<bounds::Operand>,layout:&
     result
 }
 pub(super) fn borrowed_positions(borrow:&view::Borrow,layout:&Layout,words:&[u32])->Vec<Position> {
-    words.iter().map(|word| {
-            let mut known=None;
-            for(source,when)in borrow.sources.entries() {
-                if !when.possible(){continue;}
-                let view::Source::Position(origin)=source else{
-                    return Position::Borrowed(Arc::new(borrow.clone()),layout.clone(),*word);
-                };
-                let Some(position)=origin.position_at(*word)else{return Position::Borrowed(Arc::new(borrow.clone()),layout.clone(),*word)};
-                if known.as_ref().is_some_and(|old|*old!=position){return Position::Borrowed(Arc::new(borrow.clone()),layout.clone(),*word);}
-                known=Some(position);
+    let unresolved = |word| Position::Borrowed(Arc::new(borrow.clone()), layout.clone(), word);
+    let mut positions = vec![None; words.len()];
+    // Only fields without an unresolved position need the next feasible source.
+    let mut remaining = words.len();
+    for (source, when) in borrow.sources.entries() {
+        if remaining == 0 {
+            break;
+        }
+        if !when.possible() {
+            continue;
+        }
+        let view::Source::Position(origin) = source else {
+            return words.iter().map(|&word| unresolved(word)).collect();
+        };
+        for (&word, known) in words.iter().zip(&mut positions) {
+            let Some(slot) = known else {
+                *known = Some(origin.position_at(word));
+                remaining -= usize::from(known.as_ref().is_some_and(Option::is_none));
+                continue;
+            };
+            if slot.is_some() {
+                let position = origin.position_at(word);
+                if *slot != position {
+                    *slot = None;
+                    remaining -= 1;
+                }
             }
-            known.unwrap_or_else(||Position::Borrowed(Arc::new(borrow.clone()),layout.clone(),*word))
+        }
+    }
+    words.iter().zip(positions).map(|(&word, known)| {
+        known.flatten().unwrap_or_else(|| unresolved(word))
     }).collect()
 }
 
