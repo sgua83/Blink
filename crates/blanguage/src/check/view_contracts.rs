@@ -1167,8 +1167,6 @@ fn exposed_resources<'a>(function:&Function,physical:impl Iterator<Item=(&'a Out
 }
 fn initializations(function:&Function,state:&State,known:&States,candidates:bool)->Vec<address::Initialization> {
     let exposed=exposed_resources(function,function.resource_names.keys().map(|output|(output,evaluate(&function.outputs[output],function,state,known,true))));
-    let parameters=function.parameters.iter().map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect();
-    let exits=function.initialization.iter().map(|effect|match effect {address::InitializationEffect::Position(fact)=>&fact.when,address::InitializationEffect::Call{when,..}|address::InitializationEffect::Iteration{when,..}=>when}).map(|when|when.guard_at_call(&parameters)).collect::<Vec<_>>();
     // Reading a fixed input before this function's first write already requires those bytes on entry.
     // Re-exporting the same bytes as newly initialized adds no fact for any legitimate caller.
     let mut required=Vec::new();
@@ -1217,6 +1215,8 @@ fn initializations(function:&Function,state:&State,known:&States,candidates:bool
         Some(fact)
     }));
     if candidates{return facts;}
+    let parameters=function.parameters.iter().map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect();
+    let exits=function.initialization.iter().map(|effect|match effect {address::InitializationEffect::Position(fact)=>&fact.when,address::InitializationEffect::Call{when,..}|address::InitializationEffect::Iteration{when,..}=>when}).map(|when|when.guard_at_call(&parameters)).collect::<Vec<_>>();
     facts.into_iter().filter_map(|mut fact|{
         fact.when=normalized_condition(function.initialization_when(&fact).guaranteed_at_call(&parameters));
         // Original normal exits form a finite induction domain; recursive scalar substitutions
