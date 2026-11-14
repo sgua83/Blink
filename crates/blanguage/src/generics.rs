@@ -3,10 +3,10 @@ use crate::{World, ast::*, ir::Ty};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod source_bind;
+mod instance;
+pub(crate) use instance::specialize;
 
-pub(crate) fn is_open(types:&crate::syntax::List<crate::syntax::wire::TypeParameterNode>,values:&crate::syntax::List<crate::syntax::wire::ValueParameterNode>)->bool {
-    types.iter().any(|p|p.family().is_none())||values.iter().any(|p|p.choices().is_none())
-}
+pub(crate) use instance::is_open;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct NameBytes { bytes: *const u8, length: u64 }
@@ -154,46 +154,7 @@ pub(crate) struct TypeArgument {
     pub syntax: TypeName,
 }
 
-pub(crate) fn instantiate(
-    world:&World,
-    base:&str,
-    definition:&std::sync::Arc<crate::Definition>,
-    arguments: Vec<TypeArgument>,
-    values:&[u32],
-)->Result<Instance> {
-    let function=&definition.function;
-    if function.kind()!=FunctionKind::Constant&&function.body().is_some()
-        &&let Some(inputs)=&world.build_declarations {
-        inputs.borrow_mut().insert(crate::build::Declaration::Implementation(base.into()));
-    }
-    if function.external().is_some()&&let Some(inputs)=&world.build_declarations {
-        inputs.borrow_mut().insert(crate::build::Declaration::External(base.into()));
-    }
-    if function.types().is_empty()&&function.values().is_empty() {
-        return Ok(Instance{name:base.into(),definition:definition.clone(),
-            bindings:std::sync::Arc::new(Bindings::default())});
-    }
-    let name = key(base, arguments.iter().map(|argument| argument.name.as_str()), values);
-    let types = function.types().iter().zip(arguments)
-        .map(|(parameter, argument)| (parameter.name().to_owned(), argument.syntax))
-        .collect();
-    let value_map=function.values().iter().zip(values).map(|(parameter,value)|(parameter.name().to_owned(),*value)).collect();
-    let bindings=Bindings{types,values:value_map};
-    for contract in function.contracts().iter() {
-        if contract.kind()==ContractKind::Requires
-            &&let crate::syntax::PredicateKind::Nonzero(name)=contract.predicate().kind()
-            &&let Some(value)=bindings.values.get(name)
-            &&*value==0 {
-            return definition.source.fail(contract.span(),"B226",
-                format!("const 参数 {name}=0 不满足 requires nonzero({name})"));
-        }
-    }
-    bindings.check_function(function, &definition.source)?;
-    let instance=Instance{name,definition:definition.clone(),bindings:std::sync::Arc::new(bindings)};
-    if function.c_abi(){crate::check::external::check_declaration(world,&instance)?;}
-    world.check_interface_types(definition,&instance.bindings)?;
-    Ok(instance)
-}
+pub(crate) use instance::instantiate;
 pub(crate) fn validate_declaration(definition: &crate::Definition) -> Result<()> {
     let f = &definition.function;
     crate::check::validate_signature(definition)?;
