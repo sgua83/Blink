@@ -205,6 +205,9 @@ struct PayloadEmission {
 };
 struct PayloadRead { u64 words; u32 next; u32 value; };
 struct PayloadWrite { u64 words; u32 next; };
+// The original paged record contains count consecutive u32 words. The caller
+// provides count pointer slots; step is the constant ID for a four-byte advance.
+extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address pointers, u32 count, address body) on cpu;
 // Operands are word IDs in Words mode and pointer IDs for storage accesses.
 // Shifts contains the original constant ID for each nonzero word position.
 // The emitter supplies count operand slots and 20*count (read) or 14*count

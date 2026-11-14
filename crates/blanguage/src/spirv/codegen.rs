@@ -666,6 +666,9 @@ unsafe extern "C" {
     fn scalar_math(input: MathEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
     fn page_address(input: PageAddress, step: u32, body: *mut u32) -> PageAddressResult;
+    #[link_name = "bootstrap.spirv_envelope::summary_addresses"]
+    fn emit_summary_addresses(input: PageAddress, step: u32, pointers: *mut u32, count: u32,
+        body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::read_summary_words"]
     fn read_summary_words(body: *mut u32, type_id: u32, first: u32, pointers: *const u32, count: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::write_summary_words"]
@@ -983,6 +986,25 @@ impl Emitter<'_> {
     }
     fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, word: u32) -> u32 {
         self.page_address(unit, PageSource::Dataset(self.buffers[binding]), index, word, 0)
+    }
+
+    fn summary_addresses(&mut self, count: usize, binding: usize, index: u32) -> Vec<u32> {
+        if count == 0 {
+            return Vec::new();
+        }
+        let step = if count > 1 { self.constant(Scalar::U64, 4) } else { 0 };
+        let input = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[binding]), index, Some(0), 0);
+        let at = self.body.len();
+        self.body.reserve(109 + 9 * (count - 1));
+        let mut pointers = Vec::with_capacity(count);
+        unsafe {
+            let emitted = emit_summary_addresses(input, step, pointers.as_mut_ptr(),
+                count as u32, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            self.next = emitted.next;
+            pointers.set_len(count);
+        }
+        pointers
     }
 
     fn page_address(&mut self, unit: Scalar, source: PageSource, index: u32, word: u32, extra: u32) -> u32 {

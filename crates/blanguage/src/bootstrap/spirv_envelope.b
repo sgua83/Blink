@@ -650,6 +650,24 @@ extern "C" PageAddressResult page_address(PageAddress input, u32 step, address b
     return PageAddressResult(at, next + 3, next, next + 2);
 }
 
+extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address pointers, u32 count, address body) on cpu {
+    PhysicalAddress start = physical_page_address(input, body, input.next);
+    u64 at = start.words;
+    u32 next = start.next;
+    u32 physical = start.value;
+    for (part in 0..count) {
+        if (part != 0) {
+            at = words_four(body, at, 128, input.u64_type, next, physical, step);
+            physical = next;
+            next += 1;
+        }
+        at = words_three(body, at, 120, input.result_pointer, next, physical);
+        put(pointers, u64(part), next);
+        next += 1;
+    }
+    return PayloadWrite(at, next);
+}
+
 struct StageCursor { address body; u64 words; u32 next; };
 
 void copy_record(inout StageCursor out, address layout, u32 source_index, u32 target_index) on cpu {
