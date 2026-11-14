@@ -3531,3 +3531,219 @@ extern "C" PrintEncoding print_helper(ScalarEncoding scalar, address output, add
     return PrintEncoding(u32(cursor + 1u64 - start), u32(unwind_length),
         frame + (signed ? 24 : 16), create, format, destroy, handle, write);
 }
+
+PacketPlanState packet_plan_empty() on cpu {
+    return PacketPlanState(unsafe_address(0u64),unsafe_address(0u64),0u64);
+}
+PacketPlanFlow packet_plan_no_flow() on cpu {
+    PacketPlanState empty=packet_plan_empty();return PacketPlanFlow(empty,empty,empty,empty);
+}
+u8 packet_plan_byte(address bytes,u64 index) on cpu {
+    return unsafe_position<u8>(unsafe_address(address_bits(bytes)+index));
+}
+void packet_plan_set_byte(address bytes,u64 index,u8 value) on cpu {
+    unsafe_position<u8>(unsafe_address(address_bits(bytes)+index))=value;
+}
+void packet_plan_release(PacketPlanState state,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    if(address_bits(state.owner)!=0u64){host.state_drop(state);}
+}
+void packet_plan_release_flow(PacketPlanFlow flow,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    packet_plan_release(flow.next,host);packet_plan_release(flow.breaks,host);
+    packet_plan_release(flow.continues,host);packet_plan_release(flow.exits,host);
+}
+PacketPlanState packet_plan_clone(PacketPlanState state,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    return host.state_new(state.count,state.bytes);
+}
+void packet_plan_intersect(PacketPlanState left,PacketPlanState right) on cpu {
+    u64 index=0u64;while(index<left.count){
+        packet_plan_set_byte(left.bytes,index,packet_plan_byte(left.bytes,index)&packet_plan_byte(right.bytes,index));index+=1u64;
+    }
+}
+bool packet_plan_equal(PacketPlanState left,PacketPlanState right) on cpu {
+    u64 index=0u64;while(index<left.count){
+        if(packet_plan_byte(left.bytes,index)!=packet_plan_byte(right.bytes,index)){return false;}index+=1u64;
+    }return true;
+}
+PacketPlanState packet_plan_merge(PacketPlanState target,PacketPlanState other,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    if(address_bits(other.owner)==0u64){return target;}
+    if(address_bits(target.owner)==0u64){return other;}
+    packet_plan_intersect(target,other);host.state_drop(other);return target;
+}
+PacketPlanFlow packet_plan_join(PacketPlanFlow left,PacketPlanFlow right,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    return PacketPlanFlow(packet_plan_merge(left.next,right.next,host),packet_plan_merge(left.breaks,right.breaks,host),
+        packet_plan_merge(left.continues,right.continues,host),packet_plan_merge(left.exits,right.exits,host));
+}
+extern "C" u32 packet_plan_uniform_operand(address bytes,u64 reg) on cpu {
+    return packet_plan_byte(bytes,reg)!=u8(0)?1:0;
+}
+extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu {
+    packet_plan_set_byte(bytes,reg,packet_plan_byte(bytes,reg)|u8(2));return 1;
+}
+extern "C" u32 packet_plan_definition(address context,u64 reg) on cpu {
+    PacketPlanDefinition definition=unsafe_position<PacketPlanDefinition>(context);
+    packet_plan_set_byte(definition.state.bytes,reg,u8(definition.uniform));
+    if(definition.record!=0){
+        u8 previous=packet_plan_byte(definition.definitions,reg);
+        packet_plan_set_byte(definition.definitions,reg,previous!=u8(1)&&definition.uniform!=0?u8(2):u8(1));
+    }return 1;
+}
+extern "C" u32 packet_plan_width(address context,u64 bytes) on cpu {return bytes==4u64?1:0;}
+
+PacketPlanFlow packet_plan_uniform_block(address context,PacketPlanBlock code,PacketPlanHeader header,
+    PacketPlanState state,address definitions,bool record,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    PacketPlanFlow flow=packet_plan_no_flow();flow.next=state;u64 index=0u64;
+    while(index<code.count&&address_bits(flow.next.owner)!=0u64){
+        PacketPlanState current=flow.next;flow.next=packet_plan_empty();
+        PacketPlanNode node=host.read(context,code,index);PacketPlanFlow step=packet_plan_no_flow();
+        if(node.kind==PacketPlanKind::If){
+            PacketPlanFlow yes=packet_plan_uniform_block(context,node.first,header,packet_plan_clone(current,host),definitions,record,host);
+            PacketPlanFlow no=packet_plan_uniform_block(context,node.second,header,current,definitions,record,host);
+            step=packet_plan_join(yes,no,host);
+        }else if(node.kind==PacketPlanKind::Loop){
+            step=packet_plan_loop(context,node.first,node.second,header,current,definitions,record,host);
+        }else if(node.kind==PacketPlanKind::Scope){
+            step=packet_plan_uniform_block(context,node.first,header,current,definitions,record,host);
+            step.next=packet_plan_merge(step.next,step.exits,host);step.exits=packet_plan_empty();
+        }else if(node.kind==PacketPlanKind::Break){step.breaks=current;
+        }else if(node.kind==PacketPlanKind::Continue){step.continues=current;
+        }else if(node.kind==PacketPlanKind::Exit){step.exits=current;
+        }else{
+            u32 uniform=0;
+            if(node.kind==PacketPlanKind::Load){uniform=node.writes==0&&packet_plan_byte(current.bytes,node.a)!=u8(0)?1:0;
+            }else if(node.kind==PacketPlanKind::LocalLoad){uniform=u32(packet_plan_byte(current.bytes,header.registers+node.a));
+            }else if(node.kind!=PacketPlanKind::Index){
+                uniform=host.visit(context,node.instruction,PacketPlanVisit::Operands,current.bytes,c_function(packet_plan_uniform_operand));
+            }
+            PacketPlanDefinition definition=PacketPlanDefinition(current,definitions,uniform,record?1:0);
+            host.visit(context,node.instruction,PacketPlanVisit::Results,address_of(definition),c_function(packet_plan_definition));
+            if(node.kind==PacketPlanKind::LocalStore){
+                packet_plan_set_byte(current.bytes,header.registers+node.dst,packet_plan_byte(current.bytes,node.a));
+            }step.next=current;
+        }
+        flow=packet_plan_join(flow,step,host);index+=1u64;
+    }return flow;
+}
+PacketPlanFlow packet_plan_loop(address context,PacketPlanBlock condition,PacketPlanBlock body,PacketPlanHeader header,
+    PacketPlanState entry,address definitions,bool record,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    PacketPlanState fixed=packet_plan_clone(entry,host);
+    while(true){
+        PacketPlanFlow condition_flow=packet_plan_uniform_block(context,condition,header,packet_plan_clone(fixed,host),definitions,false,host);
+        PacketPlanFlow body_flow=packet_plan_no_flow();
+        if(address_bits(condition_flow.next.owner)!=0u64){
+            body_flow=packet_plan_uniform_block(context,body,header,packet_plan_clone(condition_flow.next,host),definitions,false,host);
+        }
+        PacketPlanState back=packet_plan_merge(body_flow.next,body_flow.continues,host);
+        body_flow.next=packet_plan_empty();body_flow.continues=packet_plan_empty();
+        PacketPlanState next=packet_plan_clone(entry,host);
+        if(address_bits(back.owner)!=0u64){packet_plan_intersect(next,back);host.state_drop(back);}
+        if(packet_plan_equal(next,fixed)){
+            host.state_drop(next);
+            if(!record){
+                host.state_drop(fixed);host.state_drop(entry);
+                condition_flow.next=packet_plan_merge(condition_flow.next,body_flow.breaks,host);body_flow.breaks=packet_plan_empty();
+                condition_flow.exits=packet_plan_merge(condition_flow.exits,body_flow.exits,host);body_flow.exits=packet_plan_empty();
+                packet_plan_release_flow(body_flow,host);return condition_flow;
+            }
+            packet_plan_release_flow(condition_flow,host);packet_plan_release_flow(body_flow,host);break;
+        }
+        host.state_drop(fixed);fixed=next;packet_plan_release_flow(condition_flow,host);packet_plan_release_flow(body_flow,host);
+    }
+    host.state_drop(entry);
+    PacketPlanFlow condition_flow=packet_plan_uniform_block(context,condition,header,fixed,definitions,record,host);
+    PacketPlanFlow body_flow=packet_plan_no_flow();
+    if(address_bits(condition_flow.next.owner)!=0u64){
+        body_flow=packet_plan_uniform_block(context,body,header,packet_plan_clone(condition_flow.next,host),definitions,record,host);
+    }
+    condition_flow.next=packet_plan_merge(condition_flow.next,body_flow.breaks,host);body_flow.breaks=packet_plan_empty();
+    condition_flow.exits=packet_plan_merge(condition_flow.exits,body_flow.exits,host);body_flow.exits=packet_plan_empty();
+    packet_plan_release_flow(body_flow,host);return condition_flow;
+}
+void packet_plan_uses(address context,PacketPlanBlock code,address uses,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    u64 index=0u64;while(index<code.count){
+        PacketPlanNode node=host.read(context,code,index);
+        if(node.kind==PacketPlanKind::Index){packet_plan_set_byte(uses,node.dst,packet_plan_byte(uses,node.dst)|u8(1));
+        }else if(node.kind==PacketPlanKind::Store){packet_plan_mark_operand(uses,node.b);
+        }else if(node.kind!=PacketPlanKind::Load){host.visit(context,node.instruction,PacketPlanVisit::Operands,uses,c_function(packet_plan_mark_operand));}
+        if(node.kind==PacketPlanKind::If||node.kind==PacketPlanKind::Loop){
+            packet_plan_uses(context,node.first,uses,host);packet_plan_uses(context,node.second,uses,host);
+        }else if(node.kind==PacketPlanKind::Scope){packet_plan_uses(context,node.first,uses,host);}
+        index+=1u64;
+    }
+}
+address packet_plan_build(address context,PacketPlanBlock code,PacketPlanHeader header,address uniform,address uses,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    address plan=host.plan_new();u64 index=0u64;
+    while(index<code.count){
+        PacketPlanNode node=host.read(context,code,index);
+        PacketPlanDecision decision=PacketPlanDecision(PacketPlanOperation::Constant,0,PacketAddress::Unsupported,PacketViewAddress::Unsupported,PacketMathOperation::Sqrt);
+        address first=unsafe_address(0u64);address second=unsafe_address(0u64);
+        if(node.kind==PacketPlanKind::Constant){decision.operation=PacketPlanOperation::Constant;
+        }else if(node.kind==PacketPlanKind::Index){
+            if(packet_plan_byte(uses,node.dst)==u8(1)){index+=1u64;continue;}decision.operation=PacketPlanOperation::Index;
+        }else if(node.kind==PacketPlanKind::Uniform){decision.operation=PacketPlanOperation::Uniform;
+        }else if(node.kind==PacketPlanKind::LocalLoad){decision.operation=PacketPlanOperation::LocalLoad;
+        }else if(node.kind==PacketPlanKind::LocalStore){decision.operation=PacketPlanOperation::LocalStore;
+        }else if(node.kind==PacketPlanKind::Load){
+            decision.operation=PacketPlanOperation::Load;
+            decision.dataset=packet_dataset_address(node.stride,node.word,header.selected!=0,node.writes!=0,(packet_plan_byte(uses,node.a)&u8(1))!=u8(0),packet_plan_byte(uniform,node.a)!=u8(0));
+            if(decision.dataset==PacketAddress::Unsupported){host.plan_drop(plan);return unsafe_address(0u64);}
+        }else if(node.kind==PacketPlanKind::ViewLoad){
+            decision.operation=PacketPlanOperation::ViewLoad;
+            bool stride_uniform=host.visit(context,node.payload,PacketPlanVisit::Stride,uniform,c_function(packet_plan_uniform_operand))!=0;
+            decision.view=packet_view_address(node.word,packet_plan_byte(uniform,node.a)!=u8(0)&&packet_plan_byte(uniform,node.b)!=u8(0),packet_plan_byte(uniform,node.c)!=u8(0),stride_uniform);
+            if(decision.view==PacketViewAddress::Unsupported){host.plan_drop(plan);return unsafe_address(0u64);}
+        }else if(node.kind==PacketPlanKind::Store){
+            decision.operation=PacketPlanOperation::Store;
+            decision.dataset=packet_dataset_address(node.stride,node.word,header.selected!=0,true,(packet_plan_byte(uses,node.a)&u8(1))!=u8(0),false);
+            if(decision.dataset==PacketAddress::Unsupported){host.plan_drop(plan);return unsafe_address(0u64);}
+        }else if(node.kind==PacketPlanKind::Unary){decision.operation=PacketPlanOperation::Unary;
+        }else if(node.kind==PacketPlanKind::Binary){decision.operation=PacketPlanOperation::Binary;decision.uniform_count=packet_plan_byte(uniform,node.b)!=u8(0)?1:0;
+        }else if(node.kind==PacketPlanKind::Divide){decision.operation=PacketPlanOperation::Divide;
+        }else if(node.kind==PacketPlanKind::Cast){decision.operation=bit_copy(node.from,node.into)?PacketPlanOperation::Copy:PacketPlanOperation::Cast;
+        }else if(node.kind==PacketPlanKind::Math){
+            decision.operation=PacketPlanOperation::Math;
+            if(node.math==9){decision.math=PacketMathOperation::Sqrt;
+            }else if(node.math==0){decision.math=PacketMathOperation::Abs;
+            }else if(node.math==10){decision.math=PacketMathOperation::Min;
+            }else if(node.math==11){decision.math=PacketMathOperation::Max;
+            }else{host.plan_drop(plan);return unsafe_address(0u64);}
+        }else if(node.kind==PacketPlanKind::Select){decision.operation=PacketPlanOperation::Select;
+        }else if(node.kind==PacketPlanKind::If||node.kind==PacketPlanKind::Loop||node.kind==PacketPlanKind::Scope){
+            if(node.kind!=PacketPlanKind::Scope&&packet_plan_byte(uniform,node.a)==u8(0)){host.plan_drop(plan);return unsafe_address(0u64);}
+            first=packet_plan_build(context,node.first,header,uniform,uses,host);
+            if(address_bits(first)==0u64){host.plan_drop(plan);return unsafe_address(0u64);}
+            if(node.kind!=PacketPlanKind::Scope){
+                second=packet_plan_build(context,node.second,header,uniform,uses,host);
+                if(address_bits(second)==0u64){host.plan_drop(first);host.plan_drop(plan);return unsafe_address(0u64);}
+            }
+            decision.operation=node.kind==PacketPlanKind::If?PacketPlanOperation::If:(node.kind==PacketPlanKind::Loop?PacketPlanOperation::Loop:PacketPlanOperation::Scope);
+        }else if(node.kind==PacketPlanKind::Exit){decision.operation=PacketPlanOperation::Exit;
+        }else if(node.kind==PacketPlanKind::Break){decision.operation=PacketPlanOperation::Break;
+        }else if(node.kind==PacketPlanKind::Continue){decision.operation=PacketPlanOperation::Continue;
+        }else{host.plan_drop(plan);return unsafe_address(0u64);}
+        host.append(plan,node,decision,first,second);index+=1u64;
+    }return plan;
+}
+extern "C" address packet_plan(address context,PacketPlanBlock code,PacketPlanHeader header,PacketPlanHost host) on cpu 
+    requires nonzero(host.read) requires nonzero(host.visit) requires nonzero(host.state_new) requires nonzero(host.state_drop) requires nonzero(host.plan_new) requires nonzero(host.plan_drop) requires nonzero(host.append) requires nonzero(host.address_only) {
+    if(header.tile!=0||header.writes==0u64){return unsafe_address(0u64);}
+    if(host.visit(context,code.instructions,PacketPlanVisit::Widths,unsafe_address(0u64),c_function(packet_plan_width))==0){return unsafe_address(0u64);}
+    PacketPlanState definitions=host.state_new(header.registers,unsafe_address(0u64));
+    PacketPlanState state=host.state_new(header.slots,unsafe_address(0u64));
+    PacketPlanFlow flow=packet_plan_uniform_block(context,code,header,state,definitions.bytes,true,host);packet_plan_release_flow(flow,host);
+    u64 index=0u64;while(index<header.registers){packet_plan_set_byte(definitions.bytes,index,packet_plan_byte(definitions.bytes,index)==u8(2)?u8(1):u8(0));index+=1u64;}
+    PacketPlanState uses=host.state_new(header.registers,unsafe_address(0u64));packet_plan_uses(context,code,uses.bytes,host);
+    address plan=packet_plan_build(context,code,header,definitions.bytes,uses.bytes,host);
+    if(address_bits(plan)!=0u64){
+        index=0u64;while(index<header.registers){if(packet_plan_byte(uses.bytes,index)==u8(1)){host.address_only(context,index);}index+=1u64;}
+    }
+    host.state_drop(definitions);host.state_drop(uses);return plan;
+}

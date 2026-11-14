@@ -6,7 +6,6 @@ use super::*;
 pub(super) struct PacketAddress(u32);
 
 impl PacketAddress {
-    const UNSUPPORTED: Self = Self(0);
     const UNIFORM: Self = Self(4);
     const GATHER: Self = Self(5);
 }
@@ -39,22 +38,6 @@ struct PacketView {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::packet_dataset_address"]
-    fn classify_dataset(
-        stride: u32,
-        word: u32,
-        selected: u32,
-        writes_binding: u32,
-        element: u32,
-        uniform: u32,
-    ) -> PacketAddress;
-    #[link_name = "bootstrap.x64_instruction::packet_view_address"]
-    fn classify_view(
-        word: u32,
-        uniform_base: u32,
-        uniform_index: u32,
-        uniform_stride: u32,
-    ) -> PacketViewAddress;
     #[link_name = "bootstrap.x64_instruction::packet_lane"]
     fn encode_packet_lane(src: operands::MoveLocation, lane: u8, gpr: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::packet_read"]
@@ -79,43 +62,6 @@ unsafe extern "C" {
     ) -> u64;
 }
 
-pub(super) fn packet_dataset_address(
-    stride: u32,
-    word: u32,
-    selected: bool,
-    writes_binding: bool,
-    element: bool,
-    uniform: bool,
-) -> Option<PacketAddress> {
-    let mode = unsafe {
-        classify_dataset(
-            stride,
-            word,
-            u32::from(selected),
-            u32::from(writes_binding),
-            u32::from(element),
-            u32::from(uniform),
-        )
-    };
-    (mode != PacketAddress::UNSUPPORTED).then_some(mode)
-}
-
-pub(super) fn packet_view_address(
-    word: u32,
-    uniform_base: bool,
-    uniform_index: bool,
-    uniform_stride: bool,
-) -> Option<PacketViewAddress> {
-    let mode = unsafe {
-        classify_view(
-            word,
-            uniform_base.into(),
-            uniform_index.into(),
-            uniform_stride.into(),
-        )
-    };
-    (mode != PacketViewAddress(0)).then_some(mode)
-}
 
 impl Emitter<'_> {
     pub(super) fn packet_lane(
