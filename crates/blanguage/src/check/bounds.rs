@@ -201,6 +201,11 @@ pub(super) struct FloatingBound {
 crate::module::codec::variants!(FloatingForm{0=>Cast,1=>Upper});
 crate::module::codec::record!(FloatingBound{source,lower,upper,terms,scalar,form});
 type Facts = BTreeSet<Fact>;
+
+struct RequiredFacts {
+    facts: Facts,
+    roots: BTreeMap<ValueIdentity, ValueIdentity>,
+}
 // 固定点环境只由本轮持有；节点仅交接环境之外的事实，保持到最后消费。
 type QueryFacts<'a> = Arc<Cow<'a, Facts>>;
 struct QueryResult<'a> {
@@ -2617,9 +2622,9 @@ impl Clause {
         }).collect())
     }
     fn required(&self) -> Option<Facts> {
-        self.required_in(&Facts::new())
+        self.required_in(&Facts::new()).map(|required| required.facts)
     }
-    fn required_in<'a>(&'a self, environment: &'a Facts) -> Option<Facts> {
+    fn required_in<'a>(&'a self, environment: &'a Facts) -> Option<RequiredFacts> {
         let mut environment_roots = equality_roots(environment);
         if contradictory_with_roots(environment, &environment_roots) {
             return None;
@@ -2745,7 +2750,7 @@ impl Clause {
             }
             let numeric = integer_relation_facts(&environment, &environment_roots)?;
             if unchanged && numeric.is_empty() {
-                return Some(environment.into_owned());
+                return Some(RequiredFacts { facts: environment.into_owned(), roots: environment_roots });
             }
             // The integer solver emits bounds, which leave the equality roots intact.
             environment.to_mut().extend(numeric);
@@ -3765,18 +3770,14 @@ impl IntegerAffine {
 }
 struct IntegerQuery<'a> {
     facts: &'a Facts,
-    roots: Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>>,
+    roots: &'a BTreeMap<ValueIdentity, ValueIdentity>,
     lower: BTreeMap<(ValueIdentity, Scalar), Bits>,
     upper: BTreeMap<(ValueIdentity, Scalar), Bits>,
     coefficients: BTreeMap<(ValueIdentity, Scalar), IntegerAffine>,
     expanding: BTreeSet<(ValueIdentity, Scalar)>,
 }
 impl<'a> IntegerQuery<'a> {
-    fn new(facts: &'a Facts) -> Self {
-        Self::with_roots(facts, Cow::Owned(equality_roots(facts)))
-    }
-
-    fn with_roots(facts: &'a Facts, roots: Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>>) -> Self {
+    fn new(facts: &'a Facts, roots: &'a BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
         let mut lower = BTreeMap::new();
         let mut upper = BTreeMap::new();
         for ((id, scalar), value) in minimums(facts) {
@@ -4008,7 +4009,7 @@ impl<'a> IntegerQuery<'a> {
     }
 }
 fn integer_relation_facts(facts: &Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> Option<Facts> {
-    let mut query = IntegerQuery::with_roots(facts, Cow::Borrowed(roots));
+    let mut query = IntegerQuery::new(facts, roots);
     let mut output = Facts::new();
     for fact in facts {
         match *fact {
@@ -4535,8 +4536,7 @@ impl Builder<'_> {
         let mut environment = environment_facts(&self.env);
         environment.extend(a.facts(&Ty::scalar(Scalar::U32)));
         environment.extend(b.facts(&Ty::scalar(Scalar::U32)));
-        let Some(facts) = self.path.required_in(&environment) else { return false; };
-        let roots = equality_roots(&facts);
+        let Some(RequiredFacts { facts, roots }) = self.path.required_in(&environment) else { return false; };
         let mut a = a.clone();
         let mut b = b.clone();
         for proof in [&mut a, &mut b] {
@@ -4586,9 +4586,8 @@ impl Builder<'_> {
     }
     fn integer_below(&self, left: ValueIdentity, right: ValueIdentity, scalar: Scalar) -> bool {
         let environment = environment_facts(&self.env);
-        let Some(mut facts) = self.path.required_in(&environment) else { return false; };
-        facts.extend(environment);
-        let mut query = IntegerQuery::new(&facts);
+        let Some(RequiredFacts { facts, roots }) = self.path.required_in(&environment) else { return false; };
+        let mut query = IntegerQuery::new(&facts, &roots);
         if query.bounds(left, scalar).1 < query.bounds(right, scalar).0 { return true; }
         let Some((source, order)) = query.source_plan(left, right, scalar) else { return false; };
         let mut ranges: Option<ScalarRanges> = None;
@@ -4614,7 +4613,7 @@ impl Builder<'_> {
             }
         }
         let Some(ranges) = ranges else { return false; };
-        ranges.0.iter().all(|&range| IntegerQuery::new(&facts)
+        ranges.0.iter().all(|&range| IntegerQuery::new(&facts, &roots)
             .below_in(left, right, scalar, source, range, &order) == Some(true))
     }
     pub(super) fn observe_bounds(&mut self, value: &Value) {
@@ -4646,10 +4645,10 @@ impl Builder<'_> {
             let binding = Clause::both(condition, &Clause::facts(next.facts(ty)));
             related = Clause::either(&related, &binding);
             let candidate_path = Clause::both(path, &binding);
-            let Some(context) = candidate_path.required_in(&environment) else {
+            let Some(RequiredFacts { facts: context, roots }) = candidate_path.required_in(&environment) else {
                 continue;
             };
-            next.extend_equalities(&equality_roots(&context));
+            next.extend_equalities(&roots);
             for (component, _) in ty.components.iter().enumerate() {
                 for fact in &context {
                     if fact.identity().is_some_and(|identity| next.origins.get(component).is_some_and(|origins| origins.contains(&identity))) {
@@ -4995,7 +4994,7 @@ impl Builder<'_> {
             _ => false,
         });
         if let Some(first) = consumers.next() {
-            let Some(facts) = self.path.required_in(&environment) else {
+            let Some(RequiredFacts { facts, roots }) = self.path.required_in(&environment) else {
                 return;
             };
             // Keep branch-derived integer bounds on the path that established them.
@@ -5005,7 +5004,6 @@ impl Builder<'_> {
                     Fact::Zero(_) | Fact::NonZero(_) => true,
                     _ => false,
                 }).copied().collect()));
-            let roots = equality_roots(&facts);
             for binding in std::iter::once(first).chain(consumers) {
                 match &mut *binding {
                     Binding::Value(value) => {
@@ -5217,8 +5215,10 @@ impl Builder<'_> {
         let TileWidth::Fixed(width) = self.tiles[tile].width else { return None; };
         let component = value.ty.components.iter().position(|(_, at)| *at == word).unwrap();
         let condition = Condition::component(value, component);
-        let Some(facts) = condition.cases[1].required() else { return Some(0); };
-        let query = IntegerQuery::new(&facts);
+        let Some(RequiredFacts { facts, roots }) = condition.cases[1].required_in(&Facts::new()) else {
+            return Some(0);
+        };
+        let query = IntegerQuery::new(&facts, &roots);
         let global = query.root(ValueIdentity::Register(self.global_index));
         let mut count: Option<u32> = None;
         for fact in &facts {
@@ -5579,14 +5579,11 @@ pub(super) fn scoped_proof(ty: &Ty, proof: Proof, path: &Clause, env: &BTreeMap<
 
 pub(super) fn proof_scope(path: &Clause, env: &BTreeMap<String, Binding>) -> impl Fn(&Ty, Proof) -> Proof + use<> {
     let environment = environment_facts(env);
-    let scope = path.required_in(&environment).map(|facts| {
-        let equalities = equality_roots(&facts);
-        (facts, equalities)
-    });
+    let scope = path.required_in(&environment);
 
     move |ty, mut proof| {
-        if let Some((facts, equalities)) = &scope {
-            proof.extend_equalities(equalities);
+        if let Some(RequiredFacts { facts, roots }) = &scope {
+            proof.extend_equalities(roots);
             for component in 0..ty.components.len() {
                 for domain in proof.domains(component) {
                     if let IndexDomain::CommonRange(id, from, low, extended, to) = domain
