@@ -794,20 +794,21 @@ impl Proof {
     fn value_bindings(
         identities: impl IntoIterator<Item = ValueIdentity>,
         values: &BTreeMap<ValueIdentity, Proof>,
+        unchanged: impl Fn(ValueIdentity) -> Proof,
     ) -> BTreeMap<ValueIdentity, Proof> {
         identities.into_iter().map(|id| {
-            let proof = values.get(&id).cloned().unwrap_or_else(|| {
-                Proof::default().with_identity(id).with_view_borrow(
-                    0,
-                    view::Borrow::source(view::Source::Parameter(id, Vec::new())),
-                )
-            });
+            let proof = values.get(&id).cloned().unwrap_or_else(|| unchanged(id));
             (id, proof)
         }).collect()
     }
 
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        let bindings = Self::value_bindings(self.scalar_identities(), values);
+        let bindings = Self::value_bindings(self.scalar_identities(), values, |id| {
+            Proof::default().with_identity(id).with_view_borrow(
+                0,
+                view::Borrow::source(view::Source::Parameter(id, Vec::new())),
+            )
+        });
         let views = self.views.iter().map(|borrow| borrow.substitute_values(values)).collect();
         let mut proof = self.project_call(&bindings, views, vec![None; self.addresses.len()]);
         for (slot, address) in proof.addresses.iter_mut().zip(&self.addresses) {
@@ -2219,7 +2220,7 @@ impl Clause {
             identities.borrow_mut().insert(id);
             id
         });
-        self.project_guard(&Proof::value_bindings(identities.into_inner(), values))
+        self.project_guard(&Proof::value_bindings(identities.into_inner(), values, |id| Proof::default().with_identity(id)))
     }
 
     fn visit_identities<'a>(
@@ -3349,7 +3350,7 @@ impl Condition {
             identities.borrow_mut().insert(id);
             id
         });
-        Proof::value_bindings(identities.into_inner(), values)
+        Proof::value_bindings(identities.into_inner(), values, |id| Proof::default().with_identity(id))
     }
 
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
