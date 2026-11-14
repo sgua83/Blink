@@ -380,8 +380,15 @@ fn position_has_external_memory(origin: &Origin, when: &bounds::Clause) -> bool 
 
 impl MemoryEffect {
     pub fn of(borrow: &view::Borrow, access: Access, written: Option<&bounds::Proof>) -> Self {
+        Self::from_sources(borrow.sources.entries(), access, written)
+    }
+    fn from_sources<'a>(
+        sources: impl Iterator<Item = (&'a view::Source, bounds::Clause)>,
+        access: Access,
+        written: Option<&bounds::Proof>,
+    ) -> Self {
         let mut effect = Self::default();
-        for (source, when) in borrow.sources.entries().filter(|(_, when)| when.possible()) {
+        for (source, when) in sources.filter(|(_, when)| when.possible()) {
             if effect.external.is_none() && source_has_external_memory(source, &when) {
                 effect.external = Some(access);
             }
@@ -434,7 +441,9 @@ impl MemoryEffect {
                 Root::Resource{index,..}|Root::Dataset{index,..}=>*index,
                 _=>None,
             };
-            let effect=Self::of(&held.restricted(&when),Access::Write,None);
+            let held_sources = held.sources.entries()
+                .map(|(source, condition)| (source, bounds::Clause::both(&condition, &when)));
+            let effect = Self::from_sources(held_sources, Access::Write, None);
             let owners=origin.owners();
             // A whole dataset loan also keeps the original owned element resources readable.
             let descendant=effect.known.iter().any(|(held,active,held_access,_)| {
