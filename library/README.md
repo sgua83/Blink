@@ -487,7 +487,7 @@ target/release/blink.exe target/main.obj target/environment.lib -o target/main.e
 
 ### 读取原始字节或UTF-8
 
-`result<dataset<u8>,SourceError> read_binary(address path) on cpu`以GENERIC_READ、OPEN_EXISTING和读／写／删除共享打开，沿原读取循环连续至真实EOF，再关闭原句柄，交回唯一拥有的原始字节。所有字节包括NUL与非法UTF-8均保持，不追加终止符、转码或验证编码；空文件返回空dataset。
+`result<dataset<u8>,SourceError> read_binary(address path) on cpu`以GENERIC_READ、OPEN_EXISTING和读／写／删除共享打开，沿原读取循环连续至真实EOF，再关闭原句柄，交回唯一拥有的原始字节。读取调用只持有一份64 KiB临时dataset：每次同步ReadFile返回后按实际字节数缩短，追加到最终结果，再沿原resize恢复下一轮容量；循环不逐块创建／释放scratch，任意读取终态都沿原Frame释放。所有字节包括NUL与非法UTF-8均保持，不追加终止符、转码或验证编码；空文件返回空dataset。
 
 `read_utf8(address path)`保持同一返回类型，直接复用read_binary的打开／读取／关闭结果，再由Unicode库严格校验整个内容。BOM、NUL、换行及非ASCII原字节保持，合法标量可以跨读取块；解码失败不返回部分源码。打开共享允许其他进程修改内容，两入口都不承诺原子文件快照，固定本次模块输入仍归原装入器。
 

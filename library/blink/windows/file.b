@@ -5,8 +5,8 @@ import blink.windows.path_core;
 
 result<dataset<u8>,ReadError> read_bytes(handle file) on cpu {
     dataset<u8> data=dataset<u8>(0);
+    dataset<u8> buffer=dataset<u8>(65536);
     while (true) {
-        dataset<u8> buffer=dataset<u8>(65536);
         u32 received=0;
         i32 status=ReadFile(file,address_of(buffer[0]),buffer.length,received,address());
         if (status == 0) { return Err(ReadError::System(GetLastError())); }
@@ -16,6 +16,7 @@ result<dataset<u8>,ReadError> read_bytes(handle file) on cpu {
             Ok(next) { data=next; }
             Err(failure) { return Err(ReadError::Sequence(failure.reason)); }
         }
+        buffer=resize(chunk,65536,u8(0));
     }
 }
 
