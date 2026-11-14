@@ -541,11 +541,11 @@ FILE_SHARE_READ允许其他读者，不允许新增冲突的写／删除访问�
 | FileChangeError | 实际含义 |
 |---|---|
 | `Open(u32)` | 未获得本次源句柄，交原打开错误 |
-| `Apply(u32)` | 原变更失败，本次句柄已关闭 |
+| `Apply(u32)` | 变更未完成，未交出仍需调用者关闭的本次源句柄；rename准备分配失败时尚未打开源 |
 | `Close(CloseError)` | 原变更已成功，关闭失败，保留原句柄／code；不能当作变更未发生 |
 | `ApplyAndClose(FileApplyCloseError)` | 同时保留变更的原code与关闭的原身份／code |
 
-rename的准备长度错误为LengthOverflow，NUL名称框架错误为Nul(u32)，实际文件错误包在RenameError::Change中；原缓冲由同一Frame持有到SetFileInformationByHandle同步返回，不新增OS堆或运行时拥有表。两个入口直接依赖Windows10及文件系统支持的扩展信息类，实际不支持时保留原OS错误；不另查版本、不改用另一平台入口、复制／删除源、重试或隐藏原失败。完整Rust消费者迁移仍归C-032。
+rename的准备长度错误为LengthOverflow，NUL名称框架错误为Nul(u32)，文件变更错误包在RenameError::Change中。目标映像由共享path_core::rename_path通过GetProcessHeap／HeapAlloc的原进程堆分配并持有，零初始化保留原结构填充与末尾NUL；调用方target只读借用，仍归原Frame。首个NUL退出时匹配HeapFree且源尚未打开；分配失败交Change(Apply(8))，同样尚未打开源，不把它解释为文件变更已执行。准备成功后，change_file取得同步打开／应用／关闭结果，再匹配HeapFree释放本次原生缓冲。关闭失败载荷中的原文件句柄继续由调用方负责，释放信息缓冲不代替CloseHandle；没有另一份Frame缓冲或运行时拥有表。两个入口直接依赖Windows10及文件系统支持的扩展信息类，实际不支持时保留原OS错误；不另查版本、不改用另一平台入口、复制／删除源、重试或隐藏原失败。完整Rust消费者迁移仍归C-032。
 
 平台依据：[SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)、[FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info)及实际Windows SDK的FILE_DISPOSITION_INFO_EX／FILE_INFO_BY_HANDLE_CLASS定义。其他平台与文件系统能力按原Issues记录，不构成永久语言边界。
 
