@@ -1086,7 +1086,7 @@ impl Proof {
             .flat_map(|condition| condition.cases.iter().cloned())
             .collect();
         if !roots.is_empty() {
-            let projected=Clause::at_calls(&roots,bindings,|| false);
+            let projected=Clause::at_calls(&roots,bindings,|_| false);
             for(slot,value)in translated.conditions.iter_mut().flatten().flat_map(|condition|condition.cases.iter_mut()).zip(projected){*slot=value;}
         }
         // 输出仍是入口快照时，继续交接调用者已经持有的分量条件。
@@ -2123,11 +2123,12 @@ impl Clause {
     fn at_calls(
         roots: &[Self],
         bindings: &BTreeMap<ValueIdentity, Proof>,
-        numeric_context: impl FnOnce() -> bool,
+        numeric_context: impl FnOnce(&[&Self]) -> bool,
     ) -> Vec<Self> {
         let mut clauses = BTreeMap::new();
         let mut private_numeric = false;
-        for clause in Clause::ordered(roots) {
+        let ordered = Clause::ordered(roots);
+        for &clause in &ordered {
             let mapped = match &**clause.0 {
                 ClauseNode::Impossible => Clause::impossible(),
                 ClauseNode::Facts(facts) => {
@@ -2146,7 +2147,7 @@ impl Clause {
             clauses.insert(clause.key(), mapped);
         }
         // The other case can trigger numeric projection without itself being projected.
-        if private_numeric || numeric_context() {
+        if private_numeric || numeric_context(&ordered) {
             let mut roots=roots.to_vec();
             // Consume the original numeric condition before private snapshots leave scope.
             roots.sort_by_key(Clause::key);
@@ -2183,10 +2184,10 @@ impl Clause {
     }
 
     pub(super) fn project_guard(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        Self::at_calls(std::slice::from_ref(self), bindings, || {
+        Self::at_calls(std::slice::from_ref(self), bindings, |ordered| {
             // A reversed Below uses the same identities. Only a negated computed
             // exclusion can introduce a numeric trigger absent from the original path.
-            Self::ordered([self]).into_iter().any(|clause| {
+            ordered.iter().any(|clause| {
                 matches!(&**clause.0, ClauseNode::Facts(facts) if facts.iter().any(|fact| {
                     matches!(*fact, Fact::Outside(id, domain @ IndexDomain::Computed(_))
                         if Self::private_numeric(&Fact::Index(id, domain), bindings))
@@ -3423,7 +3424,7 @@ impl Condition {
         Clause::at_calls(
             std::slice::from_ref(&self.cases[index]),
             bindings,
-            || self.cases[1 - index].has_private_numeric(bindings),
+            |_| self.cases[1 - index].has_private_numeric(bindings),
         ).pop().unwrap()
     }
 
@@ -3450,7 +3451,7 @@ impl Condition {
     pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&**case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self{
-        let cases=Clause::at_calls(&self.cases,bindings,|| false);
+        let cases=Clause::at_calls(&self.cases,bindings,|_| false);
         Self{cases:std::array::from_fn(|i|cases[i].clone())}
     }
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
