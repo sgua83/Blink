@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Cow;
 use crate::module::codec::{Encode,Decode};
 
 #[derive(Clone)]
@@ -411,7 +412,11 @@ impl Graph {
     fn private(&self,source:&Origin)->bool{!self.references(source)&&Borrow::source(source.clone()).has_local()}
     fn residual(&self,root:usize,query:&Query<'_,'_,'_>)->Self{
         let mut residual=self.clone();let mut normal=bounds::Normalizer::new();
-        for &id in query.values.keys(){if self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Initial{..})){residual.nodes[id]=query.local_definition(id);}}
+        for &id in query.values.keys() {
+            if let Cow::Owned(node) = query.local_definition(id) {
+                residual.nodes[id] = node;
+            }
+        }
         for(id,node)in residual.nodes.iter_mut().enumerate(){
             node.seeds=node.seeds.map_sources(|s|if self.private(&s){Borrow::default()}else{Borrow::source(s)});
             if self.variables.contains(&id)||self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Read{..})) {
@@ -511,26 +516,32 @@ impl Graph {
     }
 }
 struct Query<'g,'e,'f>{graph:&'g Graph,relation:Arc<Graph>,variables:&'g BTreeMap<usize,Borrow>,values:BTreeMap<usize,Borrow>,evaluation:&'e mut BorrowEvaluation<'f>}
-impl Query<'_,'_,'_>{
+impl<'g> Query<'g, '_, '_> {
     fn node(&self,id:usize)->Borrow{self.variables.get(&id).unwrap_or_else(||&self.values[&id]).clone()}
     fn definition(&mut self, id: usize) -> Borrow {
-        let Node { seeds, edges } = self.local_definition(id);
-        let mut value = Borrow { sources: seeds.sources, ..Borrow::default() };
-        for edge in edges {
+        let mut definition = self.local_definition(id);
+        let mut sources = match &mut definition {
+            Cow::Borrowed(node) => node.seeds.sources.clone(),
+            Cow::Owned(node) => std::mem::take(&mut node.seeds.sources),
+        };
+        for edge in &definition.edges {
             let from = self.node(edge.from);
             let incoming = self.apply(id, edge.from, &edge.op, &from);
             let path = edge.when.assume(&bounds::Clause::default(), true);
-            value.sources.union(&incoming.sources.restricted(&path));
+            sources.union(&incoming.sources.restricted(&path));
         }
-        value
+        Borrow { sources, ..Borrow::default() }
     }
     fn deferred(&self,id:usize)->Borrow{Borrow::source(Origin::Relation(self.relation.clone(),id))}
     fn apply(&mut self,id:usize,from_id:usize,op:&Op,from:&Borrow)->Borrow{
         if let Op::Read{word,epoch,frame}=op{return self.read(id,from_id,from,*word,epoch,*frame);}
         from.map_sources(|source|match op{Op::Identity=>Borrow::source(source),Op::Resources=>Borrow::source(source).resources(),Op::Owners=>Borrow::source(source).owners(),Op::Select(indices)=>Borrow::source(source).select_elements(indices),Op::Element{fields,index}=>Borrow::element(Borrow::source(source),fields.clone(),*index),Op::Projection(fields)=>Borrow::projection(Borrow::source(source),fields.clone()),Op::Position(p)=>p.map_borrows(|_|Borrow::source(source)).normalize(),Op::Read{..}|Op::Initial{..}=>Borrow::default()})
     }
-    fn local_definition(&self,id:usize)->Node{
+    fn local_definition(&self, id: usize) -> Cow<'g, Node> {
         let node = &self.graph.nodes[id];
+        if !node.edges.iter().any(|edge| matches!(edge.op, Op::Initial { .. })) {
+            return Cow::Borrowed(node);
+        }
         let mut result = Node { seeds: node.seeds.clone(), edges: Vec::with_capacity(node.edges.len()) };
         for edge in &node.edges {
             let Op::Initial{origin,frame}=&edge.op else{result.edges.push(edge.clone());continue;};
@@ -609,7 +620,8 @@ impl Query<'_,'_,'_>{
                 }
             }
             result.edges.push(Edge{from:edge.from,op:Op::Identity,when:earlier.logical(edge.when.clone(),false)});
-        }result
+        }
+        Cow::Owned(result)
     }
     fn binding(&self,mut id:usize)->usize{
         loop{let n=self.local_definition(id);if !self.graph.variables.contains(&id)&&n.seeds.empty()&&n.edges.len()==1&&n.edges[0].op==Op::Identity{id=n.edges[0].from;}else{return id;}}
@@ -624,8 +636,9 @@ impl Query<'_,'_,'_>{
         for(source,path)in from.sources.entries(){
             let Origin::Position(origin)=source else{continue;};let position=content_position(origin,word);let mut content=ContentAtRead::default();let mut at=frame;let mut delayed=false;let mut ready=true;
             while let Some(fi)=at{
-                let f=self.graph.frames[fi].clone();at=f.parent;
-                for write in f.writes.iter().rev(){
+                let frame = &self.graph.frames[fi];
+                at = frame.parent;
+                for write in frame.writes.iter().rev() {
                     let yes=write.when.assume(&path,true);if !yes.possible(){continue;}
                     let fields=write.fields.iter().flatten().filter(|(field,_)|self.same_word(from_id,word,write.target,*field)).collect::<Vec<_>>();
                     if !fields.is_empty(){
