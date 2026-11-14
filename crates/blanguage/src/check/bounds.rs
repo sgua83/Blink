@@ -207,7 +207,31 @@ struct RequiredFacts {
     roots: BTreeMap<ValueIdentity, ValueIdentity>,
 }
 // 固定点环境只由本轮持有；节点仅交接环境之外的事实，保持到最后消费。
-type QueryFacts<'a> = Arc<Cow<'a, Facts>>;
+#[derive(Clone)]
+enum QueryFacts<'a> {
+    Borrowed(&'a Facts),
+    Owned(Arc<Facts>),
+}
+impl<'a> std::ops::Deref for QueryFacts<'a> {
+    type Target = Facts;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(facts) => facts,
+            Self::Owned(facts) => facts,
+        }
+    }
+}
+impl QueryFacts<'_> {
+    fn extend(&mut self, incoming: impl IntoIterator<Item = Fact>) {
+        match self {
+            Self::Borrowed(facts) => {
+                *self = Self::Owned(Arc::new(facts.iter().copied().chain(incoming).collect()));
+            }
+            Self::Owned(facts) => Arc::make_mut(facts).extend(incoming),
+        }
+    }
+}
 struct QueryResult<'a> {
     clause: &'a Clause,
     inputs: Option<(usize, usize, bool)>,
@@ -1922,7 +1946,7 @@ fn equivalent_facts<'a>(
         }
     }
     if !inferred.is_empty() {
-        Arc::make_mut(&mut facts).to_mut().extend(inferred);
+        facts.extend(inferred);
     }
     facts
 }
@@ -2691,9 +2715,10 @@ impl Clause {
             // 共同环境的别名事实只在原环境所有者处生产一次。
             let environment_members = equality_members(&environment_roots);
             let inherited_equality = {
+                let empty = Facts::new();
                 let inherited = equivalent_facts(
                     &environment,
-                    Arc::new(Cow::Owned(Facts::new())),
+                    QueryFacts::Borrowed(&empty),
                     &environment_roots,
                     &environment_members,
                     true,
@@ -2719,11 +2744,10 @@ impl Clause {
                     }
                     ClauseNode::Facts(required) => {
                         let required = if required.is_disjoint(&environment) {
-                            Cow::Borrowed(required)
+                            QueryFacts::Borrowed(required)
                         } else {
-                            Cow::Owned(required.difference(&environment).copied().collect())
+                            QueryFacts::Owned(Arc::new(required.difference(&environment).copied().collect()))
                         };
-                        let required: QueryFacts<'a> = Arc::new(required);
                         let value = if cross_conflict(&environment, &required) { None } else { Some(required) };
                         facts[index].value = Some(value);
                         continue;
@@ -3158,7 +3182,7 @@ fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<Que
         return None;
     }
     if a.len() < b.len() { std::mem::swap(&mut a, &mut b); }
-    Arc::make_mut(&mut a).to_mut().extend(b.iter().copied());
+    a.extend(b.iter().copied());
     Some(a)
 }
 fn either_facts<'a>(
@@ -3227,7 +3251,7 @@ fn either_facts<'a>(
                     }
                 }
             }
-            Some(Arc::new(Cow::Owned(common)))
+            Some(QueryFacts::Owned(Arc::new(common)))
         }
         (a, None) | (None, a) => a,
     }
