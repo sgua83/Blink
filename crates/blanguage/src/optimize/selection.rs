@@ -98,49 +98,80 @@ pub(super) fn run(
             indices[reg] = 1;
         }
     });
-    let mut slots = vec![SelectionSlot::default(); local_count];
-    let mut values = Vec::new();
-    block(code, registers, domain, &indices, &mut slots, &mut values)
+    SelectionPass {
+        registers, domain, indices: &indices,
+        slots: vec![SelectionSlot::default(); local_count],
+        values: Vec::new(),
+    }.block(code)
 }
 
-fn block(
-    code: &mut Vec<Inst>, registers: &[Scalar], domain: usize,
-    indices: &[u8], slots: &mut [SelectionSlot], values: &mut Vec<SelectionValue>,
-) -> bool {
-    let mut changed = false;
-    let mut source = std::mem::take(code).into_iter();
-    while let Some(mut inst) = source.next() {
+struct SelectionPass<'a> {
+    registers: &'a [Scalar],
+    domain: usize,
+    indices: &'a [u8],
+    slots: Vec<SelectionSlot>,
+    values: Vec<SelectionValue>,
+}
+
+impl SelectionPass<'_> {
+    fn block(&mut self, code: &mut Vec<Inst>) -> bool {
+        let mut nested_changed = false;
+        let first = (0..code.len()).find_map(|index| {
+            let (prefix, following) = code.split_at_mut(index + 1);
+            self.inspect(&mut prefix[index], following, &mut nested_changed)
+                .map(|rewrite| (index, rewrite))
+        });
+        let Some((index, rewrite)) = first else { return nested_changed };
+
+        let mut source = std::mem::take(code).into_iter();
+        code.extend(source.by_ref().take(index));
+        source.next();
+        self.emit(code, &mut source, rewrite);
+        while let Some(mut inst) = source.next() {
+            if let Some(rewrite) = self.inspect(&mut inst, source.as_slice(), &mut nested_changed) {
+                self.emit(code, &mut source, rewrite);
+            } else {
+                code.push(inst);
+            }
+        }
+        true
+    }
+
+    fn inspect(
+        &mut self, inst: &mut Inst, following: &[Inst], nested_changed: &mut bool,
+    ) -> Option<(Reg, Vec<Inst>, Vec<Inst>)> {
         match &mut inst.kind {
-            InstKind::Scope(body) => changed |= block(body, registers, domain, indices, slots, values),
-            InstKind::If { yes, no, .. } => {
-                changed |= block(yes, registers, domain, indices, slots, values);
-                changed |= block(no, registers, domain, indices, slots, values);
+            InstKind::Scope(body) => *nested_changed |= self.block(body),
+            InstKind::If { condition, yes, no } => {
+                *nested_changed |= self.block(yes);
+                *nested_changed |= self.block(no);
+                plan(yes, no, following, self.registers, self.domain, self.indices,
+                    &mut self.slots, &mut self.values);
+                if !self.values.is_empty() {
+                    return Some((*condition, std::mem::take(yes), std::mem::take(no)));
+                }
             }
             InstKind::Loop { condition, body, .. } => {
-                changed |= block(condition, registers, domain, indices, slots, values);
-                changed |= block(body, registers, domain, indices, slots, values);
+                *nested_changed |= self.block(condition);
+                *nested_changed |= self.block(body);
             }
             _ => {}
         }
-        if let InstKind::If { condition, yes, no } = &mut inst.kind {
-            plan(yes, no, source.as_slice(), registers, domain, indices, slots, values);
-            if !values.is_empty() {
-                code.extend(std::mem::take(yes).into_iter().chain(std::mem::take(no))
-                    .filter(|inst| !matches!(inst.kind, InstKind::StoreLocal(..))));
-                for value in values.iter() {
-                    let dst = value.destination;
-                    code.push(Inst::new(InstKind::Select {
-                        dst, condition: *condition, a: value.yes, b: value.no,
-                    }));
-                    // A later loop can still read this mutable slot.
-                    code.push(Inst::new(InstKind::StoreLocal(value.slot, dst)));
-                    source.next();
-                }
-                changed = true;
-                continue;
-            }
-        }
-        code.push(inst);
+        None
     }
-    changed
+
+    fn emit(
+        &self, code: &mut Vec<Inst>, source: &mut std::vec::IntoIter<Inst>,
+        (condition, yes, no): (Reg, Vec<Inst>, Vec<Inst>),
+    ) {
+        code.extend(yes.into_iter().chain(no)
+            .filter(|inst| !matches!(inst.kind, InstKind::StoreLocal(..))));
+        for value in &self.values {
+            let dst = value.destination;
+            code.push(Inst::new(InstKind::Select { dst, condition, a: value.yes, b: value.no }));
+            // A later loop can still read this mutable slot.
+            code.push(Inst::new(InstKind::StoreLocal(value.slot, dst)));
+            source.next();
+        }
+    }
 }
