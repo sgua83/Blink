@@ -73,9 +73,10 @@ unsafe extern "C" fn read_node(
 
 fn plan(
     yes: &[Inst], no: &[Inst], following: &[Inst], registers: &[Scalar], domain: usize,
-    indices: &[u8], slots: &mut [SelectionSlot],
-) -> Vec<SelectionValue> {
-    let mut values = Vec::with_capacity(yes.len().min(no.len()).min(following.len()));
+    indices: &[u8], slots: &mut [SelectionSlot], values: &mut Vec<SelectionValue>,
+) {
+    values.clear();
+    values.reserve(yes.len().min(no.len()).min(following.len()));
     slots.fill(SelectionSlot::default());
     let input = SelectionPlan {
         yes: yes.into(), no: no.into(), following: following.into(), domain,
@@ -86,7 +87,6 @@ fn plan(
         let count = plan_selection(input, (&registers as *const &[Scalar]).cast(), read_node);
         values.set_len(count);
     }
-    values
 }
 
 pub(super) fn run(
@@ -99,34 +99,35 @@ pub(super) fn run(
         }
     });
     let mut slots = vec![SelectionSlot::default(); local_count];
-    block(code, registers, domain, &indices, &mut slots)
+    let mut values = Vec::new();
+    block(code, registers, domain, &indices, &mut slots, &mut values)
 }
 
 fn block(
     code: &mut Vec<Inst>, registers: &[Scalar], domain: usize,
-    indices: &[u8], slots: &mut [SelectionSlot],
+    indices: &[u8], slots: &mut [SelectionSlot], values: &mut Vec<SelectionValue>,
 ) -> bool {
     let mut changed = false;
     let mut source = std::mem::take(code).into_iter();
     while let Some(mut inst) = source.next() {
         match &mut inst.kind {
-            InstKind::Scope(body) => changed |= block(body, registers, domain, indices, slots),
+            InstKind::Scope(body) => changed |= block(body, registers, domain, indices, slots, values),
             InstKind::If { yes, no, .. } => {
-                changed |= block(yes, registers, domain, indices, slots);
-                changed |= block(no, registers, domain, indices, slots);
+                changed |= block(yes, registers, domain, indices, slots, values);
+                changed |= block(no, registers, domain, indices, slots, values);
             }
             InstKind::Loop { condition, body, .. } => {
-                changed |= block(condition, registers, domain, indices, slots);
-                changed |= block(body, registers, domain, indices, slots);
+                changed |= block(condition, registers, domain, indices, slots, values);
+                changed |= block(body, registers, domain, indices, slots, values);
             }
             _ => {}
         }
         if let InstKind::If { condition, yes, no } = &mut inst.kind {
-            let values = plan(yes, no, source.as_slice(), registers, domain, indices, slots);
+            plan(yes, no, source.as_slice(), registers, domain, indices, slots, values);
             if !values.is_empty() {
                 code.extend(std::mem::take(yes).into_iter().chain(std::mem::take(no))
                     .filter(|inst| !matches!(inst.kind, InstKind::StoreLocal(..))));
-                for value in values {
+                for value in values.iter() {
                     let dst = value.destination;
                     code.push(Inst::new(InstKind::Select {
                         dst, condition: *condition, a: value.yes, b: value.no,
