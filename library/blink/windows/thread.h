@@ -22,3 +22,12 @@ struct GroupAffinity {
 extern "C" handle GetCurrentThread() on cpu ensures memory(read) from "KERNEL32.dll";
 extern "C" i32 SetThreadGroupAffinity(handle thread,read GroupAffinity affinity,address previous) on cpu
     from "KERNEL32.dll";
+
+const u32 THREAD_SUSPEND_RESUME=0x00000002;
+const u32 THREAD_GET_CONTEXT=0x00000008;
+const u32 THREAD_QUERY_INFORMATION=0x00000040;
+
+extern "C" handle OpenThread(u32 access,i32 inherit_handle,u32 thread_id) on cpu
+    from "KERNEL32.dll";
+extern "C" u32 SuspendThread(handle thread) on cpu from "KERNEL32.dll";
+extern "C" u32 ResumeThread(handle thread) on cpu from "KERNEL32.dll";

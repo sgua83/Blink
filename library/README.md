@@ -213,11 +213,32 @@ println(info.number_of_processors);
 
 `DebugEvent`保持原176字节／8对齐，事件代码、进程ID和线程ID位于0／4／8，`payload`从16起承接原联合存储。调用者交给`WaitForDebugEventEx`的是已初始化的`inout`记录，成功后按事件标签读取原联合的有效成员。`EXCEPTION_DEBUG_EVENT`首个字的低32位为异常代码；创建进程与装入DLL事件首个字为原文件句柄，其非零值由观察者`CloseHandle`。事件附带的原进程／线程句柄沿OS调试生命周期，独立`OpenProcess`取得的读取句柄由调用方关闭。[DEBUG_EVENT布局](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-debug_event) [等待与句柄归属](https://learn.microsoft.com/en-us/windows/win32/api/debugapi/nf-debugapi-waitfordebugeventex)
 
+## blink.windows.context
+
+`blink.windows.context`提供Windows x64的原始CPU现场布局、直接原生接口与普通B的`capture_thread(handle thread,u32 flags,u64 features)`。调用者先选择真实线程并建立明确停止／读取范围；函数同步取得一次快照，不暂停、恢复或关闭线程句柄。`blink.windows.thread`直接提供`OpenThread`、`SuspendThread`、`ResumeThread`及原访问位。暂停／恢复返回原先的挂起计数，失败为0xffffffff；一次成功恢复不自动表示所有挂起来源均已解除。[线程现场读取](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadcontext)
+
+`Native128`以16字节对齐的`uint4 words`保存四个小端u32原始字；`XmmSaveArea32`为512字节／16对齐，原x87槽和16个XMM槽分别从32和160起；`Context64`为1232字节／16对齐，flags、RSP、RBP、R12、RIP和原FXSAVE位于48／152／160／216／248／256。其余字段保持SDK原结构，不把26个VectorRegister槽猜作YMM。普通函数以`read Context64`借用同一原生位置读取所需字段，原`unsafe_position`本身不承诺全部字段已采集；有效组必须同时按实际ContextFlags和特征mask判断。寄存器位宽来自原字段／特征结构，XMM的位存储不表示B并行lane与物理寄存器映射。
+
+`capture_thread`返回`result<ContextSnapshot,ContextError>`。快照只有一份Frame拥有的CPU缓冲；原InitializeContext先查询所需字节数，再在该缓冲取得实际对齐位置。`ContextSnapshot.bytes`含原生所需存储及对齐余量，`context_offset`是Context64相对该缓冲首字节的实际偏移，不能把整个缓冲或固定1232字节当作全部有效上下文。`present_features`是成功捕获后的原特征mask；`begin_ticks`与`end_ticks`分别在GetThreadContext前后由QPC取得，单位为ticks，频率使用原`blink.windows.time::QueryPerformanceFrequency`。该区间描述本次读取，不是目标CPU指令执行时间。快照不持有线程／代码资源，在目标恢复后仍由自身缓冲保持本次数据。[原大小与位置](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-initializecontext)
+
+flags可按原`CONTEXT_CONTROL`、`INTEGER`、`SEGMENTS`、`FLOATING_POINT`、`DEBUG_REGISTERS`、`FULL`或`ALL`选择；扩展状态请求另包含`CONTEXT_XSTATE`。`GetEnabledXStateFeatures`给出本机已启用集合，`SetXStateFeaturesMask`设置本次请求，`GetXStateFeaturesMask`给出原返回的有效集合；启用、请求、实际采集不能互换。对有效特征调用`LocateXStateFeature`取得原地址及字节数，区域不保证相邻，不硬编码扩展偏移。XState结果中未置位的特征表示处理器INITIALIZED状态，其区域字节未定义；NULL定位不读取长度输出。reserved、未请求组和未采集范围不解释为寄存器值。[有效特征](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getxstatefeaturesmask) [特征定位](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-locatexstatefeature)
+
+`ContextError`按实际失败阶段保留原u32 OS码：Size、Initialize、Features、Before、Capture、After、Availability，分别为大小查询、实际初始化、特征设置、前QPC、现场读取、后QPC及有效mask查询。函数不重试、不把失败变成空成功、不另造寄存器表或完整CONTEXT副本；错误路径沿原Frame释放本次缓冲。调用者不得用当前线程GetThreadContext的非零返回冒称有效当前线程快照。
+
+`InitializeContext`、`GetThreadContext`、`GetEnabledXStateFeatures`、`SetXStateFeaturesMask`、`GetXStateFeaturesMask`、`LocateXStateFeature`及`CopyContext`均为原Kernel32 C ABI声明。需要展开而又保留观测快照时，调用者用InitializeContext初始化独立的可修改游标，再按原flags／features用CopyContext交接所需上下文，由`blink.windows.unwind`在该游标推进；这份存储属于实际展开消费者，不是捕获缓存。[上下文复制](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copycontext)
+
+模块可按普通B编译为对象并归档；使用方保留头模块，通过`--import`消费该库，不需要提供方B实现：
+
+```powershell
+bc -c library/blink/windows/context.b -I library --module -o target/context.obj
+blink --archive target/context.obj -o target/context.lib
+```
+
 ## blink.windows.unwind
 
 `blink.windows.unwind`以Windows x64原C ABI直接提供`StackWalk64`和必要的`SymInitializeW`、`SymFunctionTableAccess64`、`SymGetModuleBase64`、`SymCleanup`。只需导入头模块，没有B转发实现或Rust中转。`Address64`、`KdHelp64`、`StackFrame64`分别为16／112／264字节，均8对齐；字段保持SDK原布局。`StackFrame64`的pc、return_address、frame、stack、backing_store位于0／16／32／48／64，function_table_entry为80，parameters为88，far_call／virtual_frame为120／124，reserved为128，kernel_help为152。[原生帧结构](https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/ns-dbghelp-stackframe64)
 
-调用方持有已选目标的真实进程／线程、可读栈和可修改的目标架构`CONTEXT`。初始帧的其余状态置零，将pc、frame、stack的offset分别设为实际RIP、RBP和RSP，mode使用`ADDR_MODE_FLAT`；机器类型为`IMAGE_FILE_MACHINE_AMD64`。`CONTEXT`仍是原Windows布局和对齐的存储，不是StackFrame64，原上下文可由调用方另行保存。首次成功可能仍报告种子帧；后续调用保留并更新同一帧与上下文，按原状态逐帧推进，不能将初始化当上一帧。原i32返回零只表示本次没有成功取得下一记录，不证明完整栈尾或确定错误；StackWalk64通常不设置GetLastError。[StackWalk64](https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/nf-dbghelp-stackwalk64)
+调用方持有已选目标的真实进程／线程、可读栈和可修改的目标架构`CONTEXT`。初始帧的其余状态置零，将pc、frame、stack的offset分别设为实际RIP、RBP和RSP，mode使用`ADDR_MODE_FLAT`；机器类型为`IMAGE_FILE_MACHINE_AMD64`。`CONTEXT`使用[blink.windows.context](#blinkwindowscontext)的原布局、实际对齐位置和有效flags／features。需要保留捕获快照时，先用InitializeContext初始化实际展开存储，再以CopyContext从快照交接所需状态；后续只修改该游标，原快照保持。首次成功可能仍报告种子帧；后续调用保留并更新同一帧与上下文，按原状态逐帧推进，不能将初始化当上一帧。原i32返回零只表示本次没有成功取得下一记录，不证明完整栈尾或确定错误；StackWalk64通常不设置GetLastError。[StackWalk64](https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/nf-dbghelp-stackwalk64)
 
 四类回调均保持SDK原可空cfn ABI；实际自定义回调使用准确签名，读回调的最后参数指向u32字节数。使用DbgHelp原符号处理时，以相同process标识完成初始化、查询和清理，常用调用直接传入`c_function(SymFunctionTableAccess64)`和`c_function(SymGetModuleBase64)`。例如，调用方已持有frame与context时：
 
