@@ -5701,6 +5701,25 @@ println(values[0]);
 
 dataset声明、重赋值及拥有字段投影统一消费原Returned求值；移动、部分移动与最终释放仍归原资源树和Frame。数值关系进入原模块合同。库的开放泛型源码可按实例编译；已编译模块只交付实际导出的实例，不提供二进制泛型模板。拥有元素子资源的完整长度关系／批量增长、递归容器、完整字符串、异步及BLEngine业务采用继续开放。
 
+## AMD64 COFF原始结构读取
+
+`blink.windows.coff`以同一B算法提供当前AMD64常规COFF的原始结构读取，接受机器号0x8664且无可选头的对象字节。普通B与原对象／物理代码事实读取者共用该模块。原始节名字段保持其至多8字节的现场表示；符号名沿原短名或字符串表读取，不规范化字节或保证UTF-8。归档、PE、B对象语义、模块合同与加载关系继续沿各自原入口处理。
+
+这是原始C ABI跨度接口。`ReadBytes { address bytes; u64 length; }`借用调用者实际输入；其他Read记录中的跨度仍指向同一输入，不是拥有容器或经过B借用检查的view。调用者在最后读取结束前保持输入地址、长度和内容，headers／symbols及其派生表只与原输入配套；section索引在headers.length/40内，symbol索引按table.count及返回的next跳过辅助记录。所有函数同步完成，不保留地址、分配Frame、生成另一目录或建立输入身份服务。`next_export`只更新调用者自己的索引。
+
+| 接口 | 实际结果 |
+|---|---|
+| `headers(input)` | `ReadRange`，原COFF节头表跨度及error |
+| `build_inputs(input,headers)` | `ReadBuild`，原.blbuild字节、present及error，字段内部由原构建清单所有者解释 |
+| `symbols(input)` | `ReadSymbols`，原符号起点／计数、字符串表跨度及error |
+| `symbol(input,table,index)` | `ReadSymbol`，名字原字节、节号、值、存储类、函数标记、辅助记录、COMDAT关联字段、next及error |
+| `next_export(input,table,index)` | `ReadRange`，按原顺序选出storage=2且section>0的定义名，跳过辅助记录；结束为空跨度，索引是inout u64 |
+| `section(input,headers,index)` | `ReadSection`，原节名字段、物理载荷、flags、重定位起点／计数和zero_fill |
+| `relocations(input,offset,count,flags)` | `ReadRelocations`，按原溢出标记交接实际表起点与计数 |
+| `relocation(input,offset,index)` | `ReadRelocation`，原节内offset、符号表索引、kind及error |
+
+error为0表示本次结构读取成功；1为当前机器／可选头不匹配，2为字节范围截断，4为符号字符串偏移错误，5为符号名缺少结尾，6为溢出重定位计数错误，7为辅助记录越过符号表。调用者按实际结果使用后续字段。原未初始化节在没有物理载荷时保持bytes.length=0，并以zero_fill交接其声明长度，不伪造已存在的零字节。实际字符串转换和最终拥有容器仍归真实消费者，原错误及尚未覆盖的格式扩展如实保留。
+
 ## UTF-8／UTF-16编解码、标量长度、借用／拥有切片与整段转换
 
 `blink.text`以普通B函数提供`decimal_u64(u64 value)`和`decimal_i64(i64 value)`。返回独立拥有的CPU `dataset<u8>`，内容是有效UTF-8的十进制数字，负值带前导减号，零为单字节0。长度只覆盖实际数字及符号，前后缀、换行、终止NUL与输出目标由调用者决定。函数覆盖完整u64／i64范围，沿原dataset规则分配和释放。

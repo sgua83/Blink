@@ -495,6 +495,32 @@ target/release/blink.exe target/main.obj target/environment.lib -o target/main.e
 
 后续查询及新取得的环境快照观察本次进程的新环境；已经取得的独立环境快照和B拥有读取结果保持原值。后续子进程在使用默认继承环境时获得创建时的环境，显式环境块由实际创建者决定；本调用不更新既有其他进程、用户／机器注册表环境或旧快照。子进程基础／扩展创建、等待及句柄的现行接口见本标准库process及process_extended；编译器原Rust生产者采用仍沿C-032推进。平台合同见[SetEnvironmentVariableW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-setenvironmentvariablew)。
 
+## blink.windows.coff
+
+`blink.windows.coff`以同一B算法提供当前AMD64常规COFF的原始结构读取，接受机器号0x8664且无可选头的对象字节。普通B与原对象／物理代码事实读取者共用该模块。原始节名字段保持其至多8字节的现场表示；符号名沿原短名或字符串表读取，不规范化字节或保证UTF-8。归档、PE、B对象语义、模块合同与加载关系继续沿各自原入口处理。
+
+这是原始C ABI跨度接口。`ReadBytes { address bytes; u64 length; }`借用调用者实际输入；其他Read记录中的跨度仍指向同一输入，不是拥有容器或经过B借用检查的view。调用者在最后读取结束前保持输入地址、长度和内容，headers／symbols及其派生表只与原输入配套；section索引在headers.length/40内，symbol索引按table.count及返回的next跳过辅助记录。所有函数同步完成，不保留地址、分配Frame、生成另一目录或建立输入身份服务。`next_export`只更新调用者自己的索引。
+
+| 接口 | 实际结果 |
+|---|---|
+| `headers(input)` | `ReadRange`，原COFF节头表跨度及error |
+| `build_inputs(input,headers)` | `ReadBuild`，原.blbuild字节、present及error，字段内部由原构建清单所有者解释 |
+| `symbols(input)` | `ReadSymbols`，原符号起点／计数、字符串表跨度及error |
+| `symbol(input,table,index)` | `ReadSymbol`，名字原字节、节号、值、存储类、函数标记、辅助记录、COMDAT关联字段、next及error |
+| `next_export(input,table,index)` | `ReadRange`，按原顺序选出storage=2且section>0的定义名，跳过辅助记录；结束为空跨度，索引是inout u64 |
+| `section(input,headers,index)` | `ReadSection`，原节名字段、物理载荷、flags、重定位起点／计数和zero_fill |
+| `relocations(input,offset,count,flags)` | `ReadRelocations`，按原溢出标记交接实际表起点与计数 |
+| `relocation(input,offset,index)` | `ReadRelocation`，原节内offset、符号表索引、kind及error |
+
+error为0表示本次结构读取成功；1为当前机器／可选头不匹配，2为字节范围截断，4为符号字符串偏移错误，5为符号名缺少结尾，6为溢出重定位计数错误，7为辅助记录越过符号表。调用者按实际结果使用后续字段。原未初始化节在没有物理载荷时保持bytes.length=0，并以zero_fill交接其声明长度，不伪造已存在的零字节。实际字符串转换和最终拥有容器仍归真实消费者，原错误及尚未覆盖的格式扩展如实保留。
+
+源码导入使用`import blink.windows.coff;`及`-I library`。分立模块直接从同一源生成并归档；应用以`--import target/coff.lib`编译，再与该库链接，不需要编译器私有bootstrap源码。
+
+```powershell
+bc -c library/blink/windows/coff.b -I library --module -o target/coff.obj
+blink --archive target/coff.obj -o target/coff.lib
+```
+
 ## blink.windows.file
 
 本模块以普通B代码提供Windows x64文件I/O，使用`import blink.windows.file;`和`-I library`。路径为调用期间有效、NUL结尾的UTF-16地址，名称、相对基准与代码单元由调用者和OS解释；库不改大小写、不规范化路径、不建立文件缓存或第二份来源。

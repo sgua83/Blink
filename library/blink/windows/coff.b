@@ -1,4 +1,4 @@
-module bootstrap.coff_read;
+module blink.windows.coff;
 
 ReadBytes empty() on cpu {return ReadBytes(unsafe_address(0u64),0u64);}
 address at(address bytes,u64 offset) on cpu {return unsafe_address(address_bits(bytes)+offset);}

@@ -122,19 +122,19 @@ struct ReadRelocations { offset: usize, count: usize, error: ReadError }
 #[derive(Clone, Copy)]
 struct ReadRelocation { offset: usize, symbol: usize, kind: u64, error: ReadError }
 unsafe extern "C" {
-    #[link_name = "bootstrap.coff_read::headers"]
+    #[link_name = "blink.windows.coff::headers"]
     fn read_headers(input: ReadBytes) -> ReadRange;
-    #[link_name = "bootstrap.coff_read::build_inputs"]
+    #[link_name = "blink.windows.coff::build_inputs"]
     fn read_build_inputs(input: ReadBytes, headers: ReadBytes) -> ReadBuild;
-    #[link_name = "bootstrap.coff_read::symbols"]
+    #[link_name = "blink.windows.coff::symbols"]
     fn read_symbols(input: ReadBytes) -> ReadSymbols;
-    #[link_name = "bootstrap.coff_read::symbol"]
+    #[link_name = "blink.windows.coff::symbol"]
     fn read_symbol(input: ReadBytes, table: ReadSymbols, index: usize) -> ReadSymbol;
-    #[link_name = "bootstrap.coff_read::next_export"]
+    #[link_name = "blink.windows.coff::next_export"]
     fn next_export(input: ReadBytes, table: ReadSymbols, index: &mut usize) -> ReadRange;
-    #[link_name = "bootstrap.coff_read::relocations"]
+    #[link_name = "blink.windows.coff::relocations"]
     fn read_relocations(input: ReadBytes, offset: usize, count: usize, flags: u64) -> ReadRelocations;
-    #[link_name = "bootstrap.coff_read::relocation"]
+    #[link_name = "blink.windows.coff::relocation"]
     fn read_relocation(input: ReadBytes, offset: usize, index: usize) -> ReadRelocation;
 }
 // B owns logical section identity and COFF target interpretation; rows borrow the original input.

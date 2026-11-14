@@ -18,7 +18,7 @@ struct ReadSection {
     relocations: usize, relocation_count: usize, zero_fill: usize, error: ReadError,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.coff_read::section"]
+    #[link_name = "blink.windows.coff::section"]
     fn read_section(input: ReadBytes, headers: ReadBytes, index: usize) -> ReadSection;
 }
 struct SectionFacts {

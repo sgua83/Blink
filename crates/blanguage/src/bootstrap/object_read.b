@@ -1,5 +1,5 @@
 module bootstrap.object_read;
-import bootstrap.coff_read;
+import blink.windows.coff;
 import bootstrap.metadata_read;
 import bootstrap.bindings;
 

@@ -1,5 +1,7 @@
-module bootstrap.coff_read;
-// Borrowed Windows x64 C ABI views; the input snapshot owns every byte.
+module blink.windows.coff;
+// Raw borrowed AMD64 COFF views. The original input owns every byte.
+// Derived tables belong to that same unchanged input; callers keep it alive
+// and use section/symbol indices within those tables. No Frame is retained.
 struct ReadBytes {address bytes;u64 length;};
 struct ReadRange {ReadBytes bytes;u32 error;};
 struct ReadBuild {ReadBytes bytes;u64 present;u32 error;};

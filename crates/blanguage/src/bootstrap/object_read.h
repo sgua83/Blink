@@ -1,5 +1,5 @@
 module bootstrap.object_read;
-import bootstrap.coff_read;
+import blink.windows.coff;
 
 // Borrowed rows replace the original physical-to-loaded section map.
 struct ObjectSection {

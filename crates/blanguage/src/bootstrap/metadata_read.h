@@ -1,5 +1,5 @@
 module bootstrap.metadata_read;
-import bootstrap.coff_read;
+import blink.windows.coff;
 // One borrowed input and the original sequential read position.
 struct MetaCursor {ReadBytes input;u64 position;};
 struct MetaWord {u64 value;u32 error;};
