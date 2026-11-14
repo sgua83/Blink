@@ -22,15 +22,12 @@ pub fn emit(bootstrap: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         "../../Cargo.toml".into(),
     ]);
     files.sort();
-    let mut identity = Vec::new();
-    field(&mut identity, bootstrap);
+    let mut identity = Digest::new();
+    identity.field(bootstrap);
     for path in files {
         println!("cargo:rerun-if-changed={}", path.display());
-        field(
-            &mut identity,
-            path.to_str().ok_or("编译器源码路径不是UTF-8")?.as_bytes(),
-        );
-        field(&mut identity, &fs::read(path)?);
+        identity.field(path.to_str().ok_or("编译器源码路径不是UTF-8")?.as_bytes());
+        identity.field(&fs::read(path)?);
     }
     println!("cargo:rerun-if-changed=src");
     // Cargo owns these inputs; the content identity uses their effective values.
@@ -45,16 +42,13 @@ pub fn emit(bootstrap: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         "CARGO_FEATURE_INSTALLED",
         "CARGO_FEATURE_COMPILER",
     ] {
-        field(&mut identity, name.as_bytes());
+        identity.field(name.as_bytes());
         match env::var_os(name) {
             Some(value) => {
-                field(&mut identity, b"present");
-                field(
-                    &mut identity,
-                    value.to_str().ok_or("构建配置不是UTF-8")?.as_bytes(),
-                );
+                identity.field(b"present");
+                identity.field(value.to_str().ok_or("构建配置不是UTF-8")?.as_bytes());
             }
-            None => field(&mut identity, b"absent"),
+            None => identity.field(b"absent"),
         }
     }
     let rustc = Command::new(env::var_os("RUSTC").ok_or("缺少RUSTC")?)
@@ -63,16 +57,76 @@ pub fn emit(bootstrap: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if !rustc.status.success() {
         return Err("无法取得编译器生产工具链身份".into());
     }
-    field(&mut identity, &rustc.stdout);
+    identity.field(&rustc.stdout);
     println!(
         "cargo:rustc-env=BLINK_COMPILER_ID={}",
-        hex(&digest(&identity))
+        hex(&identity.finish())
     );
     Ok(())
 }
 
 // The Cargo build script runs before the compiler can link its B archive.
-fn digest(bytes: &[u8]) -> [u8; 32] {
+// Consume fields in place; only the unfinished block crosses field boundaries.
+struct Digest {
+    state: [u32; 8],
+    tail: [u8; 64],
+    used: usize,
+    length: u64,
+}
+impl Digest {
+    fn new() -> Self {
+        Self {
+            state: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
+            ],
+            tail: [0; 64],
+            used: 0,
+            length: 0,
+        }
+    }
+    fn field(&mut self, bytes: &[u8]) {
+        self.update(&(bytes.len() as u64).to_le_bytes());
+        self.update(bytes);
+    }
+    fn update(&mut self, mut bytes: &[u8]) {
+        self.length = self.length.wrapping_add(bytes.len() as u64);
+        if self.used != 0 {
+            let count = (64 - self.used).min(bytes.len());
+            self.tail[self.used..self.used + count].copy_from_slice(&bytes[..count]);
+            self.used += count;
+            bytes = &bytes[count..];
+            if self.used != 64 {
+                return;
+            }
+            compress(&mut self.state, &self.tail);
+            self.used = 0;
+        }
+        let mut blocks = bytes.chunks_exact(64);
+        for block in &mut blocks {
+            compress(&mut self.state, block);
+        }
+        let remainder = blocks.remainder();
+        self.tail[..remainder.len()].copy_from_slice(remainder);
+        self.used = remainder.len();
+    }
+    fn finish(mut self) -> [u8; 32] {
+        let mut tail = [0u8; 128];
+        tail[..self.used].copy_from_slice(&self.tail[..self.used]);
+        tail[self.used] = 0x80;
+        let end = if self.used < 56 { 64 } else { 128 };
+        tail[end - 8..end].copy_from_slice(&self.length.wrapping_mul(8).to_be_bytes());
+        for block in tail[..end].chunks_exact(64) {
+            compress(&mut self.state, block);
+        }
+        let mut result = [0; 32];
+        for (bytes, word) in result.chunks_exact_mut(4).zip(self.state) {
+            bytes.copy_from_slice(&word.to_be_bytes());
+        }
+        result
+    }
+}
+fn compress(state: &mut [u32; 8], chunk: &[u8]) {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -85,68 +139,40 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
         0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
         0xc67178f2,
     ];
-    let mut state = [
-        0x6a09e667u32,
-        0xbb67ae85,
-        0x3c6ef372,
-        0xa54ff53a,
-        0x510e527f,
-        0x9b05688c,
-        0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    let blocks = bytes.chunks_exact(64);
-    let remainder = blocks.remainder();
-    let mut tail = [0u8; 128];
-    tail[..remainder.len()].copy_from_slice(remainder);
-    tail[remainder.len()] = 0x80;
-    let end = if remainder.len() < 56 { 64 } else { 128 };
-    tail[end - 8..end].copy_from_slice(&(bytes.len() as u64 * 8).to_be_bytes());
-    for chunk in blocks.chain(tail[..end].chunks_exact(64)) {
-        let mut w = [0u32; 64];
-        for (word, bytes) in w.iter_mut().zip(chunk.chunks_exact(4)) {
-            *word = u32::from_be_bytes(bytes.try_into().unwrap());
-        }
-        for i in 16..64 {
-            let a = w[i - 15];
-            let b = w[i - 2];
-            w[i] = w[i - 16]
-                .wrapping_add(a.rotate_right(7) ^ a.rotate_right(18) ^ (a >> 3))
-                .wrapping_add(w[i - 7])
-                .wrapping_add(b.rotate_right(17) ^ b.rotate_right(19) ^ (b >> 10));
-        }
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state;
-        for i in 0..64 {
-            let t = h
-                .wrapping_add(e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25))
-                .wrapping_add((e & f) ^ (!e & g))
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let u = (a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22))
-                .wrapping_add((a & b) ^ (a & c) ^ (b & c));
-            h = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t);
-            d = c;
-            c = b;
-            b = a;
-            a = t.wrapping_add(u);
-        }
-        for (word, added) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
-            *word = word.wrapping_add(added);
-        }
+    let mut w = [0u32; 64];
+    for (word, bytes) in w.iter_mut().zip(chunk.chunks_exact(4)) {
+        *word = u32::from_be_bytes(bytes.try_into().unwrap());
     }
-    let mut result = [0; 32];
-    for (bytes, word) in result.chunks_exact_mut(4).zip(state) {
-        bytes.copy_from_slice(&word.to_be_bytes());
+    for i in 16..64 {
+        let a = w[i - 15];
+        let b = w[i - 2];
+        w[i] = w[i - 16]
+            .wrapping_add(a.rotate_right(7) ^ a.rotate_right(18) ^ (a >> 3))
+            .wrapping_add(w[i - 7])
+            .wrapping_add(b.rotate_right(17) ^ b.rotate_right(19) ^ (b >> 10));
     }
-    result
+    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
+    for i in 0..64 {
+        let t = h
+            .wrapping_add(e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25))
+            .wrapping_add((e & f) ^ (!e & g))
+            .wrapping_add(K[i])
+            .wrapping_add(w[i]);
+        let u = (a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22))
+            .wrapping_add((a & b) ^ (a & c) ^ (b & c));
+        h = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(t);
+        d = c;
+        c = b;
+        b = a;
+        a = t.wrapping_add(u);
+    }
+    for (word, added) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
+        *word = word.wrapping_add(added);
+    }
 }
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-fn field(target: &mut Vec<u8>, bytes: &[u8]) {
-    target.extend((bytes.len() as u64).to_le_bytes());
-    target.extend(bytes);
 }
