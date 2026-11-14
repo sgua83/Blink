@@ -455,7 +455,6 @@ impl Function {
 struct State<'a> { name: &'a str, loops:BTreeMap<LoopInput,Borrow>, entries:Option<BTreeMap<ValueIdentity,Borrow>>, interface:Interface }
 type StorageObserver<'a> = dyn Fn(&str, crate::compiler::BorrowSolveStorage) + 'a;
 
-#[derive(Clone)]
 struct States<'a> {
     functions: BTreeMap<String, State<'a>>,
     observe: Option<&'a StorageObserver<'a>>,
@@ -1233,23 +1232,34 @@ fn initializations(function:&Function,state:&State,known:&States,candidates:bool
     }).collect()
 }
 fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut States) {
-    // Grow only actual written-location candidates along the original calls.
-    loop {
-        let mut next=known.clone();
-        for(name,function)in functions {next.get_mut(name).unwrap().interface.initialization=initializations(function,&known[name],known,true);}
-        if known.functions==next.functions{break;}*known=next;
-    }
-    // Descend from those candidates using normal-return guarantees, never possible-source unions.
-    loop {
-        let mut next=known.clone();
-        for(name,function)in functions {
-            let values=initializations(function,&known[name],known,false).into_iter().map(|fact|(fact.source,fact.when)).collect::<BTreeMap<_,_>>();
-            next.get_mut(name).unwrap().interface.initialization=known[name].interface.initialization.iter().filter_map(|old|{
-                let when=normalized_condition(old.when.clone().logical(values.get(&old.source)?.clone(),false));
-                when.active().then(||address::Initialization{source:old.source.clone(),when})
-            }).collect();
+    // First grow written locations, then retain only guarantees on normal return.
+    for candidates in [true, false] {
+        loop {
+            let mut changed = Vec::new();
+            for (name, function) in functions {
+                let state = &known[name];
+                let facts = initializations(function, state, known, candidates);
+                let facts = if candidates {
+                    facts
+                } else {
+                    let guarantees: BTreeMap<_, _> = facts.into_iter()
+                        .map(|fact| (fact.source, fact.when)).collect();
+                    state.interface.initialization.iter().filter_map(|old| {
+                        let when = normalized_condition(old.when.clone().logical(guarantees.get(&old.source)?.clone(), false));
+                        when.active().then(|| address::Initialization { source: old.source.clone(), when })
+                    }).collect()
+                };
+                if facts != state.interface.initialization {
+                    changed.push((name, facts));
+                }
+            }
+            if changed.is_empty() {
+                break;
+            }
+            for (name, facts) in changed {
+                known.get_mut(name).unwrap().interface.initialization = facts;
+            }
         }
-        if known.functions==next.functions{break;}*known=next;
     }
 }
 fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_input:&impl Fn(&str,ValueIdentity)->bool) {
@@ -1401,14 +1411,14 @@ fn stored_outputs(evaluation:&mut BorrowEvaluation<'_>,exposed:&BTreeMap<Origin,
 
 fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTreeSet<(String,Output)>){
     loop{
-        let mut next=known.clone();
+        let mut changed = Vec::new();
         for(name,function)in functions{
-            let state=&known[name];let result=next.get_mut(name).unwrap();
+            let state=&known[name];
             let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()};
-            result.loops = relation::Graph::loops(function,state,known);
-            result.entries=relation::Graph::recursive_inputs(name,function,state,known);
+            let loops = relation::Graph::loops(function,state,known);
+            let entries = relation::Graph::recursive_inputs(name,function,state,known);
             let forwards=|output:&Output,definition:&Borrow|matches!(output,Output::Returned(_))&&definition.calls.iter().any(|result|function.calls[result.call].function==*name&&result.output==*output);
-            let entry_bindings=result.entries.as_ref().filter(|_|function.outputs.iter().any(|(output,definition)|forwards(output,definition))).map(|entries|{
+            let entry_bindings=entries.as_ref().filter(|_|function.outputs.iter().any(|(output,definition)|forwards(output,definition))).map(|entries|{
                 let mut inverse=BTreeMap::new();for(&local,&formal)in &function.parameters{inverse.entry(formal).or_insert_with(||bounds::Proof::default().with_identity(local).with_view_borrow(0,Borrow::source(Origin::Parameter(local,Vec::new()))));}
                 let parameters=residency::input_parameters(&function.parameters,function.input_width);
                 function.parameters.iter().filter_map(|(&local,&formal)|{
@@ -1433,14 +1443,28 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
             }).collect::<Outputs>();
             // 每个真实资源输出命名自己的交付存储；view保留所有可能的实际输出所有者。
             let exposed=exposed_resources(function,physical.iter().map(|(output,value)|(output,value.clone())));
-            for(output,definition)in &physical{
-                let mut value=canonical(definition.clone(),function,function.resource_names.get(output),&exposed);
+            let outputs = physical.into_iter().map(|(output, definition)| {
+                let mut value=canonical(definition,function,function.resource_names.get(&output),&exposed);
                 if unknown.contains(&(name.clone(),output.clone())){value.sources.insert(Origin::Unresolved);}
-                result.interface.outputs.insert(output.clone(),value);
+                (output, value)
+            }).collect::<Outputs>();
+            let access = stored_outputs(&mut evaluation,&exposed);
+            if loops != state.loops || entries != state.entries
+                || outputs != state.interface.outputs || access != state.interface.access
+            {
+                changed.push((name, loops, entries, outputs, access));
             }
-            result.interface.access=stored_outputs(&mut evaluation,&exposed);
         }
-        if known.functions==next.functions{break;}*known=next;
+        if changed.is_empty() {
+            break;
+        }
+        for (name, loops, entries, outputs, access) in changed {
+            let state = known.get_mut(name).unwrap();
+            state.loops = loops;
+            state.entries = entries;
+            state.interface.outputs = outputs;
+            state.interface.access = access;
+        }
     }
 }
 struct LoopConditions {
