@@ -22,6 +22,15 @@ struct CollectiveWords {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::choose_reduction_target"]
+    fn emit_choose_reduction_target(uint_type: u32, bool_type: u32, push_pointer: u32, push: u32,
+        index: u32, width: u32, zero: u32, one: u32, length_word: u32, target_bias: u32,
+        first: u32, body: *mut u32);
+    #[link_name = "bootstrap.spirv_envelope::reduction_record"]
+    fn emit_reduction_record(input: PageAddress, body: *mut u32) -> PageAddressResult;
+    #[link_name = "bootstrap.spirv_envelope::reduction_field"]
+    fn emit_reduction_field(record: u32, offset: u32, pointer_type: u32, wide_type: u32,
+        step: u32, first: u32, body: *mut u32) -> PageAddressResult;
     #[link_name = "bootstrap.spirv_envelope::collective_pair"]
     fn emit_collective_pair(input: CollectivePair, body: *mut u32, decorations: *mut u32) -> CollectiveWords;
 }
@@ -109,69 +118,77 @@ impl Emitter<'_> {
         self.reduction_output(r, &reduction.ty, &own, first);
     }
     pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, own: &[impl AsRef<[u32]>], first: u32) {
-        let u = self.types[&Scalar::U32];
-        let b = self.types[&Scalar::Bool];
-        let zero = self.constant(Scalar::U32, 0);
-        let write = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[first, write, end]);
-        self.emit(248, &[write]);
-        let width = self.constant(Scalar::U32, 64);
-        let group = self.id();
-        self.emit(134, &[u, group, self.index, width]);
-        // 目标长度描述当前绑定的部分结果域；有效前缀可能早于绑定容量缩到单组。
-        let target_length_word = self.constant(Scalar::U32, 2 + r.target as u32);
-        let target_length_at = self.id();
-        self.emit(
-            65,
-            &[
-                self.ptr_push_u32,
-                target_length_at,
-                self.push,
-                zero,
-                target_length_word,
-            ],
-        );
-        let target_length = self.id();
-        self.emit(61, &[u, target_length, target_length_at]);
-        let one = self.constant(Scalar::U32, 1);
-        let final_pass = self.id();
-        self.emit(170, &[b, final_pass, target_length, one]);
-        let final_write = self.id();
-        let partial_write = self.id();
-        let written = self.id();
-        self.emit(247, &[written, 0]);
-        self.emit(250, &[final_pass, final_write, partial_write]);
-        for (label, final_pass) in [(final_write, true), (partial_write, false)] {
-            self.emit(248, &[label]);
-            for (component, at) in own.iter().enumerate() {
-                let at = at.as_ref();
-                let (scalar,offset)=ty.components[component];
-                let value = if scalar.size() < 4 {
-                    let mut raw = self.load_raw(Scalar::U32, Scalar::U32, at, false);
-                    if offset % 4 != 0 {
-                        let shift = self.constant(Scalar::U32, offset % 4 * 8);
-                        let shifted = self.id();
-                        self.emit(194, &[u, shifted, raw, shift]);
-                        raw = shifted;
-                    }
-                    self.join_words(scalar, &[raw], Scalar::U32)
-                } else { self.load_raw(scalar, Scalar::U32, at, false) };
-                self.store_raw_buffer(scalar,
-                    r.target,
-                    if final_pass { zero } else { group },
-                    if final_pass {
-                        r.target_word + offset
-                    } else {
-                        offset
-                    },
-                    value);
-            }
-            self.emit(249, &[written]);
+        if ty.components.is_empty() {
+            return;
         }
-        self.emit(248, &[written]);
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
+
+        let run = self.id();
+        let end = self.id();
+        self.emit_control(9, |body| unsafe { open_selection(end, first, run, end, body) });
+
+        let width = self.constant(Scalar::U32, 64);
+        let length_word = self.constant(Scalar::U32, 2 + r.target as u32);
+        let bias = if r.target_word == 0 { 0 } else { self.constant(Scalar::U32, r.target_word) };
+        let mut target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
+            self.index, None, 0);
+        let u = target.u32_type;
+        let b = self.types[&Scalar::Bool];
+        let first = self.next;
+        let words = 26 + if bias == 0 { 0 } else { 6 };
+        let at = self.body.len();
+        self.body.reserve(words);
+        unsafe {
+            emit_choose_reduction_target(u, b, self.ptr_push_u32, self.push, self.index,
+                width, target.zero, target.one, length_word, bias, first, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + words);
+        }
+        target.index = first + 4;
+        self.next = first + 5;
+        if bias != 0 {
+            target.extra = self.id();
+        }
+        target.next = self.next;
+
+        let at = self.body.len();
+        self.body.reserve(109);
+        let record = unsafe {
+            let emitted = emit_reduction_record(target, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            self.next = emitted.next;
+            emitted.pointer
+        };
+
+        for (&(scalar, offset), source) in ty.components.iter().zip(own) {
+            let source = source.as_ref();
+            let value = if scalar.size() < 4 {
+                let mut raw = self.load_raw(Scalar::U32, Scalar::U32, source, false);
+                if offset % 4 != 0 {
+                    let shift = self.constant(Scalar::U32, offset % 4 * 8);
+                    let shifted = self.id();
+                    self.emit(194, &[u, shifted, raw, shift]);
+                    raw = shifted;
+                }
+                self.join_words(scalar, &[raw], Scalar::U32)
+            } else {
+                self.load_raw(scalar, Scalar::U32, source, false)
+            };
+
+            let unit = Self::physical_unit(scalar);
+            let count = scalar.size().div_ceil(4) as usize;
+            let offset = if offset == 0 { 0 } else { self.constant(Scalar::U64, offset) };
+            let step = if count == 2 { self.constant(Scalar::U64, 4) } else { 0 };
+            let at = self.body.len();
+            self.body.reserve(18);
+            let pointers = unsafe {
+                let emitted = emit_reduction_field(record, offset, self.physical_pointers[&unit],
+                    self.u64_type, step, self.next, self.body.as_mut_ptr().add(at));
+                self.body.set_len(at + emitted.words as usize);
+                self.next = emitted.next;
+                [emitted.pointer, emitted.second]
+            };
+            self.store_raw(scalar, unit, &pointers[..count], value, true);
+        }
+
+        self.emit_control(4, |body| unsafe { next_control_block(end, end, 1, body) });
     }
 }

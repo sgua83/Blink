@@ -650,6 +650,11 @@ extern "C" PageAddressResult page_address(PageAddress input, u32 step, address b
     return PageAddressResult(at, next + 3, next, next + 2);
 }
 
+extern "C" PageAddressResult reduction_record(PageAddress input, address body) on cpu {
+    PhysicalAddress record = physical_page_address(input, body, input.next);
+    return PageAddressResult(record.words, record.next, record.value, 0);
+}
+
 extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address pointers, u32 count, address body) on cpu {
     PhysicalAddress start = physical_page_address(input, body, input.next);
     u64 at = start.words;
@@ -1639,6 +1644,44 @@ void tree_node_store(inout StageCursor out, PayloadEmission input, u32 value, ad
     PayloadWrite result = payload_write(request, value, pointers, shifts, address(), word_at(out.body, out.words));
     out.words += result.words;
     out.next = result.next;
+}
+
+
+extern "C" PageAddressResult reduction_field(u32 record, u32 offset, u32 pointer_type, u32 wide_type, u32 step, u32 first, address body) on cpu {
+    u64 at = 0u64;
+    u32 next = first;
+    u32 physical = record;
+    if (offset != 0) {
+        at = words_four(body, at, 128, wide_type, next, physical, offset);
+        physical = next;
+        next += 1;
+    }
+    u32 pointer = next;
+    at = words_three(body, at, 120, pointer_type, pointer, physical);
+    next += 1;
+    u32 second = 0;
+    if (step != 0) {
+        at = words_four(body, at, 128, wide_type, next, physical, step);
+        second = next + 1;
+        at = words_three(body, at, 120, pointer_type, second, next);
+        next += 2;
+    }
+    return PageAddressResult(at, next, pointer, second);
+}
+
+extern "C" void choose_reduction_target(u32 uint_type, u32 bool_type, u32 push_pointer, u32 push, u32 index,
+    u32 width, u32 zero, u32 one, u32 length_word, u32 target_bias, u32 first, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, first);
+    u32 group = stage_op(out, 134, uint_type, index, width);
+    u32 length_pointer = out.next;
+    out.words = words_five(body, out.words, 65, push_pointer, length_pointer, push, zero, length_word);
+    out.next += 1;
+    u32 length = stage_load(out, uint_type, length_pointer, false);
+    u32 final_pass = stage_op(out, 170, bool_type, length, one);
+    stage_select(out, uint_type, final_pass, zero, group);
+    if (target_bias != 0) {
+        stage_select(out, uint_type, final_pass, target_bias, zero);
+    }
 }
 
 extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu {
