@@ -11,21 +11,6 @@ impl Segment<'_> {
     }
 }
 impl Emitter<'_> {
-    fn segment_read(&mut self, pointers: &[u32]) -> Vec<u32> {
-        pointers
-            .iter()
-            .map(|p| {
-                let value = self.id();
-                self.emit(61, &[self.types[&Scalar::U32], value, *p, 2, 4]);
-                value
-            })
-            .collect()
-    }
-    fn segment_write(&mut self, pointers: &[u32], values: &[u32]) {
-        for (p, v) in pointers.iter().zip(values) {
-            self.emit(62, &[*p, *v, 2, 4]);
-        }
-    }
     fn segment_address(&mut self, scan: &Segment<'_>, binding: usize, index: u32) -> Vec<u32> {
         (0..scan.summary_words() as u32)
             .map(|word| self.address_scalar(Scalar::U32, binding, index, word * 4))
@@ -53,7 +38,7 @@ impl Emitter<'_> {
             }
         }
         let at=self.address_scalar(Scalar::U32, fields.source,self.index,head_word);
-        words[k]=self.segment_read(&[at])[0];
+        words[k]=self.read_summary_words(&[at])[0];
         words
     }
     fn segment_combine(&mut self, scan: &Segment<'_>, left: &[u32], right: &[u32]) -> Vec<u32> {
@@ -123,7 +108,7 @@ impl Emitter<'_> {
         self.emit(248, &[read]);
         let mut input = if tail {
             let source=self.segment_address(scan,self.scan_input_binding(r),self.index);
-            self.segment_read(&source)
+            self.read_summary_words(&source)
         } else {
             self.segment_source(scan,r,head_word)
         };
@@ -146,7 +131,7 @@ impl Emitter<'_> {
             })
             .collect();
         let own = self.shared_planes(shared, pointer, local, scan.summary_words());
-        self.segment_write(&own, &input);
+        self.write_summary_words(&own, &input);
         self.scan_barrier();
         for width in [1, 2, 4, 8, 16, 32] {
             self.segment_tree(scan, local, shared, pointer, width, false, remaining);
@@ -162,21 +147,21 @@ impl Emitter<'_> {
         self.emit(247, &[saved, 0]);
         self.emit(250, &[is_last, save, saved]);
         self.emit(248, &[save]);
-        let total = self.segment_read(&own);
+        let total = self.read_summary_words(&own);
         let target = self.segment_address(scan, self.program.buffers.len(), group);
         if tail {
-            self.segment_write(&target, &total);
+            self.write_summary_words(&target, &total);
         } else {
-            self.segment_write(&target[..k], &total[..k]);
+            self.write_summary_words(&target[..k], &total[..k]);
         }
-        self.segment_write(&own, &identity);
+        self.write_summary_words(&own, &identity);
         self.emit(249, &[saved]);
         self.emit(248, &[saved]);
         self.scan_barrier();
         for width in [32, 16, 8, 4, 2, 1] {
             self.segment_tree(scan, local, shared, pointer, width, true, None);
         }
-        let result = self.segment_read(&own);
+        let result = self.read_summary_words(&own);
         if !tail {
             // 首段头写 lane+1；没有段头时只有最后一个物理 lane 写 0。
             let heads = self.id();
@@ -194,7 +179,7 @@ impl Emitter<'_> {
                 self.program.buffers.len(),
                 group,
                 k as u32 * 4);
-            self.emit(62, &[first, zero, 2, 4]);
+            self.write_summary_words(&[first], &[zero]);
             self.emit(249, &[saved]);
             self.emit(248, &[saved]);
         }
@@ -231,12 +216,12 @@ impl Emitter<'_> {
             let one = self.constant(Scalar::U32, 1);
             let encoded = self.id();
             self.emit(128, &[u, encoded, local, one]);
-            self.emit(62, &[target, encoded, 2, 4]);
+            self.write_summary_words(&[target], &[encoded]);
             self.emit(249, &[finish]);
             self.emit(248, &[finish]);
         } else {
             let target = self.segment_address(scan, r.target, self.index);
-            self.segment_write(&target, &result);
+            self.write_summary_words(&target, &result);
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);
@@ -272,11 +257,11 @@ impl Emitter<'_> {
             self.emit(250, &[active, run, end]);
             self.emit(248, &[run]);
             let prefix = self.segment_address(scan, self.scan_input_binding(r), group);
-            let prefix = self.segment_read(&prefix);
+            let prefix = self.read_summary_words(&prefix);
             let target = self.segment_address(scan, r.target, self.index);
-            let value = self.segment_read(&target);
+            let value = self.read_summary_words(&target);
             let merged = self.segment_combine(scan, &prefix, &value);
-            self.segment_write(&target, &merged);
+            self.write_summary_words(&target, &merged);
             self.emit(249, &[end]);
             self.emit(248, &[end]);
             return;
@@ -290,7 +275,7 @@ impl Emitter<'_> {
         self.emit(248, &[read]);
         let mut input = if pass == Pass::ScanTail {
             let source = self.segment_address(scan, self.scan_input_binding(r), self.index);
-            self.segment_read(&source)
+            self.read_summary_words(&source)
         } else {
             let mut input = self.segment_source(scan,r,reduction.head_word);
             let head = self.id();
@@ -313,7 +298,7 @@ impl Emitter<'_> {
             *value = result;
         }
         let own = self.shared_planes(shared, pointer, local, scan.summary_words());
-        self.segment_write(&own, &input);
+        self.write_summary_words(&own, &input);
         self.scan_barrier();
         let base = self.id();
         self.emit(130, &[u, base, self.index, local]);
@@ -338,9 +323,9 @@ impl Emitter<'_> {
         let last = self.constant(Scalar::U32, 63);
         let root = self.shared_planes(shared, pointer, last, scan.summary_words());
         if pass != Pass::ScanRootAdd {
-            let total = self.segment_read(&root);
+            let total = self.read_summary_words(&root);
             let target = self.segment_address(scan, self.program.buffers.len(), group);
-            self.segment_write(&target, &total);
+            self.write_summary_words(&target, &total);
         } else {
             let write_empty = self.id();
             let end_empty = self.id();
@@ -351,12 +336,12 @@ impl Emitter<'_> {
                 reduction.count.binding,
                 zero,
                 reduction.count.word);
-            self.emit(62, &[target, zero, 2, 4]);
+            self.write_summary_words(&[target], &[zero]);
             self.emit(249, &[end_empty]);
             self.emit(248, &[end_empty]);
         }
         if pass != Pass::Main {
-            self.segment_write(&root, &identity);
+            self.write_summary_words(&root, &identity);
         }
         self.emit(249, &[saved]);
         self.emit(248, &[saved]);
@@ -367,7 +352,7 @@ impl Emitter<'_> {
         for width in [32, 16, 8, 4, 2, 1] {
             self.segment_tree(scan, local, shared, pointer, width, true, None);
         }
-        let result = self.segment_read(&own);
+        let result = self.read_summary_words(&own);
         let write = self.id();
         let end = self.id();
         self.emit(247, &[end, 0]);
@@ -375,7 +360,7 @@ impl Emitter<'_> {
         self.emit(248, &[write]);
         if pass == Pass::ScanTail {
             let target = self.segment_address(scan, r.target, self.index);
-            self.segment_write(&target, &result);
+            self.write_summary_words(&target, &result);
         } else {
             let inclusive = self.segment_combine(scan, &result, &input);
             // 首组不需要设备前缀；其余组只读取自己的摘要前缀。
@@ -388,7 +373,7 @@ impl Emitter<'_> {
             self.emit(250, &[first_group, prefix_end, load_prefix]);
             self.emit(248, &[load_prefix]);
             let prefix = self.segment_address(scan, self.program.buffers.len(), group);
-            let prefix = self.segment_read(&prefix);
+            let prefix = self.read_summary_words(&prefix);
             self.emit(249, &[prefix_end]);
             self.emit(248, &[prefix_end]);
             let prefix: Vec<_> = prefix
@@ -415,7 +400,7 @@ impl Emitter<'_> {
                 r.source,
                 next,
                 reduction.head_word);
-            let next_head = self.segment_read(&[next_head])[0];
+            let next_head = self.read_summary_words(&[next_head])[0];
             let head = self.id();
             self.emit(171, &[b, head, next_head, zero]);
             self.emit(249, &[looked]);
@@ -446,7 +431,7 @@ impl Emitter<'_> {
                 reduction.count.binding,
                 zero,
                 reduction.count.word);
-            self.emit(62, &[target, total[k + 1], 2, 4]);
+            self.write_summary_words(&[target], &[total[k + 1]]);
             self.emit(249, &[counted]);
             self.emit(248, &[counted]);
         }
@@ -479,8 +464,8 @@ impl Emitter<'_> {
         self.emit(130, &[u, other, local, width]);
         let a_ptr = self.shared_planes(shared, pointer, other, scan.summary_words());
         let b_ptr = self.shared_planes(shared, pointer, local, scan.summary_words());
-        let a = self.segment_read(&a_ptr);
-        let b = self.segment_read(&b_ptr);
+        let a = self.read_summary_words(&a_ptr);
+        let b = self.read_summary_words(&b_ptr);
         let mut merged = if down {
             self.segment_combine(scan, &b, &a)
         } else {
@@ -503,9 +488,9 @@ impl Emitter<'_> {
             }
         }
         if down {
-            self.segment_write(&a_ptr, &b);
+            self.write_summary_words(&a_ptr, &b);
         }
-        self.segment_write(&b_ptr, &merged);
+        self.write_summary_words(&b_ptr, &merged);
         self.emit(249, &[end]);
         self.emit(248, &[end]);
         self.scan_barrier();
@@ -521,9 +506,9 @@ impl Emitter<'_> {
         let group = self.id();
         self.emit(134, &[self.types[&Scalar::U32], group, self.index, width]);
         let prefix = self.segment_address(scan, self.scan_input_binding(r), group);
-        let prefix = self.segment_read(&prefix);
+        let prefix = self.read_summary_words(&prefix);
         let target = self.segment_address(scan, r.target, self.index);
-        let value = self.segment_read(&target);
+        let value = self.read_summary_words(&target);
         let merged = self.segment_combine(scan, &prefix, &value);
         let merged =
             if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
@@ -545,7 +530,7 @@ impl Emitter<'_> {
             } else {
                 merged
             };
-        self.segment_write(&target, &merged);
+        self.write_summary_words(&target, &merged);
     }
     pub(super) fn segmented_root_add(&mut self, scan: &Scan) {
         let r = &scan.values;
@@ -559,8 +544,7 @@ impl Emitter<'_> {
             self.program.buffers.len(),
             group,
             scan.ty.size.div_ceil(4) * 4);
-        let head = self.id();
-        self.emit(61, &[u, head, first, 2, 4]);
+        let head = self.read_summary_words(&[first])[0];
         let one = self.constant(Scalar::U32, 1);
         let zero = self.constant(Scalar::U32, 0);
         let lane = self.id();

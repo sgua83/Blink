@@ -693,6 +693,30 @@ u32 read_word(address words, u32 part) on cpu {
     return unsafe_position<u32>(word_at(words, u64(part)));
 }
 
+u64 aligned_load(address body, u64 at, u32 type_id, u32 result, u32 pointer, u32 alignment) on cpu {
+    return words_five(body, at, 61, type_id, result, pointer, 2, alignment);
+}
+
+u64 aligned_store(address body, u64 at, u32 pointer, u32 value, u32 alignment) on cpu {
+    return words_four(body, at, 62, pointer, value, 2, alignment);
+}
+
+extern "C" u64 read_summary_words(address body, u32 type_id, u32 first, address pointers, u32 count) on cpu {
+    u64 at = 0u64;
+    for (part in 0..count) {
+        at = aligned_load(body, at, type_id, first + part, read_word(pointers, part), 4);
+    }
+    return at;
+}
+
+extern "C" u64 write_summary_words(address body, address pointers, address values, u32 count) on cpu {
+    u64 at = 0u64;
+    for (part in 0..count) {
+        at = aligned_store(body, at, read_word(pointers, part), read_word(values, part), 4);
+    }
+    return at;
+}
+
 extern "C" PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu {
     u64 at = 0u64;
     u32 next = input.next;
@@ -700,7 +724,7 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
         for (part in 0..input.count) {
             u32 pointer = read_word(operands, part);
             if (input.access == PayloadAccess::Physical) {
-                at = words_five(body, at, 61, input.unit_type, next, pointer, 2, input.unit_bytes);
+                at = aligned_load(body, at, input.unit_type, next, pointer, input.unit_bytes);
             } else {
                 at = words_three(body, at, 61, input.unit_type, next, pointer);
             }
@@ -745,7 +769,7 @@ extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address 
         if (input.access == PayloadAccess::Words) {
             put(output, u64(part), word);
         } else if (input.access == PayloadAccess::Physical) {
-            at = words_four(body, at, 62, read_word(pointers, part), word, 2, input.unit_bytes);
+            at = aligned_store(body, at, read_word(pointers, part), word, input.unit_bytes);
         } else {
             at = words_two(body, at, 62, read_word(pointers, part), word);
         }
@@ -1093,7 +1117,7 @@ u32 stage_op(inout StageCursor out, u32 op, u32 ty, u32 a, u32 b) on cpu {
 u32 stage_load(inout StageCursor out, u32 ty, u32 pointer, bool physical) on cpu {
     u32 result = out.next;
     if (physical) {
-        out.words = words_five(out.body, out.words, 61, ty, result, pointer, 2, 4);
+        out.words = aligned_load(out.body, out.words, ty, result, pointer, 4);
     } else {
         out.words = words_three(out.body, out.words, 61, ty, result, pointer);
     }

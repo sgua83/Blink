@@ -40,21 +40,6 @@ impl Emitter<'_> {
             .map(|word| self.address_scalar(Scalar::U32, binding, index, word * 4))
             .collect()
     }
-    fn custom_read(&mut self, pointers: &[u32]) -> Vec<u32> {
-        pointers
-            .iter()
-            .map(|p| {
-                let value = self.id();
-                self.emit(61, &[self.types[&Scalar::U32], value, *p, 2, 4]);
-                value
-            })
-            .collect()
-    }
-    fn custom_write(&mut self, pointers: &[u32], values: &[u32]) {
-        for (p, v) in pointers.iter().zip(values) {
-            self.emit(62, &[*p, *v, 2, 4]);
-        }
-    }
     fn custom_pair(
         &mut self,
         r: &CustomReduction,
@@ -102,7 +87,7 @@ impl Emitter<'_> {
             identity.push(self.constant(Scalar::U32, 0));
         }
         let own = self.shared_planes(shared, pointer, local, words);
-        self.custom_write(&own, &identity);
+        self.write_summary_words(&own, &identity);
         let read = self.id();
         let end = self.id();
         self.emit(247, &[end, 0]);
@@ -130,7 +115,7 @@ impl Emitter<'_> {
         }
         let components: Vec<_> = kernel.right.iter().map(|reg| self.raw_bits(*reg)).collect();
         let values = self.pack_words(r.ty.size, r.ty.components.iter().zip(&components).map(|((scalar, byte), value)| (*scalar, *byte, *value)));
-        self.custom_write(&own[..k], &values);
+        self.write_summary_words(&own[..k], &values);
         if let Some(head_word) = head_word {
             let source = self.address_scalar(Scalar::U32,
                 if tail {
@@ -140,7 +125,7 @@ impl Emitter<'_> {
                 },
                 self.index,
                 if tail { k as u32 * 4 } else { head_word });
-            let raw = self.custom_read(&[source])[0];
+            let raw = self.read_summary_words(&[source])[0];
             let mut head = self.id();
             let zero = self.constant(Scalar::U32, 0);
             let one = self.constant(Scalar::U32, 1);
@@ -154,26 +139,26 @@ impl Emitter<'_> {
             }
             let flag = self.id();
             self.select(u, flag, head, one, zero);
-            self.custom_write(&own[k..k + 1], &[flag]);
+            self.write_summary_words(&own[k..k + 1], &[flag]);
             if matches!(summary, Summary::Counted(_)) {
                 let count = if tail {
                     let at = self.address_scalar(Scalar::U32,
                         self.scan_input_binding(fields),
                         self.index,
                         (k as u32 + 1) * 4);
-                    self.custom_read(&[at])[0]
+                    self.read_summary_words(&[at])[0]
                 } else {
                     flag
                 };
-                self.custom_write(&own[k + 1..], &[count]);
+                self.write_summary_words(&own[k + 1..], &[count]);
             }
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);
         let input = if capture {
-            self.custom_read(&own)
+            self.read_summary_words(&own)
         } else if matches!(summary, Summary::Segmented(_)) && !tail {
-            self.custom_read(&own[k..k + 1])
+            self.read_summary_words(&own[k..k + 1])
         } else {
             Vec::new()
         };
@@ -262,10 +247,10 @@ impl Emitter<'_> {
         let words = summary.words(r.ty.size.div_ceil(4) as usize);
         let a = self.shared_planes(shared, pointer, other, words);
         let z = self.shared_planes(shared, pointer, local, words);
-        let left = self.custom_read(&a);
-        let right = self.custom_read(&z);
+        let left = self.read_summary_words(&a);
+        let right = self.read_summary_words(&z);
         if down {
-            self.custom_write(&a, &right);
+            self.write_summary_words(&a, &right);
         }
         let merge = self.id();
         let absent = self.id();
@@ -278,11 +263,11 @@ impl Emitter<'_> {
         } else {
             self.custom_merge(r, kernel, &left, &right, summary)
         }?;
-        self.custom_write(&z, &values);
+        self.write_summary_words(&z, &values);
         self.emit(249, &[merged]);
         self.emit(248, &[absent]);
         if !down {
-            self.custom_write(&z, &left);
+            self.write_summary_words(&z, &left);
         }
         self.emit(249, &[merged]);
         self.emit(248, &[merged]);
@@ -394,10 +379,10 @@ impl Emitter<'_> {
         self.emit(248, &[save]);
         let last = self.constant(Scalar::U32, 63);
         let root = self.shared_planes(shared, pointer, last, words);
-        let total = self.custom_read(&root);
+        let total = self.read_summary_words(&root);
         let target = self.custom_address(words, self.program.buffers.len(), group);
-        self.custom_write(&target, &total);
-        self.custom_write(&root, &identity);
+        self.write_summary_words(&target, &total);
+        self.write_summary_words(&root, &identity);
         self.emit(249, &[saved]);
         self.emit(248, &[saved]);
         self.scan_barrier();
@@ -406,7 +391,7 @@ impl Emitter<'_> {
                 r, kernel, local, shared, pointer, width, remaining, true, summary,
             )?;
         }
-        let values = self.custom_read(&own);
+        let values = self.read_summary_words(&own);
         let write = self.id();
         let end = self.id();
         self.emit(247, &[end, 0]);
@@ -444,12 +429,12 @@ impl Emitter<'_> {
             self.emit(128, &[u, encoded, local, one]);
             let target =
                 self.address_scalar(Scalar::U32, self.program.buffers.len(), group, k as u32 * 4);
-            self.custom_write(&[target], &[encoded]);
+            self.write_summary_words(&[target], &[encoded]);
             self.emit(249, &[saved]);
             self.emit(248, &[saved]);
         } else if tail {
             let target = self.custom_address(words, r.fields.target, self.index);
-            self.custom_write(&target, &values);
+            self.write_summary_words(&target, &values);
         } else {
             self.custom_store_target(r, self.index, &values);
         }
@@ -486,11 +471,11 @@ impl Emitter<'_> {
             self.emit(250, &[active, run, end]);
             self.emit(248, &[run]);
             let prefix = self.custom_address(words, self.scan_input_binding(&r.fields), group);
-            let prefix = self.custom_read(&prefix);
+            let prefix = self.read_summary_words(&prefix);
             let target = self.custom_address(words, r.fields.target, self.index);
-            let value = self.custom_read(&target);
+            let value = self.read_summary_words(&target);
             let total = self.custom_merge(r, kernel, &prefix, &value, summary)?;
-            self.custom_write(&target, &total);
+            self.write_summary_words(&target, &total);
             self.emit(249, &[end]);
             self.emit(248, &[end]);
             return Ok(());
@@ -521,9 +506,9 @@ impl Emitter<'_> {
         let last = self.constant(Scalar::U32, 63);
         let root = self.shared_planes(shared, pointer, last, words);
         if pass != Pass::ScanRootAdd {
-            let total = self.custom_read(&root);
+            let total = self.read_summary_words(&root);
             let target = self.custom_address(words, self.program.buffers.len(), group);
-            self.custom_write(&target, &total);
+            self.write_summary_words(&target, &total);
         } else {
             let empty = self.id();
             self.emit(170, &[b, empty, count, zero]);
@@ -536,12 +521,12 @@ impl Emitter<'_> {
                 reduction.count.binding,
                 zero,
                 reduction.count.word);
-            self.custom_write(&[target], &[zero]);
+            self.write_summary_words(&[target], &[zero]);
             self.emit(249, &[end]);
             self.emit(248, &[end]);
         }
         if pass != Pass::Main {
-            self.custom_write(&root, &identity);
+            self.write_summary_words(&root, &identity);
         }
         self.emit(249, &[saved]);
         self.emit(248, &[saved]);
@@ -554,7 +539,7 @@ impl Emitter<'_> {
                 r, kernel, local, shared, pointer, width, remaining, true, summary,
             )?;
         }
-        let result = self.custom_read(&own);
+        let result = self.read_summary_words(&own);
         let write = self.id();
         let end = self.id();
         self.emit(247, &[end, 0]);
@@ -562,7 +547,7 @@ impl Emitter<'_> {
         self.emit(248, &[write]);
         if pass == Pass::ScanTail {
             let target = self.custom_address(words, r.fields.target, self.index);
-            self.custom_write(&target, &result);
+            self.write_summary_words(&target, &result);
         } else {
             let inclusive = self.custom_merge(r, kernel, &result, &input, summary)?;
             let first_group = self.id();
@@ -574,7 +559,7 @@ impl Emitter<'_> {
             self.emit(250, &[first_group, loaded, load]);
             self.emit(248, &[load]);
             let prefix = self.custom_address(words, self.program.buffers.len(), group);
-            let prefix = self.custom_read(&prefix);
+            let prefix = self.read_summary_words(&prefix);
             self.emit(249, &[loaded]);
             self.emit(248, &[loaded]);
             let prefix: Vec<_> = prefix
@@ -601,7 +586,7 @@ impl Emitter<'_> {
                 r.fields.source,
                 next,
                 reduction.head_word);
-            let next_head = self.custom_read(&[next_head])[0];
+            let next_head = self.read_summary_words(&[next_head])[0];
             let head = self.id();
             self.emit(171, &[b, head, next_head, zero]);
             self.emit(249, &[looked]);
@@ -627,7 +612,7 @@ impl Emitter<'_> {
                 reduction.count.binding,
                 zero,
                 reduction.count.word);
-            self.custom_write(&[target], &[total[k + 1]]);
+            self.write_summary_words(&[target], &[total[k + 1]]);
             self.emit(249, &[counted]);
             self.emit(248, &[counted]);
         }
@@ -665,7 +650,7 @@ impl Emitter<'_> {
                 self.program.buffers.len(),
                 group,
                 r.ty.size.div_ceil(4) * 4);
-            let first = self.custom_read(&[first])[0];
+            let first = self.read_summary_words(&[first])[0];
             let lane = self.id();
             self.emit(137, &[u, lane, self.index, width]);
             let one = self.constant(Scalar::U32, 1);
@@ -688,14 +673,14 @@ impl Emitter<'_> {
             None
         };
         let prefix = self.custom_address(words, self.scan_input_binding(&r.fields), group);
-        let prefix = self.custom_read(&prefix);
+        let prefix = self.read_summary_words(&prefix);
         let values = if root {
             let values: Vec<_> = r.ty.components.iter().map(|(scalar, offset)| self.load_raw_buffer(
                 *scalar, r.fields.target, self.index, r.fields.target_word + offset)).collect();
             self.pack_words(r.ty.size, r.ty.components.iter().zip(&values).map(|((scalar, byte), value)| (*scalar, *byte, *value)))
         } else {
             let target = self.custom_address(words, r.fields.target, self.index);
-            self.custom_read(&target)
+            self.read_summary_words(&target)
         };
         let values = self.custom_merge(
             r,
@@ -712,7 +697,7 @@ impl Emitter<'_> {
             self.custom_store_target(r, self.index, &values);
         } else {
             let target = self.custom_address(words, r.fields.target, self.index);
-            self.custom_write(&target, &values);
+            self.write_summary_words(&target, &values);
         }
         if let Some(end) = end {
             self.emit(249, &[end]);

@@ -666,6 +666,10 @@ unsafe extern "C" {
     fn scalar_math(input: MathEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
     fn page_address(input: PageAddress, step: u32, body: *mut u32) -> PageAddressResult;
+    #[link_name = "bootstrap.spirv_envelope::read_summary_words"]
+    fn read_summary_words(body: *mut u32, type_id: u32, first: u32, pointers: *const u32, count: u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::write_summary_words"]
+    fn write_summary_words(body: *mut u32, pointers: *const u32, values: *const u32, count: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::payload_read"]
     fn payload_read(input: PayloadEmission, operands: *const u32, shifts: *const u32, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::payload_write"]
@@ -906,6 +910,30 @@ impl Emitter<'_> {
         }
         op(&mut self.body, code, args);
     }
+    fn read_summary_words(&mut self, pointers: &[u32]) -> Vec<u32> {
+        let at = self.body.len();
+        self.body.reserve(6 * pointers.len());
+        let first = self.next;
+        self.next += pointers.len() as u32;
+        unsafe {
+            let words = read_summary_words(self.body.as_mut_ptr().add(at),
+                self.types[&Scalar::U32], first, pointers.as_ptr(), pointers.len() as u32);
+            self.body.set_len(at + words as usize);
+        }
+        (first..self.next).collect()
+    }
+
+    fn write_summary_words(&mut self, pointers: &[u32], values: &[u32]) {
+        let count = pointers.len().min(values.len());
+        let at = self.body.len();
+        self.body.reserve(5 * count);
+        unsafe {
+            let words = write_summary_words(self.body.as_mut_ptr().add(at),
+                pointers.as_ptr(), values.as_ptr(), count as u32);
+            self.body.set_len(at + words as usize);
+        }
+    }
+
     fn workgroup_barrier(&mut self, memory_semantics: u32) {
         let scope = self.constant(Scalar::U32, 2);
         let semantics = self.constant(Scalar::U32, memory_semantics);

@@ -209,6 +209,9 @@ struct PayloadWrite { u64 words; u32 next; };
 // Shifts contains the original constant ID for each nonzero word position.
 // The emitter supplies count operand slots and 20*count (read) or 14*count
 // (write) body words. Only a Words write uses the output-ID buffer.
+// Summary cells are consecutive u32 result IDs or borrowed u32 value IDs.
+extern "C" u64 read_summary_words(address body, u32 type_id, u32 first, address pointers, u32 count) on cpu;
+extern "C" u64 write_summary_words(address body, address pointers, address values, u32 count) on cpu;
 extern "C" PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu;
 extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu;
 
