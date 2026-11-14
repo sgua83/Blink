@@ -1,5 +1,7 @@
 //! 独占位置保留原存储：元素函数静态投影，CPU 普通调用传递实际借用地址。
 use super::*;
+#[path="ownership/position.rs"]
+mod position;
 
 #[derive(Clone, Copy)]
 pub(super) enum ApplicationIndex {
@@ -36,114 +38,16 @@ pub(super) enum Position {
     Both(std::sync::Arc<Position>,std::sync::Arc<Position>),
 }
 impl Position {
-    pub(super) fn index(positions: Vec<Self>, index: ApplicationIndex, width: usize) -> Vec<Self> {
-        if positions.is_empty() { return positions; }
-        (0..width).map(|component| {
-            let choices: std::sync::Arc<[Self]> = positions.chunks_exact(width)
-                .map(|element| element[component].clone()).collect();
-            match index {
-                ApplicationIndex::Constant(index) => choices[index as usize].clone(),
-                _ => Self::Indexed(choices, index),
-            }
-        }).collect()
-    }
-    pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{if a==b{return a;}match when{owned_presence::Presence::All=>a,owned_presence::Presence::None=>b,when=>Self::Conditional(std::sync::Arc::new(when),std::sync::Arc::new(a),std::sync::Arc::new(b))}}
-    pub(super) fn both(a:Self,b:Self)->Self{if a==b{return a;}match(a,b){(Self::Initialized,value)|(value,Self::Initialized)=>value,(a,b)=>Self::Both(std::sync::Arc::new(a),std::sync::Arc::new(b))}}
-    pub(super) fn initialized_by(&self, initialized: &BTreeSet<Position>) -> bool {
-        initialized.contains(self)
-            || self.application_complete().is_some_and(|whole|initialized.contains(&whole))
-            || match self {
-                // 不可变view／tile已由原来源交接可读记录；位置身份不另存初始化状态。
-                Self::Initialized | Self::ViewElement(..) | Self::TileElement(..) => true,
-                Self::Both(a,b)|Self::Conditional(_,a,b)=>a.initialized_by(initialized)&&b.initialized_by(initialized),
-                Self::Indexed(choices, _) => choices
-                    .iter()
-                    .all(|choice| choice.initialized_by(initialized)),
-                Self::ApplicationElement(scope, _, word) => {
-                    initialized.contains(&Self::Parameter(*scope, *word as usize))
-                }
-                _ => false,
-            }
-    }
-    fn application_complete(&self)->Option<Self> {
-        match self {
-            Self::ApplicationElement(scope,_,word)=>Some(Self::Parameter(*scope,*word as usize)),
-            Self::ApplicationInput(input,_,word)=>Some(Self::ApplicationInput(*input,None,*word)),
-            Self::Initialized=>Some(Self::Initialized),
-            Self::Both(a,b)=>Some(Self::both(a.application_complete()?,b.application_complete()?)),
-            Self::Conditional(when,a,b)=>Some(Self::selected(when.as_ref().clone(),a.application_complete()?,b.application_complete()?)),
-            Self::Indexed(choices,index)=>Some(Self::Indexed(choices.iter().map(Self::application_complete).collect::<Option<_>>()?,*index)),
-            _=>None,
-        }
-    }
-    pub(super) fn application_word(&self,index:Option<ApplicationIndex>,word:u32)->Self {
-        match self {
-            Self::Initialized=>Self::Initialized,
-            Self::Both(a,b)=>Self::both(a.application_word(index,word),b.application_word(index,word)),
-            Self::Conditional(when,a,b)=>Self::selected(when.as_ref().clone(),a.application_word(index,word),b.application_word(index,word)),
-            Self::ApplicationInput(input,_,_)=>Self::ApplicationInput(*input,index,word),
-            Self::Parameter(scope,_)=>match index {
-                Some(index)=>Self::ApplicationElement(*scope,index,word),
-                None=>Self::Parameter(*scope,word as usize),
-            },
-            Self::Indexed(choices,selected)=>Self::Indexed(choices.iter().map(|choice|choice.application_word(index,word)).collect(),*selected),
-            _=>unreachable!(),
-        }
-    }
-    fn application_element_index(&self)->Option<ApplicationIndex> {
-        match self {
-            Self::ApplicationElement(_,index,_)=>Some(*index),
-            Self::ApplicationInput(_,index,_)=>*index,
-            Self::Both(a,b)|Self::Conditional(_,a,b)=>a.application_element_index().or_else(||b.application_element_index()),
-            Self::Indexed(choices,_)=>choices.iter().find_map(Self::application_element_index),
-            _=>None,
-        }
-    }
-    pub(super) fn application_prefix_initialized(&self,length:u32,word:u32,initialized:&BTreeSet<Position>)->bool {
-        if self.application_word(None,word).initialized_by(initialized) {return true;}
-        if let Self::Both(a,b)|Self::Conditional(_,a,b)=self{if a.application_prefix_initialized(length,word,initialized)&&b.application_prefix_initialized(length,word,initialized){return true;}}
-        if let Self::Indexed(choices,_)=self {
-            if choices.iter().all(|choice|choice.application_prefix_initialized(length,word,initialized)){return true;}
-        }
-        let indices:BTreeSet<_>=initialized.iter().filter_map(|position| {
-            let ApplicationIndex::Constant(index)=position.application_element_index()? else{return None};
-            (index<length && *position==self.application_word(Some(ApplicationIndex::Constant(index)),word)).then_some(index)
-        }).collect();
-        indices.len() as u64==u64::from(length)
-    }
-    pub(super) fn uses_scope(&self, scope: usize) -> bool {
-        match self {
-            Self::Parameter(owner, _) | Self::ApplicationElement(owner, _, _) => *owner == scope,
-            Self::Both(a,b)|Self::Conditional(_,a,b)=>a.uses_scope(scope)||b.uses_scope(scope),
-            Self::Indexed(choices, _) => choices.iter().any(|choice| choice.uses_scope(scope)),
-            _ => false,
-        }
-    }
-    pub(super) fn uses_index(&self, index: ApplicationIndex) -> bool {
-        if matches!(index, ApplicationIndex::Constant(_)) {
-            return false;
-        }
-        match self {
-            Self::ApplicationElement(_, value, _) => *value == index,
-            Self::ApplicationInput(_,Some(value),_)=>*value==index,
-            Self::Both(a,b)=>a.uses_index(index)||b.uses_index(index),
-            Self::Conditional(when,a,b)=>when.uses_index(index)||a.uses_index(index)||b.uses_index(index),
-            Self::Indexed(choices, value) => {
-                *value == index || choices.iter().any(|choice| choice.uses_index(index))
-            }
-            _ => false,
-        }
-    }
+    pub(super) fn index(positions:Vec<Self>,index:ApplicationIndex,width:usize)->Vec<Self>{position::indexed(positions,index,width)}
+    pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{position::selected(when,a,b)}
+    pub(super) fn both(a:Self,b:Self)->Self{position::both(a,b)}
+    pub(super) fn initialized_by(&self,initialized:&BTreeSet<Position>)->bool{position::initialized(self,initialized)}
+    pub(super) fn application_word(&self,index:Option<ApplicationIndex>,word:u32)->Self{position::word(self,index,word)}
+    pub(super) fn application_prefix_initialized(&self,length:u32,word:u32,initialized:&BTreeSet<Position>)->bool{position::prefix(self,length,word,initialized)}
+    pub(super) fn uses_scope(&self,scope:usize)->bool{position::scope(self,scope)}
+    pub(super) fn uses_index(&self,index:ApplicationIndex)->bool{position::depends(self,index)}
 }
-pub(super) fn intersect_initialized(
-    a: &BTreeSet<Position>,
-    b: &BTreeSet<Position>,
-) -> BTreeSet<Position> {
-    a.union(b)
-        .filter(|position| position.initialized_by(a) && position.initialized_by(b))
-        .cloned()
-        .collect()
-}
+pub(super) fn intersect_initialized(a:&BTreeSet<Position>,b:&BTreeSet<Position>)->BTreeSet<Position>{position::intersect(a,b)}
 impl Place {
     pub(super) fn data_positions(&self) -> Vec<Position> {
         match self {
