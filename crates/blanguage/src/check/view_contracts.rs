@@ -1358,6 +1358,9 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         (name, access)
     }).collect::<BTreeMap<_, _>>();
 
+    // Closed callees supply fixed inputs to this access solve. Keep their
+    // contributions separate so every round joins them in source call order.
+    let mut closed_calls: BTreeMap<(&str, usize), Vec<Access>> = BTreeMap::new();
     loop {
         let mut changed = Vec::new();
         for(name,function)in functions {
@@ -1369,7 +1372,21 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                 function, state, known, expand_loops: true, deferred_reads: false,
                 loop_bindings: Vec::new(), values: BTreeMap::new(),
             };
-            for call in function.calls.iter().filter(|call|call.function!=*name||state.entries.is_none()) {
+            for (index, call) in function.calls.iter().enumerate().filter(|(_, call)| call.function != *name || state.entries.is_none()) {
+                let key = (name.as_str(), index);
+                if let Some(accesses) = closed_calls.get(&key) {
+                    for value in accesses {
+                        insert(&mut access, value.clone());
+                    }
+                    continue;
+                }
+                let mut closed = (!functions.contains_key(&call.function)).then(Vec::new);
+                let mut emit = |value: Access| {
+                    if let Some(closed) = &mut closed {
+                        closed.push(value.clone());
+                    }
+                    insert(&mut access, value);
+                };
                 let live_task_places=evaluation.evaluate(&call.live_task_places);
                 let task_access=live_task_places.active();
                 let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
@@ -1383,7 +1400,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     && let Some((accessed,when,mode))=value.accessed()
                     && let Some(exclusion)=function.access(accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when)
                 {
-                    insert(&mut access,exclusion);
+                    emit(exclusion);
                 }
                 let value=match value {
                     Access::Position{mut position,borrows,when}=>{
@@ -1399,8 +1416,12 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     Access::Resource{resources,borrows,kind,when}=>function.access(resources,borrows,kind,&when),
                     Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,&when,&|id|owns_input(name,id)),
                 };
-                if let Some(value)=value{insert(&mut access,value);}
-            }}
+                if let Some(value)=value{emit(value);}
+                }
+                if let Some(closed) = closed {
+                    closed_calls.insert(key, closed);
+                }
+            }
             if let Some(entries)=&state.entries{
                 let invoked=function.calls.iter().filter(|call|call.function==*name).map(|call|bounds::Condition::execution(&call.path).guard_at_call(&parameters)).reduce(|a,b|a.logical(b,true)).unwrap();
                 let inputs=entries.iter().map(|(input,value)|(*input,bounds::Proof::default().with_view_borrow(0,value.clone()))).collect::<BTreeMap<_,_>>();
