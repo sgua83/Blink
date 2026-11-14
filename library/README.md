@@ -593,7 +593,7 @@ target/release/blink.exe --archive target/file.obj -o target/file.lib
 
 `result<dataset<u16>,CanonicalError> canonicalize(address path) on cpu`通过真实文件／目录句柄解析实际目标，交回独立拥有、没有终止NUL的UTF-16规范路径。输入是同步调用期间有效、NUL结尾的UTF-16路径；输出不借用输入，保留实际OS代码单元及名称大小写，不要求代理单元可转换为Unicode标量，也不以字符串转小写代替目标身份。
 
-普通输入先按本次GetFullPathNameW规则取得绝对名称，再将DOS／UNC／设备名称交接为Windows扩展命名空间路径，支持超过传统MAX_PATH的实际文件；精确verbatim、NT前缀及空输入按自身原生语义直接交OS。转换是打开之前的名称交接，不在打开失败后另选路径。输入准备失败由Input(AbsoluteError)返回。当前目录与名字解析不构成原子文件系统快照，调用者仍负责本次构建输入与实际内容的关系。
+普通输入沿共享path_core::absolute_path一次解释本次GetFullPathNameW绝对名称，再由既有extended_native_path在同一原生分配的预留空间形成DOS／UNC／设备扩展前缀，支持超过传统MAX_PATH的实际文件。临时名称由原NativePath持有，只借给同步CreateFileW，打开返回后用release_native_path匹配释放，不生成中间B拥有dataset；名称准备／共享分配失败按原status交回Input(System)。精确verbatim、NT前缀及空输入按自身原生语义直接交OS。转换发生在打开之前，失败不重试或另选路径；本次解析不构成原子文件系统快照，调用者仍负责构建输入与实际内容的关系。
 
 函数以零访问、读／写／删除共享及目录备份语义打开一次原目标，不指定OPEN_REPARSE_POINT，因此跟随实际符号链接／连接点。GetFinalPathNameByHandleW按normalized／DOS模式先查询容量再读取一次，成功输出保留OS实际返回的扩展前缀；查询失败立即保存原OS错误，容量增长由BufferTooSmall保留实际所需容量。查询完成后关闭原句柄一次，成功关闭后才交付拥有结果；不重查、不替换标志或交付部分输出。
 
@@ -610,7 +610,7 @@ enum CanonicalError : u32 {
 };
 ```
 
-Open交回真实打开错误；Query表示查询失败且句柄已成功关闭。Close与QueryAndClose保留关闭失败时仍由调用者持有的原句柄及原错误，后者同时保留查询错误，不伪称资源已经释放。临时名称、查询缓冲与成功拥有结果继续由原Frame和最后消费者管理，不新增路径缓存或释放链。
+Open交回真实打开错误；Query表示查询失败且句柄已成功关闭。Close与QueryAndClose保留关闭失败时仍由调用者持有的原句柄及原错误，后者同时保留查询错误，不伪称资源已经释放。临时名称沿共享NativePath保持到同步打开返回并匹配释放；查询缓冲与成功拥有结果继续由原Frame和最后消费者管理，不新增路径缓存或释放链。
 
 归档消费编译只导入path.lib；链接提供path.lib及实际使用的`push<u16>`序列实例，提供者.h／.b不必可读取。当前Rust编译器的build/object.rs与build/mod.rs仍使用原Rust实现，本B库原生可用与编译器迁移、正式周发行及采用分别记录。平台契约见[GetFinalPathNameByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)及[Rust当前Windows规范路径消费者](https://github.com/rust-lang/rust/blob/1.97.1/library/std/src/sys/fs/windows.rs)。
 

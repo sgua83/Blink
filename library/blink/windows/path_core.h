@@ -36,6 +36,10 @@ extern "C" void module_tail(address name,u64 length,u16 suffix) on cpu;
 // The input retains its NUL terminator. A nonempty allocation belongs to this call.
 struct NativePath { address name; address allocation; usize units; u32 status; };
 extern "C" NativePath absolute_path(address path,usize units) on cpu;
+// Consume a successful absolute_path span. Nonliteral storage has six writable
+// leading units; a literal span may borrow the original input. The returned
+// NUL-terminated view keeps the same NativePath owner and is not retained.
+UnitSpan extended_native_path(UnitSpan full) on cpu;
 NativePath native_path(address path,usize units,bool prefer_verbatim) on cpu;
 extern "C" void release_native_path(NativePath path) on cpu;
 result<void,DirectoryError> directory_tree(address path,usize units,bool prefer_verbatim) on cpu;
