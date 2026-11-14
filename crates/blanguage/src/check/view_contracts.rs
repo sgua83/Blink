@@ -1100,15 +1100,15 @@ fn borrow_at_call(borrow: &Borrow, call: &Call, arguments: &BTreeMap<ValueIdenti
     call_content_sources(borrow, call, arguments).at_call(arguments)
 }
 
-fn access_at_call<'a>(access:&Access,call:&Call,path:&bounds::Clause,function:&Function,state:&State,known:&States,initialized:&impl Fn()->&'a BTreeSet<Position>)->Access<bounds::Clause>{
-    let apply=|access:&Access,arguments:&BTreeMap<ValueIdentity,bounds::Proof>|{
+fn access_at_call<'a>(access:&Access,call:&Call,path:&bounds::Clause,evaluation:&mut BorrowEvaluation<'_>,initialized:&impl Fn()->&'a BTreeSet<Position>)->Access<bounds::Clause>{
+    let mut apply=|access:&Access,arguments:&BTreeMap<ValueIdentity,bounds::Proof>|{
     let(Access::Resource{borrows,when,..}|Access::Position{borrows,when,..}|Access::Memory{borrows,when,..}|Access::Dataset{borrows,when,..}|Access::Initialized{borrows,when,..}|Access::Stored{borrows,when,..})=access;
     let borrows=borrow_at_call(borrows, call, arguments);
     let when=bounds::Clause::both(path, &when.projected_case(true, arguments));
-    let borrows=evaluate(&borrows,function,state,known,true);
+    let borrows=evaluation.evaluate(&borrows);
     let borrows=if matches!(access,Access::Initialized{..}){borrows}else{refreshed_at_call(borrows,path,initialized)};
     match access {
-        Access::Resource{resources,kind,..}=>Access::Resource{resources:evaluate(&call_content_sources(resources,call,arguments).at_call(arguments),function,state,known,true),borrows,kind:*kind,when},
+        Access::Resource{resources,kind,..}=>Access::Resource{resources:evaluation.evaluate(&borrow_at_call(resources,call,arguments)),borrows,kind:*kind,when},
         Access::Position{position,..}=>Access::Position{borrows,when,position:PositionAccess{written:position.written.as_ref().map(|proof|proof.at_call(arguments)),..position.clone()}},
         Access::Memory{access,..}=>Access::Memory{borrows,when,access:*access},
         // The value belongs to content reads. Access consumers use only the write location.
@@ -1289,6 +1289,10 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         let state = &known[name];
         let parameters = residency::input_parameters(&function.parameters, function.input_width);
         let mut access=BTreeMap::new();
+        let mut evaluation = BorrowEvaluation {
+            function, state, known, expand_loops: true, deferred_reads: false,
+            loop_bindings: Vec::new(), values: BTreeMap::new(),
+        };
         for value in state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})) {insert(&mut access,value.clone());}
         for usage in &function.uses {
             if let Requirement::Initialized{read,code,..}=&usage.requirement {
@@ -1307,15 +1311,15 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             }
             let value=match &usage.requirement {
                 Requirement::Unborrowed{resource,borrow,kind,..}=>function.access(
-                    evaluate(resource,function,state,known,true),evaluate(borrow,function,state,known,true),
+                    evaluation.evaluate(resource),evaluation.evaluate(borrow),
                     *kind,&usage.path),
                 Requirement::Address{borrow,layout,written,writable,initialized,..}=>function.address_access(
-                    evaluate(borrow,function,state,known,true),
+                    evaluation.evaluate(borrow),
                     |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),written:written.as_ref().map(|proof|proof.at_call(&parameters)),writable:*writable,initialized:*initialized}},
                     &usage.path),
                 Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if !function.calls.iter().any(|call|!call.deferred&&call.memory==*memory)=>
-                    function.address_access(evaluate(borrow,function,state,known,true),|borrows,when|Access::Memory{borrows,when,access:*access},&usage.path),
-                Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,*access,*atomic,&usage.path,&|id|owns_input(name,id)),
+                    function.address_access(evaluation.evaluate(borrow),|borrows,when|Access::Memory{borrows,when,access:*access},&usage.path),
+                Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluation.evaluate(borrow),*index,*access,*atomic,&usage.path,&|id|owns_input(name,id)),
                 _=>None,
             };
             if let Some(value)=value{insert(&mut access,value);}
@@ -1330,8 +1334,12 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             let state=&known[name];
             let parameters=residency::input_parameters(&function.parameters,function.input_width);
             let mut access=direct[name].clone();
+            let mut evaluation = BorrowEvaluation {
+                function, state, known, expand_loops: true, deferred_reads: false,
+                loop_bindings: Vec::new(), values: BTreeMap::new(),
+            };
             for call in function.calls.iter().filter(|call|call.function!=*name||state.entries.is_none()) {
-                let live_task_places=evaluate(&call.live_task_places,function,state,known,true);
+                let live_task_places=evaluation.evaluate(&call.live_task_places);
                 let task_access=live_task_places.active();
                 let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
                 for requirement in &known[&call.function].interface.access {
@@ -1339,7 +1347,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                     || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && (call.deferred || position.written.is_none()))) {
                     continue;
                 }
-                let value=access_at_call(requirement,call,&call.path,function,state,known,&|| &*initialized);
+                let value=access_at_call(requirement,call,&call.path,&mut evaluation,&|| &*initialized);
                 if task_access
                     && let Some((accessed,when,mode))=value.accessed()
                     && let Some(exclusion)=function.access(accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when)
@@ -1682,15 +1690,19 @@ pub(super) fn solve(
             }
             usage.requirement.mapped(|borrow|evaluate(borrow,function,state,&known,true)).under_path(&path).check(&usage.source)?;
         }
+        let mut evaluation = BorrowEvaluation {
+            function, state, known: &known, expand_loops: true, deferred_reads: false,
+            loop_bindings: Vec::new(), values: BTreeMap::new(),
+        };
         for call in &function.calls{
             let path=bounds::Clause::both(&call.path,&context);
-            let live_task_places=evaluate(&call.live_task_places,function,state,&known,true);
+            let live_task_places=evaluation.evaluate(&call.live_task_places);
             let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, &known).positions(&path));
             for requirement in &known[&call.function].interface.access{
                 if live_task_places.empty() && matches!(requirement,Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}) {
                     continue;
                 }
-                let value=access_at_call(requirement,call,&path,function,state,&known,&|| &*initialized);
+                let value=access_at_call(requirement,call,&path,&mut evaluation,&|| &*initialized);
                 let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..}|Access::Stored{when,..})=&value;
                 if when.possible(){
                     let path=when.clone();
