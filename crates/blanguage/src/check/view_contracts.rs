@@ -1084,7 +1084,7 @@ fn resolved_read(read:&address::InitializationRead,path:&bounds::Clause,function
 
 fn refreshed_at_call<'a>(borrow:Borrow,path:&bounds::Clause,initialized:&impl Fn()->&'a BTreeSet<Position>)->Borrow {
     borrow.map_sources(|source|match source {
-        Origin::Position(origin)=>{
+        Origin::Position(origin) if origin.initialized.iter().any(|ready| !ready) => {
             let fact=address::Initialization{source:address::InitializationSource::Position(origin.as_ref().clone()),when:bounds::Condition::constant(true)};
             let positions=fact.positions(path);
             let mut origin=origin.as_ref().clone();
@@ -1548,6 +1548,7 @@ pub(super) fn solve(
                 continue;
             }
             let Requirement::Memory{target,snapshots,..}=&usage.requirement else{continue;};
+            let snapshots = snapshots.as_ref().filter(|values| !values.is_empty());
             let mut effect=address::MemoryEffect::default();
             if calls.peek().is_some_and(|call|call.memory==memory){
                 let call=calls.next().unwrap();
@@ -1573,7 +1574,8 @@ pub(super) fn solve(
                     let path = bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
                         .substitute_values(&resolved);
                     let borrow = borrows.substitute_values(&resolved).restricted(&path);
-                    let written = written.map(|proof| proof.at_call(&call.arguments).substitute_values(&resolved));
+                    let written = written.filter(|_| snapshots.is_some())
+                        .map(|proof| proof.at_call(&call.arguments).substitute_values(&resolved));
                     effect.union(address::MemoryEffect::of(&borrow, access, written.as_ref()));
                 }
             }else{
@@ -1583,13 +1585,15 @@ pub(super) fn solve(
                     }else{None}
                 });
                 for usage in std::iter::once(usage).chain(rest){
-                    if let Requirement::Memory{borrow,access,written,..}=&usage.requirement {
+                    if let Requirement::Memory{borrow,access:Some(access),written,..}=&usage.requirement {
                         let borrow=evaluate(borrow,function,&known[name],&known,true).substitute_values(&resolved).restricted(&usage.path.substitute_values(&resolved));
-                        if let Some(access)=access{effect.union(address::MemoryEffect::of(&borrow,*access,written.as_ref().map(|proof|proof.substitute_values(&resolved)).as_ref()));}
+                        let written = written.as_ref().filter(|_| snapshots.is_some())
+                            .map(|proof| proof.substitute_values(&resolved));
+                        effect.union(address::MemoryEffect::of(&borrow, *access, written.as_ref()));
                     }
                 }
             }
-            if let Some(snapshots)=snapshots && !snapshots.is_empty() {
+            if let Some(snapshots)=snapshots {
                 let path = usage.path.substitute_values(&resolved);
                 let scope = bounds::proof_scope(&path, &BTreeMap::new());
                 for(component,snapshot)in snapshots.iter().enumerate(){
