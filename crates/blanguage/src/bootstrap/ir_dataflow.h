@@ -40,6 +40,86 @@ extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
  requires nonzero(host.whole) requires nonzero(host.scalar) requires nonzero(host.rewrite);
 
 
+// Complete optimization control borrows the original Program and Stage owners.
+// Views expire before callbacks mutate those owners. Work stays in the original
+// synchronous native Worker batch; its actual io::Error remains with the host.
+struct PipelineField { usize binding; u32 word; u32 present; };
+struct PipelineStage {
+ Span code; Span reads; Span writes; Span cross;
+ usize domain; PipelineField prefix; PipelineField selection;
+ u32 operation; u32 boundary;
+};
+struct PipelineFusion {
+ Host ir; address context;
+ cfn<void,address> begin;
+ cfn<address,address> next;
+ cfn<address,address> previous;
+ cfn<PipelineStage,address> ensures memory(read) stage;
+ cfn<void,address> append;
+ cfn<void,address> merge;
+};
+struct PipelineProgram {
+ PipelineFusion fusion;
+ cfn<u32,address> batch;
+ cfn<usize,address> remove;
+ cfn<void,address> origin;
+ cfn<void,address> finish;
+};
+struct PipelineEmpty { u32 keep; u32 boundary; u32 carry; };
+struct PipelineValues { address project; address identity; address combine; };
+struct PipelineValue {
+ cfn<void,address> flow;
+ cfn<void,address> eliminate;
+ cfn<void,address> compact;
+};
+struct PipelineStageHost {
+ Host ir; address context; PipelineValue values;
+ cfn<PipelineStage,address> ensures memory(read) stage;
+ cfn<PipelineValues,address> custom;
+ cfn<void,address> flow;
+ cfn<void,address> eliminate;
+ cfn<void,address> words;
+ cfn<u32,address,u32> prune;
+ cfn<u32,address> select;
+ cfn<void,address> bindings;
+ cfn<void,address> release_words;
+ cfn<void,address> compact;
+};
+struct PipelineRead {
+ address context;
+ cfn<u32,address,u32,usize,u32> ensures memory(read) contains;
+ cfn<u32,address,usize> ensures memory(read) scalar_bytes;
+};
+// These fields come from an exclusive root-instruction borrow. B copies only
+// real word/register fields; the original Vec applies its final length.
+struct PipelineRoot { u32 kind; usize tile; Span words; Span registers; usize count; };
+struct PipelineRootResult { u32 keep; usize count; u32 changed; };
+struct PipelineMap {
+ Span code; Span tiles; PipelineField prefix; PipelineField selection;
+ address flags; usize binding_count;
+ address reads; address writes; address cross; usize cross_count;
+};
+struct PipelineAccessCounts { usize reads; usize writes; usize cross; };
+extern "C" void optimize_program(PipelineProgram host) on cpu
+ requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.begin)
+ requires nonzero(host.fusion.next) requires nonzero(host.fusion.previous)
+ requires nonzero(host.fusion.stage) requires nonzero(host.fusion.append) requires nonzero(host.fusion.merge)
+ requires nonzero(host.batch) requires nonzero(host.remove) requires nonzero(host.origin) requires nonzero(host.finish);
+extern "C" PipelineEmpty optimize_empty(PipelineStage stage,u32 carry) on cpu;
+extern "C" void optimize_stage(PipelineStageHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.stage) requires nonzero(host.custom)
+ requires nonzero(host.values.flow) requires nonzero(host.values.eliminate) requires nonzero(host.values.compact)
+ requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.words)
+ requires nonzero(host.prune) requires nonzero(host.select) requires nonzero(host.bindings)
+ requires nonzero(host.release_words) requires nonzero(host.compact);
+extern "C" void optimize_value(address value,PipelineValue host) on cpu
+ requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.compact);
+extern "C" PipelineRootResult optimize_root(PipelineRoot input,u32 preserve_scope,PipelineRead host) on cpu
+ requires nonzero(host.contains) requires nonzero(host.scalar_bytes);
+extern "C" PipelineAccessCounts optimize_bindings(PipelineMap input,Host ir,PipelineRead host) on cpu
+ requires nonzero(ir.inspect) requires nonzero(host.contains);
+
+
 // Exclusive, synchronous projections of the same original IR storage.
 struct RewriteNode { address data; u32 kind; };
 struct RewriteSpan { address data; usize count; usize stride; };

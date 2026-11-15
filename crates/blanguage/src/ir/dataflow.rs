@@ -9,7 +9,7 @@ use std::{ffi::c_void, marker::PhantomData, mem::size_of, ptr};
 enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
-    Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar,
+    Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar, Tile,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -271,6 +271,16 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             view.right = Node::of(&value.combine, Kind::ValueCode); view.first = Span::slice(value.project.as_slice()); view
         }
         Kind::Scalar => View::tag(crate::builtin_types::ScalarCode::from(unsafe { *node.data.cast::<Scalar>() }) as u32),
+        Kind::Tile => {
+            let tile = unsafe { &*node.data.cast::<Tile>() };
+            let mut view = match tile.source {
+                TileSource::Input { binding, word } => {
+                    let mut view = View::tag(0); view.a = binding; view.b = word as usize; view
+                }
+                TileSource::Published => View::tag(1),
+            };
+            view.first = Span::slice(&tile.ty.components); view
+        }
         Kind::RayRange => {
             let range = unsafe { &*node.data.cast::<std::ops::Range<usize>>() };
             let mut view = View::tag(0); view.a = range.start; view.b = range.end; view
@@ -314,7 +324,10 @@ fn instruction(value: &Inst) -> View {
             view.first = Span::slice(value.result.as_slice()); view.second = Span::slice(value.offset.as_slice());
             view.left = Node::of(&value.target, Kind::Indexed); view.right = Node::of(&value.op, Kind::AtomicOp);
         }
-        InstKind::Append(value) => { view.tag = 11; view.a = value.accepted; view.first = Span::pairs(&value.values); }
+        InstKind::Append(value) => {
+            view.tag = 11; view.a = value.accepted; view.b = value.count.binding; view.c = value.target;
+            view.first = Span::pairs(&value.values);
+        }
         InstKind::TileBarrier => view.tag = 12,
         InstKind::TilePublish(value) => { view.tag = 13; view.first = Span::pairs(&value.values); }
         InstKind::TileCollective(value) => {
@@ -366,7 +379,7 @@ fn instruction(value: &Inst) -> View {
         InstKind::Scope(body) => { view.tag = 45; view.first = Span::slice(body); }
         InstKind::Exit => view.tag = 46,
         InstKind::Raise(error) => { view.tag = 47; view.a = *error; }
-        InstKind::Cleanup { .. } => view.tag = 48,
+        InstKind::Cleanup { body, .. } => { view.tag = 48; view.first = Span::slice(body); }
     }
     view
 }

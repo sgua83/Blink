@@ -8,7 +8,7 @@ const u32 N_INDEXED=7;const u32 N_STRIDE=8;const u32 N_TEXTURE=9;const u32 N_ATO
 const u32 N_MEMORY_ALIAS=11;const u32 N_MEMORY_EFFECT=12;const u32 N_DIVISION=13;
 const u32 N_DIVISOR=14;const u32 N_WORDS3=15;
 const u32 N_COMPONENT=16;
-const u32 N_STAGE=17;const u32 N_RAY_RANGE=18;
+const u32 N_STAGE=17;const u32 N_RAY_RANGE=18;const u32 N_TILE=25;
 
 const u32 OP_TEXTURE_BINDING_ADDRESS=0;const u32 OP_TEXTURE_SAMPLE=1;const u32 OP_TEXTURE_SIZE=2;
 const u32 OP_TEXTURE_LEVELS=3;const u32 OP_TEXTURE_ADDRESS=4;const u32 OP_TEXTURE_FORMAT=5;
@@ -392,6 +392,238 @@ extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
  host.rewrite(host.context);
  compact_roots(input.inputs,input.register_map,1);compact_roots(input.outputs,input.register_map,1);
  return kept;
+}
+
+
+bool pipeline_contains(Span span,inout usize at,usize binding) on cpu {
+ while(at<span.count){
+  usize current=word_at(span,at);
+  if(current>=binding){return current==binding;}
+  at+=1u64;
+ }
+ return false;
+}
+bool pipeline_cross(PipelineStage left,PipelineStage right) on cpu {
+ usize lc=0u64;usize rc=0u64;usize lr=0u64;usize lw=0u64;usize rr=0u64;usize rw=0u64;
+ while(lc<left.cross.count||rc<right.cross.count){
+  usize binding;
+  if(lc<left.cross.count){
+   binding=word_at(left.cross,lc);
+   if(rc<right.cross.count){usize other=word_at(right.cross,rc);if(other<binding){binding=other;}}
+  }else{binding=word_at(right.cross,rc);}
+  bool left_writes=pipeline_contains(left.writes,lw,binding);
+  bool right_writes=pipeline_contains(right.writes,rw,binding);
+  if((left_writes&&(right_writes||pipeline_contains(right.reads,rr,binding)))
+     ||(right_writes&&pipeline_contains(left.reads,lr,binding))){return true;}
+  if(lc<left.cross.count&&word_at(left.cross,lc)==binding){lc+=1u64;}
+  if(rc<right.cross.count&&word_at(right.cross,rc)==binding){rc+=1u64;}
+ }
+ return false;
+}
+bool pipeline_ordered(Span code,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<code.count){
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));u32 kind=value.tag;
+  if(kind==OP_APPEND||kind==OP_SUBGROUP||kind==OP_PRINT||kind==OP_INVOKE
+     ||kind==OP_TILE_LENGTH||kind==OP_TILE_LANE||kind==OP_TILE_PUBLISH||kind==OP_TILE_BARRIER
+     ||kind==OP_TILE_COLLECTIVE||kind==OP_TILE_LOAD){return true;}
+  if(kind==OP_LOAD_INDEXED||kind==OP_ATOMIC){
+   View source=host.inspect(value.left);if(source.tag==3){return true;}
+  }
+  if(kind==OP_SCOPE||kind==OP_BRANCH||kind==OP_LOOP_VALUE){
+   if(pipeline_ordered(value.first,host)||pipeline_ordered(value.second,host)){return true;}
+  }
+  index+=1u64;
+ }
+ return false;
+}
+bool pipeline_same_field(PipelineField left,PipelineField right) on cpu {
+ return left.present==right.present&&left.binding==right.binding&&left.word==right.word;
+}
+bool pipeline_fusible(PipelineStage left,PipelineStage right,Host host) on cpu requires nonzero(host.inspect) {
+ return left.operation==0&&right.operation==0&&left.domain==right.domain&&right.boundary==0
+  &&pipeline_same_field(left.prefix,right.prefix)&&pipeline_same_field(left.selection,right.selection)
+  &&!pipeline_cross(left,right)&&!pipeline_ordered(left.code,host)&&!pipeline_ordered(right.code,host);
+}
+void pipeline_fuse(PipelineFusion host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.begin) requires nonzero(host.next)
+ requires nonzero(host.previous) requires nonzero(host.stage) requires nonzero(host.append) requires nonzero(host.merge) {
+ while(true){
+  address current=host.next(host.context);if(address_bits(current)==0u64){return;}
+  address previous=host.previous(host.context);
+  if(address_bits(previous)!=0u64&&pipeline_fusible(host.stage(previous),host.stage(current),host.ir)){
+   host.merge(host.context);
+  }else{host.append(host.context);}
+ }
+}
+extern "C" void optimize_program(PipelineProgram host) on cpu
+ requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.begin)
+ requires nonzero(host.fusion.next) requires nonzero(host.fusion.previous)
+ requires nonzero(host.fusion.stage) requires nonzero(host.fusion.append) requires nonzero(host.fusion.merge)
+ requires nonzero(host.batch) requires nonzero(host.remove) requires nonzero(host.origin) requires nonzero(host.finish) {
+ pipeline_fuse(host.fusion);
+ if(host.batch(host.fusion.context)==0){return;}
+ if(host.remove(host.fusion.context)!=0u64){
+  host.origin(host.fusion.context);
+  host.fusion.begin(host.fusion.context);
+  pipeline_fuse(host.fusion);
+  if(host.batch(host.fusion.context)==0){return;}
+ }
+ host.finish(host.fusion.context);
+}
+extern "C" PipelineEmpty optimize_empty(PipelineStage stage,u32 carry) on cpu {
+ if(stage.operation==0&&stage.code.count==0u64){return PipelineEmpty(0,stage.boundary,carry|stage.boundary);}
+ return PipelineEmpty(1,stage.boundary|carry,0);
+}
+extern "C" void optimize_value(address value,PipelineValue host) on cpu
+ requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.compact) {
+ host.flow(value);host.eliminate(value);host.compact(value);
+}
+extern "C" void optimize_stage(PipelineStageHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.stage) requires nonzero(host.custom)
+ requires nonzero(host.values.flow) requires nonzero(host.values.eliminate) requires nonzero(host.values.compact)
+ requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.words)
+ requires nonzero(host.prune) requires nonzero(host.select) requires nonzero(host.bindings)
+ requires nonzero(host.release_words) requires nonzero(host.compact) {
+ u32 operation=host.stage(host.context).operation;
+ if(operation==2||operation==3||operation==4){
+  PipelineValues values=host.custom(host.context);
+  if(address_bits(values.project)!=0u64){optimize_value(values.project,host.values);}
+  optimize_value(values.identity,host.values);optimize_value(values.combine,host.values);return;
+ }
+ host.flow(host.context);
+ while(true){
+  host.eliminate(host.context);
+  u32 preserve=has_subgroups(host.stage(host.context).code,host.ir);
+  host.words(host.context);
+  u32 changed=host.prune(host.context,preserve);
+  if(host.select(host.context)!=0){changed=1;host.flow(host.context);}
+  if(changed==0){break;}
+  host.release_words(host.context);
+ }
+ if(operation==0){host.bindings(host.context);}
+ host.release_words(host.context);host.compact(host.context);
+}
+extern "C" PipelineRootResult optimize_root(PipelineRoot input,u32 preserve_scope,PipelineRead host) on cpu
+ requires nonzero(host.contains) requires nonzero(host.scalar_bytes) {
+ usize count=input.count;
+ if(input.kind==1){
+  usize read=0u64;count=0u64;
+  while(read<input.count){
+   address word_address=unsafe_address(address_bits(input.words.data)+u64(read)*u64(input.words.stride));
+   u32 word=unsafe_position<u32>(word_address);usize reg=word_at(input.registers,read);
+   u32 bytes=host.scalar_bytes(host.context,reg);u32 part=0;bool keep=false;
+   while(part<(bytes+3)/4){
+    if(host.contains(host.context,0,input.tile,word+part*4)!=0){keep=true;break;}
+    part+=1;
+   }
+   if(keep){
+    address word_output=unsafe_address(address_bits(input.words.data)+u64(count)*u64(input.words.stride));
+    address reg_output=unsafe_address(address_bits(input.registers.data)+u64(count)*u64(input.registers.stride));
+    unsafe_position<u32>(word_output)=word;unsafe_position<usize>(reg_output)=reg;count+=1u64;
+   }
+   read+=1u64;
+  }
+ }
+ u32 keep=(input.kind==1||input.kind==2)&&count==0u64&&preserve_scope==0 ? 0 : 1;
+ return PipelineRootResult(keep,count,count!=input.count||keep==0 ? 1 : 0);
+}
+address pipeline_flag(address flags,usize binding) on cpu {
+ return unsafe_address(address_bits(flags)+u64(binding));
+}
+void pipeline_mark(address flags,usize binding,u8 mode) on cpu {
+ address at=pipeline_flag(flags,binding);unsafe_position<u8>(at)=unsafe_position<u8>(at)|mode;
+}
+u8 pipeline_access(usize access) on cpu {
+ return (accessed(access,0) ? u8(1) : u8(0))|(accessed(access,1) ? u8(2) : u8(0));
+}
+void pipeline_alias(Node source,address flags,u8 mode,Host host) on cpu requires nonzero(host.inspect) {
+ View alias=host.inspect(source);if(alias.tag==1){pipeline_mark(flags,alias.a,mode);}
+}
+void pipeline_indexed(Node source,address flags,u8 mode,Host host) on cpu requires nonzero(host.inspect) {
+ View value=host.inspect(source);
+ if(value.tag==0){pipeline_mark(flags,value.a,mode);}
+ else if(value.tag==2){
+  usize index=0u64;
+  while(index<value.second.count){pipeline_alias(node_at(value.second,index,N_MEMORY_ALIAS),flags,mode,host);index+=1u64;}
+ }
+}
+void pipeline_reference(Node source,address flags,u8 mode,Host host) on cpu requires nonzero(host.inspect) {
+ View reference=host.inspect(source);View storage=host.inspect(reference.left);
+ if(storage.tag==1){pipeline_indexed(storage.left,flags,mode,host);}
+}
+void pipeline_code_access(Span code,address flags,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<code.count){
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));u32 kind=value.tag;
+  if(kind==OP_INVOKE){
+   View call=host.inspect(value.left);usize argument=0u64;
+   while(argument<call.first.count){
+    View parameter=host.inspect(node_at(call.first,argument,N_ARGUMENT));
+    if(parameter.tag==1){pipeline_reference(parameter.left,flags,pipeline_access(parameter.a),host);}
+    argument+=1u64;
+   }
+   usize effect=0u64;
+   while(effect<call.second.count){
+    View memory=host.inspect(node_at(call.second,effect,N_MEMORY_EFFECT));
+    pipeline_alias(memory.left,flags,pipeline_access(memory.a),host);effect+=1u64;
+   }
+  }else if(kind==OP_APPEND){pipeline_mark(flags,value.b,u8(3));pipeline_mark(flags,value.c,u8(2));}
+  else if(kind==OP_ATOMIC){
+   View op=host.inspect(value.right);
+   u8 mode=(op.tag!=1 ? u8(1) : u8(0))|(op.tag!=0 ? u8(2) : u8(0));
+   pipeline_indexed(value.left,flags,mode,host);
+  }else if(kind==OP_LOAD_INDEXED||kind==OP_STORE_INDEXED){pipeline_indexed(value.left,flags,kind==OP_LOAD_INDEXED ? u8(1) : u8(2),host);}
+  else if(kind==OP_LOAD){pipeline_mark(flags,value.b,u8(1));}
+  else if(kind==OP_STORE){pipeline_mark(flags,value.a,u8(2));}
+  if(kind==OP_SCOPE||kind==OP_BRANCH||kind==OP_LOOP_VALUE||kind==OP_CLEANUP){
+   pipeline_code_access(value.first,flags,host);pipeline_code_access(value.second,flags,host);
+  }
+  index+=1u64;
+ }
+}
+void pipeline_tile_access(Span tiles,address flags,Host ir,PipelineRead host) on cpu
+ requires nonzero(ir.inspect) requires nonzero(host.contains) {
+ usize index=0u64;
+ while(index<tiles.count){
+  View tile=ir.inspect(node_at(tiles,index,N_TILE));
+  if(tile.tag==0){
+   usize component=0u64;bool needed=false;
+   while(component<tile.first.count&&!needed){
+    View field=ir.inspect(node_at(tile.first,component,N_COMPONENT));usize part=0u64;
+    while(part<(field.b+3u64)/4u64){
+     if(host.contains(host.context,1,tile.a,u32(tile.b+field.a+part*4u64))!=0){needed=true;break;}
+     part+=1u64;
+    }
+    component+=1u64;
+   }
+   if(needed){pipeline_mark(flags,tile.a,u8(1));}
+  }
+  index+=1u64;
+ }
+}
+void pipeline_write_binding(address output,usize index,usize binding) on cpu {
+ unsafe_position<usize>(unsafe_address(address_bits(output)+u64(index)*size_of<usize>()))=binding;
+}
+extern "C" PipelineAccessCounts optimize_bindings(PipelineMap input,Host ir,PipelineRead host) on cpu
+ requires nonzero(ir.inspect) requires nonzero(host.contains) {
+ pipeline_code_access(input.code,input.flags,ir);pipeline_tile_access(input.tiles,input.flags,ir,host);
+ if(input.prefix.present!=0){pipeline_mark(input.flags,input.prefix.binding,u8(1));}
+ if(input.selection.present!=0){pipeline_mark(input.flags,input.selection.binding,u8(1));}
+ usize reads=0u64;usize writes=0u64;usize binding=0u64;
+ while(binding<input.binding_count){
+  u8 flag=unsafe_position<u8>(pipeline_flag(input.flags,binding));
+  if((flag&u8(1))!=u8(0)){pipeline_write_binding(input.reads,reads,binding);reads+=1u64;}
+  if((flag&u8(2))!=u8(0)){pipeline_write_binding(input.writes,writes,binding);writes+=1u64;}
+  binding+=1u64;
+ }
+ usize cross=0u64;usize at=0u64;
+ while(at<input.cross_count){
+  binding=unsafe_position<usize>(unsafe_address(address_bits(input.cross)+u64(at)*size_of<usize>()));
+  if(unsafe_position<u8>(pipeline_flag(input.flags,binding))!=u8(0)){pipeline_write_binding(input.cross,cross,binding);cross+=1u64;}
+  at+=1u64;
+ }
+ return PipelineAccessCounts(reads,writes,cross);
 }
 
 
