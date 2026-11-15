@@ -9,7 +9,7 @@ use std::{ffi::c_void, marker::PhantomData, mem::size_of, ptr};
 enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
-    Component, Stage, RayRange,
+    Component, Stage, RayRange, Operation,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -225,7 +225,23 @@ unsafe extern "C" fn inspect(node: Node) -> View {
         }
         Kind::Stage => {
             let stage = unsafe { &*node.data.cast::<Stage>() };
-            let mut view = View::tag(0); view.first = Span::slice(&stage.code); view
+            let mut view = View::tag(0); view.first = Span::slice(&stage.code);
+            view.a = usize::from(stage.prefix.is_some()); view.b = usize::from(stage.selection.is_some());
+            view.left = Node::of(&stage.operation, Kind::Operation); view
+        }
+        Kind::Operation => {
+            let pair = |tag, source, target| { let mut view = View::tag(tag); view.a = source; view.b = target; view };
+            match unsafe { &*node.data.cast::<Operation>() } {
+                Operation::Map => View::tag(0),
+                Operation::Reduce(v) => pair(1, v.fields.source, v.fields.target),
+                Operation::CustomReduce(v) => pair(2, v.fields.source, v.fields.target),
+                Operation::CustomScan(v) => pair(3, v.values.fields.source, v.values.fields.target),
+                Operation::CustomSegmentedReduce(v) => pair(4, v.values.fields.source, v.values.fields.target),
+                Operation::SegmentedReduce(v) => pair(5, v.values.fields.source, v.values.fields.target),
+                Operation::ScanExclusive(v) => pair(6, v.values.source, v.values.target),
+                Operation::Compact(v) => pair(7, v.source, v.target),
+                Operation::StableSort(v) => pair(8, v.source, v.target),
+            }
         }
         Kind::RayRange => {
             let range = unsafe { &*node.data.cast::<std::ops::Range<usize>>() };
@@ -530,4 +546,17 @@ unsafe extern "C" fn ray_fields(values: Span, begin: usize, end: usize) -> Span 
 unsafe extern "C" fn visit_ray_query<F: FnMut(usize, Reg) -> bool>(context: *mut c_void,
     group: usize, query: usize) -> u32 {
     u32::from(unsafe { &mut *context.cast::<F>() }(group, query))
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::indirect_buffer"]
+    fn b_indirect_buffer(stages: Span, buffers: usize, host: Host) -> usize;
+    #[link_name = "bootstrap.ir_dataflow::execution_buffers"]
+    fn b_execution_buffers(stages: Span, buffers: usize, host: Host) -> ExecutionBuffers;
+}
+pub(super) fn indirect_buffer(program: &Program) -> usize {
+    unsafe { b_indirect_buffer(Span::slice(program.stages()), program.buffers.len(), HOST) }
+}
+pub(super) fn execution_buffers(program: &Program) -> ExecutionBuffers {
+    unsafe { b_execution_buffers(Span::slice(program.stages()), program.buffers.len(), HOST) }
 }

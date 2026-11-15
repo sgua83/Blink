@@ -254,3 +254,9 @@ extern "C" u32 ray_result_queries(Span code,Span ranges,RayHost host,address con
  cfn<u32,address,usize,usize> visit) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.include) requires nonzero(host.contains)
  requires nonzero(host.fields) requires nonzero(visit);
+
+struct ExecutionBuffers { usize indirect; usize auxiliary; };
+extern "C" usize indirect_buffer(Span stages,usize buffers,Host host) on cpu
+ requires nonzero(host.inspect);
+extern "C" ExecutionBuffers execution_buffers(Span stages,usize buffers,Host host) on cpu
+ requires nonzero(host.inspect);

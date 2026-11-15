@@ -2075,6 +2075,8 @@ pub struct Program {
     pub(crate) element_guarantees: Vec<ElementFact>,
     pub(crate) length_requirements: Vec<(usize, usize)>,
 }
+#[repr(C)]
+struct ExecutionBuffers { indirect: usize, auxiliary: usize }
 impl Program {
     pub(crate) fn element_outputs(&self, facts: Vec<ElementFact>) -> Vec<ElementFact> {
         let writes = self.write_regions();
@@ -2151,49 +2153,43 @@ impl Program {
     }
     /// 内部设备绑定：集合中间量与间接域参数各有一个必要槽，不占源码参数。
     pub fn indirect_buffer(&self) -> usize {
-        self.buffers.len()
-            + usize::from(self.stages.iter().any(|s| {
-                matches!(
-                    s.operation,
-                    Operation::ScanExclusive(_)
-                        | Operation::CustomScan(_)
-                        | Operation::CustomSegmentedReduce(_)
-                        | Operation::SegmentedReduce(_)
-                        | Operation::Compact(_)
-                        | Operation::StableSort(_)
-                ) || s.selection.is_some()
-            }))
+        #[cfg(feature = "compiler")]
+        { dataflow::indirect_buffer(self) }
+        #[cfg(not(feature = "compiler"))]
+        { self.buffers.len() + usize::from(self.stages.iter().any(Self::needs_intermediate)) }
     }
-    pub fn selection_buffer(&self) -> usize {
-        self.indirect_buffer() + 1
+    pub fn selection_buffer(&self) -> usize { self.indirect_buffer() + 1 }
+    pub fn scan_source_buffer(&self) -> usize { self.indirect_buffer() + 2 }
+    pub fn auxiliary_buffers(&self) -> usize { self.execution_buffers().auxiliary }
+    #[cfg(not(feature = "compiler"))]
+    fn needs_intermediate(stage: &Stage) -> bool {
+        stage.selection.is_some() || matches!(stage.operation,
+            Operation::ScanExclusive(_) | Operation::CustomScan(_)
+            | Operation::CustomSegmentedReduce(_) | Operation::SegmentedReduce(_)
+            | Operation::Compact(_) | Operation::StableSort(_))
     }
-    pub fn scan_source_buffer(&self) -> usize {
-        self.selection_buffer() + 1
-    }
-    pub fn auxiliary_buffers(&self) -> usize {
-        let original = self.indirect_buffer() - self.buffers.len()
-            + usize::from(
-                self.stages
-                    .iter()
-                    .any(|s| s.prefix.is_some() || s.selection.is_some()),
-            )
-            + usize::from(self.stages.iter().any(|s| s.selection.is_some()));
-        if self.stages.iter().any(|stage| match &stage.operation {
-            Operation::ScanExclusive(value) => value.values.source == value.values.target,
-            Operation::CustomScan(value) => {
-                value.values.fields.source == value.values.fields.target
+    fn execution_buffers(&self) -> ExecutionBuffers {
+        #[cfg(feature = "compiler")]
+        { dataflow::execution_buffers(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            let (mut intermediate, mut prefix, mut selection, mut scan_alias) = (false, false, false, false);
+            for stage in &self.stages {
+                intermediate |= Self::needs_intermediate(stage);
+                selection |= stage.selection.is_some();
+                prefix |= stage.prefix.is_some() || stage.selection.is_some();
+                scan_alias |= match &stage.operation {
+                    Operation::ScanExclusive(v) => v.values.source == v.values.target,
+                    Operation::CustomScan(v) => v.values.fields.source == v.values.fields.target,
+                    Operation::SegmentedReduce(v) => v.values.fields.source == v.values.fields.target,
+                    Operation::CustomSegmentedReduce(v) => v.values.fields.source == v.values.fields.target,
+                    _ => false,
+                };
             }
-            Operation::SegmentedReduce(value) => {
-                value.values.fields.source == value.values.fields.target
-            }
-            Operation::CustomSegmentedReduce(value) => {
-                value.values.fields.source == value.values.fields.target
-            }
-            _ => false,
-        }) {
-            original.max(self.scan_source_buffer() + 1 - self.buffers.len())
-        } else {
-            original
+            let indirect = self.buffers.len() + usize::from(intermediate);
+            let mut auxiliary = usize::from(intermediate) + usize::from(prefix) + usize::from(selection);
+            if scan_alias { auxiliary = auxiliary.max(indirect + 3 - self.buffers.len()); }
+            ExecutionBuffers { indirect, auxiliary }
         }
     }
 

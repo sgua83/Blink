@@ -310,6 +310,7 @@ impl ExecutionPlan {
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn from_program(program: &Program) -> Self {
+        let buffers = program.execution_buffers();
         let stages = program
             .stages
             .iter()
@@ -369,8 +370,8 @@ impl ExecutionPlan {
                 requirements: program.requirements(),
             },
             stages,
-            indirect_buffer: program.indirect_buffer(),
-            auxiliary_buffers: program.auxiliary_buffers(),
+            indirect_buffer: buffers.indirect,
+            auxiliary_buffers: buffers.auxiliary,
             native_frame: program.native_frame,
         }
     }
