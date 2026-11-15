@@ -577,3 +577,114 @@ extern "C" BitPattern known_shifted(u64 mask,u64 bias,u32 direction,BitPattern v
   if(result.mask==0u64){return result;}
  }return result;
 }
+
+struct IntegerWideRange {IntegerWide lower;IntegerWide upper;};
+IntegerWide range_unsigned(u64 value) on cpu {return IntegerWide(value,0u64);}
+IntegerWide range_signed(i64 value) on cpu {return IntegerWide(u64(value),value<i64(0) ? 18446744073709551615u64 : 0u64);}
+IntegerWide range_add(IntegerWide a,IntegerWide b) on cpu {
+ u64 low=a.low+b.low;return IntegerWide(low,a.high+b.high+u64(low<a.low));
+}
+IntegerWide range_subtract(IntegerWide a,IntegerWide b) on cpu {
+ return IntegerWide(a.low-b.low,a.high-b.high-u64(a.low<b.low));
+}
+IntegerWide range_negate(IntegerWide value) on cpu {
+ u64 low=0u64-value.low;return IntegerWide(low,~value.high+u64(low==0u64));
+}
+bool range_less(IntegerWide a,IntegerWide b) on cpu {
+ i64 ah=i64(a.high);i64 bh=i64(b.high);return ah<bh || (ah==bh && a.low<b.low);
+}
+IntegerWide range_min(IntegerWide a,IntegerWide b) on cpu {return range_less(a,b) ? a : b;}
+IntegerWide range_max(IntegerWide a,IntegerWide b) on cpu {return range_less(a,b) ? b : a;}
+IntegerWideRange range_corners(IntegerWide a,IntegerWide b,IntegerWide c,IntegerWide d) on cpu {
+ return IntegerWideRange(range_min(range_min(a,b),range_min(c,d)),range_max(range_max(a,b),range_max(c,d)));
+}
+u64 range_magnitude(i64 value) on cpu {return value<i64(0) ? 0u64-u64(value) : u64(value);}
+IntegerWide range_product(u64 a,u64 b) on cpu {
+ u64 al=a&4294967295u64;u64 ah=a>>32u64;u64 bl=b&4294967295u64;u64 bh=b>>32u64;
+ u64 low=al*bl;u64 middle=ah*bl+(low>>32u64);u64 high=middle>>32u64;
+ middle=(middle&4294967295u64)+al*bh;
+ return IntegerWide((middle<<32u64)|(low&4294967295u64),ah*bh+high+(middle>>32u64));
+}
+IntegerWide range_signed_product(i64 a,i64 b) on cpu {
+ IntegerWide product=range_product(range_magnitude(a),range_magnitude(b));
+ return (a<i64(0))!=(b<i64(0)) ? range_negate(product) : product;
+}
+IntegerWide range_shift(IntegerWide value,u32 count) on cpu {
+ if(count==0){return value;}
+ return IntegerWide(value.low<<u64(count),(value.high<<u64(count))|(value.low>>u64(64-count)));
+}
+IntegerWide range_quotient(i64 left,i64 right) on cpu requires nonzero(right) {
+ u64 numerator=range_magnitude(left);u64 denominator;
+ if(right<i64(0)){denominator=0u64-u64(right);}else{denominator=u64(right);}
+ IntegerWide result=range_unsigned(numerator/denominator);
+ return (left<i64(0))!=(right<i64(0)) ? range_negate(result) : result;
+}
+IntegerRangePieces range_single(u64 lower,u64 upper) on cpu {return IntegerRangePieces(BitRange(lower,upper),BitRange(0u64,0u64),1);}
+extern "C" IntegerRangePieces integer_range_project(u32 width,u64 bias,IntegerWide lower,IntegerWide upper) on cpu {
+ u64 mask=truncate(18446744073709551615u64,width);IntegerWide distance=range_subtract(upper,lower);
+ if(distance.high!=0u64 || distance.low>=mask){return range_single(0u64,mask);}
+ u64 a=(lower.low&mask)^bias;u64 b=(upper.low&mask)^bias;
+ IntegerWide offset=range_unsigned(bias);IntegerWide first=range_add(lower,offset);IntegerWide last=range_add(upper,offset);
+ if(first.high==last.high && (first.low&~mask)==(last.low&~mask)){return range_single(a,b);}
+ return IntegerRangePieces(BitRange(0u64,b),BitRange(a,mask),2);
+}
+IntegerWide range_number(u32 width,u32 signed,u64 ordered) on cpu {
+ if(signed!=0){return range_signed(signed_value(ordered^(1u64<<u64(width-1)),width));}
+ return range_unsigned(ordered);
+}
+extern "C" IntegerRangePieces integer_range_cast(u32 source_width,u32 source_signed,u32 target_width,u64 target_bias,BitRange value) on cpu {
+ return integer_range_project(target_width,target_bias,range_number(source_width,source_signed,value.lower),range_number(source_width,source_signed,value.upper));
+}
+extern "C" IntegerRangePieces integer_range_unary(IntegerRangeUnary operation,u32 width,u32 signed,BitRange value) on cpu {
+ u64 mask=truncate(18446744073709551615u64,width);u64 bias=signed!=0 ? 1u64<<u64(width-1) : 0u64;
+ if(operation==IntegerRangeUnary::BitNot){return range_single((~value.upper)&mask,(~value.lower)&mask);}
+ return integer_range_project(width,bias,range_negate(range_number(width,signed,value.upper)),range_negate(range_number(width,signed,value.lower)));
+}
+extern "C" IntegerRangePieces integer_range_counts(u32 width,u64 bias,BitRange value) on cpu {
+ u64 mask=u64(width-1);if(value.upper-value.lower>=mask){return range_single(bias,bias|mask);}
+ u64 a=value.lower&mask;u64 b=value.upper&mask;
+ if(a<=b){return range_single(bias|a,bias|b);}
+ return IntegerRangePieces(BitRange(bias,bias|b),BitRange(bias|a,bias|mask),2);
+}
+IntegerWideRange range_signed_arithmetic(IntegerRangeOperation operation,u32 width,BitRange left,BitRange right) on cpu {
+ u64 bias=1u64<<u64(width-1);i64 al=signed_value(left.lower^bias,width);i64 ah=signed_value(left.upper^bias,width);
+ i64 bl=signed_value(right.lower^bias,width);i64 bh=signed_value(right.upper^bias,width);
+ if(operation==IntegerRangeOperation::Minimum){return IntegerWideRange(range_signed(min(al,bl)),range_signed(min(ah,bh)));}
+ if(operation==IntegerRangeOperation::Maximum){return IntegerWideRange(range_signed(max(al,bl)),range_signed(max(ah,bh)));}
+ if(operation==IntegerRangeOperation::Add){return IntegerWideRange(range_add(range_signed(al),range_signed(bl)),range_add(range_signed(ah),range_signed(bh)));}
+ if(operation==IntegerRangeOperation::Subtract){return IntegerWideRange(range_subtract(range_signed(al),range_signed(bh)),range_subtract(range_signed(ah),range_signed(bl)));}
+ if(operation==IntegerRangeOperation::Multiply){return range_corners(range_signed_product(al,bl),range_signed_product(al,bh),range_signed_product(ah,bl),range_signed_product(ah,bh));}
+ if(operation==IntegerRangeOperation::Divide || operation==IntegerRangeOperation::Remainder){
+  if(bl!=i64(0) && bh!=i64(0) && (bl<i64(0))==(bh<i64(0))){
+   if(operation==IntegerRangeOperation::Divide){return range_corners(range_quotient(al,bl),range_quotient(al,bh),range_quotient(ah,bl),range_quotient(ah,bh));}
+   u64 maximum=max(range_magnitude(bl),range_magnitude(bh))-1u64;
+   return IntegerWideRange(range_signed(max(min(al,i64(0)),-i64(maximum))),range_signed(min(max(ah,i64(0)),i64(maximum))));
+  }
+  return IntegerWideRange(range_signed(-i64(1u64<<u64(width-1))),range_signed(i64((1u64<<u64(width-1))-1u64)));
+ }
+ if(operation==IntegerRangeOperation::ShiftRight){return range_corners(range_signed(al>>bl),range_signed(al>>bh),range_signed(ah>>bl),range_signed(ah>>bh));}
+ return range_corners(range_shift(range_signed(al),u32(bl)),range_shift(range_signed(al),u32(bh)),range_shift(range_signed(ah),u32(bl)),range_shift(range_signed(ah),u32(bh)));
+}
+IntegerWideRange range_unsigned_arithmetic(IntegerRangeOperation operation,u32 width,BitRange left,BitRange right) on cpu {
+ u64 al=left.lower;u64 ah=left.upper;u64 bl=right.lower;u64 bh=right.upper;
+ if(operation==IntegerRangeOperation::Minimum){return IntegerWideRange(range_unsigned(min(al,bl)),range_unsigned(min(ah,bh)));}
+ if(operation==IntegerRangeOperation::Maximum){return IntegerWideRange(range_unsigned(max(al,bl)),range_unsigned(max(ah,bh)));}
+ if(operation==IntegerRangeOperation::Add){return IntegerWideRange(range_add(range_unsigned(al),range_unsigned(bl)),range_add(range_unsigned(ah),range_unsigned(bh)));}
+ if(operation==IntegerRangeOperation::Subtract){return IntegerWideRange(range_subtract(range_unsigned(al),range_unsigned(bh)),range_subtract(range_unsigned(ah),range_unsigned(bl)));}
+ if(operation==IntegerRangeOperation::Multiply){return IntegerWideRange(range_product(al,bl),range_product(ah,bh));}
+ if(operation==IntegerRangeOperation::Divide || operation==IntegerRangeOperation::Remainder){
+  if(bl!=0u64 && bh!=0u64){
+   if(operation==IntegerRangeOperation::Divide){return IntegerWideRange(range_unsigned(al/bh),range_unsigned(ah/bl));}
+   return IntegerWideRange(range_unsigned(0u64),range_unsigned(min(ah,bh-1u64)));
+  }
+  return IntegerWideRange(range_unsigned(0u64),range_unsigned(truncate(18446744073709551615u64,width)));
+ }
+ if(operation==IntegerRangeOperation::ShiftRight){return IntegerWideRange(range_unsigned(al>>bh),range_unsigned(ah>>bl));}
+ return IntegerWideRange(range_shift(range_unsigned(al),u32(bl)),range_shift(range_unsigned(ah),u32(bh)));
+}
+extern "C" IntegerRangePieces integer_range(IntegerRangeOperation operation,u32 width,u32 signed,BitRange left,BitRange right) on cpu {
+ IntegerWideRange result;u64 bias=0u64;
+ if(signed!=0){result=range_signed_arithmetic(operation,width,left,right);bias=1u64<<u64(width-1);}
+ else{result=range_unsigned_arithmetic(operation,width,left,right);}
+ return integer_range_project(width,bias,result.lower,result.upper);
+}

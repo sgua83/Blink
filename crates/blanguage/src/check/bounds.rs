@@ -3,6 +3,7 @@ use super::*;
 mod floating;
 mod bitwise;
 mod known_bits;
+mod integer;
 mod contract;
 pub(super) use contract::Normalizer;
 use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::ManuallyDrop, sync::Arc};
@@ -358,10 +359,7 @@ impl ScalarRanges {
         let range=self.restrict(0,source.bit_mask());
         let range=if source.is_integer()&&nonzero{range.without(source.order_bias())}else{range};
         if source==target{return range;}
-        range.map(|(lower,upper)|{
-            let decode=|bits|if source.is_signed(){i128::from(source.signed(bits^source.order_bias()))}else{i128::from(bits)};
-            integer_result_range((decode(lower),decode(upper)),target.order_bias(),target.bit_width())
-        })
+        range.map(|range|integer::cast(source,target,range))
     }
     fn from_intervals(intervals: impl IntoIterator<Item = (Bits, Bits)>) -> Self {
         let mut intervals: Vec<_> = intervals.into_iter().filter(|(a, b)| a <= b).collect();
@@ -431,20 +429,7 @@ impl ScalarRanges {
         Self::from_intervals(self.0.iter().flat_map(|&interval| operation(interval).0))
     }
     fn shift_counts(&self, scalar: Scalar) -> Self {
-        let bias = scalar.order_bias();
-        self.map(|(lower, upper)| {
-            let mask = Bits::from(scalar.bit_width() - 1);
-            if upper - lower >= mask {
-                return Self::interval(bias, bias | mask);
-            }
-            // 两种有序编码只差符号位，低五位与原移位量相同。
-            let (a, b) = (lower & mask, upper & mask);
-            if a <= b {
-                Self::interval(bias | a, bias | b)
-            } else {
-                Self::from_sorted_intervals([(bias, bias | b), (bias | a, bias | mask)])
-            }
-        })
+        self.map(|range| integer::shift_counts(scalar,range))
     }
     fn combine(
         &self,
@@ -4186,7 +4171,6 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
     proof
 }
 fn arithmetic_ranges(op: &str, scalar: Scalar, left: ScalarRanges, mut right: ScalarRanges) -> ScalarRanges {
-    let signed = scalar.is_signed();
     if matches!(op, "<<" | ">>") {
         right = right.shift_counts(scalar);
     }
@@ -4199,8 +4183,7 @@ fn arithmetic_ranges(op: &str, scalar: Scalar, left: ScalarRanges, mut right: Sc
             "&" => bitwise(bitwise::Operation::And),
             "|" => bitwise(bitwise::Operation::Or),
             "^" => bitwise(bitwise::Operation::Xor),
-            _ if signed => signed_range(op, left, right, scalar),
-            _ => unsigned_range(op, left, right, scalar),
+            _ => integer::arithmetic(op,scalar,left,right),
         }
     });
     range
@@ -4365,108 +4348,19 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
     let scalar = value.ty.components[0].0;
     if op == UnaryOp::FloatNegate {
         proof.ranges = (0..value.regs.len()).map(|i| floating::negate(value, i)).collect();
-    } else if scalar.is_integer() && !scalar.is_signed() {
-        proof.ranges = (0..value.regs.len())
-            .map(|i| {
-                value.component_ranges(i).map(|(lower, upper)| match op {
-                    UnaryOp::BitNot => ScalarRanges::interval(!upper & scalar.bit_mask(), !lower & scalar.bit_mask()),
-                    UnaryOp::UnsignedNegate => {
-                        integer_result_range((-i128::from(upper), -i128::from(lower)), 0, scalar.bit_width())
-                    }
-                    _ => ScalarRanges::default(),
-                })
-            })
-            .collect();
-    } else if scalar.is_integer() && scalar.is_signed() {
-        proof.ranges = (0..value.regs.len())
-            .map(|i| {
-                value.component_ranges(i).map(|(lower, upper)| match op {
-                    UnaryOp::BitNot => ScalarRanges::interval(!upper & scalar.bit_mask(), !lower & scalar.bit_mask()),
-                    UnaryOp::SignedNegate => integer_result_range(
-                        (
-                            -i128::from(scalar.signed(upper ^ scalar.order_bias())),
-                            -i128::from(scalar.signed(lower ^ scalar.order_bias())),
-                        ),
-                        scalar.order_bias(), scalar.bit_width(),
-                    ),
-                    _ => ScalarRanges::default(),
-                })
-            })
-            .collect();
+    } else if scalar.is_integer() {
+        let operation=match op {
+            UnaryOp::BitNot=>Some(integer::Unary::BitNot),
+            UnaryOp::UnsignedNegate|UnaryOp::SignedNegate=>Some(integer::Unary::Negate),
+            _=>None,
+        };
+        proof.ranges=(0..value.regs.len()).map(|i|value.component_ranges(i).map(|range|
+            operation.map_or_else(ScalarRanges::default,|operation|integer::unary(operation,scalar,range)))).collect();
     }
     proof
 }
-fn signed_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> ScalarRanges {
-    let decode = |value| i128::from(scalar.signed(value ^ scalar.order_bias()));
-    let (al, ah, bl, bh) = (decode(al), decode(ah), decode(bl), decode(bh));
-    let corners = |f: fn(i128, i128) -> i128| {
-        let values = [f(al, bl), f(al, bh), f(ah, bl), f(ah, bh)];
-        (*values.iter().min().unwrap(), *values.iter().max().unwrap())
-    };
-    let range = match op {
-        "min" => (al.min(bl), ah.min(bh)),
-        "max" => (al.max(bl), ah.max(bh)),
-        "+" => (al + bl, ah + bh),
-        "-" => (al - bh, ah - bl),
-        "*" => corners(|a, b| a * b),
-        "/" if bl > 0 || bh < 0 => corners(|a, b| a / b),
-        "%" if bl > 0 || bh < 0 => {
-            let maximum = bl.abs().max(bh.abs()) - 1;
-            (al.min(0).max(-maximum), ah.max(0).min(maximum))
-        }
-        ">>" => corners(|a, b| a >> b),
-        "<<" => corners(|a, b| a * (1i128 << b)),
-        _ => return ScalarRanges::interval(0, scalar.bit_mask()),
-    };
-    integer_result_range(range, scalar.order_bias(), scalar.bit_width())
-}
-fn integer_result_range((lower, upper): (i128, i128), bias: Bits, width: u32) -> ScalarRanges {
-    // 按有序周期投影；不足一个完整周期的跨断点结果保留两侧区间。
-    let period = 1i128 << width;
-    let mask = (period - 1) as Bits;
-    let offset = i128::from(bias);
-    if upper - lower >= period - 1 {
-        return ScalarRanges::interval(0, mask);
-    }
-    let (a, b) = ((lower as Bits & mask) ^ bias, (upper as Bits & mask) ^ bias);
-    if (lower + offset).div_euclid(period) == (upper + offset).div_euclid(period) {
-        ScalarRanges::interval(a, b)
-    } else {
-        ScalarRanges::from_sorted_intervals([(0, b), (a, mask)])
-    }
-}
-fn unsigned_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> ScalarRanges {
-    if op == "-" {
-        return integer_result_range((i128::from(al)-i128::from(bh), i128::from(ah)-i128::from(bl)), 0, scalar.bit_width());
-    }
-    let (al, ah, bl, bh) = (
-        u128::from(al),
-        u128::from(ah),
-        u128::from(bl),
-        u128::from(bh),
-    );
-    let range = match op {
-        "min" => (al.min(bl), ah.min(bh)),
-        "max" => (al.max(bl), ah.max(bh)),
-        "+" => (al + bl, ah + bh),
-        "*" => (al * bl, ah * bh),
-        "/" if bl > 0 => (al / bh, ah / bl),
-        "%" if bl > 0 => (0, ah.min(bh - 1)),
-        ">>" => (al >> bh, ah >> bl),
-        "<<" => (al << bl, ah << bh),
-        _ => return ScalarRanges::interval(0, scalar.bit_mask()),
-    };
-    // u64乘法的完整区间可能超过i128；按无符号数学值投影，避免先截断符号。
-    let period = 1u128 << scalar.bit_width();
-    if range.1 - range.0 >= period - 1 {
-        return ScalarRanges::interval(0, scalar.bit_mask());
-    }
-    let (lower, upper) = (range.0 as Bits & scalar.bit_mask(), range.1 as Bits & scalar.bit_mask());
-    if range.0 / period == range.1 / period {
-        ScalarRanges::interval(lower, upper)
-    } else {
-        ScalarRanges::from_sorted_intervals([(0, upper), (lower, scalar.bit_mask())])
-    }
+fn integer_result_range(range:(i128,i128),bias:Bits,width:u32)->ScalarRanges {
+    integer::project(range,bias,width)
 }
 pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
     domains

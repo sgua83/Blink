@@ -78,3 +78,13 @@ extern "C" BitPattern known_common(u64 target_mask,BitPattern a,u64 bm,u64 sign_
 extern "C" BitPattern known_bitwise(IntegerBitwise operation,BitPattern a,BitPattern b) on cpu;
 extern "C" BitPattern known_ranges(u64 mask,u64 bias,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read);
 extern "C" BitPattern known_shifted(u64 mask,u64 bias,u32 direction,BitPattern value,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read);
+
+enum IntegerRangeOperation : u32 { Minimum=0;Maximum=1;Add=2;Subtract=3;Multiply=4;Divide=5;Remainder=6;ShiftLeft=7;ShiftRight=8; };
+enum IntegerRangeUnary : u32 { BitNot=0;Negate=1; };
+struct IntegerWide {u64 low;u64 high;};
+struct IntegerRangePieces {BitRange first;BitRange second;u32 count;};
+extern "C" IntegerRangePieces integer_range(IntegerRangeOperation operation,u32 width,u32 signed,BitRange left,BitRange right) on cpu;
+extern "C" IntegerRangePieces integer_range_cast(u32 source_width,u32 source_signed,u32 target_width,u64 target_bias,BitRange value) on cpu;
+extern "C" IntegerRangePieces integer_range_unary(IntegerRangeUnary operation,u32 width,u32 signed,BitRange value) on cpu;
+extern "C" IntegerRangePieces integer_range_counts(u32 width,u64 bias,BitRange value) on cpu;
+extern "C" IntegerRangePieces integer_range_project(u32 width,u64 bias,IntegerWide lower,IntegerWide upper) on cpu;
