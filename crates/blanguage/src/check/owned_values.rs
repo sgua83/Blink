@@ -1,5 +1,7 @@
 //! 拥有值沿原 Frame 持有资源；记录按字段组合，结果判别实际交付或释放的载荷。
 use super::*;
+#[path="owned_values/model.rs"]
+mod model;
 use application::{Data, DataPayload, Ownership};
 use returns::Returned;
 
@@ -15,221 +17,20 @@ pub(super) struct OwnedValuePayload {
 }
 impl OwnedValuePayload {
     pub(super) fn place(&self)->Option<Place>{self.place.clone()}
-    pub(super) fn join(&mut self, other: OwnedValue, stored: bool, choice: Option<&bounds::Condition>) {
-        if self.ownership != other.ownership {
-            self.ownership = Ownership::Moved;
-        }
-        self.value.proof = if stored { let mut proof=self.value.proof.clone(); proof.join_condition(&other.value.proof,self.value.regs.len(),choice); proof } else { bounds::Proof::common(&self.value, &other.value,choice,None) };
-        self.value.uniform &= other.value.uniform;
-        if self.value.constant != other.value.constant {
-            self.value.constant = None;
-        }
-        for (current, other) in self.payloads.iter_mut().zip(other.payloads) {
-            if let Some(other) = other {
-                if let Some(current) = current {
-                    current.join(*other,stored,choice);
-                } else {
-                    *current = Some(other);
-                }
-            }
-        }
-    }
-    pub(super) fn all_available(&self) -> bool {
-        self.ownership==Ownership::Owned && self.available()
-    }
-    pub(super) fn available(&self)->bool {
-        self.ownership.available()
-            && self.payloads.iter().enumerate().all(|(i, p)| {
-                if !self.value.ty.has_variants() && !self.value.ty.aggregate_part(i).1.owns_resources() {
-                    return true;
-                }
-                match p.as_deref() {
-                    Some(Returned::Dataset(d)) => d.ownership.available(),
-                    Some(Returned::OwnedValue(v)) => v.available(),
-                    None => self.value.ty.has_variants(),
-                    _ => true,
-                }
-            })
-    }
-    pub(super) fn borrow(&mut self) {
-        self.ownership=Ownership::Borrowed;
-        for item in self.payloads.iter_mut().flatten() {
-            match item.as_mut() {
-                Returned::Dataset(data)=>{
-                    data.ownership=Ownership::Borrowed;data.access=Access::Read;
-                    if data.root.proof.view_borrow(0).empty(){data.root.proof=data.root.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(data.root.identity())]));}
-                }
-                Returned::OwnedValue(value)=>value.borrow(),_=>{},
-            }
-        }
-    }
-    pub(super) fn incomplete(&self) -> bool {
-        self.payloads.iter().enumerate().any(|(i,p)|{
-            if !self.value.ty.has_variants() && !self.value.ty.aggregate_part(i).1.owns_resources(){return false;}
-            p.is_none() || matches!(p.as_deref(),Some(Returned::OwnedValue(v)) if v.incomplete()) || matches!(p.as_deref(),Some(Returned::Dataset(d)) if d.ownership==Ownership::Moved)
-        })
-    }
-    pub(super) fn loop_compatible(
-        &self,
-        other: &Self,
-        builder: &mut Builder<'_>,
-        span: Span,
-        path: &bounds::Clause,
-        inputs: &BTreeMap<ValueIdentity,bounds::Proof>,
-    ) -> Result<bool> {
-        if !self.ownership.loop_compatible(&other.ownership,inputs,path){return Ok(false);}
-        let path=other.ownership.presence().condition().assume(path,true);
-        if !path.possible(){return Ok(true);}
-        for(a,b)in self.payloads.iter().zip(&other.payloads){
-            let compatible=match(a.as_deref(),b.as_deref()){
-                (Some(Returned::Dataset(a)),Some(Returned::Dataset(b)))=>a.loop_compatible(b,builder,span,&path,inputs)?,
-                (Some(Returned::OwnedValue(a)),Some(Returned::OwnedValue(b)))=>a.loop_compatible(b,builder,span,&path,inputs)?,
-                (None,Some(_))=>false,
-                _=>true,
-            };
-            if !compatible{return Ok(false);}
-        }
-        Ok(true)
-    }
-    pub(super) fn invalidate(&mut self) {
-        self.value.constant = None;
-        self.value.proof = self.value.proof.borrow_state();
-        self.value.uniform = false;
-        for item in self.payloads.iter_mut().flatten() {
-            match item.as_mut() {
-                Returned::Dataset(data) => {
-                    data.root.proof = data.root.proof.borrow_state();
-                    data.length.proof = data
-                        .count
-                        .map(|n| bounds::Proof::unsigned(n, n))
-                        .unwrap_or_default();
-                    data.length.constant = None;
-                    data.length.uniform = false;
-                }
-                Returned::OwnedValue(value) => value.invalidate(),
-                Returned::Value(value) => {
-                    value.proof = bounds::Proof::default();
-                    value.constant = None;
-                    value.uniform = false;
-                }
-                Returned::Unit => {}
-            }
-        }
-    }
-    pub(super) fn invalidate_components(
-        &mut self,
-        components: &[usize],
-        borrowed: Option<ValueIdentity>,
-    ) {
-        if self.value.ty.has_variants() {
-            self.invalidate();
-            return;
-        }
-        self.value.proof.assign(
-            components,
-            self.value.ty.components.len(),
-            bounds::Proof::default(),
-        );
-        self.value.constant = None;
-        self.value.uniform = false;
-        for i in 0..self.value.ty.aggregate_len() {
-            let (offset, ty) = self.value.ty.aggregate_part(i);
-            if !ty.owns_resources() {
-                continue;
-            }
-            let selected: Vec<_> = ty
-                .components
-                .iter()
-                .enumerate()
-                .filter_map(|(j, (_, at))| {
-                    let at = self
-                        .value
-                        .ty
-                        .components
-                        .iter()
-                        .position(|(_, word)| *word == offset + at)
-                        .unwrap();
-                    components.contains(&at).then_some(j)
-                })
-                .collect();
-            if selected.is_empty() {
-                continue;
-            }
-            if let Some(item) = &mut self.payloads[i] {
-                match item.as_mut() {
-                    Returned::OwnedValue(v) => v.invalidate_components(&selected, borrowed),
-                    Returned::Dataset(d) => {
-                        if borrowed.is_some_and(|id| d.root.proof.known_identity(0) == Some(id)) {
-                            continue;
-                        }
-                        d.root.proof = d.root.proof.borrow_state();
-                        d.length.proof = d
-                            .count
-                            .map(|n| bounds::Proof::unsigned(n, n))
-                            .unwrap_or_default();
-                        d.length.constant = None;
-                        d.length.uniform = false;
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    pub(super) fn mark_moved(&mut self) {
-        if self.value.ty.has_owned_presence() {
-            self.ownership = Ownership::Moved;
-            return;
-        }
-        self.ownership = Ownership::Owned;
-        for item in self.payloads.iter_mut().flatten() {
-            match item.as_mut() {
-                Returned::Dataset(d) => {
-                    d.ownership = Ownership::Moved;
-                    d.residency = residency::Residency::default();
-                }
-                Returned::OwnedValue(v) => v.mark_moved(),
-                _ => {}
-            }
-        }
-    }
-    pub(super) fn handles(&self) -> Vec<ValueIdentity> {
-        self.payloads
-            .iter()
-            .flatten()
-            .flat_map(|item| match item.as_ref() {
-                Returned::Dataset(d) => vec![d.root.identity()],
-                Returned::OwnedValue(v) => v.handles(),
-                _ => Vec::new(),
-            })
-            .collect()
-    }
-    pub(super) fn resources(&self) -> Vec<&Data> {
-        if self.ownership == Ownership::Moved {
-            return Vec::new();
-        }
-        self.payloads
-            .iter()
-            .flatten()
-            .flat_map(|item| match item.as_ref() {
-                Returned::Dataset(d) => vec![d],
-                Returned::OwnedValue(v) => v.resources(),
-                _ => Vec::new(),
-            })
-            .collect()
-    }
-    pub(super) fn resources_mut(&mut self, visit: &mut impl FnMut(&mut Data)) {
-        if self.ownership == Ownership::Moved {
-            return;
-        }
-        for item in self.payloads.iter_mut().flatten() {
-            match item.as_mut() {
-                Returned::Dataset(d) => visit(d),
-                Returned::OwnedValue(v) => v.resources_mut(visit),
-                _ => {}
-            }
-        }
-    }
+    pub(super) fn join(&mut self,other:OwnedValue,stored:bool,choice:Option<&bounds::Condition>){model::join(self,other,stored,choice)}
+    pub(super) fn all_available(&self)->bool{model::all_available(self)}
+    pub(super) fn available(&self)->bool{model::available(self)}
+    pub(super) fn borrow(&mut self){model::borrow(self)}
+    pub(super) fn incomplete(&self)->bool{model::incomplete(self)}
+    pub(super) fn loop_compatible(&self,other:&Self,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause,inputs:&BTreeMap<ValueIdentity,bounds::Proof>)->Result<bool>{model::loop_compatible(self,other,builder,span,path,inputs)}
+    pub(super) fn invalidate(&mut self){model::invalidate(self)}
+    pub(super) fn invalidate_components(&mut self,components:&[usize],borrowed:Option<ValueIdentity>){model::invalidate_components(self,components,borrowed)}
+    pub(super) fn mark_moved(&mut self){model::mark_moved(self)}
+    pub(super) fn handles(&self)->Vec<ValueIdentity>{model::handles(self)}
+    pub(super) fn resources(&self)->Vec<&Data>{model::resources(self)}
+    pub(super) fn resources_mut(&mut self,visit:&mut impl FnMut(&mut Data)){model::resources_mut(self,visit)}
 }
+
 pub(super) fn storage_type(world:&World,ty:&TypeName,context:(&Source,&str,&[String]),span:Span)->Result<Ty> {
     let(source,module,imports)=context;
     let value=world.ty(ty,source,span,module,imports)?;
