@@ -6,12 +6,8 @@ type Slots = BTreeSet<PrivateSlot>;
 #[derive(Clone, Copy)]
 struct Block { instructions: *mut Inst, count: usize }
 impl Block {
-    fn from(code: &mut [Inst]) -> Self { Self { instructions: code.as_mut_ptr(), count: code.len() } }
-    const EMPTY: Self = Self { instructions: std::ptr::null_mut(), count: 0 };
     unsafe fn slice<'a>(self) -> &'a [Inst] { unsafe { std::slice::from_raw_parts(self.instructions, self.count) } }
 }
-#[repr(u32)]
-enum Kind { Ordinary, Scope, If, Loop, LocalWrite, IndexedWrite, Division, Collective }
 #[repr(u32)]
 enum RemovalKind { Values, Division, DirectWrite, IndexedWrite }
 #[repr(u32)]
@@ -21,22 +17,17 @@ enum Space { Register, Local }
 #[repr(u32)]
 enum Action { Copy, Union, InsertRegister, RemoveRegister, InsertLocal, RemoveLocal, Swap }
 #[repr(C)]
-struct Node {
-    instruction: *mut Inst, first: Block, second: Block,
-    first_code: *mut Vec<Inst>, second_code: *mut Vec<Inst>, payload: *mut std::ffi::c_void,
-    first_slot: usize, second_slot: usize, index: Reg, word: usize, value: Reg,
-    quotient: Reg, remainder: Reg, kind: Kind, flags: u32,
-}
+struct Span { data: *mut std::ffi::c_void, count: usize, stride: usize }
 #[repr(C)]
-struct Results { present: u32, needed: u32 }
+struct Storage { first_code: *mut Vec<Inst>, second_code: *mut Vec<Inst>, payload: *mut std::ffi::c_void }
 #[repr(C)]
-struct Removal { kind: RemovalKind, value: Reg, index: Reg, length: usize, word: usize, division: *const IntegerDivisionResult }
+struct Removal { kind: RemovalKind, value: Reg, index: Reg, length: usize, word: usize }
 type Contains = unsafe extern "C" fn(*const Slots, Space, usize) -> u32;
 #[repr(C)]
 struct Host {
-    read_node: unsafe extern "C" fn(Block, usize) -> Node,
-    read_block: unsafe extern "C" fn(*mut Vec<Inst>) -> Block,
-    results: unsafe extern "C" fn(*const Inst, *const Slots) -> Results,
+    ir: crate::ir::dataflow::Host,
+    storage: unsafe extern "C" fn(*mut Inst) -> Storage,
+    read_block: unsafe extern "C" fn(*mut Vec<Inst>) -> Span,
     contains: Contains,
     change: unsafe extern "C" fn(Action, *mut Slots, *const Slots, usize),
     clone_set: unsafe extern "C" fn(*const Slots) -> *mut Slots,
@@ -53,64 +44,28 @@ unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::eliminate_instruction"]
     fn eliminate_instruction(instruction: *mut Inst, needed: *mut Slots, break_live: *const Slots,
         continue_live: *const Slots, exit_live: *const Slots, empty: *const Slots, context: *mut Context<'_>, host: Host) -> u32;
-    #[link_name = "bootstrap.stage_fusion::dce_result"]
-    fn visit_result(results: *mut Results, needed: *const Slots, reg: Reg, contains: Contains) -> u32;
     #[link_name = "bootstrap.stage_fusion::dce_result_needed"]
     fn result_needed(needed: *const Slots, reg: Reg, contains: Contains) -> u32;
 }
 
-unsafe extern "C" fn read_node(block: Block, index: usize) -> Node {
-    let instruction = unsafe { block.instructions.add(index) };
-    let inst = unsafe { &mut *instruction };
-    let exempt = matches!(&inst.kind, InstKind::Atomic(_) | InstKind::Append(_) | InstKind::Print { .. } | InstKind::Call(_));
-    let observable = matches!(&inst.kind, InstKind::Loop { .. } | InstKind::StoreIndexed { .. } | InstKind::Store { .. }
-        | InstKind::Atomic(_) | InstKind::Append(_) | InstKind::Print { .. } | InstKind::Call(_)
-        | InstKind::TilePublish(_) | InstKind::TileCollective(_) | InstKind::TileBarrier);
-    let mut node = Node { instruction, first: Block::EMPTY, second: Block::EMPTY,
-        first_code: std::ptr::null_mut(), second_code: std::ptr::null_mut(), payload: std::ptr::null_mut(),
-        first_slot: 0, second_slot: 0, index: 0, word: 0, value: 0, quotient: 0, remainder: 0,
-        kind: Kind::Ordinary, flags: u32::from(exempt) | (u32::from(observable) << 1) };
-    match &mut inst.kind {
-        InstKind::Scope(body) => {
-            node.kind = Kind::Scope; node.first = Block::from(body); node.first_code = body;
-        }
-        InstKind::If { condition, yes, no } => {
-            node.kind = Kind::If; node.first_slot = *condition;
-            node.first = Block::from(yes); node.first_code = yes;
-            node.second = Block::from(no); node.second_code = no;
-        }
-        InstKind::Loop { condition, test, body } => {
-            node.kind = Kind::Loop; node.first_slot = *test;
-            node.first = Block::from(condition); node.first_code = condition;
-            node.second = Block::from(body); node.second_code = body;
-        }
-        InstKind::StoreLocal(slot, value) => {
-            node.kind = Kind::LocalWrite; node.first_slot = *slot; node.value = *value;
-        }
-        InstKind::StoreLocalIndexed { base, len, index, word, value } => {
-            node.kind = Kind::IndexedWrite; node.first_slot = *base; node.second_slot = *len;
-            node.index = *index; node.word = *word as usize; node.value = *value;
-        }
-        InstKind::IntegerDivide { result, .. } => {
-            node.kind = Kind::Division;
-            if let Some(reg) = result.quotient() { node.quotient = reg; node.flags |= 4; }
-            if let Some(reg) = result.remainder() { node.remainder = reg; node.flags |= 8; }
-            node.payload = (result as *mut IntegerDivisionResult).cast();
-        }
-        InstKind::TileCollective(collective) => {
-            node.kind = Kind::Collective; node.payload = (collective as *mut TileCollective).cast();
-        }
+// Only exclusive addresses of original owning fields. B has already consumed
+// the immutable scalar/tag projection before requesting these physical owners.
+unsafe extern "C" fn storage(instruction: *mut Inst) -> Storage {
+    let kind = unsafe { &mut (*instruction).kind };
+    let mut fields = Storage { first_code: std::ptr::null_mut(), second_code: std::ptr::null_mut(), payload: std::ptr::null_mut() };
+    match kind {
+        InstKind::Scope(body) => fields.first_code = body,
+        InstKind::If { yes, no, .. } => { fields.first_code = yes; fields.second_code = no; }
+        InstKind::Loop { condition, body, .. } => { fields.first_code = condition; fields.second_code = body; }
+        InstKind::IntegerDivide { result, .. } => fields.payload = (result as *mut IntegerDivisionResult).cast(),
+        InstKind::TileCollective(collective) => fields.payload = (collective as *mut TileCollective).cast(),
         _ => {}
     }
-    node
+    fields
 }
-unsafe extern "C" fn read_block(code: *mut Vec<Inst>) -> Block { Block::from(unsafe { &mut *code }) }
-unsafe extern "C" fn results(inst: *const Inst, needed: *const Slots) -> Results {
-    let mut output = Results { present: 0, needed: 0 };
-    for reg in unsafe { &*inst }.results() {
-        if unsafe { visit_result(&mut output, needed, reg, contains) } == 0 { break; }
-    }
-    output
+unsafe extern "C" fn read_block(code: *mut Vec<Inst>) -> Span {
+    let code = unsafe { &mut *code };
+    Span { data: code.as_mut_ptr().cast(), count: code.len(), stride: std::mem::size_of::<Inst>() }
 }
 unsafe extern "C" fn contains(slots: *const Slots, space: Space, slot: usize) -> u32 {
     let slot = match space { Space::Register => PrivateSlot::Register(slot), Space::Local => PrivateSlot::Local(slot) };
@@ -146,8 +101,8 @@ unsafe extern "C" fn record(context: *mut Context<'_>, instruction: *const Inst,
     let operation = match removal.kind {
         RemovalKind::Values | RemovalKind::Division => EliminatedOperation::ValueResults {
             result_types: inst.results().map(|reg| context.registers[reg]).collect(),
-            integer_division_results: match removal.kind {
-                RemovalKind::Division => Some(unsafe { *removal.division }.outputs().map(|(role, _)| role).collect()),
+            integer_division_results: match &inst.kind {
+                InstKind::IntegerDivide { result, .. } => Some(result.outputs().map(|(role, _)| role).collect()),
                 _ => None,
             },
             origin,
@@ -179,7 +134,7 @@ unsafe extern "C" fn prune_division(instruction: *mut Inst, result: *mut Integer
 unsafe extern "C" fn prune_collective(collective: *mut TileCollective, needed: *const Slots) {
     unsafe { &mut *collective }.results.retain(|(_, reg)| unsafe { result_needed(needed, *reg, contains) } != 0);
 }
-const HOST: Host = Host { read_node, read_block, results, contains, change, clone_set, drop_set,
+const HOST: Host = Host { ir: crate::ir::dataflow::HOST, storage, read_block, contains, change, clone_set, drop_set,
     eliminate_block: block, live_before: before, loop_live: header, record, prune_division, prune_collective };
 unsafe extern "C" fn block(code: *mut Vec<Inst>, needed: *mut Slots, brk: *const Slots,
     cont: *const Slots, exit: *const Slots, context: *mut Context<'_>) {
