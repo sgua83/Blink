@@ -25,6 +25,16 @@ struct FieldHost {
     types: Host,
     part: unsafe extern "C" fn(*const Ty, usize) -> Part,
 }
+#[repr(C)]
+struct Text { bytes: *const u8, length: usize }
+#[repr(C)]
+struct PathEntry { name: Text, part: Part, discriminant: u32 }
+#[repr(C)]
+struct PathHost {
+    fields: FieldHost,
+    entry: unsafe extern "C" fn(*const Ty, Child, usize) -> PathEntry,
+    tag: unsafe extern "C" fn(*const Ty, u32) -> u32,
+}
 unsafe extern "C" {
     #[link_name = "bootstrap.type_layout::contains"]
     fn b_contains(value: *const Ty, query: Query, host: Host) -> u32;
@@ -37,6 +47,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.type_layout::task_output_owners"]
     fn b_task_output_owners(value: *const Ty, base: u32, host: FieldHost, context: *mut c_void,
         emit: unsafe extern "C" fn(*mut c_void, u32, *const Ty));
+    #[link_name = "bootstrap.type_layout::field"]
+    fn b_field(value: *const Ty, path: Text, words: *const u32, word_count: usize,
+        active: u32, host: PathHost) -> Part;
 }
 
 pub(super) fn contains(value: &Ty, query: Query) -> bool {
@@ -96,4 +109,31 @@ pub(super) fn zero_valid(value: &Ty) -> bool {
 }
 unsafe extern "C" fn discriminant(value: *const Ty, index: usize) -> u32 {
     unsafe { &*value }.variants[index].discriminant
+}
+
+pub(super) fn field<'a>(value: &'a Ty, path: &str, words: Option<&[u32]>) -> Option<(u32, &'a Ty)> {
+    let (words, word_count, active) = match words {
+        Some(words) => (words.as_ptr(), words.len(), 1),
+        None => (ptr::null(), 0, 0),
+    };
+    let found = unsafe {
+        b_field(value, Text { bytes: path.as_ptr(), length: path.len() }, words, word_count,
+            active, PathHost { fields: FieldHost { types: Host { inspect, child }, part }, entry, tag })
+    };
+    if found.value.is_null() { None } else { Some((found.offset, unsafe { &*found.value })) }
+}
+unsafe extern "C" fn entry(value: *const Ty, kind: Child, index: usize) -> PathEntry {
+    let ty = unsafe { &*value };
+    let (name, offset, value, discriminant) = if matches!(kind, Child::Variant) {
+        let variant = &ty.variants[index];
+        (&variant.name, ty.variant_payload_offset(), variant.ty.as_ref(), variant.discriminant)
+    } else {
+        let (name, offset, field) = &ty.fields[index];
+        (name, *offset, field.as_ref(), 0)
+    };
+    PathEntry { name: Text { bytes: name.as_ptr(), length: name.len() },
+        part: Part { value: ptr::from_ref(value), offset }, discriminant }
+}
+unsafe extern "C" fn tag(value: *const Ty, bits: u32) -> u32 {
+    unsafe { &*value }.variant_tag(bits)
 }

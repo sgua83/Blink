@@ -1,4 +1,5 @@
 module bootstrap.type_layout;
+import bootstrap.cli;
 
 struct VectorLayout {
     u64 size;
@@ -65,3 +66,15 @@ extern "C" void task_output_owners(address value, u32 base, FieldHost host, addr
 extern "C" u32 zero_valid(address value, TypeHost host,
     cfn<u32,address,usize> ensures memory(read) discriminant) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(discriminant);
+
+struct Text { address bytes; usize length; };
+struct PathEntry { Text name; TypePart part; u32 discriminant; };
+struct PathHost {
+    FieldHost fields;
+    cfn<PathEntry,address,Child,usize> ensures memory(read) entry;
+    cfn<u32,address,u32> ensures memory(read) tag;
+};
+extern "C" TypePart field(address value, Text path, address words, usize word_count,
+    u32 active, PathHost host) on cpu
+    requires nonzero(host.fields.types.inspect) requires nonzero(host.fields.part)
+    requires nonzero(host.entry) requires nonzero(host.tag);

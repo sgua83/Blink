@@ -815,6 +815,10 @@ impl Ty {
     /// 与field共用声明路径，在绑定原生引用时同时选择实际活动分支。
     pub fn field_at(&self,path:&str,words:&[u32])->Option<(u32,&Ty)> {self.field_in(path,Some(words))}
     fn field_in(&self, path:&str, words:Option<&[u32]>)->Option<(u32,&Ty)> {
+        #[cfg(feature = "compiler")]
+        { properties::field(self, path, words) }
+        #[cfg(not(feature = "compiler"))]
+        {
         let mut ty = self;
         let mut offset = 0;
         for part in path.split('.') {
@@ -846,6 +850,7 @@ impl Ty {
             }
         }
         Some((offset, ty))
+        }
     }
 }
 fn matrix_shape(name: &str) -> Option<(usize, usize)> {
