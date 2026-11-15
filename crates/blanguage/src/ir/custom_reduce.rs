@@ -98,7 +98,7 @@ impl CustomReduction {
             let reg = stage.registers.len();
             let slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
             let mut code = value.code.clone();
-            crate::optimize::map(&mut code, &|r| r + reg, &|s| s + slot);
+            crate::optimize::map(&mut code, super::rewrite::Remap::Offset { registers: reg, locals: slot });
             stage.code.extend(code);
             stage.registers.extend(&value.registers);
             stage.locals.extend(value.locals.iter().map(|(end, ty)| (end + slot, ty.clone())));
@@ -111,7 +111,7 @@ impl CustomReduction {
         let reg = stage.registers.len();
         let slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
         let mut combine = self.combine.code.clone();
-        crate::optimize::map(&mut combine, &|r| r + reg, &|s| s + slot);
+        crate::optimize::map(&mut combine, super::rewrite::Remap::Offset { registers: reg, locals: slot });
         stage.code.extend(combine);
         stage.registers.extend(&self.combine.registers);
         stage.locals.extend(self.combine.locals.iter().map(|(end, ty)| (end + slot, ty.clone())));

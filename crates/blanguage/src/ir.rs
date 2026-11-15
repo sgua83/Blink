@@ -1065,6 +1065,7 @@ impl ElementStride {
     pub(crate) fn all_operands(&self,f:&mut impl FnMut(Reg)->bool)->bool{
         match self {Self::Constant(_)=>true,Self::Value(words)=>words.iter().all(|reg|f(*reg))}
     }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn map(&mut self,f:&impl Fn(Reg)->Reg){
         if let Self::Value(words)=self{words.iter_mut().for_each(|reg|*reg=f(*reg));}
     }
@@ -1105,6 +1106,7 @@ impl IndexedSource {
             Self::Pointer { address, index, .. } => f(address[0]) && f(address[1]) && f(*index),
         }
     }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn map(&mut self, r: &impl Fn(Reg) -> Reg) {
         match self {
             Self::Data { index, .. } | Self::Tile { index, .. } => *index = r(*index),
@@ -1130,6 +1132,7 @@ impl IndexedSource {
         };
         direct.into_iter().chain(aliases.iter().copied())
     }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn map_locals(&mut self, s: &impl Fn(usize) -> usize) {
         if let Self::Pointer { aliases, .. } = self {
             for alias in aliases {
@@ -1679,6 +1682,8 @@ pub struct TileCollective {
 }
 #[cfg(feature = "compiler")]
 mod dataflow;
+#[cfg(feature = "compiler")]
+pub(crate) mod rewrite;
 mod tile;
 pub use tile::SharedWord;
 #[cfg(feature = "compiler")]

@@ -7,6 +7,7 @@ pub enum MemoryAlias {
     Data(usize),
 }
 impl MemoryAlias {
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn map_locals(&mut self, s: &impl Fn(usize) -> usize) {
         if let Self::Local { base, len } = self && *len != 0 { *base = s(*base); }
     }
@@ -171,6 +172,7 @@ impl CallReference {
     pub(crate) fn local_ranges(&self) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
         self.aliases().filter_map(MemoryAlias::local_range)
     }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn map_locals(&mut self, s: &impl Fn(usize) -> usize) {
         match &mut self.storage {
             CallStorage::Local { base, len } => { if *len != 0 { *base = s(*base); } }
@@ -188,12 +190,14 @@ impl CallReference {
             CallStorage::Indexed(source) => source.all_operands(f),
         }
     }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn map_operands(&mut self, r: &impl Fn(Reg) -> Reg) {
         self.offset = self.offset.map(r);
         if let CallStorage::Indexed(source) = &mut self.storage { source.map(r); }
     }
 }
 impl Call {
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn map_locals(&mut self, s: &impl Fn(usize) -> usize) {
         for argument in &mut self.arguments {
             if let CallArgument::Reference { address, .. } = argument { address.map_locals(s); }
@@ -213,6 +217,7 @@ impl Call {
             CallArgument::Reference { address, .. } => address.all_operands(f),
         })
     }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn map_operands(&mut self, r: &impl Fn(Reg) -> Reg) {
         if let CallTarget::Indirect(reg) = &mut self.target { *reg = r(*reg); }
         for argument in &mut self.arguments {

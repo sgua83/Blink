@@ -267,3 +267,184 @@ extern "C" Word next_local(inout Locals state,Host host) on cpu requires nonzero
   }
  }
 }
+// Field rewriting uses exclusive physical projections, not the read-only query
+// views above. Mapping policies remain with their actual producers. No view is
+// retained after this call and no container changes shape during the rewrite.
+const u32 N_RAY_RESULT=16;
+RewriteNode rewrite_node_at(RewriteSpan span,usize index,u32 kind) on cpu {
+ return RewriteNode(unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride)),kind);
+}
+address rewrite_word_at(RewriteSpan span,usize index) on cpu {
+ return unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride));
+}
+void rewrite_word(address field,address context,cfn<usize,address,usize> ensures memory(read) map) on cpu requires nonzero(map) {
+ unsafe_position<usize>(field)=map(context,unsafe_position<usize>(field));
+}
+void rewrite_optional(address field,address context,cfn<usize,address,usize> ensures memory(read) map) on cpu requires nonzero(map) {
+ if(address_bits(field)!=0u64){rewrite_word(field,context,map);}
+}
+void rewrite_words(RewriteSpan words,address context,cfn<usize,address,usize> ensures memory(read) map) on cpu requires nonzero(map) {
+ usize index=0u64;
+ while(index<words.count){rewrite_word(rewrite_word_at(words,index),context,map);index+=1u64;}
+}
+void rewrite_stride(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) {
+ RewriteView value=host.inspect(source);
+ if(value.tag==1){rewrite_words(value.first,mapping.context,mapping.reg);}
+}
+void rewrite_indexed_operands(RewriteView value,RewriteHost host,RewriteInputMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) {
+ if(value.tag==1||value.tag==2){
+  rewrite_words(value.first,mapping.context,mapping.reg);
+  if(value.tag==1){rewrite_stride(value.left,host,mapping);}
+ }
+ rewrite_word(value.a,mapping.context,mapping.reg);
+}
+void rewrite_alias(RewriteNode source,RewriteHost host,RewriteMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.slot) {
+ RewriteView value=host.inspect(source);
+ if(value.tag==0&&value.length!=0u64){rewrite_word(value.a,mapping.context,mapping.slot);}
+}
+void rewrite_indexed_locals(RewriteView value,RewriteHost host,RewriteMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.slot) {
+ if(value.tag==2){
+  usize index=0u64;
+  while(index<value.second.count){rewrite_alias(rewrite_node_at(value.second,index,N_MEMORY_ALIAS),host,mapping);index+=1u64;}
+ }
+}
+void rewrite_reference_operands(RewriteView value,RewriteHost host,RewriteInputMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) {
+ rewrite_optional(value.a,mapping.context,mapping.reg);
+ RewriteView storage=host.inspect(value.left);
+ if(storage.tag==1){rewrite_indexed_operands(host.inspect(storage.left),host,mapping);}
+}
+void rewrite_reference_locals(RewriteView value,RewriteHost host,RewriteMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.slot) {
+ RewriteView storage=host.inspect(value.left);
+ if(storage.tag==0){
+  if(storage.length!=0u64){rewrite_word(storage.a,mapping.context,mapping.slot);}
+ }else{rewrite_indexed_locals(host.inspect(storage.left),host,mapping);}
+}
+void rewrite_call_inputs(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) {
+ RewriteView value=host.inspect(source);RewriteView target=host.inspect(value.left);
+ if(target.tag==2){rewrite_word(target.a,mapping.context,mapping.reg);}
+ usize index=0u64;
+ while(index<value.first.count){
+  RewriteView argument=host.inspect(rewrite_node_at(value.first,index,N_ARGUMENT));
+  if(argument.tag==0){
+   if(address_bits(argument.left.data)!=0u64){
+    RewriteView borrow=host.inspect(argument.left);
+    rewrite_words(borrow.first,mapping.context,mapping.reg);rewrite_word(borrow.a,mapping.context,mapping.reg);
+   }
+   rewrite_words(argument.first,mapping.context,mapping.reg);
+  }else{rewrite_reference_operands(host.inspect(argument.left),host,mapping);}
+  index+=1u64;
+ }
+}
+void rewrite_call_outputs(RewriteNode source,RewriteHost host,RewriteMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot) {
+ RewriteView value=host.inspect(source);
+ rewrite_words(value.third,mapping.context,mapping.reg);rewrite_optional(value.a,mapping.context,mapping.reg);
+ usize index=0u64;
+ while(index<value.first.count){
+  RewriteView argument=host.inspect(rewrite_node_at(value.first,index,N_ARGUMENT));
+  if(argument.tag==1){rewrite_reference_locals(host.inspect(argument.left),host,mapping);}
+  index+=1u64;
+ }
+ index=0u64;
+ while(index<value.second.count){
+  RewriteView effect=host.inspect(rewrite_node_at(value.second,index,N_MEMORY_EFFECT));
+  rewrite_alias(effect.left,host,mapping);index+=1u64;
+ }
+}
+void rewrite_result(RewriteNode source,RewriteHost host,address context,cfn<usize,address,usize> ensures memory(read) map) on cpu
+ requires nonzero(host.inspect) requires nonzero(map) {
+ RewriteView value=host.inspect(source);
+ if(source.kind==N_RAY_RESULT){rewrite_words(value.first,context,map);}
+ else{rewrite_word(value.a,context,map);rewrite_optional(value.b,context,map);}
+}
+void rewrite_inputs(RewriteView value,RewriteHost host,RewriteInputMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) {
+ u32 kind=value.tag;
+ if(kind==OP_TEXTURE_BINDING_ADDRESS||kind==OP_TEXTURE_SAMPLE||kind==OP_TEXTURE_FETCH
+    ||kind==OP_TEXTURE_SIZE||kind==OP_TEXTURE_LEVELS||kind==OP_TEXTURE_ADDRESS
+    ||kind==OP_TEXTURE_FORMAT||kind==OP_TEXTURE_READ){
+  RewriteView texture=host.inspect(value.left);
+  rewrite_optional(texture.a,mapping.context,mapping.reg);rewrite_optional(texture.b,mapping.context,mapping.reg);
+ }
+ if(kind==OP_INVOKE){rewrite_call_inputs(value.left,host,mapping);}
+ else if(kind==OP_POSITION_ADDRESS){rewrite_reference_operands(host.inspect(value.left),host,mapping);}
+ else if(kind==OP_LOAD_INDEXED||kind==OP_STORE_INDEXED){
+  rewrite_indexed_operands(host.inspect(value.left),host,mapping);
+  rewrite_word(kind==OP_LOAD_INDEXED ? value.b : value.a,mapping.context,mapping.reg);
+  if(kind==OP_STORE_INDEXED){rewrite_word(value.b,mapping.context,mapping.reg);}
+ }else if(kind==OP_ATOMIC){
+  rewrite_indexed_operands(host.inspect(value.left),host,mapping);rewrite_optional(value.b,mapping.context,mapping.reg);
+  RewriteView op=host.inspect(value.right);
+  if(op.tag!=0){rewrite_word(op.a,mapping.context,mapping.reg);}
+  if(op.tag==2){rewrite_word(op.b,mapping.context,mapping.reg);}
+ }else if(kind==OP_RAY_QUERY){
+  rewrite_words(value.first,mapping.context,mapping.reg);rewrite_words(value.second,mapping.context,mapping.reg);
+  rewrite_word(value.a,mapping.context,mapping.reg);rewrite_word(value.b,mapping.context,mapping.reg);rewrite_optional(value.c,mapping.context,mapping.reg);
+ }else if(kind==OP_INTEGER_DIVIDE){
+  rewrite_word(value.a,mapping.context,mapping.reg);RewriteView divisor=host.inspect(value.left);
+  if(divisor.tag==1){rewrite_word(divisor.a,mapping.context,mapping.reg);}
+ }else if(kind==OP_TEXTURE_SAMPLE||kind==OP_TEXTURE_FETCH){
+  rewrite_words(value.second,mapping.context,mapping.reg);rewrite_word(value.a,mapping.context,mapping.reg);
+ }else if(kind==OP_TEXTURE_READ){
+  rewrite_words(value.first,mapping.context,mapping.reg);rewrite_word(value.b,mapping.context,mapping.reg);
+ }else if(kind==OP_TEXTURE_SIZE){rewrite_word(value.a,mapping.context,mapping.reg);}
+ else if(kind==OP_APPEND||kind==OP_TILE_PUBLISH){rewrite_words(value.first,mapping.context,mapping.reg);}
+ else if(kind==OP_RAISE){rewrite_word(value.a,mapping.context,mapping.reg);}
+ else if(kind==OP_FUNCTION_ADDRESS){RewriteView target=host.inspect(value.left);if(target.tag==2){rewrite_word(target.a,mapping.context,mapping.reg);}}
+ else if(kind==OP_STORE_LOCAL||kind==OP_PRINT){rewrite_word(value.b,mapping.context,mapping.reg);}
+ else if(kind==OP_LOAD_LOCAL_INDEXED){rewrite_word(value.d,mapping.context,mapping.reg);}
+ else if(kind==OP_STORE_LOCAL_INDEXED||kind==OP_STORE){
+  rewrite_word(kind==OP_STORE_LOCAL_INDEXED ? value.c : value.b,mapping.context,mapping.reg);rewrite_word(value.d,mapping.context,mapping.reg);
+ }else if(kind==OP_SUBGROUP){rewrite_words(value.first,mapping.context,mapping.reg);rewrite_words(value.second,mapping.context,mapping.reg);}
+ else if(kind==OP_VIEW_LOAD){
+  rewrite_words(value.first,mapping.context,mapping.reg);rewrite_stride(value.left,host,mapping);rewrite_word(value.b,mapping.context,mapping.reg);
+ }else if(kind==OP_LOAD||kind==OP_TILE_LOAD){rewrite_word(value.c,mapping.context,mapping.reg);}
+ else if(kind==OP_UNARY||kind==OP_CAST){rewrite_word(value.b,mapping.context,mapping.reg);}
+ else if(kind==OP_BINARY){rewrite_word(value.b,mapping.context,mapping.reg);rewrite_word(value.c,mapping.context,mapping.reg);}
+ else if(kind==OP_MATH){rewrite_words(value.first,mapping.context,mapping.reg);}
+ else if(kind==OP_SELECT_VALUE){rewrite_word(value.b,mapping.context,mapping.reg);rewrite_word(value.c,mapping.context,mapping.reg);rewrite_word(value.d,mapping.context,mapping.reg);}
+ else if(kind==OP_BRANCH||kind==OP_LOOP_VALUE){rewrite_word(value.a,mapping.context,mapping.reg);}
+}
+void rewrite_outputs(RewriteView value,RewriteHost host,RewriteMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot) {
+ u32 kind=value.tag;
+ if(kind==OP_INVOKE){rewrite_call_outputs(value.left,host,mapping);}
+ else if(kind==OP_POSITION_ADDRESS){rewrite_word(value.a,mapping.context,mapping.reg);rewrite_reference_locals(host.inspect(value.left),host,mapping);}
+ else if(kind==OP_LOAD_INDEXED||kind==OP_STORE_INDEXED){
+  if(kind==OP_LOAD_INDEXED){rewrite_word(value.a,mapping.context,mapping.reg);}
+  rewrite_indexed_locals(host.inspect(value.left),host,mapping);
+ }else if(kind==OP_ATOMIC){rewrite_optional(value.a,mapping.context,mapping.reg);rewrite_indexed_locals(host.inspect(value.left),host,mapping);}
+ else if(kind==OP_RAY_QUERY){rewrite_result(value.left,host,mapping.context,mapping.reg);}
+ else if(kind==OP_INTEGER_DIVIDE){rewrite_result(value.right,host,mapping.context,mapping.reg);}
+ else if(kind==OP_TEXTURE_SAMPLE||kind==OP_TEXTURE_FETCH||kind==OP_TEXTURE_SIZE||kind==OP_TILE_COLLECTIVE){rewrite_words(value.first,mapping.context,mapping.reg);}
+ else if(kind==OP_LOAD_LOCAL||kind==OP_LOAD_LOCAL_INDEXED){rewrite_word(value.a,mapping.context,mapping.reg);rewrite_word(value.b,mapping.context,mapping.slot);}
+ else if(kind==OP_STORE_LOCAL||kind==OP_STORE_LOCAL_INDEXED){rewrite_word(value.a,mapping.context,mapping.slot);}
+ else if(kind==OP_TEXTURE_BINDING_ADDRESS||kind==OP_TEXTURE_LEVELS||kind==OP_TEXTURE_ADDRESS
+    ||kind==OP_TEXTURE_FORMAT||kind==OP_TEXTURE_READ||kind==OP_APPEND||kind==OP_CONSTANT
+    ||kind==OP_FUNCTION_ADDRESS||kind==OP_INDEX_VALUE||kind==OP_UNIFORM||kind==OP_BUFFER_STRIDE
+    ||kind==OP_TILE_LENGTH||kind==OP_TILE_LANE||kind==OP_LOAD||kind==OP_SUBGROUP||kind==OP_PRINT
+    ||kind==OP_TILE_LOAD||kind==OP_VIEW_LOAD||kind==OP_UNARY||kind==OP_BINARY||kind==OP_CAST
+    ||kind==OP_MATH||kind==OP_SELECT_VALUE){rewrite_word(value.a,mapping.context,mapping.reg);}
+}
+void rewrite_block(RewriteSpan code,RewriteHost host,RewriteMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot) {
+ usize entry=0u64;RewriteInputMap inputs=RewriteInputMap(mapping.context,mapping.reg);
+ while(entry<code.count){
+  RewriteView value=host.inspect(rewrite_node_at(code,entry,N_INSTRUCTION));
+  rewrite_inputs(value,host,inputs);rewrite_outputs(value,host,mapping);
+  if(value.tag==OP_SCOPE){rewrite_block(value.first,host,mapping);}
+  else if(value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){rewrite_block(value.first,host,mapping);rewrite_block(value.second,host,mapping);}
+  entry+=1u64;
+ }
+}
+extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot) {rewrite_block(code,host,mapping);}
+extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
+ requires nonzero(host.inspect) requires nonzero(mapping.reg) {rewrite_inputs(host.inspect(source),host,mapping);}

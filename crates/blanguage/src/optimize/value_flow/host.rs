@@ -107,7 +107,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::value_call_effect"]
     fn value_call_effect(values: *mut Values, kind: u32, first: usize, length: usize, writes: u32, host: Host);
 }
-pub(super) fn root(values: &Values, reg: Reg) -> Reg { unsafe { value_root(values, reg, get) } }
+pub(super) extern "C" fn root(values: &Values, reg: Reg) -> Reg { unsafe { value_root(values, reg, get) } }
 pub(super) fn run(code: &mut Vec<Inst>, values: &mut Values, registers: &[Scalar], reuses: &mut Reuses) {
     let flow = run_block(code, values, registers, reuses);
     unsafe { value_discard_flow(flow, HOST) }
@@ -184,7 +184,7 @@ unsafe extern "C" fn read(instruction: *mut Inst, context: *const Context<'_>) -
     node
 }
 unsafe extern "C" fn remap(instruction: *mut Inst, values: *const Values) {
-    let values = unsafe { &*values }; super::super::map_operands(unsafe { &mut *instruction }, &|r| root(values, r));
+    unsafe { crate::ir::rewrite::operands(&mut *instruction, &*values, root); }
 }
 unsafe extern "C" fn block(code: *mut Vec<Inst>, values: *mut Values, context: *mut Context<'_>) -> Flow {
     let context = unsafe { &mut *context }; run_block(unsafe { &mut *code }, unsafe { &mut *values }, context.registers, context.reuses)

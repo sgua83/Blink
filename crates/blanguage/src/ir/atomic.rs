@@ -61,6 +61,7 @@ impl AtomicOp {
             } => vec![*expected, *desired],
         }
     }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn map(&mut self, f: &impl Fn(Reg) -> Reg) {
         match self {
             Self::Load => {}

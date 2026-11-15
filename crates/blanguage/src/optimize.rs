@@ -230,7 +230,7 @@ fn fuse(input: impl IntoIterator<Item = (Stage, bool)>) -> Vec<(Stage, bool)> {
                 }
                 let base = previous.registers.len();
                 let local = previous.locals.last_key_value().map_or(0, |(end, _)| *end);
-                map(&mut stage.code, &|r| r + base, &|s| s + local);
+                map(&mut stage.code, crate::ir::rewrite::Remap::Offset { registers: base, locals: local });
                 previous.registers.extend(stage.registers);
                 previous.locals.extend(stage.locals.into_iter().map(|(end, ty)| (end + local, ty)));
                 previous.code.extend(stage.code);
@@ -531,7 +531,7 @@ fn compact_slots(
             }
         }
     }
-    map(code, &|reg| regs[reg] - 1, &|slot| slots[slot] - 1);
+    map(code, crate::ir::rewrite::Remap::Compact { registers: &regs, locals: &slots });
     for reg in inputs.iter_mut().chain(outputs) {
         *reg = regs[*reg] - 1;
     }
@@ -556,202 +556,7 @@ pub(crate) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
         }
     }
 }
-pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize) -> usize) {
-    for i in code {
-        map_operands(i, r);
-        match &mut (i).kind {
-            InstKind::TextureSample { result, .. } | InstKind::TextureFetch { result, .. } => {
-                result.iter_mut().for_each(|v| *v = r(*v))
-            }
-            InstKind::TextureSize { result, .. } => result.iter_mut().for_each(|v| *v = r(*v)),
-            InstKind::TextureBindingAddress { dst, .. }
-            | InstKind::TextureLevels { dst, .. }
-            | InstKind::TextureAddress { dst, .. }
-            | InstKind::TextureFormat { dst, .. }
-            | InstKind::TextureRead { dst, .. } => *dst = r(*dst),
-            InstKind::Append(a) => a.accepted = r(a.accepted),
-            InstKind::Atomic(a) => { a.result = a.result.map(r); a.target.map_locals(s); }
-            InstKind::RayQuery { result, .. } => result.map(r),
-            InstKind::IntegerDivide { result, .. } => result.map(r),
-            InstKind::TileCollective(c) => c.results.iter_mut().for_each(|(_, dst)| *dst = r(*dst)),
-            InstKind::Constant(dst, ..)
-            | InstKind::FunctionAddress(dst, _)
-            | InstKind::Index(dst)
-            | InstKind::Uniform(dst, _)
-            | InstKind::BufferStride(dst, _)
-            | InstKind::TileLength(dst)
-            | InstKind::TileLane(dst) => *dst = r(*dst),
-            InstKind::LoadLocal(dst, slot) => {
-                *dst = r(*dst);
-                *slot = s(*slot);
-            }
-            InstKind::StoreLocal(slot, _) => *slot = s(*slot),
-            InstKind::LoadLocalIndexed { dst, base, .. } => {
-                *dst = r(*dst);
-                *base = s(*base);
-            }
-            InstKind::StoreLocalIndexed { base, .. } => *base = s(*base),
-            InstKind::Call(call) => {
-                for value in &mut call.values { *value = r(*value); }
-                call.error = call.error.map(r);
-                call.map_locals(s);
-            }
-            InstKind::PositionAddress { dst, address } => { *dst = r(*dst); address.map_locals(s); }
-            InstKind::LoadIndexed { dst, source, .. } => { *dst = r(*dst); source.map_locals(s); }
-            InstKind::StoreIndexed { source, .. } => source.map_locals(s),
-            InstKind::Load { dst, .. }
-            | InstKind::Subgroup { dst, .. }
-            | InstKind::Print { dst, .. }
-            | InstKind::TileLoad { dst, .. }
-            | InstKind::ViewLoad { dst, .. }
-            | InstKind::Unary { dst, .. }
-            | InstKind::Binary { dst, .. }
-            | InstKind::Cast { dst, .. }
-            | InstKind::Math { dst, .. }
-            | InstKind::Select { dst, .. } => *dst = r(*dst),
-            InstKind::Scope(body) => map(body, r, s),
-            InstKind::If { yes, no, .. } => {
-                map(yes, r, s);
-                map(no, r, s);
-            }
-            InstKind::Loop {
-                condition, body, ..
-            } => {
-                map(condition, r, s);
-                map(body, r, s);
-            }
-            _ => {}
-        }
-    }
-}
-fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
-    if let InstKind::TextureBindingAddress { texture, .. }
-    | InstKind::TextureSample { texture, .. }
-    | InstKind::TextureFetch { texture, .. }
-    | InstKind::TextureSize { texture, .. }
-    | InstKind::TextureLevels { texture, .. }
-    | InstKind::TextureAddress { texture, .. }
-    | InstKind::TextureFormat { texture, .. }
-    | InstKind::TextureRead { texture, .. } = &mut (i).kind
-    {
-        texture.element = texture.element.map(r);
-        texture.parameter = texture.parameter.map(r);
-    }
-    match &mut (i).kind {
-        InstKind::PositionAddress { address, .. } => address.map_operands(r),
-        InstKind::Raise(error) => *error = r(*error),
-        InstKind::FunctionAddress(_, CallTarget::Indirect(reg)) => *reg = r(*reg),
-        InstKind::TextureSample {
-            coordinate, lod, ..
-        } => {
-            coordinate.iter_mut().for_each(|v| *v = r(*v));
-            *lod = r(*lod);
-        }
-        InstKind::TextureFetch {
-            coordinate, level, ..
-        }
-        | InstKind::TextureRead {
-            coordinate, level, ..
-        } => {
-            coordinate.iter_mut().for_each(|v| *v = r(*v));
-            *level = r(*level);
-        }
-        InstKind::TextureSize { level, .. } => *level = r(*level),
-        InstKind::Append(a) => a
-            .values
-            .iter_mut()
-            .for_each(|(_, value)| *value = r(*value)),
-        InstKind::Atomic(a) => {
-            a.target.map(r);
-            a.offset = a.offset.map(r);
-            a.op.map(r);
-        }
-        InstKind::TilePublish(p) => p
-            .values
-            .iter_mut()
-            .for_each(|(_, value)| *value = r(*value)),
-        InstKind::RayQuery {
-            origin,
-            direction,
-            minimum,
-            maximum,
-            cull_back_faces,
-            ..
-        } => {
-            origin
-                .iter_mut()
-                .chain(direction.iter_mut())
-                .for_each(|v| *v = r(*v));
-            *minimum = r(*minimum);
-            *maximum = r(*maximum);
-            *cull_back_faces = cull_back_faces.map(r);
-        }
-        InstKind::LoadIndexed { source, offset, .. } => {
-            source.map(r);
-            *offset = r(*offset);
-        }
-        InstKind::StoreIndexed {
-            source,
-            offset,
-            value,
-            ..
-        } => {
-            source.map(r);
-            *offset = r(*offset);
-            *value = r(*value);
-        }
-        InstKind::StoreLocal(_, src) => *src = r(*src),
-        InstKind::LoadLocalIndexed { index, .. } => *index = r(*index),
-        InstKind::StoreLocalIndexed { index, value, .. } => {
-            *index = r(*index);
-            *value = r(*value);
-        }
-        InstKind::Print { value, .. } => *value = r(*value),
-        InstKind::Call(call) => call.map_operands(r),
-        InstKind::Subgroup {
-            value, argument, ..
-        } => {
-            for v in value.iter_mut().chain(argument) {
-                *v = r(*v);
-            }
-        }
-        InstKind::ViewLoad { address, index, stride, .. } => {
-            address.iter_mut().for_each(|v| *v = r(*v));
-            stride.map(r);
-            *index = r(*index);
-        }
-        InstKind::Load { index, .. } | InstKind::TileLoad { index, .. } => *index = r(*index),
-        InstKind::Store { index, value, .. } => {
-            *index = r(*index);
-            *value = r(*value);
-        }
-        InstKind::Unary { a, .. } => *a = r(*a),
-        InstKind::Binary { a, b, .. } => {
-            *a = r(*a);
-            *b = r(*b);
-        }
-        InstKind::Cast { src, .. } => *src = r(*src),
-        InstKind::IntegerDivide { src, divisor, .. } => {
-            *src = r(*src);
-            if let IntegerDivisor::Value(value) = divisor {
-                *value = r(*value);
-            }
-        }
-        InstKind::Math { args, .. } => {
-            for a in args {
-                *a = r(*a);
-            }
-        }
-        InstKind::Select {
-            condition, a, b, ..
-        } => {
-            *condition = r(*condition);
-            *a = r(*a);
-            *b = r(*b);
-        }
-        InstKind::If { condition, .. } => *condition = r(*condition),
-        InstKind::Loop { test, .. } => *test = r(*test),
-        _ => {}
-    }
+pub(crate) fn map(code: &mut [Inst], mapping: crate::ir::rewrite::Remap<'_>) {
+    crate::ir::rewrite::map(code, mapping);
 }
 

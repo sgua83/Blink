@@ -411,7 +411,7 @@ pub(super) fn emit(
         .map(|(a, b)| (*a, *b))
         .collect();
     let bind = |r| arguments.get(&r).copied().unwrap_or(r);
-    crate::optimize::map(&mut combine, &bind, &|s| s);
+    crate::optimize::map(&mut combine, crate::ir::rewrite::Remap::Bindings(&arguments));
     for (i, reg) in kernel.result.iter().enumerate() {
         if apply {
             combine.push(Inst::new(InstKind::Store {
