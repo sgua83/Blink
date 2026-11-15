@@ -366,6 +366,10 @@ impl ScalarRanges {
     fn from_intervals(intervals: impl IntoIterator<Item = (Bits, Bits)>) -> Self {
         let mut intervals: Vec<_> = intervals.into_iter().filter(|(a, b)| a <= b).collect();
         intervals.sort_unstable();
+        Self::from_sorted_intervals(intervals)
+    }
+    // The original producer supplies valid intervals in endpoint order.
+    fn from_sorted_intervals(intervals: impl IntoIterator<Item = (Bits, Bits)>) -> Self {
         let mut merged: Vec<(Bits, Bits)> = Vec::new();
         for (lower, upper) in intervals {
             if let Some(last) = merged.last_mut()
@@ -379,7 +383,7 @@ impl ScalarRanges {
         Self(merged)
     }
     fn interval(lower: Bits, upper: Bits) -> Self {
-        Self::from_intervals([(lower, upper)])
+        Self(if lower <= upper { vec![(lower, upper)] } else { Vec::new() })
     }
     fn hull(&self) -> (Bits, Bits) {
         match (self.0.first(), self.0.last()) {
@@ -393,10 +397,19 @@ impl ScalarRanges {
             .any(|&(lower, upper)| lower <= value && value <= upper)
     }
     fn union(&self, other: &Self) -> Self {
-        Self::from_intervals(self.0.iter().chain(&other.0).copied())
+        let mut left = self.0.iter().copied().peekable();
+        let mut right = other.0.iter().copied().peekable();
+        Self::from_sorted_intervals(std::iter::from_fn(|| match (left.peek(), right.peek()) {
+            (Some(a), Some(b)) if a <= b => left.next(),
+            (_, Some(_)) => right.next(),
+            _ => left.next(),
+        }))
     }
     fn restrict(&self, lower: Bits, upper: Bits) -> Self {
-        Self::from_intervals(self.0.iter().map(|&(a, b)| (a.max(lower), b.min(upper))))
+        Self::from_sorted_intervals(self.0.iter().filter_map(|&(a, b)| {
+            let (lower, upper) = (a.max(lower), b.min(upper));
+            (lower <= upper).then_some((lower, upper))
+        }))
     }
     fn without(&self, value: Bits) -> Self {
         let mut intervals = Vec::new();
@@ -429,7 +442,7 @@ impl ScalarRanges {
             if a <= b {
                 Self::interval(bias | a, bias | b)
             } else {
-                Self::from_intervals([(bias, bias | b), (bias | a, bias | mask)])
+                Self::from_sorted_intervals([(bias, bias | b), (bias | a, bias | mask)])
             }
         })
     }
@@ -992,13 +1005,13 @@ impl Proof {
             for value in values {
                 if let Some(address)=value.addresses.first().cloned().flatten(){translated.addresses.resize_with(translated.addresses.len().max(i+1),||None);translated.addresses[i]=Some(address);}
                 let incoming = value.range_set(0);
-                translated.ranges[i] = ScalarRanges::from_intervals(
+                translated.ranges[i] = ScalarRanges::from_sorted_intervals(
                     translated.ranges[i].0.iter().flat_map(|(a, b)| {
                         incoming
                             .0
                             .iter()
                             .map(move |(c, d)| ((*a).max(*c), (*b).min(*d)))
-                    }),
+                    }).filter(|(lower, upper)| lower <= upper),
                 );
                 translated.nonzero[i] |= value.nonzero.first() == Some(&true);
                 translated.domains[i].extend(value.domains(0));
@@ -4419,7 +4432,7 @@ fn integer_result_range((lower, upper): (i128, i128), bias: Bits, width: u32) ->
     if (lower + offset).div_euclid(period) == (upper + offset).div_euclid(period) {
         ScalarRanges::interval(a, b)
     } else {
-        ScalarRanges::from_intervals([(0, b), (a, mask)])
+        ScalarRanges::from_sorted_intervals([(0, b), (a, mask)])
     }
 }
 fn unsigned_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> ScalarRanges {
@@ -4452,7 +4465,7 @@ fn unsigned_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scal
     if range.0 / period == range.1 / period {
         ScalarRanges::interval(lower, upper)
     } else {
-        ScalarRanges::from_intervals([(0, upper), (lower, scalar.bit_mask())])
+        ScalarRanges::from_sorted_intervals([(0, upper), (lower, scalar.bit_mask())])
     }
 }
 pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
