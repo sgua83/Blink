@@ -625,3 +625,51 @@ extern "C" void mark_frame_sources(FrameSourceHost host) on cpu
   }
  }
 }
+
+u32 float_code(Span code,address registers,u32 scalar,FloatHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_MATH) {
+   FloatScalar target=host.scalar(registers,value.a);
+   if(target.kind==scalar && value.b!=0u64){return 1;}
+  }else if(value.tag==OP_BINARY) {
+   if(value.d!=0u64) {
+    FloatScalar input=host.scalar(registers,value.b);
+    if(input.kind==scalar){return 1;}
+   }
+  }else if(value.tag==OP_CAST) {
+   FloatScalar source=host.scalar(registers,value.b);
+   if(source.floating!=0) {
+    FloatScalar target=host.scalar(registers,value.a);
+    if(target.integer==0 && ((target.kind==scalar)!=(source.kind==scalar))){return 1;}
+   }
+  }else if(value.tag==OP_TILE_COLLECTIVE) {
+   usize result=0u64;
+   while(result<value.first.count) {
+    FloatScalar target=host.scalar(registers,word_at(value.first,result));
+    if(target.kind==scalar){return 1;}
+    result+=1u64;
+   }
+  }else if(value.tag==OP_SUBGROUP) {
+   FloatScalar target=host.scalar(registers,value.a);
+   // Original SubgroupOp Sum, ExclusiveSum, Min and Max discriminants.
+   if(target.kind==scalar && (value.c==13u64 || value.c==14u64
+       || value.c==15u64 || value.c==16u64)){return 1;}
+  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   if(float_code(value.first,registers,scalar,host)!=0){return 1;}
+   if(float_code(value.second,registers,scalar,host)!=0){return 1;}
+  }
+  index+=1u64;
+ }
+ return 0;
+}
+extern "C" u32 float_preserve(FloatInput input,u32 scalar,FloatHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ if(input.collective.present!=0 && input.collective.value==usize(scalar)){return 1;}
+ if(float_code(input.identity.code,input.identity.registers,scalar,host)!=0){return 1;}
+ if(float_code(input.combine.code,input.combine.registers,scalar,host)!=0){return 1;}
+ if(float_code(input.project.code,input.project.registers,scalar,host)!=0){return 1;}
+ return float_code(input.body.code,input.body.registers,scalar,host);
+}

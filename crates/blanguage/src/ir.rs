@@ -1790,6 +1790,10 @@ impl Stage {
         uses(&self.code)
     }
     pub fn requires_float_preserve(&self, scalar: Scalar) -> bool {
+        #[cfg(feature = "compiler")]
+        { dataflow::float_preserve(self, scalar) }
+        #[cfg(not(feature = "compiler"))]
+        {
         fn arithmetic(code: &[Inst], registers: &[Scalar], scalar: Scalar) -> bool {
             code.iter().any(|inst| match &(inst).kind {
                 InstKind::Math { dst, op, .. } => registers[*dst] == scalar && *op != MathOp::Abs,
@@ -1823,6 +1827,7 @@ impl Stage {
             || matches!(&self.operation, Operation::SegmentedReduce(r) if r.values.ty.components[0].0 == scalar)
             || matches!(&self.operation, Operation::ScanExclusive(s) if s.ty.components[0].0 == scalar)
             || arithmetic(&self.code, &self.registers, scalar)
+        }
     }
     fn tile_usage(&self) -> (bool, std::collections::BTreeSet<usize>) {
         fn visit(code: &[Inst], scope: &mut bool, sources: &mut std::collections::BTreeSet<usize>) {

@@ -118,3 +118,17 @@ extern "C" void seed_frame_imports(FrameImportHost host) on cpu
 extern "C" void mark_frame_sources(FrameSourceHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.data.inspect) requires nonzero(host.inspect)
  requires nonzero(host.arguments) requires nonzero(host.contains);
+
+// Optimized floating requirements borrow each original body's own registers.
+struct FloatCode { Span code; address registers; };
+struct FloatInput {
+ FloatCode body; FloatCode identity; FloatCode combine; FloatCode project;
+ Word collective;
+};
+struct FloatScalar { u32 kind; u32 integer; u32 floating; };
+struct FloatHost {
+ Host ir;
+ cfn<FloatScalar,address,usize> ensures memory(read) scalar;
+};
+extern "C" u32 float_preserve(FloatInput input,u32 scalar,FloatHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
