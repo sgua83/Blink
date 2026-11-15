@@ -309,7 +309,6 @@ if form==DeclaredArgumentForm::Acceleration {
         for (param, argument) in (0..parameters.len()).zip(&arguments) {
             if let Argument::OwnedReference{value,..}=argument && parameters.access(param).writes() {
                 for data in value.resources(){self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),kind:view::Exclusion::Ownership,span})?;}
-                if parameters.access(param)==Access::InOut{for data in value.resources(){self.application_handle_available(data.root.identity(),span,&[],&self.path)?;}}
             }
             if let Argument::BorrowedData(reference) = argument {
                 let access=parameters.access(param);
