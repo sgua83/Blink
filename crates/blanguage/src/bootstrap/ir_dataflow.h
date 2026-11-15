@@ -38,3 +38,25 @@ extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mappin
  requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot);
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg);
+
+// One synchronous fallibility round over the original compiler Module.
+struct EffectSeed { u32 present; u32 fallible; address name; };
+struct EffectFunction { u32 present; address flag; Span body; };
+struct EffectNode { Span first; Span second; address target; u32 error; };
+struct EffectSeedHost {
+ address iterator; address known;
+ cfn<EffectSeed,address> next;
+ cfn<void,address,address> remember;
+};
+struct EffectHost {
+ address iterator; address known;
+ cfn<EffectFunction,address> next;
+ cfn<EffectNode,address> ensures memory(read) inspect;
+ cfn<u32,address,address> ensures memory(read) contains;
+};
+extern "C" void seed_fallible(EffectSeedHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.remember);
+extern "C" u32 mark_fallible(EffectHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.inspect) requires nonzero(host.contains);
+extern "C" void propagate_fallibility(address context,cfn<u32,address> round) on cpu
+ requires nonzero(round);

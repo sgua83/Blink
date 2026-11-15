@@ -2,6 +2,7 @@
 use super::*;
 use cooperative::Argument;
 use returns::Returned;
+mod fallibility;
 
 // Only source vectors admit a different component placement with the same type.
 // Aggregate fields and arrays retain their declared layout.
@@ -2417,27 +2418,8 @@ fn lower_dataset_borrows<'a>(
 }
 
 // The existing Module owns the closed effect; no second call graph is built.
-fn failure_effects(module:&mut Module) {
-    loop {
-        let known=module.units.iter().filter_map(|(name,unit)|unit.as_ref().unwrap().contract.fallible.then(||name.clone())).collect::<BTreeSet<_>>();
-        let mut required=BTreeSet::new();
-        for(name,unit)in &module.units {
-            let unit=unit.as_ref().unwrap();
-            if let Some(function)=&unit.function {
-                crate::optimize::visit(&function.body.code,&mut |inst|if let InstKind::Call(call)=&inst.kind {
-                    if call.error.is_some() || matches!(&call.target,CallTarget::Defined(name)if known.contains(name)) {
-                        required.insert(name.clone());
-                    }
-                });
-            }
-        }
-        let mut changed=false;
-        for name in required {
-            let contract=&mut module.units.get_mut(&name).unwrap().as_mut().unwrap().contract;
-            changed|=!contract.fallible;contract.fallible=true;
-        }
-        if !changed{break;}
-    }
+fn failure_effects(module: &mut Module) {
+    fallibility::run(module);
 }
 struct FailureContext<'a> {
     program: &'a Program,

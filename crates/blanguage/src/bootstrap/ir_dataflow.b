@@ -448,3 +448,44 @@ extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mappin
  requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot) {rewrite_block(code,host,mapping);}
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg) {rewrite_inputs(host.inspect(source),host,mapping);}
+
+extern "C" void seed_fallible(EffectSeedHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.remember) {
+ while(true) {
+  EffectSeed item=host.next(host.iterator);
+  if(item.present==0){return;}
+  if(item.fallible!=0){host.remember(host.known,item.name);}
+ }
+}
+
+bool effect_body(Span code,EffectHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.contains) {
+ usize index=0u64;
+ while(index<code.count) {
+  address instruction=unsafe_address(address_bits(code.data)+u64(index)*u64(code.stride));
+  EffectNode item=host.inspect(instruction);
+  if(item.error!=0){return true;}
+  if(address_bits(item.target)!=0u64 && host.contains(host.known,item.target)!=0){return true;}
+  if(effect_body(item.first,host)||effect_body(item.second,host)){return true;}
+  index+=1u64;
+ }
+ return false;
+}
+
+extern "C" u32 mark_fallible(EffectHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.inspect) requires nonzero(host.contains) {
+ u32 changed=0;
+ while(true) {
+  EffectFunction item=host.next(host.iterator);
+  if(item.present==0){return changed;}
+  if(unsafe_position<u8>(item.flag)==u8(0) && effect_body(item.body,host)) {
+   unsafe_position<u8>(item.flag)=u8(1);
+   changed=1;
+  }
+ }
+}
+
+extern "C" void propagate_fallibility(address context,cfn<u32,address> round) on cpu
+ requires nonzero(round) {
+ while(round(context)!=0){}
+}
