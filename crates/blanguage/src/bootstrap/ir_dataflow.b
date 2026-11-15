@@ -1038,18 +1038,21 @@ extern "C" void storage_words(Span code,StorageHost host,address context,
  }
 }
 
-extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect) {
+u32 collective_presence(Span code,Host host,bool include_subgroups) on cpu requires nonzero(host.inspect) {
  usize index=0u64;
  while(index<code.count) {
   View value=host.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_APPEND || value.tag==OP_SUBGROUP){return 1;}
+  if(value.tag==OP_APPEND || (include_subgroups && value.tag==OP_SUBGROUP)){return 1;}
   if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   if(has_subgroups(value.first,host)!=0){return 1;}
-   if(has_subgroups(value.second,host)!=0){return 1;}
+   if(collective_presence(value.first,host,include_subgroups)!=0){return 1;}
+   if(collective_presence(value.second,host,include_subgroups)!=0){return 1;}
   }
   index+=1u64;
  }
  return 0;
+}
+extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect) {
+ return collective_presence(code,host,true);
 }
 struct AppendOperations { usize count; usize prefix; usize elect; usize first; };
 AppendOperations append_operations() on cpu {return AppendOperations(6u64,7u64,3u64,8u64);}
@@ -1304,4 +1307,17 @@ extern "C" u32 program_atomic64_requirements(Span stages,Host host) on cpu requi
   flags=flags|atomic64_requirements(stage.first,host);index+=1u64;
  }
  return flags;
+}
+
+extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect) {
+ return collective_presence(code,host,false);
+}
+extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<stages.count) {
+  View stage=host.inspect(node_at(stages,index,N_STAGE));
+  if(collective_presence(stage.first,host,false)!=0){return 1;}
+  index+=1u64;
+ }
+ return 0;
 }

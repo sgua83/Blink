@@ -1806,18 +1806,23 @@ impl Stage {
         }
     }
     pub fn requires_maximal_reconvergence(&self) -> bool {
-        fn uses(code: &[Inst]) -> bool {
-            code.iter().any(|i| match &(i).kind {
-                InstKind::Append(_) => true,
-                InstKind::Scope(body) => uses(body),
-                InstKind::If { yes, no, .. } => uses(yes) || uses(no),
-                InstKind::Loop {
-                    condition, body, ..
-                } => uses(condition) || uses(body),
-                _ => false,
-            })
+        #[cfg(feature = "compiler")]
+        { dataflow::maximal_reconvergence(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            fn uses(code: &[Inst]) -> bool {
+                code.iter().any(|i| match &(i).kind {
+                    InstKind::Append(_) => true,
+                    InstKind::Scope(body) => uses(body),
+                    InstKind::If { yes, no, .. } => uses(yes) || uses(no),
+                    InstKind::Loop {
+                        condition, body, ..
+                    } => uses(condition) || uses(body),
+                    _ => false,
+                })
+            }
+            uses(&self.code)
         }
-        uses(&self.code)
     }
     pub fn requires_float_preserve(&self, scalar: Scalar) -> bool {
         #[cfg(feature = "compiler")]
@@ -2120,9 +2125,14 @@ impl Program {
         self.textures.iter().any(|t| t.count.is_some())
     }
     pub fn requires_maximal_reconvergence(&self) -> bool {
-        self.stages
-            .iter()
-            .any(Stage::requires_maximal_reconvergence)
+        #[cfg(feature = "compiler")]
+        { dataflow::program_maximal_reconvergence(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            self.stages
+                .iter()
+                .any(Stage::requires_maximal_reconvergence)
+        }
     }
     pub fn subgroup_capabilities(&self) -> SubgroupCapabilities {
         #[cfg(feature = "compiler")]

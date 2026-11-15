@@ -271,3 +271,6 @@ extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Spa
 
 extern "C" u32 atomic64_requirements(Span code,Host host) on cpu requires nonzero(host.inspect);
 extern "C" u32 program_atomic64_requirements(Span stages,Host host) on cpu requires nonzero(host.inspect);
+
+extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect);
+extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requires nonzero(host.inspect);
