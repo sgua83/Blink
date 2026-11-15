@@ -2,6 +2,7 @@
 use super::*;
 mod floating;
 mod bitwise;
+mod known_bits;
 mod contract;
 pub(super) use contract::Normalizer;
 use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::ManuallyDrop, sync::Arc};
@@ -450,36 +451,13 @@ impl ScalarRanges {
 struct KnownBits { scalar:Scalar, mask:Bits, value:Bits }
 impl KnownBits {
     fn domain(self)->IndexDomain {IndexDomain::KnownBits(self.scalar,self.mask,self.value)}
-    fn cast(self,scalar:Scalar)->Self {
-        let mut mask=self.mask&scalar.bit_mask();let mut value=self.value&mask;
-        if scalar.size()>self.scalar.size(){
-            let extra=scalar.bit_mask()&!self.scalar.bit_mask();
-            if !self.scalar.is_signed(){mask|=extra;}
-            else {let sign=1u64<<(self.scalar.bit_width()-1);if self.mask&sign!=0{mask|=extra;if self.value&sign!=0{value|=extra;}}}
-        }
-        Self{scalar,mask,value}
-    }
-    fn combined(self,other:Self)->Self {
-        let scalar=if self.scalar.size()>=other.scalar.size(){self.scalar}else{other.scalar};
-        let a=self.cast(scalar);let b=other.cast(scalar);
-        Self{scalar,mask:a.mask|b.mask,value:a.value|b.value}
-    }
+    fn cast(self,scalar:Scalar)->Self {known_bits::cast(self,scalar)}
+    fn combined(self,other:Self)->Self {let scalar=if self.scalar.size()>=other.scalar.size(){self.scalar}else{other.scalar};known_bits::combined(self,other,scalar)}
     fn bitwise(operation:IntegerOperation,scalar:Scalar,a:Option<Self>,b:Option<Self>)->Option<Self> {
-        let (am,av)=a.map_or((0,0),|bits|(bits.mask,bits.value));
-        let (bm,bv)=b.map_or((0,0),|bits|(bits.mask,bits.value));
-        let (az,bz)=(am&!av,bm&!bv);
-        let (mask,value)=match operation {
-            IntegerOperation::And=>(az|bz|(av&bv),av&bv),
-            IntegerOperation::Or=>((az&bz)|av|bv,av|bv),
-            IntegerOperation::Xor=>(am&bm,(av^bv)&am&bm),
-            _=>return None,
-        };
-        (mask!=0).then_some(Self{scalar,mask,value})
+        let operation=match operation {IntegerOperation::And=>bitwise::Operation::And,IntegerOperation::Or=>bitwise::Operation::Or,IntegerOperation::Xor=>bitwise::Operation::Xor,_=>return None};
+        known_bits::bitwise(scalar,operation,a,b)
     }
-    fn common(self,other:Self)->Option<Self> {
-        let other=other.cast(self.scalar);let mask=self.mask&other.mask&!(self.value^other.value);
-        (mask!=0).then_some(Self{scalar:self.scalar,mask,value:self.value&mask})
-    }
+    fn common(self,other:Self)->Option<Self> {known_bits::common(self,other)}
     fn facts(scalar:Scalar,id:ValueIdentity,sets:[&Facts;2])->Option<Self> {
         let (mut lower,mut upper)=(0,scalar.bit_mask());
         for facts in sets {
@@ -487,7 +465,7 @@ impl KnownBits {
             if let Some(Fact::Maximum(_,_,bound))=facts.range(Fact::Maximum(id,scalar,0)..=Fact::Maximum(id,scalar,scalar.bit_mask())).next(){upper=upper.min(*bound);}
             if facts.contains(&Fact::Zero(id)){lower=lower.max(scalar.order_bias());upper=upper.min(scalar.order_bias());}
         }
-        let mut bits=Self::ranges(scalar,ScalarRanges::interval(lower,upper));
+        let mut bits=Self::ranges(scalar,&[(lower,upper)]);
         for facts in sets {for fact in facts.range(Fact::Index(id,IndexDomain::KnownBits(scalar,0,0))..=Fact::Index(id,IndexDomain::KnownBits(scalar,Bits::MAX,Bits::MAX))) {
             if let Fact::Index(_,IndexDomain::KnownBits(from,mask,value))=*fact {
                 let incoming=Self{scalar:from,mask,value}.cast(scalar);
@@ -496,44 +474,8 @@ impl KnownBits {
         }}
         bits
     }
-    fn shifted(self, left: bool, counts: ScalarRanges) -> Option<Self> {
-        let mask = self.scalar.bit_mask();
-        let sign = 1u64 << (self.scalar.bit_width() - 1);
-        let zero_fill = left || !self.scalar.is_signed() || self.mask & sign != 0 && self.value & sign == 0;
-        let one_fill = !left && self.scalar.is_signed() && self.mask & self.value & sign != 0;
-        let shift = |bits: Bits, count: u32, fill: bool| {
-            let moved = if left { bits << count } else { bits >> count };
-            let padding = if left { mask & !(mask << count) } else { mask & !(mask >> count) };
-            (moved | if fill { padding } else { 0 }) & mask
-        };
-        let mut result: Option<Self> = None;
-        for (lower, upper) in counts.0 {
-            let lower = (lower ^ self.scalar.order_bias()) as u32;
-            let upper = (upper ^ self.scalar.order_bias()) as u32;
-            let mut zero = shift(self.mask & !self.value, lower, zero_fill);
-            let mut one = shift(self.value, lower, one_fill);
-            let mut covered = 1;
-            while covered <= upper - lower {
-                let offset = covered.min(upper - lower + 1 - covered);
-                zero &= shift(zero, offset, zero_fill);
-                one &= shift(one, offset, one_fill);
-                covered += offset;
-            }
-            let bits = Self { scalar: self.scalar, mask: zero | one, value: one };
-            result = Some(match result { Some(before) => before.common(bits)?, None => bits });
-        }
-        result.filter(|bits| bits.mask != 0)
-    }
-    fn ranges(scalar:Scalar,ranges:ScalarRanges)->Option<Self> {
-        let mut result:Option<Self>=None;
-        for(lower,upper)in ranges.restrict(0,scalar.bit_mask()).0 {
-            let different=lower^upper;let mask=scalar.bit_mask()&if different==0{Bits::MAX}else{!(Bits::MAX>>different.leading_zeros())};
-            if mask==0{return None;}
-            let value=Self{scalar,mask,value:(lower^scalar.order_bias())&mask};
-            result=Some(match result {Some(previous)=>previous.common(value)?,None=>value});
-        }
-        result
-    }
+    fn shifted(self,left:bool,counts:ScalarRanges)->Option<Self> {known_bits::shifted(self,left,&counts.0)}
+    fn ranges(scalar:Scalar,ranges:&[(Bits,Bits)])->Option<Self> {known_bits::ranges(scalar,ranges)}
 }
 #[derive(Clone, Default)]
 pub(crate) struct Proof {
@@ -1200,7 +1142,7 @@ impl Proof {
         }
     }
     fn known_bits(&self,component:usize,scalar:Scalar)->Option<KnownBits> {
-        let mut bits=KnownBits::ranges(scalar,self.range_set(component));
+        let mut bits=KnownBits::ranges(scalar,self.ranges.get(component).map_or(&[(0,Bits::MAX)][..],|ranges|ranges.0.as_slice()));
         for domain in self.domains.get(component).into_iter().flatten(){
             let IndexDomain::KnownBits(from,mask,value)=*domain else{continue;};
             let incoming=KnownBits{scalar:from,mask,value}.cast(scalar);

@@ -520,3 +520,60 @@ extern "C" BitRange integer_bitwise_range(IntegerBitwise operation,u32 width,u64
  for(state in 0..16){BitPrefix prefix=prefixes[state];if(prefix.present){lower=min(lower,prefix.lower);upper=max(upper,prefix.upper);}}
  return BitRange(lower,upper);
 }
+
+extern "C" BitPattern known_cast(u64 source_mask,u64 source_sign,u64 target_mask,BitPattern value) on cpu {
+ u64 mask=value.mask&target_mask;u64 bits=value.value&mask;
+ if(target_mask>source_mask){u64 extra=target_mask&~source_mask;
+  if(source_sign==0u64){mask|=extra;}
+  else if((value.mask&source_sign)!=0u64){mask|=extra;if((value.value&source_sign)!=0u64){bits|=extra;}}
+ }return BitPattern(mask,bits);
+}
+extern "C" BitPattern known_combined(u64 target_mask,u64 am,u64 sign_a,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu {
+ BitPattern left=known_cast(am,sign_a,target_mask,a);BitPattern right=known_cast(bm,sign_b,target_mask,b);
+ return BitPattern(left.mask|right.mask,left.value|right.value);
+}
+BitPattern common_pattern(BitPattern a,BitPattern b) on cpu {
+ u64 mask=a.mask&b.mask&~(a.value^b.value);return BitPattern(mask,a.value&mask);
+}
+extern "C" BitPattern known_common(u64 target_mask,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu {
+ return common_pattern(a,known_cast(bm,sign_b,target_mask,b));
+}
+extern "C" BitPattern known_bitwise(IntegerBitwise operation,BitPattern a,BitPattern b) on cpu {
+ u64 az=a.mask&~a.value;u64 bz=b.mask&~b.value;
+ if(operation==IntegerBitwise::And){return BitPattern(az|bz|(a.value&b.value),a.value&b.value);}
+ if(operation==IntegerBitwise::Or){return BitPattern((az&bz)|a.value|b.value,a.value|b.value);}
+ return BitPattern(a.mask&b.mask,(a.value^b.value)&a.mask&b.mask);
+}
+extern "C" BitPattern known_ranges(u64 mask,u64 bias,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read) {
+ BitPattern result=BitPattern(0u64,0u64);bool present=false;
+ u64 index=0u64;while(index<count){BitRange range=read(context,index);index+=1u64;
+  u64 upper=min(range.upper,mask);if(range.lower>upper){continue;}
+  u64 different=range.lower^upper;
+  different|=different>>1u64;different|=different>>2u64;different|=different>>4u64;
+  different|=different>>8u64;different|=different>>16u64;different|=different>>32u64;
+  u64 fixed=mask&~different;BitPattern bits=BitPattern(fixed,(range.lower^bias)&fixed);if(bits.mask==0u64){return bits;}
+  if(present){result=common_pattern(result,bits);}else{result=bits;present=true;}
+  if(result.mask==0u64){return result;}
+ }return result;
+}
+u64 shifted_pattern(u64 bits,u32 count,bool left,bool fill,u64 mask) on cpu {
+ u64 moved;u64 padding;
+ if(left){moved=bits<<u64(count);padding=mask&~(mask<<u64(count));}
+ else{moved=bits>>u64(count);padding=mask&~(mask>>u64(count));}
+ if(fill){moved|=padding;}return moved&mask;
+}
+extern "C" BitPattern known_shifted(u64 mask,u64 bias,u32 direction,BitPattern value,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read) {
+ bool left=direction!=0;bool zero_fill=left || bias==0u64 || ((value.mask&bias)!=0u64 && (value.value&bias)==0u64);
+ bool one_fill=!left && bias!=0u64 && (value.mask&value.value&bias)!=0u64;
+ BitPattern result=BitPattern(0u64,0u64);bool present=false;
+ u64 index=0u64;while(index<count){BitRange range=read(context,index);index+=1u64;u32 lower=u32(range.lower^bias);u32 upper=u32(range.upper^bias);
+  u64 zero=shifted_pattern(value.mask&~value.value,lower,left,zero_fill,mask);
+  u64 one=shifted_pattern(value.value,lower,left,one_fill,mask);u32 covered=1;
+  while(covered<=upper-lower){u32 offset=min(covered,upper-lower+1-covered);
+   zero&=shifted_pattern(zero,offset,left,zero_fill,mask);one&=shifted_pattern(one,offset,left,one_fill,mask);covered+=offset;
+  }
+  BitPattern bits=BitPattern(zero|one,one);
+  if(present){result=common_pattern(result,bits);}else{result=bits;present=true;}
+  if(result.mask==0u64){return result;}
+ }return result;
+}
