@@ -8,7 +8,7 @@ const u32 N_INDEXED=7;const u32 N_STRIDE=8;const u32 N_TEXTURE=9;const u32 N_ATO
 const u32 N_MEMORY_ALIAS=11;const u32 N_MEMORY_EFFECT=12;const u32 N_DIVISION=13;
 const u32 N_DIVISOR=14;const u32 N_WORDS3=15;
 const u32 N_COMPONENT=16;
-const u32 N_STAGE=17;
+const u32 N_STAGE=17;const u32 N_RAY_RANGE=18;
 
 const u32 OP_TEXTURE_BINDING_ADDRESS=0;const u32 OP_TEXTURE_SAMPLE=1;const u32 OP_TEXTURE_SIZE=2;
 const u32 OP_TEXTURE_LEVELS=3;const u32 OP_TEXTURE_ADDRESS=4;const u32 OP_TEXTURE_FORMAT=5;
@@ -1129,4 +1129,64 @@ extern "C" SubgroupFlags subgroup_capabilities(Span stages,SubgroupHost host) on
   index+=1u64;
  }
  return flags;
+}
+
+void collect_ray_operands(Span code,RayHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.include) {
+ usize index=0u64;
+ while(index<code.count) {
+  Node source=node_at(code,index,N_INSTRUCTION);
+  visit_instruction(source,host.ir,host.used,host.include);
+  View value=host.ir.inspect(source);
+  if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   collect_ray_operands(value.first,host);collect_ray_operands(value.second,host);
+  }
+  index+=1u64;
+ }
+}
+bool has_closest_ray(Span code,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_RAY_QUERY && value.first.count==39u64){return true;}
+  if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   if(has_closest_ray(value.first,host) || has_closest_ray(value.second,host)){return true;}
+  }
+  index+=1u64;
+ }
+ return false;
+}
+u32 select_ray_queries(Span code,Span ranges,RayHost host,address context,
+ cfn<u32,address,usize,usize> visit) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.contains)
+ requires nonzero(host.fields) requires nonzero(visit) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_RAY_QUERY && value.first.count==39u64) {
+   usize group=0u64;
+   while(group<ranges.count) {
+    View range=host.ir.inspect(node_at(ranges,group,N_RAY_RANGE));
+    Span fields=host.fields(value.first,range.a,range.b);usize field=0u64;bool consumed=false;
+    while(field<fields.count && !consumed) {
+     consumed=host.contains(host.used,word_at(fields,field))!=0;field+=1u64;
+    }
+    if(consumed && visit(context,group,word_at(value.first,0u64))==0){return 0;}
+    group+=1u64;
+   }
+  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   if(select_ray_queries(value.first,ranges,host,context,visit)==0){return 0;}
+   if(select_ray_queries(value.second,ranges,host,context,visit)==0){return 0;}
+  }
+  index+=1u64;
+ }
+ return 1;
+}
+extern "C" u32 ray_result_queries(Span code,Span ranges,RayHost host,address context,
+ cfn<u32,address,usize,usize> visit) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.include) requires nonzero(host.contains)
+ requires nonzero(host.fields) requires nonzero(visit) {
+ if(!has_closest_ray(code,host.ir)){return 1;}
+ collect_ray_operands(code,host);
+ return select_ray_queries(code,ranges,host,context,visit);
 }

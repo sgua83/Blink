@@ -243,3 +243,14 @@ extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,addre
  requires nonzero(next);
 extern "C" SubgroupFlags subgroup_capabilities(Span stages,SubgroupHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes);
+
+struct RayHost {
+ Host ir; address used;
+ cfn<u32,address,usize> include;
+ cfn<u32,address,usize> ensures memory(read) contains;
+ cfn<Span,Span,usize,usize> ensures memory(read) fields;
+};
+extern "C" u32 ray_result_queries(Span code,Span ranges,RayHost host,address context,
+ cfn<u32,address,usize,usize> visit) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.include) requires nonzero(host.contains)
+ requires nonzero(host.fields) requires nonzero(visit);

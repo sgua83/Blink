@@ -9,7 +9,7 @@ use std::{ffi::c_void, marker::PhantomData, mem::size_of, ptr};
 enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
-    Component, Stage,
+    Component, Stage, RayRange,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -226,6 +226,10 @@ unsafe extern "C" fn inspect(node: Node) -> View {
         Kind::Stage => {
             let stage = unsafe { &*node.data.cast::<Stage>() };
             let mut view = View::tag(0); view.first = Span::slice(&stage.code); view
+        }
+        Kind::RayRange => {
+            let range = unsafe { &*node.data.cast::<std::ops::Range<usize>>() };
+            let mut view = View::tag(0); view.a = range.start; view.b = range.end; view
         }
     }
 }
@@ -491,4 +495,39 @@ unsafe extern "C" fn next_subgroup<I: Iterator<Item = SubgroupOp>>(context: *mut
 }
 pub(super) fn subgroup_capabilities(program: &Program) -> SubgroupCapabilities {
     unsafe { b_subgroup_capabilities(Span::slice(program.stages()), SubgroupHost { ir: HOST, scalar_bytes: register_bytes }).into() }
+}
+
+#[repr(C)]
+struct RayHost {
+    ir: Host, used: *mut c_void,
+    include: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+    contains: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+    fields: unsafe extern "C" fn(Span, usize, usize) -> Span,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::ray_result_queries"]
+    fn b_ray_result_queries(code: Span, ranges: Span, host: RayHost, context: *mut c_void,
+        visit: unsafe extern "C" fn(*mut c_void, usize, usize) -> u32) -> u32;
+}
+pub(super) fn ray_result_queries<F: FnMut(usize, Reg) -> bool>(stage: &Stage,
+    ranges: &[std::ops::Range<usize>], output: &mut F) -> bool {
+    let mut used = BTreeSet::<Reg>::new();
+    let host = RayHost { ir: HOST, used: ptr::from_mut(&mut used).cast(),
+        include: include_ray_operand, contains: contains_ray_operand, fields: ray_fields };
+    unsafe { b_ray_result_queries(Span::slice(&stage.code), Span::slice(ranges), host,
+        ptr::from_mut(output).cast(), visit_ray_query::<F>) != 0 }
+}
+unsafe extern "C" fn include_ray_operand(context: *mut c_void, reg: usize) -> u32 {
+    unsafe { &mut *context.cast::<BTreeSet<Reg>>() }.insert(reg); 1
+}
+unsafe extern "C" fn contains_ray_operand(context: *mut c_void, reg: usize) -> u32 {
+    u32::from(unsafe { &*context.cast::<BTreeSet<Reg>>() }.contains(&reg))
+}
+unsafe extern "C" fn ray_fields(values: Span, begin: usize, end: usize) -> Span {
+    let fields = unsafe { std::slice::from_raw_parts(values.data.cast::<Reg>(), values.count) };
+    Span::slice(&fields[begin..end])
+}
+unsafe extern "C" fn visit_ray_query<F: FnMut(usize, Reg) -> bool>(context: *mut c_void,
+    group: usize, query: usize) -> u32 {
+    u32::from(unsafe { &mut *context.cast::<F>() }(group, query))
 }

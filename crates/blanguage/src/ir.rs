@@ -1739,45 +1739,71 @@ pub struct SubgroupCapabilities {
 }
 impl Stage {
     /// 对实际消费的命中字段发射设备读取；未消费的顶点和矩阵不生成读取。
-    pub fn ray_result_queries(
-        &self,
-        range: std::ops::Range<usize>,
-    ) -> std::collections::BTreeSet<Reg> {
-        fn visit(
-            code: &[Inst],
-            used: &mut std::collections::BTreeSet<Reg>,
-            queries: &mut Vec<[Reg; 39]>,
-        ) {
-            for inst in code {
-                inst.all_operands(&mut |reg| { used.insert(reg); true });
-                match &(inst).kind {
-                    InstKind::RayQuery {
-                        result: RayResult::Closest(regs),
-                        ..
-                    } => queries.push(*regs),
-                    InstKind::Scope(body) => visit(body, used, queries),
-                    InstKind::If { yes, no, .. } => {
-                        visit(yes, used, queries);
-                        visit(no, used, queries);
+    pub fn ray_result_queries(&self, range: std::ops::Range<usize>) -> BTreeSet<Reg> {
+        let mut queries = BTreeSet::new();
+        self.visit_ray_result_queries(&[range], &mut |_, query| { queries.insert(query); true });
+        queries
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn ray_query_groups(&self) -> [BTreeSet<Reg>; 3] {
+        let mut queries = std::array::from_fn(|_| BTreeSet::new());
+        self.visit_ray_result_queries(&[6..15, 15..27, 27..39], &mut |group, query| {
+            queries[group].insert(query); true
+        });
+        queries
+    }
+    fn visit_ray_result_queries(&self, ranges: &[std::ops::Range<usize>],
+        visit: &mut impl FnMut(usize, Reg) -> bool) -> bool {
+        #[cfg(feature = "compiler")]
+        { dataflow::ray_result_queries(self, ranges, visit) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            fn collect(code: &[Inst], used: &mut BTreeSet<Reg>) {
+                for inst in code {
+                    inst.all_operands(&mut |reg| { used.insert(reg); true });
+                    match &inst.kind {
+                        InstKind::Scope(body) => collect(body, used),
+                        InstKind::If { yes, no, .. } => { collect(yes, used); collect(no, used); }
+                        InstKind::Loop { condition, body, .. } => { collect(condition, used); collect(body, used); }
+                        _ => {}
                     }
-                    InstKind::Loop {
-                        condition, body, ..
-                    } => {
-                        visit(condition, used, queries);
-                        visit(body, used, queries);
-                    }
-                    _ => {}
                 }
             }
+            fn has_closest(code: &[Inst]) -> bool {
+                code.iter().any(|inst| match &inst.kind {
+                    InstKind::RayQuery { result: RayResult::Closest(_), .. } => true,
+                    InstKind::Scope(body) => has_closest(body),
+                    InstKind::If { yes, no, .. } => has_closest(yes) || has_closest(no),
+                    InstKind::Loop { condition, body, .. } => has_closest(condition) || has_closest(body),
+                    _ => false,
+                })
+            }
+            fn select(code: &[Inst], ranges: &[std::ops::Range<usize>], used: &BTreeSet<Reg>,
+                visit: &mut impl FnMut(usize, Reg) -> bool) -> bool {
+                for inst in code {
+                    match &inst.kind {
+                        InstKind::RayQuery { result: RayResult::Closest(regs), .. } => {
+                            for (group, range) in ranges.iter().enumerate() {
+                                if regs[range.clone()].iter().any(|reg| used.contains(reg)) && !visit(group, regs[0]) { return false; }
+                            }
+                        }
+                        InstKind::Scope(body) => { if !select(body, ranges, used, visit) { return false; } }
+                        InstKind::If { yes, no, .. } => {
+                            if !select(yes, ranges, used, visit) || !select(no, ranges, used, visit) { return false; }
+                        }
+                        InstKind::Loop { condition, body, .. } => {
+                            if !select(condition, ranges, used, visit) || !select(body, ranges, used, visit) { return false; }
+                        }
+                        _ => {}
+                    }
+                }
+                true
+            }
+            if !has_closest(&self.code) { return true; }
+            let mut used = BTreeSet::new();
+            collect(&self.code, &mut used);
+            select(&self.code, ranges, &used, visit)
         }
-        let mut used = std::collections::BTreeSet::new();
-        let mut queries = Vec::new();
-        visit(&self.code, &mut used, &mut queries);
-        queries
-            .into_iter()
-            .filter(|r| r[range.clone()].iter().any(|r| used.contains(r)))
-            .map(|r| r[0])
-            .collect()
     }
     pub fn requires_maximal_reconvergence(&self) -> bool {
         fn uses(code: &[Inst]) -> bool {
@@ -2085,9 +2111,8 @@ impl Program {
             .sum()
     }
     pub fn requires_ray_position_fetch(&self) -> bool {
-        self.stages
-            .iter()
-            .any(|stage| !stage.ray_result_queries(6..15).is_empty())
+        self.stages.iter().any(|stage|
+            !stage.visit_ray_result_queries(&[6..15], &mut |_, _| false))
     }
     pub fn requires_texture_indexing(&self) -> bool {
         self.textures.iter().any(|t| t.count.is_some())

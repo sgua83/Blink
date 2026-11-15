@@ -1715,6 +1715,7 @@ fn emit_shader(
             None
         };
     let stage = custom_kernel.as_ref().map(|k| &k.stage).unwrap_or(stage);
+    let [position_queries, object_queries, world_queries] = stage.ray_query_groups();
     let mut e = Emitter {
         next: 1,
         types: BTreeMap::new(),
@@ -1732,11 +1733,8 @@ fn emit_shader(
         ray_variables: BTreeMap::new(),
         ray_position_type: 0,
         ray_transform_type: 0,
-        position_queries: stage.ray_result_queries(6..15),
-        transform_queries: [
-            stage.ray_result_queries(15..27),
-            stage.ray_result_queries(27..39),
-        ],
+        position_queries,
+        transform_queries: [object_queries, world_queries],
         vec3_type: 0,
         vec2_type: 0,
         push: 0,
