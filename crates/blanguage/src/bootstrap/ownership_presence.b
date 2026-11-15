@@ -1,0 +1,1520 @@
+module bootstrap.ownership_presence;
+
+struct CloneContext { address output; u32 any; u32 prepend; };
+struct WithinContext { address output; address other; };
+struct EitherContext { address output; address branch; Selection original; u32 prepend; };
+struct NotContext { u32 mode; };
+struct SelectContext { address output; address choice; address wanted; Index index; u64 at; };
+struct SelectBranchContext { address output; address predicate; address choice; address wanted; };
+
+struct ProjectOther { address output; address value; address inputs; u32 looped; u32 any; };
+struct ProjectSelected { address output; address inputs; Selection value; Index omit_a; Index omit_b; };
+struct OwnerPair { address output; address a; address b; address choice; u32 has_choice; };
+struct OwnerSecond { OwnerPair pair; address a_presence; };
+struct OwnerChoice { address output; address a; address b; address choice; };
+struct OwnerChoiceRight { address output; address left; address b; };
+struct OwnerRestrict { address output; address owner; address when; };
+struct OwnerRestrictRight { address output; address left; };
+struct Compatible { address a; address b; address inputs; address path; };
+struct Expected { Compatible pair; address presence; };
+struct ActualPresence { Compatible pair; address expected; };
+struct ActualCondition { Compatible pair; address expected; address presence; };
+struct XorExpected { address expected; address actual; address path; };
+struct XorActual { address first; address expected; address actual; address path; };
+
+u32 comparison_mask(u32 operation) on cpu {
+if(operation==0){return 2;} if(operation==1){return 5;}
+    if(operation==2){return 1;} if(operation==3){return 4;}
+    return operation==4 ? 3 : 6;
+}
+
+u32 reverse_comparison(u32 operation) on cpu {
+if(operation==2){return 3;} if(operation==3){return 2;}
+    if(operation==4){return 5;} if(operation==5){return 4;}
+    return operation;
+}
+
+u32 inverse_comparison(u32 operation) on cpu {
+if(operation==0){return 1;} if(operation==1){return 0;}
+    if(operation==2){return 5;} if(operation==5){return 2;}
+    return operation==3 ? 4 : 3;
+}
+
+extern "C" void relation(address output,Selection value,Host host) on cpu
+    requires nonzero(host.compare_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected) {
+Selection current=value;
+    if(host.compare_index(current.a,current.b)==0){host.truth(output,(comparison_mask(current.operation)&2)!=0 ? 1 : 0);return;}
+    if(current.a.kind==1&&current.b.kind==1){
+        u32 bit=current.a.value<current.b.value ? 1 : (current.a.value==current.b.value ? 2 : 4);
+        host.truth(output,(comparison_mask(current.operation)&bit)!=0 ? 1 : 0);return;
+    }
+    if(current.a.kind==1){Index saved=current.a;current.a=current.b;current.b=saved;current.operation=reverse_comparison(current.operation);}
+    if(current.b.kind==1&&current.b.value==0){
+        if(current.operation==2){host.truth(output,0);return;}
+        if(current.operation==5){host.truth(output,1);return;}
+        if(current.operation==4){current.operation=0;}else if(current.operation==3){current.operation=1;}
+    }
+    if(current.b.kind==1&&current.b.value==0xffffffff){
+        if(current.operation==3){host.truth(output,0);return;}
+        if(current.operation==4){host.truth(output,1);return;}
+        if(current.operation==5){current.operation=0;}else if(current.operation==2){current.operation=1;}
+    }
+    host.selected(output,current);
+}
+
+extern "C" i32 compare(address a,address b,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input) {
+Node left=host.inspect(a);Node right=host.inspect(b);
+    if(left.kind!=right.kind){return left.kind<right.kind ? i32(-1) : i32(1);}
+    if(left.kind==2){return host.compare_input(left.value,right.value);}
+    if(left.kind==3){
+        if(left.operation!=right.operation){return left.operation<right.operation ? i32(-1) : i32(1);}
+        i32 first=host.compare_index(left.a,right.a);
+        return first!=0 ? first : host.compare_index(left.b,right.b);
+    }
+    if(left.kind==4){return compare(left.first,right.first,host);}
+    if(left.kind==5||left.kind==6){i32 first=compare(left.first,right.first,host);return first!=0 ? first : compare(left.second,right.second,host);}
+    return i32(0);
+}
+
+extern "C" u32 uses_index(address value,Index wanted,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.input_uses_index) {
+Node node=host.inspect(value);
+    if(node.kind==3){return host.compare_index(node.a,wanted)==0||host.compare_index(node.b,wanted)==0 ? 1 : 0;}
+    if(node.kind==2){return host.input_uses_index(node.value,wanted);}
+    if(node.kind==4){return uses_index(node.first,wanted,host);}
+    if(node.kind==5||node.kind==6){return uses_index(node.first,wanted,host)!=0||uses_index(node.second,wanted,host)!=0 ? 1 : 0;}
+    return 0;
+}
+
+extern "C" void from_value(address output,address value,Host host) on cpu
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input)
+    requires nonzero(host.truth) {
+u32 constant=host.constant_input(value);
+    if(constant==0){host.input(output,value);}else{host.truth(output,constant==2 ? 1 : 0);}
+}
+
+u32 pair_mask(Selection left,Node right,u32 any,Host host) on cpu
+    requires nonzero(host.compare_index) {
+if(right.kind!=3){return 8;}
+    u32 mask=comparison_mask(right.operation);
+    if(host.compare_index(left.a,right.b)==0&&host.compare_index(left.b,right.a)==0){mask=((mask&1)<<2)|(mask&2)|((mask&4)>>2);}
+    else if(host.compare_index(left.a,right.a)!=0||host.compare_index(left.b,right.b)!=0){return 8;}
+    return any!=0 ? (comparison_mask(left.operation)|mask) : (comparison_mask(left.operation)&mask);
+}
+
+void masked_relation(address output,Selection value,u32 mask,Host host) on cpu
+    requires nonzero(host.compare_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected) {
+Selection current=value;
+    if(mask==0||mask==7){host.truth(output,mask==7 ? 1 : 0);return;}
+    if(mask==1){current.operation=2;}else if(mask==2){current.operation=0;}
+    else if(mask==4){current.operation=3;}else if(mask==3){current.operation=4;}
+    else{current.operation=mask==5 ? 1 : 5;}
+    relation(output,current,host);
+}
+
+extern "C" u32 clone_callback(address temporary,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+CloneContext context=unsafe_position<CloneContext>(data);
+    if(context.prepend!=0){combine(temporary,context.output,context.any,host);host.move_value(context.output,temporary);}
+    else{combine(context.output,temporary,context.any,host);}
+    return 1;
+}
+
+void combine_cloned(address output,address other,u32 any,u32 prepend,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+CloneContext context=CloneContext(output,any,prepend);
+    host.clone_scope(other,address_of(context),host,c_function(clone_callback));
+}
+
+extern "C" u32 either_callback(address temporary,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+EitherContext context=unsafe_position<EitherContext>(data);
+    relation(temporary,context.original,host);
+    combine_cloned(temporary,context.branch,0,0,host);
+    if(context.prepend!=0){combine(temporary,context.output,1,host);host.move_value(context.output,temporary);}
+    else{combine(context.output,temporary,1,host);}
+    return 1;
+}
+
+u32 within_selected(address output,address other,Selection original,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+Node node=host.inspect(other);
+    u32 mask=pair_mask(original,node,0,host);
+    if(mask!=8){masked_relation(output,original,mask,host);return 1;}
+    if(node.kind==5){
+        if(within_selected(output,node.first,original,host)!=0){combine_cloned(output,node.second,0,0,host);return 1;}
+        if(within_selected(output,node.second,original,host)!=0){combine_cloned(output,node.first,0,1,host);return 1;}
+    }
+    if(node.kind==6){
+        if(within_selected(output,node.first,original,host)!=0){EitherContext context=EitherContext(output,node.second,original,0);host.truth_scope(0,address_of(context),host,c_function(either_callback));return 1;}
+        if(within_selected(output,node.second,original,host)!=0){EitherContext context=EitherContext(output,node.first,original,1);host.truth_scope(0,address_of(context),host,c_function(either_callback));return 1;}
+    }
+    return 0;
+}
+
+extern "C" u32 within_callback(Selection original,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+WithinContext context=unsafe_position<WithinContext>(data);
+    return within_selected(context.output,context.other,original,host);
+}
+
+u32 within(address output,address other,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+Node node=host.inspect(output);
+    if(node.kind!=3){return 0;}
+    WithinContext context=WithinContext(output,other);
+    return host.selected_scope(Selection(node.operation,node.a,node.b),address_of(context),host,c_function(within_callback));
+}
+
+extern "C" void combine(address left,address right,u32 any,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+if(compare(left,right,host)==0){return;}
+    Node a=host.inspect(left);Node b=host.inspect(right);
+    if((a.kind==4&&compare(a.first,right,host)==0)||(b.kind==4&&compare(left,b.first,host)==0)){host.truth(left,any);return;}
+    if(any==0){
+        if(within(left,right,host)!=0){return;}
+        if(within(right,left,host)!=0){host.move_value(left,right);return;}
+        if(a.kind==0||b.kind==0){host.truth(left,0);return;}
+        if(a.kind==1){host.move_value(left,right);return;}if(b.kind==1){return;}
+    }else{
+        if(a.kind==3){u32 mask=pair_mask(Selection(a.operation,a.a,a.b),b,1,host);if(mask!=8){masked_relation(left,Selection(a.operation,a.a,a.b),mask,host);return;}}
+        if(a.kind==1||b.kind==1){host.truth(left,1);return;}
+        if(a.kind==0){host.move_value(left,right);return;}if(b.kind==0){return;}
+    }
+    host.pair(left,left,right,any);
+}
+
+extern "C" u32 not_children(address output,address left,address right,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+NotContext context=unsafe_position<NotContext>(data);
+    if(context.mode!=0){negate(left,host);negate(right,host);combine(left,right,context.mode==1 ? 1 : 0,host);}
+    host.move_value(output,left);return 1;
+}
+
+extern "C" u32 not_selected(Selection value,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+Selection current=value;
+    current.operation=inverse_comparison(current.operation);relation(data,current,host);return 1;
+}
+
+extern "C" void negate(address value,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+Node node=host.inspect(value);
+    if(node.kind==0||node.kind==1){host.truth(value,node.kind==0 ? 1 : 0);return;}
+    if(node.kind==3){host.selected_scope(Selection(node.operation,node.a,node.b),value,host,c_function(not_selected));return;}
+    if(node.kind==4||node.kind==5||node.kind==6){NotContext context=NotContext(node.kind==4 ? 0 : (node.kind==5 ? 1 : 2));host.children_scope(value,address_of(context),host,c_function(not_children));return;}
+    host.wrap_not(value);
+}
+
+extern "C" u32 select_choice(address actual,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+SelectBranchContext context=unsafe_position<SelectBranchContext>(data);
+    selected(actual,context.choice,context.wanted,host);
+    combine(context.predicate,actual,0,host);combine(context.output,context.predicate,1,host);return 1;
+}
+
+extern "C" u32 select_predicate(address predicate,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+SelectContext context=unsafe_position<SelectContext>(data);
+    Index constant=Index(1,u32(context.at),address(),0u64);
+    relation(predicate,Selection(0,context.index,constant),host);
+    SelectBranchContext child=SelectBranchContext(context.output,predicate,context.choice,context.wanted);
+    return host.truth_scope(0,address_of(child),host,c_function(select_choice));
+}
+
+extern "C" void selected(address output,address position,address wanted,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+PositionNode node=host.position(position);
+    if(node.indexed==0){host.truth(output,host.position_equal(position,wanted));return;}
+    host.truth(output,0);
+    if(node.index.kind==1){if(u64(node.index.value)<node.count){selected(output,host.position_child(position,u64(node.index.value)),wanted,host);}return;}
+    u64 i=0u64;while(i<node.count){
+        SelectContext context=SelectContext(output,host.position_child(position,i),wanted,node.index,i);
+        host.truth_scope(0,address_of(context),host,c_function(select_predicate));i+=1u64;
+    }
+}
+
+Index omitted_index() on cpu {
+return Index(0,0,address(),0u64);
+}
+
+void index_condition(address output,Selection value,Host host) on cpu
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate) {
+if(value.operation==0||value.operation==1){host.condition_index(output,0,value.a,value.b);if(value.operation==1){host.condition_negate(output);}return;}
+    if(value.operation==2||value.operation==4){host.condition_index(output,value.operation==2 ? 1 : 2,value.a,value.b);return;}
+    host.condition_index(output,value.operation==3 ? 1 : 2,value.b,value.a);
+}
+
+extern "C" u32 project_other(address temporary,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+ProjectOther context=unsafe_position<ProjectOther>(data);
+    project(temporary,context.value,context.inputs,context.looped,host);
+    host.condition_logical(context.output,temporary,context.any);return 1;
+}
+
+extern "C" u32 project_selected(address temporary,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+ProjectSelected context=unsafe_position<ProjectSelected>(data);
+    relation(temporary,context.value,host);
+    project(context.output,temporary,address(),0,host);
+    host.condition_substitute(context.output,context.inputs,context.omit_a,context.omit_b);return 1;
+}
+
+void project(address output,address value,address inputs,u32 looped,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+Node node=host.inspect(value);
+    if(node.kind==0||node.kind==1){host.condition_truth(output,node.kind);if(looped!=0){host.condition_substitute(output,inputs,omitted_index(),omitted_index());}return;}
+    if(node.kind==2){host.condition_input(output,node.value);if(looped!=0){host.condition_substitute(output,inputs,omitted_index(),omitted_index());}return;}
+    if(node.kind==3){
+        Selection actual=Selection(node.operation,node.a,node.b);
+        if(looped==0){index_condition(output,actual,host);return;}
+        Index omit_a=omitted_index();Index omit_b=omitted_index();
+        if(host.input_offset(inputs,node.b)!=0){
+            if(actual.operation==5){actual.operation=3;omit_b=node.b;}
+            else if(actual.operation==2){actual.operation=4;omit_b=node.b;}
+        }
+        if(host.input_offset(inputs,node.a)!=0){
+            if(actual.operation==4){actual.operation=2;omit_a=node.a;}
+            else if(actual.operation==3){actual.operation=5;omit_a=node.a;}
+        }
+        ProjectSelected context=ProjectSelected(output,inputs,actual,omit_a,omit_b);
+        host.truth_scope(0,address_of(context),host,c_function(project_selected));return;
+    }
+    if(node.kind==4){project(output,node.first,inputs,looped,host);host.condition_negate(output);return;}
+    project(output,node.first,inputs,looped,host);
+    ProjectOther context=ProjectOther(output,node.second,inputs,looped,node.kind==6 ? 1 : 0);
+    host.condition_scope(address_of(context),host,c_function(project_other));
+}
+
+extern "C" void condition(address output,address value,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+project(output,value,address(),0,host);
+}
+
+extern "C" void loop_condition(address output,address value,address inputs,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+project(output,value,inputs,1,host);
+}
+
+extern "C" u32 ownership_may_own(address value,Host host) on cpu
+    requires nonzero(host.ownership_read) {
+OwnershipNode node=host.ownership_read(value);return node.kind==1||node.kind==3 ? 1 : 0;
+}
+
+extern "C" u32 ownership_available(address value,Host host) on cpu
+    requires nonzero(host.ownership_read) {
+OwnershipNode node=host.ownership_read(value);return node.kind==1||node.kind==2 ? 1 : 0;
+}
+
+extern "C" void ownership_presence(address output,address value,Host host) on cpu
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.copy_value)
+    requires nonzero(host.truth) {
+OwnershipNode node=host.ownership_read(value);
+    if(node.kind==3){host.copy_value(output,node.presence);}else{host.truth(output,node.kind==0 ? 0 : 1);}
+}
+
+extern "C" void ownership_from_presence(address output,address value,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional) {
+Node node=host.inspect(value);
+    if(node.kind==0||node.kind==1){host.ownership_constant(output,node.kind);}else{host.ownership_conditional(output,value);}
+}
+
+u32 same_ownership(address a,address b,Host host) on cpu
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input) {
+OwnershipNode left=host.ownership_read(a);OwnershipNode right=host.ownership_read(b);
+    if(left.kind!=right.kind){return 0;}
+    return left.kind!=3||compare(left.presence,right.presence,host)==0 ? 1 : 0;
+}
+
+extern "C" u32 choice_right(address right,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+OwnerChoiceRight context=unsafe_position<OwnerChoiceRight>(data);
+    negate(right,host);combine(right,context.b,0,host);combine(context.left,right,1,host);
+    ownership_from_presence(context.output,context.left,host);return 1;
+}
+
+extern "C" u32 choice_left(address left,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+OwnerChoice context=unsafe_position<OwnerChoice>(data);
+    combine(left,context.a,0,host);
+    OwnerChoiceRight next=OwnerChoiceRight(context.output,left,context.b);
+    return host.clone_scope(context.choice,address_of(next),host,c_function(choice_right));
+}
+
+extern "C" u32 owner_second(address b,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+OwnerSecond context=unsafe_position<OwnerSecond>(data);
+    ownership_presence(b,context.pair.b,host);
+    if(context.pair.has_choice==0){combine(context.a_presence,b,0,host);ownership_from_presence(context.pair.output,context.a_presence,host);return 1;}
+    OwnerChoice choice=OwnerChoice(context.pair.output,context.a_presence,b,context.pair.choice);
+    return host.clone_scope(context.pair.choice,address_of(choice),host,c_function(choice_left));
+}
+
+extern "C" u32 owner_first(address a,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+OwnerPair context=unsafe_position<OwnerPair>(data);
+    ownership_presence(a,context.a,host);
+    OwnerSecond next=OwnerSecond(context,a);
+    return host.truth_scope(0,address_of(next),host,c_function(owner_second));
+}
+
+extern "C" void ownership_either(address output,address a,address b,address choice,u32 has_choice,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+if(same_ownership(a,b,host)!=0){host.ownership_copy(output,a);return;}
+    OwnershipNode left=host.ownership_read(a);OwnershipNode right=host.ownership_read(b);
+    if(left.kind==2||right.kind==2){host.ownership_constant(output,0);return;}
+    OwnerPair context=OwnerPair(output,a,b,choice,has_choice);
+    host.truth_scope(0,address_of(context),host,c_function(owner_first));
+}
+
+extern "C" u32 restrict_right(address right,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+OwnerRestrictRight context=unsafe_position<OwnerRestrictRight>(data);
+    combine(context.left,right,0,host);ownership_from_presence(context.output,context.left,host);return 1;
+}
+
+extern "C" u32 restrict_left(address left,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+OwnerRestrict context=unsafe_position<OwnerRestrict>(data);
+    ownership_presence(left,context.owner,host);
+    OwnerRestrictRight next=OwnerRestrictRight(context.output,left);
+    return host.clone_scope(context.when,address_of(next),host,c_function(restrict_right));
+}
+
+extern "C" void ownership_restricted(address output,address value,address when,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+OwnershipNode node=host.ownership_read(value);
+    if(node.kind==2){host.ownership_constant(output,2);return;}
+    OwnerRestrict context=OwnerRestrict(output,value,when);
+    host.truth_scope(0,address_of(context),host,c_function(restrict_left));
+}
+
+extern "C" u32 xor_actual(address right,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+XorActual context=unsafe_position<XorActual>(data);
+    host.condition_negate(right);host.condition_logical(context.first,right,0);
+    host.condition_negate(context.expected);host.condition_logical(context.expected,context.actual,0);
+    host.condition_logical(context.first,context.expected,1);
+    return host.condition_truth_in(context.first,context.path)==1 ? 1 : 0;
+}
+
+extern "C" u32 xor_expected(address left,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+XorExpected context=unsafe_position<XorExpected>(data);
+    XorActual next=XorActual(left,context.expected,context.actual,context.path);
+    return host.condition_clone_scope(context.actual,address_of(next),host,c_function(xor_actual));
+}
+
+extern "C" u32 actual_condition(address actual,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+ActualCondition context=unsafe_position<ActualCondition>(data);
+    condition(actual,context.presence,host);
+    XorExpected next=XorExpected(context.expected,actual,context.pair.path);
+    return host.condition_clone_scope(context.expected,address_of(next),host,c_function(xor_expected));
+}
+
+extern "C" u32 actual_presence(address presence,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+ActualPresence context=unsafe_position<ActualPresence>(data);
+    ownership_presence(presence,context.pair.b,host);
+    ActualCondition next=ActualCondition(context.pair,context.expected,presence);
+    return host.condition_scope(address_of(next),host,c_function(actual_condition));
+}
+
+extern "C" u32 expected_condition(address expected,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+Expected context=unsafe_position<Expected>(data);
+    loop_condition(expected,context.presence,context.pair.inputs,host);
+    ActualPresence next=ActualPresence(context.pair,expected);
+    return host.truth_scope(0,address_of(next),host,c_function(actual_presence));
+}
+
+extern "C" u32 expected_presence(address presence,address data,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+Compatible context=unsafe_position<Compatible>(data);
+    ownership_presence(presence,context.a,host);
+    Expected next=Expected(context,presence);
+    return host.condition_scope(address_of(next),host,c_function(expected_condition));
+}
+
+extern "C" u32 ownership_compatible(address a,address b,address inputs,address path,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.compare_index)
+    requires nonzero(host.compare_input)
+    requires nonzero(host.constant_input)
+    requires nonzero(host.input_uses_index)
+    requires nonzero(host.truth)
+    requires nonzero(host.selected)
+    requires nonzero(host.input)
+    requires nonzero(host.move_value)
+    requires nonzero(host.pair)
+    requires nonzero(host.wrap_not)
+    requires nonzero(host.children_scope)
+    requires nonzero(host.selected_scope)
+    requires nonzero(host.clone_scope)
+    requires nonzero(host.truth_scope)
+    requires nonzero(host.position)
+    requires nonzero(host.position_child)
+    requires nonzero(host.position_equal)
+    requires nonzero(host.condition_scope)
+    requires nonzero(host.condition_clone_scope)
+    requires nonzero(host.condition_truth)
+    requires nonzero(host.condition_input)
+    requires nonzero(host.condition_index)
+    requires nonzero(host.condition_negate)
+    requires nonzero(host.condition_logical)
+    requires nonzero(host.condition_substitute)
+    requires nonzero(host.input_offset)
+    requires nonzero(host.condition_truth_in)
+    requires nonzero(host.ownership_read)
+    requires nonzero(host.ownership_copy)
+    requires nonzero(host.ownership_constant)
+    requires nonzero(host.ownership_conditional)
+    requires nonzero(host.copy_value) {
+OwnershipNode left=host.ownership_read(a);OwnershipNode right=host.ownership_read(b);
+    if((left.kind==2&&right.kind==2)||(left.kind==1&&right.kind==1)){return 1;}
+    if(left.kind==2||right.kind==2){return 0;}
+    Compatible context=Compatible(a,b,inputs,path);
+    return host.truth_scope(0,address_of(context),host,c_function(expected_presence));
+}

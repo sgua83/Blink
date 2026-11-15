@@ -815,19 +815,19 @@ impl Proof {
         for address in self.addresses.iter().flatten(){if let address::Identity::Value(values)=address{for id in values{identity(*id);}}}
         ids.into_inner()
     }
-    fn value_bindings(
+    fn value_bindings<'a>(
         identities: impl IntoIterator<Item = ValueIdentity>,
-        values: &BTreeMap<ValueIdentity, Proof>,
+        mut values: impl FnMut(ValueIdentity) -> Option<&'a Proof>,
         unchanged: impl Fn(ValueIdentity) -> Proof,
     ) -> BTreeMap<ValueIdentity, Proof> {
         identities.into_iter().map(|id| {
-            let proof = values.get(&id).cloned().unwrap_or_else(|| unchanged(id));
+            let proof = values(id).cloned().unwrap_or_else(|| unchanged(id));
             (id, proof)
         }).collect()
     }
 
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        let bindings = Self::value_bindings(self.scalar_identities(), values, |id| {
+        let bindings = Self::value_bindings(self.scalar_identities(), |id| values.get(&id), |id| {
             Proof::default().with_identity(id).with_view_borrow(
                 0,
                 view::Borrow::source(view::Source::Parameter(id, Vec::new())),
@@ -2268,7 +2268,7 @@ impl Clause {
             identities.borrow_mut().insert(id);
             id
         });
-        let bindings = Proof::value_bindings(identities.into_inner(), values, |id| Proof::default().with_identity(id));
+        let bindings = Proof::value_bindings(identities.into_inner(), |id| values.get(&id), |id| Proof::default().with_identity(id));
         self.project_guard_in(&ordered, &bindings)
     }
 
@@ -3396,7 +3396,7 @@ impl Condition {
     fn identities(&self,identity:&impl Fn(ValueIdentity)->ValueIdentity) {
         Clause::visit_identities(&Clause::ordered(&self.cases), identity);
     }
-    fn value_bindings(&self, values: &BTreeMap<ValueIdentity, Proof>) -> BTreeMap<ValueIdentity, Proof> {
+    pub(super) fn value_bindings<'a>(&self, values: impl FnMut(ValueIdentity) -> Option<&'a Proof>) -> BTreeMap<ValueIdentity, Proof> {
         let identities = std::cell::RefCell::new(BTreeSet::new());
         self.identities(&|id| {
             identities.borrow_mut().insert(id);
@@ -3406,7 +3406,7 @@ impl Condition {
     }
 
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        self.at_call(&self.value_bindings(values))
+        self.at_call(&self.value_bindings(|id| values.get(&id)))
     }
 
     pub(super) fn element_index(depth:usize,index:Operand)->Self {
