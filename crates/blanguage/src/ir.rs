@@ -1689,7 +1689,7 @@ pub struct TileCollective {
     pub results: Vec<(u32, Reg)>,
 }
 #[cfg(feature = "compiler")]
-mod dataflow;
+pub(crate) mod dataflow;
 #[cfg(feature = "compiler")]
 pub(crate) mod rewrite;
 mod tile;

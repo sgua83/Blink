@@ -39,8 +39,8 @@ extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mappin
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg);
 
-// One synchronous fallibility round over the original compiler Module.
-struct EffectSeed { u32 present; u32 fallible; address name; };
+// Synchronous flag sampling and call propagation over the original IR.
+struct EffectSeed { u32 present; u32 enabled; address name; };
 struct EffectFunction { u32 present; address flag; Span body; };
 struct EffectNode { Span first; Span second; address target; u32 error; };
 struct EffectSeedHost {
@@ -54,11 +54,11 @@ struct EffectHost {
  cfn<EffectNode,address> ensures memory(read) inspect;
  cfn<u32,address,address> ensures memory(read) contains;
 };
-extern "C" void seed_fallible(EffectSeedHost host) on cpu
+extern "C" void seed_effect_flags(EffectSeedHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.remember);
-extern "C" u32 mark_fallible(EffectHost host) on cpu
+extern "C" u32 mark_effects(EffectHost host,u32 explicit_errors) on cpu
  requires nonzero(host.next) requires nonzero(host.inspect) requires nonzero(host.contains);
-extern "C" void propagate_fallibility(address context,cfn<u32,address> round) on cpu
+extern "C" void propagate_effects(address context,cfn<u32,address> round) on cpu
  requires nonzero(round);
 
 // Direct native dependencies and their single-owner transitive selection.
@@ -97,3 +97,24 @@ extern "C" void seed_dependencies(DependencySeedHost host) on cpu
 extern "C" void expand_dependencies(DependencyClosureHost host) on cpu
  requires nonzero(host.inspect) requires nonzero(host.lookup) requires nonzero(host.insert)
  requires nonzero(host.push) requires nonzero(host.pop);
+
+// Frame inference consumes the same lowered original IR and flag fields.
+struct FrameMeta { u32 present; u32 enabled; u32 has_body; address name; };
+struct FrameImportHost {
+ address iterator; address output;
+ cfn<FrameMeta,address> next;
+ cfn<void,address,address> remember;
+};
+struct FrameFunction { u32 present; address flag; Span code; Span roots; Span outputs; };
+struct FrameSourceHost {
+ address iterator; Host data; address imported;
+ cfn<FrameFunction,address> next;
+ cfn<EffectNode,address> ensures memory(read) inspect;
+ cfn<Span,address> ensures memory(read) arguments;
+ cfn<u32,address,address> ensures memory(read) contains;
+};
+extern "C" void seed_frame_imports(FrameImportHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.remember);
+extern "C" void mark_frame_sources(FrameSourceHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.data.inspect) requires nonzero(host.inspect)
+ requires nonzero(host.arguments) requires nonzero(host.contains);

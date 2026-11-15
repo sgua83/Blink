@@ -4,6 +4,7 @@ use cooperative::Argument;
 use returns::Returned;
 mod fallibility;
 mod dependencies;
+mod frame_effects;
 
 // Only source vectors admit a different component placement with the same type.
 // Aggregate fields and arrays retain their declared layout.
@@ -2275,27 +2276,6 @@ pub(super) struct Finalized {
     pub exports: BTreeMap<String, Vec<u8>>,
     pub resources: crate::application::Resources,
 }
-fn uses_frame(code: &[Inst], registers: &[Reg], imported: &BTreeSet<String>) -> bool {
-    code.iter().any(|inst| {
-        let mut other = |reg| !registers.contains(&reg);
-        let operands = match &(inst).kind {
-            // Imported no-Frame ABIs already contain only their real arguments.
-            InstKind::Call(Call { target: CallTarget::Defined(name), arguments, .. }) =>
-                arguments.iter().skip(usize::from(!imported.contains(name))).all(|argument| match argument {
-                    CallArgument::Value { values, .. } => values.iter().all(|reg| other(*reg)),
-                    CallArgument::Reference { address, .. } => address.all_operands(&mut other),
-                }),
-            _ => inst.all_operands(&mut other),
-        };
-        !operands || match &(inst).kind {
-            InstKind::Scope(code) => uses_frame(code, registers, imported),
-            InstKind::If { yes, no, .. } => uses_frame(yes, registers, imported) || uses_frame(no, registers, imported),
-            InstKind::Loop { condition, body, .. } => uses_frame(condition, registers, imported) || uses_frame(body, registers, imported),
-            _ => false,
-        }
-    })
-}
-
 // The original call keeps its actual Frame binding only until the same module's
 // Dataset contract closes. No function body or resource graph is reconstructed.
 fn dataset_write_regions(borrow:&DatasetBorrow,context:&view_contracts::Call,contract:&Contract)->BTreeSet<(u32,u32)> {
@@ -2816,46 +2796,13 @@ fn finalize(
         .map(|(name, unit)| (name, unit.unwrap()))
         .collect::<BTreeMap<_, _>>();
     dependencies::complete(&units, &mut reachable, owner);
-    let imported_without_frame = units.iter()
-        .filter(|(_, unit)| unit.function.is_none() && !unit.contract.frame)
-        .map(|(name, _)| name.clone()).collect::<BTreeSet<_>>();
-    let mut frame = BTreeSet::new();
     let fallible=units.iter().filter_map(|(name,unit)|unit.contract.fallible.then(||name.clone())).collect::<BTreeSet<_>>();
-    let names=units.keys().cloned().collect::<Vec<_>>();
-    for name in names {
-        let unit=units.remove(&name).unwrap();
-        if unit.contract.frame {frame.insert(name.clone());}
-        if let Some(function)=&unit.function {
-            let registers=&function.body.inputs[..2];
-            if uses_frame(&function.body.code,registers,&imported_without_frame)
-                || function.body.outputs.iter().any(|reg|registers.contains(reg)) {
-                frame.insert(name.clone());
-            }
-        }
-        units.insert(name,unit);
-    }
     if let Some((body,model))=&mut root {
         lower_dataset_borrows(body,model,&|callee|&units[callee].contract);
     }
-    loop {
-        let mut next = frame.clone();
-        for (name, unit) in &mut units {
-            if let Some(function) = &mut unit.function {
-                calls(&mut function.body.code, &mut |call| {
-                    if matches!(&call.target, CallTarget::Defined(callee) if frame.contains(callee)) {
-                        next.insert(name.clone());
-                    }
-                });
-            }
-        }
-        if next == frame {
-            break;
-        }
-        frame = next;
-    }
+    let frame=frame_effects::run(&mut units);
     let mut imports = residency_imports;
     for (name, unit) in &mut units {
-        unit.contract.frame = frame.contains(name);
         if unit.c_abi && unit.contract.frame {
             return unit.source.fail(unit.span, "B263", "C入口的实际调用闭包需要Frame；C ABI不能隐式取得执行上下文");
         }

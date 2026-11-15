@@ -449,43 +449,43 @@ extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mappin
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg) {rewrite_inputs(host.inspect(source),host,mapping);}
 
-extern "C" void seed_fallible(EffectSeedHost host) on cpu
+extern "C" void seed_effect_flags(EffectSeedHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.remember) {
  while(true) {
   EffectSeed item=host.next(host.iterator);
   if(item.present==0){return;}
-  if(item.fallible!=0){host.remember(host.known,item.name);}
+  if(item.enabled!=0){host.remember(host.known,item.name);}
  }
 }
 
-bool effect_body(Span code,EffectHost host) on cpu
+bool effect_body(Span code,EffectHost host,u32 explicit_errors) on cpu
  requires nonzero(host.inspect) requires nonzero(host.contains) {
  usize index=0u64;
  while(index<code.count) {
   address instruction=unsafe_address(address_bits(code.data)+u64(index)*u64(code.stride));
   EffectNode item=host.inspect(instruction);
-  if(item.error!=0){return true;}
+  if(explicit_errors!=0 && item.error!=0){return true;}
   if(address_bits(item.target)!=0u64 && host.contains(host.known,item.target)!=0){return true;}
-  if(effect_body(item.first,host)||effect_body(item.second,host)){return true;}
+  if(effect_body(item.first,host,explicit_errors)||effect_body(item.second,host,explicit_errors)){return true;}
   index+=1u64;
  }
  return false;
 }
 
-extern "C" u32 mark_fallible(EffectHost host) on cpu
+extern "C" u32 mark_effects(EffectHost host,u32 explicit_errors) on cpu
  requires nonzero(host.next) requires nonzero(host.inspect) requires nonzero(host.contains) {
  u32 changed=0;
  while(true) {
   EffectFunction item=host.next(host.iterator);
   if(item.present==0){return changed;}
-  if(unsafe_position<u8>(item.flag)==u8(0) && effect_body(item.body,host)) {
+  if(unsafe_position<u8>(item.flag)==u8(0) && effect_body(item.body,host,explicit_errors)) {
    unsafe_position<u8>(item.flag)=u8(1);
    changed=1;
   }
  }
 }
 
-extern "C" void propagate_fallibility(address context,cfn<u32,address> round) on cpu
+extern "C" void propagate_effects(address context,cfn<u32,address> round) on cpu
  requires nonzero(round) {
  while(round(context)!=0){}
 }
@@ -565,5 +565,63 @@ extern "C" void expand_dependencies(DependencyClosureHost host) on cpu
   DependencyWork item=host.pop(host.pending);
   if(item.present==0){return;}
   expand_dependency_body(item.body,host);
+ }
+}
+
+extern "C" void seed_frame_imports(FrameImportHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.remember) {
+ while(true) {
+  FrameMeta item=host.next(host.iterator);
+  if(item.present==0){return;}
+  if(item.has_body==0 && item.enabled==0){host.remember(host.output,item.name);}
+ }
+}
+
+extern "C" u32 frame_other(address roots,usize reg) on cpu {
+ usize first=unsafe_position<usize>(roots);
+ usize second=unsafe_position<usize>(unsafe_address(address_bits(roots)+u64(size_of<usize>())));
+ return reg!=first && reg!=second ? 1 : 0;
+}
+
+bool frame_code(Span code,Span roots,FrameSourceHost host) on cpu
+ requires nonzero(host.data.inspect) requires nonzero(host.inspect)
+ requires nonzero(host.arguments) requires nonzero(host.contains) {
+ usize index=0u64;
+ while(index<code.count) {
+  address instruction=unsafe_address(address_bits(code.data)+u64(index)*u64(code.stride));
+  EffectNode item=host.inspect(instruction);
+  if(address_bits(item.target)!=0u64) {
+   Span arguments=host.arguments(instruction);
+   usize argument=host.contains(host.imported,item.target)!=0 ? 0u64 : 1u64;
+   while(argument<arguments.count) {
+    View value=host.data.inspect(node_at(arguments,argument,N_ARGUMENT));
+    u32 other=1;
+    if(value.tag==0){other=visit_span(value.first,roots.data,c_function(frame_other));}
+    else {other=visit_reference(value.left,host.data,roots.data,c_function(frame_other));}
+    if(other==0){return true;}
+    argument+=1u64;
+   }
+  }else if(operands(Node(instruction,N_INSTRUCTION),host.data,roots.data,c_function(frame_other))==0){return true;}
+  if(frame_code(item.first,roots,host)||frame_code(item.second,roots,host)){return true;}
+  index+=1u64;
+ }
+ return false;
+}
+
+extern "C" void mark_frame_sources(FrameSourceHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.data.inspect) requires nonzero(host.inspect)
+ requires nonzero(host.arguments) requires nonzero(host.contains) {
+ while(true) {
+  FrameFunction item=host.next(host.iterator);
+  if(item.present==0){return;}
+  if(unsafe_position<u8>(item.flag)==u8(0)) {
+   bool required=frame_code(item.code,item.roots,host);
+   usize index=0u64;
+   while(!required && index<item.outputs.count) {
+    required=frame_other(item.roots.data,word_at(item.outputs,index))==0;
+    index+=1u64;
+   }
+   if(required){unsafe_position<u8>(item.flag)=u8(1);}
+  }
  }
 }

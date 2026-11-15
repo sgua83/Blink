@@ -44,8 +44,8 @@ impl View {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct Host { inspect: unsafe extern "C" fn(Node) -> View }
-const HOST: Host = Host { inspect };
+pub(crate) struct Host { inspect: unsafe extern "C" fn(Node) -> View }
+pub(crate) const HOST: Host = Host { inspect };
 #[repr(C)]
 struct Word { present: u32, value: usize }
 #[repr(C)]
