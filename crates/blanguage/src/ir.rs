@@ -1041,6 +1041,11 @@ pub enum ElementStride {
     Value([Reg; 2]),
 }
 impl ElementStride {
+    #[cfg(feature = "compiler")]
+    pub(crate) fn all_operands(&self,f:&mut impl FnMut(Reg)->bool)->bool{
+        dataflow::stride_operands(self, f)
+    }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn all_operands(&self,f:&mut impl FnMut(Reg)->bool)->bool{
         match self {Self::Constant(_)=>true,Self::Value(words)=>words.iter().all(|reg|f(*reg))}
     }
@@ -1071,6 +1076,11 @@ pub enum IndexedSource {
     },
 }
 impl IndexedSource {
+    #[cfg(feature = "compiler")]
+    pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
+        dataflow::indexed_operands(self, f)
+    }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         match self {
             Self::Data { index, .. } | Self::Tile { index, .. } => f(*index),
@@ -1651,6 +1661,8 @@ pub struct TileCollective {
     pub tile: usize,
     pub results: Vec<(u32, Reg)>,
 }
+#[cfg(feature = "compiler")]
+mod dataflow;
 mod tile;
 pub use tile::SharedWord;
 #[cfg(feature = "compiler")]

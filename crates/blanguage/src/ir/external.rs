@@ -177,6 +177,11 @@ impl CallReference {
             CallStorage::Indexed(source) => source.map_locals(s),
         }
     }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
+        super::dataflow::reference_operands(self, f)
+    }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         self.offset.iter().all(|reg| f(*reg)) && match &self.storage {
             CallStorage::Local { .. } => true,
@@ -195,6 +200,11 @@ impl Call {
         }
         for effect in &mut self.memory { effect.alias.map_locals(s); }
     }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
+        super::dataflow::call_operands(self, f)
+    }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         if let CallTarget::Indirect(reg) = &self.target && !f(*reg) { return false; }
         self.arguments.iter().all(|argument| match argument {
@@ -217,6 +227,11 @@ impl Call {
             }
         }
     }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn locals(&self, writing: bool) -> impl Iterator<Item = usize> + '_ {
+        super::dataflow::call_locals(self, writing)
+    }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn locals(&self, writing: bool) -> impl Iterator<Item = usize> + '_ {
         self.arguments
             .iter()

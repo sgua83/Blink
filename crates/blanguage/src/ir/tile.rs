@@ -439,6 +439,11 @@ pub(crate) fn live_before(
 }
 
 impl Inst {
+    #[cfg(feature = "compiler")]
+    pub(crate) fn results(&self) -> impl Iterator<Item = Reg> {
+        super::dataflow::results(self)
+    }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn results(&self) -> impl Iterator<Item = Reg> {
         let mut division = [None, None];
         let mut collective = &[][..];
@@ -492,6 +497,11 @@ impl Inst {
             .chain(division.into_iter().flatten())
             .chain(collective.iter().map(|(_, reg)| *reg))
     }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
+        super::dataflow::instruction_operands(self, f)
+    }
+    #[cfg(not(feature = "compiler"))]
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         let values = match &self.kind {
             InstKind::Call(call) => call.all_operands(f),
@@ -558,6 +568,11 @@ impl Inst {
     pub(crate) fn local_writes(&self) -> impl Iterator<Item = usize> + '_ {
         self.local_slots(true)
     }
+    #[cfg(feature = "compiler")]
+    fn local_slots(&self, writing: bool) -> impl Iterator<Item = usize> + '_ {
+        super::dataflow::instruction_locals(self, writing)
+    }
+    #[cfg(not(feature = "compiler"))]
     fn local_slots(&self, writing: bool) -> impl Iterator<Item = usize> + '_ {
         let (slot, range) = match (&self.kind, writing) {
             (InstKind::LoadLocal(_, slot), false) | (InstKind::StoreLocal(slot, _), true) =>
