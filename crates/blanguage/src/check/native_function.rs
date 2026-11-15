@@ -5,6 +5,7 @@ use returns::Returned;
 mod fallibility;
 mod dependencies;
 mod frame_effects;
+mod failure_lowering;
 
 // Only source vectors admit a different component placement with the same type.
 // Aggregate fields and arrays retain their declared layout.
@@ -2447,138 +2448,10 @@ fn failure_scope(
     Ok(b.code)
 }
 fn lower_failure_calls(
-    world:&World,body:&mut ValueCode,mut context:Option<FailureContext<'_>>,
-    known:&BTreeSet<String>,mut module:Option<&mut Module>,
+    world:&World,body:&mut ValueCode,context:Option<FailureContext<'_>>,
+    known:&BTreeSet<String>,module:Option<&mut Module>,
 )->Result<(bool,bool)> {
-    fn fold_empty_status(code:&mut [Inst],slot:usize) {
-        let mut reads=BTreeSet::new();
-        crate::optimize::visit(code,&mut |inst| {
-            if let InstKind::LoadLocal(reg,source)=&inst.kind && *source==slot {
-                reads.insert(*reg);
-            }
-        });
-        fn fold(code:&mut [Inst],reads:&BTreeSet<Reg>) {
-            for inst in code {
-                match &mut inst.kind {
-                    InstKind::LoadLocal(reg,_) if reads.contains(reg) => {
-                        inst.kind=InstKind::Constant(*reg,Scalar::U64,0);
-                    }
-                    InstKind::Call(call)
-                        if matches!(&call.target,CallTarget::External(name)
-                            if name.library==crate::application::RUNTIME_LIBRARY && name.symbol=="blink_error_consumed")
-                            && matches!(call.arguments.first(),Some(CallArgument::Value{values,..}) if reads.contains(&values[0])) =>
-                    {
-                        inst.kind=InstKind::Constant(call.values[0],Scalar::Bool,0);
-                    }
-                    InstKind::Scope(body)|InstKind::Cleanup{body,..}=>fold(body,reads),
-                    InstKind::If{yes,no,..}=>{fold(yes,reads);fold(no,reads);}
-                    InstKind::Loop{condition,body,..}=>{fold(condition,reads);fold(body,reads);}
-                    _=>{}
-                }
-            }
-        }
-        fold(code,&reads);
-    }
-
-    fn block(
-        world:&World,code:&mut Vec<Inst>,registers:&mut Vec<Scalar>,locals:&mut BTreeMap<usize,Ty>,
-        context:&mut Option<FailureContext<'_>>,known:&BTreeSet<String>,module:&mut Option<&mut Module>,
-    )->Result<(bool,bool)> {
-        let mut out=Vec::new();let mut changed=false;let mut scoped=false;
-        for mut inst in std::mem::take(code) {
-            if let InstKind::Cleanup{slot,body,failure}=&mut inst.kind {
-                let slot=*slot;
-                let mut can_fail=false;
-                crate::optimize::visit(body,&mut |inst|if let InstKind::Call(call)=&inst.kind {
-                    can_fail|=call.error.is_some()||matches!(&call.target,CallTarget::Defined(name)if known.contains(name));
-                });
-                let mut body=std::mem::take(body);let failure=failure.take();
-                if !can_fail {
-                    // No call can publish an error in this group, so its error consumers see zero.
-                    fold_empty_status(&mut body,slot);
-                    inst.kind=InstKind::Scope(body);out.push(inst);changed=true;continue;
-                }
-                let site=inst.source_site.clone();let origin=inst.generated_origin.clone();
-                let generated=|kind|Inst{source_site:site.clone(),generated_origin:origin.clone(),..Inst::new(kind)};
-                let zero=registers.len();registers.push(Scalar::U64);
-                let error=registers.len();registers.push(Scalar::U64);
-                let failed=registers.len();registers.push(Scalar::Bool);
-                out.push(generated(InstKind::Constant(zero,Scalar::U64,0)));
-                out.push(generated(InstKind::StoreLocal(slot,zero)));
-                out.push(generated(InstKind::Scope(body)));
-                out.push(generated(InstKind::LoadLocal(error,slot)));
-                out.push(generated(InstKind::Binary{dst:failed,op:BinaryOp::Compare(Comparison::NotEqual),a:error,b:zero}));
-                let yes=match failure {
-                    Some(scope)=>{
-                        scoped=true;
-                        failure_scope(world,*scope,error,registers,locals,context.as_mut().unwrap(),module.as_deref_mut().unwrap(),Some(slot))?
-                    }
-                    None=>vec![generated(InstKind::Raise(error))],
-                };
-                out.push(generated(InstKind::If{condition:failed,yes,no:Vec::new()}));
-                changed=true;continue;
-            }
-            let nested=match &mut inst.kind {
-                InstKind::Scope(body)=>block(world,body,registers,locals,context,known,module)?,
-                InstKind::If{yes,no,..}=>{
-                    let a=block(world,yes,registers,locals,context,known,module)?;
-                    let b=block(world,no,registers,locals,context,known,module)?;
-                    (a.0||b.0,a.1||b.1)
-                }
-                InstKind::Loop{condition,body,..}=>{
-                    let a=block(world,condition,registers,locals,context,known,module)?;
-                    let b=block(world,body,registers,locals,context,known,module)?;
-                    (a.0||b.0,a.1||b.1)
-                }
-                _=>(false,false),
-            };
-            changed|=nested.0;scoped|=nested.1;
-            let failure=if let InstKind::Call(call)=&mut inst.kind {
-                if call.failure.is_some()&&(call.error.is_some()||matches!(&call.target,CallTarget::Defined(name)if known.contains(name))) {
-                    let error=*call.error.get_or_insert_with(||{let reg=registers.len();registers.push(Scalar::U64);reg});
-                    Some((error,call.failure.take().unwrap()))
-                }else{None}
-            }else{None};
-            let site=inst.source_site.clone();let origin=inst.generated_origin.clone();
-            let generated=|kind|Inst{source_site:site.clone(),generated_origin:origin.clone(),..Inst::new(kind)};
-            out.push(inst);
-            if let Some((error,continuation))=failure {
-                changed=true;
-                let yes=match continuation {
-                    FailureContinuation::Return=>vec![generated(InstKind::Raise(error))],
-                    FailureContinuation::Scope(scope)=>{
-                        scoped=true;
-                        failure_scope(world,*scope,error,registers,locals,context.as_mut().unwrap(),module.as_deref_mut().unwrap(),None)?
-                    }
-                    FailureContinuation::Cleanup(slot)=>{
-                        let previous=registers.len();registers.push(Scalar::U64);
-                        let joined=registers.len();registers.push(Scalar::U64);
-                        let ty=Ty::scalar(Scalar::U64);
-                        let argument=|value|CallArgument::Value{origin:None,dataset_borrow:None,ty:ty.clone(),values:vec![value]};
-                        let zero=registers.len();registers.push(Scalar::U64);
-                        let present=registers.len();registers.push(Scalar::Bool);
-                        let joined=vec![
-                            generated(application::runtime_call("error_join",vec![argument(previous),argument(error)],Some(ty),vec![joined],None,None).kind),
-                            generated(InstKind::StoreLocal(slot,joined)),
-                        ];
-                        vec![
-                            generated(InstKind::LoadLocal(previous,slot)),
-                            generated(InstKind::Constant(zero,Scalar::U64,0)),
-                            generated(InstKind::Binary{dst:present,op:BinaryOp::Compare(Comparison::NotEqual),a:previous,b:zero}),
-                            generated(InstKind::If{condition:present,yes:joined,no:vec![generated(InstKind::StoreLocal(slot,error))]}),
-                        ]
-                    }
-                };
-                let zero=registers.len();registers.push(Scalar::U64);
-                let failed=registers.len();registers.push(Scalar::Bool);
-                out.push(generated(InstKind::Constant(zero,Scalar::U64,0)));
-                out.push(generated(InstKind::Binary{dst:failed,op:BinaryOp::Compare(Comparison::NotEqual),a:error,b:zero}));
-                out.push(generated(InstKind::If{condition:failed,yes,no:Vec::new()}));
-            }
-        }
-        *code=out;Ok((changed,scoped))
-    }
-    block(world,&mut body.code,&mut body.registers,&mut body.locals,&mut context,known,&mut module)
+    failure_lowering::run(world,body,context,known,module)
 }
 fn lower_range_failures(
     world: &World, program: &mut Program, scopes: &mut BTreeMap<usize, RangeContext>,

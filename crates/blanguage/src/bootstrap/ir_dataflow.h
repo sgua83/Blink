@@ -61,6 +61,63 @@ extern "C" u32 mark_effects(EffectHost host,u32 explicit_errors) on cpu
 extern "C" void propagate_effects(address context,cfn<u32,address> round) on cpu
  requires nonzero(round);
 
+// Only the original known set and physical IR reader are needed by a body query.
+struct EffectRead {
+ address known;
+ cfn<EffectNode,address> ensures memory(read) inspect;
+ cfn<u32,address,address> ensures memory(read) contains;
+};
+
+// A lowering cursor owns the original node, not a second IR representation.
+struct LowerNode {
+ u32 present; u32 kind; address source;
+ address first; address second; Span body; usize slot;
+ Word error; address error_slot; address target;
+ u32 continuation; address payload;
+};
+struct LowerBranch { u32 kind; usize error; usize slot; u32 existing; usize previous; usize joined; };
+struct LowerHost {
+ EffectRead effects;
+ cfn<LowerNode,address> next;
+ cfn<u32,address,address> child;
+ cfn<usize,address,u32> reg;
+ cfn<void,address,address,address,u32> capture;
+ cfn<void,address,usize> set_error;
+ cfn<void,address,address> original;
+ cfn<void,address,address,address> cleanup_body;
+ cfn<void,address,address,address> cleanup_scope;
+ cfn<void,address,usize> fold;
+ cfn<void,address,address,usize,u64> constant;
+ cfn<void,address,address,usize,usize> load;
+ cfn<void,address,address,usize,usize> store;
+ cfn<void,address,address,usize,usize,usize> compare;
+ cfn<void,address,address,usize> raise;
+ cfn<void,address,address,usize,usize,usize> join;
+ cfn<u32,address,address,usize,Word> scope;
+ cfn<u32,address,address,Word,LowerBranch> branches;
+ cfn<void,address,address,usize,address,address> finish_if;
+};
+struct FoldNode {
+ EffectNode structure; u32 kind; usize reg; usize slot;
+ DependencyText library; DependencyText symbol; u32 value_argument;
+ Span arguments; Span outputs;
+};
+struct FoldHost {
+ address reads; DependencyText runtime;
+ cfn<FoldNode,address> ensures memory(read) inspect;
+ cfn<void,address,usize> insert;
+ cfn<u32,address,usize> ensures memory(read) contains;
+ cfn<void,address,usize,u32> replace;
+};
+extern "C" u32 lower_failure_block(address block,address output,LowerHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare) requires nonzero(host.raise) requires nonzero(host.join) requires nonzero(host.scope) requires nonzero(host.branches) requires nonzero(host.finish_if)
+ requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains);
+extern "C" u32 emit_failure_if(address block,address output,address yes,address no,Word test,LowerBranch branch,LowerHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare) requires nonzero(host.raise) requires nonzero(host.join) requires nonzero(host.scope) requires nonzero(host.branches) requires nonzero(host.finish_if)
+ requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains);
+extern "C" void fold_empty_status(Span code,usize slot,FoldHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.insert) requires nonzero(host.contains) requires nonzero(host.replace);
+
 // Direct native dependencies and their single-owner transitive selection.
 struct DependencyText { address data; usize length; };
 struct DependencyOwner { u32 present; DependencyText name; };
