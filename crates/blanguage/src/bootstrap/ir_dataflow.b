@@ -269,6 +269,132 @@ extern "C" Word next_local(inout Locals state,Host host) on cpu requires nonzero
   }
  }
 }
+void number_used_slots(address slots,u64 count) on cpu {
+ u64 used=0u64;u64 index=0u64;
+ while(index<count){
+  address at=unsafe_address(address_bits(slots)+index*size_of<u64>());
+  if(unsafe_position<u64>(at)!=0u64){used+=1u64;unsafe_position<u64>(at)=used;}
+  index+=1u64;
+ }
+}
+address compact_at(address slots,usize index) on cpu {
+ return unsafe_address(address_bits(slots)+u64(index)*size_of<usize>());
+}
+usize compact_index(address slots,usize index) on cpu {
+ return unsafe_position<usize>(compact_at(slots,index));
+}
+extern "C" u32 compact_mark_register(address marks,usize reg) on cpu {
+ unsafe_position<usize>(compact_at(marks,reg))=1u64;return 1;
+}
+void compact_range(address marks,usize begin,usize end) on cpu {
+ usize position=begin;
+ while(position<end){unsafe_position<usize>(compact_at(marks,position))=1u64;position+=1u64;}
+}
+void compact_aliases(Node source,address marks,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(true){
+  RangePart part=alias_range(source,index,host);
+  if(part.more==0){return;}
+  if(part.local!=0){compact_range(marks,part.begin,part.end);}
+  index+=1u64;
+ }
+}
+void compact_locals(View value,address marks,Host host) on cpu requires nonzero(host.inspect) {
+ if(value.tag==OP_LOAD_LOCAL){compact_range(marks,value.b,value.b+1u64);}
+ else if(value.tag==OP_STORE_LOCAL){compact_range(marks,value.a,value.a+1u64);}
+ else if(value.tag==OP_LOAD_LOCAL_INDEXED){compact_range(marks,value.b,value.b+value.c);}
+ else if(value.tag==OP_STORE_LOCAL_INDEXED){compact_range(marks,value.a,value.a+value.b);}
+ else if(value.tag==OP_INVOKE){
+  View call=host.inspect(value.left);usize index=0u64;
+  // Passing an address preserves its whole local range even without a read
+  // or write effect. This is the union needed by the original compactor.
+  while(index<call.first.count){
+   View argument=host.inspect(node_at(call.first,index,N_ARGUMENT));
+   if(argument.tag==1){compact_aliases(argument.left,marks,host);}
+   index+=1u64;
+  }
+  index=0u64;
+  while(index<call.second.count){
+   View effect=host.inspect(node_at(call.second,index,N_MEMORY_EFFECT));
+   View alias=host.inspect(effect.left);
+   if(alias.tag==0){compact_range(marks,alias.a,alias.a+alias.b);}
+   index+=1u64;
+  }
+ }else if(value.tag==OP_POSITION_ADDRESS||value.tag==OP_LOAD_INDEXED
+     ||value.tag==OP_STORE_INDEXED||value.tag==OP_ATOMIC){
+  compact_aliases(value.left,marks,host);
+ }
+}
+void compact_marks(Span code,address regs,address locals,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<code.count){
+  Node node=node_at(code,index,N_INSTRUCTION);Results output=results(node,host);
+  while(true){Word reg=next_result(output);if(reg.present==0){break;}compact_mark_register(regs,reg.value);}
+  operands(node,host,regs,c_function(compact_mark_register));
+  View value=host.inspect(node);compact_locals(value,locals,host);
+  if(value.tag==OP_SCOPE||value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){
+   compact_marks(value.first,regs,locals,host);compact_marks(value.second,regs,locals,host);
+  }
+  index+=1u64;
+ }
+}
+void compact_roots(Span roots,address marks,u32 rewriting) on cpu {
+ usize index=0u64;
+ while(index<roots.count){
+  address at=unsafe_address(address_bits(roots.data)+u64(index)*u64(roots.stride));
+  usize original=unsafe_position<usize>(at);
+  if(rewriting!=0){unsafe_position<usize>(at)=compact_index(marks,original)-1u64;}
+  else{compact_mark_register(marks,original);}
+  index+=1u64;
+ }
+}
+usize compact_registers(Span values,address marks) on cpu {
+ usize input=0u64;usize output=0u64;
+ while(input<values.count){
+  if(compact_index(marks,input)!=0u64){
+   usize byte=0u64;
+   while(byte<values.stride){
+    address from=unsafe_address(address_bits(values.data)+u64(input)*u64(values.stride)+u64(byte));
+    address to=unsafe_address(address_bits(values.data)+u64(output)*u64(values.stride)+u64(byte));
+    unsafe_position<u8>(to)=unsafe_position<u8>(from);byte+=1u64;
+   }
+   output+=1u64;
+  }
+  input+=1u64;
+ }
+ return output;
+}
+extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.next)
+ requires nonzero(host.whole) requires nonzero(host.scalar) requires nonzero(host.rewrite) {
+ compact_roots(input.inputs,input.register_map,0);compact_roots(input.outputs,input.register_map,0);
+ compact_marks(input.code,input.register_map,input.local_map,host.ir);
+ number_used_slots(input.register_map,u64(input.registers.count));
+ number_used_slots(input.local_map,u64(input.local_count));
+ usize kept=compact_registers(input.registers,input.register_map);
+ while(true){
+  CompactDecl item=host.next(host.context);if(item.present==0){break;}
+  if(item.count==0u64){continue;}
+  usize begin=item.end-item.count;
+  usize first=compact_index(input.local_map,begin);
+  usize last=compact_index(input.local_map,item.end-1u64);
+  if(first!=0u64&&last==first+item.count-1u64){host.whole(host.context,last);}
+  else{
+   usize index=0u64;
+   while(index<item.count){
+    usize position=compact_index(input.local_map,begin+index);
+    if(position!=0u64){host.scalar(host.context,index,position);}
+    index+=1u64;
+   }
+  }
+ }
+ // No read-only instruction view or original local declaration remains live.
+ host.rewrite(host.context);
+ compact_roots(input.inputs,input.register_map,1);compact_roots(input.outputs,input.register_map,1);
+ return kept;
+}
+
+
 // Field rewriting uses exclusive physical projections, not the read-only query
 // views above. Mapping policies remain with their actual producers. No view is
 // retained after this call and no container changes shape during the rewrite.

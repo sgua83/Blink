@@ -47,10 +47,6 @@ extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right)
 // Uniformity belongs to this reduction kernel. The spans borrow its original register indices.
 extern "C" bool extract_uniform(BindingSpan operands, BindingSpan results, address uniform) on cpu;
 
-// Each original slot contains zero when unused, one when used. Replace the
-// used marks with one-based dense indices in original order.
-extern "C" void number_used_slots(address slots, u64 count) on cpu;
-
 enum SelectionKind:u32 { Pure=0; LocalRead=1; LocalWrite=2; DataRead=3; Arithmetic=4; Ordered=5; };
 struct SelectionNode { u64 first; u64 second; SelectionKind kind; };
 struct SelectionValue { u64 slot; u64 destination; u64 yes; u64 no; };

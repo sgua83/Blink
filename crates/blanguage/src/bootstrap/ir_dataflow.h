@@ -19,6 +19,27 @@ extern "C" u32 operands(Node source,Host host,address context,cfn<u32,address,us
 extern "C" Locals locals(Node source,u32 writing,Host host) on cpu requires nonzero(host.inspect);
 extern "C" Word next_local(inout Locals state,Host host) on cpu requires nonzero(host.inspect);
 
+// Complete compaction borrows the original IR, Copy scalar records and root
+// indices. The two zeroed maps have one word per original register/local slot.
+// A declaration is owned by the host iterator until B moves it whole or emits
+// its selected scalar components; next releases the last original declaration.
+struct CompactInput {
+ Span code; Span registers; Span inputs; Span outputs;
+ address register_map; address local_map; usize local_count;
+};
+struct CompactDecl { u32 present; usize end; usize count; };
+struct CompactHost {
+ Host ir; address context;
+ cfn<CompactDecl,address> next;
+ cfn<void,address,usize> whole;
+ cfn<void,address,usize,usize> scalar;
+ cfn<void,address> rewrite;
+};
+extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.next)
+ requires nonzero(host.whole) requires nonzero(host.scalar) requires nonzero(host.rewrite);
+
+
 // Exclusive, synchronous projections of the same original IR storage.
 struct RewriteNode { address data; u32 kind; };
 struct RewriteSpan { address data; usize count; usize stride; };

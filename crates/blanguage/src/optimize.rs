@@ -5,6 +5,7 @@ mod invariant;
 mod selection;
 mod value_flow;
 mod eliminate;
+mod compaction;
 pub(crate) use invariant::prepare_reduction;
 
 #[repr(C)]
@@ -128,8 +129,6 @@ unsafe extern "C" {
         read: unsafe extern "C" fn(FusionBlock, usize) -> FusionNode) -> u32;
     #[link_name = "bootstrap.stage_fusion::merge_bindings"]
     fn merge_bindings(output: *mut usize, left_count: usize, right: BindingSpan) -> usize;
-    #[link_name = "bootstrap.stage_fusion::number_used_slots"]
-    fn number_used_slots(slots: *mut usize, count: usize);
 }
 
 fn union_bindings(left: &mut Vec<usize>, right: Vec<usize>) {
@@ -487,54 +486,7 @@ fn compact_slots(
     code: &mut [Inst], registers: &mut Vec<Scalar>, locals: &mut BTreeMap<usize, Ty>,
     inputs: &mut [Reg], outputs: &mut [Reg],
 ) {
-    let mut regs = vec![0; registers.len()];
-    let mut slots = vec![0; locals.last_key_value().map_or(0, |(&end, _)| end)];
-    for &reg in inputs.iter().chain(outputs.iter()) {
-        regs[reg] = 1;
-    }
-    visit(code, &mut |inst| {
-        for reg in inst.results() {
-            regs[reg] = 1;
-        }
-        inst.all_operands(&mut |reg| {
-            regs[reg] = 1;
-            true
-        });
-        for slot in inst.local_reads().chain(inst.local_writes()) {
-            slots[slot] = 1;
-        }
-    });
-    for span in private_spans(code) {
-        slots[span].fill(1);
-    }
-    // Both buffers contain exactly one writable word per original logical slot.
-    unsafe {
-        number_used_slots(regs.as_mut_ptr(), regs.len());
-        number_used_slots(slots.as_mut_ptr(), slots.len());
-    }
-
-    let mut register_map = regs.iter();
-    registers.retain(|_| *register_map.next().unwrap() != 0);
-
-    for (end, ty) in std::mem::take(locals) {
-        let begin = end - ty.components.len();
-        let positions = &slots[begin..end];
-        let first = positions.first().copied().unwrap_or(0);
-        let last = positions.last().copied().unwrap_or(0);
-        if first != 0 && last == first + positions.len() - 1 {
-            locals.insert(last, ty);
-        } else {
-            for (&position, &(scalar, _)) in positions.iter().zip(&ty.components) {
-                if position != 0 {
-                    locals.insert(position, Ty::scalar(scalar));
-                }
-            }
-        }
-    }
-    map(code, crate::ir::rewrite::Remap::Compact { registers: &regs, locals: &slots });
-    for reg in inputs.iter_mut().chain(outputs) {
-        *reg = regs[*reg] - 1;
-    }
+    compaction::run(code, registers, locals, inputs, outputs);
 }
 
 pub(crate) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
