@@ -96,9 +96,11 @@ macro_rules! interface_fields {
 impl ProgramInterface for Program {
     interface_fields!(,);
     fn requirements(&self) -> DeviceRequirements {
+        let (float64, integer8, integer16) = dataflow::numeric_requirements(self);
         let (atomic64, shared_atomic64) = self.stages.iter().map(Stage::atomic64_requirements)
             .fold((false, false), |a, b| (a.0 || b.0, a.1 || b.1));
-        let mut requirements = DeviceRequirements {
+        DeviceRequirements {
+            float64, integer8, integer16,
             ray_query: !self.accelerations.is_empty(),
             float32_preserve: self.stages.iter().any(|stage| stage.requires_float_preserve(Scalar::F32)),
             float64_preserve: self.stages.iter().any(|stage| stage.requires_float_preserve(Scalar::F64)),
@@ -109,20 +111,7 @@ impl ProgramInterface for Program {
             atomic64, shared_atomic64,
             subgroup: self.subgroup_capabilities(),
             ..DeviceRequirements::default()
-        };
-        let scalars = self.stages.iter().flat_map(|s| {
-            let custom=match &s.operation {Operation::CustomReduce(r)|Operation::CustomScan(CustomScan{values:r,..})|Operation::CustomSegmentedReduce(CustomSegmentedReduction{values:r,..})=>Some(r),_=>None};
-            let collective=match &s.operation {Operation::Reduce(r)=>Some(&r.ty),Operation::ScanExclusive(s)=>Some(&s.ty),Operation::SegmentedReduce(r)=>Some(&r.values.ty),_=>None};
-            s.registers.iter().chain(s.locals.values().flat_map(|ty|ty.components.iter().map(|(s,_)|s))).chain(custom.into_iter().flat_map(|r|[&r.identity,&r.combine].into_iter().chain(&r.project)).flat_map(|body|body.registers.iter().chain(body.locals.values().flat_map(|ty|ty.components.iter().map(|(s,_)|s)))))
-                .chain(collective.into_iter().flat_map(|ty|ty.components.iter().map(|(s,_)|s)))
-        });
-        requirements.float64 = scalars.clone().any(|s| *s == Scalar::F64);
-        for scalar in self.buffers.iter().flat_map(|b| &b.ty.components).map(|(s, _)| s)
-            .chain(self.uniforms.iter().flat_map(|b| &b.ty.components).map(|(s, _)| s)).chain(scalars) {
-            requirements.integer8 |= scalar.size() == 1;
-            requirements.integer16 |= scalar.size() == 2;
         }
-        requirements
     }
 }
 impl<T: Deref> ProgramInterface for T

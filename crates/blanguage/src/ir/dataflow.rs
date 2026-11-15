@@ -9,7 +9,7 @@ use std::{ffi::c_void, marker::PhantomData, mem::size_of, ptr};
 enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
-    Component, Stage, RayRange, Operation,
+    Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -221,28 +221,56 @@ unsafe extern "C" fn inspect(node: Node) -> View {
         }
         Kind::Component => {
             let (scalar, byte) = unsafe { &*node.data.cast::<(Scalar, u32)>() };
-            let mut view = View::tag(0); view.a = *byte as usize; view.b = scalar.size() as usize; view
+            let mut view = View::tag(0); view.a = *byte as usize; view.b = scalar.size() as usize;
+            view.c = crate::builtin_types::ScalarCode::from(*scalar) as usize; view
         }
         Kind::Stage => {
             let stage = unsafe { &*node.data.cast::<Stage>() };
             let mut view = View::tag(0); view.first = Span::slice(&stage.code);
             view.a = usize::from(stage.prefix.is_some()); view.b = usize::from(stage.selection.is_some());
-            view.left = Node::of(&stage.operation, Kind::Operation); view
+            view.left = Node::of(&stage.operation, Kind::Operation);
+            view.second = Span::slice(&stage.registers); view.c = ptr::from_ref(&stage.locals).addr(); view
         }
         Kind::Operation => {
             let pair = |tag, source, target| { let mut view = View::tag(tag); view.a = source; view.b = target; view };
+            let typed = |tag, values: &Reduction, ty: &Ty| {
+                let mut view = pair(tag, values.source, values.target); view.first = Span::slice(&ty.components); view
+            };
+            let custom = |tag, values: &CustomReduction| {
+                let mut view = pair(tag, values.fields.source, values.fields.target);
+                view.left = Node::of(values, Kind::CustomReduction); view
+            };
             match unsafe { &*node.data.cast::<Operation>() } {
                 Operation::Map => View::tag(0),
-                Operation::Reduce(v) => pair(1, v.fields.source, v.fields.target),
-                Operation::CustomReduce(v) => pair(2, v.fields.source, v.fields.target),
-                Operation::CustomScan(v) => pair(3, v.values.fields.source, v.values.fields.target),
-                Operation::CustomSegmentedReduce(v) => pair(4, v.values.fields.source, v.values.fields.target),
-                Operation::SegmentedReduce(v) => pair(5, v.values.fields.source, v.values.fields.target),
-                Operation::ScanExclusive(v) => pair(6, v.values.source, v.values.target),
+                Operation::Reduce(v) => typed(1, &v.fields, &v.ty),
+                Operation::CustomReduce(v) => custom(2, v),
+                Operation::CustomScan(v) => custom(3, &v.values),
+                Operation::CustomSegmentedReduce(v) => custom(4, &v.values),
+                Operation::SegmentedReduce(v) => typed(5, &v.values.fields, &v.values.ty),
+                Operation::ScanExclusive(v) => typed(6, &v.values, &v.ty),
                 Operation::Compact(v) => pair(7, v.source, v.target),
                 Operation::StableSort(v) => pair(8, v.source, v.target),
             }
         }
+        Kind::Buffer => {
+            let value = unsafe { &*node.data.cast::<Buffer>() };
+            let mut view = View::tag(0); view.first = Span::slice(&value.ty.components); view
+        }
+        Kind::Uniform => {
+            let value = unsafe { &*node.data.cast::<Uniform>() };
+            let mut view = View::tag(0); view.first = Span::slice(&value.ty.components); view
+        }
+        Kind::ValueCode => {
+            let value = unsafe { &*node.data.cast::<ValueCode>() };
+            let mut view = View::tag(0); view.second = Span::slice(&value.registers);
+            view.c = ptr::from_ref(&value.locals).addr(); view
+        }
+        Kind::CustomReduction => {
+            let value = unsafe { &*node.data.cast::<CustomReduction>() };
+            let mut view = View::tag(0); view.left = Node::of(&value.identity, Kind::ValueCode);
+            view.right = Node::of(&value.combine, Kind::ValueCode); view.first = Span::slice(value.project.as_slice()); view
+        }
+        Kind::Scalar => View::tag(crate::builtin_types::ScalarCode::from(unsafe { *node.data.cast::<Scalar>() }) as u32),
         Kind::RayRange => {
             let range = unsafe { &*node.data.cast::<std::ops::Range<usize>>() };
             let mut view = View::tag(0); view.a = range.start; view.b = range.end; view
@@ -559,4 +587,30 @@ pub(super) fn indirect_buffer(program: &Program) -> usize {
 }
 pub(super) fn execution_buffers(program: &Program) -> ExecutionBuffers {
     unsafe { b_execution_buffers(Span::slice(program.stages()), program.buffers.len(), HOST) }
+}
+
+#[repr(C)]
+struct NumericRequirements { float64: u32, integer8: u32, integer16: u32 }
+#[repr(C)]
+struct NumericHost {
+    ir: Host,
+    locals: unsafe extern "C" fn(*const c_void, *mut c_void, unsafe extern "C" fn(*mut c_void, u32)),
+}
+unsafe extern "C" fn numeric_locals(source: *const c_void, context: *mut c_void,
+    visit: unsafe extern "C" fn(*mut c_void, u32))
+{
+    for ty in unsafe { &*source.cast::<BTreeMap<usize, Ty>>() }.values() {
+        for (scalar, _) in &ty.components {
+            unsafe { visit(context, crate::builtin_types::ScalarCode::from(*scalar) as u32) };
+        }
+    }
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::numeric_requirements"]
+    fn b_numeric_requirements(stages: Span, buffers: Span, uniforms: Span, host: NumericHost) -> NumericRequirements;
+}
+pub(super) fn numeric_requirements(program: &Program) -> (bool, bool, bool) {
+    let flags = unsafe { b_numeric_requirements(Span::slice(program.stages()), Span::slice(&program.buffers),
+        Span::slice(&program.uniforms), NumericHost { ir: HOST, locals: numeric_locals }) };
+    (flags.float64 != 0, flags.integer8 != 0, flags.integer16 != 0)
 }

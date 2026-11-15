@@ -1225,3 +1225,59 @@ extern "C" ExecutionBuffers execution_buffers(Span stages,usize buffers,Host hos
  if(scan_alias && auxiliary<indirect+3u64-buffers){auxiliary=indirect+3u64-buffers;}
  return ExecutionBuffers(indirect,auxiliary);
 }
+
+const u32 N_BUFFER=20;const u32 N_UNIFORM=21;const u32 N_VALUE_CODE=22;const u32 N_SCALAR=24;
+void numeric_scalar(inout NumericRequirements flags,u32 scalar,bool code) on cpu {
+ if(code && scalar==6){flags.float64=1;}
+ if(scalar==7 || scalar==8){flags.integer8=1;}
+ if(scalar==9 || scalar==10){flags.integer16=1;}
+}
+void numeric_components(inout NumericRequirements flags,Span components,bool code,Host host) on cpu
+ requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<components.count) {
+  View component=host.inspect(node_at(components,index,N_COMPONENT));
+  numeric_scalar(flags,u32(component.c),code);index+=1u64;
+ }
+}
+extern "C" void numeric_local_scalar(address context,u32 scalar) on cpu {
+ NumericRequirements flags=unsafe_position<NumericRequirements>(context);
+ numeric_scalar(flags,scalar,true);
+ unsafe_position<NumericRequirements>(context)=flags;
+}
+void numeric_code(inout NumericRequirements flags,Node source,NumericHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.locals) {
+ View value=host.ir.inspect(source);usize index=0u64;
+ while(index<value.second.count) {
+  View scalar=host.ir.inspect(node_at(value.second,index,N_SCALAR));
+  numeric_scalar(flags,scalar.tag,true);index+=1u64;
+ }
+ host.locals(unsafe_address(u64(value.c)),address_of(flags),c_function(numeric_local_scalar));
+}
+extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Span uniforms,NumericHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.locals) {
+ NumericRequirements flags=NumericRequirements(0,0,0);usize index=0u64;
+ while(index<buffers.count) {
+  View buffer=host.ir.inspect(node_at(buffers,index,N_BUFFER));numeric_components(flags,buffer.first,false,host.ir);index+=1u64;
+ }
+ index=0u64;
+ while(index<uniforms.count) {
+  View uniform=host.ir.inspect(node_at(uniforms,index,N_UNIFORM));numeric_components(flags,uniform.first,false,host.ir);index+=1u64;
+ }
+ index=0u64;
+ while(index<stages.count) {
+  Node source=node_at(stages,index,N_STAGE);numeric_code(flags,source,host);
+  View stage=host.ir.inspect(source);View operation=host.ir.inspect(stage.left);
+  if(operation.tag==1 || operation.tag==5 || operation.tag==6) {
+   numeric_components(flags,operation.first,true,host.ir);
+  }else if(operation.tag==2 || operation.tag==3 || operation.tag==4) {
+   View custom=host.ir.inspect(operation.left);numeric_code(flags,custom.left,host);numeric_code(flags,custom.right,host);
+   usize project=0u64;
+   while(project<custom.first.count) {
+    numeric_code(flags,node_at(custom.first,project,N_VALUE_CODE),host);project+=1u64;
+   }
+  }
+  index+=1u64;
+ }
+ return flags;
+}

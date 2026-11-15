@@ -260,3 +260,11 @@ extern "C" usize indirect_buffer(Span stages,usize buffers,Host host) on cpu
  requires nonzero(host.inspect);
 extern "C" ExecutionBuffers execution_buffers(Span stages,usize buffers,Host host) on cpu
  requires nonzero(host.inspect);
+
+struct NumericRequirements { u32 float64; u32 integer8; u32 integer16; };
+struct NumericHost {
+ Host ir;
+ cfn<void,address,address,cfn<void,address,u32>> locals;
+};
+extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Span uniforms,NumericHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.locals);
