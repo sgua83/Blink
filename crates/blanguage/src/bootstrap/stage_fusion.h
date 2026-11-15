@@ -15,25 +15,6 @@ extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right)
 // Uniformity belongs to this reduction kernel. The spans borrow its original register indices.
 extern "C" bool extract_uniform(BindingSpan operands, BindingSpan results, address uniform) on cpu;
 
-enum SelectionKind:u32 { Pure=0; LocalRead=1; LocalWrite=2; DataRead=3; Arithmetic=4; Ordered=5; };
-struct SelectionNode { u64 first; u64 second; SelectionKind kind; };
-struct SelectionValue { u64 slot; u64 destination; u64 yes; u64 no; };
-struct SelectionSlot { u64 yes; u64 no; };
-struct SelectionPlan {
-    FusionBlock yes;
-    FusionBlock no;
-    FusionBlock following;
-    u64 domain;
-    address indices;
-    address slots;
-    address values;
-};
-
-// Both scratch buffers are owned by the caller. slots begins zeroed. values
-// has space for min(yes.count, no.count, following.count) rows.
-extern "C" u64 plan_selection(SelectionPlan input, address context,
-    cfn<SelectionNode,address,FusionBlock,u64> read) on cpu requires nonzero(read);
-
 struct TilePlacement {
     i64 begin;
     i64 end;

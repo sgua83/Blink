@@ -21,19 +21,6 @@ impl From<&[usize]> for BindingSpan {
     }
 }
 
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct FusionBlock {
-    instructions: *const std::ffi::c_void,
-    count: usize,
-}
-
-impl From<&[Inst]> for FusionBlock {
-    fn from(code: &[Inst]) -> Self {
-        Self { instructions: code.as_ptr().cast(), count: code.len() }
-    }
-}
-
 unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::merge_bindings"]
     fn merge_bindings(output: *mut usize, left_count: usize, right: BindingSpan) -> usize;

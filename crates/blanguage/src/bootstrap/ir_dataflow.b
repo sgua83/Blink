@@ -395,6 +395,143 @@ extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
 }
 
 
+address selection_slot(address slots,usize index) on cpu {
+ return unsafe_address(address_bits(slots)+u64(index)*size_of<SelectionSlot>());
+}
+address selection_byte(address bytes,usize index) on cpu {
+ return unsafe_address(address_bits(bytes)+u64(index));
+}
+address selection_value(address values,usize index) on cpu {
+ return unsafe_address(address_bits(values)+u64(index)*size_of<SelectionValue>());
+}
+void selection_indices(Span code,address indices,Host ir) on cpu requires nonzero(ir.inspect) {
+ usize index=0u64;
+ while(index<code.count){
+  View value=ir.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_INDEX_VALUE){unsafe_position<u8>(selection_byte(indices,value.a))=u8(1);}
+  if(value.tag==OP_SCOPE||value.tag==OP_CLEANUP){selection_indices(value.first,indices,ir);}
+  else if(value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){
+   selection_indices(value.first,indices,ir);selection_indices(value.second,indices,ir);
+  }
+  index+=1u64;
+ }
+}
+bool selection_float(Span registers,usize reg,Host ir) on cpu requires nonzero(ir.inspect) {
+ u32 scalar=ir.inspect(node_at(registers,reg,24)).tag;return scalar==0||scalar==6;
+}
+bool selection_allowed(View value,SelectionInput input,Host ir) on cpu requires nonzero(ir.inspect) {
+ u32 kind=value.tag;
+ if(kind==OP_LOAD_LOCAL){return unsafe_position<SelectionSlot>(selection_slot(input.slots,value.b)).yes==0u64;}
+ if(kind==OP_LOAD){return value.b==input.domain&&unsafe_position<u8>(selection_byte(input.indices,value.c))!=u8(0);}
+ if(kind==OP_BINARY){return !selection_float(input.registers,value.b,ir);}
+ if(kind==OP_CAST){return !selection_float(input.registers,value.a,ir)&&!selection_float(input.registers,value.b,ir);}
+ if(kind==OP_INTEGER_DIVIDE){return ir.inspect(value.left).tag==0;}
+ if(kind==OP_MATH){return value.b==0u64;}
+ return kind==OP_CONSTANT||kind==OP_INDEX_VALUE||kind==OP_UNIFORM||kind==OP_BUFFER_STRIDE
+  ||kind==OP_SELECT_VALUE||kind==OP_UNARY||kind==OP_STORE_LOCAL;
+}
+SelectionPlan selection_plan(Span yes,Span no,Span following,SelectionInput input,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit) {
+ usize capacity=yes.count<no.count?yes.count:no.count;
+ capacity=capacity<following.count?capacity:following.count;
+ if(capacity==0u64){return SelectionPlan(unsafe_address(0u64),0u64);}
+ address values=host.scratch(host.context,capacity);
+ usize index=0u64;
+ while(index<input.local_count){unsafe_position<SelectionSlot>(selection_slot(input.slots,index))=SelectionSlot(0u64,0u64);index+=1u64;}
+ usize count=0u64;index=0u64;
+ while(index<yes.count){
+  View value=host.ir.inspect(node_at(yes,index,N_INSTRUCTION));
+  if(!selection_allowed(value,input,host.ir)){return SelectionPlan(values,0u64);}
+  if(value.tag==OP_LOAD_LOCAL){unsafe_position<SelectionSlot>(selection_slot(input.slots,value.b))=SelectionSlot(0u64,1u64);}
+  else if(value.tag==OP_STORE_LOCAL){
+   address at=selection_slot(input.slots,value.a);SelectionSlot slot=unsafe_position<SelectionSlot>(at);
+   if(slot.no!=0u64){return SelectionPlan(values,0u64);}
+   if(slot.yes==0u64){count+=1u64;}
+   unsafe_position<SelectionSlot>(at)=SelectionSlot(value.b+1u64,0u64);
+  }
+  index+=1u64;
+ }
+ if(count==0u64||count>no.count||count>following.count){return SelectionPlan(values,0u64);}
+ usize matched=0u64;index=0u64;
+ while(index<no.count){
+  View value=host.ir.inspect(node_at(no,index,N_INSTRUCTION));
+  if(!selection_allowed(value,input,host.ir)){return SelectionPlan(values,0u64);}
+  if(value.tag==OP_STORE_LOCAL){
+   address at=selection_slot(input.slots,value.a);SelectionSlot slot=unsafe_position<SelectionSlot>(at);
+   if(slot.yes==0u64){return SelectionPlan(values,0u64);}
+   if(slot.no==0u64){matched+=1u64;}
+   unsafe_position<SelectionSlot>(at)=SelectionSlot(slot.yes,value.b+1u64);
+  }
+  index+=1u64;
+ }
+ if(count!=matched){return SelectionPlan(values,0u64);}
+ index=0u64;
+ while(index<count){
+  View value=host.ir.inspect(node_at(following,index,N_INSTRUCTION));
+  if(value.tag!=OP_LOAD_LOCAL){return SelectionPlan(values,0u64);}
+  address at=selection_slot(input.slots,value.b);SelectionSlot slot=unsafe_position<SelectionSlot>(at);
+  if(slot.yes==0u64){return SelectionPlan(values,0u64);}
+  unsafe_position<SelectionValue>(selection_value(values,index))=SelectionValue(value.b,value.a,slot.yes-1u64,slot.no-1u64);
+  unsafe_position<SelectionSlot>(at)=SelectionSlot(0u64,0u64);index+=1u64;
+ }
+ return SelectionPlan(values,count);
+}
+struct SelectionInspection { SelectionPlan plan; u32 changed; };
+SelectionInspection selection_inspect(address instruction,Span following,SelectionInput input,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit) {
+ View value=host.ir.inspect(Node(instruction,N_INSTRUCTION));u32 changed=0;
+ if(value.tag==OP_SCOPE||value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){
+  SelectionChildren children=host.children(instruction);
+  changed=selection_block(children.first,input,host);
+  if(value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){changed=selection_block(children.second,input,host)|changed;}
+  if(value.tag==OP_BRANCH){
+   SelectionPlan plan=selection_plan(host.block(children.first),host.block(children.second),following,input,host);
+   return SelectionInspection(plan,changed);
+  }
+ }
+ return SelectionInspection(SelectionPlan(unsafe_address(0u64),0u64),changed);
+}
+u32 selection_block(address owner,SelectionInput input,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit) {
+ Span code=host.block(owner);usize index=0u64;u32 changed=0;
+ while(index<code.count){
+  address instruction=node_at(code,index,N_INSTRUCTION).data;
+  Span following=Span(unsafe_address(address_bits(code.data)+u64(index+1u64)*u64(code.stride)),code.count-index-1u64,code.stride);
+  SelectionInspection result=selection_inspect(instruction,following,input,host);changed=changed|result.changed;
+  if(result.plan.count!=0u64){host.rebuild(host.context,owner,index,result.plan);return 1;}
+  index+=1u64;
+ }
+ return changed;
+}
+void selection_emit(address cursor,address instruction,SelectionPlan plan,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit) {
+ usize condition=host.ir.inspect(Node(instruction,N_INSTRUCTION)).a;
+ SelectionChildren children=host.children(instruction);
+ host.arm(cursor,children.first);host.arm(cursor,children.second);
+ usize index=0u64;
+ while(index<plan.count){
+  SelectionValue value=unsafe_position<SelectionValue>(selection_value(plan.values,index));
+  host.emit(cursor,condition,value);host.next(cursor);index+=1u64;
+ }
+}
+extern "C" void selection_continue(address cursor,SelectionNext first,SelectionPlan plan,SelectionInput input,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit) {
+ selection_emit(cursor,first.instruction,plan,host);
+ SelectionNext current=host.next(cursor);
+ while(address_bits(current.instruction)!=0u64){
+  SelectionInspection result=selection_inspect(current.instruction,current.following,input,host);
+  if(result.plan.count!=0u64){selection_emit(cursor,current.instruction,result.plan,host);}
+  else{host.keep(cursor);}
+  current=host.next(cursor);
+ }
+}
+extern "C" void selection_move_arm(address cursor,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit) {
+ SelectionNext current=host.next(cursor);
+ while(address_bits(current.instruction)!=0u64){
+  if(host.ir.inspect(Node(current.instruction,N_INSTRUCTION)).tag!=OP_STORE_LOCAL){host.keep(cursor);}
+  current=host.next(cursor);
+ }
+}
+extern "C" u32 selection_run(address code,SelectionInput input,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit) {
+ selection_indices(host.block(code),input.indices,host.ir);return selection_block(code,input,host);
+}
+
+
 bool pipeline_contains(Span span,inout usize at,usize binding) on cpu {
  while(at<span.count){
   usize current=word_at(span,at);

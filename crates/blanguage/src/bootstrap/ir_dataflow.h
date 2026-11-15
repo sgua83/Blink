@@ -40,6 +40,31 @@ extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
  requires nonzero(host.whole) requires nonzero(host.scalar) requires nonzero(host.rewrite);
 
 
+// Complete Select control borrows one original Stage. Scratch is overwritten
+// before every plan; output rows live only until that branch is emitted.
+// Block owners and cursors stay in Rust for their actual synchronous scope.
+struct SelectionSlot { usize yes; usize no; };
+struct SelectionValue { usize slot; usize destination; usize yes; usize no; };
+struct SelectionInput { Span registers; address indices; address slots; usize local_count; usize domain; };
+struct SelectionChildren { address first; address second; };
+struct SelectionNext { address instruction; Span following; };
+struct SelectionPlan { address values; usize count; };
+struct SelectionHost {
+ Host ir; address context;
+ cfn<Span,address> ensures memory(read) block;
+ cfn<SelectionChildren,address> children;
+ cfn<address,address,usize> scratch;
+ cfn<void,address,address,usize,SelectionPlan> rebuild;
+ cfn<SelectionNext,address> next;
+ cfn<void,address> keep;
+ cfn<void,address,address> arm;
+ cfn<void,address,usize,SelectionValue> emit;
+};
+
+extern "C" void selection_continue(address cursor,SelectionNext first,SelectionPlan plan,SelectionInput input,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit);
+extern "C" void selection_move_arm(address cursor,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit);
+extern "C" u32 selection_run(address code,SelectionInput input,SelectionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.block) requires nonzero(host.children) requires nonzero(host.scratch) requires nonzero(host.rebuild) requires nonzero(host.next) requires nonzero(host.keep) requires nonzero(host.arm) requires nonzero(host.emit);
+
 // Complete optimization control borrows the original Program and Stage owners.
 // Views expire before callbacks mutate those owners. Work stays in the original
 // synchronous native Worker batch; its actual io::Error remains with the host.
