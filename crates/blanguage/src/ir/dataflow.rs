@@ -614,3 +614,17 @@ pub(super) fn numeric_requirements(program: &Program) -> (bool, bool, bool) {
         Span::slice(&program.uniforms), NumericHost { ir: HOST, locals: numeric_locals }) };
     (flags.float64 != 0, flags.integer8 != 0, flags.integer16 != 0)
 }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::atomic64_requirements"]
+    fn b_atomic64_requirements(code: Span, host: Host) -> u32;
+    #[link_name = "bootstrap.ir_dataflow::program_atomic64_requirements"]
+    fn b_program_atomic64_requirements(stages: Span, host: Host) -> u32;
+}
+fn atomic64_flags(flags: u32) -> (bool, bool) { (flags & 1 != 0, flags & 2 != 0) }
+pub(super) fn atomic64_requirements(stage: &Stage) -> (bool, bool) {
+    atomic64_flags(unsafe { b_atomic64_requirements(Span::slice(&stage.code), HOST) })
+}
+pub(super) fn program_atomic64_requirements(program: &Program) -> (bool, bool) {
+    atomic64_flags(unsafe { b_program_atomic64_requirements(Span::slice(program.stages()), HOST) })
+}

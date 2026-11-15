@@ -1281,3 +1281,27 @@ extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Spa
  }
  return flags;
 }
+
+extern "C" u32 atomic64_requirements(Span code,Host host) on cpu requires nonzero(host.inspect) {
+ u32 flags=0;usize index=0u64;
+ while(index<code.count && flags!=3) {
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_ATOMIC && value.b==8u64) {
+   View target=host.inspect(value.left);
+   if(target.tag==0){flags=flags|1;}else if(target.tag==3){flags=flags|2;}
+  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   flags=flags|atomic64_requirements(value.first,host);
+   if(flags!=3){flags=flags|atomic64_requirements(value.second,host);}
+  }
+  index+=1u64;
+ }
+ return flags;
+}
+extern "C" u32 program_atomic64_requirements(Span stages,Host host) on cpu requires nonzero(host.inspect) {
+ u32 flags=0;usize index=0u64;
+ while(index<stages.count && flags!=3) {
+  View stage=host.inspect(node_at(stages,index,N_STAGE));
+  flags=flags|atomic64_requirements(stage.first,host);index+=1u64;
+ }
+ return flags;
+}

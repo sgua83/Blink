@@ -97,8 +97,7 @@ impl ProgramInterface for Program {
     interface_fields!(,);
     fn requirements(&self) -> DeviceRequirements {
         let (float64, integer8, integer16) = dataflow::numeric_requirements(self);
-        let (atomic64, shared_atomic64) = self.stages.iter().map(Stage::atomic64_requirements)
-            .fold((false, false), |a, b| (a.0 || b.0, a.1 || b.1));
+        let (atomic64, shared_atomic64) = dataflow::program_atomic64_requirements(self);
         DeviceRequirements {
             float64, integer8, integer16,
             ray_query: !self.accelerations.is_empty(),
