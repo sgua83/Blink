@@ -790,13 +790,14 @@ impl Ty {
     /// 只遍历本条记录的实际活动载荷，引用子存储由其自身类型和所有者处理。
     pub fn visit_view_fields<'a>(&'a self, words:&[u32], mut field:impl FnMut(u32,&'a Ty))->Result<(),String> {
         fn visit<'a>(ty:&'a Ty,base:u32,words:&[u32],field:&mut impl FnMut(u32,&'a Ty))->Result<(),String> {
-            if !ty.contains_views(){return Ok(());}
             if let Some(element)=&ty.view {field(base,element);}
             else if ty.has_variants(){
+                if !ty.contains_views(){return Ok(());}
                 let tag=ty.variant_tag(words[base as usize/4]);
                 let variant=ty.variants.iter().find(|variant|variant.discriminant==tag).ok_or_else(||format!("{}的活动变体编号{}没有声明的载荷",ty.name,tag))?;
                 visit(&variant.ty,base+ty.variant_payload_offset(),words,field)?;
             }else if let Some(element)=&ty.array {
+                if ty.values[0]==0 || !element.contains_views(){return Ok(());}
                 let stride=align_up(element.size,element.align);
                 for i in 0..ty.values[0]{visit(element,base+i*stride,words,field)?;}
             }else{for(_,offset,ty)in &ty.fields{visit(ty,base+offset,words,field)?;}}
