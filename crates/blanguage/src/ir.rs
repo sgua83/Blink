@@ -714,13 +714,13 @@ impl Ty {
         !self.is_c_function()
             && !self.is_handle()
             && !self.is_address()
-            && !self.owns_resources()
             && !self.enumeration
             && !self.has_variants()
             && self.view.is_none()
             && self.array.is_none()
             && self.fields.is_empty()
             && !self.components.is_empty() && self.components.iter().all(|x| x.0 != Scalar::Bool)
+            && !self.owns_resources()
     }
     pub fn contains_arrays(&self) -> bool {
         #[cfg(feature = "compiler")]
