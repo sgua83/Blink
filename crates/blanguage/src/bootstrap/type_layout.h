@@ -38,7 +38,7 @@ enum Property:u32 { Dataset=0; Resources=1; Cleanup=2; Arrays=3; Views=4; Borrow
 enum Child:u32 { Variant=0; Array=1; Field=2; };
 struct TypeNode {
     u32 task; u32 cleanup; u32 dataset; u32 view; u32 array; u32 address;
-    usize variants; usize fields; u32 count;
+    usize variants; usize fields; u32 count; u32 alignment;
 };
 struct TypeHost {
     cfn<TypeNode,address> ensures memory(read) inspect;
@@ -46,3 +46,13 @@ struct TypeHost {
 };
 extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child);
+
+struct TypePart { address value; u32 offset; };
+struct BorrowHost {
+    TypeHost types;
+    cfn<TypePart,address,usize> ensures memory(read) part;
+};
+extern "C" void borrow_fields(address value, u32 base, BorrowHost host, address context,
+    cfn<void,address,u32,address> emit) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.part) requires nonzero(emit);

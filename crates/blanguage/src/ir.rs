@@ -269,6 +269,7 @@ impl Ty {
     }
     pub(crate) const TASK_COMPLETION: &'static str = "__blink_task_completion";
     pub(crate) const TASK_RETURN_SOURCE: &'static str = "__blink_task_return_source";
+    #[cfg(feature = "compiler")]
     pub(crate) fn task_components(&self) -> Vec<usize> {
         if !self.owns_resources(){return Vec::new();}
         self.borrow_fields().into_iter().filter(|(_,ty)|ty.task_result().is_some())
@@ -283,6 +284,7 @@ impl Ty {
         ty.components=(0..components.len()).map(|index|(Scalar::U32,index as u32*Scalar::U32.size())).collect();
         ty
     }
+    #[cfg(feature = "compiler")]
     pub(crate) fn task_wait_layout(&self) -> Option<Self> {
         let mut ty=self.clone();
         let components=self.task_components();
@@ -299,6 +301,7 @@ impl Ty {
     pub const TASK_COMPLETION_FAILED:u32=2;
     pub const TASK_COMPLETION_EXTENT:u32=4;
     pub const TASK_COMPLETION_PAYLOAD:u32=8;
+    #[cfg(feature = "compiler")]
     pub(crate) fn task_completion(&self) -> Option<Self> {
         self.task_wait_layout()?.task_completion_storage()
     }
@@ -751,27 +754,8 @@ impl Ty {
         }
     }
     /// Borrow-bearing values in this layout, without following their pointees.
-    pub(crate) fn borrow_fields(&self) -> Vec<(u32, &Ty)> {
-        if self.task_result().is_some() || self.view.is_some() || self.is_address() { return vec![(0, self)]; }
-        if self.has_variants() {
-            let payload = self.variant_payload_offset();
-            return self.variants.iter().flat_map(|v|
-                v.ty.borrow_fields().into_iter().map(move |(at, ty)| (payload + at, ty))
-            ).collect();
-        }
-        if let Some(element) = &self.array {
-            if self.values[0] == 0 || !element.contains_borrows() {
-                return Vec::new();
-            }
-            let stride = align_up(element.size, element.align);
-            return (0..self.values[0]).flat_map(|i|
-                element.borrow_fields().into_iter().map(move |(at, ty)| (i * stride + at, ty))
-            ).collect();
-        }
-        self.fields.iter().flat_map(|(_, offset, t)|
-            t.borrow_fields().into_iter().map(move |(at, ty)| (offset + at, ty))
-        ).collect()
-    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn borrow_fields(&self) -> Vec<(u32, &Ty)> { properties::borrows(self) }
     /// 全部可能的view字段，仅用于类型能力；重叠载荷不同时活动。
     pub fn view_fields(&self) -> Vec<(u32, &Ty)> {
         if self.has_variants() {

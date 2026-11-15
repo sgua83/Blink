@@ -68,3 +68,34 @@ extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
     }
     return 0;
 }
+
+extern "C" void borrow_fields(address value, u32 base, BorrowHost host, address context,
+    cfn<void,address,u32,address> emit) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.part) requires nonzero(emit) {
+    TypeNode node=host.types.inspect(value);
+    if (node.task!=0 || node.view!=0 || node.address!=0) {
+        emit(context,base,value);
+        return;
+    }
+    if (node.variants!=0u64) {
+        usize i=0u64;
+        while (i<node.variants) {
+            borrow_fields(host.types.child(value,Child::Variant,i),base+node.alignment,host,context,emit);
+            i+=1u64;
+        }
+        return;
+    }
+    if (node.array!=0) {
+        if (node.count==0) { return; }
+        address element=host.types.child(value,Child::Array,0u64);
+        if (contains(element,Property::Borrows,host.types)==0) { return; }
+    }
+    usize count=node.array!=0 ? usize(node.count) : node.fields;
+    usize i=0u64;
+    while (i<count) {
+        TypePart part=host.part(value,i);
+        borrow_fields(part.value,base+part.offset,host,context,emit);
+        i+=1u64;
+    }
+}
