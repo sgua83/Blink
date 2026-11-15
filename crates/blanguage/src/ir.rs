@@ -1829,60 +1829,52 @@ impl Stage {
             || arithmetic(&self.code, &self.registers, scalar)
         }
     }
-    fn tile_usage(&self) -> (bool, std::collections::BTreeSet<usize>) {
-        fn visit(code: &[Inst], scope: &mut bool, sources: &mut std::collections::BTreeSet<usize>) {
-            for inst in code {
-                match &(inst).kind {
-                    InstKind::TileLength(_)
-                    | InstKind::TileLane(_)
-                    | InstKind::TilePublish(_)
-                    | InstKind::TileBarrier => *scope = true,
-                    InstKind::Atomic(Atomic {
-                        target: IndexedSource::Tile { tile, .. },
-                        ..
-                    }) => {
-                        *scope = true;
-                        sources.insert(*tile);
-                    }
-                    InstKind::TileCollective(c) => {
-                        *scope = true;
-                        if !c.results.is_empty() {
-                            sources.insert(c.tile);
-                        }
-                    }
-                    InstKind::LoadIndexed {
-                        source: IndexedSource::Tile { tile, .. },
-                        ..
-                    }
-                    | InstKind::TileLoad { tile, .. } => {
-                        *scope = true;
-                        sources.insert(*tile);
-                    }
-                    InstKind::Scope(body) => visit(body, scope, sources),
-                    InstKind::If { yes, no, .. } => {
-                        visit(yes, scope, sources);
-                        visit(no, scope, sources);
-                    }
-                    InstKind::Loop {
-                        condition, body, ..
-                    } => {
-                        visit(condition, scope, sources);
-                        visit(body, scope, sources);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let mut scope = false;
-        let mut sources = std::collections::BTreeSet::new();
-        visit(&self.code, &mut scope, &mut sources);
-        (scope, sources)
-    }
     pub fn has_tile_scope(&self) -> bool {
-        self.tile_usage().0 || (!self.tiles.is_empty() && !self.subgroup_operations().is_empty())
+        #[cfg(feature = "compiler")]
+        { dataflow::tile_scope(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            fn uses(code: &[Inst], has_tiles: bool) -> bool {
+                code.iter().any(|inst| match &inst.kind {
+                    InstKind::TileLength(_) | InstKind::TileLane(_) | InstKind::TilePublish(_)
+                    | InstKind::TileBarrier | InstKind::TileCollective(_) | InstKind::TileLoad { .. }
+                    | InstKind::Atomic(Atomic { target: IndexedSource::Tile { .. }, .. })
+                    | InstKind::LoadIndexed { source: IndexedSource::Tile { .. }, .. } => true,
+                    InstKind::Append(_) | InstKind::Subgroup { .. } => has_tiles,
+                    InstKind::Scope(body) => uses(body, has_tiles),
+                    InstKind::If { yes, no, .. } => uses(yes, has_tiles) || uses(no, has_tiles),
+                    InstKind::Loop { condition, body, .. } => uses(condition, has_tiles) || uses(body, has_tiles),
+                    _ => false,
+                })
+            }
+            uses(&self.code, !self.tiles.is_empty())
+        }
     }
     pub fn storage_tiles(&self) -> std::collections::BTreeSet<usize> {
-        self.tile_usage().1
+        #[cfg(feature = "compiler")]
+        { dataflow::storage_tiles(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            fn collect(code: &[Inst], output: &mut std::collections::BTreeSet<usize>) {
+                for inst in code {
+                    match &inst.kind {
+                        InstKind::Atomic(Atomic { target: IndexedSource::Tile { tile, .. }, .. })
+                        | InstKind::LoadIndexed { source: IndexedSource::Tile { tile, .. }, .. }
+                        | InstKind::TileLoad { tile, .. } => { output.insert(*tile); }
+                        InstKind::TileCollective(value) => {
+                            if !value.results.is_empty() { output.insert(value.tile); }
+                        }
+                        InstKind::Scope(body) => collect(body, output),
+                        InstKind::If { yes, no, .. } => { collect(yes, output); collect(no, output); }
+                        InstKind::Loop { condition, body, .. } => { collect(condition, output); collect(body, output); }
+                        _ => {}
+                    }
+                }
+            }
+            let mut output = std::collections::BTreeSet::new();
+            collect(&self.code, &mut output);
+            output
+        }
     }
     pub fn workgroup_width(&self) -> u32 {
         if self.has_tile_scope() {

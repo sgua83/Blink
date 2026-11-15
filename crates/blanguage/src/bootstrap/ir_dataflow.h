@@ -132,3 +132,10 @@ struct FloatHost {
 };
 extern "C" u32 float_preserve(FloatInput input,u32 scalar,FloatHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
+
+// Query only the tile usage facts consumed by the original Stage caller.
+extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu
+ requires nonzero(host.inspect);
+extern "C" void storage_tiles(Span code,Host host,address context,
+ cfn<void,address,usize> emit) on cpu
+ requires nonzero(host.inspect) requires nonzero(emit);

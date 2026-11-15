@@ -673,3 +673,43 @@ extern "C" u32 float_preserve(FloatInput input,u32 scalar,FloatHost host) on cpu
  if(float_code(input.project.code,input.project.registers,scalar,host)!=0){return 1;}
  return float_code(input.body.code,input.body.registers,scalar,host);
 }
+
+extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu
+ requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_TILE_LENGTH || value.tag==OP_TILE_LANE || value.tag==OP_TILE_PUBLISH
+      || value.tag==OP_TILE_BARRIER || value.tag==OP_TILE_COLLECTIVE || value.tag==OP_TILE_LOAD
+      || (has_tiles!=0 && (value.tag==OP_SUBGROUP || value.tag==OP_APPEND))){return 1;}
+  if(value.tag==OP_ATOMIC || value.tag==OP_LOAD_INDEXED) {
+   View source=host.inspect(value.left);
+   if(source.tag==3){return 1;}
+  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   if(has_tile_scope(value.first,has_tiles,host)!=0){return 1;}
+   if(has_tile_scope(value.second,has_tiles,host)!=0){return 1;}
+  }
+  index+=1u64;
+ }
+ return 0;
+}
+extern "C" void storage_tiles(Span code,Host host,address context,
+ cfn<void,address,usize> emit) on cpu
+ requires nonzero(host.inspect) requires nonzero(emit) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_TILE_COLLECTIVE) {
+   if(value.first.count!=0u64){emit(context,value.a);}
+  }else if(value.tag==OP_TILE_LOAD) {
+   emit(context,value.b);
+  }else if(value.tag==OP_ATOMIC || value.tag==OP_LOAD_INDEXED) {
+   View source=host.inspect(value.left);
+   if(source.tag==3){emit(context,source.a);}
+  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   storage_tiles(value.first,host,context,emit);
+   storage_tiles(value.second,host,context,emit);
+  }
+  index+=1u64;
+ }
+}
