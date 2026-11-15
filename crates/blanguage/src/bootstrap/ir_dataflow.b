@@ -8,6 +8,7 @@ const u32 N_INDEXED=7;const u32 N_STRIDE=8;const u32 N_TEXTURE=9;const u32 N_ATO
 const u32 N_MEMORY_ALIAS=11;const u32 N_MEMORY_EFFECT=12;const u32 N_DIVISION=13;
 const u32 N_DIVISOR=14;const u32 N_WORDS3=15;
 const u32 N_COMPONENT=16;
+const u32 N_STAGE=17;
 
 const u32 OP_TEXTURE_BINDING_ADDRESS=0;const u32 OP_TEXTURE_SAMPLE=1;const u32 OP_TEXTURE_SIZE=2;
 const u32 OP_TEXTURE_LEVELS=3;const u32 OP_TEXTURE_ADDRESS=4;const u32 OP_TEXTURE_FORMAT=5;
@@ -909,4 +910,97 @@ extern "C" void storage_words(Span code,StorageHost host,address context,
   }
   index+=1u64;
  }
+}
+
+extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_APPEND || value.tag==OP_SUBGROUP){return 1;}
+  if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   if(has_subgroups(value.first,host)!=0){return 1;}
+   if(has_subgroups(value.second,host)!=0){return 1;}
+  }
+  index+=1u64;
+ }
+ return 0;
+}
+struct AppendOperations { usize count; usize prefix; usize elect; usize first; };
+AppendOperations append_operations() on cpu {return AppendOperations(6u64,7u64,3u64,8u64);}
+extern "C" void subgroup_operations(Span code,Host host,address context,
+ cfn<void,address,usize> emit) on cpu requires nonzero(host.inspect) requires nonzero(emit) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_APPEND) {
+   AppendOperations operations=append_operations();
+   emit(context,operations.count);emit(context,operations.prefix);
+   emit(context,operations.elect);emit(context,operations.first);
+  }else if(value.tag==OP_SUBGROUP){emit(context,value.c);}
+  else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   subgroup_operations(value.first,host,context,emit);
+   subgroup_operations(value.second,host,context,emit);
+  }
+  index+=1u64;
+ }
+}
+SubgroupFlags empty_subgroup_flags() on cpu {return SubgroupFlags(0,0,0,0,0,0,0);}
+void include_subgroup(inout SubgroupFlags flags,usize operation) on cpu {
+ flags.basic=1;
+ if(operation==4u64 || operation==5u64){flags.vote=1;}
+ else if(operation==6u64 || operation==7u64 || operation==8u64){flags.ballot=1;}
+ else if(operation==9u64 || operation==10u64){flags.shuffle=1;}
+ else if(operation==11u64 || operation==12u64){flags.shuffle_relative=1;}
+ else if(operation==13u64 || operation==14u64 || operation==15u64 || operation==16u64
+     || operation==17u64 || operation==18u64 || operation==19u64 || operation==20u64
+     || operation==21u64 || operation==22u64){flags.arithmetic=1;}
+}
+void subgroup_flags(Span code,Host host,inout SubgroupFlags flags) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_APPEND) {
+   AppendOperations operations=append_operations();
+   include_subgroup(flags,operations.count);include_subgroup(flags,operations.prefix);
+   include_subgroup(flags,operations.elect);include_subgroup(flags,operations.first);
+  }else if(value.tag==OP_SUBGROUP){include_subgroup(flags,value.c);}
+  else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   subgroup_flags(value.first,host,flags);subgroup_flags(value.second,host,flags);
+  }
+  index+=1u64;
+ }
+}
+extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
+ requires nonzero(next) {
+ SubgroupFlags flags=empty_subgroup_flags();
+ while(true) {
+  Word operation=next(context);if(operation.present==0){return flags;}
+  include_subgroup(flags,operation.value);
+ }
+}
+u32 subgroup_extended(Span code,address stage,SubgroupHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_SUBGROUP) {
+   if(host.scalar_bytes(stage,value.a)!=4){return 1;}
+  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   if(subgroup_extended(value.first,stage,host)!=0){return 1;}
+   if(subgroup_extended(value.second,stage,host)!=0){return 1;}
+  }
+  index+=1u64;
+ }
+ return 0;
+}
+extern "C" SubgroupFlags subgroup_capabilities(Span stages,SubgroupHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
+ SubgroupFlags flags=empty_subgroup_flags();usize index=0u64;
+ while(index<stages.count) {
+  Node stage=node_at(stages,index,N_STAGE);View value=host.ir.inspect(stage);
+  subgroup_flags(value.first,host.ir,flags);
+  if(flags.extended_types==0){flags.extended_types=subgroup_extended(value.first,stage.data,host);}
+  index+=1u64;
+ }
+ return flags;
 }

@@ -9,7 +9,7 @@ use std::{ffi::c_void, marker::PhantomData, mem::size_of, ptr};
 enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
-    Component,
+    Component, Stage,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -223,6 +223,10 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             let (scalar, byte) = unsafe { &*node.data.cast::<(Scalar, u32)>() };
             let mut view = View::tag(0); view.a = *byte as usize; view.b = scalar.size() as usize; view
         }
+        Kind::Stage => {
+            let stage = unsafe { &*node.data.cast::<Stage>() };
+            let mut view = View::tag(0); view.first = Span::slice(&stage.code); view
+        }
     }
 }
 
@@ -426,4 +430,65 @@ pub(super) fn storage_words(stage: &Stage) -> BTreeSet<SharedWord> {
 unsafe extern "C" fn emit_word(context: *mut c_void, tile: usize, byte: u32) {
     let output = unsafe { &mut *context.cast::<WordOutput<'_>>() };
     output.words.insert(output.stage.shared_word(tile, byte));
+}
+
+#[repr(C)]
+struct SubgroupFlags {
+    basic: u32, vote: u32, arithmetic: u32, ballot: u32,
+    shuffle: u32, shuffle_relative: u32, extended_types: u32,
+}
+impl From<SubgroupFlags> for SubgroupCapabilities {
+    fn from(value: SubgroupFlags) -> Self {
+        Self { basic: value.basic != 0, vote: value.vote != 0, arithmetic: value.arithmetic != 0,
+            ballot: value.ballot != 0, shuffle: value.shuffle != 0,
+            shuffle_relative: value.shuffle_relative != 0, extended_types: value.extended_types != 0 }
+    }
+}
+#[repr(C)]
+struct SubgroupHost { ir: Host, scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32 }
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::has_subgroups"]
+    fn b_has_subgroups(code: Span, host: Host) -> u32;
+    #[link_name = "bootstrap.ir_dataflow::subgroup_operations"]
+    fn b_subgroup_operations(code: Span, host: Host, context: *mut c_void,
+        emit: unsafe extern "C" fn(*mut c_void, usize));
+    #[link_name = "bootstrap.ir_dataflow::subgroup_from_operations"]
+    fn b_subgroup_from_operations(context: *mut c_void,
+        next: unsafe extern "C" fn(*mut c_void) -> Word) -> SubgroupFlags;
+    #[link_name = "bootstrap.ir_dataflow::subgroup_capabilities"]
+    fn b_subgroup_capabilities(stages: Span, host: SubgroupHost) -> SubgroupFlags;
+}
+// Decode the paired private instruction discriminants into the original enum;
+// its Rust representation and the public query result remain unchanged.
+const SUBGROUP_OPERATIONS: [SubgroupOp; 23] = [
+    SubgroupOp::Lane, SubgroupOp::Size, SubgroupOp::Id, SubgroupOp::Elect,
+    SubgroupOp::Any, SubgroupOp::All, SubgroupOp::Count, SubgroupOp::PrefixCount,
+    SubgroupOp::BroadcastFirst, SubgroupOp::Shuffle, SubgroupOp::ShuffleXor,
+    SubgroupOp::ShuffleUp, SubgroupOp::ShuffleDown, SubgroupOp::Sum, SubgroupOp::ExclusiveSum,
+    SubgroupOp::Min, SubgroupOp::Max, SubgroupOp::BitAnd, SubgroupOp::BitOr, SubgroupOp::BitXor,
+    SubgroupOp::ExclusiveBitAnd, SubgroupOp::ExclusiveBitOr, SubgroupOp::ExclusiveBitXor,
+];
+pub(crate) fn has_subgroups(stage: &Stage) -> bool {
+    unsafe { b_has_subgroups(Span::slice(&stage.code), HOST) != 0 }
+}
+pub(super) fn subgroup_operations(stage: &Stage) -> BTreeSet<SubgroupOp> {
+    let mut output = BTreeSet::new();
+    unsafe { b_subgroup_operations(Span::slice(&stage.code), HOST, ptr::from_mut(&mut output).cast(), emit_subgroup); }
+    output
+}
+unsafe extern "C" fn emit_subgroup(context: *mut c_void, operation: usize) {
+    unsafe { &mut *context.cast::<BTreeSet<SubgroupOp>>() }.insert(SUBGROUP_OPERATIONS[operation]);
+}
+pub(super) fn subgroup_from_operations<I: IntoIterator<Item = SubgroupOp>>(operations: I) -> SubgroupCapabilities {
+    let mut operations = operations.into_iter();
+    unsafe { b_subgroup_from_operations(ptr::from_mut(&mut operations).cast(), next_subgroup::<I::IntoIter>).into() }
+}
+unsafe extern "C" fn next_subgroup<I: Iterator<Item = SubgroupOp>>(context: *mut c_void) -> Word {
+    match unsafe { &mut *context.cast::<I>() }.next() {
+        Some(value) => Word { present: 1, value: value as usize },
+        None => Word { present: 0, value: 0 },
+    }
+}
+pub(super) fn subgroup_capabilities(program: &Program) -> SubgroupCapabilities {
+    unsafe { b_subgroup_capabilities(Span::slice(program.stages()), SubgroupHost { ir: HOST, scalar_bytes: register_bytes }).into() }
 }

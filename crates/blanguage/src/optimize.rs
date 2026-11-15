@@ -317,7 +317,7 @@ fn optimize_stage(stage: &mut Stage, bindings: usize) {
             &stage.registers,
         );
         GeneratedOrigin::eliminated_operations(&mut stage.generated_origin, removed);
-        let preserve_scope = !stage.subgroup_operations().is_empty();
+        let preserve_scope = crate::ir::dataflow::has_subgroups(stage);
         let words = stage.storage_words();
         let mut changed = false;
         stage.code.retain_mut(|inst| {

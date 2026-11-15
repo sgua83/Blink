@@ -1723,6 +1723,10 @@ pub enum SubgroupOp {
     ExclusiveBitOr,
     ExclusiveBitXor,
 }
+#[cfg(not(feature = "compiler"))]
+const APPEND_SUBGROUP_OPERATIONS: [SubgroupOp; 4] = [
+    SubgroupOp::Count, SubgroupOp::PrefixCount, SubgroupOp::Elect, SubgroupOp::BroadcastFirst,
+];
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SubgroupCapabilities {
     pub basic: bool,
@@ -1946,29 +1950,16 @@ impl Stage {
         words
         }
     }
-    fn requires_subgroup_extended_types(&self) -> bool {
-        fn visit(code: &[Inst], registers: &[Scalar]) -> bool {
-            code.iter().any(|inst| match &(inst).kind {
-                InstKind::Subgroup { dst, .. } => registers[*dst].size() != 4,
-                InstKind::Scope(body) => visit(body, registers),
-                InstKind::If { yes, no, .. } => visit(yes, registers) || visit(no, registers),
-                InstKind::Loop { condition, body, .. } => visit(condition, registers) || visit(body, registers),
-                _ => false,
-            })
-        }
-        visit(&self.code, &self.registers)
-    }
     pub fn subgroup_operations(&self) -> std::collections::BTreeSet<SubgroupOp> {
+        #[cfg(feature = "compiler")]
+        { dataflow::subgroup_operations(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
         fn visit(code: &[Inst], ops: &mut std::collections::BTreeSet<SubgroupOp>) {
             for inst in code {
                 match &(inst).kind {
                     InstKind::Append(_) => {
-                        ops.extend([
-                            SubgroupOp::Count,
-                            SubgroupOp::PrefixCount,
-                            SubgroupOp::Elect,
-                            SubgroupOp::BroadcastFirst,
-                        ]);
+                        ops.extend(APPEND_SUBGROUP_OPERATIONS);
                     }
                     InstKind::Subgroup { op, .. } => {
                         ops.insert(*op);
@@ -1991,20 +1982,32 @@ impl Stage {
         let mut ops = std::collections::BTreeSet::new();
         visit(&self.code, &mut ops);
         ops
+        }
     }
 }
 impl SubgroupCapabilities {
     pub fn from_operations(ops: impl IntoIterator<Item = SubgroupOp>) -> Self {
+        #[cfg(feature = "compiler")]
+        { dataflow::subgroup_from_operations(ops) }
+        #[cfg(not(feature = "compiler"))]
+        {
         let mut caps = Self::default();
         for op in ops {
-            caps.basic = true;
+            caps.include_operation(op);
+        }
+        caps
+        }
+    }
+    #[cfg(not(feature = "compiler"))]
+    fn include_operation(&mut self, op: SubgroupOp) {
+            self.basic = true;
             match op {
-                SubgroupOp::Any | SubgroupOp::All => caps.vote = true,
+                SubgroupOp::Any | SubgroupOp::All => self.vote = true,
                 SubgroupOp::Count | SubgroupOp::PrefixCount | SubgroupOp::BroadcastFirst => {
-                    caps.ballot = true
+                    self.ballot = true
                 }
-                SubgroupOp::Shuffle | SubgroupOp::ShuffleXor => caps.shuffle = true,
-                SubgroupOp::ShuffleUp | SubgroupOp::ShuffleDown => caps.shuffle_relative = true,
+                SubgroupOp::Shuffle | SubgroupOp::ShuffleXor => self.shuffle = true,
+                SubgroupOp::ShuffleUp | SubgroupOp::ShuffleDown => self.shuffle_relative = true,
                 SubgroupOp::Sum
                 | SubgroupOp::ExclusiveSum
                 | SubgroupOp::Min
@@ -2014,11 +2017,9 @@ impl SubgroupCapabilities {
                 | SubgroupOp::BitXor
                 | SubgroupOp::ExclusiveBitAnd
                 | SubgroupOp::ExclusiveBitOr
-                | SubgroupOp::ExclusiveBitXor => caps.arithmetic = true,
+                | SubgroupOp::ExclusiveBitXor => self.arithmetic = true,
                 SubgroupOp::Lane | SubgroupOp::Size | SubgroupOp::Id | SubgroupOp::Elect => {}
             }
-        }
-        caps
     }
 }
 #[derive(Clone, Debug)]
@@ -2097,11 +2098,31 @@ impl Program {
             .any(Stage::requires_maximal_reconvergence)
     }
     pub fn subgroup_capabilities(&self) -> SubgroupCapabilities {
-        let mut capabilities = SubgroupCapabilities::from_operations(
-            self.stages.iter().flat_map(Stage::subgroup_operations),
-        );
-        capabilities.extended_types = self.stages.iter().any(Stage::requires_subgroup_extended_types);
-        capabilities
+        #[cfg(feature = "compiler")]
+        { dataflow::subgroup_capabilities(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            fn visit(code: &[Inst], registers: &[Scalar], caps: &mut SubgroupCapabilities) {
+                for inst in code {
+                    match &inst.kind {
+                        InstKind::Append(_) => {
+                            for operation in APPEND_SUBGROUP_OPERATIONS { caps.include_operation(operation); }
+                        }
+                        InstKind::Subgroup { dst, op, .. } => {
+                            caps.include_operation(*op);
+                            caps.extended_types |= registers[*dst].size() != 4;
+                        }
+                        InstKind::Scope(body) => visit(body, registers, caps),
+                        InstKind::If { yes, no, .. } => { visit(yes, registers, caps); visit(no, registers, caps); }
+                        InstKind::Loop { condition, body, .. } => { visit(condition, registers, caps); visit(body, registers, caps); }
+                        _ => {}
+                    }
+                }
+            }
+            let mut caps = SubgroupCapabilities::default();
+            for stage in &self.stages { visit(&stage.code, &stage.registers, &mut caps); }
+            caps
+        }
     }
     /// 内部设备绑定：集合中间量与间接域参数各有一个必要槽，不占源码参数。
     pub fn indirect_buffer(&self) -> usize {
