@@ -60,3 +60,40 @@ extern "C" u32 mark_fallible(EffectHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.inspect) requires nonzero(host.contains);
 extern "C" void propagate_fallibility(address context,cfn<u32,address> round) on cpu
  requires nonzero(round);
+
+// Direct native dependencies and their single-owner transitive selection.
+struct DependencyText { address data; usize length; };
+struct DependencyOwner { u32 present; DependencyText name; };
+struct DependencyNode { Span first; Span second; address target; };
+struct DependencyStage { Span body; Span project; Span identity; Span combine; };
+struct DependencyUnit { Span body; DependencyText name; };
+struct DependencyWork { u32 present; Span body; };
+struct DependencyHost {
+ address output;
+ cfn<DependencyNode,address> ensures memory(read) inspect;
+ cfn<void,address,address> add;
+};
+struct DependencySeedHost {
+ address iterator; address units; address pending; DependencyOwner owner;
+ cfn<address,address> next;
+ cfn<DependencyUnit,address,address> ensures memory(read) lookup;
+ cfn<void,address,Span> push;
+};
+struct DependencyClosureHost {
+ address units; address required; address pending; DependencyOwner owner;
+ cfn<DependencyNode,address> ensures memory(read) inspect;
+ cfn<DependencyUnit,address,address> ensures memory(read) lookup;
+ cfn<u32,address,address> insert;
+ cfn<void,address,Span> push;
+ cfn<DependencyWork,address> pop;
+};
+extern "C" void collect_dependencies(Span code,DependencyHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.add);
+extern "C" void collect_program_dependencies(Span stages,
+ cfn<DependencyStage,address> ensures memory(read) inspect,DependencyHost host) on cpu
+ requires nonzero(inspect) requires nonzero(host.inspect) requires nonzero(host.add);
+extern "C" void seed_dependencies(DependencySeedHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.push);
+extern "C" void expand_dependencies(DependencyClosureHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.lookup) requires nonzero(host.insert)
+ requires nonzero(host.push) requires nonzero(host.pop);

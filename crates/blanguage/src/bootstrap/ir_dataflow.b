@@ -489,3 +489,81 @@ extern "C" void propagate_fallibility(address context,cfn<u32,address> round) on
  requires nonzero(round) {
  while(round(context)!=0){}
 }
+
+extern "C" void collect_dependencies(Span code,DependencyHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.add) {
+ usize index=0u64;
+ while(index<code.count) {
+  address instruction=unsafe_address(address_bits(code.data)+u64(index)*u64(code.stride));
+  DependencyNode item=host.inspect(instruction);
+  if(address_bits(item.target)!=0u64){host.add(host.output,item.target);}
+  collect_dependencies(item.first,host);
+  collect_dependencies(item.second,host);
+  index+=1u64;
+ }
+}
+
+extern "C" void collect_program_dependencies(Span stages,
+ cfn<DependencyStage,address> ensures memory(read) inspect,DependencyHost host) on cpu
+ requires nonzero(inspect) requires nonzero(host.inspect) requires nonzero(host.add) {
+ usize index=0u64;
+ while(index<stages.count) {
+  address stage=unsafe_address(address_bits(stages.data)+u64(index)*u64(stages.stride));
+  DependencyStage item=inspect(stage);
+  collect_dependencies(item.body,host);
+  collect_dependencies(item.project,host);
+  collect_dependencies(item.identity,host);
+  collect_dependencies(item.combine,host);
+  index+=1u64;
+ }
+}
+
+bool dependency_local(DependencyUnit unit,DependencyOwner owner) on cpu {
+ if(owner.present==0){return true;}
+ if(unit.name.length!=owner.name.length){return false;}
+ usize index=0u64;
+ while(index<owner.name.length) {
+  u8 left=unsafe_position<u8>(unsafe_address(address_bits(unit.name.data)+u64(index)));
+  u8 right=unsafe_position<u8>(unsafe_address(address_bits(owner.name.data)+u64(index)));
+  if(left!=right){return false;}
+  index+=1u64;
+ }
+ return true;
+}
+
+extern "C" void seed_dependencies(DependencySeedHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.push) {
+ while(true) {
+  address name=host.next(host.iterator);
+  if(address_bits(name)==0u64){return;}
+  DependencyUnit unit=host.lookup(host.units,name);
+  if(unit.body.count!=0u64 && dependency_local(unit,host.owner)){host.push(host.pending,unit.body);}
+ }
+}
+
+void expand_dependency_body(Span code,DependencyClosureHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.lookup) requires nonzero(host.insert)
+ requires nonzero(host.push) requires nonzero(host.pop) {
+ usize index=0u64;
+ while(index<code.count) {
+  address instruction=unsafe_address(address_bits(code.data)+u64(index)*u64(code.stride));
+  DependencyNode item=host.inspect(instruction);
+  if(address_bits(item.target)!=0u64 && host.insert(host.required,item.target)!=0) {
+   DependencyUnit unit=host.lookup(host.units,item.target);
+   if(unit.body.count!=0u64 && dependency_local(unit,host.owner)){host.push(host.pending,unit.body);}
+  }
+  expand_dependency_body(item.first,host);
+  expand_dependency_body(item.second,host);
+  index+=1u64;
+ }
+}
+
+extern "C" void expand_dependencies(DependencyClosureHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.lookup) requires nonzero(host.insert)
+ requires nonzero(host.push) requires nonzero(host.pop) {
+ while(true) {
+  DependencyWork item=host.pop(host.pending);
+  if(item.present==0){return;}
+  expand_dependency_body(item.body,host);
+ }
+}

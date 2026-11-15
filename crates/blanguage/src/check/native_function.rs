@@ -3,6 +3,7 @@ use super::*;
 use cooperative::Argument;
 use returns::Returned;
 mod fallibility;
+mod dependencies;
 
 // Only source vectors admit a different component placement with the same type.
 // Aggregate fields and arrays retain their declared layout.
@@ -2268,42 +2269,6 @@ pub(super) fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
         }
     }
 }
-fn dependencies(body: &mut ValueCode) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    crate::optimize::visit(&body.code, &mut |inst| {
-        if let InstKind::Call(Call { target: CallTarget::Defined(name), .. }) | InstKind::FunctionAddress(_, CallTarget::Defined(name)) = &(inst).kind {
-            names.insert(name.clone());
-        }
-    });
-    names
-}
-
-fn program_dependencies(program: &Program) -> BTreeSet<String> {
-    fn collect(code: &[Inst], names: &mut BTreeSet<String>) {
-        crate::optimize::visit(code, &mut |inst| {
-            if let InstKind::Call(Call { target: CallTarget::Defined(name), .. })
-                | InstKind::FunctionAddress(_, CallTarget::Defined(name)) = &inst.kind
-            { names.insert(name.clone()); }
-        });
-    }
-    let mut names = BTreeSet::new();
-    for stage in &program.stages {
-        collect(&stage.code, &mut names);
-        let reduction = match &stage.operation {
-            Operation::CustomReduce(value) => Some(value),
-            Operation::CustomScan(value) => Some(&value.values),
-            Operation::CustomSegmentedReduce(value) => Some(&value.values),
-            _ => None,
-        };
-        if let Some(reduction) = reduction {
-            for body in reduction.project.iter().chain([&reduction.identity, &reduction.combine]) {
-                collect(&body.code, &mut names);
-            }
-        }
-    }
-    names
-}
-
 pub(super) struct Finalized {
     pub functions: Vec<FunctionBody>,
     pub imports: BTreeMap<String, Vec<u8>>,
@@ -2839,27 +2804,18 @@ fn finalize(
     let mut programs = programs.iter_mut().map(|(program, scopes)| (&mut **program, &**scopes, None))
         .chain(pending_programs.iter_mut().map(|pending|
             (&mut pending.program, &pending.scopes, pending.deferred_source.as_deref())))
-        .collect::<Vec<_>>();
+        .map(|(program, scopes, source)| {
+            let names=dependencies::program(program);
+            (program, scopes, source, names)
+        }).collect::<Vec<_>>();
     let mut reachable = entries.clone();
-    for (program, _, _) in programs.iter() { reachable.extend(program_dependencies(program)); }
+    for (_, _, _, names) in &programs { reachable.extend(names.iter().cloned()); }
     let mut units = module
         .units
         .into_iter()
         .map(|(name, unit)| (name, unit.unwrap()))
         .collect::<BTreeMap<_, _>>();
-    loop {
-        let mut next = reachable.clone();
-        for name in &reachable {
-            let unit=units.get_mut(name).unwrap();
-            if owner.is_none_or(|owner|unit.module==owner) {
-                if let Some(function)=&mut unit.function {next.extend(dependencies(&mut function.body));}
-            }
-        }
-        if next == reachable {
-            break;
-        }
-        reachable = next;
-    }
+    dependencies::complete(&units, &mut reachable, owner);
     let imported_without_frame = units.iter()
         .filter(|(_, unit)| unit.function.is_none() && !unit.contract.frame)
         .map(|(name, _)| name.clone()).collect::<BTreeSet<_>>();
@@ -2907,9 +2863,8 @@ fn finalize(
             imports.insert(name.clone(), unit.contract.bytes());
         }
     }
-    for (program, scopes, source) in &mut programs {
-        let names = program_dependencies(program);
-        for name in &names {
+    for (program, scopes, source, names) in &mut programs {
+        for name in names.iter() {
             if frame.contains(name) && program.target()!=Target::Cpu {
                 let unit = &units[name];
                 return unit.source.fail(unit.span, "B263", "该范围产物尚未交接真实Frame及同源资源定义");
@@ -2921,7 +2876,7 @@ fn finalize(
             crate::optimize::optimize(program, &world.worker)
                 .map_err(|error| crate::compiler::diagnostic(source, error))?;
         }
-        program.imports = names.into_iter().filter_map(|name|
+        program.imports = std::mem::take(names).into_iter().filter_map(|name|
             imports.get(&name).map(|contract| (name, contract.clone()))).collect();
     }
     drop(programs);
@@ -2986,7 +2941,7 @@ fn finalize(
     Ok(result)
 }
 pub(super) fn finish(world:&World, module: Module, root: &mut ValueCode, model:&view_contracts::Function) -> Result<Finalized> {
-    let roots = dependencies(root);
+    let roots = dependencies::code(&root.code);
     finalize(world, module, roots, Some((root,model)), None, &mut [])
 }
 pub(super) fn finish_program(
