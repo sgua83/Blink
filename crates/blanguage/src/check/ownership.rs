@@ -2,6 +2,8 @@
 use super::*;
 #[path="ownership/position.rs"]
 mod position;
+#[path="ownership/place.rs"]
+mod place;
 
 #[derive(Clone, Copy)]
 pub(super) enum ApplicationIndex {
@@ -49,58 +51,9 @@ impl Position {
 }
 pub(super) fn intersect_initialized(a:&BTreeSet<Position>,b:&BTreeSet<Position>)->BTreeSet<Position>{position::intersect(a,b)}
 impl Place {
-    pub(super) fn data_positions(&self) -> Vec<Position> {
-        match self {
-            Self::Element { binding, words, .. } => words.iter().map(|word| Position::Element(*binding, *word)).collect(),
-            Self::ApplicationElement { identity, element_layout, words, .. } => {
-                let borrow = Arc::new(view::Borrow::source(view::Source::Data(*identity)));
-                words.iter().map(|word| Position::Borrowed(borrow.clone(), element_layout.clone(), *word)).collect()
-            }
-            Self::ViewElement { source, index, stride, words, .. } => words.iter()
-                .map(|word| Position::ViewElement(*source, *index, *stride, *word)).collect(),
-            Self::TileElement { tile, index, words, .. } => words.iter()
-                .map(|word| Position::TileElement(*tile, *index, *word)).collect(),
-            Self::Indexed { locations, .. } => locations.clone(),
-            _ => Vec::new(),
-        }
-    }
-    pub(super) fn owned_positions(&self) -> Option<Vec<Position>> {
-        match self {
-            Self::ViewElement { .. } | Self::TileElement { .. } => Some(self.data_positions()),
-            Self::ApplicationElement {
-                initialization,
-                words,
-                ..
-            } => Some(
-                initialization
-                    .iter()
-                    .flat_map(|(scope, index)| {
-                        words
-                            .iter()
-                            .map(|word| scope.application_word(Some(*index),*word))
-                    })
-                    .collect(),
-            ),
-            Self::Reference { address: address @ ReferenceAddress::Borrowed { .. }, words, .. } => address.positions(words),
-            Self::Reference { scope, words, .. } => Some(
-                words
-                    .iter()
-                    .flat_map(|word| scope.map(|scope| Position::Parameter(scope, *word as usize)))
-                    .collect(),
-            ),
-            Self::Indexed { initialization, .. } => Some(initialization.clone()),
-            Self::ReadOnlyLocal(_, slots, ..) | Self::Local(_, slots, ..) => {
-                Some(slots.iter().copied().map(Position::Local).collect())
-            }
-            Self::Element { binding, words, .. } => Some(
-                words
-                    .iter()
-                    .map(|word| Position::Element(*binding, *word))
-                    .collect(),
-            ),
-            _ => None,
-        }
-    }
+    pub(super) fn data_positions(&self)->Vec<Position>{place::data(self)}
+    pub(super) fn owned_positions(&self)->Option<Vec<Position>>{place::owned(self)}
+    fn has_owned_positions(&self)->bool{place::has_owned(self)}
     pub(super) fn ty(&self) -> &Ty {
         match self {
             Self::Reference { ty, .. }
@@ -114,151 +67,8 @@ impl Place {
             Self::ApplicationElement { ty, .. } => ty,
         }
     }
-    pub(super) fn components_in(&self, owner: &Place) -> Option<Vec<usize>> {
-        if matches!(self, Self::Reference { address:ReferenceAddress::Borrowed { .. }, .. })
-            || matches!(owner, Self::Reference { address:ReferenceAddress::Borrowed { .. }, .. }) {
-            let selected=self.owned_positions()?;
-            let root=owner.owned_positions()?;
-            return selected.iter().map(|position|root.iter().position(|other|other==position)).collect();
-        }
-        match (self, owner) {
-            (
-                Self::Reference {
-                    address: a, words, ..
-                },
-                Self::Reference {
-                    address: b,
-                    words: root,
-                    ..
-                },
-            ) if a == b => words
-                .iter()
-                .map(|word| root.iter().position(|root| root == word))
-                .collect(),
-            (
-                Self::ApplicationElement {
-                    identity: a,
-                    initialization: ai,
-                    index: i,
-                    words,
-                    ..
-                },
-                Self::ApplicationElement {
-                    identity: b,
-                    initialization: bi,
-                    index: j,
-                    words: root,
-                    ..
-                },
-            ) if a == b && (ai.is_some() && ai == bi || i == j) => words
-                .iter()
-                .map(|word| root.iter().position(|root| root == word))
-                .collect(),
-            (
-                Self::ViewElement { source: a, index: i, stride: sa, words, .. },
-                Self::ViewElement { source: b, index: j, stride: sb, words: root, .. },
-            ) if a == b && i == j && sa == sb => words
-                .iter()
-                .map(|word| root.iter().position(|root| root == word))
-                .collect(),
-            (
-                Self::TileElement { tile: a, index: i, words, .. },
-                Self::TileElement { tile: b, index: j, words: root, .. },
-            ) if a == b && i == j => words
-                .iter()
-                .map(|word| root.iter().position(|root| root == word))
-                .collect(),
-            (
-                Self::Indexed {
-                    base: a,
-                    offset: i,
-                    words,
-                    ..
-                },
-                Self::Indexed {
-                    base: b,
-                    offset: j,
-                    words: root,
-                    ..
-                },
-            ) if a == b && i == j => words
-                .iter()
-                .map(|w| root.iter().position(|r| r == w))
-                .collect(),
-            (Self::ReadOnlyLocal(_, slots, ..) | Self::Local(_, slots, ..),
-             Self::ReadOnlyLocal(_, root, ..) | Self::Local(_, root, ..)) => slots
-                .iter()
-                .map(|s| root.iter().position(|r| r == s))
-                .collect(),
-            (
-                Self::Element {
-                    binding,
-                    index,
-                    words,
-                    ..
-                },
-                Self::Element {
-                    binding: root_binding,
-                    index: root_index,
-                    words: root,
-                    ..
-                },
-            ) if binding == root_binding && index == root_index => words
-                .iter()
-                .map(|s| root.iter().position(|r| r == s))
-                .collect(),
-            _ => None,
-        }
-    }
-    pub(super) fn overlaps(&self, other: &Place) -> bool {
-        match (self, other) {
-            (
-                Self::Reference {
-                    ty, address: a, words, ..
-                },
-                Self::Reference {
-                    ty: other_ty, address: b, words: other, ..
-                },
-            ) => a.overlaps(ty, words, b, other_ty, other),
-            (
-                Self::ApplicationElement {
-                    sources: a,
-                    index_range: (low_a, high_a),
-                    words,
-                    ..
-                },
-                Self::ApplicationElement {
-                    sources: b,
-                    index_range: (low_b, high_b),
-                    words: other,
-                    ..
-                },
-            ) => {
-                a.iter().any(|source| b.contains(source))
-                    && high_a >= low_b
-                    && high_b >= low_a
-                    && words.iter().any(|word| other.contains(word))
-            }
-            (Self::Indexed { base, .. }, b) => base.overlaps(b.storage()),
-            (a, Self::Indexed { base, .. }) => a.storage().overlaps(base),
-            (Self::Local(_, a, ..), Self::Local(_, b, ..)) => a.iter().any(|x| b.contains(x)),
-            (
-                Self::Element {
-                    binding: a,
-                    index: i,
-                    words,
-                    ..
-                },
-                Self::Element {
-                    binding: b,
-                    index: j,
-                    words: other,
-                    ..
-                },
-            ) => a == b && i == j && words.iter().any(|x| other.contains(x)),
-            _ => false,
-        }
-    }
+    pub(super) fn components_in(&self,owner:&Place)->Option<Vec<usize>>{place::components(self,owner)}
+    pub(super) fn overlaps(&self,other:&Place)->bool{place::overlaps(self,other)}
 }
 impl Builder<'_> {
     pub(super) fn mutable_place(&mut self, expr: &Expr, access: Access) -> Result<Option<Place>> {
@@ -334,11 +144,11 @@ impl Builder<'_> {
         index: &Value,
         width: usize,
     ) -> Vec<Position> {
-        let positions = match place.owned_positions() {
-            Some(_) => self.positions(place),
-            None => return Vec::new(),
-        };
-        Position::index(positions, ApplicationIndex::of(index), width)
+        if place.has_owned_positions() {
+            Position::index(self.positions(place), ApplicationIndex::of(index), width)
+        } else {
+            Vec::new()
+        }
     }
     pub(super) fn position_initialized_in(
         &self,

@@ -926,10 +926,6 @@ impl ReferenceAddress {
         };
         (source,word)
     }
-    pub(super) fn positions(&self,words:&[u32])->Option<Vec<Position>> {
-        let Self::Borrowed{borrow,layout,..}=self else{return None;};
-        Some(borrowed_positions(borrow,layout,words))
-    }
 }
 impl PartialEq for ReferenceAddress {
     fn eq(&self, other: &Self) -> bool {
