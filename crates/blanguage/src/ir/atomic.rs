@@ -44,23 +44,6 @@ impl AtomicOp {
     pub fn writes(&self) -> bool {
         !matches!(self, Self::Load)
     }
-    pub fn operands(&self) -> Vec<Reg> {
-        match self {
-            Self::Load => Vec::new(),
-            Self::Store(r)
-            | Self::Add(r)
-            | Self::Sub(r)
-            | Self::Exchange(r)
-            | Self::Min(r)
-            | Self::Max(r)
-            | Self::And(r)
-            | Self::Or(r)
-            | Self::Xor(r) => vec![*r],
-            Self::CompareExchange {
-                expected, desired, ..
-            } => vec![*expected, *desired],
-        }
-    }
     #[cfg(not(feature = "compiler"))]
     pub(crate) fn map(&mut self, f: &impl Fn(Reg) -> Reg) {
         match self {

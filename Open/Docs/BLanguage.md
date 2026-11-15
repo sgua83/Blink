@@ -737,7 +737,7 @@ IndexedSource::Pointer的aliases与address、index、stride由原IR直接持有�
 
 普通函数的原地址合同收敛后，check/address.rs::apply_memory将同一分析结果交回原Pointer.aliases，并递归处理原控制结构。未知外部影响按原分析保守覆盖局部声明，不据此推定所有局部已写；查询者须区分已交接的编译结果与构造中的中间IR，不能拿早期空列表作为无别名证明。这里说明当前生产／消费接点，不固定临时分析算法或建立另一份别名权威。
 
-StoreIndexed直接交接source、offset、word、value。Atomic直接交接target、scalar、offset、word、operation、order及可选result；CompareExchange另在operation中保留expected、desired和failure内存序。AtomicOp::Load不写，Store不读，其余读改写可能写，比较交换是否成功须由实际运行判断。原值流按这些访问语义消费别名：原子Load不会触发局部写失效，数据读取缓存另行清除也不能解释成局部写。已有字段和所属ValueCode／Stage／FunctionBody查询足以表达本叶静态访问事实，不增加逐轮缓存维护来源；原IR、共享来源及返回查询值各按真实消费者释放。实际运行地址／值和可编程观察仍属后续运行工具能力，未实现不冒称已交付。
+StoreIndexed直接交接source、offset、word、value。Atomic直接交接target、scalar、offset、word、operation、order及可选result；CompareExchange另在operation中保留expected、desired和failure内存序。原子输入沿Inst::all_operands直接借用实际操作字段、target及offset，不另存拥有的操作数列表。AtomicOp::Load不写，Store不读，其余读改写可能写，比较交换是否成功须由实际运行判断。原值流按这些访问语义消费别名：原子Load不会触发局部写失效，数据读取缓存另行清除也不能解释成局部写。已有字段和所属ValueCode／Stage／FunctionBody查询足以表达本叶静态访问事实，不增加逐轮缓存维护来源；原IR、共享来源及返回查询值各按真实消费者释放。实际运行地址／值和可编程观察仍属后续运行工具能力，未实现不冒称已交付。
 
 #### 原生调用的既有局部访问事实
 
