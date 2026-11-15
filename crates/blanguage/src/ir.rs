@@ -1884,6 +1884,10 @@ impl Stage {
         }
     }
     pub fn storage_words(&self) -> std::collections::BTreeSet<SharedWord> {
+        #[cfg(feature = "compiler")]
+        { dataflow::storage_words(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
         fn visit(stage: &Stage, code: &[Inst], words: &mut std::collections::BTreeSet<SharedWord>) {
             for inst in code {
                 match &(inst).kind {
@@ -1940,6 +1944,7 @@ impl Stage {
         let mut words = std::collections::BTreeSet::new();
         visit(self, &self.code, &mut words);
         words
+        }
     }
     fn requires_subgroup_extended_types(&self) -> bool {
         fn visit(code: &[Inst], registers: &[Scalar]) -> bool {

@@ -9,6 +9,7 @@ use std::{ffi::c_void, marker::PhantomData, mem::size_of, ptr};
 enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
+    Component,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -218,6 +219,10 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             let values = unsafe { &*node.data.cast::<[Reg; 3]>() };
             let mut view = View::tag(0); view.first = Span::slice(values); view
         }
+        Kind::Component => {
+            let (scalar, byte) = unsafe { &*node.data.cast::<(Scalar, u32)>() };
+            let mut view = View::tag(0); view.a = *byte as usize; view.b = scalar.size() as usize; view
+        }
     }
 }
 
@@ -253,16 +258,20 @@ fn instruction(value: &Inst) -> View {
             view.tag = 9; view.a = *offset; view.b = *value; view.c = *word as usize; view.left = Node::of(source, Kind::Indexed);
         }
         InstKind::Atomic(value) => {
-            view.tag = 10; view.first = Span::slice(value.result.as_slice()); view.second = Span::slice(value.offset.as_slice());
+            view.tag = 10; view.a = value.word as usize; view.b = value.scalar.size() as usize;
+            view.first = Span::slice(value.result.as_slice()); view.second = Span::slice(value.offset.as_slice());
             view.left = Node::of(&value.target, Kind::Indexed); view.right = Node::of(&value.op, Kind::AtomicOp);
         }
         InstKind::Append(value) => { view.tag = 11; view.a = value.accepted; view.first = Span::pairs(&value.values); }
         InstKind::TileBarrier => view.tag = 12,
         InstKind::TilePublish(value) => { view.tag = 13; view.first = Span::pairs(&value.values); }
-        InstKind::TileCollective(value) => { view.tag = 14; view.a = value.tile; view.first = Span::pairs(&value.results); }
+        InstKind::TileCollective(value) => {
+            view.tag = 14; view.a = value.tile; view.first = Span::pairs(&value.results);
+            view.second = Span::slice(&value.results);
+        }
         InstKind::TileLength(dst) => { view.tag = 15; view.a = *dst; }
         InstKind::TileLane(dst) => { view.tag = 16; view.a = *dst; }
-        InstKind::TileLoad { dst, tile, index, .. } => { view.tag = 17; view.a = *dst; view.b = *tile; view.c = *index; }
+        InstKind::TileLoad { dst, tile, index, word } => { view.tag = 17; view.a = *dst; view.b = *tile; view.c = *index; view.d = *word as usize; }
         InstKind::Subgroup { dst, value, argument, op } => {
             view.tag = 18; view.a = *dst; view.c = *op as usize; view.first = Span::slice(value.as_slice()); view.second = Span::slice(argument.as_slice());
         }
@@ -386,4 +395,35 @@ pub(super) fn storage_tiles(stage: &Stage) -> BTreeSet<usize> {
 }
 unsafe extern "C" fn emit_tile(context: *mut c_void, tile: usize) {
     unsafe { &mut *context.cast::<BTreeSet<usize>>() }.insert(tile);
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::storage_words"]
+    fn b_storage_words(code: Span, host: StorageHost,
+        context: *mut c_void, emit: unsafe extern "C" fn(*mut c_void, usize, u32));
+}
+#[repr(C)]
+struct StorageHost {
+    ir: Host, stage: *const c_void,
+    components: unsafe extern "C" fn(*const c_void, usize) -> Span,
+    scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32,
+}
+unsafe extern "C" fn tile_components(stage: *const c_void, tile: usize) -> Span {
+    Span::slice(&unsafe { &*stage.cast::<Stage>() }.tiles[tile].ty.components)
+}
+unsafe extern "C" fn register_bytes(stage: *const c_void, register: usize) -> u32 {
+    unsafe { &*stage.cast::<Stage>() }.registers[register].size()
+}
+struct WordOutput<'a> { stage: &'a Stage, words: BTreeSet<SharedWord> }
+pub(super) fn storage_words(stage: &Stage) -> BTreeSet<SharedWord> {
+    let mut output = WordOutput { stage, words: BTreeSet::new() };
+    unsafe {
+        b_storage_words(Span::slice(&stage.code), StorageHost { ir: HOST, stage: ptr::from_ref(stage).cast(),
+            components: tile_components, scalar_bytes: register_bytes }, ptr::from_mut(&mut output).cast(), emit_word);
+    }
+    output.words
+}
+unsafe extern "C" fn emit_word(context: *mut c_void, tile: usize, byte: u32) {
+    let output = unsafe { &mut *context.cast::<WordOutput<'_>>() };
+    output.words.insert(output.stage.shared_word(tile, byte));
 }

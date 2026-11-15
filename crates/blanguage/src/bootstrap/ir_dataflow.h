@@ -139,3 +139,13 @@ extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu
 extern "C" void storage_tiles(Span code,Host host,address context,
  cfn<void,address,usize> emit) on cpu
  requires nonzero(host.inspect) requires nonzero(emit);
+
+struct StorageHost {
+ Host ir; address stage;
+ cfn<Span,address,usize> ensures memory(read) components;
+ cfn<u32,address,usize> ensures memory(read) scalar_bytes;
+};
+extern "C" void storage_words(Span code,StorageHost host,
+ address context,cfn<void,address,usize,u32> emit) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.components)
+ requires nonzero(host.scalar_bytes) requires nonzero(emit);

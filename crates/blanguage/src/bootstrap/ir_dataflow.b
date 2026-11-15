@@ -7,6 +7,7 @@ const u32 N_DATASET_BORROW=4;const u32 N_REFERENCE=5;const u32 N_STORAGE=6;
 const u32 N_INDEXED=7;const u32 N_STRIDE=8;const u32 N_TEXTURE=9;const u32 N_ATOMIC_OP=10;
 const u32 N_MEMORY_ALIAS=11;const u32 N_MEMORY_EFFECT=12;const u32 N_DIVISION=13;
 const u32 N_DIVISOR=14;const u32 N_WORDS3=15;
+const u32 N_COMPONENT=16;
 
 const u32 OP_TEXTURE_BINDING_ADDRESS=0;const u32 OP_TEXTURE_SAMPLE=1;const u32 OP_TEXTURE_SIZE=2;
 const u32 OP_TEXTURE_LEVELS=3;const u32 OP_TEXTURE_ADDRESS=4;const u32 OP_TEXTURE_FORMAT=5;
@@ -709,6 +710,53 @@ extern "C" void storage_tiles(Span code,Host host,address context,
   }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
    storage_tiles(value.first,host,context,emit);
    storage_tiles(value.second,host,context,emit);
+  }
+  index+=1u64;
+ }
+}
+
+void shared_parts(usize tile,u32 byte,u32 bytes,address context,
+ cfn<void,address,usize,u32> emit) on cpu requires nonzero(emit) {
+ u32 part=0;
+ while(part<(bytes+3)/4){emit(context,tile,byte+part*4);part+=1;}
+}
+void shared_components(usize tile,StorageHost host,address context,
+ cfn<void,address,usize,u32> emit) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.components) requires nonzero(emit) {
+ Span components=host.components(host.stage,tile);usize index=0u64;
+ while(index<components.count) {
+  View component=host.ir.inspect(node_at(components,index,N_COMPONENT));
+  shared_parts(tile,u32(component.a),u32(component.b),context,emit);
+  index+=1u64;
+ }
+}
+extern "C" void storage_words(Span code,StorageHost host,address context,
+ cfn<void,address,usize,u32> emit) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.components)
+ requires nonzero(host.scalar_bytes) requires nonzero(emit) {
+ usize index=0u64;
+ while(index<code.count) {
+  View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
+  if(value.tag==OP_ATOMIC || value.tag==OP_LOAD_INDEXED) {
+   View source=host.ir.inspect(value.left);
+   if(source.tag==3) {
+    if(value.tag==OP_ATOMIC && value.second.count==0u64) {
+     shared_parts(source.a,u32(value.a),u32(value.b),context,emit);
+    }else{shared_components(source.a,host,context,emit);}
+   }
+  }else if(value.tag==OP_TILE_LOAD) {
+   shared_parts(value.b,u32(value.d),host.scalar_bytes(host.stage,value.a),context,emit);
+  }else if(value.tag==OP_TILE_COLLECTIVE) {
+   usize result=0u64;
+   while(result<value.first.count) {
+    // Read only the original pair's u32 byte offset, never its Rust padding.
+    u32 byte=unsafe_position<u32>(unsafe_address(address_bits(value.second.data)+u64(result)*u64(value.second.stride)));
+    shared_parts(value.a,byte,host.scalar_bytes(host.stage,word_at(value.first,result)),context,emit);
+    result+=1u64;
+   }
+  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   storage_words(value.first,host,context,emit);
+   storage_words(value.second,host,context,emit);
   }
   index+=1u64;
  }
