@@ -245,6 +245,24 @@ pub(super) fn inputs<'a>(
     let definition=definition.into();
     collect_inputs(builder,definition,env,&input_names(definition))
 }
+fn capture_current_inputs(
+    builder: &mut Builder<'_>,
+    definition: Contract<'_>,
+    names: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Value>> {
+    let env = builder.env.iter()
+        .filter(|(name, _)| names.contains(*name))
+        .map(|(name, binding)| (name.clone(), binding.clone()))
+        .collect();
+    collect_inputs(builder, definition, &env, names)
+}
+pub(super) fn current_inputs<'a>(
+    builder: &mut Builder<'_>,
+    definition: impl Into<Contract<'a>>,
+) -> Result<BTreeMap<String, Value>> {
+    let definition = definition.into();
+    capture_current_inputs(builder, definition, &input_names(definition))
+}
 pub(super) fn entry_inputs(
     builder: &mut Builder<'_>,
     instance: &crate::generics::Instance,
@@ -260,13 +278,7 @@ pub(super) fn entry_inputs(
             value.value.proof = bounds::Proof::capture(&value.value);
         }
     }
-    let env = builder
-        .env
-        .iter()
-        .filter(|(name, _)| names.contains(*name))
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect();
-    collect_inputs(builder,instance.into(),&env,&names)
+    capture_current_inputs(builder, instance.into(), &names)
 }
 
 pub(super) fn expression(

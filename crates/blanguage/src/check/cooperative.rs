@@ -663,7 +663,7 @@ if form==DeclaredArgumentForm::Acceleration {
         };
         let caller_initialization = local_initialization.then(|| std::mem::take(&mut self.initialized));
         self.materialize_array_bindings();
-        let output_inputs=outputs::inputs(self,&instance,&self.env.clone())?;
+        let output_inputs=outputs::current_inputs(self,&instance)?;
         // With no fact or resource inputs/outputs, private range paths end at this call.
         let local_bounds = self.env.values().all(|binding| matches!(binding,
             Binding::Value(value) if !value.ty.contains_borrows() && !value.ty.owns_resources()
