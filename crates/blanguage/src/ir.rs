@@ -376,6 +376,10 @@ impl Ty {
 
     /// Independently present owners within a task's actual output position.
     pub fn task_output_owners(&self) -> Vec<(u32, &Self)> {
+        #[cfg(feature = "compiler")]
+        { properties::task_output_owners(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
         fn collect<'a>(ty: &'a Ty, offset: u32, owners: &mut Vec<(u32, &'a Ty)>) {
             if !ty.owns_resources() {
                 return;
@@ -392,6 +396,7 @@ impl Ty {
         let mut owners = Vec::new();
         collect(self, 0, &mut owners);
         owners
+        }
     }
 
     pub fn owns_resources(&self) -> bool {

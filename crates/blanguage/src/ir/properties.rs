@@ -21,7 +21,7 @@ struct Host {
 #[repr(C)]
 struct Part { value: *const Ty, offset: u32 }
 #[repr(C)]
-struct BorrowHost {
+struct FieldHost {
     types: Host,
     part: unsafe extern "C" fn(*const Ty, usize) -> Part,
 }
@@ -32,7 +32,10 @@ unsafe extern "C" {
     fn b_zero_valid(value: *const Ty, host: Host,
         discriminant: unsafe extern "C" fn(*const Ty, usize) -> u32) -> u32;
     #[link_name = "bootstrap.type_layout::borrow_fields"]
-    fn b_borrow_fields(value: *const Ty, base: u32, host: BorrowHost, context: *mut c_void,
+    fn b_borrow_fields(value: *const Ty, base: u32, host: FieldHost, context: *mut c_void,
+        emit: unsafe extern "C" fn(*mut c_void, u32, *const Ty));
+    #[link_name = "bootstrap.type_layout::task_output_owners"]
+    fn b_task_output_owners(value: *const Ty, base: u32, host: FieldHost, context: *mut c_void,
         emit: unsafe extern "C" fn(*mut c_void, u32, *const Ty));
 }
 
@@ -64,7 +67,15 @@ unsafe extern "C" fn child(value: *const Ty, kind: Child, index: usize) -> *cons
 pub(super) fn borrows(value: &Ty) -> Vec<(u32, &Ty)> {
     let mut output: Vec<(u32, &Ty)> = Vec::new();
     unsafe {
-        b_borrow_fields(value, 0, BorrowHost { types: Host { inspect, child }, part },
+        b_borrow_fields(value, 0, FieldHost { types: Host { inspect, child }, part },
+            ptr::from_mut(&mut output).cast(), emit);
+    }
+    output
+}
+pub(super) fn task_output_owners(value: &Ty) -> Vec<(u32, &Ty)> {
+    let mut output: Vec<(u32, &Ty)> = Vec::new();
+    unsafe {
+        b_task_output_owners(value, 0, FieldHost { types: Host { inspect, child }, part },
             ptr::from_mut(&mut output).cast(), emit);
     }
     output

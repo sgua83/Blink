@@ -48,11 +48,16 @@ extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child);
 
 struct TypePart { address value; u32 offset; };
-struct BorrowHost {
+struct FieldHost {
     TypeHost types;
     cfn<TypePart,address,usize> ensures memory(read) part;
 };
-extern "C" void borrow_fields(address value, u32 base, BorrowHost host, address context,
+extern "C" void borrow_fields(address value, u32 base, FieldHost host, address context,
+    cfn<void,address,u32,address> emit) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.part) requires nonzero(emit);
+
+extern "C" void task_output_owners(address value, u32 base, FieldHost host, address context,
     cfn<void,address,u32,address> emit) on cpu
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.part) requires nonzero(emit);
