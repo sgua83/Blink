@@ -75,67 +75,8 @@ pub struct ReductionKernel {
 }
 #[cfg(feature = "compiler")]
 impl CustomReduction {
-    /// 两后端在编译期使用同一寄存器／局部值重定位；源 Program 保持不可变。
+    /// The original CPU and SPIR-V consumers share this B preparation.
     pub fn kernel(&self, stage: &Stage, project: bool, identity: bool) -> ReductionKernel {
-        let mut stage = stage.clone();
-        stage.registers = if identity {
-            self.identity.registers.clone()
-        } else {
-            Vec::new()
-        };
-        stage.locals = if identity {
-            self.identity.locals.clone()
-        } else {
-            BTreeMap::new()
-        };
-        stage.code = if identity {
-            self.identity.code.clone()
-        } else {
-            Vec::new()
-        };
-        let initialize_end = stage.code.len();
-        let projection = self.project.as_ref().filter(|_| project).map(|value| {
-            let reg = stage.registers.len();
-            let slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
-            let mut code = value.code.clone();
-            crate::optimize::map(&mut code, super::rewrite::Remap::Offset { registers: reg, locals: slot });
-            stage.code.extend(code);
-            stage.registers.extend(&value.registers);
-            stage.locals.extend(value.locals.iter().map(|(end, ty)| (end + slot, ty.clone())));
-            (
-                value.inputs.iter().map(|r| r + reg).collect(),
-                value.outputs.iter().map(|r| r + reg).collect(),
-            )
-        });
-        let project_end = stage.code.len();
-        let reg = stage.registers.len();
-        let slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
-        let mut combine = self.combine.code.clone();
-        crate::optimize::map(&mut combine, super::rewrite::Remap::Offset { registers: reg, locals: slot });
-        stage.code.extend(combine);
-        stage.registers.extend(&self.combine.registers);
-        stage.locals.extend(self.combine.locals.iter().map(|(end, ty)| (end + slot, ty.clone())));
-        let k = self.ty.components.len();
-        let right: Vec<_> = self.combine.inputs[k..].iter().map(|r| r + reg).collect();
-        let (source, projected) = projection.unwrap_or_else(|| (right.clone(), right.clone()));
-        let mut kernel = ReductionKernel {
-            stage,
-            invariant_end: 0,
-            invariants: std::collections::BTreeSet::new(),
-            initialize_end,
-            project_end,
-            source,
-            projected,
-            initial: if identity {
-                self.identity.outputs.clone()
-            } else {
-                Vec::new()
-            },
-            left: self.combine.inputs[..k].iter().map(|r| r + reg).collect(),
-            right,
-            result: self.combine.outputs.iter().map(|r| r + reg).collect(),
-        };
-        crate::optimize::prepare_reduction(&mut kernel);
-        kernel
+        crate::optimize::reduction_kernel(self, stage, project, identity)
     }
 }

@@ -12,9 +12,6 @@ struct FusionBlock {
 // The returned index starts the sorted union in that same output buffer.
 extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right) on cpu;
 
-// Uniformity belongs to this reduction kernel. The spans borrow its original register indices.
-extern "C" bool extract_uniform(BindingSpan operands, BindingSpan results, address uniform) on cpu;
-
 struct TilePlacement {
     i64 begin;
     i64 end;

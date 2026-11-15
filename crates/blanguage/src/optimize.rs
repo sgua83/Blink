@@ -7,7 +7,7 @@ mod value_flow;
 mod eliminate;
 mod compaction;
 mod pipeline;
-pub(crate) use invariant::prepare_reduction;
+pub(crate) use invariant::kernel as reduction_kernel;
 
 #[repr(C)]
 struct BindingSpan {

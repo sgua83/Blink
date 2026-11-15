@@ -9,7 +9,7 @@ use std::{ffi::c_void, marker::PhantomData, mem::size_of, ptr};
 enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
-    Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar, Tile,
+    Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar, Tile, Registers,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -263,12 +263,17 @@ unsafe extern "C" fn inspect(node: Node) -> View {
         Kind::ValueCode => {
             let value = unsafe { &*node.data.cast::<ValueCode>() };
             let mut view = View::tag(0); view.second = Span::slice(&value.registers);
-            view.c = ptr::from_ref(&value.locals).addr(); view
+            view.c = ptr::from_ref(&value.locals).addr();
+            view.left = Node::of(&value.inputs, Kind::Registers); view.right = Node::of(&value.outputs, Kind::Registers); view
         }
         Kind::CustomReduction => {
             let value = unsafe { &*node.data.cast::<CustomReduction>() };
             let mut view = View::tag(0); view.left = Node::of(&value.identity, Kind::ValueCode);
-            view.right = Node::of(&value.combine, Kind::ValueCode); view.first = Span::slice(value.project.as_slice()); view
+            view.right = Node::of(&value.combine, Kind::ValueCode); view.first = Span::slice(value.project.as_slice()); view.a = value.ty.components.len(); view
+        }
+        Kind::Registers => {
+            let values = unsafe { &*node.data.cast::<Vec<Reg>>() };
+            let mut view = View::tag(0); view.first = Span::slice(values); view
         }
         Kind::Scalar => View::tag(crate::builtin_types::ScalarCode::from(unsafe { *node.data.cast::<Scalar>() }) as u32),
         Kind::Tile => {

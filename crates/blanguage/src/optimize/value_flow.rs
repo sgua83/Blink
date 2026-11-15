@@ -95,30 +95,44 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
     run_code(code, registers, &mut []);
 }
-pub(super) fn with_prelude(
-    prelude: &mut Vec<Inst>, bodies: &mut [&mut Vec<Inst>], registers: &[Scalar],
-    inputs: &[(ReductionInputRole, &[Reg])],
-) -> (impl Fn(Reg) -> Reg + use<>, Vec<ReductionInputReadForward>) {
-    let mut entry = host::Values::default();
-    let mut reuses = Reuses::new();
-    host::run(prelude, &mut entry, registers, &mut reuses);
-    let mut aliases = host::aliases_only(&entry);
-    for body in bodies.iter_mut() {
-        let mut values = entry.clone();
-        host::run(body, &mut values, registers, &mut reuses);
-        host::extend_aliases(&mut aliases, values);
+// Only the original entry snapshot, merged SSA aliases and pending origins for
+// this one reduction. B selects the independent bodies and the final transfer.
+#[derive(Default)]
+pub(super) struct ReductionFlow {
+    entry: host::Values,
+    aliases: host::Values,
+    reuses: Reuses,
+    forwarded: Vec<ReductionInputReadForward>,
+}
+impl ReductionFlow {
+    pub(super) fn entry(&mut self, code: &mut Vec<Inst>, registers: &[Scalar]) {
+        host::run(code, &mut self.entry, registers, &mut self.reuses);
     }
-    retain_reuses(prelude, &mut reuses);
-    for body in bodies { retain_reuses(body, &mut reuses); }
-    let mut forwarded = Vec::new();
-    for (role, registers) in inputs {
-        for (component_index, reg) in registers.iter().enumerate() {
-            let reads = input_reads(*reg, &mut reuses);
-            if !reads.is_empty() { forwarded.push(ReductionInputReadForward { role: *role, component_index, reads }); }
+    pub(super) fn seed(&mut self) { self.aliases = host::aliases_only(&self.entry); }
+    pub(super) fn body(&mut self, code: &mut Vec<Inst>, registers: &[Scalar], take: bool) {
+        let mut values = if take { std::mem::take(&mut self.entry) } else { self.entry.clone() };
+        host::run(code, &mut values, registers, &mut self.reuses);
+        host::extend_aliases(&mut self.aliases, values);
+    }
+    pub(super) fn retain(&mut self, code: &mut [Inst]) { retain_reuses(code, &mut self.reuses); }
+    pub(super) fn forward(&mut self, role: ReductionInputRole, component_index: usize, reg: Reg) {
+        let reads = input_reads(reg, &mut self.reuses);
+        if !reads.is_empty() { self.forwarded.push(ReductionInputReadForward { role, component_index, reads }); }
+    }
+    pub(super) fn origin(&mut self, target: &mut Option<std::sync::Arc<GeneratedOrigin>>) {
+        if !self.forwarded.is_empty() {
+            let retained = target.take();
+            *target = Some(std::sync::Arc::new(GeneratedOrigin {
+                reason: GenerationReason::LocalReadForward,
+                trigger: Some(GenerationAnchor::ReductionInputForward {
+                    retained, inputs: std::mem::take(&mut self.forwarded),
+                }),
+            }));
         }
     }
-    (move |reg| host::root(&aliases, reg), forwarded)
+    pub(super) fn root(&self, reg: Reg) -> Reg { host::root(&self.aliases, reg) }
 }
+
 fn input_reads(reg: Reg, reuses: &mut Reuses) -> Vec<OperationOrigin> {
     reuses.remove(&reg).into_iter().flatten().filter_map(|source| match source {
         RetainedUse::LocalRead(origin) => Some(origin),

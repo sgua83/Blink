@@ -395,6 +395,102 @@ extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
 }
 
 
+address reduction_byte(address uniform,usize reg) on cpu {return unsafe_address(address_bits(uniform)+u64(reg));}
+extern "C" u32 reduction_uniform_operand(address uniform,usize reg) on cpu {
+ return unsafe_position<u8>(reduction_byte(uniform,reg))!=u8(0)?1:0;
+}
+extern "C" ReductionExtract reduction_extract(Node source,address uniform,Host ir) on cpu requires nonzero(ir.inspect) {
+ View value=ir.inspect(source);u32 operation;usize inputs=0u64;
+ if(value.tag==OP_CONSTANT){operation=0;}
+ else if(value.tag==OP_UNIFORM){operation=1;}
+ else if(value.tag==OP_BUFFER_STRIDE){operation=2;}
+ else if(value.tag==OP_UNARY){operation=3;inputs=1u64;}
+ else if(value.tag==OP_BINARY){operation=4;inputs=2u64;}
+ else if(value.tag==OP_CAST){operation=5;inputs=1u64;}
+ else if(value.tag==OP_MATH){operation=6;inputs=value.first.count;}
+ else if(value.tag==OP_SELECT_VALUE){operation=7;inputs=3u64;}
+ else if(value.tag==OP_INTEGER_DIVIDE&&ir.inspect(value.left).tag==0){operation=8;inputs=1u64;}
+ else{return ReductionExtract(0,0,0u64);}
+ if(operands(source,ir,uniform,c_function(reduction_uniform_operand))==0){return ReductionExtract(0,0,0u64);}
+ Results output=results(source,ir);Word next=next_result(output);
+ while(next.present!=0){unsafe_position<u8>(reduction_byte(uniform,next.value))=u8(1);next=next_result(output);}
+ return ReductionExtract(1,operation,inputs);
+}
+void reduction_copy_roots(Span values,usize offset,usize root,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.roots) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.entry) requires nonzero(host.seed) requires nonzero(host.body) requires nonzero(host.retain) requires nonzero(host.forward) requires nonzero(host.origin) requires nonzero(host.alias) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish) {
+ usize index=0u64;
+ while(index<values.count){host.push_root(host.context,root,word_at(values,index)+offset);index+=1u64;}
+}
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.remap) requires nonzero(host.push_root) requires nonzero(host.roots) requires nonzero(host.part) requires nonzero(host.uniform) requires nonzero(host.extract) requires nonzero(host.release_uniform) requires nonzero(host.entry) requires nonzero(host.seed) requires nonzero(host.body) requires nonzero(host.retain) requires nonzero(host.forward) requires nonzero(host.origin) requires nonzero(host.alias) requires nonzero(host.invariant) requires nonzero(host.boundaries) requires nonzero(host.append) requires nonzero(host.finish) {
+ View source=host.ir.inspect(input.source);
+ if(input.identity!=0){
+  host.clone(host.context,1u64,source.left,0u64);
+  View identity=host.ir.inspect(source.left);
+  reduction_copy_roots(host.ir.inspect(identity.right).first,0u64,2u64,host);
+ }
+ bool project=input.project!=0&&source.first.count!=0u64;
+ if(project){
+  Node value=node_at(source.first,0u64,22);ReductionHeader base=host.header(host.context);
+  host.clone(host.context,2u64,value,base.locals);
+  host.remap(host.context,2u64,base.registers,base.locals);
+  View code=host.ir.inspect(value);
+  reduction_copy_roots(host.ir.inspect(code.left).first,base.registers,0u64,host);
+  reduction_copy_roots(host.ir.inspect(code.right).first,base.registers,1u64,host);
+ }
+ ReductionHeader base=host.header(host.context);
+ host.clone(host.context,3u64,source.right,base.locals);
+ host.remap(host.context,3u64,base.registers,base.locals);
+ View combine=host.ir.inspect(source.right);Span inputs=host.ir.inspect(combine.left).first;
+ usize index=0u64;
+ while(index<inputs.count){
+  usize reg=word_at(inputs,index)+base.registers;
+  if(index<source.a){host.push_root(host.context,3u64,reg);}
+  else{
+   host.push_root(host.context,4u64,reg);
+   if(!project){host.push_root(host.context,0u64,reg);host.push_root(host.context,1u64,reg);}
+  }
+  index+=1u64;
+ }
+ reduction_copy_roots(host.ir.inspect(combine.right).first,base.registers,5u64,host);
+ address uniform=host.uniform(host.context,host.header(host.context).registers);
+ usize partition=1u64;
+ while(partition<4u64){host.extract(host.context,partition,uniform);partition+=1u64;}
+ host.release_uniform(host.context);
+ host.entry(host.context);host.seed(host.context);
+ partition=1u64;
+ while(partition<4u64){host.body(host.context,partition,partition==3u64?1:0);partition+=1u64;}
+ partition=0u64;
+ while(partition<4u64){host.retain(host.context,partition);partition+=1u64;}
+ // Origin facts consume the same original roots before the binding rewrite.
+ index=0u64;
+ while(index<3u64){
+  usize root=index==0u64?3u64:(index==1u64?4u64:0u64);Span values=host.roots(host.context,root);usize component=0u64;
+  while(component<values.count){host.forward(host.context,root,component,word_at(values,component));component+=1u64;}
+  index+=1u64;
+ }
+ host.origin(host.context);
+ index=0u64;
+ while(index<6u64){
+  Span values=host.roots(host.context,index);usize component=0u64;
+  while(component<values.count){
+   address at=unsafe_address(address_bits(values.data)+u64(component)*u64(values.stride));
+   usize rebound=host.alias(host.context,unsafe_position<usize>(at));unsafe_position<usize>(at)=rebound;component+=1u64;
+  }
+  index+=1u64;
+ }
+ Span entry=host.part(host.context,0u64);index=0u64;
+ while(index<entry.count){
+  Results result=results(node_at(entry,index,N_INSTRUCTION),host.ir);Word next=next_result(result);
+  while(next.present!=0){host.invariant(host.context,next.value);next=next_result(result);}
+  index+=1u64;
+ }
+ usize invariant_end=entry.count;usize initialize_end=invariant_end+host.part(host.context,1u64).count;
+ usize project_end=initialize_end+host.part(host.context,2u64).count;
+ host.boundaries(host.context,invariant_end,initialize_end,project_end);
+ partition=1u64;while(partition<4u64){host.append(host.context,partition);partition+=1u64;}
+ host.finish(host.context);
+}
+
+
 address selection_slot(address slots,usize index) on cpu {
  return unsafe_address(address_bits(slots)+u64(index)*size_of<SelectionSlot>());
 }
