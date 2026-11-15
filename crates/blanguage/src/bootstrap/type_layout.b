@@ -41,3 +41,30 @@ extern "C" VariantLayout tagged_variant(u32 payload_size, u32 payload_alignment)
     }
     return VariantLayout(u64(alignment) + natural_size(payload_size, alignment), alignment);
 }
+
+extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child) {
+    TypeNode node=host.inspect(value);
+    bool owner=node.task!=0 || node.cleanup!=0;
+    if ((property==Property::Dataset && node.dataset!=0)
+        || (property==Property::Resources && (owner || node.dataset!=0))
+        || (property==Property::Cleanup && owner)
+        || (property==Property::Arrays && node.array!=0)
+        || (property==Property::Views && node.view!=0)
+        || (property==Property::Borrows && (node.task!=0 || node.address!=0 || node.view!=0))) {
+        return 1;
+    }
+    usize i=0u64;
+    while (i<node.variants) {
+        if (contains(host.child(value,Child::Variant,i),property,host)!=0) { return 1; }
+        i+=1u64;
+    }
+    if (node.array!=0 && node.count!=0
+        && contains(host.child(value,Child::Array,0u64),property,host)!=0) { return 1; }
+    i=0u64;
+    while (i<node.fields) {
+        if (contains(host.child(value,Child::Field,i),property,host)!=0) { return 1; }
+        i+=1u64;
+    }
+    return 0;
+}

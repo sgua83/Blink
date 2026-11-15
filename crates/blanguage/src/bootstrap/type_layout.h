@@ -33,3 +33,16 @@ struct VariantLayout {
 };
 
 extern "C" VariantLayout tagged_variant(u32 payload_size, u32 payload_alignment) on cpu;
+
+enum Property:u32 { Dataset=0; Resources=1; Cleanup=2; Arrays=3; Views=4; Borrows=5; };
+enum Child:u32 { Variant=0; Array=1; Field=2; };
+struct TypeNode {
+    u32 task; u32 cleanup; u32 dataset; u32 view; u32 array; u32 address;
+    usize variants; usize fields; u32 count;
+};
+struct TypeHost {
+    cfn<TypeNode,address> ensures memory(read) inspect;
+    cfn<address,address,Child,usize> ensures memory(read) child;
+};
+extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child);

@@ -9,6 +9,8 @@ pub use origin::{SourceOrigin, SourceDeclaration, DeclarationRepresentation, Sou
 #[cfg(feature = "compiler")]
 pub(crate) use origin::SourceContext;
 mod layout;
+#[cfg(feature = "compiler")]
+mod properties;
 pub use layout::interface_layout_json;
 pub(crate) use layout::write_type_json;
 mod external;
@@ -358,10 +360,15 @@ impl Ty {
     pub const TASK_OWNED_REFERENCE_PREFIX: &'static str = "owned-reference:";
 
     pub fn contains_dataset(&self) -> bool {
-        self.dataset.is_some()
+        #[cfg(feature = "compiler")]
+        { properties::contains(self, properties::Query::Dataset) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            self.dataset.is_some()
             || self.variants.iter().any(|v| v.ty.contains_dataset())
             || self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.contains_dataset())
             || self.fields.iter().any(|(_, _, ty)| ty.contains_dataset())
+        }
     }
 
     /// Independently present owners within a task's actual output position.
@@ -385,13 +392,23 @@ impl Ty {
     }
 
     pub fn owns_resources(&self) -> bool {
-        self.task_result().is_some() || self.cleanup.is_some() || self.dataset.is_some()
+        #[cfg(feature = "compiler")]
+        { properties::contains(self, properties::Query::Resources) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            self.task_result().is_some() || self.cleanup.is_some() || self.dataset.is_some()
             || self.variants.iter().any(|v| v.ty.owns_resources())
             || self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.owns_resources())
             || self.fields.iter().any(|(_, _, ty)| ty.owns_resources())
+        }
     }
     pub(crate) fn contains_cleanup(&self)->bool {
-        self.task_result().is_some()||self.cleanup.is_some()||self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.contains_cleanup())||self.fields.iter().any(|(_,_,ty)|ty.contains_cleanup())||self.variants.iter().any(|variant|variant.ty.contains_cleanup())
+        #[cfg(feature = "compiler")]
+        { properties::contains(self, properties::Query::Cleanup) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            self.task_result().is_some()||self.cleanup.is_some()||self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.contains_cleanup())||self.fields.iter().any(|(_,_,ty)|ty.contains_cleanup())||self.variants.iter().any(|variant|variant.ty.contains_cleanup())
+        }
     }
     pub(crate) fn aggregate_len(&self) -> usize {
         if self.array.is_some() {
@@ -701,22 +718,37 @@ impl Ty {
             && !self.components.is_empty() && self.components.iter().all(|x| x.0 != Scalar::Bool)
     }
     pub fn contains_arrays(&self) -> bool {
-        self.variants.iter().any(|v| v.ty.contains_arrays())
+        #[cfg(feature = "compiler")]
+        { properties::contains(self, properties::Query::Arrays) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            self.variants.iter().any(|v| v.ty.contains_arrays())
             || self.array.is_some()
             || self.fields.iter().any(|(_, _, t)| t.contains_arrays())
+        }
     }
     pub fn contains_views(&self) -> bool {
-        self.variants.iter().any(|v| v.ty.contains_views())
+        #[cfg(feature = "compiler")]
+        { properties::contains(self, properties::Query::Views) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            self.variants.iter().any(|v| v.ty.contains_views())
             || self.view.is_some()
             || self.array.as_ref().is_some_and(|t| self.values[0] != 0 && t.contains_views())
             || self.fields.iter().any(|(_, _, t)| t.contains_views())
+        }
     }
     pub fn contains_borrows(&self) -> bool {
-        self.task_result().is_some() || self.is_address()
+        #[cfg(feature = "compiler")]
+        { properties::contains(self, properties::Query::Borrows) }
+        #[cfg(not(feature = "compiler"))]
+        {
+            self.task_result().is_some() || self.is_address()
             || self.view.is_some()
             || self.variants.iter().any(|v| v.ty.contains_borrows())
             || self.array.as_ref().is_some_and(|t| self.values[0] != 0 && t.contains_borrows())
             || self.fields.iter().any(|(_, _, t)| t.contains_borrows())
+        }
     }
     /// Borrow-bearing values in this layout, without following their pointees.
     pub(crate) fn borrow_fields(&self) -> Vec<(u32, &Ty)> {
