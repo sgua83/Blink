@@ -114,9 +114,7 @@ impl Builder<'_> {
             if let InputSlot::Data{name,path,..}=slot {
                 let data=data_at_mut(self.env.get_mut(name).unwrap(),path).unwrap();
                 let input=LoopInput{level:scope,index};
-                let before=data_at(&self.loop_contexts[level].entry.env[name],path).unwrap();
-                if !data.ty.zero_valid() && (data.root.proof.known_identity(0)!=before.root.proof.known_identity(0)
-                    || data.root.proof.view_borrow(0)!=before.root.proof.view_borrow(0)) {
+                if !data.ty.zero_valid() {
                     data.initialization=Some(Position::ApplicationInput(input,None,0));
                 }
                 data.root.proof=data.root.proof.clone().with_view_borrow(0,Borrow{inputs:view::Edges::from([input]),..Borrow::default()});

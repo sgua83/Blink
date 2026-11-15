@@ -1059,12 +1059,8 @@ fn resolved_application_position(input:LoopInput,index:Option<ownership::Applica
     }
     for producer in definition.states.iter() {
         let mut bindings=invariant.clone();bindings.extend(definition.control.bindings(producer));
-        let mut source_path=producer.path.clone();
-        if let Some(test)=&definition.control.test {
-            source_path=bounds::Clause::both(&source_path, &test.projected_case(true, &bindings));
-        }
         let read_path=path.project_guard(&bindings);
-        source_path=bounds::Clause::both(&source_path,&read_path);
+        let source_path=bounds::Clause::both(&producer.path,&read_path);
         if !source_path.possible(){continue;}
         let Some(data)=producer.env.get(&resource.name).and_then(|binding|view::data_at(binding,&resource.path))else{continue;};
         let Some(scope)=&data.initialization else{continue;};
