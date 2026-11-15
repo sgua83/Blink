@@ -487,11 +487,8 @@ impl Ty {
         // The four-byte tag occupies the first aligned block.
         self.align
     }
-    pub(crate) fn zero_valid(&self)->bool {
-        if self.task_result().is_some() || self.cleanup.is_some() || self.dataset.is_some() || self.view.is_some(){return false;}
-        if self.has_variants(){return self.variants.iter().any(|variant|variant.discriminant==0 && variant.ty.zero_valid());}
-        self.array.as_deref().is_none_or(|ty| self.values[0] == 0 || ty.zero_valid()) && self.fields.iter().all(|(_,_,ty)|ty.zero_valid())
-    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn zero_valid(&self)->bool { properties::zero_valid(self) }
     pub fn unit() -> Self {
         Self {
             name: "void".into(),

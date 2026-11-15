@@ -28,6 +28,9 @@ struct BorrowHost {
 unsafe extern "C" {
     #[link_name = "bootstrap.type_layout::contains"]
     fn b_contains(value: *const Ty, query: Query, host: Host) -> u32;
+    #[link_name = "bootstrap.type_layout::zero_valid"]
+    fn b_zero_valid(value: *const Ty, host: Host,
+        discriminant: unsafe extern "C" fn(*const Ty, usize) -> u32) -> u32;
     #[link_name = "bootstrap.type_layout::borrow_fields"]
     fn b_borrow_fields(value: *const Ty, base: u32, host: BorrowHost, context: *mut c_void,
         emit: unsafe extern "C" fn(*mut c_void, u32, *const Ty));
@@ -75,4 +78,11 @@ unsafe extern "C" fn part(value: *const Ty, index: usize) -> Part {
 unsafe extern "C" fn emit(context: *mut c_void, offset: u32, value: *const Ty) {
     let output = unsafe { &mut *context.cast::<Vec<(u32, &Ty)>>() };
     output.push((offset, unsafe { &*value }));
+}
+
+pub(super) fn zero_valid(value: &Ty) -> bool {
+    unsafe { b_zero_valid(value, Host { inspect, child }, discriminant) != 0 }
+}
+unsafe extern "C" fn discriminant(value: *const Ty, index: usize) -> u32 {
+    unsafe { &*value }.variants[index].discriminant
 }

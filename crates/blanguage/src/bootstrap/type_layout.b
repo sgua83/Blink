@@ -99,3 +99,27 @@ extern "C" void borrow_fields(address value, u32 base, BorrowHost host, address 
         i+=1u64;
     }
 }
+
+extern "C" u32 zero_valid(address value, TypeHost host,
+    cfn<u32,address,usize> ensures memory(read) discriminant) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(discriminant) {
+    TypeNode node=host.inspect(value);
+    if (node.task!=0 || node.cleanup!=0 || node.dataset!=0 || node.view!=0) { return 0; }
+    usize i=0u64;
+    if (node.variants!=0u64) {
+        while (i<node.variants) {
+            if (discriminant(value,i)==0 && zero_valid(host.child(value,Child::Variant,i),host,discriminant)!=0) {
+                return 1;
+            }
+            i+=1u64;
+        }
+        return 0;
+    }
+    if (node.array!=0 && node.count!=0
+        && zero_valid(host.child(value,Child::Array,0u64),host,discriminant)==0) { return 0; }
+    while (i<node.fields) {
+        if (zero_valid(host.child(value,Child::Field,i),host,discriminant)==0) { return 0; }
+        i+=1u64;
+    }
+    return 1;
+}

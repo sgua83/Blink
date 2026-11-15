@@ -56,3 +56,7 @@ extern "C" void borrow_fields(address value, u32 base, BorrowHost host, address 
     cfn<void,address,u32,address> emit) on cpu
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.part) requires nonzero(emit);
+
+extern "C" u32 zero_valid(address value, TypeHost host,
+    cfn<u32,address,usize> ensures memory(read) discriminant) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(discriminant);
