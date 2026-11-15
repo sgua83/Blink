@@ -67,3 +67,7 @@ extern "C" f64 float_multiply_up(f64 left,f64 right) on cpu;
 extern "C" f64 float_divide_up(f64 left,f64 right) on cpu;
 extern "C" f64 float_integer_bound(u64 value,u32 lower) on cpu;
 extern "C" f64 float_conversion_error(u64 upper) on cpu;
+
+enum IntegerBitwise : u32 { And = 0; Or = 1; Xor = 2; };
+// Inputs are the original integer Scalar width/bias and ordered intervals.
+extern "C" BitRange integer_bitwise_range(IntegerBitwise operation,u32 width,u64 order_bias,BitRange left,BitRange right) on cpu;

@@ -489,3 +489,34 @@ extern "C" FloatRange float_negate(u32 width,BitRange range) on cpu {
 }
 extern "C" f64 float_integer_bound(u64 value,u32 lower) on cpu {return fp_integer_endpoint(ScalarEncoding(ScalarKind::Unsigned,64),64,value,lower);}
 extern "C" f64 float_conversion_error(u64 upper) on cpu {return upper<=16777216u64 ? 0.0f64 : fp_power(-23);}
+
+struct BitPrefix { bool present; u64 lower; u64 upper; };
+extern "C" BitRange integer_bitwise_range(IntegerBitwise operation,u32 width,u64 order_bias,BitRange left,BitRange right) on cpu {
+ array<BitPrefix,16> prefixes=array<BitPrefix,16>(BitPrefix(false,0u64,0u64));
+ prefixes[0]=BitPrefix(true,0u64,0u64);u32 bit=width;
+ while(bit!=0) {
+  bit-=1;u32 al=u32((left.lower>>u64(bit))&1u64);u32 ah=u32((left.upper>>u64(bit))&1u64);
+  u32 bl=u32((right.lower>>u64(bit))&1u64);u32 bh=u32((right.upper>>u64(bit))&1u64);
+  u64 sign=(order_bias>>u64(bit))&1u64;
+  array<BitPrefix,16> next=array<BitPrefix,16>(BitPrefix(false,0u64,0u64));
+  for(loose in 0..16) {
+   BitPrefix prefix=prefixes[loose];if(!prefix.present){continue;}
+   for(a in 0..2) {for(b in 0..2) {
+    if(((loose&1)==0 && a<al) || ((loose&2)==0 && a>ah)
+      || ((loose&4)==0 && b<bl) || ((loose&8)==0 && b>bh)){continue;}
+    u32 state=loose|u32(a>al)|(u32(a<ah)<<1)|(u32(b>bl)<<2)|(u32(b<bh)<<3);
+    u64 av=u64(a)^sign;u64 bv=u64(b)^sign;u64 value;
+    if(operation==IntegerBitwise::And){value=av&bv;}
+    else if(operation==IntegerBitwise::Or){value=av|bv;}else{value=av^bv;}
+    value=value^sign;u64 lower=(prefix.lower<<1u64)|value;u64 upper=(prefix.upper<<1u64)|value;
+    BitPrefix previous=next[state];
+    if(previous.present){lower=min(previous.lower,lower);upper=max(previous.upper,upper);}
+    next[state]=BitPrefix(true,lower,upper);
+   }}
+  }
+  prefixes=next;
+ }
+ u64 lower=18446744073709551615u64>>u64(64-width);u64 upper=0u64;
+ for(state in 0..16){BitPrefix prefix=prefixes[state];if(prefix.present){lower=min(lower,prefix.lower);upper=max(upper,prefix.upper);}}
+ return BitRange(lower,upper);
+}

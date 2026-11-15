@@ -1,6 +1,7 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 use super::*;
 mod floating;
+mod bitwise;
 mod contract;
 pub(super) use contract::Normalizer;
 use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::ManuallyDrop, sync::Arc};
@@ -4235,14 +4236,14 @@ fn arithmetic_ranges(op: &str, scalar: Scalar, left: ScalarRanges, mut right: Sc
         right = right.shift_counts(scalar);
     }
     let range = left.combine(&right, |left, right| {
-        let bitwise = |operation: fn(Bits, Bits) -> Bits| {
-            let (lower, upper) = bitwise_range(left, right, scalar, operation);
+        let bitwise = |operation| {
+            let (lower, upper) = bitwise::range(left, right, scalar, operation);
             ScalarRanges::interval(lower, upper)
         };
         match op {
-            "&" => bitwise(|a, b| a & b),
-            "|" => bitwise(|a, b| a | b),
-            "^" => bitwise(|a, b| a ^ b),
+            "&" => bitwise(bitwise::Operation::And),
+            "|" => bitwise(bitwise::Operation::Or),
+            "^" => bitwise(bitwise::Operation::Xor),
             _ if signed => signed_range(op, left, right, scalar),
             _ => unsigned_range(op, left, right, scalar),
         }
@@ -4439,64 +4440,6 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
             .collect();
     }
     proof
-}
-fn bitwise_range(
-    (al, ah): (Bits, Bits),
-    (bl, bh): (Bits, Bits),
-    scalar: Scalar,
-    operation: fn(Bits, Bits) -> Bits,
-) -> (Bits, Bits) {
-    // 从高位向低位交付可达的输出前缀。四个松弛位分别表示两个输入已经
-    // 严格大于下界／小于上界；相同状态的后缀选择相同，只需保留前缀极值。
-    let mut prefixes = [None; 16];
-    prefixes[0] = Some((0, 0));
-    for bit in (0..scalar.bit_width()).rev() {
-        let (al, ah, bl, bh) = (
-            (al >> bit) & 1,
-            (ah >> bit) & 1,
-            (bl >> bit) & 1,
-            (bh >> bit) & 1,
-        );
-        let sign = (scalar.order_bias() >> bit) & 1;
-        let mut next: [Option<(Bits, Bits)>; 16] = [None; 16];
-        for (loose, prefix) in prefixes.into_iter().enumerate() {
-            let Some((lower, upper)) = prefix else {
-                continue;
-            };
-            for a in 0..=1 {
-                for b in 0..=1 {
-                    if (loose & 1 == 0 && a < al)
-                        || (loose & 2 == 0 && a > ah)
-                        || (loose & 4 == 0 && b < bl)
-                        || (loose & 8 == 0 && b > bh)
-                    {
-                        continue;
-                    }
-                    let state = loose
-                        | usize::from(a > al)
-                        | (usize::from(a < ah) << 1)
-                        | (usize::from(b > bl) << 2)
-                        | (usize::from(b < bh) << 3);
-                    // i32 的端点按翻转符号位排序；运算消费真实位，再回到相同顺序。
-                    let value = operation(a ^ sign, b ^ sign) ^ sign;
-                    let (lower, upper) = ((lower << 1) | value, (upper << 1) | value);
-                    next[state] = Some(match next[state] {
-                        Some((old_lower, old_upper)) => {
-                            (old_lower.min(lower), old_upper.max(upper))
-                        }
-                        None => (lower, upper),
-                    });
-                }
-            }
-        }
-        prefixes = next;
-    }
-    prefixes
-        .into_iter()
-        .flatten()
-        .fold((scalar.bit_mask(), 0), |(lower, upper), (a, b)| {
-            (lower.min(a), upper.max(b))
-        })
 }
 fn signed_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> ScalarRanges {
     let decode = |value| i128::from(scalar.signed(value ^ scalar.order_bias()));
