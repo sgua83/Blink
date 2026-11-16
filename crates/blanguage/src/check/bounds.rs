@@ -488,9 +488,8 @@ pub(crate) struct Proof {
 }
 impl PartialEq for Proof {
     fn eq(&self,other:&Self)->bool {
-        use crate::module::codec::Encode;
-        // Compare the existing canonical conditions, not equivalent DAG shapes.
-        self.origins==other.origins && self.conditions.bytes()==other.conditions.bytes()
+        // The existing Condition equality owns canonical node identity.
+        self.origins==other.origins && self.conditions==other.conditions
             && self.ranges.iter().map(|range|&range.0).eq(other.ranges.iter().map(|range|&range.0))
             && self.nonzero==other.nonzero && self.domains==other.domains
             && self.views==other.views && self.addresses==other.addresses
