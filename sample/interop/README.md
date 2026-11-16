@@ -1,44 +1,16 @@
-# 将 B 算法接入 C、C++ 和 Rust
+# 从现有工程调用 B
 
-在 Blink 根目录、Visual Studio x64 Developer PowerShell 中执行。先按仓库 README 安装 Git、Rust MSVC、C++ 工具并运行 cargo build --workspace --release。这里先由 bc 编译算法目标文件，再由 blink 输出 DLL 和调用接口，宿主不需要自己编写 Rust DLL 工程。
+先选择自己的工程语言。下面三篇各自提供完整源码、构建命令和输出，只需安装 Blink 及其构建依赖，不需要先从源码构建 Blink：
 
-## 从四个数开始
+| 你的工程语言 | 独立教程 |
+|---|---|
+| C | [C 调用 B](../../Open/Docs/CInterop.md) |
+| C++ | [C++ 调用 B](../../Open/Docs/CppInterop.md) |
+| Rust | [Rust 调用 B](../../Open/Docs/RustInterop.md) |
 
-```powershell
-.\target\release\bc.exe -c `
-    sample/lessons/map.b `
-    -o target/interop/map.obj `
-    -I sample `
-    --program scale
-.\target\release\blink.exe `
-    target/interop/map.obj `
-    -o target/interop/map.dll
+本目录的 `map.c`、`map.cpp` 和 `map.rs` 保留对应的仓库示例；使用这些源码时，在仓库根目录生成 `target/interop/map.dll` 及配套接口，再构建所选宿主即可。完整 ABI 与部署规则见[原生集成文档](../../Open/Docs/NativeInterop.md)。
 
-cl /nologo /utf-8 /EHsc `
-    /I target/interop `
-    sample/interop/map.cpp `
-    target/interop/map.lib `
-    /Fo:target/interop/map-cpp.obj `
-    /Fe:target/interop/map-cpp.exe
-.\target\interop\map-cpp.exe
-
-cl /nologo /utf-8 /I target/interop `
-    sample/interop/map.c `
-    target/interop/map.lib `
-    /Fo:target/interop/map-c.obj `
-    /Fe:target/interop/map-c.exe
-.\target\interop\map-c.exe
-
-rustc --edition=2024 -C opt-level=3 `
-    sample/interop/map.rs `
-    -L native=target/interop `
-    -o target/interop/map-rust.exe
-.\target\interop\map-rust.exe
-```
-
-生成的 C++ 包装统一使用 `blink_` 产品前缀，例如 `blink_map::Program`／`blink_map::Backend`；模块名 `main` 或 C++ 关键字不会直接成为全局命名空间。C 导出仍为 `map_*`，Rust 模块与绑定名称保持。
-
-C 和 C++ 输出 3 5 7 9；Rust 输出 [3.0, 5.0, 7.0, 9.0]。C++ 析构与 Rust Drop 释放 DLL handle，数组仍属于各自的宿主。
+以下保留已有工程的高级示例。在仓库根目录的 x64 Developer PowerShell 中，先按[源码构建说明](../../Open/Docs/GettingStarted.md#从-main-构建研发工具)构建同源 Release 工具，再执行这些研发命令。
 
 ## 性能对照专用：一百万像素分形的完整调用计时
 

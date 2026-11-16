@@ -133,17 +133,17 @@ The [step-by-step guide](Open/Docs/GettingStarted.en.md#quick-start) explains th
 
 ## Download and run
 
-1. Download `Blink-Setup-windows-x64.exe` from the [Windows x64 release v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1) and double-click it. Open a new terminal to use `bc` and `blink`.
-2. Install [Rust stable MSVC](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. Open x64 Developer PowerShell. These tools are used for building; the resulting application needs neither Rust nor sources.
+1. Download `Blink-Setup-windows-x64.exe` from the [Windows x64 release](https://github.com/sgua83/Blink/releases/latest) and double-click it. The installer configures the system PATH; open a new terminal to use `bc` and `blink`.
+2. To build the parallel examples or compute DLLs, install [Rust stable MSVC](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. Open x64 Developer PowerShell. These tools are used for building; the resulting application needs neither Rust nor sources.
 3. Save the two complete files above as `hello.h` and `hello.b` in an empty folder, then compile, link, and run with the installed formal tools:
 
 ```powershell
-& "$env:ProgramFiles/Blink/bin/bc.exe" -c hello.b -o target/hello.obj
-& "$env:ProgramFiles/Blink/bin/blink.exe" target/hello.obj -o target/hello.exe
+bc -c hello.b -o target/hello.obj
+blink target/hello.obj -o target/hello.exe
 .\target\hello.exe
 ```
 
-It prints `3`. These standalone examples are checked with formal tools **0.14.1.1**, without a repository checkout or custom imports. For the parallel examples, save their two files and compile `parallel.b` or `gpu.b` in the same way. CPU needs no GPU. The [complete guide](Open/Docs/GettingStarted.en.md#quick-start) covers GPU features and deployment of generated companion DLLs.
+It prints `3`. No repository checkout is needed. For the parallel examples, save their two files and compile `parallel.b` or `gpu.b` in the same way. The [step-by-step guide](Open/Docs/GettingStarted.en.md#quick-start) covers build prerequisites, GPU requirements, and separate C, C++, and Rust tutorials.
 
 <a id="tools-and-native-integration"></a>
 
@@ -153,11 +153,11 @@ Give B a computation while retaining the existing application and project struct
 
 | Your project | Integration | Start here |
 |---|---|---|
-| C | Generated C ABI header and DLL | [A complete four-number call](Open/Docs/GettingStarted.en.md#first-dll) |
-| C++ | Generated wrapper, RAII, and source-level `Backend` selection | [C++ host source](https://github.com/sgua83/Blink/blob/cde16596f1532894a77490799783cdcf471ef172/sample/interop/map.cpp) |
-| Rust | Generated bindings or the native Rust API | [DLL host source](https://github.com/sgua83/Blink/blob/cde16596f1532894a77490799783cdcf471ef172/sample/interop/map.rs) · [Native API](sample/interop/README.md#rust-原生-api) |
+| C | Generated C ABI header and DLL | [C tutorial](Open/Docs/CInterop.en.md) |
+| C++ | Generated wrapper, RAII, and source-level `Backend` selection | [C++ tutorial](Open/Docs/CppInterop.en.md) |
+| Rust | Generated bindings or the native Rust API | [Rust tutorial](Open/Docs/RustInterop.en.md) · [Native API](sample/interop/README.md#rust-原生-api) |
 
-Ordinary hosts select CPU/GPU in code. See the [formal-release ABI reference](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md) for supported types, synchronous completion, resource lifetimes, and deployment; the [current integration reference](Open/Docs/NativeInterop.md) tracks newer main capabilities. B can also [call external DLLs through the C ABI](sample/extern/README.md).
+Ordinary hosts select CPU/GPU in code. The [integration reference](Open/Docs/NativeInterop.md) describes supported types, completion, resource lifetimes, and deployment. B can also [call external DLLs through the C ABI](sample/extern/README.md).
 
 <a id="three-core-features"></a>
 <a id="capabilities-and-direction"></a>

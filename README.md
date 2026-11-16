@@ -133,17 +133,17 @@ u32 main() on cpu {
 
 ## 下载并运行
 
-1. 下载并双击安装 [Windows x64 正式版 v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1) 的 `Blink-Setup-windows-x64.exe`，新终端即可使用 `bc` 与 `blink`。
-2. 准备 [Rust stable MSVC](https://rust-lang.org/tools/install) 和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具与 Windows SDK），打开 x64 Developer PowerShell。这些工具用于构建，运行成品不需要 Rust 或源码。
-3. 在空目录把上面的完整代码保存为 `hello.h` 与 `hello.b`，使用安装目录中的正式工具编译、链接并运行：
+1. 下载并双击安装 [Windows x64 正式版](https://github.com/sgua83/Blink/releases/latest) 的 `Blink-Setup-windows-x64.exe`，安装器自动配置系统 PATH，新终端即可使用 `bc` 与 `blink`。
+2. 如要构建后续并行示例或计算 DLL，准备 [Rust stable MSVC](https://rust-lang.org/tools/install) 和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具与 Windows SDK），打开 x64 Developer PowerShell。这些工具用于构建，运行成品不需要 Rust 或源码。
+3. 在空目录把上面的完整代码保存为 `hello.h` 与 `hello.b`，直接使用工具名编译、链接并运行：
 
 ```powershell
-& "$env:ProgramFiles/Blink/bin/bc.exe" -c hello.b -o target/hello.obj
-& "$env:ProgramFiles/Blink/bin/blink.exe" target/hello.obj -o target/hello.exe
+bc -c hello.b -o target/hello.obj
+blink target/hello.obj -o target/hello.exe
 .\target\hello.exe
 ```
 
-程序输出 `3`。这些独立例子使用正式工具 **0.14.1.1** 核验，不需要克隆仓库或导入自定义教学模块。后续并行例子保存对应的两份文件，同样编译 `parallel.b` 或 `gpu.b` 即可；CPU 入门无需 GPU。[完整指南](Open/Docs/GettingStarted.md#快速开始)说明 GPU 能力要求与生成 DLL 的交付方式。
+程序输出 `3`，不需要克隆仓库。后续并行例子保存对应的两份文件，同样编译 `parallel.b` 或 `gpu.b` 即可。[逐步入门指南](Open/Docs/GettingStarted.md#快速开始)说明构建依赖、GPU 要求，并分别提供 C、C++、Rust 教程。
 
 <a id="工具与原生集成"></a>
 
@@ -153,11 +153,11 @@ u32 main() on cpu {
 
 | 你的工程 | 接入方式 | 从这里开始 |
 |---|---|---|
-| C | 生成的 C ABI 头文件与 DLL | [四个数的完整调用](Open/Docs/GettingStarted.md#first-dll) |
-| C++ | 生成的包装、RAII 和代码内 `Backend` 选择 | [C++ 宿主源码](https://github.com/sgua83/Blink/blob/cde16596f1532894a77490799783cdcf471ef172/sample/interop/map.cpp) |
-| Rust | 生成的绑定，或直接使用原生 Rust API | [DLL 宿主源码](https://github.com/sgua83/Blink/blob/cde16596f1532894a77490799783cdcf471ef172/sample/interop/map.rs) · [原生 API](sample/interop/README.md#rust-原生-api) |
+| C | 生成的 C ABI 头文件与 DLL | [C 入门教程](Open/Docs/CInterop.md) |
+| C++ | 生成的包装、RAII 和代码内 `Backend` 选择 | [C++ 入门教程](Open/Docs/CppInterop.md) |
+| Rust | 生成的绑定，或直接使用原生 Rust API | [Rust 入门教程](Open/Docs/RustInterop.md) · [原生 API](sample/interop/README.md#rust-原生-api) |
 
-普通宿主在代码中选择 CPU／GPU。支持类型、同步完成、资源寿命与部署要求见[正式版 ABI 文档](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md)；主线的新能力见[现行集成文档](Open/Docs/NativeInterop.md)。B 也支持[通过 C ABI 调用外部 DLL](sample/extern/README.md)。
+普通宿主在代码中选择 CPU／GPU。支持类型、同步完成、资源寿命与部署要求见[原生集成文档](Open/Docs/NativeInterop.md)。B 也支持[通过 C ABI 调用外部 DLL](sample/extern/README.md)。
 
 <a id="三大核心特点"></a>
 <a id="能力与发展方向"></a>
