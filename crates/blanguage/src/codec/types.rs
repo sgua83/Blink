@@ -187,3 +187,6 @@ unsafe extern "C" fn constant(source:Address)->Constant {
     Constant { ty:address(&value.ty),bits:Span::of(&value.bits) }
 }
 const HOST:Host=Host { append,ty,component,field,variant,function,parameter,type_name,argument,shape,expression,predicate,interval,condition,constant };
+
+// The reader owns only synchronous construction frames and the original Result.
+pub(super) mod reading;

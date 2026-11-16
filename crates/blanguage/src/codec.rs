@@ -232,27 +232,10 @@ mod types;
 impl Encode for ir::Ty {
     fn encode(&self,writer:&mut Writer) { types::encode(self,writer); }
 }
-// Typed recovery remains the original decoder until the same issue migrates it.
 #[cfg(feature="compiler")]
 impl Decode for ir::Ty {
     fn decode(reader:&mut Reader<'_>)->Result<Self> {
-        Ok(Self {
-            name:Decode::decode(reader)?,
-            arguments:Decode::decode(reader)?,
-            values:Decode::decode(reader)?,
-            size:Decode::decode(reader)?,
-            align:Decode::decode(reader)?,
-            components:Decode::decode(reader)?,
-            fields:Decode::decode(reader)?,
-            view:Decode::decode(reader)?,
-            array:Decode::decode(reader)?,
-            enumeration:Decode::decode(reader)?,
-            result:Decode::decode(reader)?,
-            variants:Decode::decode(reader)?,
-            dataset:Decode::decode(reader)?,
-            cleanup:Decode::decode(reader)?,
-            function:Decode::decode(reader)?,
-        })
+        types::reading::decode(reader)
     }
 }
 

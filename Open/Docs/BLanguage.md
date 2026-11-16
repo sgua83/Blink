@@ -1722,7 +1722,7 @@ dataset<T> relay<T>(u32 depth, dataset<T> rows) on cpu {
 
 ## 独立原生模块
 
-编译角色的Ty类型合同写出由bootstrap.contract_codec直接沿原Ty及真实递归字段完成。B选择现行十五个类型字段的顺序、可选载荷、集合长度、固定格式标签和小端字节，连同CFunctionType、TypeName／Shape／GenericArgument、语义Expr及ContractPredicate／OutputCondition／OutputConstant写入原Writer。Rust只同步借出原字段和实际区间，原tuple按其真实类型投影，不借用未保证的tuple布局；唯一输出Vec只按B已写出的字节追加，原类型树、字符串、来源及资源仍由原所有者持有。B不回调Rust Encode、不复制类型树、不建立schema、反射解释器或节点表；字段借用与B栈上的短字节仅活到同步追加返回，地址不保留。类型合同的读取、其余顶层语义合同编码、Normalizer及完整普通合同／Proof遍历尚未由本实现接管，继续沿原C-032.2.14.1。无compiler执行SDK保持其原codec及构建角色，不装编译引导归档；现行合同格式和资源ABI不因实现语言改变。
+编译角色的Ty类型合同读写由bootstrap.contract_codec直接沿原Ty及真实递归字段完成。B选择现行十五个类型字段的顺序、可选载荷、集合长度、固定格式标签和小端字节，连同CFunctionType、TypeName／Shape／GenericArgument、语义Expr及ContractPredicate／OutputCondition／OutputConstant读写原合同。写出时Rust只同步借出原字段和实际区间，原tuple按其真实类型投影；唯一输出Vec只追加B已写出的字节。读取时B消费原输入借用并直接推进原Reader.position，决定边界、合法标签及递归顺序；Rust只在原typed局部帧构造实际String、Vec、Box及所选变体，完成后移动同一值，失败由原局部值自然释放。UTF8与字符串分配沿原标准库及同一次Result返回。原类型树、来源、资源与最终容器继续归原所有者；字段、输入、构造地址及B栈字节只活到同步调用返回，不保留地址，不复制树或输入，不建立第二游标、schema、反射解释器、节点／初始化表或恢复链，不回调Rust Encode／Decode。其余顶层语义合同编码、Normalizer及完整普通合同／Proof遍历尚未由本实现接管，继续沿原C-032.2.14.1。无compiler执行SDK保持其原codec及构建角色，不装编译引导归档；现行合同格式、拒绝诊断、尾部未消费语义和资源ABI保持。
 将普通CPU适用函数库编译为模块对象，再让应用只消费已编译接口：
 
 ```powershell
