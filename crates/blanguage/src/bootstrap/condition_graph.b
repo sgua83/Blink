@@ -53,7 +53,8 @@ extern "C" u32 overlap(address left,address right,u32 right_truth,address contex
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
  requires nonzero(host.contradictory) requires nonzero(host.add_next) requires nonzero(host.begin_facts)
- requires nonzero(host.next_fact) requires nonzero(host.negate) requires nonzero(host.remaining)
+ requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
+ requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative) {
  usize first=host.index(context,left);usize second=host.index(context,right);
  usize at=0u64;
@@ -112,7 +113,9 @@ extern "C" u32 overlap(address left,address right,u32 right_truth,address contex
     while(true){
      address fact=host.next_fact(context);
      if(address_bits(fact)==0u64){break;}
-     if(host.negate(context,fact)!=0){
+     FactView negated=negated_fact(host.inspect_fact(fact),host.facts);
+     if(negated.present!=0){
+      host.set_next_fact(context,negated);
       if(host.remaining(context)!=0u64){
        host.push_fact(context,fact,Checkpoint(trail.count,host.additions(context),negative));
       }
@@ -222,9 +225,9 @@ extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHo
  required_remaining(graph,0u64,required_node(graph,0u64).remaining-1u64);
 }
 
-CrossFact cross_equal(CrossFact value,CrossHost host) on cpu requires nonzero(host.compare) {
- CrossFact key=value;key.kind=CrossFactKind::Equal;
- if(host.compare(key.first,key.second)>i32(0)){address first=key.first;key.first=key.second;key.second=first;}
+FactView fact_equal(FactView value,i32 order) on cpu {
+ FactView key=value;key.kind=FactKind::Equal;
+ if(order>i32(0)){address first=key.first;key.first=key.second;key.second=first;}
  return key;
 }
 extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost host) on cpu
@@ -233,41 +236,61 @@ extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost hos
  u32 side=host.count(context,0)<host.count(context,1) ? 0 : 1;
  u32 other=1-side;host.begin(context,side);
  while(true){
-  CrossFact fact=host.next(context);if(fact.present==0){return 0;}
-  CrossFact key=fact;
-  if(fact.kind==CrossFactKind::Boolean||fact.kind==CrossFactKind::Predicate){
+  FactView fact=host.next(context);if(fact.present==0){return 0;}
+  FactView key=fact;
+  if(fact.kind==FactKind::Boolean||fact.kind==FactKind::Predicate){
    key.flag=1-fact.flag;if(host.contains(context,other,key)!=0){return 1;}
-  }else if(fact.kind==CrossFactKind::NonZero||fact.kind==CrossFactKind::Zero){
-   key.kind=fact.kind==CrossFactKind::NonZero ? CrossFactKind::Zero : CrossFactKind::NonZero;
+  }else if(fact.kind==FactKind::NonZero||fact.kind==FactKind::Zero){
+   key.kind=fact.kind==FactKind::NonZero ? FactKind::Zero : FactKind::NonZero;
    if(host.contains(context,other,key)!=0){return 1;}
-  }else if(fact.kind==CrossFactKind::Index||fact.kind==CrossFactKind::Outside){
-   key.kind=fact.kind==CrossFactKind::Index ? CrossFactKind::Outside : CrossFactKind::Index;
+  }else if(fact.kind==FactKind::Index||fact.kind==FactKind::Outside){
+   key.kind=fact.kind==FactKind::Index ? FactKind::Outside : FactKind::Index;
    if(host.contains(context,other,key)!=0){return 1;}
-  }else if(fact.kind==CrossFactKind::Below){
+  }else if(fact.kind==FactKind::Below){
    key.first=fact.second;key.second=fact.first;key.flag=1;
    if(host.contains(context,other,key)!=0){return 1;}
    if(fact.flag!=0){
     key.flag=0;if(host.contains(context,other,key)!=0){return 1;}
-    if(host.contains(context,other,cross_equal(fact,host))!=0){return 1;}
+    if(host.contains(context,other,fact_equal(fact,host.compare(fact.first,fact.second)))!=0){return 1;}
    }
-  }else if(fact.kind==CrossFactKind::Equal){
-   key.kind=CrossFactKind::NotEqual;if(host.contains(context,other,key)!=0){return 1;}
+  }else if(fact.kind==FactKind::Equal){
+   key.kind=FactKind::NotEqual;if(host.contains(context,other,key)!=0){return 1;}
    if(host.compare(fact.first,fact.second)<=i32(0)){
     for(i in 0..4){
-     key=fact;key.kind=CrossFactKind::Below;key.flag=1;key.scalar=scalars.values[i];
+     key=fact;key.kind=FactKind::Below;key.flag=1;key.scalar=scalars.values[i];
      if(host.contains(context,other,key)!=0){return 1;}
      key.first=fact.second;key.second=fact.first;
      if(host.contains(context,other,key)!=0){return 1;}
     }
    }
-  }else if(fact.kind==CrossFactKind::NotEqual){
-   if(host.contains(context,other,cross_equal(fact,host))!=0){return 1;}
-  }else if(fact.kind==CrossFactKind::Minimum){
-   key.kind=CrossFactKind::Maximum;CrossFact lower=key;lower.value=0u64;
+  }else if(fact.kind==FactKind::NotEqual){
+   if(host.contains(context,other,fact_equal(fact,host.compare(fact.first,fact.second)))!=0){return 1;}
+  }else if(fact.kind==FactKind::Minimum){
+   key.kind=FactKind::Maximum;FactView lower=key;lower.value=0u64;
    if(host.range(context,other,lower,key,0,0)!=0){return 1;}
-  }else if(fact.kind==CrossFactKind::Maximum){
-   key.kind=CrossFactKind::Minimum;CrossFact upper=key;upper.value=fact.mask;
+  }else if(fact.kind==FactKind::Maximum){
+   key.kind=FactKind::Minimum;FactView upper=key;upper.value=fact.mask;
    if(host.range(context,other,key,upper,1,1)!=0){return 1;}
   }
  }
+}
+
+extern "C" FactView negated_fact(FactView value,FactHost host) on cpu
+ requires nonzero(host.compare) {
+ FactView fact=value;
+ if(fact.kind==FactKind::Minimum){
+  if(fact.value==0u64){fact.present=0;}else{fact.kind=FactKind::Maximum;fact.value-=1u64;}
+ }else if(fact.kind==FactKind::Maximum){
+  if(fact.value==fact.mask){fact.present=0;}else{fact.kind=FactKind::Minimum;fact.value+=1u64;}
+ }else if(fact.kind==FactKind::NonZero){fact.kind=FactKind::Zero;
+ }else if(fact.kind==FactKind::Zero){fact.kind=FactKind::NonZero;
+ }else if(fact.kind==FactKind::Boolean||fact.kind==FactKind::Predicate){fact.flag=1-fact.flag;
+ }else if(fact.kind==FactKind::Equal){fact.kind=FactKind::NotEqual;
+ }else if(fact.kind==FactKind::NotEqual){fact=fact_equal(fact,host.compare(fact.first,fact.second));
+ }else if(fact.kind==FactKind::Below){
+  address first=fact.first;fact.first=fact.second;fact.second=first;fact.flag=1-fact.flag;
+ }else if(fact.kind==FactKind::Index){
+  if(fact.fixed!=0){fact.kind=FactKind::Minimum;fact.scalar=host.unsigned32;}else{fact.kind=FactKind::Outside;}
+ }else if(fact.kind==FactKind::Outside){fact.kind=FactKind::Index;}
+ return fact;
 }

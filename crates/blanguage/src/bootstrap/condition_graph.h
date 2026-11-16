@@ -29,7 +29,9 @@ struct Host {
  cfn<u32,address> add_next;
  cfn<void,address,usize> begin_facts;
  cfn<address,address> next_fact;
- cfn<u32,address,address> negate;
+ cfn<FactView,address> ensures memory(read) inspect_fact;
+ cfn<void,address,FactView> set_next_fact;
+ FactHost facts;
  cfn<usize,address> ensures memory(read) remaining;
  cfn<void,address,usize,u32,Checkpoint> push_clause;
  cfn<void,address,address,Checkpoint> push_fact;
@@ -42,7 +44,8 @@ extern "C" u32 overlap(address left,address right,u32 right_truth,address contex
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
  requires nonzero(host.contradictory) requires nonzero(host.add_next) requires nonzero(host.begin_facts)
- requires nonzero(host.next_fact) requires nonzero(host.negate) requires nonzero(host.remaining)
+ requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
+ requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative);
 
 // Original required-facts query nodes; the result stays in its owning container.
@@ -77,17 +80,24 @@ extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHo
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
  requires nonzero(host.valid_additions) requires nonzero(host.release);
 
-enum CrossFactKind : u32 { Equal=1;Index=2;Minimum=3;Maximum=4;NonZero=5;Boolean=6;Below=7;Outside=8;Zero=9;NotEqual=10;Predicate=11; };
-struct CrossFact { u32 present; CrossFactKind kind; address first; address second; address payload; address scalar; u64 value; u64 mask; u32 flag; };
+enum FactKind : u32 { Equal=1;Index=2;Minimum=3;Maximum=4;NonZero=5;Boolean=6;Below=7;Outside=8;Zero=9;NotEqual=10;Predicate=11; };
+struct FactView { u32 present; FactKind kind; address first; address second; address payload; address scalar; u64 value; u64 mask; u32 flag; u32 fixed; };
 struct CrossScalars { array<address,4> values; };
 struct CrossHost {
  cfn<usize,address,u32> ensures memory(read) count;
  cfn<void,address,u32> begin;
- cfn<CrossFact,address> next;
- cfn<u32,address,u32,CrossFact> ensures memory(read) contains;
- cfn<u32,address,u32,CrossFact,CrossFact,u32,u32> ensures memory(read) range;
+ cfn<FactView,address> next;
+ cfn<u32,address,u32,FactView> ensures memory(read) contains;
+ cfn<u32,address,u32,FactView,FactView,u32,u32> ensures memory(read) range;
  cfn<i32,address,address> ensures memory(read) compare;
 };
 extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost host) on cpu
  requires nonzero(host.count) requires nonzero(host.begin) requires nonzero(host.next)
  requires nonzero(host.contains) requires nonzero(host.range) requires nonzero(host.compare);
+
+struct FactHost {
+ address unsigned32;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+extern "C" FactView negated_fact(FactView value,FactHost host) on cpu
+ requires nonzero(host.compare);

@@ -251,13 +251,9 @@ unsafe extern "C" fn next_fact(slot: Slot) -> Borrowed {
         .next()
         .map_or(std::ptr::null(), |fact| std::ptr::from_ref(fact).cast())
 }
-unsafe extern "C" fn negate(slot: Slot, fact: Borrowed) -> u32 {
-    if let Some(negated) = Clause::negated_fact(unsafe { *fact.cast::<Fact>() }) {
-        unsafe { context(slot) }.next_fact = Some((negated, None));
-        1
-    } else {
-        0
-    }
+unsafe extern "C" fn set_next_fact(slot: Slot, fields: super::fact_fields::Fields) {
+    let fact = unsafe { super::fact_fields::key(fields) };
+    unsafe { context(slot) }.next_fact = Some((fact, None));
 }
 unsafe extern "C" fn remaining(slot: Slot) -> usize {
     unsafe { context(slot) }.required.as_ref().unwrap().len()
@@ -330,7 +326,9 @@ struct Host {
     add_next: unsafe extern "C" fn(Slot) -> u32,
     begin_facts: unsafe extern "C" fn(Slot, usize),
     next_fact: unsafe extern "C" fn(Slot) -> Borrowed,
-    negate: unsafe extern "C" fn(Slot, Borrowed) -> u32,
+    inspect_fact: unsafe extern "C" fn(Borrowed) -> super::fact_fields::Fields,
+    set_next_fact: unsafe extern "C" fn(Slot, super::fact_fields::Fields),
+    facts: super::fact_fields::Host,
     remaining: unsafe extern "C" fn(Slot) -> usize,
     push_clause: unsafe extern "C" fn(Slot, usize, u32, Checkpoint),
     push_fact: unsafe extern "C" fn(Slot, Borrowed, Checkpoint),
@@ -341,6 +339,7 @@ unsafe extern "C" {
     fn query(left: Borrowed, right: Borrowed, truth: u32, context: Slot, host: Host) -> u32;
 }
 pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
+    let unsigned32 = super::Scalar::U32;
     let mut context = Context {
         indices: HashMap::new(),
         nodes: Vec::new(),
@@ -379,7 +378,12 @@ pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
                 add_next,
                 begin_facts,
                 next_fact,
-                negate,
+                inspect_fact: super::fact_fields::project,
+                set_next_fact,
+                facts: super::fact_fields::Host {
+                    unsigned32: std::ptr::from_ref(&unsigned32).cast(),
+                    compare: super::fact_fields::compare,
+                },
                 remaining,
                 push_clause,
                 push_fact,

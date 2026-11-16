@@ -1,6 +1,7 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 mod condition_graph;
 mod cross_facts;
+mod fact_fields;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2230,24 +2231,7 @@ impl Clause {
         // 已消费Clause不再运行Drop，直接转交它原来持有的Arc。
         unsafe { ManuallyDrop::take(&mut owned.0) }
     }
-    fn negated_fact(fact: Fact) -> Option<Fact> {
-        Some(match fact {
-            Fact::Minimum(_, _, 0) => return None,
-            Fact::Maximum(_, scalar, n) if n == scalar.bit_mask() => return None,
-            Fact::Minimum(id, scalar, n) => Fact::Maximum(id, scalar, n - 1),
-            Fact::Maximum(id, scalar, n) => Fact::Minimum(id, scalar, n + 1),
-            Fact::NonZero(id) => Fact::Zero(id),
-            Fact::Zero(id) => Fact::NonZero(id),
-            Fact::Boolean(id, truth) => Fact::Boolean(id, !truth),
-            Fact::Predicate(predicate, truth) => Fact::Predicate(predicate, !truth),
-            Fact::Equal(a, b) => Fact::NotEqual(a, b),
-            Fact::NotEqual(a, b) => Fact::equal(a, b),
-            Fact::Below(a, b, strict, scalar) => Fact::Below(b, a, !strict, scalar),
-            Fact::Index(id, IndexDomain::Fixed(n)) => Fact::Minimum(id, Scalar::U32, Bits::from(n)),
-            Fact::Index(id, domain) => Fact::Outside(id, domain),
-            Fact::Outside(id, domain) => Fact::Index(id, domain),
-        })
-    }
+    fn negated_fact(fact: Fact) -> Option<Fact> { fact_fields::negated(fact) }
 
     fn negate(&self)->Self{
         let mut values=BTreeMap::new();
