@@ -115,7 +115,9 @@ unsafe extern "C" fn node_count(slot: Slot) -> usize {
     unsafe { context(slot) }.nodes.len()
 }
 unsafe extern "C" fn inspect(slot: Slot, id: usize) -> SourceNode {
-    let clause = unsafe { context(slot) }.nodes[id].clause;
+    source_node(unsafe { context(slot) }.nodes[id].clause)
+}
+fn source_node(clause: &Clause) -> SourceNode {
     let mut out = SourceNode {
         kind: 0,
         left: std::ptr::null(),
@@ -384,5 +386,278 @@ pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
                 pop_alternative,
             },
         ) != 0
+    }
+}
+
+// The original required-facts query retains its physical nodes and values.
+// B owns their build/evaluation order and the count of actual consumers.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct RequiredNode {
+    left: usize,
+    right: usize,
+    kind: u32,
+    users: usize,
+    remaining: usize,
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct RequiredGraph {
+    nodes: *mut RequiredNode,
+    stride: usize,
+    count: usize,
+}
+struct RequiredResult<'a> {
+    clause: &'a Clause,
+    node: RequiredNode,
+    value: Option<Option<super::QueryFacts<'a>>>,
+}
+pub(super) struct RequiredQuery<'a> {
+    nodes: Vec<RequiredResult<'a>>,
+    pending: Vec<usize>,
+}
+struct RequiredBuilder<'a> {
+    indices: HashMap<usize, usize>,
+    query: RequiredQuery<'a>,
+}
+unsafe fn required_builder<'a, 'b>(slot: Slot) -> &'a mut RequiredBuilder<'b> {
+    unsafe { &mut *slot.cast::<RequiredBuilder<'b>>() }
+}
+unsafe extern "C" fn required_index(slot: Slot, clause: Borrowed) -> usize {
+    let builder = unsafe { required_builder(slot) };
+    let clause = unsafe { &*clause.cast::<Clause>() };
+    match builder.indices.entry(clause.key()) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            let id = builder.query.nodes.len();
+            entry.insert(id);
+            builder.query.nodes.push(RequiredResult {
+                clause,
+                node: RequiredNode {
+                    left: 0,
+                    right: 0,
+                    kind: 0,
+                    users: 1,
+                    remaining: 0,
+                },
+                value: None,
+            });
+            id
+        }
+        std::collections::hash_map::Entry::Occupied(entry) => {
+            let id = *entry.get();
+            builder.query.nodes[id].node.users += 1;
+            id
+        }
+    }
+}
+unsafe extern "C" fn required_count(slot: Slot) -> usize {
+    unsafe { required_builder(slot) }.query.nodes.len()
+}
+unsafe extern "C" fn required_inspect(slot: Slot, id: usize) -> SourceNode {
+    source_node(unsafe { required_builder(slot) }.query.nodes[id].clause)
+}
+unsafe extern "C" fn required_define(slot: Slot, id: usize, kind: u32, left: usize, right: usize) {
+    let node = &mut unsafe { required_builder(slot) }.query.nodes[id].node;
+    node.left = left;
+    node.right = right;
+    node.kind = kind;
+}
+#[repr(C)]
+struct RequiredBuildHost {
+    index: unsafe extern "C" fn(Slot, Borrowed) -> usize,
+    count: unsafe extern "C" fn(Slot) -> usize,
+    inspect: unsafe extern "C" fn(Slot, usize) -> SourceNode,
+    define: unsafe extern "C" fn(Slot, usize, u32, usize, usize),
+}
+struct RequiredEvaluation<'a, 'b, 'c> {
+    query: &'a mut RequiredQuery<'b>,
+    environment: &'c Facts,
+    roots: &'c std::collections::BTreeMap<super::ValueIdentity, super::ValueIdentity>,
+    members: &'c [(&'c super::ValueIdentity, &'c super::ValueIdentity)],
+}
+unsafe fn required_evaluation<'a, 'b, 'c, 'd>(
+    slot: Slot,
+) -> &'a mut RequiredEvaluation<'b, 'c, 'd> {
+    unsafe { &mut *slot.cast::<RequiredEvaluation<'b, 'c, 'd>>() }
+}
+#[repr(C)]
+struct RequiredPending {
+    present: u32,
+    index: usize,
+}
+unsafe extern "C" fn required_reset(slot: Slot, id: usize) {
+    unsafe { required_evaluation(slot) }.query.nodes[id].value = None;
+}
+unsafe extern "C" fn required_status(slot: Slot, id: usize) -> u32 {
+    match &unsafe { required_evaluation(slot) }.query.nodes[id].value {
+        None => 0,
+        Some(None) => 1,
+        Some(Some(_)) => 2,
+    }
+}
+unsafe extern "C" fn required_push(slot: Slot, id: usize) {
+    unsafe { required_evaluation(slot) }.query.pending.push(id);
+}
+unsafe extern "C" fn required_pop(slot: Slot) -> RequiredPending {
+    match unsafe { required_evaluation(slot) }.query.pending.pop() {
+        Some(index) => RequiredPending { present: 1, index },
+        None => RequiredPending {
+            present: 0,
+            index: 0,
+        },
+    }
+}
+unsafe extern "C" fn required_pending_count(slot: Slot) -> usize {
+    unsafe { required_evaluation(slot) }.query.pending.len()
+}
+unsafe extern "C" fn required_impossible(slot: Slot, id: usize) {
+    unsafe { required_evaluation(slot) }.query.nodes[id].value = Some(None);
+}
+unsafe extern "C" fn required_leaf(slot: Slot, id: usize) {
+    let evaluation = unsafe { required_evaluation(slot) };
+    if let ClauseNode::Facts(required) = &**evaluation.query.nodes[id].clause.0 {
+        let required = if required.is_disjoint(evaluation.environment) {
+            super::QueryFacts::Borrowed(required)
+        } else {
+            super::QueryFacts::Owned(std::sync::Arc::new(
+                required
+                    .difference(evaluation.environment)
+                    .copied()
+                    .collect(),
+            ))
+        };
+        let value = if super::cross_conflict(evaluation.environment, &required) {
+            None
+        } else {
+            Some(required)
+        };
+        evaluation.query.nodes[id].value = Some(value);
+    }
+}
+fn take_required<'a>(result: &mut RequiredResult<'a>, last: u32) -> Option<super::QueryFacts<'a>> {
+    if last != 0 {
+        result.value.take().unwrap()
+    } else {
+        result.value.as_ref().unwrap().clone()
+    }
+}
+unsafe extern "C" fn required_union(slot: Slot, id: usize, left_last: u32, right_last: u32) {
+    let query = &mut unsafe { required_evaluation(slot) }.query;
+    let node = query.nodes[id].node;
+    let a = take_required(&mut query.nodes[node.left], left_last).unwrap();
+    let b = take_required(&mut query.nodes[node.right], right_last).unwrap();
+    query.nodes[id].value = Some(super::combine_facts(a, b));
+}
+unsafe extern "C" fn required_common(slot: Slot, id: usize, left_last: u32, right_last: u32) {
+    let evaluation = unsafe { required_evaluation(slot) };
+    let node = evaluation.query.nodes[id].node;
+    let a = take_required(&mut evaluation.query.nodes[node.left], left_last);
+    let b = take_required(&mut evaluation.query.nodes[node.right], right_last);
+    evaluation.query.nodes[id].value = Some(super::either_facts(
+        evaluation.environment,
+        evaluation.roots,
+        evaluation.members,
+        a,
+        b,
+    ));
+}
+unsafe extern "C" fn required_valid_additions(slot: Slot, id: usize) -> u32 {
+    let evaluation = unsafe { required_evaluation(slot) };
+    let facts = evaluation.query.nodes[id]
+        .value
+        .as_ref()
+        .unwrap()
+        .as_ref()
+        .unwrap();
+    u32::from(!super::additions_conflict(evaluation.environment, facts))
+}
+unsafe extern "C" fn required_release(slot: Slot, id: usize, last: u32) -> u32 {
+    let result = &mut unsafe { required_evaluation(slot) }.query.nodes[id];
+    let computed = result.value.is_some();
+    if last != 0 {
+        result.value = None;
+    }
+    u32::from(computed)
+}
+#[repr(C)]
+struct RequiredHost {
+    reset: unsafe extern "C" fn(Slot, usize),
+    status: unsafe extern "C" fn(Slot, usize) -> u32,
+    push: unsafe extern "C" fn(Slot, usize),
+    pop: unsafe extern "C" fn(Slot) -> RequiredPending,
+    pending_count: unsafe extern "C" fn(Slot) -> usize,
+    impossible: unsafe extern "C" fn(Slot, usize),
+    leaf: unsafe extern "C" fn(Slot, usize),
+    union: unsafe extern "C" fn(Slot, usize, u32, u32),
+    common: unsafe extern "C" fn(Slot, usize, u32, u32),
+    valid_additions: unsafe extern "C" fn(Slot, usize) -> u32,
+    release: unsafe extern "C" fn(Slot, usize, u32) -> u32,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::required_build"]
+    fn build_required(root: Borrowed, context: Slot, host: RequiredBuildHost);
+    #[link_name = "bootstrap.condition_graph::required_evaluate"]
+    fn evaluate_required(graph: RequiredGraph, context: Slot, host: RequiredHost);
+}
+impl<'a> RequiredQuery<'a> {
+    pub(super) fn new(root: &'a Clause) -> Self {
+        let mut builder = RequiredBuilder {
+            indices: HashMap::new(),
+            query: Self {
+                nodes: Vec::new(),
+                pending: Vec::new(),
+            },
+        };
+        unsafe {
+            build_required(
+                std::ptr::from_ref(root).cast(),
+                (&mut builder as *mut RequiredBuilder<'_>).cast(),
+                RequiredBuildHost {
+                    index: required_index,
+                    count: required_count,
+                    inspect: required_inspect,
+                    define: required_define,
+                },
+            );
+        }
+        builder.query
+    }
+    pub(super) fn evaluate(
+        &mut self,
+        environment: &Facts,
+        roots: &std::collections::BTreeMap<super::ValueIdentity, super::ValueIdentity>,
+        members: &[(&super::ValueIdentity, &super::ValueIdentity)],
+    ) -> Option<super::QueryFacts<'a>> {
+        let graph = RequiredGraph {
+            nodes: std::ptr::addr_of_mut!(self.nodes[0].node),
+            stride: std::mem::size_of::<RequiredResult<'a>>(),
+            count: self.nodes.len(),
+        };
+        let mut evaluation = RequiredEvaluation {
+            query: self,
+            environment,
+            roots,
+            members,
+        };
+        unsafe {
+            evaluate_required(
+                graph,
+                (&mut evaluation as *mut RequiredEvaluation<'_, '_, '_>).cast(),
+                RequiredHost {
+                    reset: required_reset,
+                    status: required_status,
+                    push: required_push,
+                    pop: required_pop,
+                    pending_count: required_pending_count,
+                    impossible: required_impossible,
+                    leaf: required_leaf,
+                    union: required_union,
+                    common: required_common,
+                    valid_additions: required_valid_additions,
+                    release: required_release,
+                },
+            );
+        }
+        self.nodes[0].value.take().unwrap()
     }
 }

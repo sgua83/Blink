@@ -44,3 +44,35 @@ extern "C" u32 overlap(address left,address right,u32 right_truth,address contex
  requires nonzero(host.contradictory) requires nonzero(host.add_next) requires nonzero(host.begin_facts)
  requires nonzero(host.next_fact) requires nonzero(host.negate) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative);
+
+// Original required-facts query nodes; the result stays in its owning container.
+struct RequiredNode { usize left; usize right; u32 kind; usize users; usize remaining; };
+struct RequiredGraph { address nodes; usize stride; usize count; };
+struct RequiredPending { u32 present; usize index; };
+struct RequiredBuildHost {
+ cfn<usize,address,address> index;
+ cfn<usize,address> ensures memory(read) count;
+ cfn<SourceNode,address,usize> ensures memory(read) inspect;
+ cfn<void,address,usize,u32,usize,usize> define;
+};
+struct RequiredHost {
+ cfn<void,address,usize> reset;
+ cfn<u32,address,usize> ensures memory(read) status;
+ cfn<void,address,usize> push;
+ cfn<RequiredPending,address> pop;
+ cfn<usize,address> ensures memory(read) pending_count;
+ cfn<void,address,usize> impossible;
+ cfn<void,address,usize> leaf;
+ cfn<void,address,usize,u32,u32> union;
+ cfn<void,address,usize,u32,u32> common;
+ cfn<u32,address,usize> ensures memory(read) valid_additions;
+ cfn<u32,address,usize,u32> release;
+};
+extern "C" void required_build(address root,address context,RequiredBuildHost host) on cpu
+ requires nonzero(host.index) requires nonzero(host.count)
+ requires nonzero(host.inspect) requires nonzero(host.define);
+extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHost host) on cpu
+ requires nonzero(host.reset) requires nonzero(host.status) requires nonzero(host.push)
+ requires nonzero(host.pop) requires nonzero(host.pending_count) requires nonzero(host.impossible)
+ requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
+ requires nonzero(host.valid_additions) requires nonzero(host.release);

@@ -135,3 +135,89 @@ extern "C" u32 overlap(address left,address right,u32 right_truth,address contex
   if(alternative.kind==1){host.pending_push(context,alternative.node,alternative.truth);}
  }
 }
+
+extern "C" void required_build(address root,address context,RequiredBuildHost host) on cpu
+ requires nonzero(host.index) requires nonzero(host.count)
+ requires nonzero(host.inspect) requires nonzero(host.define) {
+ usize first=host.index(context,root);
+ usize at=first;
+ while(at<host.count(context)){
+  SourceNode source=host.inspect(context,at);
+  if(source.kind>=2){
+   address child=source.right;
+   if(source.kind==4&&source.truth==0){child=source.no;}
+   usize a=host.index(context,source.left);usize b=host.index(context,child);
+   host.define(context,at,source.kind==3 ? 3 : 2,a,b);
+  }else{host.define(context,at,source.kind,0u64,0u64);}
+  at+=1u64;
+ }
+}
+RequiredNode required_node(RequiredGraph graph,usize index) on compute {
+ return unsafe_position<RequiredNode>(unsafe_address(address_bits(graph.nodes)+u64(index)*u64(graph.stride)));
+}
+void required_remaining(RequiredGraph graph,usize index,usize count) on compute {
+ unsafe_position<RequiredNode>(unsafe_address(address_bits(graph.nodes)+u64(index)*u64(graph.stride))).remaining=count;
+}
+u32 required_consume(RequiredGraph graph,usize index) on compute {
+ usize remaining=required_node(graph,index).remaining-1u64;
+ required_remaining(graph,index,remaining);
+ return remaining==0u64 ? 1 : 0;
+}
+void required_abandon(RequiredGraph graph,address context,RequiredHost host,usize index) on cpu
+ requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.pending_count)
+ requires nonzero(host.release) {
+ usize before=host.pending_count(context);
+ host.push(context,index);
+ while(host.pending_count(context)>before){
+  RequiredPending pending=host.pop(context);usize id=pending.index;
+  RequiredNode node=required_node(graph,id);u32 last=required_consume(graph,id);
+  u32 computed=host.release(context,id,last);
+  if(last!=0&&computed==0&&node.kind>=2){host.push(context,node.left);host.push(context,node.right);}
+ }
+}
+extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHost host) on cpu
+ requires nonzero(host.reset) requires nonzero(host.status) requires nonzero(host.push)
+ requires nonzero(host.pop) requires nonzero(host.pending_count) requires nonzero(host.impossible)
+ requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
+ requires nonzero(host.valid_additions) requires nonzero(host.release) {
+ usize at=0u64;
+ while(at<graph.count){
+  RequiredNode node=required_node(graph,at);
+  required_remaining(graph,at,node.users);host.reset(context,at);at+=1u64;
+ }
+ host.push(context,0u64);
+ while(true){
+  RequiredPending pending=host.pop(context);
+  if(pending.present==0){break;}
+  usize id=pending.index;
+  if(host.status(context,id)!=0){continue;}
+  RequiredNode node=required_node(graph,id);
+  if(node.kind==0){host.impossible(context,id);continue;}
+  if(node.kind==1){host.leaf(context,id);continue;}
+  u32 a=host.status(context,node.left);
+  if(a==0){host.push(context,id);host.push(context,node.left);continue;}
+  if(node.kind!=3&&a==1){
+   u32 last=required_consume(graph,node.left);
+   u32 computed=host.release(context,node.left,last);
+   required_abandon(graph,context,host,node.right);
+   host.impossible(context,id);continue;
+  }
+  u32 b=host.status(context,node.right);
+  if(b==0){host.push(context,id);host.push(context,node.right);continue;}
+  u32 valid=1;
+  if(node.kind!=3){
+   if(a!=2||b!=2){valid=0;}
+   else if(required_node(graph,node.left).kind==3&&host.valid_additions(context,node.left)==0){valid=0;}
+   else if(required_node(graph,node.right).kind==3&&host.valid_additions(context,node.right)==0){valid=0;}
+  }
+  u32 left_last=required_consume(graph,node.left);u32 right_last=required_consume(graph,node.right);
+  if(node.kind==3){host.common(context,id,left_last,right_last);}
+  else if(valid!=0){host.union(context,id,left_last,right_last);}
+  else{
+   u32 left_computed=host.release(context,node.left,left_last);
+   u32 right_computed=host.release(context,node.right,right_last);
+   host.impossible(context,id);
+  }
+ }
+ required_remaining(graph,0u64,required_node(graph,0u64).remaining-1u64);
+}
