@@ -1,5 +1,6 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 mod condition_graph;
+mod cross_facts;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2786,34 +2787,7 @@ fn additions_conflict(environment: &Facts, additions: &Facts) -> bool {
     contradictory(additions) || cross_conflict(environment, additions)
 }
 // 两侧已各自完成内部检查；共有事实不会与另一侧冲突。
-fn cross_conflict(a: &Facts, b: &Facts) -> bool {
-    use std::ops::Bound::{Excluded, Included};
-    let (other, facts) = if a.len() < b.len() { (b, a) } else { (a, b) };
-    facts.iter().any(|fact| match *fact {
-        Fact::Boolean(id, truth) => other.contains(&Fact::Boolean(id, !truth)),
-        Fact::Predicate(predicate, truth) => other.contains(&Fact::Predicate(predicate, !truth)),
-        Fact::NonZero(id) => other.contains(&Fact::Zero(id)),
-        Fact::Zero(id) => other.contains(&Fact::NonZero(id)),
-        Fact::Index(id, domain) => other.contains(&Fact::Outside(id, domain)),
-        Fact::Outside(id, domain) => other.contains(&Fact::Index(id, domain)),
-        Fact::Below(a, b, strict, scalar) => {
-            other.contains(&Fact::Below(b, a, true, scalar))
-                || (strict && (other.contains(&Fact::Below(b, a, false, scalar))
-                    || other.contains(&Fact::equal(a, b))))
-        }
-        Fact::Equal(a, b) => other.contains(&Fact::NotEqual(a, b))
-            || (*fact == Fact::equal(a, b) && [Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64].into_iter().any(|scalar| {
-                other.contains(&Fact::Below(a, b, true, scalar))
-                    || other.contains(&Fact::Below(b, a, true, scalar))
-            })),
-        Fact::NotEqual(a, b) => other.contains(&Fact::equal(a, b)),
-        Fact::Minimum(id, scalar, lower) => other
-            .range(Fact::Maximum(id, scalar, 0)..Fact::Maximum(id, scalar, lower)).next().is_some(),
-        Fact::Maximum(id, scalar, upper) => other
-            .range((Excluded(Fact::Minimum(id, scalar, upper)), Included(Fact::Minimum(id, scalar, scalar.bit_mask()))))
-            .next().is_some(),
-    })
-}
+fn cross_conflict(a: &Facts, b: &Facts) -> bool { cross_facts::conflict(a,b) }
 
 
 fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<QueryFacts<'a>> {

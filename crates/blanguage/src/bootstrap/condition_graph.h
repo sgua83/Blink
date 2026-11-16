@@ -76,3 +76,18 @@ extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHo
  requires nonzero(host.pop) requires nonzero(host.pending_count) requires nonzero(host.impossible)
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
  requires nonzero(host.valid_additions) requires nonzero(host.release);
+
+enum CrossFactKind : u32 { Equal=1;Index=2;Minimum=3;Maximum=4;NonZero=5;Boolean=6;Below=7;Outside=8;Zero=9;NotEqual=10;Predicate=11; };
+struct CrossFact { u32 present; CrossFactKind kind; address first; address second; address payload; address scalar; u64 value; u64 mask; u32 flag; };
+struct CrossScalars { array<address,4> values; };
+struct CrossHost {
+ cfn<usize,address,u32> ensures memory(read) count;
+ cfn<void,address,u32> begin;
+ cfn<CrossFact,address> next;
+ cfn<u32,address,u32,CrossFact> ensures memory(read) contains;
+ cfn<u32,address,u32,CrossFact,CrossFact,u32,u32> ensures memory(read) range;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost host) on cpu
+ requires nonzero(host.count) requires nonzero(host.begin) requires nonzero(host.next)
+ requires nonzero(host.contains) requires nonzero(host.range) requires nonzero(host.compare);

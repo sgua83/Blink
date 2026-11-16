@@ -221,3 +221,53 @@ extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHo
  }
  required_remaining(graph,0u64,required_node(graph,0u64).remaining-1u64);
 }
+
+CrossFact cross_equal(CrossFact value,CrossHost host) on cpu requires nonzero(host.compare) {
+ CrossFact key=value;key.kind=CrossFactKind::Equal;
+ if(host.compare(key.first,key.second)>i32(0)){address first=key.first;key.first=key.second;key.second=first;}
+ return key;
+}
+extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost host) on cpu
+ requires nonzero(host.count) requires nonzero(host.begin) requires nonzero(host.next)
+ requires nonzero(host.contains) requires nonzero(host.range) requires nonzero(host.compare) {
+ u32 side=host.count(context,0)<host.count(context,1) ? 0 : 1;
+ u32 other=1-side;host.begin(context,side);
+ while(true){
+  CrossFact fact=host.next(context);if(fact.present==0){return 0;}
+  CrossFact key=fact;
+  if(fact.kind==CrossFactKind::Boolean||fact.kind==CrossFactKind::Predicate){
+   key.flag=1-fact.flag;if(host.contains(context,other,key)!=0){return 1;}
+  }else if(fact.kind==CrossFactKind::NonZero||fact.kind==CrossFactKind::Zero){
+   key.kind=fact.kind==CrossFactKind::NonZero ? CrossFactKind::Zero : CrossFactKind::NonZero;
+   if(host.contains(context,other,key)!=0){return 1;}
+  }else if(fact.kind==CrossFactKind::Index||fact.kind==CrossFactKind::Outside){
+   key.kind=fact.kind==CrossFactKind::Index ? CrossFactKind::Outside : CrossFactKind::Index;
+   if(host.contains(context,other,key)!=0){return 1;}
+  }else if(fact.kind==CrossFactKind::Below){
+   key.first=fact.second;key.second=fact.first;key.flag=1;
+   if(host.contains(context,other,key)!=0){return 1;}
+   if(fact.flag!=0){
+    key.flag=0;if(host.contains(context,other,key)!=0){return 1;}
+    if(host.contains(context,other,cross_equal(fact,host))!=0){return 1;}
+   }
+  }else if(fact.kind==CrossFactKind::Equal){
+   key.kind=CrossFactKind::NotEqual;if(host.contains(context,other,key)!=0){return 1;}
+   if(host.compare(fact.first,fact.second)<=i32(0)){
+    for(i in 0..4){
+     key=fact;key.kind=CrossFactKind::Below;key.flag=1;key.scalar=scalars.values[i];
+     if(host.contains(context,other,key)!=0){return 1;}
+     key.first=fact.second;key.second=fact.first;
+     if(host.contains(context,other,key)!=0){return 1;}
+    }
+   }
+  }else if(fact.kind==CrossFactKind::NotEqual){
+   if(host.contains(context,other,cross_equal(fact,host))!=0){return 1;}
+  }else if(fact.kind==CrossFactKind::Minimum){
+   key.kind=CrossFactKind::Maximum;CrossFact lower=key;lower.value=0u64;
+   if(host.range(context,other,lower,key,0,0)!=0){return 1;}
+  }else if(fact.kind==CrossFactKind::Maximum){
+   key.kind=CrossFactKind::Minimum;CrossFact upper=key;upper.value=fact.mask;
+   if(host.range(context,other,key,upper,1,1)!=0){return 1;}
+  }
+ }
+}
