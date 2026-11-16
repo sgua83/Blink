@@ -16,6 +16,10 @@ impl<'a> Reader<'a> {
         self.position = end;
         Ok(bytes)
     }
+    #[cfg(feature="compiler")]
+    pub(crate) fn with_native_input<T>(&mut self,read:impl FnOnce(&[u8],&mut usize)->Result<T>)->Result<T>{
+        read(self.bytes,&mut self.position)
+    }
     pub fn text(&mut self) -> Result<&'a str> {
         let size = usize::decode(self)?;
         Ok(std::str::from_utf8(self.take(size)?)?)
@@ -281,3 +285,6 @@ record!(ir::Buffer {
     count
 });
 record!(ir::Uniform { name, ty, offset });
+
+#[cfg(feature="compiler")]
+pub(crate) use types::reading::ReadStatus;

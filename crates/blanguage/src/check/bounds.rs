@@ -5,6 +5,7 @@ mod bitwise;
 mod known_bits;
 mod integer;
 mod contract;
+mod codec;
 pub(super) use contract::Normalizer;
 use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::ManuallyDrop, sync::Arc};
 
@@ -112,8 +113,8 @@ impl ScalarPredicate {
         Some(Self::new(self.op, self.scalar, operand(self.a)?, operand(self.b)?))
     }
 }
-crate::module::codec::variants!(Comparison{0=>Equal,1=>NotEqual,2=>Less,3=>Greater,4=>LessEqual,5=>GreaterEqual});
-crate::module::codec::record!(ScalarPredicate { op, scalar, a, b });
+
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IntegerOperation { Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor, ShiftLeft, ShiftRight }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -185,9 +186,9 @@ impl IntegerExpression {
         Some(arithmetic_ranges(operation, scalar, left, right))
     }
 }
-crate::module::codec::variants!(Operand{0=>Value(identity),1=>Constant(scalar,bits)});
-crate::module::codec::variants!(IntegerOperation{0=>Add,1=>Subtract,2=>Multiply,3=>Divide,4=>Remainder,5=>And,6=>Or,7=>Xor,8=>ShiftLeft,9=>ShiftRight});
-crate::module::codec::variants!(IntegerExpression{0=>Binary(op,scalar,a,b)});
+
+
+
 // The existing numeric fact owns one source snapshot and its valid integer domain.
 // Upper means value <= a*d+b+c/d (a >= 0); Cast names the actual F32 conversion.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -201,8 +202,8 @@ pub(super) struct FloatingBound {
     scalar: Scalar,
     form: FloatingForm,
 }
-crate::module::codec::variants!(FloatingForm{0=>Cast,1=>Upper});
-crate::module::codec::record!(FloatingBound{source,lower,upper,terms,scalar,form});
+
+
 type Facts = BTreeSet<Fact>;
 
 struct RequiredFacts {
@@ -5284,16 +5285,6 @@ impl Builder<'_> {
     }
 }
 
-impl crate::module::codec::Encode for ScalarRanges {
-    fn encode(&self, w: &mut crate::module::codec::Writer) {
-        crate::module::codec::Encode::encode(&self.0, w);
-    }
-}
-impl crate::module::codec::Decode for ScalarRanges {
-    fn decode(r: &mut crate::module::codec::Reader<'_>) -> crate::module::codec::Result<Self> {
-        Ok(Self(crate::module::codec::Decode::decode(r)?))
-    }
-}
 // 所有逻辑分量及其两个结果共享节点表；编码不受 Arc 的物理共享方式影响。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EncodedClause<F> {
@@ -5431,7 +5422,7 @@ impl crate::module::codec::Decode for Proof {
         })
     }
 }
-crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,scalar,lower),3=>Maximum(value,scalar,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,scalar),7=>Outside(value,domain),8=>Zero(value),9=>NotEqual(a,b),10=>Predicate(predicate,truth)});
+
 
 pub(super) fn scoped_proof(ty: &Ty, proof: Proof, path: &Clause, env: &BTreeMap<String, Binding>) -> Proof {
     proof_scope(path, env)(ty, proof)

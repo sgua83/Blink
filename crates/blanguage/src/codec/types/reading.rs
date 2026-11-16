@@ -9,7 +9,7 @@ fn slot<T>(value: &mut T) -> Slot {
 }
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ReadStatus {
+pub(crate) enum ReadStatus {
     Success = 0,
     Overflow = 1,
     Truncated = 2,
@@ -23,7 +23,42 @@ enum ReadStatus {
     Predicate = 10,
     Condition = 11,
     RustError = 12,
+    Identity = 13,
+    Operand = 14,
+    IntegerOperation = 15,
+    IntegerExpression = 16,
+    Comparison = 17,
+    FloatingForm = 18,
+    IndexDomain = 19,
+    Fact = 20,
 }
+impl ReadStatus {
+    pub(crate) fn message(self) -> Option<&'static str> {
+        match self {
+            ReadStatus::Success | ReadStatus::RustError => None,
+            ReadStatus::Overflow => Some("模块接口长度溢出"),
+            ReadStatus::Truncated => Some("模块接口被截断"),
+            ReadStatus::Boolean => Some("模块布尔值编码错误"),
+            ReadStatus::Scalar => Some("模块枚举编码错误：ir::Scalar"),
+            ReadStatus::Access => Some("模块枚举编码错误：ast::Access"),
+            ReadStatus::Target => Some("模块枚举编码错误：ast::Target"),
+            ReadStatus::Shape => Some("模块枚举编码错误：ast::Shape"),
+            ReadStatus::Argument => Some("模块枚举编码错误：ast::GenericArgument"),
+            ReadStatus::Expression => Some("模块枚举编码错误：ast::ExprKind"),
+            ReadStatus::Predicate => Some("模块枚举编码错误：ast::ContractPredicate"),
+            ReadStatus::Condition => Some("模块枚举编码错误：ast::OutputCondition"),
+            ReadStatus::Identity => Some("模块枚举编码错误：ValueIdentity"),
+            ReadStatus::Operand => Some("模块枚举编码错误：Operand"),
+            ReadStatus::IntegerOperation => Some("模块枚举编码错误：IntegerOperation"),
+            ReadStatus::IntegerExpression => Some("模块枚举编码错误：IntegerExpression"),
+            ReadStatus::Comparison => Some("模块枚举编码错误：Comparison"),
+            ReadStatus::FloatingForm => Some("模块枚举编码错误：FloatingForm"),
+            ReadStatus::IndexDomain => Some("模块枚举编码错误：IndexDomain"),
+            ReadStatus::Fact => Some("模块枚举编码错误：Fact"),
+        }
+    }
+}
+
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ScalarTag {
@@ -331,20 +366,7 @@ pub(in crate::codec) fn decode(reader: &mut Reader<'_>) -> Result<ir::Ty> {
         result: Ok(()),
     };
     let status = unsafe { parse(slot(&mut context), slot(&mut output), read_type) };
-    let message = match status {
-        ReadStatus::Success | ReadStatus::RustError => None,
-        ReadStatus::Overflow => Some("模块接口长度溢出"),
-        ReadStatus::Truncated => Some("模块接口被截断"),
-        ReadStatus::Boolean => Some("模块布尔值编码错误"),
-        ReadStatus::Scalar => Some("模块枚举编码错误：ir::Scalar"),
-        ReadStatus::Access => Some("模块枚举编码错误：ast::Access"),
-        ReadStatus::Target => Some("模块枚举编码错误：ast::Target"),
-        ReadStatus::Shape => Some("模块枚举编码错误：ast::Shape"),
-        ReadStatus::Argument => Some("模块枚举编码错误：ast::GenericArgument"),
-        ReadStatus::Expression => Some("模块枚举编码错误：ast::ExprKind"),
-        ReadStatus::Predicate => Some("模块枚举编码错误：ast::ContractPredicate"),
-        ReadStatus::Condition => Some("模块枚举编码错误：ast::OutputCondition"),
-    };
+    let message = status.message();
     if let Some(message) = message {
         context.result = Err(message.into());
     }

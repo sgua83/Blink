@@ -3,132 +3,132 @@ module bootstrap.contract_codec;
 address item(Span values,u64 index) on cpu {
  return unsafe_address(address_bits(values.data)+index*values.stride);
 }
-void byte(u8 value,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
- host.append(output,address_of(value),1u64);
+void byte(u8 value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+ append(output,address_of(value),1u64);
 }
-void word(u32 value,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
+void word(u32 value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
  array<u8,4> bytes;
  bytes[0]=u8(value);bytes[1]=u8(value>>8);bytes[2]=u8(value>>16);bytes[3]=u8(value>>24);
- host.append(output,address_of(bytes[0]),4u64);
+ append(output,address_of(bytes[0]),4u64);
 }
-void wide(u64 value,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
+void wide(u64 value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
  array<u8,8> bytes;
  bytes[0]=u8(value);bytes[1]=u8(value>>8);bytes[2]=u8(value>>16);bytes[3]=u8(value>>24);
  bytes[4]=u8(value>>32);bytes[5]=u8(value>>40);bytes[6]=u8(value>>48);bytes[7]=u8(value>>56);
- host.append(output,address_of(bytes[0]),8u64);
+ append(output,address_of(bytes[0]),8u64);
 }
-void text(Bytes value,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
- wide(value.count,output,host);host.append(output,value.data,value.count);
+void text(Bytes value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+ wide(value.count,output,append);append(output,value.data,value.count);
 }
 void type_option(address value,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
- bool present=address_bits(value)!=0u64;byte(present?u8(1):u8(0),output,host);
+ bool present=address_bits(value)!=0u64;byte(present?u8(1):u8(0),output,host.append);
  if(present){write_type(value,output,host);}
 }
 void arguments(Span values,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
- wide(values.count,output,host);u64 index=0u64;
+ wide(values.count,output,host.append);u64 index=0u64;
  while(index<values.count){
   Argument value=host.argument(item(values,index));
-  if(value.kind==0){word(0,output,host);type_name(value.value,output,host);}
-  else{word(1,output,host);shape(value.value,output,host);}
+  if(value.kind==0){word(0,output,host.append);type_name(value.value,output,host);}
+  else{word(1,output,host.append);shape(value.value,output,host);}
   index+=1u64;
  }
 }
 void predicates(Span values,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
- wide(values.count,output,host);u64 index=0u64;
+ wide(values.count,output,host.append);u64 index=0u64;
  while(index<values.count){predicate(item(values,index),output,host);index+=1u64;}
 }
 void type_name(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
- TypeName value=host.type_name(source);text(value.name,output,host);byte(u8(value.canonical),output,host);
- arguments(value.arguments,output,host);byte(u8(value.dataset),output,host);
- byte(u8(value.view),output,host);byte(u8(value.tile),output,host);
- bool count=address_bits(value.count)!=0u64;byte(count?u8(1):u8(0),output,host);
+ TypeName value=host.type_name(source);text(value.name,output,host.append);byte(u8(value.canonical),output,host.append);
+ arguments(value.arguments,output,host);byte(u8(value.dataset),output,host.append);
+ byte(u8(value.view),output,host.append);byte(u8(value.tile),output,host.append);
+ bool count=address_bits(value.count)!=0u64;byte(count?u8(1):u8(0),output,host.append);
  if(count){shape(value.count,output,host);}
- byte(u8(value.contracts_present),output,host);
+ byte(u8(value.contracts_present),output,host.append);
  if(value.contracts_present!=0){predicates(value.contracts,output,host);}
 }
 void shape(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
  Shape value=host.shape(source);
- if(value.kind==0){word(0,output,host);word(value.literal,output,host);}
- else if(value.kind==1){word(1,output,host);text(value.name,output,host);}
- else{word(2,output,host);expression(value.expression,output,host);}
+ if(value.kind==0){word(0,output,host.append);word(value.literal,output,host.append);}
+ else if(value.kind==1){word(1,output,host.append);text(value.name,output,host.append);}
+ else{word(2,output,host.append);expression(value.expression,output,host);}
 }
 void expressions(Span values,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
- wide(values.count,output,host);u64 index=0u64;
+ wide(values.count,output,host.append);u64 index=0u64;
  while(index<values.count){expression(item(values,index),output,host);index+=1u64;}
 }
 void expression(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
  Expression value=host.expression(source);
  // Description kinds are actual syntax variants; the wire tags and payload
  // order below belong to this encoder, not the Rust field projection.
- if(value.kind==0){word(0,output,host);text(value.name,output,host);}
- else if(value.kind==1){word(1,output,host);word(value.literal,output,host);}
- else if(value.kind==2){word(2,output,host);byte(u8(value.literal),output,host);}
- else if(value.kind==3){word(3,output,host);text(value.name,output,host);}
- else if(value.kind==4){word(4,output,host);expression(value.a,output,host);text(value.name,output,host);}
- else if(value.kind==5){word(5,output,host);expression(value.a,output,host);expression(value.b,output,host);}
- else if(value.kind==6){word(6,output,host);text(value.name,output,host);expressions(value.arguments,output,host);}
- else if(value.kind==7){word(7,output,host);expression(value.a,output,host);expressions(value.arguments,output,host);}
- else if(value.kind==8){word(8,output,host);type_name(value.ty,output,host);expressions(value.arguments,output,host);}
- else if(value.kind==9){word(9,output,host);text(value.name,output,host);arguments(value.types,output,host);expressions(value.arguments,output,host);}
- else if(value.kind==10){word(10,output,host);text(value.name,output,host);arguments(value.types,output,host);}
+ if(value.kind==0){word(0,output,host.append);text(value.name,output,host.append);}
+ else if(value.kind==1){word(1,output,host.append);word(value.literal,output,host.append);}
+ else if(value.kind==2){word(2,output,host.append);byte(u8(value.literal),output,host.append);}
+ else if(value.kind==3){word(3,output,host.append);text(value.name,output,host.append);}
+ else if(value.kind==4){word(4,output,host.append);expression(value.a,output,host);text(value.name,output,host.append);}
+ else if(value.kind==5){word(5,output,host.append);expression(value.a,output,host);expression(value.b,output,host);}
+ else if(value.kind==6){word(6,output,host.append);text(value.name,output,host.append);expressions(value.arguments,output,host);}
+ else if(value.kind==7){word(7,output,host.append);expression(value.a,output,host);expressions(value.arguments,output,host);}
+ else if(value.kind==8){word(8,output,host.append);type_name(value.ty,output,host);expressions(value.arguments,output,host);}
+ else if(value.kind==9){word(9,output,host.append);text(value.name,output,host.append);arguments(value.types,output,host);expressions(value.arguments,output,host);}
+ else if(value.kind==10){word(10,output,host.append);text(value.name,output,host.append);arguments(value.types,output,host);}
  else if(value.kind==11){
-  word(11,output,host);text(value.name,output,host);byte(u8(value.types_present),output,host);
+  word(11,output,host.append);text(value.name,output,host.append);byte(u8(value.types_present),output,host.append);
   if(value.types_present!=0){arguments(value.types,output,host);}expressions(value.arguments,output,host);
- }else if(value.kind==12){word(12,output,host);word(value.target,output,host);expression(value.a,output,host);}
- else if(value.kind==13){word(13,output,host);text(value.name,output,host);expression(value.a,output,host);}
- else if(value.kind==14){word(14,output,host);text(value.name,output,host);expression(value.a,output,host);expression(value.b,output,host);}
- else{word(15,output,host);expression(value.a,output,host);expression(value.b,output,host);expression(value.c,output,host);}
- wide(value.start,output,host);wide(value.end,output,host);
+ }else if(value.kind==12){word(12,output,host.append);word(value.target,output,host.append);expression(value.a,output,host);}
+ else if(value.kind==13){word(13,output,host.append);text(value.name,output,host.append);expression(value.a,output,host);}
+ else if(value.kind==14){word(14,output,host.append);text(value.name,output,host.append);expression(value.a,output,host);expression(value.b,output,host);}
+ else{word(15,output,host.append);expression(value.a,output,host);expression(value.b,output,host);expression(value.c,output,host);}
+ wide(value.start,output,host.append);wide(value.end,output,host.append);
 }
 void constant(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
- Constant value=host.constant(source);write_type(value.ty,output,host);wide(value.bits.count,output,host);u64 index=0u64;
- while(index<value.bits.count){wide(unsafe_position<u64>(item(value.bits,index)),output,host);index+=1u64;}
+ Constant value=host.constant(source);write_type(value.ty,output,host);wide(value.bits.count,output,host.append);u64 index=0u64;
+ while(index<value.bits.count){wide(unsafe_position<u64>(item(value.bits,index)),output,host.append);index+=1u64;}
 }
 void condition(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
  Condition value=host.condition(source);
- if(value.kind==0){word(0,output,host);text(value.name,output,host);}
- else if(value.kind==1){word(1,output,host);text(value.name,output,host);}
- else if(value.kind==2){word(2,output,host);byte(u8(value.literal),output,host);}
- else if(value.kind==3){word(3,output,host);condition(value.a,output,host);text(value.name,output,host);}
- else if(value.kind==4){word(4,output,host);text(value.name,output,host);condition(value.a,output,host);}
- else if(value.kind==5){word(5,output,host);text(value.name,output,host);condition(value.a,output,host);condition(value.b,output,host);}
- else if(value.kind==6){word(6,output,host);word(value.literal,output,host);}
- else{word(7,output,host);constant(value.constant,output,host);}
+ if(value.kind==0){word(0,output,host.append);text(value.name,output,host.append);}
+ else if(value.kind==1){word(1,output,host.append);text(value.name,output,host.append);}
+ else if(value.kind==2){word(2,output,host.append);byte(u8(value.literal),output,host.append);}
+ else if(value.kind==3){word(3,output,host.append);condition(value.a,output,host);text(value.name,output,host.append);}
+ else if(value.kind==4){word(4,output,host.append);text(value.name,output,host.append);condition(value.a,output,host);}
+ else if(value.kind==5){word(5,output,host.append);text(value.name,output,host.append);condition(value.a,output,host);condition(value.b,output,host);}
+ else if(value.kind==6){word(6,output,host.append);word(value.literal,output,host.append);}
+ else{word(7,output,host.append);constant(value.constant,output,host);}
 }
 void predicate(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
  Predicate value=host.predicate(source);
- if(value.kind==0){word(0,output,host);text(value.first,output,host);text(value.second,output,host);text(value.third,output,host);}
- else if(value.kind==1){word(1,output,host);text(value.first,output,host);}
- else if(value.kind==2){word(2,output,host);text(value.first,output,host);}
- else if(value.kind==3){word(4,output,host);text(value.first,output,host);}
- else if(value.kind==4){word(8,output,host);byte(u8(value.access_present),output,host);if(value.access_present!=0){word(value.access,output,host);}}
- else if(value.kind==5){word(3,output,host);text(value.first,output,host);text(value.second,output,host);}
+ if(value.kind==0){word(0,output,host.append);text(value.first,output,host.append);text(value.second,output,host.append);text(value.third,output,host.append);}
+ else if(value.kind==1){word(1,output,host.append);text(value.first,output,host.append);}
+ else if(value.kind==2){word(2,output,host.append);text(value.first,output,host.append);}
+ else if(value.kind==3){word(4,output,host.append);text(value.first,output,host.append);}
+ else if(value.kind==4){word(8,output,host.append);byte(u8(value.access_present),output,host.append);if(value.access_present!=0){word(value.access,output,host.append);}}
+ else if(value.kind==5){word(3,output,host.append);text(value.first,output,host.append);text(value.second,output,host.append);}
  else if(value.kind==6){
-  word(9,output,host);text(value.first,output,host);wide(value.intervals.count,output,host);u64 index=0u64;
+  word(9,output,host.append);text(value.first,output,host.append);wide(value.intervals.count,output,host.append);u64 index=0u64;
   while(index<value.intervals.count){Interval bounds=host.interval(item(value.intervals,index));condition(bounds.lower,output,host);condition(bounds.upper,output,host);index+=1u64;}
- }else if(value.kind==7){word(6,output,host);text(value.first,output,host);text(value.second,output,host);}
- else if(value.kind==8){word(5,output,host);text(value.first,output,host);condition(value.condition,output,host);}
- else{word(7,output,host);text(value.first,output,host);condition(value.condition,output,host);}
+ }else if(value.kind==7){word(6,output,host.append);text(value.first,output,host.append);text(value.second,output,host.append);}
+ else if(value.kind==8){word(5,output,host.append);text(value.first,output,host.append);condition(value.condition,output,host);}
+ else{word(7,output,host.append);text(value.first,output,host.append);condition(value.condition,output,host);}
 }
 extern "C" void write_type(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant) {
- Type value=host.ty(source);text(value.name,output,host);wide(value.arguments.count,output,host);u64 index=0u64;
+ Type value=host.ty(source);text(value.name,output,host.append);wide(value.arguments.count,output,host.append);u64 index=0u64;
  while(index<value.arguments.count){write_type(item(value.arguments,index),output,host);index+=1u64;}
- wide(value.values.count,output,host);index=0u64;
- while(index<value.values.count){word(unsafe_position<u32>(item(value.values,index)),output,host);index+=1u64;}
- word(value.size,output,host);word(value.alignment,output,host);wide(value.components.count,output,host);index=0u64;
- while(index<value.components.count){Component part=host.component(item(value.components,index));word(part.scalar,output,host);word(part.word,output,host);index+=1u64;}
- wide(value.fields.count,output,host);index=0u64;
- while(index<value.fields.count){Field field=host.field(item(value.fields,index));text(field.name,output,host);word(field.word,output,host);write_type(field.ty,output,host);index+=1u64;}
+ wide(value.values.count,output,host.append);index=0u64;
+ while(index<value.values.count){word(unsafe_position<u32>(item(value.values,index)),output,host.append);index+=1u64;}
+ word(value.size,output,host.append);word(value.alignment,output,host.append);wide(value.components.count,output,host.append);index=0u64;
+ while(index<value.components.count){Component part=host.component(item(value.components,index));word(part.scalar,output,host.append);word(part.word,output,host.append);index+=1u64;}
+ wide(value.fields.count,output,host.append);index=0u64;
+ while(index<value.fields.count){Field field=host.field(item(value.fields,index));text(field.name,output,host.append);word(field.word,output,host.append);write_type(field.ty,output,host);index+=1u64;}
  type_option(value.view,output,host);type_option(value.array,output,host);
- byte(u8(value.enumeration),output,host);byte(u8(value.result),output,host);wide(value.variants.count,output,host);index=0u64;
- while(index<value.variants.count){Variant variant=host.variant(item(value.variants,index));text(variant.name,output,host);word(variant.discriminant,output,host);write_type(variant.ty,output,host);index+=1u64;}
- bool dataset=address_bits(value.dataset)!=0u64;byte(dataset?u8(1):u8(0),output,host);
+ byte(u8(value.enumeration),output,host.append);byte(u8(value.result),output,host.append);wide(value.variants.count,output,host.append);index=0u64;
+ while(index<value.variants.count){Variant variant=host.variant(item(value.variants,index));text(variant.name,output,host.append);word(variant.discriminant,output,host.append);write_type(variant.ty,output,host);index+=1u64;}
+ bool dataset=address_bits(value.dataset)!=0u64;byte(dataset?u8(1):u8(0),output,host.append);
  if(dataset){type_name(value.dataset,output,host);}
- byte(u8(value.cleanup_present),output,host);if(value.cleanup_present!=0){text(value.cleanup,output,host);}
- bool callable=address_bits(value.function)!=0u64;byte(callable?u8(1):u8(0),output,host);
+ byte(u8(value.cleanup_present),output,host.append);if(value.cleanup_present!=0){text(value.cleanup,output,host.append);}
+ bool callable=address_bits(value.function)!=0u64;byte(callable?u8(1):u8(0),output,host.append);
  if(callable){
-  Function function=host.function(value.function);type_name(function.result,output,host);wide(function.parameters.count,output,host);index=0u64;
-  while(index<function.parameters.count){Parameter parameter=host.parameter(item(function.parameters,index));word(parameter.access,output,host);type_name(parameter.ty,output,host);index+=1u64;}
+  Function function=host.function(value.function);type_name(function.result,output,host);wide(function.parameters.count,output,host.append);index=0u64;
+  while(index<function.parameters.count){Parameter parameter=host.parameter(item(function.parameters,index));word(parameter.access,output,host.append);type_name(parameter.ty,output,host);index+=1u64;}
   predicates(function.contracts,output,host);
  }
 }
@@ -421,4 +421,596 @@ extern "C" ReadStatus read_predicate_payload(PredicateTag kind,PredicateFields f
  if(kind==PredicateTag::Initialized||kind==PredicateTag::Cleanup){return read_condition(input,position,fields.condition,host);}
  if(kind==PredicateTag::Range){return read_owned_values(input,position,fields.intervals,host.context,host.push_interval);}
  return ReadStatus::Success;
+}
+
+void numeric_write_scalar(ScalarTag value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+if(value==ScalarTag::F32){word(0,output,append);}
+else if(value==ScalarTag::U32){word(1,output,append);}
+else if(value==ScalarTag::I32){word(2,output,append);}
+else if(value==ScalarTag::Bool){word(3,output,append);}
+else if(value==ScalarTag::U64){word(4,output,append);}
+else if(value==ScalarTag::I64){word(5,output,append);}
+else if(value==ScalarTag::F64){word(6,output,append);}
+else if(value==ScalarTag::U8){word(7,output,append);}
+else if(value==ScalarTag::I8){word(8,output,append);}
+else if(value==ScalarTag::U16){word(9,output,append);}
+else if(value==ScalarTag::I16){word(10,output,append);}
+}
+ReadStatus numeric_read_scalar(Bytes input,inout u64 position,inout ScalarTag output) on cpu {ReadScalar value=read_scalar(input,position);if(value.status!=ReadStatus::Success){return value.status;}output=value.value;return ReadStatus::Success;}
+extern "C" void numeric_write_identity(NumericIdentity value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+if(value.kind==IdentityKind::Register){word(0,output,append);
+wide(value.first,output,append);
+}
+else if(value.kind==IdentityKind::DataLength){word(1,output,append);
+wide(value.first,output,append);
+}
+else if(value.kind==IdentityKind::TileLength){word(2,output,append);
+}
+else if(value.kind==IdentityKind::ParameterContent){word(3,output,append);
+wide(value.first,output,append);
+wide(value.second,output,append);
+}
+else if(value.kind==IdentityKind::ResourceParameter){word(4,output,append);
+wide(value.first,output,append);
+wide(value.second,output,append);
+}
+else if(value.kind==IdentityKind::ParameterStorage){word(5,output,append);
+wide(value.first,output,append);
+}
+else if(value.kind==IdentityKind::ElementComponent){word(6,output,append);
+wide(value.first,output,append);
+}
+else if(value.kind==IdentityKind::ElementParent){word(7,output,append);
+wide(value.first,output,append);
+wide(value.second,output,append);
+}
+else if(value.kind==IdentityKind::DatasetContent){word(8,output,append);
+wide(value.first,output,append);
+wide(value.second,output,append);
+wide(value.third,output,append);
+}
+else if(value.kind==IdentityKind::MemoryValue){word(9,output,append);
+wide(value.first,output,append);
+wide(value.second,output,append);
+}
+else if(value.kind==IdentityKind::ElementIndex){word(10,output,append);
+wide(value.first,output,append);
+}
+else if(value.kind==IdentityKind::LoopValue){word(11,output,append);
+wide(value.first,output,append);
+wide(value.second,output,append);
+}
+else if(value.kind==IdentityKind::TaskResult){word(12,output,append);
+wide(value.first,output,append);
+}
+else if(value.kind==IdentityKind::TaskCompletion){word(13,output,append);
+wide(value.first,output,append);
+wide(value.second,output,append);
+}
+else if(value.kind==IdentityKind::TaskControl){word(14,output,append);
+wide(value.first,output,append);
+}
+else if(value.kind==IdentityKind::TaskReturnSource){word(15,output,append);
+wide(value.first,output,append);
+}
+else if(value.kind==IdentityKind::TaskWorkCompletion){word(16,output,append);
+word(u32(value.first),output,append);
+word(u32(value.second),output,append);
+}
+}
+extern "C" ReadStatus numeric_read_identity(Bytes input,inout u64 position,inout NumericIdentity output) on cpu {
+ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+if(tag.value==0u64){
+output.kind=IdentityKind::Register;
+ReadValue part_1=fixed_value(input,position,8);if(part_1.status!=ReadStatus::Success){return part_1.status;}output.first=part_1.value;
+return ReadStatus::Success;}
+else if(tag.value==1u64){
+output.kind=IdentityKind::DataLength;
+ReadValue part_2=fixed_value(input,position,8);if(part_2.status!=ReadStatus::Success){return part_2.status;}output.first=part_2.value;
+return ReadStatus::Success;}
+else if(tag.value==2u64){
+output.kind=IdentityKind::TileLength;
+return ReadStatus::Success;}
+else if(tag.value==3u64){
+output.kind=IdentityKind::ParameterContent;
+ReadValue part_3=fixed_value(input,position,8);if(part_3.status!=ReadStatus::Success){return part_3.status;}output.first=part_3.value;
+ReadValue part_4=fixed_value(input,position,8);if(part_4.status!=ReadStatus::Success){return part_4.status;}output.second=part_4.value;
+return ReadStatus::Success;}
+else if(tag.value==4u64){
+output.kind=IdentityKind::ResourceParameter;
+ReadValue part_5=fixed_value(input,position,8);if(part_5.status!=ReadStatus::Success){return part_5.status;}output.first=part_5.value;
+ReadValue part_6=fixed_value(input,position,8);if(part_6.status!=ReadStatus::Success){return part_6.status;}output.second=part_6.value;
+return ReadStatus::Success;}
+else if(tag.value==5u64){
+output.kind=IdentityKind::ParameterStorage;
+ReadValue part_7=fixed_value(input,position,8);if(part_7.status!=ReadStatus::Success){return part_7.status;}output.first=part_7.value;
+return ReadStatus::Success;}
+else if(tag.value==6u64){
+output.kind=IdentityKind::ElementComponent;
+ReadValue part_8=fixed_value(input,position,8);if(part_8.status!=ReadStatus::Success){return part_8.status;}output.first=part_8.value;
+return ReadStatus::Success;}
+else if(tag.value==7u64){
+output.kind=IdentityKind::ElementParent;
+ReadValue part_9=fixed_value(input,position,8);if(part_9.status!=ReadStatus::Success){return part_9.status;}output.first=part_9.value;
+ReadValue part_10=fixed_value(input,position,8);if(part_10.status!=ReadStatus::Success){return part_10.status;}output.second=part_10.value;
+return ReadStatus::Success;}
+else if(tag.value==8u64){
+output.kind=IdentityKind::DatasetContent;
+ReadValue part_11=fixed_value(input,position,8);if(part_11.status!=ReadStatus::Success){return part_11.status;}output.first=part_11.value;
+ReadValue part_12=fixed_value(input,position,8);if(part_12.status!=ReadStatus::Success){return part_12.status;}output.second=part_12.value;
+ReadValue part_13=fixed_value(input,position,8);if(part_13.status!=ReadStatus::Success){return part_13.status;}output.third=part_13.value;
+return ReadStatus::Success;}
+else if(tag.value==9u64){
+output.kind=IdentityKind::MemoryValue;
+ReadValue part_14=fixed_value(input,position,8);if(part_14.status!=ReadStatus::Success){return part_14.status;}output.first=part_14.value;
+ReadValue part_15=fixed_value(input,position,8);if(part_15.status!=ReadStatus::Success){return part_15.status;}output.second=part_15.value;
+return ReadStatus::Success;}
+else if(tag.value==10u64){
+output.kind=IdentityKind::ElementIndex;
+ReadValue part_16=fixed_value(input,position,8);if(part_16.status!=ReadStatus::Success){return part_16.status;}output.first=part_16.value;
+return ReadStatus::Success;}
+else if(tag.value==11u64){
+output.kind=IdentityKind::LoopValue;
+ReadValue part_17=fixed_value(input,position,8);if(part_17.status!=ReadStatus::Success){return part_17.status;}output.first=part_17.value;
+ReadValue part_18=fixed_value(input,position,8);if(part_18.status!=ReadStatus::Success){return part_18.status;}output.second=part_18.value;
+return ReadStatus::Success;}
+else if(tag.value==12u64){
+output.kind=IdentityKind::TaskResult;
+ReadValue part_19=fixed_value(input,position,8);if(part_19.status!=ReadStatus::Success){return part_19.status;}output.first=part_19.value;
+return ReadStatus::Success;}
+else if(tag.value==13u64){
+output.kind=IdentityKind::TaskCompletion;
+ReadValue part_20=fixed_value(input,position,8);if(part_20.status!=ReadStatus::Success){return part_20.status;}output.first=part_20.value;
+ReadValue part_21=fixed_value(input,position,8);if(part_21.status!=ReadStatus::Success){return part_21.status;}output.second=part_21.value;
+return ReadStatus::Success;}
+else if(tag.value==14u64){
+output.kind=IdentityKind::TaskControl;
+ReadValue part_22=fixed_value(input,position,8);if(part_22.status!=ReadStatus::Success){return part_22.status;}output.first=part_22.value;
+return ReadStatus::Success;}
+else if(tag.value==15u64){
+output.kind=IdentityKind::TaskReturnSource;
+ReadValue part_23=fixed_value(input,position,8);if(part_23.status!=ReadStatus::Success){return part_23.status;}output.first=part_23.value;
+return ReadStatus::Success;}
+else if(tag.value==16u64){
+output.kind=IdentityKind::TaskWorkCompletion;
+ReadValue part_24=fixed_value(input,position,4);if(part_24.status!=ReadStatus::Success){return part_24.status;}output.first=u64(u32(part_24.value));
+ReadValue part_25=fixed_value(input,position,4);if(part_25.status!=ReadStatus::Success){return part_25.status;}output.second=u64(u32(part_25.value));
+return ReadStatus::Success;}
+return ReadStatus::Identity;
+}
+extern "C" void numeric_write_operand(NumericOperand value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+if(value.kind==OperandKind::Value){word(0,output,append);
+numeric_write_identity(value.identity,output,append);
+}
+else if(value.kind==OperandKind::Constant){word(1,output,append);
+numeric_write_scalar(value.scalar,output,append);
+wide(value.bits,output,append);
+}
+}
+extern "C" ReadStatus numeric_read_operand(Bytes input,inout u64 position,inout NumericOperand output) on cpu {
+ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+if(tag.value==0u64){
+output.kind=OperandKind::Value;
+ReadStatus status_26=numeric_read_identity(input,position,output.identity);if(status_26!=ReadStatus::Success){return status_26;}
+return ReadStatus::Success;}
+else if(tag.value==1u64){
+output.kind=OperandKind::Constant;
+ReadStatus status_27=numeric_read_scalar(input,position,output.scalar);if(status_27!=ReadStatus::Success){return status_27;}
+ReadValue part_28=fixed_value(input,position,8);if(part_28.status!=ReadStatus::Success){return part_28.status;}output.bits=part_28.value;
+return ReadStatus::Success;}
+return ReadStatus::Operand;
+}
+extern "C" void numeric_write_integer(IntegerKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+if(value==IntegerKind::Add){word(0,output,append);
+}
+else if(value==IntegerKind::Subtract){word(1,output,append);
+}
+else if(value==IntegerKind::Multiply){word(2,output,append);
+}
+else if(value==IntegerKind::Divide){word(3,output,append);
+}
+else if(value==IntegerKind::Remainder){word(4,output,append);
+}
+else if(value==IntegerKind::And){word(5,output,append);
+}
+else if(value==IntegerKind::Or){word(6,output,append);
+}
+else if(value==IntegerKind::Xor){word(7,output,append);
+}
+else if(value==IntegerKind::ShiftLeft){word(8,output,append);
+}
+else if(value==IntegerKind::ShiftRight){word(9,output,append);
+}
+}
+extern "C" ReadStatus numeric_read_integer(Bytes input,inout u64 position,inout IntegerKind output) on cpu {
+ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+if(tag.value==0u64){
+output=IntegerKind::Add;
+return ReadStatus::Success;}
+else if(tag.value==1u64){
+output=IntegerKind::Subtract;
+return ReadStatus::Success;}
+else if(tag.value==2u64){
+output=IntegerKind::Multiply;
+return ReadStatus::Success;}
+else if(tag.value==3u64){
+output=IntegerKind::Divide;
+return ReadStatus::Success;}
+else if(tag.value==4u64){
+output=IntegerKind::Remainder;
+return ReadStatus::Success;}
+else if(tag.value==5u64){
+output=IntegerKind::And;
+return ReadStatus::Success;}
+else if(tag.value==6u64){
+output=IntegerKind::Or;
+return ReadStatus::Success;}
+else if(tag.value==7u64){
+output=IntegerKind::Xor;
+return ReadStatus::Success;}
+else if(tag.value==8u64){
+output=IntegerKind::ShiftLeft;
+return ReadStatus::Success;}
+else if(tag.value==9u64){
+output=IntegerKind::ShiftRight;
+return ReadStatus::Success;}
+return ReadStatus::IntegerOperation;
+}
+extern "C" void numeric_write_expression(NumericExpression value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+if(true){word(0,output,append);
+numeric_write_integer(value.operation,output,append);
+numeric_write_scalar(value.scalar,output,append);
+numeric_write_operand(value.left,output,append);
+numeric_write_operand(value.right,output,append);
+}
+}
+extern "C" ReadStatus numeric_read_expression(Bytes input,inout u64 position,inout NumericExpression output) on cpu {
+ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+if(tag.value==0u64){
+ReadStatus status_29=numeric_read_integer(input,position,output.operation);if(status_29!=ReadStatus::Success){return status_29;}
+ReadStatus status_30=numeric_read_scalar(input,position,output.scalar);if(status_30!=ReadStatus::Success){return status_30;}
+ReadStatus status_31=numeric_read_operand(input,position,output.left);if(status_31!=ReadStatus::Success){return status_31;}
+ReadStatus status_32=numeric_read_operand(input,position,output.right);if(status_32!=ReadStatus::Success){return status_32;}
+return ReadStatus::Success;}
+return ReadStatus::IntegerExpression;
+}
+extern "C" void numeric_write_comparison(ComparisonKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+if(value==ComparisonKind::Equal){word(0,output,append);
+}
+else if(value==ComparisonKind::NotEqual){word(1,output,append);
+}
+else if(value==ComparisonKind::Less){word(2,output,append);
+}
+else if(value==ComparisonKind::Greater){word(3,output,append);
+}
+else if(value==ComparisonKind::LessEqual){word(4,output,append);
+}
+else if(value==ComparisonKind::GreaterEqual){word(5,output,append);
+}
+}
+extern "C" ReadStatus numeric_read_comparison(Bytes input,inout u64 position,inout ComparisonKind output) on cpu {
+ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+if(tag.value==0u64){
+output=ComparisonKind::Equal;
+return ReadStatus::Success;}
+else if(tag.value==1u64){
+output=ComparisonKind::NotEqual;
+return ReadStatus::Success;}
+else if(tag.value==2u64){
+output=ComparisonKind::Less;
+return ReadStatus::Success;}
+else if(tag.value==3u64){
+output=ComparisonKind::Greater;
+return ReadStatus::Success;}
+else if(tag.value==4u64){
+output=ComparisonKind::LessEqual;
+return ReadStatus::Success;}
+else if(tag.value==5u64){
+output=ComparisonKind::GreaterEqual;
+return ReadStatus::Success;}
+return ReadStatus::Comparison;
+}
+extern "C" void numeric_write_floating_form(FloatingKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+if(value==FloatingKind::Cast){word(0,output,append);
+}
+else if(value==FloatingKind::Upper){word(1,output,append);
+}
+}
+extern "C" ReadStatus numeric_read_floating_form(Bytes input,inout u64 position,inout FloatingKind output) on cpu {
+ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+if(tag.value==0u64){
+output=FloatingKind::Cast;
+return ReadStatus::Success;}
+else if(tag.value==1u64){
+output=FloatingKind::Upper;
+return ReadStatus::Success;}
+return ReadStatus::FloatingForm;
+}
+extern "C" void numeric_write_floating(NumericFloating value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+numeric_write_identity(value.source,output,append);
+wide(value.lower,output,append);
+wide(value.upper,output,append);
+wide(value.terms[0],output,append);
+wide(value.terms[1],output,append);
+wide(value.terms[2],output,append);
+numeric_write_scalar(value.scalar,output,append);
+numeric_write_floating_form(value.form,output,append);
+}
+extern "C" ReadStatus numeric_read_floating(Bytes input,inout u64 position,inout NumericFloating output) on cpu {
+ReadStatus status_33=numeric_read_identity(input,position,output.source);if(status_33!=ReadStatus::Success){return status_33;}
+ReadValue part_34=fixed_value(input,position,8);if(part_34.status!=ReadStatus::Success){return part_34.status;}output.lower=part_34.value;
+ReadValue part_35=fixed_value(input,position,8);if(part_35.status!=ReadStatus::Success){return part_35.status;}output.upper=part_35.value;
+ReadValue part_36=fixed_value(input,position,8);if(part_36.status!=ReadStatus::Success){return part_36.status;}output.terms[0]=part_36.value;
+ReadValue part_37=fixed_value(input,position,8);if(part_37.status!=ReadStatus::Success){return part_37.status;}output.terms[1]=part_37.value;
+ReadValue part_38=fixed_value(input,position,8);if(part_38.status!=ReadStatus::Success){return part_38.status;}output.terms[2]=part_38.value;
+ReadStatus status_39=numeric_read_scalar(input,position,output.scalar);if(status_39!=ReadStatus::Success){return status_39;}
+ReadStatus status_40=numeric_read_floating_form(input,position,output.form);if(status_40!=ReadStatus::Success){return status_40;}
+return ReadStatus::Success;
+}
+extern "C" void numeric_write_domain(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.identity) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) {
+DomainFields value=host.domain(source);
+if(value.kind==DomainKind::Data){word(0,output,host.append);
+wide(value.ordinal,output,host.append);
+}
+else if(value.kind==DomainKind::Fixed){word(1,output,host.append);
+word(u32(value.distance),output,host.append);
+}
+else if(value.kind==DomainKind::Tile){word(2,output,host.append);
+}
+else if(value.kind==DomainKind::DataLength){word(3,output,host.append);
+wide(value.ordinal,output,host.append);
+}
+else if(value.kind==DomainKind::TileLength){word(4,output,host.append);
+}
+else if(value.kind==DomainKind::View){word(5,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(host.identity(value.second),output,host.append);
+numeric_write_identity(host.identity(value.third),output,host.append);
+}
+else if(value.kind==DomainKind::ViewLength){word(6,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(host.identity(value.second),output,host.append);
+numeric_write_identity(host.identity(value.third),output,host.append);
+}
+else if(value.kind==DomainKind::ApplicationData){word(7,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+}
+else if(value.kind==DomainKind::ApplicationLength){word(8,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+}
+else if(value.kind==DomainKind::Upper){word(9,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+word(u32(value.distance),output,host.append);
+}
+else if(value.kind==DomainKind::Room){word(10,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+}
+else if(value.kind==DomainKind::Sum){word(11,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(host.identity(value.second),output,host.append);
+}
+else if(value.kind==DomainKind::Shifted){word(12,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(host.identity(value.second),output,host.append);
+word(u32(value.distance),output,host.append);
+}
+else if(value.kind==DomainKind::Offset){word(13,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+word(u32(value.distance),output,host.append);
+}
+else if(value.kind==DomainKind::Computed){word(14,output,host.append);
+numeric_write_expression(host.expression(value.expression),output,host.append);
+}
+else if(value.kind==DomainKind::Lower){word(15,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+word(u32(value.distance),output,host.append);
+}
+else if(value.kind==DomainKind::CommonRange){word(16,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_scalar(value.scalars[0],output,host.append);
+numeric_write_scalar(value.scalars[1],output,host.append);
+numeric_write_scalar(value.scalars[2],output,host.append);
+numeric_write_scalar(value.scalars[3],output,host.append);
+}
+else if(value.kind==DomainKind::KnownBits){word(17,output,host.append);
+numeric_write_scalar(value.scalars[0],output,host.append);
+wide(value.mask,output,host.append);
+wide(value.bits,output,host.append);
+}
+else if(value.kind==DomainKind::Floating){word(18,output,host.append);
+numeric_write_floating(host.floating(value.floating),output,host.append);
+}
+}
+
+extern "C" ReadStatus numeric_read_domain(Bytes input,inout u64 position,address output,NumericReader host) on cpu requires nonzero(host.domain) {
+ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+if(tag.value==0u64){return host.domain(host.context,output,DomainKind::Data);}
+else if(tag.value==1u64){return host.domain(host.context,output,DomainKind::Fixed);}
+else if(tag.value==2u64){return host.domain(host.context,output,DomainKind::Tile);}
+else if(tag.value==3u64){return host.domain(host.context,output,DomainKind::DataLength);}
+else if(tag.value==4u64){return host.domain(host.context,output,DomainKind::TileLength);}
+else if(tag.value==5u64){return host.domain(host.context,output,DomainKind::View);}
+else if(tag.value==6u64){return host.domain(host.context,output,DomainKind::ViewLength);}
+else if(tag.value==7u64){return host.domain(host.context,output,DomainKind::ApplicationData);}
+else if(tag.value==8u64){return host.domain(host.context,output,DomainKind::ApplicationLength);}
+else if(tag.value==9u64){return host.domain(host.context,output,DomainKind::Upper);}
+else if(tag.value==10u64){return host.domain(host.context,output,DomainKind::Room);}
+else if(tag.value==11u64){return host.domain(host.context,output,DomainKind::Sum);}
+else if(tag.value==12u64){return host.domain(host.context,output,DomainKind::Shifted);}
+else if(tag.value==13u64){return host.domain(host.context,output,DomainKind::Offset);}
+else if(tag.value==14u64){return host.domain(host.context,output,DomainKind::Computed);}
+else if(tag.value==15u64){return host.domain(host.context,output,DomainKind::Lower);}
+else if(tag.value==16u64){return host.domain(host.context,output,DomainKind::CommonRange);}
+else if(tag.value==17u64){return host.domain(host.context,output,DomainKind::KnownBits);}
+else if(tag.value==18u64){return host.domain(host.context,output,DomainKind::Floating);}
+return ReadStatus::IndexDomain;
+}
+
+extern "C" void numeric_write_predicate(NumericPredicate value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+numeric_write_comparison(value.operation,output,append);
+numeric_write_scalar(value.scalar,output,append);
+numeric_write_operand(value.left,output,append);
+numeric_write_operand(value.right,output,append);
+}
+extern "C" ReadStatus numeric_read_predicate(Bytes input,inout u64 position,inout NumericPredicate output) on cpu {
+ReadStatus status_74=numeric_read_comparison(input,position,output.operation);if(status_74!=ReadStatus::Success){return status_74;}
+ReadStatus status_75=numeric_read_scalar(input,position,output.scalar);if(status_75!=ReadStatus::Success){return status_75;}
+ReadStatus status_76=numeric_read_operand(input,position,output.left);if(status_76!=ReadStatus::Success){return status_76;}
+ReadStatus status_77=numeric_read_operand(input,position,output.right);if(status_77!=ReadStatus::Success){return status_77;}
+return ReadStatus::Success;
+}
+extern "C" void numeric_write_fact(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.identity) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.predicate) {
+FactFields value=host.fact(source);
+if(value.kind==FactKind::Equal){word(0,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(host.identity(value.second),output,host.append);
+}
+else if(value.kind==FactKind::Index){word(1,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_domain(value.domain,output,host);
+}
+else if(value.kind==FactKind::Minimum){word(2,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_scalar(value.scalar,output,host.append);
+wide(value.bits,output,host.append);
+}
+else if(value.kind==FactKind::Maximum){word(3,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_scalar(value.scalar,output,host.append);
+wide(value.bits,output,host.append);
+}
+else if(value.kind==FactKind::NonZero){word(4,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+}
+else if(value.kind==FactKind::Boolean){word(5,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+byte(u8(value.truth),output,host.append);
+}
+else if(value.kind==FactKind::Below){word(6,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(host.identity(value.second),output,host.append);
+byte(u8(value.truth),output,host.append);
+numeric_write_scalar(value.scalar,output,host.append);
+}
+else if(value.kind==FactKind::Outside){word(7,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_domain(value.domain,output,host);
+}
+else if(value.kind==FactKind::Zero){word(8,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+}
+else if(value.kind==FactKind::NotEqual){word(9,output,host.append);
+numeric_write_identity(host.identity(value.first),output,host.append);
+numeric_write_identity(host.identity(value.second),output,host.append);
+}
+else if(value.kind==FactKind::Predicate){word(10,output,host.append);
+numeric_write_predicate(host.predicate(value.predicate),output,host.append);
+byte(u8(value.truth),output,host.append);
+}
+}
+
+extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address output,NumericReader host) on cpu requires nonzero(host.fact) {
+ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+if(tag.value==0u64){return host.fact(host.context,output,FactKind::Equal);}
+else if(tag.value==1u64){return host.fact(host.context,output,FactKind::Index);}
+else if(tag.value==2u64){return host.fact(host.context,output,FactKind::Minimum);}
+else if(tag.value==3u64){return host.fact(host.context,output,FactKind::Maximum);}
+else if(tag.value==4u64){return host.fact(host.context,output,FactKind::NonZero);}
+else if(tag.value==5u64){return host.fact(host.context,output,FactKind::Boolean);}
+else if(tag.value==6u64){return host.fact(host.context,output,FactKind::Below);}
+else if(tag.value==7u64){return host.fact(host.context,output,FactKind::Outside);}
+else if(tag.value==8u64){return host.fact(host.context,output,FactKind::Zero);}
+else if(tag.value==9u64){return host.fact(host.context,output,FactKind::NotEqual);}
+else if(tag.value==10u64){return host.fact(host.context,output,FactKind::Predicate);}
+return ReadStatus::Fact;
+}
+
+extern "C" void numeric_write_ranges(Span values,address output,RangeWriter host) on cpu requires nonzero(host.append) requires nonzero(host.interval) {
+ wide(values.count,output,host.append);u64 index=0u64;
+ while(index<values.count){NumericInterval value=host.interval(item(values,index));wide(value.lower,output,host.append);wide(value.upper,output,host.append);index+=1u64;}
+}
+extern "C" ReadStatus numeric_read_ranges(Bytes input,inout u64 position,address output,cfn<void,address,u64,u64> push) on cpu requires nonzero(push) {
+ ReadValue count=fixed_value(input,position,8);if(count.status!=ReadStatus::Success){return count.status;}
+ u64 index=0u64;while(index<count.value){
+  ReadValue lower=fixed_value(input,position,8);if(lower.status!=ReadStatus::Success){return lower.status;}
+  ReadValue upper=fixed_value(input,position,8);if(upper.status!=ReadStatus::Success){return upper.status;}
+  push(output,lower.value,upper.value);index+=1u64;
+ }return ReadStatus::Success;
+}
+
+
+
+
+
+extern "C" ReadStatus numeric_read_payload_ordinal(Bytes input,inout u64 position,inout u64 field0) on cpu {
+ReadValue part_157=fixed_value(input,position,8);if(part_157.status!=ReadStatus::Success){return part_157.status;}field0=part_157.value;
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_count(Bytes input,inout u64 position,inout u32 field0) on cpu {
+ReadValue part_158=fixed_value(input,position,4);if(part_158.status!=ReadStatus::Success){return part_158.status;}field0=u32(part_158.value);
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_view_identities(Bytes input,inout u64 position,inout array<NumericIdentity,3> field0) on cpu {
+ReadStatus status_159=numeric_read_identity(input,position,field0[0]);if(status_159!=ReadStatus::Success){return status_159;}
+ReadStatus status_160=numeric_read_identity(input,position,field0[1]);if(status_160!=ReadStatus::Success){return status_160;}
+ReadStatus status_161=numeric_read_identity(input,position,field0[2]);if(status_161!=ReadStatus::Success){return status_161;}
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_identity_distance(Bytes input,inout u64 position,inout NumericIdentity field0,inout u32 field1) on cpu {
+ReadStatus status_162=numeric_read_identity(input,position,field0);if(status_162!=ReadStatus::Success){return status_162;}
+ReadValue part_163=fixed_value(input,position,4);if(part_163.status!=ReadStatus::Success){return part_163.status;}field1=u32(part_163.value);
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_identity_pair(Bytes input,inout u64 position,inout NumericIdentity field0,inout NumericIdentity field1) on cpu {
+ReadStatus status_164=numeric_read_identity(input,position,field0);if(status_164!=ReadStatus::Success){return status_164;}
+ReadStatus status_165=numeric_read_identity(input,position,field1);if(status_165!=ReadStatus::Success){return status_165;}
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_shifted_identities(Bytes input,inout u64 position,inout NumericIdentity field0,inout NumericIdentity field1,inout u32 field2) on cpu {
+ReadStatus status_166=numeric_read_identity(input,position,field0);if(status_166!=ReadStatus::Success){return status_166;}
+ReadStatus status_167=numeric_read_identity(input,position,field1);if(status_167!=ReadStatus::Success){return status_167;}
+ReadValue part_168=fixed_value(input,position,4);if(part_168.status!=ReadStatus::Success){return part_168.status;}field2=u32(part_168.value);
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_common_range(Bytes input,inout u64 position,inout NumericIdentity field0,inout ScalarTag field1,inout ScalarTag field2,inout ScalarTag field3,inout ScalarTag field4) on cpu {
+ReadStatus status_169=numeric_read_identity(input,position,field0);if(status_169!=ReadStatus::Success){return status_169;}
+ReadStatus status_170=numeric_read_scalar(input,position,field1);if(status_170!=ReadStatus::Success){return status_170;}
+ReadStatus status_171=numeric_read_scalar(input,position,field2);if(status_171!=ReadStatus::Success){return status_171;}
+ReadStatus status_172=numeric_read_scalar(input,position,field3);if(status_172!=ReadStatus::Success){return status_172;}
+ReadStatus status_173=numeric_read_scalar(input,position,field4);if(status_173!=ReadStatus::Success){return status_173;}
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_known_bits(Bytes input,inout u64 position,inout ScalarTag field0,inout u64 field1,inout u64 field2) on cpu {
+ReadStatus status_174=numeric_read_scalar(input,position,field0);if(status_174!=ReadStatus::Success){return status_174;}
+ReadValue part_175=fixed_value(input,position,8);if(part_175.status!=ReadStatus::Success){return part_175.status;}field1=part_175.value;
+ReadValue part_176=fixed_value(input,position,8);if(part_176.status!=ReadStatus::Success){return part_176.status;}field2=part_176.value;
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_identity_domain(Bytes input,inout u64 position,inout NumericIdentity field0,address field1,NumericReader host) on cpu requires nonzero(host.domain) {
+ReadStatus status_177=numeric_read_identity(input,position,field0);if(status_177!=ReadStatus::Success){return status_177;}
+ReadStatus domain_status=numeric_read_domain(input,position,field1,host);if(domain_status!=ReadStatus::Success){return domain_status;}
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_identity_scalar_bits(Bytes input,inout u64 position,inout NumericIdentity field0,inout ScalarTag field1,inout u64 field2) on cpu {
+ReadStatus status_178=numeric_read_identity(input,position,field0);if(status_178!=ReadStatus::Success){return status_178;}
+ReadStatus status_179=numeric_read_scalar(input,position,field1);if(status_179!=ReadStatus::Success){return status_179;}
+ReadValue part_180=fixed_value(input,position,8);if(part_180.status!=ReadStatus::Success){return part_180.status;}field2=part_180.value;
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_identity_truth(Bytes input,inout u64 position,inout NumericIdentity field0,inout u32 field1) on cpu {
+ReadStatus status_181=numeric_read_identity(input,position,field0);if(status_181!=ReadStatus::Success){return status_181;}
+ReadValue part_182=read_boolean(input,position);if(part_182.status!=ReadStatus::Success){return part_182.status;}field1=u32(part_182.value);
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_ordered_identities(Bytes input,inout u64 position,inout NumericIdentity field0,inout NumericIdentity field1,inout u32 field2,inout ScalarTag field3) on cpu {
+ReadStatus status_183=numeric_read_identity(input,position,field0);if(status_183!=ReadStatus::Success){return status_183;}
+ReadStatus status_184=numeric_read_identity(input,position,field1);if(status_184!=ReadStatus::Success){return status_184;}
+ReadValue part_185=read_boolean(input,position);if(part_185.status!=ReadStatus::Success){return part_185.status;}field2=u32(part_185.value);
+ReadStatus status_186=numeric_read_scalar(input,position,field3);if(status_186!=ReadStatus::Success){return status_186;}
+return ReadStatus::Success;
+}
+extern "C" ReadStatus numeric_read_payload_predicate_truth(Bytes input,inout u64 position,inout NumericPredicate field0,inout u32 field1) on cpu {
+ReadStatus status_187=numeric_read_predicate(input,position,field0);if(status_187!=ReadStatus::Success){return status_187;}
+ReadValue part_188=read_boolean(input,position);if(part_188.status!=ReadStatus::Success){return part_188.status;}field1=u32(part_188.value);
+return ReadStatus::Success;
 }
