@@ -403,8 +403,8 @@ impl Graph {
         }
     }
     fn private(&self,source:&Origin)->bool{!self.references(source)&&Borrow::source(source.clone()).has_local()}
-    fn residual(&self,root:usize,query:&Query<'_,'_,'_>)->Self{
-        let mut residual=self.clone();let mut normal=bounds::Normalizer::new();
+    fn residual(&self,query:&Query<'_,'_,'_>)->Self{
+        let mut residual=self.clone();
         for &id in query.values.keys() {
             if let Cow::Owned(node) = query.local_definition(id) {
                 residual.nodes[id] = node;
@@ -415,7 +415,7 @@ impl Graph {
             if self.variables.contains(&id)||self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Read{..})) {
                 if !query.variables.contains_key(&id)&&!query.values.contains_key(&id){continue;}
                 for(source,when)in query.node(id).sources.entries(){
-                    if !self.private(source)&&!self.references(source){node.seeds.sources.insert_normalized(source.clone(),when,&mut normal);}
+                    if !self.private(source)&&!self.references(source){node.seeds.sources.union_when(source.clone(),&when);}
                 }
             }
         }
@@ -424,13 +424,8 @@ impl Graph {
             let frame=&mut residual.frames[id];
             frame.writes.retain(|write|query.node(write.target).sources.entries().any(|(source,when)|when.possible()&&!self.private(source)));
             for write in &frame.writes{for(_,id)in write.fields.iter().flatten(){for(source,when)in query.node(*id).sources.entries(){
-                if self.private(source){residual.nodes[*id].seeds.sources.insert_normalized(source.clone(),when,&mut normal);}
+                if self.private(source){residual.nodes[*id].seeds.sources.union_when(source.clone(),&when);}
             }}}
-        }
-        if let Some(observe) = query.evaluation.known.observe {
-            observe(query.evaluation.state.name, crate::compiler::BorrowSolveStorage::Residual {
-                root, tables: normal.storage(),
-            });
         }
         residual
     }
@@ -498,7 +493,7 @@ impl Graph {
             {
                 let value = query.node(root);
                 let residual = std::cell::OnceCell::new();
-                return self.rebind(&value, &|| residual.get_or_init(|| self.residual(root, &query)));
+                return self.rebind(&value, &|| residual.get_or_init(|| self.residual(&query)));
             }
             values = query.values;
             for &(id, _) in &feedback {

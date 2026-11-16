@@ -26,14 +26,18 @@ impl<K:Ord+Clone> Edges<K>{
     }
 
     pub fn union(&mut self, other: &Self) {
-        use std::collections::btree_map::Entry;
         for (key, when) in &other.0 {
-            match self.0.entry(key.clone()) {
-                Entry::Vacant(entry) => { entry.insert(when.clone()); }
-                Entry::Occupied(mut entry) => {
-                    let joined = bounds::Clause::either(entry.get(), when);
-                    entry.insert(joined);
-                }
+            self.union_when(key.clone(), when);
+        }
+    }
+
+    pub(in crate::check) fn union_when(&mut self, key: K, when: &bounds::Clause) {
+        use std::collections::btree_map::Entry;
+        match self.0.entry(key) {
+            Entry::Vacant(entry) => { entry.insert(when.clone()); }
+            Entry::Occupied(mut entry) => {
+                let joined = bounds::Clause::either(entry.get(), when);
+                entry.insert(joined);
             }
         }
     }

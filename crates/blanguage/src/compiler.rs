@@ -57,7 +57,6 @@ pub enum BorrowSolveStorage {
         next_inputs: AnalysisStorage,
     },
     ReadFrame { memory: usize, tables: ConditionStorage },
-    Residual { root: usize, tables: ConditionStorage },
 }
 
 #[cfg(feature = "compiler")]
