@@ -2825,7 +2825,14 @@ fn either_facts<'a>(
                     if !environment.contains(&fact) { common.insert(fact); }
                 }
             }
-            for (id,scalar) in a.union(&b).filter_map(|fact|match fact{Fact::Index(id,IndexDomain::KnownBits(scalar,..))=>Some((*id,*scalar)),_=>None}) {
+            // Facts orders each identity/scalar group before its mask and value.
+            // Each reduction already consumes every fact in that group.
+            let mut bit_groups = a.union(&b).filter_map(|fact| match fact {
+                Fact::Index(id, IndexDomain::KnownBits(scalar, ..)) => Some((*id, *scalar)),
+                _ => None,
+            }).peekable();
+            while let Some((id, scalar)) = bit_groups.next() {
+                while bit_groups.next_if_eq(&(id, scalar)).is_some() {}
                 if let Some(bits)=KnownBits::facts(scalar,id,[environment,&a]).zip(KnownBits::facts(scalar,id,[environment,&b])).and_then(|(a,b)|a.common(b)) {
                     let fact=Fact::Index(id,bits.domain());if !environment.contains(&fact){common.insert(fact);}
                 }

@@ -573,11 +573,13 @@ impl Builder<'_> {
                 Write::Memory{borrow,..}=>{
                     let mut positions = Vec::new();
                     let mut origins = Vec::new();
-                    if Self::visit_address_writes(borrow, |origin, _, regions| {
+                    if Self::visit_address_writes(borrow, |origin, when| {
                         if origin.writable {
+                            let regions = origin.memory_regions(&when)?;
                             origins.push(origin.clone());
                             positions.extend(regions.into_iter().map(|region| region.position));
                         }
+                        Some(())
                     }).is_none() {
                         effect.unknown_storage = true;
                         effect.external = true;

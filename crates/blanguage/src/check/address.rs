@@ -205,27 +205,44 @@ impl Origin {
         self.memory_regions(path).map(|regions|regions.into_iter().map(|region|region.position).collect())
     }
     pub(super) fn memory_regions(&self,path:&bounds::Clause)->Option<Vec<MemoryRegion>> {
+        let mut regions = Vec::new();
+        self.collect_memory_regions(path, Some(&mut regions))?;
+        Some(regions)
+    }
+    fn collect_memory_regions(&self, path: &bounds::Clause, mut output: Option<&mut Vec<MemoryRegion>>) -> Option<()> {
         let borrow=match &self.root {
             Root::External(Identity::Storage(borrow))|Root::Derived(borrow)=>borrow,
-            Root::Resource{borrow,..}|Root::Dataset{borrow,..}=>return Some(self.layout.parts.iter().zip(self.words.iter()).map(|((scalar,word),at)|MemoryRegion{position:Position::Borrowed(Arc::new(borrow.clone()),self.base.clone(),*at),word:*word,offset:0,size:scalar.size()}).collect()),
+            Root::Resource{borrow,..}|Root::Dataset{borrow,..}=>{
+                if let Some(regions) = output {
+                    regions.extend(self.layout.parts.iter().zip(self.words.iter()).map(|((scalar,word),at)|MemoryRegion{position:Position::Borrowed(Arc::new(borrow.clone()),self.base.clone(),*at),word:*word,offset:0,size:scalar.size()}));
+                }
+                return Some(());
+            },
             Root::External(_)=>return None,
-            _=>return Some(self.layout.parts.iter().zip(self.positions.iter()).map(|((scalar,word),position)|MemoryRegion{position:position.clone(),word:*word,offset:0,size:scalar.size()}).collect()),
+            _=>{
+                if let Some(regions) = output {
+                    regions.extend(self.layout.parts.iter().zip(self.positions.iter()).map(|((scalar,word),position)|MemoryRegion{position:position.clone(),word:*word,offset:0,size:scalar.size()}));
+                }
+                return Some(());
+            },
         };
         if borrow.empty()||borrow.pending(){return None;}
-        let mut regions=Vec::new();
         for(source,when)in borrow.sources.entries(){
             let when=bounds::Clause::both(path, &when);if !when.possible(){continue;}
             let view::Source::Position(parent)=source else{return None;};
-            let parent_regions=parent.memory_regions(&when)?;
+            let mut parent_regions = output.as_ref().map(|_| Vec::new());
+            parent.collect_memory_regions(&when, parent_regions.as_mut())?;
             for((scalar,word),at)in self.layout.parts.iter().zip(self.words.iter()) {
                 let end=u64::from(*at)+u64::from(scalar.size());if end>u64::from(parent.layout.size){return None;}
-                for region in &parent_regions {
-                    let begin=(*at).max(region.word);let end=(end as u32).min(region.word+region.size);
-                    if begin<end{regions.push(MemoryRegion{position:region.position.clone(),word:*word+begin-*at,offset:region.offset+begin-region.word,size:end-begin});}
+                if let (Some(regions), Some(parent_regions)) = (output.as_mut(), parent_regions.as_ref()) {
+                    for region in parent_regions {
+                        let begin=(*at).max(region.word);let end=(end as u32).min(region.word+region.size);
+                        if begin<end{regions.push(MemoryRegion{position:region.position.clone(),word:*word+begin-*at,offset:region.offset+begin-region.word,size:end-begin});}
+                    }
                 }
             }
         }
-        Some(regions)
+        Some(())
     }
     pub fn map_borrows(&self, map: impl FnOnce(&view::Borrow)->view::Borrow) -> Self {
         let mut value=self.clone();
@@ -342,7 +359,7 @@ fn source_has_external_memory(source: &view::Source, when: &bounds::Clause) -> b
 
 fn position_has_external_memory(origin: &Origin, when: &bounds::Clause) -> bool {
     match &origin.root {
-        Root::External(_) => origin.memory_positions(when).is_none(),
+        Root::External(_) => origin.collect_memory_regions(when, None).is_none(),
         Root::Derived(borrow) => external_memory(borrow),
         _ => false,
     }
@@ -939,15 +956,18 @@ fn resource_metadata(ty:&Ty,resources:Vec<Vec<usize>>)->Vec<std::ops::Range<u32>
 impl Builder<'_> {
     pub(super) fn address_write_positions(&self, borrow: &view::Borrow) -> Option<Vec<Position>> {
         let mut positions = Vec::new();
-        Self::visit_address_writes(borrow, |_, _, regions| {
-            positions.extend(regions.into_iter().map(|region| region.position));
+        Self::visit_address_writes(borrow, |origin, when| {
+            if origin.writable {
+                positions.extend(origin.memory_regions(&when)?.into_iter().map(|region| region.position));
+            }
+            Some(())
         })?;
         Some(positions)
     }
 
     pub(super) fn visit_address_writes(
         borrow: &view::Borrow,
-        mut visit: impl FnMut(&Arc<Origin>, bounds::Clause, Vec<MemoryRegion>),
+        mut visit: impl FnMut(&Arc<Origin>, bounds::Clause) -> Option<()>,
     ) -> Option<()> {
         if !borrow.inputs.is_empty() || !borrow.calls.is_empty() || !borrow.reads.is_empty() {
             return None;
@@ -958,8 +978,7 @@ impl Builder<'_> {
                     if view::Borrow::source_unresolved(source, || Some(when.clone())) {
                         return None;
                     }
-                    let regions = if origin.writable { origin.memory_regions(&when)? } else { Vec::new() };
-                    visit(origin, when, regions);
+                    visit(origin, when)?;
                 }
                 view::Source::Inactive => {}
                 _ => return None,
@@ -969,12 +988,16 @@ impl Builder<'_> {
     }
 
     pub(super) fn resolved_address_write(&self, borrow: &view::Borrow) -> bool {
-        Self::visit_address_writes(borrow, |_, _, _| {}).is_some()
+        Self::visit_address_writes(borrow, |origin, when| {
+            if origin.writable { origin.collect_memory_regions(&when, None)?; }
+            Some(())
+        }).is_some()
     }
 
     pub(super) fn address_write_effect(&self, borrow: &view::Borrow) -> Option<MemoryEffect> {
         let mut effect = MemoryEffect::default();
-        Self::visit_address_writes(borrow, |origin, when, _| {
+        Self::visit_address_writes(borrow, |origin, when| {
+            if origin.writable { origin.collect_memory_regions(&when, None)?; }
             let external = effect.external.is_none() && match &origin.root {
                 // Writable external positions already resolved their regions above.
                 Root::External(_) if origin.writable => false,
@@ -986,6 +1009,7 @@ impl Builder<'_> {
             if origin.writable {
                 effect.known.push((origin.clone(), when, Access::Write, None));
             }
+            Some(())
         })?;
         Some(effect)
     }
