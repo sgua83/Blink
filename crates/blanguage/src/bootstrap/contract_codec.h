@@ -53,7 +53,7 @@ extern "C" void write_type(address source,address output,Host host) on cpu requi
 
 // The reader borrows the original input and exclusively updates the original
 // Reader.position. Typed fields below are construction slots, not an IR/schema.
-enum ReadStatus:u32 { Success=0; Overflow=1; Truncated=2; Boolean=3; Scalar=4; Access=5; Target=6; Shape=7; Argument=8; Expression=9; Predicate=10; Condition=11; RustError=12; Identity=13; Operand=14; IntegerOperation=15; IntegerExpression=16; Comparison=17; FloatingForm=18; IndexDomain=19; Fact=20; };
+enum ReadStatus:u32 { Success=0; Overflow=1; Truncated=2; Boolean=3; Scalar=4; Access=5; Target=6; Shape=7; Argument=8; Expression=9; Predicate=10; Condition=11; RustError=12; Identity=13; Operand=14; IntegerOperation=15; IntegerExpression=16; Comparison=17; FloatingForm=18; IndexDomain=19; Fact=20; ConditionVersion=21; ConditionNode=22; };
 enum ScalarTag:u32 { F32=0; U32=1; I32=2; Bool=3; U64=4; I64=5; F64=6; U8=7; I8=8; U16=9; I16=10; };
 enum AccessTag:u32 { Value=0; Read=1; Write=2; InOut=3; Atomic=4; };
 enum TargetTag:u32 { Compute=0; Cpu=1; Gpu=2; };
@@ -186,3 +186,39 @@ extern "C" ReadStatus numeric_read_payload_identity_scalar_bits(Bytes input,inou
 extern "C" ReadStatus numeric_read_payload_identity_truth(Bytes input,inout u64 position,inout NumericIdentity field0,inout u32 field1) on cpu;
 extern "C" ReadStatus numeric_read_payload_ordered_identities(Bytes input,inout u64 position,inout NumericIdentity field0,inout NumericIdentity field1,inout u32 field2,inout ScalarTag field3) on cpu;
 extern "C" ReadStatus numeric_read_payload_predicate_truth(Bytes input,inout u64 position,inout NumericPredicate field0,inout u32 field1) on cpu;
+
+// Shared canonical condition identities and the original Proof.conditions.
+enum NodeKind:u32 { Impossible=0; Facts=1; Both=2; Either=3; };
+enum ClauseKind:u32 { Impossible=0; Facts=1; Both=2; Either=3; Branch=4; };
+struct ClauseFields {u32 present;ClauseKind kind;u64 key;address facts;u64 first;u64 second;};
+struct NodeFields {NodeKind kind;address facts;u64 first;u64 second;};
+struct RootFields {u32 present;u64 first;u64 second;};
+struct Inserted {u64 index;u32 inserted;};
+struct CanonicalHost {
+ cfn<ClauseFields,address> next;
+ cfn<u64,address,u64> ensures memory(read) index;
+ cfn<u64,address> ensures memory(read) len;
+ cfn<Inserted,address,NodeKind,address,u64,u64,u64> intern;
+ cfn<void,address,NodeKind,address,u64,u64> record;
+ cfn<void,address,u64,u64> bind;
+};
+extern "C" void condition_node_ids(address context,CanonicalHost host) on cpu requires nonzero(host.next) requires nonzero(host.index) requires nonzero(host.len) requires nonzero(host.intern) requires nonzero(host.record) requires nonzero(host.bind);
+struct ConditionWriter {
+ cfn<void,address,address,u64> append;
+ cfn<RootFields,address,u64> ensures memory(read) condition;
+ cfn<NodeFields,address,u64> ensures memory(read) node;
+ cfn<u64,address,u64> ensures memory(read) index;
+ cfn<void,address,address> facts;
+};
+extern "C" void write_proof_conditions(address context,u64 length,u64 count,address output,ConditionWriter host) on cpu requires nonzero(host.append) requires nonzero(host.condition) requires nonzero(host.node) requires nonzero(host.index) requires nonzero(host.facts);
+extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.identity) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.predicate) requires nonzero(next);
+struct ConditionReader {
+ address context;
+ cfn<void,address> impossible;
+ cfn<ReadStatus,address,address> facts;
+ cfn<void,address,u64,u64> both;
+ cfn<void,address,u64,u64> either;
+};
+extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout u32 present,address output,ConditionReader host) on cpu requires nonzero(host.impossible) requires nonzero(host.facts) requires nonzero(host.both) requires nonzero(host.either);
+extern "C" ReadStatus read_fact_sequence(Bytes input,inout u64 position,address context,address output,cfn<ReadStatus,address,address> push) on cpu requires nonzero(push);
+extern "C" ReadStatus read_condition_roots(Bytes input,inout u64 position,address output,cfn<void,address,u32,u64,u64> push) on cpu requires nonzero(push);

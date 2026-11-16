@@ -1014,3 +1014,86 @@ ReadStatus status_187=numeric_read_predicate(input,position,field0);if(status_18
 ReadValue part_188=read_boolean(input,position);if(part_188.status!=ReadStatus::Success){return part_188.status;}field1=u32(part_188.value);
 return ReadStatus::Success;
 }
+
+extern "C" void condition_node_ids(address context,CanonicalHost host) on cpu requires nonzero(host.next) requires nonzero(host.index) requires nonzero(host.len) requires nonzero(host.intern) requires nonzero(host.record) requires nonzero(host.bind) {
+ ClauseFields value=host.next(context);
+ while(value.present!=0){
+  NodeKind kind=NodeKind::Impossible;u64 a=0u64;u64 b=0u64;
+  if(value.kind==ClauseKind::Facts){kind=NodeKind::Facts;}
+  else if(value.kind==ClauseKind::Both||value.kind==ClauseKind::Branch){kind=NodeKind::Both;a=host.index(context,value.first);b=host.index(context,value.second);}
+  else if(value.kind==ClauseKind::Either){kind=NodeKind::Either;a=host.index(context,value.first);b=host.index(context,value.second);}
+  u64 index=0u64;
+  if((kind==NodeKind::Both||kind==NodeKind::Either)&&a==b){index=a;}
+  else{
+   u64 next=host.len(context);Inserted found=host.intern(context,kind,value.facts,a,b,next);index=found.index;
+   if(found.inserted!=0){host.record(context,kind,value.facts,a,b);}
+  }
+  host.bind(context,value.key,index);value=host.next(context);
+ }
+}
+extern "C" void write_proof_conditions(address context,u64 length,u64 count,address output,ConditionWriter host) on cpu requires nonzero(host.append) requires nonzero(host.condition) requires nonzero(host.node) requires nonzero(host.index) requires nonzero(host.facts) {
+ u64 width=length;
+ while(width!=0u64){RootFields last=host.condition(context,width-1u64);if(last.present!=0){break;}width-=1u64;}
+ byte(width!=0u64?u8(1):u8(0),output,host.append);
+ if(width==0u64){return;}
+ byte(u8(3),output,host.append);wide(count,output,host.append);
+ u64 index=0u64;
+ while(index<count){
+  NodeFields value=host.node(context,index);
+  if(value.kind==NodeKind::Impossible){word(0,output,host.append);}
+  else if(value.kind==NodeKind::Facts){word(1,output,host.append);host.facts(value.facts,output);}
+  else if(value.kind==NodeKind::Both){word(2,output,host.append);wide(value.first,output,host.append);wide(value.second,output,host.append);}
+  else{word(3,output,host.append);wide(value.first,output,host.append);wide(value.second,output,host.append);}
+  index+=1u64;
+ }
+ wide(width,output,host.append);index=0u64;
+ while(index<width){
+  RootFields value=host.condition(context,index);byte(value.present!=0?u8(1):u8(0),output,host.append);
+  if(value.present!=0){wide(host.index(context,value.first),output,host.append);wide(host.index(context,value.second),output,host.append);}
+  index+=1u64;
+ }
+}
+extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.identity) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.predicate) requires nonzero(next) {
+ wide(count,output,host.append);u64 index=0u64;
+ while(index<count){numeric_write_fact(next(iterator),output,host);index+=1u64;}
+}
+extern "C" ReadStatus read_fact_sequence(Bytes input,inout u64 position,address context,address output,cfn<ReadStatus,address,address> push) on cpu requires nonzero(push) {
+ ReadValue count=fixed_value(input,position,8);if(count.status!=ReadStatus::Success){return count.status;}
+ u64 index=0u64;
+ while(index<count.value){ReadStatus status=push(context,output);if(status!=ReadStatus::Success){return status;}index+=1u64;}
+ return ReadStatus::Success;
+}
+extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout u32 present,address output,ConditionReader host) on cpu requires nonzero(host.impossible) requires nonzero(host.facts) requires nonzero(host.both) requires nonzero(host.either) {
+ ReadValue active=read_boolean(input,position);if(active.status!=ReadStatus::Success){return active.status;}
+ present=u32(active.value);if(present==0){return ReadStatus::Success;}
+ ReadValue version=fixed_value(input,position,1);if(version.status!=ReadStatus::Success){return version.status;}
+ if(version.value!=3u64){return ReadStatus::ConditionVersion;}
+ ReadValue count=fixed_value(input,position,8);if(count.status!=ReadStatus::Success){return count.status;}
+ u64 index=0u64;
+ while(index<count.value){
+  ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+  if(tag.value==0u64){host.impossible(output);}
+  else if(tag.value==1u64){ReadStatus status=host.facts(host.context,output);if(status!=ReadStatus::Success){return status;}}
+  else if(tag.value==2u64||tag.value==3u64){
+   ReadValue a=fixed_value(input,position,8);if(a.status!=ReadStatus::Success){return a.status;}
+   ReadValue b=fixed_value(input,position,8);if(b.status!=ReadStatus::Success){return b.status;}
+   if(tag.value==2u64){host.both(output,a.value,b.value);}else{host.either(output,a.value,b.value);}
+  }else{return ReadStatus::ConditionNode;}
+  index+=1u64;
+ }
+ return ReadStatus::Success;
+}
+extern "C" ReadStatus read_condition_roots(Bytes input,inout u64 position,address output,cfn<void,address,u32,u64,u64> push) on cpu requires nonzero(push) {
+ ReadValue count=fixed_value(input,position,8);if(count.status!=ReadStatus::Success){return count.status;}
+ u64 index=0u64;
+ while(index<count.value){
+  ReadValue active=read_boolean(input,position);if(active.status!=ReadStatus::Success){return active.status;}
+  u64 a=0u64;u64 b=0u64;
+  if(active.value!=0u64){
+   ReadValue first=fixed_value(input,position,8);if(first.status!=ReadStatus::Success){return first.status;}a=first.value;
+   ReadValue second=fixed_value(input,position,8);if(second.status!=ReadStatus::Success){return second.status;}b=second.value;
+  }
+  push(output,u32(active.value),a,b);index+=1u64;
+ }
+ return ReadStatus::Success;
+}

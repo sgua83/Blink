@@ -31,6 +31,8 @@ pub(crate) enum ReadStatus {
     FloatingForm = 18,
     IndexDomain = 19,
     Fact = 20,
+    ConditionVersion = 21,
+    ConditionNode = 22,
 }
 impl ReadStatus {
     pub(crate) fn message(self) -> Option<&'static str> {
@@ -55,6 +57,8 @@ impl ReadStatus {
             ReadStatus::FloatingForm => Some("模块枚举编码错误：FloatingForm"),
             ReadStatus::IndexDomain => Some("模块枚举编码错误：IndexDomain"),
             ReadStatus::Fact => Some("模块枚举编码错误：Fact"),
+            ReadStatus::ConditionVersion => Some("模块分量条件合同格式不兼容，需要用同一编译器重新编译"),
+            ReadStatus::ConditionNode => Some("模块枚举编码错误：EncodedClause<F>"),
         }
     }
 }

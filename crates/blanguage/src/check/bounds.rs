@@ -5293,36 +5293,12 @@ enum EncodedClause<F> {
     Both(usize, usize),
     Either(usize, usize),
 }
-crate::module::codec::variants!(@<F> EncodedClause<F>{0=>Impossible,1=>Facts(facts),2=>Both(a,b),3=>Either(a,b)});
 
 fn condition_node_ids<'a>(
     roots: impl IntoIterator<Item = &'a Clause>,
-    mut record: impl FnMut(EncodedClause<&'a Facts>),
+    record: impl FnMut(EncodedClause<&'a Facts>),
 ) -> BTreeMap<usize, usize> {
-    let mut unique = BTreeMap::new();
-    let mut indices = BTreeMap::new();
-    for clause in Clause::ordered(roots) {
-        let node = match &**clause.0 {
-            ClauseNode::Impossible => EncodedClause::Impossible,
-            ClauseNode::Facts(facts) => EncodedClause::Facts(facts),
-            ClauseNode::Both(a, b) => EncodedClause::Both(indices[&a.key()], indices[&b.key()]),
-            ClauseNode::Branch(parent, condition, truth) => EncodedClause::Both(
-                indices[&parent.key()],
-                indices[&condition.cases[usize::from(*truth)].key()],
-            ),
-            ClauseNode::Either(a, b) => EncodedClause::Either(indices[&a.key()], indices[&b.key()]),
-        };
-        let next = unique.len();
-        let index = match node {
-            EncodedClause::Both(a, b) | EncodedClause::Either(a, b) if a == b => a,
-            node => *unique.entry(node).or_insert_with(|| {
-                record(node);
-                next
-            }),
-        };
-        indices.insert(clause.key(), index);
-    }
-    indices
+    codec::conditions::node_ids(roots, record)
 }
 
 fn same_condition_roots<const N: usize>(left: [&Clause; N], right: [&Clause; N]) -> bool {
@@ -5335,32 +5311,7 @@ fn same_condition_roots<const N: usize>(left: [&Clause; N], right: [&Clause; N])
 impl crate::module::codec::Encode for Proof {
     fn encode(&self, w: &mut crate::module::codec::Writer) {
         self.origins.encode(w);
-        let width = self
-            .conditions
-            .iter()
-            .rposition(Option::is_some)
-            .map_or(0, |i| i + 1);
-        (width != 0).encode(w);
-        if width != 0 {
-            // 沿用原条件存在位；旧标量格式为 2，分量载体为 3，双方明确拒绝混用。
-            3u8.encode(w);
-            let roots = self.conditions[..width]
-                .iter()
-                .flatten()
-                .flat_map(|condition| condition.cases.iter());
-            let mut nodes = Vec::new();
-            let indices = condition_node_ids(roots, |node| nodes.push(node));
-            nodes.encode(w);
-            self.conditions[..width]
-                .iter()
-                .map(|condition| {
-                    condition.as_deref().map(|condition| {
-                        condition.cases.each_ref().map(|case| indices[&case.key()])
-                    })
-                })
-                .collect::<Vec<_>>()
-                .encode(w);
-        }
+        codec::conditions::encode(&self.conditions, w);
         self.ranges.encode(w);
         self.nonzero.encode(w);
         self.domains.encode(w);
@@ -5375,42 +5326,7 @@ impl crate::module::codec::Encode for Proof {
 impl crate::module::codec::Decode for Proof {
     fn decode(r: &mut crate::module::codec::Reader<'_>) -> crate::module::codec::Result<Self> {
         let origins = crate::module::codec::Decode::decode(r)?;
-        let conditions = if bool::decode(r)? {
-            if u8::decode(r)? != 3 {
-                return Err("模块分量条件合同格式不兼容，需要用同一编译器重新编译".into());
-            }
-            fn node(nodes: &[Clause], index: usize) -> crate::module::codec::Result<Clause> {
-                nodes
-                    .get(index)
-                    .cloned()
-                    .ok_or_else(|| "模块条件节点引用无效".into())
-            }
-            let mut nodes = Vec::new();
-            for encoded in Vec::<EncodedClause<Facts>>::decode(r)? {
-                nodes.push(match encoded {
-                    EncodedClause::Impossible => Clause::impossible(),
-                    EncodedClause::Facts(facts) => Clause::facts(facts),
-                    EncodedClause::Both(a, b) => Clause::node(ClauseNode::Both(node(&nodes, a)?, node(&nodes, b)?)),
-                    EncodedClause::Either(a, b) => {
-                        Clause::node(ClauseNode::Either(node(&nodes, a)?, node(&nodes, b)?))
-                    }
-                });
-            }
-            Vec::<Option<[usize; 2]>>::decode(r)?
-                .into_iter()
-                .map(|roots| {
-                    roots
-                        .map(|[a, b]| {
-                            Ok(Box::new(Condition {
-                                cases: [node(&nodes, a)?, node(&nodes, b)?],
-                            }))
-                        })
-                        .transpose()
-                })
-                .collect::<crate::module::codec::Result<Vec<_>>>()?
-        } else {
-            Vec::new()
-        };
+        let conditions = codec::conditions::decode(r)?;
         Ok(Self {
             origins,
             conditions,

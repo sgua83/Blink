@@ -1662,3 +1662,6 @@ unsafe extern "C" fn construct_fact(context: Slot, output: Slot, kind: FactKind)
         }
     }
 }
+
+
+pub(super) mod conditions;
