@@ -299,33 +299,10 @@ impl Residency {
         }
     }
 }
-impl crate::module::codec::Encode for Contract {
-    fn encode(&self,w:&mut crate::module::codec::Writer){
-        self.required.len().encode(w);
-        for(key,guards)in &self.required{
-            key.encode(w);1usize.encode(w);
-            guards.iter().cloned().fold(bounds::Condition::constant(false),|a,b|a.logical(b,true)).encode(w);
-        }
-        self.calls.encode(w);
-    }
-}
-impl crate::module::codec::Decode for Contract {
-    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
-        use crate::module::codec::Decode;
-        Ok(Self{required:Decode::decode(r)?,calls:Decode::decode(r)?})
-    }
-}
-impl crate::module::codec::Encode for Call {
-    fn encode(&self,w:&mut crate::module::codec::Writer){
-        self.function.encode(w);self.arguments.encode(w);self.bindings.encode(w);bounds::Condition::guard(self.path.clone()).encode(w);
-    }
-}
-impl crate::module::codec::Decode for Call {
-    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
-        use crate::module::codec::Decode;
-        Ok(Self{function:Decode::decode(r)?,arguments:Decode::decode(r)?,bindings:Decode::decode(r)?,path:bounds::Condition::decode(r)?.assume(&bounds::Clause::default(),true),source:None,span:Span::default()})
-    }
-}
+
+
+
+
 #[derive(Default)]
 pub(super) struct Inputs{
     pub calls:Vec<Call>,
@@ -732,10 +709,10 @@ fn bind_returned(value: &mut Returned, arguments: &Arguments) -> bool {
 pub(super) fn returned(value: &mut Returned, arguments: &Arguments) {
     bind_returned(value, arguments);
 }
-crate::module::codec::variants!(Part { 0 => Field(field), 1 => Elements, 2 => Selected(index) });
-crate::module::codec::record!(Input { parameter, fields });
-crate::module::codec::variants!(Origin { 0 => Cpu, 1 => Gpu, 2 => Input(input), 3 => Output(output), 4 => TaskTransfer });
-crate::module::codec::variants!(Residency{0=>Absent,1=>Origins(origins),2=>Selected(when,a,b)});
+
+
+
+
 
 // 编译期调用结果是原资源来源表达式，不形成运行时位置表。
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -961,11 +938,1147 @@ pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool 
     }
     resolve(value, outputs)
 }
-crate::module::codec::variants!(OutputKind{0=>Returned,1=>Written(parameter)});
-crate::module::codec::record!(Output {
-    function,
-    kind,
-    fields,
-    arguments,
-    bindings
-});
+
+
+
+// Physical construction for the original public contract wire.
+crate::codec::contracts::codec!(Part);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Reader {
+        field: ReadCallback,
+        elements: ReadCallback,
+        selected: ReadCallback,
+    }
+    unsafe extern "C" fn build_field(context: Slot, destination: Slot) -> ReadStatus {
+        let mut field = <usize as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            field: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            field: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_residency_part_field"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    field: contracts::slot(&mut field),
+                },
+                Host {
+                    field: contracts::read_value::<usize>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Part>() = Part::Field(field);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_elements(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<Part>() = Part::Elements;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_selected(context: Slot, destination: Slot) -> ReadStatus {
+        let mut index = <Option<bounds::Operand> as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            index: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            index: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_residency_part_selected"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    index: contracts::slot(&mut index),
+                },
+                Host {
+                    index: contracts::read_value::<Option<bounds::Operand>>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Part>() = Part::Selected(index);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_read_residency_part"]
+        fn read(
+            input: contracts::Bytes,
+            position: *mut usize,
+            context: Slot,
+            output: Slot,
+            host: Reader,
+        ) -> ReadStatus;
+    }
+    impl Native for Part {
+        fn empty() -> Self {
+            Self::Elements
+        }
+        unsafe fn write(&self, destination: Slot) {
+            match self {
+                Self::Field(field) => {
+                    #[repr(C)]
+                    struct Fields {
+                        field: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        field: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_part_field"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                field: contracts::address(field).cast_mut(),
+                            },
+                            Host {
+                                field: contracts::write_value::<usize>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Elements => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_part_elements"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Selected(index) => {
+                    #[repr(C)]
+                    struct Fields {
+                        index: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        index: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_part_selected"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                index: contracts::address(index).cast_mut(),
+                            },
+                            Host {
+                                index: contracts::write_value::<Option<bounds::Operand>>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+            }
+        }
+        unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
+            let (bytes, position) = unsafe { contracts::input(context) };
+            unsafe {
+                read(
+                    bytes,
+                    position,
+                    context,
+                    contracts::slot(destination),
+                    Reader {
+                        field: build_field,
+                        elements: build_elements,
+                        selected: build_selected,
+                    },
+                )
+            }
+        }
+    }
+};
+
+crate::codec::contracts::codec!(Input);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        parameter: Slot,
+        fields: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        parameter: WriteCallback,
+        fields: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        parameter: ReadCallback,
+        fields: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_residency_input"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_residency_input"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for Input {
+        fn empty() -> Self {
+            Self {
+                parameter: <usize as Native>::empty(),
+                fields: <Vec<Part> as Native>::empty(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        parameter: contracts::address(&self.parameter).cast_mut(),
+                        fields: contracts::address(&self.fields).cast_mut(),
+                    },
+                    Writer {
+                        parameter: contracts::write_value::<usize>,
+                        fields: contracts::write_value::<Vec<Part>>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        parameter: contracts::slot(&mut output.parameter),
+                        fields: contracts::slot(&mut output.fields),
+                    },
+                    Reader {
+                        parameter: contracts::read_value::<usize>,
+                        fields: contracts::read_value::<Vec<Part>>,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};
+
+crate::codec::contracts::codec!(Origin);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Reader {
+        cpu: ReadCallback,
+        gpu: ReadCallback,
+        input: ReadCallback,
+        output: ReadCallback,
+        task_transfer: ReadCallback,
+    }
+    unsafe extern "C" fn build_cpu(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<Origin>() = Origin::Cpu;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_gpu(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<Origin>() = Origin::Gpu;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_input(context: Slot, destination: Slot) -> ReadStatus {
+        let mut input = <Input as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            input: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            input: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_residency_origin_input"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    input: contracts::slot(&mut input),
+                },
+                Host {
+                    input: contracts::read_value::<Input>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Origin>() = Origin::Input(input);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_output(context: Slot, destination: Slot) -> ReadStatus {
+        let mut output = <Output as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            output: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            output: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_residency_origin_output"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    output: contracts::slot(&mut output),
+                },
+                Host {
+                    output: contracts::read_value::<Output>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Origin>() = Origin::Output(output);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_task_transfer(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<Origin>() = Origin::TaskTransfer;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_read_residency_origin"]
+        fn read(
+            input: contracts::Bytes,
+            position: *mut usize,
+            context: Slot,
+            output: Slot,
+            host: Reader,
+        ) -> ReadStatus;
+    }
+    impl Native for Origin {
+        fn empty() -> Self {
+            Self::Cpu
+        }
+        unsafe fn write(&self, destination: Slot) {
+            match self {
+                Self::Cpu => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_origin_cpu"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Gpu => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_origin_gpu"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Input(input) => {
+                    #[repr(C)]
+                    struct Fields {
+                        input: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        input: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_origin_input"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                input: contracts::address(input).cast_mut(),
+                            },
+                            Host {
+                                input: contracts::write_value::<Input>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Output(output) => {
+                    #[repr(C)]
+                    struct Fields {
+                        output: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        output: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_origin_output"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                output: contracts::address(output).cast_mut(),
+                            },
+                            Host {
+                                output: contracts::write_value::<Output>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::TaskTransfer => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_origin_task_transfer"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+            }
+        }
+        unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
+            let (bytes, position) = unsafe { contracts::input(context) };
+            unsafe {
+                read(
+                    bytes,
+                    position,
+                    context,
+                    contracts::slot(destination),
+                    Reader {
+                        cpu: build_cpu,
+                        gpu: build_gpu,
+                        input: build_input,
+                        output: build_output,
+                        task_transfer: build_task_transfer,
+                    },
+                )
+            }
+        }
+    }
+};
+
+crate::codec::contracts::codec!(Residency);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Reader {
+        absent: ReadCallback,
+        origins: ReadCallback,
+        selected: ReadCallback,
+    }
+    unsafe extern "C" fn build_absent(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<Residency>() = Residency::Absent;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_origins(context: Slot, destination: Slot) -> ReadStatus {
+        let mut origins = <BTreeSet<Origin> as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            origins: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            origins: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_residency_origins"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    origins: contracts::slot(&mut origins),
+                },
+                Host {
+                    origins: contracts::read_value::<BTreeSet<Origin>>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Residency>() = Residency::Origins(origins);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_selected(context: Slot, destination: Slot) -> ReadStatus {
+        let mut when = <Box<bounds::Condition> as Native>::empty();
+        let mut a = <Box<Residency> as Native>::empty();
+        let mut b = <Box<Residency> as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            when: Slot,
+            a: Slot,
+            b: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            when: ReadCallback,
+            a: ReadCallback,
+            b: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_residency_selected"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    when: contracts::slot(&mut when),
+                    a: contracts::slot(&mut a),
+                    b: contracts::slot(&mut b),
+                },
+                Host {
+                    when: contracts::read_value::<Box<bounds::Condition>>,
+                    a: contracts::read_value::<Box<Residency>>,
+                    b: contracts::read_value::<Box<Residency>>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Residency>() = Residency::Selected(when, a, b);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_read_residency"]
+        fn read(
+            input: contracts::Bytes,
+            position: *mut usize,
+            context: Slot,
+            output: Slot,
+            host: Reader,
+        ) -> ReadStatus;
+    }
+    impl Native for Residency {
+        fn empty() -> Self {
+            Self::Absent
+        }
+        unsafe fn write(&self, destination: Slot) {
+            match self {
+                Self::Absent => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_absent"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Origins(origins) => {
+                    #[repr(C)]
+                    struct Fields {
+                        origins: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        origins: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_origins"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                origins: contracts::address(origins).cast_mut(),
+                            },
+                            Host {
+                                origins: contracts::write_value::<BTreeSet<Origin>>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Selected(when, a, b) => {
+                    #[repr(C)]
+                    struct Fields {
+                        when: Slot,
+                        a: Slot,
+                        b: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        when: WriteCallback,
+                        a: WriteCallback,
+                        b: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_selected"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                when: contracts::address(when).cast_mut(),
+                                a: contracts::address(a).cast_mut(),
+                                b: contracts::address(b).cast_mut(),
+                            },
+                            Host {
+                                when: contracts::write_value::<Box<bounds::Condition>>,
+                                a: contracts::write_value::<Box<Residency>>,
+                                b: contracts::write_value::<Box<Residency>>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+            }
+        }
+        unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
+            let (bytes, position) = unsafe { contracts::input(context) };
+            unsafe {
+                read(
+                    bytes,
+                    position,
+                    context,
+                    contracts::slot(destination),
+                    Reader {
+                        absent: build_absent,
+                        origins: build_origins,
+                        selected: build_selected,
+                    },
+                )
+            }
+        }
+    }
+};
+
+crate::codec::contracts::codec!(OutputKind);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Reader {
+        returned: ReadCallback,
+        written: ReadCallback,
+    }
+    unsafe extern "C" fn build_returned(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<OutputKind>() = OutputKind::Returned;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_written(context: Slot, destination: Slot) -> ReadStatus {
+        let mut parameter = <usize as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            parameter: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            parameter: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_residency_output_kind_written"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    parameter: contracts::slot(&mut parameter),
+                },
+                Host {
+                    parameter: contracts::read_value::<usize>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<OutputKind>() = OutputKind::Written(parameter);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_read_residency_output_kind"]
+        fn read(
+            input: contracts::Bytes,
+            position: *mut usize,
+            context: Slot,
+            output: Slot,
+            host: Reader,
+        ) -> ReadStatus;
+    }
+    impl Native for OutputKind {
+        fn empty() -> Self {
+            Self::Returned
+        }
+        unsafe fn write(&self, destination: Slot) {
+            match self {
+                Self::Returned => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_output_kind_returned"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Written(parameter) => {
+                    #[repr(C)]
+                    struct Fields {
+                        parameter: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        parameter: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_residency_output_kind_written"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                parameter: contracts::address(parameter).cast_mut(),
+                            },
+                            Host {
+                                parameter: contracts::write_value::<usize>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+            }
+        }
+        unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
+            let (bytes, position) = unsafe { contracts::input(context) };
+            unsafe {
+                read(
+                    bytes,
+                    position,
+                    context,
+                    contracts::slot(destination),
+                    Reader {
+                        returned: build_returned,
+                        written: build_written,
+                    },
+                )
+            }
+        }
+    }
+};
+
+crate::codec::contracts::codec!(Output);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        function: Slot,
+        kind: Slot,
+        fields: Slot,
+        arguments: Slot,
+        bindings: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        function: WriteCallback,
+        kind: WriteCallback,
+        fields: WriteCallback,
+        arguments: WriteCallback,
+        bindings: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        function: ReadCallback,
+        kind: ReadCallback,
+        fields: ReadCallback,
+        arguments: ReadCallback,
+        bindings: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_residency_output"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_residency_output"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for Output {
+        fn empty() -> Self {
+            Self {
+                function: <String as Native>::empty(),
+                kind: <OutputKind as Native>::empty(),
+                fields: <Vec<Part> as Native>::empty(),
+                arguments: <Arguments as Native>::empty(),
+                bindings: <BTreeMap<ValueIdentity, bounds::Proof> as Native>::empty(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        function: contracts::address(&self.function).cast_mut(),
+                        kind: contracts::address(&self.kind).cast_mut(),
+                        fields: contracts::address(&self.fields).cast_mut(),
+                        arguments: contracts::address(&self.arguments).cast_mut(),
+                        bindings: contracts::address(&self.bindings).cast_mut(),
+                    },
+                    Writer {
+                        function: contracts::write_value::<String>,
+                        kind: contracts::write_value::<OutputKind>,
+                        fields: contracts::write_value::<Vec<Part>>,
+                        arguments: contracts::write_value::<Arguments>,
+                        bindings: contracts::write_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        function: contracts::slot(&mut output.function),
+                        kind: contracts::slot(&mut output.kind),
+                        fields: contracts::slot(&mut output.fields),
+                        arguments: contracts::slot(&mut output.arguments),
+                        bindings: contracts::slot(&mut output.bindings),
+                    },
+                    Reader {
+                        function: contracts::read_value::<String>,
+                        kind: contracts::read_value::<OutputKind>,
+                        fields: contracts::read_value::<Vec<Part>>,
+                        arguments: contracts::read_value::<Arguments>,
+                        bindings: contracts::read_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};
+
+crate::codec::contracts::codec!(Contract);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Address, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        required: Slot,
+        calls: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        required: WriteCallback,
+        calls: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        required: ReadCallback,
+        calls: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_residency_contract"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_residency_contract"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    unsafe extern "C" fn write_required(value: Address, output: Slot) {
+        unsafe {
+            contracts::write_map_with(&*value.cast::<Requirements>(), output, write_requirement)
+        }
+    }
+    unsafe extern "C" fn write_requirement(value: Address, output: Slot) {
+        let (key, guards) =
+            unsafe { &*value.cast::<(&(Input, Target), &BTreeSet<bounds::Condition>)>() };
+        let condition = guards
+            .iter()
+            .cloned()
+            .fold(bounds::Condition::constant(false), |a, b| {
+                a.logical(b, true)
+            });
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_write_requirement"]
+            fn write(
+                key: Address,
+                condition: Address,
+                output: Slot,
+                key_write: WriteCallback,
+                condition_write: WriteCallback,
+                append: unsafe extern "C" fn(Slot, *const u8, usize),
+            );
+        }
+        unsafe {
+            write(
+                contracts::address(*key),
+                contracts::address(&condition),
+                output,
+                contracts::write_value::<(Input, Target)>,
+                contracts::write_value::<bounds::Condition>,
+                contracts::append,
+            )
+        }
+    }
+    impl Native for Contract {
+        fn empty() -> Self {
+            Self::default()
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        required: contracts::address(&self.required).cast_mut(),
+                        calls: contracts::address(&self.calls).cast_mut(),
+                    },
+                    Writer {
+                        required: write_required,
+                        calls: contracts::write_value::<Vec<Call>>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let mut required = <Requirements as Native>::empty();
+            let mut calls = <Vec<Call> as Native>::empty();
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        required: contracts::slot(&mut required),
+                        calls: contracts::slot(&mut calls),
+                    },
+                    Reader {
+                        required: contracts::read_value::<Requirements>,
+                        calls: contracts::read_value::<Vec<Call>>,
+                    },
+                )
+            };
+            if status == ReadStatus::Success {
+                *output = Self { required, calls };
+            }
+            status
+        }
+    }
+};
+
+crate::codec::contracts::codec!(Call);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        function: Slot,
+        arguments: Slot,
+        bindings: Slot,
+        path: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        function: WriteCallback,
+        arguments: WriteCallback,
+        bindings: WriteCallback,
+        path: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        function: ReadCallback,
+        arguments: ReadCallback,
+        bindings: ReadCallback,
+        path: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_residency_call"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_residency_call"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for Call {
+        fn empty() -> Self {
+            Self {
+                function: String::new(),
+                arguments: BTreeMap::new(),
+                bindings: BTreeMap::new(),
+                path: bounds::Clause::default(),
+                source: None,
+                span: Span::default(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            let path = bounds::Condition::guard(self.path.clone());
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        function: contracts::address(&self.function).cast_mut(),
+                        arguments: contracts::address(&self.arguments).cast_mut(),
+                        bindings: contracts::address(&self.bindings).cast_mut(),
+                        path: contracts::address(&path).cast_mut(),
+                    },
+                    Writer {
+                        function: contracts::write_value::<String>,
+                        arguments: contracts::write_value::<Arguments>,
+                        bindings: contracts::write_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
+                        path: contracts::write_value::<bounds::Condition>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let mut function = <String as Native>::empty();
+            let mut arguments = <Arguments as Native>::empty();
+            let mut bindings = <BTreeMap<ValueIdentity, bounds::Proof> as Native>::empty();
+            let mut path = <bounds::Condition as Native>::empty();
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        function: contracts::slot(&mut function),
+                        arguments: contracts::slot(&mut arguments),
+                        bindings: contracts::slot(&mut bindings),
+                        path: contracts::slot(&mut path),
+                    },
+                    Reader {
+                        function: contracts::read_value::<String>,
+                        arguments: contracts::read_value::<Arguments>,
+                        bindings: contracts::read_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
+                        path: contracts::read_value::<bounds::Condition>,
+                    },
+                )
+            };
+            if status == ReadStatus::Success {
+                *output = Self {
+                    function,
+                    arguments,
+                    bindings,
+                    path: path.assume(&bounds::Clause::default(), true),
+                    source: None,
+                    span: Span::default(),
+                };
+            }
+            status
+        }
+    }
+};

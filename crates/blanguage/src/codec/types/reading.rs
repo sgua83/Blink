@@ -33,6 +33,27 @@ pub(crate) enum ReadStatus {
     Fact = 20,
     ConditionVersion = 21,
     ConditionNode = 22,
+    ContractAddressRoot = 23,
+    ContractInitializationSource = 24,
+    ContractElementFacts = 25,
+    ContractDataLayout = 26,
+    ContractReturned = 27,
+    ContractTaskProjection = 28,
+    ContractExclusion = 29,
+    ContractViewAccess = 30,
+    ContractResidencyPart = 31,
+    ContractResidencyOrigin = 32,
+    ContractResidency = 33,
+    ContractResidencyOutputKind = 34,
+    ContractTextureDimension = 35,
+    ContractTextureFormat = 36,
+    ContractElementFact = 37,
+    ContractCallParameterKind = 38,
+    ContractContractKind = 39,
+    ContractRelationOp = 40,
+    ContractOwnership = 41,
+    ContractAddressIdentity = 42,
+    ContractBorrowSource = 43,
 }
 impl ReadStatus {
     pub(crate) fn message(self) -> Option<&'static str> {
@@ -59,6 +80,27 @@ impl ReadStatus {
             ReadStatus::Fact => Some("模块枚举编码错误：Fact"),
             ReadStatus::ConditionVersion => Some("模块分量条件合同格式不兼容，需要用同一编译器重新编译"),
             ReadStatus::ConditionNode => Some("模块枚举编码错误：EncodedClause<F>"),
+            ReadStatus::ContractBorrowSource => Some("模块枚举编码错误：Source"),
+            ReadStatus::ContractAddressIdentity => Some("模块地址数值关系无效"),
+            ReadStatus::ContractOwnership => Some("invalid ownership tag"),
+            ReadStatus::ContractRelationOp => Some("模块枚举编码错误：Op"),
+            ReadStatus::ContractContractKind => Some("模块枚举编码错误：ast::ContractKind"),
+            ReadStatus::ContractCallParameterKind => Some("模块枚举编码错误：ir::CallParameterKind"),
+            ReadStatus::ContractElementFact => Some("模块枚举编码错误：ElementFact"),
+            ReadStatus::ContractTextureFormat => Some("模块枚举编码错误：crate::ast::TextureFormat"),
+            ReadStatus::ContractTextureDimension => Some("模块枚举编码错误：crate::ast::TextureDimension"),
+            ReadStatus::ContractResidencyOutputKind => Some("模块枚举编码错误：OutputKind"),
+            ReadStatus::ContractResidency => Some("模块枚举编码错误：Residency"),
+            ReadStatus::ContractResidencyOrigin => Some("模块枚举编码错误：Origin"),
+            ReadStatus::ContractResidencyPart => Some("模块枚举编码错误：Part"),
+            ReadStatus::ContractViewAccess => Some("模块枚举编码错误：Access"),
+            ReadStatus::ContractExclusion => Some("模块枚举编码错误：Exclusion"),
+            ReadStatus::ContractTaskProjection => Some("模块枚举编码错误：TaskProjection"),
+            ReadStatus::ContractReturned => Some("模块枚举编码错误：Returned"),
+            ReadStatus::ContractDataLayout => Some("模块枚举编码错误：DataLayout"),
+            ReadStatus::ContractElementFacts => Some("模块枚举编码错误：ElementFacts"),
+            ReadStatus::ContractInitializationSource => Some("模块枚举编码错误：InitializationSource"),
+            ReadStatus::ContractAddressRoot => Some("模块枚举编码错误：Root"),
         }
     }
 }
@@ -247,6 +289,7 @@ struct ReadHost {
 }
 
 unsafe extern "C" {
+#[link_name="bootstrap.contract_codec::contract_read_ast_condition"]fn read_condition(input:Bytes,position:*mut usize,output:Slot,host:ReadHost)->ReadStatus;
     #[link_name = "bootstrap.contract_codec::read_type"]
     fn read_type(input: Bytes, position: *mut usize, output: Slot, host: ReadHost) -> ReadStatus;
     #[link_name = "bootstrap.contract_codec::read_type_name"]
@@ -359,8 +402,10 @@ unsafe fn parse(context: Slot, output: Slot, read: Read) -> ReadStatus {
     };
     unsafe { read(input, position, output, host(context)) }
 }
-pub(in crate::codec) fn decode(reader: &mut Reader<'_>) -> Result<ir::Ty> {
-    let mut output = empty_type();
+pub(crate) fn with_context<T>(
+    reader: &mut Reader<'_>,
+    read: impl FnOnce(Slot) -> (ReadStatus, T),
+) -> Result<T> {
     let mut context = Context {
         input: Bytes {
             data: reader.bytes.as_ptr(),
@@ -369,14 +414,50 @@ pub(in crate::codec) fn decode(reader: &mut Reader<'_>) -> Result<ir::Ty> {
         position: ptr::from_mut(&mut reader.position),
         result: Ok(()),
     };
-    let status = unsafe { parse(slot(&mut context), slot(&mut output), read_type) };
-    let message = status.message();
-    if let Some(message) = message {
+    let (status, value) = read(slot(&mut context));
+    if let Some(message) = status.message() {
         context.result = Err(message.into());
     }
-    context.result.map(|()| output)
+    context.result.map(|()| value)
 }
-fn empty_type() -> ir::Ty {
+pub(crate) unsafe fn input(context: Slot) -> (Bytes, *mut usize) {
+    let c = unsafe { &*context.cast::<Context>() };
+    (c.input, c.position)
+}
+pub(crate) unsafe fn fail(context: Slot, error: Box<dyn std::error::Error>) -> ReadStatus {
+    unsafe { &mut *context.cast::<Context>() }.result = Err(error);
+    ReadStatus::RustError
+}
+pub(in crate::codec) fn decode(reader: &mut Reader<'_>) -> Result<ir::Ty> {
+    with_context(reader, |context| {
+        let mut value = empty_type();
+        let status = unsafe { parse(context, slot(&mut value), read_type) };
+        (status, value)
+    })
+}
+pub(crate) unsafe fn native_type(context: Slot, output: &mut ir::Ty) -> ReadStatus {
+    unsafe { parse(context, slot(output), read_type) }
+}
+pub(crate) unsafe fn native_predicate(
+    context: Slot,
+    output: &mut ast::ContractPredicate,
+) -> ReadStatus {
+    unsafe { parse(context, slot(output), read_predicate) }
+}
+pub(crate) unsafe fn native_condition(
+    context: Slot,
+    output: &mut ast::OutputCondition,
+) -> ReadStatus {
+    unsafe { parse(context, slot(output), read_condition) }
+}
+pub(crate) unsafe extern "C" fn native_text(
+    context: Slot,
+    output: Slot,
+    bytes: Bytes,
+) -> ReadStatus {
+    unsafe { text(context, output, bytes) }
+}
+pub(crate) fn empty_type() -> ir::Ty {
     ir::Ty {
         name: String::new(),
         arguments: Vec::new(),

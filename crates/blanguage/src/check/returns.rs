@@ -779,4 +779,265 @@ impl Builder<'_> {
     }
 }
 
-crate::module::codec::variants!(Returned{0=>Unit,1=>Value(value),2=>Dataset(data),3=>OwnedValue(value)});
+
+
+// Physical construction for the original public contract wire.
+crate::codec::contracts::codec!(Returned);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Reader {
+        unit: ReadCallback,
+        value: ReadCallback,
+        dataset: ReadCallback,
+        owned_value: ReadCallback,
+    }
+    unsafe extern "C" fn build_unit(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<Returned>() = Returned::Unit;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_value(context: Slot, destination: Slot) -> ReadStatus {
+        let mut value = <Box<Value> as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            value: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            value: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_returned_value"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    value: contracts::slot(&mut value),
+                },
+                Host {
+                    value: contracts::read_value::<Box<Value>>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Returned>() = Returned::Value(value);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_dataset(context: Slot, destination: Slot) -> ReadStatus {
+        let mut data = <Box<application::DataPayload> as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            data: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            data: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_returned_dataset"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    data: contracts::slot(&mut data),
+                },
+                Host {
+                    data: contracts::read_value::<Box<application::DataPayload>>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Returned>() = Returned::Dataset(data);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_owned_value(context: Slot, destination: Slot) -> ReadStatus {
+        let mut value = <Box<owned_values::OwnedValuePayload> as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            value: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            value: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_returned_owned_value"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    value: contracts::slot(&mut value),
+                },
+                Host {
+                    value: contracts::read_value::<Box<owned_values::OwnedValuePayload>>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Returned>() = Returned::OwnedValue(value);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_read_returned"]
+        fn read(
+            input: contracts::Bytes,
+            position: *mut usize,
+            context: Slot,
+            output: Slot,
+            host: Reader,
+        ) -> ReadStatus;
+    }
+    impl Native for Returned {
+        fn empty() -> Self {
+            Self::Unit
+        }
+        unsafe fn write(&self, destination: Slot) {
+            match self {
+                Self::Unit => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_returned_unit"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Value(value) => {
+                    #[repr(C)]
+                    struct Fields {
+                        value: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        value: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_returned_value"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                value: contracts::address(value).cast_mut(),
+                            },
+                            Host {
+                                value: contracts::write_value::<Box<Value>>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Dataset(data) => {
+                    #[repr(C)]
+                    struct Fields {
+                        data: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        data: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_returned_dataset"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                data: contracts::address(data).cast_mut(),
+                            },
+                            Host {
+                                data: contracts::write_value::<Box<application::DataPayload>>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::OwnedValue(value) => {
+                    #[repr(C)]
+                    struct Fields {
+                        value: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        value: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_returned_owned_value"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                value: contracts::address(value).cast_mut(),
+                            },
+                            Host {
+                                value: contracts::write_value::<Box<owned_values::OwnedValuePayload>>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+            }
+        }
+        unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
+            let (bytes, position) = unsafe { contracts::input(context) };
+            unsafe {
+                read(
+                    bytes,
+                    position,
+                    context,
+                    contracts::slot(destination),
+                    Reader {
+                        unit: build_unit,
+                        value: build_value,
+                        dataset: build_dataset,
+                        owned_value: build_owned_value,
+                    },
+                )
+            }
+        }
+    }
+};

@@ -226,8 +226,11 @@ impl<P> Decode for spirv::ProgramImage<P> {
     }
 }
 record!(crate::ast::ExternalName { library, symbol });
+#[cfg(not(feature="compiler"))]
 variants!(crate::ast::TextureDimension { 2=>D2, 3=>D3 });
+#[cfg(not(feature="compiler"))]
 variants!(crate::ast::TextureFormat { 0=>Rgba32Float, 1=>Rgba8Unorm, 2=>Rgba8Srgb, 3=>R8Unorm, 4=>Rg16Unorm, 5=>Rgb10A2Unorm, 6=>R11G11B10Float });
+#[cfg(not(feature="compiler"))]
 record!(TextureBinding { name, count, dimension, format });
 record!(Reduction {
     source,
@@ -266,7 +269,9 @@ record!(Sorting {
     target
 });
 variants!(Operation<ReductionLayout> {0=>Map,1=>Reduce(r),2=>CustomReduce(r),3=>CustomScan(s),4=>CustomSegmentedReduce(r),5=>SegmentedReduce(r),6=>ScanExclusive(s),7=>Compact(c),8=>StableSort(s)});
+#[cfg(not(feature="compiler"))]
 record!(PrefixCount { binding, word });
+#[cfg(not(feature="compiler"))]
 record!(PrefixRelation { domain, domain_region, count });
 record!(Selection { binding, word });
 variants!(CollectiveOperator {0=>Sum,1=>Min,2=>Max,3=>BitAnd,4=>BitOr,5=>BitXor});
@@ -291,7 +296,9 @@ record!(DeviceRequirements {
     position_fetch,
     subgroup
 });
+#[cfg(not(feature="compiler"))]
 record!(ElementRange { binding, offset, scalar, intervals, known_bits });
+#[cfg(not(feature="compiler"))]
 variants!(ElementFact { 0 => Range(range), 1 => Index { binding, offset, target } });
 record!(ProgramLayout {
     write_regions,
@@ -399,3 +406,810 @@ impl<P> native::ProgramImage<P,*const u8>{
         Ok(image.map_code(|index|code[index]))
     }
 }
+
+// Physical construction for the original public contract wire.
+#[cfg(feature = "compiler")]
+crate::codec::contracts::codec!(crate::ast::TextureDimension);
+
+#[cfg(feature = "compiler")]
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{self, Native, Read as ReadCallback, Slot};
+    #[repr(C)]
+    struct Reader {
+        d2: ReadCallback,
+        d3: ReadCallback,
+    }
+    unsafe extern "C" fn build_d2(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureDimension>() = crate::ast::TextureDimension::D2;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_d3(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureDimension>() = crate::ast::TextureDimension::D3;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_read_texture_dimension"]
+        fn read(
+            input: contracts::Bytes,
+            position: *mut usize,
+            context: Slot,
+            output: Slot,
+            host: Reader,
+        ) -> ReadStatus;
+    }
+    impl Native for crate::ast::TextureDimension {
+        fn empty() -> Self {
+            Self::D2
+        }
+        unsafe fn write(&self, destination: Slot) {
+            match self {
+                Self::D2 => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_texture_dimension_d2"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::D3 => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_texture_dimension_d3"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+            }
+        }
+        unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
+            let (bytes, position) = unsafe { contracts::input(context) };
+            unsafe {
+                read(
+                    bytes,
+                    position,
+                    context,
+                    contracts::slot(destination),
+                    Reader {
+                        d2: build_d2,
+                        d3: build_d3,
+                    },
+                )
+            }
+        }
+    }
+};
+
+#[cfg(feature = "compiler")]
+crate::codec::contracts::codec!(crate::ast::TextureFormat);
+
+#[cfg(feature = "compiler")]
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{self, Native, Read as ReadCallback, Slot};
+    #[repr(C)]
+    struct Reader {
+        rgba32float: ReadCallback,
+        rgba8unorm: ReadCallback,
+        rgba8srgb: ReadCallback,
+        r8unorm: ReadCallback,
+        rg16unorm: ReadCallback,
+        rgb10a2unorm: ReadCallback,
+        r11g11b10float: ReadCallback,
+    }
+    unsafe extern "C" fn build_rgba32float(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureFormat>() =
+                crate::ast::TextureFormat::Rgba32Float;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_rgba8unorm(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureFormat>() =
+                crate::ast::TextureFormat::Rgba8Unorm;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_rgba8srgb(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureFormat>() = crate::ast::TextureFormat::Rgba8Srgb;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_r8unorm(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureFormat>() = crate::ast::TextureFormat::R8Unorm;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_rg16unorm(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureFormat>() = crate::ast::TextureFormat::Rg16Unorm;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_rgb10a2unorm(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureFormat>() =
+                crate::ast::TextureFormat::Rgb10A2Unorm;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_r11g11b10float(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureFormat>() =
+                crate::ast::TextureFormat::R11G11B10Float;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_read_texture_format"]
+        fn read(
+            input: contracts::Bytes,
+            position: *mut usize,
+            context: Slot,
+            output: Slot,
+            host: Reader,
+        ) -> ReadStatus;
+    }
+    impl Native for crate::ast::TextureFormat {
+        fn empty() -> Self {
+            Self::Rgba32Float
+        }
+        unsafe fn write(&self, destination: Slot) {
+            match self {
+                Self::Rgba32Float => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rgba32float"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Rgba8Unorm => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rgba8unorm"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Rgba8Srgb => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rgba8srgb"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::R8Unorm => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_r8unorm"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Rg16Unorm => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rg16unorm"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::Rgb10A2Unorm => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rgb10a2unorm"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+                Self::R11G11B10Float => {
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_r11g11b10float"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
+            }
+        }
+        unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
+            let (bytes, position) = unsafe { contracts::input(context) };
+            unsafe {
+                read(
+                    bytes,
+                    position,
+                    context,
+                    contracts::slot(destination),
+                    Reader {
+                        rgba32float: build_rgba32float,
+                        rgba8unorm: build_rgba8unorm,
+                        rgba8srgb: build_rgba8srgb,
+                        r8unorm: build_r8unorm,
+                        rg16unorm: build_rg16unorm,
+                        rgb10a2unorm: build_rgb10a2unorm,
+                        r11g11b10float: build_r11g11b10float,
+                    },
+                )
+            }
+        }
+    }
+};
+
+#[cfg(feature = "compiler")]
+crate::codec::contracts::codec!(TextureBinding);
+
+#[cfg(feature = "compiler")]
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        name: Slot,
+        count: Slot,
+        dimension: Slot,
+        format: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        name: WriteCallback,
+        count: WriteCallback,
+        dimension: WriteCallback,
+        format: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        name: ReadCallback,
+        count: ReadCallback,
+        dimension: ReadCallback,
+        format: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_texture_binding"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_texture_binding"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for TextureBinding {
+        fn empty() -> Self {
+            Self {
+                name: <String as Native>::empty(),
+                count: <Option<u32> as Native>::empty(),
+                dimension: <crate::ast::TextureDimension as Native>::empty(),
+                format: <Option<crate::ast::TextureFormat> as Native>::empty(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        name: contracts::address(&self.name).cast_mut(),
+                        count: contracts::address(&self.count).cast_mut(),
+                        dimension: contracts::address(&self.dimension).cast_mut(),
+                        format: contracts::address(&self.format).cast_mut(),
+                    },
+                    Writer {
+                        name: contracts::write_value::<String>,
+                        count: contracts::write_value::<Option<u32>>,
+                        dimension: contracts::write_value::<crate::ast::TextureDimension>,
+                        format: contracts::write_value::<Option<crate::ast::TextureFormat>>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        name: contracts::slot(&mut output.name),
+                        count: contracts::slot(&mut output.count),
+                        dimension: contracts::slot(&mut output.dimension),
+                        format: contracts::slot(&mut output.format),
+                    },
+                    Reader {
+                        name: contracts::read_value::<String>,
+                        count: contracts::read_value::<Option<u32>>,
+                        dimension: contracts::read_value::<crate::ast::TextureDimension>,
+                        format: contracts::read_value::<Option<crate::ast::TextureFormat>>,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};
+
+#[cfg(feature = "compiler")]
+crate::codec::contracts::codec!(PrefixCount);
+
+#[cfg(feature = "compiler")]
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        binding: Slot,
+        word: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        binding: WriteCallback,
+        word: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        binding: ReadCallback,
+        word: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_prefix_count"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_prefix_count"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for PrefixCount {
+        fn empty() -> Self {
+            Self {
+                binding: <usize as Native>::empty(),
+                word: <u32 as Native>::empty(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        binding: contracts::address(&self.binding).cast_mut(),
+                        word: contracts::address(&self.word).cast_mut(),
+                    },
+                    Writer {
+                        binding: contracts::write_value::<usize>,
+                        word: contracts::write_value::<u32>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        binding: contracts::slot(&mut output.binding),
+                        word: contracts::slot(&mut output.word),
+                    },
+                    Reader {
+                        binding: contracts::read_value::<usize>,
+                        word: contracts::read_value::<u32>,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};
+
+#[cfg(feature = "compiler")]
+crate::codec::contracts::codec!(PrefixRelation);
+
+#[cfg(feature = "compiler")]
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        domain: Slot,
+        domain_region: Slot,
+        count: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        domain: WriteCallback,
+        domain_region: WriteCallback,
+        count: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        domain: ReadCallback,
+        domain_region: ReadCallback,
+        count: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_prefix_relation"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_prefix_relation"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for PrefixRelation {
+        fn empty() -> Self {
+            Self {
+                domain: <usize as Native>::empty(),
+                domain_region: <Option<(u32, u32)> as Native>::empty(),
+                count: <PrefixCount as Native>::empty(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        domain: contracts::address(&self.domain).cast_mut(),
+                        domain_region: contracts::address(&self.domain_region).cast_mut(),
+                        count: contracts::address(&self.count).cast_mut(),
+                    },
+                    Writer {
+                        domain: contracts::write_value::<usize>,
+                        domain_region: contracts::write_value::<Option<(u32, u32)>>,
+                        count: contracts::write_value::<PrefixCount>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        domain: contracts::slot(&mut output.domain),
+                        domain_region: contracts::slot(&mut output.domain_region),
+                        count: contracts::slot(&mut output.count),
+                    },
+                    Reader {
+                        domain: contracts::read_value::<usize>,
+                        domain_region: contracts::read_value::<Option<(u32, u32)>>,
+                        count: contracts::read_value::<PrefixCount>,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};
+
+#[cfg(feature = "compiler")]
+crate::codec::contracts::codec!(ElementRange);
+
+#[cfg(feature = "compiler")]
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        binding: Slot,
+        offset: Slot,
+        scalar: Slot,
+        intervals: Slot,
+        known_bits: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        binding: WriteCallback,
+        offset: WriteCallback,
+        scalar: WriteCallback,
+        intervals: WriteCallback,
+        known_bits: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        binding: ReadCallback,
+        offset: ReadCallback,
+        scalar: ReadCallback,
+        intervals: ReadCallback,
+        known_bits: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_element_range"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_element_range"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for ElementRange {
+        fn empty() -> Self {
+            Self {
+                binding: <usize as Native>::empty(),
+                offset: <u32 as Native>::empty(),
+                scalar: <Scalar as Native>::empty(),
+                intervals: <Vec<(Bits, Bits)> as Native>::empty(),
+                known_bits: <(Bits, Bits) as Native>::empty(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        binding: contracts::address(&self.binding).cast_mut(),
+                        offset: contracts::address(&self.offset).cast_mut(),
+                        scalar: contracts::address(&self.scalar).cast_mut(),
+                        intervals: contracts::address(&self.intervals).cast_mut(),
+                        known_bits: contracts::address(&self.known_bits).cast_mut(),
+                    },
+                    Writer {
+                        binding: contracts::write_value::<usize>,
+                        offset: contracts::write_value::<u32>,
+                        scalar: contracts::write_value::<Scalar>,
+                        intervals: contracts::write_value::<Vec<(Bits, Bits)>>,
+                        known_bits: contracts::write_value::<(Bits, Bits)>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        binding: contracts::slot(&mut output.binding),
+                        offset: contracts::slot(&mut output.offset),
+                        scalar: contracts::slot(&mut output.scalar),
+                        intervals: contracts::slot(&mut output.intervals),
+                        known_bits: contracts::slot(&mut output.known_bits),
+                    },
+                    Reader {
+                        binding: contracts::read_value::<usize>,
+                        offset: contracts::read_value::<u32>,
+                        scalar: contracts::read_value::<Scalar>,
+                        intervals: contracts::read_value::<Vec<(Bits, Bits)>>,
+                        known_bits: contracts::read_value::<(Bits, Bits)>,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};
+
+#[cfg(feature = "compiler")]
+crate::codec::contracts::codec!(ElementFact);
+
+#[cfg(feature = "compiler")]
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Reader {
+        range: ReadCallback,
+        index: ReadCallback,
+    }
+    unsafe extern "C" fn build_range(context: Slot, destination: Slot) -> ReadStatus {
+        let mut range = <ElementRange as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            range: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            range: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_element_fact_range"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    range: contracts::slot(&mut range),
+                },
+                Host {
+                    range: contracts::read_value::<ElementRange>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<ElementFact>() = ElementFact::Range(range);
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_index(context: Slot, destination: Slot) -> ReadStatus {
+        let mut binding = <usize as Native>::empty();
+        let mut offset = <u32 as Native>::empty();
+        let mut target = <usize as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            binding: Slot,
+            offset: Slot,
+            target: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            binding: ReadCallback,
+            offset: ReadCallback,
+            target: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_element_fact_index"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    binding: contracts::slot(&mut binding),
+                    offset: contracts::slot(&mut offset),
+                    target: contracts::slot(&mut target),
+                },
+                Host {
+                    binding: contracts::read_value::<usize>,
+                    offset: contracts::read_value::<u32>,
+                    target: contracts::read_value::<usize>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<ElementFact>() = ElementFact::Index {
+                binding,
+                offset,
+                target,
+            };
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_read_element_fact"]
+        fn read(
+            input: contracts::Bytes,
+            position: *mut usize,
+            context: Slot,
+            output: Slot,
+            host: Reader,
+        ) -> ReadStatus;
+    }
+    impl Native for ElementFact {
+        fn empty() -> Self {
+            Self::Index {
+                binding: 0,
+                offset: 0,
+                target: 0,
+            }
+        }
+        unsafe fn write(&self, destination: Slot) {
+            match self {
+                Self::Range(range) => {
+                    #[repr(C)]
+                    struct Fields {
+                        range: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        range: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_element_fact_range"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                range: contracts::address(range).cast_mut(),
+                            },
+                            Host {
+                                range: contracts::write_value::<ElementRange>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Index {
+                    binding,
+                    offset,
+                    target,
+                } => {
+                    #[repr(C)]
+                    struct Fields {
+                        binding: Slot,
+                        offset: Slot,
+                        target: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        binding: WriteCallback,
+                        offset: WriteCallback,
+                        target: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_element_fact_index"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                binding: contracts::address(binding).cast_mut(),
+                                offset: contracts::address(offset).cast_mut(),
+                                target: contracts::address(target).cast_mut(),
+                            },
+                            Host {
+                                binding: contracts::write_value::<usize>,
+                                offset: contracts::write_value::<u32>,
+                                target: contracts::write_value::<usize>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+            }
+        }
+        unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
+            let (bytes, position) = unsafe { contracts::input(context) };
+            unsafe {
+                read(
+                    bytes,
+                    position,
+                    context,
+                    contracts::slot(destination),
+                    Reader {
+                        range: build_range,
+                        index: build_index,
+                    },
+                )
+            }
+        }
+    }
+};

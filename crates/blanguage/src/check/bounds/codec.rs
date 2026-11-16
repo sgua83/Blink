@@ -645,6 +645,16 @@ unsafe extern "C" fn append(output: *mut c_void, data: *const u8, count: usize) 
 }
 macro_rules! native_codec {
     ($ty:ty,$write:ident,$read:ident) => {
+        impl crate::codec::contracts::Native for $ty{
+            fn empty()->Self{Self::from_frame(Default::default())}
+            unsafe fn write(&self,output:Slot){unsafe{$write((*self).into_frame(),output,append)}}
+            unsafe fn read(context:Slot,output:&mut Self)->ReadStatus{
+                let(bytes,position)=unsafe{crate::codec::contracts::input(context)};
+                let mut value:<Self as NativeValue>::Frame=Default::default();
+                let status=unsafe{$read(Bytes{data:bytes.data,count:bytes.count},position,&mut value)};
+                if status==ReadStatus::Success{*output=Self::from_frame(value);}status
+            }
+        }
         impl Encode for $ty {
             fn encode(&self, writer: &mut Writer) {
                 unsafe { $write((*self).into_frame(), ptr::from_mut(writer).cast(), append) }
@@ -1053,6 +1063,15 @@ unsafe extern "C" {
 }
 macro_rules! borrowed_codec {
     ($ty:ty,$empty:expr,$write:ident,$read:ident) => {
+        impl crate::codec::contracts::Native for $ty{
+            fn empty()->Self{$empty}
+            unsafe fn write(&self,output:Slot){unsafe{$write(ptr::from_ref(self).cast(),output,writer_host())}}
+            unsafe fn read(context:Slot,output:&mut Self)->ReadStatus{
+                let(bytes,position)=unsafe{crate::codec::contracts::input(context)};
+                let bytes=Bytes{data:bytes.data,count:bytes.count};let mut frame=ReadContext{input:bytes,position};
+                unsafe{$read(bytes,position,slot(output),reader_host(slot(&mut frame)))}
+            }
+        }
         impl Encode for $ty {
             fn encode(&self, writer: &mut Writer) {
                 unsafe {
@@ -1665,3 +1684,37 @@ unsafe extern "C" fn construct_fact(context: Slot, output: Slot, kind: FactKind)
 
 
 pub(super) mod conditions;
+
+// Physical construction for the original public contract wire.
+impl crate::codec::contracts::Native for ScalarRanges {
+    fn empty() -> Self {
+        Self(Vec::new())
+    }
+    unsafe fn write(&self, output: Slot) {
+        unsafe {
+            write_ranges(
+                Span {
+                    data: self.0.as_ptr().cast(),
+                    count: self.0.len(),
+                    stride: size_of::<(Bits, Bits)>(),
+                },
+                output,
+                RangeWriter { append, interval },
+            )
+        }
+    }
+    unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+        let (bytes, position) = unsafe { crate::codec::contracts::input(context) };
+        unsafe {
+            read_ranges(
+                Bytes {
+                    data: bytes.data,
+                    count: bytes.count,
+                },
+                position,
+                slot(&mut output.0),
+                push_interval,
+            )
+        }
+    }
+}

@@ -1111,12 +1111,8 @@ impl Builder<'_> {
     }
 }
 
-impl crate::module::codec::Encode for OwnedValuePayload {
-    fn encode(&self,w:&mut crate::module::codec::Writer){self.value.encode(w);self.payloads.encode(w);self.ownership.encode(w);}
-}
-impl crate::module::codec::Decode for OwnedValuePayload {
-    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{value:Value::decode(r)?,payloads:Vec::decode(r)?,ownership:Ownership::decode(r)?,place:None,declaration:0})}
-}
+
+
 
 impl Builder<'_> {
     // 临时拥有者仍只在原env中；完整消费结束后沿原资源作用域出口释放。
@@ -1131,3 +1127,86 @@ impl Builder<'_> {
         Ok(value)
     }
 }
+
+// Physical construction for the original public contract wire.
+crate::codec::contracts::codec!(OwnedValuePayload);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        value: Slot,
+        payloads: Slot,
+        ownership: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        value: WriteCallback,
+        payloads: WriteCallback,
+        ownership: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        value: ReadCallback,
+        payloads: ReadCallback,
+        ownership: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_owned_value_payload"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_owned_value_payload"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for OwnedValuePayload {
+        fn empty() -> Self {
+            Self {
+                value: <Value as Native>::empty(),
+                payloads: <Vec<Option<Box<Returned>>> as Native>::empty(),
+                ownership: <Ownership as Native>::empty(),
+                place: None,
+                declaration: 0,
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        value: contracts::address(&self.value).cast_mut(),
+                        payloads: contracts::address(&self.payloads).cast_mut(),
+                        ownership: contracts::address(&self.ownership).cast_mut(),
+                    },
+                    Writer {
+                        value: contracts::write_value::<Value>,
+                        payloads: contracts::write_value::<Vec<Option<Box<Returned>>>>,
+                        ownership: contracts::write_value::<Ownership>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        value: contracts::slot(&mut output.value),
+                        payloads: contracts::slot(&mut output.payloads),
+                        ownership: contracts::slot(&mut output.ownership),
+                    },
+                    Reader {
+                        value: contracts::read_value::<Value>,
+                        payloads: contracts::read_value::<Vec<Option<Box<Returned>>>>,
+                        ownership: contracts::read_value::<Ownership>,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};

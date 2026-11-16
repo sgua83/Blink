@@ -1,7 +1,6 @@
 //! The sole public contract projection. Checking retains its shared facts;
 //! only normalized fields need temporary copies for the original encoder.
 use super::*;
-use crate::module::codec::Encode;
 
 fn describe_value(value:&Value,normal:&mut bounds::Normalizer) {
     for(&reg,&(scalar,_))in value.regs.iter().zip(&value.ty.components){normal.scalar(ValueIdentity::Register(reg),scalar);}
@@ -103,8 +102,5 @@ pub(super) fn encode(original:&Contract,writer:&mut crate::module::codec::Writer
     if let Some(access)=&mut view_access{accesses(access,&mut normal);}
     if let Some(values)=&mut initialized{initialization(values,&mut normal);}
     if let Some(domain)=&mut domain{for proof in domain.elements.values_mut(){normal.proof(proof);}}
-    original.parameters.encode(writer);original.result.encode(writer);original.inputs.encode(writer);original.element_inputs.encode(writer);
-    returned.encode(writer);written.encode(writer);original.requires.encode(writer);
-    original.target.encode(writer);original.frame.encode(writer);original.fallible.encode(writer);domain.encode(writer);
-    residency.encode(writer);view_access.as_ref().unwrap().encode(writer);initialized.as_ref().unwrap().encode(writer);
+    unsafe{Contract::write_public(writer,&original.parameters,&original.result,&original.inputs,&original.element_inputs,&returned,&written,&original.requires,&original.target,&original.frame,&original.fallible,&domain,&residency,view_access.as_ref().unwrap(),initialized.as_ref().unwrap());}
 }

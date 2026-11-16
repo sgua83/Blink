@@ -5178,14 +5178,7 @@ pub(crate) fn kernel_interface(world: &World, instance: &crate::generics::Instan
     Ok(true)
 }
 
-crate::module::codec::record!(Value {
-    proof,
-    literal,
-    ty,
-    regs,
-    uniform,
-    constant
-});
+
 
 
 
@@ -5198,3 +5191,108 @@ pub(crate) fn canonical_function_contract(bytes: &[u8]) -> crate::module::codec:
     }
     Ok(native_function::Contract::from_bytes(bytes)?.bytes())
 }
+
+// Physical construction for the original public contract wire.
+crate::codec::contracts::codec!(Value);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        proof: Slot,
+        literal: Slot,
+        ty: Slot,
+        regs: Slot,
+        uniform: Slot,
+        constant: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        proof: WriteCallback,
+        literal: WriteCallback,
+        ty: WriteCallback,
+        regs: WriteCallback,
+        uniform: WriteCallback,
+        constant: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        proof: ReadCallback,
+        literal: ReadCallback,
+        ty: ReadCallback,
+        regs: ReadCallback,
+        uniform: ReadCallback,
+        constant: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_value"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_value"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for Value {
+        fn empty() -> Self {
+            Self {
+                proof: <bounds::Proof as Native>::empty(),
+                literal: <bool as Native>::empty(),
+                ty: <Ty as Native>::empty(),
+                regs: <Vec<Reg> as Native>::empty(),
+                uniform: <bool as Native>::empty(),
+                constant: <Option<Vec<Bits>> as Native>::empty(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        proof: contracts::address(&self.proof).cast_mut(),
+                        literal: contracts::address(&self.literal).cast_mut(),
+                        ty: contracts::address(&self.ty).cast_mut(),
+                        regs: contracts::address(&self.regs).cast_mut(),
+                        uniform: contracts::address(&self.uniform).cast_mut(),
+                        constant: contracts::address(&self.constant).cast_mut(),
+                    },
+                    Writer {
+                        proof: contracts::write_value::<bounds::Proof>,
+                        literal: contracts::write_value::<bool>,
+                        ty: contracts::write_value::<Ty>,
+                        regs: contracts::write_value::<Vec<Reg>>,
+                        uniform: contracts::write_value::<bool>,
+                        constant: contracts::write_value::<Option<Vec<Bits>>>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        proof: contracts::slot(&mut output.proof),
+                        literal: contracts::slot(&mut output.literal),
+                        ty: contracts::slot(&mut output.ty),
+                        regs: contracts::slot(&mut output.regs),
+                        uniform: contracts::slot(&mut output.uniform),
+                        constant: contracts::slot(&mut output.constant),
+                    },
+                    Reader {
+                        proof: contracts::read_value::<bounds::Proof>,
+                        literal: contracts::read_value::<bool>,
+                        ty: contracts::read_value::<Ty>,
+                        regs: contracts::read_value::<Vec<Reg>>,
+                        uniform: contracts::read_value::<bool>,
+                        constant: contracts::read_value::<Option<Vec<Bits>>>,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};

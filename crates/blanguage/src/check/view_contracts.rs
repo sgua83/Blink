@@ -42,7 +42,7 @@ impl Ord for PositionAccess {
     }
 }
 impl PartialOrd for PositionAccess {fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}}
-crate::module::codec::record!(PositionAccess {layout,written,writable,initialized});
+
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum Access<Path = bounds::Condition> {
     Resource {resources:Borrow,borrows:Borrow,kind:view::Exclusion,when:Path},
@@ -90,7 +90,7 @@ impl Access {
         }
     }
 }
-crate::module::codec::variants!(Access {0=>Resource{resources,borrows,kind,when},1=>Position{borrows,when,position},2=>Memory{borrows,when,access},3=>Dataset{borrows,when,index,access,atomic},4=>Initialized{borrows,initialized,when},5=>Stored{borrows,word,value,when}});
+
 #[derive(Clone,Default,PartialEq,Eq)]
 pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub initialization:Vec<address::Initialization>}
 pub(super) struct ValueSnapshot { pub position:Position, pub index:Option<bounds::Operand>, pub scalar:Scalar, pub proof:Arc<bounds::Proof> }
@@ -2053,3 +2053,736 @@ impl Builder<'_> {
 }
 
 pub(super) mod relation;
+
+// Physical construction for the original public contract wire.
+crate::codec::contracts::codec!(PositionAccess);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        layout: Slot,
+        written: Slot,
+        writable: Slot,
+        initialized: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        layout: WriteCallback,
+        written: WriteCallback,
+        writable: WriteCallback,
+        initialized: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        layout: ReadCallback,
+        written: ReadCallback,
+        writable: ReadCallback,
+        initialized: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_position_access"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_position_access"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for PositionAccess {
+        fn empty() -> Self {
+            Self {
+                layout: <address::Layout as Native>::empty(),
+                written: <Option<bounds::Proof> as Native>::empty(),
+                writable: <bool as Native>::empty(),
+                initialized: <bool as Native>::empty(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        layout: contracts::address(&self.layout).cast_mut(),
+                        written: contracts::address(&self.written).cast_mut(),
+                        writable: contracts::address(&self.writable).cast_mut(),
+                        initialized: contracts::address(&self.initialized).cast_mut(),
+                    },
+                    Writer {
+                        layout: contracts::write_value::<address::Layout>,
+                        written: contracts::write_value::<Option<bounds::Proof>>,
+                        writable: contracts::write_value::<bool>,
+                        initialized: contracts::write_value::<bool>,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        layout: contracts::slot(&mut output.layout),
+                        written: contracts::slot(&mut output.written),
+                        writable: contracts::slot(&mut output.writable),
+                        initialized: contracts::slot(&mut output.initialized),
+                    },
+                    Reader {
+                        layout: contracts::read_value::<address::Layout>,
+                        written: contracts::read_value::<Option<bounds::Proof>>,
+                        writable: contracts::read_value::<bool>,
+                        initialized: contracts::read_value::<bool>,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};
+
+crate::codec::contracts::codec!(Access);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Reader {
+        resource: ReadCallback,
+        position: ReadCallback,
+        memory: ReadCallback,
+        dataset: ReadCallback,
+        initialized: ReadCallback,
+        stored: ReadCallback,
+    }
+    unsafe extern "C" fn build_resource(context: Slot, destination: Slot) -> ReadStatus {
+        let mut resources = <Borrow as Native>::empty();
+        let mut borrows = <Borrow as Native>::empty();
+        let mut kind = <view::Exclusion as Native>::empty();
+        let mut when = <bounds::Condition as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            resources: Slot,
+            borrows: Slot,
+            kind: Slot,
+            when: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            resources: ReadCallback,
+            borrows: ReadCallback,
+            kind: ReadCallback,
+            when: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_view_access_resource"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    resources: contracts::slot(&mut resources),
+                    borrows: contracts::slot(&mut borrows),
+                    kind: contracts::slot(&mut kind),
+                    when: contracts::slot(&mut when),
+                },
+                Host {
+                    resources: contracts::read_value::<Borrow>,
+                    borrows: contracts::read_value::<Borrow>,
+                    kind: contracts::read_value::<view::Exclusion>,
+                    when: contracts::read_value::<bounds::Condition>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Access>() = Access::Resource {
+                resources,
+                borrows,
+                kind,
+                when,
+            };
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_position(context: Slot, destination: Slot) -> ReadStatus {
+        let mut borrows = <Borrow as Native>::empty();
+        let mut when = <bounds::Condition as Native>::empty();
+        let mut position = <PositionAccess as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            borrows: Slot,
+            when: Slot,
+            position: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            borrows: ReadCallback,
+            when: ReadCallback,
+            position: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_view_access_position"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    borrows: contracts::slot(&mut borrows),
+                    when: contracts::slot(&mut when),
+                    position: contracts::slot(&mut position),
+                },
+                Host {
+                    borrows: contracts::read_value::<Borrow>,
+                    when: contracts::read_value::<bounds::Condition>,
+                    position: contracts::read_value::<PositionAccess>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Access>() = Access::Position {
+                borrows,
+                when,
+                position,
+            };
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_memory(context: Slot, destination: Slot) -> ReadStatus {
+        let mut borrows = <Borrow as Native>::empty();
+        let mut when = <bounds::Condition as Native>::empty();
+        let mut access = <crate::ast::Access as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            borrows: Slot,
+            when: Slot,
+            access: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            borrows: ReadCallback,
+            when: ReadCallback,
+            access: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_view_access_memory"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    borrows: contracts::slot(&mut borrows),
+                    when: contracts::slot(&mut when),
+                    access: contracts::slot(&mut access),
+                },
+                Host {
+                    borrows: contracts::read_value::<Borrow>,
+                    when: contracts::read_value::<bounds::Condition>,
+                    access: contracts::read_value::<crate::ast::Access>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Access>() = Access::Memory {
+                borrows,
+                when,
+                access,
+            };
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_dataset(context: Slot, destination: Slot) -> ReadStatus {
+        let mut borrows = <Borrow as Native>::empty();
+        let mut when = <bounds::Condition as Native>::empty();
+        let mut index = <Option<bounds::Operand> as Native>::empty();
+        let mut access = <crate::ast::Access as Native>::empty();
+        let mut atomic = <bool as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            borrows: Slot,
+            when: Slot,
+            index: Slot,
+            access: Slot,
+            atomic: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            borrows: ReadCallback,
+            when: ReadCallback,
+            index: ReadCallback,
+            access: ReadCallback,
+            atomic: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_view_access_dataset"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    borrows: contracts::slot(&mut borrows),
+                    when: contracts::slot(&mut when),
+                    index: contracts::slot(&mut index),
+                    access: contracts::slot(&mut access),
+                    atomic: contracts::slot(&mut atomic),
+                },
+                Host {
+                    borrows: contracts::read_value::<Borrow>,
+                    when: contracts::read_value::<bounds::Condition>,
+                    index: contracts::read_value::<Option<bounds::Operand>>,
+                    access: contracts::read_value::<crate::ast::Access>,
+                    atomic: contracts::read_value::<bool>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Access>() = Access::Dataset {
+                borrows,
+                when,
+                index,
+                access,
+                atomic,
+            };
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_initialized(context: Slot, destination: Slot) -> ReadStatus {
+        let mut borrows = <Borrow as Native>::empty();
+        let mut initialized = <Vec<address::Initialization> as Native>::empty();
+        let mut when = <bounds::Condition as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            borrows: Slot,
+            initialized: Slot,
+            when: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            borrows: ReadCallback,
+            initialized: ReadCallback,
+            when: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_view_access_initialized"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    borrows: contracts::slot(&mut borrows),
+                    initialized: contracts::slot(&mut initialized),
+                    when: contracts::slot(&mut when),
+                },
+                Host {
+                    borrows: contracts::read_value::<Borrow>,
+                    initialized: contracts::read_value::<Vec<address::Initialization>>,
+                    when: contracts::read_value::<bounds::Condition>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Access>() = Access::Initialized {
+                borrows,
+                initialized,
+                when,
+            };
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_stored(context: Slot, destination: Slot) -> ReadStatus {
+        let mut borrows = <Borrow as Native>::empty();
+        let mut word = <u32 as Native>::empty();
+        let mut value = <Borrow as Native>::empty();
+        let mut when = <bounds::Condition as Native>::empty();
+        #[repr(C)]
+        struct Fields {
+            borrows: Slot,
+            word: Slot,
+            value: Slot,
+            when: Slot,
+        }
+        #[repr(C)]
+        struct Host {
+            borrows: ReadCallback,
+            word: ReadCallback,
+            value: ReadCallback,
+            when: ReadCallback,
+        }
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_read_view_access_stored"]
+            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+        }
+        let status = unsafe {
+            payload(
+                context,
+                Fields {
+                    borrows: contracts::slot(&mut borrows),
+                    word: contracts::slot(&mut word),
+                    value: contracts::slot(&mut value),
+                    when: contracts::slot(&mut when),
+                },
+                Host {
+                    borrows: contracts::read_value::<Borrow>,
+                    word: contracts::read_value::<u32>,
+                    value: contracts::read_value::<Borrow>,
+                    when: contracts::read_value::<bounds::Condition>,
+                },
+            )
+        };
+        if status != ReadStatus::Success {
+            return status;
+        }
+        unsafe {
+            *destination.cast::<Access>() = Access::Stored {
+                borrows,
+                word,
+                value,
+                when,
+            };
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_read_view_access"]
+        fn read(
+            input: contracts::Bytes,
+            position: *mut usize,
+            context: Slot,
+            output: Slot,
+            host: Reader,
+        ) -> ReadStatus;
+    }
+    impl Native for Access {
+        fn empty() -> Self {
+            Self::Memory {
+                borrows: Borrow::default(),
+                when: bounds::Condition::constant(false),
+                access: crate::ast::Access::Read,
+            }
+        }
+        unsafe fn write(&self, destination: Slot) {
+            match self {
+                Self::Resource {
+                    resources,
+                    borrows,
+                    kind,
+                    when,
+                } => {
+                    #[repr(C)]
+                    struct Fields {
+                        resources: Slot,
+                        borrows: Slot,
+                        kind: Slot,
+                        when: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        resources: WriteCallback,
+                        borrows: WriteCallback,
+                        kind: WriteCallback,
+                        when: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_view_access_resource"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                resources: contracts::address(resources).cast_mut(),
+                                borrows: contracts::address(borrows).cast_mut(),
+                                kind: contracts::address(kind).cast_mut(),
+                                when: contracts::address(when).cast_mut(),
+                            },
+                            Host {
+                                resources: contracts::write_value::<Borrow>,
+                                borrows: contracts::write_value::<Borrow>,
+                                kind: contracts::write_value::<view::Exclusion>,
+                                when: contracts::write_value::<bounds::Condition>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Position {
+                    borrows,
+                    when,
+                    position,
+                } => {
+                    #[repr(C)]
+                    struct Fields {
+                        borrows: Slot,
+                        when: Slot,
+                        position: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        borrows: WriteCallback,
+                        when: WriteCallback,
+                        position: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_view_access_position"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                borrows: contracts::address(borrows).cast_mut(),
+                                when: contracts::address(when).cast_mut(),
+                                position: contracts::address(position).cast_mut(),
+                            },
+                            Host {
+                                borrows: contracts::write_value::<Borrow>,
+                                when: contracts::write_value::<bounds::Condition>,
+                                position: contracts::write_value::<PositionAccess>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Memory {
+                    borrows,
+                    when,
+                    access,
+                } => {
+                    #[repr(C)]
+                    struct Fields {
+                        borrows: Slot,
+                        when: Slot,
+                        access: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        borrows: WriteCallback,
+                        when: WriteCallback,
+                        access: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_view_access_memory"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                borrows: contracts::address(borrows).cast_mut(),
+                                when: contracts::address(when).cast_mut(),
+                                access: contracts::address(access).cast_mut(),
+                            },
+                            Host {
+                                borrows: contracts::write_value::<Borrow>,
+                                when: contracts::write_value::<bounds::Condition>,
+                                access: contracts::write_value::<crate::ast::Access>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Dataset {
+                    borrows,
+                    when,
+                    index,
+                    access,
+                    atomic,
+                } => {
+                    #[repr(C)]
+                    struct Fields {
+                        borrows: Slot,
+                        when: Slot,
+                        index: Slot,
+                        access: Slot,
+                        atomic: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        borrows: WriteCallback,
+                        when: WriteCallback,
+                        index: WriteCallback,
+                        access: WriteCallback,
+                        atomic: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_view_access_dataset"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                borrows: contracts::address(borrows).cast_mut(),
+                                when: contracts::address(when).cast_mut(),
+                                index: contracts::address(index).cast_mut(),
+                                access: contracts::address(access).cast_mut(),
+                                atomic: contracts::address(atomic).cast_mut(),
+                            },
+                            Host {
+                                borrows: contracts::write_value::<Borrow>,
+                                when: contracts::write_value::<bounds::Condition>,
+                                index: contracts::write_value::<Option<bounds::Operand>>,
+                                access: contracts::write_value::<crate::ast::Access>,
+                                atomic: contracts::write_value::<bool>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Initialized {
+                    borrows,
+                    initialized,
+                    when,
+                } => {
+                    #[repr(C)]
+                    struct Fields {
+                        borrows: Slot,
+                        initialized: Slot,
+                        when: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        borrows: WriteCallback,
+                        initialized: WriteCallback,
+                        when: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_view_access_initialized"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                borrows: contracts::address(borrows).cast_mut(),
+                                initialized: contracts::address(initialized).cast_mut(),
+                                when: contracts::address(when).cast_mut(),
+                            },
+                            Host {
+                                borrows: contracts::write_value::<Borrow>,
+                                initialized: contracts::write_value::<Vec<address::Initialization>>,
+                                when: contracts::write_value::<bounds::Condition>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+                Self::Stored {
+                    borrows,
+                    word,
+                    value,
+                    when,
+                } => {
+                    #[repr(C)]
+                    struct Fields {
+                        borrows: Slot,
+                        word: Slot,
+                        value: Slot,
+                        when: Slot,
+                    }
+                    #[repr(C)]
+                    struct Host {
+                        borrows: WriteCallback,
+                        word: WriteCallback,
+                        value: WriteCallback,
+                        when: WriteCallback,
+                    }
+                    unsafe extern "C" {
+                        #[link_name = "bootstrap.contract_codec::contract_write_view_access_stored"]
+                        fn write(
+                            output: Slot,
+                            fields: Fields,
+                            host: Host,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe {
+                        write(
+                            destination,
+                            Fields {
+                                borrows: contracts::address(borrows).cast_mut(),
+                                word: contracts::address(word).cast_mut(),
+                                value: contracts::address(value).cast_mut(),
+                                when: contracts::address(when).cast_mut(),
+                            },
+                            Host {
+                                borrows: contracts::write_value::<Borrow>,
+                                word: contracts::write_value::<u32>,
+                                value: contracts::write_value::<Borrow>,
+                                when: contracts::write_value::<bounds::Condition>,
+                            },
+                            contracts::append,
+                        )
+                    }
+                }
+            }
+        }
+        unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
+            let (bytes, position) = unsafe { contracts::input(context) };
+            unsafe {
+                read(
+                    bytes,
+                    position,
+                    context,
+                    contracts::slot(destination),
+                    Reader {
+                        resource: build_resource,
+                        position: build_position,
+                        memory: build_memory,
+                        dataset: build_dataset,
+                        initialized: build_initialized,
+                        stored: build_stored,
+                    },
+                )
+            }
+        }
+    }
+};

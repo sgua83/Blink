@@ -14,7 +14,9 @@ macro_rules! pod {
         struct $name { $($field:$ty),* }
     };
 }
-pod!(Bytes { data:*const u8,count:usize });
+#[repr(C)]
+#[derive(Clone,Copy,Default)]
+pub(crate) struct Bytes { pub(crate) data:*const u8,pub(crate) count:usize }
 impl Bytes { fn of(value:&str)->Self { Self { data:value.as_ptr(),count:value.len() } } }
 pod!(Span { data:Address,count:usize,stride:usize });
 impl Span { fn of<T>(values:&[T])->Self { Self { data:values.as_ptr().cast(),count:values.len(),stride:std::mem::size_of::<T>() } } }
@@ -189,4 +191,53 @@ unsafe extern "C" fn constant(source:Address)->Constant {
 const HOST:Host=Host { append,ty,component,field,variant,function,parameter,type_name,argument,shape,expression,predicate,interval,condition,constant };
 
 // The reader owns only synchronous construction frames and the original Result.
-pub(super) mod reading;
+pub(crate) mod reading;
+
+// Physical construction for the original public contract wire.
+impl crate::codec::contracts::Native for ir::Ty {
+    fn empty() -> Self {
+        reading::empty_type()
+    }
+    unsafe fn write(&self, output: *mut c_void) {
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_write_ast_type"]
+            fn write(source: Address, output: *mut c_void, host: Host);
+        }
+        unsafe { write(address(self), output, HOST) }
+    }
+    unsafe fn read(context: *mut c_void, output: &mut Self) -> crate::codec::ReadStatus {
+        unsafe { reading::native_type(context, output) }
+    }
+}
+
+impl crate::codec::contracts::Native for ast::ContractPredicate {
+    fn empty() -> Self {
+        ast::ContractPredicate::Nonzero(String::new())
+    }
+    unsafe fn write(&self, output: *mut c_void) {
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_write_ast_predicate"]
+            fn write(source: Address, output: *mut c_void, host: Host);
+        }
+        unsafe { write(address(self), output, HOST) }
+    }
+    unsafe fn read(context: *mut c_void, output: &mut Self) -> crate::codec::ReadStatus {
+        unsafe { reading::native_predicate(context, output) }
+    }
+}
+
+impl crate::codec::contracts::Native for ast::OutputCondition {
+    fn empty() -> Self {
+        ast::OutputCondition::Bool(false)
+    }
+    unsafe fn write(&self, output: *mut c_void) {
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_write_ast_condition"]
+            fn write(source: Address, output: *mut c_void, host: Host);
+        }
+        unsafe { write(address(self), output, HOST) }
+    }
+    unsafe fn read(context: *mut c_void, output: &mut Self) -> crate::codec::ReadStatus {
+        unsafe { reading::native_condition(context, output) }
+    }
+}

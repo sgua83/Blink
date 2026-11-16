@@ -533,7 +533,7 @@ pub(super) struct TaskGuard {
     returned:Vec<Reg>,
     inputs:BTreeMap<String,(Ty,Vec<Option<bounds::Operand>>)>,
 }
-crate::module::codec::record!(TaskGuard {target,ty,clauses,result,model,arguments,returned,inputs});
+
 impl Ord for TaskGuard {
     fn cmp(&self,other:&Self)->std::cmp::Ordering {
         use crate::module::codec::Encode;
@@ -1232,3 +1232,132 @@ impl Builder<'_> {
         Ok(model)
     }
 }
+
+// Physical construction for the original public contract wire.
+crate::codec::contracts::codec!(TaskGuard);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        target: Slot,
+        ty: Slot,
+        clauses: Slot,
+        result: Slot,
+        model: Slot,
+        arguments: Slot,
+        returned: Slot,
+        inputs: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        target: WriteCallback,
+        ty: WriteCallback,
+        clauses: WriteCallback,
+        result: WriteCallback,
+        model: WriteCallback,
+        arguments: WriteCallback,
+        returned: WriteCallback,
+        inputs: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        target: ReadCallback,
+        ty: ReadCallback,
+        clauses: ReadCallback,
+        result: ReadCallback,
+        model: ReadCallback,
+        arguments: ReadCallback,
+        returned: ReadCallback,
+        inputs: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_task_guard"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_task_guard"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Native for TaskGuard {
+        fn empty() -> Self {
+            Self {
+                target: <view::Borrow as Native>::empty(),
+                ty: <Ty as Native>::empty(),
+                clauses: <Vec<(Vec<usize>, crate::ast::OutputCondition)> as Native>::empty(),
+                result: <Ty as Native>::empty(),
+                model: <Option<Returned> as Native>::empty(),
+                arguments: <BTreeMap<ValueIdentity, bounds::Proof> as Native>::empty(),
+                returned: <Vec<Reg> as Native>::empty(),
+                inputs: <BTreeMap<String, (Ty, Vec<Option<bounds::Operand>>)> as Native>::empty(),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        target: contracts::address(&self.target).cast_mut(),
+                        ty: contracts::address(&self.ty).cast_mut(),
+                        clauses: contracts::address(&self.clauses).cast_mut(),
+                        result: contracts::address(&self.result).cast_mut(),
+                        model: contracts::address(&self.model).cast_mut(),
+                        arguments: contracts::address(&self.arguments).cast_mut(),
+                        returned: contracts::address(&self.returned).cast_mut(),
+                        inputs: contracts::address(&self.inputs).cast_mut(),
+                    },
+                    Writer {
+                        target: contracts::write_value::<view::Borrow>,
+                        ty: contracts::write_value::<Ty>,
+                        clauses: contracts::write_value::<
+                            Vec<(Vec<usize>, crate::ast::OutputCondition)>,
+                        >,
+                        result: contracts::write_value::<Ty>,
+                        model: contracts::write_value::<Option<Returned>>,
+                        arguments: contracts::write_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
+                        returned: contracts::write_value::<Vec<Reg>>,
+                        inputs: contracts::write_value::<
+                            BTreeMap<String, (Ty, Vec<Option<bounds::Operand>>)>,
+                        >,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        target: contracts::slot(&mut output.target),
+                        ty: contracts::slot(&mut output.ty),
+                        clauses: contracts::slot(&mut output.clauses),
+                        result: contracts::slot(&mut output.result),
+                        model: contracts::slot(&mut output.model),
+                        arguments: contracts::slot(&mut output.arguments),
+                        returned: contracts::slot(&mut output.returned),
+                        inputs: contracts::slot(&mut output.inputs),
+                    },
+                    Reader {
+                        target: contracts::read_value::<view::Borrow>,
+                        ty: contracts::read_value::<Ty>,
+                        clauses: contracts::read_value::<
+                            Vec<(Vec<usize>, crate::ast::OutputCondition)>,
+                        >,
+                        result: contracts::read_value::<Ty>,
+                        model: contracts::read_value::<Option<Returned>>,
+                        arguments: contracts::read_value::<BTreeMap<ValueIdentity, bounds::Proof>>,
+                        returned: contracts::read_value::<Vec<Reg>>,
+                        inputs: contracts::read_value::<
+                            BTreeMap<String, (Ty, Vec<Option<bounds::Operand>>)>,
+                        >,
+                    },
+                )
+            };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            ReadStatus::Success
+        }
+    }
+};

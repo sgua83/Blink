@@ -191,8 +191,10 @@ pub(in super::super) fn node_ids<'a, F: FnMut(EncodedClause<&'a Facts>)>(
     state.indices
 }
 
+pub(in crate::check::bounds) enum Conditions<'a>{Components(&'a [Option<Box<Condition>>]),One(&'a Condition)}
+impl<'a> Conditions<'a>{fn len(&self)->usize{match self{Self::Components(v)=>v.len(),Self::One(_)=>1}}fn at(&self,index:usize)->Option<&'a Condition>{match self{Self::Components(v)=>v[index].as_deref(),Self::One(v)=>Some(*v)}}}
 struct WriteContext<'a> {
-    conditions: &'a [Option<Box<Condition>>],
+    conditions: Conditions<'a>,
     nodes: Vec<EncodedClause<&'a Facts>>,
     indices: BTreeMap<usize, usize>,
 }
@@ -205,8 +207,7 @@ struct WriteHost {
     facts: unsafe extern "C" fn(*const c_void, Slot),
 }
 unsafe extern "C" fn condition_at(context: *const c_void, index: usize) -> RootFields {
-    unsafe { &*context.cast::<WriteContext<'_>>() }.conditions[index]
-        .as_deref()
+    unsafe { &*context.cast::<WriteContext<'_>>() }.conditions.at(index)
         .map_or_else(RootFields::default, |condition| RootFields {
             present: 1,
             first: condition.cases[0].key(),
@@ -274,11 +275,8 @@ unsafe extern "C" {
         next: unsafe extern "C" fn(Slot) -> *const c_void,
     );
 }
-pub(in super::super) fn encode(conditions: &[Option<Box<Condition>>], writer: &mut Writer) {
-    let roots = conditions
-        .iter()
-        .flatten()
-        .flat_map(|condition| condition.cases.iter());
+pub(in crate::check::bounds) fn write_borrowed(conditions:Conditions<'_>,writer:&mut Writer){
+    let roots=(0..conditions.len()).filter_map(|i|conditions.at(i)).flat_map(|condition|condition.cases.iter());
     let mut nodes = Vec::new();
     let indices = node_ids(roots, |node| nodes.push(node));
     let state = WriteContext {
@@ -289,7 +287,7 @@ pub(in super::super) fn encode(conditions: &[Option<Box<Condition>>], writer: &m
     unsafe {
         write_conditions(
             ptr::from_ref(&state).cast(),
-            conditions.len(),
+            state.conditions.len(),
             state.nodes.len(),
             slot(writer),
             WriteHost {
@@ -375,8 +373,11 @@ fn checked(status: ReadStatus) -> Result<()> {
         None => Ok(()),
     }
 }
-pub(in super::super) fn decode(reader: &mut Reader<'_>) -> Result<Vec<Option<Box<Condition>>>> {
-    reader.with_native_input(|bytes, position| {
+pub(in crate::check::bounds) unsafe fn read_borrowed(context:crate::codec::contracts::Slot)->Result<Vec<Option<Box<Condition>>>>{
+    let(bytes,position)=unsafe{crate::codec::contracts::input(context)};
+    let bytes=unsafe{std::slice::from_raw_parts(bytes.data,bytes.count)};
+    let position=unsafe{&mut *position};
+    {
         let bytes = Bytes {
             data: bytes.as_ptr(),
             count: bytes.len(),
@@ -441,5 +442,5 @@ pub(in super::super) fn decode(reader: &mut Reader<'_>) -> Result<Vec<Option<Box
                     .transpose()
             })
             .collect()
-    })
+    }
 }

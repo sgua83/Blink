@@ -136,23 +136,9 @@ impl Contract {
     }
 }
 
-impl crate::module::codec::Encode for Contract {
-    fn encode(&self,w:&mut crate::module::codec::Writer){
-        contract::encode(self,w);
-    }
-}
+
 mod contract;
-impl crate::module::codec::Decode for Contract {
-    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
-        use crate::module::codec::Decode;
-        Ok(Self{
-            parameters:Decode::decode(r)?,result:Decode::decode(r)?,inputs:Decode::decode(r)?,element_inputs:Decode::decode(r)?,
-            returned:Decode::decode(r)?,written:Decode::decode(r)?,requires:Decode::decode(r)?,
-            target:Decode::decode(r)?,frame:Decode::decode(r)?,fallible:Decode::decode(r)?,domain:Decode::decode(r)?,
-            residency:Decode::decode(r)?,view_access:Some(Decode::decode(r)?),initialization:Some(Decode::decode(r)?),
-        })
-    }
-}
+
 
 pub(crate) fn compiled_task_signature(bytes:&[u8]) -> std::result::Result<(Vec<CallParameter>,Option<Ty>,bool),&'static str> {
     use crate::module::codec::Decode;
@@ -3297,3 +3283,231 @@ fn emit_domain_part(
     });
     Ok(())
 }
+
+// Physical construction for the original public contract wire.
+crate::codec::contracts::codec!(Contract);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        parameters: Slot,
+        result: Slot,
+        inputs: Slot,
+        element_inputs: Slot,
+        returned: Slot,
+        written: Slot,
+        requires: Slot,
+        target: Slot,
+        frame: Slot,
+        fallible: Slot,
+        domain: Slot,
+        residency: Slot,
+        view_access: Slot,
+        initialization: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        parameters: WriteCallback,
+        result: WriteCallback,
+        inputs: WriteCallback,
+        element_inputs: WriteCallback,
+        returned: WriteCallback,
+        written: WriteCallback,
+        requires: WriteCallback,
+        target: WriteCallback,
+        frame: WriteCallback,
+        fallible: WriteCallback,
+        domain: WriteCallback,
+        residency: WriteCallback,
+        view_access: WriteCallback,
+        initialization: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        parameters: ReadCallback,
+        result: ReadCallback,
+        inputs: ReadCallback,
+        element_inputs: ReadCallback,
+        returned: ReadCallback,
+        written: ReadCallback,
+        requires: ReadCallback,
+        target: ReadCallback,
+        frame: ReadCallback,
+        fallible: ReadCallback,
+        domain: ReadCallback,
+        residency: ReadCallback,
+        view_access: ReadCallback,
+        initialization: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_ordinary_contract"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_ordinary_contract"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    impl Contract {
+        pub(super) unsafe fn write_public(
+            output: *mut crate::codec::Writer,
+            parameters: &Vec<CallParameter>,
+            result: &Option<Ty>,
+            inputs: &Vec<Reg>,
+            element_inputs: &BTreeMap<residency::Input, (usize, usize)>,
+            returned: &Option<Returned>,
+            written: &Vec<Option<Returned>>,
+            requires: &BTreeSet<(ContractKind, ContractPredicate)>,
+            target: &Target,
+            frame: &bool,
+            fallible: &bool,
+            domain: &Option<crate::module::domain::Interface>,
+            residency: &residency::Contract,
+            view_access: &BTreeSet<view_contracts::Access>,
+            initialization: &Vec<address::Initialization>,
+        ) {
+            unsafe {
+                write(
+                    output.cast(),
+                    Fields {
+                        parameters: contracts::address(parameters).cast_mut(),
+                        result: contracts::address(result).cast_mut(),
+                        inputs: contracts::address(inputs).cast_mut(),
+                        element_inputs: contracts::address(element_inputs).cast_mut(),
+                        returned: contracts::address(returned).cast_mut(),
+                        written: contracts::address(written).cast_mut(),
+                        requires: contracts::address(requires).cast_mut(),
+                        target: contracts::address(target).cast_mut(),
+                        frame: contracts::address(frame).cast_mut(),
+                        fallible: contracts::address(fallible).cast_mut(),
+                        domain: contracts::address(domain).cast_mut(),
+                        residency: contracts::address(residency).cast_mut(),
+                        view_access: contracts::address(view_access).cast_mut(),
+                        initialization: contracts::address(initialization).cast_mut(),
+                    },
+                    Writer {
+                        parameters: contracts::write_value::<Vec<CallParameter>>,
+                        result: contracts::write_value::<Option<Ty>>,
+                        inputs: contracts::write_value::<Vec<Reg>>,
+                        element_inputs: contracts::write_value::<
+                            BTreeMap<residency::Input, (usize, usize)>,
+                        >,
+                        returned: contracts::write_value::<Option<Returned>>,
+                        written: contracts::write_value::<Vec<Option<Returned>>>,
+                        requires: contracts::write_value::<
+                            BTreeSet<(ContractKind, ContractPredicate)>,
+                        >,
+                        target: contracts::write_value::<Target>,
+                        frame: contracts::write_value::<bool>,
+                        fallible: contracts::write_value::<bool>,
+                        domain: contracts::write_value::<Option<crate::module::domain::Interface>>,
+                        residency: contracts::write_value::<residency::Contract>,
+                        view_access: contracts::write_value::<BTreeSet<view_contracts::Access>>,
+                        initialization: contracts::write_value::<Vec<address::Initialization>>,
+                    },
+                )
+            }
+        }
+    }
+    impl Native for Contract {
+        fn empty() -> Self {
+            Self {
+                parameters: <Vec<CallParameter> as Native>::empty(),
+                result: <Option<Ty> as Native>::empty(),
+                inputs: <Vec<Reg> as Native>::empty(),
+                element_inputs: <BTreeMap<residency::Input, (usize, usize)> as Native>::empty(),
+                returned: <Option<Returned> as Native>::empty(),
+                written: <Vec<Option<Returned>> as Native>::empty(),
+                requires: <BTreeSet<(ContractKind, ContractPredicate)> as Native>::empty(),
+                target: <Target as Native>::empty(),
+                frame: <bool as Native>::empty(),
+                fallible: <bool as Native>::empty(),
+                domain: <Option<crate::module::domain::Interface> as Native>::empty(),
+                residency: <residency::Contract as Native>::empty(),
+                view_access: Some(<BTreeSet<view_contracts::Access> as Native>::empty()),
+                initialization: Some(<Vec<address::Initialization> as Native>::empty()),
+            }
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe { contract::encode(self, &mut *output.cast::<crate::codec::Writer>()) }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let mut parameters = <Vec<CallParameter> as Native>::empty();
+            let mut result = <Option<Ty> as Native>::empty();
+            let mut inputs = <Vec<Reg> as Native>::empty();
+            let mut element_inputs =
+                <BTreeMap<residency::Input, (usize, usize)> as Native>::empty();
+            let mut returned = <Option<Returned> as Native>::empty();
+            let mut written = <Vec<Option<Returned>> as Native>::empty();
+            let mut requires = <BTreeSet<(ContractKind, ContractPredicate)> as Native>::empty();
+            let mut target = <Target as Native>::empty();
+            let mut frame = <bool as Native>::empty();
+            let mut fallible = <bool as Native>::empty();
+            let mut domain = <Option<crate::module::domain::Interface> as Native>::empty();
+            let mut residency = <residency::Contract as Native>::empty();
+            let mut view_access = <BTreeSet<view_contracts::Access> as Native>::empty();
+            let mut initialization = <Vec<address::Initialization> as Native>::empty();
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        parameters: contracts::slot(&mut parameters),
+                        result: contracts::slot(&mut result),
+                        inputs: contracts::slot(&mut inputs),
+                        element_inputs: contracts::slot(&mut element_inputs),
+                        returned: contracts::slot(&mut returned),
+                        written: contracts::slot(&mut written),
+                        requires: contracts::slot(&mut requires),
+                        target: contracts::slot(&mut target),
+                        frame: contracts::slot(&mut frame),
+                        fallible: contracts::slot(&mut fallible),
+                        domain: contracts::slot(&mut domain),
+                        residency: contracts::slot(&mut residency),
+                        view_access: contracts::slot(&mut view_access),
+                        initialization: contracts::slot(&mut initialization),
+                    },
+                    Reader {
+                        parameters: contracts::read_value::<Vec<CallParameter>>,
+                        result: contracts::read_value::<Option<Ty>>,
+                        inputs: contracts::read_value::<Vec<Reg>>,
+                        element_inputs: contracts::read_value::<
+                            BTreeMap<residency::Input, (usize, usize)>,
+                        >,
+                        returned: contracts::read_value::<Option<Returned>>,
+                        written: contracts::read_value::<Vec<Option<Returned>>>,
+                        requires: contracts::read_value::<
+                            BTreeSet<(ContractKind, ContractPredicate)>,
+                        >,
+                        target: contracts::read_value::<Target>,
+                        frame: contracts::read_value::<bool>,
+                        fallible: contracts::read_value::<bool>,
+                        domain: contracts::read_value::<Option<crate::module::domain::Interface>>,
+                        residency: contracts::read_value::<residency::Contract>,
+                        view_access: contracts::read_value::<BTreeSet<view_contracts::Access>>,
+                        initialization: contracts::read_value::<Vec<address::Initialization>>,
+                    },
+                )
+            };
+            if status == ReadStatus::Success {
+                *output = Self {
+                    parameters,
+                    result,
+                    inputs,
+                    element_inputs,
+                    returned,
+                    written,
+                    requires,
+                    target,
+                    frame,
+                    fallible,
+                    domain,
+                    residency,
+                    view_access: Some(view_access),
+                    initialization: Some(initialization),
+                };
+            }
+            status
+        }
+    }
+};

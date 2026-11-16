@@ -3284,18 +3284,11 @@ impl PartialOrd for Condition {
 impl Ord for Condition {
     fn cmp(&self,other:&Self)->std::cmp::Ordering {
         use crate::module::codec::Encode;
-        Proof::condition(self.clone()).bytes().cmp(&Proof::condition(other.clone()).bytes())
+        self.bytes().cmp(&other.bytes())
     }
 }
-impl crate::module::codec::Encode for Condition {
-    fn encode(&self,w:&mut crate::module::codec::Writer){crate::module::codec::Encode::encode(&Proof::condition(self.clone()),w);}
-}
-impl crate::module::codec::Decode for Condition {
-    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
-        let proof=<Proof as crate::module::codec::Decode>::decode(r)?;
-        proof.conditions.into_iter().next().flatten().map(|value|*value).ok_or_else(||"模块资源位置缺少条件合同".into())
-    }
-}
+
+
 impl Proof{
     pub(super) fn element_operand(index:Operand,range:(u32,u32))->Self{
         let mut proof=match index{
@@ -5308,36 +5301,8 @@ fn same_condition_roots<const N: usize>(left: [&Clause; N], right: [&Clause; N])
     let indices = condition_node_ids(left.into_iter().chain(right), |_| {});
     left.map(|root| indices[&root.key()]) == right.map(|root| indices[&root.key()])
 }
-impl crate::module::codec::Encode for Proof {
-    fn encode(&self, w: &mut crate::module::codec::Writer) {
-        self.origins.encode(w);
-        codec::conditions::encode(&self.conditions, w);
-        self.ranges.encode(w);
-        self.nonzero.encode(w);
-        self.domains.encode(w);
-        // 缺失分量与原读取规则的空借用相同；容器尾部空槽不属于合同身份。
-        let width = self.views.iter()
-            .rposition(|borrow| !borrow.sources.is_empty())
-            .map_or(0, |index| index + 1);
-        self.views[..width].encode(w);
-        let width=self.addresses.iter().rposition(Option::is_some).map_or(0,|i|i+1);self.addresses[..width].encode(w);
-    }
-}
-impl crate::module::codec::Decode for Proof {
-    fn decode(r: &mut crate::module::codec::Reader<'_>) -> crate::module::codec::Result<Self> {
-        let origins = crate::module::codec::Decode::decode(r)?;
-        let conditions = codec::conditions::decode(r)?;
-        Ok(Self {
-            origins,
-            conditions,
-            ranges: crate::module::codec::Decode::decode(r)?,
-            nonzero: crate::module::codec::Decode::decode(r)?,
-            domains: crate::module::codec::Decode::decode(r)?,
-            views: crate::module::codec::Decode::decode(r)?,
-            addresses: crate::module::codec::Decode::decode(r)?,
-        })
-    }
-}
+
+
 
 
 pub(super) fn scoped_proof(ty: &Ty, proof: Proof, path: &Clause, env: &BTreeMap<String, Binding>) -> Proof {
@@ -5387,3 +5352,222 @@ fn common_range_domain(domain: IndexDomain) -> bool {
         | IndexDomain::Computed(_) => false,
     }
 }
+
+// Physical construction for the original public contract wire.
+crate::codec::contracts::codec!(Proof);
+
+const _: () = {
+    use crate::codec::ReadStatus;
+    use crate::codec::contracts::{
+        self, Address, Native, Read as ReadCallback, Slot, Write as WriteCallback,
+    };
+    #[repr(C)]
+    struct Fields {
+        origins: Slot,
+        conditions: Slot,
+        ranges: Slot,
+        nonzero: Slot,
+        domains: Slot,
+        views: Slot,
+        addresses: Slot,
+    }
+    #[repr(C)]
+    struct Writer {
+        origins: WriteCallback,
+        conditions: WriteCallback,
+        ranges: WriteCallback,
+        nonzero: WriteCallback,
+        domains: WriteCallback,
+        views: WriteCallback,
+        addresses: WriteCallback,
+    }
+    #[repr(C)]
+    struct Reader {
+        origins: ReadCallback,
+        conditions: ReadCallback,
+        ranges: ReadCallback,
+        nonzero: ReadCallback,
+        domains: ReadCallback,
+        views: ReadCallback,
+        addresses: ReadCallback,
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.contract_codec::contract_write_proof"]
+        fn write(output: Slot, fields: Fields, host: Writer);
+        #[link_name = "bootstrap.contract_codec::contract_read_proof"]
+        fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
+    }
+    unsafe extern "C" fn write_conditions(source: Address, output: Slot) {
+        unsafe {
+            codec::conditions::write_borrowed(
+                codec::conditions::Conditions::Components(
+                    &*source.cast::<Vec<Option<Box<Condition>>>>(),
+                ),
+                &mut *output.cast::<crate::codec::Writer>(),
+            )
+        }
+    }
+    unsafe extern "C" fn read_conditions(context: Slot, output: Slot) -> ReadStatus {
+        let result = unsafe { codec::conditions::read_borrowed(context) };
+        unsafe {
+            contracts::finish(
+                context,
+                result,
+                &mut *output.cast::<Vec<Option<Box<Condition>>>>(),
+            )
+        }
+    }
+    unsafe extern "C" fn empty_view(source: Address) -> u32 {
+        u32::from(
+            unsafe { &*source.cast::<view::Borrow>() }
+                .sources
+                .is_empty(),
+        )
+    }
+    unsafe extern "C" fn empty_address(source: Address) -> u32 {
+        u32::from(unsafe { &*source.cast::<Option<address::Identity>>() }.is_none())
+    }
+    unsafe extern "C" fn write_views(source: Address, output: Slot) {
+        unsafe {
+            contracts::write_trimmed(&*source.cast::<Vec<view::Borrow>>(), output, empty_view)
+        }
+    }
+    unsafe extern "C" fn write_addresses(source: Address, output: Slot) {
+        unsafe {
+            contracts::write_trimmed(
+                &*source.cast::<Vec<Option<address::Identity>>>(),
+                output,
+                empty_address,
+            )
+        }
+    }
+    unsafe extern "C" fn write_one(source: Address, output: Slot) {
+        unsafe {
+            codec::conditions::write_borrowed(
+                codec::conditions::Conditions::One(&*source.cast::<Condition>()),
+                &mut *output.cast::<crate::codec::Writer>(),
+            )
+        }
+    }
+    impl Native for Condition {
+        fn empty() -> Self {
+            Self::constant(false)
+        }
+        unsafe fn write(&self, output: Slot) {
+            let blank = Proof::default();
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        origins: contracts::address(&blank.origins).cast_mut(),
+                        conditions: contracts::address(self).cast_mut(),
+                        ranges: contracts::address(&blank.ranges).cast_mut(),
+                        nonzero: contracts::address(&blank.nonzero).cast_mut(),
+                        domains: contracts::address(&blank.domains).cast_mut(),
+                        views: contracts::address(&blank.views).cast_mut(),
+                        addresses: contracts::address(&blank.addresses).cast_mut(),
+                    },
+                    Writer {
+                        origins: contracts::write_value::<Vec<Vec<ValueIdentity>>>,
+                        conditions: write_one,
+                        ranges: contracts::write_value::<Vec<ScalarRanges>>,
+                        nonzero: contracts::write_value::<Vec<bool>>,
+                        domains: contracts::write_value::<Vec<Domains>>,
+                        views: write_views,
+                        addresses: write_addresses,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let mut proof = Proof::default();
+            let status = unsafe { Proof::read(context, &mut proof) };
+            if status != ReadStatus::Success {
+                return status;
+            }
+            match proof.conditions.into_iter().next().flatten() {
+                Some(value) => {
+                    *output = *value;
+                    ReadStatus::Success
+                }
+                None => unsafe { contracts::fail(context, "模块资源位置缺少条件合同") },
+            }
+        }
+    }
+    impl Native for Proof {
+        fn empty() -> Self {
+            Self::default()
+        }
+        unsafe fn write(&self, output: Slot) {
+            unsafe {
+                write(
+                    output,
+                    Fields {
+                        origins: contracts::address(&self.origins).cast_mut(),
+                        conditions: contracts::address(&self.conditions).cast_mut(),
+                        ranges: contracts::address(&self.ranges).cast_mut(),
+                        nonzero: contracts::address(&self.nonzero).cast_mut(),
+                        domains: contracts::address(&self.domains).cast_mut(),
+                        views: contracts::address(&self.views).cast_mut(),
+                        addresses: contracts::address(&self.addresses).cast_mut(),
+                    },
+                    Writer {
+                        origins: contracts::write_value::<Vec<Vec<ValueIdentity>>>,
+                        conditions: write_conditions,
+                        ranges: contracts::write_value::<Vec<ScalarRanges>>,
+                        nonzero: contracts::write_value::<Vec<bool>>,
+                        domains: contracts::write_value::<Vec<Domains>>,
+                        views: write_views,
+                        addresses: write_addresses,
+                    },
+                )
+            }
+        }
+        unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let mut origins = <Vec<Vec<ValueIdentity>> as Native>::empty();
+            let mut conditions = <Vec<Option<Box<Condition>>> as Native>::empty();
+            let mut ranges = <Vec<ScalarRanges> as Native>::empty();
+            let mut nonzero = <Vec<bool> as Native>::empty();
+            let mut domains = <Vec<Domains> as Native>::empty();
+            let mut views = <Vec<view::Borrow> as Native>::empty();
+            let mut addresses = <Vec<Option<address::Identity>> as Native>::empty();
+            let status = unsafe {
+                read(
+                    context,
+                    Fields {
+                        origins: contracts::slot(&mut origins),
+                        conditions: contracts::slot(&mut conditions),
+                        ranges: contracts::slot(&mut ranges),
+                        nonzero: contracts::slot(&mut nonzero),
+                        domains: contracts::slot(&mut domains),
+                        views: contracts::slot(&mut views),
+                        addresses: contracts::slot(&mut addresses),
+                    },
+                    Reader {
+                        origins: contracts::read_value::<Vec<Vec<ValueIdentity>>>,
+                        conditions: read_conditions,
+                        ranges: contracts::read_value::<Vec<ScalarRanges>>,
+                        nonzero: contracts::read_value::<Vec<bool>>,
+                        domains: contracts::read_value::<Vec<Domains>>,
+                        views: contracts::read_value::<Vec<view::Borrow>>,
+                        addresses: contracts::read_value::<Vec<Option<address::Identity>>>,
+                    },
+                )
+            };
+            if status == ReadStatus::Success {
+                *output = Self {
+                    origins,
+                    conditions,
+                    ranges,
+                    nonzero,
+                    domains,
+                    views,
+                    addresses,
+                };
+            }
+            status
+        }
+    }
+};
+
+crate::codec::contracts::codec!(Condition);
