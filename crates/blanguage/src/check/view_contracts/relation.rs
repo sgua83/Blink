@@ -207,7 +207,8 @@ impl Graph {
         }}}
         if !roots.values().any(|root|b.graph.read_feedback(*root)){return None;}
         let graph=Arc::new(b.graph);let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()};
-        Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(value).unwrap_or_default())}).collect())
+        let parameters=residency::input_parameters(&function.parameters,function.input_width);
+        Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(&parameters,value).unwrap_or_default())}).collect())
     }
     pub(super) fn loops(
         inputs: &BTreeSet<LoopInput>, function: &Function, state: &State, known: &States,

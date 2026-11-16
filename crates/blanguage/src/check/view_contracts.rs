@@ -338,7 +338,7 @@ impl Function {
         for component in components(ty) {self.outputs.insert(output(component),proof.view_borrow(component));}
     }
     fn input(&self,id:ValueIdentity)->bool {match id{ValueIdentity::Register(n)=>n<self.input_width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)|ValueIdentity::ParameterStorage(..)|ValueIdentity::DatasetContent(..)=>true,_=>false}}
-    fn address_borrows(&self,borrow:Borrow)->Option<Borrow> {
+    fn address_borrows(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,borrow:Borrow)->Option<Borrow> {
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id,indices)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
                 .map(|id|Borrow::source(Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,self)).collect()))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
@@ -362,12 +362,10 @@ impl Function {
             _=>Borrow::default(),
         });
         if !selected.active(){return None;}
-        let bindings=residency::input_parameters(&self.parameters,self.input_width);
-        Some(selected.guards_at_call(&bindings))
+        Some(selected.guards_at_call(parameters))
     }
-    fn initialization_access(&self,read:&address::InitializationRead,when:&bounds::Clause)->Option<Access>{
+    fn initialization_access(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,read:&address::InitializationRead,when:&bounds::Clause)->Option<Access>{
         if read.missing().is_empty(){return None;}
-        let parameters=residency::input_parameters(&self.parameters,self.input_width);
         let initialized:Vec<_>=address::initialization_effects(&read.initialized,&bounds::Clause::default()).into_iter().filter_map(|effect|{
             let address::InitializationEffect::Position(mut fact)=effect else{return None;};
             if fact.source.borrow().has_local(){return None;}
@@ -384,31 +382,30 @@ impl Function {
                     address::InitializationSource::Task(value)
                 },
             };
-            fact.when=fact.when.guaranteed_at_call(&parameters);
+            fact.when=fact.when.guaranteed_at_call(parameters);
             Some(fact)
         }).collect();
-        self.address_access(read.borrow(),|borrows,when|Access::Initialized{borrows,initialized:address::merge_initializations(initialized),when},when)
+        self.address_access(parameters,read.borrow(),|borrows,when|Access::Initialized{borrows,initialized:address::merge_initializations(initialized),when},when)
     }
-    fn address_access(&self,borrow:Borrow,make:impl FnOnce(Borrow,bounds::Condition)->Access,when:&bounds::Clause)->Option<Access>{
-        let borrows = self.address_borrows(borrow)?;
-        let bindings = residency::input_parameters(&self.parameters, self.input_width);
-        let when = when.project_guard(&bindings);
+    fn address_access(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,borrow:Borrow,make:impl FnOnce(Borrow,bounds::Condition)->Access,when:&bounds::Clause)->Option<Access>{
+        let borrows = self.address_borrows(parameters,borrow)?;
+        let when = when.project_guard(parameters);
         when.possible().then(|| make(borrows, bounds::Condition::guard(when)))
     }
-    fn access(&self,resources:Borrow,borrows:Borrow,kind:view::Exclusion,when:&bounds::Clause)->Option<Access>{
+    fn access(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,resources:Borrow,borrows:Borrow,kind:view::Exclusion,when:&bounds::Clause)->Option<Access>{
         if matches!(kind,view::Exclusion::Position(_)) {
-            let resources = self.address_borrows(resources)?;
-            return self.address_access(borrows, |borrows, when| Access::Resource { resources, borrows, kind, when }, when);
+            let resources = self.address_borrows(parameters,resources)?;
+            return self.address_access(parameters,borrows, |borrows, when| Access::Resource { resources, borrows, kind, when }, when);
         }
-        let mut parameters=residency::input_parameters(&self.parameters,self.input_width);
+        let mut parameters=std::borrow::Cow::Borrowed(parameters);
         let mut indices=resource_index_values(&resources);indices.extend(resource_index_values(&borrows));
         indices.extend(bounds::Proof::condition(bounds::Condition::guard(when.clone())).scalar_identities().into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))));
         let mut next=0;
         for id in indices{
             if let Some(target)=self.parameters.get(&id).copied().filter(|target|self.input(*target)){
-                parameters.entry(id).or_insert_with(||bounds::Proof::default().with_identity(target));
+                parameters.to_mut().entry(id).or_insert_with(||bounds::Proof::default().with_identity(target));
             }else{
-                parameters.insert(id,bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(next)));next+=1;
+                parameters.to_mut().insert(id,bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(next)));next+=1;
             }
         }
         fn external(function:&Function,borrow:Borrow,parameters:&BTreeMap<ValueIdentity,bounds::Proof>)->Borrow{
@@ -434,7 +431,7 @@ impl Function {
         let when=bounds::Condition::guard(when.project_guard(&parameters).canonical());
         when.active().then_some(Access::Resource{resources,borrows,kind,when})
     }
-    fn dataset_access(&self,borrow:Borrow,index:Option<bounds::Operand>,access:super::Access,atomic:bool,when:&bounds::Clause,owns_input:&impl Fn(ValueIdentity)->bool)->Option<Access> {
+    fn dataset_access(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,borrow:Borrow,index:Option<bounds::Operand>,access:super::Access,atomic:bool,when:&bounds::Clause,owns_input:&impl Fn(ValueIdentity)->bool)->Option<Access> {
         fn inputs(borrow:&Borrow,function:&Function,owns_input:&impl Fn(ValueIdentity)->bool)->Borrow {
             borrow.map_sources(|source|match source {
                 Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id)&&!owns_input(*id))=>Borrow::default(),
@@ -450,7 +447,7 @@ impl Function {
         }
 
         let index=index.and_then(|index|index.map(|id|self.parameters.get(&id).copied().filter(|id|self.input(*id))));
-        self.address_access(inputs(&borrow,self,owns_input),|borrows,when|Access::Dataset{borrows,when,index,access,atomic},when)
+        self.address_access(parameters,inputs(&borrow,self,owns_input),|borrows,when|Access::Dataset{borrows,when,index,access,atomic},when)
     }
 }
 #[derive(Clone,Default,PartialEq,Eq)]
@@ -1386,12 +1383,12 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             if let Requirement::Initialized{read,code,..}=&usage.requirement {
                 let read=resolved_read(read,&usage.path,function,state,known);
                 if *code=="B229" {
-                    if let Some(value)=function.initialization_access(&read,&usage.path){insert(&mut access,value);}
+                    if let Some(value)=function.initialization_access(&parameters,&read,&usage.path){insert(&mut access,value);}
                     continue;
                 }
                 for(source,when)in read.borrow().sources.entries() {
                     if let Origin::Position(origin)=source {
-                        if let Some(value)=function.address_access(Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),written:None,writable:false,initialized:true}},
+                        if let Some(value)=function.address_access(&parameters,Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),written:None,writable:false,initialized:true}},
                             &bounds::Clause::both(&usage.path,&when)){insert(&mut access,value);}
                     }
                 }
@@ -1399,20 +1396,20 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             }
             let value=match &usage.requirement {
                 Requirement::Unborrowed{resource,borrow,kind,..}=>function.access(
-                    evaluation.evaluate(resource),evaluation.evaluate(borrow),
+                    &parameters,evaluation.evaluate(resource),evaluation.evaluate(borrow),
                     *kind,&usage.path),
                 Requirement::Address{borrow,layout,written,writable,initialized,..}=>function.address_access(
-                    evaluation.evaluate(borrow),
+                    &parameters,evaluation.evaluate(borrow),
                     |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),written:written.as_ref().map(|proof|proof.at_call(&parameters)),writable:*writable,initialized:*initialized}},
                     &usage.path),
                 Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if !function.calls.iter().any(|call|!call.deferred&&call.memory==*memory)=>
-                    function.address_access(evaluation.evaluate(borrow),|borrows,when|Access::Memory{borrows,when,access:*access},&usage.path),
-                Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluation.evaluate(borrow),*index,*access,*atomic,&usage.path,&|id|owns_input(name,id)),
+                    function.address_access(&parameters,evaluation.evaluate(borrow),|borrows,when|Access::Memory{borrows,when,access:*access},&usage.path),
+                Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(&parameters,evaluation.evaluate(borrow),*index,*access,*atomic,&usage.path,&|id|owns_input(name,id)),
                 _=>None,
             };
             if let Some(value)=value{insert(&mut access,value);}
         }
-        (name, access)
+        (name, (parameters, access))
     }).collect::<BTreeMap<_, _>>();
 
     // Sources, stored writes and initialization are fixed; a call's projection
@@ -1423,8 +1420,8 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         for(name,function)in functions {
             let normalize=feedback.contains(name.as_str());
             let state=&known[name];
-            let parameters=residency::input_parameters(&function.parameters,function.input_width);
-            let mut access=direct[name].clone();
+            let (parameters, local_access)=&direct[name];
+            let mut access=local_access.clone();
             let mut evaluation = BorrowEvaluation {
                 function, state, known, expand_loops: true, deferred_reads: false,
                 loop_bindings: Vec::new(), values: BTreeMap::new(),
@@ -1443,7 +1440,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                         let value=access_at_call(requirement,call,&call.path,&mut evaluation,&|| &*initialized);
                         if task_access
                             && let Some((accessed,when,mode))=value.accessed()
-                            && let Some(exclusion)=function.access(accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when)
+                            && let Some(exclusion)=function.access(parameters,accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when)
                         {
                             projected.push(exclusion);
                         }
@@ -1452,15 +1449,15 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                                 if call.deferred { position.written=None; }
                                 if position.written.is_none()&&!position.initialized&&!position.writable{continue;}
                                 position.written=position.written.as_ref()
-                                    .map(|proof|proof.at_call(&call.arguments).at_call(&parameters));
-                                function.address_access(borrows,|borrows,when|Access::Position{borrows,when,position},&when)
+                                    .map(|proof|proof.at_call(&call.arguments).at_call(parameters));
+                                function.address_access(parameters,borrows,|borrows,when|Access::Position{borrows,when,position},&when)
                             },
                             Access::Stored{..}=>continue,
-                            Access::Memory{borrows,when,access}=>function.address_access(borrows,|borrows,when|Access::Memory{borrows,when,access},&when),
+                            Access::Memory{borrows,when,access}=>function.address_access(parameters,borrows,|borrows,when|Access::Memory{borrows,when,access},&when),
                             Access::Initialized{borrows,initialized,when}=>function.initialization_access(
-                                &output_initialization_read(&borrows,&initialized,&when),&when),
-                            Access::Resource{resources,borrows,kind,when}=>function.access(resources,borrows,kind,&when),
-                            Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,&when,&|id|owns_input(name,id)),
+                                parameters,&output_initialization_read(&borrows,&initialized,&when),&when),
+                            Access::Resource{resources,borrows,kind,when}=>function.access(parameters,resources,borrows,kind,&when),
+                            Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(parameters,borrows,index,access,atomic,&when,&|id|owns_input(name,id)),
                         };
                         if let Some(value)=value{projected.push(value);}
                     }
@@ -1471,7 +1468,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                 }
             }
             if let Some(entries)=&state.entries{
-                let invoked=function.calls.iter().filter(|call|call.function==*name).map(|call|bounds::Condition::execution(&call.path).guard_at_call(&parameters)).reduce(|a,b|a.logical(b,true)).unwrap();
+                let invoked=function.calls.iter().filter(|call|call.function==*name).map(|call|bounds::Condition::execution(&call.path).guard_at_call(parameters)).reduce(|a,b|a.logical(b,true)).unwrap();
                 let inputs=entries.iter().map(|(input,value)|(*input,bounds::Proof::default().with_view_borrow(0,value.clone()))).collect::<BTreeMap<_,_>>();
                 let direct=access.iter().map(|(access,when)|{let mut a=access.clone();*a.when_mut()=when.clone();a}).collect::<Vec<_>>();
                 for value in direct{let value=match value{
