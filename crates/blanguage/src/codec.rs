@@ -208,6 +208,7 @@ pub(crate) use {record, variants};
 variants!(ast::Access{0=>Value,1=>Read,2=>Write,3=>InOut,4=>Atomic});
 variants!(ast::Target{0=>Compute,1=>Cpu,2=>Gpu});
 variants!(ir::Scalar{0=>F32,1=>U32,2=>I32,3=>Bool,4=>U64,5=>I64,6=>F64,7=>U8,8=>I8,9=>U16,10=>I16});
+#[cfg(not(feature="compiler"))]
 record!(ir::Ty {
     name,
     arguments,
@@ -225,6 +226,36 @@ record!(ir::Ty {
     cleanup,
     function
 });
+#[cfg(feature="compiler")]
+mod types;
+#[cfg(feature="compiler")]
+impl Encode for ir::Ty {
+    fn encode(&self,writer:&mut Writer) { types::encode(self,writer); }
+}
+// Typed recovery remains the original decoder until the same issue migrates it.
+#[cfg(feature="compiler")]
+impl Decode for ir::Ty {
+    fn decode(reader:&mut Reader<'_>)->Result<Self> {
+        Ok(Self {
+            name:Decode::decode(reader)?,
+            arguments:Decode::decode(reader)?,
+            values:Decode::decode(reader)?,
+            size:Decode::decode(reader)?,
+            align:Decode::decode(reader)?,
+            components:Decode::decode(reader)?,
+            fields:Decode::decode(reader)?,
+            view:Decode::decode(reader)?,
+            array:Decode::decode(reader)?,
+            enumeration:Decode::decode(reader)?,
+            result:Decode::decode(reader)?,
+            variants:Decode::decode(reader)?,
+            dataset:Decode::decode(reader)?,
+            cleanup:Decode::decode(reader)?,
+            function:Decode::decode(reader)?,
+        })
+    }
+}
+
 record!(ir::CFunctionType { result, parameters, contracts });
 record!(ast::TypeName { name, canonical, arguments, dataset, view, tile, count, contracts });
 variants!(ast::Shape { 0=>Literal(value), 1=>Constant(name), 2=>Expression(value) });
