@@ -1707,19 +1707,43 @@ struct Solved<'a> {
     values: BTreeMap<String, ScalarValues>,
 }
 
-enum CallMemoryUse {
+enum MemoryConsumers {
     Snapshot,
     Ir,
     SnapshotAndIr,
+}
+
+impl MemoryConsumers {
+    fn from_sources<'a, 'b>(
+        &self,
+        sources: impl Iterator<Item = (&'a view::Source, bounds::Clause)>,
+        path: impl FnOnce() -> bounds::Clause,
+        access: super::Access,
+        written: impl FnOnce() -> Option<&'b bounds::Proof>,
+    ) -> (address::MemoryEffect, address::MemoryAccesses) {
+        let (mut effect, aliases) = if !matches!(self, Self::Ir) && access.writes() {
+            let effect = address::MemoryEffect::from_sources(sources, path, access, written);
+            let mut aliases = address::MemoryAccesses::default();
+            if matches!(self, Self::SnapshotAndIr) { aliases.record(&effect); }
+            (effect, aliases)
+        } else if !matches!(self, Self::Snapshot) {
+            (address::MemoryEffect::default(), address::MemoryAccesses::from_sources(sources, path, access))
+        } else {
+            (address::MemoryEffect::default(), address::MemoryAccesses::default())
+        };
+        if matches!(self, Self::SnapshotAndIr) { effect.include_external(&aliases); }
+        (effect, aliases)
+    }
 }
 
 fn call_memory_effect(
     evaluation: &mut BorrowEvaluation<'_>,
     call: &Call,
     resolved: &ScalarValues,
-    consumer: CallMemoryUse,
-) -> address::MemoryEffect {
+    consumer: MemoryConsumers,
+) -> (address::MemoryEffect, address::MemoryAccesses) {
     let mut effect = address::MemoryEffect::default();
+    let mut aliases = address::MemoryAccesses::default();
     for access in &evaluation.known[&call.function].interface.access {
         let (borrows, when, access, written) = match access {
             Access::Memory { borrows, when, access } | Access::Dataset { borrows, when, access, .. } =>
@@ -1735,7 +1759,7 @@ fn call_memory_effect(
             }
             _ => continue,
         };
-        if matches!(consumer, CallMemoryUse::Snapshot) && !access.writes() {
+        if matches!(consumer, MemoryConsumers::Snapshot) && !access.writes() {
             continue;
         }
         let borrows = borrow_at_call(borrows, call, &call.arguments);
@@ -1746,17 +1770,18 @@ fn call_memory_effect(
                 .substitute_values(resolved)
         };
         let written = std::cell::LazyCell::new(|| {
-            written.filter(|_| !matches!(consumer, CallMemoryUse::Ir))
-                .map(|proof| proof.at_call(&call.arguments).substitute_values(resolved))
+            written.map(|proof| proof.at_call(&call.arguments).substitute_values(resolved))
         });
-        effect.union(address::MemoryEffect::from_sources(
+        let (values, access) = consumer.from_sources(
             borrow.sources.entries(), path, access, || written.as_ref(),
-        ));
-        if matches!(consumer, CallMemoryUse::Snapshot) && effect.has_external_write() {
+        );
+        effect.union(values);
+        aliases.union(access);
+        if matches!(consumer, MemoryConsumers::Snapshot) && effect.has_external_write() {
             break;
         }
     }
-    effect
+    (effect, aliases)
 }
 
 fn solve<'a>(
@@ -1809,16 +1834,18 @@ fn solve<'a>(
             let Requirement::Memory{target,snapshots,..}=&usage.requirement else{continue;};
             let snapshots = snapshots.as_ref().filter(|values| !values.is_empty());
             let mut effect=address::MemoryEffect::default();
+            let mut aliases=address::MemoryAccesses::default();
             let call = calls.next_if(|call| call.memory == memory);
             if let Some(call) = call {
                 let consumer = match (has_feedback, snapshots.is_some()) {
                     (true, false) => continue,
-                    (true, true) => CallMemoryUse::Snapshot,
-                    (false, true) => CallMemoryUse::SnapshotAndIr,
-                    (false, false) => CallMemoryUse::Ir,
+                    (true, true) => MemoryConsumers::Snapshot,
+                    (false, true) => MemoryConsumers::SnapshotAndIr,
+                    (false, false) => MemoryConsumers::Ir,
                 };
-                effect = call_memory_effect(&mut evaluation, call, &resolved, consumer);
+                (effect, aliases) = call_memory_effect(&mut evaluation, call, &resolved, consumer);
             }else{
+                let consumer=if snapshots.is_some(){MemoryConsumers::SnapshotAndIr}else{MemoryConsumers::Ir};
                 let rest=std::iter::from_fn(||{
                     if matches!(target,address::MemoryTarget::Call(_))&&usages.peek().is_some_and(|(_,usage)|matches!(&usage.requirement,Requirement::Memory{target:other,..}if other==target)){
                         usages.next().map(|(_,usage)|usage)
@@ -1829,12 +1856,13 @@ fn solve<'a>(
                         let borrow = evaluation.evaluate(borrow).substitute_values(&resolved);
                         let path = || usage.path.substitute_values(&resolved);
                         let written = std::cell::LazyCell::new(|| {
-                            written.as_ref().filter(|_| snapshots.is_some())
-                                .map(|proof| proof.substitute_values(&resolved))
+                            written.as_ref().map(|proof| proof.substitute_values(&resolved))
                         });
-                        effect.union(address::MemoryEffect::from_sources(
+                        let (values, access) = consumer.from_sources(
                             borrow.sources.entries(), path, *access, || written.as_ref(),
-                        ));
+                        );
+                        effect.union(values);
+                        aliases.union(access);
                     }
                 }
             }
@@ -1870,7 +1898,7 @@ fn solve<'a>(
                 }
             }
             if !has_feedback || call.is_none() {
-                values.entry(*target).or_default().record(effect);
+                values.entry(*target).or_default().union(aliases);
             }
         }
         for (input, definition) in &function.loops {
@@ -1888,8 +1916,8 @@ fn solve<'a>(
                 let Requirement::Memory { target, .. } = &function.uses[call.memory].requirement else {
                     continue;
                 };
-                let effect = call_memory_effect(&mut evaluation, call, &resolved, CallMemoryUse::Ir);
-                values.entry(*target).or_default().record(effect);
+                let (_, aliases) = call_memory_effect(&mut evaluation, call, &resolved, MemoryConsumers::Ir);
+                values.entry(*target).or_default().union(aliases);
             }
         }
         memory.insert(name.clone(),values);
