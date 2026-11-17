@@ -67,6 +67,23 @@ impl<Path> Access<Path> {
 }
 
 impl Access {
+    fn memory_effect(&self) -> Option<(&Borrow, &bounds::Condition, super::Access, Option<&bounds::Proof>)> {
+        match self {
+            Self::Memory { borrows, when, access } | Self::Dataset { borrows, when, access, .. } =>
+                Some((borrows, when, *access, None)),
+            Self::Position { borrows, when, position } => {
+                let access = match (&position.written, position.initialized) {
+                    (Some(_), true) => super::Access::InOut,
+                    (Some(_), false) => super::Access::Write,
+                    (None, true) => super::Access::Read,
+                    (None, false) => return None,
+                };
+                Some((borrows, when, access, position.written.as_ref()))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn when_mut(&mut self)->&mut bounds::Condition {match self {
         Self::Resource{when,..}|Self::Position{when,..}|Self::Memory{when,..}|Self::Dataset{when,..}|Self::Initialized{when,..}|Self::Stored{when,..}=>when,
     }}
@@ -1744,24 +1761,37 @@ fn call_memory_effect(
 ) -> (address::MemoryEffect, address::MemoryAccesses) {
     let mut effect = address::MemoryEffect::default();
     let mut aliases = address::MemoryAccesses::default();
-    for access in &evaluation.known[&call.function].interface.access {
-        let (borrows, when, access, written) = match access {
-            Access::Memory { borrows, when, access } | Access::Dataset { borrows, when, access, .. } =>
-                (borrows, when, *access, None),
-            Access::Position { borrows, when, position } => {
-                let access = match (&position.written, position.initialized) {
-                    (Some(_), true) => super::Access::InOut,
-                    (Some(_), false) => super::Access::Write,
-                    (None, true) => super::Access::Read,
-                    (None, false) => continue,
-                };
-                (borrows, when, access, position.written.as_ref())
-            }
-            _ => continue,
-        };
+    let accesses = &evaluation.known[&call.function].interface.access;
+    if matches!(consumer, MemoryConsumers::Snapshot) {
+        // A possible opaque write makes every numeric snapshot unknown. Consume
+        // its declaration before producing positions that would be discarded.
+        for (borrows, when, access, _) in accesses.iter().filter_map(Access::memory_effect) {
+            if !access.writes() { continue; }
+            let Some((_, selected)) = borrows.sources.entries().find(|(source, _)| matches!(source, Origin::External)) else { continue; };
+            let borrow = Borrow::source(Origin::External).restricted(&selected);
+            let borrow = borrow_at_call(&borrow, call, &call.arguments);
+            let borrow = evaluation.evaluate(&borrow).substitute_values(resolved);
+            let values = address::MemoryEffect::from_sources(borrow.sources.entries(), || {
+                bounds::Clause::both(&call.path, &when.projected_case(true, &call.arguments))
+                    .substitute_values(resolved)
+            }, access, || None);
+            if values.has_external_write() { return (values, aliases); }
+        }
+    }
+    for (borrows, when, access, written) in accesses.iter().filter_map(Access::memory_effect) {
         if matches!(consumer, MemoryConsumers::Snapshot) && !access.writes() {
             continue;
         }
+        let mut remaining;
+        let borrows = if matches!(consumer, MemoryConsumers::Snapshot)
+            && borrows.sources.iter().any(|source| matches!(source, Origin::External))
+        {
+            // The explicit source was infeasible. Other sources and deferred
+            // inputs can still resolve to an external write and must be read.
+            remaining = borrows.clone();
+            remaining.sources.remove(&Origin::External);
+            &remaining
+        } else { borrows };
         let borrows = borrow_at_call(borrows, call, &call.arguments);
         let borrows = evaluation.evaluate(&borrows);
         let borrow = borrows.substitute_values(resolved);
