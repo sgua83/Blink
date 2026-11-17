@@ -4,6 +4,7 @@ mod cross_facts;
 mod fact_fields;
 mod negation;
 mod internal_conflicts;
+mod common_facts;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2683,93 +2684,7 @@ fn either_facts<'a>(
     a: Option<QueryFacts<'a>>,
     b: Option<QueryFacts<'a>>,
 ) -> Option<QueryFacts<'a>> {
-    match (a, b) {
-        (Some(a), Some(b)) => {
-            let left = additional_equality_roots(environment, environment_roots, &a);
-            let right = additional_equality_roots(environment, environment_roots, &b);
-            let expand = |facts, roots: &Cow<'_, BTreeMap<ValueIdentity, ValueIdentity>>| match roots {
-                Cow::Borrowed(_) => equivalent_facts(environment, facts, roots, environment_members, None),
-                Cow::Owned(_) => equivalent_facts(environment, facts, roots, &equality_members(roots), Some(environment_roots)),
-            };
-            let a = expand(a, &left);
-            let b = expand(b, &right);
-            let mut common: Facts = a.intersection(&b).copied().collect();
-            let mut groups = BTreeMap::new();
-            for (identity, left_root) in left.iter() {
-                if let Some(right_root) = right.get(identity) {
-                    let representative = if left_root == right_root {
-                        if identity == left_root { continue; }
-                        *left_root
-                    } else {
-                        match groups.entry((*left_root, *right_root)) {
-                            std::collections::btree_map::Entry::Vacant(entry) => {
-                                entry.insert(*identity);
-                                continue;
-                            }
-                            std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
-                        }
-                    };
-                    let fact = Fact::equal(representative, *identity);
-                    if !environment.contains(&fact) { common.insert(fact); }
-                }
-            }
-            // Facts orders each identity/scalar group before its mask and value.
-            // Each reduction already consumes every fact in that group.
-            let mut bit_groups = a.union(&b).filter_map(|fact| match fact {
-                Fact::Index(id, IndexDomain::KnownBits(scalar, ..)) => Some((*id, *scalar)),
-                _ => None,
-            }).peekable();
-            while let Some((id, scalar)) = bit_groups.next() {
-                while bit_groups.next_if_eq(&(id, scalar)).is_some() {}
-                if let Some(bits)=KnownBits::facts(scalar,id,[environment,&a]).zip(KnownBits::facts(scalar,id,[environment,&b])).and_then(|(a,b)|a.common(b)) {
-                    let fact=Fact::Index(id,bits.domain());if !environment.contains(&fact){common.insert(fact);}
-                }
-            }
-            // 环境仍归原所有者；这里只生产两支共同新增的范围。
-            let mut left = limit_facts(&a).peekable();
-            let mut right = limit_facts(&b).peekable();
-            while let (Some(&(upper, identity, scalar, left_value)), Some(&(other_upper, other_identity, other_scalar, right_value))) = (left.peek(), right.peek()) {
-                match (upper, identity, scalar).cmp(&(other_upper, other_identity, other_scalar)) {
-                    std::cmp::Ordering::Less => { left.next(); }
-                    std::cmp::Ordering::Greater => { right.next(); }
-                    std::cmp::Ordering::Equal => {
-                        if upper {
-                            let bound = left_value.max(right_value);
-                            if environment.range(Fact::Maximum(identity, scalar, 0)..=Fact::Maximum(identity, scalar, bound)).next().is_none() {
-                                common.insert(Fact::Maximum(identity, scalar, bound));
-                            }
-                        } else {
-                            let bound = left_value.min(right_value);
-                            if environment.range(Fact::Minimum(identity, scalar, bound)..=Fact::Minimum(identity, scalar, scalar.bit_mask())).next().is_none() {
-                                common.insert(Fact::Minimum(identity, scalar, bound));
-                            }
-                        }
-                        left.next();
-                        right.next();
-                    }
-                }
-            }
-            Some(QueryFacts::Owned(Arc::new(common)))
-        }
-        (a, None) | (None, a) => a,
-    }
-}
-// Fact 按类别、身份、实际标量类型和值排序；这里只借用每一组的最强界。
-fn limit_facts(facts: &Facts) -> impl Iterator<Item = (bool, ValueIdentity, Scalar, Bits)> + '_ {
-    let mut values = facts.iter().filter_map(|fact| match *fact {
-        Fact::Minimum(identity, scalar, value) => Some((false, identity, scalar, value)),
-        Fact::Maximum(identity, scalar, value) => Some((true, identity, scalar, value)),
-        _ => None,
-    }).peekable();
-    std::iter::from_fn(move || {
-        let (upper, identity, scalar, mut value) = values.next()?;
-        while let Some(&(other_upper, other_identity, other_scalar, next)) = values.peek() {
-            if (upper, identity, scalar) != (other_upper, other_identity, other_scalar) { break; }
-            if !upper { value = next; }
-            values.next();
-        }
-        Some((upper, identity, scalar, value))
-    })
+    common_facts::either(environment, environment_roots, environment_members, a, b)
 }
 fn minimums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<(ValueIdentity, Scalar), Bits> {
     let mut result: BTreeMap<(ValueIdentity, Scalar), Bits> = BTreeMap::new();

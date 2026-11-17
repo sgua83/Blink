@@ -186,3 +186,35 @@ pub(super) fn negated(fact: Fact) -> Option<Fact> {
     };
     (fields.present != 0).then(|| unsafe { key(fields) })
 }
+
+#[repr(C)]
+pub(super) struct ScalarView {
+    kind: u32,
+    width: u32,
+    mask: u64,
+    bias: u64,
+}
+pub(super) unsafe extern "C" fn scalar(value: Borrowed) -> ScalarView {
+    let value = unsafe { *value.cast::<Scalar>() };
+    ScalarView {
+        kind: if value.is_float() {
+            2
+        } else if value.is_signed() {
+            1
+        } else if value == Scalar::Bool {
+            3
+        } else {
+            0
+        },
+        width: value.bit_width(),
+        mask: value.bit_mask(),
+        bias: value.order_bias(),
+    }
+}
+pub(super) unsafe extern "C" fn same_scalar(a: Borrowed, b: Borrowed) -> u32 {
+    u32::from(unsafe { *a.cast::<Scalar>() == *b.cast::<Scalar>() })
+}
+
+pub(super) unsafe extern "C" fn compare_scalars(a: Borrowed, b: Borrowed) -> i32 {
+    unsafe { (&*a.cast::<Scalar>()).cmp(&*b.cast::<Scalar>()) as i32 }
+}

@@ -2,7 +2,7 @@
 //! its physical containers and borrows immutable Clause/Fact fields until return.
 use super::{Clause, ClauseNode, Fact, Facts, contradictory};
 use std::{
-    collections::{HashMap, btree_set},
+    collections::{BTreeMap, HashMap, btree_set},
     ffi::c_void,
 };
 
@@ -68,7 +68,7 @@ enum Alternative<'a> {
     Fact(&'a Fact, btree_set::Iter<'a, Fact>),
 }
 struct Context<'a> {
-    indices: HashMap<usize, usize>,
+    indices: BTreeMap<usize, usize>,
     nodes: Vec<Node<'a>>,
     pending: Vec<(usize, bool)>,
     values: Vec<u8>,
@@ -93,23 +93,7 @@ unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
 unsafe extern "C" fn index(slot: Slot, clause: Borrowed) -> usize {
     let context = unsafe { context(slot) };
     let clause = unsafe { &*clause.cast::<Clause>() };
-    *context.indices.entry(clause.key()).or_insert_with(|| {
-        let id = context.nodes.len();
-        context.nodes.push(Node {
-            clause,
-            view: Gate {
-                left: 0,
-                right: 0,
-                kind: 0,
-                parents: Span {
-                    data: std::ptr::null(),
-                    count: 0,
-                },
-            },
-            parents: Vec::new(),
-        });
-        id
-    })
+    context.indices[&clause.key()]
 }
 unsafe extern "C" fn node_count(slot: Slot) -> usize {
     unsafe { context(slot) }.nodes.len()
@@ -340,9 +324,28 @@ unsafe extern "C" {
 }
 pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
     let unsigned32 = super::Scalar::U32;
+    let indices = super::condition_node_ids([left, right], |_| {});
+    let mut nodes = Vec::new();
+    for clause in Clause::ordered([left, right]) {
+        if indices[&clause.key()] == nodes.len() {
+            nodes.push(Node {
+                clause,
+                view: Gate {
+                    left: 0,
+                    right: 0,
+                    kind: 0,
+                    parents: Span {
+                        data: std::ptr::null(),
+                        count: 0,
+                    },
+                },
+                parents: Vec::new(),
+            });
+        }
+    }
     let mut context = Context {
-        indices: HashMap::new(),
-        nodes: Vec::new(),
+        indices,
+        nodes,
         pending: Vec::new(),
         values: Vec::new(),
         trail: Vec::new(),

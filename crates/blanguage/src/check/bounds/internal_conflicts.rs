@@ -1,4 +1,5 @@
 //! B decides internal contradictions; the original typed containers own facts and aliases.
+use super::fact_fields::{ScalarView, same_scalar, scalar};
 use super::{
     Comparison, Fact, Facts, IndexDomain, Operand, Scalar, ScalarPredicate, ValueIdentity,
     fact_fields, map_domain,
@@ -115,33 +116,6 @@ unsafe extern "C" fn contains(slot: Slot, fields: fact_fields::Fields) -> u32 {
             .select(key, false)
             .is_some_and(|fact| *fact == key),
     )
-}
-#[repr(C)]
-struct ScalarView {
-    kind: u32,
-    width: u32,
-    mask: u64,
-    bias: u64,
-}
-unsafe extern "C" fn scalar(value: Borrowed) -> ScalarView {
-    let value = unsafe { *value.cast::<Scalar>() };
-    ScalarView {
-        kind: if value.is_float() {
-            2
-        } else if value.is_signed() {
-            1
-        } else if value == Scalar::Bool {
-            3
-        } else {
-            0
-        },
-        width: value.bit_width(),
-        mask: value.bit_mask(),
-        bias: value.order_bias(),
-    }
-}
-unsafe extern "C" fn same_scalar(a: Borrowed, b: Borrowed) -> u32 {
-    u32::from(unsafe { *a.cast::<Scalar>() == *b.cast::<Scalar>() })
 }
 #[repr(C)]
 struct OperandView {
