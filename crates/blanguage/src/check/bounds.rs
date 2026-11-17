@@ -3,6 +3,7 @@ mod condition_graph;
 mod cross_facts;
 mod fact_fields;
 mod negation;
+mod internal_conflicts;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2650,110 +2651,7 @@ fn contradictory(facts: &Facts) -> bool {
     contradictory_with_roots(facts, &equality_roots(facts))
 }
 fn contradictory_with_roots(facts: &Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> bool {
-    let root = |id| roots.get(&id).copied().unwrap_or(id);
-    let canonical = |fact: Fact| match fact {
-        Fact::Equal(a, b) => Fact::equal(root(a), root(b)),
-        Fact::NotEqual(a, b) => {
-            let (a, b) = (root(a), root(b));
-            Fact::NotEqual(a.min(b), a.max(b))
-        }
-        Fact::Below(a, b, strict, scalar) => Fact::Below(root(a), root(b), strict, scalar),
-        Fact::Predicate(predicate, truth) => Fact::Predicate(predicate.map(|id|Some(root(id))).unwrap(), truth),
-        Fact::Index(id, domain) => Fact::Index(root(id), map_domain(domain,&root)),
-        Fact::Outside(id, domain) => Fact::Outside(root(id), map_domain(domain,&root)),
-        value => value.identity().map(|id| value.at(root(id))).unwrap_or(value),
-    };
-    // 原查询只生产一次别名规范视图；排序、查找及判定不重复投影。
-    let mut aliases: Vec<Fact> = Vec::new();
-    if !roots.is_empty() {
-        aliases.extend(facts.iter().copied().map(canonical));
-        aliases.sort_unstable();
-        aliases.dedup();
-    }
-    let select = |query: Fact, preceding: bool| {
-        if roots.is_empty() {
-            if preceding { facts.range(..=query).next_back().copied() }
-            else { facts.range(query..).next().copied() }
-        } else {
-            let index = aliases.partition_point(|fact| {
-                let value = *fact;
-                if preceding { value <= query } else { value < query }
-            });
-            if preceding {
-                index.checked_sub(1).map(|index| aliases[index])
-            } else {
-                aliases.get(index).copied()
-            }
-        }
-    };
-    let contains = |fact| select(fact, false) == Some(fact);
-    let bounds = |id, scalar: Scalar| {
-        let mut lower = match select(Fact::Minimum(id, scalar, scalar.bit_mask()), true) {
-            Some(Fact::Minimum(other, actual, bound)) if (other, actual) == (id, scalar) => bound,
-            _ => 0,
-        };
-        let upper = match select(Fact::Maximum(id, scalar, 0), false) {
-            Some(Fact::Maximum(other, actual, bound)) if (other, actual) == (id, scalar) => bound,
-            _ => scalar.bit_mask(),
-        };
-        if scalar.is_integer() && !scalar.is_signed() && contains(Fact::NonZero(id)) { lower=lower.max(1); }
-        if contains(Fact::Zero(id)) { (lower.max(scalar.order_bias()),upper.min(scalar.order_bias())) } else { (lower,upper) }
-    };
-    let conflict = |fact| match fact {
-        Fact::Boolean(id, truth) => contains(Fact::Boolean(id, !truth)),
-        Fact::Predicate(predicate, truth) => contains(Fact::Predicate(predicate, !truth)) || {
-            let [a,b]=[predicate.a,predicate.b].map(|operand|match operand {
-                Operand::Constant(_,bits)=>{
-                    let at=if predicate.scalar.is_float(){floating::order(predicate.scalar,bits)}else{bits^predicate.scalar.order_bias()};
-                    (at,at)
-                },
-                Operand::Value(id)=>bounds(id,predicate.scalar),
-            });
-            if predicate.scalar.is_float(){
-                !floating::comparison_possible(predicate.op,predicate.scalar,a,b,truth)
-            }else{
-                (a.0==a.1&&b.0==b.1).then(||(a.0^predicate.scalar.order_bias(),b.0^predicate.scalar.order_bias()))
-                    .and_then(|(a,b)|constant::binary(BinaryOp::Compare(predicate.op),predicate.scalar,a,b)).is_some_and(|value|value!=Bits::from(truth))
-            }
-        },
-        Fact::Zero(id) => contains(Fact::NonZero(id)),
-        Fact::NonZero(id) => contains(Fact::Zero(id)),
-        Fact::Index(id, domain) => contains(Fact::Outside(id, domain)),
-        Fact::Outside(id, domain) => matches!(domain,IndexDomain::Upper(limit,0)if id==limit)||contains(Fact::Index(id, domain)),
-        Fact::Minimum(id, scalar, _) | Fact::Maximum(id, scalar, _) => {
-            let (lower, upper) = bounds(id, scalar);
-            let zero = scalar.order_bias();
-            lower > upper
-                || (contains(Fact::Zero(id)) && !(lower <= zero && zero <= upper))
-                || (contains(Fact::NonZero(id)) && lower == upper && lower == zero)
-        }
-        Fact::NotEqual(a, b) => {
-            a == b
-                || (contains(Fact::Zero(a)) && contains(Fact::Zero(b)))
-                || [false, true].into_iter().any(|truth| {
-                    contains(Fact::Boolean(a, truth)) && contains(Fact::Boolean(b, truth))
-                })
-                || [Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64].into_iter().any(|scalar| {
-                    let value = |id| {
-                        if contains(Fact::Zero(id)) { Some(scalar.order_bias()) }
-                        else {
-                            let (lower, upper) = bounds(id, scalar);
-                            (lower == upper).then_some(lower)
-                        }
-                    };
-                    value(a).zip(value(b)).is_some_and(|(a, b)| a == b)
-                })
-        }
-        Fact::Below(a, b, strict, scalar) => (a == b && strict)
-            || contains(Fact::Below(b, a, true, scalar))
-            || (strict && contains(Fact::Below(b, a, false, scalar))) || {
-                let (lower,_)=bounds(a,scalar);let (_,upper)=bounds(b,scalar);
-                lower>upper || strict && lower==upper
-            },
-        Fact::Equal(..) => false,
-    };
-    if roots.is_empty() { facts.iter().copied().any(conflict) }
-    else { aliases.iter().copied().any(conflict) }
+    internal_conflicts::conflict(facts, roots)
 }
 
 // 环境已由本轮固定点检查；这里只处理新增事实内部及其与环境的关系。

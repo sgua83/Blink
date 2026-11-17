@@ -1,4 +1,5 @@
 module bootstrap.condition_graph;
+import bootstrap.scalar_fold;
 
 // These descriptors borrow the original Clause query and its physical buffers.
 // They are private native fields, not a stored condition or public graph format.
@@ -123,3 +124,22 @@ extern "C" void negate_graph(address root,address context,NegateHost host) on cp
  requires nonzero(host.has_result) requires nonzero(host.unconstrained) requires nonzero(host.impossible)
  requires nonzero(host.begin_facts) requires nonzero(host.next_fact) requires nonzero(host.either_fact)
  requires nonzero(host.either) requires nonzero(host.both) requires nonzero(host.facts.compare);
+
+struct InternalScalar { u32 kind; u32 width; u64 mask; u64 bias; };
+struct InternalOperand { address identity; u64 bits; u32 is_constant; };
+struct InternalPredicate { address scalar; BinaryOperation operation; InternalOperand left; InternalOperand right; };
+struct InternalUpper { address identity; u32 distance; u32 present; };
+struct InternalHost {
+ cfn<FactView,address> next;
+ cfn<FactView,address,FactView,u32> ensures memory(read) select;
+ cfn<u32,address,FactView> ensures memory(read) contains;
+ cfn<i32,address,address> ensures memory(read) compare;
+ cfn<u32,address,address> ensures memory(read) same_scalar;
+ cfn<InternalScalar,address> ensures memory(read) scalar;
+ cfn<InternalPredicate,address> ensures memory(read) predicate;
+ cfn<InternalUpper,address> ensures memory(read) upper;
+};
+extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.select) requires nonzero(host.contains)
+ requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar)
+ requires nonzero(host.predicate) requires nonzero(host.upper);
