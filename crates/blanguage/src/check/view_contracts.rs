@@ -1790,8 +1790,8 @@ fn solve<'a>(
         let mut resolved=BTreeMap::new();
         let has_feedback = function.loops.values().any(|definition| definition.value.is_some());
         loop {
-        // Only scalar loop inputs feed back; snapshot values keep their original order.
-        let previous = has_feedback.then(|| resolved.clone());
+        // Each value identity is written once in the original use/backedge order.
+        let mut values_changed = false;
         values.clear();
         let mut calls=function.calls.iter().filter(|call|!call.deferred).peekable();let mut usages=function.uses.iter().enumerate().peekable();
         while let Some((memory,usage))=usages.next(){
@@ -1801,7 +1801,9 @@ fn solve<'a>(
                     let value=value.proof.substitute_values(&resolved).at_call(&value.bindings);
                     bounds::Proof::join(&mut proof,&value,1,None);
                 }
-                resolved.insert(ValueIdentity::MemoryValue(memory,0),proof);
+                let identity=ValueIdentity::MemoryValue(memory,0);
+                if has_feedback {values_changed=values_changed||resolved.get(&identity)!=Some(&proof);}
+                resolved.insert(identity,proof);
                 continue;
             }
             let Requirement::Memory{target,snapshots,..}=&usage.requirement else{continue;};
@@ -1862,7 +1864,9 @@ fn solve<'a>(
                         bounds::Proof::default()
                     };
                     let identity = ValueIdentity::MemoryValue(memory, component);
-                    resolved.insert(identity, proof.with_identity(identity));
+                    let proof = proof.with_identity(identity);
+                    if has_feedback {values_changed=values_changed||resolved.get(&identity)!=Some(&proof);}
+                    resolved.insert(identity, proof);
                 }
             }
             if !has_feedback || call.is_none() {
@@ -1872,9 +1876,10 @@ fn solve<'a>(
         for (input, definition) in &function.loops {
             let Some((id, _)) = definition.value else { continue; };
             let proof = solve_loop_value(function, *input, id, definition, &resolved);
+            values_changed=values_changed||resolved.get(&id)!=Some(&proof);
             resolved.insert(id, proof);
         }
-        if previous.is_none_or(|previous|resolved==previous){break;}
+        if !has_feedback||!values_changed{break;}
         }
         if has_feedback {
             // Each snapshot identity is written only by its own event.
