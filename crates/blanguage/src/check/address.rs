@@ -1029,16 +1029,16 @@ impl Builder<'_> {
             (place.data_positions().into_iter().map(|position|resource_position(position,&resource)).collect(),Some(*index_value))
         }else{(self.positions(place),None)}
     }
-    pub(super) fn memory_write_components(
-        &self, borrow: &view::Borrow, place: &Place, outside_element: bool,
+    pub(super) fn memory_effect_components(
+        &self, effect: Option<&MemoryEffect>, place: &Place, outside_element: bool,
     ) -> Vec<usize> {
-        let Some(effect) = self.address_write_effect(borrow) else {
+        let Some(effect) = effect else {
             return (0..place.ty().components.len()).collect();
         };
         let (positions, index) = self.value_memory_location(place);
         let written = if outside_element { MemoryEffect::outside_element_bytes } else { MemoryEffect::written_bytes };
         positions.iter().zip(&place.ty().components).enumerate().filter_map(|(component, (position, (scalar, _)))| {
-            (written(&effect, position, *scalar, index) != 0).then_some(component)
+            (written(effect, position, *scalar, index) != 0).then_some(component)
         }).collect()
     }
     pub(super) fn address_write_components(&self,positions:&[Position],place:&Place)->Vec<usize> {
