@@ -6,6 +6,7 @@ mod negation;
 mod internal_conflicts;
 mod common_facts;
 mod task_sources;
+mod combination;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2324,108 +2325,16 @@ impl Clause {
     pub(super) fn impossible() -> Self {
         Self::node(ClauseNode::Impossible)
     }
-    fn facts(facts: Facts) -> Self {
-        if contradictory(&facts) {
-            Self::impossible()
-        } else {
-            Self::node(ClauseNode::Facts(facts))
-        }
-    }
-    pub(super) fn both(a: &Self, b: &Self) -> Self {
-        match (&**a.0, &**b.0) {
-            (ClauseNode::Impossible, _) | (_, ClauseNode::Impossible) => Self::impossible(),
-            (ClauseNode::Facts(facts), _) if facts.is_empty() => b.clone(),
-            (_, ClauseNode::Facts(facts)) if facts.is_empty() => a.clone(),
-            (ClauseNode::Facts(a), ClauseNode::Facts(b)) => {
-                Self::facts(a.union(b).copied().collect())
-            }
-            _ if Arc::ptr_eq(&a.0, &b.0) || a.has_direct_conjunct(b) => a.clone(),
-            _ if b.has_direct_conjunct(a) => b.clone(),
-            _ => Self::node(ClauseNode::Both(a.clone(), b.clone())),
-        }
-    }
+    fn facts(facts: Facts) -> Self { combination::facts(facts) }
+    pub(super) fn both(a: &Self, b: &Self) -> Self { combination::both(a, b) }
     fn observed(parent:&Self,facts:Facts)->Self {
         let known=Arc::new(Condition{cases:[Self::impossible(),Self::facts(facts)]});
         Self::branch(parent,&known,true)
     }
     fn branch(parent: &Self, condition: &Arc<Condition>, truth: bool) -> Self {
-        if matches!(&**parent.0, ClauseNode::Impossible)
-            || matches!(
-                &**condition.cases[usize::from(truth)].0,
-                ClauseNode::Impossible
-            )
-        {
-            return Self::impossible();
-        }
-        Self::node(ClauseNode::Branch(
-            parent.clone(),
-            condition.clone(),
-            truth,
-        ))
+        combination::branch(parent, condition, truth)
     }
-    fn joined_branches(a: &Self, b: &Self) -> Option<Self> {
-        match (&**a.0, &**b.0) {
-            (ClauseNode::Branch(ap, ac, at), ClauseNode::Branch(bp, bc, bt))
-                if Arc::ptr_eq(&ap.0, &bp.0) && Arc::ptr_eq(ac, bc) && at != bt =>
-            {
-                Some(ap.clone())
-            }
-            _ => None,
-        }
-    }
-    pub(super) fn either(a: &Self, b: &Self) -> Self {
-        if let Some(parent) = Self::joined_branches(a, b) {
-            return parent;
-        }
-        if let ClauseNode::Either(x, y) = &**a.0 {
-            if let Some(parent) = Self::joined_branches(y, b) {
-                return Self::either(x, &parent);
-            }
-            if let Some(parent) = Self::joined_branches(x, b) {
-                return Self::either(&parent, y);
-            }
-        }
-        if let ClauseNode::Either(x, y) = &**b.0 {
-            if let Some(parent) = Self::joined_branches(a, x) {
-                return Self::either(&parent, y);
-            }
-            if let Some(parent) = Self::joined_branches(a, y) {
-                return Self::either(x, &parent);
-            }
-        }
-        match (&**a.0, &**b.0) {
-            (ClauseNode::Impossible, _) => b.clone(),
-            (_, ClauseNode::Impossible) => a.clone(),
-            (ClauseNode::Facts(facts), _) if facts.is_empty() => a.clone(),
-            (_, ClauseNode::Facts(facts)) if facts.is_empty() => b.clone(),
-            (ClauseNode::Facts(left), ClauseNode::Facts(right)) if left.is_subset(right) => {
-                a.clone()
-            }
-            (ClauseNode::Facts(left), ClauseNode::Facts(right)) if right.is_subset(left) => {
-                b.clone()
-            }
-            _ if Arc::ptr_eq(&a.0, &b.0) => a.clone(),
-            _ if a.has_direct_conjunct(b) => b.clone(),
-            _ if b.has_direct_conjunct(a) => a.clone(),
-            (ClauseNode::Both(left, right), ClauseNode::Both(first, second))
-                if Arc::ptr_eq(&left.0, &first.0) =>
-                Self::both(left, &Self::either(right, second)),
-            (ClauseNode::Both(left, right), ClauseNode::Both(first, second))
-                if Arc::ptr_eq(&left.0, &second.0) =>
-                Self::both(left, &Self::either(right, first)),
-            (ClauseNode::Both(left, right), ClauseNode::Both(first, second))
-                if Arc::ptr_eq(&right.0, &first.0) =>
-                Self::both(right, &Self::either(left, second)),
-            (ClauseNode::Both(left, right), ClauseNode::Both(first, second))
-                if Arc::ptr_eq(&right.0, &second.0) =>
-                Self::both(right, &Self::either(left, first)),
-            _ => Self::node(ClauseNode::Either(a.clone(), b.clone())),
-        }
-    }
-    fn has_direct_conjunct(&self, clause: &Self) -> bool {
-        matches!(self.query_inputs(), Some((left, right, false))
-            if Arc::ptr_eq(&left.0, &clause.0) || Arc::ptr_eq(&right.0, &clause.0))
-    }
+    pub(super) fn either(a: &Self, b: &Self) -> Self { combination::either(a, b) }
 
     fn query_inputs(&self) -> Option<(&Self, &Self, bool)> {
         match &**self.0 {

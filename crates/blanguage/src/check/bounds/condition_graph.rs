@@ -22,6 +22,7 @@ pub(super) struct SourceNode {
     no: Borrowed,
     truth: u32,
     empty: u32,
+    condition: Borrowed,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -109,11 +110,13 @@ pub(super) fn source_node(clause: &Clause) -> SourceNode {
         no: std::ptr::null(),
         truth: 0,
         empty: 0,
+        condition: std::ptr::null(),
     };
     match &**clause.0 {
         ClauseNode::Impossible => {}
         ClauseNode::Facts(facts) => {
             out.kind = 1;
+            out.left = std::ptr::from_ref(facts).cast();
             out.empty = u32::from(facts.is_empty());
         }
         ClauseNode::Both(a, b) => {
@@ -132,6 +135,7 @@ pub(super) fn source_node(clause: &Clause) -> SourceNode {
             out.right = std::ptr::from_ref(&condition.cases[1]).cast();
             out.no = std::ptr::from_ref(&condition.cases[0]).cast();
             out.truth = u32::from(*truth);
+            out.condition = std::ptr::from_ref(condition).cast();
         }
     }
     out

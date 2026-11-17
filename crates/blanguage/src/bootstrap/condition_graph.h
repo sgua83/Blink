@@ -4,7 +4,7 @@ import bootstrap.scalar_fold;
 // These descriptors borrow the original Clause query and its physical buffers.
 // They are private native fields, not a stored condition or public graph format.
 struct Span { address data; usize count; };
-struct SourceNode { u32 kind; address left; address right; address no; u32 truth; u32 empty; };
+struct SourceNode { u32 kind; address left; address right; address no; u32 truth; u32 empty; address condition; };
 struct Gate { usize left; usize right; u32 kind; Span parents; };
 struct Graph { address nodes; usize stride; address values; };
 struct Assignment { u32 present; usize node; u32 truth; };
@@ -197,3 +197,43 @@ extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
  requires nonzero(host.unknown) requires nonzero(host.empty) requires nonzero(host.single)
  requires nonzero(host.copy) requires nonzero(host.intersection) requires nonzero(host.union)
  requires nonzero(host.same_scalar) requires nonzero(host.facts.compare);
+
+// Synchronous typed Clause outputs and the original container primitives.
+struct ClauseLeafHost {
+ cfn<u32,address> conflict;
+ cfn<void,address> impossible;
+ cfn<void,address,address> make;
+};
+struct ClauseBothHost {
+ cfn<SourceNode,address> ensures memory(read) inspect;
+ cfn<u32,address,address> ensures memory(read) same;
+ cfn<void,address,address,address> unite;
+ cfn<void,address> impossible;
+ cfn<void,address,address> copy;
+ cfn<void,address,address,address> make;
+};
+struct ClauseEitherHost {
+ cfn<SourceNode,address> ensures memory(read) inspect;
+ cfn<u32,address,address> ensures memory(read) same;
+ cfn<u32,address,address> ensures memory(read) same_condition;
+ cfn<u32,address,address> ensures memory(read) subset;
+ cfn<void,address,address> copy;
+ cfn<void,address,address,address> make;
+ cfn<void,address,address,address,address> factor;
+};
+struct ClauseBranchHost {
+ cfn<SourceNode,address> ensures memory(read) inspect;
+ cfn<address,address,u32> ensures memory(read) case;
+ cfn<void,address> impossible;
+ cfn<void,address,address,address,u32> make;
+};
+extern "C" void clause_facts(address facts,address output,ClauseLeafHost host) on cpu
+ requires nonzero(host.conflict) requires nonzero(host.impossible) requires nonzero(host.make);
+extern "C" void clause_both(address left,address right,address output,ClauseBothHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.same) requires nonzero(host.unite)
+ requires nonzero(host.impossible) requires nonzero(host.copy) requires nonzero(host.make);
+extern "C" void clause_either(address left,address right,address output,ClauseEitherHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.same) requires nonzero(host.same_condition)
+ requires nonzero(host.subset) requires nonzero(host.copy) requires nonzero(host.make) requires nonzero(host.factor);
+extern "C" void clause_branch(address parent,address condition,u32 truth,address output,ClauseBranchHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.case) requires nonzero(host.impossible) requires nonzero(host.make);

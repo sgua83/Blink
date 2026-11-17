@@ -543,3 +543,78 @@ extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
   }
  }
 }
+
+bool clause_direct(SourceNode source,address other,cfn<u32,address,address> ensures memory(read) same) on cpu
+ requires nonzero(same) {
+ if(source.kind!=2&&source.kind!=4){return false;}
+ address right=source.right;if(source.kind==4&&source.truth==0){right=source.no;}
+ return same(source.left,other)!=0||same(right,other)!=0;
+}
+address clause_joined(address left,address right,
+ cfn<SourceNode,address> ensures memory(read) inspect,
+ cfn<u32,address,address> ensures memory(read) same,
+ cfn<u32,address,address> ensures memory(read) same_condition) on cpu
+ requires nonzero(inspect) requires nonzero(same) requires nonzero(same_condition) {
+ SourceNode a=inspect(left);SourceNode b=inspect(right);
+ if(a.kind==4&&b.kind==4&&a.truth!=b.truth
+    &&same(a.left,b.left)!=0&&same_condition(a.condition,b.condition)!=0){return a.left;}
+ return address();
+}
+extern "C" void clause_facts(address facts,address output,ClauseLeafHost host) on cpu
+ requires nonzero(host.conflict) requires nonzero(host.impossible) requires nonzero(host.make) {
+ if(host.conflict(facts)!=0){host.impossible(output);}else{host.make(output,facts);}
+}
+extern "C" void clause_both(address left,address right,address output,ClauseBothHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.same) requires nonzero(host.unite)
+ requires nonzero(host.impossible) requires nonzero(host.copy) requires nonzero(host.make) {
+ SourceNode a=host.inspect(left);SourceNode b=host.inspect(right);
+ if(a.kind==0||b.kind==0){host.impossible(output);return;}
+ if(a.kind==1&&a.empty!=0){host.copy(output,right);return;}
+ if(b.kind==1&&b.empty!=0){host.copy(output,left);return;}
+ if(a.kind==1&&b.kind==1){host.unite(output,a.left,b.left);return;}
+ if(host.same(left,right)!=0||clause_direct(a,right,host.same)){host.copy(output,left);return;}
+ if(clause_direct(b,left,host.same)){host.copy(output,right);return;}
+ host.make(output,left,right);
+}
+extern "C" void clause_either(address left,address right,address output,ClauseEitherHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.same) requires nonzero(host.same_condition)
+ requires nonzero(host.subset) requires nonzero(host.copy) requires nonzero(host.make) requires nonzero(host.factor) {
+ address parent=clause_joined(left,right,host.inspect,host.same,host.same_condition);
+ if(parent!=address()){host.copy(output,parent);return;}
+ SourceNode a=host.inspect(left);SourceNode b=host.inspect(right);
+ if(a.kind==3){
+  parent=clause_joined(a.right,right,host.inspect,host.same,host.same_condition);
+  if(parent!=address()){clause_either(a.left,parent,output,host);return;}
+  parent=clause_joined(a.left,right,host.inspect,host.same,host.same_condition);
+  if(parent!=address()){clause_either(parent,a.right,output,host);return;}
+ }
+ if(b.kind==3){
+  parent=clause_joined(left,b.left,host.inspect,host.same,host.same_condition);
+  if(parent!=address()){clause_either(parent,b.right,output,host);return;}
+  parent=clause_joined(left,b.right,host.inspect,host.same,host.same_condition);
+  if(parent!=address()){clause_either(b.left,parent,output,host);return;}
+ }
+ if(a.kind==0){host.copy(output,right);return;}
+ if(b.kind==0){host.copy(output,left);return;}
+ if(a.kind==1&&a.empty!=0){host.copy(output,left);return;}
+ if(b.kind==1&&b.empty!=0){host.copy(output,right);return;}
+ if(a.kind==1&&b.kind==1){
+  if(host.subset(a.left,b.left)!=0){host.copy(output,left);return;}
+  if(host.subset(b.left,a.left)!=0){host.copy(output,right);return;}
+ }
+ if(host.same(left,right)!=0){host.copy(output,left);return;}
+ if(clause_direct(a,right,host.same)){host.copy(output,right);return;}
+ if(clause_direct(b,left,host.same)){host.copy(output,left);return;}
+ if(a.kind==2&&b.kind==2){
+  if(host.same(a.left,b.left)!=0){host.factor(output,a.left,a.right,b.right);return;}
+  if(host.same(a.left,b.right)!=0){host.factor(output,a.left,a.right,b.left);return;}
+  if(host.same(a.right,b.left)!=0){host.factor(output,a.right,a.left,b.right);return;}
+  if(host.same(a.right,b.right)!=0){host.factor(output,a.right,a.left,b.left);return;}
+ }
+ host.make(output,left,right);
+}
+extern "C" void clause_branch(address parent,address condition,u32 truth,address output,ClauseBranchHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.case) requires nonzero(host.impossible) requires nonzero(host.make) {
+ if(host.inspect(parent).kind==0||host.inspect(host.case(condition,truth)).kind==0){host.impossible(output);return;}
+ host.make(output,parent,condition,truth);
+}
