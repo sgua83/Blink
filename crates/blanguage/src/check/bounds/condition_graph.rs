@@ -15,7 +15,7 @@ struct Span {
     count: usize,
 }
 #[repr(C)]
-struct SourceNode {
+pub(super) struct SourceNode {
     kind: u32,
     left: Borrowed,
     right: Borrowed,
@@ -117,7 +117,7 @@ unsafe extern "C" fn node_count(slot: Slot) -> usize {
 unsafe extern "C" fn inspect(slot: Slot, id: usize) -> SourceNode {
     source_node(unsafe { context(slot) }.nodes[id].clause)
 }
-fn source_node(clause: &Clause) -> SourceNode {
+pub(super) fn source_node(clause: &Clause) -> SourceNode {
     let mut out = SourceNode {
         kind: 0,
         left: std::ptr::null(),

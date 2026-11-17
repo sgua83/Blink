@@ -294,3 +294,31 @@ extern "C" FactView negated_fact(FactView value,FactHost host) on cpu
  }else if(fact.kind==FactKind::Outside){fact.kind=FactKind::Index;}
  return fact;
 }
+
+
+extern "C" void negate_graph(address root,address context,NegateHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.has_result) requires nonzero(host.unconstrained) requires nonzero(host.impossible)
+ requires nonzero(host.begin_facts) requires nonzero(host.next_fact) requires nonzero(host.either_fact)
+ requires nonzero(host.either) requires nonzero(host.both) requires nonzero(host.facts.compare) {
+ host.push(context,root,0);
+ while(true){
+  NegatePending pending=host.pop(context);if(pending.present==0){return;}
+  if(host.has_result(context,pending.source)!=0){continue;}
+  SourceNode source=host.inspect(pending.source);address right=source.right;
+  if(source.kind==4&&source.truth==0){right=source.no;}
+  if(pending.ready==0&&source.kind>=2){
+   host.push(context,pending.source,1);host.push(context,right,0);host.push(context,source.left,0);continue;
+  }
+  if(source.kind==0){host.unconstrained(context,pending.source);
+  }else if(source.kind==1){
+   host.impossible(context,pending.source);host.begin_facts(context,pending.source);
+   while(true){
+    FactView fact=host.next_fact(context);if(fact.present==0){break;}
+    FactView opposite=negated_fact(fact,host.facts);
+    if(opposite.present!=0){host.either_fact(context,pending.source,opposite);}
+   }
+  }else if(source.kind==3){host.both(context,pending.source,source.left,right);
+  }else{host.either(context,pending.source,source.left,right);}
+ }
+}

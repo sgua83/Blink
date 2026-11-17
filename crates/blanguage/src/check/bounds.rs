@@ -2,6 +2,7 @@
 mod condition_graph;
 mod cross_facts;
 mod fact_fields;
+mod negation;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2232,20 +2233,7 @@ impl Clause {
     }
     fn negated_fact(fact: Fact) -> Option<Fact> { fact_fields::negated(fact) }
 
-    fn negate(&self)->Self{
-        let mut values=BTreeMap::new();
-        for clause in Self::ordered(std::slice::from_ref(self)){
-            let next=match &**clause.0{
-                ClauseNode::Impossible=>Self::default(),
-                ClauseNode::Facts(facts) => facts.iter().copied().filter_map(Self::negated_fact)
-                    .fold(Self::impossible(), |all, fact| Self::either(&all, &Self::facts([fact].into()))),
-                ClauseNode::Both(a,b)=>Self::either(&values[&a.key()],&values[&b.key()]),
-                ClauseNode::Either(a,b)=>Self::both(&values[&a.key()],&values[&b.key()]),
-                ClauseNode::Branch(parent,condition,truth)=>Self::either(&values[&parent.key()],&values[&condition.cases[usize::from(*truth)].key()]),
-            };values.insert(clause.key(),next);
-        }
-        values.remove(&self.key()).unwrap()
-    }
+    fn negate(&self)->Self { negation::negate(self) }
     pub(super) fn output_bound(&self, bindings: &OutputBindings) -> Self {
         Self::output_bounds(std::slice::from_ref(self), bindings).pop().unwrap()
     }

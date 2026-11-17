@@ -101,3 +101,25 @@ struct FactHost {
 };
 extern "C" FactView negated_fact(FactView value,FactHost host) on cpu
  requires nonzero(host.compare);
+
+
+struct NegatePending { u32 present; u32 ready; address source; };
+struct NegateHost {
+ cfn<SourceNode,address> ensures memory(read) inspect;
+ cfn<void,address,address,u32> push;
+ cfn<NegatePending,address> pop;
+ cfn<u32,address,address> ensures memory(read) has_result;
+ cfn<void,address,address> unconstrained;
+ cfn<void,address,address> impossible;
+ cfn<void,address,address> begin_facts;
+ cfn<FactView,address> next_fact;
+ cfn<void,address,address,FactView> either_fact;
+ cfn<void,address,address,address,address> either;
+ cfn<void,address,address,address,address> both;
+ FactHost facts;
+};
+extern "C" void negate_graph(address root,address context,NegateHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.has_result) requires nonzero(host.unconstrained) requires nonzero(host.impossible)
+ requires nonzero(host.begin_facts) requires nonzero(host.next_fact) requires nonzero(host.either_fact)
+ requires nonzero(host.either) requires nonzero(host.both) requires nonzero(host.facts.compare);
