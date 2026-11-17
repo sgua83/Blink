@@ -501,3 +501,45 @@ extern "C" void common_facts(address context,CommonHost host) on cpu
   }
  }
 }
+
+extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
+ requires nonzero(host.count) requires nonzero(host.inspect) requires nonzero(host.begin)
+ requires nonzero(host.next) requires nonzero(host.contains) requires nonzero(host.lookup)
+ requires nonzero(host.unknown) requires nonzero(host.empty) requires nonzero(host.single)
+ requires nonzero(host.copy) requires nonzero(host.intersection) requires nonzero(host.union)
+ requires nonzero(host.same_scalar) requires nonzero(host.facts.compare) {
+ usize count=host.count(context);
+ usize at=0u64;
+ while(at<count){
+  usize index=at;at+=1u64;
+  SourceNode node=host.inspect(context,index);
+  if(node.kind==0){host.empty(context,index);continue;}
+  if(node.kind==1){
+   host.begin(context,index);u32 found=0;u32 value=0;
+   while(true){
+    FactView fact=host.next(context);
+    if(fact.present==0){break;}
+    if(fact.kind!=FactKind::Minimum){continue;}
+    if(host.facts.compare(fact.first,host.identity)!=0){continue;}
+    if(host.same_scalar(fact.scalar,host.facts.unsigned32)==0){continue;}
+    FactView maximum=fact;maximum.kind=FactKind::Maximum;
+    if(host.contains(context,maximum)!=0){found=1;value=u32(fact.value);break;}
+   }
+   if(found!=0){host.single(context,index,value);}else{host.unknown(context,index);}
+   continue;
+  }
+  address right=node.right;
+  if(node.kind==4&&node.truth==0){right=node.no;}
+  TaskSourceSet left=host.lookup(context,node.left);
+  TaskSourceSet other=host.lookup(context,right);
+  if(node.kind==3){
+   if(left.known!=0&&other.known!=0){host.union(context,index,left.values,other.values);}
+   else{host.unknown(context,index);}
+  }else{
+   if(left.known!=0&&other.known!=0){host.intersection(context,index,left.values,other.values);}
+   else if(left.known!=0){host.copy(context,index,left.values);}
+   else if(other.known!=0){host.copy(context,index,other.values);}
+   else{host.unknown(context,index);}
+  }
+ }
+}

@@ -171,3 +171,29 @@ extern "C" void common_facts(address context,CommonHost host) on cpu
  requires nonzero(host.known) requires nonzero(host.known_bits) requires nonzero(host.contains_known)
  requires nonzero(host.emit_known) requires nonzero(host.side_next) requires nonzero(host.range)
  requires nonzero(host.compare) requires nonzero(host.scalar_compare) requires nonzero(host.scalar);
+
+// The original synchronous task-return query owns all sets and node results.
+struct TaskSourceSet { u32 known; address values; };
+struct TaskSourceHost {
+ cfn<usize,address> ensures memory(read) count;
+ cfn<SourceNode,address,usize> ensures memory(read) inspect;
+ cfn<void,address,usize> begin;
+ cfn<FactView,address> next;
+ cfn<u32,address,FactView> ensures memory(read) contains;
+ cfn<TaskSourceSet,address,address> ensures memory(read) lookup;
+ cfn<void,address,usize> unknown;
+ cfn<void,address,usize> empty;
+ cfn<void,address,usize,u32> single;
+ cfn<void,address,usize,address> copy;
+ cfn<void,address,usize,address,address> intersection;
+ cfn<void,address,usize,address,address> union;
+ cfn<u32,address,address> ensures memory(read) same_scalar;
+ address identity;
+ FactHost facts;
+};
+extern "C" void task_return_sources(address context,TaskSourceHost host) on cpu
+ requires nonzero(host.count) requires nonzero(host.inspect) requires nonzero(host.begin)
+ requires nonzero(host.next) requires nonzero(host.contains) requires nonzero(host.lookup)
+ requires nonzero(host.unknown) requires nonzero(host.empty) requires nonzero(host.single)
+ requires nonzero(host.copy) requires nonzero(host.intersection) requires nonzero(host.union)
+ requires nonzero(host.same_scalar) requires nonzero(host.facts.compare);
