@@ -7,6 +7,7 @@ mod internal_conflicts;
 mod common_facts;
 mod task_sources;
 mod combination;
+mod equality;
 use super::*;
 mod floating;
 mod bitwise;
@@ -1765,99 +1766,15 @@ impl Fact {
     }
 }
 fn equality_roots<'a, I>(facts: I) -> BTreeMap<ValueIdentity, ValueIdentity>
-where I: IntoIterator<Item = &'a Fact>, I::IntoIter: Clone {
-    let facts = facts.into_iter();
-    let mut roots = BTreeMap::new();
-    extend_equality_roots(&mut roots, facts.clone());
-    extend_computed_roots(&mut roots, facts);
-    roots
+where I: IntoIterator<Item = &'a Fact>, I::IntoIter: Clone { equality::roots(facts) }
+fn extend_computed_roots<'a>(roots: &mut BTreeMap<ValueIdentity, ValueIdentity>, facts: impl IntoIterator<Item = &'a Fact>) {
+    equality::computed(roots, facts)
 }
-// 同一确定运算在相等输入上产生相等结果；嵌套结果沿本次查询收敛。
-fn extend_computed_roots<'a>(
-    roots: &mut BTreeMap<ValueIdentity, ValueIdentity>,
-    facts: impl IntoIterator<Item = &'a Fact>,
-) {
-    let expressions: Vec<_> = facts.into_iter().filter_map(|fact| match *fact {
-        Fact::Index(result, IndexDomain::Computed(expression)) => Some((result, expression)),
-        _ => None,
-    }).collect();
-    loop {
-        let mut produced = BTreeMap::new();
-        let mut equalities = Facts::new();
-        for &(result, expression) in &expressions {
-            let result = roots.get(&result).copied().unwrap_or(result);
-            let expression = expression.map(|id| Some(roots.get(&id).copied().unwrap_or(id))).unwrap();
-            match produced.entry(expression) {
-                std::collections::btree_map::Entry::Vacant(entry) => { entry.insert(result); },
-                std::collections::btree_map::Entry::Occupied(entry) if *entry.get() != result => {
-                    equalities.insert(Fact::equal(*entry.get(), result));
-                },
-                _ => {},
-            }
-        }
-        if equalities.is_empty() { break; }
-        extend_equality_roots(roots, &equalities);
-    }
+fn extend_equality_roots<'a>(roots: &mut BTreeMap<ValueIdentity, ValueIdentity>, facts: impl IntoIterator<Item = &'a Fact>) -> bool {
+    equality::extend(roots, facts)
 }
-fn extend_equality_roots<'a>(
-    roots: &mut BTreeMap<ValueIdentity, ValueIdentity>,
-    facts: impl IntoIterator<Item = &'a Fact>,
-) -> bool {
-    let mut changed = false;
-    // Facts 及其 union 按 Fact 排序；Equal 是首个事实类别。
-    for fact in facts.into_iter().take_while(|fact| matches!(fact, Fact::Equal(..))) {
-        if let Fact::Equal(a, b) = *fact {
-            let a_group = roots.get(&a).copied();
-            let b_group = roots.get(&b).copied();
-            let a_root = a_group.unwrap_or(a);
-            let b_root = b_group.unwrap_or(b);
-            let root = a_root.min(b_root);
-            if a_root != b_root {
-                changed = true;
-                let merged = a_root.max(b_root);
-                // 只改被合并组；其成员身份不可能小于该组的最小代表值。
-                for (_, current) in roots.range_mut(merged..) {
-                    if *current == merged {
-                        *current = root;
-                    }
-                }
-            }
-            if a_group.is_none() {
-                roots.insert(a, root);
-            }
-            if b_group.is_none() {
-                roots.insert(b, root);
-            }
-        }
-    }
-    changed
-}
-
-// environment 在本轮固定点内不变；节点合并本路径新增的相等与整数运算关系。
-fn additional_equality_roots<'a>(
-    environment: &Facts,
-    environment_roots: &'a BTreeMap<ValueIdentity, ValueIdentity>,
-    additions: &Facts,
-) -> Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>> {
-    let changes_roots = additions.iter().any(|fact| match *fact {
-        Fact::Equal(a, b) => match environment_roots.get(&a).zip(environment_roots.get(&b)) {
-            Some((left, right)) => left != right,
-            None => true,
-        },
-        Fact::Index(_, IndexDomain::Computed(_)) => true,
-        _ => false,
-    });
-    if !changes_roots {
-        return Cow::Borrowed(environment_roots);
-    }
-    let mut roots = environment_roots.clone();
-    extend_equality_roots(&mut roots, additions);
-    extend_computed_roots(&mut roots, environment.iter().chain(additions));
-    if roots == *environment_roots {
-        Cow::Borrowed(environment_roots)
-    } else {
-        Cow::Owned(roots)
-    }
+fn additional_equality_roots<'a>(environment: &Facts, environment_roots: &'a BTreeMap<ValueIdentity, ValueIdentity>, additions: &Facts) -> Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>> {
+    equality::additional(environment, environment_roots, additions)
 }
 type EqualityMembers<'a> = Vec<(&'a ValueIdentity, &'a ValueIdentity)>;
 
@@ -1867,45 +1784,10 @@ fn equality_members(roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> EqualityM
     members
 }
 
-fn equivalent_facts<'a>(
-    environment: &Facts,
-    mut facts: QueryFacts<'a>,
-    roots: &BTreeMap<ValueIdentity, ValueIdentity>,
-    members: &[(&ValueIdentity, &ValueIdentity)],
-    inherited_roots: Option<&BTreeMap<ValueIdentity, ValueIdentity>>,
-) -> QueryFacts<'a> {
-    if members.is_empty() {
-        return facts;
-    }
-    let mut inferred = Facts::new();
-    let inherited = inherited_roots.into_iter().flat_map(|previous| {
-        environment.iter().map(move |fact| (fact, Some(previous)))
-    });
-    for (fact, previous) in facts.iter().map(|fact| (fact, None)).chain(inherited) {
-        let Some(identity) = fact.identity() else { continue; };
-        let Some(root) = roots.get(&identity) else { continue; };
-        // The round already closed the environment over its old groups.
-        // Each group's representative carries its facts into newly joined groups.
-        let previous_root = previous.and_then(|previous| previous.get(&identity));
-        if previous_root.is_some_and(|root| *root != identity) {
-            continue;
-        }
-        let begin = members.partition_point(|(group, _)| *group < root);
-        let end = members.partition_point(|(group, _)| *group <= root);
-        inferred.extend(members[begin..end].iter()
-            .filter(|(_, id)| {
-                **id != identity && previous_root.is_none_or(|root| {
-                    previous.and_then(|previous| previous.get(*id)) != Some(root)
-                })
-            })
-            .map(|(_, id)| fact.at(**id))
-            .filter(|fact| !environment.contains(fact) && !facts.contains(fact)));
-    }
-    if !inferred.is_empty() {
-        facts.extend(inferred);
-    }
-    facts
+fn equivalent_facts<'a>(environment: &Facts, facts: QueryFacts<'a>, roots: &BTreeMap<ValueIdentity, ValueIdentity>, members: &[(&ValueIdentity, &ValueIdentity)], inherited_roots: Option<&BTreeMap<ValueIdentity, ValueIdentity>>) -> QueryFacts<'a> {
+    equality::equivalent(environment, facts, roots, members, inherited_roots)
 }
+
 impl Proof {
     fn extend_equalities(&mut self, roots: &BTreeMap<ValueIdentity, ValueIdentity>) {
         for origins in &mut self.origins {

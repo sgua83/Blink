@@ -237,3 +237,72 @@ extern "C" void clause_either(address left,address right,address output,ClauseEi
  requires nonzero(host.subset) requires nonzero(host.copy) requires nonzero(host.make) requires nonzero(host.factor);
 extern "C" void clause_branch(address parent,address condition,u32 truth,address output,ClauseBranchHost host) on cpu
  requires nonzero(host.inspect) requires nonzero(host.case) requires nonzero(host.impossible) requires nonzero(host.make);
+
+struct EqualityLookup { u32 present; address root; };
+struct EqualityIdentityHost {
+ cfn<i32,address,address> ensures memory(read) compare;
+ cfn<void,address,address> assign;
+};
+struct EqualityHost {
+ cfn<FactView,address> next;
+ cfn<EqualityLookup,address,u32,address> lookup;
+ cfn<i32,address,address> ensures memory(read) compare;
+ cfn<void,address,address,address> merge;
+ cfn<void,address,address,address> insert;
+};
+extern "C" void equality_merge_value(address current,address merged,address root,EqualityIdentityHost host) on cpu
+ requires nonzero(host.compare) requires nonzero(host.assign);
+extern "C" u32 equality_extend(address context,EqualityHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.compare)
+ requires nonzero(host.merge) requires nonzero(host.insert);
+struct ComputedEqualityStep { u32 present; address result; };
+struct ComputedEqualityHost {
+ cfn<FactView,address> next;
+ cfn<address,address> ensures memory(read) expression;
+ cfn<void,address,address,address> collect;
+ cfn<void,address> begin;
+ cfn<ComputedEqualityStep,address> step;
+ cfn<address,address> ensures memory(read) produced;
+ cfn<void,address> remember;
+ cfn<void,address,address,address> equate;
+ cfn<u32,address> ensures memory(read) has_equalities;
+ cfn<void,address> extend;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+extern "C" void computed_equalities(address context,ComputedEqualityHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.expression) requires nonzero(host.collect)
+ requires nonzero(host.begin) requires nonzero(host.step) requires nonzero(host.produced)
+ requires nonzero(host.remember) requires nonzero(host.equate) requires nonzero(host.has_equalities)
+ requires nonzero(host.extend) requires nonzero(host.compare);
+struct AdditionalEqualityHost {
+ cfn<FactView,address> next;
+ cfn<address,address,address> ensures memory(read) lookup;
+ cfn<address,address> ensures memory(read) expression;
+ cfn<i32,address,address> ensures memory(read) compare;
+ cfn<void,address> own;
+ cfn<void,address> extend;
+ cfn<void,address> computed;
+ cfn<u32,address> ensures memory(read) unchanged;
+ cfn<void,address> borrow;
+};
+extern "C" void additional_equalities(address context,AdditionalEqualityHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.expression)
+ requires nonzero(host.compare) requires nonzero(host.own) requires nonzero(host.extend)
+ requires nonzero(host.computed) requires nonzero(host.unchanged) requires nonzero(host.borrow);
+struct AliasFactHost {
+ cfn<FactView,address,u32> next;
+ cfn<address,address,address> ensures memory(read) root;
+ cfn<address,address,address> ensures memory(read) previous;
+ cfn<void,address,address> group;
+ cfn<address,address> member;
+ cfn<address,address,FactView,address> key;
+ cfn<u32,address,u32,address> ensures memory(read) contains;
+ cfn<void,address,address> emit;
+ cfn<u32,address> ensures memory(read) has_inferred;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+extern "C" u32 alias_facts(address context,usize members,u32 inherited,AliasFactHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.previous)
+ requires nonzero(host.group) requires nonzero(host.member) requires nonzero(host.key)
+ requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.has_inferred)
+ requires nonzero(host.compare);

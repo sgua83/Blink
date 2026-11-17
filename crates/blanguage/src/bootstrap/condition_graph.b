@@ -618,3 +618,98 @@ extern "C" void clause_branch(address parent,address condition,u32 truth,address
  if(host.inspect(parent).kind==0||host.inspect(host.case(condition,truth)).kind==0){host.impossible(output);return;}
  host.make(output,parent,condition,truth);
 }
+
+extern "C" void equality_merge_value(address current,address merged,address root,EqualityIdentityHost host) on cpu
+ requires nonzero(host.compare) requires nonzero(host.assign) {
+ if(host.compare(current,merged)==0){host.assign(current,root);}
+}
+extern "C" u32 equality_extend(address context,EqualityHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.compare)
+ requires nonzero(host.merge) requires nonzero(host.insert) {
+ u32 changed=0;
+ while(true){
+  FactView fact=host.next(context);
+  if(fact.present==0||fact.kind!=FactKind::Equal){return changed;}
+  EqualityLookup left=host.lookup(context,0,fact.first);
+  EqualityLookup right=host.lookup(context,1,fact.second);
+  i32 order=host.compare(left.root,right.root);
+  address root=order<=0 ? left.root : right.root;
+  if(order!=0){
+   address merged=order<=0 ? right.root : left.root;
+   changed=1;host.merge(context,merged,root);
+  }
+  if(left.present==0){host.insert(context,fact.first,root);}
+  if(right.present==0){host.insert(context,fact.second,root);}
+ }
+}
+extern "C" void computed_equalities(address context,ComputedEqualityHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.expression) requires nonzero(host.collect)
+ requires nonzero(host.begin) requires nonzero(host.step) requires nonzero(host.produced)
+ requires nonzero(host.remember) requires nonzero(host.equate) requires nonzero(host.has_equalities)
+ requires nonzero(host.extend) requires nonzero(host.compare) {
+ while(true){
+  FactView fact=host.next(context);if(fact.present==0){break;}
+  if(fact.kind!=FactKind::Index){continue;}
+  address expression=host.expression(fact.payload);
+  if(expression!=address()){host.collect(context,fact.first,expression);}
+ }
+ while(true){
+  host.begin(context);
+  while(true){
+   ComputedEqualityStep step=host.step(context);if(step.present==0){break;}
+   address previous=host.produced(context);
+   if(previous==address()){host.remember(context);}
+   else if(host.compare(previous,step.result)!=0){host.equate(context,previous,step.result);}
+  }
+  if(host.has_equalities(context)==0){return;}
+  host.extend(context);
+ }
+}
+extern "C" void additional_equalities(address context,AdditionalEqualityHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.expression)
+ requires nonzero(host.compare) requires nonzero(host.own) requires nonzero(host.extend)
+ requires nonzero(host.computed) requires nonzero(host.unchanged) requires nonzero(host.borrow) {
+ u32 changes=0;
+ while(true){
+  FactView fact=host.next(context);if(fact.present==0){break;}
+  if(fact.kind==FactKind::Equal){
+   address left=host.lookup(context,fact.first);address right=host.lookup(context,fact.second);
+   if(left==address()||right==address()){changes=1;break;}
+   if(host.compare(left,right)!=0){changes=1;break;}
+  }else if(fact.kind==FactKind::Index&&host.expression(fact.payload)!=address()){changes=1;break;}
+ }
+ if(changes==0){return;}
+ host.own(context);host.extend(context);host.computed(context);
+ if(host.unchanged(context)!=0){host.borrow(context);}
+}
+extern "C" u32 alias_facts(address context,usize members,u32 inherited,AliasFactHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.previous)
+ requires nonzero(host.group) requires nonzero(host.member) requires nonzero(host.key)
+ requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.has_inferred)
+ requires nonzero(host.compare) {
+ if(members==0u64){return 0;}
+ u32 side=0;
+ while(side<1+inherited){
+  while(true){
+   FactView fact=host.next(context,side);if(fact.present==0){break;}
+   if(fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual
+      ||fact.kind==FactKind::Below||fact.kind==FactKind::Predicate){continue;}
+   address identity=fact.first;address root=host.root(context,identity);if(root==address()){continue;}
+   address previous=address();if(side!=0){previous=host.previous(context,identity);}
+   if(previous!=address()&&host.compare(previous,identity)!=0){continue;}
+   host.group(context,root);
+   while(true){
+    address member=host.member(context);if(member==address()){break;}
+    if(host.compare(member,identity)==0){continue;}
+    if(previous!=address()){
+     address old=host.previous(context,member);
+     if(old!=address()&&host.compare(old,previous)==0){continue;}
+    }
+    address key=host.key(context,fact,member);
+    if(host.contains(context,0,key)==0&&host.contains(context,1,key)==0){host.emit(context,key);}
+   }
+  }
+  side+=1;
+ }
+ return host.has_inferred(context);
+}
