@@ -1848,7 +1848,7 @@ fn additional_equality_roots<'a>(
     }
     let mut roots = environment_roots.clone();
     extend_equality_roots(&mut roots, additions);
-    extend_computed_roots(&mut roots, environment.union(additions));
+    extend_computed_roots(&mut roots, environment.iter().chain(additions));
     if roots == *environment_roots {
         Cow::Borrowed(environment_roots)
     } else {
