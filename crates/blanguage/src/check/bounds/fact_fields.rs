@@ -238,6 +238,7 @@ pub(super) fn bound(id: &ValueIdentity, scalar: &Scalar, value: u64, minimum: bo
     }
 }
 
+#[derive(Default)]
 #[repr(C)]
 pub(super) struct OperandView {
     identity: Borrowed,
@@ -330,6 +331,7 @@ pub(super) unsafe fn operand_key(view: OperandView) -> Operand {
         Operand::Value(unsafe { *view.identity.cast::<ValueIdentity>() })
     }
 }
+#[derive(Default)]
 #[repr(C)]
 pub(super) struct ExpressionView {
     present: u32,
@@ -366,23 +368,6 @@ pub(super) fn expression(value: &super::IntegerExpression) -> ExpressionView {
 pub(super) unsafe extern "C" fn computed(value: Borrowed) -> ExpressionView {
     match unsafe { &*value.cast::<IndexDomain>() } {
         IndexDomain::Computed(value) => expression(value),
-        _ => ExpressionView {
-            present: 0,
-            operation: 0,
-            scalar: ptr::null(),
-            left: OperandView {
-                identity: ptr::null(),
-                bits: 0,
-                scalar: ptr::null(),
-                is_constant: 0,
-            },
-            right: OperandView {
-                identity: ptr::null(),
-                bits: 0,
-                scalar: ptr::null(),
-                is_constant: 0,
-            },
-            definition: ptr::null(),
-        },
+        _ => ExpressionView::default(),
     }
 }

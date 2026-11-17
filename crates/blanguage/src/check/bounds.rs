@@ -2958,72 +2958,8 @@ impl<'a> IntegerQuery<'a> {
             _ => None,
         })
     }
-    fn source_plan(&mut self, left: ValueIdentity, right: ValueIdentity, scalar: Scalar) -> Option<(ValueIdentity, Vec<ValueIdentity>)> {
-        let mut pending = vec![(Operand::Value(left), false), (Operand::Value(right), false)];
-        let mut order = Vec::new();
-        let mut source = None;
-        let result = (|| {
-            while let Some((operand, ready)) = pending.pop() {
-                let Operand::Value(id) = operand else { continue; };
-                let (lower, upper) = self.bounds(id, scalar);
-                if lower == upper { continue; }
-                if ready { order.push(id); continue; }
-                if !self.expanding.insert((self.root(id), scalar)) { continue; }
-                if let Some(IntegerExpression::Binary(_, _, a, b)) = self.computed(id, scalar) {
-                    pending.push((operand, true));
-                    pending.extend([(a, false), (b, false)]);
-                } else {
-                    let id = self.root(id);
-                    if source.is_some_and(|known| known != id) { return None; }
-                    source = Some(id);
-                }
-            }
-            Some((source?, order))
-        })();
-        self.expanding.clear();
-        result
-    }
-    fn below_in(&mut self, left: ValueIdentity, right: ValueIdentity, scalar: Scalar,
-        source: ValueIdentity, (lower, upper): (Bits, Bits), order: &[ValueIdentity],
-    ) -> Option<bool> {
-        self.lower.entry((source, scalar)).and_modify(|value| *value = (*value).max(lower)).or_insert(lower);
-        self.upper.entry((source, scalar)).and_modify(|value| *value = (*value).min(upper)).or_insert(upper);
-        let ordered = |value: i128| scalar.truncate(value as Bits) ^ scalar.order_bias();
-        for &id in order {
-            let (minimum, maximum) = self.bounds(id, scalar);
-            if minimum > maximum { return Some(true); }
-            if minimum == maximum { continue; }
-            let IntegerExpression::Binary(op, _, a, b) = self.computed(id, scalar)?;
-            let operand = |operand| match operand {
-                Operand::Constant(actual, bits) if actual == scalar => {
-                    let at = bits ^ scalar.order_bias(); Some(ScalarRanges::interval(at, at))
-                }
-                Operand::Value(id) => {
-                    let (lower, upper) = self.bounds(id, scalar);
-                    Some(ScalarRanges::interval(ordered(lower), ordered(upper)))
-                }
-                _ => None,
-            };
-            let (a, b) = (operand(a)?, operand(b)?);
-            if matches!(op, IntegerOperation::Divide | IntegerOperation::Remainder)
-                && b.contains(scalar.order_bias()) { return None; }
-            let op = match op {
-                IntegerOperation::Add => "+", IntegerOperation::Subtract => "-",
-                IntegerOperation::Multiply => "*", IntegerOperation::Divide => "/",
-                IntegerOperation::Remainder => "%", IntegerOperation::And => "&",
-                IntegerOperation::Or => "|", IntegerOperation::Xor => "^",
-                IntegerOperation::ShiftLeft => "<<", IntegerOperation::ShiftRight => ">>",
-            };
-            let range = arithmetic_ranges(op, scalar, a, b).restrict(ordered(minimum), ordered(maximum));
-            if range.0.is_empty() { return Some(true); }
-            let (lower, upper) = range.hull();
-            let key = (self.root(id), scalar);
-            self.lower.insert(key, lower);
-            self.upper.insert(key, upper);
-        }
-        let (a, b) = (self.bounds(left, scalar), self.bounds(right, scalar));
-        Some(a.0 > a.1 || b.0 > b.1 || a.1 < b.0)
-    }
+    fn source_plan(&mut self,left:ValueIdentity,right:ValueIdentity,scalar:Scalar)->Option<(ValueIdentity,Vec<ValueIdentity>)> {integer_relations::source_plan(self,left,right,scalar)}
+    fn below_in(&mut self,left:ValueIdentity,right:ValueIdentity,scalar:Scalar,source:ValueIdentity,bounds:(Bits,Bits),order:&[ValueIdentity])->Option<bool> {integer_relations::below_in(self,left,right,scalar,source,bounds,order)}
     fn bounds(&self, id: ValueIdentity, scalar: Scalar) -> (i128, i128) {
         let key = (self.root(id), scalar);
         let lower = self.lower.get(&key).copied().unwrap_or(0);

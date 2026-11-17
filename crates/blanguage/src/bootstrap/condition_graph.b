@@ -1257,3 +1257,57 @@ FactView fact_numeric_alias(FactView input,u32 scalar_kind) on cpu {
   else if(fact.kind==FactKind::Maximum&&fact.value==0u64){fact.kind=FactKind::Zero;}
  }return fact;
 }
+
+extern "C" u32 relation_source_plan(address context,RelationSourcePlanHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.bounds) requires nonzero(host.enter) requires nonzero(host.computed) requires nonzero(host.root) requires nonzero(host.select) requires nonzero(host.emit) requires nonzero(host.clear) requires nonzero(host.compare) {
+ address source=address();u32 known=1;
+ while(true){
+  RelationSourceWork work=host.pop(context);if(work.present==0){break;}
+  address id=work.operand.identity;RelationRange bounds=host.bounds(context,id);
+  if(relation_wide_equal(bounds.lower,bounds.upper)){continue;}
+  if(work.ready!=0){host.emit(context,id);continue;}
+  if(host.enter(context,id)==0){continue;}
+  RelationExpression expression=host.computed(context,id);
+  if(expression.present!=0){
+   host.push(context,work.operand,1);
+   if(expression.left.is_constant==0){host.push(context,expression.left,0);}
+   if(expression.right.is_constant==0){host.push(context,expression.right,0);}
+  }else{
+   address root=host.root(context,id);
+   if(source!=address()&&host.compare(source,root)!=0){known=0;break;}
+   if(source==address()){source=host.select(context,root);}
+  }
+ }
+ host.clear(context);return known!=0&&source!=address() ? 1 : 0;
+}
+RelationRange source_operand_range(address context,InternalOperand operand,address scalar,InternalScalar info,
+ cfn<RelationRange,address,address> ensures memory(read) bounds,
+ cfn<u32,address,address> ensures memory(read) same_scalar) on cpu requires nonzero(bounds) requires nonzero(same_scalar) {
+ if(operand.is_constant!=0){
+  if(same_scalar(operand.scalar,scalar)==0){return RelationRange(0,relation_zero(),relation_zero());}
+  IntegerWide at=IntegerWide(operand.bits^info.bias,0u64);return RelationRange(1,at,at);
+ }
+ RelationRange value=bounds(context,operand.identity);
+ return RelationRange(1,IntegerWide((value.lower.low&info.mask)^info.bias,0u64),IntegerWide((value.upper.low&info.mask)^info.bias,0u64));
+}
+extern "C" u32 relation_source_below(address context,address left,address right,address source,u64 lower,u64 upper,address scalar,InternalScalar info,RelationSourceBelowHost host) on cpu
+ requires nonzero(host.seed) requires nonzero(host.next) requires nonzero(host.bounds) requires nonzero(host.computed) requires nonzero(host.same_scalar) requires nonzero(host.arithmetic) requires nonzero(host.store) {
+ host.seed(context,source,lower,upper);
+ while(true){
+  address id=host.next(context);if(id==address()){break;}
+  RelationRange bounds=host.bounds(context,id);
+  if(range_less(bounds.upper,bounds.lower)){return 2;}
+  if(relation_wide_equal(bounds.lower,bounds.upper)){continue;}
+  RelationExpression expression=host.computed(context,id);if(expression.present==0){return 0;}
+  RelationRange a=source_operand_range(context,expression.left,scalar,info,host.bounds,host.same_scalar);
+  if(a.present==0){return 0;}
+  RelationRange b=source_operand_range(context,expression.right,scalar,info,host.bounds,host.same_scalar);
+  if(b.present==0){return 0;}
+  if((expression.operation==3||expression.operation==4)&&b.lower.low<=info.bias&&info.bias<=b.upper.low){return 0;}
+  RelationRange value=host.arithmetic(context,expression.operation,a,b,(bounds.lower.low&info.mask)^info.bias,(bounds.upper.low&info.mask)^info.bias);
+  if(value.present==0){return 2;}
+  host.store(context,id,value.lower.low,value.upper.low);
+ }
+ RelationRange a=host.bounds(context,left);RelationRange b=host.bounds(context,right);
+ return range_less(a.upper,a.lower)||range_less(b.upper,b.lower)||range_less(a.upper,b.lower) ? 2 : 1;
+}

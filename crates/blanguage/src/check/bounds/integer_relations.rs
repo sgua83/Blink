@@ -696,3 +696,292 @@ pub(super) fn facts(
     };
     if result != 0 { Some(output) } else { None }
 }
+
+#[repr(C)]
+struct SourceWork {
+    present: u32,
+    ready: u32,
+    operand: fact_fields::OperandView,
+}
+struct SourcePlan<'a> {
+    query: *mut IntegerQuery<'a>,
+    scalar: Scalar,
+    pending: Vec<(Operand, bool)>,
+    order: Vec<ValueIdentity>,
+    current: *mut Operand,
+    root: *mut ValueIdentity,
+    source: *mut ValueIdentity,
+    expression: *mut IntegerExpression,
+}
+unsafe extern "C" fn source_pop(s: Slot) -> SourceWork {
+    let c = unsafe { frame::<SourcePlan<'_>>(s) };
+    match c.pending.pop() {
+        Some((value, ready)) => {
+            unsafe { c.current.write(value) };
+            SourceWork {
+                present: 1,
+                ready: u32::from(ready),
+                operand: fact_fields::operand(unsafe { &*c.current }),
+            }
+        }
+        None => SourceWork {
+            present: 0,
+            ready: 0,
+            operand: fact_fields::OperandView::default(),
+        },
+    }
+}
+unsafe extern "C" fn source_push(s: Slot, value: fact_fields::OperandView, ready: u32) {
+    let value = unsafe { fact_fields::operand_key(value) };
+    unsafe { frame::<SourcePlan<'_>>(s) }
+        .pending
+        .push((value, ready != 0));
+}
+unsafe extern "C" fn source_bounds(s: Slot, id: Borrowed) -> Range {
+    let c = unsafe { frame::<SourcePlan<'_>>(s) };
+    unsafe { bounds(c.query, c.scalar, id) }
+}
+unsafe extern "C" fn source_enter(s: Slot, id: Borrowed) -> u32 {
+    let id = unsafe { *id.cast::<ValueIdentity>() };
+    let c = unsafe { frame::<SourcePlan<'_>>(s) };
+    let query = unsafe { &mut *c.query };
+    u32::from(query.expanding.insert((query.root(id), c.scalar)))
+}
+unsafe fn selected_expression(
+    query: *const IntegerQuery<'_>,
+    scalar: Scalar,
+    id: Borrowed,
+    target: *mut IntegerExpression,
+) -> fact_fields::ExpressionView {
+    match unsafe { &*query }.computed(unsafe { *id.cast::<ValueIdentity>() }, scalar) {
+        Some(expression) => {
+            unsafe { target.write(expression) };
+            fact_fields::expression(unsafe { &*target })
+        }
+        None => fact_fields::ExpressionView::default(),
+    }
+}
+unsafe extern "C" fn source_computed(s: Slot, id: Borrowed) -> fact_fields::ExpressionView {
+    let c = unsafe { frame::<SourcePlan<'_>>(s) };
+    unsafe { selected_expression(c.query, c.scalar, id, c.expression) }
+}
+unsafe extern "C" fn source_root(s: Slot, id: Borrowed) -> Borrowed {
+    let id = unsafe { *id.cast::<ValueIdentity>() };
+    let c = unsafe { frame::<SourcePlan<'_>>(s) };
+    unsafe { c.root.write((&*c.query).root(id)) };
+    c.root.cast()
+}
+unsafe extern "C" fn source_select(s: Slot, id: Borrowed) -> Borrowed {
+    let id = unsafe { *id.cast::<ValueIdentity>() };
+    let c = unsafe { frame::<SourcePlan<'_>>(s) };
+    unsafe { c.source.write(id) };
+    c.source.cast()
+}
+unsafe extern "C" fn source_emit(s: Slot, id: Borrowed) {
+    let id = unsafe { *id.cast::<ValueIdentity>() };
+    unsafe { frame::<SourcePlan<'_>>(s) }.order.push(id);
+}
+unsafe extern "C" fn source_clear(s: Slot) {
+    let c = unsafe { frame::<SourcePlan<'_>>(s) };
+    unsafe { &mut *c.query }.expanding.clear();
+}
+#[repr(C)]
+struct SourcePlanHost {
+    pop: unsafe extern "C" fn(Slot) -> SourceWork,
+    push: unsafe extern "C" fn(Slot, fact_fields::OperandView, u32),
+    bounds: unsafe extern "C" fn(Slot, Borrowed) -> Range,
+    enter: unsafe extern "C" fn(Slot, Borrowed) -> u32,
+    computed: unsafe extern "C" fn(Slot, Borrowed) -> fact_fields::ExpressionView,
+    root: unsafe extern "C" fn(Slot, Borrowed) -> Borrowed,
+    select: unsafe extern "C" fn(Slot, Borrowed) -> Borrowed,
+    emit: unsafe extern "C" fn(Slot, Borrowed),
+    clear: unsafe extern "C" fn(Slot),
+    compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::relation_source_plan"]
+    fn b_source_plan(context: Slot, host: SourcePlanHost) -> u32;
+}
+pub(super) fn source_plan(
+    query: &mut IntegerQuery<'_>,
+    left: ValueIdentity,
+    right: ValueIdentity,
+    scalar: Scalar,
+) -> Option<(ValueIdentity, Vec<ValueIdentity>)> {
+    let mut current = MaybeUninit::<Operand>::uninit();
+    let mut root = MaybeUninit::<ValueIdentity>::uninit();
+    let mut source = MaybeUninit::<ValueIdentity>::uninit();
+    let mut expression = MaybeUninit::<IntegerExpression>::uninit();
+    let mut c = SourcePlan {
+        query,
+        scalar,
+        pending: vec![
+            (Operand::Value(left), false),
+            (Operand::Value(right), false),
+        ],
+        order: Vec::new(),
+        current: current.as_mut_ptr(),
+        root: root.as_mut_ptr(),
+        source: source.as_mut_ptr(),
+        expression: expression.as_mut_ptr(),
+    };
+    let result = unsafe {
+        b_source_plan(
+            (&mut c as *mut SourcePlan<'_>).cast(),
+            SourcePlanHost {
+                pop: source_pop,
+                push: source_push,
+                bounds: source_bounds,
+                enter: source_enter,
+                computed: source_computed,
+                root: source_root,
+                select: source_select,
+                emit: source_emit,
+                clear: source_clear,
+                compare: fact_fields::compare,
+            },
+        )
+    };
+    if result != 0 {
+        Some((unsafe { source.assume_init() }, c.order))
+    } else {
+        None
+    }
+}
+
+struct SourceBelow<'a, 'b> {
+    query: *mut IntegerQuery<'a>,
+    scalar: Scalar,
+    order: std::slice::Iter<'b, ValueIdentity>,
+    expression: *mut IntegerExpression,
+}
+unsafe extern "C" fn source_seed(s: Slot, id: Borrowed, lower: u64, upper: u64) {
+    let id = unsafe { *id.cast::<ValueIdentity>() };
+    let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
+    let q = unsafe { &mut *c.query };
+    let key = (id, c.scalar);
+    q.lower
+        .entry(key)
+        .and_modify(|value| *value = (*value).max(lower))
+        .or_insert(lower);
+    q.upper
+        .entry(key)
+        .and_modify(|value| *value = (*value).min(upper))
+        .or_insert(upper);
+}
+unsafe extern "C" fn source_next(s: Slot) -> Borrowed {
+    unsafe { frame::<SourceBelow<'_, '_>>(s) }
+        .order
+        .next()
+        .map(borrow)
+        .unwrap_or(ptr::null())
+}
+unsafe extern "C" fn below_bounds(s: Slot, id: Borrowed) -> Range {
+    let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
+    unsafe { bounds(c.query, c.scalar, id) }
+}
+unsafe extern "C" fn below_computed(s: Slot, id: Borrowed) -> fact_fields::ExpressionView {
+    let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
+    unsafe { selected_expression(c.query, c.scalar, id, c.expression) }
+}
+unsafe extern "C" fn source_arithmetic(
+    s: Slot,
+    operation: u32,
+    a: Range,
+    b: Range,
+    minimum: u64,
+    maximum: u64,
+) -> Range {
+    let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
+    let op = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"][operation as usize];
+    let value = arithmetic_ranges(
+        op,
+        c.scalar,
+        ScalarRanges::interval(a.lower.low, a.upper.low),
+        ScalarRanges::interval(b.lower.low, b.upper.low),
+    )
+    .restrict(minimum, maximum);
+    let (lower, upper) = value.hull();
+    Range {
+        present: u32::from(!value.0.is_empty()),
+        lower: Wide {
+            low: lower,
+            high: 0,
+        },
+        upper: Wide {
+            low: upper,
+            high: 0,
+        },
+    }
+}
+unsafe extern "C" fn source_store(s: Slot, id: Borrowed, lower: u64, upper: u64) {
+    let id = unsafe { *id.cast::<ValueIdentity>() };
+    let c = unsafe { frame::<SourceBelow<'_, '_>>(s) };
+    let q = unsafe { &mut *c.query };
+    let key = (q.root(id), c.scalar);
+    q.lower.insert(key, lower);
+    q.upper.insert(key, upper);
+}
+#[repr(C)]
+struct SourceBelowHost {
+    seed: unsafe extern "C" fn(Slot, Borrowed, u64, u64),
+    next: unsafe extern "C" fn(Slot) -> Borrowed,
+    bounds: unsafe extern "C" fn(Slot, Borrowed) -> Range,
+    computed: unsafe extern "C" fn(Slot, Borrowed) -> fact_fields::ExpressionView,
+    same_scalar: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
+    arithmetic: unsafe extern "C" fn(Slot, u32, Range, Range, u64, u64) -> Range,
+    store: unsafe extern "C" fn(Slot, Borrowed, u64, u64),
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::relation_source_below"]
+    fn b_source_below(
+        context: Slot,
+        left: Borrowed,
+        right: Borrowed,
+        source: Borrowed,
+        lower: u64,
+        upper: u64,
+        scalar: Borrowed,
+        info: fact_fields::ScalarView,
+        host: SourceBelowHost,
+    ) -> u32;
+}
+pub(super) fn below_in(
+    query: &mut IntegerQuery<'_>,
+    left: ValueIdentity,
+    right: ValueIdentity,
+    scalar: Scalar,
+    source: ValueIdentity,
+    (lower, upper): (Bits, Bits),
+    order: &[ValueIdentity],
+) -> Option<bool> {
+    let mut expression = MaybeUninit::<IntegerExpression>::uninit();
+    let mut c = SourceBelow {
+        query,
+        scalar,
+        order: order.iter(),
+        expression: expression.as_mut_ptr(),
+    };
+    let result = unsafe {
+        b_source_below(
+            (&mut c as *mut SourceBelow<'_, '_>).cast(),
+            borrow(&left),
+            borrow(&right),
+            borrow(&source),
+            lower,
+            upper,
+            borrow(&scalar),
+            fact_fields::scalar(borrow(&scalar)),
+            SourceBelowHost {
+                seed: source_seed,
+                next: source_next,
+                bounds: below_bounds,
+                computed: below_computed,
+                same_scalar: fact_fields::same_scalar,
+                arithmetic: source_arithmetic,
+                store: source_store,
+            },
+        )
+    };
+    if result == 0 { None } else { Some(result == 2) }
+}

@@ -622,3 +622,30 @@ extern "C" u32 relation_at_most_zero(address context,RelationAffine value,Intern
 
 extern "C" u32 relation_facts(address context,RelationFactsHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.scalar) requires nonzero(host.computed) requires nonzero(host.operand) requires nonzero(host.expression) requires nonzero(host.at_most) requires nonzero(host.quotient) requires nonzero(host.root) requires nonzero(host.interval) requires nonzero(host.retain) requires nonzero(host.compare) requires nonzero(host.finish);
+
+struct RelationSourceWork {u32 present;u32 ready;InternalOperand operand;};
+struct RelationSourcePlanHost {
+ cfn<RelationSourceWork,address> pop;
+ cfn<void,address,InternalOperand,u32> push;
+ cfn<RelationRange,address,address> ensures memory(read) bounds;
+ cfn<u32,address,address> enter;
+ cfn<RelationExpression,address,address> computed;
+ cfn<address,address,address> root;
+ cfn<address,address,address> select;
+ cfn<void,address,address> emit;
+ cfn<void,address> clear;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+struct RelationSourceBelowHost {
+ cfn<void,address,address,u64,u64> seed;
+ cfn<address,address> next;
+ cfn<RelationRange,address,address> ensures memory(read) bounds;
+ cfn<RelationExpression,address,address> computed;
+ cfn<u32,address,address> ensures memory(read) same_scalar;
+ cfn<RelationRange,address,u32,RelationRange,RelationRange,u64,u64> arithmetic;
+ cfn<void,address,address,u64,u64> store;
+};
+extern "C" u32 relation_source_plan(address context,RelationSourcePlanHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.bounds) requires nonzero(host.enter) requires nonzero(host.computed) requires nonzero(host.root) requires nonzero(host.select) requires nonzero(host.emit) requires nonzero(host.clear) requires nonzero(host.compare);
+extern "C" u32 relation_source_below(address context,address left,address right,address source,u64 lower,u64 upper,address scalar,InternalScalar info,RelationSourceBelowHost host) on cpu
+ requires nonzero(host.seed) requires nonzero(host.next) requires nonzero(host.bounds) requires nonzero(host.computed) requires nonzero(host.same_scalar) requires nonzero(host.arithmetic) requires nonzero(host.store);
