@@ -95,11 +95,202 @@ struct CfnSlot {
     ty: SemanticInfo,
     access: u32,
 }
-#[repr(C)]
-struct QueryBool {
-    ready: u32,
-    value: u32,
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum SpecializeNeed {
+    Failed = 0,
+    TypeChild = 1,
+    ValueChild = 2,
+    ExplicitType = 3,
+    ExplicitDataset = 4,
+    FamilyCurrent = 5,
+    ExplicitValue = 7,
+    Instantiate = 11,
 }
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum MatchNeed {
+    Done = 0,
+    TypeChild = 1,
+    ValueChild = 2,
+    FamilyActual = 6,
+    ActualType = 8,
+    ChildType = 9,
+    RecordName = 10,
+}
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum InstanceNeed {
+    Done = 0,
+    CAbi = 12,
+    Interface = 13,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum MatchMode {
+    Type,
+    Value,
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct SpecializeCursor {
+    function: wire::SignatureNode,
+    phase: u32,
+    actual_count: u64,
+    explicit_count: wire::Optional<u64>,
+    explicit_types: u32,
+    first_value: u64,
+    index: u64,
+    position: u64,
+    name: NameBytes,
+    inferred: wire::Optional<u32>,
+    scalar: u32,
+    unit: u32,
+    semantic: SemanticInfo,
+    next: wire::SignatureNode,
+    next_actual: TypeInfo,
+}
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct MatchCursor {
+    mode: MatchMode,
+    phase: u32,
+    source: wire::SignatureNode,
+    function_offset: u64,
+    actual: TypeInfo,
+    name: NameBytes,
+    base: NameBytes,
+    index: u64,
+    position: u64,
+    inferred: wire::Optional<u32>,
+    scalar: u32,
+    unit: u32,
+    known: u32,
+    next: wire::SignatureNode,
+    next_actual: TypeInfo,
+    semantic: SemanticInfo,
+    next_known: u32,
+}
+#[repr(C)]
+struct InstanceCursor {
+    function: wire::SignatureNode,
+    phase: u32,
+    tracking: u32,
+    type_count: u64,
+    value_count: u64,
+    index: u64,
+}
+#[repr(C)]
+struct Host {
+    fail: unsafe extern "C" fn(*mut c_void, Problem, NameBytes, *const c_void, u32, u32),
+    actual: unsafe extern "C" fn(*mut c_void, u64) -> ActualArgument,
+    explicit_argument: unsafe extern "C" fn(*mut c_void, u64) -> SemanticInfo,
+    has_type: unsafe extern "C" fn(*mut c_void) -> u32,
+    same_type: unsafe extern "C" fn(*mut c_void, *const c_void) -> u32,
+    keep_type: unsafe extern "C" fn(*mut c_void, *const c_void),
+    push_type: unsafe extern "C" fn(*mut c_void),
+    push_value: unsafe extern "C" fn(*mut c_void, u32),
+    child: unsafe extern "C" fn(*const c_void, u64) -> TypeInfo,
+    element: unsafe extern "C" fn(*const c_void) -> TypeInfo,
+    view: unsafe extern "C" fn(*const c_void) -> TypeInfo,
+    dataset_syntax: unsafe extern "C" fn(*const c_void) -> SemanticInfo,
+    cfn_slot: unsafe extern "C" fn(*const c_void, u64) -> CfnSlot,
+    record_matches: unsafe extern "C" fn(*const c_void, NameBytes) -> u32,
+}
+fn host() -> Host {
+    Host {
+        fail,
+        actual,
+        explicit_argument,
+        has_type,
+        same_type,
+        keep_type,
+        push_type,
+        push_value,
+        child,
+        element,
+        view,
+        dataset_syntax,
+        cfn_slot,
+        record_matches,
+    }
+}
+#[repr(C)]
+struct InstanceHost {
+    implementation: unsafe extern "C" fn(*mut c_void),
+    external: unsafe extern "C" fn(*mut c_void),
+    plain: unsafe extern "C" fn(*mut c_void),
+    name: unsafe extern "C" fn(*mut c_void),
+    type_argument: unsafe extern "C" fn(*mut c_void, NameBytes),
+    value_argument: unsafe extern "C" fn(*mut c_void, NameBytes, u64),
+    constant: unsafe extern "C" fn(*mut c_void, NameBytes) -> wire::Optional<u32>,
+    nonzero_error: unsafe extern "C" fn(*mut c_void, u64, NameBytes),
+    uses: unsafe extern "C" fn(*mut c_void) -> u32,
+    construct: unsafe extern "C" fn(*mut c_void),
+}
+fn instance_host() -> InstanceHost {
+    InstanceHost {
+        implementation,
+        external,
+        plain,
+        name,
+        type_argument,
+        value_argument,
+        constant,
+        nonzero_error,
+        uses,
+        construct,
+    }
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.generic_instance::specialize_start"]
+    fn specialize_start(
+        function: wire::SignatureNode,
+        actual_count: u64,
+        explicit_count: wire::Optional<u64>,
+    ) -> SpecializeCursor;
+    #[link_name = "bootstrap.generic_instance::specialize_step"]
+    fn specialize_step(
+        state: *mut SpecializeCursor,
+        host: Host,
+        context: *mut c_void,
+    ) -> SpecializeNeed;
+    #[link_name = "bootstrap.generic_instance::match_start"]
+    fn match_start(
+        mode: MatchMode,
+        source: wire::SignatureNode,
+        function_offset: u64,
+        actual: TypeInfo,
+        index: u64,
+        name: NameBytes,
+        inferred: wire::Optional<u32>,
+        known: u32,
+    ) -> MatchCursor;
+    #[link_name = "bootstrap.generic_instance::match_step"]
+    fn match_step(state: *mut MatchCursor, host: Host, context: *mut c_void) -> MatchNeed;
+    #[link_name = "bootstrap.generic_instance::instance_start"]
+    fn instance_start(
+        function: wire::SignatureNode,
+        tracking: u32,
+        type_count: u64,
+        value_count: u64,
+    ) -> InstanceCursor;
+    #[link_name = "bootstrap.generic_instance::instance_step"]
+    fn instance_step(
+        state: *mut InstanceCursor,
+        host: InstanceHost,
+        context: *mut c_void,
+    ) -> InstanceNeed;
+    #[link_name = "bootstrap.generic_instance::is_open"]
+    fn is_open_b(
+        type_storage: wire::StorageView,
+        types: wire::Slice,
+        value_storage: wire::StorageView,
+        values: wire::Slice,
+    ) -> u32;
+}
+
 #[repr(u32)]
 enum Problem {
     GenericArguments,
@@ -155,7 +346,6 @@ struct Frame<'a, 'b> {
     current: Option<Ty>,
     types: Vec<TypeArgument>,
     values: Vec<u32>,
-    result: Option<Instance>,
     error: Option<Diagnostic>,
 }
 unsafe fn frame<'a, 'b>(raw: *mut c_void) -> &'a mut Frame<'a, 'b> {
@@ -293,89 +483,6 @@ unsafe extern "C" fn explicit_argument(raw: *mut c_void, index: u64) -> Semantic
         GenericArgument::Value(_) => SemanticInfo::absent(),
     }
 }
-unsafe extern "C" fn explicit_type(raw: *mut c_void, index: u64, unit: u32) -> u32 {
-    let syntax = unsafe { semantic(explicit_argument(raw, index)) };
-    let f = unsafe { frame(raw) };
-    let c = f.context;
-    match if unit != 0 {
-        Ok(Ty::unit())
-    } else {
-        c.world.ty(syntax, c.source, c.span, c.module, c.imports)
-    } {
-        Ok(value) => {
-            f.current = Some(value);
-            1
-        }
-        Err(error) => {
-            f.error = Some(error);
-            0
-        }
-    }
-}
-unsafe extern "C" fn explicit_dataset(raw: *mut c_void, index: u64) -> u32 {
-    let syntax = unsafe { semantic(explicit_argument(raw, index)) };
-    let f = unsafe { frame(raw) };
-    let c = f.context;
-    match c
-        .world
-        .shape(&syntax.count, c.source, c.span, c.module, c.imports)
-    {
-        Ok(count) => {
-            f.current = Some(Ty::owned_dataset(f.current.take().unwrap().syntax(), count));
-            1
-        }
-        Err(error) => {
-            f.error = Some(error);
-            0
-        }
-    }
-}
-fn family(c: Context<'_>, index: u64, value: &Ty, span: Span) -> Result<bool> {
-    c.world.family_accepts(
-        &c.callee.function.types().at(index as usize).family(),
-        value,
-        &c.callee.source,
-        span,
-        &c.callee.module,
-        &c.callee.imports,
-        &mut BTreeSet::new(),
-    )
-}
-unsafe extern "C" fn family_current(raw: *mut c_void, index: u64) -> QueryBool {
-    let f = unsafe { frame(raw) };
-    match family(
-        f.context,
-        index,
-        f.current.as_ref().unwrap(),
-        f.context.callee.function.span(),
-    ) {
-        Ok(value) => QueryBool {
-            ready: 1,
-            value: u32::from(value),
-        },
-        Err(error) => {
-            f.error = Some(error);
-            QueryBool { ready: 0, value: 0 }
-        }
-    }
-}
-unsafe extern "C" fn family_actual(
-    raw: *mut c_void,
-    index: u64,
-    value: *const c_void,
-) -> QueryBool {
-    let f = unsafe { frame(raw) };
-    match family(f.context, index, unsafe { ty(value) }, f.context.span) {
-        Ok(value) => QueryBool {
-            ready: 1,
-            value: u32::from(value),
-        },
-        Err(error) => {
-            f.error = Some(error);
-            QueryBool { ready: 0, value: 0 }
-        }
-    }
-}
 unsafe extern "C" fn has_type(raw: *mut c_void) -> u32 {
     u32::from(unsafe { &*raw.cast::<Frame<'_, '_>>() }.current.is_some())
 }
@@ -402,37 +509,8 @@ unsafe extern "C" fn push_type(raw: *mut c_void) {
         syntax,
     });
 }
-unsafe extern "C" fn explicit_value(raw: *mut c_void, index: u64) -> wire::Optional<u32> {
-    let f = unsafe { frame(raw) };
-    let c = f.context;
-    let shape = f.explicit.unwrap()[index as usize].shape().unwrap();
-    match c
-        .world
-        .shape(&Some(shape), c.source, c.span, c.module, c.imports)
-    {
-        Ok(value) => optional(value),
-        Err(error) => {
-            f.error = Some(error);
-            optional(None)
-        }
-    }
-}
 unsafe extern "C" fn push_value(raw: *mut c_void, value: u32) {
     unsafe { frame(raw) }.values.push(value);
-}
-unsafe extern "C" fn finish(raw: *mut c_void) -> u32 {
-    let f = unsafe { frame(raw) };
-    let c = f.context;
-    match instantiate(c.world, c.key, c.callee, mem::take(&mut f.types), &f.values) {
-        Ok(value) => {
-            f.result = Some(value);
-            1
-        }
-        Err(error) => {
-            f.error = Some(error);
-            0
-        }
-    }
 }
 unsafe extern "C" fn child(value: *const c_void, index: u64) -> TypeInfo {
     TypeInfo::of(&unsafe { ty(value) }.arguments[index as usize])
@@ -461,106 +539,16 @@ unsafe extern "C" fn cfn_slot(value: *const c_void, index: u64) -> CfnSlot {
         }
     }
 }
-unsafe extern "C" fn type_dataset(
-    raw: *mut c_void,
-    formal: wire::SignatureNode,
-    syntax: SemanticInfo,
-    index: u64,
-    name: NameBytes,
-) -> u32 {
-    let c = unsafe { frame(raw) }.context;
-    match c.world.ty(
-        unsafe { semantic(syntax) },
-        c.source,
-        c.span,
+fn family(c: Context<'_>, index: u64, value: &Ty, span: Span) -> Result<bool> {
+    c.world.family_accepts(
+        &c.callee.function.types().at(index as usize).family(),
+        value,
+        &c.callee.source,
+        span,
         &c.callee.module,
         &c.callee.imports,
-    ) {
-        Ok(value) => unsafe {
-            type_after_dataset_b(host(), raw, formal, TypeInfo::of(&value), index, name)
-        },
-        Err(error) => {
-            unsafe { frame(raw) }.error = Some(error);
-            0
-        }
-    }
-}
-unsafe extern "C" fn type_cfn(
-    raw: *mut c_void,
-    formal: wire::SignatureNode,
-    syntax: SemanticInfo,
-    index: u64,
-    name: NameBytes,
-    unit: u32,
-) -> u32 {
-    let c = unsafe { frame(raw) }.context;
-    match if unit != 0 {
-        Ok(Ty::unit())
-    } else {
-        c.world.ty(
-            unsafe { semantic(syntax) },
-            c.source,
-            c.span,
-            &c.callee.module,
-            &c.callee.imports,
-        )
-    } {
-        Ok(value) => unsafe {
-            type_mentioned_b(host(), raw, formal, TypeInfo::of(&value), index, name)
-        },
-        Err(error) => {
-            unsafe { frame(raw) }.error = Some(error);
-            0
-        }
-    }
-}
-unsafe extern "C" fn value_dataset(
-    raw: *mut c_void,
-    formal: wire::SignatureNode,
-    syntax: SemanticInfo,
-    name: NameBytes,
-    inferred: *mut wire::Optional<u32>,
-) -> u32 {
-    let c = unsafe { frame(raw) }.context;
-    match c.world.ty(
-        unsafe { semantic(syntax) },
-        c.source,
-        c.span,
-        &c.callee.module,
-        &c.callee.imports,
-    ) {
-        Ok(value) => unsafe {
-            value_after_dataset_b(host(), raw, formal, TypeInfo::of(&value), name, inferred)
-        },
-        Err(error) => {
-            unsafe { frame(raw) }.error = Some(error);
-            0
-        }
-    }
-}
-unsafe extern "C" fn value_cfn(
-    raw: *mut c_void,
-    formal: wire::SignatureNode,
-    syntax: SemanticInfo,
-    name: NameBytes,
-    inferred: *mut wire::Optional<u32>,
-) -> u32 {
-    let c = unsafe { frame(raw) }.context;
-    match c.world.ty(
-        unsafe { semantic(syntax) },
-        c.source,
-        c.span,
-        &c.callee.module,
-        &c.callee.imports,
-    ) {
-        Ok(value) => unsafe {
-            infer_value_b(host(), raw, formal, TypeInfo::of(&value), name, inferred)
-        },
-        Err(error) => {
-            unsafe { frame(raw) }.error = Some(error);
-            0
-        }
-    }
+        &mut BTreeSet::new(),
+    )
 }
 fn record_base(c: Context<'_>, formal: wire::SignatureNode, value: bool) -> Result<String> {
     let source = c.callee.function.child::<wire::TypeNode>(formal.offset);
@@ -578,278 +566,10 @@ fn record_base(c: Context<'_>, formal: wire::SignatureNode, value: bool) -> Resu
             },
         })
 }
-unsafe extern "C" fn record_type(
-    raw: *mut c_void,
-    formal: wire::SignatureNode,
-    actual: TypeInfo,
-    index: u64,
-    name: NameBytes,
-) -> u32 {
-    let c = unsafe { frame(raw) }.context;
-    match record_base(c, formal, false) {
-        Ok(base) => unsafe {
-            type_record_b(
-                host(),
-                raw,
-                formal,
-                actual,
-                index,
-                name,
-                NameBytes::new(&base),
-            )
-        },
-        Err(error) => {
-            unsafe { frame(raw) }.error = Some(error);
-            0
-        }
-    }
-}
-unsafe extern "C" fn record_value(
-    raw: *mut c_void,
-    formal: wire::SignatureNode,
-    actual: TypeInfo,
-    name: NameBytes,
-    inferred: *mut wire::Optional<u32>,
-) -> u32 {
-    let c = unsafe { frame(raw) }.context;
-    match record_base(c, formal, true) {
-        Ok(base) => unsafe {
-            value_record_b(
-                host(),
-                raw,
-                formal,
-                actual,
-                name,
-                NameBytes::new(&base),
-                inferred,
-            )
-        },
-        Err(error) => {
-            unsafe { frame(raw) }.error = Some(error);
-            0
-        }
-    }
-}
 unsafe extern "C" fn record_matches(value: *const c_void, base: NameBytes) -> u32 {
     u32::from(record_key_matches(unsafe { text(base) }, unsafe {
         ty(value)
     }))
-}
-
-#[repr(C)]
-struct Host {
-    fail: unsafe extern "C" fn(*mut c_void, Problem, NameBytes, *const c_void, u32, u32),
-    actual: unsafe extern "C" fn(*mut c_void, u64) -> ActualArgument,
-    explicit_argument: unsafe extern "C" fn(*mut c_void, u64) -> SemanticInfo,
-    explicit_type: unsafe extern "C" fn(*mut c_void, u64, u32) -> u32,
-    explicit_dataset: unsafe extern "C" fn(*mut c_void, u64) -> u32,
-    family_current: unsafe extern "C" fn(*mut c_void, u64) -> QueryBool,
-    family_actual: unsafe extern "C" fn(*mut c_void, u64, *const c_void) -> QueryBool,
-    has_type: unsafe extern "C" fn(*mut c_void) -> u32,
-    same_type: unsafe extern "C" fn(*mut c_void, *const c_void) -> u32,
-    keep_type: unsafe extern "C" fn(*mut c_void, *const c_void),
-    push_type: unsafe extern "C" fn(*mut c_void),
-    explicit_value: unsafe extern "C" fn(*mut c_void, u64) -> wire::Optional<u32>,
-    push_value: unsafe extern "C" fn(*mut c_void, u32),
-    finish: unsafe extern "C" fn(*mut c_void) -> u32,
-    child: unsafe extern "C" fn(*const c_void, u64) -> TypeInfo,
-    element: unsafe extern "C" fn(*const c_void) -> TypeInfo,
-    view: unsafe extern "C" fn(*const c_void) -> TypeInfo,
-    dataset_syntax: unsafe extern "C" fn(*const c_void) -> SemanticInfo,
-    cfn_slot: unsafe extern "C" fn(*const c_void, u64) -> CfnSlot,
-    type_dataset:
-        unsafe extern "C" fn(*mut c_void, wire::SignatureNode, SemanticInfo, u64, NameBytes) -> u32,
-    type_cfn: unsafe extern "C" fn(
-        *mut c_void,
-        wire::SignatureNode,
-        SemanticInfo,
-        u64,
-        NameBytes,
-        u32,
-    ) -> u32,
-    value_dataset: unsafe extern "C" fn(
-        *mut c_void,
-        wire::SignatureNode,
-        SemanticInfo,
-        NameBytes,
-        *mut wire::Optional<u32>,
-    ) -> u32,
-    value_cfn: unsafe extern "C" fn(
-        *mut c_void,
-        wire::SignatureNode,
-        SemanticInfo,
-        NameBytes,
-        *mut wire::Optional<u32>,
-    ) -> u32,
-    record_type:
-        unsafe extern "C" fn(*mut c_void, wire::SignatureNode, TypeInfo, u64, NameBytes) -> u32,
-    record_value: unsafe extern "C" fn(
-        *mut c_void,
-        wire::SignatureNode,
-        TypeInfo,
-        NameBytes,
-        *mut wire::Optional<u32>,
-    ) -> u32,
-    record_matches: unsafe extern "C" fn(*const c_void, NameBytes) -> u32,
-}
-fn host() -> Host {
-    Host {
-        fail,
-        actual,
-        explicit_argument,
-        explicit_type,
-        explicit_dataset,
-        family_current,
-        family_actual,
-        has_type,
-        same_type,
-        keep_type,
-        push_type,
-        explicit_value,
-        push_value,
-        finish,
-        child,
-        element,
-        view,
-        dataset_syntax,
-        cfn_slot,
-        type_dataset,
-        type_cfn,
-        value_dataset,
-        value_cfn,
-        record_type,
-        record_value,
-        record_matches,
-    }
-}
-unsafe extern "C" {
-    #[link_name = "bootstrap.generic_instance::specialize"]
-    fn specialize_b(
-        function: wire::SignatureNode,
-        actual_count: u64,
-        explicit_count: wire::Optional<u64>,
-        host: Host,
-        context: *mut c_void,
-    ) -> u32;
-    #[link_name = "bootstrap.generic_instance::type_mentioned"]
-    fn type_mentioned_b(
-        host: Host,
-        context: *mut c_void,
-        formal: wire::SignatureNode,
-        actual: TypeInfo,
-        index: u64,
-        name: NameBytes,
-    ) -> u32;
-    #[link_name = "bootstrap.generic_instance::type_after_dataset"]
-    fn type_after_dataset_b(
-        host: Host,
-        context: *mut c_void,
-        formal: wire::SignatureNode,
-        actual: TypeInfo,
-        index: u64,
-        name: NameBytes,
-    ) -> u32;
-    #[link_name = "bootstrap.generic_instance::type_record"]
-    fn type_record_b(
-        host: Host,
-        context: *mut c_void,
-        formal: wire::SignatureNode,
-        actual: TypeInfo,
-        index: u64,
-        name: NameBytes,
-        base: NameBytes,
-    ) -> u32;
-    #[link_name = "bootstrap.generic_instance::infer_value"]
-    fn infer_value_b(
-        host: Host,
-        context: *mut c_void,
-        formal: wire::SignatureNode,
-        actual: TypeInfo,
-        name: NameBytes,
-        inferred: *mut wire::Optional<u32>,
-    ) -> u32;
-    #[link_name = "bootstrap.generic_instance::value_after_dataset"]
-    fn value_after_dataset_b(
-        host: Host,
-        context: *mut c_void,
-        formal: wire::SignatureNode,
-        actual: TypeInfo,
-        name: NameBytes,
-        inferred: *mut wire::Optional<u32>,
-    ) -> u32;
-    #[link_name = "bootstrap.generic_instance::value_record"]
-    fn value_record_b(
-        host: Host,
-        context: *mut c_void,
-        formal: wire::SignatureNode,
-        actual: TypeInfo,
-        name: NameBytes,
-        base: NameBytes,
-        inferred: *mut wire::Optional<u32>,
-    ) -> u32;
-    #[link_name = "bootstrap.generic_instance::instantiate"]
-    fn instantiate_b(
-        function: wire::SignatureNode,
-        tracking: u32,
-        type_count: u64,
-        value_count: u64,
-        host: InstanceHost,
-        context: *mut c_void,
-    ) -> u32;
-    #[link_name = "bootstrap.generic_instance::is_open"]
-    fn is_open_b(
-        type_storage: wire::StorageView,
-        types: wire::Slice,
-        value_storage: wire::StorageView,
-        values: wire::Slice,
-    ) -> u32;
-}
-
-pub(crate) fn specialize(
-    world: &World,
-    key: &str,
-    actuals: &[Actual<'_>],
-    explicit: Option<&[GenericArgument]>,
-    (source, module, imports): (&Source, &str, &[String]),
-    span: Span,
-) -> Result<Instance> {
-    let callee = &world.functions[key];
-    let mut f = Frame {
-        context: Context {
-            world,
-            key,
-            callee,
-            source,
-            module,
-            imports,
-            span,
-        },
-        actuals,
-        explicit,
-        current: None,
-        types: Vec::new(),
-        values: Vec::new(),
-        result: None,
-        error: None,
-    };
-    let count = wire::Optional {
-        present: u32::from(explicit.is_some()),
-        value: explicit.map_or(0, |v| v.len() as u64),
-    };
-    let success = unsafe {
-        specialize_b(
-            callee.function.signature_node(),
-            actuals.len() as u64,
-            count,
-            host(),
-            (&mut f as *mut Frame<'_, '_>).cast(),
-        )
-    };
-    if success != 0 {
-        Ok(f.result.unwrap())
-    } else {
-        Err(f.error.unwrap())
-    }
 }
 
 struct InstanceFrame<'a> {
@@ -857,7 +577,7 @@ struct InstanceFrame<'a> {
     base: &'a str,
     definition: &'a Arc<Definition>,
     arguments: std::vec::IntoIter<TypeArgument>,
-    values: &'a [u32],
+    values: Values<'a>,
     name: Option<String>,
     bindings: Bindings,
     result: Option<Instance>,
@@ -897,7 +617,7 @@ unsafe extern "C" fn name(raw: *mut c_void) {
     f.name = Some(key(
         f.base,
         f.arguments.as_slice().iter().map(|a| a.name.as_str()),
-        f.values,
+        f.values.as_slice(),
     ));
 }
 unsafe extern "C" fn type_argument(raw: *mut c_void, name: NameBytes) {
@@ -909,9 +629,10 @@ unsafe extern "C" fn type_argument(raw: *mut c_void, name: NameBytes) {
 }
 unsafe extern "C" fn value_argument(raw: *mut c_void, name: NameBytes, index: u64) {
     let f = unsafe { instance_frame(raw) };
-    f.bindings
-        .values
-        .insert(unsafe { text(name) }.into(), f.values[index as usize]);
+    f.bindings.values.insert(
+        unsafe { text(name) }.into(),
+        f.values.as_slice()[index as usize],
+    );
 }
 unsafe extern "C" fn constant(raw: *mut c_void, name: NameBytes) -> wire::Optional<u32> {
     let f = unsafe { &*raw.cast::<InstanceFrame<'_>>() };
@@ -948,43 +669,430 @@ unsafe extern "C" fn construct(raw: *mut c_void) {
         bindings: Arc::new(mem::take(&mut f.bindings)),
     });
 }
-unsafe extern "C" fn c_abi(raw: *mut c_void) -> u32 {
-    let f = unsafe { instance_frame(raw) };
-    match crate::check::external::check_declaration(f.world, f.result.as_ref().unwrap()) {
-        Ok(()) => 1,
-        Err(error) => {
-            f.error = Some(error);
-            0
+
+struct Matching {
+    cursor: MatchCursor,
+    // Dataset and cfn-slot queries are distinct actual values. A child cannot
+    // replace an actual Ty still borrowed by the parent's remaining slots.
+    actual: Option<Box<Ty>>,
+    child: Option<Box<Ty>>,
+    base: Option<String>,
+}
+pub(super) struct Specialization<'a, 'b> {
+    data: Box<Frame<'a, 'b>>,
+    cursor: SpecializeCursor,
+    matches: Vec<Matching>,
+}
+pub(super) enum SpecializationNeed {
+    ExplicitType,
+    ExplicitDataset,
+    FamilyCurrent,
+    FamilyActual,
+    ExplicitValue,
+    ActualType,
+    ChildType,
+    RecordName,
+}
+pub(super) enum SpecializationProgress<'a, 'b> {
+    Need(Specialization<'a, 'b>, SpecializationNeed),
+    Instance(Instantiation<'a>),
+}
+impl<'a, 'b> Specialization<'a, 'b> {
+    fn new(
+        world: &'a World,
+        key: &'a str,
+        actuals: &'a [Actual<'b>],
+        explicit: Option<&'a [GenericArgument]>,
+        (source, module, imports): (&'a Source, &'a str, &'a [String]),
+        span: Span,
+    ) -> Self {
+        let callee = &world.functions[key];
+        let cursor = unsafe {
+            specialize_start(
+                callee.function.signature_node(),
+                actuals.len() as u64,
+                wire::Optional {
+                    present: u32::from(explicit.is_some()),
+                    value: explicit.map_or(0, |v| v.len() as u64),
+                },
+            )
+        };
+        Self {
+            data: Box::new(Frame {
+                context: Context {
+                    world,
+                    key,
+                    callee,
+                    source,
+                    module,
+                    imports,
+                    span,
+                },
+                actuals,
+                explicit,
+                current: None,
+                types: Vec::new(),
+                values: Vec::new(),
+                error: None,
+            }),
+            cursor,
+            matches: Vec::new(),
+        }
+    }
+    fn push_match(
+        &mut self,
+        mode: MatchMode,
+        source: wire::SignatureNode,
+        function_offset: u64,
+        actual: TypeInfo,
+        index: u64,
+        name: NameBytes,
+        inferred: wire::Optional<u32>,
+        known: u32,
+    ) {
+        let cursor = unsafe {
+            match_start(
+                mode,
+                source,
+                function_offset,
+                actual,
+                index,
+                name,
+                inferred,
+                known,
+            )
+        };
+        self.matches.push(Matching {
+            cursor,
+            actual: None,
+            child: None,
+            base: None,
+        });
+    }
+    pub(super) fn advance(mut self) -> Result<SpecializationProgress<'a, 'b>> {
+        loop {
+            if let Some(active) = self.matches.last_mut() {
+                let need = unsafe {
+                    match_step(
+                        &mut active.cursor,
+                        host(),
+                        (&mut *self.data as *mut Frame<'_, '_>).cast(),
+                    )
+                };
+                if let Some(error) = self.data.error.take() {
+                    return Err(error);
+                }
+                match need {
+                    MatchNeed::Done => {
+                        let finished = self.matches.pop().unwrap();
+                        if finished.cursor.mode == MatchMode::Value {
+                            if let Some(parent) = self.matches.last_mut() {
+                                parent.cursor.inferred = finished.cursor.inferred;
+                            } else {
+                                self.cursor.inferred = finished.cursor.inferred;
+                            }
+                        }
+                    }
+                    MatchNeed::TypeChild | MatchNeed::ValueChild => {
+                        let c = self.matches.last().unwrap().cursor;
+                        let mode = match need {
+                            MatchNeed::TypeChild => MatchMode::Type,
+                            _ => MatchMode::Value,
+                        };
+                        self.push_match(
+                            mode,
+                            c.next,
+                            c.function_offset,
+                            c.next_actual,
+                            c.index,
+                            c.name,
+                            c.inferred,
+                            c.next_known,
+                        );
+                    }
+                    MatchNeed::FamilyActual => {
+                        return Ok(SpecializationProgress::Need(
+                            self,
+                            SpecializationNeed::FamilyActual,
+                        ));
+                    }
+                    MatchNeed::ActualType => {
+                        return Ok(SpecializationProgress::Need(
+                            self,
+                            SpecializationNeed::ActualType,
+                        ));
+                    }
+                    MatchNeed::ChildType => {
+                        return Ok(SpecializationProgress::Need(
+                            self,
+                            SpecializationNeed::ChildType,
+                        ));
+                    }
+                    MatchNeed::RecordName => {
+                        return Ok(SpecializationProgress::Need(
+                            self,
+                            SpecializationNeed::RecordName,
+                        ));
+                    }
+                }
+                continue;
+            }
+            let need = unsafe {
+                specialize_step(
+                    &mut self.cursor,
+                    host(),
+                    (&mut *self.data as *mut Frame<'_, '_>).cast(),
+                )
+            };
+            match need {
+                SpecializeNeed::Failed => return Err(self.data.error.take().unwrap()),
+                SpecializeNeed::TypeChild | SpecializeNeed::ValueChild => {
+                    let c = self.cursor;
+                    let mode = match need {
+                        SpecializeNeed::TypeChild => MatchMode::Type,
+                        _ => MatchMode::Value,
+                    };
+                    self.push_match(
+                        mode,
+                        c.next,
+                        c.function.offset,
+                        c.next_actual,
+                        c.index,
+                        c.name,
+                        c.inferred,
+                        u32::from(mode == MatchMode::Type),
+                    );
+                }
+                SpecializeNeed::ExplicitType => {
+                    return Ok(SpecializationProgress::Need(
+                        self,
+                        SpecializationNeed::ExplicitType,
+                    ));
+                }
+                SpecializeNeed::ExplicitDataset => {
+                    return Ok(SpecializationProgress::Need(
+                        self,
+                        SpecializationNeed::ExplicitDataset,
+                    ));
+                }
+                SpecializeNeed::FamilyCurrent => {
+                    return Ok(SpecializationProgress::Need(
+                        self,
+                        SpecializationNeed::FamilyCurrent,
+                    ));
+                }
+                SpecializeNeed::ExplicitValue => {
+                    return Ok(SpecializationProgress::Need(
+                        self,
+                        SpecializationNeed::ExplicitValue,
+                    ));
+                }
+                SpecializeNeed::Instantiate => {
+                    let c = self.data.context;
+                    let next = Instantiation::new(
+                        c.world,
+                        c.key,
+                        c.callee,
+                        mem::take(&mut self.data.types),
+                        Values::Owned(mem::take(&mut self.data.values)),
+                    );
+                    return Ok(SpecializationProgress::Instance(next));
+                }
+            }
+        }
+    }
+    pub(super) fn fulfill(mut self, need: SpecializationNeed) -> Result<Self> {
+        let c = self.data.context;
+        match need {
+            SpecializationNeed::ExplicitType => {
+                let input = unsafe { semantic(self.cursor.semantic) };
+                self.data.current = Some(if self.cursor.unit != 0 {
+                    Ty::unit()
+                } else {
+                    c.world.ty(input, c.source, c.span, c.module, c.imports)?
+                });
+            }
+            SpecializationNeed::ExplicitDataset => {
+                let input = unsafe { semantic(self.cursor.semantic) };
+                let count = c
+                    .world
+                    .shape(&input.count, c.source, c.span, c.module, c.imports)?;
+                self.data.current = Some(Ty::owned_dataset(
+                    self.data.current.take().unwrap().syntax(),
+                    count,
+                ));
+            }
+            SpecializationNeed::FamilyCurrent => {
+                self.cursor.scalar = u32::from(family(
+                    c,
+                    self.cursor.index,
+                    self.data.current.as_ref().unwrap(),
+                    c.callee.function.span(),
+                )?);
+            }
+            SpecializationNeed::ExplicitValue => {
+                let input = self.data.explicit.unwrap()
+                    [(self.cursor.first_value + self.cursor.index) as usize]
+                    .shape()
+                    .unwrap();
+                self.cursor.scalar = c
+                    .world
+                    .shape(&Some(input), c.source, c.span, c.module, c.imports)?
+                    .unwrap();
+            }
+            SpecializationNeed::FamilyActual => {
+                let m = self.matches.last_mut().unwrap();
+                m.cursor.scalar = u32::from(family(
+                    c,
+                    m.cursor.index,
+                    unsafe { ty(m.cursor.actual.value) },
+                    c.span,
+                )?);
+            }
+            SpecializationNeed::ActualType | SpecializationNeed::ChildType => {
+                let m = self.matches.last_mut().unwrap();
+                let input = unsafe { semantic(m.cursor.semantic) };
+                let actual = Box::new(if m.cursor.unit != 0 {
+                    Ty::unit()
+                } else {
+                    c.world
+                        .ty(input, c.source, c.span, &c.callee.module, &c.callee.imports)?
+                });
+                let description = TypeInfo::of(&actual);
+                match need {
+                    SpecializationNeed::ActualType => {
+                        m.actual = Some(actual);
+                        m.cursor.actual = description;
+                    }
+                    _ => {
+                        m.child = Some(actual);
+                        m.cursor.next_actual = description;
+                    }
+                }
+            }
+            SpecializationNeed::RecordName => {
+                let m = self.matches.last_mut().unwrap();
+                m.base = Some(record_base(
+                    c,
+                    m.cursor.source,
+                    m.cursor.mode == MatchMode::Value,
+                )?);
+                m.cursor.base = NameBytes::new(m.base.as_ref().unwrap());
+            }
+        }
+        Ok(self)
+    }
+}
+pub(crate) fn specialize(
+    world: &World,
+    key: &str,
+    actuals: &[Actual<'_>],
+    explicit: Option<&[GenericArgument]>,
+    context: (&Source, &str, &[String]),
+    span: Span,
+) -> Result<Instance> {
+    let mut query = Specialization::new(world, key, actuals, explicit, context, span);
+    loop {
+        match query.advance()? {
+            SpecializationProgress::Need(pending, need) => query = pending.fulfill(need)?,
+            SpecializationProgress::Instance(instance) => return instance.drive(),
         }
     }
 }
-unsafe extern "C" fn interface(raw: *mut c_void) -> u32 {
-    let f = unsafe { instance_frame(raw) };
-    match f
-        .world
-        .check_interface_types(f.definition, &f.result.as_ref().unwrap().bindings)
-    {
-        Ok(()) => 1,
-        Err(error) => {
-            f.error = Some(error);
-            0
+enum Values<'a> {
+    Borrowed(&'a [u32]),
+    Owned(Vec<u32>),
+}
+impl Values<'_> {
+    fn as_slice(&self) -> &[u32] {
+        match self {
+            Self::Borrowed(v) => v,
+            Self::Owned(v) => v,
         }
     }
 }
-#[repr(C)]
-struct InstanceHost {
-    implementation: unsafe extern "C" fn(*mut c_void),
-    external: unsafe extern "C" fn(*mut c_void),
-    plain: unsafe extern "C" fn(*mut c_void),
-    name: unsafe extern "C" fn(*mut c_void),
-    type_argument: unsafe extern "C" fn(*mut c_void, NameBytes),
-    value_argument: unsafe extern "C" fn(*mut c_void, NameBytes, u64),
-    constant: unsafe extern "C" fn(*mut c_void, NameBytes) -> wire::Optional<u32>,
-    nonzero_error: unsafe extern "C" fn(*mut c_void, u64, NameBytes),
-    uses: unsafe extern "C" fn(*mut c_void) -> u32,
-    construct: unsafe extern "C" fn(*mut c_void),
-    c_abi: unsafe extern "C" fn(*mut c_void) -> u32,
-    interface: unsafe extern "C" fn(*mut c_void) -> u32,
+pub(super) struct Instantiation<'a> {
+    data: Box<InstanceFrame<'a>>,
+    cursor: InstanceCursor,
+}
+pub(super) enum InstantiationNeed {
+    CAbi,
+    Interface,
+}
+pub(super) enum InstantiationProgress<'a> {
+    Complete(Instance),
+    Need(Instantiation<'a>, InstantiationNeed),
+}
+impl<'a> Instantiation<'a> {
+    fn new(
+        world: &'a World,
+        base: &'a str,
+        definition: &'a Arc<Definition>,
+        arguments: Vec<TypeArgument>,
+        values: Values<'a>,
+    ) -> Self {
+        let cursor = unsafe {
+            instance_start(
+                definition.function.signature_node(),
+                u32::from(world.build_declarations.is_some()),
+                arguments.len() as u64,
+                values.as_slice().len() as u64,
+            )
+        };
+        Self {
+            cursor,
+            data: Box::new(InstanceFrame {
+                world,
+                base,
+                definition,
+                arguments: arguments.into_iter(),
+                values,
+                name: None,
+                bindings: Bindings::default(),
+                result: None,
+                error: None,
+            }),
+        }
+    }
+    pub(super) fn advance(mut self) -> Result<InstantiationProgress<'a>> {
+        let need = unsafe {
+            instance_step(
+                &mut self.cursor,
+                instance_host(),
+                (&mut *self.data as *mut InstanceFrame<'_>).cast(),
+            )
+        };
+        if let Some(error) = self.data.error.take() {
+            return Err(error);
+        }
+        Ok(match need {
+            InstanceNeed::Done => InstantiationProgress::Complete(self.data.result.take().unwrap()),
+            InstanceNeed::CAbi => InstantiationProgress::Need(self, InstantiationNeed::CAbi),
+            InstanceNeed::Interface => {
+                InstantiationProgress::Need(self, InstantiationNeed::Interface)
+            }
+        })
+    }
+    pub(super) fn fulfill(self, need: InstantiationNeed) -> Result<Self> {
+        let f = &self.data;
+        match need {
+            InstantiationNeed::CAbi => {
+                crate::check::external::check_declaration(f.world, f.result.as_ref().unwrap())?
+            }
+            InstantiationNeed::Interface => f
+                .world
+                .check_interface_types(f.definition, &f.result.as_ref().unwrap().bindings)?,
+        }
+        Ok(self)
+    }
+    fn drive(mut self) -> Result<Instance> {
+        loop {
+            match self.advance()? {
+                InstantiationProgress::Complete(instance) => return Ok(instance),
+                InstantiationProgress::Need(pending, need) => self = pending.fulfill(need)?,
+            }
+        }
+    }
 }
 pub(crate) fn instantiate(
     world: &World,
@@ -993,48 +1101,9 @@ pub(crate) fn instantiate(
     arguments: Vec<TypeArgument>,
     values: &[u32],
 ) -> Result<Instance> {
-    let type_count = arguments.len() as u64;
-    let mut f = InstanceFrame {
-        world,
-        base,
-        definition,
-        arguments: arguments.into_iter(),
-        values,
-        name: None,
-        bindings: Bindings::default(),
-        result: None,
-        error: None,
-    };
-    let host = InstanceHost {
-        implementation,
-        external,
-        plain,
-        name,
-        type_argument,
-        value_argument,
-        constant,
-        nonzero_error,
-        uses,
-        construct,
-        c_abi,
-        interface,
-    };
-    let success = unsafe {
-        instantiate_b(
-            definition.function.signature_node(),
-            u32::from(world.build_declarations.is_some()),
-            type_count,
-            values.len() as u64,
-            host,
-            (&mut f as *mut InstanceFrame<'_>).cast(),
-        )
-    };
-    if success != 0 {
-        Ok(f.result.unwrap())
-    } else {
-        Err(f.error.unwrap())
-    }
+    Instantiation::new(world, base, definition, arguments, Values::Borrowed(values)).drive()
 }
+
 pub(crate) fn is_open(
     types: &syntax::List<wire::TypeParameterNode>,
     values: &syntax::List<wire::ValueParameterNode>,
