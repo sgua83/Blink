@@ -552,3 +552,73 @@ extern "C" void contract_emit(address context,usize root,ContractEmitHost host) 
 
 extern "C" void contract_union(address context,ContractUnionHost host) on cpu
  requires nonzero(host.case) requires nonzero(host.import) requires nonzero(host.operation) requires nonzero(host.emit);
+
+struct RelationAffine {u32 present;address source;IntegerWide scale;IntegerWide offset;};
+struct RelationRange {u32 present;IntegerWide lower;IntegerWide upper;};
+struct RelationExpression {u32 present;u32 operation;address scalar;InternalOperand left;InternalOperand right;address definition;};
+struct RelationIntervalHost {cfn<RelationRange,address,address> ensures memory(read) bounds;};
+struct RelationOperandHost {
+ cfn<RelationAffine,address,address> cache;
+ cfn<address,address,address> root;
+ cfn<u32,address,address> enter;
+ cfn<RelationRange,address,address> ensures memory(read) bounds;
+ cfn<void,address,address> begin;
+ cfn<FactView,address> next;
+ cfn<RelationExpression,address> ensures memory(read) computed;
+ cfn<RelationAffine,address,address> expression;
+ cfn<void,address> end;
+ cfn<void,address,address> leave;
+ cfn<void,address,address,RelationAffine> remember;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+struct RelationExpressionHost {
+ cfn<RelationAffine,address,u32> operand;
+ cfn<RelationRange,address,RelationAffine> interval;
+ cfn<u32,address,address> ensures memory(read) same_scalar;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+struct RelationRetainHost {
+ cfn<RelationRange,address> ensures memory(read) bounds;
+ cfn<void,address,u32,u64> emit;
+};
+struct RelationQuotientHost {
+ cfn<RelationRange,address,address> ensures memory(read) bounds;
+ cfn<RelationRange,address,InternalOperand> ensures memory(read) operand_bounds;
+ cfn<u32,address,address,IntegerWide,IntegerWide> retain;
+};
+struct RelationAtMostHost {cfn<u32,address,address,IntegerWide,IntegerWide> retain;};
+struct RelationFactsHost {
+ cfn<FactView,address> next;
+ cfn<InternalScalar,address> ensures memory(read) scalar;
+ cfn<RelationExpression,address> ensures memory(read) computed;
+ cfn<RelationAffine,address,u32,InternalOperand,address> operand;
+ cfn<RelationAffine,address,address,address> expression;
+ cfn<u32,address,address,RelationAffine> at_most;
+ cfn<u32,address,address,address,InternalOperand,InternalOperand> quotient;
+ cfn<address,address,address> root;
+ cfn<RelationRange,address,RelationAffine,address> interval;
+ cfn<u32,address,address,address,IntegerWide,IntegerWide> retain;
+ cfn<i32,address,address> ensures memory(read) compare;
+ cfn<void,address> finish;
+};
+
+extern "C" RelationRange relation_interval(address context,RelationAffine value,RelationIntervalHost host) on cpu
+ requires nonzero(host.bounds);
+
+extern "C" RelationAffine relation_operand(address context,InternalOperand operand,InternalScalar info,RelationOperandHost host) on cpu
+ requires nonzero(host.cache) requires nonzero(host.root) requires nonzero(host.enter) requires nonzero(host.bounds) requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.computed) requires nonzero(host.expression) requires nonzero(host.end) requires nonzero(host.leave) requires nonzero(host.remember) requires nonzero(host.compare);
+
+extern "C" RelationAffine relation_expression(address context,RelationExpression expression,address scalar,InternalScalar info,RelationExpressionHost host) on cpu
+ requires nonzero(host.operand) requires nonzero(host.interval) requires nonzero(host.same_scalar) requires nonzero(host.compare);
+
+extern "C" u32 relation_retain(address context,IntegerWide lower,IntegerWide upper,InternalScalar info,RelationRetainHost host) on cpu
+ requires nonzero(host.bounds) requires nonzero(host.emit);
+
+extern "C" u32 relation_quotient(address context,address id,InternalOperand numerator,InternalOperand divisor,InternalScalar info,RelationQuotientHost host) on cpu
+ requires nonzero(host.bounds) requires nonzero(host.operand_bounds) requires nonzero(host.retain);
+
+extern "C" u32 relation_at_most_zero(address context,RelationAffine value,InternalScalar info,RelationAtMostHost host) on cpu
+ requires nonzero(host.retain);
+
+extern "C" u32 relation_facts(address context,RelationFactsHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.scalar) requires nonzero(host.computed) requires nonzero(host.operand) requires nonzero(host.expression) requires nonzero(host.at_most) requires nonzero(host.quotient) requires nonzero(host.root) requires nonzero(host.interval) requires nonzero(host.retain) requires nonzero(host.compare) requires nonzero(host.finish);

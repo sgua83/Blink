@@ -768,10 +768,7 @@ extern "C" void canonical_normalize(address context,CanonicalNormalHost host) on
    InternalScalar scalar=host.scalar(bound.scalar);
    FactView zero=bound;zero.kind=FactKind::Zero;
    if(scalar.kind<2&&host.contains(context,zero)!=0){continue;}
-   if(scalar.kind==0){
-    if(side==0&&bound.value==1u64){bound.kind=FactKind::NonZero;}
-    if(side==1&&bound.value==0u64){bound.kind=FactKind::Zero;}
-   }
+   bound=fact_numeric_alias(bound,scalar.kind);
    host.emit(context,bound);
   }
   side+=1;
@@ -958,12 +955,7 @@ InternalOperand contract_value(address identity) on cpu {return InternalOperand(
 extern "C" usize contract_fact(address context,FactView input,ContractSemanticHost host) on cpu
  requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain) {
  FactView fact=input;
- if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){
-  if(host.scalar(fact.scalar).kind==0){
-   if(fact.kind==FactKind::Minimum&&fact.value==1u64){fact.kind=FactKind::NonZero;}
-   else if(fact.kind==FactKind::Maximum&&fact.value==0u64){fact.kind=FactKind::Zero;}
-  }
- }
+ if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){fact=fact_numeric_alias(fact,host.scalar(fact.scalar).kind);}
  if(fact.kind==FactKind::Minimum){return contract_minimum(context,fact.first,fact.scalar,fact.value,host);}
  if(fact.kind==FactKind::Maximum){return contract_cut(context,fact.first,fact.scalar,fact.value,host);}
  if(fact.kind==FactKind::Zero||fact.kind==FactKind::NonZero){
@@ -1092,3 +1084,176 @@ extern "C" void contract_union(address context,ContractUnionHost host) on cpu
  u32 truth=0;while(truth<2){usize a=host.import(context,host.case(context,0,truth));usize b=host.import(context,host.case(context,1,truth));host.emit(context,truth,host.operation(context,a,b,truth));truth+=1;}
 }
 
+bool relation_wide_equal(IntegerWide a,IntegerWide b) on cpu {return a.low==b.low&&a.high==b.high;}
+bool relation_wide_nonzero(IntegerWide a) on cpu {return a.low!=0u64||a.high!=0u64;}
+IntegerWide relation_zero() on cpu {return IntegerWide(0u64,0u64);}
+IntegerWide relation_one() on cpu {return IntegerWide(1u64,0u64);}
+IntegerWide relation_minus_one() on cpu {return IntegerWide(18446744073709551615u64,18446744073709551615u64);}
+IntegerWide relation_number(InternalScalar scalar,u64 bits) on cpu {
+ u64 low=bits&scalar.mask;u64 high=0u64;
+ if(scalar.kind==1&&(low&scalar.bias)!=0u64){low|=~scalar.mask;high=18446744073709551615u64;}
+ return IntegerWide(low,high);
+}
+RelationRange relation_scalar_bounds(InternalScalar scalar) on cpu {return RelationRange(1,relation_number(scalar,scalar.bias),relation_number(scalar,scalar.mask^scalar.bias));}
+RelationAffine relation_none() on cpu {return RelationAffine(0,address(),relation_zero(),relation_zero());}
+RelationAffine relation_constant(IntegerWide value) on cpu {return RelationAffine(1,address(),relation_zero(),value);}
+RelationAffine relation_scaled(RelationAffine input,IntegerWide factor) on cpu {
+ if(input.present==0){return relation_none();}IntegerWideChecked scale=integer_wide_checked_multiply(input.scale,factor);if(scale.present==0){return relation_none();}
+ IntegerWideChecked offset=integer_wide_checked_multiply(input.offset,factor);if(offset.present==0){return relation_none();}
+ return RelationAffine(1,relation_wide_nonzero(scale.value) ? input.source : address(),scale.value,offset.value);
+}
+RelationAffine relation_plus(RelationAffine a,RelationAffine b,cfn<i32,address,address> ensures memory(read) compare) on cpu requires nonzero(compare) {
+ if(a.present==0||b.present==0){return relation_none();}
+ if(a.source!=address()&&b.source!=address()&&compare(a.source,b.source)!=0){return relation_none();}
+ address source=a.source!=address() ? a.source : b.source;
+ IntegerWideChecked scale=integer_wide_checked_add(a.scale,b.scale);if(scale.present==0){return relation_none();}
+ IntegerWideChecked offset=integer_wide_checked_add(a.offset,b.offset);if(offset.present==0){return relation_none();}
+ return RelationAffine(1,relation_wide_nonzero(scale.value) ? source : address(),scale.value,offset.value);
+}
+bool relation_affine_equal(RelationAffine a,RelationAffine b,cfn<i32,address,address> ensures memory(read) compare) on cpu requires nonzero(compare) {
+ if((a.source==address())!=(b.source==address())){return false;}
+ if(a.source!=address()&&compare(a.source,b.source)!=0){return false;}
+ return relation_wide_equal(a.scale,b.scale)&&relation_wide_equal(a.offset,b.offset);
+}
+extern "C" RelationRange relation_interval(address context,RelationAffine value,RelationIntervalHost host) on cpu
+ requires nonzero(host.bounds) {
+ if(value.source==address()){return RelationRange(1,value.offset,value.offset);}
+ RelationRange bounds=host.bounds(context,value.source);
+ IntegerWideChecked a=integer_wide_checked_multiply(bounds.lower,value.scale);if(a.present==0){return RelationRange(0,relation_zero(),relation_zero());}
+ a=integer_wide_checked_add(a.value,value.offset);if(a.present==0){return RelationRange(0,relation_zero(),relation_zero());}
+ IntegerWideChecked b=integer_wide_checked_multiply(bounds.upper,value.scale);if(b.present==0){return RelationRange(0,relation_zero(),relation_zero());}
+ b=integer_wide_checked_add(b.value,value.offset);if(b.present==0){return RelationRange(0,relation_zero(),relation_zero());}
+ return RelationRange(1,range_min(a.value,b.value),range_max(a.value,b.value));
+}
+
+extern "C" RelationAffine relation_operand(address context,InternalOperand operand,InternalScalar info,RelationOperandHost host) on cpu
+ requires nonzero(host.cache) requires nonzero(host.root) requires nonzero(host.enter) requires nonzero(host.bounds) requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.computed) requires nonzero(host.expression) requires nonzero(host.end) requires nonzero(host.leave) requires nonzero(host.remember) requires nonzero(host.compare) {
+ if(operand.is_constant!=0){return relation_constant(relation_number(info,operand.bits));}
+ address id=operand.identity;RelationAffine cached=host.cache(context,id);if(cached.present!=0){return cached;}
+ RelationAffine symbol=RelationAffine(1,host.root(context,id),relation_one(),relation_zero());
+ if(host.enter(context,id)==0){return symbol;}
+ RelationRange bounds=host.bounds(context,id);RelationAffine value=relation_wide_equal(bounds.lower,bounds.upper) ? relation_constant(bounds.lower) : symbol;
+ if(relation_affine_equal(value,symbol,host.compare)){
+  host.begin(context,id);
+  while(true){FactView fact=host.next(context);if(fact.present==0||fact.kind!=FactKind::Index){break;}if(host.compare(fact.first,id)!=0){break;}
+   RelationExpression expression=host.computed(fact.payload);if(expression.present==0){continue;}
+   RelationAffine candidate=host.expression(context,expression.definition);if(candidate.present!=0&&!relation_affine_equal(candidate,symbol,host.compare)){value=candidate;break;}
+  }host.end(context);
+ }host.leave(context,id);host.remember(context,id,value);return value;
+}
+
+extern "C" RelationAffine relation_expression(address context,RelationExpression expression,address scalar,InternalScalar info,RelationExpressionHost host) on cpu
+ requires nonzero(host.operand) requires nonzero(host.interval) requires nonzero(host.same_scalar) requires nonzero(host.compare) {
+ if(host.same_scalar(expression.scalar,scalar)==0||expression.operation>2){return relation_none();}
+ RelationAffine a=host.operand(context,0);RelationAffine b=host.operand(context,1);RelationAffine value=relation_none();
+ if(expression.operation==0){value=relation_plus(a,b,host.compare);}
+ else if(expression.operation==1){value=relation_plus(a,relation_scaled(b,relation_minus_one()),host.compare);}
+ else if(a.source==address()){value=relation_scaled(b,a.offset);}
+ else if(b.source==address()){value=relation_scaled(a,b.offset);}
+ if(value.present==0){return value;}RelationRange range=host.interval(context,value);if(range.present==0){return relation_none();}
+ RelationRange bounds=relation_scalar_bounds(info);
+ if(range_less(range.lower,bounds.lower)||range_less(range.upper,range.lower)||range_less(bounds.upper,range.upper)){return relation_none();}return value;
+}
+
+extern "C" u32 relation_retain(address context,IntegerWide lower,IntegerWide upper,InternalScalar info,RelationRetainHost host) on cpu
+ requires nonzero(host.bounds) requires nonzero(host.emit) {
+ RelationRange before=host.bounds(context);
+ if(range_less(before.upper,lower)||range_less(upper,before.lower)||range_less(upper,lower)){return 0;}
+ if(range_less(before.lower,lower)){host.emit(context,1,(lower.low&info.mask)^info.bias);}
+ if(range_less(upper,before.upper)){host.emit(context,0,(upper.low&info.mask)^info.bias);}return 1;
+}
+
+extern "C" u32 relation_quotient(address context,address id,InternalOperand numerator,InternalOperand divisor,InternalScalar info,RelationQuotientHost host) on cpu
+ requires nonzero(host.bounds) requires nonzero(host.operand_bounds) requires nonzero(host.retain) {
+ if(numerator.is_constant!=0){return 1;}
+ RelationRange q=host.bounds(context,id);RelationRange d=host.operand_bounds(context,divisor);RelationRange scalar=relation_scalar_bounds(info);
+ if(info.kind!=1){
+  IntegerWide dl=range_max(d.lower,relation_one());if(integer_wide_unsigned_less(d.upper,dl)){return 0;}
+  IntegerWide lower=range_product(q.lower.low,dl.low);IntegerWide upper=range_subtract(range_add(range_product(q.upper.low,d.upper.low),d.upper),relation_one());
+  if(integer_wide_unsigned_less(scalar.upper,lower)){return 0;}
+  if(integer_wide_unsigned_less(scalar.upper,upper)){upper=scalar.upper;}
+  return host.retain(context,numerator.identity,lower,upper);
+ }
+ RelationRange result=RelationRange(0,relation_zero(),relation_zero());u32 side=0;
+ while(side<2){
+  IntegerWide a=q.lower;IntegerWide b=q.upper;IntegerWide low=range_max(d.lower,relation_one());IntegerWide high=d.upper;
+  if(side!=0){a=range_negate(q.upper);b=range_negate(q.lower);low=range_max(range_negate(d.upper),relation_one());high=range_negate(d.lower);}side+=1;
+  if(range_less(high,low)){continue;}
+  IntegerWide first=integer_wide_checked_multiply(a,low).value;IntegerWide last=integer_wide_checked_multiply(a,high).value;
+  if(!range_less(relation_zero(),a)){first=range_subtract(first,range_subtract(low,relation_one()));last=range_subtract(last,range_subtract(high,relation_one()));}
+  IntegerWide lower=range_max(range_min(first,last),scalar.lower);
+  first=integer_wide_checked_multiply(b,low).value;last=integer_wide_checked_multiply(b,high).value;
+  if(!range_less(b,relation_zero())){first=range_add(first,range_subtract(low,relation_one()));last=range_add(last,range_subtract(high,relation_one()));}
+  IntegerWide upper=range_min(range_max(first,last),scalar.upper);
+  if(!range_less(upper,lower)){
+   if(result.present==0){result=RelationRange(1,lower,upper);}else{result.lower=range_min(result.lower,lower);result.upper=range_max(result.upper,upper);}
+  }
+ }
+ IntegerWide minus_one=relation_minus_one();
+ if(!range_less(scalar.lower,q.lower)&&!range_less(q.upper,scalar.lower)&&!range_less(minus_one,d.lower)&&!range_less(d.upper,minus_one)){
+  if(result.present!=0){result.lower=scalar.lower;}else{result=RelationRange(1,scalar.lower,scalar.lower);}
+ }
+ if(result.present==0){return 0;}return host.retain(context,numerator.identity,result.lower,result.upper);
+}
+
+extern "C" u32 relation_at_most_zero(address context,RelationAffine value,InternalScalar info,RelationAtMostHost host) on cpu
+ requires nonzero(host.retain) {
+ if(value.source==address()){return !range_less(relation_zero(),value.offset) ? 1 : 0;}
+ RelationRange bounds=relation_scalar_bounds(info);IntegerWide magnitude=(value.offset.high>>63u64)!=0u64 ? range_negate(value.offset) : value.offset;
+ IntegerWide divisor=(value.scale.high>>63u64)!=0u64 ? range_negate(value.scale) : value.scale;
+ IntegerWideDivision divided=integer_wide_unsigned_divide(magnitude,divisor);IntegerWide quotient=divided.quotient;
+ if(range_less(relation_zero(),value.scale)){
+  IntegerWide upper;
+  if(!range_less(relation_zero(),value.offset)){
+   if(!integer_wide_unsigned_less(quotient,bounds.upper)){return 1;}upper=quotient;
+  }else{
+   if(relation_wide_nonzero(divided.remainder)){quotient=range_add(quotient,relation_one());}
+   IntegerWide limit=range_negate(bounds.lower);if(integer_wide_unsigned_less(limit,quotient)){return 0;}upper=range_negate(quotient);
+  }return host.retain(context,value.source,bounds.lower,upper);
+ }
+ IntegerWide lower;
+ if(!range_less(value.offset,relation_zero())){
+  if(relation_wide_nonzero(divided.remainder)){quotient=range_add(quotient,relation_one());}
+  if(integer_wide_unsigned_less(bounds.upper,quotient)){return 0;}lower=quotient;
+ }else{
+  IntegerWide limit=range_negate(bounds.lower);if(!integer_wide_unsigned_less(quotient,limit)){return 1;}lower=range_negate(quotient);
+ }return host.retain(context,value.source,lower,bounds.upper);
+}
+
+extern "C" u32 relation_facts(address context,RelationFactsHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.scalar) requires nonzero(host.computed) requires nonzero(host.operand) requires nonzero(host.expression) requires nonzero(host.at_most) requires nonzero(host.quotient) requires nonzero(host.root) requires nonzero(host.interval) requires nonzero(host.retain) requires nonzero(host.compare) requires nonzero(host.finish) {
+ while(true){FactView fact=host.next(context);if(fact.present==0){break;}
+  if(fact.kind==FactKind::Below&&host.scalar(fact.scalar).kind<2){
+   RelationAffine a=host.operand(context,0,InternalOperand(fact.first,0u64,address(),0),fact.scalar);
+   RelationAffine b=host.operand(context,1,InternalOperand(fact.second,0u64,address(),0),fact.scalar);
+   RelationAffine difference=relation_plus(a,relation_scaled(b,relation_minus_one()),host.compare);
+   if(difference.present!=0){IntegerWideChecked offset=integer_wide_checked_add(difference.offset,IntegerWide(u64(fact.flag),0u64));
+    if(offset.present!=0){difference.offset=offset.value;if(host.at_most(context,fact.scalar,difference)==0){return 0;}}
+   }
+  }else if(fact.kind==FactKind::Index){
+   RelationExpression expression=host.computed(fact.payload);if(expression.present==0||host.scalar(expression.scalar).kind>=2){continue;}
+   if(expression.operation==3&&host.quotient(context,fact.first,expression.scalar,expression.left,expression.right)==0){return 0;}
+   RelationAffine value=host.expression(context,expression.definition,expression.scalar);if(value.present==0){continue;}
+   address id=host.root(context,fact.first);
+   if(value.source!=address()&&host.compare(value.source,id)==0){
+    RelationAffine difference=relation_plus(value,RelationAffine(1,id,relation_minus_one(),relation_zero()),host.compare);
+    if(difference.present!=0){
+     if(host.at_most(context,expression.scalar,difference)==0){return 0;}
+     RelationAffine reverse=relation_scaled(difference,relation_minus_one());if(reverse.present!=0&&host.at_most(context,expression.scalar,reverse)==0){return 0;}
+    }
+   }else{
+    RelationRange range=host.interval(context,value,expression.scalar);if(range.present!=0&&host.retain(context,id,expression.scalar,range.lower,range.upper)==0){return 0;}
+   }
+  }
+ }host.finish(context);return 1;
+}
+
+
+// One endpoint rule for the original source-path and public-contract consumers.
+FactView fact_numeric_alias(FactView input,u32 scalar_kind) on cpu {
+ FactView fact=input;
+ if(scalar_kind==0){
+  if(fact.kind==FactKind::Minimum&&fact.value==1u64){fact.kind=FactKind::NonZero;}
+  else if(fact.kind==FactKind::Maximum&&fact.value==0u64){fact.kind=FactKind::Zero;}
+ }return fact;
+}

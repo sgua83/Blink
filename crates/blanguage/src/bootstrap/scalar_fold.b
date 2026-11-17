@@ -581,25 +581,25 @@ extern "C" BitPattern known_shifted(u64 mask,u64 bias,u32 direction,BitPattern v
 struct IntegerWideRange {IntegerWide lower;IntegerWide upper;};
 IntegerWide range_unsigned(u64 value) on cpu {return IntegerWide(value,0u64);}
 IntegerWide range_signed(i64 value) on cpu {return IntegerWide(u64(value),value<i64(0) ? 18446744073709551615u64 : 0u64);}
-IntegerWide range_add(IntegerWide a,IntegerWide b) on cpu {
+extern "C" IntegerWide range_add(IntegerWide a,IntegerWide b) on cpu {
  u64 low=a.low+b.low;return IntegerWide(low,a.high+b.high+u64(low<a.low));
 }
-IntegerWide range_subtract(IntegerWide a,IntegerWide b) on cpu {
+extern "C" IntegerWide range_subtract(IntegerWide a,IntegerWide b) on cpu {
  return IntegerWide(a.low-b.low,a.high-b.high-u64(a.low<b.low));
 }
-IntegerWide range_negate(IntegerWide value) on cpu {
+extern "C" IntegerWide range_negate(IntegerWide value) on cpu {
  u64 low=0u64-value.low;return IntegerWide(low,~value.high+u64(low==0u64));
 }
-bool range_less(IntegerWide a,IntegerWide b) on cpu {
+extern "C" bool range_less(IntegerWide a,IntegerWide b) on cpu {
  i64 ah=i64(a.high);i64 bh=i64(b.high);return ah<bh || (ah==bh && a.low<b.low);
 }
-IntegerWide range_min(IntegerWide a,IntegerWide b) on cpu {return range_less(a,b) ? a : b;}
-IntegerWide range_max(IntegerWide a,IntegerWide b) on cpu {return range_less(a,b) ? b : a;}
+extern "C" IntegerWide range_min(IntegerWide a,IntegerWide b) on cpu {return range_less(a,b) ? a : b;}
+extern "C" IntegerWide range_max(IntegerWide a,IntegerWide b) on cpu {return range_less(a,b) ? b : a;}
 IntegerWideRange range_corners(IntegerWide a,IntegerWide b,IntegerWide c,IntegerWide d) on cpu {
  return IntegerWideRange(range_min(range_min(a,b),range_min(c,d)),range_max(range_max(a,b),range_max(c,d)));
 }
 u64 range_magnitude(i64 value) on cpu {return value<i64(0) ? 0u64-u64(value) : u64(value);}
-IntegerWide range_product(u64 a,u64 b) on cpu {
+extern "C" IntegerWide range_product(u64 a,u64 b) on cpu {
  u64 al=a&4294967295u64;u64 ah=a>>32u64;u64 bl=b&4294967295u64;u64 bh=b>>32u64;
  u64 low=al*bl;u64 middle=ah*bl+(low>>32u64);u64 high=middle>>32u64;
  middle=(middle&4294967295u64)+al*bh;
@@ -687,4 +687,36 @@ extern "C" IntegerRangePieces integer_range(IntegerRangeOperation operation,u32 
  if(signed!=0){result=range_signed_arithmetic(operation,width,left,right);bias=1u64<<u64(width-1);}
  else{result=range_unsigned_arithmetic(operation,width,left,right);}
  return integer_range_project(width,bias,result.lower,result.upper);
+}
+
+extern "C" bool integer_wide_unsigned_less(IntegerWide a,IntegerWide b) on cpu {return a.high<b.high||(a.high==b.high&&a.low<b.low);}
+extern "C" IntegerWideChecked integer_wide_checked_add(IntegerWide a,IntegerWide b) on cpu {
+ IntegerWide value=range_add(a,b);u64 sign=a.high>>63u64;
+ return IntegerWideChecked(sign!=(b.high>>63u64)||(value.high>>63u64)==sign ? 1 : 0,value);
+}
+extern "C" IntegerWideChecked integer_wide_checked_multiply(IntegerWide a,IntegerWide b) on cpu {
+ u64 sa=a.high>>63u64;u64 sb=b.high>>63u64;
+ IntegerWide x=sa!=0u64 ? range_negate(a) : a;IntegerWide y=sb!=0u64 ? range_negate(b) : b;
+ IntegerWide p=range_product(x.low,y.low);IntegerWide first=range_product(x.low,y.high);
+ IntegerWide second=range_product(x.high,y.low);IntegerWide last=range_product(x.high,y.high);
+ u64 high=p.high+first.low;u32 overflow=high<p.high ? 1 : 0;
+ u64 merged=high+second.low;if(merged<high||first.high!=0u64||second.high!=0u64||last.low!=0u64||last.high!=0u64){overflow=1;}
+ IntegerWide magnitude=IntegerWide(p.low,merged);
+ IntegerWide limit=sa!=sb ? IntegerWide(0u64,9223372036854775808u64) : IntegerWide(18446744073709551615u64,9223372036854775807u64);
+ if(integer_wide_unsigned_less(limit,magnitude)){overflow=1;}
+ return IntegerWideChecked(overflow==0 ? 1 : 0,sa!=sb ? range_negate(magnitude) : magnitude);
+}
+// Callers supply the nonzero magnitude of the original affine scale.
+extern "C" IntegerWideDivision integer_wide_unsigned_divide(IntegerWide numerator,IntegerWide denominator) on cpu {
+ if(numerator.high==0u64&&denominator.high==0u64&&denominator.low!=0u64){
+  u64 quotient=numerator.low/denominator.low;
+  return IntegerWideDivision(IntegerWide(quotient,0u64),IntegerWide(numerator.low-quotient*denominator.low,0u64));
+ }
+ IntegerWide quotient=IntegerWide(0u64,0u64);IntegerWide remainder=IntegerWide(0u64,0u64);u32 at=128;
+ while(at!=0){at-=1;u64 bit=at>=64 ? ((numerator.high>>u64(at-64))&1u64) : ((numerator.low>>u64(at))&1u64);
+  u64 carry=remainder.high>>63u64;remainder=IntegerWide((remainder.low<<1u64)|bit,(remainder.high<<1u64)|(remainder.low>>63u64));
+  if(carry!=0u64||!integer_wide_unsigned_less(remainder,denominator)){
+   remainder=range_subtract(remainder,denominator);if(at>=64){quotient.high|=1u64<<u64(at-64);}else{quotient.low|=1u64<<u64(at);}
+  }
+ }return IntegerWideDivision(quotient,remainder);
 }

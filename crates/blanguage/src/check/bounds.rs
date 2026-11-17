@@ -9,6 +9,7 @@ mod task_sources;
 mod combination;
 mod canonical;
 mod equality;
+mod integer_relations;
 use super::*;
 mod floating;
 mod bitwise;
@@ -1710,15 +1711,6 @@ fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
         .collect()
 }
 impl Fact {
-    // Unsigned endpoint aliases describe the same value, including identities
-    // retained by a lossless widening. Keep one rule for checking and export.
-    fn numeric_alias(self)->Self {
-        match self {
-            Self::Minimum(id,scalar,1)if scalar.is_integer()&&!scalar.is_signed()=>Self::NonZero(id),
-            Self::Maximum(id,scalar,0)if scalar.is_integer()&&!scalar.is_signed()=>Self::Zero(id),
-            other=>other,
-        }
-    }
     fn map(self,identity:&impl Fn(ValueIdentity)->ValueIdentity)->Self {
         match self {
             Self::Equal(a,b)=>Self::equal(identity(a),identity(b)),
@@ -2931,31 +2923,6 @@ struct IntegerAffine {
     scale: i128,
     offset: i128,
 }
-impl IntegerAffine {
-    fn constant(value: i128) -> Self { Self { source: None, scale: 0, offset: value } }
-    fn variable(source: ValueIdentity) -> Self { Self { source: Some(source), scale: 1, offset: 0 } }
-    fn scaled(self, factor: i128) -> Option<Self> {
-        let scale = self.scale.checked_mul(factor)?;
-        Some(Self {
-            source: if scale == 0 { None } else { self.source },
-            scale,
-            offset: self.offset.checked_mul(factor)?,
-        })
-    }
-    fn plus(self, other: Self) -> Option<Self> {
-        let source = match (self.source, other.source) {
-            (Some(a), Some(b)) if a != b => return None,
-            (Some(source), _) | (_, Some(source)) => Some(source),
-            _ => None,
-        };
-        let scale = self.scale.checked_add(other.scale)?;
-        Some(Self {
-            source: if scale == 0 { None } else { source },
-            scale,
-            offset: self.offset.checked_add(other.offset)?,
-        })
-    }
-}
 struct IntegerQuery<'a> {
     facts: &'a Facts,
     roots: &'a BTreeMap<ValueIdentity, ValueIdentity>,
@@ -3057,186 +3024,27 @@ impl<'a> IntegerQuery<'a> {
         let (a, b) = (self.bounds(left, scalar), self.bounds(right, scalar));
         Some(a.0 > a.1 || b.0 > b.1 || a.1 < b.0)
     }
-    fn scalar_bounds(scalar: Scalar) -> (i128, i128) {
-        (Self::number(scalar, scalar.order_bias()), Self::number(scalar, scalar.bit_mask() ^ scalar.order_bias()))
-    }
     fn bounds(&self, id: ValueIdentity, scalar: Scalar) -> (i128, i128) {
         let key = (self.root(id), scalar);
         let lower = self.lower.get(&key).copied().unwrap_or(0);
         let upper = self.upper.get(&key).copied().unwrap_or(scalar.bit_mask());
         (Self::number(scalar, lower ^ scalar.order_bias()), Self::number(scalar, upper ^ scalar.order_bias()))
     }
-    fn interval(&self, value: IntegerAffine, scalar: Scalar) -> Option<(i128, i128)> {
-        let Some(source) = value.source else { return Some((value.offset, value.offset)); };
-        let (a, b) = self.bounds(source, scalar);
-        let a = a.checked_mul(value.scale)?.checked_add(value.offset)?;
-        let b = b.checked_mul(value.scale)?.checked_add(value.offset)?;
-        Some((a.min(b), a.max(b)))
-    }
-    fn operand(&mut self, operand: Operand, scalar: Scalar) -> IntegerAffine {
-        let id = match operand {
-            Operand::Constant(_, bits) => return IntegerAffine::constant(Self::number(scalar, bits)),
-            Operand::Value(id) => id,
-        };
-        let key = (id, scalar);
-        if let Some(value) = self.coefficients.get(&key) { return *value; }
-        let symbol = IntegerAffine::variable(self.root(id));
-        // The facts are equations: an equality may lead back to the same value.
-        // Retain that variable while eliminating the surrounding expression.
-        if !self.expanding.insert(key) { return symbol; }
-        let (lower, upper) = self.bounds(id, scalar);
-        let mut value = if lower == upper { IntegerAffine::constant(lower) } else { symbol };
-        if value == symbol {
-            let expressions = self.facts.range(Fact::Index(id, IndexDomain::Data(0))..)
-                .take_while(|fact| matches!(fact, Fact::Index(source, _) if *source == id))
-                .filter_map(|fact| match fact {
-                    Fact::Index(_, IndexDomain::Computed(expression)) => Some(*expression),
-                    _ => None,
-                }).collect::<Vec<_>>();
-            for expression in expressions {
-                if let Some(affine) = self.expression(expression, scalar) {
-                    if affine != symbol { value = affine; break; }
-                }
-            }
-        }
-        self.expanding.remove(&key);
-        self.coefficients.insert(key, value);
-        value
-    }
-    fn expression(&mut self, expression: IntegerExpression, scalar: Scalar) -> Option<IntegerAffine> {
-        let IntegerExpression::Binary(op, actual, a, b) = expression;
-        if actual != scalar || !matches!(op, IntegerOperation::Add | IntegerOperation::Subtract | IntegerOperation::Multiply) { return None; }
-        let a = self.operand(a, scalar);
-        let b = self.operand(b, scalar);
-        let value = match op {
-            IntegerOperation::Add => a.plus(b)?,
-            IntegerOperation::Subtract => a.plus(b.scaled(-1)?)?,
-            IntegerOperation::Multiply if a.source.is_none() => b.scaled(a.offset)?,
-            IntegerOperation::Multiply if b.source.is_none() => a.scaled(b.offset)?,
-            _ => return None,
-        };
-        let (lower, upper) = self.interval(value, scalar)?;
-        let (minimum, maximum) = Self::scalar_bounds(scalar);
-        // Only a non-wrapping machine operation has this integer equation.
-        (minimum <= lower && lower <= upper && upper <= maximum).then_some(value)
-    }
-    fn retain(&self, output: &mut Facts, id: ValueIdentity, scalar: Scalar, lower: i128, upper: i128) -> Option<()> {
-        let id = self.root(id);
-        let (before_lower, before_upper) = self.bounds(id, scalar);
-        if lower > before_upper || upper < before_lower || lower > upper { return None; }
-        let ordered = |number| scalar.truncate(number as Bits) ^ scalar.order_bias();
-        if lower > before_lower { output.insert(Fact::Minimum(id, scalar, ordered(lower))); }
-        if upper < before_upper { output.insert(Fact::Maximum(id, scalar, ordered(upper))); }
-        Some(())
-    }
+    fn interval(&self,value:IntegerAffine,scalar:Scalar)->Option<(i128,i128)> {integer_relations::interval(self,value,scalar)}
+    fn operand(&mut self,operand:Operand,scalar:Scalar)->IntegerAffine {integer_relations::operand(self,operand,scalar)}
+    fn expression(&mut self,expression:IntegerExpression,scalar:Scalar)->Option<IntegerAffine> {integer_relations::expression(self,expression,scalar)}
+    fn retain(&self,output:&mut Facts,id:ValueIdentity,scalar:Scalar,lower:i128,upper:i128)->Option<()> {integer_relations::retain(self,output,id,scalar,lower,upper)}
     fn operand_bounds(&self, operand: Operand, scalar: Scalar) -> (i128, i128) {
         match operand {
             Operand::Constant(_, bits) => { let value = Self::number(scalar, bits); (value, value) }
             Operand::Value(id) => self.bounds(id, scalar),
         }
     }
-    fn quotient(&self, output: &mut Facts, id: ValueIdentity, scalar: Scalar, numerator: Operand, divisor: Operand) -> Option<()> {
-        let Operand::Value(source) = numerator else { return Some(()); };
-        let (ql, qh) = self.bounds(id, scalar);
-        let (dl, dh) = self.operand_bounds(divisor, scalar);
-        let (minimum, maximum) = Self::scalar_bounds(scalar);
-        if !scalar.is_signed() {
-            // Unsigned division is floor division. Products use the full u128 domain.
-            let (dl, dh) = (dl.max(1) as u128, dh as u128);
-            if dl > dh { return None; }
-            let lower = ql as u128 * dl;
-            let upper = qh as u128 * dh + dh - 1;
-            if lower > maximum as u128 { return None; }
-            return self.retain(output, source, scalar, lower as i128, upper.min(maximum as u128) as i128);
-        }
-        // Signed quotients truncate toward zero: the zero quotient has both signs.
-        let mut range: Option<(i128, i128)> = None;
-        for (a, b, low, high) in [(ql, qh, dl.max(1), dh), (-qh, -ql, (-dh).max(1), -dl)] {
-            if low > high { continue; }
-            let lower = [low, high].map(|d| a*d - if a <= 0 { d-1 } else { 0 }).into_iter().min().unwrap().max(minimum);
-            let upper = [low, high].map(|d| b*d + if b >= 0 { d-1 } else { 0 }).into_iter().max().unwrap().min(maximum);
-            if lower <= upper {
-                range = Some(match range { Some((a, b)) => (a.min(lower), b.max(upper)), None => (lower, upper) });
-            }
-        }
-        // MIN / -1 has the original machine's low-bit result, which is MIN.
-        if ql <= minimum && minimum <= qh && dl <= -1 && -1 <= dh {
-            range = Some(match range { Some((_, upper)) => (minimum, upper), None => (minimum, minimum) });
-        }
-        let (lower, upper) = range?;
-        self.retain(output, source, scalar, lower, upper)
-    }
-    fn at_most_zero(&self, output: &mut Facts, value: IntegerAffine, scalar: Scalar) -> Option<()> {
-        let Some(source) = value.source else { return (value.offset <= 0).then_some(()); };
-        let (minimum, maximum) = Self::scalar_bounds(scalar);
-        let magnitude = value.offset.unsigned_abs();
-        let divisor = value.scale.unsigned_abs();
-        if value.scale > 0 {
-            let upper = if value.offset <= 0 {
-                let quotient = magnitude / divisor;
-                if quotient >= maximum as u128 { return Some(()); }
-                quotient as i128
-            } else {
-                let quotient = magnitude / divisor + u128::from(magnitude % divisor != 0);
-                if quotient > minimum.unsigned_abs() { return None; }
-                -(quotient as i128)
-            };
-            self.retain(output, source, scalar, minimum, upper)
-        } else {
-            let lower = if value.offset >= 0 {
-                let quotient = magnitude / divisor + u128::from(magnitude % divisor != 0);
-                if quotient > maximum as u128 { return None; }
-                quotient as i128
-            } else {
-                let quotient = magnitude / divisor;
-                if quotient >= minimum.unsigned_abs() { return Some(()); }
-                -(quotient as i128)
-            };
-            self.retain(output, source, scalar, lower, maximum)
-        }
-    }
+    fn quotient(&self,output:&mut Facts,id:ValueIdentity,scalar:Scalar,numerator:Operand,divisor:Operand)->Option<()> {integer_relations::quotient(self,output,id,scalar,numerator,divisor)}
+    fn at_most_zero(&self,output:&mut Facts,value:IntegerAffine,scalar:Scalar)->Option<()> {integer_relations::at_most_zero(self,output,value,scalar)}
 }
-fn integer_relation_facts(facts: &Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> Option<Facts> {
-    let mut query = IntegerQuery::new(facts, roots);
-    let mut output = Facts::new();
-    for fact in facts {
-        match *fact {
-            Fact::Below(a, b, strict, scalar) if scalar.is_integer() => {
-                let a = query.operand(Operand::Value(a), scalar);
-                let b = query.operand(Operand::Value(b), scalar);
-                if let Some(mut difference) = b.scaled(-1).and_then(|b| a.plus(b)) {
-                    if let Some(offset) = difference.offset.checked_add(i128::from(strict)) {
-                        difference.offset = offset;
-                        query.at_most_zero(&mut output, difference, scalar)?;
-                    }
-                }
-            }
-            Fact::Index(id, IndexDomain::Computed(expression)) => {
-                let IntegerExpression::Binary(_, scalar, _, _) = expression;
-                if !scalar.is_integer() { continue; }
-                if let IntegerExpression::Binary(IntegerOperation::Divide, _, numerator, divisor) = expression {
-                    query.quotient(&mut output, id, scalar, numerator, divisor)?;
-                }
-                if let Some(value) = query.expression(expression, scalar) {
-                    let id = query.root(id);
-                    if value.source == Some(id) {
-                        if let Some(difference) = value.plus(IntegerAffine { source: Some(id), scale: -1, offset: 0 }) {
-                            query.at_most_zero(&mut output, difference, scalar)?;
-                            if let Some(reverse) = difference.scaled(-1) {
-                                query.at_most_zero(&mut output, reverse, scalar)?;
-                            }
-                        }
-                    } else if let Some((lower, upper)) = query.interval(value, scalar) {
-                        query.retain(&mut output, id, scalar, lower, upper)?;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    output.retain(|fact| !facts.contains(fact));
-    Some(output)
-}
+
+fn integer_relation_facts(facts:&Facts,roots:&BTreeMap<ValueIdentity,ValueIdentity>)->Option<Facts> {integer_relations::facts(facts,roots)}
 /// 数值区间逐分量计算；资源索引域只沿已证明的无符号关系传递。
 pub(super) fn math(op: MathOp, args: &[Value]) -> Proof {
     let width = args.iter().map(|value| value.regs.len()).max().unwrap();

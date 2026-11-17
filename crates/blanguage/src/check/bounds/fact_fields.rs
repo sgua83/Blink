@@ -245,7 +245,7 @@ pub(super) struct OperandView {
     scalar: Borrowed,
     is_constant: u32,
 }
-fn operand(value: &Operand) -> OperandView {
+pub(super) fn operand(value: &Operand) -> OperandView {
     match value {
         Operand::Value(id) => OperandView {
             identity: ptr::from_ref(id).cast(),
@@ -321,4 +321,68 @@ pub(super) unsafe extern "C" fn domain(value: Borrowed) -> DomainView {
         _ => {}
     }
     view
+}
+
+pub(super) unsafe fn operand_key(view: OperandView) -> Operand {
+    if view.is_constant != 0 {
+        Operand::Constant(unsafe { *view.scalar.cast::<Scalar>() }, view.bits)
+    } else {
+        Operand::Value(unsafe { *view.identity.cast::<ValueIdentity>() })
+    }
+}
+#[repr(C)]
+pub(super) struct ExpressionView {
+    present: u32,
+    operation: u32,
+    scalar: Borrowed,
+    left: OperandView,
+    right: OperandView,
+    definition: Borrowed,
+}
+pub(super) fn expression(value: &super::IntegerExpression) -> ExpressionView {
+    use super::{IntegerExpression, IntegerOperation};
+    let IntegerExpression::Binary(op, scalar, left, right) = value;
+    let operation = match op {
+        IntegerOperation::Add => 0,
+        IntegerOperation::Subtract => 1,
+        IntegerOperation::Multiply => 2,
+        IntegerOperation::Divide => 3,
+        IntegerOperation::Remainder => 4,
+        IntegerOperation::And => 5,
+        IntegerOperation::Or => 6,
+        IntegerOperation::Xor => 7,
+        IntegerOperation::ShiftLeft => 8,
+        IntegerOperation::ShiftRight => 9,
+    };
+    ExpressionView {
+        present: 1,
+        operation,
+        scalar: ptr::from_ref(scalar).cast(),
+        left: operand(left),
+        right: operand(right),
+        definition: ptr::from_ref(value).cast(),
+    }
+}
+pub(super) unsafe extern "C" fn computed(value: Borrowed) -> ExpressionView {
+    match unsafe { &*value.cast::<IndexDomain>() } {
+        IndexDomain::Computed(value) => expression(value),
+        _ => ExpressionView {
+            present: 0,
+            operation: 0,
+            scalar: ptr::null(),
+            left: OperandView {
+                identity: ptr::null(),
+                bits: 0,
+                scalar: ptr::null(),
+                is_constant: 0,
+            },
+            right: OperandView {
+                identity: ptr::null(),
+                bits: 0,
+                scalar: ptr::null(),
+                is_constant: 0,
+            },
+            definition: ptr::null(),
+        },
+    }
 }

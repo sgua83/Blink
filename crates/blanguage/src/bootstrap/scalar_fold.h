@@ -88,3 +88,18 @@ extern "C" IntegerRangePieces integer_range_cast(u32 source_width,u32 source_sig
 extern "C" IntegerRangePieces integer_range_unary(IntegerRangeUnary operation,u32 width,u32 signed,BitRange value) on cpu;
 extern "C" IntegerRangePieces integer_range_counts(u32 width,u64 bias,BitRange value) on cpu;
 extern "C" IntegerRangePieces integer_range_project(u32 width,u64 bias,IntegerWide lower,IntegerWide upper) on cpu;
+
+// The original integer-range wide value is also used by relation coefficients.
+struct IntegerWideChecked {u32 present;IntegerWide value;};
+struct IntegerWideDivision {IntegerWide quotient;IntegerWide remainder;};
+extern "C" IntegerWide range_add(IntegerWide a,IntegerWide b) on cpu;
+extern "C" IntegerWide range_subtract(IntegerWide a,IntegerWide b) on cpu;
+extern "C" IntegerWide range_negate(IntegerWide value) on cpu;
+extern "C" bool range_less(IntegerWide a,IntegerWide b) on cpu;
+extern "C" IntegerWide range_min(IntegerWide a,IntegerWide b) on cpu;
+extern "C" IntegerWide range_max(IntegerWide a,IntegerWide b) on cpu;
+extern "C" IntegerWide range_product(u64 a,u64 b) on cpu;
+extern "C" bool integer_wide_unsigned_less(IntegerWide a,IntegerWide b) on cpu;
+extern "C" IntegerWideChecked integer_wide_checked_add(IntegerWide a,IntegerWide b) on cpu;
+extern "C" IntegerWideChecked integer_wide_checked_multiply(IntegerWide a,IntegerWide b) on cpu;
+extern "C" IntegerWideDivision integer_wide_unsigned_divide(IntegerWide numerator,IntegerWide denominator) on cpu;
