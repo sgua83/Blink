@@ -7,6 +7,7 @@ mod internal_conflicts;
 mod common_facts;
 mod task_sources;
 mod combination;
+mod canonical;
 mod equality;
 use super::*;
 mod floating;
@@ -2118,7 +2119,6 @@ impl Clause {
         // 已消费Clause不再运行Drop，直接转交它原来持有的Arc。
         unsafe { ManuallyDrop::take(&mut owned.0) }
     }
-    fn negated_fact(fact: Fact) -> Option<Fact> { fact_fields::negated(fact) }
 
     fn negate(&self)->Self { negation::negate(self) }
     pub(super) fn output_bound(&self, bindings: &OutputBindings) -> Self {
@@ -2263,64 +2263,7 @@ impl Clause {
         ordered
     }
     // 同一资源来源的路径按事实合取去重，保留每个来源实际成立的完整条件。
-    pub(super) fn canonical(&self)->Self{
-        fn insert(terms:&mut BTreeSet<Facts>,facts:Facts)->bool{
-            if terms.iter().any(|old|old.is_subset(&facts)){return false;}
-            if !terms.is_empty(){
-                let incoming=Clause::facts(facts.clone());
-                if terms.iter().any(|old|!incoming.overlap_query(&Clause::facts(old.clone()),false)){return false;}
-                terms.retain(|old|!facts.is_subset(old)&&Clause::facts(old.clone()).overlap_query(&incoming,false));
-            }
-            terms.insert(facts)
-        }
-        fn facts(value:&Facts)->Option<Facts>{
-            if contradictory(value){return None;}
-            let lower=minimums(value);
-            let mut next=value.iter().filter(|fact|!matches!(fact,Fact::Below(a,b,false,scalar)if a==b&&scalar.is_integer())&&!matches!(fact,Fact::Index(id,IndexDomain::Upper(limit,0))if id==limit)&&!matches!(fact,Fact::Minimum(..)|Fact::Maximum(..))&&!matches!(fact,Fact::NonZero(id)if lower.iter().any(|((other,scalar),n)|other==id&&*n>1&&scalar.is_integer()&&!scalar.is_signed()))).copied().collect::<Facts>();
-            next.extend(lower.into_iter().filter(|((id,scalar),n)|*n!=0&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|Fact::Minimum(id,scalar,n).numeric_alias()));
-            next.extend(maximums(value).into_iter().filter(|((id,scalar),n)|*n!=scalar.bit_mask()&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|Fact::Maximum(id,scalar,n).numeric_alias()));
-            Some(next)
-        }
-        let mut values:BTreeMap<usize,BTreeSet<Facts>>=BTreeMap::new();
-        for clause in Self::ordered(std::slice::from_ref(self)){
-            let next=match &**clause.0{
-                ClauseNode::Impossible=>BTreeSet::new(),
-                ClauseNode::Facts(value)=>facts(value).into_iter().collect(),
-                ClauseNode::Either(a,b)=>{
-                    let mut terms=values[&a.key()].clone();for value in &values[&b.key()]{insert(&mut terms,value.clone());}terms
-                },
-                node=>{
-                    let (a,b)=match node{ClauseNode::Both(a,b)=>(a,b),ClauseNode::Branch(parent,condition,truth)=>(parent,&condition.cases[usize::from(*truth)]),_=>unreachable!()};
-                    let mut terms=BTreeSet::new();
-                    for left in &values[&a.key()]{for right in &values[&b.key()]{
-                        if let Some(value)=facts(&left.union(right).copied().collect()){insert(&mut terms,value);}
-                    }}terms
-                },
-            };values.insert(clause.key(),next);
-        }
-        let mut terms=values.remove(&self.key()).unwrap();
-        drop(values);
-        // Consensus removes the short-circuit partition: A || (!A && B)
-        // has the same complete sum as A || B. Negation stays with Clause.
-        loop {
-            let mut additions=BTreeSet::new();
-            for left in &terms {
-                for right in terms.range((std::ops::Bound::Excluded(left),std::ops::Bound::Unbounded)) {
-                    for fact in left {
-                        let Some(other)=Self::negated_fact(*fact)else{continue};
-                        if !right.contains(&other){continue;}
-                        let combined=left.iter().filter(|value|*value!=fact)
-                            .chain(right.iter().filter(|value|**value!=other)).copied().collect();
-                        if let Some(value)=facts(&combined){insert(&mut additions,value);}
-                    }
-                }
-            }
-            let mut changed=false;
-            for value in additions{changed|=insert(&mut terms,value);}
-            if !changed{break;}
-        }
-        terms.into_iter().fold(Self::impossible(),|all,facts|Self::either(&all,&Self::facts(facts)))
-    }
+    pub(super) fn canonical(&self) -> Self { canonical::canonical(self) }
     pub(super) fn task_return_source(component:usize,source:u32) -> Self {
         let id=ValueIdentity::TaskReturnSource(component);
         let source=Bits::from(source);

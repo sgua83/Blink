@@ -306,3 +306,95 @@ extern "C" u32 alias_facts(address context,usize members,u32 inherited,AliasFact
  requires nonzero(host.group) requires nonzero(host.member) requires nonzero(host.key)
  requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.has_inferred)
  requires nonzero(host.compare);
+
+// Original typed source-path terms remain owned by the synchronous native caller.
+struct CanonicalTerm { u32 present; address value; };
+enum CanonicalInsertion : u32 { Reject=0; Insert=1; RejectPrepared=2; RetainInsert=3; };
+struct CanonicalInsertHost {
+ cfn<CanonicalTerm,address> next;
+ cfn<u32,address,address> ensures memory(read) subset;
+ cfn<void,address> prepare;
+ cfn<void,address> reset;
+ cfn<u32,address,address> forward;
+};
+extern "C" CanonicalInsertion canonical_insert(address context,address candidate,u32 empty,CanonicalInsertHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.subset) requires nonzero(host.prepare)
+ requires nonzero(host.reset) requires nonzero(host.forward);
+struct CanonicalKeepHost {
+ cfn<u32,address,address> ensures memory(read) subset;
+ cfn<u32,address,address> reverse;
+};
+extern "C" u32 canonical_keep(address old,address candidate,address incoming,CanonicalKeepHost host) on cpu
+ requires nonzero(host.subset) requires nonzero(host.reverse);
+struct CanonicalNormalHost {
+ cfn<FactView,address> next;
+ cfn<void,address,u32> reset;
+ cfn<FactView,address,u32> bound;
+ cfn<u32,address,FactView> ensures memory(read) contains;
+ cfn<void,address,FactView> emit;
+ cfn<i32,address,address> ensures memory(read) compare;
+ cfn<InternalScalar,address> ensures memory(read) scalar;
+ cfn<InternalUpper,address> ensures memory(read) upper;
+};
+extern "C" void canonical_normalize(address context,CanonicalNormalHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.reset) requires nonzero(host.bound)
+ requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.compare)
+ requires nonzero(host.scalar) requires nonzero(host.upper);
+struct CanonicalAcceptHost {
+ cfn<u32,address> conflict;
+ cfn<void,address,address> normalize;
+};
+extern "C" void canonical_accept(address source,address target,CanonicalAcceptHost host) on cpu
+ requires nonzero(host.conflict) requires nonzero(host.normalize);
+struct CanonicalEitherHost {
+ cfn<CanonicalTerm,address> next;
+ cfn<void,address,address> insert;
+};
+extern "C" void canonical_either_terms(address context,CanonicalEitherHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.insert);
+struct CanonicalProductHost {
+ cfn<CanonicalTerm,address> left;
+ cfn<void,address> reset;
+ cfn<CanonicalTerm,address> right;
+ cfn<void,address,address,address> union;
+};
+extern "C" void canonical_product(address context,CanonicalProductHost host) on cpu
+ requires nonzero(host.left) requires nonzero(host.reset) requires nonzero(host.right) requires nonzero(host.union);
+struct CanonicalGraphHost {
+ cfn<usize,address> ensures memory(read) count;
+ cfn<SourceNode,address,usize> ensures memory(read) inspect;
+ cfn<address,address,address> ensures memory(read) lookup;
+ cfn<void,address,usize> empty;
+ cfn<void,address,usize,address> leaf;
+ cfn<void,address,usize,address,address> either;
+ cfn<void,address,usize,address,address> both;
+};
+extern "C" void canonical_graph(address context,CanonicalGraphHost host) on cpu
+ requires nonzero(host.count) requires nonzero(host.inspect) requires nonzero(host.lookup)
+ requires nonzero(host.empty) requires nonzero(host.leaf) requires nonzero(host.either) requires nonzero(host.both);
+struct CanonicalConsensusHost {
+ cfn<CanonicalTerm,address> left;
+ cfn<void,address,address> right_begin;
+ cfn<CanonicalTerm,address> right;
+ cfn<void,address,address> facts_begin;
+ cfn<FactView,address> fact;
+ cfn<u32,address,FactView> ensures memory(read) contains;
+ cfn<void,address,address,address,FactView,FactView> resolve;
+ FactHost facts;
+};
+extern "C" void canonical_consensus(address context,CanonicalConsensusHost host) on cpu
+ requires nonzero(host.left) requires nonzero(host.right_begin) requires nonzero(host.right)
+ requires nonzero(host.facts_begin) requires nonzero(host.fact) requires nonzero(host.contains)
+ requires nonzero(host.resolve) requires nonzero(host.facts.compare);
+struct CanonicalMergeHost {
+ cfn<u32,address> next;
+ cfn<u32,address> insert;
+};
+extern "C" u32 canonical_merge_additions(address context,CanonicalMergeHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.insert);
+struct CanonicalClosureHost { cfn<u32,address> round; };
+extern "C" void canonical_closure(address context,CanonicalClosureHost host) on cpu
+ requires nonzero(host.round);
+struct CanonicalFoldHost { cfn<u32,address> next; cfn<void,address> append; };
+extern "C" void canonical_fold(address context,CanonicalFoldHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.append);

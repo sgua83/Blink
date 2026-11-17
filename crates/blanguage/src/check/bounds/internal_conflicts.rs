@@ -1,7 +1,7 @@
 //! B decides internal contradictions; the original typed containers own facts and aliases.
 use super::fact_fields::{ScalarView, same_scalar, scalar};
 use super::{
-    Comparison, Fact, Facts, IndexDomain, Operand, Scalar, ScalarPredicate, ValueIdentity,
+    Comparison, Fact, Facts, Operand, Scalar, ScalarPredicate, ValueIdentity,
     fact_fields, map_domain,
 };
 use std::{
@@ -162,26 +162,6 @@ unsafe extern "C" fn predicate(value: Borrowed) -> PredicateView {
     }
 }
 #[repr(C)]
-struct UpperView {
-    identity: Borrowed,
-    distance: u32,
-    present: u32,
-}
-unsafe extern "C" fn upper(value: Borrowed) -> UpperView {
-    match unsafe { &*value.cast::<IndexDomain>() } {
-        IndexDomain::Upper(id, distance) => UpperView {
-            identity: ptr::from_ref(id).cast(),
-            distance: *distance,
-            present: 1,
-        },
-        _ => UpperView {
-            identity: ptr::null(),
-            distance: 0,
-            present: 0,
-        },
-    }
-}
-#[repr(C)]
 struct Scalars {
     values: [Borrowed; 4],
 }
@@ -194,7 +174,7 @@ struct Host {
     same_scalar: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
     scalar: unsafe extern "C" fn(Borrowed) -> ScalarView,
     predicate: unsafe extern "C" fn(Borrowed) -> PredicateView,
-    upper: unsafe extern "C" fn(Borrowed) -> UpperView,
+    upper: unsafe extern "C" fn(Borrowed) -> fact_fields::UpperView,
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::internal_conflict"]
@@ -218,7 +198,7 @@ pub(super) fn conflict(facts: &Facts, roots: &BTreeMap<ValueIdentity, ValueIdent
                 same_scalar,
                 scalar,
                 predicate,
-                upper,
+                upper: fact_fields::upper,
             },
         ) != 0
     }

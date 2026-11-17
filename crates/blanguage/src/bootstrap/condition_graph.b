@@ -713,3 +713,128 @@ extern "C" u32 alias_facts(address context,usize members,u32 inherited,AliasFact
  }
  return host.has_inferred(context);
 }
+
+extern "C" CanonicalInsertion canonical_insert(address context,address candidate,u32 empty,CanonicalInsertHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.subset) requires nonzero(host.prepare)
+ requires nonzero(host.reset) requires nonzero(host.forward) {
+ while(true){
+  CanonicalTerm old=host.next(context);if(old.present==0){break;}
+  if(host.subset(old.value,candidate)!=0){return CanonicalInsertion::Reject;}
+ }
+ if(empty!=0){return CanonicalInsertion::Insert;}
+ host.prepare(context);host.reset(context);
+ while(true){
+  CanonicalTerm old=host.next(context);if(old.present==0){break;}
+  if(host.forward(context,old.value)==0){return CanonicalInsertion::RejectPrepared;}
+ }
+ return CanonicalInsertion::RetainInsert;
+}
+extern "C" u32 canonical_keep(address old,address candidate,address incoming,CanonicalKeepHost host) on cpu
+ requires nonzero(host.subset) requires nonzero(host.reverse) {
+ if(host.subset(candidate,old)!=0){return 0;}
+ return host.reverse(old,incoming);
+}
+extern "C" void canonical_normalize(address context,CanonicalNormalHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.reset) requires nonzero(host.bound)
+ requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.compare)
+ requires nonzero(host.scalar) requires nonzero(host.upper) {
+ while(true){
+  FactView fact=host.next(context);if(fact.present==0){break;}
+  if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){continue;}
+  if(fact.kind==FactKind::Below&&fact.flag==0&&host.compare(fact.first,fact.second)==0){
+   if(host.scalar(fact.scalar).kind<2){continue;}
+  }
+  if(fact.kind==FactKind::Index){
+   InternalUpper upper=host.upper(fact.payload);
+   if(upper.present!=0&&upper.distance==0&&host.compare(fact.first,upper.identity)==0){continue;}
+  }
+  if(fact.kind==FactKind::NonZero){
+   host.reset(context,0);u32 redundant=0;
+   while(true){
+    FactView bound=host.bound(context,0);if(bound.present==0){break;}
+    if(bound.value>1u64&&host.compare(fact.first,bound.first)==0&&host.scalar(bound.scalar).kind==0){redundant=1;break;}
+   }
+   if(redundant!=0){continue;}
+  }
+  host.emit(context,fact);
+ }
+ u32 side=0;
+ while(side<2){
+  host.reset(context,side);
+  while(true){
+   FactView bound=host.bound(context,side);if(bound.present==0){break;}
+   if(side==0&&bound.value==0u64){continue;}
+   if(side==1&&bound.value==bound.mask){continue;}
+   InternalScalar scalar=host.scalar(bound.scalar);
+   FactView zero=bound;zero.kind=FactKind::Zero;
+   if(scalar.kind<2&&host.contains(context,zero)!=0){continue;}
+   if(scalar.kind==0){
+    if(side==0&&bound.value==1u64){bound.kind=FactKind::NonZero;}
+    if(side==1&&bound.value==0u64){bound.kind=FactKind::Zero;}
+   }
+   host.emit(context,bound);
+  }
+  side+=1;
+ }
+}
+extern "C" void canonical_accept(address source,address target,CanonicalAcceptHost host) on cpu
+ requires nonzero(host.conflict) requires nonzero(host.normalize) {
+ if(host.conflict(source)==0){host.normalize(source,target);}
+}
+extern "C" void canonical_either_terms(address context,CanonicalEitherHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.insert) {
+ while(true){CanonicalTerm term=host.next(context);if(term.present==0){return;}host.insert(context,term.value);}
+}
+extern "C" void canonical_product(address context,CanonicalProductHost host) on cpu
+ requires nonzero(host.left) requires nonzero(host.reset) requires nonzero(host.right) requires nonzero(host.union) {
+ while(true){
+  CanonicalTerm left=host.left(context);if(left.present==0){return;}
+  host.reset(context);
+  while(true){CanonicalTerm right=host.right(context);if(right.present==0){break;}host.union(context,left.value,right.value);}
+ }
+}
+extern "C" void canonical_graph(address context,CanonicalGraphHost host) on cpu
+ requires nonzero(host.count) requires nonzero(host.inspect) requires nonzero(host.lookup)
+ requires nonzero(host.empty) requires nonzero(host.leaf) requires nonzero(host.either) requires nonzero(host.both) {
+ usize count=host.count(context);
+ usize at=0u64;
+ while(at<count){
+  usize index=at;at+=1u64;
+  SourceNode node=host.inspect(context,index);
+  if(node.kind==0){host.empty(context,index);continue;}
+  if(node.kind==1){host.leaf(context,index,node.left);continue;}
+  address right=node.right;if(node.kind==4&&node.truth==0){right=node.no;}
+  address left=host.lookup(context,node.left);address other=host.lookup(context,right);
+  if(node.kind==3){host.either(context,index,left,other);}else{host.both(context,index,left,other);}
+ }
+}
+extern "C" void canonical_consensus(address context,CanonicalConsensusHost host) on cpu
+ requires nonzero(host.left) requires nonzero(host.right_begin) requires nonzero(host.right)
+ requires nonzero(host.facts_begin) requires nonzero(host.fact) requires nonzero(host.contains)
+ requires nonzero(host.resolve) requires nonzero(host.facts.compare) {
+ while(true){
+  CanonicalTerm left=host.left(context);if(left.present==0){return;}
+  host.right_begin(context,left.value);
+  while(true){
+   CanonicalTerm right=host.right(context);if(right.present==0){break;}
+   host.facts_begin(context,left.value);
+   while(true){
+    FactView fact=host.fact(context);if(fact.present==0){break;}
+    FactView other=negated_fact(fact,host.facts);
+    if(other.present!=0&&host.contains(right.value,other)!=0){host.resolve(context,left.value,right.value,fact,other);}
+   }
+  }
+ }
+}
+extern "C" u32 canonical_merge_additions(address context,CanonicalMergeHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.insert) {
+ u32 changed=0;while(host.next(context)!=0){changed|=host.insert(context);}return changed;
+}
+extern "C" void canonical_closure(address context,CanonicalClosureHost host) on cpu
+ requires nonzero(host.round) {
+ while(host.round(context)!=0){}
+}
+extern "C" void canonical_fold(address context,CanonicalFoldHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.append) {
+ while(host.next(context)!=0){host.append(context);}
+}

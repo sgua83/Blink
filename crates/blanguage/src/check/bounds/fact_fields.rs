@@ -169,24 +169,6 @@ pub(super) struct Host {
     pub(super) unsigned32: Borrowed,
     pub(super) compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
 }
-unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::negated_fact"]
-    fn evaluate(fact: Fields, host: Host) -> Fields;
-}
-pub(super) fn negated(fact: Fact) -> Option<Fact> {
-    let unsigned32 = Scalar::U32;
-    let fields = unsafe {
-        evaluate(
-            Fields::from(&fact),
-            Host {
-                unsigned32: ptr::from_ref(&unsigned32).cast(),
-                compare,
-            },
-        )
-    };
-    (fields.present != 0).then(|| unsafe { key(fields) })
-}
-
 #[repr(C)]
 pub(super) struct ScalarView {
     kind: u32,
@@ -217,4 +199,41 @@ pub(super) unsafe extern "C" fn same_scalar(a: Borrowed, b: Borrowed) -> u32 {
 
 pub(super) unsafe extern "C" fn compare_scalars(a: Borrowed, b: Borrowed) -> i32 {
     unsafe { (&*a.cast::<Scalar>()).cmp(&*b.cast::<Scalar>()) as i32 }
+}
+
+#[repr(C)]
+pub(super) struct UpperView {
+    identity: Borrowed,
+    distance: u32,
+    present: u32,
+}
+pub(super) unsafe extern "C" fn upper(value: Borrowed) -> UpperView {
+    match unsafe { &*value.cast::<IndexDomain>() } {
+        IndexDomain::Upper(id, distance) => UpperView {
+            identity: ptr::from_ref(id).cast(),
+            distance: *distance,
+            present: 1,
+        },
+        _ => UpperView {
+            identity: ptr::null(),
+            distance: 0,
+            present: 0,
+        },
+    }
+}
+
+pub(super) fn bound(id: &ValueIdentity, scalar: &Scalar, value: u64, minimum: bool) -> Fields {
+    Fields {
+        present: 1,
+        kind: if minimum {
+            Kind::Minimum
+        } else {
+            Kind::Maximum
+        },
+        first: ptr::from_ref(id).cast(),
+        scalar: ptr::from_ref(scalar).cast(),
+        value,
+        mask: scalar.bit_mask(),
+        ..Fields::default()
+    }
 }
