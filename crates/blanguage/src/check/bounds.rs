@@ -1952,6 +1952,23 @@ impl Default for Condition {
 }
 #[derive(Clone)]
 pub(super) struct Clause(ManuallyDrop<Arc<ClauseNode>>);
+pub(super) struct GuardProjection<'a> {
+    source: &'a Clause,
+    bindings: &'a BTreeMap<ValueIdentity, Proof>,
+    projected: std::cell::OnceCell<Clause>,
+}
+impl<'a> GuardProjection<'a> {
+    pub(super) fn new(source: &'a Clause, bindings: &'a BTreeMap<ValueIdentity, Proof>) -> Self {
+        Self { source, bindings, projected: std::cell::OnceCell::new() }
+    }
+    pub(super) fn project(&self, source: &Clause, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
+        if Arc::ptr_eq(&source.0, &self.source.0) && std::ptr::eq(bindings, self.bindings) {
+            self.projected.get_or_init(|| self.source.project_guard(self.bindings)).clone()
+        } else {
+            source.project_guard(bindings)
+        }
+    }
+}
 impl Default for Clause {
     fn default() -> Self {
         Self::facts(Facts::new())
