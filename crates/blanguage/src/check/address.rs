@@ -1046,14 +1046,14 @@ impl Builder<'_> {
             owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()
     }
     pub(super) fn update_address_elements(&mut self,borrow:&view::Borrow,effect:&MemoryEffect)->Result<()> {
-        let data=borrow.sources.entries().filter(|(_,when)|when.possible()).filter_map(|(source,when)|{
+        let data=borrow.sources.entries().filter_map(|(source,when)|{
             let view::Source::Position(origin)=source else{return None;};
             if !origin.writable{return None;}
             match &origin.root {
-                Root::Resource{borrow:resource,index}|Root::Dataset{borrow:resource,index}=>Some((resource.restricted(&when),origin.words.to_vec(),index.map(|index|{
+                Root::Resource{borrow:resource,index}|Root::Dataset{borrow:resource,index} if when.possible()=>Some((resource.restricted(&when),origin.words.to_vec(),index.map(|index|{
                     let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)
                 }))),
-                Root::External(Identity::Storage(resource))=>Some((resource.resources().restricted(&when),resource.sources.iter().filter_map(|source|match source{view::Source::Position(parent)=>Some(parent.words.iter().copied()),_=>None}).flatten().collect(),None)),
+                Root::External(Identity::Storage(resource)) if when.possible()=>Some((resource.resources().restricted(&when),resource.sources.iter().filter_map(|source|match source{view::Source::Position(parent)=>Some(parent.words.iter().copied()),_=>None}).flatten().collect(),None)),
                 _=>None,
             }
         }).collect::<Vec<_>>();
