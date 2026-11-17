@@ -48,10 +48,13 @@ u32 propagate(address context,Graph graph,Host host) on cpu
 
 Graph query_graph(address context,Host host) on cpu
  requires nonzero(host.index) requires nonzero(host.node_count) requires nonzero(host.inspect)
- requires nonzero(host.define) requires nonzero(host.parent_push) requires nonzero(host.prepare) {
+ requires nonzero(host.define) requires nonzero(host.parent_push) requires nonzero(host.prepare)
+ requires nonzero(host.pending_push) {
  usize at=0u64;
  while(at<host.node_count(context)){
   SourceNode source=host.inspect(context,at);
+  if(source.kind==0){host.pending_push(context,at,0);}
+  else if(source.kind==1&&source.empty!=0){host.pending_push(context,at,1);}
   if(source.kind>=2){
    address child=source.right;
    if(source.kind==4&&source.truth==0){child=source.no;}
@@ -65,7 +68,6 @@ Graph query_graph(address context,Host host) on cpu
 }
 
 u32 query_search(usize first,usize second,u32 right_truth,address context,Graph graph,Host host) on cpu
- requires nonzero(host.node_count) requires nonzero(host.inspect)
  requires nonzero(host.pending_push) requires nonzero(host.pending_pop) requires nonzero(host.pending_clear)
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
@@ -74,12 +76,6 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative) {
  address values=graph.values;usize at=0u64;
- while(at<host.node_count(context)){
-  SourceNode source=host.inspect(context,at);
-  if(source.kind==0){host.pending_push(context,at,0);}
-  else if(source.kind==1&&source.empty!=0){host.pending_push(context,at,1);}
-  at+=1u64;
- }
  host.pending_push(context,first,1);host.pending_push(context,second,right_truth);
  usize consumed=0u64;usize negative=0u64;
  while(true){
@@ -179,6 +175,13 @@ extern "C" u32 equivalent(address left,address right,address context,Host host,c
  Span assigned=host.trail(context);usize at=assigned.count;
  while(at>0u64){at-=1u64;set_value(graph.values,word_at(assigned,at),0);}
  reset(context);
+ at=0u64;
+ while(at<host.node_count(context)){
+  SourceNode source=host.inspect(context,at);
+  if(source.kind==0){host.pending_push(context,at,0);}
+  else if(source.kind==1&&source.empty!=0){host.pending_push(context,at,1);}
+  at+=1u64;
+ }
  return query_search(second,first,0,context,graph,host)==0 ? 1 : 0;
 }
 
