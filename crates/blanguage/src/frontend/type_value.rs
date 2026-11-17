@@ -1,5 +1,6 @@
 //! B controls ordinary type expansion. This file lends the original World,
-//! declared source and single semantic containers to that synchronous consumer.
+//! declared source and single semantic containers to that query. B returns real
+//! semantic child requests; those World queries run after native stepping returns.
 use crate::{
     Diagnostic, Result, Source, World,
     ast::*,
@@ -86,13 +87,7 @@ impl Facts {
     }
 }
 #[repr(C)]
-struct Value {
-    ready: u32,
-    value: u32,
-}
-#[repr(C)]
 struct Count {
-    ready: u32,
     present: u32,
     value: u32,
 }
@@ -212,22 +207,55 @@ struct ReleaseState {
     identity: Option<String>,
     instance: Option<generics::Instance>,
 }
+enum InputOwner<'a> {Borrowed(&'a TypeName),Shared(Arc<TypeName>)}
+// A direct view into the one actual input tree. Root calls borrow their input;
+// bound inputs share their existing allocation with real child consumers.
+struct TypeInput<'a> {owner:InputOwner<'a>,value:*const TypeName}
+impl<'a> TypeInput<'a> {
+    fn borrowed(value:&'a TypeName)->Self {Self{owner:InputOwner::Borrowed(value),value}}
+    fn shared(value:&Arc<TypeName>)->Self {Self{owner:InputOwner::Shared(value.clone()),value:Arc::as_ptr(value)}}
+    fn child(&self,value:TypeInfo)->Self {
+        let owner=match &self.owner {
+            InputOwner::Borrowed(root)=>InputOwner::Borrowed(root),
+            InputOwner::Shared(root)=>InputOwner::Shared(root.clone()),
+        };
+        Self{owner,value:value.value.cast()}
+    }
+}
+impl std::ops::Deref for TypeInput<'_> {
+    type Target=TypeName;
+    fn deref(&self)->&TypeName {unsafe{&*self.value}}
+}
+
 struct Frame<'a> {
     context: Context<'a>,
-    input: &'a TypeName,
+    input: TypeInput<'a>,
     builtin: Builtin,
-    stack: &'a mut BTreeSet<String>,
+    stack: *mut BTreeSet<String>,
     current: Option<Ty>,
     record: Option<RecordState<'a>>,
     release: Option<ReleaseState>,
     payloads: Vec<Ty>,
     // One actual bound temporary, kept at a stable address for B's borrow.
     // It is moved here, not cloned into a source/type mirror.
-    bound: Option<Box<TypeName>>,
+    bound: Option<Arc<TypeName>>,
     field_count: Option<Shape>,
     reference: Option<TypeName>,
     error: Option<Diagnostic>,
 }
+// Only this active native call borrows data mutably. Moving the active-frame Vec
+// cannot move the source tree or a shared bound input referenced by a cursor.
+struct ActiveFrame<'a> {cursor:Cursor,data:Frame<'a>}
+impl<'a> ActiveFrame<'a> {
+    fn new(context:Context<'a>,input:TypeInput<'a>,stack:*mut BTreeSet<String>)->Self {
+        let descriptor=TypeInfo::of(&input);
+        let builtin=Builtin::recognize(&input.name);
+        let cursor=unsafe{type_start(descriptor,builtin.kind)};
+        Self{cursor,data:Frame{context,input,builtin,stack,current:None,record:None,release:None,
+            payloads:Vec::new(),bound:None,field_count:None,reference:None,error:None}}
+    }
+}
+
 unsafe fn frame<'a>(raw: *mut c_void) -> &'a mut Frame<'a> {
     unsafe { &mut *raw.cast() }
 }
@@ -236,8 +264,8 @@ unsafe fn input<'a>(value: TypeInfo) -> &'a TypeName {
 }
 fn scope<'a>(
     context: Context<'a>,
-    record: &'a Option<RecordState<'_>>,
-    release: &'a Option<ReleaseState>,
+    record: &Option<RecordState<'a>>,
+    release: &Option<ReleaseState>,
     site: Site,
     index: u64,
 ) -> Context<'a> {
@@ -259,13 +287,8 @@ fn scope<'a>(
             }
         }
         Site::CleanupParameter => {
-            let d = &release
-                .as_ref()
-                .unwrap()
-                .instance
-                .as_ref()
-                .unwrap()
-                .definition;
+            // Instance formation shares this World declaration's Definition Arc.
+            let d=&context.world.functions[&release.as_ref().unwrap().name];
             Context {
                 world: context.world,
                 source: &d.source,
@@ -273,26 +296,6 @@ fn scope<'a>(
                 module: &d.module,
                 imports: &d.imports,
             }
-        }
-    }
-}
-fn read_child(f: &mut Frame<'_>, value: TypeInfo, site: Site, index: u64) -> bool {
-    let c = scope(f.context, &f.record, &f.release, site, index);
-    match c.world.ty_inner(
-        unsafe { input(value) },
-        c.source,
-        c.span,
-        c.module,
-        c.imports,
-        f.stack,
-    ) {
-        Ok(ty) => {
-            f.current = Some(ty);
-            true
-        }
-        Err(error) => {
-            f.error = Some(error);
-            false
         }
     }
 }
@@ -425,23 +428,12 @@ unsafe extern "C" fn failure(
         message,
     });
 }
-unsafe extern "C" fn function(raw: *mut c_void) -> bool {
-    let f = unsafe { frame(raw) };
-    let c = f.context;
-    match c
-        .world
-        .c_function_reference(f.input, c.source, c.span, c.module, c.imports)
-    {
-        Ok(value) => {
-            f.current = Some(value.into_ty());
-            true
-        }
-        Err(error) => {
-            f.error = Some(error);
-            false
-        }
-    }
+fn function(f:&mut Frame<'_>)->Result<()> {
+    let c=f.context;
+    let value=c.world.c_function_reference(&f.input,c.source,c.span,c.module,c.imports)?;
+    f.current=Some(value.into_ty());Ok(())
 }
+
 unsafe extern "C" fn builtin(raw: *mut c_void) {
     let f = unsafe { frame(raw) };
     f.current = Ty::from_builtin(f.builtin);
@@ -482,30 +474,13 @@ unsafe extern "C" fn argument(parent: *mut c_void, index: u64) -> TypeInfo {
         GenericArgument::Value(_) => TypeInfo::absent(),
     }
 }
-unsafe extern "C" fn child(raw: *mut c_void, value: TypeInfo, site: Site, index: u64) -> bool {
-    read_child(unsafe { frame(raw) }, value, site, index)
+fn dataset(f:&mut Frame<'_>,value:TypeInfo,site:Site,index:u64)->Result<()> {
+    let c=scope(f.context,&f.record,&f.release,site,index);
+    let syntax=f.current.as_ref().unwrap().syntax();
+    let count=c.world.shape(&unsafe{input(value)}.count,c.source,c.span,c.module,c.imports)?;
+    f.current=Some(Ty::owned_dataset(syntax,count));Ok(())
 }
-unsafe extern "C" fn dataset(raw: *mut c_void, value: TypeInfo, site: Site, index: u64) -> bool {
-    let f = unsafe { frame(raw) };
-    let c = scope(f.context, &f.record, &f.release, site, index);
-    let syntax = f.current.as_ref().unwrap().syntax();
-    match c.world.shape(
-        &unsafe { input(value) }.count,
-        c.source,
-        c.span,
-        c.module,
-        c.imports,
-    ) {
-        Ok(count) => {
-            f.current = Some(Ty::owned_dataset(syntax, count));
-            true
-        }
-        Err(error) => {
-            f.error = Some(error);
-            false
-        }
-    }
-}
+
 unsafe extern "C" fn cleanup(raw: *mut c_void, value: TypeInfo) -> CleanupInfo {
     let f = unsafe { frame(raw) };
     let name = unsafe { input(value) };
@@ -556,105 +531,58 @@ unsafe extern "C" fn owner(raw: *mut c_void) {
     let r = f.release.as_mut().unwrap();
     r.owner = Some(Ty::owned(f.current.take().unwrap(), r.name.clone()));
 }
-unsafe extern "C" fn enter_cleanup(raw: *mut c_void) -> bool {
+unsafe extern "C" fn enter_cleanup(raw: *mut c_void) -> u32 {
     let f = unsafe { frame(raw) };
     let r = f.release.as_mut().unwrap();
     let identity = format!("owned contract:{}", r.owner.as_ref().unwrap().name);
-    let entered = f.stack.insert(identity.clone());
+    let entered = unsafe{&mut *f.stack}.insert(identity.clone());
     r.identity = Some(identity);
-    entered
+    u32::from(entered)
 }
-unsafe extern "C" fn specialize_cleanup(raw: *mut c_void) -> bool {
-    let f = unsafe { frame(raw) };
-    let r = f.release.as_mut().unwrap();
-    let definition = &f.context.world.functions[&r.name];
-    match crate::check::generics::specialize(
-        f.context.world,
-        &r.name,
-        &[crate::check::generics::Actual::value(
-            &r.owner.as_ref().unwrap().arguments[0],
-        )],
-        None,
-        (&definition.source, &definition.module, &definition.imports),
-        definition.function.span(),
-    ) {
-        Ok(instance) => {
-            r.instance = Some(instance);
-            true
-        }
-        Err(error) => {
-            f.error = Some(Diagnostic {
-                source: f.context.source.clone(),
-                span: f.context.span,
-                code: error.code,
-                message: format!("释放函数 {}：{}", r.name, error.message),
-            });
-            false
-        }
-    }
+fn specialize_cleanup(f:&mut Frame<'_>)->Result<()> {
+    let r=f.release.as_mut().unwrap();
+    let definition=&f.context.world.functions[&r.name];
+    let instance=crate::check::generics::specialize(f.context.world,&r.name,
+        &[crate::check::generics::Actual::value(&r.owner.as_ref().unwrap().arguments[0])],None,
+        (&definition.source,&definition.module,&definition.imports),definition.function.span())
+        .map_err(|error|Diagnostic{source:f.context.source.clone(),span:f.context.span,code:error.code,
+            message:format!("释放函数 {}：{}",r.name,error.message)})?;
+    r.instance=Some(instance);Ok(())
 }
-unsafe extern "C" fn bind(raw: *mut c_void, which: Binding, index: u64) -> TypeInfo {
-    let f = unsafe { frame(raw) };
-    let value = match which {
-        Binding::Representation | Binding::Field | Binding::Variant => {
-            let r = f.record.as_ref().unwrap();
-            let (node, span) = match which {
-                Binding::Representation => (r.source.enumeration().unwrap(), r.source.span()),
-                Binding::Field => {
-                    let field = r.source.fields().at(index as usize);
-                    (field.ty(), field.span())
-                }
-                _ => {
-                    let variant = r.source.variants().at(index as usize);
-                    (variant.payload(), variant.span())
-                }
+
+fn bind(f:&mut Frame<'_>,which:Binding,index:u64)->Result<TypeInfo> {
+    let value=match which {
+        Binding::Representation|Binding::Field|Binding::Variant=>{
+            let r=f.record.as_ref().unwrap();
+            let(node,span)=match which {
+                Binding::Representation=>(r.source.enumeration().unwrap(),r.source.span()),
+                Binding::Field=>{let field=r.source.fields().at(index as usize);(field.ty(),field.span())},
+                _=>{let variant=r.source.variants().at(index as usize);(variant.payload(),variant.span())},
             };
-            r.bindings.as_ref().unwrap().type_name(
-                f.context.world,
-                &node,
-                (r.context.source, r.context.module, r.context.imports),
-                span,
-            )
+            r.bindings.as_ref().unwrap().type_name(f.context.world,&node,
+                (r.context.source,r.context.module,r.context.imports),span)?
         }
-        Binding::CleanupResult => {
-            let i = f.release.as_ref().unwrap().instance.as_ref().unwrap();
-            let d = &i.definition;
-            i.bindings.type_name(
-                f.context.world,
-                &d.function.result(),
-                (&d.source, &d.module, &d.imports),
-                d.function.span(),
-            )
+        Binding::CleanupResult=>{
+            let i=f.release.as_ref().unwrap().instance.as_ref().unwrap();let d=&i.definition;
+            i.bindings.type_name(f.context.world,&d.function.result(),
+                (&d.source,&d.module,&d.imports),d.function.span())?
         }
-        Binding::CleanupParameter => {
-            let i = f.release.as_ref().unwrap().instance.as_ref().unwrap();
-            let d = &i.definition;
-            let parameter = d.function.params().at(0);
-            i.bindings.type_name(
-                f.context.world,
-                &parameter.ty(),
-                (&d.source, &d.module, &d.imports),
-                parameter.span(),
-            )
+        Binding::CleanupParameter=>{
+            let i=f.release.as_ref().unwrap().instance.as_ref().unwrap();let d=&i.definition;
+            let parameter=d.function.params().at(0);
+            i.bindings.type_name(f.context.world,&parameter.ty(),
+                (&d.source,&d.module,&d.imports),parameter.span())?
         }
     };
-    match value {
-        Ok(value) => {
-            f.bound = Some(Box::new(value));
-            TypeInfo::of(f.bound.as_ref().unwrap())
-        }
-        Err(error) => {
-            f.error = Some(error);
-            TypeInfo::absent()
-        }
-    }
+    f.bound=Some(Arc::new(value));Ok(TypeInfo::of(f.bound.as_ref().unwrap()))
 }
+
 unsafe extern "C" fn leave_cleanup(raw: *mut c_void) {
     let f = unsafe { frame(raw) };
-    f.stack
+    unsafe{&mut *f.stack}
         .remove(f.release.as_ref().unwrap().identity.as_ref().unwrap());
 }
-unsafe extern "C" fn owner_matches(raw: *mut c_void) -> bool {
+unsafe extern "C" fn owner_matches(raw: *mut c_void) -> u32 {
     let f = unsafe { frame(raw) };
     let expected = f.current.as_ref().unwrap();
     let payload = &f
@@ -665,11 +593,11 @@ unsafe extern "C" fn owner_matches(raw: *mut c_void) -> bool {
         .as_ref()
         .unwrap()
         .arguments[0];
-    if let (Some(expected), Some(actual)) = (&expected.dataset, &payload.dataset) {
+    u32::from(if let (Some(expected), Some(actual)) = (&expected.dataset, &payload.dataset) {
         expected == actual
     } else {
         expected == payload
-    }
+    })
 }
 unsafe extern "C" fn use_owner(raw: *mut c_void) {
     let f = unsafe { frame(raw) };
@@ -679,31 +607,18 @@ unsafe extern "C" fn save_payload(raw: *mut c_void) {
     let f = unsafe { frame(raw) };
     f.payloads.push(f.current.take().unwrap());
 }
-unsafe extern "C" fn result(raw: *mut c_void) -> bool {
+unsafe extern "C" fn result(raw: *mut c_void) -> u32 {
     let f = unsafe { frame(raw) };
     let error = f.payloads.pop().unwrap();
     let ok = f.payloads.pop().unwrap();
     f.current = Ty::result(ok, error);
-    f.current.is_some()
+    u32::from(f.current.is_some())
 }
-unsafe extern "C" fn shape_argument(raw: *mut c_void, index: u64) -> Value {
-    let f = unsafe { frame(raw) };
-    let c = f.context;
-    let shape = f.input.arguments[index as usize].shape().unwrap();
-    match c
-        .world
-        .shape(&Some(shape), c.source, c.span, c.module, c.imports)
-    {
-        Ok(value) => Value {
-            ready: 1,
-            value: value.unwrap(),
-        },
-        Err(error) => {
-            f.error = Some(error);
-            Value { ready: 0, value: 0 }
-        }
-    }
+fn shape_argument(f:&mut Frame<'_>,index:u64)->Result<u32> {
+    let c=f.context;let shape=f.input.arguments[index as usize].shape().unwrap();
+    Ok(c.world.shape(&Some(shape),c.source,c.span,c.module,c.imports)?.unwrap())
 }
+
 unsafe extern "C" fn array_layout(raw: *mut c_void, count: u32) -> Extent {
     let f = unsafe { frame(raw) };
     let element = f.current.as_ref().unwrap();
@@ -753,92 +668,86 @@ unsafe extern "C" fn array_component(raw: *mut c_void, index: u64, offset: u32) 
 }
 
 #[repr(C)]
+struct Cursor {
+    value:TypeInfo,kind:Kind,stage:u32,wrap:u32,index:u64,
+    temporary:TypeInfo,record:RecordInfo,components:u64,scalar:u32,count:Count,
+}
+#[repr(u32)]
+enum Query {Complete,Function,Child,Dataset,SpecializeCleanup,Bind,ShapeArgument,Family,VariantTag,Reference,FieldCount,RecordStride}
+#[repr(C)]
+struct Request {kind:Query,site:Site,binding:Binding,index:u64}
+
+#[repr(C)]
 struct Host {
     failure: unsafe extern "C" fn(*mut c_void, Site, u64, Problem, u64) -> (),
-    function: unsafe extern "C" fn(*mut c_void) -> bool,
     builtin: unsafe extern "C" fn(*mut c_void) -> (),
     unit: unsafe extern "C" fn(*mut c_void) -> (),
     view: unsafe extern "C" fn(*mut c_void) -> (),
     argument: unsafe extern "C" fn(*mut c_void, u64) -> TypeInfo,
-    child: unsafe extern "C" fn(*mut c_void, TypeInfo, Site, u64) -> bool,
-    dataset: unsafe extern "C" fn(*mut c_void, TypeInfo, Site, u64) -> bool,
     cleanup: unsafe extern "C" fn(*mut c_void, TypeInfo) -> CleanupInfo,
     owner: unsafe extern "C" fn(*mut c_void) -> (),
-    enter_cleanup: unsafe extern "C" fn(*mut c_void) -> bool,
-    specialize_cleanup: unsafe extern "C" fn(*mut c_void) -> bool,
-    bind: unsafe extern "C" fn(*mut c_void, Binding, u64) -> TypeInfo,
+    enter_cleanup: unsafe extern "C" fn(*mut c_void) -> u32,
     leave_cleanup: unsafe extern "C" fn(*mut c_void) -> (),
-    owner_matches: unsafe extern "C" fn(*mut c_void) -> bool,
+    owner_matches: unsafe extern "C" fn(*mut c_void) -> u32,
     use_owner: unsafe extern "C" fn(*mut c_void) -> (),
     save_payload: unsafe extern "C" fn(*mut c_void) -> (),
-    result: unsafe extern "C" fn(*mut c_void) -> bool,
-    shape_argument: unsafe extern "C" fn(*mut c_void, u64) -> Value,
+    result: unsafe extern "C" fn(*mut c_void) -> u32,
     array_layout: unsafe extern "C" fn(*mut c_void, u32) -> Extent,
     array: unsafe extern "C" fn(*mut c_void, u32, u32) -> (),
     component_offset: unsafe extern "C" fn(*mut c_void, u64) -> u32,
     array_component: unsafe extern "C" fn(*mut c_void, u64, u32) -> (),
     record: unsafe extern "C" fn(*mut c_void) -> RecordInfo,
-    family: unsafe extern "C" fn(*mut c_void, u64) -> Value,
     type_argument: unsafe extern "C" fn(*mut c_void, u64) -> (),
-    const_domain: unsafe extern "C" fn(*mut c_void, u64, u32) -> bool,
+    const_domain: unsafe extern "C" fn(*mut c_void, u64, u32) -> u32,
     const_argument: unsafe extern "C" fn(*mut c_void, u64, u32) -> (),
     arguments_done: unsafe extern "C" fn(*mut c_void) -> (),
-    enter_record: unsafe extern "C" fn(*mut c_void) -> bool,
+    enter_record: unsafe extern "C" fn(*mut c_void) -> u32,
     leave_record: unsafe extern "C" fn(*mut c_void) -> (),
     simple_enum: unsafe extern "C" fn(*mut c_void) -> (),
     begin_variants: unsafe extern "C" fn(*mut c_void) -> (),
-    unique_variant_name: unsafe extern "C" fn(*mut c_void, u64) -> bool,
-    variant_tag: unsafe extern "C" fn(*mut c_void, u64) -> Value,
-    unique_variant_tag: unsafe extern "C" fn(*mut c_void, u32) -> bool,
+    unique_variant_name: unsafe extern "C" fn(*mut c_void, u64) -> u32,
+    unique_variant_tag: unsafe extern "C" fn(*mut c_void, u32) -> u32,
     variant: unsafe extern "C" fn(*mut c_void, u64, u32) -> (),
-    variants_done: unsafe extern "C" fn(*mut c_void) -> bool,
+    variants_done: unsafe extern "C" fn(*mut c_void) -> u32,
     begin_record: unsafe extern "C" fn(*mut c_void) -> (),
-    unique_field: unsafe extern "C" fn(*mut c_void, u64) -> bool,
+    unique_field: unsafe extern "C" fn(*mut c_void, u64) -> u32,
     dataset_field: unsafe extern "C" fn(*mut c_void) -> TypeInfo,
-    reference: unsafe extern "C" fn(*mut c_void, TypeInfo, Site, u64) -> bool,
-    field_count: unsafe extern "C" fn(*mut c_void, u64) -> Count,
     reference_dataset: unsafe extern "C" fn(*mut c_void, Count) -> (),
-    field: unsafe extern "C" fn(*mut c_void, u64) -> bool,
-    record_done: unsafe extern "C" fn(*mut c_void) -> bool,
-    record_stride: unsafe extern "C" fn(*mut c_void) -> Value,
-    stride_accepts: unsafe extern "C" fn(*mut c_void, u32) -> bool,
+    field: unsafe extern "C" fn(*mut c_void, u64) -> u32,
+    record_done: unsafe extern "C" fn(*mut c_void) -> u32,
+    stride_accepts: unsafe extern "C" fn(*mut c_void, u32) -> u32,
     set_stride: unsafe extern "C" fn(*mut c_void, u32) -> (),
     use_record: unsafe extern "C" fn(*mut c_void) -> (),
     facts: unsafe extern "C" fn(*mut c_void) -> Facts,
-    views: unsafe extern "C" fn(*mut c_void) -> bool,
-    task: unsafe extern "C" fn(*mut c_void, u32) -> bool,
+    views: unsafe extern "C" fn(*mut c_void) -> u32,
+    task: unsafe extern "C" fn(*mut c_void, u32) -> u32,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.type_value::resolve"]
-    fn resolve_b(value: TypeInfo, kind: Kind, host: Host, context: *mut c_void) -> bool;
+    #[link_name="bootstrap.type_value::type_start"]
+    fn type_start(value:TypeInfo,kind:Kind)->Cursor;
+    #[link_name="bootstrap.type_value::type_step"]
+    fn type_step(state:*mut Cursor,host:Host,context:*mut c_void)->Request;
 }
 fn host() -> Host {
     Host {
         failure,
-        function,
         builtin,
         unit,
         view,
         argument,
-        child,
-        dataset,
         cleanup,
         owner,
         enter_cleanup,
-        specialize_cleanup,
-        bind,
         leave_cleanup,
         owner_matches,
         use_owner,
         save_payload,
         result,
-        shape_argument,
         array_layout,
         array,
         component_offset,
         array_component,
         record,
-        family,
         type_argument,
         const_domain,
         const_argument,
@@ -848,19 +757,15 @@ fn host() -> Host {
         simple_enum,
         begin_variants,
         unique_variant_name,
-        variant_tag,
         unique_variant_tag,
         variant,
         variants_done,
         begin_record,
         unique_field,
         dataset_field,
-        reference,
-        field_count,
         reference_dataset,
         field,
         record_done,
-        record_stride,
         stride_accepts,
         set_stride,
         use_record,
@@ -869,6 +774,7 @@ fn host() -> Host {
         task,
     }
 }
+
 
 unsafe extern "C" fn record(raw: *mut c_void) -> RecordInfo {
     let f = unsafe { frame(raw) };
@@ -933,30 +839,12 @@ unsafe extern "C" fn record(raw: *mut c_void) -> RecordInfo {
     });
     info
 }
-unsafe extern "C" fn family(raw: *mut c_void, index: u64) -> Value {
-    let f = unsafe { frame(raw) };
-    let r = f.record.as_ref().unwrap();
-    let parameter = r.source.types().at(index as usize);
-    let c = r.context;
-    match c.world.family_accepts(
-        &parameter.family(),
-        f.current.as_ref().unwrap(),
-        c.source,
-        c.span,
-        c.module,
-        c.imports,
-        f.stack,
-    ) {
-        Ok(value) => Value {
-            ready: 1,
-            value: u32::from(value),
-        },
-        Err(error) => {
-            f.error = Some(error);
-            Value { ready: 0, value: 0 }
-        }
-    }
+fn family(f:&mut Frame<'_>,index:u64)->Result<bool> {
+    let r=f.record.as_ref().unwrap();let parameter=r.source.types().at(index as usize);let c=r.context;
+    c.world.family_accepts(&parameter.family(),f.current.as_ref().unwrap(),
+        c.source,c.span,c.module,c.imports,unsafe{&mut *f.stack})
 }
+
 unsafe extern "C" fn type_argument(raw: *mut c_void, index: u64) {
     let f = unsafe { frame(raw) };
     let r = f.record.as_mut().unwrap();
@@ -967,15 +855,15 @@ unsafe extern "C" fn type_argument(raw: *mut c_void, index: u64) {
     );
     r.arguments.push(actual);
 }
-unsafe extern "C" fn const_domain(raw: *mut c_void, index: u64, value: u32) -> bool {
-    unsafe { frame(raw) }
+unsafe extern "C" fn const_domain(raw: *mut c_void, index: u64, value: u32) -> u32 {
+    u32::from(unsafe { frame(raw) }
         .record
         .as_ref()
         .unwrap()
         .source
         .values()
         .at(index as usize)
-        .accepts_const(value)
+        .accepts_const(value))
 }
 unsafe extern "C" fn const_argument(raw: *mut c_void, index: u64, value: u32) {
     let r = unsafe { frame(raw) }.record.as_mut().unwrap();
@@ -999,13 +887,13 @@ unsafe extern "C" fn arguments_done(raw: *mut c_void) {
         );
     }
 }
-unsafe extern "C" fn enter_record(raw: *mut c_void) -> bool {
+unsafe extern "C" fn enter_record(raw: *mut c_void) -> u32 {
     let f = unsafe { frame(raw) };
-    f.stack.insert(f.record.as_ref().unwrap().key.clone())
+    u32::from(unsafe{&mut *f.stack}.insert(f.record.as_ref().unwrap().key.clone()))
 }
 unsafe extern "C" fn leave_record(raw: *mut c_void) {
     let f = unsafe { frame(raw) };
-    f.stack.remove(&f.record.as_ref().unwrap().key);
+    unsafe{&mut *f.stack}.remove(&f.record.as_ref().unwrap().key);
 }
 unsafe extern "C" fn simple_enum(raw: *mut c_void) {
     let f = unsafe { frame(raw) };
@@ -1017,41 +905,25 @@ unsafe extern "C" fn begin_variants(raw: *mut c_void) {
     let f = unsafe { frame(raw) };
     f.record.as_mut().unwrap().representation = f.current.take();
 }
-unsafe extern "C" fn unique_variant_name(raw: *mut c_void, index: u64) -> bool {
+unsafe extern "C" fn unique_variant_name(raw: *mut c_void, index: u64) -> u32 {
     let r = unsafe { frame(raw) }.record.as_mut().unwrap();
-    r.names
-        .insert(r.source.variants().at(index as usize).name().to_owned())
+    u32::from(r.names
+        .insert(r.source.variants().at(index as usize).name().to_owned()))
 }
-unsafe extern "C" fn variant_tag(raw: *mut c_void, index: u64) -> Value {
-    let f = unsafe { frame(raw) };
-    let r = f.record.as_ref().unwrap();
-    let variant = r.source.variants().at(index as usize);
-    let expression = variant.discriminant();
-    let c = r.context;
-    match crate::check::variant_discriminant(
-        c.world,
-        &format!("{}::{}", r.key, variant.name()),
-        c.source,
-        c.module,
-        c.imports,
-        r.representation.as_ref().unwrap(),
-        &expression,
-        r.bindings.as_ref().unwrap(),
-    ) {
-        Ok(value) => Value { ready: 1, value },
-        Err(error) => {
-            f.error = Some(error);
-            Value { ready: 0, value: 0 }
-        }
-    }
+fn variant_tag(f:&mut Frame<'_>,index:u64)->Result<u32> {
+    let r=f.record.as_ref().unwrap();let variant=r.source.variants().at(index as usize);
+    let expression=variant.discriminant();let c=r.context;
+    crate::check::variant_discriminant(c.world,&format!("{}::{}",r.key,variant.name()),
+        c.source,c.module,c.imports,r.representation.as_ref().unwrap(),&expression,r.bindings.as_ref().unwrap())
 }
-unsafe extern "C" fn unique_variant_tag(raw: *mut c_void, tag: u32) -> bool {
-    unsafe { frame(raw) }
+
+unsafe extern "C" fn unique_variant_tag(raw: *mut c_void, tag: u32) -> u32 {
+    u32::from(unsafe { frame(raw) }
         .record
         .as_mut()
         .unwrap()
         .tags
-        .insert(tag)
+        .insert(tag))
 }
 unsafe extern "C" fn variant(raw: *mut c_void, index: u64, tag: u32) {
     let f = unsafe { frame(raw) };
@@ -1062,7 +934,7 @@ unsafe extern "C" fn variant(raw: *mut c_void, index: u64, tag: u32) {
         ty: Box::new(f.current.take().unwrap()),
     });
 }
-unsafe extern "C" fn variants_done(raw: *mut c_void) -> bool {
+unsafe extern "C" fn variants_done(raw: *mut c_void) -> u32 {
     let r = unsafe { frame(raw) }.record.as_mut().unwrap();
     let tag = r.representation.as_ref().unwrap().components[0].0;
     r.ty = Ty::variant(
@@ -1072,7 +944,7 @@ unsafe extern "C" fn variants_done(raw: *mut c_void) -> bool {
         tag,
         mem::take(&mut r.variants),
     );
-    r.ty.is_some()
+    u32::from(r.ty.is_some())
 }
 unsafe extern "C" fn begin_record(raw: *mut c_void) {
     let r = unsafe { frame(raw) }.record.as_mut().unwrap();
@@ -1094,60 +966,30 @@ unsafe extern "C" fn begin_record(raw: *mut c_void) {
         function: None,
     });
 }
-unsafe extern "C" fn unique_field(raw: *mut c_void, index: u64) -> bool {
+unsafe extern "C" fn unique_field(raw: *mut c_void, index: u64) -> u32 {
     let r = unsafe { frame(raw) }.record.as_mut().unwrap();
-    r.names
-        .insert(r.source.fields().at(index as usize).name().to_owned())
+    u32::from(r.names
+        .insert(r.source.fields().at(index as usize).name().to_owned()))
 }
 unsafe extern "C" fn dataset_field(raw: *mut c_void) -> TypeInfo {
     let f = unsafe { frame(raw) };
-    let value = f.bound.as_mut().unwrap();
+    let value = Arc::get_mut(f.bound.as_mut().unwrap()).unwrap();
     value.dataset = false;
     f.field_count = value.count.take();
     TypeInfo::of(value)
 }
-unsafe extern "C" fn reference(raw: *mut c_void, value: TypeInfo, site: Site, index: u64) -> bool {
-    let f = unsafe { frame(raw) };
-    let c = scope(f.context, &f.record, &f.release, site, index);
-    match c.world.type_reference(
-        unsafe { input(value) },
-        c.source,
-        c.span,
-        c.module,
-        c.imports,
-    ) {
-        Ok(value) => {
-            f.reference = Some(value);
-            true
-        }
-        Err(error) => {
-            f.error = Some(error);
-            false
-        }
-    }
+fn reference(f:&mut Frame<'_>,value:TypeInfo,site:Site,index:u64)->Result<()> {
+    let c=scope(f.context,&f.record,&f.release,site,index);
+    let value=c.world.type_reference(unsafe{input(value)},c.source,c.span,c.module,c.imports)?;
+    f.reference=Some(value);Ok(())
 }
-unsafe extern "C" fn field_count(raw: *mut c_void, index: u64) -> Count {
-    let f = unsafe { frame(raw) };
-    let c = scope(f.context, &f.record, &f.release, Site::Field, index);
-    match c
-        .world
-        .shape(&f.field_count, c.source, c.span, c.module, c.imports)
-    {
-        Ok(value) => Count {
-            ready: 1,
-            present: u32::from(value.is_some()),
-            value: value.unwrap_or(0),
-        },
-        Err(error) => {
-            f.error = Some(error);
-            Count {
-                ready: 0,
-                present: 0,
-                value: 0,
-            }
-        }
-    }
+
+fn field_count(f:&mut Frame<'_>,index:u64)->Result<Count> {
+    let c=scope(f.context,&f.record,&f.release,Site::Field,index);
+    let value=c.world.shape(&f.field_count,c.source,c.span,c.module,c.imports)?;
+    Ok(Count{present:u32::from(value.is_some()),value:value.unwrap_or(0)})
 }
+
 unsafe extern "C" fn reference_dataset(raw: *mut c_void, count: Count) {
     let f = unsafe { frame(raw) };
     f.current = Some(Ty::owned_dataset(
@@ -1155,7 +997,7 @@ unsafe extern "C" fn reference_dataset(raw: *mut c_void, count: Count) {
         (count.present != 0).then_some(count.value),
     ));
 }
-unsafe extern "C" fn field(raw: *mut c_void, index: u64) -> bool {
+unsafe extern "C" fn field(raw: *mut c_void, index: u64) -> u32 {
     let f = unsafe { frame(raw) };
     let field = f.current.take().unwrap();
     let r = f.record.as_mut().unwrap();
@@ -1167,13 +1009,13 @@ unsafe extern "C" fn field(raw: *mut c_void, index: u64) -> bool {
                 offset,
                 Box::new(field),
             ));
-            true
+            1
         }
-        None => false,
+        None => 0,
     }
 }
-unsafe extern "C" fn record_done(raw: *mut c_void) -> bool {
-    unsafe { frame(raw) }
+unsafe extern "C" fn record_done(raw: *mut c_void) -> u32 {
+    u32::from(unsafe { frame(raw) }
         .record
         .as_mut()
         .unwrap()
@@ -1181,28 +1023,15 @@ unsafe extern "C" fn record_done(raw: *mut c_void) -> bool {
         .as_mut()
         .unwrap()
         .finish_record_layout()
-        .is_some()
+        .is_some())
 }
-unsafe extern "C" fn record_stride(raw: *mut c_void) -> Value {
-    let f = unsafe { frame(raw) };
-    let r = f.record.as_ref().unwrap();
-    let c = r.context;
-    match c.world.source_shape(
-        &r.source.stride().unwrap(),
-        r.bindings.as_ref().unwrap(),
-        c.source,
-        c.span,
-        c.module,
-        c.imports,
-    ) {
-        Ok(value) => Value { ready: 1, value },
-        Err(error) => {
-            f.error = Some(error);
-            Value { ready: 0, value: 0 }
-        }
-    }
+fn record_stride(f:&mut Frame<'_>)->Result<u32> {
+    let r=f.record.as_ref().unwrap();let c=r.context;
+    c.world.source_shape(&r.source.stride().unwrap(),r.bindings.as_ref().unwrap(),
+        c.source,c.span,c.module,c.imports)
 }
-unsafe extern "C" fn stride_accepts(raw: *mut c_void, stride: u32) -> bool {
+
+unsafe extern "C" fn stride_accepts(raw: *mut c_void, stride: u32) -> u32 {
     let ty = unsafe { frame(raw) }
         .record
         .as_ref()
@@ -1210,7 +1039,7 @@ unsafe extern "C" fn stride_accepts(raw: *mut c_void, stride: u32) -> bool {
         .ty
         .as_ref()
         .unwrap();
-    unsafe { super::accepts_record_stride(ty.size, ty.align, stride) }
+    u32::from(unsafe { super::accepts_record_stride(ty.size, ty.align, stride) })
 }
 unsafe extern "C" fn set_stride(raw: *mut c_void, stride: u32) {
     unsafe { frame(raw) }
@@ -1229,14 +1058,14 @@ unsafe extern "C" fn use_record(raw: *mut c_void) {
 unsafe extern "C" fn facts(raw: *mut c_void) -> Facts {
     Facts::of(unsafe { frame(raw) }.current.as_ref().unwrap())
 }
-unsafe extern "C" fn views(raw: *mut c_void) -> bool {
-    unsafe { frame(raw) }
+unsafe extern "C" fn views(raw: *mut c_void) -> u32 {
+    u32::from(unsafe { frame(raw) }
         .current
         .as_ref()
         .unwrap()
-        .contains_views()
+        .contains_views())
 }
-unsafe extern "C" fn task(raw: *mut c_void, error: u32) -> bool {
+unsafe extern "C" fn task(raw: *mut c_void, error: u32) -> u32 {
     let f = unsafe { frame(raw) };
     let payload = f.current.take().unwrap();
     f.current = if error != 0 {
@@ -1244,50 +1073,44 @@ unsafe extern "C" fn task(raw: *mut c_void, error: u32) -> bool {
     } else {
         Some(Ty::task(payload))
     };
-    f.current.is_some()
+    u32::from(f.current.is_some())
 }
 
 pub(super) fn resolve(
-    world: &World,
-    value: &TypeName,
-    source: &Source,
-    span: Span,
-    module: &str,
-    imports: &[String],
-    stack: &mut BTreeSet<String>,
-) -> Result<Ty> {
-    let descriptor = TypeInfo::of(value);
-    let mut f = Frame {
-        context: Context {
-            world,
-            source,
-            span,
-            module,
-            imports,
-        },
-        input: value,
-        builtin: Builtin::recognize(&value.name),
-        stack,
-        current: None,
-        record: None,
-        release: None,
-        payloads: Vec::new(),
-        bound: None,
-        field_count: None,
-        reference: None,
-        error: None,
-    };
-    let success = unsafe {
-        resolve_b(
-            descriptor,
-            f.builtin.kind,
-            host(),
-            (&mut f as *mut Frame<'_>).cast(),
-        )
-    };
-    if success {
-        Ok(f.current.take().unwrap())
-    } else {
-        Err(f.error.take().unwrap())
+    world:&World,value:&TypeName,source:&Source,span:Span,module:&str,imports:&[String],
+    stack:&mut BTreeSet<String>,
+)->Result<Ty> {
+    let context=Context{world,source,span,module,imports};
+    let mut frames=vec![ActiveFrame::new(context,TypeInput::borrowed(value),stack)];
+    loop {
+        let active=frames.last_mut().unwrap();
+        let request=unsafe{type_step(&mut active.cursor,host(),(&mut active.data as *mut Frame<'_>).cast())};
+        if let Some(error)=active.data.error.take(){return Err(error);}
+        match request.kind {
+            Query::Complete=>{
+                let finished=frames.pop().unwrap();
+                let ty=finished.data.current.unwrap();
+                if let Some(parent)=frames.last_mut(){parent.data.current=Some(ty);}else{return Ok(ty);}
+            }
+            Query::Child=>{
+                let context=scope(active.data.context,&active.data.record,&active.data.release,request.site,request.index);
+                let input=match request.site {
+                    Site::Root=>active.data.input.child(active.cursor.temporary),
+                    _=>TypeInput::shared(active.data.bound.as_ref().unwrap()),
+                };
+                let child=ActiveFrame::new(context,input,active.data.stack);
+                frames.push(child);
+            }
+            Query::Function=>function(&mut active.data)?,
+            Query::Dataset=>dataset(&mut active.data,active.cursor.temporary,request.site,request.index)?,
+            Query::SpecializeCleanup=>specialize_cleanup(&mut active.data)?,
+            Query::Bind=>active.cursor.temporary=bind(&mut active.data,request.binding,request.index)?,
+            Query::ShapeArgument=>active.cursor.scalar=shape_argument(&mut active.data,request.index)?,
+            Query::Family=>active.cursor.scalar=u32::from(family(&mut active.data,request.index)?),
+            Query::VariantTag=>active.cursor.scalar=variant_tag(&mut active.data,request.index)?,
+            Query::Reference=>reference(&mut active.data,active.cursor.temporary,request.site,request.index)?,
+            Query::FieldCount=>active.cursor.count=field_count(&mut active.data,request.index)?,
+            Query::RecordStride=>active.cursor.scalar=record_stride(&mut active.data)?,
+        }
     }
 }

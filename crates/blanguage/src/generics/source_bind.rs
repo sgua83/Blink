@@ -4,29 +4,42 @@ use super::*;
 use crate::syntax::{self, wire};
 use std::{ffi::c_void, mem::{self, MaybeUninit}, sync::Arc};
 
+#[repr(C)]
+struct BindingCursor {
+    storage: wire::StorageView,
+    offset: u64,
+    arguments: wire::Slice,
+    index: u64,
+    mode: u32,
+    checked: u32,
+    stage: u32,
+    shape: wire::Optional<u32>,
+}
+#[repr(u32)]
+enum RequestKind { Complete, Type, Shape }
+#[repr(C)]
+struct BindingRequest { kind: RequestKind, reference: u64 }
+#[repr(C)]
+struct BindingHost {
+    actual: unsafe extern "C" fn(*mut c_void,wire::Text)->*const c_void,
+    value: unsafe extern "C" fn(*mut c_void,wire::Text)->wire::Optional<u32>,
+    reserve: unsafe extern "C" fn(*mut c_void,u64),
+    check: unsafe extern "C" fn(*mut c_void,wire::TypeRef)->u32,
+    append_value: unsafe extern "C" fn(*mut c_void,u32),
+    begin_contracts: unsafe extern "C" fn(*mut c_void,u64),
+    append_predicate: unsafe extern "C" fn(*mut c_void,wire::PredicateRef,u64),
+    construct: unsafe extern "C" fn(*mut c_void,wire::Text,u32,wire::Optional<u32>,u32),
+    clone_actual: unsafe extern "C" fn(*mut c_void,*const c_void),
+    wrap: unsafe extern "C" fn(*mut c_void,u32,u32,u32,wire::Optional<u32>),
+}
+
 unsafe extern "C" {
-    #[link_name="bootstrap.source_bind::arguments"]
-    fn arguments_b(storage:wire::StorageView, arguments:wire::Slice, checked:u32, context:*mut c_void,
-        value:unsafe extern "C" fn(*mut c_void,wire::Text)->wire::Optional<u32>,
-        shape:unsafe extern "C" fn(*mut c_void,wire::ShapeRef)->wire::Optional<u32>,
-        reserve:unsafe extern "C" fn(*mut c_void,u64),
-        check:unsafe extern "C" fn(*mut c_void,wire::TypeRef)->bool,
-        append_type:unsafe extern "C" fn(*mut c_void,wire::TypeRef)->bool,
-        append_value:unsafe extern "C" fn(*mut c_void,u32))->bool;
-    #[link_name="bootstrap.source_bind::type_name"]
-    fn type_b(source:wire::SignatureNode,context:*mut c_void,
-        actual:unsafe extern "C" fn(*mut c_void,wire::Text)->*const c_void,
-        value:unsafe extern "C" fn(*mut c_void,wire::Text)->wire::Optional<u32>,
-        shape:unsafe extern "C" fn(*mut c_void,wire::ShapeRef)->wire::Optional<u32>,
-        reserve:unsafe extern "C" fn(*mut c_void,u64),
-        check:unsafe extern "C" fn(*mut c_void,wire::TypeRef)->bool,
-        append_type:unsafe extern "C" fn(*mut c_void,wire::TypeRef)->bool,
-        append_value:unsafe extern "C" fn(*mut c_void,u32),
-        begin_contracts:unsafe extern "C" fn(*mut c_void,u64),
-        append_predicate:unsafe extern "C" fn(*mut c_void,wire::PredicateRef,u64),
-        construct:unsafe extern "C" fn(*mut c_void,wire::Text,u32,wire::Optional<u32>,u32),
-        clone_actual:unsafe extern "C" fn(*mut c_void,*const c_void),
-        wrap:unsafe extern "C" fn(*mut c_void,u32,u32,u32,wire::Optional<u32>));
+    #[link_name="bootstrap.source_bind::type_start"]
+    fn type_start(source:wire::SignatureNode)->BindingCursor;
+    #[link_name="bootstrap.source_bind::arguments_start"]
+    fn arguments_start(storage:wire::StorageView,arguments:wire::Slice,checked:u32)->BindingCursor;
+    #[link_name="bootstrap.source_bind::binding_step"]
+    fn binding_step(state:*mut BindingCursor,context:*mut c_void,host:BindingHost)->BindingRequest;
     #[link_name="bootstrap.source_bind::condition"]
     fn condition_b(source:wire::SignatureNode,parameters:wire::Optional<u64>,output:u32,context:*mut c_void,
         value:unsafe extern "C" fn(*mut c_void,wire::Text)->wire::Optional<u32>,
@@ -51,47 +64,51 @@ fn count(value:wire::Optional<u32>)->Option<Shape> {
     (value.present!=0).then_some(Shape::Literal(value.value))
 }
 
+enum TypeSource {
+    Type(syntax::Type),
+    Arguments(syntax::List<wire::ArgumentNode>),
+}
+impl TypeSource {
+    fn view(&self)->syntax::SourceView<'_> {
+        match self {Self::Type(source)=>source.source_view(),Self::Arguments(source)=>source.source_view()}
+    }
+}
 struct TypeFrame<'a> {
-    source:syntax::SourceView<'a>,bindings:&'a Arc<Bindings>,world:&'a World,
+    source:TypeSource,bindings:&'a Arc<Bindings>,world:&'a World,
     context:(&'a Source,&'a str,&'a [String]),span:Span,
     arguments:Vec<GenericArgument>,contracts:Vec<ContractPredicate>,
     result:MaybeUninit<TypeName>,error:Option<Diagnostic>,
 }
-impl<'a> TypeFrame<'a> {
-    fn new(source:syntax::SourceView<'a>,bindings:&'a Arc<Bindings>,world:&'a World,
+struct BindingFrame<'a> {cursor:BindingCursor,data:TypeFrame<'a>}
+impl<'a> BindingFrame<'a> {
+    fn type_name(source:syntax::Type,bindings:&'a Arc<Bindings>,world:&'a World,
         context:(&'a Source,&'a str,&'a [String]),span:Span)->Self {
-        Self{source,bindings,world,context,span,arguments:Vec::new(),contracts:Vec::new(),result:MaybeUninit::uninit(),error:None}
+        let cursor=unsafe{type_start(source.signature_node())};
+        Self{cursor,data:TypeFrame{source:TypeSource::Type(source),bindings,world,context,span,
+            arguments:Vec::new(),contracts:Vec::new(),result:MaybeUninit::uninit(),error:None}}
+    }
+    fn arguments(source:syntax::List<wire::ArgumentNode>,bindings:&'a Arc<Bindings>,world:&'a World,
+        context:(&'a Source,&'a str,&'a [String]),span:Span)->Self {
+        let cursor=unsafe{arguments_start(source.source_view().storage(),source.source_slice(),1)};
+        Self{cursor,data:TypeFrame{source:TypeSource::Arguments(source),bindings,world,context,span,
+            arguments:Vec::new(),contracts:Vec::new(),result:MaybeUninit::uninit(),error:None}}
     }
 }
-unsafe fn type_frame<'a>(raw:*mut c_void)->&'a mut TypeFrame<'a> {unsafe{&mut *raw.cast()}}
+unsafe fn type_frame<'a,'b>(raw:*mut c_void)->&'a mut TypeFrame<'b> {unsafe{&mut *raw.cast()}}
 unsafe extern "C" fn type_value(raw:*mut c_void,name:wire::Text)->wire::Optional<u32> {
-    let f=unsafe{type_frame(raw)};bound_value(f.source,&f.bindings.values,name)
+    let f=unsafe{type_frame(raw)};bound_value(f.source.view(),&f.bindings.values,name)
 }
 unsafe extern "C" fn actual_type(raw:*mut c_void,name:wire::Text)->*const c_void {
     let f=unsafe{type_frame(raw)};
-    f.bindings.types.get(f.source.text(name)).map_or(std::ptr::null(),|ty|(ty as *const TypeName).cast())
-}
-unsafe extern "C" fn source_shape(raw:*mut c_void,shape:wire::ShapeRef)->wire::Optional<u32> {
-    let f=unsafe{type_frame(raw)};let (source,module,imports)=f.context;
-    match f.world.source_shape(&f.source.node(shape.offset),f.bindings,source,f.span,module,imports) {
-        Ok(value)=>wire::Optional{present:1,value},
-        Err(error)=>{f.error=Some(error);wire::Optional{present:0,value:0}},
-    }
+    f.bindings.types.get(f.source.view().text(name)).map_or(std::ptr::null(),|ty|(ty as *const TypeName).cast())
 }
 unsafe extern "C" fn reserve_arguments(raw:*mut c_void,count:u64) {
     unsafe{type_frame(raw)}.arguments.reserve(count as usize);
 }
-unsafe extern "C" fn check_type(raw:*mut c_void,reference:wire::TypeRef)->bool {
+unsafe extern "C" fn check_type(raw:*mut c_void,reference:wire::TypeRef)->u32 {
     let f=unsafe{type_frame(raw)};
-    match f.bindings.check_type(&f.source.node(reference.offset),f.context.0,f.span) {
-        Ok(())=>true,Err(error)=>{f.error=Some(error);false},
-    }
-}
-unsafe extern "C" fn append_type(raw:*mut c_void,reference:wire::TypeRef)->bool {
-    let f=unsafe{type_frame(raw)};
-    match type_name(f.bindings,f.world,&f.source.node(reference.offset),f.context,f.span) {
-        Ok(ty)=>{f.arguments.push(GenericArgument::Type(ty));true},
-        Err(error)=>{f.error=Some(error);false},
+    match f.bindings.check_type(&f.source.view().node(reference.offset),f.context.0,f.span) {
+        Ok(())=>1,Err(error)=>{f.error=Some(error);0},
     }
 }
 unsafe extern "C" fn append_value(raw:*mut c_void,value:u32) {
@@ -102,11 +119,11 @@ unsafe extern "C" fn begin_contracts(raw:*mut c_void,count:u64) {
 }
 unsafe extern "C" fn append_predicate(raw:*mut c_void,reference:wire::PredicateRef,parameters:u64) {
     let f=unsafe{type_frame(raw)};
-    f.contracts.push(predicate(f.source,&f.bindings.values,reference,wire::Optional{present:1,value:parameters}));
+    f.contracts.push(predicate(f.source.view(),&f.bindings.values,reference,wire::Optional{present:1,value:parameters}));
 }
 unsafe extern "C" fn construct_type(raw:*mut c_void,name:wire::Text,canonical:u32,size:wire::Optional<u32>,contracts:u32) {
     let f=unsafe{type_frame(raw)};
-    f.result.write(TypeName{name:f.source.text(name).into(),canonical:canonical!=0,
+    f.result.write(TypeName{name:f.source.view().text(name).into(),canonical:canonical!=0,
         arguments:mem::take(&mut f.arguments),dataset:false,view:false,tile:false,count:count(size),
         contracts:(contracts!=0).then(||Box::new(mem::take(&mut f.contracts)))});
 }
@@ -114,24 +131,86 @@ unsafe extern "C" fn clone_actual(raw:*mut c_void,actual:*const c_void) {
     unsafe{type_frame(raw)}.result.write(unsafe{&*actual.cast::<TypeName>()}.clone());
 }
 unsafe extern "C" fn wrap_type(raw:*mut c_void,dataset:u32,view:u32,tile:u32,size:wire::Optional<u32>) {
-    // B has constructed this exact result before requesting its source wrapper.
     let result=unsafe{type_frame(raw).result.assume_init_mut()};
     result.dataset=dataset!=0;result.view=view!=0;result.tile=tile!=0;result.count=count(size);
 }
+
+// This is the original binding query's active state. Native stepping does not
+// call World for a shape or recursively enter another native type binder.
+pub(super) struct SourceBinding<'a> {frames:Vec<BindingFrame<'a>>}
+pub(super) struct ShapeNeed<'a> {
+    shape:syntax::Shape,bindings:&'a Arc<Bindings>,world:&'a World,
+    context:(&'a Source,&'a str,&'a [String]),span:Span,
+}
+pub(super) enum BindingProgress<'a> {
+    Complete(SourceBinding<'a>),
+    Shape(SourceBinding<'a>,ShapeNeed<'a>),
+}
+impl ShapeNeed<'_> {
+    fn evaluate(self)->Result<u32> {
+        self.world.source_shape(&self.shape,self.bindings,self.context.0,self.span,self.context.1,self.context.2)
+    }
+}
+impl<'a> SourceBinding<'a> {
+    fn type_name(bindings:&'a Arc<Bindings>,world:&'a World,source:&syntax::Type,
+        context:(&'a Source,&'a str,&'a [String]),span:Span)->Self {
+        Self{frames:vec![BindingFrame::type_name(source.clone(),bindings,world,context,span)]}
+    }
+    fn arguments(bindings:&'a Arc<Bindings>,world:&'a World,source:&syntax::List<wire::ArgumentNode>,
+        context:(&'a Source,&'a str,&'a [String]),span:Span)->Self {
+        Self{frames:vec![BindingFrame::arguments(source.clone(),bindings,world,context,span)]}
+    }
+    pub(super) fn advance(mut self)->Result<BindingProgress<'a>> {
+        loop {
+            let frame=self.frames.last_mut().unwrap();
+            let request=unsafe{binding_step(&mut frame.cursor,(&mut frame.data as *mut TypeFrame<'_>).cast(),BindingHost{
+                actual:actual_type,value:type_value,reserve:reserve_arguments,check:check_type,append_value,
+                begin_contracts,append_predicate,construct:construct_type,clone_actual,wrap:wrap_type,
+            })};
+            if let Some(error)=frame.data.error.take(){return Err(error);}
+            match request.kind {
+                RequestKind::Complete=>{
+                    if self.frames.len()==1{return Ok(BindingProgress::Complete(self));}
+                    let child=self.frames.pop().unwrap();
+                    let value=unsafe{child.data.result.assume_init()};
+                    self.frames.last_mut().unwrap().data.arguments.push(GenericArgument::Type(value));
+                }
+                RequestKind::Type=>{
+                    let frame=&self.frames.last().unwrap().data;
+                    let child=BindingFrame::type_name(frame.source.view().node(request.reference),
+                        frame.bindings,frame.world,frame.context,frame.span);
+                    self.frames.push(child);
+                }
+                RequestKind::Shape=>{
+                    let frame=&self.frames.last().unwrap().data;
+                    let need=ShapeNeed{shape:frame.source.view().node(request.reference),bindings:frame.bindings,
+                        world:frame.world,context:frame.context,span:frame.span};
+                    return Ok(BindingProgress::Shape(self,need));
+                }
+            }
+        }
+    }
+    pub(super) fn complete_shape(mut self,value:u32)->Self {
+        self.frames.last_mut().unwrap().cursor.shape=wire::Optional{present:1,value};self
+    }
+    fn finish_type(mut self)->TypeName {unsafe{self.frames.pop().unwrap().data.result.assume_init()}}
+    fn finish_arguments(mut self)->Vec<GenericArgument> {self.frames.pop().unwrap().data.arguments}
+}
+fn drive<'a>(mut binding:SourceBinding<'a>)->Result<SourceBinding<'a>> {
+    loop {
+        match binding.advance()? {
+            BindingProgress::Complete(done)=>return Ok(done),
+            BindingProgress::Shape(pending,need)=>binding=pending.complete_shape(need.evaluate()?),
+        }
+    }
+}
 pub(super) fn type_name(bindings:&Arc<Bindings>,world:&World,source:&syntax::Type,
     context:(&Source,&str,&[String]),span:Span)->Result<TypeName> {
-    let mut frame=TypeFrame::new(source.source_view(),bindings,world,context,span);
-    unsafe{type_b(source.signature_node(),(&mut frame as *mut TypeFrame<'_>).cast(),
-        actual_type,type_value,source_shape,reserve_arguments,check_type,append_type,append_value,
-        begin_contracts,append_predicate,construct_type,clone_actual,wrap_type)};
-    match frame.error {Some(error)=>Err(error),None=>Ok(unsafe{frame.result.assume_init()})}
+    drive(SourceBinding::type_name(bindings,world,source,context,span)).map(SourceBinding::finish_type)
 }
 pub(super) fn arguments(bindings:&Arc<Bindings>,world:&World,arguments:&syntax::List<wire::ArgumentNode>,
     context:(&Source,&str,&[String]),span:Span)->Result<Vec<GenericArgument>> {
-    let mut frame=TypeFrame::new(arguments.source_view(),bindings,world,context,span);
-    unsafe{arguments_b(frame.source.storage(),arguments.source_slice(),1,(&mut frame as *mut TypeFrame<'_>).cast(),
-        type_value,source_shape,reserve_arguments,check_type,append_type,append_value)};
-    match frame.error {Some(error)=>Err(error),None=>Ok(frame.arguments)}
+    drive(SourceBinding::arguments(bindings,world,arguments,context,span)).map(SourceBinding::finish_arguments)
 }
 
 struct ConditionFrame<'a> {

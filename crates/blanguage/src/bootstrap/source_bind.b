@@ -41,95 +41,79 @@ bool positional(read StorageView storage, Text name, u64 count) on cpu {
     return true;
 }
 
-bool argument(StorageView storage, u64 offset, u32 checked, address context,
-    cfn<Optional<u32>,address,Text> value,
-    cfn<Optional<u32>,address,ShapeRef> shape,
-    cfn<bool,address,TypeRef> check,
-    cfn<bool,address,TypeRef> append_type,
-    cfn<void,address,u32> append_value) on cpu
-    requires nonzero(value) requires nonzero(shape) requires nonzero(check)
-    requires nonzero(append_type) requires nonzero(append_value) {
-        ArgumentNode node = unsafe_position<ArgumentNode>(at(storage.nodes, offset));
-        match (node) {
-            ArgumentNode::Type(reference) {
-                TypeNode ty = unsafe_position<TypeNode>(at(storage.nodes, reference.offset));
-                if (ty.arguments.count == 0u64 && ty.dataset == 0 && ty.view == 0 && ty.tile == 0) {
-                    Optional<u32> bound = value(context, ty.name);
-                    if (bound.present != 0) { append_value(context, bound.value); return true; }
+extern "C" BindingCursor type_start(SignatureNode source) on cpu {
+    TypeNode ty=unsafe_position<TypeNode>(at(source.storage.nodes,source.offset));
+    return BindingCursor(source.storage,source.offset,ty.arguments,0u64,0,0,0,Optional<u32>(0,0));
+}
+extern "C" BindingCursor arguments_start(StorageView storage,Slice arguments,u32 checked) on cpu {
+    return BindingCursor(storage,0u64,arguments,0u64,1,checked,0,Optional<u32>(0,0));
+}
+BindingRequest binding_request(address state,BindingCursor cursor,u32 kind,u64 reference) on cpu {
+    unsafe_position<BindingCursor>(state)=cursor;
+    return BindingRequest(kind,reference);
+}
+extern "C" BindingRequest binding_step(address state,address context,BindingHost host) on cpu
+    requires nonzero(host.actual) requires nonzero(host.value) requires nonzero(host.reserve)
+    requires nonzero(host.check) requires nonzero(host.append_value) requires nonzero(host.begin_contracts)
+    requires nonzero(host.append_predicate) requires nonzero(host.construct)
+    requires nonzero(host.clone_actual) requires nonzero(host.wrap) {
+    BindingCursor cursor=unsafe_position<BindingCursor>(state);
+    while(true){
+        if(cursor.stage==8){return binding_request(state,cursor,0,0u64);}
+        if(cursor.stage==0){host.reserve(context,cursor.arguments.count);cursor.stage=1;}
+        if(cursor.stage==2){
+            host.append_value(context,cursor.shape.value);
+            cursor.index+=1u64;cursor.stage=1;
+        }
+        if(cursor.stage==3){cursor.index+=1u64;cursor.stage=1;}
+        if(cursor.stage==1){
+            if(cursor.index<cursor.arguments.count){
+                ArgumentNode node=unsafe_position<ArgumentNode>(at(cursor.storage.nodes,element(cursor.storage,cursor.arguments,cursor.index)));
+                match(node){
+                    ArgumentNode::Type(reference){
+                        TypeNode ty=unsafe_position<TypeNode>(at(cursor.storage.nodes,reference.offset));
+                        if(ty.arguments.count==0u64&&ty.dataset==0&&ty.view==0&&ty.tile==0){
+                            Optional<u32> bound=host.value(context,ty.name);
+                            if(bound.present!=0){host.append_value(context,bound.value);cursor.index+=1u64;continue;}
+                        }
+                        if(cursor.checked!=0&&!host.check(context,reference)){
+                            cursor.stage=8;return binding_request(state,cursor,0,0u64);
+                        }
+                        cursor.stage=3;return binding_request(state,cursor,1,reference.offset);
+                    }
+                    ArgumentNode::Value(reference){
+                        cursor.stage=2;return binding_request(state,cursor,2,reference.offset);
+                    }
                 }
-                if (checked != 0 && !check(context, reference)) { return false; }
-                if (!append_type(context, reference)) { return false; }
             }
-            ArgumentNode::Value(reference) {
-                Optional<u32> bound = shape(context, reference);
-                if (bound.present == 0) { return false; }
-                append_value(context, bound.value);
-            }
+            if(cursor.mode==1){cursor.stage=8;return binding_request(state,cursor,0,0u64);}
+            cursor.stage=5;
         }
-    return true;
-}
-
-extern "C" bool arguments(StorageView storage, Slice arguments, u32 checked, address context,
-    cfn<Optional<u32>,address,Text> value,
-    cfn<Optional<u32>,address,ShapeRef> shape,
-    cfn<void,address,u64> reserve,
-    cfn<bool,address,TypeRef> check,
-    cfn<bool,address,TypeRef> append_type,
-    cfn<void,address,u32> append_value) on cpu
-    requires nonzero(value) requires nonzero(shape) requires nonzero(reserve) requires nonzero(check)
-    requires nonzero(append_type) requires nonzero(append_value) {
-    reserve(context, arguments.count);
-    u64 index = 0u64;
-    while (index < arguments.count) {
-        if (!argument(storage, element(storage, arguments, index), checked, context, value, shape, check, append_type, append_value)) { return false; }
-        index += 1u64;
-    }
-    return true;
-}
-
-extern "C" void type_name(SignatureNode source, address context,
-    cfn<address,address,Text> actual,
-    cfn<Optional<u32>,address,Text> value,
-    cfn<Optional<u32>,address,ShapeRef> shape,
-    cfn<void,address,u64> reserve,
-    cfn<bool,address,TypeRef> check,
-    cfn<bool,address,TypeRef> append_type,
-    cfn<void,address,u32> append_value,
-    cfn<void,address,u64> begin_contracts,
-    cfn<void,address,PredicateRef,u64> append_predicate,
-    cfn<void,address,Text,u32,Optional<u32>,u32> construct,
-    cfn<void,address,address> clone_actual,
-    cfn<void,address,u32,u32,u32,Optional<u32>> wrap) on cpu
-    requires nonzero(actual) requires nonzero(value) requires nonzero(shape)
-    requires nonzero(reserve) requires nonzero(check) requires nonzero(append_type)
-    requires nonzero(append_value) requires nonzero(begin_contracts)
-    requires nonzero(append_predicate) requires nonzero(construct)
-    requires nonzero(clone_actual) requires nonzero(wrap) {
-    TypeNode ty = unsafe_position<TypeNode>(at(source.storage.nodes, source.offset));
-    // Arguments and shape retain the original evaluation and diagnostic order.
-    if (!arguments(source.storage, ty.arguments, 0, context, value, shape, reserve, check, append_type, append_value)) { return; }
-    Optional<u32> count = Optional<u32>(0, 0);
-    if (ty.count.present != 0) {
-        count = shape(context, ty.count.value);
-        if (count.present == 0) { return; }
-    }
-    address bound = actual(context, ty.name);
-    if (address_bits(bound) != 0u64) { clone_actual(context, bound); }
-    else {
-        if (ty.contracts.present != 0) {
-            begin_contracts(context, ty.contracts.value.count);
-            u64 parameters = ty.arguments.count == 0u64 ? 0u64 : ty.arguments.count - 1u64;
-            u64 index = 0u64;
-            while (index < ty.contracts.value.count) {
-                PredicateRef reference = PredicateRef(element(source.storage, ty.contracts.value, index));
-                append_predicate(context, reference, parameters);
-                index += 1u64;
-            }
+        if(cursor.stage==5){
+            TypeNode ty=unsafe_position<TypeNode>(at(cursor.storage.nodes,cursor.offset));
+            if(ty.count.present!=0){cursor.stage=6;return binding_request(state,cursor,2,ty.count.value.offset);}
+            cursor.shape=Optional<u32>(0,0);cursor.stage=7;
         }
-        construct(context, ty.name, ty.canonical, count, ty.contracts.present);
-    }
-    if (ty.dataset != 0 || ty.view != 0 || ty.tile != 0) {
-        wrap(context, ty.dataset, ty.view, ty.tile, count);
+        if(cursor.stage==6){cursor.stage=7;}
+        if(cursor.stage==7){
+            TypeNode ty=unsafe_position<TypeNode>(at(cursor.storage.nodes,cursor.offset));
+            address bound=host.actual(context,ty.name);
+            if(address_bits(bound)!=0u64){host.clone_actual(context,bound);}
+            else{
+                if(ty.contracts.present!=0){
+                    host.begin_contracts(context,ty.contracts.value.count);
+                    u64 parameters=ty.arguments.count==0u64 ? 0u64 : ty.arguments.count-1u64;
+                    u64 index=0u64;
+                    while(index<ty.contracts.value.count){
+                        PredicateRef reference=PredicateRef(element(cursor.storage,ty.contracts.value,index));
+                        host.append_predicate(context,reference,parameters);index+=1u64;
+                    }
+                }
+                host.construct(context,ty.name,ty.canonical,cursor.shape,ty.contracts.present);
+            }
+            if(ty.dataset!=0||ty.view!=0||ty.tile!=0){host.wrap(context,ty.dataset,ty.view,ty.tile,cursor.shape);}
+            cursor.stage=8;return binding_request(state,cursor,0,0u64);
+        }
     }
 }
 

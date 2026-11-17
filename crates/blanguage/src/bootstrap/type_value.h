@@ -6,8 +6,7 @@ import bootstrap.type_families;
 struct Text { address bytes; u64 length; };
 struct Type { address value; Text name; u64 arguments; u32 flags; u32 canonical; };
 struct Facts { u32 numeric; u32 integer; u64 components; Text name; };
-struct Value { u32 ready; u32 value; };
-struct Count { u32 ready; u32 present; u32 value; };
+struct Count { u32 present; u32 value; };
 struct Extent { u64 size; u64 stride; };
 struct Record { u32 ready; u64 types; u64 values; u64 fields; u64 variants; u32 enumeration; u32 stride; };
 struct Cleanup { u32 ready; u32 ordinary; u32 cpu; u64 parameters; u32 value_parameter; };
@@ -25,32 +24,48 @@ enum Problem:u32 {
     Stride=40; DatasetViewSpaced=41;
 };
 
+enum Query:u32 {
+    Complete=0; Function=1; Child=2; Dataset=3; SpecializeCleanup=4; Bind=5;
+    ShapeArgument=6; Family=7; VariantTag=8; Reference=9; FieldCount=10; RecordStride=11;
+};
+enum Stage:u32 {
+    Start=0; FunctionDone=1; TaskAfterChild=2; TaskBuild=3;
+    OwnedAfterChild=4; OwnedSave=5; OwnedBindResult=6; OwnedCheckResult=7;
+    OwnedParameter=8; OwnedAfterParameter=9; OwnedFinish=10;
+    ResultItem=11; ResultAfterChild=12; ResultSave=13;
+    ArrayAfterChild=14; ArrayCount=15; ArrayBuild=16;
+    RecordTypeItem=17; RecordTypeAfterChild=18; RecordTypeFamily=19; RecordTypeAccepted=20;
+    RecordConstItem=21; RecordConstStore=22; RecordRepresentation=23; RecordRepresentationReady=24;
+    VariantItem=25; VariantTagged=26; VariantPayload=27; VariantAfterChild=28; VariantStore=29;
+    FieldItem=30; FieldBound=31; FieldCount=32; FieldReference=33; FieldStore=34; RecordStride=35;
+};
+// This is the existing B type query's continuation. Ty and all partially built
+// native containers remain in its original Frame; descriptors only borrow them.
+struct Cursor {
+    Type value; BuiltinKind kind; Stage stage; u32 wrap; u64 index;
+    Type temporary; Record record; u64 components; u32 scalar; Count count;
+};
+struct Request { Query kind; Site site; Binding binding; u64 index; };
+
 struct Host {
     cfn<void,address,Site,u64,Problem,u64> failure;
-    cfn<bool,address> function;
     cfn<void,address> builtin;
     cfn<void,address> unit;
     cfn<void,address> view;
     cfn<Type,address,u64> argument;
-    cfn<bool,address,Type,Site,u64> child;
-    cfn<bool,address,Type,Site,u64> dataset;
     cfn<Cleanup,address,Type> cleanup;
     cfn<void,address> owner;
     cfn<bool,address> enter_cleanup;
-    cfn<bool,address> specialize_cleanup;
-    cfn<Type,address,Binding,u64> bind;
     cfn<void,address> leave_cleanup;
     cfn<bool,address> owner_matches;
     cfn<void,address> use_owner;
     cfn<void,address> save_payload;
     cfn<bool,address> result;
-    cfn<Value,address,u64> shape_argument;
     cfn<Extent,address,u32> array_layout;
     cfn<void,address,u32,u32> array;
     cfn<u32,address,u64> component_offset;
     cfn<void,address,u64,u32> array_component;
     cfn<Record,address> record;
-    cfn<Value,address,u64> family;
     cfn<void,address,u64> type_argument;
     cfn<bool,address,u64,u32> const_domain;
     cfn<void,address,u64,u32> const_argument;
@@ -60,19 +75,15 @@ struct Host {
     cfn<void,address> simple_enum;
     cfn<void,address> begin_variants;
     cfn<bool,address,u64> unique_variant_name;
-    cfn<Value,address,u64> variant_tag;
     cfn<bool,address,u32> unique_variant_tag;
     cfn<void,address,u64,u32> variant;
     cfn<bool,address> variants_done;
     cfn<void,address> begin_record;
     cfn<bool,address,u64> unique_field;
     cfn<Type,address> dataset_field;
-    cfn<bool,address,Type,Site,u64> reference;
-    cfn<Count,address,u64> field_count;
     cfn<void,address,Count> reference_dataset;
     cfn<bool,address,u64> field;
     cfn<bool,address> record_done;
-    cfn<Value,address> record_stride;
     cfn<bool,address,u32> stride_accepts;
     cfn<void,address,u32> set_stride;
     cfn<void,address> use_record;
@@ -81,22 +92,19 @@ struct Host {
     cfn<bool,address,u32> task;
 };
 
-extern "C" bool resolve(Type value, BuiltinKind kind, Host host, address context) on cpu
-    requires nonzero(host.failure) requires nonzero(host.function) requires nonzero(host.builtin)
-    requires nonzero(host.unit) requires nonzero(host.view) requires nonzero(host.argument)
-    requires nonzero(host.child) requires nonzero(host.dataset) requires nonzero(host.cleanup)
-    requires nonzero(host.owner) requires nonzero(host.enter_cleanup) requires nonzero(host.specialize_cleanup)
-    requires nonzero(host.bind) requires nonzero(host.leave_cleanup) requires nonzero(host.owner_matches)
-    requires nonzero(host.use_owner) requires nonzero(host.save_payload) requires nonzero(host.result)
-    requires nonzero(host.shape_argument) requires nonzero(host.array_layout) requires nonzero(host.array)
-    requires nonzero(host.component_offset) requires nonzero(host.array_component) requires nonzero(host.record)
-    requires nonzero(host.family) requires nonzero(host.type_argument) requires nonzero(host.const_domain)
+
+extern "C" Cursor type_start(Type value,BuiltinKind kind) on cpu;
+extern "C" Request type_step(address state,Host host,address context) on cpu
+    requires nonzero(host.failure) requires nonzero(host.builtin)
+    requires nonzero(host.unit) requires nonzero(host.view) requires nonzero(host.argument) requires nonzero(host.cleanup)
+    requires nonzero(host.owner) requires nonzero(host.enter_cleanup) requires nonzero(host.leave_cleanup) requires nonzero(host.owner_matches)
+    requires nonzero(host.use_owner) requires nonzero(host.save_payload) requires nonzero(host.result) requires nonzero(host.array_layout) requires nonzero(host.array)
+    requires nonzero(host.component_offset) requires nonzero(host.array_component) requires nonzero(host.record) requires nonzero(host.type_argument) requires nonzero(host.const_domain)
     requires nonzero(host.const_argument) requires nonzero(host.arguments_done) requires nonzero(host.enter_record)
     requires nonzero(host.leave_record) requires nonzero(host.simple_enum) requires nonzero(host.begin_variants)
-    requires nonzero(host.unique_variant_name) requires nonzero(host.variant_tag) requires nonzero(host.unique_variant_tag)
+    requires nonzero(host.unique_variant_name) requires nonzero(host.unique_variant_tag)
     requires nonzero(host.variant) requires nonzero(host.variants_done) requires nonzero(host.begin_record)
-    requires nonzero(host.unique_field) requires nonzero(host.dataset_field) requires nonzero(host.reference)
-    requires nonzero(host.field_count) requires nonzero(host.reference_dataset) requires nonzero(host.field)
-    requires nonzero(host.record_done) requires nonzero(host.record_stride) requires nonzero(host.stride_accepts)
+    requires nonzero(host.unique_field) requires nonzero(host.dataset_field) requires nonzero(host.reference_dataset) requires nonzero(host.field)
+    requires nonzero(host.record_done) requires nonzero(host.stride_accepts)
     requires nonzero(host.set_stride) requires nonzero(host.use_record) requires nonzero(host.facts)
     requires nonzero(host.task) requires nonzero(host.views);
