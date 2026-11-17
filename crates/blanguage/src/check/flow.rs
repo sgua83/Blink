@@ -615,6 +615,7 @@ impl Builder<'_> {
         let mut context=self.loop_contexts.pop().unwrap();let natural_index=context.exits.len();
         if !context.initial && let Some(exit)=natural.as_mut() {
             let empty=context.control_source.test.as_ref().unwrap().at_call(&context.control_source.bindings(&context.entry)).negate();
+            let scalar_empty=std::cell::LazyCell::new(||if nonempty{bounds::Condition::constant(false)}else{match empty.truth_in(&context.entry.path){Some(truth)=>bounds::Condition::constant(truth),None=>empty.clone()}});
             for(name,binding)in &mut exit.env {
                 if let Binding::ApplicationData(data)=binding
                     && let Some(Place::Local(_,slots,..))=&data.place
@@ -635,7 +636,6 @@ impl Builder<'_> {
                 let Some((proof,uniform,place))=binding.proof_storage() else{continue;};
                 let Some((entry,_,_))=context.entry.env.get_mut(name).and_then(Binding::proof_storage) else{continue;};
                 let width=place.ty().components.len();
-                let empty=if nonempty{bounds::Condition::constant(false)}else{match empty.truth_in(&context.entry.path){Some(truth)=>bounds::Condition::constant(truth),None=>empty.clone()}};
                 for component in 0..width {
                     // A new header read is the final iteration's value. Other
                     // components take backedge facts only if the header leaves them unchanged.
@@ -656,10 +656,11 @@ impl Builder<'_> {
                         }
                     }
                     if let Some((repeated,alias,reg))=repeated {
+                        let empty=&*scalar_empty;
                         let mut common=proof.project(&[component],width);
                         let aliases=[common.output_aliases(&[reg],&self.registers,&BTreeMap::new()),alias];
                         exit.path=bounds::Clause::both(&exit.path,&bounds::Clause::either(&empty.assume(&aliases[0],true),&empty.assume(&aliases[1],false)));
-                        common.join_condition(&repeated,1,Some(&empty));common=common.with_identity(ValueIdentity::Register(reg)).with_view_borrow(0,proof.view_borrow(component));
+                        common.join_condition(&repeated,1,Some(empty));common=common.with_identity(ValueIdentity::Register(reg)).with_view_borrow(0,proof.view_borrow(component));
                         proof.assign(&[component],width,common);
                     }
                 }
