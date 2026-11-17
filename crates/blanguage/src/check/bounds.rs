@@ -2356,10 +2356,7 @@ impl Clause {
     }
 
     pub(super) fn equivalent(&self, other: &Self) -> bool {
-        if same_condition_roots([self], [other]) {
-            return true;
-        }
-        !self.overlap_query(other, false) && !other.overlap_query(self, false)
+        condition_graph::equivalent(self, other)
     }
 
     fn overlap_query(&self, other: &Self, other_truth: bool) -> bool {

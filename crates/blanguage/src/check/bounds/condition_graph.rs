@@ -80,7 +80,39 @@ struct Context<'a> {
     required: Option<btree_set::Iter<'a, Fact>>,
     next_fact: Option<(Fact, Option<btree_set::Iter<'a, Fact>>)>,
 }
-impl Context<'_> {
+impl<'a> Context<'a> {
+    fn new(left: &'a Clause, right: &'a Clause, indices: BTreeMap<usize, usize>) -> Self {
+        let mut nodes = Vec::new();
+        for clause in Clause::ordered([left, right]) {
+            if indices[&clause.key()] == nodes.len() {
+                nodes.push(Node {
+                    clause,
+                    view: Gate {
+                        left: 0,
+                        right: 0,
+                        kind: 0,
+                        parents: Span {
+                            data: std::ptr::null(),
+                            count: 0,
+                        },
+                    },
+                    parents: Vec::new(),
+                });
+            }
+        }
+        Self {
+            indices,
+            nodes,
+            pending: Vec::new(),
+            values: Vec::new(),
+            trail: Vec::new(),
+            alternatives: Vec::new(),
+            facts: Facts::new(),
+            additions: Vec::new(),
+            required: None,
+            next_fact: None,
+        }
+    }
     fn add(&mut self, fact: Fact) {
         if self.facts.insert(fact) {
             self.additions.push(fact);
@@ -185,6 +217,16 @@ unsafe extern "C" fn pending_pop(slot: Slot) -> Assignment {
 }
 unsafe extern "C" fn pending_clear(slot: Slot) {
     unsafe { context(slot) }.pending.clear();
+}
+unsafe extern "C" fn reset_search(slot: Slot) {
+    let context = unsafe { context(slot) };
+    context.pending.clear();
+    context.trail.clear();
+    context.alternatives.clear();
+    context.facts.clear();
+    context.additions.clear();
+    context.required = None;
+    context.next_fact = None;
 }
 unsafe extern "C" fn trail_push(slot: Slot, id: usize) {
     unsafe { context(slot) }.trail.push(id);
@@ -325,78 +367,80 @@ struct Host {
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::overlap"]
     fn query(left: Borrowed, right: Borrowed, truth: u32, context: Slot, host: Host) -> u32;
+    #[link_name = "bootstrap.condition_graph::equivalent"]
+    fn query_equivalent(
+        left: Borrowed,
+        right: Borrowed,
+        context: Slot,
+        host: Host,
+        reset: unsafe extern "C" fn(Slot),
+    ) -> u32;
 }
 pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
     let unsigned32 = super::Scalar::U32;
     let indices = super::condition_node_ids([left, right], |_| {});
-    let mut nodes = Vec::new();
-    for clause in Clause::ordered([left, right]) {
-        if indices[&clause.key()] == nodes.len() {
-            nodes.push(Node {
-                clause,
-                view: Gate {
-                    left: 0,
-                    right: 0,
-                    kind: 0,
-                    parents: Span {
-                        data: std::ptr::null(),
-                        count: 0,
-                    },
-                },
-                parents: Vec::new(),
-            });
-        }
-    }
-    let mut context = Context {
-        indices,
-        nodes,
-        pending: Vec::new(),
-        values: Vec::new(),
-        trail: Vec::new(),
-        alternatives: Vec::new(),
-        facts: Facts::new(),
-        additions: Vec::new(),
-        required: None,
-        next_fact: None,
-    };
+    let mut context = Context::new(left, right, indices);
     unsafe {
         query(
             std::ptr::from_ref(left).cast(),
             std::ptr::from_ref(right).cast(),
             u32::from(truth),
             (&mut context as *mut Context<'_>).cast(),
-            Host {
-                index,
-                node_count,
-                inspect,
-                define,
-                parent_push,
-                prepare,
-                pending_push,
-                pending_pop,
-                pending_clear,
-                trail_push,
-                trail_pop,
-                trail,
-                additions,
-                undo_addition,
-                add_leaf,
-                contradictory: conflict,
-                add_next,
-                begin_facts,
-                next_fact,
-                inspect_fact: super::fact_fields::project,
-                set_next_fact,
-                facts: super::fact_fields::Host {
-                    unsigned32: std::ptr::from_ref(&unsigned32).cast(),
-                    compare: super::fact_fields::compare,
-                },
-                remaining,
-                push_clause,
-                push_fact,
-                pop_alternative,
-            },
+            host(&unsigned32),
         ) != 0
+    }
+}
+pub(super) fn equivalent(left: &Clause, right: &Clause) -> bool {
+    if left.key() == right.key() {
+        return true;
+    }
+    let indices = super::condition_node_ids([left, right], |_| {});
+    if indices[&left.key()] == indices[&right.key()] {
+        return true;
+    }
+    let unsigned32 = super::Scalar::U32;
+    let mut context = Context::new(left, right, indices);
+    unsafe {
+        query_equivalent(
+            std::ptr::from_ref(left).cast(),
+            std::ptr::from_ref(right).cast(),
+            (&mut context as *mut Context<'_>).cast(),
+            host(&unsigned32),
+            reset_search,
+        ) != 0
+    }
+}
+fn host(unsigned32: &super::Scalar) -> Host {
+    Host {
+        index,
+        node_count,
+        inspect,
+        define,
+        parent_push,
+        prepare,
+        pending_push,
+        pending_pop,
+        pending_clear,
+        trail_push,
+        trail_pop,
+        trail,
+        additions,
+        undo_addition,
+        add_leaf,
+        contradictory: conflict,
+        add_next,
+        begin_facts,
+        next_fact,
+        inspect_fact: super::fact_fields::project,
+        set_next_fact,
+        facts: super::fact_fields::Host {
+            unsigned32: std::ptr::from_ref(unsigned32).cast(),
+            compare: super::fact_fields::compare,
+        },
+        remaining,
+        push_clause,
+        push_fact,
+        pop_alternative,
     }
 }
 

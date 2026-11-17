@@ -48,6 +48,17 @@ extern "C" u32 overlap(address left,address right,u32 right_truth,address contex
  requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative);
+extern "C" u32 equivalent(address left,address right,address context,Host host,cfn<void,address> reset) on cpu
+ requires nonzero(host.index) requires nonzero(host.node_count) requires nonzero(host.inspect)
+ requires nonzero(host.define) requires nonzero(host.parent_push) requires nonzero(host.prepare)
+ requires nonzero(host.pending_push) requires nonzero(host.pending_pop) requires nonzero(host.pending_clear)
+ requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
+ requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
+ requires nonzero(host.contradictory) requires nonzero(host.add_next) requires nonzero(host.begin_facts)
+ requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
+ requires nonzero(host.facts.compare) requires nonzero(host.remaining)
+ requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative)
+ requires nonzero(reset);
 
 // Original required-facts query nodes; the result stays in its owning container.
 struct RequiredNode { usize left; usize right; u32 kind; usize users; usize remaining; };
