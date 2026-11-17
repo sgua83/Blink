@@ -616,6 +616,7 @@ impl Builder<'_> {
         if !context.initial && let Some(exit)=natural.as_mut() {
             let empty=context.control_source.test.as_ref().unwrap().at_call(&context.control_source.bindings(&context.entry)).negate();
             let scalar_empty=std::cell::LazyCell::new(||if nonempty{bounds::Condition::constant(false)}else{match empty.truth_in(&context.entry.path){Some(truth)=>bounds::Condition::constant(truth),None=>empty.clone()}});
+            let continue_scopes=context.continues.iter().map(|_|std::cell::OnceCell::new()).collect::<Vec<_>>();
             for(name,binding)in &mut exit.env {
                 if let Binding::ApplicationData(data)=binding
                     && let Some(Place::Local(_,slots,..))=&data.place
@@ -641,10 +642,11 @@ impl Builder<'_> {
                     // components take backedge facts only if the header leaves them unchanged.
                     if proof.known_identity(component).is_some_and(|id|entry.known_identity(component)!=Some(id)) || self.application_condition_writes(condition,&place,component){continue;}
                     let mut repeated:Option<(bounds::Proof,bounds::Clause,Reg)>=None;
-                    for edge in &mut context.continues {
+                    for(edge,scope)in context.continues.iter_mut().zip(&continue_scopes) {
                         if let Some((next,next_uniform,_))=edge.env.get_mut(name).and_then(Binding::proof_storage) {
                             let next=next.project(&[component],width);*uniform &= *next_uniform;
-                            let next=bounds::scoped_proof(&Ty::scalar(place.ty().components[component].0),next,&edge.path,&edge.env);
+                            let scope=scope.get_or_init(||bounds::proof_scope(&edge.path,&edge.env));
+                            let next=scope(&Ty::scalar(place.ty().components[component].0),next);
                             if let Some((common,aliases,reg))=repeated.as_mut(){
                                 *aliases=bounds::Clause::either(aliases,&next.output_aliases(&[*reg],&self.registers,&BTreeMap::new()));
                                 common.join(&next,1,None);
