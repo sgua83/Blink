@@ -1,5 +1,5 @@
 //! Physical projections borrow original Fact fields until the synchronous consumer returns.
-use super::{Fact, IndexDomain, Scalar, ScalarPredicate, ValueIdentity};
+use super::{Comparison, Fact, IndexDomain, Operand, Scalar, ScalarPredicate, ValueIdentity};
 use std::{ffi::c_void, ptr};
 type Borrowed = *const c_void;
 
@@ -236,4 +236,89 @@ pub(super) fn bound(id: &ValueIdentity, scalar: &Scalar, value: u64, minimum: bo
         mask: scalar.bit_mask(),
         ..Fields::default()
     }
+}
+
+#[repr(C)]
+pub(super) struct OperandView {
+    identity: Borrowed,
+    bits: u64,
+    scalar: Borrowed,
+    is_constant: u32,
+}
+fn operand(value: &Operand) -> OperandView {
+    match value {
+        Operand::Value(id) => OperandView {
+            identity: ptr::from_ref(id).cast(),
+            bits: 0,
+            scalar: ptr::null(),
+            is_constant: 0,
+        },
+        Operand::Constant(scalar, bits) => OperandView {
+            identity: ptr::null(),
+            bits: *bits,
+            scalar: ptr::from_ref(scalar).cast(),
+            is_constant: 1,
+        },
+    }
+}
+#[repr(C)]
+pub(super) struct PredicateView {
+    scalar: Borrowed,
+    operation: u32,
+    left: OperandView,
+    right: OperandView,
+}
+pub(super) unsafe extern "C" fn predicate(value: Borrowed) -> PredicateView {
+    let value = unsafe { &*value.cast::<ScalarPredicate>() };
+    let operation = match value.op {
+        Comparison::Equal => 10,
+        Comparison::NotEqual => 11,
+        Comparison::Less => 12,
+        Comparison::Greater => 13,
+        Comparison::LessEqual => 14,
+        Comparison::GreaterEqual => 15,
+    };
+    PredicateView {
+        scalar: ptr::from_ref(&value.scalar).cast(),
+        operation,
+        left: operand(&value.a),
+        right: operand(&value.b),
+    }
+}
+
+#[repr(C)]
+pub(super) struct DomainView {
+    kind: u32,
+    identity: Borrowed,
+    count: u32,
+    distance: u32,
+}
+pub(super) unsafe extern "C" fn domain(value: Borrowed) -> DomainView {
+    let mut view = DomainView {
+        kind: 0,
+        identity: ptr::null(),
+        count: 0,
+        distance: 0,
+    };
+    match unsafe { &*value.cast::<IndexDomain>() } {
+        IndexDomain::Fixed(count) => {
+            view.kind = 1;
+            view.count = *count;
+        }
+        IndexDomain::Upper(id, distance) => {
+            view.kind = 2;
+            view.identity = ptr::from_ref(id).cast();
+            view.distance = *distance;
+        }
+        IndexDomain::ApplicationData(id) => {
+            view.kind = 3;
+            view.identity = ptr::from_ref(id).cast();
+        }
+        IndexDomain::ApplicationLength(id) => {
+            view.kind = 4;
+            view.identity = ptr::from_ref(id).cast();
+        }
+        _ => {}
+    }
+    view
 }

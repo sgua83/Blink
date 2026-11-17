@@ -838,3 +838,257 @@ extern "C" void canonical_fold(address context,CanonicalFoldHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.append) {
  while(host.next(context)!=0){host.append(context);}
 }
+
+bool contract_end_equal(ContractEnd a,ContractEnd b) on cpu {return a.high==b.high&&a.low==b.low;}
+bool contract_end_less(ContractEnd a,ContractEnd b) on cpu {return a.high<b.high||(a.high==b.high&&a.low<b.low);}
+extern "C" usize contract_node(address context,ContractNodeHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.last) requires nonzero(host.extend) requires nonzero(host.push) requires nonzero(host.count) requires nonzero(host.intern) {
+ while(true){
+  ContractCell next=host.next(context);if(next.present==0){break;}
+  ContractCell previous=host.last(context);
+  if(previous.present!=0&&previous.value==next.value){host.extend(context,next.end);}else{host.push(context,next);}
+ }
+ if(host.count(context)==1u64){return host.last(context).value;}
+ return host.intern(context);
+}
+
+extern "C" u32 contract_pairs(address context,usize left,usize right,ContractPairHost host) on cpu
+ requires nonzero(host.compare) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.push) {
+ i32 order=host.compare(context);usize count=host.count(context,order<=0 ? 0 : 1);
+ if(order!=0){
+  usize at=0u64;while(at<count){ContractCell cell=host.cell(context,order<0 ? 0 : 1,at);at+=1u64;
+   host.push(context,cell.end,order<0 ? cell.value : left,order<0 ? right : cell.value);
+  }return order<0 ? 0 : 1;
+ }
+ usize a=0u64;usize b=0u64;usize right_count=host.count(context,1);
+ while(a<count&&b<right_count){
+  ContractCell x=host.cell(context,0,a);ContractCell y=host.cell(context,1,b);
+  ContractEnd end=contract_end_less(x.end,y.end) ? x.end : y.end;host.push(context,end,x.value,y.value);
+  if(contract_end_equal(x.end,end)){a+=1u64;}if(contract_end_equal(y.end,end)){b+=1u64;}
+ }return 0;
+}
+
+ContractOperation contract_key(usize a,usize b,u32 either,u32 ready) on cpu {
+ return ContractOperation(1,ready,either,a<b ? a : b,a<b ? b : a);
+}
+extern "C" usize contract_operation(address context,usize left,usize right,u32 either,ContractOperationHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.prepare) requires nonzero(host.count) requires nonzero(host.pair) requires nonzero(host.cell) requires nonzero(host.make) requires nonzero(host.release) {
+ ContractOperation root=contract_key(left,right,either,0);host.push(context,root);
+ while(true){
+  ContractOperation work=host.pop(context);if(work.present==0){break;}
+  if(host.lookup(context,work.either,work.left,work.right).present!=0){continue;}
+  usize a=work.left;usize b=work.right;u32 simple=1;usize value=0u64;
+  if(a==b){value=a;}else if(work.either!=0){
+   if(a==1u64||b==1u64){value=1u64;}else if(a==0u64){value=b;}else{simple=0;}
+  }else if(a==0u64){value=0u64;}else if(a==1u64){value=b;}else{simple=0;}
+  if(simple!=0){host.remember(context,work.either,a,b,value);continue;}
+  host.prepare(context,a,b);usize count=host.count(context);
+  if(work.ready==0){
+   work.ready=1;host.push(context,work);
+   while(count!=0u64){count-=1u64;ContractPair pair=host.pair(context,count);host.push(context,contract_key(pair.left,pair.right,work.either,0));}
+  }else{
+   usize at=0u64;while(at<count){ContractPair pair=host.pair(context,at);at+=1u64;
+    ContractOperation key=contract_key(pair.left,pair.right,work.either,0);host.cell(context,pair.end,host.lookup(context,key.either,key.left,key.right).value);
+   }value=host.make(context);host.remember(context,work.either,a,b,value);
+  }host.release(context);
+ }return host.lookup(context,root.either,root.left,root.right).value;
+}
+
+extern "C" usize contract_not(address context,usize root,ContractNotHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.load) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.emit) requires nonzero(host.make) requires nonzero(host.release) {
+ host.push(context,root,0);
+ while(true){
+  ContractPending work=host.pop(context);if(work.present==0){break;}
+  if(host.lookup(context,work.index).present!=0){continue;}
+  host.load(context,work.index);usize count=host.count(context);
+  if(work.ready==0){
+   host.push(context,work.index,1);
+   while(count!=0u64){count-=1u64;host.push(context,host.cell(context,count).value,0);}
+  }else{
+   usize at=0u64;while(at<count){ContractCell cell=host.cell(context,at);at+=1u64;host.emit(context,cell.end,host.lookup(context,cell.value).value);}
+   usize inverse=host.make(context);host.remember(context,work.index,inverse);host.remember(context,inverse,work.index);
+  }host.release(context);
+ }return host.lookup(context,root).value;
+}
+
+// Semantic helpers share the original typed normalizer and actual scalar fields.
+usize contract_cut(address context,address identity,address scalar,u64 upper,ContractSemanticHost host) on cpu requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain) {
+ if(upper>=host.scalar(scalar).mask){return 1u64;}return host.range(context,identity,scalar,upper);
+}
+usize contract_minimum(address context,address identity,address scalar,u64 lower,ContractSemanticHost host) on cpu requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain) {
+ if(lower==0u64){return 1u64;}return host.invert(context,contract_cut(context,identity,scalar,lower-1u64,host));
+}
+usize contract_zero(address context,address identity,address scalar,ContractSemanticHost host) on cpu requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain) {
+ u64 zero=host.scalar(scalar).bias;usize upper=contract_cut(context,identity,scalar,zero,host);
+ usize lower=contract_minimum(context,identity,scalar,zero,host);return host.operation(context,lower,upper,0);
+}
+usize contract_less(address context,address a,address b,address scalar,ContractSemanticHost host) on cpu requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain) {
+ if(host.compare(a,b)==0){return 0u64;}
+ FactView fact=FactView(1,FactKind::Below,a,b,address(),scalar,0u64,0u64,1,0);
+ usize relation=host.atom(context,fact);usize before=contract_cut(context,a,scalar,host.scalar(scalar).mask-1u64,host);
+ usize after=contract_minimum(context,b,scalar,1u64,host);relation=host.operation(context,relation,before,0);return host.operation(context,relation,after,0);
+}
+ContractIndex contract_comparison_less(address context,InternalOperand a,InternalOperand b,address scalar,ContractSemanticHost host) on cpu requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain) {
+ ContractIndex result=ContractIndex(1,0u64);InternalScalar info=host.scalar(scalar);
+ if(a.is_constant==0&&b.is_constant==0){result.value=contract_less(context,a.identity,b.identity,scalar,host);return result;}
+ if(a.is_constant==0&&b.is_constant!=0&&host.same_scalar(b.scalar,scalar)!=0){u64 order=(b.bits&info.mask)^info.bias;
+  if(order!=0u64){result.value=contract_cut(context,a.identity,scalar,order-1u64,host);}return result;
+ }
+ if(a.is_constant!=0&&b.is_constant==0&&host.same_scalar(a.scalar,scalar)!=0){u64 order=(a.bits&info.mask)^info.bias;
+  if(order!=info.mask){result.value=contract_minimum(context,b.identity,scalar,order+1u64,host);}return result;
+ }
+ if(a.is_constant!=0&&b.is_constant!=0&&host.same_scalar(a.scalar,scalar)!=0&&host.same_scalar(b.scalar,scalar)!=0){
+  result.value=((a.bits&info.mask)^info.bias)<((b.bits&info.mask)^info.bias) ? 1u64 : 0u64;return result;
+ }result.present=0;return result;
+}
+ContractIndex contract_compare(address context,BinaryOperation operation,address scalar,InternalOperand a,InternalOperand b,ContractSemanticHost host) on cpu requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain) {
+ ContractIndex result=ContractIndex(0,0u64);if(host.scalar(scalar).kind>=2){return result;}
+ if(operation==BinaryOperation::Less){return contract_comparison_less(context,a,b,scalar,host);}
+ if(operation==BinaryOperation::Greater){return contract_comparison_less(context,b,a,scalar,host);}
+ if(operation==BinaryOperation::LessEqual||operation==BinaryOperation::GreaterEqual){
+  result=operation==BinaryOperation::LessEqual ? contract_comparison_less(context,b,a,scalar,host) : contract_comparison_less(context,a,b,scalar,host);
+  if(result.present!=0){result.value=host.invert(context,result.value);}return result;
+ }
+ result=contract_comparison_less(context,a,b,scalar,host);if(result.present==0){return result;}
+ ContractIndex right=contract_comparison_less(context,b,a,scalar,host);if(right.present==0){return right;}
+ result.value=host.operation(context,result.value,right.value,1);
+ if(operation==BinaryOperation::Equal){result.value=host.invert(context,result.value);}return result;
+}
+InternalOperand contract_value(address identity) on cpu {return InternalOperand(identity,0u64,address(),0);}
+extern "C" usize contract_fact(address context,FactView input,ContractSemanticHost host) on cpu
+ requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain) {
+ FactView fact=input;
+ if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){
+  if(host.scalar(fact.scalar).kind==0){
+   if(fact.kind==FactKind::Minimum&&fact.value==1u64){fact.kind=FactKind::NonZero;}
+   else if(fact.kind==FactKind::Maximum&&fact.value==0u64){fact.kind=FactKind::Zero;}
+  }
+ }
+ if(fact.kind==FactKind::Minimum){return contract_minimum(context,fact.first,fact.scalar,fact.value,host);}
+ if(fact.kind==FactKind::Maximum){return contract_cut(context,fact.first,fact.scalar,fact.value,host);}
+ if(fact.kind==FactKind::Zero||fact.kind==FactKind::NonZero){
+  address scalar=host.integer(context,fact.first,0);
+  if(scalar!=address()){usize zero=contract_zero(context,fact.first,scalar,host);return fact.kind==FactKind::Zero ? zero : host.invert(context,zero);}
+  if(host.boolean(context,fact.first)!=0){FactView truth=fact;truth.kind=FactKind::Boolean;truth.flag=1;usize value=host.atom(context,truth);return fact.kind==FactKind::NonZero ? value : host.invert(context,value);}
+ }
+ if(fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual){
+  if(host.compare(fact.first,fact.second)==0){return fact.kind==FactKind::Equal ? 1u64 : 0u64;}
+  address scalar=host.integer(context,fact.first,0);address other=host.integer(context,fact.second,1);
+  if(scalar!=address()&&other!=address()&&host.same_scalar(scalar,other)!=0){
+   return contract_compare(context,fact.kind==FactKind::Equal ? BinaryOperation::Equal : BinaryOperation::NotEqual,scalar,contract_value(fact.first),contract_value(fact.second),host).value;
+  }
+ }
+ if(fact.kind==FactKind::Below&&host.scalar(fact.scalar).kind<2){
+  return contract_compare(context,fact.flag!=0 ? BinaryOperation::Less : BinaryOperation::LessEqual,fact.scalar,contract_value(fact.first),contract_value(fact.second),host).value;
+ }
+ if(fact.kind==FactKind::Predicate){
+  InternalPredicate predicate=host.predicate(fact.payload);ContractIndex value=contract_compare(context,predicate.operation,predicate.scalar,predicate.left,predicate.right,host);
+  if(value.present!=0){return fact.flag!=0 ? value.value : host.invert(context,value.value);}
+ }
+ if(fact.kind==FactKind::Index||fact.kind==FactKind::Outside){
+  ContractDomain domain=host.domain(fact.payload);ContractIndex relation=ContractIndex(0,0u64);
+  if(domain.kind==1){relation.present=1;if(domain.count!=0){relation.value=contract_cut(context,fact.first,host.unsigned32,u64(domain.count)-1u64,host);}}
+  else if(domain.kind==2&&domain.distance<=1){
+   address scalar=host.integer(context,fact.first,0);address other=host.integer(context,domain.identity,1);
+   if(scalar!=address()&&other!=address()&&host.scalar(scalar).kind==0&&host.same_scalar(scalar,other)!=0){
+    relation=contract_compare(context,domain.distance==0 ? BinaryOperation::LessEqual : BinaryOperation::Less,scalar,contract_value(fact.first),contract_value(domain.identity),host);
+   }
+  }else if(domain.kind==3||domain.kind==4){
+   address length=host.length(context,domain.identity);
+   if(length!=address()){
+    address scalar=host.integer(context,fact.first,0);address other=host.integer(context,length,1);
+    if(scalar!=address()&&other!=address()&&host.scalar(scalar).kind==0&&host.same_scalar(scalar,other)!=0){
+     relation=contract_compare(context,domain.kind==3 ? BinaryOperation::Less : BinaryOperation::LessEqual,scalar,contract_value(fact.first),contract_value(length),host);
+    }
+   }
+  }if(relation.present!=0){return fact.kind==FactKind::Index ? relation.value : host.invert(context,relation.value);}
+ }
+ u32 truth=1;
+ if(fact.kind==FactKind::Boolean){truth=fact.flag;fact.flag=1;}
+ else if(fact.kind==FactKind::NonZero){fact.kind=FactKind::Zero;truth=0;}
+ else if(fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual){truth=fact.kind==FactKind::Equal ? 1 : 0;fact.kind=FactKind::Equal;
+  if(host.compare(fact.first,fact.second)>0){address swap=fact.first;fact.first=fact.second;fact.second=swap;}
+ }else if(fact.kind==FactKind::Outside){fact.kind=FactKind::Index;truth=0;}
+ else if(fact.kind==FactKind::Predicate){truth=fact.flag;fact.flag=1;}
+ usize value=host.atom(context,fact);return truth!=0 ? value : host.invert(context,value);
+}
+
+extern "C" u32 contract_unary(FactView fact,cfn<InternalPredicate,address> ensures memory(read) predicate,cfn<ContractDomain,address> ensures memory(read) domain) on cpu
+ requires nonzero(predicate) requires nonzero(domain) {
+ if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum||fact.kind==FactKind::Zero||fact.kind==FactKind::NonZero||fact.kind==FactKind::Boolean){return 1;}
+ if(fact.kind==FactKind::Index||fact.kind==FactKind::Outside){return domain(fact.payload).kind==1 ? 1 : 0;}
+ if(fact.kind==FactKind::Predicate){InternalPredicate p=predicate(fact.payload);return p.left.is_constant!=0||p.right.is_constant!=0 ? 1 : 0;}return 0;
+}
+
+extern "C" u32 contract_all_unary(address context,cfn<FactView,address> next,cfn<InternalPredicate,address> ensures memory(read) predicate,cfn<ContractDomain,address> ensures memory(read) domain) on cpu
+ requires nonzero(next) requires nonzero(predicate) requires nonzero(domain) {
+ while(true){FactView fact=next(context);if(fact.present==0){return 1;}if(contract_unary(fact,predicate,domain)==0){return 0;}}
+}
+
+extern "C" u32 contract_priority(address source,ContractPriorityHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.all_unary) {
+ SourceNode node=host.inspect(source);if(node.kind==0){return 1;}if(node.kind==1){return host.all_unary(node.left);}return 0;
+}
+
+extern "C" void contract_operands(address context,u32 either,ContractOperandsHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.inspect) requires nonzero(host.emit) {
+ while(true){address clause=host.pop(context);if(clause==address()){return;}if(host.seen(context,clause)==0){continue;}
+  if(host.imported(context,clause)!=0){host.emit(context,clause);continue;}SourceNode node=host.inspect(clause);
+  if((node.kind==2&&either==0)||(node.kind==3&&either!=0)){host.push(context,node.right);host.push(context,node.left);}
+  else if(node.kind==4&&either==0){host.push(context,node.truth!=0 ? node.right : node.no);host.push(context,node.left);}
+  else{host.emit(context,clause);}
+ }
+}
+
+extern "C" usize contract_import(address context,address root,ContractImportHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.visit) requires nonzero(host.start) requires nonzero(host.resume) requires nonzero(host.lookup) requires nonzero(host.inspect) requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.operation) requires nonzero(host.operand) requires nonzero(host.remember) {
+ host.visit(context,root);
+ while(true){ContractImport work=host.pop(context);if(work.present==0){break;}
+  if(work.fold==0){
+   if(host.lookup(context,work.clause).present!=0){continue;}SourceNode node=host.inspect(work.clause);usize result=0u64;
+   if(node.kind==1){result=1u64;u32 phase=0;while(phase<2){host.begin(context,node.left);
+    while(true){FactView fact=host.next(context);if(fact.present==0){break;}
+     if(contract_unary(fact,host.predicate,host.domain)==(phase==0 ? 1 : 0)){result=host.operation(context,result,host.fact(context,fact),0);}
+    }phase+=1;
+   }}else if(node.kind!=0){u32 either=node.kind==3 ? 1 : 0;host.start(context,work.clause,either,either!=0 ? 0u64 : 1u64);continue;}
+   host.remember(context,work.clause,result);
+  }else{
+   usize next=work.next;usize result=work.result;
+   while(next<work.count&&result!=usize(work.either)){
+    address operand=host.operand(context,next);ContractIndex value=host.lookup(context,operand);if(value.present==0){break;}
+    result=host.operation(context,result,value.value,work.either);next+=1u64;
+   }
+   if(next<work.count&&result!=usize(work.either)){address operand=host.operand(context,next);host.resume(context,work.clause,work.either,next,result);host.visit(context,operand);}
+   else{host.remember(context,work.clause,result);}
+  }
+ }return host.lookup(context,root).value;
+}
+
+extern "C" void contract_emit(address context,usize root,ContractEmitHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.known) requires nonzero(host.load) requires nonzero(host.variable) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.bound) requires nonzero(host.guard) requires nonzero(host.atom) requires nonzero(host.negate) requires nonzero(host.guard_node) requires nonzero(host.child) requires nonzero(host.both) requires nonzero(host.first) requires nonzero(host.either) requires nonzero(host.remember) requires nonzero(host.release) {
+ host.push(context,root,0);
+ while(true){ContractPending work=host.pop(context);if(work.present==0){return;}if(host.known(context,work.index)!=0){continue;}
+  host.load(context,work.index);usize count=host.count(context);
+  if(work.ready==0){host.push(context,work.index,1);while(count!=0u64){count-=1u64;host.push(context,host.cell(context,count).value,0);}host.release(context);continue;}
+  ContractVariable variable=host.variable(context);ContractEnd begin=ContractEnd(0u64,0u64);u32 found=0;usize at=0u64;
+  while(at<count){ContractCell cell=host.cell(context,at);at+=1u64;
+   if(cell.value!=0u64){
+    if(variable.kind==0){
+     if(begin.low!=0u64||begin.high!=0u64){FactView lower=variable.fact;lower.kind=FactKind::Minimum;lower.value=begin.low;host.bound(context,lower);}
+     if(!contract_end_equal(cell.end,variable.end)){FactView upper=variable.fact;upper.kind=FactKind::Maximum;upper.value=cell.end.low-1u64;host.bound(context,upper);}
+     host.guard(context);
+    }else{host.atom(context,variable.fact);if(begin.low==0u64&&begin.high==0u64){host.negate(context);}}
+    if(cell.value!=1u64){SourceNode guard=host.guard_node(context);
+     if(guard.kind==1&&guard.empty!=0){host.child(context,cell.value);}else{host.both(context,cell.value);}
+    }
+    if(found==0){host.first(context);found=1;}else{host.either(context);}
+   }begin=cell.end;
+  }host.remember(context,work.index,found);host.release(context);
+ }
+}
+
+extern "C" void contract_union(address context,ContractUnionHost host) on cpu
+ requires nonzero(host.case) requires nonzero(host.import) requires nonzero(host.operation) requires nonzero(host.emit) {
+ u32 truth=0;while(truth<2){usize a=host.import(context,host.case(context,0,truth));usize b=host.import(context,host.case(context,1,truth));host.emit(context,truth,host.operation(context,a,b,truth));truth+=1;}
+}
+

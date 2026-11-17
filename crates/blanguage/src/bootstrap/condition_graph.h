@@ -126,7 +126,7 @@ extern "C" void negate_graph(address root,address context,NegateHost host) on cp
  requires nonzero(host.either) requires nonzero(host.both) requires nonzero(host.facts.compare);
 
 struct InternalScalar { u32 kind; u32 width; u64 mask; u64 bias; };
-struct InternalOperand { address identity; u64 bits; u32 is_constant; };
+struct InternalOperand { address identity; u64 bits; address scalar; u32 is_constant; };
 struct InternalPredicate { address scalar; BinaryOperation operation; InternalOperand left; InternalOperand right; };
 struct InternalUpper { address identity; u32 distance; u32 present; };
 struct InternalHost {
@@ -398,3 +398,157 @@ extern "C" void canonical_closure(address context,CanonicalClosureHost host) on 
 struct CanonicalFoldHost { cfn<u32,address> next; cfn<void,address> append; };
 extern "C" void canonical_fold(address context,CanonicalFoldHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.append);
+
+// One synchronous public-contract normalizer owns every typed container.
+struct ContractEnd { u64 low; u64 high; };
+struct ContractCell { u32 present; ContractEnd end; usize value; };
+struct ContractPair { ContractEnd end; usize left; usize right; };
+struct ContractIndex { u32 present; usize value; };
+struct ContractPending { u32 present; u32 ready; usize index; };
+struct ContractOperation { u32 present; u32 ready; u32 either; usize left; usize right; };
+struct ContractDomain { u32 kind; address identity; u32 count; u32 distance; };
+struct ContractVariable { u32 kind; FactView fact; ContractEnd end; };
+struct ContractImport { u32 present; u32 fold; address clause; u32 either; usize next; usize result; usize count; };
+struct ContractNodeHost {
+ cfn<ContractCell,address> next;
+ cfn<ContractCell,address> ensures memory(read) last;
+ cfn<void,address,ContractEnd> extend;
+ cfn<void,address,ContractCell> push;
+ cfn<usize,address> ensures memory(read) count;
+ cfn<usize,address> intern;
+};
+struct ContractPairHost {
+ cfn<i32,address> ensures memory(read) compare;
+ cfn<usize,address,u32> ensures memory(read) count;
+ cfn<ContractCell,address,u32,usize> ensures memory(read) cell;
+ cfn<void,address,ContractEnd,usize,usize> push;
+};
+struct ContractOperationHost {
+ cfn<ContractOperation,address> pop;
+ cfn<void,address,ContractOperation> push;
+ cfn<ContractIndex,address,u32,usize,usize> ensures memory(read) lookup;
+ cfn<void,address,u32,usize,usize,usize> remember;
+ cfn<void,address,usize,usize> prepare;
+ cfn<usize,address> ensures memory(read) count;
+ cfn<ContractPair,address,usize> ensures memory(read) pair;
+ cfn<void,address,ContractEnd,usize> cell;
+ cfn<usize,address> make;
+ cfn<void,address> release;
+};
+struct ContractNotHost {
+ cfn<ContractPending,address> pop;
+ cfn<void,address,usize,u32> push;
+ cfn<ContractIndex,address,usize> ensures memory(read) lookup;
+ cfn<void,address,usize,usize> remember;
+ cfn<void,address,usize> load;
+ cfn<usize,address> ensures memory(read) count;
+ cfn<ContractCell,address,usize> ensures memory(read) cell;
+ cfn<void,address,ContractEnd,usize> emit;
+ cfn<usize,address> make;
+ cfn<void,address> release;
+};
+struct ContractSemanticHost {
+ cfn<usize,address,FactView> atom;
+ cfn<usize,address,address,address,u64> range;
+ cfn<usize,address,usize,usize,u32> operation;
+ cfn<usize,address,usize> invert;
+ cfn<address,address,address,u32> integer;
+ cfn<u32,address,address> ensures memory(read) boolean;
+ cfn<address,address,address> length;
+ cfn<i32,address,address> ensures memory(read) compare;
+ cfn<u32,address,address> ensures memory(read) same_scalar;
+ cfn<InternalScalar,address> ensures memory(read) scalar;
+ cfn<InternalPredicate,address> ensures memory(read) predicate;
+ cfn<ContractDomain,address> ensures memory(read) domain;
+ address unsigned32;
+};
+struct ContractPriorityHost {
+ cfn<SourceNode,address> ensures memory(read) inspect;
+ cfn<u32,address> all_unary;
+};
+struct ContractOperandsHost {
+ cfn<address,address> pop;
+ cfn<void,address,address> push;
+ cfn<u32,address,address> seen;
+ cfn<u32,address,address> ensures memory(read) imported;
+ cfn<SourceNode,address> ensures memory(read) inspect;
+ cfn<void,address,address> emit;
+};
+struct ContractImportHost {
+ cfn<ContractImport,address> pop;
+ cfn<void,address,address> visit;
+ cfn<void,address,address,u32,usize> start;
+ cfn<void,address,address,u32,usize,usize> resume;
+ cfn<ContractIndex,address,address> ensures memory(read) lookup;
+ cfn<SourceNode,address> ensures memory(read) inspect;
+ cfn<void,address,address> begin;
+ cfn<FactView,address> next;
+ cfn<InternalPredicate,address> ensures memory(read) predicate;
+ cfn<ContractDomain,address> ensures memory(read) domain;
+ cfn<usize,address,FactView> fact;
+ cfn<usize,address,usize,usize,u32> operation;
+ cfn<address,address,usize> ensures memory(read) operand;
+ cfn<void,address,address,usize> remember;
+};
+struct ContractEmitHost {
+ cfn<ContractPending,address> pop;
+ cfn<void,address,usize,u32> push;
+ cfn<u32,address,usize> ensures memory(read) known;
+ cfn<void,address,usize> load;
+ cfn<ContractVariable,address> ensures memory(read) variable;
+ cfn<usize,address> ensures memory(read) count;
+ cfn<ContractCell,address,usize> ensures memory(read) cell;
+ cfn<void,address,FactView> bound;
+ cfn<void,address> guard;
+ cfn<void,address,FactView> atom;
+ cfn<void,address> negate;
+ cfn<SourceNode,address> ensures memory(read) guard_node;
+ cfn<void,address,usize> child;
+ cfn<void,address,usize> both;
+ cfn<void,address> first;
+ cfn<void,address> either;
+ cfn<void,address,usize,u32> remember;
+ cfn<void,address> release;
+};
+struct ContractUnionHost {
+ cfn<address,address,u32,u32> ensures memory(read) case;
+ cfn<usize,address,address> import;
+ cfn<usize,address,usize,usize,u32> operation;
+ cfn<void,address,u32,usize> emit;
+};
+
+extern "C" usize contract_node(address context,ContractNodeHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.last) requires nonzero(host.extend) requires nonzero(host.push) requires nonzero(host.count) requires nonzero(host.intern);
+
+extern "C" u32 contract_pairs(address context,usize left,usize right,ContractPairHost host) on cpu
+ requires nonzero(host.compare) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.push);
+
+extern "C" usize contract_operation(address context,usize left,usize right,u32 either,ContractOperationHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.prepare) requires nonzero(host.count) requires nonzero(host.pair) requires nonzero(host.cell) requires nonzero(host.make) requires nonzero(host.release);
+
+extern "C" usize contract_not(address context,usize root,ContractNotHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.lookup) requires nonzero(host.remember) requires nonzero(host.load) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.emit) requires nonzero(host.make) requires nonzero(host.release);
+
+extern "C" usize contract_fact(address context,FactView input,ContractSemanticHost host) on cpu
+ requires nonzero(host.atom) requires nonzero(host.range) requires nonzero(host.operation) requires nonzero(host.invert) requires nonzero(host.integer) requires nonzero(host.boolean) requires nonzero(host.length) requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar) requires nonzero(host.predicate) requires nonzero(host.domain);
+
+extern "C" u32 contract_unary(FactView fact,cfn<InternalPredicate,address> ensures memory(read) predicate,cfn<ContractDomain,address> ensures memory(read) domain) on cpu
+ requires nonzero(predicate) requires nonzero(domain);
+
+extern "C" u32 contract_all_unary(address context,cfn<FactView,address> next,cfn<InternalPredicate,address> ensures memory(read) predicate,cfn<ContractDomain,address> ensures memory(read) domain) on cpu
+ requires nonzero(next) requires nonzero(predicate) requires nonzero(domain);
+
+extern "C" u32 contract_priority(address source,ContractPriorityHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.all_unary);
+
+extern "C" void contract_operands(address context,u32 either,ContractOperandsHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.seen) requires nonzero(host.imported) requires nonzero(host.inspect) requires nonzero(host.emit);
+
+extern "C" usize contract_import(address context,address root,ContractImportHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.visit) requires nonzero(host.start) requires nonzero(host.resume) requires nonzero(host.lookup) requires nonzero(host.inspect) requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.predicate) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.operation) requires nonzero(host.operand) requires nonzero(host.remember);
+
+extern "C" void contract_emit(address context,usize root,ContractEmitHost host) on cpu
+ requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.known) requires nonzero(host.load) requires nonzero(host.variable) requires nonzero(host.count) requires nonzero(host.cell) requires nonzero(host.bound) requires nonzero(host.guard) requires nonzero(host.atom) requires nonzero(host.negate) requires nonzero(host.guard_node) requires nonzero(host.child) requires nonzero(host.both) requires nonzero(host.first) requires nonzero(host.either) requires nonzero(host.remember) requires nonzero(host.release);
+
+extern "C" void contract_union(address context,ContractUnionHost host) on cpu
+ requires nonzero(host.case) requires nonzero(host.import) requires nonzero(host.operation) requires nonzero(host.emit);

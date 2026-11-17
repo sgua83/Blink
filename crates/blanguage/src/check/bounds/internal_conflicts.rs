@@ -1,9 +1,6 @@
 //! B decides internal contradictions; the original typed containers own facts and aliases.
 use super::fact_fields::{ScalarView, same_scalar, scalar};
-use super::{
-    Comparison, Fact, Facts, Operand, Scalar, ScalarPredicate, ValueIdentity,
-    fact_fields, map_domain,
-};
+use super::{Fact, Facts, Scalar, ValueIdentity, fact_fields, map_domain};
 use std::{
     collections::{BTreeMap, btree_set},
     ffi::c_void,
@@ -118,50 +115,6 @@ unsafe extern "C" fn contains(slot: Slot, fields: fact_fields::Fields) -> u32 {
     )
 }
 #[repr(C)]
-struct OperandView {
-    identity: Borrowed,
-    bits: u64,
-    is_constant: u32,
-}
-fn operand(value: &Operand) -> OperandView {
-    match value {
-        Operand::Value(id) => OperandView {
-            identity: ptr::from_ref(id).cast(),
-            bits: 0,
-            is_constant: 0,
-        },
-        Operand::Constant(_, bits) => OperandView {
-            identity: ptr::null(),
-            bits: *bits,
-            is_constant: 1,
-        },
-    }
-}
-#[repr(C)]
-struct PredicateView {
-    scalar: Borrowed,
-    operation: u32,
-    left: OperandView,
-    right: OperandView,
-}
-unsafe extern "C" fn predicate(value: Borrowed) -> PredicateView {
-    let value = unsafe { &*value.cast::<ScalarPredicate>() };
-    let operation = match value.op {
-        Comparison::Equal => 10,
-        Comparison::NotEqual => 11,
-        Comparison::Less => 12,
-        Comparison::Greater => 13,
-        Comparison::LessEqual => 14,
-        Comparison::GreaterEqual => 15,
-    };
-    PredicateView {
-        scalar: ptr::from_ref(&value.scalar).cast(),
-        operation,
-        left: operand(&value.a),
-        right: operand(&value.b),
-    }
-}
-#[repr(C)]
 struct Scalars {
     values: [Borrowed; 4],
 }
@@ -173,7 +126,7 @@ struct Host {
     compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
     same_scalar: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
     scalar: unsafe extern "C" fn(Borrowed) -> ScalarView,
-    predicate: unsafe extern "C" fn(Borrowed) -> PredicateView,
+    predicate: unsafe extern "C" fn(Borrowed) -> fact_fields::PredicateView,
     upper: unsafe extern "C" fn(Borrowed) -> fact_fields::UpperView,
 }
 unsafe extern "C" {
@@ -197,7 +150,7 @@ pub(super) fn conflict(facts: &Facts, roots: &BTreeMap<ValueIdentity, ValueIdent
                 compare: fact_fields::compare,
                 same_scalar,
                 scalar,
-                predicate,
+                predicate: fact_fields::predicate,
                 upper: fact_fields::upper,
             },
         ) != 0
