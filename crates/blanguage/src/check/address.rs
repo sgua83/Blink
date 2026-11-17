@@ -198,8 +198,10 @@ impl Origin {
         match &self.root {
             Root::Local { base, len } => if possible() { vec![MemoryAlias::Local { base: *base, len: *len }] } else { Vec::new() },
             Root::Buffer(binding) => if possible() { vec![MemoryAlias::Data(*binding)] } else { Vec::new() },
-            Root::Derived(borrow)|Root::Dataset{borrow,..}|Root::External(Identity::Storage(borrow)) =>
-                if possible() { borrow.aliases() } else { Vec::new() },
+            Root::Derived(borrow)|Root::Dataset{borrow,..}|Root::External(Identity::Storage(borrow)) => {
+                let aliases = borrow.aliases();
+                if aliases.is_empty() || possible() { aliases } else { Vec::new() }
+            },
             _ => Vec::new(),
         }
     }
@@ -363,7 +365,7 @@ fn source_has_external_memory<'a>(source: &view::Source, when: impl FnOnce() -> 
 fn position_has_external_memory<'a>(origin: &Origin, when: impl FnOnce() -> Option<&'a bounds::Clause>) -> bool {
     match &origin.root {
         Root::External(_) => when().is_some_and(|when| origin.collect_memory_regions(when, None).is_none()),
-        Root::Derived(borrow) => when().is_some() && external_memory(borrow),
+        Root::Derived(borrow) => external_memory(borrow) && when().is_some(),
         _ => false,
     }
 }
