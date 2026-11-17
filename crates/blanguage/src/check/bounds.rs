@@ -1528,6 +1528,7 @@ impl Proof {
                     }
                     if !scalar.is_signed() {
                         for domain in self.domains(component) {
+                            if maximum == 0 && matches!(domain, IndexDomain::Upper(_, 0)) { continue; }
                             facts.insert(Fact::Index(identity, domain));
                             match domain {
                                 IndexDomain::Lower(base, amount) | IndexDomain::Offset(base, amount) => {
