@@ -75,7 +75,7 @@ struct Host {
 struct Context<'a> { source: &'a Source, span: Span, error: Option<Diagnostic> }
 #[repr(C)]
 struct BindingContext<'a> {
-    common: Context<'a>, world: &'a World, definition: Contract<'a>,
+    common: Context<'a>, world: &'a World, definition: ConditionScope<'a>,
     nodes: [Option<Box<OutputCondition>>; 2],
 }
 // These are the original owned term/type locals. Native descriptors only borrow
@@ -342,6 +342,8 @@ enum IdentityNeed { Done, Child, Type }
 #[repr(u32)]
 enum TypeNeed { Done, Child, Path }
 unsafe extern "C" {
+    #[link_name = "bootstrap.contract_condition::positional_index"]
+    fn b_positional_index(name: Bytes, count: u64) -> u64;
     #[link_name="bootstrap.contract_condition::bind_start"]
     fn bind_start(value: Address, is_public: u32) -> BindingCursor;
     #[link_name="bootstrap.contract_condition::bind_step"]
@@ -355,7 +357,11 @@ unsafe extern "C" {
     #[link_name="bootstrap.contract_condition::type_step"]
     fn type_step(state: *mut QueryCursor, ctx: Address, host: Host) -> TypeNeed;
 }
-async fn bind_node(world: &World, definition: Contract<'_>, value: &OutputCondition, span: Span) -> Result<Box<OutputCondition>> {
+pub(super) fn positional_index(name: &str, count: usize) -> usize {
+    unsafe { b_positional_index(Bytes::of(name), count as u64) as usize }
+}
+
+async fn bind_node(world: &World, definition: ConditionScope<'_>, value: &OutputCondition, span: Span) -> Result<Box<OutputCondition>> {
     let mut ctx=BindingContext {
         common: Context { source: definition.source, span, error: None }, world, definition,
         nodes: [None,None],
@@ -379,7 +385,7 @@ async fn bind_node(world: &World, definition: Contract<'_>, value: &OutputCondit
         }
     }
 }
-pub(super) async fn bind_constants(world: &World, definition: Contract<'_>, value: &OutputCondition, span: Span) -> Result<OutputCondition> {
+pub(super) async fn bind_constants(world: &World, definition: ConditionScope<'_>, value: &OutputCondition, span: Span) -> Result<OutputCondition> {
     Ok(*unsafe { world.call(bind_node(world,definition,value,span)).await }?)
 }
 async fn identity_term(

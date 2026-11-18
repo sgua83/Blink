@@ -9,7 +9,8 @@ use returns::Returned;
 mod contract_condition;
 #[path="outputs/written.rs"]
 mod written;
-use contract_condition::{bind_constants,condition_type};
+use contract_condition::{bind_constants,condition_type,positional_index};
+use std::borrow::Cow;
 
 #[derive(Clone, Copy)]
 enum Clauses<'a> {
@@ -99,21 +100,58 @@ impl<'a> Contract<'a> {
             Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>parameters[index].name.clone(),
         }
     }
-    fn has_parameter(self,name:&str)->bool{
-        match self.clauses {
-            Clauses::Declaration(instance)=>instance.definition.function.params().iter().any(|parameter|parameter.name()==name),
-            Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>parameters.iter().any(|parameter|parameter.name==name),
+    fn condition_scope(self) -> ConditionScope<'a> {
+        let parameters = match self.clauses {
+            Clauses::Declaration(instance) => ConditionParameters::Declaration(instance),
+            Clauses::Signature(parameters,..) | Clauses::Native(parameters,..) => ConditionParameters::Native(parameters),
+        };
+        ConditionScope { source: self.source, module: self.module, imports: self.imports,
+            public: self.public, parameters }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ConditionParameters<'a> {
+    Declaration(&'a crate::generics::Instance),
+    Native(&'a [Param]),
+    Positional(&'a [(Access, TypeName)]),
+}
+
+#[derive(Clone, Copy)]
+struct ConditionScope<'a> {
+    source: &'a Source,
+    module: &'a str,
+    imports: &'a [String],
+    public: bool,
+    parameters: ConditionParameters<'a>,
+}
+impl<'a> ConditionScope<'a> {
+    fn has_parameter(self, name: &str) -> bool {
+        match self.parameters {
+            ConditionParameters::Declaration(instance) => {
+                instance.definition.function.params().iter().any(|parameter| parameter.name()==name)
+            }
+            ConditionParameters::Native(parameters) => parameters.iter().any(|parameter| parameter.name==name),
+            ConditionParameters::Positional(parameters) => positional_index(name, parameters.len()) < parameters.len(),
         }
     }
-    async fn parameter_type(self,world:&World,name:&str,span:Span)->Result<Option<TypeName>>{
-        match self.clauses {
-            Clauses::Declaration(instance)=>match instance.definition.function.params().iter()
-                .find(|parameter|parameter.name()==name) {
-                    Some(parameter)=>unsafe { world.call(instance.bindings.type_name(world,&parameter.ty(),
-                        (self.source,self.module,self.imports),span)).await }.map(Some),
-                    None=>Ok(None),
-                },
-            Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>Ok(parameters.iter().find(|parameter|parameter.name==name).map(|parameter|parameter.ty.clone())),
+
+    async fn parameter_type(self, world: &World, name: &str, span: Span) -> Result<Option<Cow<'a, TypeName>>> {
+        match self.parameters {
+            ConditionParameters::Declaration(instance) => {
+                let Some(parameter) = instance.definition.function.params().iter().find(|parameter| parameter.name()==name)
+                    else { return Ok(None); };
+                let ty = unsafe {
+                    world.call(instance.bindings.type_name(world, &parameter.ty(), (self.source,self.module,self.imports), span)).await
+                }?;
+                Ok(Some(Cow::Owned(ty)))
+            }
+            ConditionParameters::Native(parameters) => {
+                Ok(parameters.iter().find(|parameter| parameter.name==name).map(|parameter| Cow::Borrowed(&parameter.ty)))
+            }
+            ConditionParameters::Positional(parameters) => {
+                Ok(parameters.get(positional_index(name, parameters.len())).map(|(_, ty)| Cow::Borrowed(ty)))
+            }
         }
     }
 }
@@ -172,7 +210,7 @@ pub(super) async fn validate_named<'a>(world: &World, instance: &crate::generics
         if contract.kind != ContractKind::Ensures || definition.function.kind() != FunctionKind::Value {
             return definition.source.fail(contract.span, "B225", "initialized 是普通函数的 ensures 输出合同");
         }
-        let condition = unsafe { world.call(normalize(world, instance.into(), result_name, condition, contract.span)).await }?;
+        let condition = unsafe { world.call(normalize(world, Contract::from(instance).condition_scope(), result_name, condition, contract.span)).await }?;
         unsafe { world.call(validate_output(world,value, &condition, &input, returned, &definition.source, contract.span)).await }?;
     }
     Ok(())
@@ -315,7 +353,7 @@ pub(super) async fn expression(
                 if let Some(value) = value {
                     return Ok(value.clone());
                 }
-                if name == "returned" || definition.has_parameter(name)
+                if name == "returned" || definition.condition_scope().has_parameter(name)
                 {
                     return definition.source.fail(
                         span,
@@ -557,7 +595,7 @@ impl TaskGuard {
     )->Result<Self> {
         let mut clauses=Vec::new();
         for (components,condition,span) in output_clauses(definition,parameter,ty)? {
-            let condition=unsafe { builder.world.call(bind_constants(builder.world,definition,&condition,span)).await }?;
+            let condition=unsafe { builder.world.call(bind_constants(builder.world,definition.condition_scope(),&condition,span)).await }?;
             clauses.push((components,condition));
         }
         let inputs=inputs.iter().map(|(name,value)| {
@@ -674,7 +712,7 @@ pub(super) async fn contract_predicates(
     for contract in instance.contracts() {
         let mut predicate = contract.predicate;
         if let ContractPredicate::Initialized { condition, .. }|ContractPredicate::Cleanup { condition, .. } = &mut predicate {
-            *condition = unsafe { builder.world.call(normalize(builder.world, instance.into(), &unsafe { builder.world.call(instance.bindings.type_name(builder.world,&definition.function.result(),
+            *condition = unsafe { builder.world.call(normalize(builder.world, Contract::from(instance).condition_scope(), &unsafe { builder.world.call(instance.bindings.type_name(builder.world,&definition.function.result(),
                 (&definition.source,&definition.module,&definition.imports),definition.function.span())).await }?, condition, contract.span)).await }?;
         }
         if let ContractPredicate::Range { intervals, .. } = &mut predicate {
@@ -695,7 +733,7 @@ pub(super) async fn range_constants(
     let mut builder=Builder::from_checked(world,lexical,&context,0,source_definition,source_context,BTreeSet::new());
     builder.in_function = true;
     let mut endpoint = async |value: &OutputCondition| -> Result<OutputConstant> {
-        let value = unsafe { world.call(bind_constants(world, definition, value, span)).await }?;
+        let value = unsafe { world.call(bind_constants(world, definition.condition_scope(), value, span)).await }?;
         let first = builder.code.len();
         let value = unsafe { world.call(expression(&mut builder, definition, &value, &BTreeMap::new(), None, span, None)).await }?;
         if !value.ty.is_numeric() || value.ty.components.len() != 1
@@ -718,7 +756,7 @@ pub(super) async fn range_constants(
     Ok(endpoints)
 }
 
-async fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
+async fn normalize(world: &World, definition: ConditionScope<'_>, returned: &TypeName,
     value: &OutputCondition, span: Span,
 ) -> Result<OutputCondition> {
     let value = unsafe { world.call(bind_constants(world, definition, value, span)).await }?;
@@ -737,7 +775,7 @@ async fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
         if name == "returned" && (returned.name == "void" || returned.is_never()) {
             return definition.source.fail(span, "B225", "无返回值的函数没有returned输入");
         }
-        let syntax = if name == "returned" { Some(returned.clone()) }
+        let syntax = if name == "returned" { Some(Cow::Borrowed(returned)) }
             else { unsafe { world.call(definition.parameter_type(world,name,span)).await }? };
         let syntax = syntax.ok_or_else(|| Diagnostic { source: definition.source.clone(), span, code: "B225",
             message: format!("输出条件没有输入{name}") })?;
@@ -751,10 +789,8 @@ pub(crate) async fn bind_function_contracts(
     source: &crate::Source, span: Span, module: &str, imports: &[String],
 ) -> Result<Vec<ContractPredicate>> {
     if outputs.is_empty() { return Ok(Vec::new()); }
-    let parameters = parameters.iter().enumerate().map(|(index, (access, ty))|
-        Param { name: format!("argument{index}"), ty: ty.clone(), access: *access, span }
-    ).collect::<Vec<_>>();
-    let contract = Contract::signature(source, module, imports, &parameters, outputs, span);
+    let contract = ConditionScope { source, module, imports, public: false,
+        parameters: ConditionParameters::Positional(parameters) };
     let mut bound = BTreeSet::new();
     for predicate in outputs {
         match predicate {
@@ -819,9 +855,8 @@ pub(crate) async fn validate_function_contracts(
     world:&World,parameters: &[CallParameter], result: Option<&Ty>, outputs: &[ContractPredicate],
     source: &crate::Source, span: Span,
 ) -> Result<()> {
-    let input = |name: &str| parameters.iter().enumerate()
-        .find(|(index, _)| name == format!("argument{index}"))
-        .map(|(_, parameter)| match &parameter.kind {
+    let input = |name: &str| parameters.get(positional_index(name, parameters.len()))
+        .map(|parameter| match &parameter.kind {
             CallParameterKind::Value(ty) => (Access::Value, ty.clone()),
             CallParameterKind::Reference { ty, access } => (*access, ty.clone()),
         });

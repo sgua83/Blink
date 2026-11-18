@@ -1,6 +1,7 @@
 module bootstrap.contract_condition;
 import bootstrap.scalar_fold;
 import bootstrap.numeric_literal;
+import bootstrap.cli;
 
 struct Bytes {address data;u64 count;};
 struct Result {address value;u32 ok;};
@@ -128,3 +129,5 @@ extern "C" TypeNeed type_step(address state,address context,Host host) on cpu
     requires nonzero(host.scalar_type)
     requires nonzero(host.typed)
     requires nonzero(host.unary_type);
+
+extern "C" u64 positional_index(Bytes name,u64 count) on cpu;
