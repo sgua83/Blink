@@ -524,7 +524,7 @@ pub(super) fn resource_aliases(data:&application::Data)->Borrow {
 pub(super) fn resource_borrow(data:&application::Data)->Borrow{
     let mut value=data.root.proof.view_borrow(0);if value.empty()||matches!(data.root.identity(),ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){value.sources.insert(Source::Data(data.root.identity()));}value
 }
-pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.root.proof.borrow_state().with_view_borrow(0,resource_borrow(data))}
+pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{{let mut component_proof=data.root.proof.borrow_state();component_proof.set_view_borrow(0,resource_borrow(data));component_proof}}
 
 pub(super) enum InputSlot {
     Value {name:String,contents:Option<Vec<usize>>,component:usize,identity:Option<(ValueIdentity,Scalar)>},
@@ -995,7 +995,7 @@ impl Builder<'_> {
         proof.append(&data.length);
         let stride=Value{ty:Ty::vector(Scalar::U32,2),regs:stride_parts.to_vec(),proof:bounds::Proof::default(),literal:false,uniform:stride.uniform,constant:None};
         proof.append(&stride);
-        proof = proof.with_view_borrow(0, self.data_value_borrow(&data.data));
+        proof.set_view_borrow(0, self.data_value_borrow(&data.data));
         Value {
             proof,
             literal: false,
@@ -1044,7 +1044,7 @@ impl Builder<'_> {
                 regs: address.to_vec(), literal: false, uniform: false, constant: None };
             value.proof = bounds::Proof::default();
             value.proof.append(&pointer); value.proof.append(&length); value.proof.append(&stride_value);
-            value.proof = value.proof.with_view_borrow(0, borrow);
+            value.proof.set_view_borrow(0, borrow);
             value.regs = vec![address[0], address[1], length.regs[0],parts[0],parts[1]];
         }
         Ok(Some(value))

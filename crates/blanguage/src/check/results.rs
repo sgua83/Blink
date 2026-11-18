@@ -187,7 +187,7 @@ impl Builder<'_> {
             for component in view_contracts::components(&payload.ty) {
                 let word=offset+payload.ty.components[component].1;
                 let target=ty.components.iter().position(|(_,at)|*at==word).unwrap();
-                value.proof=value.proof.with_view_borrow(target,payload.proof.view_borrow(component));
+                value.proof.set_view_borrow(target,payload.proof.view_borrow(component));
             }
             value.retain_payload_nonzero(&payload, offset);
             value.uniform = payload.uniform;
@@ -195,7 +195,7 @@ impl Builder<'_> {
         value.proof.retain_view_borrows(&ty);
         let offset=ty.variant_payload_offset();
         let active=view_contracts::components(&ty.variants[index].ty).into_iter().map(|component|ty.components.iter().position(|(_,at)|*at==offset+ty.variants[index].ty.components[component].1).unwrap()).collect::<BTreeSet<_>>();
-        for component in view_contracts::components(&ty).difference(&active){value.proof=value.proof.clone().with_view_sources(*component,BTreeSet::from([view::Source::Inactive]));}
+        for component in view_contracts::components(&ty).difference(&active){value.proof.set_view_sources(*component,BTreeSet::from([view::Source::Inactive]));}
         value.literal = false;
         value
     }
@@ -228,7 +228,7 @@ impl Builder<'_> {
         for component in view_contracts::components(&ty) {
             let word=offset+ty.components[component].1;
             let source=value.ty.components.iter().position(|(_,at)|*at==word).unwrap();
-            proof=proof.with_view_borrow(component,value.proof.view_borrow(source));
+            proof.set_view_borrow(component,value.proof.view_borrow(source));
         }
         proof.retain_view_borrows(&ty);
         let proof = self.path_proof(&ty, proof);

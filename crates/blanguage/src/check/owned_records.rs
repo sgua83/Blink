@@ -517,7 +517,7 @@ impl Builder<'_> {
             let model=self.owned_place_model(&place);self.prepare_owned_read(&model);unsafe { self.world.call(self.require_initialized(&place,span)).await }?;
             let Returned::Dataset(mut data)=model else{unreachable!()};
             let sources:Vec<_>=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.root.identity()}).collect();
-            data.root.proof=data.root.proof.clone().with_view_borrow(0,self.data_borrow(&sources));
+            data.root.proof.set_view_borrow(0,self.data_borrow(&sources));
             (data,sources)
         };
         self.application_available(&data,span)?;

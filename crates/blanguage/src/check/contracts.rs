@@ -1008,7 +1008,7 @@ async fn mark_cleanup_owner(builder:&mut Builder<'_>,owner:&mut owned_values::Ow
             let name=instance.definition.function.params().at(0).name().to_owned();let mut env=BTreeMap::from([(name.clone(),binding)]);
             unsafe { builder.world.call(element_input_paths(builder,(&instance).into(),&mut env,None)).await }?;
             let resources=instance.definition.function.params().iter().enumerate().filter_map(|(index,p)|match env.get(p.name()){
-                Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))),_=>None,
+                Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,view::resource_borrow(data));component_proof})),_=>None,
             }).collect();
             let requirements=unsafe { builder.world.call(resolve(builder,(&instance).into(),&LexicalScope::Function(instance.clone()),&env,&resources)).await }?;let before=env.clone();
             for requirement in &requirements{assume_values(&mut env,requirement);}

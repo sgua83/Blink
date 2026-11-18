@@ -1078,7 +1078,7 @@ impl Builder<'_> {
             else { Self::borrowed_dataset_parameter_type(access, self.scope.execution()).components[0].0 };
         let reg = self.reg(scalar);
         let mut handle = self.application_root(reg);
-        if access==Access::Value{handle.proof=handle.proof.with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::ResourceParameter(parameter,0))]));}
+        if access==Access::Value{handle.proof.set_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::ResourceParameter(parameter,0))]));}
         let length_reg = self.reg(Scalar::U32);
         let count = self.program.buffers[binding].count;
         let mut length = Value {
@@ -1559,13 +1559,13 @@ impl Builder<'_> {
         let payload=ir::align_up(4,result.align);
         let at=result.components.iter().position(|(_,word)|*word==payload).unwrap();
         let task=view::Borrow::source(view::Source::Task{captures:Box::new(captured),outputs,initialized:Box::new(initialized),guards: guards.into_iter().map(|(_, guard)| guard).collect(),completions});
-        let mut proof=bounds::Proof::default().with_view_borrow(at,task);
+        let mut proof={let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(at,task);component_proof};
         let error_type=(*result.variants[1].ty).clone();
         let error_input=payload+error_type.fields[1].1;
         for component in view_contracts::components(&source.ty){
             let word=source.ty.components[component].1;
             let at=result.components.iter().position(|(_,offset)|*offset==error_input+word).unwrap();
-            proof=proof.with_view_borrow(at,source.proof.view_borrow(component));
+            proof.set_view_borrow(at,source.proof.view_borrow(component));
         }
         let mut error_regs=Vec::with_capacity(error_type.components.len());
         error_regs.push(values[1]);
@@ -1817,7 +1817,7 @@ impl Builder<'_> {
                         }
                     })
                 }else{borrow};
-                proof=proof.with_view_borrow(component,borrow);
+                proof.set_view_borrow(component,borrow);
             }
             let result=Value{ty:result,regs,proof,uniform:false,literal:false,constant:None};
             unsafe { builder.world.call(builder.complete_task_owned_places(&sources,|_,_|Some(result.clone()),None,
@@ -2346,7 +2346,7 @@ impl Builder<'_> {
         ], Some(Ty::scalar(Scalar::U32)), vec![reg],Some(error),self.failure_continuation(Vec::new())).kind, call_origin));
         // Frame 槽位及已有资源来源保持；新 SSA 身份仍区分旧长度／下标版本。
         let mut handle = self.application_root(reg);
-        handle.proof = handle.proof.with_view_borrow(0, resource);
+        handle.proof.set_view_borrow(0, resource);
         length.literal = false;
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
@@ -2500,7 +2500,7 @@ impl Builder<'_> {
             let mut elements=unsafe { self.world.call(self.unknown_element_model(&data.ty,(&data.residency,&[]))).await }?;
             let value=elements.view_value_mut().unwrap();
             for component in view_contracts::components(&value.ty) {
-                value.proof=std::mem::take(&mut value.proof).with_view_borrow(component,view::Borrow::source(view::Source::Inactive));
+                value.proof.set_view_borrow(component,view::Borrow::source(view::Source::Inactive));
             }
             data.elements=application::ElementFacts::Known(elements);
         }
@@ -3002,7 +3002,7 @@ impl Builder<'_> {
                 let ty=Ty::scalar(Scalar::U64);
                 self.code.push(Inst::generated(runtime_call("storage_address",vec![argument(frame),argument(data.root.clone())],Some(ty.clone()),vec![reg],None,None).kind,origin));
                 let mut value=Value{ty,regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
-                value.proof=value.proof.with_view_borrow(0,self.data_value_borrow(&data.data));
+                value.proof.set_view_borrow(0,self.data_value_borrow(&data.data));
                 value
             }
         } else { data.root.clone() };
@@ -3015,7 +3015,7 @@ impl Builder<'_> {
             stride=Value{ty:Ty::scalar(Scalar::U64),regs:vec![dst],proof:stride.proof,literal:false,uniform:stride.uniform,constant:stride.constant};
         }
         let mut root=root;
-        root.proof=root.proof.with_view_borrow(0,view::Borrow::projection(self.data_value_borrow(&data.data),data.projection.clone()));
+        root.proof.set_view_borrow(0,view::Borrow::projection(self.data_value_borrow(&data.data),data.projection.clone()));
         let mut proof=bounds::Proof::default();
         for value in [&root,&data.length,&stride,&offset]{proof.append(value);}
         Ok(Value{ty,regs:vec![root.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None})
@@ -3862,7 +3862,7 @@ pub(super) fn element_scope_bindings(bindings:&ElementBindings,width:usize,paren
 pub(super) fn canonical_element_inputs(builder:&Builder<'_>,bindings:&mut ElementBindings) {
     for(&source,&target)in &builder.view_model.parameters{
         if matches!(source,ValueIdentity::DatasetContent(..)){
-            bindings.insert(source,bounds::Proof::default().with_identity(target).with_view_sources(0,BTreeSet::from([view::Source::Parameter(target,Vec::new())])));
+            bindings.insert(source,{let mut component_proof=bounds::Proof::default().with_identity(target);component_proof.set_view_sources(0,BTreeSet::from([view::Source::Parameter(target,Vec::new())]));component_proof});
         }
     }
 }
@@ -3885,10 +3885,10 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:outputs
         }}
         for component in 0..width{
             let borrow=proof.view_borrow(component).at_call(&bindings);
-            proof=proof.with_view_borrow(component,borrow.clone());
+            proof.set_view_borrow(component,borrow.clone());
             let mut input=proof.project(&[component],width);
             if !references.contains(&component){input=input.substitute_values(&model_values);}
-            let input=input.with_view_borrow(0,borrow);
+            let input={let mut component_proof=input;component_proof.set_view_borrow(0,borrow);component_proof};
             if let Some((resource,start))=identity{out.insert(ValueIdentity::DatasetContent(parameter,resource,start+component),input);}
         }
         if reads{memory.union(&builder.address_contents(&value.ty,&proof));}
@@ -3910,7 +3910,7 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:outputs
                     let mut projected;
                     let data=if let Binding::DataReference(reference)=binding {
                         projected=data.clone();
-                        projected.root.proof=projected.root.proof.clone().with_view_borrow(0,view::Borrow::projection(builder.data_value_borrow(data),reference.projection.clone()));
+                        projected.root.proof.set_view_borrow(0,view::Borrow::projection(builder.data_value_borrow(data),reference.projection.clone()));
                         projected.ty=reference.element_layout().1.clone();
                         projected.elements=projected.elements.map(&mut |model|{
                             let mut model=*model;
@@ -3978,7 +3978,7 @@ impl Builder<'_> {
         for(component,(scalar,_))in ty.components.iter().enumerate(){
             proof.append(&Value{ty:Ty::scalar(*scalar),regs:vec![component],proof:bounds::Proof::default().with_identity(ValueIdentity::ElementComponent(component)),uniform:false,literal:false,constant:None});
         }
-        for component in view_contracts::components(ty){proof=proof.with_view_borrow(component,view::Borrow::source(view::Source::Unresolved));}
+        for component in view_contracts::components(ty){proof.set_view_borrow(component,view::Borrow::source(view::Source::Unresolved));}
         let mut model=unsafe { self.world.call(self.template_returned(Value{ty:ty.clone(),regs:(0..ty.components.len()).collect(),proof,uniform:false,literal:false,constant:None},true)).await }?;
         let parent=location.0.scope_indices(1,0);
         let index=ValueIdentity::ElementIndex(0);let selection=BTreeMap::from([(index,bounds::Proof::default().with_identity(index))]);
@@ -4002,7 +4002,7 @@ impl Builder<'_> {
         fn aliases(borrow:&view::Borrow,out:&mut ElementBindings){
             for source in &borrow.sources{match source{
                 view::Source::Data(id@(ValueIdentity::Register(_)|ValueIdentity::ResourceParameter(..)))=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id));},
-                view::Source::Parameter(id@ValueIdentity::DatasetContent(..),_)=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(*id,Vec::new()))));},
+                view::Source::Parameter(id@ValueIdentity::DatasetContent(..),_)=>{out.entry(*id).or_insert_with(||{let mut component_proof=bounds::Proof::default().with_identity(*id);component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Parameter(*id,Vec::new())));component_proof});},
                 view::Source::Element{parent,..}|view::Source::Projection{parent,..}=>aliases(parent,out),
                 view::Source::Position(origin)=>aliases(&origin.resources(),out),_=>{},
             }}
@@ -4052,7 +4052,7 @@ impl Builder<'_> {
                 let mut borrow=proof.view_borrow(0);
                 borrow.union(&view::Borrow::element(parent.clone(),fields,index));
                 borrow.union(&view::resource_aliases(resource));
-                *proof=std::mem::take(proof).with_view_borrow(0,borrow);
+                proof.set_view_borrow(0,borrow);
             }
         }
     }
@@ -4281,7 +4281,7 @@ impl Builder<'_> {
                             let mut reference = DataReference::direct(data.clone());
                             reference.sources.clear();
                             reference.projection = projection;
-                            reference.data.root.proof = reference.data.root.proof.clone().with_view_borrow(0, borrow.clone());
+                            reference.data.root.proof.set_view_borrow(0, borrow.clone());
                             return Some(reference);
                         }
                     }
@@ -4299,7 +4299,7 @@ impl Builder<'_> {
                 let mut data=data;
                 for fields in scope{data=model_data(data.elements.known(),&fields).unwrap();}
                 let mut paths=Vec::new();Self::owned_element_projections(&data.ty,place.ty(),words,matches!(place,Place::Indexed{..}),0,&mut Vec::new(),&mut paths);
-                if !paths.is_empty(){let mut data=data.clone();data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,resource.clone());references.push((DataReference::direct(data),paths));}
+                if !paths.is_empty(){let mut data=data.clone();data.root.proof.set_view_borrow(0,resource.clone());references.push((DataReference::direct(data),paths));}
             }
         }}}
         references
@@ -4384,7 +4384,7 @@ impl Builder<'_> {
                 let proof=self.path_proof(&loaded.ty,bounds::Proof::capture(&loaded));
                 bindings.insert(ValueIdentity::ElementComponent(component),proof.clone());
                 for source in storage.component_origins(index).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
-                    bindings.insert(source,proof.clone().with_view_borrow(0,storage.proof.view_borrow(index)));
+                    bindings.insert(source,{let mut component_proof=proof.clone();component_proof.set_view_borrow(0,storage.proof.view_borrow(index));component_proof});
                 }
             }
             value.regs
@@ -4403,7 +4403,7 @@ impl Builder<'_> {
                 // Data's stored parent indices exclude the element being loaded now.
                 child.residency=data.residency.element_indices(&parent_indices).project(&path,&bindings);
             }
-            child.root.proof=child.root.proof.clone().with_view_borrow(0,child.root.proof.view_borrow(0).joined(view::Borrow::element(borrow.clone(),fields,index)));
+            child.root.proof.set_view_borrow(0,child.root.proof.view_borrow(0).joined(view::Borrow::element(borrow.clone(),fields,index)));
         });
         // Data.elements uses the same logical ordinal slots as its value model.
         // Bind those selections at the actual load before native cleanup consumes them.
@@ -4477,7 +4477,7 @@ impl Builder<'_> {
                             let proof=bounds::Proof::default().with_identity(ValueIdentity::Register(*reg));
                             bindings.insert(ValueIdentity::ElementComponent(*component),proof.clone());
                             for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..)|ValueIdentity::MemoryValue(..)|ValueIdentity::LoopValue(..))){
-                                bindings.insert(source,proof.clone().with_view_borrow(0,value.proof.view_borrow(*component)));
+                                bindings.insert(source,{let mut component_proof=proof.clone();component_proof.set_view_borrow(0,value.proof.view_borrow(*component));component_proof});
                             }
                         }
                         let mut selected=Some(place);let mut depth=0;
@@ -4614,7 +4614,7 @@ impl Builder<'_> {
                         let handle=inner.root.regs[0];let length=inner.length.regs[0];
                         let borrow=inner.root.proof.view_borrow(0);
                         inner.root=self.value_component(&updated,handle);inner.length=self.value_component(&updated,length);
-                        inner.root.proof=std::mem::take(&mut inner.root.proof).with_identity(ValueIdentity::ElementComponent(handle)).with_view_borrow(0,borrow);
+                        inner.root.proof={let mut component_proof=std::mem::take(&mut inner.root.proof).with_identity(ValueIdentity::ElementComponent(handle));component_proof.set_view_borrow(0,borrow);component_proof};
                         if components.contains(&handle)||components.contains(&length){
                             let original=unsafe { self.world.call(self.element_model(&inner.ty,&inner.elements,(&inner.residency,&[]),self.scope.span())).await }?;
                             let mut elements=unsafe { self.world.call(self.unknown_element_model(&inner.ty,(&inner.residency,&[]))).await }?;
@@ -4736,7 +4736,7 @@ impl Builder<'_> {
             let mut scoped=owned.output_bound(&shifts);
             let Some(elements)=data.elements.known()else{
                 if unsafe { builder.world.call(builder.world.stored_borrows(&data.ty,builder.scope.source(),span,builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),false)).await }? && !matches!(data.elements,ElementFacts::Input(_)){
-                    let proof=bounds::Proof::default().with_view_borrow(0,view::Borrow::source(view::Source::Unresolved));
+                    let proof={let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Unresolved));component_proof};
                     builder.require_view_return_proof(&proof,scoped,span)?;
                 }
                 return Ok(());
@@ -4763,7 +4763,7 @@ impl Builder<'_> {
         }).collect::<BTreeMap<_,_>>();
         let value=self.returned_storage(model);
         for path in view::resource_paths(&value.ty){if let(Some(data),Some(source))=(model_data_mut(Some(model),&path),model_data(Some(original),&path)){
-            if data.ownership.may_own(){data.root.proof=data.root.proof.clone().with_view_borrow(0,view::resource_borrow(source).output_bound(&names));}
+            if data.ownership.may_own(){data.root.proof.set_view_borrow(0,view::resource_borrow(source).output_bound(&names));}
             let nested=element_scope_bindings(bindings,source.ty.components.len(),true);
             if let(Some(value),Some(original))=(data.elements.known_mut(),source.elements.known()){self.close_stored_resources(value,original,&nested);}
         }}

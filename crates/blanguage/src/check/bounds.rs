@@ -559,7 +559,7 @@ impl Proof {
     pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.views.get(component).cloned().unwrap_or_default()}
     pub(super) fn borrowed_view(&self)->view::Borrow {self.views.iter().fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
     pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources.entries().filter_map(|(source,when)|when.possible().then_some(source.clone())).collect()}
-    pub(super) fn with_view_sources(self,component:usize,sources:BTreeSet<view::Source>)->Self {self.with_view_borrow(component,view::Borrow::from_sources(sources))}
+    pub(super) fn set_view_sources(&mut self,component:usize,sources:BTreeSet<view::Source>) {self.set_view_borrow(component,view::Borrow::from_sources(sources));}
     pub(super) fn with_external_borrows(mut self,ty:&Ty)->Self {
         for (offset,field) in ty.borrow_fields() {
             if field.is_address() {
@@ -573,12 +573,12 @@ impl Proof {
         self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);
         self.views[component].sources.union_when(view::Source::External,&Clause::default());
     }
-    pub(super) fn with_view_borrow(mut self,component:usize,borrow:view::Borrow)->Self {
-        self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;self
+    pub(super) fn set_view_borrow(&mut self,component:usize,borrow:view::Borrow) {
+        self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;
     }
     pub(super) fn view_parameters(mut self, ty: &Ty, indices:&[Option<Operand>], identity: impl Fn(usize) -> ValueIdentity) -> Self {
         for at in view_contracts::components(ty) {
-            self = self.with_view_sources(at, BTreeSet::from([view::Source::Parameter(identity(at),indices.to_vec())]));
+            self.set_view_sources(at, BTreeSet::from([view::Source::Parameter(identity(at),indices.to_vec())]));
         }
         self
     }
@@ -3590,7 +3590,7 @@ impl Builder<'_> {
             for (target,(component,reg)) in components.iter().zip(regs).enumerate() {
                 if proof.origins[*component].is_empty() {
                     proof.origins[*component].push(ValueIdentity::Register(*reg));
-                    if let Some(common)=&common{*proof=std::mem::take(proof).with_view_borrow(*component,common.view_borrow(target));}
+                    if let Some(common)=&common{proof.set_view_borrow(*component,common.view_borrow(target));}
                 }
             }
             stored = Some((proof.project(&components, width), *uniform));

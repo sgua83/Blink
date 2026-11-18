@@ -282,7 +282,7 @@ pub(super) fn resource_output_name(value:&returns::Returned,resource:&ResourcePa
     let depth=path.len();for(at,fields)in path.iter().enumerate(){name=Borrow::element(name,fields.clone(),Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth-1-at))));}Some(name)
 }
 pub(super) fn set_resource_outputs(value:&mut returns::Returned,mut borrow:impl FnMut(ResourcePath)->Borrow){
-    for resource in resource_output_paths(value){if let Some(data)=resource_output_mut(value,&resource){data.root.proof=data.root.proof.clone().with_view_borrow(0,borrow(resource));}}
+    for resource in resource_output_paths(value){if let Some(data)=resource_output_mut(value,&resource){data.root.proof.set_view_borrow(0,borrow(resource));}}
 }
 fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSet<usize>)->bool {
     if !a.calls.is_empty()||!b.calls.is_empty(){return false;}
@@ -1492,7 +1492,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             }
             if let Some(entries)=&state.entries{
                 let invoked=function.calls.iter().filter(|call|call.function==*name).map(|call|bounds::Condition::execution(&call.path).guard_at_call(parameters)).reduce(|a,b|a.logical(b,true)).unwrap();
-                let inputs=entries.iter().map(|(input,value)|(*input,bounds::Proof::default().with_view_borrow(0,value.clone()))).collect::<BTreeMap<_,_>>();
+                let inputs=entries.iter().map(|(input,value)|(*input,{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,value.clone());component_proof})).collect::<BTreeMap<_,_>>();
                 let direct=access.iter().map(|(access,when)|{let mut a=access.clone();*a.when_mut()=when.clone();a}).collect::<Vec<_>>();
                 for value in direct{let value=match value{
                     Access::Position{borrows,when,position}=>Access::Position{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),position:PositionAccess{written:position.written.as_ref().map(|p|p.at_call(&inputs)),..position}},
@@ -1558,13 +1558,13 @@ fn converge(
             let entries = relation::Graph::recursive_inputs(name,function,state,known);
             let forwards=|output:&Output,definition:&Borrow|matches!(output,Output::Returned(_))&&definition.calls.iter().any(|result|function.calls[result.call].function==*name&&result.output==*output);
             let entry_bindings=entries.as_ref().filter(|_|function.outputs.iter().any(|(output,definition)|forwards(output,definition))).map(|entries|{
-                let mut inverse=BTreeMap::new();for(&local,&formal)in &function.parameters{inverse.entry(formal).or_insert_with(||bounds::Proof::default().with_identity(local).with_view_borrow(0,Borrow::source(Origin::Parameter(local,Vec::new()))));}
+                let mut inverse=BTreeMap::new();for(&local,&formal)in &function.parameters{inverse.entry(formal).or_insert_with(||{let mut component_proof=bounds::Proof::default().with_identity(local);component_proof.set_view_borrow(0,Borrow::source(Origin::Parameter(local,Vec::new())));component_proof});}
                 let parameters=residency::input_parameters(&function.parameters,function.input_width);
                 function.parameters.iter().filter_map(|(&local,&formal)|{
                     let entry=entries.get(&formal)?.substitute_values(&inverse);
                     let unchanged=function.calls.iter().filter(|call|call.function==*name).all(|call|call.arguments.get(&formal).is_some_and(|value|value.at_call(&parameters).known_identity(0)==Some(formal)));
                     let proof=if unchanged{bounds::Proof::default().with_identity(local)}else{bounds::Proof::default()};
-                    Some((local,proof.with_view_borrow(0,entry)))
+                    Some((local,{let mut component_proof=proof;component_proof.set_view_borrow(0,entry);component_proof}))
                 }).collect::<BTreeMap<_,_>>()
             });
             let physical=function.outputs.iter().map(|(output,definition)|{

@@ -1256,7 +1256,7 @@ impl Builder<'_> {
         for(offset,field)in ty.borrow_fields() {
             if field.is_address() {
                 let component=ty.components.iter().position(|(_,word)|*word==offset).unwrap();
-                result=result.with_view_borrow(component,self.current_address_borrow(&proof.view_borrow(component)));
+                result.set_view_borrow(component,self.current_address_borrow(&proof.view_borrow(component)));
             }
         }
         result
@@ -1287,7 +1287,7 @@ impl Builder<'_> {
                 if capture_kind==Capture::Write{
                     *proof=std::mem::take(proof).with_component_identity(component,identity);
                     if fields.contains(&component){
-                        *proof=std::mem::take(proof).with_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Snapshot{memory,component:snapshot,position,initial}]),..view::Borrow::default()});
+                        proof.set_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Snapshot{memory,component:snapshot,position,initial}]),..view::Borrow::default()});
                     }
                 }
             }
@@ -1369,7 +1369,7 @@ impl Builder<'_> {
         let mut proof=bounds::Proof::default();proof.addresses.push(Some(identity));
         self.emit(InstKind::PositionAddress{dst,address});
         let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin)));
-        Ok(Some(Value{ty,regs:vec![dst],proof:proof.with_view_borrow(0,borrow),literal:false,uniform:false,constant:None}))
+        Ok(Some(Value{ty,regs:vec![dst],proof:{let mut component_proof=proof;component_proof.set_view_borrow(0,borrow);component_proof},literal:false,uniform:false,constant:None}))
     }
 
     pub(super) async fn external_position(&mut self,explicit:&[GenericArgument],args:&Expressions,span:Span)->Result<Option<Place>> {

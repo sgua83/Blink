@@ -117,13 +117,13 @@ impl Builder<'_> {
                 if !data.ty.zero_valid() {
                     data.initialization=Some(Position::ApplicationInput(input,None,0));
                 }
-                data.root.proof=data.root.proof.clone().with_view_borrow(0,Borrow{inputs:view::Edges::from([input]),..Borrow::default()});
+                data.root.proof.set_view_borrow(0,Borrow{inputs:view::Edges::from([input]),..Borrow::default()});
             }
         }
         for (index,slot) in slots.iter().enumerate() {
             if let InputSlot::Value{component,..}=slot {
                 let proof=slot.value_proof_mut(&mut self.env).unwrap();
-                *proof=proof.clone().with_view_borrow(*component,Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()});
+                proof.set_view_borrow(*component,Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()});
             }
         }
         self.loop_contexts[level].view_inputs=slots;self.loop_contexts[level].view_resources=resources;
@@ -157,7 +157,7 @@ impl Builder<'_> {
                         let mut borrow=proof.view_borrow(*component);
                         let inputs=std::mem::take(&mut borrow.inputs);
                         for(input,when)in inputs.into_entries(){if input.level==scope{borrow.union(&continued[input.index].restricted(&when));}else{borrow.inputs.insert_when(input,when);}}
-                        *proof=proof.clone().with_view_borrow(*component,borrow);
+                        proof.set_view_borrow(*component,borrow);
                     }
                 }
             }
@@ -201,17 +201,17 @@ impl Builder<'_> {
             for slot in &context.view_inputs {
                 if let InputSlot::Value{component,..}=slot && let Some(proof)=slot.value_proof_mut(environment){
                     let borrow=resolve(proof.view_borrow(*component),&direct,&sources);
-                    *proof=std::mem::take(proof).with_view_borrow(*component,borrow);
+                    proof.set_view_borrow(*component,borrow);
                 }
             }
             for binding in environment.values_mut() {
                 let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,resolve(data_value(data),&direct,&sources))).collect::<BTreeMap<_,_>>();
                 match binding {
-                    Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.root.proof=data.root.proof.clone().with_view_borrow(0,value);}}
+                    Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.root.proof.set_view_borrow(0,value);}}
                     Binding::OwnedValue(value)=>{
                         fn assign(value:&mut owned_values::OwnedValue,path:&mut Vec<usize>,borrows:&mut BTreeMap<Vec<usize>,Borrow>) {
                             for (index,payload) in value.payloads.iter_mut().enumerate(){let Some(payload)=payload.as_deref_mut()else{continue};path.push(index);
-                                match payload {returns::Returned::Dataset(data)=>{if let Some(value)=borrows.remove(path){data.root.proof=data.root.proof.clone().with_view_borrow(0,value);}},returns::Returned::OwnedValue(value)=>assign(value,path,borrows),_=>{}}
+                                match payload {returns::Returned::Dataset(data)=>{if let Some(value)=borrows.remove(path){data.root.proof.set_view_borrow(0,value);}},returns::Returned::OwnedValue(value)=>assign(value,path,borrows),_=>{}}
                                 path.pop();
                             }
                         }
@@ -662,7 +662,7 @@ impl Builder<'_> {
                         let mut common=proof.project(&[component],width);
                         let aliases=[common.output_aliases(&[reg],&self.registers,&BTreeMap::new()),alias];
                         exit.path=bounds::Clause::both(&exit.path,&bounds::Clause::either(&empty.assume(&aliases[0],true),&empty.assume(&aliases[1],false)));
-                        common.join_condition(&repeated,1,Some(empty));common=common.with_identity(ValueIdentity::Register(reg)).with_view_borrow(0,proof.view_borrow(component));
+                        common.join_condition(&repeated,1,Some(empty));common={let mut component_proof=common.with_identity(ValueIdentity::Register(reg));component_proof.set_view_borrow(0,proof.view_borrow(component));component_proof};
                         proof.assign(&[component],width,common);
                     }
                 }

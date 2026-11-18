@@ -742,7 +742,7 @@ impl<'b, 'w> Scope<'b, 'w> {
                 let (1,Some(place))=(args.len(),args.first())else{return Ok(None);};
                 let Some((_,_,borrow))=unsafe { self.world.call(self.input_snapshot(&place,limit,Access::Read,element,ordinal)).await }?else{return Ok(None);};
                 if !borrow.active(){return Ok(None);}
-                return Ok(Some((Ty::builtin("address").unwrap(),bounds::Proof::default().with_view_borrow(0,borrow),view::Borrow::default())));
+                return Ok(Some((Ty::builtin("address").unwrap(),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,borrow);component_proof},view::Borrow::default())));
             },
             ExprKind::Specialize(name,explicit,args)if name=="unsafe_position"=>{
                 let (1,Some(address))=(args.len(),args.first())else{return Ok(None);};
@@ -890,7 +890,7 @@ impl<'b, 'w> Scope<'b, 'w> {
                 if let Some(name)=assigned_root(&arg) &&!self.bindings.iter().any(|(bound,_)|*bound==name) {
                     if let Some((data,field,ty))=builder.written_application_data(&arg) {
                         let origin=application::dataset_origin(data,field,ty,false);
-                        inputs.insert(ValueIdentity::Register(offset),data.root.proof.clone().with_view_borrow(0,origin.normalize()));
+                        inputs.insert(ValueIdentity::Register(offset),{let mut component_proof=data.root.proof.clone();component_proof.set_view_borrow(0,origin.normalize());component_proof});
                         inputs.insert(ValueIdentity::Register(offset+1),bounds::Proof::capture(&data.length));
                     }
                 }
@@ -899,7 +899,7 @@ impl<'b, 'w> Scope<'b, 'w> {
             let(proof,storage)=match unsafe { self.world.call(self.input_snapshot(&arg,self.bindings.len(),parameter.access,None,None)).await }?{Some((_,proof,storage))=>(proof,storage),None=>(bounds::Proof::default().with_external_borrows(&ty),view::Borrow::source(view::Source::Unresolved))};
             if matches!(parameter.access,Access::Read|Access::Write|Access::InOut|Access::Atomic) {
                 let storage=if storage.empty(){view::Borrow::source(view::Source::Unresolved)}else{storage};
-                inputs.insert(ValueIdentity::ParameterStorage(index),bounds::Proof::default().with_view_borrow(0,storage));
+                inputs.insert(ValueIdentity::ParameterStorage(index),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,storage);component_proof});
                 for component in 0..ty.components.len(){inputs.insert(ValueIdentity::ParameterContent(index,component),proof.project(&[component],ty.components.len()));}
                 offset+=native_function::reference_parameters(&ty).len()*application::pointer_type().components.len();
             }else{
@@ -2030,11 +2030,11 @@ impl Builder<'_> {
             let path=when.assume(&bounds::Clause::default(),true);
             match model{
                 Returned::Dataset(data)=>{
-                    data.root.proof=data.root.proof.clone().with_view_borrow(0,view::resource_borrow(data).restricted(&path));
+                    data.root.proof.set_view_borrow(0,view::resource_borrow(data).restricted(&path));
                     if let Some(child)=data.elements.known_mut(){qualify(child,&when.scope_element_indices(1));}
                 },
                 Returned::OwnedValue(value)=>{
-                    for component in 0..value.value.ty.components.len(){let borrow=value.value.proof.view_borrow(component).restricted(&path);value.value.proof=value.value.proof.clone().with_view_borrow(component,borrow);}
+                    for component in 0..value.value.ty.components.len(){let borrow=value.value.proof.view_borrow(component).restricted(&path);value.value.proof.set_view_borrow(component,borrow);}
                     for child in value.payloads.iter_mut().flatten(){qualify(child,when);}
                 },_=>{},
             }

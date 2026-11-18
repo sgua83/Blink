@@ -93,8 +93,8 @@ impl Returned {
         if let (Self::Dataset(data), Self::Dataset(other)) = (&mut *self, &mut other) {
             let borrows=choice.map(|choice| {
                 let a=view::resource_borrow(data);let b=view::resource_borrow(other);
-                data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,view::Borrow::default());
-                other.root.proof=std::mem::take(&mut other.root.proof).with_view_borrow(0,view::Borrow::default());
+                data.root.proof.set_view_borrow(0,view::Borrow::default());
+                other.root.proof.set_view_borrow(0,view::Borrow::default());
                 (choice,a,b)
             });
             if data.ownership != other.ownership {
@@ -102,7 +102,7 @@ impl Returned {
             }
             if stored { data.root.proof.join_condition(&other.root.proof,data.root.regs.len(),None); } else { data.root.proof = bounds::Proof::common(&data.root, &other.root,None,None); }
             if let Some((choice,a,b))=borrows {
-                data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,a.selected(choice,&b));
+                data.root.proof.set_view_borrow(0,a.selected(choice,&b));
             }
             data.elements=if data.length.maximum()==0{other.elements.clone()}
                 else if other.length.maximum()==0{std::mem::take(&mut data.elements)}
@@ -335,7 +335,7 @@ impl Builder<'_> {
                 source:IndexedSource::View{address,index,stride:ElementStride::Constant(0)},
                 offset:index,word:slot as u32*Scalar::U32.size(),value:result,
             });
-            value.proof=value.proof.clone().with_view_borrow(component,borrow);
+            value.proof.set_view_borrow(component,borrow);
         }
         Ok(())
     }

@@ -1956,7 +1956,7 @@ async fn function_parameters(
     b.env=environment;
     application::bind_parameter_elements(b,instance.into(),&element_paths);
     let resources=d.function.params().iter().enumerate().filter_map(|(index,p)|match b.env.get(p.name()){
-        Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))),_=>None,
+        Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,view::resource_borrow(data));component_proof})),_=>None,
     }).collect();
     let environment=std::mem::take(&mut b.env);
     let requirements=unsafe { b.world.call(contracts::resolve(b,instance.into(),&LexicalScope::Function(instance.clone()),&environment,&resources)).await };b.env=environment;
@@ -2695,7 +2695,7 @@ impl<'a> Builder<'a> {
                     for (word,field) in ty.borrow_fields(){
                         if !field.is_address(){continue;}
                         let component=ty.components.iter().position(|(_,at)|*at==word).unwrap();
-                        proof=proof.with_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Value{memory,word,borrow:borrow.clone(),snapshots:snapshots.clone()}]),..view::Borrow::default()});
+                        proof.set_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Value{memory,word,borrow:borrow.clone(),snapshots:snapshots.clone()}]),..view::Borrow::default()});
                     }
                 }
                 if matches!(address, ReferenceAddress::External { .. }) {
@@ -4162,7 +4162,7 @@ impl<'a> Builder<'a> {
             match domain {
                 CursorSource::ApplicationData(mut data) => {
                     // The cursor uses the same current loop resource as indexed access.
-                    data.data.root.proof=data.data.root.proof.clone().with_view_borrow(0,data.root.proof.view_borrow(0).joined(self.data_borrow(&data.sources)));
+                    data.data.root.proof.set_view_borrow(0,data.root.proof.view_borrow(0).joined(self.data_borrow(&data.sources)));
                     let input=if !initial&&!bounds::seeks(body){unsafe { self.world.call(self.application_cursor_input(&data,&body_cursor)).await }?}else{bounds::Proof::default()};
                     Binding::Owned(OwnedBinding {
                         place: data.element(

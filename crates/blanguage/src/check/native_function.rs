@@ -427,7 +427,7 @@ pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>
         let p=unsafe { builder.world.call(p.bound(builder.world)).await }?;
         if p.access!=Access::Value && !p.ty.dataset && !p.ty.tile {
             let id=ValueIdentity::ParameterStorage(parameter);
-            bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(id,Vec::new()))));
+            bindings.insert(id,{let mut component_proof=bounds::Proof::default().with_identity(id);component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Parameter(id,Vec::new())));component_proof});
         }
         if matches!(p.access,Access::Read|Access::InOut) && let Some(place)=builder.env.get(p.name.as_str()).and_then(Binding::stored_place){
             for component in 0..place.ty().components.len(){let id=ValueIdentity::ParameterContent(parameter,component);bindings.insert(id,bounds::Proof::default().with_identity(id));}
@@ -437,13 +437,13 @@ pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>
             Some(Binding::OwnedValue(value))=>view::resource_paths(&value.value.ty).len(),
             _=>0,
         };
-        for resource in 0..resources{let id=ValueIdentity::ResourceParameter(parameter,resource);bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_sources(0,BTreeSet::from([view::Source::Data(id)])));}
+        for resource in 0..resources{let id=ValueIdentity::ResourceParameter(parameter,resource);bindings.insert(id,{let mut component_proof=bounds::Proof::default().with_identity(id);component_proof.set_view_sources(0,BTreeSet::from([view::Source::Data(id)]));component_proof});}
     }
     if let Some(value)=returned.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
     for(index,model)in written.iter().enumerate(){if let Some(value)=model.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,|component|view_contracts::Output::Written(index,component));}}
     application::canonical_element_inputs(builder,&mut bindings);
     let sources=returned.iter().chain(written.iter().flatten()).flat_map(application::element_parameter_sources).collect::<BTreeSet<_>>();
-    for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){*proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target,Vec::new())]));}}
+    for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){proof.set_view_sources(0,BTreeSet::from([view::Source::Parameter(target,Vec::new())]));}}
     if let Some(value)=&returned{builder.view_model.capture_resources(value,view_contracts::Output::ReturnedResource);}
     for(parameter,value)in written.iter().enumerate(){if let Some(value)=value{builder.view_model.capture_resources(value,|resource|view_contracts::Output::WrittenResource(parameter,resource));}}
     for(memory,usage)in builder.view_model.uses.iter().enumerate(){
@@ -479,7 +479,7 @@ pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>
             }
             if !scope.is_empty(){if let Some(source)=view_contracts::resource_output_mut(&mut original,resource){
                 let name=builder.view_model.resource_names[&output].clone();
-                for origin in &source.root.proof.view_borrow(0).sources{if let view::Source::Data(id@ValueIdentity::Register(_))=origin{bindings.entry(*id).or_insert_with(||bounds::Proof::default().with_view_borrow(0,name.clone()));}}
+                for origin in &source.root.proof.view_borrow(0).sources{if let view::Source::Data(id@ValueIdentity::Register(_))=origin{bindings.entry(*id).or_insert_with(||{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,name.clone());component_proof});}}
             }}
             if scope.is_empty(){if let(Some(source),Some(target))=(view_contracts::resource_output_mut(&mut original,resource),view_contracts::resource_output_mut(&mut value,resource)){
                 let bound=bounds::Proof::default().with_identity(ValueIdentity::Register(target.root.regs[0]));
@@ -507,7 +507,7 @@ pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>
             && let ParameterOrigin::Parameter{index,..}=origin.as_ref()
             && unsafe { builder.world.call(builder.scope.parameters().nth(*index).unwrap().bound(builder.world)).await }?.ty.dataset {
             let id=ValueIdentity::Register(start);
-            resources.insert(id,bounds::Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(ValueIdentity::ResourceParameter(*index,0),Vec::new()))));
+            resources.insert(id,{let mut component_proof=bounds::Proof::default().with_identity(id);component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Parameter(ValueIdentity::ResourceParameter(*index,0),Vec::new())));component_proof});
         }
         start+=match &parameter.kind{CallParameterKind::Value(ty)=>ty.components.len(),CallParameterKind::Reference{..}=>2};
     }
@@ -570,7 +570,7 @@ async fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&Lexical
     application::bind_parameter_elements(&mut b,contract,&paths);
     let resources=match b.env.get("value"){
         Some(Binding::ApplicationData(data))=>BTreeMap::from([(ValueIdentity::ResourceParameter(0,0),
-            bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))]),
+            {let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,view::resource_borrow(data));component_proof})]),
         _=>BTreeMap::new(),
     };
     let mut environment=std::mem::take(&mut b.env);
@@ -1002,7 +1002,7 @@ impl Builder<'_> {
             let arg=match arg {
                 Argument::BorrowedData(mut reference)=>{
                     let source=self.data_value_borrow(&reference.data);
-                    resource_inputs.insert(ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,prefix::domain(&reference)));
+                    resource_inputs.insert(ValueIdentity::ResourceParameter(index,0),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,prefix::domain(&reference));component_proof});
                     let borrow=if matches!(p.access,Access::Read|Access::Atomic) && signature.execution==crate::execution::Requirement::Invocation {
                         let (_,ty)=reference.element_layout();
                         address::Origin{
@@ -1011,7 +1011,7 @@ impl Builder<'_> {
                             writable:p.access.writes(),initialized:vec![true;ty.components.len()].into(),
                         }.normalize()
                     }else{source};
-                    reference.data.root.proof=reference.data.root.proof.with_view_borrow(0,borrow);
+                    reference.data.root.proof.set_view_borrow(0,borrow);
                     Argument::BorrowedData(reference)
                 },
                 other=>other,
@@ -1027,7 +1027,7 @@ impl Builder<'_> {
                     unsafe { self.world.call(self.require_place_access(&place,p.access,span)).await }?;
                 }
                 let borrow=unsafe { self.world.call(self.position_borrows(&place,span)).await }?;
-                storage_inputs.insert(ValueIdentity::ParameterStorage(index),bounds::Proof::default().with_view_borrow(0,borrow));
+                storage_inputs.insert(ValueIdentity::ParameterStorage(index),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,borrow);component_proof});
             }
             match arg {
                 Argument::Value(mut value) if p.access == Access::Value && !p.ty.dataset => {
@@ -1064,7 +1064,7 @@ impl Builder<'_> {
                         let proof=bounds::Proof::capture(&value.value);
                         for component in 0..ty.components.len(){contents.insert(ValueIdentity::ParameterContent(index,component),proof.project(&[component],ty.components.len()));}
                         residency::owned_argument(&mut locations,index,&mut value);
-                        for(resource,path)in view::resource_paths(&ty).into_iter().enumerate(){let borrow=match view::owned_data_at(&value,&path){Some(data)=>self.data_value_borrow(data),None=>view::Borrow::from_sources(BTreeSet::from([view::Source::Inactive]))};resource_inputs.insert(ValueIdentity::ResourceParameter(index,resource),bounds::Proof::default().with_view_borrow(0,borrow));}
+                        for(resource,path)in view::resource_paths(&ty).into_iter().enumerate(){let borrow=match view::owned_data_at(&value,&path){Some(data)=>self.data_value_borrow(data),None=>view::Borrow::from_sources(BTreeSet::from([view::Source::Inactive]))};resource_inputs.insert(ValueIdentity::ResourceParameter(index,resource),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,borrow);component_proof});}
                     } else if launch.is_some() {
                         retired_outputs.push((place.clone(),Returned::OwnedValue(value.clone())));
                     } else {
@@ -1131,10 +1131,10 @@ impl Builder<'_> {
                         self.code.push(Inst::generated(InstKind::PositionAddress{dst:address,address:CallReference{
                             storage:CallStorage::Indexed(IndexedSource::Data{binding,index:zero.regs[0]}),offset:None,word:0,
                         }},origin.clone()));
-                        Value{ty:Ty::scalar(Scalar::U64),regs:vec![address],proof:bounds::Proof::default().with_view_borrow(0,borrow),literal:false,uniform:true,constant:None}
+                        Value{ty:Ty::scalar(Scalar::U64),regs:vec![address],proof:{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,borrow);component_proof},literal:false,uniform:true,constant:None}
                     }else{
                         let mut handle=self.constant_with_origin(Scalar::U32,binding as u64,Some(origin.clone()));
-                        handle.proof=handle.proof.with_view_borrow(0,borrow);handle
+                        handle.proof.set_view_borrow(0,borrow);handle
                     };
                     let length=self.data_length(&view);
                     let step=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::BufferStride(step,binding),origin.clone()));
@@ -1189,7 +1189,7 @@ impl Builder<'_> {
                     }else{None};
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
                     let(field,ty)=reference.element_layout();
-                    value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&reference.data,field,ty,p.access.reads()).normalize());
+                    value.proof.set_view_borrow(0,application::dataset_origin(&reference.data,field,ty,p.access.reads()).normalize());
                     if p.access==Access::Write&&signature.execution==crate::execution::Requirement::Invocation {
                         let borrow=if reference.root.ty.components[0].0==Scalar::U64&&reference.projection.is_empty() {
                             view::Borrow::source(view::Source::Parameter(reference.root.identity(),Vec::new()))
@@ -1211,7 +1211,7 @@ impl Builder<'_> {
                             address::Origin{root,base,words:words.into(),positions,writable:true,
                                 initialized:vec![false;layout.parts.len()].into(),layout}.normalize()
                         };
-                        value.proof=value.proof.with_view_borrow(0,borrow);
+                        value.proof.set_view_borrow(0,borrow);
                     }
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow,ty:value.ty,values:value.regs});
@@ -1222,9 +1222,9 @@ impl Builder<'_> {
                     self.require_same(&ty,&data.ty,span)?;
                     unsafe { self.world.call(self.require_application_initialized(&data,span)).await }?;
                     unsafe { self.world.call(self.native_dataset_shape(p,d,data.count,span)).await }?;
-                    resource_inputs.insert(ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(&data)));
+                    resource_inputs.insert(ValueIdentity::ResourceParameter(index,0),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,view::resource_borrow(&data));component_proof});
                     let mut value=self.returned_storage(&Returned::Dataset(data.clone()));
-                    value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&data,0,&data.ty,true).normalize());
+                    value.proof.set_view_borrow(0,application::dataset_origin(&data,0,&data.ty,true).normalize());
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow:None, ty:value.ty,values:value.regs});
                     env.insert(p.name.to_owned(),Binding::ApplicationData(data));
@@ -1245,7 +1245,7 @@ impl Builder<'_> {
                     for data in value.resources(){unsafe { self.world.call(self.require_application_initialized(data,span)).await }?;}
                     value.resources_mut(&mut |data|data.initialization=None);
                     residency::owned_argument(&mut locations, index, &mut value);
-                    for(resource,path)in view::resource_paths(&value.value.ty).into_iter().enumerate(){let borrow=match view::owned_data_at(&value,&path){Some(data)=>self.data_value_borrow(data),None=>view::Borrow::from_sources(BTreeSet::from([view::Source::Inactive]))};resource_inputs.insert(ValueIdentity::ResourceParameter(index,resource),bounds::Proof::default().with_view_borrow(0,borrow));}
+                    for(resource,path)in view::resource_paths(&value.value.ty).into_iter().enumerate(){let borrow=match view::owned_data_at(&value,&path){Some(data)=>self.data_value_borrow(data),None=>view::Borrow::from_sources(BTreeSet::from([view::Source::Inactive]))};resource_inputs.insert(ValueIdentity::ResourceParameter(index,resource),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,borrow);component_proof});}
                     value.value.proof=self.current_address_proof(&value.value.ty,&value.value.proof);
                     memory_borrow.union(&self.address_contents(&value.value.ty,&value.value.proof));
                     append_actual(&mut actual, &value.value);
@@ -1724,7 +1724,7 @@ impl Builder<'_> {
             if let Some(call)=view_call {for component in view_contracts::components(place.ty()) {
                 let relation=model.view_borrow(component);
                 if relation.empty()||relation.pending()||relation.unresolved(){
-                    proof=proof.with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Written(index,component)));
+                    proof.set_view_borrow(component,self.view_model.result(call,view_contracts::Output::Written(index,component)));
                 }
             }}
             let mut owned_output=None;
@@ -1783,10 +1783,10 @@ impl Builder<'_> {
                         at_call(source).restricted(&when)
                     });
                     if let Some(selected)=selected {
-                        value.proof=value.proof.clone().with_view_borrow(component,selected);
+                        value.proof.set_view_borrow(component,selected);
                     }else if !projected.is_empty(){
                         let actual=borrow.guards_at_call(&bindings).map_sources(|source|at_call(&source));
-                        value.proof=value.proof.clone().with_view_borrow(component,actual);
+                        value.proof.set_view_borrow(component,actual);
                     }
                 }
             }
@@ -1798,7 +1798,7 @@ impl Builder<'_> {
             for component in view_contracts::components(&value.ty){
                 let actual=value.proof.view_borrow(component);
                 let resolved=self.view_model.result(call,view_contracts::Output::Returned(component));
-                if actual.content_inputs()||actual.empty()||actual.pending()||actual.unresolved(){value.proof=value.proof.clone().with_view_borrow(component,resolved);}
+                if actual.content_inputs()||actual.empty()||actual.pending()||actual.unresolved(){value.proof.set_view_borrow(component,resolved);}
             }
         }
         if let Some(model)=&mut model {
@@ -2159,26 +2159,26 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             match output {
                 view_contracts::Output::Returned(component) => {
                     if let Some(value) = contract.returned.as_mut().and_then(Returned::view_value_mut) {
-                        value.proof = value.proof.clone().with_view_borrow(component, borrow);
+                        value.proof.set_view_borrow(component, borrow);
                     }
                 }
                 view_contracts::Output::Written(parameter, component) => {
                     if let Some(value) = contract.written[parameter].as_mut().and_then(Returned::view_value_mut) {
-                        value.proof = value.proof.clone().with_view_borrow(component, borrow);
+                        value.proof.set_view_borrow(component, borrow);
                     }
                 }
                 view_contracts::Output::ReturnedResource(resource) => {
                     if let Some(value) = contract.returned.as_mut()
                         .and_then(|value| view_contracts::resource_output_mut(value, &resource))
                     {
-                        value.root.proof = value.root.proof.clone().with_view_borrow(0, borrow);
+                        value.root.proof.set_view_borrow(0, borrow);
                     }
                 }
                 view_contracts::Output::WrittenResource(parameter, resource) => {
                     if let Some(value) = contract.written[parameter].as_mut()
                         .and_then(|value| view_contracts::resource_output_mut(value, &resource))
                     {
-                        value.root.proof = value.root.proof.clone().with_view_borrow(0, borrow);
+                        value.root.proof.set_view_borrow(0, borrow);
                     }
                 }
             }
