@@ -693,6 +693,21 @@ impl Proof {
         for address in self.addresses.iter().flatten(){if let address::Identity::Value(values)=address{for id in values{identity(*id);}}}
         ids.into_inner()
     }
+    pub(super) fn any_scalar_identity(&self, test:&impl Fn(&ValueIdentity)->bool)->bool {
+        if self.origins.iter().flatten().any(test) { return true; }
+        for domain in self.domains.iter().flatten() {
+            let found=std::cell::Cell::new(false);
+            map_domain(*domain,&|id|{found.set(found.get()||test(&id));id});
+            if found.get() { return true; }
+        }
+        if Clause::any_scalar_identity(self.conditions.iter().flatten().flat_map(|condition|condition.cases.iter()),test) {
+            return true;
+        }
+        self.addresses.iter().flatten().any(|address|match address {
+            address::Identity::Value(values)=>values.iter().any(test),
+            _=>false,
+        })
+    }
     fn bound_input<'a>(
         bindings: &'a BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
         id: &ValueIdentity,
@@ -2174,6 +2189,30 @@ impl Clause {
     }
     fn key(&self) -> usize {
         Arc::as_ptr(&self.0) as usize
+    }
+    pub(super) fn any_scalar_identity<'a>(
+        roots:impl IntoIterator<Item=&'a Self>, test:&impl Fn(&ValueIdentity)->bool,
+    )->bool {
+        let mut pending=Vec::new();let mut visited=HashSet::new();
+        for root in roots {
+            pending.push(root);
+            while let Some(clause)=pending.pop() {
+                if !visited.insert(clause.key()) { continue; }
+                match &**clause.0 {
+                    ClauseNode::Facts(facts)=>for fact in facts {
+                        let found=std::cell::Cell::new(false);
+                        fact.map(&|id|{found.set(found.get()||test(&id));id});
+                        if found.get() { return true; }
+                    },
+                    ClauseNode::Both(a,b)|ClauseNode::Either(a,b)=>pending.extend([b,a]),
+                    ClauseNode::Branch(parent,condition,truth)=>{
+                        pending.extend([&condition.cases[usize::from(*truth)],parent]);
+                    },
+                    ClauseNode::Impossible=>{},
+                }
+            }
+        }
+        false
     }
     // 按子节点在先的顺序只访问每个共享节点一次，不展开路径的笛卡尔积。
     fn ordered<'a>(roots: impl IntoIterator<Item = &'a Self>) -> Vec<&'a Self> {

@@ -4488,7 +4488,7 @@ impl Builder<'_> {
                         self.bind_element_resource_borrows(data,&parent,&mut bindings);
                         let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings);
                         if !reads.is_empty() {
-                            pending|=value.proof.scalar_identities().into_iter().any(|source|matches!(source,ValueIdentity::MemoryValue(..)|ValueIdentity::LoopValue(..)));
+                            pending=pending||value.proof.any_scalar_identity(&|source|matches!(source,ValueIdentity::MemoryValue(..)|ValueIdentity::LoopValue(..)));
                             let bindings=Arc::new(bindings);
                             if projections.is_empty(){projections.resize_with(regs.len(),Vec::new);}
                             for(target,component)in components.iter().enumerate(){

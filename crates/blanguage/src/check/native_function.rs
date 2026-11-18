@@ -2233,8 +2233,8 @@ fn resolve_residencies(world:&World,module: &mut Module) -> Result<BTreeMap<Stri
         });
         residency::check_calls(unit.residency.calls.iter().filter(|call|
             !call.arguments.values().all(unbound)
-            && !call.bindings.values().any(|proof|proof.scalar_identities().iter().any(&pending))
-            && !bounds::Proof::condition(bounds::Condition::guard(call.path.clone())).scalar_identities().iter().any(&pending)
+            && !call.bindings.values().any(|proof|proof.any_scalar_identity(&pending))
+            && !bounds::Clause::any_scalar_identity([&call.path],&pending)
         ),&known,&outputs)?;
         residency::check_loops(name,&unit.residency,&unit.contract.residency,&parameters,&outputs,&known,unit.input_access.len())?;
         for written in &mut unit.contract.written{if let Some(value)=written{if !residency::resolve_returned(value,&outputs){*written=None;}}}
