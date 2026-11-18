@@ -14,6 +14,7 @@ mod index_domains;
 mod comparison_conditions;
 mod value_conditions;
 mod index_conditions;
+mod numeric_bounds;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2413,30 +2414,6 @@ fn either_facts<'a>(
 ) -> Option<QueryFacts<'a>> {
     common_facts::either(environment, environment_roots, environment_members, a, b)
 }
-fn minimums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<(ValueIdentity, Scalar), Bits> {
-    let mut result: BTreeMap<(ValueIdentity, Scalar), Bits> = BTreeMap::new();
-    for fact in facts {
-        if let Fact::Minimum(identity, scalar, lower) = fact {
-            result
-                .entry((*identity, *scalar))
-                .and_modify(|v| *v = (*v).max(*lower))
-                .or_insert(*lower);
-        }
-    }
-    result
-}
-fn maximums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<(ValueIdentity, Scalar), Bits> {
-    let mut result: BTreeMap<(ValueIdentity, Scalar), Bits> = BTreeMap::new();
-    for fact in facts {
-        if let Fact::Maximum(identity, scalar, upper) = fact {
-            result
-                .entry((*identity, *scalar))
-                .and_modify(|v| *v = (*v).min(*upper))
-                .or_insert(*upper);
-        }
-    }
-    result
-}
 impl PartialEq for Clause {
     fn eq(&self, other: &Self) -> bool { same_condition_roots([self], [other]) }
 }
@@ -2695,16 +2672,7 @@ struct IntegerQuery<'a> {
 }
 impl<'a> IntegerQuery<'a> {
     fn new(facts: &'a Facts, roots: &'a BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
-        let mut lower = BTreeMap::new();
-        let mut upper = BTreeMap::new();
-        for ((id, scalar), value) in minimums(facts) {
-            let id = roots.get(&id).copied().unwrap_or(id);
-            lower.entry((id, scalar)).and_modify(|old: &mut Bits| *old = (*old).max(value)).or_insert(value);
-        }
-        for ((id, scalar), value) in maximums(facts) {
-            let id = roots.get(&id).copied().unwrap_or(id);
-            upper.entry((id, scalar)).and_modify(|old: &mut Bits| *old = (*old).min(value)).or_insert(value);
-        }
+        let (lower,upper)=numeric_bounds::collect(facts,Some(roots));
         Self { facts, roots, lower, upper, coefficients: BTreeMap::new(), expanding: BTreeSet::new() }
     }
     fn root(&self, id: ValueIdentity) -> ValueIdentity { self.roots.get(&id).copied().unwrap_or(id) }

@@ -1,8 +1,7 @@
 //! B controls source-path canonicalization. Native frames hold the original
 //! typed sets and iterators until their synchronous last consumer.
 use super::{
-    Clause, Facts, Scalar, ValueIdentity, condition_graph, contradictory, fact_fields, maximums,
-    minimums,
+    Clause, Facts, Scalar, ValueIdentity, condition_graph, contradictory, fact_fields, numeric_bounds,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map, btree_set},
@@ -187,8 +186,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" fn normalize(source: Borrowed, target: Slot) {
     let source = unsafe { &*source.cast::<Facts>() };
-    let lower = minimums(source);
-    let upper = maximums(source);
+    let (lower,upper)=numeric_bounds::collect(source,None);
     let mut output = Facts::new();
     {
         let mut c = Normal {

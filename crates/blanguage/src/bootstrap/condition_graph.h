@@ -760,3 +760,14 @@ extern "C" void index_condition_equal(address state,IndexRelationOperand left,In
  requires nonzero(host.cases.emit) requires nonzero(host.cases.finish) requires nonzero(host.predicate) requires nonzero(host.guard);
 extern "C" void index_condition_below(address state,address input,IndexRelationInput values,u32 original_strict,IndexRelationBelowHost host) on cpu
  requires nonzero(host.cases.emit) requires nonzero(host.cases.finish) requires nonzero(host.bounds) requires nonzero(host.constrain) requires nonzero(host.compare);
+
+enum NumericBoundSide:u32 {Lower=0;Upper=1;};
+struct NumericBoundPrevious {u32 present;u64 value;};
+struct NumericBoundsHost {
+ cfn<FactView,address> next;
+ cfn<address,address,address> ensures memory(read) root;
+ cfn<NumericBoundPrevious,address,NumericBoundSide,address,address> ensures memory(read) lookup;
+ cfn<void,address,NumericBoundSide,address,address,u64> emit;
+};
+extern "C" void numeric_bounds(address context,NumericBoundsHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.lookup) requires nonzero(host.emit);

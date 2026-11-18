@@ -1618,3 +1618,16 @@ extern "C" void index_condition_below(address state,address input,IndexRelationI
  host.cases.finish(state,invert,possible_false!=0 ? IndexConditionFinish::Facts : IndexConditionFinish::Impossible);
  host.cases.finish(state,1-invert,possible_true!=0 ? IndexConditionFinish::Facts : IndexConditionFinish::Impossible);
 }
+
+extern "C" void numeric_bounds(address context,NumericBoundsHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.lookup) requires nonzero(host.emit) {
+ while(true){FactView fact=host.next(context);if(fact.present==0){return;}
+  if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){
+   NumericBoundSide side=fact.kind==FactKind::Minimum ? NumericBoundSide::Lower : NumericBoundSide::Upper;
+   address id=host.root(context,fact.first);NumericBoundPrevious previous=host.lookup(context,side,id,fact.scalar);
+   u64 value=fact.value;
+   if(previous.present!=0){value=side==NumericBoundSide::Lower ? max(previous.value,value) : min(previous.value,value);}
+   host.emit(context,side,id,fact.scalar,value);
+  }
+ }
+}
