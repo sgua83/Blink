@@ -303,6 +303,7 @@ f64 fp_truncated(f64 value) on cpu {
     return bitcast_f64(raw&~((1u64<<count)-1u64));
 }
 f64 fp_floor(f64 value) on cpu {f64 whole=fp_truncated(value);return whole>value ? whole-1.0f64 : whole;}
+f64 fp_ceil(f64 value) on cpu {f64 whole=fp_truncated(value);return whole<value ? whole+1.0f64 : whole;}
 u64 fp_raw(u32 width,f64 value) on cpu {return width==32 ? u64(bitcast_u32(f32(value))) : bitcast_u64(value);}
 FloatRange fp_unknown() on cpu {return FloatRange(0u64,0u64,0);}
 FloatRange fp_empty() on cpu {return FloatRange(0u64,0u64,2);}
@@ -465,6 +466,7 @@ extern "C" FloatRange float_math(u32 operation,u32 width,BitRange left,BitRange 
         lower=operation==1 ? fp_min(a.lower,b.lower) : fp_max(a.lower,b.lower);upper=operation==1 ? fp_min(a.upper,b.upper) : fp_max(a.upper,b.upper);
     }else if(operation==3){lower=a.lower<=0.0f64&&a.upper>=0.0f64 ? 0.0f64 : fp_min(fp_abs(a.lower),fp_abs(a.upper));upper=fp_max(fp_abs(a.lower),fp_abs(a.upper));}
     else if(operation==4){lower=fp_floor(a.lower);upper=fp_floor(a.upper);}
+    else if(operation==7){lower=fp_ceil(a.lower);upper=fp_ceil(a.upper);}
     else if((operation==5||operation==6)&&a.lower>0.0f64){lower=-fp_maximum(width);upper=fp_maximum(width);}
     else{return fp_unknown();}
     return float_interval(width,lower,upper);

@@ -3322,6 +3322,7 @@ impl<'a> Builder<'a> {
             "sqrt"
                 | "abs"
                 | "floor"
+                | "ceil"
                 | "sin"
                 | "cos"
                 | "exp"

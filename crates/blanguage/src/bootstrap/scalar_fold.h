@@ -58,7 +58,7 @@ extern "C" u32 float_comparison_possible(BinaryOperation operation,u32 width,Bit
 extern "C" FloatPieces float_bitcast(u32 width,BitRange range,u32 source_float) on cpu;
 extern "C" FloatRange float_cast_range(ScalarEncoding source,ScalarEncoding target,BitRange range) on cpu;
 extern "C" FloatRange float_range_arithmetic(BinaryOperation operation,u32 width,BitRange left,BitRange right) on cpu;
-// math: 1 min, 2 max, 3 abs, 4 floor, 5 log, 6 log2; other operations remain unknown.
+// math: 1 min, 2 max, 3 abs, 4 floor, 5 log, 6 log2, 7 ceil; other operations remain unknown.
 extern "C" FloatRange float_math(u32 operation,u32 width,BitRange left,BitRange right) on cpu;
 extern "C" FloatRange float_sum_range(u32 width,BitRange range,u64 maximum) on cpu;
 extern "C" FloatRange float_negate(u32 width,BitRange range) on cpu;

@@ -77,7 +77,7 @@ pub(in crate::check::bounds) fn arithmetic(op:&str,a:&Value,b:&Value,component:u
 pub(in crate::check::bounds) fn math(op:MathOp,args:&[Value],component:usize)->ScalarRanges {
     let a=&args[0];let left=super::ranges(a,component%a.regs.len());
     let right=if matches!(op,MathOp::Min|MathOp::Max){let b=&args[1];raw(super::ranges(b,component%b.regs.len()).hull())}else{RawRange{lower:0,upper:0}};
-    let operation=match op{MathOp::Min=>1,MathOp::Max=>2,MathOp::Abs=>3,MathOp::Floor=>4,MathOp::Log=>5,MathOp::Log2=>6,_=>0};
+    let operation=match op{MathOp::Min=>1,MathOp::Max=>2,MathOp::Abs=>3,MathOp::Floor=>4,MathOp::Log=>5,MathOp::Log2=>6,MathOp::Ceil=>7,_=>0};
     decoded(unsafe{source_math(operation,a.ty.components[0].0.bit_width(),raw(left.hull()),right)})
 }
 pub(in crate::check::bounds) fn sum(input:&Proof,component:usize,scalar:Scalar,maximum:Bits)->ScalarRanges {

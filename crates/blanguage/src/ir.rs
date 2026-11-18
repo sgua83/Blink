@@ -1045,12 +1045,14 @@ pub enum MathOp {
     Sqrt,
     Min,
     Max,
+    Ceil,
 }
 impl MathOp {
     pub fn from_source(name: &str) -> Option<Self> {
         Some(match name {
             "abs" => Self::Abs,
             "floor" => Self::Floor,
+            "ceil" => Self::Ceil,
             "sin" => Self::Sin,
             "cos" => Self::Cos,
             "pow" => Self::Pow,

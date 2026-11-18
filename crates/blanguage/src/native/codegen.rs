@@ -661,7 +661,7 @@ impl Emitter<'_> {
                         MathOp::Min => { self.float_binary(*dst, args[0], args[1], 0x5d); None }
                         MathOp::Max => { self.float_binary(*dst, args[0], args[1], 0x5f); None }
                         MathOp::Abs => { self.float_math(*dst, args[0], false); None }
-                        MathOp::Sin => Some("sin"), MathOp::Cos => Some("cos"), MathOp::Floor => Some("floor"),
+                        MathOp::Sin => Some("sin"), MathOp::Cos => Some("cos"), MathOp::Floor => Some("floor"), MathOp::Ceil => Some("ceil"),
                         MathOp::Exp => Some("exp"), MathOp::Exp2 => Some("exp2"), MathOp::Log => Some("log"),
                         MathOp::Log2 => Some("log2"), MathOp::Pow => Some("pow"),
                     };

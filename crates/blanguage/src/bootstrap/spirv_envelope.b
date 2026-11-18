@@ -512,6 +512,7 @@ extern "C" u64 scalar_unary(UnaryEmission input, address body) on cpu {
 
 u32 math_opcode(MathOperation operation) on cpu {
     if (operation == MathOperation::Floor) { return 8; }
+    if (operation == MathOperation::Ceil) { return 9; }
     if (operation == MathOperation::Sin) { return 13; }
     if (operation == MathOperation::Cos) { return 14; }
     if (operation == MathOperation::Pow) { return 26; }
