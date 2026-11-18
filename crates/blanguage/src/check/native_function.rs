@@ -2405,6 +2405,7 @@ async fn domain_at(
     functions: &mut Module,
     target: Target,
     element_inputs: &[ElementFact],
+    parameters: Option<&[Param]>,
 ) -> Result<crate::module::domain::Interface> {
     let name = crate::module::domain::symbol(input.name(), target);
     if !functions.units.contains_key(&name) {
@@ -2414,7 +2415,7 @@ async fn domain_at(
             reference.name = name.clone();
             *functions = unsafe { world.call(declaration(world, &reference, std::mem::take(functions))).await }?;
         } else {
-            unsafe { world.call(build_domain(world, input, functions, target, element_inputs)).await }?;
+            unsafe { world.call(build_domain(world, input, functions, target, element_inputs, parameters)).await }?;
         }
     }
     functions.units[&name]
@@ -2436,8 +2437,9 @@ impl Builder<'_> {
         input: DomainInput<'_>,
         target: Target,
         element_inputs: &[ElementFact],
+        parameters: &[Param],
     ) -> Result<crate::module::domain::Interface> {
-        unsafe { self.world.call(domain_at(self.world, input, &mut self.functions, target, element_inputs)).await }
+        unsafe { self.world.call(domain_at(self.world, input, &mut self.functions, target, element_inputs, Some(parameters))).await }
     }
     pub(super) fn call_domain(
         &mut self,
@@ -2478,7 +2480,7 @@ async fn domain_declaration(
     };
     let mut roots = BTreeSet::new();
     for &target in targets {
-        unsafe { world.call(domain_at(world, DomainInput::Declaration(instance), functions, target, &[])).await }?;
+        unsafe { world.call(domain_at(world, DomainInput::Declaration(instance), functions, target, &[], None)).await }?;
         if instance.definition.public {
             roots.insert(crate::module::domain::symbol(&instance.name, target));
         }
@@ -2491,10 +2493,22 @@ async fn build_domain(
     functions: &mut Module,
     target: Target,
     element_inputs: &[ElementFact],
+    parameters: Option<&[Param]>,
 ) -> Result<()> {
     let d = &input.owner().definition;
-    let bound_parameters=unsafe { world.call(input.parameters(world)).await }?;
-    let (expanded, bound_contracts) = unsafe { world.call(expand_domain(world, input, functions, element_inputs)).await }?;
+    let bound_parameters = match parameters {
+        Some(parameters) => Cow::Borrowed(parameters),
+        None => unsafe { world.call(input.parameters(world)).await }?,
+    };
+    if let DomainInput::Declaration(instance) = input
+        && !unsafe {
+            world.call(kernel_parameters(world, instance, bound_parameters.iter().map(ScopeParameter::Bound), |_| {})).await
+        }?
+    {
+        return Err(invalid_kernel_interface(input));
+    }
+    let (expanded, bound_contracts) =
+        unsafe { world.call(expand_domain(world, input, &bound_parameters, functions, element_inputs)).await }?;
     let mut signature = expanded.program;
     let mut scopes = expanded.scopes;
     if !signature.accelerations.is_empty() || target == Target::Gpu && !signature.textures.is_empty() {
@@ -2519,7 +2533,7 @@ async fn build_domain(
     let mut uniform_values = Vec::new();
     let mut uniform_regs = BTreeMap::new();
     let mut ui = 0;
-    for param in &bound_parameters {
+    for param in bound_parameters.iter() {
         let first = registers.len();
         if param.ty.dataset {
             registers.extend([Scalar::U32; 2]);
@@ -2597,7 +2611,7 @@ async fn build_domain(
             &mut registers,
             &mut code,
         )?;
-        unsafe { world.call(domain_at(world, DomainInput::Declaration(&call.instance), functions, target, &[])).await }?;
+        unsafe { world.call(domain_at(world, DomainInput::Declaration(&call.instance), functions, target, &[], None)).await }?;
         let mut arguments = vec![frame.clone()];
         for root in &call.arguments {
             arguments.push(match root {

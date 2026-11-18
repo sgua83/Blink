@@ -384,8 +384,15 @@ pub(crate) async fn compile_program(
     world: &World,
     instance: &crate::generics::Instance,
 ) -> Result<Program> {
+    let input = DomainInput::Declaration(instance);
+    let mut parameters = Vec::new();
+    if !unsafe {
+        world.call(kernel_parameters(world, instance, declared_kernel_parameters(instance), |param| parameters.push(param))).await
+    }? {
+        return Err(invalid_kernel_interface(input));
+    }
     let mut functions = native_function::Module::default();
-    let (expanded, _) = unsafe { world.call(expand_domain(world, DomainInput::Declaration(instance), &mut functions, &[])).await }?;
+    let (expanded, _) = unsafe { world.call(expand_domain(world, input, &parameters, &mut functions, &[])).await }?;
     if !expanded.calls.is_empty() {
         return instance.definition.source.fail(
             instance.definition.function.span(),
@@ -423,14 +430,17 @@ impl<'a> DomainInput<'a> {
     fn target(self)->Target {
         match self {Self::Declaration(instance)=>instance.definition.function.target(),Self::Parallel{..}=>Target::Cpu}
     }
-    async fn parameters(self,world:&World)->Result<Vec<Param>> {
-        match self {Self::Declaration(instance)=>{
-            let mut parameters=Vec::new();
-            for parameter in instance.parameters(world) {
-                parameters.push(unsafe { world.call(parameter).await }?);
+    async fn parameters(self, world: &World) -> Result<Cow<'a, [Param]>> {
+        match self {
+            Self::Declaration(instance) => {
+                let mut parameters = Vec::new();
+                for parameter in instance.parameters(world) {
+                    parameters.push(unsafe { world.call(parameter).await }?);
+                }
+                Ok(Cow::Owned(parameters))
             }
-            Ok(parameters)
-        },Self::Parallel{parameters,..}=>Ok(parameters.to_vec())}
+            Self::Parallel { parameters, .. } => Ok(Cow::Borrowed(parameters)),
+        }
     }
     fn contracts(self) -> Cow<'a, [FunctionContract]> {
         match self {
@@ -453,30 +463,31 @@ impl<'a> DomainInput<'a> {
         origin.map(|origin|Arc::new(SourceSite{origin,context:Arc::new(SourceContext{domain_path:path.clone(),..(*context).clone()}),span,syntax}))
     }
 }
+fn invalid_kernel_interface(input: DomainInput<'_>) -> Diagnostic {
+    Diagnostic {
+        source: input.owner().definition.source.clone(),
+        span: input.span(),
+        code: "B266",
+        message: "算法对象接口以借用数据与普通统一值交付结果；普通函数的独立调用／资源 ABI 产物尚未实现".into(),
+    }
+}
+
 async fn expand_domain<'a>(
     world: &World,
     input: DomainInput<'a>,
+    parameters: &[Param],
     functions: &mut native_function::Module,
     element_inputs: &[ElementFact],
 ) -> Result<(ExpandedDomain, Cow<'a, [FunctionContract]>)> {
     let name = input.name();
     let d = &input.owner().definition;
-    if let DomainInput::Declaration(instance)=input {
-    if !unsafe { world.call(kernel_interface(world, instance)).await }? {
-        return d.source.fail(
-            input.span(),
-            "B266",
-            "算法对象接口以借用数据与普通统一值交付结果；普通函数的独立调用／资源 ABI 产物尚未实现",
-        );
-    }
-    }
     let mut buffers = Vec::new();
     let mut accelerations = Vec::new();
     let mut textures = Vec::new();
     let mut uniforms = Vec::new();
     let mut env = BTreeMap::new();
     let mut offset = 0;
-    for p in unsafe { world.call(input.parameters(world)).await }? {
+    for p in parameters {
         if p.ty.is_texture_resource() {
             if p.access != Access::Read {
                 return d
@@ -4888,7 +4899,23 @@ pub(crate) fn stage_intrinsic(name: &str) -> bool {
         || custom_reduce::Kind::from_source(name).is_some()
 }
 
-pub(crate) async fn kernel_interface(world: &World, instance: &crate::generics::Instance) -> Result<bool> {
+pub(crate) fn kernel_interface<'a>(
+    world: &'a World,
+    instance: &'a crate::generics::Instance,
+) -> impl std::future::Future<Output = Result<bool>> + 'a {
+    kernel_parameters(world, instance, declared_kernel_parameters(instance), |_| {})
+}
+
+fn declared_kernel_parameters(instance: &crate::generics::Instance) -> impl Iterator<Item = ScopeParameter<'_>> {
+    instance.definition.function.params().into_iter().map(|parameter| ScopeParameter::Declaration(instance, parameter))
+}
+
+async fn kernel_parameters<'a>(
+    world: &World,
+    instance: &crate::generics::Instance,
+    parameters: impl Iterator<Item = ScopeParameter<'a>>,
+    mut retain: impl FnMut(Param),
+) -> Result<bool> {
     let d=&instance.definition;
     let result=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),
         (&d.source,&d.module,&d.imports),d.function.span())).await }?;
@@ -4900,8 +4927,12 @@ pub(crate) async fn kernel_interface(world: &World, instance: &crate::generics::
     {
         return Ok(false);
     }
-    for param in instance.parameters(world) {
-        let param=unsafe { world.call(param).await }?;
+    for parameter in parameters {
+        let param = match parameter {
+            ScopeParameter::Declaration(instance, parameter) =>
+                Cow::Owned(unsafe { world.call(instance.parameter(world, parameter)).await }?),
+            ScopeParameter::Bound(parameter) => Cow::Borrowed(parameter),
+        };
         if param.ty.dataset {
             if param.access == Access::Value {
                 return Ok(false);
@@ -4915,10 +4946,12 @@ pub(crate) async fn kernel_interface(world: &World, instance: &crate::generics::
                 return Ok(false);
             }
         }
+        if let Cow::Owned(param) = param {
+            retain(param);
+        }
     }
     Ok(true)
 }
-
 
 
 

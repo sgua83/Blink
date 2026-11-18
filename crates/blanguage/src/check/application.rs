@@ -3221,7 +3221,7 @@ impl Builder<'_> {
         for value in &data {
             self.application_handle_available(value.root.identity(), span, &[],&self.path)?;
         }
-        let interface = unsafe { self.world.call(self.prepare_domain(input, target, element_inputs)).await }?;
+        let interface = unsafe { self.world.call(self.prepare_domain(input, target, element_inputs, &bound_parameters)).await }?;
         for &(left, right) in &interface.length_requirements {
             if !self.lengths_equal(&data[left].length, &data[right].length) {
                 return self.fail(span, "B226", "整域调用前未证明same_length数据集长度关系");
@@ -3290,7 +3290,7 @@ impl Builder<'_> {
         let mut data_arguments = data.iter();
         let mut uniforms = uniforms.into_iter();
         let mut textures = textures.into_iter();
-        for parameter in &bound_parameters {
+        for parameter in bound_parameters.iter() {
             if parameter.ty.dataset {
                 let value = data_arguments.next().unwrap();
                 physical.push(self.application_domain_argument(value));
