@@ -545,7 +545,8 @@ impl Builder<'_> {
                     let mut owned=Vec::new();
                     for(parameter,arg)in instance.parameters(self.world).zip(&syntax){
                         let parameter=unsafe { self.world.call(parameter).await }?;
-                        if unsafe { self.world.call(cooperative::parameter_type(self.world,&parameter,(&instance.definition.source,&instance.definition.module,&instance.definition.imports,instance.definition.function.kind()),self.program.target)).await }?.owns_resources(){owned.push(arg);}
+                        // Texture descriptors are borrowed resources, not ordinary owning values.
+                        if !parameter.ty.is_texture_resource() && unsafe { self.world.call(cooperative::parameter_type(self.world,&parameter,(&instance.definition.source,&instance.definition.module,&instance.definition.imports,instance.definition.function.kind()),self.program.target)).await }?.owns_resources(){owned.push(arg);}
                     }
                     normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),place,..}
                         if origin.same_node(&call)&&!owned.iter().chain(local.iter()).any(|arg|arg.same_node(place))));
