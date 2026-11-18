@@ -384,13 +384,18 @@ pub(crate) fn compile_world(
             Job::Instance(instance, retained) => {
                 let name = &instance.name;
                 let d = &instance.definition;
-                if d.execution == execution::Requirement::Domain
-                    && (d.function.target() != Target::Cpu || unsafe { world.call(check::kernel_interface(world, &instance)).await }?)
-                {
+                let domain = d.execution == execution::Requirement::Domain;
+                let cpu_domain = domain && d.function.target() == Target::Cpu;
+                let signature = if cpu_domain {
+                    unsafe { world.call(check::kernel_signature(world, &instance)).await }?
+                } else {
+                    None
+                };
+                if domain && (!cpu_domain || signature.is_some()) {
                     if for_application {
-                        unsafe { world.call(check::check_domain(world, &instance)).await }.map_err(|error| instance_error(error, name))?;
+                        unsafe { world.call(check::check_domain(world, &instance, signature.as_deref())).await }.map_err(|error| instance_error(error, name))?;
                     } else {
-                        let mut program = unsafe { world.call(check::compile_program(world, &instance)).await }.map_err(|error| instance_error(error, name))?;
+                        let mut program = unsafe { world.call(check::compile_program(world, &instance, signature.as_deref())).await }.map_err(|error| instance_error(error, name))?;
                         if retained {
                             optimize::optimize(&mut program, &world.worker).map_err(|error| crate::compiler::diagnostic(&d.source.path, error))?;
                             programs.push(program);
@@ -414,7 +419,7 @@ pub(crate) fn compile_world(
                 if matches!(kind, EntryKind::Application) {
                     return unsafe { world.call(check::compile_application(world, &instance)).await }.map(Output::Application);
                 }
-                let mut program = unsafe { world.call(check::compile_program(world, &instance)).await }.map_err(|error| instance_error(error, &instance.name))?;
+                let mut program = unsafe { world.call(check::compile_program(world, &instance, None)).await }.map_err(|error| instance_error(error, &instance.name))?;
                 optimize::optimize(&mut program, &world.worker).map_err(|error| crate::compiler::diagnostic(&definition.source.path, error))?;
                 programs.push(program);
             }

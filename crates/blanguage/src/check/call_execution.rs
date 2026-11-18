@@ -75,14 +75,21 @@ fn keep_position(position:&Position,scopes:&BTreeSet<usize>)->bool{
 impl<'a> Builder<'a>{
  pub(super) async fn invoke_returned(&mut self,instance:crate::generics::Instance,args:Vec<Argument>,span:Span,generated_origin:Option<Arc<GeneratedOrigin>>,syntax:Option<&Expressions>)->Result<Option<Returned>>{
   let mut cursor=unsafe{b_invoke_start()};
+  let mut signature = None;
   let mut facts=InvokeFacts{external:u32::from(instance.definition.function.external().is_some()),compiled:u32::from(instance.definition.compiled.is_some()),domain:u32::from(instance.definition.execution==crate::execution::Requirement::Domain),
    application:u32::from(self.application.is_some()),entry:u32::from(self.application_entry()),target:target(self.program.target),callee_target:target(instance.definition.function.target()),kind:kind(instance.definition.function.kind()),kernel:0};
   loop{match unsafe{b_invoke_step(&mut cursor,facts)}{
    InvokeNeed::External=>return unsafe{self.world.call(self.external_call(&instance,args,span,generated_origin)).await}.map(|v|v.map(Returned::value)),
    InvokeNeed::InvalidCompiledTarget=>return self.fail(span,"B161","已编译普通CPU模块调用需要CPU执行目标"),
    InvokeNeed::Native=>return unsafe{self.world.call(self.native_function(instance,args,span,generated_origin,syntax,None)).await},
-   InvokeNeed::Kernel=>{facts.kernel=u32::from(unsafe{self.world.call(super::kernel_interface(self.world,&instance)).await}?);}
-   InvokeNeed::Domain=>return unsafe{self.world.call(self.application_execute(DomainInput::Declaration(&instance),args,Target::Cpu,span,&[])).await},
+   InvokeNeed::Kernel => {
+    signature = unsafe { self.world.call(super::kernel_signature(self.world, &instance)).await }?;
+    facts.kernel = u32::from(signature.is_some());
+   }
+   InvokeNeed::Domain => {
+    let input = DomainInput::Declaration { instance: &instance, signature: signature.as_deref() };
+    return unsafe { self.world.call(self.application_execute(input, args, Target::Cpu, span, &[])).await };
+   }
    InvokeNeed::InvalidDomain=>return self.fail(span,"B159","整域执行需要发起位置，不能由元素实例或协作成员发起"),
    InvokeNeed::InvalidCooperative=>return self.fail(span,"B208","cooperative 函数需要显式 cooperate 根块调用"),
    InvokeNeed::InvalidConstant=>return self.fail(span,"B234","const 通过名称读取，不能作为函数调用"),

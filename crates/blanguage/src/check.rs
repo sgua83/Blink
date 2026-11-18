@@ -383,14 +383,14 @@ struct ExpandedDomain {
 pub(crate) async fn compile_program(
     world: &World,
     instance: &crate::generics::Instance,
+    signature: Option<&[Param]>,
 ) -> Result<Program> {
-    let input = DomainInput::Declaration(instance);
-    let mut parameters = Vec::new();
-    if !unsafe {
-        world.call(kernel_parameters(world, instance, declared_kernel_parameters(instance), |param| parameters.push(param))).await
-    }? {
-        return Err(invalid_kernel_interface(input));
-    }
+    let input = DomainInput::Declaration { instance, signature };
+    let parameters = match signature {
+        Some(parameters) => Cow::Borrowed(parameters),
+        None => Cow::Owned(unsafe { world.call(kernel_signature(world, instance)).await }?
+            .ok_or_else(|| invalid_kernel_interface(input))?),
+    };
     let mut functions = native_function::Module::default();
     let (expanded, _) = unsafe { world.call(expand_domain(world, input, &parameters, &mut functions, &[])).await }?;
     if !expanded.calls.is_empty() {
@@ -404,7 +404,10 @@ pub(crate) async fn compile_program(
 }
 #[derive(Clone, Copy)]
 enum DomainInput<'a> {
-    Declaration(&'a crate::generics::Instance),
+    Declaration {
+        instance: &'a crate::generics::Instance,
+        signature: Option<&'a [Param]>,
+    },
     Parallel {
         owner: &'a crate::generics::Instance,
         name: &'a str,
@@ -419,20 +422,21 @@ enum DomainInput<'a> {
 }
 impl<'a> DomainInput<'a> {
     fn owner(self)->&'a crate::generics::Instance {
-        match self {Self::Declaration(instance)|Self::Parallel{owner:instance,..}=>instance}
+        match self {Self::Declaration { instance, .. }|Self::Parallel{owner:instance,..}=>instance}
     }
     fn name(self)->&'a str {
-        match self {Self::Declaration(instance)=>&instance.name,Self::Parallel{name,..}=>name}
+        match self {Self::Declaration { instance, .. }=>&instance.name,Self::Parallel{name,..}=>name}
     }
     fn span(self)->Span {
-        match self {Self::Declaration(instance)=>instance.definition.function.span(),Self::Parallel{statement,..}=>statement.span()}
+        match self {Self::Declaration { instance, .. }=>instance.definition.function.span(),Self::Parallel{statement,..}=>statement.span()}
     }
     fn target(self)->Target {
-        match self {Self::Declaration(instance)=>instance.definition.function.target(),Self::Parallel{..}=>Target::Cpu}
+        match self {Self::Declaration { instance, .. }=>instance.definition.function.target(),Self::Parallel{..}=>Target::Cpu}
     }
     async fn parameters(self, world: &World) -> Result<Cow<'a, [Param]>> {
         match self {
-            Self::Declaration(instance) => {
+            Self::Declaration { signature: Some(parameters), .. } => Ok(Cow::Borrowed(parameters)),
+            Self::Declaration { instance, signature: None } => {
                 let mut parameters = Vec::new();
                 for parameter in instance.parameters(world) {
                     parameters.push(unsafe { world.call(parameter).await }?);
@@ -444,16 +448,16 @@ impl<'a> DomainInput<'a> {
     }
     fn contracts(self) -> Cow<'a, [FunctionContract]> {
         match self {
-            Self::Declaration(instance) => Cow::Owned(instance.contracts().collect()),
+            Self::Declaration { instance, .. } => Cow::Owned(instance.contracts().collect()),
             Self::Parallel { contracts, .. } => Cow::Borrowed(contracts),
         }
     }
     fn source_origin(self)->Option<SourceOrigin> {
-        match self {Self::Declaration(instance)=>instance.definition.source_origin(),Self::Parallel{..}=>None}
+        match self {Self::Declaration { instance, .. }=>instance.definition.source_origin(),Self::Parallel{..}=>None}
     }
     fn syntax_context(self)->(Option<Arc<SourceOrigin>>,Arc<SourceContext>) {
         match self {
-            Self::Declaration(instance)=>instance.definition.syntax_context(Some(&instance.name)),
+            Self::Declaration { instance, .. }=>instance.definition.syntax_context(Some(&instance.name)),
             Self::Parallel{site:Some(site),..}=>(Some(site.origin.clone()),site.context.clone()),
             Self::Parallel{site:None,..}=>(None,Arc::new(SourceContext{instance:None,inlined_at:Box::default(),domain_path:Arc::from([])})),
         }
@@ -609,7 +613,7 @@ async fn expand_domain<'a>(
     let path=input.syntax_context().1.domain_path.clone();
     let mut scopes = BTreeMap::new();
     match input {
-        DomainInput::Declaration(instance)=>unsafe { world.call(expand_program(
+        DomainInput::Declaration { instance, .. }=>unsafe { world.call(expand_program(
             world,instance,&mut env,&mut program,&mut Vec::new(),&mut false,&mut facts,&mut calls,path,functions,&mut scopes)).await }?,
         DomainInput::Parallel{statement,..}=>{
             unsafe { world.call(expand_stages(world,input,std::iter::once(statement.clone()),&mut env,&mut program,
@@ -643,7 +647,7 @@ async fn expand_program(
     stack.push(key);
     unsafe { world.call(expand_stages(
         world,
-        DomainInput::Declaration(instance),
+        DomainInput::Declaration { instance, signature: None },
         d.function.body().as_ref().ok_or_else(|| Diagnostic {
             source: d.source.clone(), span: d.function.span(), code: "B270",
             message: "已编译整域入口没有可展开的实现体；CPU应用或CPU包装函数沿原生入口调用，域内部的已编译域组合尚未实现".into(),
@@ -2007,7 +2011,7 @@ impl<'a> Builder<'a> {
     }
     async fn domain(world:&'a World,input:DomainInput<'_>,program:&'a Program,domain_index:usize)->Result<Self> {
         match input {
-            DomainInput::Declaration(instance)=>unsafe { world.call(Self::new(world,instance,program,domain_index,Some(&instance.name))).await },
+            DomainInput::Declaration { instance, .. }=>unsafe { world.call(Self::new(world,instance,program,domain_index,Some(&instance.name))).await },
             DomainInput::Parallel{owner,parameters,statement,element,domain,body,site,..}=>{
                 let scope=LexicalScope::Parallel{owner:owner.clone(),parameters:(*parameters).clone(),statement:statement.clone(),site:(*site).clone()};
                 let mut mutable_names=BTreeSet::new();
@@ -4904,6 +4908,17 @@ pub(crate) fn kernel_interface<'a>(
     instance: &'a crate::generics::Instance,
 ) -> impl std::future::Future<Output = Result<bool>> + 'a {
     kernel_parameters(world, instance, declared_kernel_parameters(instance), |_| {})
+}
+
+pub(crate) async fn kernel_signature(
+    world: &World,
+    instance: &crate::generics::Instance,
+) -> Result<Option<Vec<Param>>> {
+    let mut parameters = Vec::new();
+    let eligible = unsafe {
+        world.call(kernel_parameters(world, instance, declared_kernel_parameters(instance), |param| parameters.push(param))).await
+    }?;
+    Ok(eligible.then_some(parameters))
 }
 
 fn declared_kernel_parameters(instance: &crate::generics::Instance) -> impl Iterator<Item = ScopeParameter<'_>> {

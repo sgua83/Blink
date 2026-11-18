@@ -3151,7 +3151,8 @@ impl Builder<'_> {
             None=>None,
         };
         let instance = unsafe { self.world.call(self.specialized_arguments(key, &arguments, explicit.as_deref(), span)).await }?;
-        unsafe { self.world.call(self.application_execute(DomainInput::Declaration(&instance), arguments, target, span, &[])).await }
+        let input = DomainInput::Declaration { instance: &instance, signature: None };
+        unsafe { self.world.call(self.application_execute(input, arguments, target, span, &[])).await }
     }
     pub(super) async fn application_execute(
         &mut self,
