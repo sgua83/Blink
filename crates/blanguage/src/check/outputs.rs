@@ -143,25 +143,25 @@ pub(super) async fn validate(world: &World, instance: &crate::generics::Instance
                 param.span,&definition.module,&definition.imports)).await }?)
         } else { ty });
     }
-    let result = unsafe { world.call(instance.bindings.type_name(world,&definition.function.result(),
+    let result_name = unsafe { world.call(instance.bindings.type_name(world,&definition.function.result(),
         (&definition.source,&definition.module,&definition.imports),definition.function.span())).await }?;
-    let result = if result.name == "void" || result.is_never() { None } else {
-        let ty = unsafe { world.call(world.ty(&result, &definition.source, definition.function.span(),
+    let result = if result_name.name == "void" || result_name.is_never() { None } else {
+        let ty = unsafe { world.call(world.ty(&result_name, &definition.source, definition.function.span(),
             &definition.module, &definition.imports)).await }?;
-        Some(if result.dataset {
-            Ty::owned_dataset((ty).syntax(), unsafe { world.call(world.shape(&result.count, &definition.source,
+        Some(if result_name.dataset {
+            Ty::owned_dataset(ty.syntax(), unsafe { world.call(world.shape(&result_name.count, &definition.source,
                 definition.function.span(), &definition.module, &definition.imports)).await }?)
         } else { ty })
     };
-    unsafe { world.call(validate_named(world, instance, &parameters, result.as_ref())).await }
+    unsafe { world.call(validate_named(world, instance, |index| &parameters[index], &result_name, result.as_ref())).await }
 }
-pub(super) async fn validate_named(world: &World, instance: &crate::generics::Instance,
-    parameters: &[Ty], returned: Option<&Ty>,
+pub(super) async fn validate_named<'a>(world: &World, instance: &crate::generics::Instance,
+    parameter_type: impl Fn(usize) -> &'a Ty, result_name: &TypeName, returned: Option<&Ty>,
 ) -> Result<()> {
     let definition=&instance.definition;
     let input = |name: &str| definition.function.params().iter().enumerate()
         .find(|(_, param)| param.name() == name)
-        .map(|(index, param)| (param.access(), parameters[index].clone()));
+        .map(|(index, param)| (param.access(), parameter_type(index).clone()));
     for contract in instance.contracts() {
         if definition.function.c_abi() && contract.kind == ContractKind::Requires
             && let ContractPredicate::Nonzero(path) = &contract.predicate {
@@ -172,8 +172,7 @@ pub(super) async fn validate_named(world: &World, instance: &crate::generics::In
         if contract.kind != ContractKind::Ensures || definition.function.kind() != FunctionKind::Value {
             return definition.source.fail(contract.span, "B225", "initialized 是普通函数的 ensures 输出合同");
         }
-        let condition = unsafe { world.call(normalize(world, instance.into(), &unsafe { world.call(instance.bindings.type_name(world,&definition.function.result(),
-            (&definition.source,&definition.module,&definition.imports),definition.function.span())).await }?, condition, contract.span)).await }?;
+        let condition = unsafe { world.call(normalize(world, instance.into(), result_name, condition, contract.span)).await }?;
         unsafe { world.call(validate_output(world,value, &condition, &input, returned, &definition.source, contract.span)).await }?;
     }
     Ok(())

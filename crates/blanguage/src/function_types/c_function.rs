@@ -1,7 +1,7 @@
 //! B selects nominal C signatures and classifies actual physical layouts.
 //! World children execute outside native stepping; actual containers stay here.
 use crate::{ast::*,ir::{CFunctionType,CallParameter,Ty},Source,World,Diagnostic,Result};
-use std::{collections::BTreeSet,ffi::c_void,ptr};
+use std::{borrow::Cow, collections::BTreeSet, ffi::c_void, ptr};
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -41,9 +41,25 @@ struct BindingHost {
     fail:unsafe extern "C" fn(*mut c_void,Problem),
 }
 #[repr(u32)]
-enum SignatureNeed {Done,Parameter,Result}
+enum SignatureNeed {Done,Parameter,Result,ResultName}
 #[repr(C)]
-struct ResultShape {name:Text,arguments:u64,wrappers:u32,decorations:u32}
+#[derive(Clone, Copy)]
+struct ResultShape {
+    name: Text,
+    arguments: u64,
+    wrappers: u32,
+    decorations: u32,
+    declaration: u32,
+}
+impl ResultShape {
+    fn of(name: &TypeName, declaration: bool) -> Self {
+        let source = Type::of(name);
+        Self {
+            name: source.name, arguments: source.arguments, wrappers: source.wrappers,
+            decorations: source.decorations, declaration: u32::from(declaration),
+        }
+    }
+}
 #[repr(C)]
 struct SignatureCursor {count:u64,index:u64,layout:Layout,access:Access,stage:u32,never:u32}
 #[repr(C)]
@@ -73,6 +89,12 @@ impl Context<'_> {
     }
     async fn layout(&self,input:&TypeName)->Result<Ty> {
         unsafe { self.world.call(self.world.ty_inner(input,self.source,self.span,self.module,self.imports,&mut BTreeSet::new())).await }
+    }
+    async fn declared_layout(&self, input: &TypeName) -> Result<Ty> {
+        if input.dataset || input.tile || input.is_acceleration() || input.is_texture_resource() {
+            return self.source.fail(self.span, "B263", "extern C 参数与结果需要普通C签名，不能传递dataset、tile或设备资源");
+        }
+        unsafe { self.world.call(self.world.ty(input, self.source, self.span, self.module, self.imports)).await }
     }
     fn error(&self,problem:Problem)->Diagnostic {
         let(code,message)=match problem {
@@ -141,33 +163,153 @@ pub(super) async fn declaration(world:&World,result:TypeName,parameters:Vec<(Acc
     drop(result);
     output
 }
-struct Signature<'a> {context:Context<'a>,current:Option<Ty>,parameters:Vec<CallParameter>,result:Option<Ty>,error:Option<Diagnostic>}
+struct Signature<'a> {context:Context<'a>,declaration:bool,current:Option<Ty>,parameters:Vec<CallParameter>,result:Option<Ty>,error:Option<Diagnostic>}
 unsafe fn signature_frame<'a>(raw:*mut c_void)->&'a mut Signature<'a> {unsafe{&mut *raw.cast()}}
 unsafe extern "C" fn append_value(raw:*mut c_void) {let f=unsafe{signature_frame(raw)};f.parameters.push(CallParameter::value(f.current.take().unwrap()));}
 unsafe extern "C" fn append_reference(raw:*mut c_void,access:Access) {let f=unsafe{signature_frame(raw)};f.parameters.push(CallParameter::reference(f.current.take().unwrap(),access));}
 unsafe extern "C" fn use_result(raw:*mut c_void) {let f=unsafe{signature_frame(raw)};f.result=f.current.take();}
-unsafe extern "C" fn signature_fail(raw:*mut c_void,problem:Problem) {let f=unsafe{signature_frame(raw)};f.error=Some(f.context.error(problem));}
-pub(super) async fn signature(world:&World,function:&CFunctionType,source:&Source,span:Span,module:&str,imports:&[String])
-    ->Result<(Vec<CallParameter>,Option<Ty>,bool)> {
-    let mut f=Signature{context:Context{world,source,span,module,imports},current:None,parameters:Vec::new(),result:None,error:None};
-    let mut cursor=unsafe{signature_start(function.parameters.len() as u64)};
-    loop {
-        let need=unsafe{signature_step(&mut cursor,ResultShape{name:Text{bytes:function.result.name.as_ptr(),length:function.result.name.len() as u64},
-            arguments:function.result.arguments.len() as u64,wrappers:u32::from(function.result.dataset)|(u32::from(function.result.view)<<1)|(u32::from(function.result.tile)<<2),
-            decorations:u32::from(function.result.count.is_some())|(u32::from(function.result.contracts.is_some())<<1)|(u32::from(function.result.canonical)<<2)},
-            (&mut f as *mut Signature<'_>).cast(),SignatureHost{append_value,append_reference,use_result,fail:signature_fail})};
-        if let Some(error)=f.error.take(){return Err(error);}
-        match need {
-            SignatureNeed::Done=>return Ok((f.parameters,f.result,cursor.never!=0)),
-            SignatureNeed::Parameter=>{
-                let(access,syntax)=&function.parameters[cursor.index as usize];
-                let ty=unsafe{world.call(f.context.layout(syntax)).await}?;
-                cursor.layout=Layout::of(&ty,syntax);cursor.access=*access;f.current=Some(ty);
+unsafe extern "C" fn signature_fail(raw: *mut c_void, problem: Problem) {
+    let f = unsafe { signature_frame(raw) };
+    let message = if f.declaration {
+        match problem {
+            Problem::Resource => Some(("B224", "拥有结果需要Frame所有权协议，不能跨当前普通C ABI")),
+            Problem::EmptyOrView => Some(("B263", "C ABI 需要非空普通值布局，不能传递 Blink 资源引用")),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    f.error = Some(match message {
+        Some((code, message)) => Diagnostic {
+            source: f.context.source.clone(), span: f.context.span, code, message: message.into(),
+        },
+        None => f.context.error(problem),
+    });
+}
+
+#[derive(Clone, Copy)]
+enum SignatureInput<'a> {
+    Declaration(&'a crate::generics::Instance),
+    Indirect(&'a CFunctionType),
+}
+impl<'a> SignatureInput<'a> {
+    fn len(self) -> usize {
+        match self {
+            Self::Declaration(instance) => instance.definition.function.params().len(),
+            Self::Indirect(function) => function.parameters.len(),
+        }
+    }
+
+    async fn parameter(self, context: &mut Context<'a>, index: usize) -> Result<(Access, Cow<'a, TypeName>)> {
+        match self {
+            Self::Declaration(instance) => {
+                let parameter = instance.definition.function.params().at(index);
+                context.span = parameter.span();
+                let name = unsafe { context.world.call(instance.bindings.type_name(
+                    context.world, &parameter.ty(), (context.source, context.module, context.imports), context.span,
+                )).await }?;
+                Ok((parameter.access(), Cow::Owned(name)))
             }
-            SignatureNeed::Result=>{
-                let ty=unsafe{world.call(f.context.layout(&function.result)).await}?;
-                cursor.layout=Layout::of(&ty,&function.result);f.current=Some(ty);
+            Self::Indirect(function) => {
+                let (access, name) = &function.parameters[index];
+                Ok((*access, Cow::Borrowed(name)))
             }
         }
     }
+
+    async fn result_name(self, context: &mut Context<'a>) -> Result<Cow<'a, TypeName>> {
+        match self {
+            Self::Declaration(instance) => {
+                let function = &instance.definition.function;
+                context.span = function.span();
+                let name = unsafe { context.world.call(instance.bindings.type_name(
+                    context.world, &function.result(), (context.source, context.module, context.imports), context.span,
+                )).await }?;
+                Ok(Cow::Owned(name))
+            }
+            Self::Indirect(function) => Ok(Cow::Borrowed(&function.result)),
+        }
+    }
+}
+
+pub(crate) struct CheckedSignature<'a> {
+    pub(crate) parameters: Vec<CallParameter>,
+    pub(crate) result: Option<Ty>,
+    pub(crate) never: bool,
+    pub(crate) result_name: Cow<'a, TypeName>,
+}
+impl CheckedSignature<'_> {
+    pub(crate) fn parameter_type(&self, index: usize) -> &Ty {
+        use crate::ir::CallParameterKind;
+        match &self.parameters[index].kind {
+            CallParameterKind::Value(ty) | CallParameterKind::Reference {ty, ..} => ty,
+        }
+    }
+}
+async fn drive_signature<'a>(input: SignatureInput<'a>, context: Context<'a>) -> Result<CheckedSignature<'a>> {
+    let declaration = matches!(input, SignatureInput::Declaration(_));
+    let mut f = Signature {
+        context, declaration, current: None, parameters: Vec::new(), result: None, error: None,
+    };
+    let mut cursor = unsafe { signature_start(input.len() as u64) };
+    let mut result_name = None;
+    let mut result_shape = ResultShape {
+        name: Text {bytes: ptr::null(), length: 0}, arguments: 0, wrappers: 0, decorations: 0,
+        declaration: u32::from(declaration),
+    };
+    loop {
+        let need = unsafe { signature_step(
+            &mut cursor, result_shape, (&mut f as *mut Signature<'_>).cast(),
+            SignatureHost {append_value, append_reference, use_result, fail: signature_fail},
+        ) };
+        if let Some(error) = f.error.take() {
+            return Err(error);
+        }
+        match need {
+            SignatureNeed::Done => return Ok(CheckedSignature {
+                parameters: f.parameters, result: f.result, never: cursor.never != 0,
+                result_name: result_name.unwrap(),
+            }),
+            SignatureNeed::ResultName => {
+                let name = unsafe { context.world.call(input.result_name(&mut f.context)).await }?;
+                result_shape = ResultShape::of(&name, declaration);
+                result_name = Some(name);
+            }
+            SignatureNeed::Parameter | SignatureNeed::Result => {
+                let syntax = match need {
+                    SignatureNeed::Parameter => {
+                        let (access, syntax) = unsafe { context.world.call(
+                            input.parameter(&mut f.context, cursor.index as usize),
+                        ).await }?;
+                        cursor.access = access;
+                        syntax
+                    }
+                    _ => Cow::Borrowed(result_name.as_deref().unwrap()),
+                };
+                let ty = if declaration {
+                    unsafe { context.world.call(f.context.declared_layout(&syntax)).await }?
+                } else {
+                    unsafe { context.world.call(f.context.layout(&syntax)).await }?
+                };
+                cursor.layout = Layout::of(&ty, &syntax);
+                f.current = Some(ty);
+            }
+        }
+    }
+}
+
+pub(crate) async fn named_signature<'a>(world: &'a World, instance: &'a crate::generics::Instance)
+    -> Result<CheckedSignature<'a>> {
+    let d = &instance.definition;
+    let context = Context {
+        world, source: &d.source, span: d.function.span(), module: &d.module, imports: &d.imports,
+    };
+    unsafe { world.call(drive_signature(SignatureInput::Declaration(instance), context)).await }
+}
+
+pub(super) async fn signature(world: &World, function: &CFunctionType, source: &Source,
+    span: Span, module: &str, imports: &[String]) -> Result<(Vec<CallParameter>, Option<Ty>, bool)> {
+    let context = Context {world, source, span, module, imports};
+    let signature = unsafe { world.call(drive_signature(SignatureInput::Indirect(function), context)).await }?;
+    Ok((signature.parameters, signature.result, signature.never))
 }

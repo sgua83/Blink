@@ -14,8 +14,8 @@ struct BindingHost {
     cfn<Parameter,address,u64> parameter;
     cfn<void,address,Problem> fail;
 };
-enum SignatureNeed:u32 { Done=0; Parameter=1; Result=2; };
-struct ResultShape { Text name; u64 arguments; u32 wrappers; u32 decorations; };
+enum SignatureNeed:u32 { Done=0; Parameter=1; Result=2; ResultName=3; };
+struct ResultShape { Text name; u64 arguments; u32 wrappers; u32 decorations; u32 declaration; };
 struct SignatureCursor { u64 count; u64 index; Layout layout; Access access; u32 stage; u32 never; };
 struct SignatureHost {
     cfn<void,address> append_value;

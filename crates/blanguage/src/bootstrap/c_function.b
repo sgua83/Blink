@@ -96,12 +96,15 @@ extern "C" SignatureNeed signature_step(address state,ResultShape result,address
         host.use_result(context);
         return give_signature(state,cursor,SignatureNeed::Done);
     }
-    if(cursor.index<cursor.count){
-        cursor.stage=1;return give_signature(state,cursor,SignatureNeed::Parameter);
+    if(cursor.stage==0){
+        if(cursor.index<cursor.count){
+            cursor.stage=1;return give_signature(state,cursor,SignatureNeed::Parameter);
+        }
+        cursor.stage=2;return give_signature(state,cursor,SignatureNeed::ResultName);
     }
     bool plain=result.arguments==0u64&&result.wrappers==0;
     bool never=plain&&(result.decorations&3)==0&&word(result.name,"never");
-    bool empty=plain&&result.decorations==0&&word(result.name,"void");
+    bool empty=(result.declaration!=0||(plain&&result.decorations==0))&&word(result.name,"void");
     cursor.never=never?1:0;
     if(!never&&!empty){cursor.stage=3;return give_signature(state,cursor,SignatureNeed::Result);}
     return give_signature(state,cursor,SignatureNeed::Done);

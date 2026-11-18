@@ -1,5 +1,6 @@
 //! B选择并绑定C函数签名；名义引用与实际C布局沿原World和原容器交接。
 mod c_function;
+pub(crate) use c_function::named_signature;
 use crate::{ast::*, ir::{CFunctionType, CallParameter, Scalar, Ty}, Source, World};
 
 impl World {

@@ -2,38 +2,11 @@
 use super::*;
 use cooperative::Argument;
 
-async fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Result<Ty> {
-    if ty.dataset || ty.tile || ty.is_acceleration() || ty.is_texture_resource() {
-        return d.source.fail(span,"B263","extern C 参数与结果需要普通C签名，不能传递dataset、tile或设备资源");
-    }
-    let ty = unsafe { world.call(world.ty(ty, &d.source, span, &d.module, &d.imports)).await }?;
-    if ty.owns_resources() {
-        return d.source.fail(
-            span,
-            "B224",
-            "拥有结果需要Frame所有权协议，不能跨当前普通C ABI",
-        );
-    }
-    if ty.contains_views() || ty.components.is_empty() {
-        return d.source.fail(
-            span,
-            "B263",
-            "C ABI 需要非空普通值布局，不能传递 Blink 资源引用",
-        );
-    }
-    Ok(ty)
-}
 pub(crate) async fn check_declaration(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    let d=&instance.definition;
-    let mut parameters=Vec::new();
-    for param in d.function.params().iter() {
-        let ty=unsafe { world.call(instance.bindings.type_name(world,&param.ty(),(&d.source,&d.module,&d.imports),param.span())).await }?;
-        parameters.push(unsafe { world.call(value_type(world,d,&ty,param.span())).await }?);
-    }
-    let result_name=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())).await }?;
-    let result=if result_name.name=="void"||result_name.is_never(){None}
-        else{Some(unsafe { world.call(value_type(world,d,&result_name,d.function.span())).await }?)};
-    unsafe { world.call(outputs::validate_named(world,instance,&parameters,result.as_ref())).await }
+    let signature = unsafe { world.call(crate::function_types::named_signature(world, instance)).await }?;
+    unsafe { world.call(outputs::validate_named(
+        world, instance, |index| signature.parameter_type(index), &signature.result_name, signature.result.as_ref(),
+    )).await }
 }
 
 impl Builder<'_> {
@@ -245,21 +218,16 @@ impl Builder<'_> {
     }
     #[inline(never)]
     pub(super) async fn external_call(&mut self, instance: &crate::generics::Instance, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
-        let d=&instance.definition;
-        let mut parameters=Vec::new();
-        for param in d.function.params().iter() {
-            let name=unsafe { self.world.call(instance.bindings.type_name(self.world,&param.ty(),
-                (&d.source,&d.module,&d.imports),param.span())).await }?;
-            let ty=unsafe { self.world.call(value_type(self.world,d,&name,param.span())).await }?;
-            parameters.push(if param.access()==Access::Value {CallParameter::value(ty)}
-                else {CallParameter::reference(ty,param.access())});
-        }
-        let result_name=unsafe { self.world.call(instance.bindings.type_name(self.world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())).await }?;
-        let result = if result_name.name == "void" || result_name.is_never() { None }
-            else { Some(unsafe { self.world.call(value_type(self.world, d, &result_name, d.function.span())).await }?) };
-        unsafe { self.world.call(self.c_call(CallTarget::External({let name=d.function.external().unwrap();ExternalName{library:name.library().into(),symbol:name.symbol().into()}}), &parameters, args, result,
-            result_name.is_never(), Some(instance.into()), span, generated_origin)).await }
+        let d = &instance.definition;
+        let signature = unsafe { self.world.call(crate::function_types::named_signature(self.world, instance)).await }?;
+        let name = d.function.external().unwrap();
+        let target = CallTarget::External(ExternalName {library: name.library().into(), symbol: name.symbol().into()});
+        unsafe { self.world.call(self.c_call(
+            target, &signature.parameters, args, signature.result, signature.never,
+            Some(instance.into()), span, generated_origin,
+        )).await }
     }
+
     pub(super) async fn function_value_call(&mut self, callee_span: Span, args: &Expressions, span: Span,
         lower: impl std::ops::AsyncFnOnce(&mut Self) -> Result<Option<Value>>) -> Result<Option<returns::Returned>> {
         unsafe { self.world.call(self.function_value_arguments(callee_span,span,lower,async |builder,parameters|
