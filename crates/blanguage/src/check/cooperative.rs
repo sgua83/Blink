@@ -18,82 +18,7 @@ impl Argument {
     pub(super) fn resource(value:returns::Returned)->Self {
         match value {returns::Returned::Dataset(data)=>Self::ApplicationData(data),returns::Returned::OwnedValue(value)=>Self::OwnedValue(value),returns::Returned::Value(value)=>Self::Value(*value),returns::Returned::Unit=>unreachable!()}
     }
-    fn overlaps(&self, other: &Self,builder:&Builder<'_>) -> bool {
-        let env=&builder.env;
-        let stage_region=|argument:&Self|match argument {
-            Self::Dataset(view)=>{
-                let (field,ty)=builder.dataset_layout(view);
-                Some((view.binding,ty.components.iter().map(|(scalar,word)|(field+word,field+word+scalar.size())).collect::<Vec<_>>()))
-            },
-            Self::Reference(OwnedBinding{place,..})|Self::Atomic(place)|Self::OwnedReference{place,..}=>match place.storage(){
-                Place::Element{binding,ty,words,..}=>Some((*binding,ty.components.iter().zip(words).map(|((scalar,_),word)|(*word,*word+scalar.size())).collect())),
-                _=>None,
-            },
-            _=>None,
-        };
-        if (matches!(self,Self::Dataset(_))||matches!(other,Self::Dataset(_)))
-            && let(Some((a,words)),Some((b,other)))=(stage_region(self),stage_region(other)){
-            return a==b&&words.iter().any(|(start,end)|other.iter().any(|(other_start,other_end)|start<other_end&&other_start<end));
-        }
-        let place=|argument:&Self|match argument {
-            Self::Reference(owner)=>Some(owner.place.clone()),Self::Atomic(place)=>Some(place.clone()),
-            Self::OwnedValue(value)=>value.place(),
-            Self::OwnedReference{place,..}=>Some(place.clone()),
-            Self::Scoped{owner,..}=>match env.get(owner){Some(Binding::OwnedValue(value))=>value.place(),Some(Binding::Owned(value))=>Some(value.place.clone()),_=>None},_=>None,
-        };
-        if matches!(self,Self::Reference(_)|Self::Atomic(_)|Self::OwnedReference{..})||matches!(other,Self::Reference(_)|Self::Atomic(_)|Self::OwnedReference{..}) {
-            if let(Some(a),Some(b))=(place(self),place(other)) && a.overlaps(&b){return true;}
-        }
-        if let (Self::Reference(OwnedBinding{place:a,..}) | Self::Atomic(a), Self::Reference(OwnedBinding{place:b,..}) | Self::Atomic(b)) =
-            (self, other)
-        {
-            return a.overlaps(b);
-        }
-        let region=|argument:&Self|match argument {
-            Self::BorrowedData(data)=>Some((data.sources.clone(),data.words())),
-            Self::Reference(OwnedBinding{place,..})|Self::Atomic(place)|Self::OwnedReference{place,..}=>match place.storage(){
-                Place::ApplicationElement{sources,words,..}=>Some((sources.clone(),words.clone())),
-                _=>None,
-            },
-            _=>None,
-        };
-        if let(Some((a,words)),Some((b,other)))=(region(self),region(other)){
-            return a.iter().any(|source|b.contains(source))&&words.iter().any(|word|other.contains(word));
-        }
-        let owners=|borrow:view::Borrow|borrow.owners().sources.into_iter().filter_map(|source|if let view::Source::Data(id)=source{Some(id)}else{None}).collect::<Vec<_>>();
-        let handles = |arg: &Self| match arg {
-            Self::BorrowedData(reference) => {
-                let mut handles=reference.sources.clone();
-                handles.extend(owners(view::resource_borrow(&reference.data)));handles
-            },
-            Self::ApplicationData(d) => vec![d.root.identity()],
-            Self::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>vec![data.root.identity()],returns::Returned::OwnedValue(value)=>value.handles(),returns::Returned::Value(v)=>owners(v.proof.typed_view_borrow(&v.ty)),_=>Vec::new()},
-            Self::OwnedValue(r) => r.handles(),
-            Self::OwnedReference{value,place,..} => {
-                let mut handles=value.handles();
-                if let Place::ApplicationElement{sources,resource,..}=place.storage(){
-                    handles.extend(sources);handles.extend(owners(resource.clone()));
-                }
-                handles
-            },
-            Self::Value(v) => owners(v.proof.typed_view_borrow(&v.ty)),
-            Self::Reference(owner) => {
-                let mut handles=owners(owner.proof.typed_view_borrow(owner.place.ty()));
-                if let Place::ApplicationElement{sources,resource,..}=owner.place.storage(){handles.extend(sources);handles.extend(owners(resource.clone()));}
-                handles
-            },
-            Self::Atomic(p) => match p.storage() {
-                Place::ApplicationElement { sources,resource,.. } => {
-                    let mut handles=sources.clone();handles.extend(owners(resource.clone()));handles
-                },
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
-        };
-        let a = handles(self);
-        let b = handles(other);
-        a.iter().any(|h| b.contains(h))
-    }
+
 }
 pub(super) async fn parameter_type(world: &World, param: &Param, context: (&Source,&str,&[String],FunctionKind), target: Target) -> Result<Ty> {
     let(source,module,imports,kind)=context;
@@ -358,30 +283,8 @@ if form==DeclaredArgumentForm::Acceleration {
         Ok(Some(arguments))
     }
     pub(super) fn check_argument_aliases(&self, parameter: impl Fn(usize)->(Access,bool), arguments: &[Argument], span: impl Fn(usize) -> Span) -> Result<()> {
-        for (index, argument) in arguments.iter().enumerate()
-        {
-            let (access,dataset)=parameter(index);
-            for (other_index,before) in arguments.iter().take(index).enumerate() {
-                let (other_access,other_dataset)=parameter(other_index);
-                if (matches!(access, Access::Write | Access::InOut)
-                    || matches!(other_access, Access::Write | Access::InOut)
-                    || (dataset && access == Access::Value)
-                    || (other_dataset && other_access == Access::Value)
-                    || (dataset
-                        && other_dataset
-                        && ((access == Access::Atomic && other_access != Access::Atomic)
-                            || (other_access == Access::Atomic && access != Access::Atomic)))
-                    || (access==Access::Value && matches!(argument, Argument::OwnedValue(_)))
-                    || (other_access==Access::Value && matches!(before, Argument::OwnedValue(_))))
-                    && argument.overlaps(before,self)
-                {
-                    return self.fail(
-                        span(index),
-                        "B227",
-                        "同一次调用的独占借用不能重叠，也不能与同一存储的只读或原子借用重叠",
-                    );
-                }
-            }
+        if let Some(index)=call_aliases::conflict(self,parameter,arguments){
+            return self.fail(span(index),"B227","同一次调用的独占借用不能重叠，也不能与同一存储的只读或原子借用重叠");
         }
         Ok(())
     }

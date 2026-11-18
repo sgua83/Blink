@@ -14,6 +14,7 @@ mod compact;
 mod callback;
 mod constant;
 mod source_call;
+mod call_aliases;
 pub(crate) use constant::evaluate as evaluate_constant;
 pub(crate) use constant::variant_discriminant;
 mod application;
