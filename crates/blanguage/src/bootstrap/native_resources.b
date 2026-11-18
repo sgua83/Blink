@@ -67,3 +67,17 @@ extern "C" void encode(ResourceInput input,ResourceOutput output,ResourcePlan pl
     }
     i=0u64;while(i<input.runtime_count){ResourceRuntime row=runtime_at(input,i);put(output.text,row.value,u8(255));put(output.text,row.value+1u64,u8(37));i+=1u64;}
 }
+
+u8 hex_digit(u8 value) on cpu {
+    if(value<u8(10)){return value+u8(48);}return value+u8(87);
+}
+extern "C" u64 module_prefix(address name,u64 length,address output) on cpu {
+    u64 bytes=7u64+length*2u64;
+    if(address_bits(output)==0u64){return bytes;}
+    literal(output,0u64,30785687480003682u64,7u64);
+    u64 i=0u64;while(i<length){u64 value=u64(byte_at(name,i));
+        put(output,7u64+i*2u64,hex_digit(u8(value>>4u64)));
+        put(output,8u64+i*2u64,hex_digit(u8(value&15u64)));i+=1u64;
+    }
+    return bytes;
+}

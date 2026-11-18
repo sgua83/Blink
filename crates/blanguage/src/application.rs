@@ -81,13 +81,18 @@ impl Application {
     }
 }
 
+unsafe extern "C" {
+    #[link_name = "bootstrap.native_resources::module_prefix"]
+    fn module_resource_prefix(name: *const u8, length: usize, output: *mut u8) -> usize;
+}
 pub(crate) fn resource_prefix(name: &str) -> String {
-    use std::fmt::Write;
-    let mut prefix = String::from("blink_m");
-    for byte in name.bytes() {
-        write!(prefix, "{byte:02x}").unwrap();
+    let length = unsafe { module_resource_prefix(name.as_ptr(), name.len(), std::ptr::null_mut()) };
+    let mut output = Vec::with_capacity(length);
+    unsafe {
+        module_resource_prefix(name.as_ptr(), name.len(), output.as_mut_ptr());
+        output.set_len(length);
+        String::from_utf8_unchecked(output)
     }
-    prefix
 }
 pub(crate) fn bind_tasks(
     module:&str,body:Option<&mut ValueCode>,definitions:&[crate::ir::FunctionBody],

@@ -17,3 +17,4 @@ struct ResourceOutput {address data;address text;};
 struct ResourcePlan {u64 data;u64 text;u64 data_flags;u64 text_flags;u64 error;u64 at;};
 extern "C" ResourcePlan prepare(ResourceInput input) on cpu;
 extern "C" void encode(ResourceInput input,ResourceOutput output,ResourcePlan plan) on cpu;
+extern "C" u64 module_prefix(address name,u64 length,address output) on cpu;
