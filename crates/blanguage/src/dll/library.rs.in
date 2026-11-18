@@ -1,37 +1,43 @@
-#![allow(non_camel_case_types, unused_imports, unused_mut)]
-use blanguage::{ExecutableProgram, native::ProgramImage as NativeProgramImage, spirv::ProgramImage as ShaderProgramImage};
-use blcompute::{cpu::CpuProgram, vulkan::Device};
-use blcompute::ffi::{LibraryProgram, Buffer as FfiBuffer, status};
-use std::ffi::{c_void, c_char};
+#![allow(non_camel_case_types)]
+use core::ffi::{c_char, c_void};
+
+// The source-SDK static archive currently supplies the shared native runtime.
+extern crate blcompute as _;
+
 @TYPES@
+@IMAGE_ABI@
+@BUFFER_ABI@
+unsafe extern "C" {
+    fn blink_library_create(
+        backend: u32, cpu: *const ModuleImage, gpu: *const ModuleImage,
+        factories: *const ModuleFactory, factory_count: usize,
+        out: *mut *mut c_void, error: *mut c_char, capacity: usize,
+    ) -> i32;
+    fn blink_library_run(
+        handle: *mut c_void, buffers: *const LibraryBuffer, uniforms: *const *const c_void,
+        error: *mut c_char, capacity: usize,
+    ) -> i32;
+    fn blink_library_destroy(handle: *mut c_void);
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn @PREFIX@_create(
-    backend: u32, out: *mut *mut LibraryProgram, error: *mut c_char, capacity: usize,
+    backend: u32, out: *mut *mut c_void, error: *mut c_char, capacity: usize,
 ) -> i32 {
-    let result = (|| {
-        if out.is_null() {
-            return Err(std::io::Error::other("null output handle").into());
-        }
-        unsafe { *out = std::ptr::null_mut(); }
-        let handle = @CREATE@;
-        unsafe { *out = Box::into_raw(Box::new(handle)); }
-        Ok(())
-    })();
-    unsafe { status(result, error, capacity) }
+    @IMAGES@
+    unsafe { blink_library_create(backend, cpu, gpu, factories, factory_count, out, error, capacity) }
 }
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn @PREFIX@_run(
-    handle: *mut LibraryProgram@COMMA@@R_PARAMS@, error: *mut c_char, capacity: usize,
+    handle: *mut c_void@COMMA@@R_PARAMS@, error: *mut c_char, capacity: usize,
 ) -> i32 {
-    let result = (|| {
-        let handle = unsafe { handle.as_mut() }
-            .ok_or_else(|| std::io::Error::other("null handle"))?;
-        @VALUES@
-        unsafe { handle.run(&[@BUFFERS@], &values) }
-    })();
-    unsafe { status(result, error, capacity) }
+    let buffers: [LibraryBuffer; @BUFFER_COUNT@] = [@BUFFERS@];
+    let uniforms: [*const c_void; @UNIFORM_COUNT@] = [@UNIFORMS@];
+    unsafe { blink_library_run(handle, buffers.as_ptr(), uniforms.as_ptr(), error, capacity) }
 }
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn @PREFIX@_destroy(handle: *mut LibraryProgram) {
-    if !handle.is_null() { drop(unsafe { Box::from_raw(handle) }); }
+pub unsafe extern "C" fn @PREFIX@_destroy(handle: *mut c_void) {
+    unsafe { blink_library_destroy(handle) }
 }

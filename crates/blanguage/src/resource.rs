@@ -14,6 +14,8 @@ mod program_layout;
 mod execution_plan;
 mod image_codec;
 mod module_image;
+mod library_buffer;
+pub use library_buffer::LibraryBuffer;
 pub use module_image::{ModuleImage, ModuleFactory};
 /// 字段共同保证的闭区间，按原Scalar有序位编码；仅同步借用，不拥有存储。
 #[repr(C)]

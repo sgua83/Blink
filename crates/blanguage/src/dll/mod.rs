@@ -173,7 +173,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     let mut safe_r = Vec::new();
     let mut safe_args = Vec::new();
     let mut buffers = Vec::new();
-    let mut values = String::from("let mut values = Vec::new();\n");
+    let mut uniforms = Vec::new();
     for b in p.buffers() {
         let n = identifier(&b.name)?;
         if let Some(count) = b.count {
@@ -187,7 +187,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
         let data = if b.ty.size == 0 {
             safe_r.push(format!("count_{n}: u32"));
             safe_args.push(format!("count_{n}"));
-            "std::ptr::null_mut()".to_owned()
+            "core::ptr::null_mut()".to_owned()
         } else {
             let t = format!("{prefix}_data_{n}");
             layout(&t, &b.ty, &mut c, &mut types)?;
@@ -213,9 +213,9 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
         cp.push(format!("uint32_t count_{n}"));
         rp.push(format!("count_{n}: u32"));
         args.push(format!("count_{n}"));
-        buffers.push(format!("FfiBuffer {{data: {data}, count: count_{n}}}"));
+        buffers.push(format!("LibraryBuffer {{data: {data}, count: count_{n}}}"));
     }
-    for (i, u) in p.uniforms().iter().enumerate().filter(|(_, u)| u.ty.size != 0) {
+    for u in p.uniforms().iter().filter(|u| u.ty.size != 0) {
         let n = identifier(&u.name)?;
         let t = format!("{prefix}_uniform_{n}");
         layout(&t, &u.ty, &mut c, &mut types)?;
@@ -224,15 +224,12 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
         args.push(format!("param_{n}"));
         safe_r.push(format!("param_{n}: &{t}"));
         safe_args.push(format!("param_{n}"));
-        writeln!(
-            values,
-            "if param_{n}.is_null() {{ return Err(std::io::Error::other(\"null uniform: {n}\").into()); }}\nvalues.extend(unsafe {{ blcompute::ffi::uniform_values(param_{n}.cast(), &handle.program().uniforms()[{i}].ty) }});"
-        )?;
+        uniforms.push(format!("param_{n}.cast()"));
     }
     let c_run = cp.join(", ");
     let r_run = rp.join(", ");
     let comma = if cp.is_empty() { "" } else { ", " };
-    let (constructor, functions, resources) = source::constructor(p, prefix, worker)?;
+    let (images, functions, resources) = source::constructor(p, prefix, worker)?;
     let replacements = [
         ("@PREFIX@", prefix.to_owned()),
         ("@COMMA@", comma.to_owned()),
@@ -242,8 +239,12 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
         ("@SAFE_PARAMS@", safe_r.join(", ")),
         ("@SAFE_ARGS@", safe_args.join(", ")),
         ("@TYPES@", types),
-        ("@CREATE@", constructor),
-        ("@VALUES@", values),
+        ("@IMAGES@", images),
+        ("@IMAGE_ABI@", include_str!("../resource/module_image.rs").to_owned()),
+        ("@BUFFER_ABI@", include_str!("../resource/library_buffer.rs").to_owned()),
+        ("@BUFFER_COUNT@", buffers.len().to_string()),
+        ("@UNIFORM_COUNT@", uniforms.len().to_string()),
+        ("@UNIFORMS@", uniforms.join(", ")),
         ("@BUFFERS@", buffers.join(", ")),
     ];
     let render = |template: &str| {

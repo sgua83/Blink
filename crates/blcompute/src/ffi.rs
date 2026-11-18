@@ -8,15 +8,16 @@ use crate::{
 use blanguage::{
     ir::{ExecutionPlan as Program, Scalar},
 };
-#[cfg(feature="compiler")]
-use blanguage::ExecutableProgram;
+use blanguage::{
+    ExecutableProgram,
+    native::ProgramImage as NativeProgramImage,
+    resource::{ModuleFactory, ModuleImage},
+    spirv::ProgramImage as ShaderProgramImage,
+};
 use std::ffi::{c_char, c_void};
 
-/// count 为完整记录数；零尺寸记录不需要数据指针。字段与布局来自生成的头文件。
-pub struct Buffer {
-    pub data: *mut c_void,
-    pub count: u32,
-}
+pub use blanguage::resource::LibraryBuffer as Buffer;
+
 pub enum LibraryProgram {
     Cpu(CpuProgram),
     Gpu { device: Device, program: GpuProgram },
@@ -176,4 +177,90 @@ pub unsafe fn status(result: Result<()>, message: *mut c_char, capacity: usize) 
         unsafe { *message = 0; }
     }
     code
+}
+
+/// # Safety
+/// The selected image, code addresses and factory table come from the linked DLL.
+/// The output and error buffer are valid according to its generated C interface.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_library_create(
+    backend: u32,
+    cpu: *const ModuleImage,
+    gpu: *const ModuleImage,
+    factories: *const ModuleFactory,
+    factory_count: usize,
+    out: *mut *mut LibraryProgram,
+    message: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    let result = (|| {
+        let out = unsafe { out.as_mut() }.ok_or_else(|| error("null output handle"))?;
+        *out = std::ptr::null_mut();
+        let handle = match backend {
+            0 => {
+                let cpu = unsafe { cpu.as_ref() }.ok_or_else(|| error("GPU 专属程序不能提交给 CPU"))?;
+                let bytes = unsafe { std::slice::from_raw_parts(cpu.data, cpu.bytes) };
+                let code = unsafe { std::slice::from_raw_parts(cpu.code, cpu.codes) };
+                let image = unsafe {
+                    NativeProgramImage::<ExecutableProgram, *const u8>::from_linked_compiler_output_bytes(bytes, code)
+                }?;
+                let program = if factories.is_null() {
+                    unsafe { CpuProgram::from_linked(image) }?
+                } else {
+                    let factories = unsafe { std::slice::from_raw_parts(factories, factory_count) };
+                    unsafe { CpuProgram::from_linked_modules(image, factories) }?
+                };
+                LibraryProgram::Cpu(program)
+            }
+            1 => {
+                let gpu = unsafe { gpu.as_ref() }.ok_or_else(|| error("CPU 专属程序不能提交给 GPU"))?;
+                let bytes = unsafe { std::slice::from_raw_parts(gpu.data, gpu.bytes) };
+                let image = unsafe { ShaderProgramImage::<ExecutableProgram>::from_compiler_output_bytes(bytes) }?;
+                let device = Device::for_program(image.program())?;
+                let program = device.load(image)?;
+                LibraryProgram::Gpu { device, program }
+            }
+            _ => return Err(error("backend 必须为 CPU(0) 或 GPU(1)")),
+        };
+        *out = Box::into_raw(Box::new(handle));
+        Ok(())
+    })();
+    unsafe { status(result, message, capacity) }
+}
+
+/// # Safety
+/// The generated wrapper supplies one buffer per dataset and one pointer per
+/// nonempty uniform in the program's order. The original call owns those borrows.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_library_run(
+    handle: *mut LibraryProgram,
+    buffers: *const Buffer,
+    uniforms: *const *const c_void,
+    message: *mut c_char,
+    capacity: usize,
+) -> i32 {
+    let result = (|| {
+        let handle = unsafe { handle.as_mut() }.ok_or_else(|| error("null handle"))?;
+        let program = handle.program();
+        let buffers = unsafe { std::slice::from_raw_parts(buffers, program.buffers().len()) };
+        let mut values = Vec::new();
+        for (index, uniform) in program.uniforms().iter().filter(|u| u.ty.size != 0).enumerate() {
+            let data = unsafe { *uniforms.add(index) };
+            if data.is_null() {
+                return Err(error(format!("null uniform: {}", uniform.name)));
+            }
+            values.extend(unsafe { uniform_values(data, &uniform.ty) });
+        }
+        unsafe { handle.run(buffers, &values) }
+    })();
+    unsafe { status(result, message, capacity) }
+}
+
+/// # Safety
+/// A nonnull handle is the owned result of creation and has no remaining callers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_library_destroy(handle: *mut LibraryProgram) {
+    if !handle.is_null() {
+        drop(unsafe { Box::from_raw(handle) });
+    }
 }
