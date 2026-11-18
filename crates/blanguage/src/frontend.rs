@@ -74,10 +74,12 @@ pub struct Compilation {
     pub open_generics: Vec<String>,
     pub applications: Vec<application::Application>,
 }
+type RecordDeclaration = (crate::syntax::Record, Source, String, Arc<[String]>);
+
 pub(crate) struct Declarations {
     pub(crate) sources: BTreeMap<String, Source>,
     pub(crate) interfaces: BTreeMap<String, Arc<crate::syntax::Module>>,
-    pub(crate) records: BTreeMap<String, (crate::syntax::Record, Source, String, Arc<[String]>)>,
+    pub(crate) records: BTreeMap<String, RecordDeclaration>,
     pub(crate) functions: BTreeMap<String, Arc<Definition>>,
     pub(crate) type_sets: BTreeMap<String, (crate::syntax::TypeSet, Source, String, Arc<[String]>)>,
 }
@@ -117,7 +119,7 @@ impl World {
         }
         self.declarations.resolve(name, module, imports, functions)
     }
-    pub(crate) fn record(&self, key: &str) -> &(crate::syntax::Record, Source, String, Arc<[String]>) {
+    pub(crate) fn record(&self, key: &str) -> &RecordDeclaration {
         if let Some(inputs) = &self.build_declarations {
             inputs.borrow_mut().insert(build::Declaration::Record(key.into()));
         }
@@ -612,7 +614,8 @@ impl Declarations {
 }
 impl World {
     pub(crate) async fn type_reference(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<TypeName> {
-        unsafe{self.call(type_reference::bind(self,name,source,span,module,imports)).await}
+        let builtin=crate::builtin_types::Builtin::recognize(&name.name);
+        unsafe{self.call(type_reference::bind(self,name,source,span,module,imports,builtin)).await}.map(|bound|bound.name)
     }
     async fn write_type_layout_json(&self, out: &mut String, value: &ir::Ty, source: &Source, span: Span,
         module: &str, imports: &[String], active: &mut BTreeSet<String>) -> Result<()> {

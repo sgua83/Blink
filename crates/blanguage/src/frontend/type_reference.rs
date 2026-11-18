@@ -1,8 +1,9 @@
 //! B controls nominal-reference selection. Every real World child runs after
 //! native stepping returns; this query retains its actual partial arguments.
 use super::super::*;
+use super::RecordDeclaration;
 use crate::builtin_types::{Builtin,Kind};
-use std::{ffi::c_void,mem::{self,MaybeUninit},ptr,slice,str};
+use std::{collections::BTreeMap,ffi::c_void,mem::{self,MaybeUninit},ptr,slice,str,sync::Arc};
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -28,6 +29,8 @@ impl Code {
 enum Problem {Arity,Type,ReleaseType,ReleaseForm}
 #[repr(u32)]
 enum Need {Done,Function,Type,Value,Count}
+#[repr(u32)]
+enum Projection { Member, Length, LengthTail, Variant }
 #[repr(C)]
 struct Cursor {source:Reference,types:u64,count:u64,index:u64,code:Code,canonical:u32,stage:u32,reference:*const c_void}
 #[repr(C)]
@@ -45,10 +48,13 @@ unsafe extern "C" {
     fn start(source:Reference)->Cursor;
     #[link_name="bootstrap.type_reference::step"]
     fn step(state:*mut Cursor,context:*mut c_void,host:Host)->Need;
+    #[link_name="bootstrap.type_reference::contract_projection"]
+    fn contract_projection(kind:Kind,wrappers:u32,field:Name,tail:bool)->Projection;
 }
 struct Frame<'a> {
     world:&'a World,input:&'a TypeName,source:&'a Source,span:Span,module:&'a str,imports:&'a [String],
-    name:&'a str,resolved:Option<String>,arguments:Vec<GenericArgument>,count:Option<u32>,
+    name:&'a str,resolved:Option<String>,record:Option<&'a RecordDeclaration>,
+    arguments:Vec<GenericArgument>,count:Option<u32>,
     result:MaybeUninit<TypeName>,error:Option<Diagnostic>,
 }
 unsafe fn frame<'a>(raw:*mut c_void)->&'a mut Frame<'a> {unsafe{&mut *raw.cast()}}
@@ -64,8 +70,10 @@ unsafe extern "C" fn record(raw:*mut c_void)->Parameters {
         f.error=Some(Diagnostic{source:f.source.clone(),span:f.span,code:"B031",message:format!("未知或不明确的类型 {}",f.input.name)});
         return Parameters{present:0,types:0,count:0};
     };
-    let record=&f.world.record(&key).0;
-    let types=record.types().len() as u64;let count=types+record.values().len() as u64;f.resolved=Some(key);
+    let declaration=f.world.record(&key);
+    let record=&declaration.0;
+    let types=record.types().len() as u64;let count=types+record.values().len() as u64;
+    f.record=Some(declaration);f.resolved=Some(key);
     Parameters{present:1,types,count}
 }
 unsafe extern "C" fn reserve(raw:*mut c_void,count:u64) {unsafe{frame(raw)}.arguments.reserve(count as usize);}
@@ -101,23 +109,29 @@ unsafe extern "C" fn finish(raw:*mut c_void,canonical:u32,name:Name) {
         arguments:mem::take(&mut f.arguments),dataset:f.input.dataset,view:f.input.view,tile:f.input.tile,
         count:f.count.map(Shape::Literal),contracts:f.input.contracts.clone()});
 }
-pub(super) async fn bind(world:&World,input:&TypeName,source:&Source,span:Span,module:&str,imports:&[String])->Result<TypeName> {
-    let builtin=Builtin::recognize(&input.name);
+pub(super) struct BoundReference<'a> {
+    pub(super) name: TypeName,
+    record: Option<&'a RecordDeclaration>,
+}
+
+pub(super) async fn bind<'a>(world:&'a World,input:&'a TypeName,source:&'a Source,span:Span,
+    module:&'a str,imports:&'a [String],builtin:Builtin)->Result<BoundReference<'a>> {
     let name=builtin.canonical(&input.name).unwrap_or(&input.name);
     let descriptor=Reference{kind:builtin.kind,wrappers:wrappers(input),resource:u32::from(input.is_texture()||input.is_acceleration()),
         count:u32::from(input.count.is_some()),arguments:input.arguments.len() as u64,name:Name::new(name)};
-    let mut f=Frame{world,input,source,span,module,imports,name,resolved:None,arguments:Vec::new(),count:None,result:MaybeUninit::uninit(),error:None};
+    let mut f=Frame{world,input,source,span,module,imports,name,resolved:None,record:None,arguments:Vec::new(),count:None,result:MaybeUninit::uninit(),error:None};
     let mut cursor=unsafe{start(descriptor)};
     loop {
         let need=unsafe{step(&mut cursor,(&mut f as *mut Frame<'_>).cast(),Host{resource,record,reserve,argument,append_release,fail,finish})};
         if let Some(error)=f.error.take(){return Err(error);}
         match need {
-            Need::Done=>return Ok(unsafe{f.result.assume_init()}),
-            Need::Function=>return unsafe{world.call(world.c_function_reference(input,source,span,module,imports)).await}.map(|value|value.into_syntax()),
+            Need::Done=>return Ok(BoundReference{name:unsafe{f.result.assume_init()},record:f.record}),
+            Need::Function=>return unsafe{world.call(world.c_function_reference(input,source,span,module,imports)).await}.map(|value|BoundReference{name:value.into_syntax(),record:None}),
             Need::Type=>{
                 let value=unsafe{&*cursor.reference.cast::<TypeName>()};
-                let value=unsafe{world.call(bind(world,value,source,span,module,imports)).await}?;
-                f.arguments.push(GenericArgument::Type(value));
+                let builtin=Builtin::recognize(&value.name);
+                let bound=unsafe{world.call(bind(world,value,source,span,module,imports,builtin)).await}?;
+                f.arguments.push(GenericArgument::Type(bound.name));
             }
             Need::Value=>{
                 let Some(value)=input.arguments[cursor.index as usize].shape()else{
@@ -128,5 +142,87 @@ pub(super) async fn bind(world:&World,input:&TypeName,source:&Source,span:Span,m
             }
             Need::Count=>f.count=unsafe{world.call(world.shape(&input.count,source,span,module,imports)).await}?,
         }
+    }
+}
+
+fn variant_condition(rest: &[&str], source: &Source, span: Span) -> Result<ir::Ty> {
+    if rest.is_empty() {
+        Ok(ir::Ty::scalar(ir::Scalar::Bool))
+    } else {
+        source.fail(span, "B225", "变体条件没有后续字段")
+    }
+}
+
+impl World {
+    /// Contract paths select nominal fields before requesting a layout.
+    /// A callback can refer to the record that holds it.
+    pub(crate) async fn output_path_type(&self, input: &TypeName, fields: &[&str], source: &Source,
+        span: Span, module: &str, imports: &[String],
+    ) -> Result<ir::Ty> {
+        let builtin = Builtin::recognize(&input.name);
+        let flags = wrappers(input);
+        if builtin.kind == Kind::CFunction && flags == 0 {
+            return source.fail(span, if fields.is_empty() { "B148" } else { "B225" },
+                "函数签名没有数值运算或字段；原生地址通过function_address显式取得");
+        }
+        let BoundReference { name, record } =
+            unsafe { self.call(bind(self, input, source, span, module, imports, builtin)).await }?;
+        let declaration = || record.or_else(|| {
+            self.resolve(&name.name, module, imports, false).unique().map(|key| self.record(&key))
+        });
+        if let Some((field, rest)) = fields.split_first() {
+            match unsafe { contract_projection(builtin.kind, flags, Name::new(field), !rest.is_empty()) } {
+                Projection::Length => return Ok(ir::Ty::scalar(ir::Scalar::U32)),
+                Projection::LengthTail => return source.fail(span, "B225", "长度值没有后续字段"),
+                Projection::Variant => return variant_condition(rest, source, span),
+                Projection::Member => {}
+            }
+            if let Some(mut ty) = ir::Ty::from_builtin(builtin) {
+                for field in fields {
+                    ty = crate::check::member_type_only(&ty, field, source, span)?;
+                }
+                return Ok(ty);
+            }
+            let Some((record, record_source, record_module, record_imports)) = declaration() else {
+                return source.fail(span, "B031", format!("未知类型 {}", name.name));
+            };
+            let selected = match record.contract_member(field) {
+                crate::syntax::ContractMember::Field(ty) => ty,
+                crate::syntax::ContractMember::Variant => return variant_condition(rest, source, span),
+                crate::syntax::ContractMember::Missing => {
+                    return source.fail(span, "B225", format!("类型 {} 没有字段 {field}", name.name));
+                }
+            };
+            let mut arguments = name.arguments.into_iter();
+            let types = record.types().iter().zip(&mut arguments).map(|(parameter, argument)| {
+                let GenericArgument::Type(ty) = argument else {
+                    return source.fail(span, "B232", "此记录参数需要类型实参");
+                };
+                Ok((parameter.name().to_owned(), ty))
+            }).collect::<Result<_>>()?;
+            let mut values = BTreeMap::new();
+            for (parameter, argument) in record.values().iter().zip(arguments) {
+                let value = match argument {
+                    GenericArgument::Value(Shape::Literal(value)) => value,
+                    argument => unsafe {
+                        self.call(self.shape(&Some(argument.shape().unwrap()),source,span,module,imports)).await
+                    }?.unwrap(),
+                };
+                values.insert(parameter.name().to_owned(), value);
+            }
+            let bindings = Arc::new(crate::generics::Bindings { types, values });
+            let selected = unsafe {
+                self.call(bindings.type_name(self, &selected, (record_source, record_module, record_imports), span)).await
+            }?;
+            return unsafe { self.call(self.output_path_type(&selected, rest, record_source, span, record_module, record_imports)).await };
+        }
+
+        // An ordinary record is not a numeric input; do not expand recursive callbacks for its layout.
+        if let Some((record, ..)) = declaration() {
+            if record.enumeration().is_none() {
+                return source.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");
+            }
+        }
+        unsafe { self.call(self.ty(&name,source,span,module,imports)).await }
     }
 }

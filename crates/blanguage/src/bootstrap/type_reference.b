@@ -66,3 +66,21 @@ extern "C" Need step(address state,address context,Host host) on cpu
     host.finish(context,cursor.canonical,cursor.source.name);
     return give(state,cursor,Need::Done);
 }
+
+bool member_is<const N:u32 in {2,3,6}>(Name name,read array<u8,N> expected) on cpu {
+    if (name.length!=u64(N)) { return false; }
+    for (index in 0..N) {
+        u8 actual=unsafe_position<u8>(unsafe_address(address_bits(name.bytes)+u64(index)));
+        if (actual!=expected[index]) { return false; }
+    }
+    return true;
+}
+extern "C" Projection contract_projection(BuiltinKind kind,u32 wrappers,Name field,bool tail) on cpu {
+    if (((wrappers&1)!=0||kind==BuiltinKind::Array)&&member_is(field,"length")) {
+        return tail ? Projection::LengthTail : Projection::Length;
+    }
+    if (kind==BuiltinKind::Result&&(member_is(field,"Ok")||member_is(field,"Err"))) {
+        return Projection::Variant;
+    }
+    return Projection::Member;
+}
