@@ -1220,10 +1220,9 @@ fn access_at_call<'a>(access:&Access,call:&Call,path:&bounds::Clause,evaluation:
 fn output_initialization_read(borrows:&Borrow,initialized:&[address::Initialization],path:&bounds::Clause)->address::InitializationRead {
     let mut positions=Vec::new();
     for(source,when)in borrows.sources.entries(){
+        let Origin::Position(origin)=source else {continue;};
         if !bounds::Clause::both(path, &when).possible(){continue;}
-        if let Origin::Position(origin)=source {
-            positions.extend(address::borrowed_positions(&Borrow::source(source.clone()),&origin.layout,&origin.layout.parts.iter().map(|(_,word)|*word).collect::<Vec<_>>()));
-        }
+        positions.extend(address::borrowed_positions(&Borrow::source(source.clone()),&origin.layout,&origin.layout.parts.iter().map(|(_,word)|*word).collect::<Vec<_>>()));
     }
     let initialized=initialized.iter().filter(|fact|fact.when.truth_in(path)==Some(true)).flat_map(|fact|fact.positions(path)).collect();
     address::InitializationRead{positions,initialized}
