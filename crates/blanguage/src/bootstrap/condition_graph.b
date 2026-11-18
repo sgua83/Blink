@@ -785,6 +785,8 @@ extern "C" void canonical_normalize(address context,CanonicalNormalHost host) on
  requires nonzero(host.next) requires nonzero(host.reset) requires nonzero(host.bound)
  requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.compare)
  requires nonzero(host.scalar) requires nonzero(host.upper) {
+ FactView lower=internal_key(FactKind::Minimum,address(),address(),0u64);
+ bool lower_started=false;
  while(true){
   FactView fact=host.next(context);if(fact.present==0){break;}
   if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){continue;}
@@ -796,12 +798,15 @@ extern "C" void canonical_normalize(address context,CanonicalNormalHost host) on
    if(upper.present!=0&&upper.distance==0&&host.compare(fact.first,upper.identity)==0){continue;}
   }
   if(fact.kind==FactKind::NonZero){
-   host.reset(context,0);u32 redundant=0;
-   while(true){
-    FactView bound=host.bound(context,0);if(bound.present==0){break;}
-    if(bound.value>1u64&&host.compare(fact.first,bound.first)==0&&host.scalar(bound.scalar).kind==0){redundant=1;break;}
+   if(!lower_started){lower=host.bound(context,0);lower_started=true;}
+   bool redundant=false;
+   while(lower.present!=0){
+    i32 order=host.compare(lower.first,fact.first);
+    if(order>i32(0)){break;}
+    if(order==i32(0)&&lower.value>1u64&&host.scalar(lower.scalar).kind==0){redundant=true;break;}
+    lower=host.bound(context,0);
    }
-   if(redundant!=0){continue;}
+   if(redundant){continue;}
   }
   host.emit(context,fact);
  }
