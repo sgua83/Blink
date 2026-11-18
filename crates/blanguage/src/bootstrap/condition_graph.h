@@ -156,7 +156,7 @@ extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalH
  requires nonzero(host.predicate) requires nonzero(host.upper);
 
 struct CommonRoot { u32 present; u32 matched; address identity; address left; address right; };
-struct CommonKnown { address scalar; u32 present; };
+struct CommonKnown { address identity; address scalar; u32 present; };
 struct CommonBits { u64 mask; u64 value; u32 present; };
 struct CommonLimit { FactView value; FactView next; };
 struct CommonHost {
@@ -165,8 +165,7 @@ struct CommonHost {
  cfn<address,address,address,address,address> representative;
  cfn<u32,address,FactView> ensures memory(read) contains;
  cfn<void,address,FactView> emit;
- cfn<FactView,address> union_next;
- cfn<CommonKnown,address> ensures memory(read) known;
+ cfn<CommonKnown,address> known_next;
  cfn<CommonBits,address,u32,address,address> ensures memory(read) known_bits;
  cfn<u32,address,address,address,u64,u64> ensures memory(read) contains_known;
  cfn<void,address,address,address,u64,u64> emit_known;
@@ -178,8 +177,8 @@ struct CommonHost {
 };
 extern "C" void common_facts(address context,CommonHost host) on cpu
  requires nonzero(host.intersection) requires nonzero(host.root_next) requires nonzero(host.representative)
- requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.union_next)
- requires nonzero(host.known) requires nonzero(host.known_bits) requires nonzero(host.contains_known)
+ requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.known_next)
+ requires nonzero(host.known_bits) requires nonzero(host.contains_known)
  requires nonzero(host.emit_known) requires nonzero(host.side_next) requires nonzero(host.range)
  requires nonzero(host.compare) requires nonzero(host.scalar_compare) requires nonzero(host.scalar);
 

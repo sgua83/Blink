@@ -95,25 +95,25 @@ unsafe extern "C" fn emit(slot: Slot, fields: fact_fields::Fields) {
         .common
         .insert(unsafe { fact_fields::key(fields) });
 }
-unsafe extern "C" fn union_next(slot: Slot) -> fact_fields::Fields {
-    unsafe { context(slot) }
-        .union
-        .next()
-        .map(fact_fields::Fields::from)
-        .unwrap_or_default()
-}
 #[repr(C)]
 struct Known {
+    identity: Borrowed,
     scalar: Borrowed,
     present: u32,
 }
-unsafe extern "C" fn known(value: Borrowed) -> Known {
-    match unsafe { &*value.cast::<IndexDomain>() } {
-        IndexDomain::KnownBits(scalar, ..) => Known {
+unsafe extern "C" fn known_next(slot: Slot) -> Known {
+    let context = unsafe { context(slot) };
+    match context.union.find_map(|fact| match fact {
+        Fact::Index(identity, IndexDomain::KnownBits(scalar, ..)) => Some((identity, scalar)),
+        _ => None,
+    }) {
+        Some((identity, scalar)) => Known {
+            identity: ptr::from_ref(identity).cast(),
             scalar: ptr::from_ref(scalar).cast(),
             present: 1,
         },
-        _ => Known {
+        None => Known {
+            identity: ptr::null(),
             scalar: ptr::null(),
             present: 0,
         },
@@ -206,8 +206,7 @@ struct Host {
     representative: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed) -> Borrowed,
     contains: unsafe extern "C" fn(Slot, fact_fields::Fields) -> u32,
     emit: unsafe extern "C" fn(Slot, fact_fields::Fields),
-    union_next: unsafe extern "C" fn(Slot) -> fact_fields::Fields,
-    known: unsafe extern "C" fn(Borrowed) -> Known,
+    known_next: unsafe extern "C" fn(Slot) -> Known,
     known_bits: unsafe extern "C" fn(Slot, u32, Borrowed, Borrowed) -> Bits,
     contains_known: unsafe extern "C" fn(Slot, Borrowed, Borrowed, u64, u64) -> u32,
     emit_known: unsafe extern "C" fn(Slot, Borrowed, Borrowed, u64, u64),
@@ -266,8 +265,7 @@ pub(super) fn either<'a>(
                         representative,
                         contains,
                         emit,
-                        union_next,
-                        known,
+                        known_next,
                         known_bits,
                         contains_known,
                         emit_known,

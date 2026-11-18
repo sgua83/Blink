@@ -497,8 +497,8 @@ CommonLimit common_limit_next(address context,u32 side,FactView carry,
 }
 extern "C" void common_facts(address context,CommonHost host) on cpu
  requires nonzero(host.intersection) requires nonzero(host.root_next) requires nonzero(host.representative)
- requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.union_next)
- requires nonzero(host.known) requires nonzero(host.known_bits) requires nonzero(host.contains_known)
+ requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.known_next)
+ requires nonzero(host.known_bits) requires nonzero(host.contains_known)
  requires nonzero(host.emit_known) requires nonzero(host.side_next) requires nonzero(host.range)
  requires nonzero(host.compare) requires nonzero(host.scalar_compare) requires nonzero(host.scalar) {
  host.intersection(context);
@@ -518,18 +518,16 @@ extern "C" void common_facts(address context,CommonHost host) on cpu
  }
  address previous_identity=unsafe_address(0u64);address previous_scalar=unsafe_address(0u64);u32 have_previous=0;
  while(true){
-  FactView fact=host.union_next(context);if(fact.present==0){break;}
-  if(fact.kind!=FactKind::Index){continue;}
-  CommonKnown known=host.known(fact.payload);if(known.present==0){continue;}
-  if(have_previous!=0&&host.compare(previous_identity,fact.first)==i32(0)&&host.scalar_compare(previous_scalar,known.scalar)==i32(0)){continue;}
-  previous_identity=fact.first;previous_scalar=known.scalar;have_previous=1;
-  CommonBits left=host.known_bits(context,0,fact.first,known.scalar);
+  CommonKnown known=host.known_next(context);if(known.present==0){break;}
+  if(have_previous!=0&&host.compare(previous_identity,known.identity)==i32(0)&&host.scalar_compare(previous_scalar,known.scalar)==i32(0)){continue;}
+  previous_identity=known.identity;previous_scalar=known.scalar;have_previous=1;
+  CommonBits left=host.known_bits(context,0,known.identity,known.scalar);
   if(left.present==0){continue;}
-  CommonBits right=host.known_bits(context,1,fact.first,known.scalar);
+  CommonBits right=host.known_bits(context,1,known.identity,known.scalar);
   if(right.present==0){continue;}
   InternalScalar scalar=host.scalar(known.scalar);
   BitPattern bits=known_common(scalar.mask,BitPattern(left.mask,left.value),scalar.mask,scalar.bias,BitPattern(right.mask,right.value));
-  if(bits.mask!=0u64&&host.contains_known(context,fact.first,known.scalar,bits.mask,bits.value)==0){host.emit_known(context,fact.first,known.scalar,bits.mask,bits.value);}
+  if(bits.mask!=0u64&&host.contains_known(context,known.identity,known.scalar,bits.mask,bits.value)==0){host.emit_known(context,known.identity,known.scalar,bits.mask,bits.value);}
  }
  CommonLimit left=common_limit_next(context,0,host.side_next(context,0),host.side_next,host.compare,host.scalar_compare);
  if(left.value.present==0){return;}
