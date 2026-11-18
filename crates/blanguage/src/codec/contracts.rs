@@ -41,6 +41,10 @@ pub(crate) fn decode<T: Native>(reader: &mut Reader<'_>) -> Result<T> {
 pub(crate) unsafe extern "C" fn write_value<T: Native>(value: Address, output: Slot) {
     unsafe { (&*value.cast::<T>()).write(output) }
 }
+/// The pointed-to slice reference borrows its original image through this synchronous call.
+pub(crate) unsafe extern "C" fn write_slice_value<T: Native>(value: Address, output: Slot) {
+    unsafe { write_slice(&*value.cast::<&[T]>(), output) }
+}
 pub(crate) unsafe extern "C" fn read_value<T: Native>(context: Slot, output: Slot) -> ReadStatus {
     unsafe { T::read(context, &mut *output.cast::<T>()) }
 }
@@ -661,3 +665,51 @@ impl<A: Native, B: Native, C: Native> Native for (A, B, C) {
         },TripleReader {first: read_value::<A>,second: read_value::<B>,third: read_value::<C>}) }
     }
 }
+
+// Expand physical typed projections at the existing synchronous codec boundary.
+macro_rules! native_impl {
+    ([], $ty:ty, $body:tt) => { impl $crate::codec::contracts::Native for $ty $body };
+    ([$generic:ident], $ty:ty, $body:tt) => { impl<$generic: $crate::codec::contracts::Native> $crate::codec::contracts::Native for $ty $body };
+}
+macro_rules! native_codecs {
+    ([], $ty:ty) => { $crate::codec::contracts::codec!($ty); };
+    ([$generic:ident], $ty:ty) => {
+        impl<$generic: $crate::codec::contracts::Native> $crate::codec::Encode for $ty {
+            fn encode(&self, writer: &mut $crate::codec::Writer) { $crate::codec::contracts::encode(self, writer) }
+        }
+        impl<$generic: $crate::codec::contracts::Native> $crate::codec::Decode for $ty {
+            fn decode(reader: &mut $crate::codec::Reader<'_>) -> $crate::codec::Result<Self> { $crate::codec::contracts::decode(reader) }
+        }
+    };
+}
+macro_rules! projected_record {
+    (@ $generic:tt,$ty:ty,$write:literal,$read:literal,{$($field:ident:$kind:ty),+$(,)?},{$($extra:ident:$value:expr),*$(,)?}) => {
+        const _: () = {
+            #[repr(C)] struct Fields { $($field: $crate::codec::contracts::Slot,)+ }
+            #[repr(C)] struct Writer { $($field: $crate::codec::contracts::Write,)+ }
+            #[repr(C)] struct Reader { $($field: $crate::codec::contracts::Read,)+ }
+            unsafe extern "C" {
+                #[link_name = $write] fn write(output: $crate::codec::contracts::Slot, fields: Fields, host: Writer);
+                #[link_name = $read] fn read(context: $crate::codec::contracts::Slot, fields: Fields, host: Reader) -> $crate::codec::ReadStatus;
+            }
+            $crate::codec::contracts::native_impl!($generic,$ty,{
+                fn empty() -> Self { Self { $($field: <$kind as $crate::codec::contracts::Native>::empty(),)+ $($extra:$value,)* } }
+                unsafe fn write(&self, output: $crate::codec::contracts::Slot) {
+                    unsafe { write(output,
+                        Fields { $($field: $crate::codec::contracts::address(&self.$field).cast_mut(),)+ },
+                        Writer { $($field: $crate::codec::contracts::write_value::<$kind>,)+ }) }
+                }
+                unsafe fn read(context: $crate::codec::contracts::Slot, output: &mut Self) -> $crate::codec::ReadStatus {
+                    unsafe { read(context,
+                        Fields { $($field: $crate::codec::contracts::slot(&mut output.$field),)+ },
+                        Reader { $($field: $crate::codec::contracts::read_value::<$kind>,)+ }) }
+                }
+            });
+            $crate::codec::contracts::native_codecs!($generic,$ty);
+        };
+    };
+    ($ty:ty,$write:literal,$read:literal,{$($field:ident:$kind:ty),+$(,)?}) => {
+        $crate::codec::contracts::projected_record!(@ [],$ty,$write,$read,{$($field:$kind,)+},{});
+    };
+}
+pub(crate) use {native_impl,native_codecs,projected_record};

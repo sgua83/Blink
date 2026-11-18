@@ -15,6 +15,8 @@ mod device_requirements;
 mod program_layout;
 #[cfg(feature = "compiler")]
 mod execution_plan;
+#[cfg(feature = "compiler")]
+mod image_codec;
 mod module_image;
 pub use module_image::{ModuleImage, ModuleFactory};
 /// 字段共同保证的闭区间，按原Scalar有序位编码；仅同步借用，不拥有存储。
@@ -80,9 +82,13 @@ pub struct Module<C = native::NativeCode> {
     pub types: Vec<Ty>,
     pub images: Vec<Image<TemplateProgram, C>>,
 }
+#[cfg(not(feature = "compiler"))]
 record!(Module { types, images });
+#[cfg(not(feature = "compiler"))]
 record!(Module<usize> { types, images });
+#[cfg(not(feature = "compiler"))]
 variants!(Image { 0=>Cpu(image), 1=>Gpu(image) });
+#[cfg(not(feature = "compiler"))]
 variants!(Image<TemplateProgram, usize> { 2=>Cpu(image), 1=>Gpu(image) });
 
 #[cfg(feature = "compiler")]
@@ -191,6 +197,7 @@ macro_rules! image_output {
 }
 image_output!(native);
 image_output!(spirv);
+#[cfg(not(feature = "compiler"))]
 macro_rules! native_image_codec {
     ($code:ty)=>{
         impl<P> Encode for native::ProgramImage<P,$code>{
@@ -212,18 +219,26 @@ macro_rules! native_image_codec {
         }
     };
 }
+#[cfg(not(feature = "compiler"))]
 record!(native::ModuleCode { sections, symbols });
+#[cfg(not(feature = "compiler"))]
 record!(native::ModuleSection { name, bytes, flags, relocations });
+#[cfg(not(feature = "compiler"))]
 record!(native::ModuleRelocation { offset, kind, target });
+#[cfg(not(feature = "compiler"))]
 variants!(native::ModuleTarget { 0=>Section{section,value}, 1=>Import(name) });
+#[cfg(not(feature = "compiler"))]
 native_image_codec!(native::NativeCode);
+#[cfg(not(feature = "compiler"))]
 native_image_codec!(usize);
+#[cfg(not(feature = "compiler"))]
 impl<P> Encode for spirv::ProgramImage<P> {
     fn encode(&self, writer: &mut Writer) {
         self.program().encode(writer);
         self.stages().encode(writer);
     }
 }
+#[cfg(not(feature = "compiler"))]
 impl<P> Decode for spirv::ProgramImage<P> {
     fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
         let program = ExecutionPlan::decode(reader)?;
@@ -231,6 +246,7 @@ impl<P> Decode for spirv::ProgramImage<P> {
         Ok(unsafe { Self::from_compiler_output(program, stages) })
     }
 }
+#[cfg(not(feature = "compiler"))]
 record!(crate::ast::ExternalName { library, symbol });
 #[cfg(not(feature="compiler"))]
 variants!(crate::ast::TextureDimension { 2=>D2, 3=>D3 });
@@ -362,9 +378,12 @@ record!(ExecutionPlan {
     auxiliary_buffers,
     native_frame
 });
+#[cfg(not(feature = "compiler"))]
 variants!(native::NativeSymbol {0=>Print(scalar),1=>External(name),2=>Function(name)});
+#[cfg(not(feature = "compiler"))]
 record!(native::Relocation { offset, target });
 // Observation ranges belong to the compiler result, not the deployed execution ABI.
+#[cfg(not(feature = "compiler"))]
 impl Encode for native::NativeCode {
     fn encode(&self, writer: &mut Writer) {
         self.bytes.encode(writer);
@@ -375,6 +394,7 @@ impl Encode for native::NativeCode {
         self.unwind.encode(writer);
     }
 }
+#[cfg(not(feature = "compiler"))]
 impl Decode for native::NativeCode {
     fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
         Ok(Self {
@@ -393,8 +413,11 @@ impl Decode for native::NativeCode {
         })
     }
 }
+#[cfg(not(feature = "compiler"))]
 variants!(native::RangeResult {0=>None,1=>Values(n)});
+#[cfg(not(feature = "compiler"))]
 variants!(@<C> native::ContinuationCode<C> {0=>ReductionTail(code),1=>ScanAdd(code),2=>CompactScatter(code),3=>SegmentedFinish(code),4=>Scan{prefix,apply,source,target}});
+#[cfg(not(feature = "compiler"))]
 record!(@<C> native::SortCode<C> {
     source,
     target,
@@ -403,8 +426,11 @@ record!(@<C> native::SortCode<C> {
     scatter,
     gather
 });
+#[cfg(not(feature = "compiler"))]
 variants!(@<C> native::StageCode<C> {0=>Element{main,continuation,result},1=>Sort(code)});
+#[cfg(not(feature = "compiler"))]
 record!(spirv::ShaderCode { words, ranks });
+#[cfg(not(feature = "compiler"))]
 record!(spirv::StageCode {
     main,
     tail,

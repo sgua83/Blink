@@ -57,11 +57,25 @@ pub(crate) enum ReadStatus {
     ResourceSortOrder = 44,
     ResourceCollectiveOperator = 45,
     ResourceOperation = 46,
+    ResourceImage = 47,
+    ResourceLinkedImage = 48,
+    ResourceModuleTarget = 49,
+    ResourceNativeSymbol = 50,
+    ResourceRangeResult = 51,
+    ResourceContinuationCode = 52,
+    ResourceCpuStageCode = 53,
 }
 impl ReadStatus {
     pub(crate) fn message(self) -> Option<&'static str> {
         match self {
             ReadStatus::Success | ReadStatus::RustError => None,
+            ReadStatus::ResourceImage => Some("模块枚举编码错误：Image"),
+            ReadStatus::ResourceLinkedImage => Some("模块枚举编码错误：Image<TemplateProgram, usize>"),
+            ReadStatus::ResourceModuleTarget => Some("模块枚举编码错误：native::ModuleTarget"),
+            ReadStatus::ResourceNativeSymbol => Some("模块枚举编码错误：native::NativeSymbol"),
+            ReadStatus::ResourceRangeResult => Some("模块枚举编码错误：native::RangeResult"),
+            ReadStatus::ResourceContinuationCode => Some("模块枚举编码错误：native::ContinuationCode<C>"),
+            ReadStatus::ResourceCpuStageCode => Some("模块枚举编码错误：native::StageCode<C>"),
             ReadStatus::ResourceSortOrder => Some("模块枚举编码错误：SortOrder"),
             ReadStatus::ResourceCollectiveOperator => Some("模块枚举编码错误：CollectiveOperator"),
             ReadStatus::ResourceOperation => Some("模块枚举编码错误：Operation<ReductionLayout>"),

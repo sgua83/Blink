@@ -1682,3 +1682,245 @@ extern "C" ReadStatus contract_read_triple(address context,ContractTripleFields 
  ReadStatus second=host.second(context,fields.second);if(second!=ReadStatus::Success){return second;}
  return host.third(context,fields.third);
 }
+extern "C" void resource_write_external_name(address output,ResourceExternalNameFields fields,ResourceExternalNameWriter host) on cpu requires nonzero(host.library) requires nonzero(host.symbol) {
+ host.library(fields.library,output);
+ host.symbol(fields.symbol,output);
+}
+extern "C" ReadStatus resource_read_external_name(address context,ResourceExternalNameFields fields,ResourceExternalNameReader host) on cpu requires nonzero(host.library) requires nonzero(host.symbol) {
+ ReadStatus s0=host.library(context,fields.library);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.symbol(context,fields.symbol);if(s1!=ReadStatus::Success){return s1;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_module_code(address output,ResourceModuleCodeFields fields,ResourceModuleCodeWriter host) on cpu requires nonzero(host.sections) requires nonzero(host.symbols) {
+ host.sections(fields.sections,output);
+ host.symbols(fields.symbols,output);
+}
+extern "C" ReadStatus resource_read_module_code(address context,ResourceModuleCodeFields fields,ResourceModuleCodeReader host) on cpu requires nonzero(host.sections) requires nonzero(host.symbols) {
+ ReadStatus s0=host.sections(context,fields.sections);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.symbols(context,fields.symbols);if(s1!=ReadStatus::Success){return s1;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_module_section(address output,ResourceModuleSectionFields fields,ResourceModuleSectionWriter host) on cpu requires nonzero(host.name) requires nonzero(host.bytes) requires nonzero(host.flags) requires nonzero(host.relocations) {
+ host.name(fields.name,output);
+ host.bytes(fields.bytes,output);
+ host.flags(fields.flags,output);
+ host.relocations(fields.relocations,output);
+}
+extern "C" ReadStatus resource_read_module_section(address context,ResourceModuleSectionFields fields,ResourceModuleSectionReader host) on cpu requires nonzero(host.name) requires nonzero(host.bytes) requires nonzero(host.flags) requires nonzero(host.relocations) {
+ ReadStatus s0=host.name(context,fields.name);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.bytes(context,fields.bytes);if(s1!=ReadStatus::Success){return s1;}
+ ReadStatus s2=host.flags(context,fields.flags);if(s2!=ReadStatus::Success){return s2;}
+ ReadStatus s3=host.relocations(context,fields.relocations);if(s3!=ReadStatus::Success){return s3;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_module_relocation(address output,ResourceModuleRelocationFields fields,ResourceModuleRelocationWriter host) on cpu requires nonzero(host.offset) requires nonzero(host.kind) requires nonzero(host.target) {
+ host.offset(fields.offset,output);
+ host.kind(fields.kind,output);
+ host.target(fields.target,output);
+}
+extern "C" ReadStatus resource_read_module_relocation(address context,ResourceModuleRelocationFields fields,ResourceModuleRelocationReader host) on cpu requires nonzero(host.offset) requires nonzero(host.kind) requires nonzero(host.target) {
+ ReadStatus s0=host.offset(context,fields.offset);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.kind(context,fields.kind);if(s1!=ReadStatus::Success){return s1;}
+ ReadStatus s2=host.target(context,fields.target);if(s2!=ReadStatus::Success){return s2;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_native_relocation(address output,ResourceNativeRelocationFields fields,ResourceNativeRelocationWriter host) on cpu requires nonzero(host.offset) requires nonzero(host.target) {
+ host.offset(fields.offset,output);
+ host.target(fields.target,output);
+}
+extern "C" ReadStatus resource_read_native_relocation(address context,ResourceNativeRelocationFields fields,ResourceNativeRelocationReader host) on cpu requires nonzero(host.offset) requires nonzero(host.target) {
+ ReadStatus s0=host.offset(context,fields.offset);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.target(context,fields.target);if(s1!=ReadStatus::Success){return s1;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_native_code(address output,ResourceNativeCodeFields fields,ResourceNativeCodeWriter host) on cpu requires nonzero(host.bytes) requires nonzero(host.relocations) requires nonzero(host.stack_bytes) requires nonzero(host.calls) requires nonzero(host.function_end) requires nonzero(host.unwind) {
+ host.bytes(fields.bytes,output);
+ host.relocations(fields.relocations,output);
+ host.stack_bytes(fields.stack_bytes,output);
+ host.calls(fields.calls,output);
+ host.function_end(fields.function_end,output);
+ host.unwind(fields.unwind,output);
+}
+extern "C" ReadStatus resource_read_native_code(address context,ResourceNativeCodeFields fields,ResourceNativeCodeReader host) on cpu requires nonzero(host.bytes) requires nonzero(host.relocations) requires nonzero(host.stack_bytes) requires nonzero(host.calls) requires nonzero(host.function_end) requires nonzero(host.unwind) {
+ ReadStatus s0=host.bytes(context,fields.bytes);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.relocations(context,fields.relocations);if(s1!=ReadStatus::Success){return s1;}
+ ReadStatus s2=host.stack_bytes(context,fields.stack_bytes);if(s2!=ReadStatus::Success){return s2;}
+ ReadStatus s3=host.calls(context,fields.calls);if(s3!=ReadStatus::Success){return s3;}
+ ReadStatus s4=host.function_end(context,fields.function_end);if(s4!=ReadStatus::Success){return s4;}
+ ReadStatus s5=host.unwind(context,fields.unwind);if(s5!=ReadStatus::Success){return s5;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_sort_code(address output,ResourceSortCodeFields fields,ResourceSortCodeWriter host) on cpu requires nonzero(host.source) requires nonzero(host.target) requires nonzero(host.initialize) requires nonzero(host.histogram) requires nonzero(host.scatter) requires nonzero(host.gather) {
+ host.source(fields.source,output);
+ host.target(fields.target,output);
+ host.initialize(fields.initialize,output);
+ host.histogram(fields.histogram,output);
+ host.scatter(fields.scatter,output);
+ host.gather(fields.gather,output);
+}
+extern "C" ReadStatus resource_read_sort_code(address context,ResourceSortCodeFields fields,ResourceSortCodeReader host) on cpu requires nonzero(host.source) requires nonzero(host.target) requires nonzero(host.initialize) requires nonzero(host.histogram) requires nonzero(host.scatter) requires nonzero(host.gather) {
+ ReadStatus s0=host.source(context,fields.source);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.target(context,fields.target);if(s1!=ReadStatus::Success){return s1;}
+ ReadStatus s2=host.initialize(context,fields.initialize);if(s2!=ReadStatus::Success){return s2;}
+ ReadStatus s3=host.histogram(context,fields.histogram);if(s3!=ReadStatus::Success){return s3;}
+ ReadStatus s4=host.scatter(context,fields.scatter);if(s4!=ReadStatus::Success){return s4;}
+ ReadStatus s5=host.gather(context,fields.gather);if(s5!=ReadStatus::Success){return s5;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_shader_code(address output,ResourceShaderCodeFields fields,ResourceShaderCodeWriter host) on cpu requires nonzero(host.words) requires nonzero(host.ranks) {
+ host.words(fields.words,output);
+ host.ranks(fields.ranks,output);
+}
+extern "C" ReadStatus resource_read_shader_code(address context,ResourceShaderCodeFields fields,ResourceShaderCodeReader host) on cpu requires nonzero(host.words) requires nonzero(host.ranks) {
+ ReadStatus s0=host.words(context,fields.words);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.ranks(context,fields.ranks);if(s1!=ReadStatus::Success){return s1;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_gpu_stage_code(address output,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeWriter host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.sort) {
+ host.main(fields.main,output);
+ host.tail(fields.tail,output);
+ host.scan_add(fields.scan_add,output);
+ host.finish(fields.finish,output);
+ host.dispatch(fields.dispatch,output);
+ host.selector(fields.selector,output);
+ host.sort(fields.sort,output);
+}
+extern "C" ReadStatus resource_read_gpu_stage_code(address context,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeReader host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.sort) {
+ ReadStatus s0=host.main(context,fields.main);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.tail(context,fields.tail);if(s1!=ReadStatus::Success){return s1;}
+ ReadStatus s2=host.scan_add(context,fields.scan_add);if(s2!=ReadStatus::Success){return s2;}
+ ReadStatus s3=host.finish(context,fields.finish);if(s3!=ReadStatus::Success){return s3;}
+ ReadStatus s4=host.dispatch(context,fields.dispatch);if(s4!=ReadStatus::Success){return s4;}
+ ReadStatus s5=host.selector(context,fields.selector);if(s5!=ReadStatus::Success){return s5;}
+ ReadStatus s6=host.sort(context,fields.sort);if(s6!=ReadStatus::Success){return s6;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_module(address output,ResourceModuleFields fields,ResourceModuleWriter host) on cpu requires nonzero(host.types) requires nonzero(host.images) {
+ host.types(fields.types,output);
+ host.images(fields.images,output);
+}
+extern "C" ReadStatus resource_read_module(address context,ResourceModuleFields fields,ResourceModuleReader host) on cpu requires nonzero(host.types) requires nonzero(host.images) {
+ ReadStatus s0=host.types(context,fields.types);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.images(context,fields.images);if(s1!=ReadStatus::Success){return s1;}
+ return ReadStatus::Success;
+}
+extern "C" ReadStatus resource_read_image(Bytes input,inout u64 position,address context,address output,ResourceImageVariants host) on cpu requires nonzero(host.cpu) requires nonzero(host.gpu) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==0u64){return host.cpu(context,output);}
+ if(tag.value==1u64){return host.gpu(context,output);}
+ return ReadStatus::ResourceImage;
+}
+extern "C" void resource_write_image_cpu(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(0,output,append);payload(value,output);}
+extern "C" void resource_write_image_gpu(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(1,output,append);payload(value,output);}
+extern "C" ReadStatus resource_read_linked_image(Bytes input,inout u64 position,address context,address output,ResourceImageVariants host) on cpu requires nonzero(host.cpu) requires nonzero(host.gpu) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==2u64){return host.cpu(context,output);}
+ if(tag.value==1u64){return host.gpu(context,output);}
+ return ReadStatus::ResourceLinkedImage;
+}
+extern "C" void resource_write_linked_image_cpu(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(2,output,append);payload(value,output);}
+extern "C" ReadStatus resource_read_module_target(Bytes input,inout u64 position,address context,address output,ResourceModuleTargetVariants host) on cpu requires nonzero(host.section) requires nonzero(host.import) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==0u64){return host.section(context,output);}
+ if(tag.value==1u64){return host.import(context,output);}
+ return ReadStatus::ResourceModuleTarget;
+}
+extern "C" void resource_write_module_target_section_fields(address output,ResourceModuleTargetSectionFieldsFields fields,ResourceModuleTargetSectionFieldsWriter host) on cpu requires nonzero(host.section) requires nonzero(host.value) {
+ host.section(fields.section,output);
+ host.value(fields.value,output);
+}
+extern "C" ReadStatus resource_read_module_target_section_fields(address context,ResourceModuleTargetSectionFieldsFields fields,ResourceModuleTargetSectionFieldsReader host) on cpu requires nonzero(host.section) requires nonzero(host.value) {
+ ReadStatus s0=host.section(context,fields.section);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.value(context,fields.value);if(s1!=ReadStatus::Success){return s1;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_module_target_section(address output,ResourceModuleTargetSectionFieldsFields fields,ResourceModuleTargetSectionFieldsWriter host,cfn<void,address,address,u64> append) on cpu requires nonzero(append) requires nonzero(host.section) requires nonzero(host.value) {word(0,output,append);resource_write_module_target_section_fields(output,fields,host);}
+extern "C" void resource_write_module_target_import(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(1,output,append);payload(value,output);}
+extern "C" ReadStatus resource_read_native_symbol(Bytes input,inout u64 position,address context,address output,ResourceNativeSymbolVariants host) on cpu requires nonzero(host.print) requires nonzero(host.external) requires nonzero(host.function) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==0u64){return host.print(context,output);}
+ if(tag.value==1u64){return host.external(context,output);}
+ if(tag.value==2u64){return host.function(context,output);}
+ return ReadStatus::ResourceNativeSymbol;
+}
+extern "C" void resource_write_native_symbol_print(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(0,output,append);payload(value,output);}
+extern "C" void resource_write_native_symbol_external(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(1,output,append);payload(value,output);}
+extern "C" void resource_write_native_symbol_function(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(2,output,append);payload(value,output);}
+extern "C" ReadStatus resource_read_range_result(Bytes input,inout u64 position,address context,address output,ResourceRangeResultVariants host) on cpu requires nonzero(host.none) requires nonzero(host.values) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==0u64){return host.none(context,output);}
+ if(tag.value==1u64){return host.values(context,output);}
+ return ReadStatus::ResourceRangeResult;
+}
+extern "C" void resource_write_range_result_none(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(0,output,append);}
+extern "C" void resource_write_range_result_values(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(1,output,append);payload(value,output);}
+extern "C" ReadStatus resource_read_continuation_code(Bytes input,inout u64 position,address context,address output,ResourceContinuationCodeVariants host) on cpu requires nonzero(host.reduction_tail) requires nonzero(host.scan_add) requires nonzero(host.compact_scatter) requires nonzero(host.segmented_finish) requires nonzero(host.scan) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==0u64){return host.reduction_tail(context,output);}
+ if(tag.value==1u64){return host.scan_add(context,output);}
+ if(tag.value==2u64){return host.compact_scatter(context,output);}
+ if(tag.value==3u64){return host.segmented_finish(context,output);}
+ if(tag.value==4u64){return host.scan(context,output);}
+ return ReadStatus::ResourceContinuationCode;
+}
+extern "C" void resource_write_continuation_code_reduction_tail(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(0,output,append);payload(value,output);}
+extern "C" void resource_write_continuation_code_scan_add(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(1,output,append);payload(value,output);}
+extern "C" void resource_write_continuation_code_compact_scatter(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(2,output,append);payload(value,output);}
+extern "C" void resource_write_continuation_code_segmented_finish(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(3,output,append);payload(value,output);}
+extern "C" void resource_write_continuation_code_scan_fields(address output,ResourceContinuationCodeScanFieldsFields fields,ResourceContinuationCodeScanFieldsWriter host) on cpu requires nonzero(host.prefix) requires nonzero(host.apply) requires nonzero(host.source) requires nonzero(host.target) {
+ host.prefix(fields.prefix,output);
+ host.apply(fields.apply,output);
+ host.source(fields.source,output);
+ host.target(fields.target,output);
+}
+extern "C" ReadStatus resource_read_continuation_code_scan_fields(address context,ResourceContinuationCodeScanFieldsFields fields,ResourceContinuationCodeScanFieldsReader host) on cpu requires nonzero(host.prefix) requires nonzero(host.apply) requires nonzero(host.source) requires nonzero(host.target) {
+ ReadStatus s0=host.prefix(context,fields.prefix);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.apply(context,fields.apply);if(s1!=ReadStatus::Success){return s1;}
+ ReadStatus s2=host.source(context,fields.source);if(s2!=ReadStatus::Success){return s2;}
+ ReadStatus s3=host.target(context,fields.target);if(s3!=ReadStatus::Success){return s3;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_continuation_code_scan(address output,ResourceContinuationCodeScanFieldsFields fields,ResourceContinuationCodeScanFieldsWriter host,cfn<void,address,address,u64> append) on cpu requires nonzero(append) requires nonzero(host.prefix) requires nonzero(host.apply) requires nonzero(host.source) requires nonzero(host.target) {word(4,output,append);resource_write_continuation_code_scan_fields(output,fields,host);}
+extern "C" ReadStatus resource_read_cpu_stage_code(Bytes input,inout u64 position,address context,address output,ResourceCpuStageCodeVariants host) on cpu requires nonzero(host.element) requires nonzero(host.sort) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==0u64){return host.element(context,output);}
+ if(tag.value==1u64){return host.sort(context,output);}
+ return ReadStatus::ResourceCpuStageCode;
+}
+extern "C" void resource_write_cpu_stage_code_element_fields(address output,ResourceCpuStageCodeElementFieldsFields fields,ResourceCpuStageCodeElementFieldsWriter host) on cpu requires nonzero(host.main) requires nonzero(host.continuation) requires nonzero(host.result) {
+ host.main(fields.main,output);
+ host.continuation(fields.continuation,output);
+ host.result(fields.result,output);
+}
+extern "C" ReadStatus resource_read_cpu_stage_code_element_fields(address context,ResourceCpuStageCodeElementFieldsFields fields,ResourceCpuStageCodeElementFieldsReader host) on cpu requires nonzero(host.main) requires nonzero(host.continuation) requires nonzero(host.result) {
+ ReadStatus s0=host.main(context,fields.main);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.continuation(context,fields.continuation);if(s1!=ReadStatus::Success){return s1;}
+ ReadStatus s2=host.result(context,fields.result);if(s2!=ReadStatus::Success){return s2;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_cpu_stage_code_element(address output,ResourceCpuStageCodeElementFieldsFields fields,ResourceCpuStageCodeElementFieldsWriter host,cfn<void,address,address,u64> append) on cpu requires nonzero(append) requires nonzero(host.main) requires nonzero(host.continuation) requires nonzero(host.result) {word(0,output,append);resource_write_cpu_stage_code_element_fields(output,fields,host);}
+extern "C" void resource_write_cpu_stage_code_sort(address value,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(1,output,append);payload(value,output);}
+extern "C" void resource_write_native_image(address output,ResourceNativeImageFields fields,ResourceNativeImageWriter host) on cpu requires nonzero(host.plan) requires nonzero(host.stages) requires nonzero(host.functions) requires nonzero(host.resources) requires nonzero(host.module_code) {
+ host.plan(fields.plan,output);
+ host.stages(fields.stages,output);
+ host.functions(fields.functions,output);
+ host.resources(fields.resources,output);
+ host.module_code(fields.module_code,output);
+}
+extern "C" ReadStatus resource_read_native_image(address context,ResourceNativeImageFields fields,ResourceNativeImageReader host) on cpu requires nonzero(host.plan) requires nonzero(host.stages) requires nonzero(host.functions) requires nonzero(host.resources) requires nonzero(host.module_code) {
+ ReadStatus s0=host.plan(context,fields.plan);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.stages(context,fields.stages);if(s1!=ReadStatus::Success){return s1;}
+ ReadStatus s2=host.functions(context,fields.functions);if(s2!=ReadStatus::Success){return s2;}
+ ReadStatus s3=host.resources(context,fields.resources);if(s3!=ReadStatus::Success){return s3;}
+ ReadStatus s4=host.module_code(context,fields.module_code);if(s4!=ReadStatus::Success){return s4;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_gpu_image(address output,ResourceGpuImageFields fields,ResourceGpuImageWriter host) on cpu requires nonzero(host.plan) requires nonzero(host.stages) {
+ host.plan(fields.plan,output);
+ host.stages(fields.stages,output);
+}
+extern "C" ReadStatus resource_read_gpu_image(address context,ResourceGpuImageFields fields,ResourceGpuImageReader host) on cpu requires nonzero(host.plan) requires nonzero(host.stages) {
+ ReadStatus s0=host.plan(context,fields.plan);if(s0!=ReadStatus::Success){return s0;}
+ ReadStatus s1=host.stages(context,fields.stages);if(s1!=ReadStatus::Success){return s1;}
+ return ReadStatus::Success;
+}

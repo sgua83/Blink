@@ -6,35 +6,8 @@ use crate::codec::{
 use crate::ir::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-// This expands only the original typed field projections and constructors.
-// The B functions choose the wire order; no field table is interpreted.
-macro_rules! projected_record {
-    ($ty:ty,$write:literal,$read:literal,{$($field:ident:$kind:ty),+$(,)?}) => {
-        const _: () = {
-            #[repr(C)] struct Fields { $($field: Slot,)+ }
-            #[repr(C)] struct Writer { $($field: Write,)+ }
-            #[repr(C)] struct Reader { $($field: Read,)+ }
-            unsafe extern "C" {
-                #[link_name = $write] fn write(output: Slot, fields: Fields, host: Writer);
-                #[link_name = $read] fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
-            }
-            impl Native for $ty {
-                fn empty() -> Self { Self { $($field: <$kind as Native>::empty(),)+ } }
-                unsafe fn write(&self, output: Slot) {
-                    unsafe { write(output,
-                        Fields { $($field: contracts::address(&self.$field).cast_mut(),)+ },
-                        Writer { $($field: contracts::write_value::<$kind>,)+ }) }
-                }
-                unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
-                    unsafe { read(context,
-                        Fields { $($field: contracts::slot(&mut output.$field),)+ },
-                        Reader { $($field: contracts::read_value::<$kind>,)+ }) }
-                }
-            }
-        };
-        contracts::codec!($ty);
-    };
-}
+use crate::codec::contracts::projected_record;
+
 macro_rules! projected_enum {
     ($ty:ty,$empty:ident,$read:literal,{$($variant:ident=>($field:ident,$write:literal)),+$(,)?}) => {
         const _: () = {
