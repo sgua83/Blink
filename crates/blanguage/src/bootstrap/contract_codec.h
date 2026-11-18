@@ -53,7 +53,7 @@ extern "C" void write_type(address source,address output,Host host) on cpu requi
 
 // The reader borrows the original input and exclusively updates the original
 // Reader.position. Typed fields below are construction slots, not an IR/schema.
-enum ReadStatus:u32 { Success=0; Overflow=1; Truncated=2; Boolean=3; Scalar=4; Access=5; Target=6; Shape=7; Argument=8; Expression=9; Predicate=10; Condition=11; RustError=12; Identity=13; Operand=14; IntegerOperation=15; IntegerExpression=16; Comparison=17; FloatingForm=18; IndexDomain=19; Fact=20; ConditionVersion=21; ConditionNode=22; ContractAddressRoot=23; ContractInitializationSource=24; ContractElementFacts=25; ContractDataLayout=26; ContractReturned=27; ContractTaskProjection=28; ContractExclusion=29; ContractViewAccess=30; ContractResidencyPart=31; ContractResidencyOrigin=32; ContractResidency=33; ContractResidencyOutputKind=34; ContractTextureDimension=35; ContractTextureFormat=36; ContractElementFact=37; ContractCallParameterKind=38; ContractContractKind=39; ContractRelationOp=40; ContractOwnership=41; ContractAddressIdentity=42; ContractBorrowSource=43; };
+enum ReadStatus:u32 { Success=0; Overflow=1; Truncated=2; Boolean=3; Scalar=4; Access=5; Target=6; Shape=7; Argument=8; Expression=9; Predicate=10; Condition=11; RustError=12; Identity=13; Operand=14; IntegerOperation=15; IntegerExpression=16; Comparison=17; FloatingForm=18; IndexDomain=19; Fact=20; ConditionVersion=21; ConditionNode=22; ContractAddressRoot=23; ContractInitializationSource=24; ContractElementFacts=25; ContractDataLayout=26; ContractReturned=27; ContractTaskProjection=28; ContractExclusion=29; ContractViewAccess=30; ContractResidencyPart=31; ContractResidencyOrigin=32; ContractResidency=33; ContractResidencyOutputKind=34; ContractTextureDimension=35; ContractTextureFormat=36; ContractElementFact=37; ContractCallParameterKind=38; ContractContractKind=39; ContractRelationOp=40; ContractOwnership=41; ContractAddressIdentity=42; ContractBorrowSource=43; ResourceSortOrder=44; ResourceCollectiveOperator=45; ResourceOperation=46; };
 enum ScalarTag:u32 { F32=0; U32=1; I32=2; Bool=3; U64=4; I64=5; F64=6; U8=7; I8=8; U16=9; I16=10; };
 enum AccessTag:u32 { Value=0; Read=1; Write=2; InOut=3; Atomic=4; };
 enum TargetTag:u32 { Compute=0; Cpu=1; Gpu=2; };
@@ -918,3 +918,279 @@ struct ResourceProgramLayoutReader {
 };
 extern "C" void resource_write_program_layout(address output,ResourceProgramLayoutFields fields,ResourceProgramLayoutWriter host) on cpu requires nonzero(host.write_regions) requires nonzero(host.name) requires nonzero(host.target) requires nonzero(host.buffers) requires nonzero(host.accelerations) requires nonzero(host.textures) requires nonzero(host.uniforms) requires nonzero(host.uniform_bytes) requires nonzero(host.prefix_requirements) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_requirements) requires nonzero(host.element_guarantees) requires nonzero(host.length_requirements) requires nonzero(host.requirements);
 extern "C" ReadStatus resource_read_program_layout(address context,ResourceProgramLayoutFields fields,ResourceProgramLayoutReader host) on cpu requires nonzero(host.write_regions) requires nonzero(host.name) requires nonzero(host.target) requires nonzero(host.buffers) requires nonzero(host.accelerations) requires nonzero(host.textures) requires nonzero(host.uniforms) requires nonzero(host.uniform_bytes) requires nonzero(host.prefix_requirements) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_requirements) requires nonzero(host.element_guarantees) requires nonzero(host.length_requirements) requires nonzero(host.requirements);
+
+// Actual execution-plan fields borrowed for one synchronous format call.
+struct ResourceReductionFields {
+ address source;
+ address source_word;
+ address target;
+ address target_word;
+};
+struct ResourceReductionWriter {
+ cfn<void,address,address> source;
+ cfn<void,address,address> source_word;
+ cfn<void,address,address> target;
+ cfn<void,address,address> target_word;
+};
+struct ResourceReductionReader {
+ cfn<ReadStatus,address,address> source;
+ cfn<ReadStatus,address,address> source_word;
+ cfn<ReadStatus,address,address> target;
+ cfn<ReadStatus,address,address> target_word;
+};
+extern "C" void resource_write_reduction(address output,ResourceReductionFields fields,ResourceReductionWriter host) on cpu requires nonzero(host.source) requires nonzero(host.source_word) requires nonzero(host.target) requires nonzero(host.target_word);
+extern "C" ReadStatus resource_read_reduction(address context,ResourceReductionFields fields,ResourceReductionReader host) on cpu requires nonzero(host.source) requires nonzero(host.source_word) requires nonzero(host.target) requires nonzero(host.target_word);
+struct ResourceReductionSpecFields {
+ address fields;
+ address ty;
+ address operator;
+};
+struct ResourceReductionSpecWriter {
+ cfn<void,address,address> fields;
+ cfn<void,address,address> ty;
+ cfn<void,address,address> operator;
+};
+struct ResourceReductionSpecReader {
+ cfn<ReadStatus,address,address> fields;
+ cfn<ReadStatus,address,address> ty;
+ cfn<ReadStatus,address,address> operator;
+};
+extern "C" void resource_write_reduction_spec(address output,ResourceReductionSpecFields fields,ResourceReductionSpecWriter host) on cpu requires nonzero(host.fields) requires nonzero(host.ty) requires nonzero(host.operator);
+extern "C" ReadStatus resource_read_reduction_spec(address context,ResourceReductionSpecFields fields,ResourceReductionSpecReader host) on cpu requires nonzero(host.fields) requires nonzero(host.ty) requires nonzero(host.operator);
+struct ResourceSegmentedReductionFields {
+ address values;
+ address head_word;
+ address count;
+};
+struct ResourceSegmentedReductionWriter {
+ cfn<void,address,address> values;
+ cfn<void,address,address> head_word;
+ cfn<void,address,address> count;
+};
+struct ResourceSegmentedReductionReader {
+ cfn<ReadStatus,address,address> values;
+ cfn<ReadStatus,address,address> head_word;
+ cfn<ReadStatus,address,address> count;
+};
+extern "C" void resource_write_segmented_reduction(address output,ResourceSegmentedReductionFields fields,ResourceSegmentedReductionWriter host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) requires nonzero(host.count);
+extern "C" ReadStatus resource_read_segmented_reduction(address context,ResourceSegmentedReductionFields fields,ResourceSegmentedReductionReader host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) requires nonzero(host.count);
+struct ResourceScanFields {
+ address values;
+ address ty;
+ address operator;
+ address head_word;
+};
+struct ResourceScanWriter {
+ cfn<void,address,address> values;
+ cfn<void,address,address> ty;
+ cfn<void,address,address> operator;
+ cfn<void,address,address> head_word;
+};
+struct ResourceScanReader {
+ cfn<ReadStatus,address,address> values;
+ cfn<ReadStatus,address,address> ty;
+ cfn<ReadStatus,address,address> operator;
+ cfn<ReadStatus,address,address> head_word;
+};
+extern "C" void resource_write_scan(address output,ResourceScanFields fields,ResourceScanWriter host) on cpu requires nonzero(host.values) requires nonzero(host.ty) requires nonzero(host.operator) requires nonzero(host.head_word);
+extern "C" ReadStatus resource_read_scan(address context,ResourceScanFields fields,ResourceScanReader host) on cpu requires nonzero(host.values) requires nonzero(host.ty) requires nonzero(host.operator) requires nonzero(host.head_word);
+struct ResourceCompactionFields {
+ address source;
+ address flags;
+ address flag_word;
+ address target;
+ address count;
+ address count_word;
+};
+struct ResourceCompactionWriter {
+ cfn<void,address,address> source;
+ cfn<void,address,address> flags;
+ cfn<void,address,address> flag_word;
+ cfn<void,address,address> target;
+ cfn<void,address,address> count;
+ cfn<void,address,address> count_word;
+};
+struct ResourceCompactionReader {
+ cfn<ReadStatus,address,address> source;
+ cfn<ReadStatus,address,address> flags;
+ cfn<ReadStatus,address,address> flag_word;
+ cfn<ReadStatus,address,address> target;
+ cfn<ReadStatus,address,address> count;
+ cfn<ReadStatus,address,address> count_word;
+};
+extern "C" void resource_write_compaction(address output,ResourceCompactionFields fields,ResourceCompactionWriter host) on cpu requires nonzero(host.source) requires nonzero(host.flags) requires nonzero(host.flag_word) requires nonzero(host.target) requires nonzero(host.count) requires nonzero(host.count_word);
+extern "C" ReadStatus resource_read_compaction(address context,ResourceCompactionFields fields,ResourceCompactionReader host) on cpu requires nonzero(host.source) requires nonzero(host.flags) requires nonzero(host.flag_word) requires nonzero(host.target) requires nonzero(host.count) requires nonzero(host.count_word);
+struct ResourceSortingFields {
+ address source;
+ address keys;
+ address target;
+};
+struct ResourceSortingWriter {
+ cfn<void,address,address> source;
+ cfn<void,address,address> keys;
+ cfn<void,address,address> target;
+};
+struct ResourceSortingReader {
+ cfn<ReadStatus,address,address> source;
+ cfn<ReadStatus,address,address> keys;
+ cfn<ReadStatus,address,address> target;
+};
+extern "C" void resource_write_sorting(address output,ResourceSortingFields fields,ResourceSortingWriter host) on cpu requires nonzero(host.source) requires nonzero(host.keys) requires nonzero(host.target);
+extern "C" ReadStatus resource_read_sorting(address context,ResourceSortingFields fields,ResourceSortingReader host) on cpu requires nonzero(host.source) requires nonzero(host.keys) requires nonzero(host.target);
+struct ResourceReductionLayoutFields {
+ address fields;
+ address ty;
+};
+struct ResourceReductionLayoutWriter {
+ cfn<void,address,address> fields;
+ cfn<void,address,address> ty;
+};
+struct ResourceReductionLayoutReader {
+ cfn<ReadStatus,address,address> fields;
+ cfn<ReadStatus,address,address> ty;
+};
+extern "C" void resource_write_reduction_layout(address output,ResourceReductionLayoutFields fields,ResourceReductionLayoutWriter host) on cpu requires nonzero(host.fields) requires nonzero(host.ty);
+extern "C" ReadStatus resource_read_reduction_layout(address context,ResourceReductionLayoutFields fields,ResourceReductionLayoutReader host) on cpu requires nonzero(host.fields) requires nonzero(host.ty);
+struct ResourceCustomScanFields {
+ address values;
+ address head_word;
+};
+struct ResourceCustomScanWriter {
+ cfn<void,address,address> values;
+ cfn<void,address,address> head_word;
+};
+struct ResourceCustomScanReader {
+ cfn<ReadStatus,address,address> values;
+ cfn<ReadStatus,address,address> head_word;
+};
+extern "C" void resource_write_custom_scan(address output,ResourceCustomScanFields fields,ResourceCustomScanWriter host) on cpu requires nonzero(host.values) requires nonzero(host.head_word);
+extern "C" ReadStatus resource_read_custom_scan(address context,ResourceCustomScanFields fields,ResourceCustomScanReader host) on cpu requires nonzero(host.values) requires nonzero(host.head_word);
+struct ResourceCustomSegmentedReductionFields {
+ address values;
+ address head_word;
+ address count;
+};
+struct ResourceCustomSegmentedReductionWriter {
+ cfn<void,address,address> values;
+ cfn<void,address,address> head_word;
+ cfn<void,address,address> count;
+};
+struct ResourceCustomSegmentedReductionReader {
+ cfn<ReadStatus,address,address> values;
+ cfn<ReadStatus,address,address> head_word;
+ cfn<ReadStatus,address,address> count;
+};
+extern "C" void resource_write_custom_segmented_reduction(address output,ResourceCustomSegmentedReductionFields fields,ResourceCustomSegmentedReductionWriter host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) requires nonzero(host.count);
+extern "C" ReadStatus resource_read_custom_segmented_reduction(address context,ResourceCustomSegmentedReductionFields fields,ResourceCustomSegmentedReductionReader host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) requires nonzero(host.count);
+struct ResourceSelectionFields {
+ address binding;
+ address word;
+};
+struct ResourceSelectionWriter {
+ cfn<void,address,address> binding;
+ cfn<void,address,address> word;
+};
+struct ResourceSelectionReader {
+ cfn<ReadStatus,address,address> binding;
+ cfn<ReadStatus,address,address> word;
+};
+extern "C" void resource_write_selection(address output,ResourceSelectionFields fields,ResourceSelectionWriter host) on cpu requires nonzero(host.binding) requires nonzero(host.word);
+extern "C" ReadStatus resource_read_selection(address context,ResourceSelectionFields fields,ResourceSelectionReader host) on cpu requires nonzero(host.binding) requires nonzero(host.word);
+struct ResourceExecutionStageFields {
+ address domain;
+ address prefix;
+ address selection;
+ address operation;
+ address reads;
+ address writes;
+ address write_regions;
+ address prefix_guarantees;
+ address element_guarantees;
+ address inputs;
+ address tile_scope;
+ address width;
+ address shared_bytes;
+};
+struct ResourceExecutionStageWriter {
+ cfn<void,address,address> domain;
+ cfn<void,address,address> prefix;
+ cfn<void,address,address> selection;
+ cfn<void,address,address> operation;
+ cfn<void,address,address> reads;
+ cfn<void,address,address> writes;
+ cfn<void,address,address> write_regions;
+ cfn<void,address,address> prefix_guarantees;
+ cfn<void,address,address> element_guarantees;
+ cfn<void,address,address> inputs;
+ cfn<void,address,address> tile_scope;
+ cfn<void,address,address> width;
+ cfn<void,address,address> shared_bytes;
+};
+struct ResourceExecutionStageReader {
+ cfn<ReadStatus,address,address> domain;
+ cfn<ReadStatus,address,address> prefix;
+ cfn<ReadStatus,address,address> selection;
+ cfn<ReadStatus,address,address> operation;
+ cfn<ReadStatus,address,address> reads;
+ cfn<ReadStatus,address,address> writes;
+ cfn<ReadStatus,address,address> write_regions;
+ cfn<ReadStatus,address,address> prefix_guarantees;
+ cfn<ReadStatus,address,address> element_guarantees;
+ cfn<ReadStatus,address,address> inputs;
+ cfn<ReadStatus,address,address> tile_scope;
+ cfn<ReadStatus,address,address> width;
+ cfn<ReadStatus,address,address> shared_bytes;
+};
+extern "C" void resource_write_execution_stage(address output,ResourceExecutionStageFields fields,ResourceExecutionStageWriter host) on cpu requires nonzero(host.domain) requires nonzero(host.prefix) requires nonzero(host.selection) requires nonzero(host.operation) requires nonzero(host.reads) requires nonzero(host.writes) requires nonzero(host.write_regions) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_guarantees) requires nonzero(host.inputs) requires nonzero(host.tile_scope) requires nonzero(host.width) requires nonzero(host.shared_bytes);
+extern "C" ReadStatus resource_read_execution_stage(address context,ResourceExecutionStageFields fields,ResourceExecutionStageReader host) on cpu requires nonzero(host.domain) requires nonzero(host.prefix) requires nonzero(host.selection) requires nonzero(host.operation) requires nonzero(host.reads) requires nonzero(host.writes) requires nonzero(host.write_regions) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_guarantees) requires nonzero(host.inputs) requires nonzero(host.tile_scope) requires nonzero(host.width) requires nonzero(host.shared_bytes);
+struct ResourceExecutionPlanFields {
+ address interface;
+ address stages;
+ address indirect_buffer;
+ address auxiliary_buffers;
+ address native_frame;
+};
+struct ResourceExecutionPlanWriter {
+ cfn<void,address,address> interface;
+ cfn<void,address,address> stages;
+ cfn<void,address,address> indirect_buffer;
+ cfn<void,address,address> auxiliary_buffers;
+ cfn<void,address,address> native_frame;
+};
+struct ResourceExecutionPlanReader {
+ cfn<ReadStatus,address,address> interface;
+ cfn<ReadStatus,address,address> stages;
+ cfn<ReadStatus,address,address> indirect_buffer;
+ cfn<ReadStatus,address,address> auxiliary_buffers;
+ cfn<ReadStatus,address,address> native_frame;
+};
+extern "C" void resource_write_execution_plan(address output,ResourceExecutionPlanFields fields,ResourceExecutionPlanWriter host) on cpu requires nonzero(host.interface) requires nonzero(host.stages) requires nonzero(host.indirect_buffer) requires nonzero(host.auxiliary_buffers) requires nonzero(host.native_frame);
+extern "C" ReadStatus resource_read_execution_plan(address context,ResourceExecutionPlanFields fields,ResourceExecutionPlanReader host) on cpu requires nonzero(host.interface) requires nonzero(host.stages) requires nonzero(host.indirect_buffer) requires nonzero(host.auxiliary_buffers) requires nonzero(host.native_frame);
+struct ResourceSortOrderReader {cfn<void,address> ascending;cfn<void,address> descending;};
+extern "C" void resource_write_sort_order_ascending(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void resource_write_sort_order_descending(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus resource_read_sort_order(Bytes input,inout u64 position,address output,ResourceSortOrderReader host) on cpu requires nonzero(host.ascending) requires nonzero(host.descending);
+struct ResourceCollectiveOperatorReader {cfn<void,address> sum;cfn<void,address> min;cfn<void,address> max;cfn<void,address> bit_and;cfn<void,address> bit_or;cfn<void,address> bit_xor;};
+extern "C" void resource_write_collective_operator_sum(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void resource_write_collective_operator_min(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void resource_write_collective_operator_max(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void resource_write_collective_operator_bit_and(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void resource_write_collective_operator_bit_or(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void resource_write_collective_operator_bit_xor(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus resource_read_collective_operator(Bytes input,inout u64 position,address output,ResourceCollectiveOperatorReader host) on cpu requires nonzero(host.sum) requires nonzero(host.min) requires nonzero(host.max) requires nonzero(host.bit_and) requires nonzero(host.bit_or) requires nonzero(host.bit_xor);
+struct ResourceOperationReader {cfn<ReadStatus,address,address> map;cfn<ReadStatus,address,address> reduce;cfn<ReadStatus,address,address> custom_reduce;cfn<ReadStatus,address,address> custom_scan;cfn<ReadStatus,address,address> custom_segmented_reduce;cfn<ReadStatus,address,address> segmented_reduce;cfn<ReadStatus,address,address> scan_exclusive;cfn<ReadStatus,address,address> compact;cfn<ReadStatus,address,address> stable_sort;};
+extern "C" void resource_write_operation_map(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void resource_write_operation_reduce(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append);
+extern "C" void resource_write_operation_custom_reduce(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append);
+extern "C" void resource_write_operation_custom_scan(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append);
+extern "C" void resource_write_operation_custom_segmented_reduce(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append);
+extern "C" void resource_write_operation_segmented_reduce(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append);
+extern "C" void resource_write_operation_scan_exclusive(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append);
+extern "C" void resource_write_operation_compact(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append);
+extern "C" void resource_write_operation_stable_sort(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append);
+extern "C" ReadStatus resource_read_operation(Bytes input,inout u64 position,address context,address output,ResourceOperationReader host) on cpu requires nonzero(host.map) requires nonzero(host.reduce) requires nonzero(host.custom_reduce) requires nonzero(host.custom_scan) requires nonzero(host.custom_segmented_reduce) requires nonzero(host.segmented_reduce) requires nonzero(host.scan_exclusive) requires nonzero(host.compact) requires nonzero(host.stable_sort);
+struct ContractTripleFields {address first;address second;address third;};
+struct ContractTripleWriter {cfn<void,address,address> first;cfn<void,address,address> second;cfn<void,address,address> third;};
+struct ContractTripleReader {cfn<ReadStatus,address,address> first;cfn<ReadStatus,address,address> second;cfn<ReadStatus,address,address> third;};
+extern "C" void contract_write_triple(address output,ContractTripleFields fields,ContractTripleWriter host) on cpu requires nonzero(host.first) requires nonzero(host.second) requires nonzero(host.third);
+extern "C" ReadStatus contract_read_triple(address context,ContractTripleFields fields,ContractTripleReader host) on cpu requires nonzero(host.first) requires nonzero(host.second) requires nonzero(host.third);

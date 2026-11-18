@@ -635,3 +635,29 @@ pub(crate) unsafe fn write_trimmed<T: Native>(
         )
     }
 }
+
+#[repr(C)]
+struct TripleFields { first: Slot, second: Slot, third: Slot }
+#[repr(C)]
+struct TripleWriter { first: Write, second: Write, third: Write }
+#[repr(C)]
+struct TripleReader { first: Read, second: Read, third: Read }
+unsafe extern "C" {
+    #[link_name = "bootstrap.contract_codec::contract_write_triple"]
+    fn write_triple(output: Slot, fields: TripleFields, host: TripleWriter);
+    #[link_name = "bootstrap.contract_codec::contract_read_triple"]
+    fn read_triple(context: Slot, fields: TripleFields, host: TripleReader) -> ReadStatus;
+}
+impl<A: Native, B: Native, C: Native> Native for (A, B, C) {
+    fn empty() -> Self { (A::empty(), B::empty(), C::empty()) }
+    unsafe fn write(&self, output: Slot) {
+        unsafe { write_triple(output,TripleFields {
+            first: address(&self.0).cast_mut(),second: address(&self.1).cast_mut(),third: address(&self.2).cast_mut(),
+        },TripleWriter {first: write_value::<A>,second: write_value::<B>,third: write_value::<C>}) }
+    }
+    unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+        unsafe { read_triple(context,TripleFields {
+            first: slot(&mut output.0),second: slot(&mut output.1),third: slot(&mut output.2),
+        },TripleReader {first: read_value::<A>,second: read_value::<B>,third: read_value::<C>}) }
+    }
+}

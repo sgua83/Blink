@@ -54,11 +54,17 @@ pub(crate) enum ReadStatus {
     ContractOwnership = 41,
     ContractAddressIdentity = 42,
     ContractBorrowSource = 43,
+    ResourceSortOrder = 44,
+    ResourceCollectiveOperator = 45,
+    ResourceOperation = 46,
 }
 impl ReadStatus {
     pub(crate) fn message(self) -> Option<&'static str> {
         match self {
             ReadStatus::Success | ReadStatus::RustError => None,
+            ReadStatus::ResourceSortOrder => Some("模块枚举编码错误：SortOrder"),
+            ReadStatus::ResourceCollectiveOperator => Some("模块枚举编码错误：CollectiveOperator"),
+            ReadStatus::ResourceOperation => Some("模块枚举编码错误：Operation<ReductionLayout>"),
             ReadStatus::Overflow => Some("模块接口长度溢出"),
             ReadStatus::Truncated => Some("模块接口被截断"),
             ReadStatus::Boolean => Some("模块布尔值编码错误"),

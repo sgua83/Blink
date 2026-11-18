@@ -13,6 +13,8 @@ pub(crate) const MODULE_RUNTIME_SYMBOLS: &[&str] = &["blink_allocate", "blink_ru
 mod device_requirements;
 #[cfg(feature = "compiler")]
 mod program_layout;
+#[cfg(feature = "compiler")]
+mod execution_plan;
 mod module_image;
 pub use module_image::{ModuleImage, ModuleFactory};
 /// 字段共同保证的闭区间，按原Scalar有序位编码；仅同步借用，不拥有存储。
@@ -236,28 +238,33 @@ variants!(crate::ast::TextureDimension { 2=>D2, 3=>D3 });
 variants!(crate::ast::TextureFormat { 0=>Rgba32Float, 1=>Rgba8Unorm, 2=>Rgba8Srgb, 3=>R8Unorm, 4=>Rg16Unorm, 5=>Rgb10A2Unorm, 6=>R11G11B10Float });
 #[cfg(not(feature="compiler"))]
 record!(TextureBinding { name, count, dimension, format });
+#[cfg(not(feature = "compiler"))]
 record!(Reduction {
     source,
     source_word,
     target,
     target_word
 });
+#[cfg(not(feature = "compiler"))]
 record!(ReductionSpec {
     fields,
     ty,
     operator
 });
+#[cfg(not(feature = "compiler"))]
 record!(SegmentedReduction {
     values,
     head_word,
     count
 });
+#[cfg(not(feature = "compiler"))]
 record!(Scan {
     values,
     ty,
     operator,
     head_word
 });
+#[cfg(not(feature = "compiler"))]
 record!(Compaction {
     source,
     flags,
@@ -266,21 +273,29 @@ record!(Compaction {
     count,
     count_word
 });
+#[cfg(not(feature = "compiler"))]
 variants!(SortOrder {0=>Ascending,1=>Descending});
+#[cfg(not(feature = "compiler"))]
 record!(Sorting {
     source,
     keys,
     target
 });
+#[cfg(not(feature = "compiler"))]
 variants!(Operation<ReductionLayout> {0=>Map,1=>Reduce(r),2=>CustomReduce(r),3=>CustomScan(s),4=>CustomSegmentedReduce(r),5=>SegmentedReduce(r),6=>ScanExclusive(s),7=>Compact(c),8=>StableSort(s)});
 #[cfg(not(feature="compiler"))]
 record!(PrefixCount { binding, word });
 #[cfg(not(feature="compiler"))]
 record!(PrefixRelation { domain, domain_region, count });
+#[cfg(not(feature = "compiler"))]
 record!(Selection { binding, word });
+#[cfg(not(feature = "compiler"))]
 variants!(CollectiveOperator {0=>Sum,1=>Min,2=>Max,3=>BitAnd,4=>BitOr,5=>BitXor});
+#[cfg(not(feature = "compiler"))]
 record!(ReductionLayout { fields, ty });
+#[cfg(not(feature = "compiler"))]
 record!(CustomScan<ReductionLayout> { values, head_word });
+#[cfg(not(feature = "compiler"))]
 record!(CustomSegmentedReduction<ReductionLayout> { values, head_word, count });
 #[cfg(not(feature = "compiler"))]
 record!(SubgroupCapabilities {
@@ -323,6 +338,7 @@ record!(ProgramLayout {
     length_requirements,
     requirements
 });
+#[cfg(not(feature = "compiler"))]
 record!(ExecutionStage {
     domain,
     prefix,
@@ -338,6 +354,7 @@ record!(ExecutionStage {
     width,
     shared_bytes
 });
+#[cfg(not(feature = "compiler"))]
 record!(ExecutionPlan {
     interface,
     stages,

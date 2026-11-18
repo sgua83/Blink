@@ -1467,3 +1467,218 @@ extern "C" ReadStatus resource_read_program_layout(address context,ResourceProgr
  ReadStatus status_13=host.requirements(context,fields.requirements);if(status_13!=ReadStatus::Success){return status_13;}
  return ReadStatus::Success;
 }
+
+extern "C" void resource_write_reduction(address output,ResourceReductionFields fields,ResourceReductionWriter host) on cpu requires nonzero(host.source) requires nonzero(host.source_word) requires nonzero(host.target) requires nonzero(host.target_word) {
+ host.source(fields.source,output);
+ host.source_word(fields.source_word,output);
+ host.target(fields.target,output);
+ host.target_word(fields.target_word,output);
+}
+extern "C" ReadStatus resource_read_reduction(address context,ResourceReductionFields fields,ResourceReductionReader host) on cpu requires nonzero(host.source) requires nonzero(host.source_word) requires nonzero(host.target) requires nonzero(host.target_word) {
+ ReadStatus status_0=host.source(context,fields.source);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.source_word(context,fields.source_word);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.target(context,fields.target);if(status_2!=ReadStatus::Success){return status_2;}
+ ReadStatus status_3=host.target_word(context,fields.target_word);if(status_3!=ReadStatus::Success){return status_3;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_reduction_spec(address output,ResourceReductionSpecFields fields,ResourceReductionSpecWriter host) on cpu requires nonzero(host.fields) requires nonzero(host.ty) requires nonzero(host.operator) {
+ host.fields(fields.fields,output);
+ host.ty(fields.ty,output);
+ host.operator(fields.operator,output);
+}
+extern "C" ReadStatus resource_read_reduction_spec(address context,ResourceReductionSpecFields fields,ResourceReductionSpecReader host) on cpu requires nonzero(host.fields) requires nonzero(host.ty) requires nonzero(host.operator) {
+ ReadStatus status_0=host.fields(context,fields.fields);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.ty(context,fields.ty);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.operator(context,fields.operator);if(status_2!=ReadStatus::Success){return status_2;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_segmented_reduction(address output,ResourceSegmentedReductionFields fields,ResourceSegmentedReductionWriter host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) requires nonzero(host.count) {
+ host.values(fields.values,output);
+ host.head_word(fields.head_word,output);
+ host.count(fields.count,output);
+}
+extern "C" ReadStatus resource_read_segmented_reduction(address context,ResourceSegmentedReductionFields fields,ResourceSegmentedReductionReader host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) requires nonzero(host.count) {
+ ReadStatus status_0=host.values(context,fields.values);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.head_word(context,fields.head_word);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.count(context,fields.count);if(status_2!=ReadStatus::Success){return status_2;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_scan(address output,ResourceScanFields fields,ResourceScanWriter host) on cpu requires nonzero(host.values) requires nonzero(host.ty) requires nonzero(host.operator) requires nonzero(host.head_word) {
+ host.values(fields.values,output);
+ host.ty(fields.ty,output);
+ host.operator(fields.operator,output);
+ host.head_word(fields.head_word,output);
+}
+extern "C" ReadStatus resource_read_scan(address context,ResourceScanFields fields,ResourceScanReader host) on cpu requires nonzero(host.values) requires nonzero(host.ty) requires nonzero(host.operator) requires nonzero(host.head_word) {
+ ReadStatus status_0=host.values(context,fields.values);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.ty(context,fields.ty);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.operator(context,fields.operator);if(status_2!=ReadStatus::Success){return status_2;}
+ ReadStatus status_3=host.head_word(context,fields.head_word);if(status_3!=ReadStatus::Success){return status_3;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_compaction(address output,ResourceCompactionFields fields,ResourceCompactionWriter host) on cpu requires nonzero(host.source) requires nonzero(host.flags) requires nonzero(host.flag_word) requires nonzero(host.target) requires nonzero(host.count) requires nonzero(host.count_word) {
+ host.source(fields.source,output);
+ host.flags(fields.flags,output);
+ host.flag_word(fields.flag_word,output);
+ host.target(fields.target,output);
+ host.count(fields.count,output);
+ host.count_word(fields.count_word,output);
+}
+extern "C" ReadStatus resource_read_compaction(address context,ResourceCompactionFields fields,ResourceCompactionReader host) on cpu requires nonzero(host.source) requires nonzero(host.flags) requires nonzero(host.flag_word) requires nonzero(host.target) requires nonzero(host.count) requires nonzero(host.count_word) {
+ ReadStatus status_0=host.source(context,fields.source);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.flags(context,fields.flags);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.flag_word(context,fields.flag_word);if(status_2!=ReadStatus::Success){return status_2;}
+ ReadStatus status_3=host.target(context,fields.target);if(status_3!=ReadStatus::Success){return status_3;}
+ ReadStatus status_4=host.count(context,fields.count);if(status_4!=ReadStatus::Success){return status_4;}
+ ReadStatus status_5=host.count_word(context,fields.count_word);if(status_5!=ReadStatus::Success){return status_5;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_sorting(address output,ResourceSortingFields fields,ResourceSortingWriter host) on cpu requires nonzero(host.source) requires nonzero(host.keys) requires nonzero(host.target) {
+ host.source(fields.source,output);
+ host.keys(fields.keys,output);
+ host.target(fields.target,output);
+}
+extern "C" ReadStatus resource_read_sorting(address context,ResourceSortingFields fields,ResourceSortingReader host) on cpu requires nonzero(host.source) requires nonzero(host.keys) requires nonzero(host.target) {
+ ReadStatus status_0=host.source(context,fields.source);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.keys(context,fields.keys);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.target(context,fields.target);if(status_2!=ReadStatus::Success){return status_2;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_reduction_layout(address output,ResourceReductionLayoutFields fields,ResourceReductionLayoutWriter host) on cpu requires nonzero(host.fields) requires nonzero(host.ty) {
+ host.fields(fields.fields,output);
+ host.ty(fields.ty,output);
+}
+extern "C" ReadStatus resource_read_reduction_layout(address context,ResourceReductionLayoutFields fields,ResourceReductionLayoutReader host) on cpu requires nonzero(host.fields) requires nonzero(host.ty) {
+ ReadStatus status_0=host.fields(context,fields.fields);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.ty(context,fields.ty);if(status_1!=ReadStatus::Success){return status_1;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_custom_scan(address output,ResourceCustomScanFields fields,ResourceCustomScanWriter host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) {
+ host.values(fields.values,output);
+ host.head_word(fields.head_word,output);
+}
+extern "C" ReadStatus resource_read_custom_scan(address context,ResourceCustomScanFields fields,ResourceCustomScanReader host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) {
+ ReadStatus status_0=host.values(context,fields.values);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.head_word(context,fields.head_word);if(status_1!=ReadStatus::Success){return status_1;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_custom_segmented_reduction(address output,ResourceCustomSegmentedReductionFields fields,ResourceCustomSegmentedReductionWriter host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) requires nonzero(host.count) {
+ host.values(fields.values,output);
+ host.head_word(fields.head_word,output);
+ host.count(fields.count,output);
+}
+extern "C" ReadStatus resource_read_custom_segmented_reduction(address context,ResourceCustomSegmentedReductionFields fields,ResourceCustomSegmentedReductionReader host) on cpu requires nonzero(host.values) requires nonzero(host.head_word) requires nonzero(host.count) {
+ ReadStatus status_0=host.values(context,fields.values);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.head_word(context,fields.head_word);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.count(context,fields.count);if(status_2!=ReadStatus::Success){return status_2;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_selection(address output,ResourceSelectionFields fields,ResourceSelectionWriter host) on cpu requires nonzero(host.binding) requires nonzero(host.word) {
+ host.binding(fields.binding,output);
+ host.word(fields.word,output);
+}
+extern "C" ReadStatus resource_read_selection(address context,ResourceSelectionFields fields,ResourceSelectionReader host) on cpu requires nonzero(host.binding) requires nonzero(host.word) {
+ ReadStatus status_0=host.binding(context,fields.binding);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.word(context,fields.word);if(status_1!=ReadStatus::Success){return status_1;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_execution_stage(address output,ResourceExecutionStageFields fields,ResourceExecutionStageWriter host) on cpu requires nonzero(host.domain) requires nonzero(host.prefix) requires nonzero(host.selection) requires nonzero(host.operation) requires nonzero(host.reads) requires nonzero(host.writes) requires nonzero(host.write_regions) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_guarantees) requires nonzero(host.inputs) requires nonzero(host.tile_scope) requires nonzero(host.width) requires nonzero(host.shared_bytes) {
+ host.domain(fields.domain,output);
+ host.prefix(fields.prefix,output);
+ host.selection(fields.selection,output);
+ host.operation(fields.operation,output);
+ host.reads(fields.reads,output);
+ host.writes(fields.writes,output);
+ host.write_regions(fields.write_regions,output);
+ host.prefix_guarantees(fields.prefix_guarantees,output);
+ host.element_guarantees(fields.element_guarantees,output);
+ host.inputs(fields.inputs,output);
+ host.tile_scope(fields.tile_scope,output);
+ host.width(fields.width,output);
+ host.shared_bytes(fields.shared_bytes,output);
+}
+extern "C" ReadStatus resource_read_execution_stage(address context,ResourceExecutionStageFields fields,ResourceExecutionStageReader host) on cpu requires nonzero(host.domain) requires nonzero(host.prefix) requires nonzero(host.selection) requires nonzero(host.operation) requires nonzero(host.reads) requires nonzero(host.writes) requires nonzero(host.write_regions) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_guarantees) requires nonzero(host.inputs) requires nonzero(host.tile_scope) requires nonzero(host.width) requires nonzero(host.shared_bytes) {
+ ReadStatus status_0=host.domain(context,fields.domain);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.prefix(context,fields.prefix);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.selection(context,fields.selection);if(status_2!=ReadStatus::Success){return status_2;}
+ ReadStatus status_3=host.operation(context,fields.operation);if(status_3!=ReadStatus::Success){return status_3;}
+ ReadStatus status_4=host.reads(context,fields.reads);if(status_4!=ReadStatus::Success){return status_4;}
+ ReadStatus status_5=host.writes(context,fields.writes);if(status_5!=ReadStatus::Success){return status_5;}
+ ReadStatus status_6=host.write_regions(context,fields.write_regions);if(status_6!=ReadStatus::Success){return status_6;}
+ ReadStatus status_7=host.prefix_guarantees(context,fields.prefix_guarantees);if(status_7!=ReadStatus::Success){return status_7;}
+ ReadStatus status_8=host.element_guarantees(context,fields.element_guarantees);if(status_8!=ReadStatus::Success){return status_8;}
+ ReadStatus status_9=host.inputs(context,fields.inputs);if(status_9!=ReadStatus::Success){return status_9;}
+ ReadStatus status_10=host.tile_scope(context,fields.tile_scope);if(status_10!=ReadStatus::Success){return status_10;}
+ ReadStatus status_11=host.width(context,fields.width);if(status_11!=ReadStatus::Success){return status_11;}
+ ReadStatus status_12=host.shared_bytes(context,fields.shared_bytes);if(status_12!=ReadStatus::Success){return status_12;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_execution_plan(address output,ResourceExecutionPlanFields fields,ResourceExecutionPlanWriter host) on cpu requires nonzero(host.interface) requires nonzero(host.stages) requires nonzero(host.indirect_buffer) requires nonzero(host.auxiliary_buffers) requires nonzero(host.native_frame) {
+ host.interface(fields.interface,output);
+ host.stages(fields.stages,output);
+ host.indirect_buffer(fields.indirect_buffer,output);
+ host.auxiliary_buffers(fields.auxiliary_buffers,output);
+ host.native_frame(fields.native_frame,output);
+}
+extern "C" ReadStatus resource_read_execution_plan(address context,ResourceExecutionPlanFields fields,ResourceExecutionPlanReader host) on cpu requires nonzero(host.interface) requires nonzero(host.stages) requires nonzero(host.indirect_buffer) requires nonzero(host.auxiliary_buffers) requires nonzero(host.native_frame) {
+ ReadStatus status_0=host.interface(context,fields.interface);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.stages(context,fields.stages);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.indirect_buffer(context,fields.indirect_buffer);if(status_2!=ReadStatus::Success){return status_2;}
+ ReadStatus status_3=host.auxiliary_buffers(context,fields.auxiliary_buffers);if(status_3!=ReadStatus::Success){return status_3;}
+ ReadStatus status_4=host.native_frame(context,fields.native_frame);if(status_4!=ReadStatus::Success){return status_4;}
+ return ReadStatus::Success;
+}
+extern "C" void resource_write_sort_order_ascending(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(0,output,append);}
+extern "C" void resource_write_sort_order_descending(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(1,output,append);}
+extern "C" ReadStatus resource_read_sort_order(Bytes input,inout u64 position,address output,ResourceSortOrderReader host) on cpu requires nonzero(host.ascending) requires nonzero(host.descending) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==0u64){host.ascending(output);return ReadStatus::Success;}
+ if(tag.value==1u64){host.descending(output);return ReadStatus::Success;}
+ return ReadStatus::ResourceSortOrder;
+}
+extern "C" void resource_write_collective_operator_sum(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(0,output,append);}
+extern "C" void resource_write_collective_operator_min(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(1,output,append);}
+extern "C" void resource_write_collective_operator_max(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(2,output,append);}
+extern "C" void resource_write_collective_operator_bit_and(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(3,output,append);}
+extern "C" void resource_write_collective_operator_bit_or(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(4,output,append);}
+extern "C" void resource_write_collective_operator_bit_xor(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(5,output,append);}
+extern "C" ReadStatus resource_read_collective_operator(Bytes input,inout u64 position,address output,ResourceCollectiveOperatorReader host) on cpu requires nonzero(host.sum) requires nonzero(host.min) requires nonzero(host.max) requires nonzero(host.bit_and) requires nonzero(host.bit_or) requires nonzero(host.bit_xor) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==0u64){host.sum(output);return ReadStatus::Success;}
+ if(tag.value==1u64){host.min(output);return ReadStatus::Success;}
+ if(tag.value==2u64){host.max(output);return ReadStatus::Success;}
+ if(tag.value==3u64){host.bit_and(output);return ReadStatus::Success;}
+ if(tag.value==4u64){host.bit_or(output);return ReadStatus::Success;}
+ if(tag.value==5u64){host.bit_xor(output);return ReadStatus::Success;}
+ return ReadStatus::ResourceCollectiveOperator;
+}
+extern "C" void resource_write_operation_map(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {word(0,output,append);}
+extern "C" void resource_write_operation_reduce(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(1,output,append);payload(source,output);}
+extern "C" void resource_write_operation_custom_reduce(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(2,output,append);payload(source,output);}
+extern "C" void resource_write_operation_custom_scan(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(3,output,append);payload(source,output);}
+extern "C" void resource_write_operation_custom_segmented_reduce(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(4,output,append);payload(source,output);}
+extern "C" void resource_write_operation_segmented_reduce(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(5,output,append);payload(source,output);}
+extern "C" void resource_write_operation_scan_exclusive(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(6,output,append);payload(source,output);}
+extern "C" void resource_write_operation_compact(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(7,output,append);payload(source,output);}
+extern "C" void resource_write_operation_stable_sort(address source,address output,cfn<void,address,address> payload,cfn<void,address,address,u64> append) on cpu requires nonzero(payload) requires nonzero(append) {word(8,output,append);payload(source,output);}
+extern "C" ReadStatus resource_read_operation(Bytes input,inout u64 position,address context,address output,ResourceOperationReader host) on cpu requires nonzero(host.map) requires nonzero(host.reduce) requires nonzero(host.custom_reduce) requires nonzero(host.custom_scan) requires nonzero(host.custom_segmented_reduce) requires nonzero(host.segmented_reduce) requires nonzero(host.scan_exclusive) requires nonzero(host.compact) requires nonzero(host.stable_sort) {
+ ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
+ if(tag.value==0u64){return host.map(context,output);}
+ if(tag.value==1u64){return host.reduce(context,output);}
+ if(tag.value==2u64){return host.custom_reduce(context,output);}
+ if(tag.value==3u64){return host.custom_scan(context,output);}
+ if(tag.value==4u64){return host.custom_segmented_reduce(context,output);}
+ if(tag.value==5u64){return host.segmented_reduce(context,output);}
+ if(tag.value==6u64){return host.scan_exclusive(context,output);}
+ if(tag.value==7u64){return host.compact(context,output);}
+ if(tag.value==8u64){return host.stable_sort(context,output);}
+ return ReadStatus::ResourceOperation;
+}
+extern "C" void contract_write_triple(address output,ContractTripleFields fields,ContractTripleWriter host) on cpu requires nonzero(host.first) requires nonzero(host.second) requires nonzero(host.third) {
+ host.first(fields.first,output);host.second(fields.second,output);host.third(fields.third,output);
+}
+extern "C" ReadStatus contract_read_triple(address context,ContractTripleFields fields,ContractTripleReader host) on cpu requires nonzero(host.first) requires nonzero(host.second) requires nonzero(host.third) {
+ ReadStatus first=host.first(context,fields.first);if(first!=ReadStatus::Success){return first;}
+ ReadStatus second=host.second(context,fields.second);if(second!=ReadStatus::Success){return second;}
+ return host.third(context,fields.third);
+}
