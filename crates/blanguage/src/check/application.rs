@@ -1071,12 +1071,11 @@ impl Builder<'_> {
         binding: usize,
         parameter: usize,
         access: Access,
+        scalar: Scalar,
     ) -> Result<Data> {
         if access == Access::Value {
             self.application_frame(self.scope.span())?;
         }
-        let scalar = if access == Access::Value { Scalar::U32 }
-            else { Self::borrowed_dataset_parameter_type(access, self.scope.execution()).components[0].0 };
         let reg = self.reg(scalar);
         let mut handle = self.application_root(reg);
         if access==Access::Value{handle.proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(ValueIdentity::ResourceParameter(parameter,0))));}

@@ -51,7 +51,7 @@ impl Builder<'_>{
 }
 async fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&LexicalScope,parameters:&[Param],contract:outputs::Contract<'_>,functions:Module,span:Span)->Result<Module>{
  let mut cursor=unsafe{d::start()};let mut facts=d::BodyFacts{dataset:u32::from(parameters[0].ty.dataset),owned:0};
- let program=Arc::new(unsafe{world.call(function_program(world,name,parameters.iter().cloned().map(|parameter|async{Ok(parameter)}),(lexical.source(),lexical.module(),lexical.imports(),FunctionKind::Value),Target::Cpu,None)).await}?);
+ let program=Arc::new(unsafe{world.call(function_program(world,name,parameters.iter().map(|parameter| std::future::ready(Ok(parameter))),(lexical.source(),lexical.module(),lexical.imports(),FunctionKind::Value),Target::Cpu,None, |_| {})).await}?);
  let mut functions=Some(functions);let mut b:Option<Box<Builder<'_>>>=None;let mut data:Option<application::Data>=None;let mut value:Option<Value>=None;let mut owner=None;let mut origin=None;
  let mut inputs=Vec::new();let mut abi=Vec::new();let mut regs=Vec::new();let mut environment=BTreeMap::new();let mut paths=None;let mut resources=BTreeMap::new();let mut requirements=None;let mut checked=None;let mut result=None;
  loop{let next=unsafe{d::body_step(cursor,facts)};cursor=next.cursor;match next.need{
@@ -65,7 +65,7 @@ async fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&Lexical
   }
   d::BodyNeed::Calls=>{unsafe{b.as_mut().unwrap_unchecked()}.calls.push(name.to_owned());}
   d::BodyNeed::Origin=>{origin=Some(Arc::new(ParameterOrigin::Parameter{index:0,name:"value".into(),instance:Arc::from(name),generated:true,site:None}));}
-  d::BodyNeed::DataParameter=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};data=Some(unsafe{builder.world.call(builder.application_parameter(0,0,Access::Value)).await}?);}
+  d::BodyNeed::DataParameter=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};data=Some(unsafe{builder.world.call(builder.application_parameter(0,0,Access::Value,Scalar::U32)).await}?);}
   d::BodyNeed::DataAbi=>{
    let data=unsafe{data.as_ref().unwrap_unchecked()};abi.push(CallParameter::value(Ty::owned_dataset(data.ty.syntax(),data.count)).with_origin(origin.take()));inputs.extend(&data.root.regs);inputs.extend(&data.length.regs);
   }

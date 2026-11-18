@@ -23,8 +23,8 @@ impl Builder<'_>{
    span,parameters:parameters.clone(),source_definition:None,
    source_context:Arc::new(SourceContext{instance:Some(Arc::from(name.as_str())),inlined_at:Box::default(),domain_path:Arc::from([])}),
   };
-  let program=Arc::new(unsafe{self.world.call(function_program(self.world,&name,parameters.iter().cloned().map(|parameter|async{Ok(parameter)}),
-   (lexical.source(),lexical.module(),lexical.imports(),FunctionKind::Value),Target::Cpu,None)).await}?);
+  let program=Arc::new(unsafe{self.world.call(function_program(self.world,&name,parameters.iter().map(|parameter| std::future::ready(Ok(parameter))),
+   (lexical.source(),lexical.module(),lexical.imports(),FunctionKind::Value),Target::Cpu,None, |_| {})).await}?);
   let mut cursor=unsafe{start()};let mut b:Option<Box<Builder<'_>>>=None;let mut frame_value:Option<Value>=None;
   let mut registers=Vec::new();let mut inputs=Vec::new();let mut abi=Vec::new();let mut emit=Some(emit);let mut checked=None;
   loop{let next=unsafe{callback_step(cursor,u32::from(frame))};cursor=next.cursor;match next.need{

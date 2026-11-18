@@ -1675,6 +1675,9 @@ struct CheckedFunction {
     initialization:Option<Vec<address::Initialization>>,
     functions: native_function::Module,
 }
+mod function_inputs;
+use function_inputs::{function_parameters, function_program};
+
 async fn checked_function(
     world: &World,
     instance: &crate::generics::Instance,
@@ -1684,8 +1687,9 @@ async fn checked_function(
 ) -> Result<Box<CheckedFunction>> {
     let name = &instance.name;
     let d = &instance.definition;
+    let mut bound_parameters = Vec::new();
     let mut program=unsafe { world.call(function_program(world,name,instance.parameters(world),
-        (&d.source,&d.module,&d.imports,d.function.kind()),target,d.source_origin())).await }?;
+        (&d.source,&d.module,&d.imports,d.function.kind()),target,d.source_origin(), |parameter| bound_parameters.push(parameter))).await }?;
     let roots=program.buffers.iter().enumerate().map(|(index,b)|(b.name.clone(),Root::Data(index,b.access))).collect();
     program.prefix_requirements=instance.contracts().filter(|c|c.kind==ContractKind::Requires&&matches!(c.predicate,ContractPredicate::Prefix{..}))
         .map(|c|prefix::relation(&program,&roots,d,&c)).collect::<Result<_>>()?;
@@ -1695,296 +1699,12 @@ async fn checked_function(
     b.application = application;
     b.functions = functions;
     if b.application.is_some() { b.view_uses = view_liveness::State::new(world, instance); }
-    let (mut parameters, mut inputs, output_contracts) = unsafe { world.call(function_parameters(&mut b, instance, name)).await }?;
+    let (mut parameters, mut inputs, output_contracts) = unsafe { world.call(function_parameters(&mut b, instance, name, bound_parameters)).await }?;
     let result_name=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())).await }?;
     let result=if result_name.name=="void"||result_name.is_never(){None}else{Some(unsafe { world.call(b.expected_storage(&result_name,d.function.span())).await }?)};
-    let task_results=result.as_ref().map(Ty::task_components).unwrap_or_default();
-    if b.application_entry()&&!d.function.c_abi()&&!task_results.is_empty() {
-        let address=[b.reg(Scalar::U32),b.reg(Scalar::U32)];
-        b.task_return_source=Some(address);
-        parameters.push(CallParameter::reference(Ty::task_return_layout(&task_results),Access::Write));
-        inputs.extend(address);
-    }
+    function_inputs::return_inputs(&mut b, d.function.c_abi(), result.as_ref(), &mut parameters, &mut inputs);
     let (returned,written) = unsafe { world.call(b.function_body(instance, d.function.body().as_ref().unwrap())).await }?;
     unsafe { world.call(finish_checked_function(b,program.clone(),name,d.function.span(),d.source_origin(),result,parameters,inputs,output_contracts,returned,written)).await }
-}
-
-#[inline(never)]
-async fn function_program(world:&World,name:&str,parameters:impl Iterator<Item=impl std::future::Future<Output=Result<Param>>>,
-    context:(&Source,&str,&[String],FunctionKind),target:Target,source_origin:Option<SourceOrigin>)->Result<Program> {
-    let(source,module,imports,kind)=context;
-    // CPU 参数是实际调用 ABI；设备参数仍使用原并行域的接口身份。
-    let mut buffers = Vec::new();
-    let mut accelerations = Vec::new();
-    let mut textures = Vec::new();
-    for p in parameters {
-        let p=unsafe { world.call(p).await }?;
-        if p.ty.dataset {
-            let ty=unsafe { world.call(cooperative::parameter_type(world,&p,(source,module,imports,kind),target)).await }?;
-            buffers.push(Buffer{name:p.name.clone(),access:p.access,stride:ir::align_up(ty.size,ty.align),ty,
-                count:unsafe { world.call(world.shape(&p.ty.count,source,p.span,module,imports)).await }?});
-        }
-        if p.ty.is_acceleration(){accelerations.push(p.name.clone());}
-        if p.ty.is_texture_resource(){
-            textures.push(TextureBinding{name:p.name.clone(),count:unsafe { world.call(texture::shape(world,&p.ty,(source,module,imports),p.span)).await }?,
-                dimension:p.ty.texture_dimension().unwrap(),format:p.ty.texture_format()});
-        }
-    }
-    let program = Program {
-        name: name.to_owned(),
-        source_origin,
-        generated_origin: None,
-        target,
-        uniform_bytes: 8 + 4 * buffers.len() as u32,
-        buffers,
-        accelerations,
-        textures,
-        uniforms: Vec::new(),
-        native_frame: None,
-        resources: None,
-        source_stages: 0,
-        stages: Vec::new(),
-        functions: Arc::from([]),
-        prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
-    };
-    Ok(program)
-}
-
-// 参数准备与输出打包不在下一层函数体分析期间保留临时载荷。
-#[inline(never)]
-async fn function_parameters(
-    b: &mut Builder<'_>,
-    instance: &crate::generics::Instance,
-    name: &str,
-) -> Result<(Vec<CallParameter>, Vec<Reg>, BTreeSet<(ContractKind, ContractPredicate)>)> {
-    let world = b.world;
-    let d = &instance.definition;
-    let mut inputs = Vec::new();
-    let mut parameters = Vec::new();
-    if b.application.is_some() {
-        let frame = b.application_frame(d.function.span())?;
-        parameters.push(CallParameter::value(frame.ty).with_origin(Some(Arc::new(ParameterOrigin::Frame))));
-        inputs.extend(frame.regs);
-    }
-    b.calls.push(name.into());
-    if d.function.kind() == FunctionKind::Cooperative {
-        b.cooperative_root = Some(0);
-    }
-    let mut data_index = 0;
-    let mut texture_index = 0;
-    let mut acceleration_index = 0;
-    for (parameter_index, p) in instance.parameters(world).enumerate() {
-        let p=unsafe { world.call(p).await }?;
-        let origin=match d.syntax_origin {
-            crate::frontend::DefinitionSyntax::Source=>Some(Arc::new(ParameterOrigin::Parameter{
-                index:parameter_index,name:p.name.to_owned(),instance:Arc::from(name),generated:false,
-                site:b.source_at(p.span,SourceSyntax::Parameter),
-            })),
-            crate::frontend::DefinitionSyntax::CompiledInterface=>None,
-        };
-        if p.ty.is_acceleration() {
-            b.env
-                .insert(p.name.to_owned(), Binding::Acceleration(acceleration_index));
-            acceleration_index += 1;
-            continue;
-        }
-        if p.ty.is_texture_resource() {
-            let address = b.reg(Scalar::U64);
-            parameters.push(CallParameter::value(Ty::scalar(Scalar::U64)).with_origin(origin.clone()));
-            inputs.push(address);
-            let mut resource = texture::TextureReference::binding(texture_index);
-            resource.source.parameter = Some(address);
-            b.env.insert(p.name.to_owned(), Binding::Texture(resource));
-            texture_index += 1;
-            continue;
-        }
-        if p.ty.dataset {
-            let binding = if d.function.kind() == FunctionKind::Value
-                && b.program.target == Target::Cpu {
-                {
-                    let mut data = unsafe { b.world.call(b.application_parameter(data_index, parameter_index, p.access)).await }?;
-                    if p.access!=Access::Value {
-                        let parameter_ty=Builder::borrowed_dataset_parameter_type(p.access,d.execution);
-                        let stride=b.reg(parameter_ty.components[2].0);let offset=b.reg(Scalar::U32);
-                        let value=|reg,scalar|Value{ty:Ty::scalar(scalar),regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
-                        let stride_scalar=parameter_ty.components[2].0;
-                        parameters.push(CallParameter::value(parameter_ty).with_origin(origin.clone()));
-                        inputs.extend([data.root.regs[0],data.length.regs[0],stride,offset]);
-                        data.layout=application::DataLayout::Parameter{parameter:parameter_index,stride:value(stride,stride_scalar),offset:value(offset,Scalar::U32)};
-                        Binding::ApplicationData(data)
-                    }else{
-                        parameters.push(CallParameter::value(Ty::owned_dataset((data.ty.clone()).syntax(),data.count)).with_origin(origin.clone()));
-                        inputs.extend([data.root.regs[0],data.length.regs[0]]);
-                        let data=b.application_bind(data,application::rebound(d.function.body().as_ref().unwrap(),&p.name));
-                        Binding::ApplicationData(data)
-                    }
-                }
-            } else {
-                b.view_access.insert(data_index, p.access);
-                if p.access == Access::InOut {
-                    b.initialized.extend(b.program.buffers[data_index].ty.components.iter().map(|(_,word)|Position::Element(data_index,*word)));
-                }
-                Binding::Data(b.dataset_view(data_index,p.access,true))
-            };
-            b.env.insert(p.name.to_owned(), binding);
-            data_index += 1;
-            continue;
-        }
-        if p.ty.tile {
-            let ty = unsafe { world.call(cooperative::parameter_type(world,&p,(&d.source,&d.module,&d.imports,d.function.kind()),b.program.target)).await }?;
-            let tile = b.tiles.len();
-            b.tiles.push(CheckedTile {
-                source: TileOrigin::Parameter(ty),
-                width: TileWidth::Parameter,
-                access: p.access,
-            });
-            b.bind_tile(&p.name, tile);
-            continue;
-        }
-        let ty=unsafe { world.call(cooperative::parameter_type(world,&p,(&d.source,&d.module,&d.imports,d.function.kind()),b.program.target)).await }?;
-        if p.access==Access::Read {
-            if ty.owns_resources() {
-                let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect::<Vec<_>>();
-                inputs.extend(&regs);parameters.push(CallParameter::value(ty.clone()).with_origin(origin.clone()));
-                let proof=bounds::Proof::default().view_parameters(&ty,&[],|i|ValueIdentity::Register(regs[i]));
-                let mut value=unsafe { b.world.call(b.incoming_owned_value(Value{ty,regs,proof,literal:false,uniform:false,constant:None})).await }?;
-                value.borrow();residency::parameter(&mut value,parameter_index);
-                b.bind_owned_value(&p.name,value,p.span)?;continue;
-            }
-        }
-        if p.access == Access::Atomic && b.application.is_none() {
-            b.env.insert(
-                p.name.to_owned(),
-                Binding::AtomicBorrow(Place::AtomicParameter(ty)),
-            );
-            continue;
-        }
-        if p.access != Access::Value {
-            let place = if b.application.is_some() {
-                let parts = if d.function.c_abi() { vec![ty.clone()] } else { native_function::reference_parameters(&ty) };
-                let mut addresses = Vec::new();
-                for part in &parts {
-                    let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
-                    inputs.extend(address);
-                    addresses.push(address);
-                    parameters.push(CallParameter::reference(part.clone(), p.access).with_origin(origin.clone()));
-                }
-                let address = if addresses.len() == 1 {
-                    ReferenceAddress::Contiguous(addresses[0])
-                } else {
-                    ReferenceAddress::Components(ty.components.iter().map(|(_, offset)| *offset).zip(addresses).collect())
-                };
-                Place::Reference {
-                    words: ty.components.iter().map(|(_, offset)| *offset).collect(),
-                    ty,
-                    address,
-                    scope: Some(parameter_index),
-                    access: p.access,
-                }
-            } else {
-                let (slots, storage) = b.local_slots(&ty);
-                if p.access == Access::Read { Place::ReadOnlyLocal(ty, slots, storage) }
-                else { Place::Local(ty, slots, storage) }
-            };
-            if p.access.reads() {
-                b.initialize(&place);
-            }
-            if p.access == Access::Atomic {
-                b.env.insert(p.name.to_owned(), Binding::AtomicBorrow(place));
-                continue;
-            }
-            if place.ty().owns_resources(){
-                let ty=place.ty().clone();let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect();
-                let proof=if p.access==Access::InOut{bounds::Proof::parameter_content(parameter_index,ty.components.len()).view_parameters(&ty,&[],|i|ValueIdentity::ParameterContent(parameter_index,i))}else{bounds::Proof::default()};
-                let value=Value{ty,regs,proof,uniform:false,literal:false,constant:None};
-                let returns::Returned::OwnedValue(mut value)=unsafe { b.world.call(b.template_returned(value,p.access==Access::InOut)).await }? else{unreachable!()};
-                if p.access==Access::InOut{residency::parameter(&mut value,parameter_index);}
-                value.place=Some(place);b.env.insert(p.name.to_owned(),Binding::OwnedValue(value));continue;
-            }
-            b.env.insert(
-                p.name.to_owned(),
-                Binding::Owned(OwnedBinding {
-                    proof: if p.access.reads() && b.application.is_some() {
-                        bounds::Proof::parameter_content(
-                            parameter_index,
-                            place.ty().components.len(),
-                        ).view_parameters(place.ty(),&[], |i| ValueIdentity::ParameterContent(parameter_index,i))
-                    } else {
-                        bounds::Proof::default()
-                    },
-                    place,
-                    uniform: false,
-                    initialization: None,
-                }),
-            );
-            continue;
-        }
-        let regs: Vec<_> = ty.components.iter().map(|(s, _)| b.reg(*s)).collect();
-        if b.application.is_some() {
-            inputs.extend(&regs);
-            parameters.push(CallParameter::value(ty.clone()).with_origin(origin.clone()));
-        }
-        if ty.owns_resources() {
-            let proof=bounds::Proof::default().view_parameters(&ty,&[],|i|ValueIdentity::Register(regs[i]));
-            let mut result = unsafe { b.world.call(b.incoming_owned_value(Value {
-                ty,
-                regs,
-                proof,
-                literal: false,
-                uniform: false,
-                constant: None,
-            })).await }?;
-            residency::parameter(&mut result, parameter_index);
-            b.bind_owned_value(&p.name, result, p.span)?;
-            continue;
-        }
-        b.env.insert(
-            p.name.to_owned(),
-            Binding::Value(Value {
-                proof: bounds::Proof::default().view_parameters(&ty,&[], |i| ValueIdentity::Register(regs[i])),
-                literal: false,
-                ty,
-                regs,
-                uniform: false,
-                constant: None,
-            }),
-        );
-    }
-    let mut environment=std::mem::take(&mut b.env);
-    let element_paths=unsafe { b.world.call(contracts::element_input_paths(b,instance.into(),&mut environment,None)).await }?;
-    b.env=environment;
-    application::bind_parameter_elements(b,instance.into(),&element_paths);
-    let resources=d.function.params().iter().enumerate().filter_map(|(index,p)|match b.env.get(p.name()){
-        Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,view::resource_borrow(data));component_proof})),_=>None,
-    }).collect();
-    let environment=std::mem::take(&mut b.env);
-    let requirements=unsafe { b.world.call(contracts::resolve(b,instance.into(),&LexicalScope::Function(instance.clone()),&environment,&resources)).await };b.env=environment;
-    let requirements=requirements?;
-    let mut environment=std::mem::take(&mut b.env);
-    unsafe { b.world.call(contracts::assume(b,instance.into(),&mut environment,&requirements)).await }?;b.env=environment;
-    b.materialize_array_bindings();
-    let output_contracts=unsafe { b.world.call(outputs::contract_predicates(b,instance)).await }?;
-    if b.application.is_some() && !d.function.c_abi() {
-        let first_completion=inputs.len();
-        for completion in native_function::task_completion_parameters(
-            parameters.iter().map(|parameter| match &parameter.kind {
-                CallParameterKind::Value(ty)=>(ty.components.len(),Some(ty)),
-                CallParameterKind::Reference{..}=>(2,None),
-            }),0,
-        ) {
-            let source=match completion.parent {
-                Some((parent,component))=>TaskCompletionSource::Returned(inputs[first_completion+2*parent],component),
-                None=>TaskCompletionSource::Input(inputs[completion.input]),
-            };
-            let address=[b.reg(Scalar::U32),b.reg(Scalar::U32)];
-            let layout=b.task_completion_layout(&completion.result,d.function.span())?;
-            b.task_completions.entry(source).or_default().push((completion.result,address));
-            parameters.push(CallParameter::reference(layout,Access::InOut));
-            inputs.extend(address);
-        }
-    }
-    Ok((parameters, inputs, output_contracts))
 }
 
 #[inline(never)]
