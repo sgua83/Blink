@@ -60,15 +60,20 @@ impl Pending {
         }
     }
     fn flush_private(&mut self, write: std::ops::Range<usize>, out: &mut Vec<Inst>) {
-        for (read, id) in std::mem::take(&mut self.private_reads) {
+        let mut retained = 0;
+        for index in 0..self.private_reads.len() {
+            let (read, id) = &self.private_reads[index];
+            let (start, end, id) = (read.start, read.end, *id);
             if self.code[id].is_some() {
-                if read.start < write.end && write.start < read.end {
+                if start < write.end && write.start < end {
                     self.emit(id, out);
                 } else {
-                    self.private_reads.push((read, id));
+                    self.private_reads[retained] = (start..end, id);
+                    retained += 1;
                 }
             }
         }
+        self.private_reads.truncate(retained);
     }
     fn flush(&mut self, out: &mut Vec<Inst>) {
         for id in 0..self.code.len() {
