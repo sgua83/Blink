@@ -510,3 +510,23 @@ extern "C" TypeNeed type_step(address state,address context,Host host) on cpu
     }
     return give_type(state,cursor,TypeNeed::Done);
 }
+
+extern "C" void input_names(address condition,address context,cfn<Node,address> inspect,
+    cfn<void,address,Bytes> emit) on cpu requires nonzero(inspect) requires nonzero(emit) {
+    address current=condition;
+    while (true) {
+        Node value=inspect(current);
+        if (value.kind==0) {
+            if (!returned_name(value.text)) { emit(context,value.text); }
+            return;
+        }
+        if (value.kind==5 || value.kind==6) {
+            current=value.left;
+        } else if (value.kind==7) {
+            input_names(value.left,context,inspect,emit);
+            current=value.right;
+        } else {
+            return;
+        }
+    }
+}

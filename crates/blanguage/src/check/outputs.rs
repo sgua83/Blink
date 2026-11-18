@@ -9,7 +9,7 @@ use returns::Returned;
 mod contract_condition;
 #[path="outputs/written.rs"]
 mod written;
-use contract_condition::{bind_constants,condition_type,positional_index};
+use contract_condition::{add_input_names,bind_constants,condition_type,positional_index};
 use std::borrow::Cow;
 
 #[derive(Clone, Copy)]
@@ -86,9 +86,21 @@ impl<'a> Contract<'a> {
                 FunctionContract{kind,predicate:predicate.clone(),span}
             }))).chain(native.into_iter().flat_map(|clauses|clauses.iter().cloned()))
     }
-    pub(super) fn external_memory(self)->Option<Access>{
-        external_memory(self.contracts().filter_map(|contract|
-            (contract.kind==ContractKind::Ensures).then_some(contract.predicate)))
+    pub(super) fn c_call_inputs(self, returns: bool) -> (Option<Access>, BTreeSet<String>) {
+        let mut names = BTreeSet::new();
+        let memory = external_memory(self.contracts().filter_map(|contract| {
+            match (contract.kind, &contract.predicate) {
+                (ContractKind::Requires, ContractPredicate::Nonzero(path)) => {
+                    names.insert(path.split('.').next().unwrap().to_owned());
+                }
+                (ContractKind::Ensures, ContractPredicate::Initialized {condition,..}) if returns => {
+                    add_input_names(condition, &mut names);
+                }
+                _ => {}
+            }
+            (contract.kind==ContractKind::Ensures).then_some(contract.predicate)
+        }));
+        (memory, names)
     }
     pub(super) fn nonzero_inputs(self)->impl Iterator<Item=(String,Span)>+'a {
         self.contracts().filter_map(|contract|match (contract.kind,contract.predicate) {
@@ -231,25 +243,10 @@ pub(super) fn declared<'a>(definition: impl Into<Contract<'a>>, parameter: usize
 }
 
 fn input_names(definition:Contract<'_>) -> BTreeSet<String> {
-    fn visit(condition: &OutputCondition, names: &mut BTreeSet<String>) {
-        match condition {
-            OutputCondition::Name(name) if name != "returned" => {
-                names.insert(name.clone());
-            }
-            OutputCondition::Member(base, _) | OutputCondition::Unary(_, base) => {
-                visit(base, names)
-            }
-            OutputCondition::Binary(_, a, b) => {
-                visit(a, names);
-                visit(b, names);
-            }
-            _ => {}
-        }
-    }
     let mut names = BTreeSet::new();
     for contract in definition.contracts() {
         if let ContractPredicate::Initialized { condition, .. }|ContractPredicate::Cleanup { condition, .. } = &contract.predicate {
-            visit(condition, &mut names);
+            add_input_names(condition, &mut names);
         }
     }
     names

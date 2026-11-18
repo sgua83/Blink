@@ -128,3 +128,6 @@ extern "C" TypeNeed type_step(address state,address context,Host host) on cpu
     requires nonzero(host.scalar_type)
     requires nonzero(host.typed)
     requires nonzero(host.unary_type);
+
+extern "C" void input_names(address condition,address context,cfn<Node,address> inspect,
+    cfn<void,address,Bytes> emit) on cpu requires nonzero(inspect) requires nonzero(emit);

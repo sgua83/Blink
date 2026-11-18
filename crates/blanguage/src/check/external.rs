@@ -265,7 +265,9 @@ impl Builder<'_> {
         let mut written = Vec::new();
         let mut held = Vec::new();
         let mut output_inputs = BTreeMap::new();
-        let opaque=definition.map(|contract|contract.external_memory()).unwrap_or(Some(Access::InOut));
+        let (opaque, capture_names)=definition.map_or_else(
+            ||(Some(Access::InOut), BTreeSet::new()), |contract|contract.c_call_inputs(!never),
+        );
         let mut memory=vec![(view::Borrow::source(view::Source::External),opaque)];
         for (index, (parameter, arg)) in parameters.iter().zip(args).enumerate() {
             let arg = if let Argument::Scoped { value, owner } = arg { held.push(owner); Argument::resource(value) } else { arg };
@@ -278,8 +280,17 @@ impl Builder<'_> {
                 (CallParameterKind::Value(ty), Argument::Value(value)) => {
                     self.require_same(ty, &value.ty, span)?;
                     memory[0].0.union(&self.address_contents(&value.ty,&value.proof));
-                    if let Some(d) = definition { output_inputs.insert(d.parameter_name(index), value.clone()); }
-                    CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: ty.clone(), values: value.regs }
+                    let captured=definition.filter(|_|!capture_names.is_empty())
+                        .map(|contract|contract.parameter_name(index))
+                        .filter(|name|capture_names.contains(name));
+                    let values=if let Some(name)=captured {
+                        let registers=value.regs.clone();
+                        output_inputs.insert(name,value);
+                        registers
+                    } else {
+                        value.regs
+                    };
+                    CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: ty.clone(), values }
                 }
                 (CallParameterKind::Reference { ty, access }, Argument::Reference(owner)) => {
                     if access.reads(){memory[0].0.union(&self.address_contents(ty,&owner.proof));}
