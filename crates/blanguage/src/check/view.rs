@@ -475,24 +475,33 @@ impl Borrow{
         }
     }
 
-    pub fn has_local(&self)->bool {
-        fn query(value:&Borrow,path:&bounds::Clause)->bool {
-            value.sources.entries().any(|(source,when)|{
-                let when=bounds::Clause::both(path,&when);
-                when.possible()&&match source {
-                    Source::Relation(graph,root)=>graph.has_local(*root),
-                    Source::Position(origin)=>match &origin.root {
-                        address::Root::Derived(parent)|address::Root::Dataset{borrow:parent,..}=>query(parent,&when),
-                        _=>origin.has_local(),
+    pub fn has_local(&self) -> bool {
+        fn query(value: &Borrow, path: &bounds::Clause) -> bool {
+            value.sources.0.iter().any(|(source, when)| {
+                let reachable = || {
+                    let when = bounds::Clause::both(path, when);
+                    when.possible().then_some(when)
+                };
+                let parent_is_local = |parent: &Borrow| {
+                    reachable().is_some_and(|when| query(parent, &when))
+                };
+                match source {
+                    Source::Relation(graph, root) => reachable().is_some() && graph.has_local(*root),
+                    Source::Position(origin) => match &origin.root {
+                        address::Root::Derived(parent) | address::Root::Dataset { borrow: parent, .. } => parent_is_local(parent),
+                        _ => origin.has_local() && reachable().is_some(),
                     },
-                    Source::Element{parent,..}|Source::Projection{parent,..}=>query(parent,&when),
-                    Source::Task{captures,outputs,initialized,..}=>query(captures,&when)||query(initialized,&when)||outputs.iter().any(|output|query(output,&when)),
-                    Source::TaskOutput{task,..}=>query(task,&when),
-                    _=>false,
+                    Source::Element { parent, .. } | Source::Projection { parent, .. }
+                    | Source::TaskOutput { task: parent, .. } => parent_is_local(parent),
+                    Source::Task { captures, outputs, initialized, .. } => reachable().is_some_and(|when| {
+                        query(captures, &when) || query(initialized, &when)
+                            || outputs.iter().any(|output| query(output, &when))
+                    }),
+                    _ => false,
                 }
             })
         }
-        query(self,&bounds::Clause::default())
+        query(self, &bounds::Clause::default())
     }
     pub fn view_resources(&self)->Self {
         self.map_sources(|source|match source {
