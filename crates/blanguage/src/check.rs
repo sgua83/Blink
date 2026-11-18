@@ -2002,7 +2002,7 @@ async fn finish_checked_function(
     mut written: Vec<Option<returns::Returned>>,
 ) -> Result<Box<CheckedFunction>> {
     for value in returned.iter_mut().chain(written.iter_mut().flatten()){unsafe { b.world.call(b.normalize_element_facts(value,span)).await }?;}
-    let output = returned.as_ref().map(|value| b.returned_storage(value));
+    let outputs = returned.as_ref().map(returns::Returned::registers).unwrap_or_default();
     let (returned, semantic_inputs, written, initialization) =
         unsafe { b.world.call(native_function::canonical(&mut b, returned, &inputs, &parameters, written)).await }?;
     let body = FunctionBody {
@@ -2017,8 +2017,8 @@ async fn finish_checked_function(
             registers: b.registers,
             locals: b.locals,
             code: b.code,
-            inputs: inputs.clone(),
-            outputs: output.map(|v| v.regs).unwrap_or_default(),
+            inputs,
+            outputs,
         },
     };
     Ok(Box::new(CheckedFunction {

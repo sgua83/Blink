@@ -9,6 +9,8 @@ mod task_callbacks;
 mod dependencies;
 mod frame_effects;
 mod failure_lowering;
+mod model;
+pub(super) use model::{rebind_model,translate_returned,translate_in_place};
 
 // Only source vectors admit a different component placement with the same type.
 // Aggregate fields and arrays retain their declared layout.
@@ -264,50 +266,6 @@ fn finish_declaration(
     resolve_views(world,&mut functions,Some(&name))?;
     Ok(functions)
 }
-// 合同中的值编号属于接口，不进入实际IR寄存器表或产生转换指令。
-pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
-    match value {
-        Returned::Unit => {}
-        Returned::Value(value) => value.regs = registers,
-        Returned::Dataset(data) => {
-            data.root.regs = vec![registers[0]];
-            data.length.regs = vec![registers[1]];
-            data.place = None;
-            data.initialization = None;
-        }
-        Returned::OwnedValue(value) => {
-            value.value.regs = registers;
-            value.place = None;
-            for (index, payload) in value.payloads.iter_mut().enumerate() {
-                if let Some(payload) = payload {
-                    let (offset, ty) = if value.value.ty.has_variants() {
-                        (
-                            value.value.ty.variant_payload_offset(),
-                            value.value.ty.variants[index].ty.as_ref(),
-                        )
-                    } else {
-                        value.value.ty.aggregate_part(index)
-                    };
-                    let registers = ty
-                        .components
-                        .iter()
-                        .map(|(_, at)| {
-                            let component = value
-                                .value
-                                .ty
-                                .components
-                                .iter()
-                                .position(|(scalar, word)| *word <= offset + at && offset + at < word + scalar.size())
-                                .unwrap();
-                            value.value.regs[component]
-                        })
-                        .collect();
-                    rebind_model(payload, registers);
-                }
-            }
-        }
-    }
-}
 #[derive(Clone)]
 pub(super) struct TaskCompletionOutput {
     pub result:Ty,
@@ -465,12 +423,11 @@ pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>
             if let Some(id)=proof.known_identity(component){bindings.entry(id).or_insert(bound);}
         }
         // 拥有叶的存储身份与其输出分量共同命名；不把私有位置身份丢成未知。
-        let mut original=model.clone();
         let paths=view_contracts::resource_output_paths(&model);
         for resource in &paths{
             let(root,scope)=resource;
             let output=if model_index==0{view_contracts::Output::ReturnedResource(resource.clone())}else{view_contracts::Output::WrittenResource(model_index-1,resource.clone())};
-            if let(Some(source),Some(target))=(view_contracts::resource_value_mut(&mut original,*root),view_contracts::resource_value_mut(&mut value,*root)){
+            if let(Some(source),Some(target))=(view_contracts::root_resource(&model,*root),view_contracts::root_resource(&value,*root)){
                 let name=if source.ownership==application::Ownership::Borrowed{
                     let identity=source.root.identity();
                     let bound=bindings[&identity].clone();
@@ -480,16 +437,16 @@ pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>
                 let name=scope.iter().enumerate().fold(name,|parent,(at,fields)|view::Borrow::element(parent,fields.clone(),Some(bounds::Operand::Value(ValueIdentity::ElementIndex(scope.len()-1-at)))));
                 builder.view_model.resource_names.insert(output.clone(),name);
             }
-            if !scope.is_empty(){if let Some(source)=view_contracts::resource_output_mut(&mut original,resource){
+            if !scope.is_empty(){if let Some(source)=view_contracts::resource_output(&model,resource){
                 let name=builder.view_model.resource_names[&output].clone();
                 for origin in &source.root.proof.view_borrow(0).sources{if let view::Source::Data(id@ValueIdentity::Register(_))=origin{bindings.entry(*id).or_insert_with(||{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,name.clone());component_proof});}}
             }}
-            if scope.is_empty(){if let(Some(source),Some(target))=(view_contracts::resource_output_mut(&mut original,resource),view_contracts::resource_output_mut(&mut value,resource)){
+            if scope.is_empty(){if let(Some(source),Some(target))=(view_contracts::resource_output(&model,resource),view_contracts::resource_output(&value,resource)){
                 let bound=bounds::Proof::default().with_identity(ValueIdentity::Register(target.root.regs[0]));
                 bindings.entry(source.root.identity()).or_insert_with(||bound.clone());bindings.entry(ValueIdentity::Register(source.root.regs[0])).or_insert(bound);
             }}
         }
-        next+=value.registers().len();(value,model)
+        next+=value.registers().len();value
     })).collect::<Vec<_>>();
     let names=bindings.iter().filter_map(|(source,proof)|proof.known_identity(0).map(|target|(*source,target))).collect::<BTreeMap<_,_>>();
     let initialization=builder.view_model.initialization.iter().map(|effect|match effect {
@@ -524,8 +481,8 @@ pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>
             _=>{},
         }
     }
-    let mut models=models.into_iter().map(|pair|pair.map(|(mut value,model)|{
-        translate_returned(&mut value,&model,&bindings,false);prefix_inputs(&mut value,&resources);value
+    let mut models=models.into_iter().map(|model|model.map(|mut value|{
+        translate_in_place(&mut value,&bindings,false);prefix_inputs(&mut value,&resources);value
     }));
     Ok((models.next().unwrap(),(0..inputs.len()).collect(),models.collect(),initialization))
 }
@@ -1671,57 +1628,6 @@ fn append_actual(actual: &mut Vec<Option<bounds::Proof>>, value: &Value) {
     let proof = bounds::Proof::capture(value);
     for i in 0..value.regs.len() {
         actual.push(Some(proof.project(&[i], value.regs.len())));
-    }
-}
-fn translate_value(
-    value: &mut Value,
-    model: &Value,
-    bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
-) {
-    // 合同的未知来源保持未知；模型保留的寄存器不是本次真实返回值。
-    value.proof = model.proof.clone().at_call(bindings);
-    value.constant = model
-        .constant
-        .clone()
-        .or_else(|| value.proof.known_value(&value.ty));
-    value.uniform = false;
-}
-pub(super) fn translate_returned(
-    value: &mut Returned,
-    model: &Returned,
-    bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
-    stored: bool,
-) {
-    match (value, model) {
-        (Returned::Value(value), Returned::Value(model)) => translate_value(value, model, bindings),
-        (Returned::Dataset(value), Returned::Dataset(model)) => {
-            translate_value(&mut value.root, &model.root, bindings);
-            translate_value(&mut value.length, &model.length, bindings);
-            value.root.proof = bounds::Proof::capture(&value.root);
-            value.length.proof =
-                bounds::Proof::capture(&value.length).with_domains(Domains::from([
-                    IndexDomain::ApplicationLength(value.root.identity()),
-                ]));
-            value.residency = model.residency.at_call(bindings);
-            value.prefixes=model.prefixes.iter().map(|(word,fact)|(*word,fact.at_call(bindings))).collect();
-            value.count = model.count;
-            value.elements=model.elements.clone().map(&mut |model|{
-                let element_bindings=application::element_scope_bindings(bindings,model.registers().len(),stored);
-                let mut value=model.clone();translate_returned(&mut value,&model,&element_bindings,true);value
-            },&mut |when|when.at_call(bindings));
-        }
-        (Returned::OwnedValue(value), Returned::OwnedValue(model)) => {
-            translate_value(&mut value.value, &model.value, bindings);
-            for (value, model) in value.payloads.iter_mut().zip(&model.payloads) {
-                match (value.as_mut(), model.as_ref()) {
-                    (Some(value), Some(model)) => translate_returned(value, model, bindings,stored),
-                    _ => {
-                        *value = None;
-                    }
-                }
-            }
-        }
-        _ => {}
     }
 }
 fn view_outputs(contract:&Contract)->view_contracts::Interface {

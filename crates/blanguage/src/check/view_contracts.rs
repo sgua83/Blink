@@ -251,7 +251,7 @@ pub(super) fn resource_output_paths(value:&returns::Returned)->Vec<ResourcePath>
     let mut out=(0..roots).map(|root|(root,Vec::new())).collect::<Vec<_>>();
     for root in 0..roots{if let Some(data)=root_resource(value,root){visit(data,root,&[],&mut out);}}out
 }
-fn root_resource(value:&returns::Returned,index:usize)->Option<&application::Data>{match value{
+pub(super) fn root_resource(value:&returns::Returned,index:usize)->Option<&application::Data>{match value{
     returns::Returned::Dataset(data)if index==0=>Some(data),
     returns::Returned::OwnedValue(value)=>view::resource_paths(&value.value.ty).get(index).and_then(|path|view::owned_data_at(value,path)),_=>None,
 }}
@@ -271,6 +271,10 @@ pub(super) fn resource_outputs(value:&returns::Returned)->Vec<(ResourcePath,Borr
         }else{Borrow::source(Origin::Inactive)};
         (resource,borrow)
     }).collect()
+}
+pub(super) fn resource_output<'a>(value:&'a returns::Returned,resource:&ResourcePath)->Option<&'a application::Data>{
+    let(root,path)=resource;let mut data=root_resource(value,*root)?;
+    for fields in path{data=application::model_data(data.elements.known(),fields)?;}Some(data)
 }
 pub(super) fn resource_output_mut<'a>(value:&'a mut returns::Returned,resource:&ResourcePath)->Option<&'a mut application::Data>{
     let(root,path)=resource;let mut data=resource_value_mut(value,*root)?;

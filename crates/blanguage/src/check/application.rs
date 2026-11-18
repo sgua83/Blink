@@ -3854,7 +3854,7 @@ pub(super) fn bind_element_input(builder:&mut Builder<'_>,model:&mut returns::Re
             bindings.insert(ValueIdentity::ElementComponent(component),bounds::Proof::default()
                 .with_identity(ValueIdentity::ElementComponent(component)).with_identity(id));
         }
-        let original=model.clone();native_function::translate_returned(model,&original,&bindings,true);
+        native_function::translate_in_place(model,&bindings,true);
         if let Some(value)=model.view_value_mut(){
             let indices=(0..depth).rev().map(|depth|Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth)))).collect::<Vec<_>>();
             value.proof=value.proof.clone().view_parameters(&value.ty,&indices,|component|ValueIdentity::DatasetContent(parameter,resource,start+component));
