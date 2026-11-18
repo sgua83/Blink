@@ -439,13 +439,21 @@ impl Borrow{
         &self,
         reachable_path: &dyn Fn() -> Option<&'a bounds::Clause>,
     ) -> bool {
+        self.any_source_in(reachable_path, Self::source_unresolved)
+    }
+
+    fn any_source_in<'a>(
+        &self,
+        reachable_path: &dyn Fn() -> Option<&'a bounds::Clause>,
+        query: impl for<'path> Fn(&Source, &dyn Fn() -> Option<&'path bounds::Clause>) -> bool,
+    ) -> bool {
         self.sources.0.iter().any(|(source, when)| {
             let path = std::cell::LazyCell::new(|| {
                 let path = reachable_path()?;
                 let when = bounds::Clause::both(path, when);
                 when.possible().then_some(when)
             });
-            Self::source_unresolved(source, &|| path.as_ref())
+            query(source, &|| path.as_ref())
         })
     }
 
@@ -476,32 +484,29 @@ impl Borrow{
     }
 
     pub fn has_local(&self) -> bool {
-        fn query(value: &Borrow, path: &bounds::Clause) -> bool {
-            value.sources.0.iter().any(|(source, when)| {
-                let reachable = || {
-                    let when = bounds::Clause::both(path, when);
-                    when.possible().then_some(when)
-                };
-                let parent_is_local = |parent: &Borrow| {
-                    reachable().is_some_and(|when| query(parent, &when))
-                };
-                match source {
-                    Source::Relation(graph, root) => reachable().is_some() && graph.has_local(*root),
-                    Source::Position(origin) => match &origin.root {
-                        address::Root::Derived(parent) | address::Root::Dataset { borrow: parent, .. } => parent_is_local(parent),
-                        _ => origin.has_local() && reachable().is_some(),
-                    },
-                    Source::Element { parent, .. } | Source::Projection { parent, .. }
-                    | Source::TaskOutput { task: parent, .. } => parent_is_local(parent),
-                    Source::Task { captures, outputs, initialized, .. } => reachable().is_some_and(|when| {
-                        query(captures, &when) || query(initialized, &when)
-                            || outputs.iter().any(|output| query(output, &when))
-                    }),
-                    _ => false,
-                }
-            })
-        }
-        query(self, &bounds::Clause::default())
+        let root = std::cell::LazyCell::new(bounds::Clause::default);
+        self.has_local_in(&|| Some(&*root))
+    }
+
+    fn has_local_in<'a>(
+        &self,
+        reachable_path: &dyn Fn() -> Option<&'a bounds::Clause>,
+    ) -> bool {
+        self.any_source_in(reachable_path, |source, reachable| match source {
+            Source::Relation(graph, root) => reachable().is_some() && graph.has_local(*root),
+            Source::Position(origin) => match &origin.root {
+                address::Root::Derived(parent) | address::Root::Dataset { borrow: parent, .. } =>
+                    parent.has_local_in(reachable),
+                _ => origin.has_local() && reachable().is_some(),
+            },
+            Source::Element { parent, .. } | Source::Projection { parent, .. }
+            | Source::TaskOutput { task: parent, .. } => parent.has_local_in(reachable),
+            Source::Task { captures, outputs, initialized, .. } =>
+                captures.has_local_in(reachable)
+                    || initialized.has_local_in(reachable)
+                    || outputs.iter().any(|output| output.has_local_in(reachable)),
+            _ => false,
+        })
     }
     pub fn view_resources(&self)->Self {
         self.map_sources(|source|match source {
