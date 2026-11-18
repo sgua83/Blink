@@ -530,7 +530,7 @@ impl Graph {
         }
     }
     fn private(&self,source:&Origin)->bool{!self.references(source)&&Borrow::source(source.clone()).has_local()}
-    fn residual(&self,query:&Query<'_,'_,'_>)->Self{
+    fn residual(&self, query: &Query<'_>) -> Self {
         let mut residual=self.clone();
         for &id in query.values.keys() {
             if let Cow::Owned(node) = query.local_definition(id) {
@@ -596,17 +596,16 @@ impl Graph {
                 relation: Arc::clone(self),
                 variables: &variables,
                 values,
-                evaluation: &mut scope,
             };
             for (id, _) in stable.drain(..).chain(feedback.iter().copied()) {
-                let value = query.definition(id);
+                let value = query.definition(id, &mut scope);
                 query.values.insert(id, value);
             }
-            let next = variables.keys().map(|&id| (id, query.definition(id)))
+            let next = variables.keys().map(|&id| (id, query.definition(id, &mut scope)))
                 .collect::<BTreeMap<_, _>>();
-            if let Some(observe) = query.evaluation.known.observe {
+            if let Some(observe) = scope.known.observe {
                 use crate::compiler::{AnalysisStorage, BorrowSolveStorage};
-                observe(query.evaluation.state.name, BorrowSolveStorage::Relation {
+                observe(scope.state.name, BorrowSolveStorage::Relation {
                     root,
                     nodes: AnalysisStorage::vector(&self.nodes),
                     frames: AnalysisStorage::vector(&self.frames),
@@ -620,7 +619,7 @@ impl Graph {
             {
                 let value = query.node(root);
                 let residual = std::cell::OnceCell::new();
-                return self.rebind(&value, &|| residual.get_or_init(|| self.residual(&query)));
+                return self.rebind(value, &|| residual.get_or_init(|| self.residual(&query)));
             }
             values = query.values;
             for &(id, _) in &feedback {
@@ -630,10 +629,18 @@ impl Graph {
         }
     }
 }
-struct Query<'g,'e,'f>{graph:&'g Graph,relation:Arc<Graph>,variables:&'g BTreeMap<usize,Borrow>,values:BTreeMap<usize,Borrow>,evaluation:&'e mut BorrowEvaluation<'f>}
-impl<'g> Query<'g, '_, '_> {
-    fn node(&self,id:usize)->Borrow{self.variables.get(&id).unwrap_or_else(||&self.values[&id]).clone()}
-    fn definition(&mut self, id: usize) -> Borrow {
+struct Query<'g> {
+    graph: &'g Graph,
+    relation: Arc<Graph>,
+    variables: &'g BTreeMap<usize, Borrow>,
+    values: BTreeMap<usize, Borrow>,
+}
+impl<'g> Query<'g> {
+    fn node(&self, id: usize) -> &Borrow {
+        self.variables.get(&id).unwrap_or_else(|| &self.values[&id])
+    }
+
+    fn definition(&self, id: usize, evaluation: &mut BorrowEvaluation<'_>) -> Borrow {
         let mut definition = self.local_definition(id);
         let mut sources = match &mut definition {
             Cow::Borrowed(node) => node.seeds.sources.clone(),
@@ -641,15 +648,19 @@ impl<'g> Query<'g, '_, '_> {
         };
         for edge in &definition.edges {
             let from = self.node(edge.from);
-            let incoming = self.apply(id, edge.from, &edge.op, &from);
+            let incoming = self.apply(id, edge.from, &edge.op, from, evaluation);
             let path = edge.when.assume(&bounds::Clause::default(), true);
             sources.union(&incoming.sources.restricted(&path));
         }
         Borrow { sources, ..Borrow::default() }
     }
     fn deferred(&self,id:usize)->Borrow{Borrow::source(Origin::Relation(self.relation.clone(),id))}
-    fn apply(&mut self,id:usize,from_id:usize,op:&Op,from:&Borrow)->Borrow{
-        if let Op::Read{word,epoch,frame}=op{return self.read(id,from_id,from,*word,epoch,*frame);}
+    fn apply(
+        &self, id: usize, from_id: usize, op: &Op, from: &Borrow, evaluation: &mut BorrowEvaluation<'_>,
+    ) -> Borrow {
+        if let Op::Read { word, epoch, frame } = op {
+            return self.read(id, from_id, from, *word, epoch, *frame, evaluation);
+        }
         from.map_sources(|source|match op{Op::Identity=>Borrow::source(source),Op::Resources=>Borrow::source(source).resources(),Op::Owners=>Borrow::source(source).owners(),Op::Select(indices)=>Borrow::source(source).select_elements(indices),Op::Element{fields,index}=>Borrow::element(Borrow::source(source),fields.clone(),*index),Op::Projection(fields)=>Borrow::projection(Borrow::source(source),fields.clone()),Op::Position(p)=>p.map_borrows(|_|Borrow::source(source)).normalize(),Op::Read{..}|Op::Initial{..}=>Borrow::default()})
     }
     fn local_definition(&self, id: usize) -> Cow<'g, Node> {
@@ -746,7 +757,10 @@ impl<'g> Query<'g, '_, '_> {
         let(Some((a,x)),Some((b,y)))=(self.location(read),self.location(write))else{return false;};
         (a==b||(!self.graph.variables.contains(&a)&&!self.graph.variables.contains(&b)&&self.graph.nodes[a]==self.graph.nodes[b]))&&x.root==y.root&&x.base==y.base&&content_word(&x,word).zip(content_word(&y,field)).is_some_and(|((_,a),(_,b))|a==b)
     }
-    fn read(&mut self,id:usize,from_id:usize,from:&Borrow,word:u32,epoch:&Epoch,frame:Option<usize>)->Borrow{
+    fn read(
+        &self, id: usize, from_id: usize, from: &Borrow, word: u32, epoch: &Epoch, frame: Option<usize>,
+        evaluation: &mut BorrowEvaluation<'_>,
+    ) -> Borrow {
         let mut output=Borrow::default();
         for(source,path)in from.sources.entries(){
             let Origin::Position(origin)=source else{continue;};let position=content_position(origin,word);let mut content=ContentAtRead::default();let mut at=frame;let mut delayed=false;let mut ready=true;
@@ -781,7 +795,7 @@ impl<'g> Query<'g, '_, '_> {
                 if !ready{break;}
             }
             let value=if !ready{Borrow::default()}else if delayed{self.deferred(id)}else if content.earlier.as_ref().is_some_and(|p|!p.possible()){content.with_initial(Borrow::default())}else if origin.symbolic_input(){self.deferred(id)}else{
-                let base=match epoch{Epoch::Input=>input_contents(origin,word),Epoch::Local{memory,snapshots}=>self.evaluation.content_before(origin,word,*memory,snapshots.as_deref())};
+                let base=match epoch{Epoch::Input=>input_contents(origin,word),Epoch::Local{memory,snapshots}=>evaluation.content_before(origin,word,*memory,snapshots.as_deref())};
                 if base.sources.iter().any(|s|matches!(s,Origin::Contents{..})){self.deferred(id)}else{content.with_initial(base)}
             };output.sources.union(&value.sources.restricted(&path));
         }output
