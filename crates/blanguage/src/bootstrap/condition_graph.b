@@ -1545,3 +1545,28 @@ extern "C" u32 comparison_boolean(address state,u32 operation,ComparisonBooleanH
  host.pair(state,0,0,0);host.pair(state,1,1,1);host.finish(state,1);
  return operation==11 ? 1 : 0;
 }
+
+extern "C" void value_condition(address context,ValueConditionInput input,ValueConditionHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.domain) requires nonzero(host.bounds) requires nonzero(host.emit) requires nonzero(host.finish) {
+ u32 live=input.base_cases;
+ if(input.constant.present!=0){live=live&(input.constant.bits==0u64 ? 1 : 2);}
+ if(input.scalar.kind!=2&&live!=0){
+  while(true){ComparisonDomain domain=host.next(context);if(domain.present==0){break;}
+   if(domain.common!=0){host.domain(context,live,domain.original);}
+  }
+  if(input.scalar.kind==0||input.scalar.kind==1){
+   IndexBounds bounds=host.bounds(context);
+   if(bounds.lower!=0u64){host.emit(context,live,ValueConditionOutput::Minimum,bounds.lower);}
+   if(bounds.upper!=input.scalar.mask){host.emit(context,live,ValueConditionOutput::Maximum,bounds.upper);}
+  }
+ }
+ u32 truth=0;
+ while(truth<2){u32 mask=1<<truth;
+  if((live&mask)==0){host.finish(context,truth,ValueConditionFinish::Impossible);}
+  else if(input.scalar.kind==2){host.finish(context,truth,ValueConditionFinish::Base);}
+  else{
+   ValueConditionOutput output=input.scalar.kind==3 ? (truth==0 ? ValueConditionOutput::BooleanFalse : ValueConditionOutput::BooleanTrue) : (truth==0 ? ValueConditionOutput::Zero : ValueConditionOutput::NonZero);
+   host.emit(context,mask,output,0u64);host.finish(context,truth,ValueConditionFinish::Facts);
+  }truth+=1;
+ }
+}

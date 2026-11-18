@@ -37,13 +37,6 @@ enum Output {
     Equal,
     NotEqual,
 }
-#[repr(C)]
-#[derive(Default)]
-struct Domain {
-    present: u32,
-    common: u32,
-    original: Borrowed,
-}
 struct State<'a> {
     values: [&'a Value; 2],
     ids: [ValueIdentity; 2],
@@ -98,16 +91,8 @@ unsafe extern "C" fn select(s: Slot, side: u32) {
     let c = unsafe { frame::<State<'_>>(s) };
     c.input = c.domains(side).iter();
 }
-unsafe extern "C" fn next(s: Slot) -> Domain {
-    unsafe { frame::<State<'_>>(s) }
-        .input
-        .next()
-        .map(|d| Domain {
-            present: 1,
-            common: u32::from(matches!(d, IndexDomain::CommonRange(..))),
-            original: ptr::from_ref(d).cast(),
-        })
-        .unwrap_or_default()
+unsafe extern "C" fn next(s: Slot) -> fact_fields::ConditionDomain {
+    unsafe { frame::<State<'_>>(s) }.input.next().map(fact_fields::ConditionDomain::from).unwrap_or_default()
 }
 unsafe extern "C" fn domain(s: Slot, truth: u32, side: u32, value: Borrowed) {
     let value = unsafe { *value.cast::<IndexDomain>() };
@@ -127,7 +112,7 @@ unsafe extern "C" fn finish(s: Slot, truth: u32, possible: u32) {
 struct CaseHost {
     emit: unsafe extern "C" fn(Slot, u32, Output, u32, u64),
     select: unsafe extern "C" fn(Slot, u32),
-    next: unsafe extern "C" fn(Slot) -> Domain,
+    next: unsafe extern "C" fn(Slot) -> fact_fields::ConditionDomain,
     domain: unsafe extern "C" fn(Slot, u32, u32, Borrowed),
     finish: unsafe extern "C" fn(Slot, u32, u32),
 }

@@ -12,6 +12,7 @@ mod equality;
 mod integer_relations;
 mod index_domains;
 mod comparison_conditions;
+mod value_conditions;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2678,33 +2679,7 @@ impl Condition {
         Self { cases: [condition.negate(), condition] }
     }
     fn component(value: &Value, component: usize) -> Self {
-        let mut condition = value
-            .proof
-            .component_condition(component)
-            .cloned()
-            .unwrap_or_default();
-        let scalar = value.ty.components[component].0;
-        let identity = value.component_identity(component);
-        for (truth, case) in condition.cases.iter_mut().enumerate() {
-            let fact = if scalar == Scalar::Bool {
-                Fact::Boolean(identity, truth != 0)
-            } else if scalar.is_integer() {
-                if truth != 0 { Fact::NonZero(identity) } else { Fact::Zero(identity) }
-            } else { continue; };
-            let mut facts = Facts::from([fact]);
-            facts.extend(value.proof.domains(component).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(identity,domain)));
-            if scalar.is_integer() {
-                let (minimum, maximum) = value.component_range(component);
-                if minimum != 0 { facts.insert(Fact::Minimum(identity, scalar, minimum)); }
-                if maximum != scalar.bit_mask() { facts.insert(Fact::Maximum(identity, scalar, maximum)); }
-            }
-            *case = Clause::both(case, &Clause::facts(facts));
-        }
-        // 常量排除相反结果，但不抹掉成立结果已经持有的范围与长度事实。
-        if let Some(bits) = &value.constant {
-            condition.cases[usize::from(bits[component] == 0)] = Clause::impossible();
-        }
-        condition
+        value_conditions::component(value,component)
     }
     pub fn negate(mut self) -> Self {
         self.cases.swap(0, 1);

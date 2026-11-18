@@ -723,3 +723,16 @@ extern "C" u32 comparison_float(address state,u32 operation,IndexBounds finite,C
  requires nonzero(host.cases.emit) requires nonzero(host.cases.select) requires nonzero(host.cases.next) requires nonzero(host.cases.domain) requires nonzero(host.cases.finish) requires nonzero(host.predicate);
 extern "C" u32 comparison_boolean(address state,u32 operation,ComparisonBooleanHost host) on cpu
  requires nonzero(host.pair) requires nonzero(host.finish);
+
+struct ValueConditionInput {InternalScalar scalar;IndexConstant constant;u32 base_cases;};
+enum ValueConditionOutput:u32 {BooleanFalse=0;BooleanTrue=1;Zero=2;NonZero=3;Minimum=4;Maximum=5;};
+enum ValueConditionFinish:u32 {Impossible=0;Base=1;Facts=2;};
+struct ValueConditionHost {
+ cfn<ComparisonDomain,address> next;
+ cfn<void,address,u32,address> domain;
+ cfn<IndexBounds,address> ensures memory(read) bounds;
+ cfn<void,address,u32,ValueConditionOutput,u64> emit;
+ cfn<void,address,u32,ValueConditionFinish> finish;
+};
+extern "C" void value_condition(address context,ValueConditionInput input,ValueConditionHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.domain) requires nonzero(host.bounds) requires nonzero(host.emit) requires nonzero(host.finish);

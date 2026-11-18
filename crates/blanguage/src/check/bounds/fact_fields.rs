@@ -371,3 +371,13 @@ pub(super) unsafe extern "C" fn computed(value: Borrowed) -> ExpressionView {
         _ => ExpressionView::default(),
     }
 }
+
+// Both value and comparison conditions borrow this same original domain field.
+#[derive(Default)]
+#[repr(C)]
+pub(super) struct ConditionDomain {present:u32,common:u32,original:Borrowed}
+impl From<&IndexDomain> for ConditionDomain {
+    fn from(domain:&IndexDomain)->Self {
+        Self{present:1,common:u32::from(matches!(domain,IndexDomain::CommonRange(..))),original:ptr::from_ref(domain).cast()}
+    }
+}
