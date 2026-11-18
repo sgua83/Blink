@@ -2,7 +2,7 @@ pub use crate::texture::{TextureInput, CpuTextureBinding, CpuTextures};
 mod dataset;
 mod observation;
 mod sort;
-use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
+use crate::{Dataset, DomainBindings, ReadDataset, Result, Value, arguments, error};
 use crate::library::Library;
 use blanguage::{
     ExecutableProgram, TemplateProgram,
@@ -719,14 +719,15 @@ pub(crate) struct CpuBuffer<'a> {
     pub(crate) writable: bool,
 }
 impl<'a> CpuBuffer<'a> {
-    fn require_storage(data: &Dataset) -> Result<()> {
+    fn require_layout(data: &Dataset) -> Result<()> {
         if data.stride != blanguage::ir::align_up(data.ty.size, data.ty.align) {
             return Err(error("原生CPU绑定的物理记录布局与其类型不一致"));
         }
-        data.require_views()
+        Ok(())
     }
     fn owned(data: &'a mut Dataset) -> Result<Self> {
-        Self::require_storage(data)?;
+        Self::require_layout(data)?;
+        data.require_views()?;
         Ok(Self {
             ty: &data.ty,
             stride: data.stride,
@@ -735,8 +736,8 @@ impl<'a> CpuBuffer<'a> {
             writable:true,
         })
     }
-    fn read(data: &'a Dataset) -> Result<Self> {
-        Self::require_storage(data)?;
+    fn read(data: &'a ReadDataset) -> Result<Self> {
+        Self::require_layout(data)?;
         Ok(Self {
             ty: &data.ty,
             stride: data.stride,

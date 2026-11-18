@@ -8,9 +8,11 @@ impl Device {
         data: &crate::cpu::CpuDataset,
         memo: &mut BTreeMap<usize, ReadDataset>,
     ) -> Result<GpuDataset> {
-        data.require_views()?;
         match data {
-            crate::cpu::CpuDataset::Owned(data) => self.upload_graph(data, memo),
+            crate::cpu::CpuDataset::Owned(data) => {
+                data.require_views()?;
+                self.upload_graph(data, memo)
+            }
             crate::cpu::CpuDataset::Read(source) => self
                 .upload_read(source, memo)
                 .map(|target| target.binding()),

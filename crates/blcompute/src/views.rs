@@ -160,7 +160,7 @@ impl Dataset {
     }
 
     pub(crate) fn require_views(&self) -> Result<()> {
-        if self.ty.contains_views() && self.views.sources.is_empty(){
+        if self.views.sources.is_empty() && self.ty.contains_views() {
             for words in self.words.chunks(self.stride as usize/4){
                 let mut present=false;
                 self.ty.visit_view_fields(words,|_,_|present=true).map_err(error)?;
