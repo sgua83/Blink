@@ -15,7 +15,7 @@ use std::borrow::Cow;
 #[derive(Clone, Copy)]
 enum Clauses<'a> {
     Declaration(&'a crate::generics::Instance),
-    Signature(&'a [Param], &'a [ContractPredicate], Span),
+    Signature(usize, &'a [ContractPredicate], Span),
     Native(&'a [Param], &'a [FunctionContract], &'a str, Span),
 }
 /// Read source clauses with their real instance bindings, or a concrete cfn signature.
@@ -37,8 +37,8 @@ impl<'a> From<&'a crate::generics::Instance> for Contract<'a> {
 }
 impl<'a> Contract<'a> {
     pub(super) fn signature(source:&'a crate::Source,module:&'a str,imports:&'a [String],
-        parameters:&'a [Param],outputs:&'a [ContractPredicate],span:Span)->Self {
-        Self { source,module,imports,public:false,clauses:Clauses::Signature(parameters,outputs,span) }
+        argument_count:usize,outputs:&'a [ContractPredicate],span:Span)->Self {
+        Self { source,module,imports,public:false,clauses:Clauses::Signature(argument_count,outputs,span) }
     }
     pub(super) fn declaration_origin(self)->Option<SourceDeclaration>{
         match self.clauses {
@@ -53,7 +53,9 @@ impl<'a> Contract<'a> {
     pub(super) fn parameters(self)->impl Iterator<Item=ScopeParameter<'a>> {
         let(declaration,bound)=match self.clauses {
             Clauses::Declaration(instance)=>(Some(instance),None),
-            Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>(None,Some(parameters)),
+            Clauses::Native(parameters,..)=>(None,Some(parameters)),
+            // An indirect call supplies its actual captured values separately.
+            Clauses::Signature(..)=>(None,None),
         };
         declaration.into_iter().flat_map(|instance|instance.definition.function.params().into_iter()
             .map(move|parameter|ScopeParameter::Declaration(instance,parameter)))
@@ -97,13 +99,15 @@ impl<'a> Contract<'a> {
     pub(super) fn parameter_name(self,index:usize)->String {
         match self.clauses {
             Clauses::Declaration(instance)=>instance.definition.function.params().at(index).name().into(),
-            Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>parameters[index].name.clone(),
+            Clauses::Signature(..)=>format!("argument{index}"),
+            Clauses::Native(parameters,..)=>parameters[index].name.clone(),
         }
     }
     fn condition_scope(self) -> ConditionScope<'a> {
         let parameters = match self.clauses {
             Clauses::Declaration(instance) => ConditionParameters::Declaration(instance),
-            Clauses::Signature(parameters,..) | Clauses::Native(parameters,..) => ConditionParameters::Native(parameters),
+            Clauses::Native(parameters,..) => ConditionParameters::Native(parameters),
+            Clauses::Signature(count,..) => ConditionParameters::Captured(count),
         };
         ConditionScope { source: self.source, module: self.module, imports: self.imports,
             public: self.public, parameters }
@@ -115,6 +119,7 @@ enum ConditionParameters<'a> {
     Declaration(&'a crate::generics::Instance),
     Native(&'a [Param]),
     Positional(&'a [(Access, TypeName)]),
+    Captured(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -133,6 +138,7 @@ impl<'a> ConditionScope<'a> {
             }
             ConditionParameters::Native(parameters) => parameters.iter().any(|parameter| parameter.name==name),
             ConditionParameters::Positional(parameters) => positional_index(name) < parameters.len(),
+            ConditionParameters::Captured(count) => positional_index(name) < count,
         }
     }
 
@@ -152,6 +158,7 @@ impl<'a> ConditionScope<'a> {
             ConditionParameters::Positional(parameters) => {
                 Ok(parameters.get(positional_index(name)).map(|(_, ty)| Cow::Borrowed(ty)))
             }
+            ConditionParameters::Captured(_) => Ok(None),
         }
     }
 }
@@ -684,7 +691,7 @@ impl TaskGuard {
         map:impl Fn(bounds::Operand)->Option<bounds::Operand>,
     )->Result<Vec<Presence>> {
         let source=builder.scope.source().clone();
-        let definition=Contract::signature(&source,"",&[],&[],&[],span);
+        let definition=Contract::signature(&source,"",&[],0,&[],span);
         let mut inputs=BTreeMap::new();
         for (name,(ty,words)) in &self.inputs {
             let mut regs=Vec::with_capacity(words.len());

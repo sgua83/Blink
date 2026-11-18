@@ -149,11 +149,11 @@ pub(super) async fn source(builder:&mut Builder<'_>,parameters:CallParameters<'_
    SourceNeed::Mutable=>return unsafe{world.call(builder.mutable_argument(arg,parameter.access)).await},
    SourceNeed::Expected=>{expected=unsafe{world.call(parameters.expected(world,&builder.scope,index)).await}?;}
    SourceNeed::Read=>{
-    argument=unsafe{world.call(builder.read_argument(arg,expected.as_ref())).await}?;
+    argument=unsafe{world.call(builder.read_argument(arg,expected.as_deref())).await}?;
     facts.present=u32::from(argument.is_some());facts.continuing=u32::from(builder.flow.continues());
    }
    SourceNeed::Value=>{
-    returned=unsafe{world.call(builder.evaluate_returned(arg,expected.as_ref())).await}?;
+    returned=unsafe{world.call(builder.evaluate_returned(arg,expected.as_deref())).await}?;
     facts.present=u32::from(returned.as_ref().is_some_and(|value|!matches!(value,Returned::Unit)));facts.continuing=u32::from(builder.flow.continues());
    }
    SourceNeed::ReturnRead=>return Ok(argument.take()),

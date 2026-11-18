@@ -1,5 +1,6 @@
 //! 函数借用现有数据集、独占／原子位置或 tile；静态绑定实际来源与访问模式。
 use super::*;
+use std::borrow::Cow;
 pub(super) enum Argument {
     BorrowedData(application::DataReference),
     Acceleration(usize),
@@ -43,23 +44,26 @@ pub(super) async fn parameter_type(world: &World, param: &Param, context: (&Sour
 #[derive(Clone,Copy)]
 pub(super) enum CallParameters<'a>{
     Declaration(&'a Definition),
-    CFunction(&'a [Param]),
+    CFunction(&'a [CallParameter], Span),
 }
-impl CallParameters<'_>{
+impl<'a> CallParameters<'a>{
     pub(super) fn len(self)->usize{match self{
         Self::Declaration(definition)=>definition.function.params().len(),
-        Self::CFunction(parameters)=>parameters.len(),
+        Self::CFunction(parameters,..)=>parameters.len(),
     }}
     pub(super) fn access(self,index:usize)->Access{match self{
         Self::Declaration(definition)=>definition.function.params().at(index).access(),
-        Self::CFunction(parameters)=>parameters[index].access,
+        Self::CFunction(parameters,..)=>match &parameters[index].kind {
+            CallParameterKind::Value(_) => Access::Value,
+            CallParameterKind::Reference {access,..} => *access,
+        },
     }}
     pub(super) fn form(self,index:usize)->DeclaredArgumentForm{match self{
         Self::Declaration(definition)=>declared_argument_form(&definition.function.params().at(index).ty()),
         // The cfn producer has already checked its ordinary C ABI layout.
-        Self::CFunction(_)=>DeclaredArgumentForm::Ordinary,
+        Self::CFunction(..)=>DeclaredArgumentForm::Ordinary,
     }}
-    pub(super) async fn expected(self,world:&World,caller:&LexicalScope,index:usize)->Result<Option<Ty>>{
+    pub(super) async fn expected(self,world:&World,caller:&LexicalScope,index:usize)->Result<Option<Cow<'a,Ty>>>{
         match self{
             Self::Declaration(definition)=>{
                 if !definition.function.types().is_empty()||!definition.function.values().is_empty(){return Ok(None);}
@@ -69,11 +73,16 @@ impl CallParameters<'_>{
                 let bindings=Arc::new(crate::generics::Bindings::default());
                 let syntax=unsafe { world.call(bindings.type_name(world,&parameter.ty(),
                     (&definition.source,&definition.module,&definition.imports),parameter.span())).await }?;
-                unsafe { world.call(world.ty(&syntax,&definition.source,parameter.span(),&definition.module,&definition.imports)).await }.map(Some)
+                unsafe { world.call(world.ty(&syntax,&definition.source,parameter.span(),&definition.module,&definition.imports)).await }
+                    .map(|ty|Some(Cow::Owned(ty)))
             }
-            Self::CFunction(parameters)=>{
-                let parameter=&parameters[index];
-                unsafe { world.call(world.ty(&parameter.ty,caller.source(),parameter.span,caller.module(),caller.imports())).await }.map(Some)
+            Self::CFunction(parameters,span)=>{
+                let ty=match &parameters[index].kind {
+                    CallParameterKind::Value(ty) | CallParameterKind::Reference {ty,..} => ty,
+                };
+                unsafe { world.call(world.validate_type_references(ty,caller.source(),span,
+                    caller.module(),caller.imports(),&mut BTreeSet::new())).await }?;
+                Ok(Some(Cow::Borrowed(ty)))
             }
         }
     }
@@ -85,7 +94,7 @@ impl CallParameters<'_>{
                     matches!(contract.predicate().kind(),crate::syntax::PredicateKind::Initialized{value,..}
                         if value.split('.').next()==Some(parameter.name())))
             }
-            Self::CFunction(_)=>false,
+            Self::CFunction(..)=>false,
         }
     }
 }

@@ -231,11 +231,11 @@ impl Builder<'_> {
     pub(super) async fn function_value_call(&mut self, callee_span: Span, args: &Expressions, span: Span,
         lower: impl std::ops::AsyncFnOnce(&mut Self) -> Result<Option<Value>>) -> Result<Option<returns::Returned>> {
         unsafe { self.world.call(self.function_value_arguments(callee_span,span,lower,async |builder,parameters|
-            unsafe { builder.world.call(builder.call_arguments(cooperative::CallParameters::CFunction(parameters),args,span)).await })).await }
+            unsafe { builder.world.call(builder.call_arguments(cooperative::CallParameters::CFunction(parameters,span),args,span)).await })).await }
     }
     pub(super) async fn function_value_arguments(&mut self,callee_span:Span,span:Span,
         lower:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>,
-        prepare:impl std::ops::AsyncFnOnce(&mut Self,&[Param])->Result<Option<Vec<Argument>>>)->Result<Option<returns::Returned>> {
+        prepare:impl std::ops::AsyncFnOnce(&mut Self,&[CallParameter])->Result<Option<Vec<Argument>>>)->Result<Option<returns::Returned>> {
         if self.program.target != Target::Cpu {
             return self.fail(span, "B265", "原生C函数地址只能在CPU位置调用");
         }
@@ -248,18 +248,11 @@ impl Builder<'_> {
         }
         let (parameters, result, never) = unsafe { self.world.call(self.world.c_function_signature(
             function, self.scope.source(), span, self.scope.module(), self.scope.imports())).await }?;
-        let source_parameters = parameters.iter().enumerate().map(|(index, parameter)| {
-            let (ty, access) = match &parameter.kind {
-                CallParameterKind::Value(ty) => (ty, Access::Value),
-                CallParameterKind::Reference { ty, access } => (ty, *access),
-            };
-            Param { name: format!("argument{index}"), ty: ty.syntax(), access, span }
-        }).collect::<Vec<_>>();
-        let Some(arguments) = prepare(self,&source_parameters).await? else { return Ok(None); };
+        let Some(arguments) = prepare(self,&parameters).await? else { return Ok(None); };
         let scope = self.scope.clone();
         let contract = if function.contracts.is_empty() { None } else {
             Some(outputs::Contract::signature(scope.source(), scope.module(),
-                scope.imports(), &source_parameters, &function.contracts, span))
+                scope.imports(), parameters.len(), &function.contracts, span))
         };
         unsafe { self.world.call(self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, contract, span, None)).await }
             .map(|value| value.map(returns::Returned::value))

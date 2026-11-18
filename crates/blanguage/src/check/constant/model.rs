@@ -306,7 +306,7 @@ impl Builder<'_> {
      let callee=unsafe{&*view.first};let args=unsafe{std::slice::from_raw_parts(view.args,view.arg_count)};
      let result=unsafe{self.world.call(self.function_value_arguments(callee.span,span,
       async |builder|unsafe{builder.world.call(builder.reference_expr(callee,None)).await},
-      async |builder,parameters|unsafe{builder.world.call(builder.reference_call_arguments(cooperative::CallParameters::CFunction(parameters),args,span)).await})).await}?;
+      async |builder,parameters|unsafe{builder.world.call(builder.reference_call_arguments(cooperative::CallParameters::CFunction(parameters,span),args,span)).await})).await}?;
      return self.ordinary_return(result,span);
     }
     SyntaxNeed::Empty=>return Ok(None),
@@ -411,7 +411,7 @@ impl Builder<'_> {
   let access=parameters.access(index);
   let code=match access{Access::InOut=>1,Access::Write=>2,Access::Atomic=>3,_=>0};
   let mut cursor=unsafe{b_argument_start(code)};let mut facts=0;
-  let mut place:Option<Place>=None;let mut expected:Option<Ty>=None;let mut value:Option<Value>=None;
+  let mut place:Option<Place>=None;let mut expected=None;let mut value:Option<Value>=None;
   loop{
    match unsafe{b_argument_step(&mut cursor,facts)}{
     ArgumentNeed::PlaceTest=>{facts=u32::from(self.reference_is_place(expression));}
@@ -426,7 +426,7 @@ impl Builder<'_> {
      return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));
     }
     ArgumentNeed::Expected=>{expected=unsafe{self.world.call(parameters.expected(self.world,&self.scope,index)).await}?;}
-    ArgumentNeed::Read=>{value=unsafe{self.world.call(self.reference_expr(expression,expected.as_ref())).await}?;}
+    ArgumentNeed::Read=>{value=unsafe{self.world.call(self.reference_expr(expression,expected.as_deref())).await}?;}
     ArgumentNeed::Flow=>{facts=u32::from(self.flow.continues())<<2;}
     ArgumentNeed::MutableReturned=>return unsafe{self.world.call(self.mutable_returned_argument(
      value.take().map(returns::Returned::value),access,expression.span)).await},
