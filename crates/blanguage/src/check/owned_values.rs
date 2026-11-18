@@ -2,6 +2,7 @@
 use super::*;
 #[path="owned_values/model.rs"]
 mod model;
+pub(super) mod storage;
 use application::{Data, DataPayload, Ownership};
 use returns::Returned;
 
@@ -41,37 +42,6 @@ pub(super) async fn storage_type(world:&World,ty:&TypeName,context:(&Source,&str
 }
 
 impl Builder<'_> {
-    pub(super) fn returned_storage(&self, value: &Returned) -> Value {
-        match value {
-            Returned::Value(value) => (**value).clone(),
-            Returned::OwnedValue(value) => value.value.clone(),
-            Returned::Unit => Value {
-                ty: Ty::unit(),
-                regs: Vec::new(),
-                proof: bounds::Proof::default(),
-                uniform: true,
-                literal: false,
-                constant: Some(Vec::new()),
-            },
-            Returned::Dataset(data) => {
-                let mut proof = bounds::Proof::default();
-                proof.append(&data.root);
-                proof.append(&data.length);
-                let mut ty=Ty::owned_dataset(data.ty.syntax(), data.count);
-                ty.components=vec![(data.root.ty.components[0].0,0),(Scalar::U32,data.root.ty.size)];
-                ty.align=data.root.ty.align.max(data.length.ty.align);
-                ty.size=ir::align_up(data.root.ty.size+data.length.ty.size,ty.align);
-                Value {
-                    ty,
-                    regs: vec![data.root.regs[0], data.length.regs[0]],
-                    proof,
-                    uniform: data.root.uniform && data.length.uniform,
-                    literal: false,
-                    constant: None,
-                }
-            }
-        }
-    }
     pub(super) async fn expected_storage(&self,ty:&TypeName,span:Span)->Result<Ty> {
         unsafe { self.world.call(storage_type(self.world,ty,(self.scope.source(),self.scope.module(),self.scope.imports()),span)).await }
     }
@@ -123,114 +93,6 @@ impl Builder<'_> {
             _=>{},
         }
         Ok(())
-    }
-    pub(super) fn rebind_returned(&mut self, value: &mut Returned, regs: Vec<Reg>) {
-        match value {
-            Returned::Unit => {}
-            Returned::Value(value) => value.regs = regs,
-            Returned::OwnedValue(result) => {
-                result.value.regs = regs;
-                result.place = None;
-            }
-            Returned::Dataset(data) => {
-                data.root.regs = vec![regs[0]];
-                data.root.proof = bounds::Proof::capture(&data.root);
-                data.length.regs = vec![regs[1]];
-                data.length.proof =
-                    bounds::Proof::capture(&data.length).with_domains(Domains::from([
-                        IndexDomain::ApplicationLength(data.root.identity()),
-                    ]));
-            }
-        }
-    }
-    pub(super) async fn template_returned(&self, mut value: Value, available: bool) -> Result<Returned> {
-        if value.ty.dataset.is_none(){value.proof.retain_view_borrows(&value.ty);}
-        Ok(if let Some(reference) = value.ty.dataset.as_deref() {
-            let element=unsafe { self.world.call(self.expected_storage(reference,self.scope.span())).await }?;
-            let mut handle = self.value_component(&value, 0);
-            handle.proof = bounds::Proof::capture(&handle);
-            let mut length = self.value_component(&value, 1);
-            let count = value.ty.values.first().copied();
-            length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
-                IndexDomain::ApplicationLength(handle.identity()),
-            ]));
-            if let Some(n) = count {
-                length.proof = bounds::Proof::unsigned(n, n).with_domains(Domains::from([
-                    IndexDomain::ApplicationLength(handle.identity()),
-                ]));
-                length.constant = Some(vec![Bits::from(n)]);
-            }
-            Returned::Dataset(Box::new(DataPayload {
-                prefixes: BTreeMap::new(),
-                elements:application::ElementFacts::Unknown,
-                root: handle,
-                length,
-                ty: element.clone(),
-                count,
-                layout: application::DataLayout::Declared,
-                residency: residency::Residency::default(),
-                ownership: if available {
-                    Ownership::Owned
-                } else {
-                    Ownership::Moved
-                },
-                access: Access::InOut,
-                place: None,
-                initialization: None,
-            }))
-        } else if value.ty.owns_resources() && !value.ty.has_variants() {
-            let mut payloads=Vec::new();
-            for i in 0..value.ty.aggregate_len() {
-                let payload=if value.ty.aggregate_part(i).1.owns_resources() {
-                    let field=self.record_component(&value,i);
-                    Some(Box::new(unsafe { self.world.call(self.template_returned(field,available)).await }?))
-                } else { None };
-                payloads.push(payload);
-            }
-            let ownership=if (value.ty.cleanup.is_some() || value.ty.task_result().is_some()) && !available {Ownership::Moved}else{Ownership::Owned};
-            Returned::OwnedValue(Box::new(OwnedValuePayload {
-                value,
-                payloads,
-                ownership,
-                place: None, declaration: 0,
-            }))
-        } else if value.ty.owns_resources() {
-            let mut payloads = vec![None;value.ty.variants.len()];
-            if !available {
-                return Ok(Returned::OwnedValue(Box::new(OwnedValuePayload {
-                    value,
-                    payloads,
-                    ownership: Ownership::Moved,
-                    place: None, declaration: 0,
-                })));
-            }
-            for index in 0..value.ty.variants.len() {
-                let ty = &value.ty.variants[index].ty;
-                let offset = value.ty.variant_payload_offset();
-                let components: Vec<_> = ty.components.iter().map(|(_,at)| {
-                    value.ty.components.iter().position(|(scalar,word)| *word <= offset + at && offset + at < word + scalar.size()).unwrap()
-                }).collect();
-                let mut proof = value.projected_proof(&components);
-                for (component, source) in components.iter().enumerate() {
-                    if ty.components[component] != (value.ty.components[*source].0, value.ty.components[*source].1 - offset) {
-                        proof.forget_value(&[component], components.len());
-                    }
-                }
-                let payload = Value { ty: (**ty).clone(), regs: components.iter().map(|i|value.regs[*i]).collect(),
-                    proof, uniform: value.uniform, literal: false, constant: None };
-                payloads[index] = Some(Box::new(unsafe { self.world.call(self.template_returned(payload, available)).await }?));
-            }
-            Returned::OwnedValue(Box::new(OwnedValuePayload {
-                value,
-                payloads,
-                ownership: Ownership::Owned,
-                place: None, declaration: 0,
-            }))
-        } else if value.ty.name == "void" {
-            Returned::Unit
-        } else {
-            Returned::value(value)
-        })
     }
     pub(super) fn value_component(&self, value: &Value, index: usize) -> Value {
         Value {

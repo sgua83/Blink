@@ -1,7 +1,7 @@
 //! 记录的字段投影保持原局部槽、Frame 数据和每个资源叶的唯一拥有关系。
 use super::*;
 use application::Ownership;
-use owned_values::{OwnedValue, OwnedValuePayload};
+use owned_values::OwnedValue;
 use returns::Returned;
 mod projection;
 
@@ -23,130 +23,21 @@ fn metadata_mut<'a>(owner: &'a mut OwnedValue, path: &[usize]) -> &'a mut Return
     }
 }
 impl Builder<'_> {
-    pub(super) fn record_component(&self, value: &Value, index: usize) -> Value {
-        let (offset, ty) = value.ty.aggregate_part(index);
-        let components: Vec<_> = ty
-            .components
-            .iter()
-            .map(|(_, at)| {
-                value
-                    .ty
-                    .components
-                    .iter()
-                    .position(|(_, word)| *word == offset + at)
-                    .unwrap()
-            })
-            .collect();
-        Value {
-            ty: ty.clone(),
-            regs: components.iter().map(|i| value.regs[*i]).collect(),
-            proof: value.projected_proof(&components),
-            uniform: value.uniform,
-            literal: false,
-            constant: value
-                .constant
-                .as_ref()
-                .map(|v| components.iter().map(|i| v[*i]).collect()),
-        }
+    pub(super) fn record_component(&self, value:&Value,index:usize)->Value {
+        let(offset,ty)=value.ty.aggregate_part(index);
+        let components=projection::components(&value.ty,ty,offset);
+        self.component_value(value,ty,&components)
     }
-    pub(super) fn unpack_record(&mut self, owner: &OwnedValue, index: usize) -> Returned {
-        let value = self.record_component(&owner.value, index);
-        if !value.ty.owns_resources() {
-            return Returned::value(value);
-        }
-        let mut item = (**owner.payloads[index].as_ref().unwrap()).clone();
-        self.rebind_returned(&mut item, value.regs.clone());
-        if let Returned::OwnedValue(child) = &mut item {
-            child.value = value;
-        }else if let Returned::Dataset(data)=&mut item {
-            data.length=self.value_component(&value,1);
-            if let Some(count)=data.count{data.length.proof.assume_same_length(&bounds::Proof::unsigned(count,count));}
-        }
-        if let Some(place)=owner.place(){
-            let(offset,ty)=owner.value.ty.aggregate_part(index);
-            let components=ty.components.iter().map(|(_,at)|owner.value.ty.components.iter().position(|(_,word)|*word==offset+at).unwrap()).collect::<Vec<_>>();
-            let place=place.project(ty.clone(),&components);
-            match &mut item {Returned::Dataset(data)=>data.place=Some(place),Returned::OwnedValue(child)=>child.place=Some(place),_=>{}}
-        }
-        item
+    fn component_value(&self,value:&Value,ty:&Ty,components:&[usize])->Value {
+        Value {ty:ty.clone(),regs:components.iter().map(|i|value.regs[*i]).collect(),
+            proof:value.projected_proof(components),uniform:value.uniform,literal:false,
+            constant:value.constant.as_ref().map(|v|components.iter().map(|i|v[*i]).collect())}
     }
-    #[inline(never)]
-    pub(super) async fn make_owned_record(
-        &mut self,
-        ty: Ty,
-        args: &Expressions,
-        span: Span,
-    ) -> Result<Option<Returned>> {
-        if ty.has_variants() {return self.fail(span,"B269","带载荷变体通过声明的分支构造");}
-        if self.program.target != Target::Cpu || self.application.is_none() {
-            return self.fail(span, "B224", "拥有资源的记录由普通CPU应用函数组织");
-        }
-        if args.len() != ty.aggregate_len() && !(ty.array.is_some() && args.len() == 1) {
-            return self.fail(span, "B157", "记录构造需要按声明顺序提供每个字段");
-        }
-        let mut fields = Vec::new();
-        let mut held = Vec::new();
-        for (i, arg) in args.iter().enumerate() {
-            let (_, field) = ty.aggregate_part(i);
-            let item = unsafe { self.world.call(self.evaluate_returned(&arg, Some(field))).await }?;
-            if !self.flow.continues() {
-                self.abandon_arguments(&held);
-                return Ok(None);
-            }
-            let mut item = item.ok_or_else(|| Diagnostic {
-                source: self.scope.source().clone(),
-                span: arg.span(),
-                code: "B228",
-                message: "记录字段需要值或拥有资源".into(),
-            })?;
-            if ty.array.is_some() && args.len() == 1 {
-                if matches!(&item,Returned::OwnedValue(value) if value.value.ty==ty) {
-                    return Ok(Some(item));
-                }
-                if ty.aggregate_len() != 1 {
-                    return self.fail(
-                        span,
-                        "B157",
-                        "拥有数组构造需要逐项交付全部元素，不能复制一个拥有值填充",
-                    );
-                }
-            }
-            unsafe { self.world.call(self.check_returned_type(&mut item, field, arg.span())).await }?;
-            let binding = match &item {
-                Returned::Dataset(data) => Some(Binding::ApplicationData(data.clone())),
-                Returned::OwnedValue(value) => Some(Binding::OwnedValue(value.clone())),
-                Returned::Value(value) if value.ty.contains_borrows()=>Some(Binding::Value((**value).clone())),
-                _ => None,
-            };
-            if let Some(binding) = binding {
-                let name = self.hold_binding(binding);
-                held.push((fields.len(), name));
-            }
-            fields.push(item);
-        }
-        for (index, name) in held {
-            fields[index] = match self.env.remove(&name).unwrap() {
-                Binding::ApplicationData(data) => Returned::Dataset(data),
-                Binding::OwnedValue(value) => Returned::OwnedValue(value),
-                Binding::Value(value)=>Returned::value(value),
-                _ => unreachable!(),
-            };
-        }
-        let mut payloads = Vec::new();
-        let mut values = Vec::new();
-        for (i, item) in fields.into_iter().enumerate() {
-            let (_, field) = ty.aggregate_part(i);
-            values.push(self.returned_storage(&item));
-            payloads.push(field.owns_resources().then(|| Box::new(item)));
-        }
-        let mut value = self.pack_record(ty, values, span)?;
-        value.proof.retain_view_borrows(&value.ty);
-        Ok(Some(Returned::OwnedValue(Box::new(OwnedValuePayload {
-            value,
-            payloads,
-            ownership: Ownership::Owned,
-            place: None, declaration: 0,
-        }))))
+    pub(super) fn unpack_record(&mut self,owner:&OwnedValue,index:usize)->Returned {
+        let(offset,ty)=owner.value.ty.aggregate_part(index);
+        let components=projection::components(&owner.value.ty,ty,offset);
+        let value=self.component_value(&owner.value,ty,&components);
+        owned_values::storage::unpack(self,owner,index,value,ty,components)
     }
     pub(super) fn owned_projection(&self, expr: &Expr) -> Option<OwnedProjection> {
         projection::owned(self,expr).map(|(value,_)|value)
