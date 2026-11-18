@@ -15,19 +15,20 @@ struct CapturedBody {
     imports: Arc<[String]>,
 }
 type Sources = BTreeMap<std::path::PathBuf, SourceInput>;
-type Interfaces = BTreeMap<String, BTreeMap<Arc<str>, Arc<syntax::Module>>>;
+type Interfaces<T> = BTreeMap<String, BTreeMap<Arc<str>, T>>;
+type CapturedInterface = (Arc<syntax::Module>, Option<Arc<[String]>>);
 
 pub(crate) struct Inputs {
     sources: Arc<Sources>,
-    interfaces: Interfaces,
+    interfaces: Interfaces<CapturedInterface>,
 }
 #[derive(Default)]
 pub(super) struct Capture {
     sources: Sources,
-    interfaces: Interfaces,
+    interfaces: Interfaces<Arc<syntax::Module>>,
 }
 impl Capture {
-    pub(super) fn finish(self, interfaces: Vec<Interfaces>) -> Vec<Inputs> {
+    pub(super) fn finish(self, interfaces: Vec<Interfaces<CapturedInterface>>) -> Vec<Inputs> {
         let sources = Arc::new(self.sources);
         interfaces.into_iter().map(|interfaces| Inputs { sources: sources.clone(), interfaces }).collect()
     }
@@ -48,7 +49,7 @@ impl Capture {
 
     pub(super) fn capture(
         &mut self, path: &Path, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
-    ) -> ast::Result<Interfaces> {
+    ) -> ast::Result<Interfaces<CapturedInterface>> {
         let mut interfaces = Interfaces::new();
         self.capture_source(path, root, providers, &mut BTreeSet::new(), &mut interfaces)?;
         Ok(interfaces)
@@ -56,7 +57,7 @@ impl Capture {
 
     fn capture_source(
         &mut self, path: &Path, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
-        visited: &mut BTreeSet<String>, interfaces: &mut Interfaces,
+        visited: &mut BTreeSet<String>, interfaces: &mut Interfaces<CapturedInterface>,
     ) -> ast::Result<()> {
         let SourceInput { interface, body } = self.source_input(path)?;
         let imports = match body {
@@ -77,7 +78,7 @@ impl Capture {
 
     fn capture_imports(
         &mut self, imports: &[String], root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
-        visited: &mut BTreeSet<String>, interfaces: &mut Interfaces,
+        visited: &mut BTreeSet<String>, interfaces: &mut Interfaces<CapturedInterface>,
     ) -> ast::Result<()> {
         for name in imports {
             if visited.contains(name) {
@@ -98,10 +99,11 @@ impl Capture {
                     continue;
                 }
             };
+            let imports = visited.insert(interface.name().to_owned())
+                .then(|| crate::names::module_imports(&interface, None));
             interfaces.entry(name.clone()).or_default()
-                .insert(interface.source.text.clone(), interface.clone());
-            if visited.insert(interface.name().to_owned()) {
-                let imports = crate::names::module_imports(&interface, None);
+                .insert(interface.source.text.clone(), (interface, imports.clone()));
+            if let Some(imports) = imports {
                 self.capture_imports(&imports, root, providers, visited, interfaces)?;
             }
         }
@@ -121,7 +123,7 @@ impl Capture {
     }
 }
 impl Inputs {
-    pub(crate) fn interface(&self, name: &str, text: &str) -> ast::Result<Arc<syntax::Module>> {
+    pub(crate) fn interface(&self, name: &str, text: &str) -> ast::Result<CapturedInterface> {
         self.interfaces.get(name).and_then(|interfaces| interfaces.get(text)).cloned()
             .ok_or_else(|| Diagnostic {
                 source: Source { path: format!("<{name}>.h").into(), text: "".into() },

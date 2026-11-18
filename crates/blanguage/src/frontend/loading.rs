@@ -227,8 +227,10 @@ pub(crate) fn load(path: &Path, root: &Path, world: &mut Declarations,
         Provider::Compiled { name, module } => (Arc::new(parser::parse(Source {
             path: PathBuf::from(format!("<{name}>.h")), text: module.header.clone(),
         })?), None, None, Some(*module)),
-        Provider::CapturedCompiled { name, module, inputs } =>
-            (inputs.interface(name, &module.header)?, None, None, Some(*module)),
+        Provider::CapturedCompiled { name, module, inputs } => {
+            let (interface, imports) = inputs.interface(name, &module.header)?;
+            (interface, None, imports, Some(*module))
+        }
         Provider::Source => {
             let interface = Arc::new(parser::parse(read(&crate::source_path::with_extension(path, u16::from(b'h')))?)?);
             let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
