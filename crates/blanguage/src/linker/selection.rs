@@ -63,14 +63,14 @@ fn text(bytes:&Bytes)->&str {unsafe{std::str::from_utf8_unchecked(std::slice::fr
 struct Context<'a> {
     sources:Vec<Source<'a>>,libraries:Vec<Library>,objects:Vec<ObjectView>,sections:Vec<SectionView>,
     relocations:Vec<RelocationView>,associated:Vec<u64>,symbols:Vec<SymbolView>,imports:Vec<ImportView>,
-    exports:Vec<ExportView>,code:Vec<Bytes>,frames:Vec<FrameView>,nodes:Vec<[u64;9]>,pending:Vec<u64>,
+    exports:Vec<ExportView>,code:Vec<Bytes>,frames:Option<Vec<FrameView>>,nodes:Vec<[u64;9]>,pending:Vec<u64>,
     locals:Vec<LocalView>,runtime:Vec<Bytes>,archives:Vec<u64>,slots:Vec<String>,error:Option<Box<dyn std::error::Error>>,
 }
 impl<'a> Context<'a> {
-    fn new(inputs: Inputs<'a>)->Self {
+    fn new(inputs: Inputs<'a>, stack_output: bool)->Self {
         let Inputs { sources, libraries } = inputs;
         let mut context=Self{sources,libraries,objects:Vec::new(),sections:Vec::new(),relocations:Vec::new(),associated:Vec::new(),
-            symbols:Vec::new(),imports:Vec::new(),exports:Vec::new(),code:Vec::new(),frames:Vec::new(),nodes:Vec::new(),pending:Vec::new(),
+            symbols:Vec::new(),imports:Vec::new(),exports:Vec::new(),code:Vec::new(),frames:stack_output.then(Vec::new),nodes:Vec::new(),pending:Vec::new(),
             locals:Vec::new(),runtime:Vec::new(),archives:Vec::new(),slots:Vec::new(),error:None};
         for index in 0..context.sources.len(){context.describe(index);}
         context.grow();context
@@ -81,7 +81,7 @@ impl<'a> Context<'a> {
             kind:match object.kind{Kind::Module{..}=>0,Kind::Application{..}=>1,Kind::Library{..}=>2},name:Bytes::new(&object.name),
             section_start:self.sections.len() as u64,section_count:object.sections.len() as u64,symbol_start:self.symbols.len() as u64,symbol_count:object.symbols.len() as u64,
             import_start:self.imports.len() as u64,import_count:object.imports.len() as u64,export_start:self.exports.len() as u64,export_count:0,
-            code_start:self.code.len() as u64,code_count:0,frame_start:self.frames.len() as u64,frame_count:0,prefix:empty,
+            code_start:self.code.len() as u64,code_count:0,frame_start:self.frames.as_ref().map_or(0, Vec::len) as u64,frame_count:0,prefix:empty,
             archive:object.archive.is_some() as u64,has_resources:0,selected:0,resources:0,keep_archive:0,borrowed:borrowed_source as u64,
         };
         for section in &object.sections {
@@ -106,10 +106,9 @@ impl<'a> Context<'a> {
                 self.code.extend(resource.code.iter().map(|name|Bytes::new(name)));
             }
         }
-        // Borrowed native code has no compiler-report consumer.
-        if !borrowed_source{
+        if let Some(frames) = &mut self.frames {
             row.frame_count=object.stack.len() as u64;
-            self.frames.extend(object.stack.iter().map(|frame|FrameView{section:frame.coff.map_or(0,|x|x.0 as u64),present:frame.coff.is_some() as u64,keep:0,mapping:0}));
+            frames.extend(object.stack.iter().map(|frame|FrameView{section:frame.coff.map_or(0,|x|x.0 as u64),present:frame.coff.is_some() as u64,keep:0,mapping:0}));
         }
         self.objects.push(row);
     }
@@ -123,7 +122,7 @@ impl<'a> Context<'a> {
     fn view(&mut self)->View {
         View{objects:self.objects.as_mut_ptr(),object_count:self.objects.len() as u64,sections:self.sections.as_mut_ptr(),section_count:self.sections.len() as u64,
             relocations:self.relocations.as_mut_ptr(),associated:self.associated.as_mut_ptr(),symbols:self.symbols.as_mut_ptr(),imports:self.imports.as_mut_ptr(),
-            exports:self.exports.as_mut_ptr(),code:self.code.as_mut_ptr(),frames:self.frames.as_mut_ptr(),nodes:self.nodes.as_mut_ptr(),pending:self.pending.as_mut_ptr(),
+            exports:self.exports.as_mut_ptr(),code:self.code.as_mut_ptr(),frames:self.frames.as_mut().map_or(std::ptr::null_mut(), Vec::as_mut_ptr),nodes:self.nodes.as_mut_ptr(),pending:self.pending.as_mut_ptr(),
             locals:self.locals.as_mut_ptr(),runtime:self.runtime.as_mut_ptr(),archives:self.archives.as_mut_ptr(),library_count:self.libraries.len() as u64}
     }
     fn append(&mut self,object:Object)->u64 {
@@ -151,9 +150,20 @@ impl<'a> Context<'a> {
                     if row.live==0{return None;}self.section(&mut section,row);Some(section)
                 }).collect();
                 let mut index=0;object.symbols.retain_mut(|symbol|{let row=symbols[index];index+=1;symbol.section=row.section as usize;row.keep!=0});
-                let mut index=0;object.stack.retain_mut(|frame|{let view=self.frames[row.frame_start as usize+index];index+=1;
-                    if let Some((_,start))=frame.coff{frame.coff=Some((view.mapping as usize,start));}view.keep!=0
-                });object
+                if let Some(frames) = &self.frames {
+                    let mut index = row.frame_start as usize;
+                    object.stack.retain_mut(|frame| {
+                        let view = frames[index];
+                        index += 1;
+                        if let Some((_, start)) = frame.coff {
+                            frame.coff = Some((view.mapping as usize, start));
+                        }
+                        view.keep != 0
+                    });
+                } else {
+                    object.stack = Vec::new();
+                }
+                object
             }
             Source::Borrowed(object)=>Object{
                 name:object.name.clone(),kind:object.kind.clone(),
@@ -205,7 +215,7 @@ pub(super) fn select(inputs: Inputs<'_>, roots: Roots<'_>)->Result<Vec<Object>> 
     };
     let runtime=crate::resource::MODULE_RUNTIME_SYMBOLS.iter().map(|name|Bytes::new(name)).collect::<Vec<_>>();
     let params=Params{native_mode,types,programs,roots:roots.as_ptr(),root_count:roots.len() as u64,runtime_library:Bytes::new(crate::application::RUNTIME_LIBRARY),runtime_symbols:runtime.as_ptr(),runtime_symbol_count:runtime.len() as u64};
-    let mut context=Context::new(inputs);let input=context.view();
+    let mut context=Context::new(inputs, native_mode == 0);let input=context.view();
     let result=unsafe{choose(input,params,&mut context as *mut Context<'_> as *mut c_void,extract,native_archive,binding,slot)};
     match result.error{
         0=>{},
