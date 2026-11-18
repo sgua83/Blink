@@ -61,15 +61,7 @@ impl Builder<'_> {
         if value.value.ty.cleanup.is_none(){return self.fail(span,"B224","into_inner只解除用户拥有包装");}
         Ok(Some(self.unpack_record(&value,0)))
     }
-    pub(super) async fn drop_user_owned(&mut self,value:OwnedValue,retained:&view::Borrow,span:Span)->Result<()>{
-        let payload=self.unpack_record(&value,0);
-        let resources=match &payload{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
-        for data in resources{self.application_movable(data,retained,span)?;}
-        let argument=cooperative::Argument::resource(payload);
-        let instance=unsafe { self.world.call(self.specialized_function(value.value.ty.cleanup.as_ref().unwrap().clone(),std::slice::from_ref(&argument),span)).await }?;
-        let origin=std::sync::Arc::new(ir::GeneratedOrigin{reason:ir::GenerationReason::UserOwnedDrop,trigger:self.source_site.clone().map(ir::GenerationAnchor::Syntax)});
-        unsafe { self.world.call(self.invoke_returned(instance,vec![argument],span,Some(origin),None)).await }?;Ok(())
-    }
+
 }
 
 // 释放调用是作用域内的真实后续消费者；只复用原Proof及实际拥有条件。

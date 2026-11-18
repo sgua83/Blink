@@ -1,0 +1,17 @@
+module bootstrap.ownership_release;
+enum Kind:u32 {Other=0;Owned=1;Data=2;};
+enum State:u32 {Inactive=0;Owned=1;Conditional=2;};
+enum Entry:u32 {Present=0;ErrorPosition=1;};
+struct Cursor {u32 phase;u64 index;};
+struct Step<T> {Cursor cursor;T need;};
+struct Facts {Kind kind;State ownership;u32 presence;u32 placed;u32 task;u32 cleanup;u32 variants;u32 field_owns;u64 fields;};
+enum Need:u32 {Conditional=0;Frame=1;Data=2;Inspect=3;Load=4;Task=5;User=6;InspectField=7;Unpack=8;Forget=9;Borrow=10;Recurse=11;ClearPlace=12;Variant=13;Complete=14;Next=15;};
+struct VariantFacts {u64 count;u32 known;};
+enum VariantNeed:u32 {Condition=0;Outer=1;Unpack=2;Drop=3;Yes=4;Rest=5;Emit=6;Complete=7;Next=8;};
+enum UserNeed:u32 {Payload=0;MovableData=1;MovableTree=2;Argument=3;Instance=4;Invoke=5;Complete=6;Next=7;};
+extern "C" Cursor start() on cpu;
+extern "C" Entry entry(u32 may_own,u32 pending,u32 stored_words) on cpu;
+extern "C" Step<Need> step(Cursor state,Facts facts) on cpu;
+extern "C" Step<VariantNeed> variant_step(Cursor state,VariantFacts facts) on cpu;
+extern "C" Step<UserNeed> user_step(Cursor state,Kind payload) on cpu;
+extern "C" Step<u32> resource_step(Cursor state,u64 count) on cpu;

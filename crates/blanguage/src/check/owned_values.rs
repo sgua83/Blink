@@ -3,6 +3,7 @@ use super::*;
 #[path="owned_values/model.rs"]
 mod model;
 pub(super) mod storage;
+mod release;
 use application::{Data, DataPayload, Ownership};
 use returns::Returned;
 
@@ -649,112 +650,6 @@ impl Builder<'_> {
         }).collect())
     }
 
-    pub(super) async fn drop_owned_tree(&mut self, value: Returned, retained: &view::Borrow, span: Span) -> Result<()> {
-        unsafe { self.world.call(self.drop_owned_tree_with(value, retained, span, Self::application_drop)).await }
-    }
-
-    pub(super) async fn drop_owned_tree_with(
-        &mut self, value: Returned, retained: &view::Borrow, span: Span,
-        drop_dataset: impl std::ops::AsyncFn(&mut Self, &application::Data, &view::Borrow, Span) -> Result<()> + Copy,
-    ) -> Result<()> {
-        let place=match &value {
-            Returned::Dataset(data) if data.ownership.may_own()=>data.place.clone(),
-            Returned::OwnedValue(value) if value.ownership.may_own()=>value.place(),
-            _=>None,
-        };
-        if let Some(error)=self.pending_error && let Some(place)=place && !place.ty().components.is_empty() {
-            let status=self.reg(Scalar::U64);
-            self.emit(InstKind::LoadLocal(status,error.slot()));
-            let arguments = self.error_position_arguments(&place, status, span)?;
-            let consumed=self.reg(Scalar::Bool);
-            self.emit(application::runtime_call("error_consumed",arguments,
-                Some(Ty::scalar(Scalar::Bool)),vec![consumed],None,None).kind);
-            let no_error=bounds::Condition::guard(bounds::Clause::zero_results([status]));
-            let consumed_proof=bounds::Proof::condition(no_error.negate().logical(bounds::Condition::default(),false));
-            let retained_owner=owned_presence::Presence::input(&Value{
-                ty:Ty::scalar(Scalar::Bool),regs:vec![consumed],proof:consumed_proof,
-                uniform:false,literal:false,constant:None,
-            }).not();
-            return unsafe { self.world.call(self.owned_when(&retained_owner,span,None,None,async |builder|unsafe { builder.world.call(builder.drop_present_owned_tree(value,retained,span,drop_dataset)).await })).await };
-        }
-        unsafe { self.world.call(self.drop_present_owned_tree(value,retained,span,drop_dataset)).await }
-    }
-
-    async fn drop_present_owned_tree(
-        &mut self, value: Returned, retained: &view::Borrow, span: Span,
-        drop_dataset: impl std::ops::AsyncFn(&mut Self, &application::Data, &view::Borrow, Span) -> Result<()> + Copy,
-    ) -> Result<()> {
-        match value {
-            Returned::Dataset(mut data) if matches!(data.ownership,Ownership::Conditional(_))=>{
-                let Ownership::Conditional(when)=data.ownership.clone()else{unreachable!()};data.ownership=Ownership::Owned;
-                let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
-                let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropBranch,trigger:trigger.clone()});
-                let condition=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropCondition,trigger});
-                return unsafe { self.world.call(self.owned_when(&when,span,Some(branch),Some(condition),async |builder|unsafe { builder.world.call(builder.drop_owned_tree_with(Returned::Dataset(data),retained,span,drop_dataset)).await })).await }
-            }
-            Returned::OwnedValue(mut value) if matches!(value.ownership,Ownership::Conditional(_))=>{
-                let Ownership::Conditional(when)=value.ownership.clone()else{unreachable!()};value.ownership=Ownership::Owned;
-                let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
-                let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropBranch,trigger:trigger.clone()});
-                let condition=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropCondition,trigger});
-                return unsafe { self.world.call(self.owned_when(&when,span,Some(branch),Some(condition),async |builder|unsafe { builder.world.call(builder.drop_owned_tree_with(Returned::OwnedValue(value),retained,span,drop_dataset)).await })).await }
-            }
-            Returned::Dataset(data) if data.ownership == Ownership::Owned => {
-                self.application_frame(span)?;
-                drop_dataset(self, &data, retained, span).await?;
-            }
-            Returned::OwnedValue(mut result) if result.ownership == Ownership::Owned => {
-                if result.value.ty.has_owned_presence() && let Some(place)=result.place() {
-                    unsafe { self.world.call(self.read_cleanup_storage(&place,async |builder|unsafe { builder.world.call(builder.load_owned_value(&mut result,span)).await })).await }?;
-                }
-                if result.value.ty.task_result().is_some(){
-                    return unsafe { self.world.call(self.wait_task_value(result.value, span,
-                        async |builder, value| unsafe { builder.world.call(builder.drop_owned_tree_with(value, retained, span, drop_dataset)).await })).await };
-                }
-                if result.value.ty.cleanup.is_some(){return unsafe { self.world.call(self.drop_user_owned(result,retained,span)).await };}
-
-                if !result.value.ty.has_variants() {
-                    for i in (0..result.value.ty.aggregate_len()).rev() {
-                        if result.value.ty.aggregate_part(i).1.owns_resources() {
-                            let field=self.unpack_record(&result,i);
-                            result.payloads[i].as_deref_mut().unwrap().restrict_owned(&owned_presence::Presence::None);
-                            let mut remaining=retained.clone();
-                            unsafe { self.world.call(result.cleanup_borrow(self,&BTreeSet::new(),&mut remaining)).await }?;
-                            unsafe { self.world.call(self.drop_owned_tree_with(field,&remaining,span,drop_dataset)).await }?;
-                        }
-                    }
-                    return Ok(());
-                }
-                result.place=None;
-                unsafe { self.world.call(self.drop_variant(&result,0,retained,span,drop_dataset)).await }?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    async fn drop_variant(
-        &mut self, value: &OwnedValue, index: usize, retained: &view::Borrow, span: Span,
-        drop_dataset: impl std::ops::AsyncFn(&mut Self, &application::Data, &view::Borrow, Span) -> Result<()> + Copy,
-    ) -> Result<()> {
-        if index+1==value.payloads.len() {
-            let item=unsafe { self.world.call(self.unpack_variant(value,index)).await }?;return unsafe { self.world.call(self.drop_owned_tree_with(item,retained,span,drop_dataset)).await };
-        }
-        let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
-        let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropBranch,trigger:trigger.clone()});
-        let selection=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropCondition,trigger});
-        let condition=self.owned_variant_condition(value,index,span,Some(selection))?;
-        if let Some(bits)=&condition.constant {
-            if bits[0]!=0 {let item=unsafe { self.world.call(self.unpack_variant(value,index)).await }?;unsafe { self.world.call(self.drop_owned_tree_with(item,retained,span,drop_dataset)).await }}
-            else {unsafe { self.world.call(self.drop_variant(value,index+1,retained,span,drop_dataset)).await }}
-        } else {
-            let outer=std::mem::take(&mut self.code);
-            let item=unsafe { self.world.call(self.unpack_variant(value,index)).await }?;unsafe { self.world.call(self.drop_owned_tree_with(item,retained,span,drop_dataset)).await }?;
-            let yes=std::mem::take(&mut self.code);
-            unsafe { self.world.call(self.drop_variant(value,index+1,retained,span,drop_dataset)).await }?;
-            let no=std::mem::replace(&mut self.code,outer);
-            self.code.push(Inst::generated(InstKind::If{condition:condition.regs[0],yes,no},branch));Ok(())
-        }
-    }
     pub(super) async fn drop_binding(&mut self,binding:Binding,retained:&view::Borrow,span:Span) -> Result<()> {
         match binding {
             Binding::OwnedValue(r) => unsafe { self.world.call(self.drop_returned(Returned::OwnedValue(r),retained,span)).await },
