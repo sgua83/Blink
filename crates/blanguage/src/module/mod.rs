@@ -29,20 +29,23 @@ impl Imports {
         Ok(imports)
     }
     pub(crate) fn object(&mut self, object: &Object) -> codec::Result<()> {
-        self.insert(&object.name, &object.kind, object.symbols.iter()
+        self.insert(object.name.clone(), object.kind.clone(), object.symbols.iter()
             .map(|symbol| (symbol.name.clone(), symbol.contract.clone()))
             .chain(object.imports.iter().map(|(name,contract)|(name.clone(),contract.clone()))).collect())
     }
-    pub(crate) fn insert(&mut self, name: &str, kind: &Kind, definitions: BTreeMap<String, Vec<u8>>) -> codec::Result<()> {
+    pub(crate) fn insert(&mut self, name: String, kind: Kind, definitions: BTreeMap<String, Vec<u8>>) -> codec::Result<()> {
         let Kind::Module { interface, requirements, .. } = kind else {
             return Err(format!("{name} 不是独立模块产物").into());
         };
-        if self.modules.insert(name.into(), Imported {
-            header: interface.clone(), requirements: requirements.clone(), definitions: Arc::new(definitions),
-        }).is_some() {
-            return Err(format!("模块有多个提供者 {name}").into());
+        match self.modules.entry(name) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Imported { header: interface, requirements, definitions: Arc::new(definitions) });
+                Ok(())
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                Err(format!("模块有多个提供者 {}", entry.key()).into())
+            }
         }
-        Ok(())
     }
 }
 

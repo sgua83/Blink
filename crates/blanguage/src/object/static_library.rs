@@ -29,7 +29,7 @@ impl Input {
                     let (name,bytes)=library.member_bytes(member.member);
                     let (module,kind,definitions)=coff::Reader::new(&bytes)?.interface()
                         .map_err(|error| format!("静态库成员 {name}：{error}"))?;
-                    imports.insert(&module,&kind,definitions)?;
+                    imports.insert(module,kind,definitions)?;
                 }
             }
         }
