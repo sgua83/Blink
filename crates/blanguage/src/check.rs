@@ -15,6 +15,7 @@ mod callback;
 mod constant;
 mod source_call;
 mod call_aliases;
+mod call_arguments;
 pub(crate) use constant::evaluate as evaluate_constant;
 pub(crate) use constant::variant_discriminant;
 mod application;
@@ -1547,6 +1548,7 @@ fn collective_value_field(
 // A source declaration describes the call form before inference. This is not
 // an instantiated type classification; actual parameter types belong to Instance.
 #[derive(Clone,Copy,PartialEq,Eq)]
+#[repr(u32)]
 enum DeclaredArgumentForm { Ordinary, Dataset, Tile, Acceleration, Texture }
 fn declared_argument_form(ty:&crate::syntax::Type)->DeclaredArgumentForm{
     if ty.dataset(){return DeclaredArgumentForm::Dataset;}

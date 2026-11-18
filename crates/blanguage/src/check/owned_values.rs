@@ -902,67 +902,12 @@ impl Builder<'_> {
 }
 
 impl Builder<'_> {
-    pub(super) async fn hold_argument(
-        &mut self,
-        argument: &mut cooperative::Argument,
-        access: Access,
-    ) -> Result<Option<String>> {
-        if let cooperative::Argument::Reference(owner)=argument {
-            if access.reads() {
-                let regs=owner.place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect::<Vec<_>>();
-                let (proof,uniform,_)=unsafe { self.world.call(self.read_owned_proof(&owner.place,&regs,&[])).await }?;owner.proof=proof;owner.uniform=uniform;
-            } else {owner.proof=bounds::Proof::default();}
-        }
-        let binding = match argument {
-            cooperative::Argument::BorrowedData(reference) => {
-                Binding::DataReference(reference.clone())
-            }
-            cooperative::Argument::Reference(owner) => Binding::Owned(owner.clone()),
-            cooperative::Argument::Atomic(place)
-                if matches!(place.storage(), Place::ApplicationElement { .. }) =>
-            {
-                Binding::AtomicBorrow(place.clone())
-            }
-            cooperative::Argument::Value(value) if value.ty.contains_borrows() => Binding::Value(value.clone()),
-            cooperative::Argument::OwnedValue(value) => Binding::OwnedValue(value.clone()),
-            cooperative::Argument::OwnedReference{place,..} if access==Access::Read => Binding::Owned(self.borrow_owned(place.clone())),
-            cooperative::Argument::OwnedReference{value,owner,..}=>{if let Some(owner)=owner{return Ok(Some(owner.clone()));}let mut value=value.clone();value.borrow();Binding::OwnedValue(value)},
-            cooperative::Argument::ApplicationData(data) if access == Access::Value => {
-                Binding::ApplicationData(data.clone())
-            }
-            cooperative::Argument::Scoped { owner, .. } => return Ok(Some(owner.clone())),
-            _ => return Ok(None),
-        };
-        Ok(Some(self.hold_binding(binding)))
-    }
     pub(super) fn hold_binding(&mut self, binding: Binding) -> String {
         let index=self.env.keys().filter_map(|name|name.strip_prefix("\0argument:"))
             .fold(0,|next,index|next.max(index.parse::<usize>().unwrap()+1));
         let name=format!("\0argument:{index}");
         self.env.insert(name.clone(), binding);
         name
-    }
-    pub(super) fn finish_arguments(
-        &mut self,
-        held: &[(usize, String)],
-        arguments: &mut [cooperative::Argument],
-    ) {
-        for (index, name) in held {
-            if matches!(arguments[*index], cooperative::Argument::Scoped { .. }|cooperative::Argument::OwnedReference{owner:Some(_),..}) {
-                continue;
-            }
-            let value = self.env.remove(name).unwrap();
-            if matches!(arguments[*index],cooperative::Argument::OwnedReference{..})||matches!(value, Binding::DataReference(_) | Binding::AtomicBorrow(_)) {
-                continue;
-            }
-            arguments[*index] = match value {
-                Binding::Owned(owner) => cooperative::Argument::Reference(owner),
-                Binding::ApplicationData(data) => cooperative::Argument::ApplicationData(data),
-                Binding::OwnedValue(value) => cooperative::Argument::OwnedValue(value),
-                Binding::Value(value) => cooperative::Argument::Value(value),
-                _ => unreachable!(),
-            };
-        }
     }
     pub(super) fn abandon_arguments(&mut self, held: &[(usize, String)]) {
         for (_, name) in held {

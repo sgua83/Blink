@@ -1374,18 +1374,18 @@ impl Builder<'_> {
             }
         }).collect::<Vec<_>>();
         let mut field=0;
-        let parameters=unsafe { self.world.call(self.call_arguments_from(
+        let parameters=unsafe { self.world.call(call_arguments::build(self,
             signature,declared.len(),span,
             |index|positions[index].as_ref().map_or(source.span(),Expr::span),
-            async |builder,index| {
+            async |builder,index,parameter| {
                 if let Some(arg)=&positions[index] {
-                    let argument=unsafe { builder.world.call(builder.source_call_argument(signature,index,arg)).await }?;
+                    let argument=unsafe { builder.world.call(call_arguments::source(builder,signature,index,parameter,arg)).await }?;
                     let available=match argument.as_ref() {
                         None | Some(cooperative::Argument::Reference(_)
                             | cooperative::Argument::Value(_)
                             | cooperative::Argument::OwnedReference { .. }
                             | cooperative::Argument::BorrowedData(_)) => true,
-                        Some(cooperative::Argument::OwnedValue(value)) if signature.access(index)==Access::Read =>
+                        Some(cooperative::Argument::OwnedValue(value)) if parameter.access==Access::Read =>
                             value.place().is_some(),
                         _=>false,
                     };

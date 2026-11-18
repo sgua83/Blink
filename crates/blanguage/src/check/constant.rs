@@ -261,7 +261,7 @@ impl Builder<'_> {
         Ok(value)
     }
     async fn reference_call_arguments(&mut self,parameters:cooperative::CallParameters<'_>,args:&[crate::ast::Expr],span:Span)->Result<Option<Vec<cooperative::Argument>>> {
-        unsafe{self.world.call(self.call_arguments_from(parameters,args.len(),span,|index|args[index].span,
-            async |builder,index|builder.reference_argument(parameters,&args[index],index).await)).await}
+        unsafe{self.world.call(call_arguments::build(self,parameters,args.len(),span,|index|args[index].span,
+            async |builder,index,_parameter|builder.reference_argument(parameters,&args[index],index).await)).await}
     }
 }
