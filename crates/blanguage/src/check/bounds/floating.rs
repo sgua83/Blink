@@ -17,9 +17,9 @@ impl Proof {
             (order(scalar, 0), order(scalar, 0)),
             (order(scalar, minimum), order(scalar, maximum)),
         ];
-        let requires = |ranges: ScalarRanges, domains: Domains| {
+        let requires = |ranges: &ScalarRanges, domains: Option<&Domains>| {
             // Cast names the original unsigned integer -> F32 conversion: +0 or finite normal.
-            if scalar == Scalar::F32 && domains.iter().any(|domain|
+            if scalar == Scalar::F32 && domains.into_iter().flatten().any(|domain|
                 matches!(domain, IndexDomain::Floating(FloatingBound { form: FloatingForm::Cast, .. }))) {
                 return false;
             }
@@ -27,9 +27,9 @@ impl Proof {
                 !ordinary.iter().any(|&(first, last)| first <= lower && upper <= last))
         };
         let (ai, bi) = (component % a.regs.len(), component % b.regs.len());
-        requires(ranges(a, ai), a.proof.domains(ai))
-            || requires(ranges(b, bi), b.proof.domains(bi))
-            || (!comparison && requires(self.range_set(component), self.domains(component)))
+        requires(&ranges(a, ai), a.proof.domains.get(ai))
+            || requires(&ranges(b, bi), b.proof.domains.get(bi))
+            || (!comparison && requires(&self.range_set(component), self.domains.get(component)))
     }
 }
 

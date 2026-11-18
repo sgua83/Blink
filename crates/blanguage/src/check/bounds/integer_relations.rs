@@ -897,8 +897,8 @@ unsafe extern "C" fn source_arithmetic(
     let value = arithmetic_ranges(
         op,
         c.scalar,
-        ScalarRanges::interval(a.lower.low, a.upper.low),
-        ScalarRanges::interval(b.lower.low, b.upper.low),
+        &ScalarRanges::interval(a.lower.low, a.upper.low),
+        &ScalarRanges::interval(b.lower.low, b.upper.low),
     )
     .restrict(minimum, maximum);
     let (lower, upper) = value.hull();

@@ -202,7 +202,7 @@ impl IntegerExpression {
             IntegerOperation::Or => "|", IntegerOperation::Xor => "^",
             IntegerOperation::ShiftLeft => "<<", IntegerOperation::ShiftRight => ">>",
         };
-        Some(arithmetic_ranges(operation, scalar, left, right))
+        Some(arithmetic_ranges(operation, scalar, &left, &right))
     }
 }
 
@@ -504,7 +504,7 @@ impl Proof {
         for (source, &component) in components.iter().enumerate() {
             self.nonzero[component]=fresh.nonzero.get(source)==Some(&true);
             self.origins[component] = fresh.origins.get(source).cloned().unwrap_or_default();
-            self.ranges[component] = fresh.range_set(source);
+            self.ranges[component] = fresh.range_set(source).into_owned();
             self.domains[component] = fresh.domains(source);
             self.conditions[component] = fresh.conditions.get(source).cloned().flatten();
         }
@@ -942,7 +942,7 @@ impl Proof {
             origins: Vec::with_capacity(count(self.origins.len())),
             domains: Vec::with_capacity(count(self.origins.len().max(self.domains.len()))),
             conditions: Vec::new(),
-            ranges: components.map_or_else(|| self.ranges.clone(), |selected| selected.iter().map(|&i| self.range_set(i)).collect()),
+            ranges: components.map_or_else(|| self.ranges.clone(), |selected| selected.iter().map(|&i| self.range_set(i).into_owned()).collect()),
             nonzero: components.map_or_else(|| self.nonzero.clone(), |selected| selected.iter().map(|&i| self.nonzero.get(i) == Some(&true)).collect()),
         };
         for i in 0..count(self.origins.len()) {
@@ -1112,9 +1112,9 @@ impl Proof {
         if !scalar.is_integer()||bytes==((1u16<<scalar.size())-1) as u8{return Self::default();}
         let mask=(0..scalar.size()).filter(|byte|bytes&(1<<byte)!=0).fold(0,|mask,byte|mask|(255u64<<(byte*8)));
         let kept=scalar.bit_mask()&!mask;let ordered=kept^scalar.order_bias();
-        let range=arithmetic_ranges("&",scalar,self.range_set(component).restrict(0,scalar.bit_mask()),ScalarRanges::interval(ordered,ordered));
+        let range=arithmetic_ranges("&",scalar,&self.range_set(component).restrict(0,scalar.bit_mask()),&ScalarRanges::interval(ordered,ordered));
         let changed=ScalarRanges::interval(0,mask).cast(Scalar::U64,scalar,false);
-        let mut proof=Self{ranges:vec![arithmetic_ranges("|",scalar,range,changed)],..Self::default()};
+        let mut proof=Self{ranges:vec![arithmetic_ranges("|",scalar,&range,&changed)],..Self::default()};
         if let Some(mut bits)=self.known_bits(component,scalar){bits.mask&=kept;bits.value&=bits.mask;if bits.mask!=0{proof.mark_domain(0,bits.domain());}}
         proof
     }
@@ -1143,14 +1143,21 @@ impl Proof {
             self.ranges.resize_with(width, ScalarRanges::default);
             self.domains.resize(width, Domains::new());
             if !self.addresses.is_empty()||!fresh.addresses.is_empty(){self.addresses.resize_with(width,||None);}
-            for (j, &i) in components.iter().enumerate() {
-                if !self.addresses.is_empty(){self.addresses[i]=fresh.addresses.get(j).cloned().flatten();}
-                self.views[i] = fresh.view_borrow(j);
-                self.origins[i] = fresh.origins.get(j).cloned().unwrap_or_default();
-                self.conditions[i] = fresh.conditions.get(j).cloned().flatten();
-                self.nonzero[i] = fresh.nonzero.get(j) == Some(&true);
-                self.ranges[i] = fresh.range_set(j);
-                self.domains[i] = fresh.domains(j);
+            let mut addresses = fresh.addresses.into_iter();
+            let mut views = fresh.views.into_iter();
+            let mut origins = fresh.origins.into_iter();
+            let mut conditions = fresh.conditions.into_iter();
+            let mut nonzero = fresh.nonzero.into_iter();
+            let mut ranges = fresh.ranges.into_iter();
+            let mut domains = fresh.domains.into_iter();
+            for &i in components {
+                if !self.addresses.is_empty(){self.addresses[i]=addresses.next().flatten();}
+                self.views[i] = views.next().unwrap_or_default();
+                self.origins[i] = origins.next().unwrap_or_default();
+                self.conditions[i] = conditions.next().flatten();
+                self.nonzero[i] = nonzero.next().unwrap_or(false);
+                self.ranges[i] = ranges.next().unwrap_or_default();
+                self.domains[i] = domains.next().unwrap_or_default();
             }
         }
     }
@@ -1253,7 +1260,7 @@ impl Proof {
                 .iter()
                 .map(|&i| self.nonzero.get(i) == Some(&true))
                 .collect(),
-            ranges: components.iter().map(|&i| self.range_set(i)).collect(),
+            ranges: components.iter().map(|&i| self.range_set(i).into_owned()).collect(),
             domains: components.iter().map(|&i| self.domains(i)).collect(),
         }
     }
@@ -1273,8 +1280,8 @@ impl Proof {
         let scalar = Scalar::U32;
         Self {
             ranges: vec![arithmetic_ranges("+", scalar,
-                self.range_set(0).cast(scalar,scalar,self.nonzero.get(0)==Some(&true)),
-                integer_result_range((low,high),0,scalar.bit_width()))],
+                &self.range_set(0).cast(scalar,scalar,self.nonzero.get(0)==Some(&true)),
+                &integer_result_range((low,high),0,scalar.bit_width()))],
             ..Self::default()
         }
     }
@@ -1282,7 +1289,7 @@ impl Proof {
         let amount = Bits::from(amount);
         Self {
             ranges: vec![arithmetic_ranges("-", Scalar::U32,
-                ScalarRanges::interval(amount, amount), self.range_set(0))],
+                &ScalarRanges::interval(amount, amount), &self.range_set(0))],
             ..Self::default()
         }
     }
@@ -1352,8 +1359,8 @@ impl Proof {
     fn range(&self, component: usize) -> (Bits, Bits) {
         self.range_set(component).hull()
     }
-    fn range_set(&self, component: usize) -> ScalarRanges {
-        self.ranges.get(component).cloned().unwrap_or_default()
+    fn range_set(&self, component: usize) -> Cow<'_, ScalarRanges> {
+        self.ranges.get(component).map_or_else(|| Cow::Owned(ScalarRanges::default()), Cow::Borrowed)
     }
     pub(super) fn bitcast(value: &Value, target: Scalar) -> Self {
         Self {
@@ -2637,7 +2644,7 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
                             }
                         };
                     }
-                    let range = arithmetic_ranges(op, scalar, left, right);
+                    let range = arithmetic_ranges(op, scalar, &left, &right);
                     if !signed && op == "-" {
                         let left_origins = a.component_origins(ai);
                         let right_origins = b.component_origins(bi);
@@ -2704,11 +2711,13 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
     }
     proof
 }
-fn arithmetic_ranges(op: &str, scalar: Scalar, left: ScalarRanges, mut right: ScalarRanges) -> ScalarRanges {
-    if matches!(op, "<<" | ">>") {
-        right = right.shift_counts(scalar);
-    }
-    let range = left.combine(&right, |left, right| {
+fn arithmetic_ranges(op: &str, scalar: Scalar, left: &ScalarRanges, right: &ScalarRanges) -> ScalarRanges {
+    let shifted;
+    let right = if matches!(op, "<<" | ">>") {
+        shifted = right.shift_counts(scalar);
+        &shifted
+    } else { right };
+    left.combine(right, |left, right| {
         let bitwise = |operation| {
             let (lower, upper) = bitwise::range(left, right, scalar, operation);
             ScalarRanges::interval(lower, upper)
@@ -2719,8 +2728,7 @@ fn arithmetic_ranges(op: &str, scalar: Scalar, left: ScalarRanges, mut right: Sc
             "^" => bitwise(bitwise::Operation::Xor),
             _ => integer::arithmetic(op,scalar,left,right),
         }
-    });
-    range
+    })
 }
 fn arithmetic_source<'a>(
     op: &str,
