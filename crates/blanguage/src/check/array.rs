@@ -191,10 +191,10 @@ impl Builder<'_> {
         self.initialize(&place);
         OwnedBinding { place, proof, uniform, initialization: None }
     }
-    pub(super) fn array_place(&mut self, place: Place, expr: &Expr) -> Result<Option<Place>> {
+    pub(super) async fn array_place(&mut self, place: Place, expr: &Expr) -> Result<Option<Place>> {
         let held = matches!(place.storage(), Place::ApplicationElement { .. })
             .then(|| self.hold_binding(Binding::AtomicBorrow(place.clone())));
-        let index = self.expr(expr)?;
+        let index = unsafe { self.world.call(self.expr(expr)).await }?;
         if let Some(name) = held {
             self.env.remove(&name);
         }
@@ -203,12 +203,12 @@ impl Builder<'_> {
         };
         self.array_index(place, index, expr.span()).map(Some)
     }
-    pub(super) fn array_value_index(&mut self,value:Value,expr:&Expr)->Result<Option<Value>> {
-        self.array_value_at(value,expr.span(),|builder|builder.expr(expr))
+    pub(super) async fn array_value_index(&mut self,value:Value,expr:&Expr)->Result<Option<Value>> {
+        unsafe { self.world.call(self.array_value_at(value,expr.span(),async |builder|unsafe { builder.world.call(builder.expr(expr)).await })).await }
     }
-    pub(super) fn array_value_at(&mut self,value:Value,span:Span,index:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
+    pub(super) async fn array_value_at(&mut self,value:Value,span:Span,index:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
         let held = value.ty.contains_borrows().then(|| self.hold_binding(Binding::Value(value.clone())));
-        let evaluated = index(self);
+        let evaluated = index(self).await;
         if let Some(name) = held { self.env.remove(&name); }
         let Some(index) = evaluated? else {
             return Ok(None);
@@ -250,7 +250,7 @@ impl Builder<'_> {
         }
         let OwnedBinding { place, proof, .. } = self.materialize_array(value, None);
         let place = self.array_index(place, index, span)?;
-        let mut result = self.read_place(&place, span, None)?;
+        let mut result = unsafe { self.world.call(self.read_place(&place, span, None)).await }?;
         result.proof = self.array_value_proof(&proof, &array, selected, &result.regs);
         result.uniform = uniform;
         result.constant = result.proof.known_value(&result.ty);
@@ -421,7 +421,7 @@ impl Builder<'_> {
         };
         Ok((source, offset, word))
     }
-    pub(super) fn read_array_place(&mut self, place: &Place, span: Span) -> Result<Value> {
+    pub(super) async fn read_array_place(&mut self, place: &Place, span: Span) -> Result<Value> {
         if self.atomic_storage(place) {
             return self.fail(span, "B214", "atomic 数组元素只能通过显式原子操作读取");
         }
@@ -437,7 +437,7 @@ impl Builder<'_> {
         };
         match &**base {
             Place::Local(..) | Place::Reference { .. } | Place::ApplicationElement { .. } => {
-                self.require_initialized(place, span)?
+                unsafe { self.world.call(self.require_initialized(place, span)).await }?
             }
             Place::Element { binding, index, .. } => {
                 self.reads.insert(*binding);
@@ -445,7 +445,7 @@ impl Builder<'_> {
                     self.cross_access.insert(*binding);
                 }
                 if self.view_access[binding].writes() {
-                    self.require_initialized(place, span)?;
+                    unsafe { self.world.call(self.require_initialized(place, span)).await }?;
                 }
             }
             Place::TileElement { tile, .. } => {
@@ -481,7 +481,7 @@ impl Builder<'_> {
             self.emit(instruction.kind);
             regs.push(dst);
         }
-        let (proof, uniform, _) = self.read_owned_proof(place, &regs, &reads)?;
+        let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(place, &regs, &reads)).await }?;
         Ok(Value {
             proof,
             literal: false,
@@ -491,7 +491,7 @@ impl Builder<'_> {
             constant: None,
         })
     }
-    pub(super) fn write_array_place(
+    pub(super) async fn write_array_place(
         &mut self,
         place: &Place,
         value: Value,
@@ -509,13 +509,13 @@ impl Builder<'_> {
         if self.atomic_storage(place) {
             return self.fail(span, "B214", "atomic 数组元素只能通过显式原子操作修改");
         }
-        self.writable_storage(place, span, Some(bounds::Proof::default()))?;
+        unsafe { self.world.call(self.writable_storage(place, span, Some(bounds::Proof::default()))).await }?;
         if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
             return self.fail(span, "B143", "赋值位置包含重复分量");
         }
         self.data_access(place, Access::Write, None);
         self.dataset_effect(place,Access::Write,false,span)?;
-        self.assign_owned_proof(place, bounds::Proof::capture(&value), false)?;
+        unsafe { self.world.call(self.assign_owned_proof(place, bounds::Proof::capture(&value), false)).await }?;
         self.initialize(place);
         for ((word, &(scalar, _)), value) in words.iter().zip(&value.ty.components).zip(value.regs) {
             let instruction = match &**base {

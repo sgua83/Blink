@@ -64,9 +64,9 @@ impl<'a> Contract<'a> {
         match self.clauses {Clauses::Declaration(instance)=>Some(instance.definition.function.name()),
             Clauses::Native(_,_,name,_)=>Some(name),Clauses::Signature(..)=>None}
     }
-    pub(super) fn validate_source(self,world:&World)->Result<()> {
+    pub(super) async fn validate_source(self,world:&World)->Result<()> {
         if let Clauses::Declaration(instance)=self.clauses
-            && !instance.definition.function.c_abi(){validate(world,instance)?;}
+            && !instance.definition.function.c_abi(){unsafe { world.call(validate(world,instance)).await }?;}
         Ok(())
     }
     pub(super) fn contracts(self)->impl Iterator<Item=FunctionContract>+'a {
@@ -103,12 +103,14 @@ impl<'a> Contract<'a> {
             Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>parameters.iter().any(|parameter|parameter.name==name),
         }
     }
-    fn parameter_type(self,world:&World,name:&str,span:Span)->Result<Option<TypeName>>{
+    async fn parameter_type(self,world:&World,name:&str,span:Span)->Result<Option<TypeName>>{
         match self.clauses {
-            Clauses::Declaration(instance)=>instance.definition.function.params().iter()
-                .find(|parameter|parameter.name()==name)
-                .map(|parameter|instance.bindings.type_name(world,&parameter.ty(),
-                    (self.source,self.module,self.imports),span)).transpose(),
+            Clauses::Declaration(instance)=>match instance.definition.function.params().iter()
+                .find(|parameter|parameter.name()==name) {
+                    Some(parameter)=>unsafe { world.call(instance.bindings.type_name(world,&parameter.ty(),
+                        (self.source,self.module,self.imports),span)).await }.map(Some),
+                    None=>Ok(None),
+                },
             Clauses::Signature(parameters,..)|Clauses::Native(parameters,..)=>Ok(parameters.iter().find(|parameter|parameter.name==name).map(|parameter|parameter.ty.clone())),
         }
     }
@@ -123,32 +125,35 @@ pub(super) fn external_memory<P:std::borrow::Borrow<ContractPredicate>>(predicat
     match(reads,writes){(true,true)=>Some(Access::InOut),(true,false)=>Some(Access::Read),(false,true)=>Some(Access::Write),(false,false)=>None}
 }
 
-pub(super) fn validate(world: &World, instance: &crate::generics::Instance) -> Result<()> {
+pub(super) async fn validate(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let definition=&instance.definition;
     if !instance.contracts()
         .any(|contract| matches!(contract.predicate, ContractPredicate::Initialized { .. })) {
         return Ok(());
     }
-    let parameters = instance.parameters(world).map(|param| {
-        let param=param?;
-        let ty = cooperative::parameter_type(world,&param,(&definition.source,&definition.module,&definition.imports,definition.function.kind()),Target::Cpu)?;
-        Ok(if param.ty.dataset {
-            Ty::owned_dataset((ty).syntax(), world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)?)
-        } else { ty })
-    }).collect::<Result<Vec<_>>>()?;
-    let result = instance.bindings.type_name(world,&definition.function.result(),
-        (&definition.source,&definition.module,&definition.imports),definition.function.span())?;
+    let mut parameters=Vec::new();
+    for param in instance.parameters(world) {
+        let param=unsafe { world.call(param).await }?;
+        let ty=unsafe { world.call(cooperative::parameter_type(world,&param,
+            (&definition.source,&definition.module,&definition.imports,definition.function.kind()),Target::Cpu)).await }?;
+        parameters.push(if param.ty.dataset {
+            Ty::owned_dataset(ty.syntax(),unsafe { world.call(world.shape(&param.ty.count,&definition.source,
+                param.span,&definition.module,&definition.imports)).await }?)
+        } else { ty });
+    }
+    let result = unsafe { world.call(instance.bindings.type_name(world,&definition.function.result(),
+        (&definition.source,&definition.module,&definition.imports),definition.function.span())).await }?;
     let result = if result.name == "void" || result.is_never() { None } else {
-        let ty = world.ty(&result, &definition.source, definition.function.span(),
-            &definition.module, &definition.imports)?;
+        let ty = unsafe { world.call(world.ty(&result, &definition.source, definition.function.span(),
+            &definition.module, &definition.imports)).await }?;
         Some(if result.dataset {
-            Ty::owned_dataset((ty).syntax(), world.shape(&result.count, &definition.source,
-                definition.function.span(), &definition.module, &definition.imports)?)
+            Ty::owned_dataset((ty).syntax(), unsafe { world.call(world.shape(&result.count, &definition.source,
+                definition.function.span(), &definition.module, &definition.imports)).await }?)
         } else { ty })
     };
-    validate_named(world, instance, &parameters, result.as_ref())
+    unsafe { world.call(validate_named(world, instance, &parameters, result.as_ref())).await }
 }
-pub(super) fn validate_named(world: &World, instance: &crate::generics::Instance,
+pub(super) async fn validate_named(world: &World, instance: &crate::generics::Instance,
     parameters: &[Ty], returned: Option<&Ty>,
 ) -> Result<()> {
     let definition=&instance.definition;
@@ -165,9 +170,9 @@ pub(super) fn validate_named(world: &World, instance: &crate::generics::Instance
         if contract.kind != ContractKind::Ensures || definition.function.kind() != FunctionKind::Value {
             return definition.source.fail(contract.span, "B225", "initialized 是普通函数的 ensures 输出合同");
         }
-        let condition = normalize(world, instance.into(), &instance.bindings.type_name(world,&definition.function.result(),
-            (&definition.source,&definition.module,&definition.imports),definition.function.span())?, condition, contract.span)?;
-        validate_output(world,value, &condition, &input, returned, &definition.source, contract.span)?;
+        let condition = unsafe { world.call(normalize(world, instance.into(), &unsafe { world.call(instance.bindings.type_name(world,&definition.function.result(),
+            (&definition.source,&definition.module,&definition.imports),definition.function.span())).await }?, condition, contract.span)).await }?;
+        unsafe { world.call(validate_output(world,value, &condition, &input, returned, &definition.source, contract.span)).await }?;
     }
     Ok(())
 }
@@ -203,7 +208,7 @@ fn input_names(definition:Contract<'_>) -> BTreeSet<String> {
     }
     names
 }
-fn collect_inputs(
+async fn collect_inputs(
     builder: &mut Builder<'_>,
     definition: Contract<'_>,
     env: &BTreeMap<String, Binding>,
@@ -221,7 +226,7 @@ fn collect_inputs(
             Binding::Value(value) if parameter.access() == Access::Value => value.clone(),
             Binding::OwnedValue(value) if parameter.access() == Access::Value => value.value.clone(),
             Binding::Owned(owner) if parameter.access() == Access::Value => {
-                builder.read_place(&owner.place, parameter.span(), None)?
+                unsafe { builder.world.call(builder.read_place(&owner.place, parameter.span(), None)).await }?
             }
             Binding::Data(data)=>{
                 inputs.insert(format!("{}.length",parameter.name()),builder.data_length(data));
@@ -237,15 +242,15 @@ fn collect_inputs(
     }
     Ok(inputs)
 }
-pub(super) fn inputs<'a>(
+pub(super) async fn inputs<'a>(
     builder: &mut Builder<'_>,
     definition: impl Into<Contract<'a>>,
     env: &BTreeMap<String, Binding>,
 ) -> Result<BTreeMap<String, Value>> {
     let definition=definition.into();
-    collect_inputs(builder,definition,env,&input_names(definition))
+    unsafe { builder.world.call(collect_inputs(builder,definition,env,&input_names(definition))).await }
 }
-fn capture_current_inputs(
+async fn capture_current_inputs(
     builder: &mut Builder<'_>,
     definition: Contract<'_>,
     names: &BTreeSet<String>,
@@ -254,16 +259,16 @@ fn capture_current_inputs(
         .filter(|(name, _)| names.contains(*name))
         .map(|(name, binding)| (name.clone(), binding.clone()))
         .collect();
-    collect_inputs(builder, definition, &env, names)
+    unsafe { builder.world.call(collect_inputs(builder, definition, &env, names)).await }
 }
-pub(super) fn current_inputs<'a>(
+pub(super) async fn current_inputs<'a>(
     builder: &mut Builder<'_>,
     definition: impl Into<Contract<'a>>,
 ) -> Result<BTreeMap<String, Value>> {
     let definition = definition.into();
-    capture_current_inputs(builder, definition, &input_names(definition))
+    unsafe { builder.world.call(capture_current_inputs(builder, definition, &input_names(definition))).await }
 }
-pub(super) fn entry_inputs(
+pub(super) async fn entry_inputs(
     builder: &mut Builder<'_>,
     instance: &crate::generics::Instance,
 ) -> Result<BTreeMap<String, Value>> {
@@ -278,10 +283,10 @@ pub(super) fn entry_inputs(
             value.value.proof = bounds::Proof::capture(&value.value);
         }
     }
-    capture_current_inputs(builder, instance.into(), &names)
+    unsafe { builder.world.call(capture_current_inputs(builder, instance.into(), &names)).await }
 }
 
-pub(super) fn expression(
+pub(super) async fn expression(
     builder: &mut Builder<'_>,
     definition: Contract<'_>,
     condition: &OutputCondition,
@@ -290,7 +295,7 @@ pub(super) fn expression(
     span: Span,
     expected: Option<&Ty>,
 ) -> Result<Value> {
-    fn path(
+    async fn path(
         builder: &mut Builder<'_>,
         definition: Contract<'_>,
         value: &OutputCondition,
@@ -335,13 +340,13 @@ pub(super) fn expression(
                         "公开输出条件的模块常量必须在接口中可见",
                     );
                 }
-                let (ty, bits, origin) = constant::evaluate(builder.world, &key, &[])?;
+                let (ty, bits, origin) = unsafe { builder.world.call(constant::evaluate(builder.world, &key, &[])).await }?;
                 Ok(builder.evaluated_constant(ty, bits, origin))
             }
             OutputCondition::Member(base, field) => {
                 if field=="length"&&let OutputCondition::Name(name)=base.as_ref()
                     &&let Some(value)=inputs.get(&format!("{name}.length")) {return Ok(value.clone());}
-                let value = path(builder, definition, base, inputs, returned, span)?;
+                let value = unsafe { builder.world.call(path(builder, definition, base, inputs, returned, span)).await }?;
                 if value.ty.dataset.is_some() && field == "length" {
                     return Ok(builder.value_component(&value, 1));
                 }
@@ -354,18 +359,18 @@ pub(super) fn expression(
             ),
         }
     }
-    fn lower(
+    async fn lower(
         builder: &mut Builder<'_>, definition: Contract<'_>, condition: &OutputCondition,
         inputs: &BTreeMap<String, Value>, returned: Option<&Value>, span: Span,
     ) -> Result<Option<Value>> {
         let mut value = match condition {
-            OutputCondition::Name(_) => Some(path(builder, definition, condition, inputs, returned, span)?),
+            OutputCondition::Name(_) => Some(unsafe { builder.world.call(path(builder, definition, condition, inputs, returned, span)).await }?),
             OutputCondition::Member(base, field) => {
                 if field == "length" && let OutputCondition::Name(name) = base.as_ref()
                     && let Some(value) = inputs.get(&format!("{name}.length")) {
                     Some(value.clone())
                 } else {
-                    let value = path(builder, definition, base, inputs, returned, span)?;
+                    let value = unsafe { builder.world.call(path(builder, definition, base, inputs, returned, span)).await }?;
                     if value.ty.has_variants() {
                         let Some(variant) = value.ty.variants.iter().find(|variant| variant.name == *field) else {
                             return builder.fail(span, "B225", "输出条件使用声明的返回变体名称");
@@ -376,7 +381,7 @@ pub(super) fn expression(
                         let expected = builder.constant(scalar, Bits::from(discriminant));
                         Some(builder.binary("==", tag, expected, span, None)?)
                     } else {
-                        Some(path(builder, definition, condition, inputs, returned, span)?)
+                        Some(unsafe { builder.world.call(path(builder, definition, condition, inputs, returned, span)).await }?)
                     }
                 }
             }
@@ -389,20 +394,20 @@ pub(super) fn expression(
                 if op == "-" && let OutputCondition::Number(number) = value.as_ref() {
                     Some(builder.negative_number(number, span)?)
                 } else {
-                    let Some(value) = lower(builder, definition, value, inputs, returned, span)? else { return Ok(None); };
+                    let Some(value) = unsafe { builder.world.call(lower(builder, definition, value, inputs, returned, span)).await }? else { return Ok(None); };
                     Some(builder.unary_value(op, value, span)?)
                 }
             }
             OutputCondition::Binary(op, left, right) => {
-                let Some(left) = lower(builder, definition, left, inputs, returned, span)? else { return Ok(None); };
+                let Some(left) = unsafe { builder.world.call(lower(builder, definition, left, inputs, returned, span)).await }? else { return Ok(None); };
                 if op == "&&" || op == "||" {
                     builder.require_bool(&left, span)?;
-                    builder.short_circuit_value(op, left, span, |builder| {
-                        Ok(lower(builder, definition, right, inputs, returned, span)?
+                    unsafe { builder.world.call(builder.short_circuit_value(op, left, span, async |builder| {
+                        Ok(unsafe { builder.world.call(lower(builder, definition, right, inputs, returned, span)).await }?
                             .map(|value| returns::Returned::Value(Box::new(value))))
-                    }, |_, _| Ok(()), span)?
+                    }, async |_, _| Ok(()), span)).await }?
                 } else {
-                    let Some(right) = lower(builder, definition, right, inputs, returned, span)? else { return Ok(None); };
+                    let Some(right) = unsafe { builder.world.call(lower(builder, definition, right, inputs, returned, span)).await }? else { return Ok(None); };
                     Some(builder.binary(op, left, right, span, None)?)
                 }
             }
@@ -424,8 +429,8 @@ pub(super) fn expression(
         }
     }
     builder.source_site = builder.source_at(span, SourceSyntax::Expression);
-    let result = (|| {
-        let result = lower(builder, definition, condition, inputs, returned, span);
+    let result = async {
+        let result = unsafe { builder.world.call(lower(builder, definition, condition, inputs, returned, span)).await };
         let value = result?.ok_or_else(|| Diagnostic {
             source: builder.scope.source().clone(),
             span,
@@ -434,7 +439,7 @@ pub(super) fn expression(
         })?;
         if let Some(expected) = expected { builder.require_same(expected, &value.ty, span)?; }
         Ok(value)
-    })();
+    }.await;
     if let Some(declaration) = declaration {
         for instruction in &mut builder.code[first..] {
             let retained = OperationOrigin::from_instruction(instruction);
@@ -450,7 +455,7 @@ pub(super) fn expression(
     result
 }
 
-pub(super) fn guards<'a>(
+pub(super) async fn guards<'a>(
     builder: &mut Builder<'_>,
     definition: impl Into<Contract<'a>>,
     parameter: usize,
@@ -460,7 +465,7 @@ pub(super) fn guards<'a>(
 ) -> Result<Vec<Presence>> {
     let definition = definition.into();
     let clauses=output_clauses(definition,parameter,ty)?;
-    evaluate_guards(builder,definition,ty,&clauses,inputs,returned)
+    unsafe { builder.world.call(evaluate_guards(builder,definition,ty,&clauses,inputs,returned)).await }
 }
 
 type GuardClause = (Vec<usize>, OutputCondition, Span);
@@ -491,13 +496,13 @@ fn output_clauses(
     Ok(clauses)
 }
 
-fn evaluate_guards(
+async fn evaluate_guards(
     builder:&mut Builder<'_>, definition:Contract<'_>, ty:&Ty,
     clauses:&[GuardClause], inputs:&BTreeMap<String,Value>, returned:Option<&Value>,
 )->Result<Vec<Presence>> {
     let mut guards = vec![None::<Presence>; ty.components.len()];
     for (components,condition,span) in clauses {
-        let when = Presence::input(&expression(
+        let when = Presence::input(&unsafe { builder.world.call(expression(
             builder,
             definition,
             condition,
@@ -505,7 +510,7 @@ fn evaluate_guards(
             returned,
             *span,
             Some(&Ty::scalar(Scalar::Bool)),
-        )?);
+        )).await }?);
         for &component in components {
             guards[component] = Some(
                 guards[component]
@@ -549,14 +554,16 @@ impl PartialEq for TaskGuard {
 impl Eq for TaskGuard {}
 
 impl TaskGuard {
-    pub(super) fn new(
+    pub(super) async fn new(
         builder:&Builder<'_>, definition:Contract<'_>, parameter:usize,
         ty:&Ty, target:view::Borrow, inputs:&BTreeMap<String,Value>, result:&Ty, span:Span,
         model:Option<Returned>, arguments:&BTreeMap<ValueIdentity,bounds::Proof>, returned:&[Reg],
     )->Result<Self> {
-        let clauses=output_clauses(definition,parameter,ty)?.into_iter()
-            .map(|(components,condition,span)|Ok((components,bind_constants(builder.world,definition,&condition,span)?)))
-            .collect::<Result<Vec<_>>>()?;
+        let mut clauses=Vec::new();
+        for (components,condition,span) in output_clauses(definition,parameter,ty)? {
+            let condition=unsafe { builder.world.call(bind_constants(builder.world,definition,&condition,span)).await }?;
+            clauses.push((components,condition));
+        }
         let inputs=inputs.iter().map(|(name,value)| {
             let words=value.regs.iter().enumerate().map(|(at,&reg)| Some(match &value.constant {
                 Some(bits)=>bounds::Operand::Constant(value.ty.components[at].0,bits[at]),
@@ -584,14 +591,14 @@ impl TaskGuard {
         for argument in self.arguments.values_mut(){*argument=map(argument);}
     }
 
-    pub(super) fn written_value(
+    pub(super) async fn written_value(
         &self,builder:&mut Builder<'_>,returned:Option<&Value>,
     )->Result<Returned> {
         // The ordinary written model names the output. Its consumers load the actual place.
         let regs=self.ty.components.iter().map(|(scalar,_)|builder.reg(*scalar)).collect();
         let value=Value{ty:self.ty.clone(),regs,proof:bounds::Proof::default(),
             uniform:false,literal:false,constant:None};
-        let mut output=builder.template_returned(value,true)?;
+        let mut output=unsafe { builder.world.call(builder.template_returned(value,true)).await }?;
         if let Some(model)=&self.model {
             let mut bindings=self.arguments.clone();
             if let Some(returned)=returned {
@@ -638,7 +645,7 @@ impl TaskGuard {
             uniform:false,literal:false,constant:None})
     }
 
-    pub(super) fn guards(
+    pub(super) async fn guards(
         &self, builder:&mut Builder<'_>, returned:Option<&Value>, span:Span,
     )->Result<Vec<Presence>> {
         let source=builder.scope.source().clone();
@@ -657,11 +664,11 @@ impl TaskGuard {
                 uniform:false,literal:false,constant:None});
         }
         let clauses=self.clauses.iter().map(|(parts,condition)|(parts.clone(),condition.clone(),span)).collect::<Vec<_>>();
-        evaluate_guards(builder,definition,&self.ty,&clauses,&inputs,returned)
+        unsafe { builder.world.call(evaluate_guards(builder,definition,&self.ty,&clauses,&inputs,returned)).await }
     }
 }
 
-pub(super) fn contract_predicates(
+pub(super) async fn contract_predicates(
     builder: &mut Builder<'_>,
     instance: &crate::generics::Instance,
 ) -> Result<BTreeSet<(ContractKind, ContractPredicate)>> {
@@ -670,11 +677,11 @@ pub(super) fn contract_predicates(
     for contract in instance.contracts() {
         let mut predicate = contract.predicate;
         if let ContractPredicate::Initialized { condition, .. }|ContractPredicate::Cleanup { condition, .. } = &mut predicate {
-            *condition = normalize(builder.world, instance.into(), &instance.bindings.type_name(builder.world,&definition.function.result(),
-                (&definition.source,&definition.module,&definition.imports),definition.function.span())?, condition, contract.span)?;
+            *condition = unsafe { builder.world.call(normalize(builder.world, instance.into(), &unsafe { builder.world.call(instance.bindings.type_name(builder.world,&definition.function.result(),
+                (&definition.source,&definition.module,&definition.imports),definition.function.span())).await }?, condition, contract.span)).await }?;
         }
         if let ContractPredicate::Range { intervals, .. } = &mut predicate {
-            *intervals = range_constants(builder.world,instance.into(),&LexicalScope::Function(instance.clone()),None,intervals,contract.span)?
+            *intervals = unsafe { builder.world.call(range_constants(builder.world,instance.into(),&LexicalScope::Function(instance.clone()),None,intervals,contract.span)).await }?
                 .into_iter().map(|(lower, upper)| (OutputCondition::Constant(lower), OutputCondition::Constant(upper))).collect();
         }
         predicates.insert((contract.kind, predicate));
@@ -682,7 +689,7 @@ pub(super) fn contract_predicates(
     Ok(predicates)
 }
 
-pub(super) fn range_constants(
+pub(super) async fn range_constants(
     world: &World, definition: Contract<'_>, lexical:&LexicalScope, scalar: Option<Scalar>,
     intervals: &[(OutputCondition, OutputCondition)], span: Span,
 ) -> Result<Vec<(OutputConstant, OutputConstant)>> {
@@ -690,10 +697,10 @@ pub(super) fn range_constants(
     let(source_definition,source_context)=lexical.syntax_context(None);
     let mut builder=Builder::from_checked(world,lexical,&context,0,source_definition,source_context,BTreeSet::new());
     builder.in_function = true;
-    let mut endpoint = |value: &OutputCondition| -> Result<OutputConstant> {
-        let value = bind_constants(world, definition, value, span)?;
+    let mut endpoint = async |value: &OutputCondition| -> Result<OutputConstant> {
+        let value = unsafe { world.call(bind_constants(world, definition, value, span)).await }?;
         let first = builder.code.len();
-        let value = expression(&mut builder, definition, &value, &BTreeMap::new(), None, span, None)?;
+        let value = unsafe { world.call(expression(&mut builder, definition, &value, &BTreeMap::new(), None, span, None)).await }?;
         if !value.ty.is_numeric() || value.ty.components.len() != 1
             || value.ty.components[0].0 == Scalar::Bool
             || scalar.is_some_and(|scalar| value.ty != Ty::scalar(scalar))
@@ -705,14 +712,20 @@ pub(super) fn range_constants(
         Ok(OutputConstant { ty: value.ty, bits: value.constant.unwrap(),
             generated_origin: builder.code.last().and_then(|inst| inst.generated_origin.clone()) })
     };
-    intervals.iter().map(|(lower, upper)| Ok((endpoint(lower)?, endpoint(upper)?))).collect()
+    let mut endpoints=Vec::new();
+    for (lower,upper) in intervals {
+        let lower=endpoint(lower).await?;
+        let upper=endpoint(upper).await?;
+        endpoints.push((lower,upper));
+    }
+    Ok(endpoints)
 }
 
-fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
+async fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
     value: &OutputCondition, span: Span,
 ) -> Result<OutputCondition> {
-    let value = bind_constants(world, definition, value, span)?;
-    let path = |value: &OutputCondition| {
+    let value = unsafe { world.call(bind_constants(world, definition, value, span)).await }?;
+    let path = async |value: &OutputCondition| {
         fn components<'a>(value: &'a OutputCondition, fields: &mut Vec<&'a str>) -> Option<&'a str> {
             match value {
                 OutputCondition::Name(name) => Some(name),
@@ -728,15 +741,15 @@ fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
             return definition.source.fail(span, "B225", "无返回值的函数没有returned输入");
         }
         let syntax = if name == "returned" { Some(returned.clone()) }
-            else { definition.parameter_type(world,name,span)? };
+            else { unsafe { world.call(definition.parameter_type(world,name,span)).await }? };
         let syntax = syntax.ok_or_else(|| Diagnostic { source: definition.source.clone(), span, code: "B225",
             message: format!("输出条件没有输入{name}") })?;
-        world.output_path_type(&syntax, &fields, definition.source, span, definition.module, definition.imports)
+        unsafe { world.call(world.output_path_type(&syntax, &fields, definition.source, span, definition.module, definition.imports)).await }
     };
-    contract_condition::identity(&value, &path, definition.source, span)
+    unsafe { world.call(contract_condition::identity(world,&value,&path, definition.source, span)).await }
 }
 
-pub(crate) fn bind_function_contracts(
+pub(crate) async fn bind_function_contracts(
     world: &World, result: &TypeName, parameters: &[(Access, TypeName)], outputs: &[ContractPredicate],
     source: &crate::Source, span: Span, module: &str, imports: &[String],
 ) -> Result<Vec<ContractPredicate>> {
@@ -752,7 +765,7 @@ pub(crate) fn bind_function_contracts(
             ContractPredicate::Memory(access) => { bound.insert(ContractPredicate::Memory(*access)); }
             ContractPredicate::Initialized { value, condition } => {
                 bound.insert(ContractPredicate::Initialized { value: value.clone(),
-                    condition: normalize(world, contract, result, condition, span)? });
+                    condition: unsafe { world.call(normalize(world, contract, result, condition, span)).await }? });
             }
             _ => return source.fail(span, "B225", "cfn合同使用requires nonzero、ensures initialized及ensures memory"),
         }
@@ -787,7 +800,7 @@ fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, 
         _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
     }
 }
-fn validate_output(world:&World,value: &str, condition: &OutputCondition,
+async fn validate_output(world:&World,value: &str, condition: &OutputCondition,
     input: &impl Fn(&str) -> Option<(Access, Ty)>, returned: Option<&Ty>,
     source: &Source, span: Span,
 ) -> Result<()> {
@@ -798,14 +811,14 @@ fn validate_output(world:&World,value: &str, condition: &OutputCondition,
     };
     // Dataset output positions describe initialized elements; input/return
     // conditions consume the original handle/length storage type.
-    if let Some(reference)=&ty.dataset {ty=world.ty(reference,source,span,"",&[])?;}
+    if let Some(reference)=&ty.dataset {ty=unsafe { world.call(world.ty(reference,source,span,"",&[])).await }?;}
     for field in fields { ty = member_type(&ty, field, source, span)?.0; }
-    let path = |value: &OutputCondition| typed_path(value, input, returned, source, span);
-    let (condition, _) = condition_type(condition, &path, source, span)?;
+    let path = async |value: &OutputCondition| typed_path(value, input, returned, source, span);
+    let (condition, _) = unsafe { world.call(condition_type(world,condition,&path, source, span)).await }?;
     operators::same(&Ty::scalar(Scalar::Bool), &condition, source, span)
 }
 
-pub(crate) fn validate_function_contracts(
+pub(crate) async fn validate_function_contracts(
     world:&World,parameters: &[CallParameter], result: Option<&Ty>, outputs: &[ContractPredicate],
     source: &crate::Source, span: Span,
 ) -> Result<()> {
@@ -818,7 +831,7 @@ pub(crate) fn validate_function_contracts(
     for output in outputs {
         match output {
             ContractPredicate::Nonzero(path) => contracts::validate_nonzero_input(path, &input, source, span)?,
-            ContractPredicate::Initialized { value, condition } => validate_output(world,value, condition, &input, result, source, span)?,
+            ContractPredicate::Initialized { value, condition } => unsafe { world.call(validate_output(world,value, condition, &input, result, source, span)).await }?,
             ContractPredicate::Memory(_) => {},
             _ => return source.fail(span, "B225", "cfn合同使用requires nonzero、ensures initialized及ensures memory"),
         }
@@ -971,7 +984,7 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn prepare_data_output(
+    pub(super) async fn prepare_data_output(
         &mut self,
         data: &mut application::Data,
         span: Span,
@@ -1012,7 +1025,7 @@ impl Builder<'_> {
                     let scoped=materialize(&old,&mut||scope.clone()).unwrap_or_else(||old.clone());
                     candidate.initialization =
                         Some(Position::selected(selected, scoped, old));
-                    self.assign_owned_place(&actual, Returned::Dataset(candidate))?;
+                    unsafe { self.world.call(self.assign_owned_place(&actual, Returned::Dataset(candidate))).await }?;
                     found = true;
                 }
             }
@@ -1043,7 +1056,7 @@ impl Builder<'_> {
         let changed=data.words().into_iter().map(|word|scope.application_word(None,word)).collect::<Vec<_>>();
         self.forget_output_positions(&changed,span)
     }
-    pub(super) fn check_data_output(
+    pub(super) async fn check_data_output(
         &mut self,
         data: &application::Data,
         guards: &[Presence],
@@ -1059,8 +1072,8 @@ impl Builder<'_> {
         }
         if data.ty.owns_resources() && data.length.maximum() != 0 {
             self.path = path.clone();
-            let model = self.element_model(&data.ty, &data.elements, (&data.residency, &[]), span)?;
-            Self::check_output_resources(self, &model, &data.ty, 0, guards, &path, span)?;
+            let model = unsafe { self.world.call(self.element_model(&data.ty, &data.elements, (&data.residency, &[]), span)).await }?;
+            unsafe { self.world.call(Self::check_output_resources(self, &model, &data.ty, 0, guards, &path, span)).await }?;
         }
         self.path = path;
         Ok(())
@@ -1092,7 +1105,7 @@ impl Builder<'_> {
         }
     }
 
-    fn check_output_resources(
+    async fn check_output_resources(
         builder: &mut Builder<'_>,
         model: &Returned,
         root: &Ty,
@@ -1118,7 +1131,7 @@ impl Builder<'_> {
                             "条件输出分支没有实际拥有所声明的资源",
                         );
                     }
-                    builder.require_application_initialized(&data, span)?;
+                    unsafe { builder.world.call(builder.require_application_initialized(&data, span)).await }?;
                 }
                 builder.path = when.condition().assume(path, false);
                 if builder.path.possible()
@@ -1146,7 +1159,7 @@ impl Builder<'_> {
                         } else {
                             value.value.ty.aggregate_part(index).0
                         };
-                        Self::check_output_resources(builder, payload, root, offset + at, guards, path, span)?;
+                        unsafe { builder.world.call(Self::check_output_resources(builder, payload, root, offset + at, guards, path, span)).await }?;
                     }
                 }
             }
@@ -1155,7 +1168,7 @@ impl Builder<'_> {
         Ok(())
     }
 
-    pub(super) fn conditional_written_model(
+    pub(super) async fn conditional_written_model(
         &mut self,
         name: &str,
         guards: &[Presence],
@@ -1204,7 +1217,7 @@ impl Builder<'_> {
             Binding::OwnedValue(value) => Returned::OwnedValue(value),
             _ => unreachable!(),
         };
-        Self::check_output_resources(self, &model, place.ty(), 0, guards, &original_path, span)?;
+        unsafe { self.world.call(Self::check_output_resources(self, &model, place.ty(), 0, guards, &original_path, span)).await }?;
         self.path = original_path;
         fn absent(model: &mut Returned) {
             match model {

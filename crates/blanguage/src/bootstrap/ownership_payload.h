@@ -47,8 +47,6 @@ struct Host {
     cfn<u32,address,address,address,address> ownership_loop;
     cfn<address,address,address,address> loop_path;
     cfn<u32,address> path_possible;
-    cfn<void,address> drop_path;
-    cfn<u32,address,address,address,address> data_loop;
     cfn<address> fresh_indices;
     cfn<void,address,u64> push_index;
     cfn<Indices,address> indices_view;
@@ -101,15 +99,18 @@ extern "C" u32 incomplete(address value,Host host) on cpu
     requires nonzero(host.field_owned)
     requires nonzero(host.state_moved)
     requires nonzero(host.data_ownership);
-extern "C" u32 loop_compatible(address before,address after,address context,address path,Host host) on cpu
+struct LoopCursor {address before;address after;address path;u64 count;u64 index;};
+struct LoopNeed {u32 kind;u32 value;address before;address after;};
+// kind=0 is the actual final value; kind=3/4 asks for the original Data/Owned child.
+extern "C" LoopNeed loop_start(address state,address before,address after,address context,address path,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
     requires nonzero(host.ownership_loop)
     requires nonzero(host.loop_path)
-    requires nonzero(host.path_possible)
-    requires nonzero(host.drop_path)
-    requires nonzero(host.data_loop);
+    requires nonzero(host.path_possible);
+extern "C" LoopNeed loop_step(address state,u32 compatible,Host host) on cpu
+    requires nonzero(host.child);
 extern "C" void invalidate(address value,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.value)

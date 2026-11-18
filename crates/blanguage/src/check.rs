@@ -374,12 +374,12 @@ struct ExpandedDomain {
     outputs: Vec<crate::module::domain::Output>,
     elements: BTreeMap<usize, bounds::Proof>,
 }
-pub(crate) fn compile_program(
+pub(crate) async fn compile_program(
     world: &World,
     instance: &crate::generics::Instance,
 ) -> Result<Program> {
     let mut functions = native_function::Module::default();
-    let expanded = expand_domain(world, DomainInput::Declaration(instance), &mut functions, &[])?;
+    let expanded = unsafe { world.call(expand_domain(world, DomainInput::Declaration(instance), &mut functions, &[])).await }?;
     if !expanded.calls.is_empty() {
         return instance.definition.source.fail(
             instance.definition.function.span(),
@@ -387,7 +387,7 @@ pub(crate) fn compile_program(
             "跨对象域使用原生模块或应用入口编译；单个内核映像不包含其他模块的实现",
         );
     }
-    native_function::finish_program(world, functions, expanded.program, expanded.scopes)
+    unsafe { world.call(native_function::finish_program(world, functions, expanded.program, expanded.scopes)).await }
 }
 #[derive(Clone, Copy)]
 enum DomainInput<'a> {
@@ -417,8 +417,14 @@ impl<'a> DomainInput<'a> {
     fn target(self)->Target {
         match self {Self::Declaration(instance)=>instance.definition.function.target(),Self::Parallel{..}=>Target::Cpu}
     }
-    fn parameters(self,world:&World)->Result<Vec<Param>> {
-        match self {Self::Declaration(instance)=>instance.parameters(world).collect(),Self::Parallel{parameters,..}=>Ok(parameters.to_vec())}
+    async fn parameters(self,world:&World)->Result<Vec<Param>> {
+        match self {Self::Declaration(instance)=>{
+            let mut parameters=Vec::new();
+            for parameter in instance.parameters(world) {
+                parameters.push(unsafe { world.call(parameter).await }?);
+            }
+            Ok(parameters)
+        },Self::Parallel{parameters,..}=>Ok(parameters.to_vec())}
     }
     fn contracts(self)->Vec<FunctionContract> {
         match self {Self::Declaration(instance)=>instance.contracts().collect(),Self::Parallel{contracts,..}=>contracts.to_vec()}
@@ -438,11 +444,11 @@ impl<'a> DomainInput<'a> {
         origin.map(|origin|Arc::new(SourceSite{origin,context:Arc::new(SourceContext{domain_path:path.clone(),..(*context).clone()}),span,syntax}))
     }
 }
-fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_function::Module, element_inputs: &[ElementFact]) -> Result<ExpandedDomain> {
+async fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_function::Module, element_inputs: &[ElementFact]) -> Result<ExpandedDomain> {
     let name = input.name();
     let d = &input.owner().definition;
     if let DomainInput::Declaration(instance)=input {
-    if !kernel_interface(world, instance)? {
+    if !unsafe { world.call(kernel_interface(world, instance)).await }? {
         return d.source.fail(
             input.span(),
             "B266",
@@ -456,7 +462,7 @@ fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_f
     let mut uniforms = Vec::new();
     let mut env = BTreeMap::new();
     let mut offset = 0;
-    for p in input.parameters(world)? {
+    for p in unsafe { world.call(input.parameters(world)).await }? {
         if p.ty.is_texture_resource() {
             if p.access != Access::Read {
                 return d
@@ -466,7 +472,7 @@ fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_f
             env.insert(p.name.to_owned(), Root::Texture(textures.len()));
             textures.push(TextureBinding {
                 name: p.name.to_owned(),
-                count: texture::shape(world, &p.ty,(&d.source,&d.module,&d.imports),p.span)?,
+                count: unsafe { world.call(texture::shape(world, &p.ty,(&d.source,&d.module,&d.imports),p.span)).await }?,
                 dimension: p.ty.texture_dimension().unwrap(),
                 format: p.ty.texture_format(),
             });
@@ -484,7 +490,7 @@ fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_f
             accelerations.push(p.name.to_owned());
             continue;
         }
-        let ty = world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)?;
+        let ty = unsafe { world.call(world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)).await }?;
         if ty.owns_resources() {
             return d.source.fail(
                 p.span,
@@ -514,7 +520,7 @@ fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_f
                 access: p.access,
                 ty,
                 stride,
-                count: world.shape(&p.ty.count, &d.source, p.span, &d.module, &d.imports)?,
+                count: unsafe { world.call(world.shape(&p.ty.count, &d.source, p.span, &d.module, &d.imports)).await }?,
             });
             env.insert(p.name.to_owned(), Root::Data(binding, p.access));
         } else {
@@ -567,7 +573,7 @@ fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_f
     program.length_requirements = contracts::root_lengths(&env, d, input.contracts().into_iter())?;
     program.prefix_requirements = prefix::relations(&program, &env, d, input.contracts().into_iter(), ContractKind::Requires)?;
     program.prefix_guarantees = prefix::relations(&program, &env, d, input.contracts().into_iter(), ContractKind::Ensures)?;
-    program.element_requirements = prefix::element_requirements(world, &program.buffers, &env, input.owner(), input.contracts().into_iter())?;
+    program.element_requirements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &env, input.owner(), input.contracts().into_iter())).await }?;
     program.element_requirements.extend_from_slice(element_inputs);
     program.element_requirements.sort();
     program.element_requirements.dedup();
@@ -577,18 +583,18 @@ fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_f
     let path=input.syntax_context().1.domain_path.clone();
     let mut scopes = BTreeMap::new();
     match input {
-        DomainInput::Declaration(instance)=>expand_program(
-            world,instance,&mut env,&mut program,&mut Vec::new(),&mut false,&mut facts,&mut calls,path,functions,&mut scopes)?,
+        DomainInput::Declaration(instance)=>unsafe { world.call(expand_program(
+            world,instance,&mut env,&mut program,&mut Vec::new(),&mut false,&mut facts,&mut calls,path,functions,&mut scopes)).await }?,
         DomainInput::Parallel{statement,..}=>{
-            expand_stages(world,input,std::iter::once(statement.clone()),&mut env,&mut program,
-                &mut Vec::new(),&mut false,&mut facts,&mut calls,&path,functions,&mut scopes)?;
+            unsafe { world.call(expand_stages(world,input,std::iter::once(statement.clone()),&mut env,&mut program,
+                &mut Vec::new(),&mut false,&mut facts,&mut calls,&path,functions,&mut scopes)).await }?;
         }
     }
     program.source_stages = program.stages.len();
     program.element_guarantees = program.element_outputs(facts.element_facts(&program));
     Ok(ExpandedDomain { program, scopes, calls, outputs: facts.outputs, elements: facts.elements })
 }
-fn expand_program(
+async fn expand_program(
     world: &World,
     instance: &crate::generics::Instance,
     env: &mut BTreeMap<String, Root>,
@@ -609,7 +615,7 @@ fn expand_program(
             .fail(d.function.span(), "B105", "计算程序递归调用没有静态阶段边界");
     }
     stack.push(key);
-    expand_stages(
+    unsafe { world.call(expand_stages(
         world,
         DomainInput::Declaration(instance),
         d.function.body().as_ref().ok_or_else(|| Diagnostic {
@@ -625,7 +631,7 @@ fn expand_program(
         &domain_path,
         functions,
         scopes,
-    )?;
+    )).await }?;
     for contract in instance.contracts()
         .filter(|c| c.kind == ContractKind::Ensures)
     {
@@ -646,7 +652,7 @@ fn operation_source(instance: &crate::generics::Instance, span: Span, syntax: So
     let context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*context).clone() });
     origin.map(|origin| Arc::new(SourceSite { origin, context, span, syntax }))
 }
-fn expand_stages(
+async fn expand_stages(
     world: &World,
     input: DomainInput<'_>,
     body: impl Iterator<Item=Stmt>,
@@ -677,15 +683,18 @@ fn expand_stages(
                 if env.contains_key(name) {
                     return d.source.fail(statement.span(), "B125", format!("重复局部变量或覆盖参数 {name}"));
                 }
-                let annotation=annotation.as_ref().map(|ty|instance.bindings.type_name(world,ty,
-                    (&d.source,&d.module,&d.imports),statement.span())).transpose()?;
-                let value = constant::stage_expression(
+                let annotation=match annotation.as_ref() {
+                    Some(ty)=>Some(unsafe { world.call(instance.bindings.type_name(world,ty,
+                        (&d.source,&d.module,&d.imports),statement.span())).await }?),
+                    None=>None,
+                };
+                let value = unsafe { world.call(constant::stage_expression(
                     world, instance, env, program, &expression, annotation.as_ref(), domain_path,
-                )?;
+                )).await }?;
                 env.insert(name.to_string(), value);
             }
             StmtKind::If(condition, yes, no) => {
-                let Root::Literal(ty, words, evaluation) = stage_root(world, instance, env, program, &condition, domain_path)? else {
+                let Root::Literal(ty, words, evaluation) = unsafe { world.call(stage_root(world, instance, env, program, &condition, domain_path)).await }? else {
                     return d.source.fail(condition.span(), "B251", "阶段 if 条件必须是编译期 bool；动态条件放在 parallel 或CPU主流程中");
                 };
                 if ty != Ty::scalar(Scalar::Bool) {
@@ -694,7 +703,7 @@ fn expand_stages(
                 let selected = if words[0] == 0 { no } else { yes };
                 let mut child = env.clone();
                 let first_call = calls.len();
-                let returned = expand_stages(world, input, selected.iter(), &mut child, program, stack, boundary, facts, calls, domain_path, functions, scopes)?;
+                let returned = unsafe { world.call(expand_stages(world, input, selected.iter(), &mut child, program, stack, boundary, facts, calls, domain_path, functions, scopes)).await }?;
                 program.generated_origin = Some(Arc::new(GeneratedOrigin {
                     reason: GenerationReason::StageIfSelection,
                     trigger: Some(GenerationAnchor::StageIfSelection {
@@ -722,8 +731,8 @@ fn expand_stages(
                         format!("重复阶段 for 计数器或覆盖参数 {name}"),
                     );
                 }
-                let bound = |expr: &Expr| -> Result<StageForBound> {
-                    match stage_root(world, instance, env, program, expr, domain_path)? {
+                let bound = async |expr: &Expr| -> Result<StageForBound> {
+                    match unsafe { world.call(stage_root(world, instance, env, program, expr, domain_path)).await }? {
                         Root::Literal(ty, words, evaluation) if ty == Ty::scalar(Scalar::U32) => Ok(StageForBound {
                             expression: input.operation_source(expr.span(), SourceSyntax::Expression, domain_path),
                             value: words[0] as u32, evaluation,
@@ -735,8 +744,8 @@ fn expand_stages(
                         ),
                     }
                 };
-                let first = bound(&first)?;
-                let last = bound(&last)?;
+                let first = bound(&first).await?;
+                let last = bound(&last).await?;
                 let retained = program.generated_origin.take();
                 let mut iterations = Vec::new();
                 let mut returned = false;
@@ -748,9 +757,9 @@ fn expand_stages(
                         name.to_string(),
                         Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)], None),
                     );
-                    returned = expand_stages(
+                    returned = unsafe { world.call(expand_stages(
                         world, input, body.iter(), &mut child, program, stack, boundary, facts, calls, domain_path, functions, scopes,
-                    )?;
+                    )).await }?;
                     iterations.push(StageForIteration {
                         index, returned,
                         stages: program.stages[first_stage..].iter().map(|stage| OperationOrigin {
@@ -816,7 +825,7 @@ fn expand_stages(
                         Ok(Selection { binding, word })
                     })
                     .transpose()?;
-                let mut b = Builder::domain(world, input, program, *domain)?;
+                let mut b = unsafe { world.call(Builder::domain(world, input, program, *domain)).await }?;
                 if program.target == Target::Cpu {
                     let frame = vec![b.reg(Scalar::U32), b.reg(Scalar::U32)];
                     b.application = Some(application::Context { frame: Some(frame), range: true });
@@ -880,8 +889,8 @@ fn expand_stages(
                     b.cross_access.insert(limit.binding);
                 }
                 b.prefix = prefix;
-                let inputs = b.tile_inputs(&body)?;
-                b.block(&body.slice(inputs..))?;
+                let inputs = unsafe { world.call(b.tile_inputs(&body)).await }?;
+                unsafe { world.call(b.block(&body.slice(inputs..))).await }?;
                 b.parallel_access(statement.span())?;
                 let appended: Vec<_> = b
                     .appends
@@ -1075,7 +1084,7 @@ fn expand_stages(
                             if let Some(kind) =
                                 custom_reduce::Kind::from_source(name).filter(|_| explicit.is_none())
                             {
-                                custom_reduce::compile(
+                                unsafe { world.call(custom_reduce::compile(
                                     world,
                                     program,
                                     env,
@@ -1088,7 +1097,7 @@ fn expand_stages(
                                     domain_path.clone(),
                                     functions,
                                     input.operation_source(call_span, SourceSyntax::Expression, domain_path),
-                                )?;
+                                )).await }?;
                                 *boundary = false;
                                 break 'call;
                             }
@@ -1169,10 +1178,10 @@ fn expand_stages(
                                 .source
                                 .fail(statement.span(), "B112", "程序与子程序的设备目标不兼容");
                         }
-                        let roots = args
-                            .iter()
-                            .map(|arg| stage_root(world, instance, env, program, &arg, domain_path))
-                            .collect::<Result<Vec<_>>>()?;
+                        let mut roots=Vec::new();
+                        for arg in args.iter() {
+                            roots.push(unsafe { world.call(stage_root(world,instance,env,program,&arg,domain_path)).await }?);
+                        }
                         let actuals: Vec<_> = roots
                             .iter()
                             .map(|root| match root {
@@ -1192,22 +1201,25 @@ fn expand_stages(
                             })
                             .collect();
                         let (caller_origin, caller_context) = d.syntax_context(Some(&instance.name));
-                        let explicit=explicit.map(|arguments|instance.bindings.arguments(world,arguments,
-                            (&d.source,&d.module,&d.imports),statement.span())).transpose()?;
+                        let explicit=match explicit {
+                            Some(arguments)=>Some(unsafe { world.call(instance.bindings.arguments(world,arguments,
+                                (&d.source,&d.module,&d.imports),statement.span())).await }?),
+                            None=>None,
+                        };
                         let instance =
-                            generics::specialize(world, &key, &actuals, explicit.as_deref(), (&d.source, &d.module, &d.imports), statement.span())?;
+                            unsafe { world.call(generics::specialize(world, &key, &actuals, explicit.as_deref(), (&d.source, &d.module, &d.imports), statement.span())).await }?;
                         let callee = &instance.definition;
                         let mut child = BTreeMap::new();
                         for ((p, arg), root) in instance.parameters(world).zip(args).zip(roots) {
-                            let p=p?;
-                            let expected = || {
-                                world.ty(
+                            let p=unsafe { world.call(p).await }?;
+                            let expected = async || {
+                                unsafe { world.call(world.ty(
                                     &p.ty,
                                     &callee.source,
                                     p.span,
                                     &callee.module,
                                     &callee.imports,
-                                )
+                                )).await }
                             };
                             match &root {
                                 Root::Texture(i) => {
@@ -1215,7 +1227,7 @@ fn expand_stages(
                                         || p.access != Access::Read
                                         || p.ty.texture_dimension() != Some(program.textures[*i].dimension)
                                         || p.ty.texture_format().is_some_and(|format| Some(format) != program.textures[*i].format)
-                                        || texture::shape(world, &p.ty,(&callee.source,&callee.module,&callee.imports),p.span)?
+                                        || unsafe { world.call(texture::shape(world, &p.ty,(&callee.source,&callee.module,&callee.imports),p.span)).await }?
                                             != program.textures[*i].count
                                     {
                                         return d.source.fail(
@@ -1238,18 +1250,18 @@ fn expand_stages(
                                     }
                                 }
                                 Root::Data(i, access) => {
-                                    let ty = expected()?;
+                                    let ty = expected().await?;
                                     if !p.ty.dataset || ty != program.buffers[*i].ty {
                                         return d.source.fail(arg.span(), "B115", "数据集类型不匹配");
                                     }
                                     if p.ty.count.is_some()
-                                        && world.shape(
+                                        && unsafe { world.call(world.shape(
                                             &p.ty.count,
                                             &callee.source,
                                             p.span,
                                             &callee.module,
                                             &callee.imports,
-                                        )? != program.buffers[*i].count
+                                        )).await }? != program.buffers[*i].count
                                     {
                                         return d.source.fail(
                                             arg.span(),
@@ -1268,7 +1280,7 @@ fn expand_stages(
                                     }
                                 }
                                 Root::Uniform(t, _) | Root::Literal(t, ..) => {
-                                    let ty = expected()?;
+                                    let ty = expected().await?;
                                     if p.ty.dataset || *t != ty {
                                         return d.source.fail(arg.span(), "B117", "标量参数类型不匹配");
                                     }
@@ -1305,7 +1317,7 @@ fn expand_stages(
                             }
                         }
                         let required = prefix::relations(program, &child, callee, instance.contracts(), ContractKind::Requires)?;
-                        let elements = prefix::element_requirements(world, &program.buffers, &child, &instance, instance.contracts())?;
+                        let elements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &child, &instance, instance.contracts())).await }?;
                         facts.prove_elements(program, &elements, &d.source, statement.span())?;
                         for relation in &required {
                             prefix::prove(
@@ -1381,9 +1393,9 @@ fn expand_stages(
                             *boundary = true;
                         } else {
                             facts.enter(&required);
-                            expand_program(
+                            unsafe { world.call(expand_program(
                                 world, &instance, &mut child, program, stack, boundary, facts, calls, child_path, functions, scopes,
-                            )?;
+                            )).await }?;
                             facts.leave();
                         }
                         first_stage = program.stages.len();
@@ -1442,7 +1454,7 @@ fn expand_stages(
     }
     Ok(false)
 }
-fn stage_root(
+async fn stage_root(
     world: &World,
     instance: &crate::generics::Instance,
     env: &BTreeMap<String, Root>,
@@ -1461,7 +1473,7 @@ fn stage_root(
                 .resolve(n, &d.module, &d.imports, true).unique()
                 .filter(|key| world.functions[key].function.kind() == FunctionKind::Constant)
             {
-                let (ty, words, origin) = constant::evaluate(world, &key, &[])?;
+                let (ty, words, origin) = unsafe { world.call(constant::evaluate(world, &key, &[])).await }?;
                 Ok(Root::Literal(ty, words, origin).reference_literal(operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path)))
             } else {
                 d.source
@@ -1473,7 +1485,7 @@ fn stage_root(
             let (ty, bits) = number(&d.source, arg.span(), n)?;
             Ok(Root::Literal(ty, vec![bits], None))
         }
-        _ => constant::stage_expression(world, instance, env, program, arg, None, domain_path),
+        _ => unsafe { world.call(constant::stage_expression(world, instance, env, program, arg, None, domain_path)).await },
     }
 }
 fn collective_field(
@@ -1628,16 +1640,16 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance) -> Result<()> {
+pub(crate) async fn check_function(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let name = &instance.name;
     let d = &instance.definition;
     if d.function.kind() == FunctionKind::Constant {
-        return constant_value(world, name).map(|_| ());
+        return unsafe { world.call(constant_value(world, name)).await }.map(|_| ());
     }
     if d.function.kind() == FunctionKind::Value && d.function.target() == Target::Cpu {
-        return native_function::check(world, instance);
+        return unsafe { world.call(native_function::check(world, instance)).await };
     }
-    checked_function(world, instance, d.function.target(), None, native_function::Module::default()).map(|_| ())
+    unsafe { world.call(checked_function(world, instance, d.function.target(), None, native_function::Module::default())).await }.map(|_| ())
 }
 struct CheckedContext {
     program: Arc<Program>,
@@ -1656,7 +1668,7 @@ struct CheckedFunction {
     initialization:Option<Vec<address::Initialization>>,
     functions: native_function::Module,
 }
-fn checked_function(
+async fn checked_function(
     world: &World,
     instance: &crate::generics::Instance,
     target: Target,
@@ -1665,20 +1677,20 @@ fn checked_function(
 ) -> Result<Box<CheckedFunction>> {
     let name = &instance.name;
     let d = &instance.definition;
-    let mut program=function_program(world,name,instance.parameters(world),
-        (&d.source,&d.module,&d.imports,d.function.kind()),target,d.source_origin())?;
+    let mut program=unsafe { world.call(function_program(world,name,instance.parameters(world),
+        (&d.source,&d.module,&d.imports,d.function.kind()),target,d.source_origin())).await }?;
     let roots=program.buffers.iter().enumerate().map(|(index,b)|(b.name.clone(),Root::Data(index,b.access))).collect();
     program.prefix_requirements=instance.contracts().filter(|c|c.kind==ContractKind::Requires&&matches!(c.predicate,ContractPredicate::Prefix{..}))
         .map(|c|prefix::relation(&program,&roots,d,&c)).collect::<Result<_>>()?;
     let program=Arc::new(program);
-    let mut b = Box::new(Builder::new(world, instance, &program, 0, Some(&instance.name))?);
+    let mut b = Box::new(unsafe { world.call(Builder::new(world, instance, &program, 0, Some(&instance.name))).await }?);
     b.in_function = true;
     b.application = application;
     b.functions = functions;
     if b.application.is_some() { b.view_uses = view_liveness::State::new(world, instance); }
-    let (mut parameters, mut inputs, output_contracts) = function_parameters(&mut b, instance, name)?;
-    let result_name=instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())?;
-    let result=if result_name.name=="void"||result_name.is_never(){None}else{Some(b.expected_storage(&result_name,d.function.span())?)};
+    let (mut parameters, mut inputs, output_contracts) = unsafe { world.call(function_parameters(&mut b, instance, name)).await }?;
+    let result_name=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())).await }?;
+    let result=if result_name.name=="void"||result_name.is_never(){None}else{Some(unsafe { world.call(b.expected_storage(&result_name,d.function.span())).await }?)};
     let task_results=result.as_ref().map(Ty::task_components).unwrap_or_default();
     if b.application_entry()&&!d.function.c_abi()&&!task_results.is_empty() {
         let address=[b.reg(Scalar::U32),b.reg(Scalar::U32)];
@@ -1686,12 +1698,12 @@ fn checked_function(
         parameters.push(CallParameter::reference(Ty::task_return_layout(&task_results),Access::Write));
         inputs.extend(address);
     }
-    let (returned,written) = b.function_body(instance, d.function.body().as_ref().unwrap())?;
-    finish_checked_function(b,program.clone(),name,d.function.span(),d.source_origin(),result,parameters,inputs,output_contracts,returned,written)
+    let (returned,written) = unsafe { world.call(b.function_body(instance, d.function.body().as_ref().unwrap())).await }?;
+    unsafe { world.call(finish_checked_function(b,program.clone(),name,d.function.span(),d.source_origin(),result,parameters,inputs,output_contracts,returned,written)).await }
 }
 
 #[inline(never)]
-fn function_program(world:&World,name:&str,parameters:impl Iterator<Item=Result<Param>>,
+async fn function_program(world:&World,name:&str,parameters:impl Iterator<Item=impl std::future::Future<Output=Result<Param>>>,
     context:(&Source,&str,&[String],FunctionKind),target:Target,source_origin:Option<SourceOrigin>)->Result<Program> {
     let(source,module,imports,kind)=context;
     // CPU 参数是实际调用 ABI；设备参数仍使用原并行域的接口身份。
@@ -1699,15 +1711,15 @@ fn function_program(world:&World,name:&str,parameters:impl Iterator<Item=Result<
     let mut accelerations = Vec::new();
     let mut textures = Vec::new();
     for p in parameters {
-        let p=p?;
+        let p=unsafe { world.call(p).await }?;
         if p.ty.dataset {
-            let ty=cooperative::parameter_type(world,&p,(source,module,imports,kind),target)?;
+            let ty=unsafe { world.call(cooperative::parameter_type(world,&p,(source,module,imports,kind),target)).await }?;
             buffers.push(Buffer{name:p.name.clone(),access:p.access,stride:ir::align_up(ty.size,ty.align),ty,
-                count:world.shape(&p.ty.count,source,p.span,module,imports)?});
+                count:unsafe { world.call(world.shape(&p.ty.count,source,p.span,module,imports)).await }?});
         }
         if p.ty.is_acceleration(){accelerations.push(p.name.clone());}
         if p.ty.is_texture_resource(){
-            textures.push(TextureBinding{name:p.name.clone(),count:texture::shape(world,&p.ty,(source,module,imports),p.span)?,
+            textures.push(TextureBinding{name:p.name.clone(),count:unsafe { world.call(texture::shape(world,&p.ty,(source,module,imports),p.span)).await }?,
                 dimension:p.ty.texture_dimension().unwrap(),format:p.ty.texture_format()});
         }
     }
@@ -1734,7 +1746,7 @@ fn function_program(world:&World,name:&str,parameters:impl Iterator<Item=Result<
 
 // 参数准备与输出打包不在下一层函数体分析期间保留临时载荷。
 #[inline(never)]
-fn function_parameters(
+async fn function_parameters(
     b: &mut Builder<'_>,
     instance: &crate::generics::Instance,
     name: &str,
@@ -1756,7 +1768,7 @@ fn function_parameters(
     let mut texture_index = 0;
     let mut acceleration_index = 0;
     for (parameter_index, p) in instance.parameters(world).enumerate() {
-        let p=p?;
+        let p=unsafe { world.call(p).await }?;
         let origin=match d.syntax_origin {
             crate::frontend::DefinitionSyntax::Source=>Some(Arc::new(ParameterOrigin::Parameter{
                 index:parameter_index,name:p.name.to_owned(),instance:Arc::from(name),generated:false,
@@ -1784,7 +1796,7 @@ fn function_parameters(
             let binding = if d.function.kind() == FunctionKind::Value
                 && b.program.target == Target::Cpu {
                 {
-                    let mut data = b.application_parameter(data_index, parameter_index, p.access)?;
+                    let mut data = unsafe { b.world.call(b.application_parameter(data_index, parameter_index, p.access)).await }?;
                     if p.access!=Access::Value {
                         let parameter_ty=Builder::borrowed_dataset_parameter_type(p.access,d.execution);
                         let stride=b.reg(parameter_ty.components[2].0);let offset=b.reg(Scalar::U32);
@@ -1813,7 +1825,7 @@ fn function_parameters(
             continue;
         }
         if p.ty.tile {
-            let ty = cooperative::parameter_type(world,&p,(&d.source,&d.module,&d.imports,d.function.kind()),b.program.target)?;
+            let ty = unsafe { world.call(cooperative::parameter_type(world,&p,(&d.source,&d.module,&d.imports,d.function.kind()),b.program.target)).await }?;
             let tile = b.tiles.len();
             b.tiles.push(CheckedTile {
                 source: TileOrigin::Parameter(ty),
@@ -1823,13 +1835,13 @@ fn function_parameters(
             b.bind_tile(&p.name, tile);
             continue;
         }
-        let ty=cooperative::parameter_type(world,&p,(&d.source,&d.module,&d.imports,d.function.kind()),b.program.target)?;
+        let ty=unsafe { world.call(cooperative::parameter_type(world,&p,(&d.source,&d.module,&d.imports,d.function.kind()),b.program.target)).await }?;
         if p.access==Access::Read {
             if ty.owns_resources() {
                 let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect::<Vec<_>>();
                 inputs.extend(&regs);parameters.push(CallParameter::value(ty.clone()).with_origin(origin.clone()));
                 let proof=bounds::Proof::default().view_parameters(&ty,&[],|i|ValueIdentity::Register(regs[i]));
-                let mut value=b.incoming_owned_value(Value{ty,regs,proof,literal:false,uniform:false,constant:None})?;
+                let mut value=unsafe { b.world.call(b.incoming_owned_value(Value{ty,regs,proof,literal:false,uniform:false,constant:None})).await }?;
                 value.borrow();residency::parameter(&mut value,parameter_index);
                 b.bind_owned_value(&p.name,value,p.span)?;continue;
             }
@@ -1879,7 +1891,7 @@ fn function_parameters(
                 let ty=place.ty().clone();let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect();
                 let proof=if p.access==Access::InOut{bounds::Proof::parameter_content(parameter_index,ty.components.len()).view_parameters(&ty,&[],|i|ValueIdentity::ParameterContent(parameter_index,i))}else{bounds::Proof::default()};
                 let value=Value{ty,regs,proof,uniform:false,literal:false,constant:None};
-                let returns::Returned::OwnedValue(mut value)=b.template_returned(value,p.access==Access::InOut)? else{unreachable!()};
+                let returns::Returned::OwnedValue(mut value)=unsafe { b.world.call(b.template_returned(value,p.access==Access::InOut)).await }? else{unreachable!()};
                 if p.access==Access::InOut{residency::parameter(&mut value,parameter_index);}
                 value.place=Some(place);b.env.insert(p.name.to_owned(),Binding::OwnedValue(value));continue;
             }
@@ -1908,14 +1920,14 @@ fn function_parameters(
         }
         if ty.owns_resources() {
             let proof=bounds::Proof::default().view_parameters(&ty,&[],|i|ValueIdentity::Register(regs[i]));
-            let mut result = b.incoming_owned_value(Value {
+            let mut result = unsafe { b.world.call(b.incoming_owned_value(Value {
                 ty,
                 regs,
                 proof,
                 literal: false,
                 uniform: false,
                 constant: None,
-            })?;
+            })).await }?;
             residency::parameter(&mut result, parameter_index);
             b.bind_owned_value(&p.name, result, p.span)?;
             continue;
@@ -1933,19 +1945,19 @@ fn function_parameters(
         );
     }
     let mut environment=std::mem::take(&mut b.env);
-    let element_paths=contracts::element_input_paths(b,instance.into(),&mut environment,None)?;
+    let element_paths=unsafe { b.world.call(contracts::element_input_paths(b,instance.into(),&mut environment,None)).await }?;
     b.env=environment;
     application::bind_parameter_elements(b,instance.into(),&element_paths);
     let resources=d.function.params().iter().enumerate().filter_map(|(index,p)|match b.env.get(p.name()){
         Some(Binding::ApplicationData(data))=>Some((ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(data)))),_=>None,
     }).collect();
     let environment=std::mem::take(&mut b.env);
-    let requirements=contracts::resolve(b,instance.into(),&LexicalScope::Function(instance.clone()),&environment,&resources);b.env=environment;
+    let requirements=unsafe { b.world.call(contracts::resolve(b,instance.into(),&LexicalScope::Function(instance.clone()),&environment,&resources)).await };b.env=environment;
     let requirements=requirements?;
     let mut environment=std::mem::take(&mut b.env);
-    contracts::assume(b,instance.into(),&mut environment,&requirements)?;b.env=environment;
+    unsafe { b.world.call(contracts::assume(b,instance.into(),&mut environment,&requirements)).await }?;b.env=environment;
     b.materialize_array_bindings();
-    let output_contracts=outputs::contract_predicates(b,instance)?;
+    let output_contracts=unsafe { b.world.call(outputs::contract_predicates(b,instance)).await }?;
     if b.application.is_some() && !d.function.c_abi() {
         let first_completion=inputs.len();
         for completion in native_function::task_completion_parameters(
@@ -1969,7 +1981,7 @@ fn function_parameters(
 }
 
 #[inline(never)]
-fn finish_checked_function(
+async fn finish_checked_function(
     mut b: Box<Builder<'_>>,
     program: Arc<Program>,
     name: &str,
@@ -1982,10 +1994,10 @@ fn finish_checked_function(
     mut returned: Option<returns::Returned>,
     mut written: Vec<Option<returns::Returned>>,
 ) -> Result<Box<CheckedFunction>> {
-    for value in returned.iter_mut().chain(written.iter_mut().flatten()){b.normalize_element_facts(value,span)?;}
+    for value in returned.iter_mut().chain(written.iter_mut().flatten()){unsafe { b.world.call(b.normalize_element_facts(value,span)).await }?;}
     let output = returned.as_ref().map(|value| b.returned_storage(value));
     let (returned, semantic_inputs, written, initialization) =
-        native_function::canonical(&mut b, returned, &inputs, &parameters, written)?;
+        unsafe { b.world.call(native_function::canonical(&mut b, returned, &inputs, &parameters, written)).await }?;
     let body = FunctionBody {
         fallible: false,
         name: name.to_string(),
@@ -2084,8 +2096,8 @@ impl ScopeParameter<'_> {
     fn name(&self)->&str {match self {Self::Declaration(_,p)=>p.name(),Self::Bound(p)=>&p.name}}
     fn access(&self)->Access {match self {Self::Declaration(_,p)=>p.access(),Self::Bound(p)=>p.access}}
     fn span(&self)->Span {match self {Self::Declaration(_,p)=>p.span(),Self::Bound(p)=>p.span}}
-    fn bound(&self,world:&World)->Result<Param> {
-        match self {Self::Declaration(instance,p)=>instance.parameter(world,p),Self::Bound(p)=>Ok((*p).clone())}
+    async fn bound(&self,world:&World)->Result<Param> {
+        match self {Self::Declaration(instance,p)=>unsafe { world.call(instance.parameter(world,p.clone())).await },Self::Bound(p)=>Ok((*p).clone())}
     }
 }
 impl LexicalScope {
@@ -2225,7 +2237,7 @@ impl<'a> Builder<'a> {
         })
     }
     #[inline(never)]
-    fn new(
+    async fn new(
         world: &'a World,
         instance: &crate::generics::Instance,
         program: &'a Program,
@@ -2235,22 +2247,22 @@ impl<'a> Builder<'a> {
         let scope = LexicalScope::Function(instance.clone());
         let definition = &instance.definition;
         let mut mutable_names = BTreeSet::new();
-        assigned_names(
+        unsafe { world.call(assigned_names(
             world,
             &scope,
             definition.function.body().as_ref().unwrap(),
             &mut mutable_names,
-        )?;
+        )).await }?;
         let (source_definition, source_context) = definition.syntax_context(source_instance);
         Ok(Self::from_checked(world,&scope,program,domain,source_definition,source_context,mutable_names))
     }
-    fn domain(world:&'a World,input:DomainInput<'_>,program:&'a Program,domain_index:usize)->Result<Self> {
+    async fn domain(world:&'a World,input:DomainInput<'_>,program:&'a Program,domain_index:usize)->Result<Self> {
         match input {
-            DomainInput::Declaration(instance)=>Self::new(world,instance,program,domain_index,Some(&instance.name)),
+            DomainInput::Declaration(instance)=>unsafe { world.call(Self::new(world,instance,program,domain_index,Some(&instance.name))).await },
             DomainInput::Parallel{owner,parameters,statement,element,domain,body,site,..}=>{
                 let scope=LexicalScope::Parallel{owner:owner.clone(),parameters:(*parameters).clone(),statement:statement.clone(),site:(*site).clone()};
                 let mut mutable_names=BTreeSet::new();
-                effects::assigned_parallel(world,&scope,element,domain,body,&mut mutable_names)?;
+                unsafe { world.call(effects::assigned_parallel(world,&scope,element,domain,body,&mut mutable_names)).await }?;
                 let(origin,context)=input.syntax_context();
                 Ok(Self::from_checked(world,&scope,program,domain_index,origin,context,mutable_names))
             }
@@ -2355,12 +2367,12 @@ impl<'a> Builder<'a> {
             Some(scope)=>FailureContinuation::Scope(scope),None=>FailureContinuation::Return,
         }})
     }
-    fn cleanup_group(&mut self,consumed:Vec<Place>,work:impl FnOnce(&mut Self)->Result<()>)->Result<()> {
-        if self.pending_error.is_some()||self.application.is_none(){return work(self);}
+    async fn cleanup_group(&mut self,consumed:Vec<Place>,work:impl std::ops::AsyncFnOnce(&mut Self)->Result<()>)->Result<()> {
+        if self.pending_error.is_some()||self.application.is_none(){return work(self).await;}
         let slot=self.local_slots(&Ty::scalar(Scalar::U64)).0[0];
         let outer=std::mem::take(&mut self.code);
         self.pending_error=Some(PendingError::Group(slot));
-        let result=work(self);
+        let result=work(self).await;
         let body=std::mem::replace(&mut self.code,outer);
         self.pending_error=None;
         result?;
@@ -2386,10 +2398,10 @@ impl<'a> Builder<'a> {
             origin: origin.clone(), context: self.source_context.clone(), span, syntax,
         }))
     }
-    fn at_source<T>(&mut self, span: Span, syntax: SourceSyntax, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+    async fn at_source<T>(&mut self, span: Span, syntax: SourceSyntax, work: impl std::ops::AsyncFnOnce(&mut Self) -> Result<T>) -> Result<T> {
         let site = self.source_at(span, syntax);
         let previous = std::mem::replace(&mut self.source_site, site);
-        let result = work(self);
+        let result = work(self).await;
         self.source_site = previous;
         result
     }
@@ -2511,7 +2523,7 @@ impl<'a> Builder<'a> {
     fn require_bool(&self, v: &Value, span: Span) -> Result<()> {
         self.require_same(&Ty::scalar(Scalar::Bool), &v.ty, span)
     }
-    fn block(&mut self, body: &Block) -> Result<()> {
+    async fn block(&mut self, body: &Block) -> Result<()> {
         let original = self.env.keys().cloned().collect::<BTreeSet<_>>();
         self.block_depth += 1;
         let mut flow = Flow::NEXT;
@@ -2520,61 +2532,69 @@ impl<'a> Builder<'a> {
                 break;
             }
             self.flow = Flow::NEXT;
-            self.statement(&s)?;
+            unsafe { self.world.call(self.statement(&s)).await }?;
             self.view_uses.after(s.span());
             flow = flow.then(self.flow);
         }
         self.flow = flow;
         self.block_depth -= 1;
         if flow.continues() {
-            self.release_application_data(Some(&original),view::Borrow::default())?;
+            unsafe { self.world.call(self.release_application_data(Some(&original),view::Borrow::default())).await }?;
         }
         self.env.retain(|k, _| original.contains(k));
         Ok(())
     }
-    fn statement(&mut self, s: &Stmt) -> Result<()> {
-        self.at_source(s.span(), SourceSyntax::Statement, |b| b.temporary_scope(s.span(), |b| {b.statement_syntax(s)?;Ok(((),view::Borrow::default()))}))
+    async fn statement(&mut self, s: &Stmt) -> Result<()> {
+        let world = self.world;
+        unsafe { world.call(self.at_source(s.span(), SourceSyntax::Statement,
+            async |b| unsafe { world.call(b.temporary_scope(s.span(), async |b| {
+                unsafe { world.call(b.statement_syntax(s)) .await }?;
+                Ok(((),view::Borrow::default()))
+            })) .await })) .await }
     }
-    fn statement_syntax(&mut self, s: &Stmt) -> Result<()> {
+    async fn statement_syntax(&mut self, s: &Stmt) -> Result<()> {
         self.view_uses.before(s.span());
         match s.kind() {
             StmtKind::Declare(annotation, name) => {
-                let annotation=self.scope.bindings().type_name(self.world,&annotation,
-                    (self.scope.source(),self.scope.module(),self.scope.imports()),s.span())?;
-                return self.declare_statement(&annotation, name, s.span());
+                let annotation=unsafe { self.world.call(self.scope.bindings().type_name(self.world,&annotation,
+                    (self.scope.source(),self.scope.module(),self.scope.imports()),s.span())).await }?;
+                return unsafe { self.world.call(self.declare_statement(&annotation, name, s.span())).await };
             }
             StmtKind::Let(annotation, name, e) => {
-                let annotation=annotation.as_ref().map(|annotation|self.scope.bindings().type_name(self.world,annotation,
-                    (self.scope.source(),self.scope.module(),self.scope.imports()),s.span())).transpose()?;
-                return self.let_statement(&annotation, name, &e, s.span());
+                let annotation=match annotation.as_ref() {
+                    Some(annotation)=>Some(unsafe { self.world.call(self.scope.bindings().type_name(self.world,annotation,
+                        (self.scope.source(),self.scope.module(),self.scope.imports()),s.span())).await }?),
+                    None=>None,
+                };
+                return unsafe { self.world.call(self.let_statement(&annotation, name, &e, s.span())).await };
             }
-            StmtKind::Assign(lhs, op, rhs) => return self.assign_statement(&lhs, op, &rhs, s.span()),
-            StmtKind::Expr(e) => return self.expression_statement(&e),
+            StmtKind::Assign(lhs, op, rhs) => return unsafe { self.world.call(self.assign_statement(&lhs, op, &rhs, s.span())).await },
+            StmtKind::Expr(e) => return unsafe { self.world.call(self.expression_statement(&e)).await },
             StmtKind::If(condition, yes_body, no_body) => {
-                return self.if_statement(&condition, &yes_body, &no_body, s.span());
+                return unsafe { self.world.call(self.if_statement(&condition, &yes_body, &no_body, s.span())).await };
             }
             StmtKind::While(condition, body) => {
-                return self.while_statement(&condition, &body, s.span());
+                return unsafe { self.world.call(self.while_statement(&condition, &body, s.span())).await };
             }
             StmtKind::For(name, start, end, body) => {
-                return self.for_statement(name, &start, &end, &body, s.span());
+                return unsafe { self.world.call(self.for_statement(name, &start, &end, &body, s.span())).await };
             }
-            StmtKind::Break | StmtKind::Continue => return self.loop_control_statement(s),
-            StmtKind::Match(value, arms) => { return self.match_returned(&value,&arms,s.span()); }
-            StmtKind::Return(value) => self.return_statement(value.as_ref(), s.span())?,
-            StmtKind::Parallel(element,domain,body) => return self.application_parallel(s,element,&domain,&body),
+            StmtKind::Break | StmtKind::Continue => return unsafe { self.world.call(self.loop_control_statement(s)).await },
+            StmtKind::Match(value, arms) => { return unsafe { self.world.call(self.match_returned(&value,&arms,s.span())).await }; }
+            StmtKind::Return(value) => unsafe { self.world.call(self.return_statement(value.as_ref(), s.span())).await }?,
+            StmtKind::Parallel(element,domain,body) => return unsafe { self.world.call(self.application_parallel(s,element,&domain,&body)).await },
             StmtKind::Phase => {
                 if !self.application_entry() {
                     return self.fail(s.span(), "B163", "phase 需要整域同步位置，不能位于元素实例中");
                 }
             }
-            StmtKind::Seek(name, position) => return self.seek_statement(name, &position, s.span()),
+            StmtKind::Seek(name, position) => return unsafe { self.world.call(self.seek_statement(name, &position, s.span())).await },
         }
         Ok(())
     }
     // 循环出口的资源交接只在本语句分析时存活。
     #[inline(never)]
-    fn loop_control_statement(&mut self, s: &Stmt) -> Result<()> {
+    async fn loop_control_statement(&mut self, s: &Stmt) -> Result<()> {
         let breaking = matches!(s.kind(), StmtKind::Break);
         if self.loop_depth == 0 {
             return self.fail(s.span(), "B129", if breaking {
@@ -2583,7 +2603,7 @@ impl<'a> Builder<'a> {
                 "continue 只能用于局部顺序循环"
             });
         }
-        self.release_application_loop()?;
+        unsafe { self.world.call(self.release_application_loop()).await }?;
         if breaking {
             self.emit(InstKind::Break);
             self.capture_break();
@@ -2592,7 +2612,7 @@ impl<'a> Builder<'a> {
             if let Some(Some((_, slot))) = self.iterators.last().cloned() {
                 self.advance_iterator(slot)?;
             }
-            self.check_application_loop(s.span())?;
+            unsafe { self.world.call(self.check_application_loop(s.span())).await }?;
             self.emit(InstKind::Continue);
             self.flow = Flow::CONTINUE;
         }
@@ -2604,28 +2624,28 @@ impl<'a> Builder<'a> {
             None => self.fail(span, "B228", "此处需要普通值，void 调用没有返回值"),
         }
     }
-    fn place(&mut self, e: &Expr) -> Result<Option<Place>> {
-        self.at_source(e.span(), SourceSyntax::Place, |b| b.place_syntax(e))
+    async fn place(&mut self, e: &Expr) -> Result<Option<Place>> {
+        unsafe { self.world.call(self.at_source(e.span(), SourceSyntax::Place, async |b| unsafe { b.world.call(b.place_syntax(e)).await })).await }
     }
-    fn place_syntax(&mut self, e: &Expr) -> Result<Option<Place>> {
+    async fn place_syntax(&mut self, e: &Expr) -> Result<Option<Place>> {
         self.require_user_projection(e)?;
         self.view_uses.before(e.span());
         match e.kind() {
             ExprKind::Name(name) => self.name_place(name, e.span()).map(Some),
             ExprKind::Specialize(name, explicit, args) if name == "unsafe_position" => {
                 {
-                let explicit=self.scope.bindings().arguments(self.world,&explicit,
-                    (self.scope.source(),self.scope.module(),self.scope.imports()),e.span())?;
-                self.external_position(&explicit, &args, e.span())
+                let explicit=unsafe { self.world.call(self.scope.bindings().arguments(self.world,&explicit,
+                    (self.scope.source(),self.scope.module(),self.scope.imports()),e.span())).await }?;
+                unsafe { self.world.call(self.external_position(&explicit, &args, e.span())).await }
             }
             }
-            ExprKind::Member(base, field) => self.member_place(&base, field, e),
-            ExprKind::Index(base, index) => self.index_place(&base, &index),
+            ExprKind::Member(base, field) => unsafe { self.world.call(self.member_place(&base, field, e)).await },
+            ExprKind::Index(base, index) => unsafe { self.world.call(self.index_place(&base, &index)).await },
             _ => self.fail(e.span(), "B138", "表达式不是可赋值位置"),
         }
     }
-    fn read_place(&mut self, p: &Place, span: Span, element_read_origin: Option<Arc<GeneratedOrigin>>) -> Result<Value> {
-        self.require_place_access(p,Access::Read,span)?;
+    async fn read_place(&mut self, p: &Place, span: Span, element_read_origin: Option<Arc<GeneratedOrigin>>) -> Result<Value> {
+        unsafe { self.world.call(self.require_place_access(p,Access::Read,span)).await }?;
         if p.ty().owns_resources() {
             return self.fail(
                 span,
@@ -2643,11 +2663,11 @@ impl<'a> Builder<'a> {
                 ty, address, words, ..
             } => {
                 let mut content_read=None;
-                if let Some((target,borrow))=self.reference_memory(p,span)? {
+                if let Some((target,borrow))=unsafe { self.world.call(self.reference_memory(p,span)).await }? {
                     self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:address::Layout::of(ty),written:None,writable:false,initialized:true,span})?;
                     content_read=Some((self.view_model.uses.len(),Arc::new(borrow.clone())));
                     self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Read),written:None,snapshots:None,span,address_fields:Arc::from([])})?;
-                }else{self.require_initialized(p, span)?;}
+                }else{unsafe { self.world.call(self.require_initialized(p, span)).await }?;}
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 let mut regs = Vec::new();
                 for ((scalar, _), word) in ty.components.iter().zip(words) {
@@ -2661,7 +2681,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (mut proof, uniform, known) = self.read_owned_proof(p, &regs, &[])?;
+                let (mut proof, uniform, known) = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?;
                 if !known && matches!(address,ReferenceAddress::Borrowed{..}) && let Some((memory,borrow))=content_read {
                     let snapshots:Arc<[view_contracts::ValueSnapshot]>=self.capture_address_values(memory,address::Capture::Read).into();
                     if let view::Requirement::Memory{snapshots:captured,..}=&mut self.view_model.uses[memory].requirement{*captured=Some(snapshots.clone());}
@@ -2692,17 +2712,17 @@ impl<'a> Builder<'a> {
                 words,
                 ..
             } => {
-                self.require_initialized(p, span)?;
+                unsafe { self.world.call(self.require_initialized(p, span)).await }?;
                 let reads=self.dataset_effect(p,Access::Read,false,span)?;
                 let mut value = self
                     .read_application_place(ty, *handle, *identity, *index, *stride, words, span, element_read_origin)?;
-                let (proof, uniform, _) = self.read_owned_proof(p, &value.regs, &reads)?;
+                let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(p, &value.regs, &reads)).await }?;
                 value.constant = proof.known_value(ty);
                 value.proof = proof;
                 value.uniform = uniform;
                 Ok(value)
             }
-            Place::Indexed { .. } => self.read_array_place(p, span),
+            Place::Indexed { .. } => unsafe { self.world.call(self.read_array_place(p, span)).await },
             Place::ViewElement {
                 ty,
                 address,
@@ -2723,7 +2743,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (proof, uniform, _) = self.read_owned_proof(p, &regs, &[])?;
+                let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2759,7 +2779,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let (proof, uniform, _) = self.read_owned_proof(p, &regs, &[])?;
+                let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2771,7 +2791,7 @@ impl<'a> Builder<'a> {
             }
             Place::Local(ty, slots, ..) | Place::ReadOnlyLocal(ty, slots, ..) => {
                 if matches!(p, Place::Local(..)) {
-                    self.require_initialized(p, span)?;
+                    unsafe { self.world.call(self.require_initialized(p, span)).await }?;
                 }
                 let mut regs = Vec::new();
                 for (s, slot) in ty.components.iter().zip(slots) {
@@ -2779,7 +2799,7 @@ impl<'a> Builder<'a> {
                     self.emit(InstKind::LoadLocal(r, *slot));
                     regs.push(r);
                 }
-                let (proof, uniform, _) = self.read_owned_proof(p, &regs, &[])?;
+                let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?;
                 let constant = proof.known_value(ty);
                 Ok(Value {
                     proof,
@@ -2801,7 +2821,7 @@ impl<'a> Builder<'a> {
                     return self.fail(span, "B214", "atomic 数据集元素只能通过显式原子操作读取");
                 }
                 if self.view_access[binding].writes() {
-                    self.require_initialized(p, span)?;
+                    unsafe { self.world.call(self.require_initialized(p, span)).await }?;
                 }
                 self.data_access(p, Access::Read, None);
                 self.reads.insert(*binding);
@@ -2819,7 +2839,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let proof = self.read_owned_proof(p, &regs, &[])?.0;
+                let proof = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?.0;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2831,8 +2851,8 @@ impl<'a> Builder<'a> {
             }
         }
     }
-    fn write_place(&mut self, p: &Place, value: Value, span: Span, local_origin: Option<Arc<GeneratedOrigin>>) -> Result<()> {
-        self.require_place_access(p,Access::Write,span)?;
+    async fn write_place(&mut self, p: &Place, value: Value, span: Span, local_origin: Option<Arc<GeneratedOrigin>>) -> Result<()> {
+        unsafe { self.world.call(self.require_place_access(p,Access::Write,span)).await }?;
         if p.ty().contains_views() && matches!(p.storage(), Place::Element { .. } | Place::ApplicationElement { .. }) {
             return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
         }
@@ -2842,9 +2862,9 @@ impl<'a> Builder<'a> {
         self.require_same(ty, &value.ty, span)?;
         let stored=bounds::Proof::capture(&value);
         let written=if matches!(p,Place::Reference{..}){self.path_proof(ty,bounds::Proof::capture(&value)).numeric_facts()}else{bounds::Proof::default()};
-        if let Some((target,borrow))=self.reference_memory(p,span)? {
+        if let Some((target,borrow))=unsafe { self.world.call(self.reference_memory(p,span)).await }? {
             let memory=self.view_model.uses.len();
-            let snapshots=if borrow.pending()&&!self.resolved_address_write(&borrow){Some(self.capture_address_values(memory,address::Capture::Write).into())}else{self.write_address_values(&borrow,&[(borrow.clone(),Some(Access::Write),Some(written.clone()))])?;None};
+            let snapshots=if borrow.pending()&&!self.resolved_address_write(&borrow){Some(self.capture_address_values(memory,address::Capture::Write).into())}else{unsafe { self.world.call(self.write_address_values(&borrow,&[(borrow.clone(),Some(Access::Write),Some(written.clone()))])).await }?;None};
             self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Write),written:Some(stored.clone()),snapshots,span,address_fields:p.ty().borrow_fields().into_iter().filter(|(_,field)|field.is_address()).map(|(word,_)|(word,p.ty().components.iter().position(|(_,at)|*at==word).unwrap())).collect()})?;
         }
         match p {
@@ -2854,8 +2874,8 @@ impl<'a> Builder<'a> {
                 return self.fail(span, "B214", "原子借用只能通过显式原子操作修改");
             }
             Place::Reference { address, words, .. } => {
-                self.writable_storage(p, span, Some(written.clone()))?;
-                self.assign_owned_proof(p, bounds::Proof::capture(&value), false)?;
+                unsafe { self.world.call(self.writable_storage(p, span, Some(written.clone()))).await }?;
+                unsafe { self.world.call(self.assign_owned_proof(p, bounds::Proof::capture(&value), false)).await }?;
                 self.initialize(p);
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 for (word, value) in words.iter().zip(value.regs) {
@@ -2877,7 +2897,7 @@ impl<'a> Builder<'a> {
                 words,
                 ..
             } => {
-                self.writable_storage(p, span, Some(written))?;
+                unsafe { self.world.call(self.writable_storage(p, span, Some(written))).await }?;
                 self.dataset_effect(p,Access::Write,false,span)?;
                 let proof = bounds::Proof::capture(&value);
                 if self.iterators.last().is_some_and(Option::is_some) {
@@ -2887,13 +2907,13 @@ impl<'a> Builder<'a> {
                     *handle, *identity, *index, *stride, words, value, span, None,
                 )?;
                 self.initialize(p);
-                self.assign_owned_proof(p, proof, false)?;
+                unsafe { self.world.call(self.assign_owned_proof(p, proof, false)).await }?;
                 if self.loop_contexts.is_empty() {
-                    self.complete_application_writes(|_,data| sources.contains(&data.root.identity()), span)?;
+                    unsafe { self.world.call(self.complete_application_writes(|_,data| sources.contains(&data.root.identity()), span)).await }?;
                 }
                 return Ok(());
             }
-            Place::Indexed { .. } => return self.write_array_place(p, value, span),
+            Place::Indexed { .. } => return unsafe { self.world.call(self.write_array_place(p, value, span)).await },
             Place::ReadOnlyLocal(..) => {
                 return self.fail(span, "B144", "按值参数或不可变局部值不可写");
             }
@@ -2908,7 +2928,7 @@ impl<'a> Builder<'a> {
                 if slots.iter().copied().collect::<BTreeSet<_>>().len() != slots.len() {
                     return self.fail(span, "B143", "赋值位置包含重复分量");
                 }
-                self.assign_owned_proof(p, bounds::Proof::capture(&value), false)?;
+                unsafe { self.world.call(self.assign_owned_proof(p, bounds::Proof::capture(&value), false)).await }?;
                 self.initialize(p);
                 for (slot, value) in slots.iter().zip(value.regs) {
                     let kind=InstKind::StoreLocal(*slot,value);
@@ -2939,7 +2959,7 @@ impl<'a> Builder<'a> {
                 }
                 self.data_access(p, Access::Write, None);
                 self.writes.insert(*binding);
-                self.assign_owned_proof(p, bounds::Proof::capture(&value), false)?;
+                unsafe { self.world.call(self.assign_owned_proof(p, bounds::Proof::capture(&value), false)).await }?;
                 for (word, value) in words.iter().zip(value.regs) {
                     self.emit(InstKind::Store {
                         binding: *binding,
@@ -2953,12 +2973,15 @@ impl<'a> Builder<'a> {
         }
         Ok(())
     }
-    fn expr(&mut self, e: &Expr) -> Result<Option<Value>> {
-        let mut value = self.at_source(e.span(), SourceSyntax::Expression, |b| b.expr_syntax(e))?;
+    async fn expr(&mut self, e: &Expr) -> Result<Option<Value>> {
+        let world = self.world;
+        let mut value = unsafe { world.call(self.at_source(e.span(), SourceSyntax::Expression,
+            async |b| unsafe { world.call(b.expr_syntax(e)) .await })) .await }?;
         if let Some(value) = &mut value { self.bound_value(value); }
         Ok(value)
     }
-    fn expr_syntax(&mut self, e: &Expr) -> Result<Option<Value>> {
+    async fn expr_syntax(&mut self, e: &Expr) -> Result<Option<Value>> {
+        let world = self.world;
         self.view_uses.before(e.span());
         match e.kind() {
             ExprKind::FunctionRef(..) => self.fail(
@@ -2970,29 +2993,30 @@ impl<'a> Builder<'a> {
                 self.fail(e.span(), "B208", "cooperate 调用只能作为协作根块的局部声明")
             }
             ExprKind::StaticU32(bits) => self.constant_expression(Scalar::U32, Bits::from(bits)),
-            ExprKind::Specialize(name, explicit, args) => self.specialized_expression(e, name, &explicit, &args),
+            ExprKind::Specialize(name, explicit, args) =>
+                unsafe { world.call(self.specialized_expression(e, name, &explicit, &args)) .await },
             ExprKind::Number(n) => self.number_expression(n, e.span()),
             ExprKind::Bool(b) => self.constant_expression(Scalar::Bool, Bits::from(b)),
-            ExprKind::Name(name) => self.name_expression(name, e),
+            ExprKind::Name(name) => unsafe { world.call(self.name_expr(name, e.span())) .await }.map(Some),
             ExprKind::Member(base, field) => {
-                let result = self.member_returned(e, &base, field)?;
+                let result = unsafe { world.call(self.member_returned(e, &base, field)) .await }?;
                 self.returned_expression(result, e.span())
             }
-            ExprKind::Index(base, index) => self.index_expr(&base, &index, e),
-            ExprKind::Unary(op, a) => self.unary_expr(op, &a, e.span()),
-            ExprKind::Binary(op, a, b) => self.binary_expr(op, &a, &b, e.span()),
-            ExprKind::Select(c, a, b) => self.selection(&c, &a, &b, e.span()),
+            ExprKind::Index(base, index) => unsafe { world.call(self.index_expr(&base, &index, e)) .await },
+            ExprKind::Unary(op, a) => unsafe { world.call(self.unary_expr(op, &a, e.span())) .await },
+            ExprKind::Binary(op, a, b) => unsafe { world.call(self.binary_expr(op, &a, &b, e.span())) .await },
+            ExprKind::Select(c, a, b) => unsafe { world.call(self.selection(&c, &a, &b, e.span())) .await },
             ExprKind::Target(target, call) => {
-                let result = self.target_call(target, &call, e.span())?;
+                let result = unsafe { world.call(self.target_call(target, &call, e.span())) .await }?;
                 self.returned_expression(result, e.span())
             }
             ExprKind::Construct(ty, args) => {
-                let ty=self.scope.bindings().type_name(self.world,&ty,
-                    (self.scope.source(),self.scope.module(),self.scope.imports()),e.span())?;
-                self.record_expression(&ty, &args, e.span())
+                let ty = unsafe { world.call(self.scope.bindings().type_name(world, &ty,
+                    (self.scope.source(),self.scope.module(),self.scope.imports()),e.span())) .await }?;
+                unsafe { world.call(self.record_expression(&ty, &args, e.span())) .await }
             },
             ExprKind::Call(..) | ExprKind::Invoke(..) => {
-                let result = self.evaluate_returned(e, None)?;
+                let result = unsafe { world.call(self.evaluate_returned(e, None)) .await }?;
                 self.returned_expression(result, e.span())
             }
         }
@@ -3000,10 +3024,6 @@ impl<'a> Builder<'a> {
     #[inline(never)]
     fn constant_expression(&mut self, scalar: Scalar, bits: Bits) -> Result<Option<Value>> {
         Ok(Some(self.constant(scalar, bits)))
-    }
-    #[inline(never)]
-    fn name_expression(&mut self, name: &str, e: &Expr) -> Result<Option<Value>> {
-        self.name_expr(name, e.span()).map(Some)
     }
     #[inline(never)]
     fn returned_expression(&mut self, result: Option<returns::Returned>, span: Span) -> Result<Option<Value>> {
@@ -3014,39 +3034,39 @@ impl<'a> Builder<'a> {
         self.value_result(value, span).map(Some)
     }
     #[inline(never)]
-    fn specialized_expression(&mut self, e: &Expr, name: &str, explicit: &crate::syntax::List<crate::syntax::wire::ArgumentNode>, args: &Expressions) -> Result<Option<Value>> {
-        let bound_explicit=self.scope.bindings().arguments(self.world,explicit,
-            (self.scope.source(),self.scope.module(),self.scope.imports()),e.span())?;
+    async fn specialized_expression(&mut self, e: &Expr, name: &str, explicit: &crate::syntax::List<crate::syntax::wire::ArgumentNode>, args: &Expressions) -> Result<Option<Value>> {
+        let bound_explicit=unsafe { self.world.call(self.scope.bindings().arguments(self.world,explicit,
+            (self.scope.source(),self.scope.module(),self.scope.imports()),e.span())).await }?;
         let explicit=bound_explicit.as_slice();
         if name == "unsafe_function" {
-            return self.function_from_address(explicit,args.len(),e.span(),args.first().map(|arg|arg.span()).unwrap_or(e.span()),
-                |builder|builder.expr(&args.at(0)));
+            return unsafe { self.world.call(self.function_from_address(explicit,args.len(),e.span(),args.first().map(|arg|arg.span()).unwrap_or(e.span()),
+                async |builder|unsafe { builder.world.call(builder.expr(&args.at(0))).await })).await };
         }
         if name == "unsafe_position" {
-            let Some(place) = self.external_position(explicit, args, e.span())? else { return Ok(None); };
-            return self.read_place(&place, e.span(), None).map(Some);
+            let Some(place) = unsafe { self.world.call(self.external_position(explicit, args, e.span())).await }? else { return Ok(None); };
+            return unsafe { self.world.call(self.read_place(&place, e.span(), None)).await }.map(Some);
         }
-        if name == "view" { return self.create_application_view(explicit, args, e.span()); }
-        if self.variant_constructor_type(name,Some(explicit),None,e.span())?.is_some() {
-            let value=self.evaluate_returned(e,None)?;return self.ordinary_return(value,e.span());
+        if name == "view" { return unsafe { self.world.call(self.create_application_view(explicit, args, e.span())).await }; }
+        if unsafe { self.world.call(self.variant_constructor_type(name,Some(explicit),None,e.span())).await }?.is_some() {
+            let value=unsafe { self.world.call(self.evaluate_returned(e,None)).await }?;return self.ordinary_return(value,e.span());
         }
-        let value = self.specialized_call(name, explicit, args, e.span())?;
+        let value = unsafe { self.world.call(self.specialized_call(name, explicit, args, e.span())).await }?;
         if !self.flow.continues() {
             return Ok(None);
         }
         self.value_result(value, e.span()).map(Some)
     }
-    fn function_from_address(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
-        argument:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
+    async fn function_from_address(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
+        argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
             if self.program.target != Target::Cpu {
                 return self.fail(span, "B265", "unsafe_function只解释本进程CPU函数地址");
             }
             let ([GenericArgument::Type(signature)], 1) = (explicit, count) else {
                 return self.fail(span, "B153", "unsafe_function<cfn<...>>需要明确签名和一个address实参");
             };
-            let ty = self.world.ty(signature, self.scope.source(), span, self.scope.module(), self.scope.imports())?;
+            let ty = unsafe { self.world.call(self.world.ty(signature, self.scope.source(), span, self.scope.module(), self.scope.imports())).await }?;
             if !ty.is_c_function() { return self.fail(span, "B263", "unsafe_function需要cfn原生C签名"); }
-            let Some(mut value) = argument(self)? else { return Ok(None); };
+            let Some(mut value) = argument(self).await? else { return Ok(None); };
             self.require_same(&Ty::builtin("address").unwrap(), &value.ty, argument_span)?;
             value.ty = ty;
             value.proof.retain_view_borrows(&value.ty);
@@ -3448,8 +3468,8 @@ impl<'a> Builder<'a> {
             constant: None,
         })
     }
-    fn builtin_call(&mut self, name: &str, args: &Expressions, span: Span) -> Result<Option<Value>> {
-        if name == "c_function" { return self.c_function_value(args, span).map(Some); }
+    async fn builtin_call(&mut self, name: &str, args: &Expressions, span: Span) -> Result<Option<Value>> {
+        if name == "c_function" { return unsafe { self.world.call(self.c_function_value(args, span)).await }.map(Some); }
         if matches!(name, "Ok" | "Err") {
             return self.fail(
                 span,
@@ -3458,16 +3478,16 @@ impl<'a> Builder<'a> {
             );
         }
         if matches!(name, "upload" | "download") {
-            return self.application_transfer(name, args, span);
+            return unsafe { self.world.call(self.application_transfer(name, args, span)).await };
         }
         if name == "println" {
-            return self.println(args, span);
+            return unsafe { self.world.call(self.println(args, span)).await };
         }
         if name == "texture_sample" {
-            return self.texture_sample(args, span);
+            return unsafe { self.world.call(self.texture_sample(args, span)).await };
         }
         if name == "append" {
-            return self.append(args, span);
+            return unsafe { self.world.call(self.append(args, span)).await };
         }
         if TileOp::from_source(name).is_some() {
             return self.fail(
@@ -3490,14 +3510,14 @@ impl<'a> Builder<'a> {
                 "tile_input 只能作为 parallel 开头的 let 输入声明，不能创建普通值或在控制流中构造",
             );
         }
-        if let Some(value) = self.subgroup(name,args.len(),span,|builder,index|builder.expr(&args.at(index)),|index|args.at(index).span()) {
+        if let Some(value) = unsafe { self.world.call(self.subgroup(name,args.len(),span,async |builder,index|unsafe { builder.world.call(builder.expr(&args.at(index))).await },|index|args.at(index).span())).await } {
             return value;
         }
         if matches!(name, "trace_closest" | "trace_any") {
-            return self.ray_query_call(name, args, span);
+            return unsafe { self.world.call(self.ray_query_call(name, args, span)).await };
         }
         if name == "unsafe_read" {
-            return self.unsafe_read_call(args, span);
+            return unsafe { self.world.call(self.unsafe_read_call(args, span)).await };
         }
         if name == "ordinal" {
             return self.ordinal_call(args, span);
@@ -3557,7 +3577,7 @@ impl<'a> Builder<'a> {
                 | "atomic_or"
                 | "atomic_xor"
         ) {
-            return self.atomic_value(name, args, span);
+            return unsafe { self.world.call(self.atomic_value(name, args, span)).await };
         }
         if !self
             .world
@@ -3569,17 +3589,24 @@ impl<'a> Builder<'a> {
             )
             .is_missing()
         {
-            return self.record_expression(&TypeName::named(name), args, span);
+            return unsafe { self.world.call(self.record_expression(&TypeName::named(name), args, span)).await };
         }
-        if name == "address_of" { return self.position_address(args, span); }
-        self.builtin_values(name,span,|builder|args.iter().map(|arg|builder.expr(&arg)).collect())
+        if name == "address_of" { return unsafe { self.world.call(self.position_address(args, span)).await }; }
+        unsafe { self.world.call(self.builtin_values(name,span,async |builder| {
+            let mut values=Vec::new();
+            for arg in args.iter() {
+                let Some(value)=unsafe { builder.world.call(builder.expr(&arg)).await }? else { return Ok(None); };
+                values.push(value);
+            }
+            Ok(Some(values))
+        })).await }
     }
     // The original value/IR owner consumes values from either actual input reader.
     // Argument evaluation stays lazy until this owner has selected a known operation.
-    fn builtin_values(&mut self,name:&str,span:Span,
-        values:impl FnOnce(&mut Self)->Result<Option<Vec<Value>>>)->Result<Option<Value>> {
+    async fn builtin_values(&mut self,name:&str,span:Span,
+        values:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Vec<Value>>>)->Result<Option<Value>> {
         if name == "function_address" {
-            let Some(mut values) = values(self)? else { return Ok(None); };
+            let Some(mut values) = values(self).await? else { return Ok(None); };
             if self.program.target != Target::Cpu { return self.fail(span, "B265", "function_address只取得本进程CPU函数地址"); }
             if values.len() != 1 { return self.fail(span, "B153", "function_address需要一个cfn实参"); }
             let mut value = values.pop().unwrap();
@@ -3590,7 +3617,7 @@ impl<'a> Builder<'a> {
             return Ok(Some(value));
         }
         if name == "unsafe_handle" {
-            let Some(mut values) = values(self)? else { return Ok(None); };
+            let Some(mut values) = values(self).await? else { return Ok(None); };
             if values.len() != 1 {
                 return self.fail(span, "B153", "unsafe_handle需要一个usize实参");
             }
@@ -3612,7 +3639,7 @@ impl<'a> Builder<'a> {
             }));
         }
         if matches!(name, "unsafe_address" | "address_bits") {
-            let Some(mut values) = values(self)? else { return Ok(None); };
+            let Some(mut values) = values(self).await? else { return Ok(None); };
             if self.program.target != Target::Cpu {
                 return self.fail(span, "B265", "CPU本地地址只能在on cpu位置解释或取得位模式");
             }
@@ -3638,11 +3665,11 @@ impl<'a> Builder<'a> {
             return Ok(Some(value));
         }
         if let Some(ty) = Ty::builtin(name) {
-            let Some(values) = values(self)? else { return Ok(None); };
+            let Some(values) = values(self).await? else { return Ok(None); };
             return self.value_constructor(ty, values, span).map(Some);
         }
         if matches!(name, "bitcast_u32" | "bitcast_f32" | "bitcast_u64" | "bitcast_f64") {
-            let Some(values) = values(self)? else { return Ok(None); };
+            let Some(values) = values(self).await? else { return Ok(None); };
             return self.bitcast(name, values, span).map(Some);
         }
         if matches!(
@@ -3660,29 +3687,29 @@ impl<'a> Builder<'a> {
                 | "max"
                 | "pow"
         ) {
-            let Some(values) = values(self)? else { return Ok(None); };
+            let Some(values) = values(self).await? else { return Ok(None); };
             return self.math(name, values, span).map(Some);
         }
         if matches!(name, "transpose" | "determinant" | "inverse") {
-            let Some(values) = values(self)? else { return Ok(None); };
+            let Some(values) = values(self).await? else { return Ok(None); };
             return self.matrix_intrinsic(name, values, span).map(Some);
         }
         if name == "dot" {
-            let Some(values) = values(self)? else { return Ok(None); };
+            let Some(values) = values(self).await? else { return Ok(None); };
             return self.dot_value(values, span).map(Some);
         }
         if matches!(name, "length" | "normalize") {
-            let Some(values) = values(self)? else { return Ok(None); };
+            let Some(values) = values(self).await? else { return Ok(None); };
             return self
                 .length_value(values, name == "normalize", span)
                 .map(Some);
         }
         if name == "cross" {
-            let Some(values) = values(self)? else { return Ok(None); };
+            let Some(values) = values(self).await? else { return Ok(None); };
             return self.cross_value(values, span).map(Some);
         }
         if name == "clamp" {
-            let Some(values) = values(self)? else { return Ok(None); };
+            let Some(values) = values(self).await? else { return Ok(None); };
             if values.len() != 3 {
                 return self.fail(span, "B153", "clamp 需要三个参数");
             }
@@ -3692,11 +3719,11 @@ impl<'a> Builder<'a> {
         self.fail(span, "B158", format!("未知或未导出的函数或能力 {name}"))
     }
     #[inline(never)]
-    fn unary_expr(&mut self, op: &str, a: &Expr, span: Span) -> Result<Option<Value>> {
+    async fn unary_expr(&mut self, op: &str, a: &Expr, span: Span) -> Result<Option<Value>> {
         if op == "-" && let ExprKind::Number(literal) = a.kind() {
             return self.negative_number(literal, span).map(Some);
         }
-        let Some(value) = self.expr(a)? else { return Ok(None); };
+        let Some(value) = unsafe { self.world.call(self.expr(a)).await }? else { return Ok(None); };
         self.unary_value(op, value, span).map(Some)
     }
     fn negative_number(&mut self, literal: &str, span: Span) -> Result<Value> {
@@ -3756,35 +3783,35 @@ impl<'a> Builder<'a> {
         })
     }
     #[inline(never)]
-    fn binary_expr(&mut self, op: &str, a: &Expr, b: &Expr, span: Span) -> Result<Option<Value>> {
-        if op == "&&" || op == "||" { return self.short_circuit_expr(op,a,b,span); }
-        let Some(a) = self.expr(a)? else { return Ok(None); };
-        self.binary_after_left(op,Box::new(a),b,span)
+    async fn binary_expr(&mut self, op: &str, a: &Expr, b: &Expr, span: Span) -> Result<Option<Value>> {
+        if op == "&&" || op == "||" { return unsafe { self.world.call(self.short_circuit_expr(op,a,b,span)).await }; }
+        let Some(a) = unsafe { self.world.call(self.expr(a)).await }? else { return Ok(None); };
+        unsafe { self.world.call(self.binary_after_left(op,Box::new(a),b,span)).await }
     }
     #[inline(never)]
-    fn short_circuit_expr(&mut self, op: &str, a: &Expr, b: &Expr, span: Span) -> Result<Option<Value>> {
-        let Some(condition) = self.temporary_scope(a.span(), |builder| Ok((builder.expr(a)?, view::Borrow::default())))? else {
+    async fn short_circuit_expr(&mut self, op: &str, a: &Expr, b: &Expr, span: Span) -> Result<Option<Value>> {
+        let Some(condition) = unsafe { self.world.call(self.temporary_scope(a.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(a)).await }?, view::Borrow::default())))).await }? else {
             return Ok(None);
         };
         self.require_bool(&condition, a.span())?;
-        self.short_circuit_value(op, condition, b.span(),
-            |builder| builder.evaluate_returned(b, None),
-            |builder, names| expression_assignments(builder, b, names), span)
+        unsafe { self.world.call(self.short_circuit_value(op, condition, b.span(),
+            async |builder| unsafe { builder.world.call(builder.evaluate_returned(b, None)).await },
+            async |builder, names| unsafe { builder.world.call(expression_assignments(builder, b, names)).await }, span)).await }
     }
-    fn short_circuit_value(
+    async fn short_circuit_value(
         &mut self, op: &str, condition: Value, right_span: Span,
-        right: impl FnOnce(&mut Self) -> Result<Option<returns::Returned>>,
-        modified: impl FnOnce(&Self, &mut BTreeSet<String>) -> Result<()>, span: Span,
+        right: impl std::ops::AsyncFnOnce(&mut Self) -> Result<Option<returns::Returned>>,
+        modified: impl std::ops::AsyncFnOnce(&Self, &mut BTreeSet<String>) -> Result<()>, span: Span,
     ) -> Result<Option<Value>> {
         let skipped = op == "||";
-        let skip = |builder: &mut Self| {
+        let skip = async |builder: &mut Self| {
             let value = builder.constant(Scalar::Bool, Bits::from(skipped));
             Ok(Some(returns::Returned::Value(Box::new(value))))
         };
         let result = if op == "&&" {
-            self.selection_after_condition(condition, (right_span, right), (span, skip), modified, span)?
+            unsafe { self.world.call(self.selection_after_condition(condition, (right_span, right), (span, skip), modified, span)).await }?
         } else {
-            self.selection_after_condition(condition, (span, skip), (right_span, right), |_, _| Ok(()), span)?
+            unsafe { self.world.call(self.selection_after_condition(condition, (span, skip), (right_span, right), async |_, _| Ok(()), span)).await }?
         };
         if !self.flow.continues() { return Ok(None); }
         let value = self.ordinary_return(result, span)?;
@@ -3793,8 +3820,8 @@ impl<'a> Builder<'a> {
         Ok(Some(value))
     }
     #[inline(never)]
-    fn binary_after_left(&mut self, op: &str, a: Box<Value>, b: &Expr, span: Span) -> Result<Option<Value>> {
-        let Some(b) = self.expr(b)? else { return Ok(None); };
+    async fn binary_after_left(&mut self, op: &str, a: Box<Value>, b: &Expr, span: Span) -> Result<Option<Value>> {
+        let Some(b) = unsafe { self.world.call(self.expr(b)).await }? else { return Ok(None); };
         self.binary_operands(op,a,b,span)
     }
     #[inline(never)]
@@ -3802,30 +3829,30 @@ impl<'a> Builder<'a> {
         self.binary(op,*a,b,span,None).map(Some)
     }
     #[inline(never)]
-    fn if_statement(
+    async fn if_statement(
         &mut self,
         condition: &Expr,
         yes_body: &Block,
         no_body: &Block,
         span: Span,
     ) -> Result<()> {
-        let Some(c) = self.temporary_scope(condition.span(), |builder| Ok((builder.expr(condition)?, view::Borrow::default())))? else {
+        let Some(c) = unsafe { self.world.call(self.temporary_scope(condition.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(condition)).await }?, view::Borrow::default())))).await }? else {
             return Ok(());
         };
         self.require_bool(&c, condition.span())?;
-        self.conditional_blocks(c, |b| b.block(yes_body), |b| b.block(no_body), span)
+        unsafe { self.world.call(self.conditional_blocks(c, async |b| unsafe { b.world.call(b.block(yes_body)).await }, async |b| unsafe { b.world.call(b.block(no_body)).await }, span)).await }
     }
-    fn conditional_blocks(
+    async fn conditional_blocks(
         &mut self,
         c: Value,
-        yes_body: impl FnOnce(&mut Self) -> Result<()>,
-        no_body: impl FnOnce(&mut Self) -> Result<()>,
+        yes_body: impl std::ops::AsyncFnOnce(&mut Self) -> Result<()>,
+        no_body: impl std::ops::AsyncFnOnce(&mut Self) -> Result<()>,
         span: Span,
     ) -> Result<()> {
         let partition = Arc::new(bounds::Condition::of(&c));
         if let Some(truth) = partition.boolean_constant() {
             self.refine_bounds(&partition, truth);
-            return if truth { yes_body(self) } else { no_body(self) };
+            return if truth { yes_body(self).await } else { no_body(self).await };
         }
         self.remember_loop_control(&c);
         let environment = self.env.clone();
@@ -3835,7 +3862,7 @@ impl<'a> Builder<'a> {
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
         self.refine_bounds(&partition, true);
-        yes_body(self)?;
+        yes_body(self).await?;
         let yes = self.code.split_off(prefix);
         let yes_init = self.take_application_initialization_state();
         let yes_env = self.env.clone();
@@ -3847,7 +3874,7 @@ impl<'a> Builder<'a> {
         self.env = environment.clone();
         self.path = path;
         self.refine_bounds(&partition, false);
-        no_body(self)?;
+        no_body(self).await?;
         let no = self.code.split_off(prefix);
         let no_init = self.take_application_initialization_state();
         let no_flow = self.flow;
@@ -3884,20 +3911,20 @@ impl<'a> Builder<'a> {
 
         Ok(())
     }
-    fn while_statement(&mut self, condition: &Expr, body: &Block, span: Span) -> Result<()> {
-        let initial = self.application_initial_loop(body)?;
-        self.while_loop(condition, body, initial, span)
+    async fn while_statement(&mut self, condition: &Expr, body: &Block, span: Span) -> Result<()> {
+        let initial = unsafe { self.world.call(self.application_initial_loop(body)).await }?;
+        unsafe { self.world.call(self.while_loop(condition, body, initial, span)).await }
     }
-    fn while_loop(&mut self, condition: &Expr, body: &Block, initial: bool, span: Span) -> Result<()> {
+    async fn while_loop(&mut self, condition: &Expr, body: &Block, initial: bool, span: Span) -> Result<()> {
         self.flow = Flow::NEXT;
         let environment = self.env.clone();
         self.enter_loop(&environment);
         self.configure_initial_loop(initial,None,None);
         self.prepare_view_loop();
-        let writes=self.loop_writes(Some(condition),body,None,initial)?;
+        let writes=unsafe { self.world.call(self.loop_writes(Some(condition),body,None,initial)).await }?;
         self.loop_contexts.last_mut().unwrap().writes=writes;
         self.loop_contexts.last_mut().unwrap().outer=std::mem::take(&mut self.code);
-        let Some(c) = self.temporary_scope(condition.span(), |builder| Ok((builder.expr(condition)?, view::Borrow::default())))? else {
+        let Some(c) = unsafe { self.world.call(self.temporary_scope(condition.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(condition)).await }?, view::Borrow::default())))).await }? else {
             let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
             self.finish_view_condition()?;
             let code = std::mem::replace(&mut self.code, outer);
@@ -3919,7 +3946,7 @@ impl<'a> Builder<'a> {
                         owner.proof.retain_loop_bounds(&bounds::Proof::unsigned(low,high),0,true,true);
                     }
                 }
-                possible=self.retain_loop_bounds(Some(condition),body,&environment,&mut condition_env)?;
+                possible=unsafe { self.world.call(self.retain_loop_bounds(Some(condition),body,&environment,&mut condition_env)).await }?;
             }
         }
         if !possible {
@@ -3945,10 +3972,10 @@ impl<'a> Builder<'a> {
         self.control_uniform &= c.uniform;
         self.loop_depth += 1;
         self.iterators.push(None);
-        self.block(body)?;
+        unsafe { self.world.call(self.block(body)).await }?;
         let mut body_flow = self.flow;
         if body_flow.continues() {
-            self.check_application_loop(condition.span())?;
+            unsafe { self.world.call(self.check_application_loop(condition.span())).await }?;
         }
         self.iterators.pop();
         self.loop_depth -= 1;
@@ -3956,10 +3983,10 @@ impl<'a> Builder<'a> {
         let condition_code = std::mem::take(&mut self.code);
         if initial {
             let (expanded, flow) =
-                self.expand_initial_loop(code, body_flow.continues(), |builder, _| {
-                    let initial=builder.next_initial_loop(body)?;
-                    builder.while_loop(condition, body, initial, span)
-                })?;
+                unsafe { self.world.call(self.expand_initial_loop(code, body_flow.continues(), async |builder, _| {
+                    let initial=unsafe { builder.world.call(builder.next_initial_loop(body)).await }?;
+                    unsafe { builder.world.call(builder.while_loop(condition, body, initial, span)).await }
+                })).await }?;
             code = expanded;
             body_flow = body_flow.union(flow);
         }
@@ -3978,7 +4005,7 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     #[inline(never)]
-    fn for_statement(
+    async fn for_statement(
         &mut self,
         name: &str,
         start: &Expr,
@@ -3990,17 +4017,17 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B125", "循环变量不能覆盖已有绑定");
         }
         let (begin, limit, data) = if let Some(end) = end {
-            let Some(a) = self.temporary_scope(start.span(), |builder| Ok((builder.expr(start)?, view::Borrow::default())))? else {
+            let Some(a) = unsafe { self.world.call(self.temporary_scope(start.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(start)).await }?, view::Borrow::default())))).await }? else {
                 return Ok(());
             };
-            let Some(b) = self.temporary_scope(end.span(), |builder| Ok((builder.expr(end)?, view::Borrow::default())))? else {
+            let Some(b) = unsafe { self.world.call(self.temporary_scope(end.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(end)).await }?, view::Borrow::default())))).await }? else {
                 return Ok(());
             };
             self.require_same(&Ty::scalar(Scalar::U32), &a.ty, start.span())?;
             self.require_same(&a.ty, &b.ty, start.span())?;
             (a, b, None)
         } else {
-            let source = if let Some(value) = self.application_reference(start)? {
+            let source = if let Some(value) = unsafe { self.world.call(self.application_reference(start)).await }? {
                 Some(Binding::DataReference(value))
             } else if let ExprKind::Name(name) = start.kind() {
                 self.env.get(name).cloned()
@@ -4037,7 +4064,7 @@ impl<'a> Builder<'a> {
                     )
                 }
                 _ => {
-                    let Some(view) = self.expr(start)? else {
+                    let Some(view) = unsafe { self.world.call(self.expr(start)).await }? else {
                         return Ok(());
                     };
                     if view.ty.view.is_none() {
@@ -4063,11 +4090,11 @@ impl<'a> Builder<'a> {
             Some(CursorSource::ApplicationData(data)) => Some(data.root.identity()),
             _ => None,
         };
-        let initial = self.application_initial_loop(body)?;
+        let initial = unsafe { self.world.call(self.application_initial_loop(body)).await }?;
         let slot = self.local_slots(&Ty::scalar(Scalar::U32)).0[0];
         self.emit(InstKind::StoreLocal(slot, begin.regs[0]));
         let initialization = self.application_iteration_outputs(&begin, &limit, match &data {Some(CursorSource::ApplicationData(data))=>Some(&data.data),_=>None});
-        let writes = self.for_loop(
+        let writes = unsafe { self.world.call(self.for_loop(
             ForLoop {
                 name: name.to_string(),
                 begin: begin.clone(),
@@ -4082,16 +4109,16 @@ impl<'a> Builder<'a> {
             initial,
             nonempty,
             &begin,
-        )?;
+        )).await }?;
         if self.flow.continues() {
-            self.complete_application_writes(|builder,data| writes.unknown_storage
+            unsafe { self.world.call(self.complete_application_writes(|builder,data| writes.unknown_storage
                 || writes.storage.iter().any(|written| written.includes_root(builder,data.root.regs[0]))
                 || data.place.as_ref().is_some_and(|place| matches!(place.storage(),
-                    Place::Local(_, slots, _) if slots.iter().any(|slot| writes.locals.contains(slot)))), span)?;
+                    Place::Local(_, slots, _) if slots.iter().any(|slot| writes.locals.contains(slot)))), span)).await }?;
         }
         Ok(())
     }
-    fn for_loop(
+    async fn for_loop(
         &mut self,
         cursor_specification: ForLoop,
         body: &Block,
@@ -4156,7 +4183,7 @@ impl<'a> Builder<'a> {
                 CursorSource::ApplicationData(mut data) => {
                     // The cursor uses the same current loop resource as indexed access.
                     data.data.root.proof=data.data.root.proof.clone().with_view_borrow(0,data.root.proof.view_borrow(0).joined(self.data_borrow(&data.sources)));
-                    let input=if !initial&&!bounds::seeks(body){self.application_cursor_input(&data,&body_cursor)?}else{bounds::Proof::default()};
+                    let input=if !initial&&!bounds::seeks(body){unsafe { self.world.call(self.application_cursor_input(&data,&body_cursor)).await }?}else{bounds::Proof::default()};
                     Binding::Owned(OwnedBinding {
                         place: data.element(
                             &cursor,
@@ -4214,7 +4241,7 @@ impl<'a> Builder<'a> {
             Binding::Value(body_cursor.clone())
         };
         self.env.insert(name.clone(), binding);
-        let mut writes=self.loop_writes(None,body,borrowed,initial)?;
+        let mut writes=unsafe { self.world.call(self.loop_writes(None,body,borrowed,initial)).await }?;
         writes.locals.insert(slot);
         self.loop_contexts.last_mut().unwrap().writes=writes;
         self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(&test,&self.env,Some(body_cursor.clone()));
@@ -4231,24 +4258,24 @@ impl<'a> Builder<'a> {
         self.env = condition_env;
         self.path = condition_path;
         self.refine_bounds(&partition, true);
-        if !initial {self.retain_loop_bounds(None,body,&environment,&mut natural.env)?;}
+        if !initial {unsafe { self.world.call(self.retain_loop_bounds(None,body,&environment,&mut natural.env)).await }?;}
         let control = self.control_uniform;
         self.control_uniform &= begin.uniform && limit.uniform;
         self.loop_depth += 1;
         self.iterators.push(Some((name.clone(), slot)));
-        self.block(body)?;
+        unsafe { self.world.call(self.block(body)).await }?;
         let mut body_flow = self.flow;
         let body_reachable = body_flow.continues();
         if body_reachable {
             self.advance_iterator(slot)?;
-            self.check_application_loop(span)?;
+            unsafe { self.world.call(self.check_application_loop(span)).await }?;
         }
         self.iterators.pop();
         self.loop_depth -= 1;
         if !initial && !bounds::seeks(body) {
             match &cursor_specification.data {
-                Some(CursorSource::ApplicationData(data)) => self.application_iteration_elements(&mut natural, Some(data), &cursor, &limit)?,
-                None => self.application_iteration_elements(&mut natural, None, &cursor, &limit)?,
+                Some(CursorSource::ApplicationData(data)) => unsafe { self.world.call(self.application_iteration_elements(&mut natural, Some(data), &cursor, &limit)).await }?,
+                None => unsafe { self.world.call(self.application_iteration_elements(&mut natural, None, &cursor, &limit)).await }?,
                 _ => {},
             }
         }
@@ -4267,15 +4294,15 @@ impl<'a> Builder<'a> {
         if initial {
             let specification = cursor_specification.clone();
             let (expanded, flow) =
-                self.expand_initial_loop(code, body_reachable, |builder, next| {
+                unsafe { self.world.call(self.expand_initial_loop(code, body_reachable, async |builder, next| {
                     let mut cursor = specification.clone();
                     cursor.initialization =
                         builder.application_iteration_prefix(&initialization, iteration);
                     cursor.begin = next.unwrap();
-                    let initial=builder.next_initial_loop(body)?;
+                    let initial=unsafe { builder.world.call(builder.next_initial_loop(body)).await }?;
                     let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
-                    builder.for_loop(cursor, body, span, initial, nonempty, original_begin).map(|_| ())
-                })?;
+                    unsafe { builder.world.call(builder.for_loop(cursor, body, span, initial, nonempty, original_begin)).await }.map(|_| ())
+                })).await }?;
             code = expanded;
             body_flow = body_flow.union(flow);
         }
@@ -4294,7 +4321,7 @@ impl<'a> Builder<'a> {
         Ok(writes)
     }
     #[inline(never)]
-    fn let_statement(
+    async fn let_statement(
         &mut self,
         annotation: &Option<TypeName>,
         name: &str,
@@ -4306,21 +4333,21 @@ impl<'a> Builder<'a> {
         }
         if let ExprKind::Call(call, args) = e.kind() {
             if matches!(call, "tile_publish" | "tile_atomic") {
-                return self.tile_publish(
+                return unsafe { self.world.call(self.tile_publish(
                     annotation.is_some(),
                     name,
                     &args,
                     span,
                     call == "tile_atomic",
-                );
+                )).await };
             }
         }
-        let expected = annotation
-            .as_ref()
-            .map(|ty| self.expected_storage(ty, span))
-            .transpose()?;
+        let expected=match annotation.as_ref() {
+            Some(ty)=>Some(unsafe { self.world.call(self.expected_storage(ty,span)).await }?),
+            None=>None,
+        };
         let result = if let ExprKind::Cooperate(call, explicit, args) = e.kind() {
-            self.cooperate(call, explicit.as_ref(), &args, e.span())?
+            unsafe { self.world.call(self.cooperate(call, explicit.as_ref(), &args, e.span())).await }?
                 .map(returns::Returned::value)
         } else if let ExprKind::Call(call, args) = e.kind() {
             if let Some(op) = TileOp::from_source(call) {
@@ -4328,10 +4355,10 @@ impl<'a> Builder<'a> {
                     self.tile_collective(op, &args, span)?,
                 ))
             } else {
-                self.evaluate_returned(e, expected.as_ref())?
+                unsafe { self.world.call(self.evaluate_returned(e, expected.as_ref())).await }?
             }
         } else {
-            self.evaluate_returned(e, expected.as_ref())?
+            unsafe { self.world.call(self.evaluate_returned(e, expected.as_ref())).await }?
         };
         if !self.flow.continues() {
             return Ok(());
@@ -4343,7 +4370,7 @@ impl<'a> Builder<'a> {
             message: "局部绑定需要值或拥有资源".into(),
         })?;
         if let Some(expected) = expected {
-            self.check_returned_type(&mut value, &expected, span)?;
+            unsafe { self.world.call(self.check_returned_type(&mut value, &expected, span)).await }?;
         }
         self.bind_returned(name, value, span)
     }
@@ -4612,8 +4639,8 @@ impl<'a> Builder<'a> {
             constant: None,
         });
     }
-    fn member_place(&mut self, base: &Expr, field: &str, e: &Expr) -> Result<Option<Place>> {
-        let Some(p) = self.place(base)? else {
+    async fn member_place(&mut self, base: &Expr, field: &str, e: &Expr) -> Result<Option<Place>> {
+        let Some(p) = unsafe { self.world.call(self.place(base)).await }? else {
             return Ok(None);
         };
         self.member_position(p,field,e.span())
@@ -4625,20 +4652,20 @@ impl<'a> Builder<'a> {
         let (sub, components) = member_type(p.ty(), field, self.scope.source(), span)?;
         Ok(Some(p.project(sub, &components)))
     }
-    fn index_place(&mut self, base: &Expr, index: &Expr) -> Result<Option<Place>> {
-        if let Some(data) = self.application_reference(base)? {
-            return self.application_index(data, index);
+    async fn index_place(&mut self, base: &Expr, index: &Expr) -> Result<Option<Place>> {
+        if let Some(data) = unsafe { self.world.call(self.application_reference(base)).await }? {
+            return unsafe { self.world.call(self.application_index(data, index)).await };
         }
         if let ExprKind::Name(name) = base.kind()
             && let Some(Binding::Tile(view)) = self.env.get(name).cloned()
         {
-            return self.tile_place(view, index);
+            return unsafe { self.world.call(self.tile_place(view, index)).await };
         }
         let Some(view) = self.dataset_reference(base)? else {
-            return self.view_place(base, index);
+            return unsafe { self.world.call(self.view_place(base, index)).await };
         };
         let binding = view.binding;
-        let Some(i) = self.expr(index)? else {
+        let Some(i) = unsafe { self.world.call(self.expr(index)).await }? else {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span())?;
@@ -4695,7 +4722,7 @@ impl<'a> Builder<'a> {
         }
     }
     #[inline(never)]
-    fn declare_statement(
+    async fn declare_statement(
         &mut self,
         annotation: &TypeName,
         name: &str,
@@ -4705,17 +4732,17 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
         }
         if annotation.dataset {
-            return self.application_declare(annotation, name, span);
+            return unsafe { self.world.call(self.application_declare(annotation, name, span)).await };
         }
-        let ty = self.world.ty(
+        let ty = unsafe { self.world.call(self.world.ty(
             annotation,
             self.scope.source(),
             span,
             self.scope.module(),
             self.scope.imports(),
-        )?;
+        )).await }?;
         if ty.owns_resources() {
-            return self.owned_value_declare(name, ty, span);
+            return unsafe { self.world.call(self.owned_value_declare(name, ty, span)).await };
         }
         let (slots, storage) = self.local_slots(&ty);
         self.env.insert(
@@ -4731,13 +4758,16 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     #[inline(never)]
-    fn assign_statement(&mut self, lhs: &Expr, op: &str, rhs: &Expr, span: Span) -> Result<()> {
-        if self.read_expression_type(lhs)?.is_some_and(|ty|ty.owns_resources()) {
+    async fn assign_statement(&mut self, lhs: &Expr, op: &str, rhs: &Expr, span: Span) -> Result<()> {
+        if unsafe { self.world.call(self.read_expression_type(lhs)).await }?.is_some_and(|ty|ty.owns_resources()) {
             let mut element=lhs.clone();let mut projection=Vec::new();
             loop {match element.kind() {
-                ExprKind::Index(base,index) if self.read_expression_type(&base)?.and_then(|ty|ty.dataset).map(|reference|self.expected_storage(&reference,base.span())).transpose()?.is_some_and(|element|element.owns_resources())=>{
-                    let Some(data)=self.application_reference(&base)?else{return Ok(())};
-                    projection.reverse();return self.assign_application_element(data,&index,&projection,op,rhs,span);
+                ExprKind::Index(base,index) if match unsafe { self.world.call(self.read_expression_type(&base)).await }?.and_then(|ty|ty.dataset) {
+                    Some(reference)=>unsafe { self.world.call(self.expected_storage(&reference,base.span())).await }?.owns_resources(),
+                    None=>false,
+                }=>{
+                    let Some(data)=unsafe { self.world.call(self.application_reference(&base)).await }?else{return Ok(())};
+                    projection.reverse();return unsafe { self.world.call(self.assign_application_element(data,&index,&projection,op,rhs,span)).await };
                 },
                 ExprKind::Member(base,_)|ExprKind::Index(base,_)=>{projection.push(element);element=base;},
                 _=>break,
@@ -4746,46 +4776,46 @@ impl<'a> Builder<'a> {
         if let ExprKind::Name(name) = lhs.kind()
             && let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned()
         {
-            return self.application_assign(name, data, op, rhs, span);
+            return unsafe { self.world.call(self.application_assign(name, data, op, rhs, span)).await };
         }
-        let Some(place) = self.place(lhs)? else {
+        let Some(place) = unsafe { self.world.call(self.place(lhs)).await }? else {
             return Ok(());
         };
         if place.ty().owns_resources() {
-            return self.assign_owned_storage(place,None,op,rhs,span);
+            return unsafe { self.world.call(self.assign_owned_storage(place,None,op,rhs,span)).await };
         }
         let borrowed = matches!(place.storage(), Place::ApplicationElement { .. })
             .then(|| self.hold_binding(Binding::AtomicBorrow(place.clone())));
-        let Some(mut value) = self.expr_expected(rhs, Some(place.ty()))? else {
+        let Some(mut value) = unsafe { self.world.call(self.expr_expected(rhs, Some(place.ty()))).await }? else {
             return Ok(());
         };
         if let Some(name) = borrowed {
             self.env.remove(&name);
         }
         if op != "=" {
-            let current = self.read_place(&place, lhs.span(), None)?;
+            let current = unsafe { self.world.call(self.read_place(&place, lhs.span(), None)).await }?;
             value = self.binary(&op[..op.len() - 1], current, value, span,None)?;
         }
         self.view_uses.after(span);
-        self.write_place(&place, value, span, None)?;
+        unsafe { self.world.call(self.write_place(&place, value, span, None)).await }?;
 
         Ok(())
     }
     #[inline(never)]
-    fn expression_statement(&mut self, e: &Expr) -> Result<()> {
+    async fn expression_statement(&mut self, e: &Expr) -> Result<()> {
         if let ExprKind::Call(name, args) = e.kind()
             && name == "atomic_store"
         {
-            self.atomic_store(&args, e.span())?;
+            unsafe { self.world.call(self.atomic_store(&args, e.span())).await }?;
         } else if let ExprKind::Call(name, args) = e.kind()
             && name == "tile_barrier"
         {
             self.tile_barrier(&args, e.span())?;
         } else if let ExprKind::Cooperate(name, explicit, args) = e.kind() {
-            self.cooperate(name, explicit.as_ref(), &args, e.span())?;
+            unsafe { self.world.call(self.cooperate(name, explicit.as_ref(), &args, e.span())).await }?;
         } else {
-            if let Some(value) = self.evaluate_returned(e, None)? {
-                self.drop_returned(value,&view::Borrow::default(),e.span())?;
+            if let Some(value) = unsafe { self.world.call(self.evaluate_returned(e, None)).await }? {
+                unsafe { self.world.call(self.drop_returned(value,&view::Borrow::default(),e.span())).await }?;
             }
         }
 
@@ -4799,27 +4829,27 @@ impl<'a> Builder<'a> {
         self.capture_loop_cursor(value);Ok(())
     }
     #[inline(never)]
-    fn seek_statement(&mut self, name: &str, position: &Expr, span: Span) -> Result<()> {
+    async fn seek_statement(&mut self, name: &str, position: &Expr, span: Span) -> Result<()> {
         let Some(Some((iterator, slot))) = self.iterators.last().cloned() else {
             return self.fail(span, "B164", "seek 需要当前有界 for 游标");
         };
         if iterator != *name {
             return self.fail(span, "B165", "seek 只能推进当前最内层游标");
         }
-        let Some(value) = self.temporary_scope(position.span(), |builder| Ok((builder.expr(position)?, view::Borrow::default())))? else {
+        let Some(value) = unsafe { self.world.call(self.temporary_scope(position.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(position)).await }?, view::Borrow::default())))).await }? else {
             return Ok(());
         };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span())?;
-        self.release_application_loop()?;
+        unsafe { self.world.call(self.release_application_loop()).await }?;
         self.emit(InstKind::StoreLocal(slot, value.regs[0]));
         self.capture_loop_cursor(value);
-        self.check_application_loop(span)?;
+        unsafe { self.world.call(self.check_application_loop(span)).await }?;
         self.emit(InstKind::Continue);
         self.flow = Flow::CONTINUE;
 
         Ok(())
     }
-    fn ray_query_call(&mut self, name: &str, args: &Expressions, span: Span) -> Result<Option<Value>> {
+    async fn ray_query_call(&mut self, name: &str, args: &Expressions, span: Span) -> Result<Option<Value>> {
         if !matches!(args.len(), 5 | 6) {
             return self.fail(
                 span,
@@ -4834,16 +4864,16 @@ impl<'a> Builder<'a> {
         let Some(Binding::Acceleration(scene)) = self.env.get(scene).cloned() else {
             return self.fail(span, "B183", "光线查询需要 read acceleration 资源");
         };
-        let Some(origin) = self.expr(&args.at(1))? else {
+        let Some(origin) = unsafe { self.world.call(self.expr(&args.at(1))).await }? else {
             return Ok(None);
         };
-        let Some(minimum) = self.expr(&args.at(2))? else {
+        let Some(minimum) = unsafe { self.world.call(self.expr(&args.at(2))).await }? else {
             return Ok(None);
         };
-        let Some(direction) = self.expr(&args.at(3))? else {
+        let Some(direction) = unsafe { self.world.call(self.expr(&args.at(3))).await }? else {
             return Ok(None);
         };
-        let Some(maximum) = self.expr(&args.at(4))? else {
+        let Some(maximum) = unsafe { self.world.call(self.expr(&args.at(4))).await }? else {
             return Ok(None);
         };
         self.require_same(&Ty::vector(Scalar::F32, 3), &origin.ty, args.at(1).span())?;
@@ -4852,7 +4882,7 @@ impl<'a> Builder<'a> {
         self.require_same(&minimum.ty, &maximum.ty, args.at(4).span())?;
         let cull_back_faces = if args.len() == 6 {
             let arg = args.at(5);
-            let Some(value) = self.expr(&arg)? else {
+            let Some(value) = unsafe { self.world.call(self.expr(&arg)).await }? else {
                 return Ok(None);
             };
             self.require_same(&Ty::scalar(Scalar::Bool), &value.ty, arg.span())?;
@@ -4889,7 +4919,7 @@ impl<'a> Builder<'a> {
             constant: None,
         }));
     }
-    fn unsafe_read_call(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
+    async fn unsafe_read_call(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
         if args.len() != 2 {
             return self.fail(
                 span,
@@ -4898,13 +4928,13 @@ impl<'a> Builder<'a> {
             );
         }
         if let ExprKind::Name(data) = &args.at(0).kind() {
-            if let Some(data) = self.application_value(data, span)? {
+            if let Some(data) = unsafe { self.world.call(self.application_value(data, span)).await }? {
                 self.application_cpu(&data, span)?;
-                let Some(index) = self.expr(&args.at(1))? else {
+                let Some(index) = unsafe { self.world.call(self.expr(&args.at(1))).await }? else {
                     return Ok(None);
                 };
                 self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args.at(1).span())?;
-                return self
+                return unsafe { self.world.call(self
                     .read_place(
                         &Self::application_element(
                             &data,
@@ -4912,7 +4942,7 @@ impl<'a> Builder<'a> {
                             (index.minimum(), index.maximum()),
                         ),
                         span, None
-                    )
+                    )).await }
                     .map(Some);
             }
         }
@@ -4920,27 +4950,27 @@ impl<'a> Builder<'a> {
             if !matches!(view.access, Access::Read | Access::InOut) {
                 return self.fail(span, "B181", "unsafe_read 需要 read 或本阶段共享只读的 inout 数据集");
             }
-            let Some(index) = self.expr(&args.at(1))? else { return Ok(None); };
+            let Some(index) = unsafe { self.world.call(self.expr(&args.at(1))).await }? else { return Ok(None); };
             self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args.at(1).span())?;
-            return self.read_place(&self.dataset_element(&view, index.regs[0], false), span, None).map(Some);
+            return unsafe { self.world.call(self.read_place(&self.dataset_element(&view, index.regs[0], false), span, None)).await }.map(Some);
         }
-        let Some(view) = self.expr(&args.at(0))? else {
+        let Some(view) = unsafe { self.world.call(self.expr(&args.at(0))).await }? else {
             return Ok(None);
         };
-        self.unsafe_read_view(view,span,args.at(1).span(),|builder|builder.expr(&args.at(1)))
+        unsafe { self.world.call(self.unsafe_read_view(view,span,args.at(1).span(),async |builder|unsafe { builder.world.call(builder.expr(&args.at(1))).await })).await }
     }
-    fn unsafe_read_view(&mut self,view:Value,span:Span,index_span:Span,
-        read_index:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
+    async fn unsafe_read_view(&mut self,view:Value,span:Span,index_span:Span,
+        read_index:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
         if view.ty.view.is_none() {
             return self.fail(span, "B181", "unsafe_read 需要 read dataset 或不可变 view");
         }
         let held = self.hold_binding(Binding::Value(view.clone()));
-        let evaluated = read_index(self);
+        let evaluated = read_index(self).await;
         self.env.remove(&held);
         let Some(index) = evaluated? else { return Ok(None); };
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, index_span)?;
-        return self
-            .read_place(&Self::view_element(&view, index.regs[0]), span, None)
+        return unsafe { self.world.call(self
+            .read_place(&Self::view_element(&view, index.regs[0]), span, None)).await }
             .map(Some);
     }
     fn ordinal_call(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
@@ -4998,8 +5028,8 @@ impl<'a> Builder<'a> {
             constant: None,
         }));
     }
-    fn member_expr(&mut self, base: &Expr, field: &str, e: &Expr) -> Result<Option<Value>> {
-        if let Some(data) = self.application_reference(base)? {
+    async fn member_expr(&mut self, base: &Expr, field: &str, e: &Expr) -> Result<Option<Value>> {
+        if let Some(data) = unsafe { self.world.call(self.application_reference(base)).await }? {
             return if field == "length" {
                 Ok(Some(data.length.clone()))
             } else {
@@ -5028,7 +5058,7 @@ impl<'a> Builder<'a> {
         }
         if self.is_place(base) {
             // 保留字段访问，避免为了读取一个字段先加载整个结构体。
-            let Some(p) = self.place(base)? else {
+            let Some(p) = unsafe { self.world.call(self.place(base)).await }? else {
                 return Ok(None);
             };
             if p.ty().array.is_some() && field == "length" {
@@ -5036,17 +5066,17 @@ impl<'a> Builder<'a> {
             }
             if p.ty().view.is_some() {
                 if field == "length" {
-                    let view = self.read_place(&p, e.span(), None)?;
+                    let view = unsafe { self.world.call(self.read_place(&p, e.span(), None)).await }?;
                     return Ok(Some(Self::view_length(&view)));
                 }
                 return self.fail(e.span(), "B185", "view 只公开只读 length，不公开设备地址分量");
             }
             let (sub, components) = member_type(p.ty(), field, self.scope.source(), e.span())?;
-            return self
-                .read_place(&p.project(sub, &components), e.span(), None)
+            return unsafe { self.world.call(self
+                .read_place(&p.project(sub, &components), e.span(), None)).await }
                 .map(Some);
         }
-        let Some(v) = self.expr(base)? else {
+        let Some(v) = unsafe { self.world.call(self.expr(base)).await }? else {
             return Ok(None);
         };
         self.member_value(v, field, e.span()).map(Some)
@@ -5069,31 +5099,31 @@ impl<'a> Builder<'a> {
         })
     }
     #[inline(never)]
-    fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Option<Value>> {
+    async fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Option<Value>> {
         let resource = self.dataset_reference(base)?.is_some() || matches!(base.kind(), ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Tile(_) | Binding::ApplicationData(_))));
         if !resource && !self.is_place(base) {
-            let returned = self.owned_array_index(e, base, index)?;
+            let returned = unsafe { self.world.call(self.owned_array_index(e, base, index)).await }?;
             return self.ordinary_return(returned, e.span());
         }
-        let Some(p) = self.place(e)? else {
+        let Some(p) = unsafe { self.world.call(self.place(e)).await }? else {
             return Ok(None);
         };
-        self.read_place(&p, e.span(), None).map(Some)
+        unsafe { self.world.call(self.read_place(&p, e.span(), None)).await }.map(Some)
     }
     #[inline(never)]
-    fn name_expr(&mut self, name: &str, span: Span) -> Result<Value> {
+    async fn name_expr(&mut self, name: &str, span: Span) -> Result<Value> {
         if let Some(value) = self.scope.bindings().values.get(name).copied() {
             return Ok(self.constant(Scalar::U32, Bits::from(value)));
         }
         match self.env.get(name).cloned() {
             Some(Binding::Value(v)) => Ok(v),
-            Some(Binding::Owned(owner)) => self.read_place(&owner.place, span, None),
+            Some(Binding::Owned(owner)) => unsafe { self.world.call(self.read_place(&owner.place, span, None)).await },
             Some(
                 Binding::AtomicBorrow(_)
                 | Binding::ViewElement { .. },
             ) => {
                 let p = self.name_place(name, span)?;
-                self.read_place(&p, span, None)
+                unsafe { self.world.call(self.read_place(&p, span, None)).await }
             }
             None => {
                 let key = self
@@ -5111,7 +5141,7 @@ impl<'a> Builder<'a> {
                         code: "B145",
                         message: format!("未知值 {name}"),
                     })?;
-                self.module_constant(key)
+                unsafe { self.world.call(self.module_constant(key)).await }
             }
             _ => self.fail(span, "B145", format!("未知值 {name}")),
         }
@@ -5147,10 +5177,10 @@ pub(crate) fn stage_intrinsic(name: &str) -> bool {
         || custom_reduce::Kind::from_source(name).is_some()
 }
 
-pub(crate) fn kernel_interface(world: &World, instance: &crate::generics::Instance) -> Result<bool> {
+pub(crate) async fn kernel_interface(world: &World, instance: &crate::generics::Instance) -> Result<bool> {
     let d=&instance.definition;
-    let result=instance.bindings.type_name(world,&d.function.result(),
-        (&d.source,&d.module,&d.imports),d.function.span())?;
+    let result=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),
+        (&d.source,&d.module,&d.imports),d.function.span())).await }?;
     if result.name != "void"
         || result.dataset
         || result.tile
@@ -5160,15 +5190,15 @@ pub(crate) fn kernel_interface(world: &World, instance: &crate::generics::Instan
         return Ok(false);
     }
     for param in instance.parameters(world) {
-        let param=param?;
+        let param=unsafe { world.call(param).await }?;
         if param.ty.dataset {
             if param.access == Access::Value {
                 return Ok(false);
             }
         } else if !param.ty.is_acceleration() && !param.ty.is_texture_resource() {
             if param.access != Access::Value
-                || world
-                    .ty(&param.ty, &d.source, param.span, &d.module, &d.imports)?
+                || unsafe { world.call(world
+                    .ty(&param.ty, &d.source, param.span, &d.module, &d.imports)).await }?
                     .owns_resources()
             {
                 return Ok(false);

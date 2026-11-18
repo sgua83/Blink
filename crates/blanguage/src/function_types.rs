@@ -3,21 +3,21 @@ mod c_function;
 use crate::{ast::*, ir::{CFunctionType, CallParameter, Scalar, Ty}, Source, World};
 
 impl World {
-    pub(crate) fn check_interface_types(&self, definition: &crate::Definition,
+    pub(crate) async fn check_interface_types(&self, definition: &crate::Definition,
         bindings: &std::sync::Arc<crate::generics::Bindings>,
     ) -> crate::Result<()> {
         let Some(declaration) = &definition.interface_declaration else { return Ok(()); };
         let actual = &definition.function;
         let interface = &self.interfaces[&definition.module];
-        let bind = |name: &crate::syntax::Type, source: &Source, span: Span| -> crate::Result<TypeName> {
-            let name=bindings.type_name(self,name,(source,&definition.module,&definition.imports),span)?;
-            self.type_reference(&name, source, span, &definition.module, &definition.imports)
+        let bind = async |name: &crate::syntax::Type, source: &Source, span: Span| -> crate::Result<TypeName> {
+            let name=unsafe{self.call(bindings.type_name(self,name,(source,&definition.module,&definition.imports),span)).await}?;
+            unsafe{self.call(self.type_reference(&name,source,span,&definition.module,&definition.imports)).await}
         };
-        let mut same = bind(&declaration.result(), &interface.source, declaration.span())?
-            == bind(&actual.result(), &definition.source, actual.span())?;
+        let mut same = unsafe{self.call(bind(&declaration.result(),&interface.source,declaration.span())).await}?
+            == unsafe{self.call(bind(&actual.result(),&definition.source,actual.span())).await}?;
         for (declared, implemented) in declaration.params().iter().zip(actual.params()) {
-            same &= bind(&declared.ty(), &interface.source, declared.span())?
-                == bind(&implemented.ty(), &definition.source, implemented.span())?;
+            same &= unsafe{self.call(bind(&declared.ty(),&interface.source,declared.span())).await}?
+                == unsafe{self.call(bind(&implemented.ty(),&definition.source,implemented.span())).await}?;
         }
         if !same {
             return definition.source.fail(actual.span(), "B028", format!("{} 的实际类型或函数值合同与 .h 不一致", actual.name()));
@@ -27,14 +27,14 @@ impl World {
     // Resolve names and const arguments without asking a signature reference for its record layout.
     /// Contract expressions project nominal fields before requesting a layout;
     /// a callback signature may refer to the containing record itself.
-    pub(crate) fn output_path_type(&self, name: &TypeName, fields: &[&str], source: &Source,
+    pub(crate) async fn output_path_type(&self, name: &TypeName, fields: &[&str], source: &Source,
         span: Span, module: &str, imports: &[String],
     ) -> crate::Result<Ty> {
         if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
             return source.fail(span, if fields.is_empty() { "B148" } else { "B225" },
                 "函数签名没有数值运算或字段；原生地址通过function_address显式取得");
         }
-        let resolved = self.type_reference(name, source, span, module, imports)?;
+        let resolved = unsafe{self.call(self.type_reference(name,source,span,module,imports)).await}?;
         let name = &resolved;
         if let Some((field, rest)) = fields.split_first() {
             if *field == "length" && (name.dataset || name.name == "array") {
@@ -74,13 +74,15 @@ impl World {
                 };
                 Ok((parameter.name().to_owned(), ty.clone()))
             }).collect::<crate::Result<_>>()?;
-            let values = record.values().iter().zip(&name.arguments[record.types().len()..]).map(|(parameter, argument)| {
-                let shape = argument.shape().unwrap();
-                Ok((parameter.name().to_owned(), self.shape(&Some(shape), source, span, module, imports)?.unwrap()))
-            }).collect::<crate::Result<_>>()?;
+            let mut values=std::collections::BTreeMap::new();
+            for(parameter,argument)in record.values().iter().zip(&name.arguments[record.types().len()..]){
+                let shape=argument.shape().unwrap();
+                let value=unsafe{self.call(self.shape(&Some(shape),source,span,module,imports)).await}?.unwrap();
+                values.insert(parameter.name().to_owned(),value);
+            }
             let bindings=std::sync::Arc::new(crate::generics::Bindings{types,values});
-            let selected=bindings.type_name(self,&selected,(record_source,record_module,record_imports),span)?;
-            return self.output_path_type(&selected, rest, record_source, span, record_module, record_imports);
+            let selected=unsafe{self.call(bindings.type_name(self,&selected,(record_source,record_module,record_imports),span)).await}?;
+            return unsafe{self.call(self.output_path_type(&selected,rest,record_source,span,record_module,record_imports)).await};
         }
         // A literal cannot numerically operate on an ordinary record. Decide
         // that existing type error from its declaration, without expanding a
@@ -92,21 +94,21 @@ impl World {
                 return source.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");
             }
         }
-        self.ty(name, source, span, module, imports)
+        unsafe{self.call(self.ty(name,source,span,module,imports)).await}
     }
-    pub(crate) fn c_function_reference(
+    pub(crate) async fn c_function_reference(
         &self,name:&TypeName,source:&Source,span:Span,module:&str,imports:&[String],
     )->crate::Result<CFunctionType> {
-        c_function::reference(self,name,source,span,module,imports)
+        unsafe{self.call(c_function::reference(self,name,source,span,module,imports)).await}
     }
-    pub(crate) fn bind_c_function_reference(
+    pub(crate) async fn bind_c_function_reference(
         &self,result:TypeName,parameters:Vec<(Access,TypeName)>,outputs:&[ContractPredicate],
         context:(&Source,Span,&str,&[String]),
     )->crate::Result<CFunctionType> {
-        c_function::declaration(self,result,parameters,outputs,context)
+        unsafe{self.call(c_function::declaration(self,result,parameters,outputs,context)).await}
     }
-    pub(crate) fn c_function_signature(&self,function:&CFunctionType,source:&Source,span:Span,module:&str,imports:&[String])
+    pub(crate) async fn c_function_signature(&self,function:&CFunctionType,source:&Source,span:Span,module:&str,imports:&[String])
         ->crate::Result<(Vec<CallParameter>,Option<Ty>,bool)> {
-        c_function::signature(self,function,source,span,module,imports)
+        unsafe{self.call(c_function::signature(self,function,source,span,module,imports)).await}
     }
 }

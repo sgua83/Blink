@@ -1,3 +1,5 @@
+mod evaluation;
+pub(crate) use evaluation::Call;
 mod type_reference;
 mod type_value;
 mod loading;
@@ -80,6 +82,7 @@ pub(crate) struct Declarations {
     pub(crate) type_sets: BTreeMap<String, (crate::syntax::TypeSet, Source, String, Arc<[String]>)>,
 }
 pub(crate) struct World {
+    calls: evaluation::Calls,
     pub(crate) declarations: Arc<Declarations>,
     pub(crate) worker: compiler::Worker,
     pub(crate) evaluating_constants: crate::names::ActiveDependencies,
@@ -91,7 +94,17 @@ impl std::ops::Deref for World {
 }
 impl World {
     pub(crate) fn new(declarations: Arc<Declarations>, worker: compiler::Worker) -> Self {
-        Self { declarations, worker, evaluating_constants: crate::names::ActiveDependencies::default(), build_declarations: None }
+        Self { declarations, worker, calls: evaluation::Calls::default(), evaluating_constants: crate::names::ActiveDependencies::default(), build_declarations: None }
+    }
+    /// The child is awaited by this World's current original invocation.
+    /// The caller preserves that invocation protocol through completion.
+    pub(crate) unsafe fn call<'f, F: std::future::Future + 'f>(&'f self, future: F) -> evaluation::Call<'f, F::Output> {
+        unsafe { self.calls.call(future) }
+    }
+    /// Only original World functions using the same awaited call protocol run
+    /// here. Internal calls do not recursively enter another run.
+    pub(crate) unsafe fn run<F: std::future::Future>(&self, future: F) -> F::Output {
+        unsafe { self.calls.run(future) }
     }
     pub(crate) fn resolve(&self, name: &str, module: &str, imports: &[String], functions: bool) -> NameResolution {
         if let Some(inputs) = &self.build_declarations {
@@ -233,10 +246,10 @@ impl Compiler {
             let (world, module) = read_world(path, root, None, &[], worker, None, None)?;
             let imports = &world.interfaces[&module].imports().map(str::to_owned).collect::<Vec<_>>();
             let bindings=Arc::new(generics::Bindings::default());
-            let name=bindings.type_name(&world,&name,(&source,&module,imports),span)?;
-            let value = world.ty(&name, &source, span, &module, imports)?;
+            let name=unsafe { world.run(bindings.type_name(&world,&name,(&source,&module,imports),span)) }?;
+            let value = unsafe { world.run(world.ty(&name, &source, span, &module, imports)) }?;
             if name.dataset {
-                let count = world.shape(&name.count, &source, span, &module, imports)?;
+                let count = unsafe { world.run(world.shape(&name.count, &source, span, &module, imports)) }?;
                 Ok(ir::Ty::owned_dataset((value).syntax(), count))
             } else { Ok(value) }
         })
@@ -250,17 +263,17 @@ impl Compiler {
             let (world, module) = read_world(path, root, None, &[], worker, None, None)?;
             let imports = &world.interfaces[&module].imports().map(str::to_owned).collect::<Vec<_>>();
             let bindings=Arc::new(generics::Bindings::default());
-            let name=bindings.type_name(&world,&name,(&source,&module,imports),span)?;
-            let value = world.ty(&name, &source, span, &module, imports)?;
+            let name=unsafe { world.run(bindings.type_name(&world,&name,(&source,&module,imports),span)) }?;
+            let value = unsafe { world.run(world.ty(&name, &source, span, &module, imports)) }?;
             let value = if name.dataset {
-                ir::Ty::owned_dataset(value.syntax(), world.shape(&name.count, &source, span, &module, imports)?)
+                ir::Ty::owned_dataset(value.syntax(), unsafe { world.run(world.shape(&name.count, &source, span, &module, imports)) }?)
             } else { value };
             let (offset, selected) = if let Some(field) = field {
                 value.field(field).ok_or_else(|| Diagnostic { source: source.clone(), span, code: "B141",
                     message: format!("类型 {} 没有可定位的静态字段路径 {field}", value.name) })?
             } else { (0, &value) };
             let mut json = String::new();
-            world.write_type_layout_json(&mut json, selected, &source, span, &module, imports, &mut BTreeSet::new())?;
+            unsafe { world.run(world.write_type_layout_json(&mut json, selected, &source, span, &module, imports, &mut BTreeSet::new())) }?;
             Ok((value.name, offset, json))
         })
     }
@@ -339,7 +352,7 @@ pub(crate) fn compile_world(
     }
     let for_application = matches!(selected.as_ref(), Some((_, _, EntryKind::Application, _)));
     let mut jobs = Vec::new();
-    let planned = (|| -> Result<()> {
+    let planned = unsafe { world.run(async {
         for (base, definition) in &world.functions {
             if definition.compiled.is_some() || definition.function.kind() == FunctionKind::Constant
                 || definition.function.external().is_some() { continue; }
@@ -348,11 +361,11 @@ pub(crate) fn compile_world(
                 continue;
             }
             let retained = selected.is_none() && definition.module == entry && definition.public;
-            jobs.extend(generics::instances(&world, base, definition)?
+            jobs.extend(unsafe { world.call(generics::instances(&world, base, definition)).await }?
                 .into_iter().map(|instance| Job::Instance(instance, retained)));
         }
         Ok(())
-    })();
+    }) };
     if let Err(error) = planned {
         jobs.push(Job::Failed(error));
     } else if let Some((key, arguments, kind, source)) = &selected {
@@ -365,7 +378,7 @@ pub(crate) fn compile_world(
         if collect_declarations { world.build_declarations = Some(RefCell::new(BTreeSet::new())); }
         world
     }, |world, job| {
-        let output = (|| -> Result<Output> {
+        let output = unsafe { world.run(async {
         let mut programs = Vec::new();
         match job {
             Job::Failed(error) => return Err(error),
@@ -373,39 +386,42 @@ pub(crate) fn compile_world(
                 let name = &instance.name;
                 let d = &instance.definition;
                 if d.execution == execution::Requirement::Domain
-                    && (d.function.target() != Target::Cpu || check::kernel_interface(world, &instance)?)
+                    && (d.function.target() != Target::Cpu || unsafe { world.call(check::kernel_interface(world, &instance)).await }?)
                 {
                     if for_application {
-                        check::check_domain(world, &instance).map_err(|error| instance_error(error, name))?;
+                        unsafe { world.call(check::check_domain(world, &instance)).await }.map_err(|error| instance_error(error, name))?;
                     } else {
-                        let mut program = check::compile_program(world, &instance).map_err(|error| instance_error(error, name))?;
+                        let mut program = unsafe { world.call(check::compile_program(world, &instance)).await }.map_err(|error| instance_error(error, name))?;
                         if retained {
                             optimize::optimize(&mut program, &world.worker).map_err(|error| crate::compiler::diagnostic(&d.source.path, error))?;
                             programs.push(program);
                         }
                     }
                 } else {
-                    check::check_function(world, &instance).map_err(|error| instance_error(error, name))?;
+                    unsafe { world.call(check::check_function(world, &instance)).await }.map_err(|error| instance_error(error, name))?;
                 }
             }
             Job::Selected(key, arguments, kind, source) => {
                 let definition = &world.functions[key];
                 let span=Span{start:0,end:source.text.len()};
                 let bindings=Arc::new(generics::Bindings::default());
-                let arguments=arguments.as_ref().map(|arguments|bindings.arguments(world,arguments,
-                    (source,&definition.module,&definition.imports),span)).transpose()?;
-                let instance = check::generics::specialize(world, key, &[], arguments.as_deref(),
-                    (source, &definition.module, &definition.imports), span)?;
+                let arguments=match arguments.as_ref() {
+                    Some(arguments)=>Some(unsafe { world.call(bindings.arguments(world,arguments,
+                        (source,&definition.module,&definition.imports),span)).await }?),
+                    None=>None,
+                };
+                let instance = unsafe { world.call(check::generics::specialize(world, key, &[], arguments.as_deref(),
+                    (source, &definition.module, &definition.imports), span)).await }?;
                 if matches!(kind, EntryKind::Application) {
-                    return check::compile_application(world, &instance).map(Output::Application);
+                    return unsafe { world.call(check::compile_application(world, &instance)).await }.map(Output::Application);
                 }
-                let mut program = check::compile_program(world, &instance).map_err(|error| instance_error(error, &instance.name))?;
+                let mut program = unsafe { world.call(check::compile_program(world, &instance)).await }.map_err(|error| instance_error(error, &instance.name))?;
                 optimize::optimize(&mut program, &world.worker).map_err(|error| crate::compiler::diagnostic(&definition.source.path, error))?;
                 programs.push(program);
             }
         }
         Ok(Output::Programs(programs))
-        })()?;
+        }) }?;
         let used = world.build_declarations.as_ref()
             .map(|inputs| std::mem::take(&mut *inputs.borrow_mut())).unwrap_or_default();
         Ok((output, used))
@@ -520,46 +536,46 @@ pub(crate) fn read_world(
     for (key, definition) in &world.functions {
         if definition.function.kind() == FunctionKind::Constant {
             generics::validate_declaration(definition)?;
-            check::constant_value(&world, key)?;
+            unsafe { world.run(check::constant_value(&world, key)) }?;
         }
     }
     world.build_declarations = None;
     for definition in world.functions.values().filter(|definition| {
         definition.function.types().is_empty() && definition.function.values().is_empty()
     }) {
-        world.check_interface_types(definition, &Arc::new(generics::Bindings::default()))?;
+        unsafe { world.run(world.check_interface_types(definition, &Arc::new(generics::Bindings::default()))) }?;
     }
-    validate_types(&world)?;
+    unsafe { world.run(validate_types(&world)) }?;
     for (key,definition) in world.functions.iter().filter(|(_,definition)|definition.function.c_abi()) {
         check::external::validate_signature(definition)?;
         if definition.function.types().is_empty()&&definition.function.values().is_empty(){
-            let instance=generics::instantiate(&world,key,definition,Vec::new(),&[])?;
-            check::external::check_declaration(&world,&instance)?;
+            let instance=unsafe { world.run(generics::instantiate(&world,key,definition,Vec::new(),&[])) }?;
+            unsafe { world.run(check::external::check_declaration(&world,&instance)) }?;
         }
     }
     world.build_declarations = build_declarations;
     Ok((world, entry))
 }
-pub(crate) fn validate_types(world: &World) -> Result<()> {
+pub(crate) async fn validate_types(world: &World) -> Result<()> {
     for name in world.type_sets.keys() {
-        world.for_each_set_member(name, &mut BTreeSet::new(), |_| {})?;
+        unsafe { world.call(world.for_each_set_member(name, &mut BTreeSet::new(), |_| {})).await }?;
     }
     for (name, (record, source, module, imports)) in &world.records {
         generics::validate_record_parameters(record, source)?;
-        generics::for_each_combination(
+        unsafe { world.call(generics::for_each_combination(
             world,
             &record.types(),
             &record.values(),
             (source, record.span(), module, imports),
-            |arguments, row| {
+            async |arguments, row| {
                 let mut ty = TypeName::named(name);
                 ty.arguments = arguments.into_iter().map(|argument| GenericArgument::Type(argument.syntax))
                     .chain(row.iter().map(|&value| GenericArgument::Value(Shape::Literal(value))))
                     .collect();
-                world.ty(&ty, source, record.span(), module, imports)?;
+                unsafe { world.call(world.ty(&ty, source, record.span(), module, imports)).await }?;
                 Ok(())
             },
-        )?;
+        )).await }?;
     }
 
     Ok(())
@@ -593,45 +609,48 @@ impl Declarations {
     }
 }
 impl World {
-    pub(crate) fn type_reference(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<TypeName> {
-        type_reference::bind(self,name,source,span,module,imports)
+    pub(crate) async fn type_reference(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<TypeName> {
+        unsafe{self.call(type_reference::bind(self,name,source,span,module,imports)).await}
     }
-    fn write_type_layout_json(&self, out: &mut String, value: &ir::Ty, source: &Source, span: Span,
+    async fn write_type_layout_json(&self, out: &mut String, value: &ir::Ty, source: &Source, span: Span,
         module: &str, imports: &[String], active: &mut BTreeSet<String>) -> Result<()> {
         active.insert(value.name.clone());
-        let result = ir::write_type_json(out, value, &mut |out, reference| {
-            let element = self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())?;
-            write!(out, ",\"element_stride_bytes\":{},\"element\":", ir::align_up(element.size, element.align)).unwrap();
-            if active.contains(&element.name) {
-                out.push_str("{\"kind\":\"type_reference\",\"name\":");
-                crate::json::string(out, &element.name); out.push('}');
-            } else {
-                self.write_type_layout_json(out, &element, source, span, module, imports, active)?;
+        let result = unsafe { self.call(async {
+            let mut layout = ir::TypeJson::new(value);
+            while let Some(reference) = layout.next(out) {
+                let element = unsafe { self.call(self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())).await }?;
+                write!(out, ",\"element_stride_bytes\":{},\"element\":", ir::align_up(element.size, element.align)).unwrap();
+                if active.contains(&element.name) {
+                    out.push_str("{\"kind\":\"type_reference\",\"name\":");
+                    crate::json::string(out, &element.name); out.push('}');
+                } else {
+                    unsafe { self.call(self.write_type_layout_json(out, &element, source, span, module, imports, active)).await }?;
+                }
             }
             Ok(())
-        });
+        }).await };
         active.remove(&value.name);
         result
     }
     // Query stored borrows through nominal references; cleanup retains possible
     // reads by actual F. Generic arguments and signatures do not occupy storage.
-    pub(crate) fn stored_borrows(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<(String,bool)>, cleanup: bool) -> crate::Result<bool> {
+    pub(crate) async fn stored_borrows(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<(String,bool)>, cleanup: bool) -> crate::Result<bool> {
         let cleanup=cleanup&&ty.cleanup.is_none();
         if !consumed.insert((ty.name.clone(),cleanup)) { return Ok(false); }
         if ty.view.is_some() || ty.is_address() { return Ok(!cleanup); }
         for nested in ty.fields.iter().map(|(_, _, ty)| ty.as_ref())
             .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
             .chain(ty.array.as_deref().filter(|_| ty.values[0] != 0)) {
-            if self.stored_borrows(nested, source, span, module, imports, consumed, cleanup)? { return Ok(true); }
+            if unsafe{self.call(self.stored_borrows(nested,source,span,module,imports,consumed,cleanup)).await}? { return Ok(true); }
         }
         if let Some(reference) = ty.dataset.as_deref().filter(|_| ty.values.first() != Some(&0)) {
-            let element = self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())?;
-            return self.stored_borrows(&element, source, span, module, imports, consumed, cleanup);
+            let element=unsafe{self.call(self.ty_inner(reference,source,span,module,imports,&mut BTreeSet::new())).await}?;
+            return unsafe{self.call(self.stored_borrows(&element,source,span,module,imports,consumed,cleanup)).await};
         }
         Ok(false)
     }
     // An absent element model loses only actual F input requirements.
-    pub(crate) fn cleanup_requirements(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<bool> {
+    pub(crate) async fn cleanup_requirements(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<bool> {
         if !consumed.insert(ty.name.clone()) { return Ok(false); }
         if let Some(key) = &ty.cleanup {
             return Ok(self.functions[key].function.contracts().iter().any(|contract| contract.kind() == ContractKind::Requires));
@@ -639,38 +658,38 @@ impl World {
         for nested in ty.fields.iter().map(|(_, _, ty)| ty.as_ref())
             .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
             .chain(ty.array.as_deref().filter(|_| ty.values[0] != 0)) {
-            if self.cleanup_requirements(nested, source, span, module, imports, consumed)? { return Ok(true); }
+            if unsafe{self.call(self.cleanup_requirements(nested,source,span,module,imports,consumed)).await}? { return Ok(true); }
         }
         if let Some(reference) = ty.dataset.as_deref().filter(|_| ty.values.first() != Some(&0)) {
-            let element = self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())?;
-            return self.cleanup_requirements(&element, source, span, module, imports, consumed);
+            let element=unsafe{self.call(self.ty_inner(reference,source,span,module,imports,&mut BTreeSet::new())).await}?;
+            return unsafe{self.call(self.cleanup_requirements(&element,source,span,module,imports,consumed)).await};
         }
         Ok(false)
     }
-    pub(crate) fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
+    pub(crate) async fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
         if !consumed.insert(ty.name.clone()) { return Ok(()); }
         if let Some(function) = &ty.function {
-            let (parameters, result, _) = self.c_function_signature(function, source, span, module, imports)?;
-            crate::check::outputs::validate_function_contracts(
-                self,&parameters, result.as_ref(), &function.contracts, source, span)?;
+            let (parameters,result,_)=unsafe{self.call(self.c_function_signature(function,source,span,module,imports)).await}?;
+            unsafe{self.call(crate::check::outputs::validate_function_contracts(
+                self,&parameters,result.as_ref(),&function.contracts,source,span)).await}?;
             for parameter in parameters {
                 let ty = match parameter.kind { ir::CallParameterKind::Value(ty) | ir::CallParameterKind::Reference { ty, .. } => ty };
-                self.validate_type_references(&ty, source, span, module, imports, consumed)?;
+                unsafe{self.call(self.validate_type_references(&ty,source,span,module,imports,consumed)).await}?;
             }
-            if let Some(result) = result { self.validate_type_references(&result, source, span, module, imports, consumed)?; }
+            if let Some(result) = result { unsafe{self.call(self.validate_type_references(&result,source,span,module,imports,consumed)).await}?; }
         }
         for nested in ty.arguments.iter().chain(ty.fields.iter().map(|(_, _, ty)| ty.as_ref()))
             .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
             .chain(ty.array.as_deref()).chain(ty.view.as_deref()) {
-            self.validate_type_references(nested, source, span, module, imports, consumed)?;
+            unsafe{self.call(self.validate_type_references(nested,source,span,module,imports,consumed)).await}?;
         }
         if let Some(reference) = ty.dataset.as_deref() {
-            let element=self.ty_inner(reference,source,span,module,imports,&mut BTreeSet::new())?;
-            self.validate_type_references(&element,source,span,module,imports,consumed)?;
+            let element=unsafe{self.call(self.ty_inner(reference,source,span,module,imports,&mut BTreeSet::new())).await}?;
+            unsafe{self.call(self.validate_type_references(&element,source,span,module,imports,consumed)).await}?;
         }
         Ok(())
     }
-    pub(crate) fn ty(
+    pub(crate) async fn ty(
         &self,
         name: &TypeName,
         source: &Source,
@@ -678,11 +697,11 @@ impl World {
         module: &str,
         imports: &[String],
     ) -> Result<ir::Ty> {
-        let ty = self.ty_inner(name, source, span, module, imports, &mut BTreeSet::new())?;
-        self.validate_type_references(&ty, source, span, module, imports, &mut BTreeSet::new())?;
+        let ty = unsafe { self.call(self.ty_inner(name, source, span, module, imports, &mut BTreeSet::new())) .await }?;
+        unsafe { self.call(self.validate_type_references(&ty, source, span, module, imports, &mut BTreeSet::new())) .await }?;
         Ok(ty)
     }
-    pub(crate) fn ty_inner(
+    pub(crate) async fn ty_inner(
         &self,
         name: &TypeName,
         source: &Source,
@@ -691,7 +710,7 @@ impl World {
         imports: &[String],
         stack: &mut BTreeSet<String>,
     ) -> Result<ir::Ty> {
-        type_value::resolve(self, name, source, span, module, imports, stack)
+        unsafe { self.call(type_value::resolve(self, name, source, span, module, imports, stack)) .await }
     }
 }
 

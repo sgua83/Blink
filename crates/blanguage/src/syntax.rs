@@ -308,7 +308,7 @@ impl List<wire::ValueParameterNode> {
 }
 
 impl InstanceCombinations<'_> {
-    pub fn try_for_each(&mut self, mut consume: impl FnMut(&[u64], &[u32]) -> crate::Result<()>) -> crate::Result<()> {
+    pub fn advance(&mut self, first: bool) -> Option<(&[u64], &[u32])> {
         let domains = wire::InstanceDomains {
             nodes: self.parameters.owner.view().nodes,
             parameters: self.parameters.value,
@@ -316,14 +316,10 @@ impl InstanceCombinations<'_> {
             type_count: self.type_sizes.len() as u64,
         };
         let row = wire::InstanceRow { indices: self.indices.as_mut_ptr(), values: self.values.as_mut_ptr() };
-        let mut first = 1;
-        // The sealed syntax store and the domain lengths stay live. B
-        // writes one index per axis and one value per const parameter.
-        while unsafe { wire::advance_instance_domain(domains, row, first) } != 0 {
-            consume(&self.indices[..self.type_sizes.len()], &self.values)?;
-            first = 0;
-        }
-        Ok(())
+        // The sealed syntax and these actual row buffers outlive their consumer.
+        if unsafe { wire::advance_instance_domain(domains, row, u32::from(first)) } != 0 {
+            Some((&self.indices[..self.type_sizes.len()], &self.values))
+        } else { None }
     }
 }
 

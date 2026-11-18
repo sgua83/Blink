@@ -56,7 +56,7 @@ impl Drop for DependencyScope<'_> {
 }
 
 impl ActiveDependencies {
-    pub(crate) fn evaluate<T>(&self, key: &str, evaluate: impl FnOnce() -> T) -> Option<T> {
+    pub(crate) async fn evaluate<T>(&self, key: &str, evaluate: impl std::ops::AsyncFnOnce() -> T) -> Option<T> {
         let key = Bytes::new(key);
         {
             let path = self.path.borrow();
@@ -67,7 +67,7 @@ impl ActiveDependencies {
         self.path.borrow_mut().push(key);
         // The key stays borrowed through this call; remove its descriptor before returning or unwinding.
         let _scope = DependencyScope(self);
-        Some(evaluate())
+        Some(evaluate().await)
     }
 }
 unsafe extern "C" fn lookup<'a,F:Fn(&str)->Option<Declaration<'a>>>(context:*const c_void,name:Bytes)->Hit {

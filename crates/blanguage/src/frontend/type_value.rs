@@ -428,9 +428,9 @@ unsafe extern "C" fn failure(
         message,
     });
 }
-fn function(f:&mut Frame<'_>)->Result<()> {
+async fn function(f:&mut Frame<'_>)->Result<()> {
     let c=f.context;
-    let value=c.world.c_function_reference(&f.input,c.source,c.span,c.module,c.imports)?;
+    let value=unsafe { c.world.call(c.world.c_function_reference(&f.input,c.source,c.span,c.module,c.imports)).await }?;
     f.current=Some(value.into_ty());Ok(())
 }
 
@@ -474,10 +474,10 @@ unsafe extern "C" fn argument(parent: *mut c_void, index: u64) -> TypeInfo {
         GenericArgument::Value(_) => TypeInfo::absent(),
     }
 }
-fn dataset(f:&mut Frame<'_>,value:TypeInfo,site:Site,index:u64)->Result<()> {
+async fn dataset(f:&mut Frame<'_>,value:TypeInfo,site:Site,index:u64)->Result<()> {
     let c=scope(f.context,&f.record,&f.release,site,index);
     let syntax=f.current.as_ref().unwrap().syntax();
-    let count=c.world.shape(&unsafe{input(value)}.count,c.source,c.span,c.module,c.imports)?;
+    let count=unsafe { c.world.call(c.world.shape(&input(value).count,c.source,c.span,c.module,c.imports)).await }?;
     f.current=Some(Ty::owned_dataset(syntax,count));Ok(())
 }
 
@@ -539,18 +539,18 @@ unsafe extern "C" fn enter_cleanup(raw: *mut c_void) -> u32 {
     r.identity = Some(identity);
     u32::from(entered)
 }
-fn specialize_cleanup(f:&mut Frame<'_>)->Result<()> {
+async fn specialize_cleanup(f:&mut Frame<'_>)->Result<()> {
     let r=f.release.as_mut().unwrap();
     let definition=&f.context.world.functions[&r.name];
-    let instance=crate::check::generics::specialize(f.context.world,&r.name,
+    let instance=unsafe { f.context.world.call(crate::check::generics::specialize(f.context.world,&r.name,
         &[crate::check::generics::Actual::value(&r.owner.as_ref().unwrap().arguments[0])],None,
-        (&definition.source,&definition.module,&definition.imports),definition.function.span())
+        (&definition.source,&definition.module,&definition.imports),definition.function.span())).await }
         .map_err(|error|Diagnostic{source:f.context.source.clone(),span:f.context.span,code:error.code,
             message:format!("释放函数 {}：{}",r.name,error.message)})?;
     r.instance=Some(instance);Ok(())
 }
 
-fn bind(f:&mut Frame<'_>,which:Binding,index:u64)->Result<TypeInfo> {
+async fn bind(f:&mut Frame<'_>,which:Binding,index:u64)->Result<TypeInfo> {
     let value=match which {
         Binding::Representation|Binding::Field|Binding::Variant=>{
             let r=f.record.as_ref().unwrap();
@@ -559,19 +559,19 @@ fn bind(f:&mut Frame<'_>,which:Binding,index:u64)->Result<TypeInfo> {
                 Binding::Field=>{let field=r.source.fields().at(index as usize);(field.ty(),field.span())},
                 _=>{let variant=r.source.variants().at(index as usize);(variant.payload(),variant.span())},
             };
-            r.bindings.as_ref().unwrap().type_name(f.context.world,&node,
-                (r.context.source,r.context.module,r.context.imports),span)?
+            unsafe { f.context.world.call(r.bindings.as_ref().unwrap().type_name(f.context.world,&node,
+                (r.context.source,r.context.module,r.context.imports),span)).await }?
         }
         Binding::CleanupResult=>{
             let i=f.release.as_ref().unwrap().instance.as_ref().unwrap();let d=&i.definition;
-            i.bindings.type_name(f.context.world,&d.function.result(),
-                (&d.source,&d.module,&d.imports),d.function.span())?
+            unsafe { f.context.world.call(i.bindings.type_name(f.context.world,&d.function.result(),
+                (&d.source,&d.module,&d.imports),d.function.span())).await }?
         }
         Binding::CleanupParameter=>{
             let i=f.release.as_ref().unwrap().instance.as_ref().unwrap();let d=&i.definition;
             let parameter=d.function.params().at(0);
-            i.bindings.type_name(f.context.world,&parameter.ty(),
-                (&d.source,&d.module,&d.imports),parameter.span())?
+            unsafe { f.context.world.call(i.bindings.type_name(f.context.world,&parameter.ty(),
+                (&d.source,&d.module,&d.imports),parameter.span())).await }?
         }
     };
     f.bound=Some(Arc::new(value));Ok(TypeInfo::of(f.bound.as_ref().unwrap()))
@@ -614,9 +614,9 @@ unsafe extern "C" fn result(raw: *mut c_void) -> u32 {
     f.current = Ty::result(ok, error);
     u32::from(f.current.is_some())
 }
-fn shape_argument(f:&mut Frame<'_>,index:u64)->Result<u32> {
+async fn shape_argument(f:&mut Frame<'_>,index:u64)->Result<u32> {
     let c=f.context;let shape=f.input.arguments[index as usize].shape().unwrap();
-    Ok(c.world.shape(&Some(shape),c.source,c.span,c.module,c.imports)?.unwrap())
+    Ok(unsafe { c.world.call(c.world.shape(&Some(shape),c.source,c.span,c.module,c.imports)).await }?.unwrap())
 }
 
 unsafe extern "C" fn array_layout(raw: *mut c_void, count: u32) -> Extent {
@@ -839,10 +839,10 @@ unsafe extern "C" fn record(raw: *mut c_void) -> RecordInfo {
     });
     info
 }
-fn family(f:&mut Frame<'_>,index:u64)->Result<bool> {
+async fn family(f:&mut Frame<'_>,index:u64)->Result<bool> {
     let r=f.record.as_ref().unwrap();let parameter=r.source.types().at(index as usize);let c=r.context;
-    c.world.family_accepts(&parameter.family(),f.current.as_ref().unwrap(),
-        c.source,c.span,c.module,c.imports,unsafe{&mut *f.stack})
+    unsafe { c.world.call(c.world.family_accepts(&parameter.family(),f.current.as_ref().unwrap(),
+        c.source,c.span,c.module,c.imports,&mut *f.stack)).await }
 }
 
 unsafe extern "C" fn type_argument(raw: *mut c_void, index: u64) {
@@ -910,11 +910,11 @@ unsafe extern "C" fn unique_variant_name(raw: *mut c_void, index: u64) -> u32 {
     u32::from(r.names
         .insert(r.source.variants().at(index as usize).name().to_owned()))
 }
-fn variant_tag(f:&mut Frame<'_>,index:u64)->Result<u32> {
+async fn variant_tag(f:&mut Frame<'_>,index:u64)->Result<u32> {
     let r=f.record.as_ref().unwrap();let variant=r.source.variants().at(index as usize);
     let expression=variant.discriminant();let c=r.context;
-    crate::check::variant_discriminant(c.world,&format!("{}::{}",r.key,variant.name()),
-        c.source,c.module,c.imports,r.representation.as_ref().unwrap(),&expression,r.bindings.as_ref().unwrap())
+    unsafe { c.world.call(crate::check::variant_discriminant(c.world,&format!("{}::{}",r.key,variant.name()),
+        c.source,c.module,c.imports,r.representation.as_ref().unwrap(),&expression,r.bindings.as_ref().unwrap())).await }
 }
 
 unsafe extern "C" fn unique_variant_tag(raw: *mut c_void, tag: u32) -> u32 {
@@ -978,15 +978,15 @@ unsafe extern "C" fn dataset_field(raw: *mut c_void) -> TypeInfo {
     f.field_count = value.count.take();
     TypeInfo::of(value)
 }
-fn reference(f:&mut Frame<'_>,value:TypeInfo,site:Site,index:u64)->Result<()> {
+async fn reference(f:&mut Frame<'_>,value:TypeInfo,site:Site,index:u64)->Result<()> {
     let c=scope(f.context,&f.record,&f.release,site,index);
-    let value=c.world.type_reference(unsafe{input(value)},c.source,c.span,c.module,c.imports)?;
+    let value=unsafe { c.world.call(c.world.type_reference(input(value),c.source,c.span,c.module,c.imports)).await }?;
     f.reference=Some(value);Ok(())
 }
 
-fn field_count(f:&mut Frame<'_>,index:u64)->Result<Count> {
+async fn field_count(f:&mut Frame<'_>,index:u64)->Result<Count> {
     let c=scope(f.context,&f.record,&f.release,Site::Field,index);
-    let value=c.world.shape(&f.field_count,c.source,c.span,c.module,c.imports)?;
+    let value=unsafe { c.world.call(c.world.shape(&f.field_count,c.source,c.span,c.module,c.imports)).await }?;
     Ok(Count{present:u32::from(value.is_some()),value:value.unwrap_or(0)})
 }
 
@@ -1025,10 +1025,10 @@ unsafe extern "C" fn record_done(raw: *mut c_void) -> u32 {
         .finish_record_layout()
         .is_some())
 }
-fn record_stride(f:&mut Frame<'_>)->Result<u32> {
+async fn record_stride(f:&mut Frame<'_>)->Result<u32> {
     let r=f.record.as_ref().unwrap();let c=r.context;
-    c.world.source_shape(&r.source.stride().unwrap(),r.bindings.as_ref().unwrap(),
-        c.source,c.span,c.module,c.imports)
+    unsafe { c.world.call(c.world.source_shape(&r.source.stride().unwrap(),r.bindings.as_ref().unwrap(),
+        c.source,c.span,c.module,c.imports)).await }
 }
 
 unsafe extern "C" fn stride_accepts(raw: *mut c_void, stride: u32) -> u32 {
@@ -1076,7 +1076,7 @@ unsafe extern "C" fn task(raw: *mut c_void, error: u32) -> u32 {
     u32::from(f.current.is_some())
 }
 
-pub(super) fn resolve(
+pub(super) async fn resolve(
     world:&World,value:&TypeName,source:&Source,span:Span,module:&str,imports:&[String],
     stack:&mut BTreeSet<String>,
 )->Result<Ty> {
@@ -1101,16 +1101,16 @@ pub(super) fn resolve(
                 let child=ActiveFrame::new(context,input,active.data.stack);
                 frames.push(child);
             }
-            Query::Function=>function(&mut active.data)?,
-            Query::Dataset=>dataset(&mut active.data,active.cursor.temporary,request.site,request.index)?,
-            Query::SpecializeCleanup=>specialize_cleanup(&mut active.data)?,
-            Query::Bind=>active.cursor.temporary=bind(&mut active.data,request.binding,request.index)?,
-            Query::ShapeArgument=>active.cursor.scalar=shape_argument(&mut active.data,request.index)?,
-            Query::Family=>active.cursor.scalar=u32::from(family(&mut active.data,request.index)?),
-            Query::VariantTag=>active.cursor.scalar=variant_tag(&mut active.data,request.index)?,
-            Query::Reference=>reference(&mut active.data,active.cursor.temporary,request.site,request.index)?,
-            Query::FieldCount=>active.cursor.count=field_count(&mut active.data,request.index)?,
-            Query::RecordStride=>active.cursor.scalar=record_stride(&mut active.data)?,
+            Query::Function=>unsafe { world.call(function(&mut active.data)).await }?,
+            Query::Dataset=>unsafe { world.call(dataset(&mut active.data,active.cursor.temporary,request.site,request.index)).await }?,
+            Query::SpecializeCleanup=>unsafe { world.call(specialize_cleanup(&mut active.data)).await }?,
+            Query::Bind=>active.cursor.temporary=unsafe { world.call(bind(&mut active.data,request.binding,request.index)).await }?,
+            Query::ShapeArgument=>active.cursor.scalar=unsafe { world.call(shape_argument(&mut active.data,request.index)).await }?,
+            Query::Family=>active.cursor.scalar=u32::from(unsafe { world.call(family(&mut active.data,request.index)).await }?),
+            Query::VariantTag=>active.cursor.scalar=unsafe { world.call(variant_tag(&mut active.data,request.index)).await }?,
+            Query::Reference=>unsafe { world.call(reference(&mut active.data,active.cursor.temporary,request.site,request.index)).await }?,
+            Query::FieldCount=>active.cursor.count=unsafe { world.call(field_count(&mut active.data,request.index)).await }?,
+            Query::RecordStride=>active.cursor.scalar=unsafe { world.call(record_stride(&mut active.data)).await }?,
         }
     }
 }

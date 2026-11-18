@@ -1,11 +1,13 @@
-//! B owns C-signature selection; these adapters lend actual values and construct
-//! their original semantic containers. No source or type tree is mirrored.
+//! B selects nominal C signatures and classifies actual physical layouts.
+//! World children execute outside native stepping; actual containers stay here.
 use crate::{ast::*,ir::{CFunctionType,CallParameter,Ty},Source,World,Diagnostic,Result};
-use std::{collections::BTreeSet,ffi::c_void,mem::{self,MaybeUninit},ptr};
+use std::{collections::BTreeSet,ffi::c_void,ptr};
 
 #[repr(C)]
+#[derive(Clone,Copy)]
 struct Text {bytes:*const u8,length:u64}
 #[repr(C)]
+#[derive(Clone,Copy)]
 struct Type {reference:*const c_void,name:Text,arguments:u64,wrappers:u32,decorations:u32}
 impl Type {
     fn of(value:&TypeName)->Self {
@@ -18,48 +20,62 @@ impl Type {
 #[repr(C)]
 struct Parameter {access:Access,value:Type}
 #[repr(C)]
-struct Layout {present:u32,dataset:u32,owned:u32,views:u32,empty:u32}
+struct Layout {dataset:u32,owned:u32,views:u32,empty:u32}
 impl Layout {
     fn of(ty:&Ty,syntax:&TypeName)->Self {
-        Self{present:1,dataset:u32::from(syntax.dataset),owned:u32::from(ty.owns_resources()),
+        Self{dataset:u32::from(syntax.dataset),owned:u32::from(ty.owns_resources()),
             views:u32::from(ty.contains_views()),empty:u32::from(ty.components.is_empty())}
     }
-    fn absent()->Self {Self{present:0,dataset:0,owned:0,views:0,empty:0}}
 }
-#[repr(C)]
-struct ParameterLayout {access:Access,value:Layout}
 #[repr(u32)]
 enum Problem {MissingResult,TypeArgument,Position,Resource,EmptyOrView}
+#[repr(u32)]
+enum BindingNeed {Done,Result,AppendParameter,ReplaceParameter}
+#[repr(C)]
+struct BindingCursor {source:*const c_void,current:*const c_void,count:u64,index:u64,access:Access,mode:u32,stage:u32}
+#[repr(C)]
+struct BindingHost {
+    argument:unsafe extern "C" fn(*const c_void,u64)->Type,
+    reserve:unsafe extern "C" fn(*mut c_void,u64),
+    parameter:unsafe extern "C" fn(*mut c_void,u64)->Parameter,
+    fail:unsafe extern "C" fn(*mut c_void,Problem),
+}
+#[repr(u32)]
+enum SignatureNeed {Done,Parameter,Result}
+#[repr(C)]
+struct ResultShape {name:Text,arguments:u64,wrappers:u32,decorations:u32}
+#[repr(C)]
+struct SignatureCursor {count:u64,index:u64,layout:Layout,access:Access,stage:u32,never:u32}
+#[repr(C)]
+struct SignatureHost {
+    append_value:unsafe extern "C" fn(*mut c_void),
+    append_reference:unsafe extern "C" fn(*mut c_void,Access),
+    use_result:unsafe extern "C" fn(*mut c_void),
+    fail:unsafe extern "C" fn(*mut c_void,Problem),
+}
 unsafe extern "C" {
-    #[link_name="bootstrap.c_function::reference"]
-    fn reference_b(source:Type,context:*mut c_void,
-        argument:unsafe extern "C" fn(*const c_void,u64)->Type,
-        bind_result:unsafe extern "C" fn(*mut c_void,*const c_void)->bool,
-        reserve:unsafe extern "C" fn(*mut c_void,u64),
-        bind_parameter:unsafe extern "C" fn(*mut c_void,u64,Access,*const c_void)->bool,
-        fail:unsafe extern "C" fn(*mut c_void,Problem),finish:unsafe extern "C" fn(*mut c_void));
-    #[link_name="bootstrap.c_function::declaration"]
-    fn declaration_b(result:Type,count:u64,context:*mut c_void,
-        parameter:unsafe extern "C" fn(*mut c_void,u64)->Parameter,
-        bind_result:unsafe extern "C" fn(*mut c_void,*const c_void)->bool,
-        bind_parameter:unsafe extern "C" fn(*mut c_void,u64,Access,*const c_void)->bool,
-        finish:unsafe extern "C" fn(*mut c_void));
-    #[link_name="bootstrap.c_function::signature"]
-    fn signature_b(result:Type,count:u64,context:*mut c_void,
-        parameter:unsafe extern "C" fn(*mut c_void,u64)->ParameterLayout,
-        result_layout:unsafe extern "C" fn(*mut c_void)->Layout,
-        append_value:unsafe extern "C" fn(*mut c_void),
-        append_reference:unsafe extern "C" fn(*mut c_void,Access),
-        use_result:unsafe extern "C" fn(*mut c_void),fail:unsafe extern "C" fn(*mut c_void,Problem),
-        finish:unsafe extern "C" fn(*mut c_void,u32));
+    #[link_name="bootstrap.c_function::reference_start"]
+    fn reference_start(source:*const c_void,count:u64)->BindingCursor;
+    #[link_name="bootstrap.c_function::declaration_start"]
+    fn declaration_start(result:*const c_void,count:u64)->BindingCursor;
+    #[link_name="bootstrap.c_function::binding_step"]
+    fn binding_step(state:*mut BindingCursor,context:*mut c_void,host:BindingHost)->BindingNeed;
+    #[link_name="bootstrap.c_function::signature_start"]
+    fn signature_start(count:u64)->SignatureCursor;
+    #[link_name="bootstrap.c_function::signature_step"]
+    fn signature_step(state:*mut SignatureCursor,result:ResultShape,context:*mut c_void,host:SignatureHost)->SignatureNeed;
 }
 #[derive(Clone,Copy)]
 struct Context<'a> {world:&'a World,source:&'a Source,span:Span,module:&'a str,imports:&'a [String]}
 impl Context<'_> {
-    fn reference(&self,input:&TypeName)->Result<TypeName> {self.world.type_reference(input,self.source,self.span,self.module,self.imports)}
-    fn layout(&self,input:&TypeName)->Result<Ty> {self.world.ty_inner(input,self.source,self.span,self.module,self.imports,&mut BTreeSet::new())}
+    async fn reference(&self,input:&TypeName)->Result<TypeName> {
+        unsafe { self.world.call(self.world.type_reference(input,self.source,self.span,self.module,self.imports)).await }
+    }
+    async fn layout(&self,input:&TypeName)->Result<Ty> {
+        unsafe { self.world.call(self.world.ty_inner(input,self.source,self.span,self.module,self.imports,&mut BTreeSet::new())).await }
+    }
     fn error(&self,problem:Problem)->Diagnostic {
-        let (code,message)=match problem {
+        let(code,message)=match problem {
             Problem::MissingResult=>("B263","cfn<R,P...>至少需要一个返回类型"),
             Problem::TypeArgument=>("B263","cfn签名只接受类型，不接受const数值"),
             Problem::Position=>("B263","cfn位置参数使用read<T>／write<T>／inout<T>"),
@@ -69,88 +85,89 @@ impl Context<'_> {
         Diagnostic{source:self.source.clone(),span:self.span,code,message:message.into()}
     }
 }
-struct Binding<'a> {
-    context:Context<'a>,outputs:&'a [ContractPredicate],result:Option<TypeName>,
-    parameters:Vec<(Access,TypeName)>,output:MaybeUninit<CFunctionType>,error:Option<Diagnostic>,
-}
+struct Binding<'a> {context:Context<'a>,outputs:&'a [ContractPredicate],result:Option<TypeName>,parameters:Vec<(Access,TypeName)>,error:Option<Diagnostic>}
 unsafe fn binding<'a>(raw:*mut c_void)->&'a mut Binding<'a> {unsafe{&mut *raw.cast()}}
 unsafe extern "C" fn argument(parent:*const c_void,index:u64)->Type {
     match &unsafe{&*parent.cast::<TypeName>()}.arguments[index as usize] {
         GenericArgument::Type(value)=>Type::of(value),GenericArgument::Value(_)=>Type::absent(),
     }
 }
-unsafe extern "C" fn bind_result(raw:*mut c_void,input:*const c_void)->bool {
-    let f=unsafe{binding(raw)};
-    match f.context.reference(unsafe{&*input.cast::<TypeName>()}) {
-        Ok(value)=>{f.result=Some(value);true},Err(error)=>{f.error=Some(error);false},
-    }
-}
 unsafe extern "C" fn reserve(raw:*mut c_void,count:u64) {unsafe{binding(raw)}.parameters.reserve(count as usize);}
-unsafe extern "C" fn append_parameter(raw:*mut c_void,_index:u64,access:Access,input:*const c_void)->bool {
-    let f=unsafe{binding(raw)};
-    match f.context.reference(unsafe{&*input.cast::<TypeName>()}) {
-        Ok(value)=>{f.parameters.push((access,value));true},Err(error)=>{f.error=Some(error);false},
-    }
-}
 unsafe extern "C" fn declaration_parameter(raw:*mut c_void,index:u64)->Parameter {
-    let (access,value)=&unsafe{binding(raw)}.parameters[index as usize];Parameter{access:*access,value:Type::of(value)}
-}
-unsafe extern "C" fn replace_parameter(raw:*mut c_void,index:u64,access:Access,input:*const c_void)->bool {
-    let f=unsafe{binding(raw)};
-    match f.context.reference(unsafe{&*input.cast::<TypeName>()}) {
-        Ok(value)=>{f.parameters[index as usize]=(access,value);true},Err(error)=>{f.error=Some(error);false},
-    }
+    let(access,value)=&unsafe{binding(raw)}.parameters[index as usize];Parameter{access:*access,value:Type::of(value)}
 }
 unsafe extern "C" fn binding_fail(raw:*mut c_void,problem:Problem) {let f=unsafe{binding(raw)};f.error=Some(f.context.error(problem));}
-unsafe extern "C" fn finish_binding(raw:*mut c_void) {
-    let f=unsafe{binding(raw)};let result=f.result.take().unwrap();let c=f.context;
-    match crate::check::outputs::bind_function_contracts(c.world,&result,&f.parameters,f.outputs,c.source,c.span,c.module,c.imports) {
-        Ok(contracts)=>{f.output.write(CFunctionType{result,parameters:mem::take(&mut f.parameters),contracts});},
-        Err(error)=>f.error=Some(error),
+async fn drive_binding(mut f:Binding<'_>,mut cursor:BindingCursor)->Result<CFunctionType> {
+    let c=f.context;
+    loop {
+        let need=unsafe{binding_step(&mut cursor,(&mut f as *mut Binding<'_>).cast(),BindingHost{argument,reserve,parameter:declaration_parameter,fail:binding_fail})};
+        if let Some(error)=f.error.take(){return Err(error);}
+        match need {
+            BindingNeed::Done=>break,
+            BindingNeed::Result=>{
+                let input=unsafe{&*cursor.current.cast::<TypeName>()};
+                f.result=Some(unsafe{c.world.call(c.reference(input)).await}?);
+            }
+            BindingNeed::AppendParameter=>{
+                let input=unsafe{&*cursor.current.cast::<TypeName>()};
+                let value=unsafe{c.world.call(c.reference(input)).await}?;
+                f.parameters.push((cursor.access,value));
+            }
+            BindingNeed::ReplaceParameter=>{
+                let input=unsafe{&*cursor.current.cast::<TypeName>()};
+                let value=unsafe{c.world.call(c.reference(input)).await}?;
+                f.parameters[cursor.index as usize]=(cursor.access,value);
+            }
+        }
     }
+    let result=f.result.take().unwrap();
+    let contracts=unsafe{c.world.call(crate::check::outputs::bind_function_contracts(c.world,&result,&f.parameters,f.outputs,c.source,c.span,c.module,c.imports)).await}?;
+    Ok(CFunctionType{result,parameters:f.parameters,contracts})
 }
-pub(super) fn reference(world:&World,input:&TypeName,source:&Source,span:Span,module:&str,imports:&[String])->Result<CFunctionType> {
-    let mut f=Binding{context:Context{world,source,span,module,imports},outputs:input.contracts.as_deref().map_or(&[],|v|v.as_slice()),
-        result:None,parameters:Vec::new(),output:MaybeUninit::uninit(),error:None};
-    unsafe{reference_b(Type::of(input),(&mut f as *mut Binding<'_>).cast(),argument,bind_result,reserve,append_parameter,binding_fail,finish_binding)};
-    match f.error {Some(error)=>Err(error),None=>Ok(unsafe{f.output.assume_init()})}
+pub(super) async fn reference(world:&World,input:&TypeName,source:&Source,span:Span,module:&str,imports:&[String])->Result<CFunctionType> {
+    let f=Binding{context:Context{world,source,span,module,imports},outputs:input.contracts.as_deref().map_or(&[],|v|v.as_slice()),
+        result:None,parameters:Vec::new(),error:None};
+    let cursor=unsafe{reference_start((input as *const TypeName).cast(),input.arguments.len() as u64)};
+    unsafe{world.call(drive_binding(f,cursor)).await}
 }
-pub(super) fn declaration(world:&World,result:TypeName,parameters:Vec<(Access,TypeName)>,outputs:&[ContractPredicate],
+pub(super) async fn declaration(world:&World,result:TypeName,parameters:Vec<(Access,TypeName)>,outputs:&[ContractPredicate],
     (source,span,module,imports):(&Source,Span,&str,&[String]))->Result<CFunctionType> {
-    let mut f=Binding{context:Context{world,source,span,module,imports},outputs,result:None,parameters,output:MaybeUninit::uninit(),error:None};
-    unsafe{declaration_b(Type::of(&result),f.parameters.len() as u64,(&mut f as *mut Binding<'_>).cast(),declaration_parameter,bind_result,replace_parameter,finish_binding)};
-    match f.error {Some(error)=>Err(error),None=>Ok(unsafe{f.output.assume_init()})}
+    let result=Box::new(result);
+    let cursor=unsafe{declaration_start((&*result as *const TypeName).cast(),parameters.len() as u64)};
+    let f=Binding{context:Context{world,source,span,module,imports},outputs,result:None,parameters,error:None};
+    // The descriptor borrows this actual owned input at a fixed address until
+    // the original normalization and its final contract consumer are finished.
+    let output=unsafe{world.call(drive_binding(f,cursor)).await};
+    drop(result);
+    output
 }
-struct Signature<'a> {
-    context:Context<'a>,function:&'a CFunctionType,current:Option<Ty>,parameters:Vec<CallParameter>,result:Option<Ty>,
-    output:MaybeUninit<(Vec<CallParameter>,Option<Ty>,bool)>,error:Option<Diagnostic>,
-}
+struct Signature<'a> {context:Context<'a>,current:Option<Ty>,parameters:Vec<CallParameter>,result:Option<Ty>,error:Option<Diagnostic>}
 unsafe fn signature_frame<'a>(raw:*mut c_void)->&'a mut Signature<'a> {unsafe{&mut *raw.cast()}}
-unsafe extern "C" fn parameter_layout(raw:*mut c_void,index:u64)->ParameterLayout {
-    let f=unsafe{signature_frame(raw)};let (access,syntax)=&f.function.parameters[index as usize];
-    match f.context.layout(syntax) {
-        Ok(ty)=>{let value=Layout::of(&ty,syntax);f.current=Some(ty);ParameterLayout{access:*access,value}},
-        Err(error)=>{f.error=Some(error);ParameterLayout{access:*access,value:Layout::absent()}},
-    }
-}
-unsafe extern "C" fn result_layout(raw:*mut c_void)->Layout {
-    let f=unsafe{signature_frame(raw)};
-    match f.context.layout(&f.function.result) {
-        Ok(ty)=>{let value=Layout::of(&ty,&f.function.result);f.current=Some(ty);value},
-        Err(error)=>{f.error=Some(error);Layout::absent()},
-    }
-}
 unsafe extern "C" fn append_value(raw:*mut c_void) {let f=unsafe{signature_frame(raw)};f.parameters.push(CallParameter::value(f.current.take().unwrap()));}
 unsafe extern "C" fn append_reference(raw:*mut c_void,access:Access) {let f=unsafe{signature_frame(raw)};f.parameters.push(CallParameter::reference(f.current.take().unwrap(),access));}
 unsafe extern "C" fn use_result(raw:*mut c_void) {let f=unsafe{signature_frame(raw)};f.result=f.current.take();}
 unsafe extern "C" fn signature_fail(raw:*mut c_void,problem:Problem) {let f=unsafe{signature_frame(raw)};f.error=Some(f.context.error(problem));}
-unsafe extern "C" fn finish_signature(raw:*mut c_void,never:u32) {
-    let f=unsafe{signature_frame(raw)};f.output.write((mem::take(&mut f.parameters),f.result.take(),never!=0));
-}
-pub(super) fn signature(world:&World,function:&CFunctionType,source:&Source,span:Span,module:&str,imports:&[String])
+pub(super) async fn signature(world:&World,function:&CFunctionType,source:&Source,span:Span,module:&str,imports:&[String])
     ->Result<(Vec<CallParameter>,Option<Ty>,bool)> {
-    let mut f=Signature{context:Context{world,source,span,module,imports},function,current:None,parameters:Vec::new(),result:None,output:MaybeUninit::uninit(),error:None};
-    unsafe{signature_b(Type::of(&function.result),function.parameters.len() as u64,(&mut f as *mut Signature<'_>).cast(),
-        parameter_layout,result_layout,append_value,append_reference,use_result,signature_fail,finish_signature)};
-    match f.error {Some(error)=>Err(error),None=>Ok(unsafe{f.output.assume_init()})}
+    let mut f=Signature{context:Context{world,source,span,module,imports},current:None,parameters:Vec::new(),result:None,error:None};
+    let mut cursor=unsafe{signature_start(function.parameters.len() as u64)};
+    loop {
+        let need=unsafe{signature_step(&mut cursor,ResultShape{name:Text{bytes:function.result.name.as_ptr(),length:function.result.name.len() as u64},
+            arguments:function.result.arguments.len() as u64,wrappers:u32::from(function.result.dataset)|(u32::from(function.result.view)<<1)|(u32::from(function.result.tile)<<2),
+            decorations:u32::from(function.result.count.is_some())|(u32::from(function.result.contracts.is_some())<<1)|(u32::from(function.result.canonical)<<2)},
+            (&mut f as *mut Signature<'_>).cast(),SignatureHost{append_value,append_reference,use_result,fail:signature_fail})};
+        if let Some(error)=f.error.take(){return Err(error);}
+        match need {
+            SignatureNeed::Done=>return Ok((f.parameters,f.result,cursor.never!=0)),
+            SignatureNeed::Parameter=>{
+                let(access,syntax)=&function.parameters[cursor.index as usize];
+                let ty=unsafe{world.call(f.context.layout(syntax)).await}?;
+                cursor.layout=Layout::of(&ty,syntax);cursor.access=*access;f.current=Some(ty);
+            }
+            SignatureNeed::Result=>{
+                let ty=unsafe{world.call(f.context.layout(&function.result)).await}?;
+                cursor.layout=Layout::of(&ty,&function.result);f.current=Some(ty);
+            }
+        }
+    }
 }

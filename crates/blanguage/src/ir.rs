@@ -12,7 +12,7 @@ mod layout;
 #[cfg(feature = "compiler")]
 mod properties;
 pub use layout::interface_layout_json;
-pub(crate) use layout::write_type_json;
+pub(crate) use layout::TypeJson;
 mod external;
 pub(crate) use external::DatasetBorrow;
 #[cfg(feature = "compiler")]

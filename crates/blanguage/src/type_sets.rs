@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::syntax::FamilyKind;
 
 impl World {
-    pub(crate) fn family_accepts(
+    pub(crate) async fn family_accepts(
         &self,
         family: &Option<crate::syntax::TypeFamily>,
         actual: &Ty,
@@ -20,14 +20,14 @@ impl World {
             FamilyKind::Named(name) => {
                 let key = self.named_family_key(name, source, span, module, imports)?;
                 let mut accepted = false;
-                self.for_each_set_member(&key, stack, |ty| accepted |= ty.name == actual.name)?;
+                unsafe { self.call(self.for_each_set_member(&key, stack, |ty| accepted |= ty.name == actual.name)).await }?;
                 Ok(accepted)
             }
             _ => Ok(family.contains_builtin(&actual.name)),
         }
     }
 
-    pub(crate) fn family_arguments(
+    pub(crate) async fn family_arguments(
         &self,
         family: &crate::syntax::TypeFamily,
         source: &Source,
@@ -40,10 +40,10 @@ impl World {
             FamilyKind::Named(name) => {
                 let key = self.named_family_key(name, source, span, module, imports)?;
                 let mut members = BTreeMap::new();
-                self.for_each_set_member(&key, stack, |ty| {
+                unsafe { self.call(self.for_each_set_member(&key, stack, |ty| {
                     let syntax = ty.syntax();
                     members.insert(ty.name, syntax);
-                })?;
+                })).await }?;
                 Ok(members.into_iter().map(|(name, syntax)| TypeArgument { name, syntax }).collect())
             }
             _ => Ok(family.builtin_names().iter().map(|name| TypeArgument {
@@ -74,7 +74,7 @@ impl World {
             })
     }
 
-    pub(crate) fn for_each_set_member(
+    pub(crate) async fn for_each_set_member(
         &self,
         key: &str,
         stack: &mut BTreeSet<String>,
@@ -104,8 +104,8 @@ impl World {
                     "类型集合成员必须是普通值类型，不能直接是资源包装",
                 );
             }
-            let member=bindings.type_name(self,&member,(source,module,imports),set.span())?;
-            consume(self.ty_inner(&member, source, set.span(), module, imports, stack)?);
+            let member=unsafe { self.call(bindings.type_name(self,&member,(source,module,imports),set.span())).await }?;
+            consume(unsafe { self.call(self.ty_inner(&member, source, set.span(), module, imports, stack)).await }?);
         }
         stack.remove(&identity);
         Ok(())

@@ -110,19 +110,19 @@ impl Bindings {
     pub(crate) fn check_expression(&self, expression: &crate::syntax::Expr, source: &Source) -> Result<()> {
         Self::use_result(expression.bound_uses(&self.use_names()), source)
     }
-    pub(crate) fn type_name(
+    pub(crate) async fn type_name(
         self: &std::sync::Arc<Self>, world: &World, source_type: &crate::syntax::Type,
         context: (&Source, &str, &[String]), span: Span,
     ) -> Result<TypeName> {
         self.check_type(source_type, context.0, span)?;
-        source_bind::type_name(self, world, source_type, context, span)
+        unsafe { world.call(source_bind::type_name(self, world, source_type, context, span)) .await }
     }
-    pub(crate) fn arguments(
+    pub(crate) async fn arguments(
         self: &std::sync::Arc<Self>, world: &World,
         arguments: &crate::syntax::List<crate::syntax::wire::ArgumentNode>,
         context: (&Source, &str, &[String]), span: Span,
     ) -> Result<Vec<GenericArgument>> {
-        source_bind::arguments(self, world, arguments, context, span)
+        unsafe { world.call(source_bind::arguments(self, world, arguments, context, span)) .await }
     }
 
 }
@@ -134,14 +134,14 @@ pub(crate) struct Instance {
     pub bindings:std::sync::Arc<Bindings>,
 }
 impl Instance {
-    pub(crate) fn parameter(&self, world:&World, parameter:&crate::syntax::Param)->Result<Param>{
+    pub(crate) async fn parameter(&self, world:&World, parameter:crate::syntax::Param)->Result<Param>{
         let definition=&self.definition;
         Ok(Param{name:parameter.name().into(),access:parameter.access(),span:parameter.span(),
-            ty:self.bindings.type_name(world,&parameter.ty(),
-                (&definition.source,&definition.module,&definition.imports),parameter.span())?})
+            ty:unsafe { world.call(self.bindings.type_name(world,&parameter.ty(),
+                (&definition.source,&definition.module,&definition.imports),parameter.span())) .await }?})
     }
-    pub(crate) fn parameters<'a>(&'a self,world:&'a World)->impl Iterator<Item=Result<Param>>+'a{
-        self.definition.function.params().into_iter().map(move|parameter|self.parameter(world,&parameter))
+    pub(crate) fn parameters<'a>(&'a self,world:&'a World)->impl Iterator<Item=impl std::future::Future<Output=Result<Param>>+'a>+'a{
+        self.definition.function.params().into_iter().map(move|parameter|self.parameter(world,parameter))
     }
     pub(crate) fn contracts(&self) -> impl Iterator<Item = FunctionContract> + '_ {
         self.definition.function.contracts().iter()
@@ -161,23 +161,23 @@ pub(crate) fn validate_declaration(definition: &crate::Definition) -> Result<()>
     let error = unsafe { crate::syntax::wire::function_parameter_error(f.signature_node()) };
     parameter_diagnostic(error, &definition.source, f.span())
 }
-pub(crate) fn instances(
+pub(crate) async fn instances(
     world: &World,
     base: &str,
     definition: &std::sync::Arc<crate::Definition>,
 ) -> Result<Vec<Instance>> {
     let f = &definition.function;
     let mut result = Vec::new();
-    for_each_combination(
+    unsafe { world.call(for_each_combination(
         world,
         &f.types(),
         &f.values(),
         (&definition.source, f.span(), &definition.module, &definition.imports),
-        |arguments, values| {
-            result.push(instantiate(world, base, definition, arguments, values)?);
+        async |arguments, values| {
+            result.push(unsafe { world.call(instantiate(world, base, definition, arguments, values)).await }?);
             Ok(())
         },
-    )?;
+    )).await }?;
     Ok(result)
 }
 pub(crate) fn validate_record_parameters(record: &crate::syntax::Record, source: &Source) -> Result<()> {
@@ -195,26 +195,29 @@ fn parameter_diagnostic(error: crate::syntax::wire::ParameterError, source: &Sou
     }
 }
 
-pub(crate) fn for_each_combination(
+pub(crate) async fn for_each_combination(
     world: &World,
     types: &crate::syntax::List<crate::syntax::wire::TypeParameterNode>,
     values: &crate::syntax::List<crate::syntax::wire::ValueParameterNode>,
     (source, span, module, imports): (&Source, Span, &str, &[String]),
-    mut consume: impl FnMut(Vec<TypeArgument>, &[u32]) -> Result<()>,
+    mut consume: impl std::ops::AsyncFnMut(Vec<TypeArgument>, &[u32]) -> Result<()>,
 ) -> Result<()> {
     let mut domains = Vec::with_capacity(types.len());
     for parameter in types {
         let members = match parameter.family() {
-            Some(family) => world.family_arguments(&family, source, span, module, imports, &mut BTreeSet::new())?,
+            Some(family) => unsafe { world.call(world.family_arguments(&family, source, span, module, imports, &mut BTreeSet::new())).await }?,
             None => Vec::new(),
         };
         domains.push(members);
     }
     let sizes: Vec<_> = domains.iter().map(|domain| domain.len() as u64).collect();
-    values.instance_combinations(&sizes).try_for_each(|indices, row| {
-        let arguments = domains.iter().zip(indices)
-            .map(|(domain, &index)| domain[index as usize].clone())
-            .collect();
-        consume(arguments, row)
-    })
+    let mut combinations=values.instance_combinations(&sizes);
+    let mut first=true;
+    while let Some((indices,row))=combinations.advance(first) {
+        let arguments=domains.iter().zip(indices)
+            .map(|(domain,&index)|domain[index as usize].clone()).collect();
+        consume(arguments,row).await?;
+        first=false;
+    }
+    Ok(())
 }

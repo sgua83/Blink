@@ -36,69 +36,95 @@ struct Host {
     cfn<address,Bytes,address,address> make_binary;
     cfn<u32,address,Bytes> parameter;
     cfn<Lookup,address,Bytes> lookup;
-    cfn<Result,address,address> evaluate;
     cfn<Variant,address,Bytes> variant;
     cfn<Member,address,address,Bytes> member;
     cfn<void,address> drop_indices;
-    cfn<Result,address,address> path_type;
     cfn<UnaryRule,address,Bytes,address> unary_type;
     cfn<BinaryRule,address,Bytes,address,u32,address,u32> binary_type;
     cfn<u32,address,address,address> same_type;
     cfn<u64,u32,u64,u64,u32> divide;
     cfn<void,address,u32,Bytes> fail;
+    cfn<address,address,u32> take_bound;
+    cfn<void,address,u32,address> put_bound;
+    cfn<Term,address,u32> term;
+    cfn<Term,address,u32> take_term;
+    cfn<void,address,u32,Term> put_term;
+    cfn<address,address,u32> term_type;
+    cfn<TypeResult,address,u32> typed;
+    cfn<void,address,u32,TypeResult> put_type;
+    cfn<void,address,u32> clear_type;
 };
-extern "C" Result bind(address context,address value,u32 is_public,Host host) on cpu
-    requires nonzero(host.node)
+enum BindingNeed:u32 { Done=0; Child=1; Constant=2; };
+enum IdentityNeed:u32 { Done=0; Child=1; Type=2; };
+enum TypeNeed:u32 { Done=0; Child=1; Path=2; };
+struct BindingCursor {address source;address request;u32 stage;u32 is_public;};
+struct QueryCursor {address source;address request;u32 stage;u32 slot;};
+
+extern "C" BindingCursor bind_start(address value,u32 is_public) on cpu;
+
+extern "C" QueryCursor identity_start(address value) on cpu;
+
+extern "C" QueryCursor type_start(address value) on cpu;
+
+extern "C" BindingNeed bind_step(address state,address context,Host host) on cpu
+    requires nonzero(host.bits)
     requires nonzero(host.constant)
-    requires nonzero(host.type_info)
     requires nonzero(host.copy_node)
     requires nonzero(host.copy_type)
+    requires nonzero(host.drop_indices)
     requires nonzero(host.drop_node)
     requires nonzero(host.drop_type)
-    requires nonzero(host.scalar_type)
-    requires nonzero(host.bits)
-    requires nonzero(host.push_bit)
+    requires nonzero(host.fail)
+    requires nonzero(host.lookup)
+    requires nonzero(host.make_binary)
     requires nonzero(host.make_constant)
     requires nonzero(host.make_member)
     requires nonzero(host.make_unary)
-    requires nonzero(host.make_binary)
-    requires nonzero(host.parameter)
-    requires nonzero(host.lookup)
-    requires nonzero(host.evaluate)
-    requires nonzero(host.variant)
     requires nonzero(host.member)
-    requires nonzero(host.drop_indices)
-    requires nonzero(host.fail);
-extern "C" Term identity(address context,address value,Host host) on cpu
     requires nonzero(host.node)
-    requires nonzero(host.constant)
-    requires nonzero(host.broadcast_bit)
+    requires nonzero(host.parameter)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.put_bound)
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.take_bound)
     requires nonzero(host.type_info)
+    requires nonzero(host.variant);
+
+extern "C" IdentityNeed identity_step(address state,address context,Host host) on cpu
+    requires nonzero(host.binary_type)
+    requires nonzero(host.bits)
+    requires nonzero(host.broadcast_bit)
+    requires nonzero(host.constant)
     requires nonzero(host.copy_node)
     requires nonzero(host.copy_type)
+    requires nonzero(host.divide)
+    requires nonzero(host.drop_bits)
     requires nonzero(host.drop_node)
     requires nonzero(host.drop_type)
-    requires nonzero(host.scalar_type)
-    requires nonzero(host.bits)
-    requires nonzero(host.push_bit)
-    requires nonzero(host.drop_bits)
+    requires nonzero(host.fail)
+    requires nonzero(host.make_binary)
     requires nonzero(host.make_constant)
     requires nonzero(host.make_unary)
-    requires nonzero(host.make_binary)
-    requires nonzero(host.path_type)
-    requires nonzero(host.unary_type)
-    requires nonzero(host.binary_type)
-    requires nonzero(host.same_type)
-    requires nonzero(host.divide)
-    requires nonzero(host.fail);
-extern "C" TypeResult condition_type(address context,address value,Host host) on cpu
     requires nonzero(host.node)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.put_term)
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.take_term)
+    requires nonzero(host.term)
+    requires nonzero(host.term_type)
+    requires nonzero(host.type_info)
+    requires nonzero(host.unary_type);
+
+extern "C" TypeNeed type_step(address state,address context,Host host) on cpu
+    requires nonzero(host.binary_type)
+    requires nonzero(host.clear_type)
     requires nonzero(host.constant)
     requires nonzero(host.copy_type)
     requires nonzero(host.drop_type)
-    requires nonzero(host.scalar_type)
-    requires nonzero(host.path_type)
-    requires nonzero(host.unary_type)
-    requires nonzero(host.binary_type)
+    requires nonzero(host.fail)
+    requires nonzero(host.node)
+    requires nonzero(host.put_type)
     requires nonzero(host.same_type)
-    requires nonzero(host.fail);
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.typed)
+    requires nonzero(host.unary_type);

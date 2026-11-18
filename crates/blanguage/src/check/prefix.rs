@@ -168,7 +168,7 @@ pub(super) fn relations(
     Ok(result)
 }
 
-pub(super) fn element_requirements(world: &World, buffers: &[Buffer], env: &BTreeMap<String, Root>, instance:&crate::generics::Instance, contracts:impl Iterator<Item=FunctionContract>) -> Result<Vec<ElementFact>> {
+pub(super) async fn element_requirements(world: &World, buffers: &[Buffer], env: &BTreeMap<String, Root>, instance:&crate::generics::Instance, contracts:impl Iterator<Item=FunctionContract>) -> Result<Vec<ElementFact>> {
     let d=&instance.definition;
     let mut requirements = Vec::new();
     for contract in contracts {
@@ -216,7 +216,7 @@ pub(super) fn element_requirements(world: &World, buffers: &[Buffer], env: &BTre
             }
             ContractPredicate::Range { intervals, .. } => {
                 let scalar = bounds::range_scalar(&ty, &d.source, contract.span)?;
-                let constants = outputs::range_constants(world,instance.into(),&LexicalScope::Function(instance.clone()),Some(scalar),intervals,contract.span)?;
+                let constants = unsafe { world.call(outputs::range_constants(world,instance.into(),&LexicalScope::Function(instance.clone()),Some(scalar),intervals,contract.span)).await }?;
                 let intervals = bounds::numeric_intervals(scalar, constants.iter().map(|(a,b)| (a.bits[0],b.bits[0])), &d.source, contract.span)?;
                 requirements.extend(components.into_iter().map(|component| ElementFact::Range(ElementRange {
                     binding: *binding, offset: buffers[*binding].ty.components[component].1, scalar, intervals: intervals.clone(), known_bits:(0,0),

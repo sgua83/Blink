@@ -17,16 +17,16 @@ impl<'a> Actual<'a> {
 }
 
 impl Builder<'_> {
-    pub(super) fn specialized_function(
+    pub(super) async fn specialized_function(
         &self,
         key: String,
         args: &[Argument],
         span: Span,
     ) -> Result<crate::generics::Instance> {
-        self.specialized_arguments(key, args, None, span)
+        unsafe { self.world.call(self.specialized_arguments(key, args, None, span)).await }
     }
     #[inline(never)]
-    pub(super) fn specialized_arguments(
+    pub(super) async fn specialized_arguments(
         &self,
         key: String,
         args: &[Argument],
@@ -58,9 +58,9 @@ impl Builder<'_> {
                 Argument::Reference(owner) => Actual::value(owner.place.ty()),
             })
             .collect();
-        specialize(self.world, &key, &types, explicit, (self.scope.source(), self.scope.module(), self.scope.imports()), span)
+        unsafe { self.world.call(specialize(self.world, &key, &types, explicit, (self.scope.source(), self.scope.module(), self.scope.imports()), span)).await }
     }
-    pub(super) fn specialized_call(
+    pub(super) async fn specialized_call(
         &mut self,
         name: &str,
         explicit: &[GenericArgument],
@@ -68,7 +68,7 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<Option<Value>> {
         if matches!(name, "Ok" | "Err") {
-            return self.explicit_result(name, explicit, args, span);
+            return unsafe { self.world.call(self.explicit_result(name, explicit, args, span)).await };
         }
         if matches!(name, "array" | "owned")
             || !self
@@ -83,7 +83,7 @@ impl Builder<'_> {
         {
             let mut ty = TypeName::named(name);
             ty.arguments = explicit.to_vec();
-            return self.record_expression(&ty, args, span);
+            return unsafe { self.world.call(self.record_expression(&ty, args, span)).await };
         }
         let key = self.world.resolve(
             name, self.scope.module(), self.scope.imports(), true,
@@ -92,7 +92,7 @@ impl Builder<'_> {
             let ([GenericArgument::Type(syntax)], 0) = (explicit, args.len()) else {
                 return self.fail(span, "B153", format!("{name}<T>()需要一个明确类型且不接收值实参"));
             };
-            let ty = self.expected_storage(syntax, span)?;
+            let ty = unsafe { self.world.call(self.expected_storage(syntax, span)).await }?;
             let bytes = if name == "size_of" { ty.size } else { ty.align };
             return Ok(Some(self.constant(Scalar::U64, Bits::from(bytes))));
         }
@@ -102,11 +102,11 @@ impl Builder<'_> {
                 code: "B158",
                 message: format!("未知或未导出的泛型函数 {name}"),
             })?;
-        let Some(arguments) = self.function_arguments(&key, args, span)? else {
+        let Some(arguments) = unsafe { self.world.call(self.function_arguments(&key, args, span)).await }? else {
             return Ok(None);
         };
-        let instance = self.specialized_arguments(key, &arguments, Some(explicit), span)?;
-        self.invoke_instance(instance, arguments, span, Some(args))
+        let instance = unsafe { self.world.call(self.specialized_arguments(key, &arguments, Some(explicit), span)).await }?;
+        unsafe { self.world.call(self.invoke_instance(instance, arguments, span, Some(args))).await }
     }
 }
 /// 类型与静态 u32 值共用原名义实例；显式调用可给全部实参或只给 const 后缀。

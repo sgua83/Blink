@@ -1,7 +1,7 @@
 //! 输入捕获与中间发布共享逻辑块；块内索引能力不能变成全局可写所有权。
 use super::*;
 impl Builder<'_> {
-    pub(super) fn tile_inputs(&mut self, body: &Block) -> Result<usize> {
+    pub(super) async fn tile_inputs(&mut self, body: &Block) -> Result<usize> {
         let mut consumed = 0;
         for statement in body {
             let StmtKind::Let(annotation, name, expression) = statement.kind() else {
@@ -23,7 +23,7 @@ impl Builder<'_> {
             if self.env.contains_key(name) {
                 return self.fail(statement.span(), "B125", "tile 输入名称不能覆盖现有绑定");
             }
-            let width = self.tile_width(&args.at(1))?;
+            let width = unsafe { self.world.call(self.tile_width(&args.at(1))).await }?;
             let (source, word, ty) = self.dataset_field(&args.at(0))?;
             if !self.view_access[&source].reads()
                 || self.view_access[&source] == Access::Atomic
@@ -69,7 +69,7 @@ impl Builder<'_> {
         }
         Ok(consumed)
     }
-    pub(super) fn tile_publish(
+    pub(super) async fn tile_publish(
         &mut self,
         annotated: bool,
         name: &str,
@@ -92,7 +92,7 @@ impl Builder<'_> {
                     "cooperative 函数继承借用块范围，发布不能指定固定宽度",
                 );
             }
-            TileWidth::Fixed(self.tile_width(&args.at(1))?)
+            TileWidth::Fixed(unsafe { self.world.call(self.tile_width(&args.at(1))).await }?)
         } else {
             self.tiles
                 .first()
@@ -104,7 +104,7 @@ impl Builder<'_> {
                     message: "省略发布宽度需要既有 tile 范围".into(),
                 })?
         };
-        let Some(mut value) = self.expr(&args.at(0))? else {
+        let Some(mut value) = unsafe { self.world.call(self.expr(&args.at(0))).await }? else {
             return Ok(());
         };
         if value.ty.contains_views() || value.ty.components.is_empty() {
@@ -136,8 +136,8 @@ impl Builder<'_> {
         self.bind_tile(name, tile);
         Ok(())
     }
-    fn tile_width(&mut self, expr: &Expr) -> Result<u32> {
-        let result = self.expr(expr)?;
+    async fn tile_width(&mut self, expr: &Expr) -> Result<u32> {
+        let result = unsafe { self.world.call(self.expr(expr)).await }?;
         let value = self.value_result(result, expr.span())?;
         let Some(bits) = value.constant else {
             return self.fail(expr.span(), "B199", "tile 宽度需要编译期正 u32 值");
@@ -331,8 +331,8 @@ impl Builder<'_> {
     pub(super) fn tile_index_proof(&self) -> bounds::Proof {
         bounds::Proof::unsigned(0, self.tile_width_bound() - 1)
     }
-    pub(super) fn tile_place(&mut self, view: TileView, index: &Expr) -> Result<Option<Place>> {
-        let Some(value) = self.expr(index)? else {
+    pub(super) async fn tile_place(&mut self, view: TileView, index: &Expr) -> Result<Option<Place>> {
+        let Some(value) = unsafe { self.world.call(self.expr(index)).await }? else {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span())?;

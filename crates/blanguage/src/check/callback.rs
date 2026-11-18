@@ -15,7 +15,7 @@ fn condition(value: &OutputCondition, parameters: &crate::syntax::List<crate::sy
         value => value.clone(),
     }
 }
-pub(super) fn signature(world: &World, caller: &LexicalScope, args: &Expressions, span: Span) -> Result<(crate::generics::Instance, Ty)> {
+pub(super) async fn signature(world: &World, caller: &LexicalScope, args: &Expressions, span: Span) -> Result<(crate::generics::Instance, Ty)> {
     if args.len()!=1 {
         return caller.source().fail(span, "B153", "c_function需要一个明确的C ABI函数引用");
     }
@@ -25,13 +25,16 @@ pub(super) fn signature(world: &World, caller: &LexicalScope, args: &Expressions
         ExprKind::FunctionRef(name, arguments) => (name, Some(arguments)),
         _ => return caller.source().fail(reference.span(), "B153", "c_function需要C ABI函数名及具体类型／const实参"),
     };
-    signature_named(world,caller,name,span,reference.span(),||{
-        explicit.as_ref().map(|arguments|caller.bindings().arguments(world,arguments,
-            (caller.source(),caller.module(),caller.imports()),reference.span()).map(std::borrow::Cow::Owned)).transpose()
-    })
+    unsafe { world.call(signature_named(world,caller,name,span,reference.span(),async ||{
+        match explicit.as_ref() {
+            Some(arguments)=>unsafe { world.call(caller.bindings().arguments(world,arguments,
+                (caller.source(),caller.module(),caller.imports()),reference.span())).await }.map(|v|Some(std::borrow::Cow::Owned(v))),
+            None=>Ok(None),
+        }
+    })).await }
 }
-pub(super) fn signature_named<'a>(world:&World,caller:&LexicalScope,name:&str,span:Span,reference_span:Span,
-    arguments:impl FnOnce()->Result<Option<std::borrow::Cow<'a,[GenericArgument]>>>)->Result<(crate::generics::Instance,Ty)> {
+pub(super) async fn signature_named<'a>(world:&World,caller:&LexicalScope,name:&str,span:Span,reference_span:Span,
+    arguments:impl std::ops::AsyncFnOnce()->Result<Option<std::borrow::Cow<'a,[GenericArgument]>>>)->Result<(crate::generics::Instance,Ty)> {
     let Some(key) = world.resolve(name, caller.module(), caller.imports(), true).unique() else {
         return caller.source().fail(span, "B158", format!("未知函数 {name}"));
     };
@@ -39,8 +42,8 @@ pub(super) fn signature_named<'a>(world:&World,caller:&LexicalScope,name:&str,sp
     if !definition.function.c_abi() {
         return caller.source().fail(span, "B263", "c_function需要明确的extern C声明或定义，不自动改变普通B函数ABI");
     }
-    let explicit=arguments()?;
-    let instance = generics::specialize(world, &key, &[], explicit.as_deref(), (caller.source(), caller.module(), caller.imports()), reference_span)?;
+    let explicit=arguments().await?;
+    let instance = unsafe { world.call(generics::specialize(world, &key, &[], explicit.as_deref(), (caller.source(), caller.module(), caller.imports()), reference_span)).await }?;
     let definition = &instance.definition;
     let f = &definition.function;
     let contracts: Vec<_> = instance.contracts().filter_map(|contract| {
@@ -54,31 +57,32 @@ pub(super) fn signature_named<'a>(world:&World,caller:&LexicalScope,name:&str,sp
         }
     }).collect();
     let context: (&Source, &str, &[String]) = (&definition.source, &definition.module, &definition.imports);
-    let result = instance.bindings.type_name(world, &f.result(), context, f.span())?;
-    let parameters = f.params().iter().map(|parameter| {
-        let ty = instance.bindings.type_name(world, &parameter.ty(), context, parameter.span())?;
-        Ok((parameter.access(), ty))
-    }).collect::<Result<Vec<_>>>()?;
-    let ty = world.bind_c_function_reference(
+    let result = unsafe { world.call(instance.bindings.type_name(world, &f.result(), context, f.span())).await }?;
+    let mut parameters=Vec::new();
+    for parameter in f.params().iter() {
+        let ty=unsafe { world.call(instance.bindings.type_name(world,&parameter.ty(),context,parameter.span())).await }?;
+        parameters.push((parameter.access(),ty));
+    }
+    let ty = unsafe { world.call(world.bind_c_function_reference(
         result, parameters, &contracts,
         (context.0, f.span(), context.1, context.2),
-    )?.into_ty();
+    )).await }?.into_ty();
     Ok((instance, ty))
 }
 impl Builder<'_> {
-    pub(super) fn c_function_value(&mut self, args: &Expressions, span: Span) -> Result<Value> {
-        self.c_function_from(span,|builder|signature(builder.world,&builder.scope,args,span))
+    pub(super) async fn c_function_value(&mut self, args: &Expressions, span: Span) -> Result<Value> {
+        unsafe { self.world.call(self.c_function_from(span,async |builder|unsafe { builder.world.call(signature(builder.world,&builder.scope,args,span)).await })).await }
     }
-    pub(super) fn c_function_from(&mut self,span:Span,
-        signature:impl FnOnce(&mut Self)->Result<(crate::generics::Instance,Ty)>)->Result<Value> {
+    pub(super) async fn c_function_from(&mut self,span:Span,
+        signature:impl std::ops::AsyncFnOnce(&mut Self)->Result<(crate::generics::Instance,Ty)>)->Result<Value> {
         if self.program.target != Target::Cpu || !self.application_entry() {
             return self.fail(span, "B265", "c_function在普通CPU应用或模块中取得C函数符号地址");
         }
-        let (instance, ty) = signature(self)?;
+        let (instance, ty) = signature(self).await?;
         let target = if let Some(name) = &instance.definition.function.external() {
             CallTarget::External(ExternalName{library:name.library().into(),symbol:name.symbol().into()})
         } else {
-            self.native_declaration(&instance)?;
+            unsafe { self.world.call(self.native_declaration(&instance)).await }?;
             CallTarget::Defined(instance.name)
         };
         let reg = self.reg(Scalar::U64);

@@ -71,7 +71,7 @@ impl Builder<'_> {
         item
     }
     #[inline(never)]
-    pub(super) fn make_owned_record(
+    pub(super) async fn make_owned_record(
         &mut self,
         ty: Ty,
         args: &Expressions,
@@ -88,7 +88,7 @@ impl Builder<'_> {
         let mut held = Vec::new();
         for (i, arg) in args.iter().enumerate() {
             let (_, field) = ty.aggregate_part(i);
-            let item = self.evaluate_returned(&arg, Some(field))?;
+            let item = unsafe { self.world.call(self.evaluate_returned(&arg, Some(field))).await }?;
             if !self.flow.continues() {
                 self.abandon_arguments(&held);
                 return Ok(None);
@@ -111,7 +111,7 @@ impl Builder<'_> {
                     );
                 }
             }
-            self.check_returned_type(&mut item, field, arg.span())?;
+            unsafe { self.world.call(self.check_returned_type(&mut item, field, arg.span())).await }?;
             let binding = match &item {
                 Returned::Dataset(data) => Some(Binding::ApplicationData(data.clone())),
                 Returned::OwnedValue(value) => Some(Binding::OwnedValue(value.clone())),
@@ -224,7 +224,7 @@ impl Builder<'_> {
         };
         Some(owner.place()?.project(p.ty.clone(), &p.components))
     }
-    pub(super) fn projected_owned(&mut self, p: &OwnedProjection, span: Span) -> Result<Returned> {
+    pub(super) async fn projected_owned(&mut self, p: &OwnedProjection, span: Span) -> Result<Returned> {
         let Some(Binding::OwnedValue(root)) = self.env.get(&p.root).cloned() else {
             unreachable!()
         };
@@ -241,36 +241,36 @@ impl Builder<'_> {
         match item {
             Returned::Value(value) => {
                 if let Some(place) = self.projection_place(p) {
-                    self.read_place(&place, span, None).map(Returned::value)
+                    unsafe { self.world.call(self.read_place(&place, span, None)).await }.map(Returned::value)
                 } else {
                     Ok(Returned::Value(value))
                 }
             }
             Returned::Dataset(data) => {
                 let mut data=data;data.residency=self.resolve_owned_residency(&data.residency,None);self.application_available(&data,span)?;self.prepare_owned_read(&Returned::Dataset(data.clone()));
-                Ok(Returned::Dataset(self.refresh_application_data(data,span)?))
+                Ok(Returned::Dataset(unsafe { self.world.call(self.refresh_application_data(data,span)).await }?))
             }
             other => Ok(other),
         }
     }
-    pub(super) fn application_named_reference(
+    pub(super) async fn application_named_reference(
         &mut self, name: &str, span: Span,
     ) -> Result<Option<application::DataReference>> {
         if let Some(Binding::DataReference(data)) = self.env.get(name).cloned() {
             self.application_available(&data.data, span)?;
             return Ok(Some(data));
         }
-        self.application_value(name, span).map(|data| data.map(application::DataReference::direct))
+        unsafe { self.world.call(self.application_value(name, span)).await }.map(|data| data.map(application::DataReference::direct))
     }
-    pub(super) fn application_reference(
+    pub(super) async fn application_reference(
         &mut self,
         expr: &Expr,
     ) -> Result<Option<application::DataReference>> {
         if let ExprKind::Name(name) = expr.kind() {
-            return self.application_named_reference(name, expr.span());
+            return unsafe { self.world.call(self.application_named_reference(name, expr.span())).await };
         }
         if let ExprKind::Member(base,field)=expr.kind() {
-            if let Some(mut data)=self.application_reference(&base)? {
+            if let Some(mut data)=unsafe { self.world.call(self.application_reference(&base)).await }? {
                 let(_,ty)=data.element_layout();
                 let Some(index)=ty.fields.iter().position(|(name,..)|name==field)else{
                     return if field=="length"{Ok(None)}else{self.fail(expr.span(),"B141","dataset字段不存在")};
@@ -283,15 +283,15 @@ impl Builder<'_> {
             .filter(|p| p.ty.dataset.is_some())
         else {
             if !self.owned_element_type(expr).is_some_and(|ty|ty.dataset.is_some())
-                && !self.read_expression_type(expr)?.is_some_and(|ty|ty.dataset.is_some()) {
+                && !unsafe { self.world.call(self.read_expression_type(expr)).await }?.is_some_and(|ty|ty.dataset.is_some()) {
                 return Ok(None);
             }
-            let Some(place) = self.place(expr)? else {
+            let Some(place) = unsafe { self.world.call(self.place(expr)).await }? else {
                 return Ok(None);
             };
-            return self.application_place_reference(place,expr.span()).map(Some);
+            return unsafe { self.world.call(self.application_place_reference(place,expr.span())).await }.map(Some);
         };
-        let Returned::Dataset(data) = self.projected_owned(&p, expr.span())? else {
+        let Returned::Dataset(data) = unsafe { self.world.call(self.projected_owned(&p, expr.span())).await }? else {
             unreachable!()
         };
         self.application_available(&data, expr.span())?;
@@ -306,7 +306,7 @@ impl Builder<'_> {
         Ok(Some(application::DataReference::direct(data)))
     }
     #[inline(never)]
-    pub(super) fn member_returned(
+    pub(super) async fn member_returned(
         &mut self,
         expr: &Expr,
         base: &Expr,
@@ -316,13 +316,13 @@ impl Builder<'_> {
             .owned_element_type(expr)
             .is_some_and(|ty| ty.owns_resources())
         {
-            let Some(place)=self.place(expr)?else{return Ok(None)};
-            return self.take_owned_place(place,expr.span()).map(Some);
+            let Some(place)=unsafe { self.world.call(self.place(expr)).await }?else{return Ok(None)};
+            return unsafe { self.world.call(self.take_owned_place(place,expr.span())).await }.map(Some);
         }
         if let Some(p) = self.owned_projection(expr) {
-            return self.projected_owned(&p, expr.span()).map(Some);
+            return unsafe { self.world.call(self.projected_owned(&p, expr.span())).await }.map(Some);
         }
-        if let Some(data) = self.application_reference(base)? {
+        if let Some(data) = unsafe { self.world.call(self.application_reference(base)).await }? {
             return if name == "length" {
                 Ok(Some(Returned::value(data.length.clone())))
             } else {
@@ -335,11 +335,11 @@ impl Builder<'_> {
                 || self.dataset_reference(base)?.is_some()
                 || matches!(base.kind(),ExprKind::Name(n) if matches!(self.env.get(n),Some(Binding::Tile(_)|Binding::Texture(_)))))
         {
-            return self
-                .member_expr(base, name, expr)
+            return unsafe { self.world.call(self
+                .member_expr(base, name, expr)).await }
                 .map(|v| v.map(Returned::value));
         }
-        let value = self.evaluate_returned(base, None)?;
+        let value = unsafe { self.world.call(self.evaluate_returned(base, None)).await }?;
         if !self.flow.continues() {
             return Ok(None);
         }
@@ -364,7 +364,7 @@ impl Builder<'_> {
                 }
                 let retained=item.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
                 if retained.empty() {
-                    self.drop_returned(Returned::OwnedValue(owner),&retained,expr.span())?;
+                    unsafe { self.world.call(self.drop_returned(Returned::OwnedValue(owner),&retained,expr.span())).await }?;
                 } else {
                     self.hold_binding(Binding::OwnedValue(owner));
                 }
@@ -375,7 +375,7 @@ impl Builder<'_> {
                     return self.fail(expr.span(), "B141", "dataset只公开只读length");
                 }
                 let length = data.length.clone();
-                self.drop_returned(Returned::Dataset(data),&view::Borrow::default(),expr.span())?;
+                unsafe { self.world.call(self.drop_returned(Returned::Dataset(data),&view::Borrow::default(),expr.span())).await }?;
                 Ok(Some(Returned::value(length)))
             }
             Some(Returned::Value(value)) => self
@@ -423,7 +423,7 @@ impl Builder<'_> {
             _ => None,
         }
     }
-    pub(super) fn read_expression_type(&self,expr:&Expr)->Result<Option<Ty>> {
+    pub(super) async fn read_expression_type(&self,expr:&Expr)->Result<Option<Ty>> {
         Ok(match expr.kind() {
             ExprKind::Name(name)=>match self.env.get(name) {
                 Some(Binding::OwnedValue(value))=>Some(value.value.ty.clone()),
@@ -433,15 +433,15 @@ impl Builder<'_> {
                 _=>None,
             },
             ExprKind::Member(base,field)=>{
-                let Some(ty)=self.read_expression_type(&base)? else{return Ok(None);};
+                let Some(ty)=unsafe { self.world.call(self.read_expression_type(&base)).await }? else{return Ok(None);};
                 if let Some(reference)=&ty.dataset {
-                    let element=self.expected_storage(reference,expr.span())?;
+                    let element=unsafe { self.world.call(self.expected_storage(reference,expr.span())).await }?;
                     element.field(field).map(|(_,field)|Ty::owned_dataset(field.syntax(),ty.values.first().copied()))
                 }else{ty.field(field).map(|(_,ty)|ty.clone())}
             },
             ExprKind::Index(base,_)=>{
-                let Some(ty)=self.read_expression_type(&base)? else{return Ok(None);};
-                if let Some(reference)=ty.dataset {Some(self.expected_storage(&reference,expr.span())?)}
+                let Some(ty)=unsafe { self.world.call(self.read_expression_type(&base)).await }? else{return Ok(None);};
+                if let Some(reference)=ty.dataset {Some(unsafe { self.world.call(self.expected_storage(&reference,expr.span())).await }?)}
                 else{ty.array.map(|element|*element)}
             },
             _=>None,
@@ -451,17 +451,17 @@ impl Builder<'_> {
         self.owned_expression_type(expr)
     }
     #[inline(never)]
-    pub(super) fn owned_array_index(
+    pub(super) async fn owned_array_index(
         &mut self,
         expr: &Expr,
         base: &Expr,
         index: &Expr,
     ) -> Result<Option<Returned>> {
         if self.owned_expression_type(base).is_some() {
-            let Some(place)=self.place(expr)?else{return Ok(None)};
-            return self.take_owned_place(place,expr.span()).map(Some);
+            let Some(place)=unsafe { self.world.call(self.place(expr)).await }?else{return Ok(None)};
+            return unsafe { self.world.call(self.take_owned_place(place,expr.span())).await }.map(Some);
         }
-        let returned = self.evaluate_returned(base, None)?;
+        let returned = unsafe { self.world.call(self.evaluate_returned(base, None)).await }?;
         if !self.flow.continues() {
             return Ok(None);
         }
@@ -470,58 +470,58 @@ impl Builder<'_> {
             Some(Returned::Dataset(data)) => {
                 let held = self.hold_binding(Binding::ApplicationData(data.clone()));
                 let Some(place) =
-                    self.application_index(application::DataReference::direct(data), index)?
+                    unsafe { self.world.call(self.application_index(application::DataReference::direct(data), index)).await }?
                 else {
                     return Ok(None);
                 };
-                let value=if place.ty().owns_resources(){self.take_owned_place(place,expr.span())?}
-                    else{Returned::value(self.read_place(&place,expr.span(),None)?)};
+                let value=if place.ty().owns_resources(){unsafe { self.world.call(self.take_owned_place(place,expr.span())).await }?}
+                    else{Returned::value(unsafe { self.world.call(self.read_place(&place,expr.span(),None)).await }?)};
                 let stored=self.returned_storage(&value);
-                if stored.proof.typed_view_borrow(&stored.ty).empty(){self.finish_scoped_argument(&held,expr.span())?;}
+                if stored.proof.typed_view_borrow(&stored.ty).empty(){unsafe { self.world.call(self.finish_scoped_argument(&held,expr.span())).await }?;}
                 return Ok(Some(value));
             }
             Some(Returned::Value(value)) if value.ty.indexed_element().is_some() => {
-                return self
-                    .array_value_index(*value, index)
+                return unsafe { self.world.call(self
+                    .array_value_index(*value, index)).await }
                     .map(|v| v.map(Returned::value));
             }
             Some(Returned::Value(value)) => {
-                let Some(place) = self.view_value_place(*value, index)? else {
+                let Some(place) = unsafe { self.world.call(self.view_value_place(*value, index)).await }? else {
                     return Ok(None);
                 };
-                return self
-                    .read_place(&place, expr.span(), None)
+                return unsafe { self.world.call(self
+                    .read_place(&place, expr.span(), None)).await }
                     .map(|v| Some(Returned::value(v)));
             }
             _ => return self.fail(expr.span(), "B224", "拥有数组元素需要实际拥有数组值"),
         };
         let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();let held=self.hold_binding(Binding::OwnedValue(owner));
-        let Some(value)=self.expr(index)?else{return Ok(None)};let place=self.array_index(place,value,index.span())?;let item=self.take_owned_place(place,expr.span())?;
-        self.finish_scoped_argument(&held,expr.span())?;
+        let Some(value)=unsafe { self.world.call(self.expr(index)).await }?else{return Ok(None)};let place=self.array_index(place,value,index.span())?;let item=unsafe { self.world.call(self.take_owned_place(place,expr.span())).await }?;
+        unsafe { self.world.call(self.finish_scoped_argument(&held,expr.span())).await }?;
         Ok(Some(item))
     }
 }
 
 impl Builder<'_> {
-    pub(super) fn application_place_reference(
+    pub(super) async fn application_place_reference(
         &mut self,
         place: Place,
         span: Span,
     ) -> Result<application::DataReference> {
         let (mut data,sources)=if let Place::ApplicationElement{access,..}=place.storage() {
-            let Returned::Dataset(mut data)=self.application_owned_argument(&place,true,span)?else{unreachable!()};
+            let Returned::Dataset(mut data)=unsafe { self.world.call(self.application_owned_argument(&place,true,span)).await }?else{unreachable!()};
             data.access=*access;
             (data,Vec::new())
         }else{
             let candidates=self.owned_place_candidates(&place);
-            let model=self.owned_place_model(&place);self.prepare_owned_read(&model);self.require_initialized(&place,span)?;
+            let model=self.owned_place_model(&place);self.prepare_owned_read(&model);unsafe { self.world.call(self.require_initialized(&place,span)).await }?;
             let Returned::Dataset(mut data)=model else{unreachable!()};
             let sources:Vec<_>=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.root.identity()}).collect();
             data.root.proof=data.root.proof.clone().with_view_borrow(0,self.data_borrow(&sources));
             (data,sources)
         };
         self.application_available(&data,span)?;
-        data=self.refresh_application_data(data,span)?;data.ownership=Ownership::Borrowed;data.place=Some(place);
+        data=unsafe { self.world.call(self.refresh_application_data(data,span)).await }?;data.ownership=Ownership::Borrowed;data.place=Some(place);
         Ok(application::DataReference { data, sources, projection:Vec::new() })
     }
 }

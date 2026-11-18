@@ -7,9 +7,9 @@ impl Builder<'_> {
     pub(super) fn user_owned_function<'a>(source:&Source,function:&'a Expr)->Result<&'a str>{
         match function.kind(){ExprKind::Name(name)=>Ok(name),ExprKind::FunctionRef(name,explicit)if explicit.is_empty()=>Ok(name),_=>source.fail(function.span(),"B224","释放函数使用静态函数名称，其类型从载荷推导")}
     }
-    pub(super) fn user_owned_type(world:&World,scope:&LexicalScope,payload:&Ty,function:&str,span:Span)->Result<Ty>{
+    pub(super) async fn user_owned_type(world:&World,scope:&LexicalScope,payload:&Ty,function:&str,span:Span)->Result<Ty>{
         let mut syntax=TypeName::named("owned");syntax.arguments=vec![GenericArgument::Type(payload.syntax()),GenericArgument::Type(TypeName::named(function))];
-        world.ty(&syntax,scope.source(),span,scope.module(),scope.imports())
+        unsafe { world.call(world.ty(&syntax,scope.source(),span,scope.module(),scope.imports())).await }
     }
     pub(super) fn inside_user_owner(&self,expr:&Expr)->bool {
         match expr.kind() {
@@ -41,56 +41,56 @@ impl Builder<'_> {
         Ok(())
     }
     #[inline(never)]
-    pub(super) fn make_user_owned(&mut self,args:&Expressions,span:Span)->Result<Option<Returned>>{
+    pub(super) async fn make_user_owned(&mut self,args:&Expressions,span:Span)->Result<Option<Returned>>{
         if args.len()!=2{return self.fail(span,"B157","own(value,F)需要实际载荷和静态释放函数");}
         if self.application.is_none()||self.program.target!=Target::Cpu{return self.fail(span,"B224","用户拥有值由普通CPU应用组织");}
         let function_reference=args.at(1);
         let function=Self::user_owned_function(self.scope.source(),&function_reference)?;
-        let Some(payload)=self.evaluate_returned(&args.at(0),None)?else{return Ok(None)};
+        let Some(payload)=unsafe { self.world.call(self.evaluate_returned(&args.at(0),None)).await }?else{return Ok(None)};
         let value=self.returned_storage(&payload);
-        let ty=Self::user_owned_type(self.world,&self.scope,&value.ty,function,span)?;
+        let ty=unsafe { self.world.call(Self::user_owned_type(self.world,&self.scope,&value.ty,function,span)).await }?;
         let value=self.pack_record(ty,vec![value],span)?;
         let payloads=vec![value.ty.arguments[0].owns_resources().then(||Box::new(payload))];
         Ok(Some(Returned::OwnedValue(Box::new(OwnedValuePayload{value,payloads,ownership:Ownership::Owned,place:None,declaration:0}))))
     }
     #[inline(never)]
-    pub(super) fn into_user_inner(&mut self,args:&Expressions,span:Span)->Result<Option<Returned>>{
+    pub(super) async fn into_user_inner(&mut self,args:&Expressions,span:Span)->Result<Option<Returned>>{
         if args.len()!=1{return self.fail(span,"B157","into_inner需要一个实际拥有包装");}
-        let Some(value)=self.evaluate_returned(&args.at(0),None)?else{return Ok(None)};
+        let Some(value)=unsafe { self.world.call(self.evaluate_returned(&args.at(0),None)).await }?else{return Ok(None)};
         let Returned::OwnedValue(value)=value else{return self.fail(span,"B224","into_inner需要实际用户拥有包装");};
         if value.value.ty.cleanup.is_none(){return self.fail(span,"B224","into_inner只解除用户拥有包装");}
         Ok(Some(self.unpack_record(&value,0)))
     }
-    pub(super) fn drop_user_owned(&mut self,value:OwnedValue,retained:&view::Borrow,span:Span)->Result<()>{
+    pub(super) async fn drop_user_owned(&mut self,value:OwnedValue,retained:&view::Borrow,span:Span)->Result<()>{
         let payload=self.unpack_record(&value,0);
         let resources=match &payload{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
         for data in resources{self.application_movable(data,retained,span)?;}
         let argument=cooperative::Argument::resource(payload);
-        let instance=self.specialized_function(value.value.ty.cleanup.as_ref().unwrap().clone(),std::slice::from_ref(&argument),span)?;
+        let instance=unsafe { self.world.call(self.specialized_function(value.value.ty.cleanup.as_ref().unwrap().clone(),std::slice::from_ref(&argument),span)).await }?;
         let origin=std::sync::Arc::new(ir::GeneratedOrigin{reason:ir::GenerationReason::UserOwnedDrop,trigger:self.source_site.clone().map(ir::GenerationAnchor::Syntax)});
-        self.invoke_returned(instance,vec![argument],span,Some(origin),None)?;Ok(())
+        unsafe { self.world.call(self.invoke_returned(instance,vec![argument],span,Some(origin),None)).await }?;Ok(())
     }
 }
 
 // 释放调用是作用域内的真实后续消费者；只复用原Proof及实际拥有条件。
-pub(super) fn cleanup_borrow(builder:&Builder<'_>,binding:&Binding,omitted:&BTreeSet<usize>)->Result<view::Borrow> {
+pub(super) async fn cleanup_borrow(builder:&Builder<'_>,binding:&Binding,omitted:&BTreeSet<usize>)->Result<view::Borrow> {
     let mut result=view::Borrow::default();
     match binding{
-        Binding::OwnedValue(value)=>value.cleanup_borrow(builder,omitted,&mut result)?,
-        Binding::ApplicationData(value)=>data_contents(builder,value,&mut result)?,
+        Binding::OwnedValue(value)=>unsafe { builder.world.call(value.cleanup_borrow(builder,omitted,&mut result)).await }?,
+        Binding::ApplicationData(value)=>unsafe { builder.world.call(data_contents(builder,value,&mut result)).await }?,
         _=>{},
     }
     Ok(result)
 }
 
-fn data_contents(builder:&Builder<'_>,data:&application::Data,into:&mut view::Borrow)->Result<()>{
+async fn data_contents(builder:&Builder<'_>,data:&application::Data,into:&mut view::Borrow)->Result<()>{
     if !data.ownership.may_own()||data.length.maximum()==0{return Ok(());}
     let mut borrowed=view::Borrow::default();
     match data.elements.known(){
-        Some(Returned::OwnedValue(value))=>value.cleanup_borrow(builder,&BTreeSet::new(),&mut borrowed)?,
-        Some(Returned::Dataset(child))=>data_contents(builder,child,&mut borrowed)?,
+        Some(Returned::OwnedValue(value))=>unsafe { builder.world.call(value.cleanup_borrow(builder,&BTreeSet::new(),&mut borrowed)).await }?,
+        Some(Returned::Dataset(child))=>unsafe { builder.world.call(data_contents(builder,child,&mut borrowed)).await }?,
         Some(Returned::Value(_)|Returned::Unit)=>{},
-        None if builder.world.stored_borrows(&data.ty,builder.scope.source(),builder.scope.span(),builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),true)?=>borrowed=view::Borrow::source(view::Source::Unresolved),
+        None if unsafe { builder.world.call(builder.world.stored_borrows(&data.ty,builder.scope.source(),builder.scope.span(),builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),true)).await }?=>borrowed=view::Borrow::source(view::Source::Unresolved),
         None=>{},
     }
     let borrowed=if let Ownership::Conditional(when)=&data.ownership{borrowed.restricted(&when.condition().assume(&bounds::Clause::default(),true))}else{borrowed};
@@ -121,20 +121,20 @@ impl OwnedValuePayload {
         if !value.ownership.may_own(){return;}
         if value.value.ty.contains_borrows(){visit(value,&value.value,0,&bounds::Clause::default(),omitted,into,map);}
     }
-    pub(super) fn cleanup_borrow(&self,builder:&Builder<'_>,omitted:&BTreeSet<usize>,into:&mut view::Borrow)->Result<()>{
+    pub(super) async fn cleanup_borrow(&self,builder:&Builder<'_>,omitted:&BTreeSet<usize>,into:&mut view::Borrow)->Result<()>{
         let value=self;
         if !value.ownership.may_own(){return Ok(());}
         value.cleanup_views(omitted,into,&|_,_,borrow|borrow);
-        fn children(builder:&Builder<'_>,value:&OwnedValuePayload,into:&mut view::Borrow)->Result<()>{
+        async fn children(builder:&Builder<'_>,value:&OwnedValuePayload,into:&mut view::Borrow)->Result<()>{
             if !value.ownership.may_own(){return Ok(());}
             for payload in value.payloads.iter().flatten(){match payload.as_ref(){
-                Returned::Dataset(child)=>data_contents(builder,child,into)?,
-                Returned::OwnedValue(child)=>children(builder,child,into)?,
+                Returned::Dataset(child)=>unsafe { builder.world.call(data_contents(builder,child,into)).await }?,
+                Returned::OwnedValue(child)=>unsafe { builder.world.call(children(builder,child,into)).await }?,
                 Returned::Value(_)|Returned::Unit=>{},
             }}
             Ok(())
         }
-        let mut nested=view::Borrow::default();children(builder,value,&mut nested)?;
+        let mut nested=view::Borrow::default();unsafe { builder.world.call(children(builder,value,&mut nested)).await }?;
         let nested=if let Ownership::Conditional(when)=&value.ownership{nested.restricted(&when.condition().assume(&bounds::Clause::default(),true))}else{nested};
         into.union(&nested);
         Ok(())

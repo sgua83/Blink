@@ -260,7 +260,6 @@ struct LowerBranch { u32 kind; usize error; usize slot; u32 existing; usize prev
 struct LowerHost {
  EffectRead effects;
  cfn<LowerNode,address> next;
- cfn<u32,address,address> child;
  cfn<usize,address,u32> reg;
  cfn<void,address,address,address,u32> capture;
  cfn<void,address,usize> set_error;
@@ -274,8 +273,6 @@ struct LowerHost {
  cfn<void,address,address,usize,usize,usize> compare;
  cfn<void,address,address,usize> raise;
  cfn<void,address,address,usize,usize,usize> join;
- cfn<u32,address,address,usize,Word> scope;
- cfn<u32,address,address,Word,LowerBranch> branches;
  cfn<void,address,address,usize,address,address> finish_if;
 };
 struct FoldNode {
@@ -290,12 +287,22 @@ struct FoldHost {
  cfn<u32,address,usize> ensures memory(read) contains;
  cfn<void,address,usize,u32> replace;
 };
-extern "C" u32 lower_failure_block(address block,address output,LowerHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare) requires nonzero(host.raise) requires nonzero(host.join) requires nonzero(host.scope) requires nonzero(host.branches) requires nonzero(host.finish_if)
+struct LowerCursor {LowerNode node;u32 flags;u32 phase;};
+struct LowerNeed {u32 kind;u32 flags;address child;Word test;LowerBranch branch;};
+struct FailureBranchNeed {u32 kind;Word test;LowerBranch branch;};
+extern "C" LowerNeed lower_failure_start(address state,address block,address output,LowerHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare)
  requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains);
-extern "C" u32 emit_failure_if(address block,address output,address yes,address no,Word test,LowerBranch branch,LowerHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare) requires nonzero(host.raise) requires nonzero(host.join) requires nonzero(host.scope) requires nonzero(host.branches) requires nonzero(host.finish_if)
+extern "C" LowerNeed lower_failure_child(address state,address block,address output,u32 nested,LowerHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare)
  requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains);
+extern "C" LowerNeed lower_failure_branch(address state,address block,address output,LowerHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare)
+ requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains);
+extern "C" FailureBranchNeed failure_branch_prepare(address block,address yes,LowerBranch branch,LowerHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.raise) requires nonzero(host.load) requires nonzero(host.constant) requires nonzero(host.compare) requires nonzero(host.join) requires nonzero(host.store);
+extern "C" void failure_branch_finish(address block,address output,address yes,address no,Word test,LowerBranch branch,LowerHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.constant) requires nonzero(host.compare) requires nonzero(host.store) requires nonzero(host.finish_if);
 extern "C" void fold_empty_status(Span code,usize slot,FoldHost host) on cpu
  requires nonzero(host.inspect) requires nonzero(host.insert) requires nonzero(host.contains) requires nonzero(host.replace);
 

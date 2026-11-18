@@ -18,7 +18,7 @@ impl Kind {
         })
     }
 }
-fn function(
+async fn function(
     world: &World,
     program: &mut Program,
     env: &BTreeMap<String, Root>,
@@ -70,7 +70,7 @@ fn function(
             "集合需要 compute 值函数：投影接收一个源值，单位元无元素参数，合并器接收两个结果值；bind 参数追加在元素参数之后",
         );
     }
-    let mut builder = Builder::new(world, owner, program, 0, Some(&owner.name))?;
+    let mut builder = unsafe { world.call(Builder::new(world, owner, program, 0, Some(&owner.name))).await }?;
     builder.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*builder.source_context).clone() });
     builder.functions = std::mem::take(functions);
     builder.roots(env);
@@ -90,7 +90,7 @@ fn function(
     }
     builder.in_function = true;
     for capture in captures.iter().flat_map(|captures|captures.iter()) {
-        let result = builder.expr(&capture)?;
+        let result = unsafe { world.call(builder.expr(&capture)).await }?;
         let value = builder.value_result(result, capture.span())?;
         if !value.uniform
             || value.ty.contains_views()
@@ -106,9 +106,12 @@ fn function(
         args.push(cooperative::Argument::Value(value));
     }
     builder.in_function = false;
-    let explicit=explicit.as_ref().map(|arguments|owner.bindings.arguments(world,arguments,
-        (&d.source,&d.module,&d.imports),reference.span())).transpose()?;
-    let instance = builder.specialized_arguments(key, &args, explicit.as_deref(), reference.span())?;
+    let explicit=match explicit.as_ref() {
+        Some(arguments)=>Some(unsafe { world.call(owner.bindings.arguments(world,arguments,
+            (&d.source,&d.module,&d.imports),reference.span())).await }?),
+        None=>None,
+    };
+    let instance = unsafe { world.call(builder.specialized_arguments(key, &args, explicit.as_deref(), reference.span())).await }?;
     let source_site = |span| builder.source_definition.as_ref().map(|origin| Arc::new(SourceSite {
         origin: origin.clone(), context: builder.source_context.clone(), span, syntax: SourceSyntax::Expression,
     }));
@@ -119,7 +122,7 @@ fn function(
         capture_parameter_start: parameters.len(),
         captures: captures.iter().flat_map(|captures|captures.iter()).map(|capture| source_site(capture.span())).collect(),
     });
-    let result = builder.invoke_returned(instance, args, reference.span(), None, None)?;
+    let result = unsafe { world.call(builder.invoke_returned(instance, args, reference.span(), None, None)).await }?;
     let result = builder.ordinary_return(result, expr.span())?;
     let result = builder.value_result(result, expr.span())?;
     builder.require_same(ty, &result.ty, expr.span())?;
@@ -135,7 +138,7 @@ fn function(
     };
     Ok(code)
 }
-pub(super) fn compile(
+pub(super) async fn compile(
     world: &World,
     program: &mut Program,
     env: &BTreeMap<String, Root>,
@@ -248,7 +251,7 @@ pub(super) fn compile(
         return d.source.fail(span, "B171", "归约输出形状必须为 1");
     }
     let project = if map {
-        Some(function(
+        Some(unsafe { world.call(function(
             world,
             program,
             env,
@@ -258,11 +261,11 @@ pub(super) fn compile(
             &ty,
             &[&source_ty],
             native_functions,
-        )?)
+        )).await }?)
     } else {
         None
     };
-    let identity = function(
+    let identity = unsafe { world.call(function(
         world,
         program,
         env,
@@ -272,8 +275,8 @@ pub(super) fn compile(
         &ty,
         &[],
         native_functions,
-    )?;
-    let combine = function(
+    )).await }?;
+    let combine = unsafe { world.call(function(
         world,
         program,
         env,
@@ -283,7 +286,7 @@ pub(super) fn compile(
         &ty,
         &[&ty, &ty],
         native_functions,
-    )?;
+    )).await }?;
     let writes: Vec<_> = std::iter::once(target)
         .chain(count.map(|c| c.binding))
         .collect();

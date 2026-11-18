@@ -147,8 +147,8 @@ pub(super) enum BindingProgress<'a> {
     Shape(SourceBinding<'a>,ShapeNeed<'a>),
 }
 impl ShapeNeed<'_> {
-    fn evaluate(self)->Result<u32> {
-        self.world.source_shape(&self.shape,self.bindings,self.context.0,self.span,self.context.1,self.context.2)
+    async fn evaluate(self)->Result<u32> {
+        unsafe { self.world.call(self.world.source_shape(&self.shape,self.bindings,self.context.0,self.span,self.context.1,self.context.2)) .await }
     }
 }
 impl<'a> SourceBinding<'a> {
@@ -196,21 +196,25 @@ impl<'a> SourceBinding<'a> {
     fn finish_type(mut self)->TypeName {unsafe{self.frames.pop().unwrap().data.result.assume_init()}}
     fn finish_arguments(mut self)->Vec<GenericArgument> {self.frames.pop().unwrap().data.arguments}
 }
-fn drive<'a>(mut binding:SourceBinding<'a>)->Result<SourceBinding<'a>> {
+async fn drive<'a>(mut binding:SourceBinding<'a>)->Result<SourceBinding<'a>> {
     loop {
         match binding.advance()? {
             BindingProgress::Complete(done)=>return Ok(done),
-            BindingProgress::Shape(pending,need)=>binding=pending.complete_shape(need.evaluate()?),
+            BindingProgress::Shape(pending,need)=>{
+                let world=need.world;
+                let value=unsafe { world.call(need.evaluate()) .await }?;
+                binding=pending.complete_shape(value);
+            },
         }
     }
 }
-pub(super) fn type_name(bindings:&Arc<Bindings>,world:&World,source:&syntax::Type,
+pub(super) async fn type_name(bindings:&Arc<Bindings>,world:&World,source:&syntax::Type,
     context:(&Source,&str,&[String]),span:Span)->Result<TypeName> {
-    drive(SourceBinding::type_name(bindings,world,source,context,span)).map(SourceBinding::finish_type)
+    unsafe { world.call(drive(SourceBinding::type_name(bindings,world,source,context,span))) .await }.map(SourceBinding::finish_type)
 }
-pub(super) fn arguments(bindings:&Arc<Bindings>,world:&World,arguments:&syntax::List<wire::ArgumentNode>,
+pub(super) async fn arguments(bindings:&Arc<Bindings>,world:&World,arguments:&syntax::List<wire::ArgumentNode>,
     context:(&Source,&str,&[String]),span:Span)->Result<Vec<GenericArgument>> {
-    drive(SourceBinding::arguments(bindings,world,arguments,context,span)).map(SourceBinding::finish_arguments)
+    unsafe { world.call(drive(SourceBinding::arguments(bindings,world,arguments,context,span))) .await }.map(SourceBinding::finish_arguments)
 }
 
 struct ConditionFrame<'a> {

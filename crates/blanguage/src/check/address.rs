@@ -1094,7 +1094,7 @@ impl Builder<'_> {
         self.positions(place).iter().enumerate().filter_map(|(i,position)|positions.iter().any(|written|
             owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()
     }
-    pub(super) fn update_address_elements(&mut self,borrow:&view::Borrow,effect:&MemoryEffect)->Result<()> {
+    pub(super) async fn update_address_elements(&mut self,borrow:&view::Borrow,effect:&MemoryEffect)->Result<()> {
         let data=borrow.sources.entries().filter_map(|(source,when)|{
             let view::Source::Position(origin)=source else{return None;};
             if !origin.writable{return None;}
@@ -1106,10 +1106,10 @@ impl Builder<'_> {
                 _=>None,
             }
         }).collect::<Vec<_>>();
-        for(resource,words,index)in data {self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Bytes{effect,index})?;}
+        for(resource,words,index)in data {unsafe { self.world.call(self.update_application_elements(&[],&resource,&words,application::ElementUpdate::Bytes{effect,index})).await }?;}
         Ok(())
     }
-    pub(super) fn write_address_values(&mut self,borrow:&view::Borrow,memory:&[(view::Borrow,Option<Access>,Option<bounds::Proof>)])->Result<()> {
+    pub(super) async fn write_address_values(&mut self,borrow:&view::Borrow,memory:&[(view::Borrow,Option<Access>,Option<bounds::Proof>)])->Result<()> {
         let borrow=self.current_address_borrow(borrow);let mut effect=MemoryEffect::default();
         for(source,access,written)in memory{if let Some(access)=access.filter(|access|access.writes()){
             let source=self.current_address_borrow(source);effect.union(MemoryEffect::of(&source,access,written.as_ref()));
@@ -1117,7 +1117,7 @@ impl Builder<'_> {
         if !self.resolved_address_write(&borrow) {
         let data=self.env.values().flat_map(Binding::application_resources)
             .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
-        for data in data {self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown)?;}
+        for data in data {unsafe { self.world.call(self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown)).await }?;}
         for binding in self.env.values_mut() {
             let metadata=match &*binding{Binding::OwnedValue(owner)=>resource_metadata(&owner.value.ty,view::resource_paths(&owner.value.ty).into_iter().filter(|fields|view::owned_data_at(owner,fields).is_some()).collect()),_=>Vec::new()};
             if let Some((proof,uniform,owner))=binding.proof_storage() {
@@ -1129,7 +1129,7 @@ impl Builder<'_> {
             }
         }
         }else{
-        self.update_address_elements(&borrow,&effect)?;
+        unsafe { self.world.call(self.update_address_elements(&borrow,&effect)).await }?;
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
             let(positions,index)=self.value_memory_location(&place);
@@ -1158,7 +1158,7 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn position_origin(&self,place:&Place,span:Span)->Result<Origin> {
+    pub(super) async fn position_origin(&self,place:&Place,span:Span)->Result<Origin> {
         let layout=Layout::of(place.ty());
         let mut base=layout.clone();
         let mut words=layout.parts.iter().map(|(_,word)|*word).collect::<Vec<_>>();
@@ -1175,7 +1175,7 @@ impl Builder<'_> {
             }
             Place::Reference{address:ReferenceAddress::External{identity,..},..}=>{words=external::reference_words(place,&self.locals).unwrap();Root::External(identity.clone())},
             Place::Reference{scope:Some(parameter),..}=>{
-                let ty=cooperative::parameter_type(self.world,&self.scope.parameters().nth(*parameter).unwrap().bound(self.world)?,(&self.scope.function().unwrap().definition.source,&self.scope.function().unwrap().definition.module,&self.scope.function().unwrap().definition.imports,self.scope.function().unwrap().definition.function.kind()),self.program.target)?;
+                let ty=unsafe { self.world.call(cooperative::parameter_type(self.world,&unsafe { self.world.call(self.scope.parameters().nth(*parameter).unwrap().bound(self.world)).await }?,(&self.scope.function().unwrap().definition.source,&self.scope.function().unwrap().definition.module,&self.scope.function().unwrap().definition.imports,self.scope.function().unwrap().definition.function.kind()),self.program.target)).await }?;
                 base=Layout::of(&ty);words=external::reference_words(place,&self.locals).unwrap();Root::Parameter(*parameter)
             }
             Place::ApplicationElement{resource,element_layout,words:actual,index_value,..}=>{
@@ -1200,8 +1200,8 @@ impl Builder<'_> {
         }else{vec![self.is_initialized(place);layout.parts.len()]};
         Ok(Origin{root,layout,base,words:words.into(),positions:positions.into(),writable,initialized:initialized.into()})
     }
-    pub(super) fn position_borrows(&self,place:&Place,span:Span)->Result<view::Borrow> {
-        let origin=self.position_origin(place,span)?;
+    pub(super) async fn position_borrows(&self,place:&Place,span:Span)->Result<view::Borrow> {
+        let origin=unsafe { self.world.call(self.position_origin(place,span)).await }?;
         let positions=place.data_positions();
         if !matches!(place,Place::Indexed{..}) || !matches!(origin.root,Root::Resource{..}) || positions.is_empty() {
             return Ok(view::Borrow::source(view::Source::Position(Arc::new(origin))));
@@ -1231,9 +1231,9 @@ impl Builder<'_> {
         collect(&origin,&positions,&self.path,&mut borrow);
         Ok(borrow)
     }
-    pub(super) fn reference_memory(&self,place:&Place,span:Span)->Result<Option<(MemoryTarget,view::Borrow)>> {
+    pub(super) async fn reference_memory(&self,place:&Place,span:Span)->Result<Option<(MemoryTarget,view::Borrow)>> {
         if let Place::Reference{address:ReferenceAddress::Borrowed{address,..}|ReferenceAddress::External{address,..},..}=place{
-            return Ok(Some((MemoryTarget::Value(address[0]),self.position_origin(place,span)?.normalize())));
+            return Ok(Some((MemoryTarget::Value(address[0]),unsafe { self.world.call(self.position_origin(place,span)).await }?.normalize())));
         }
         Ok(None)
     }
@@ -1323,7 +1323,7 @@ impl Builder<'_> {
         });}
         snapshots
     }
-    pub(super) fn call_address_memory(&mut self,memory:impl IntoIterator<Item=(view::Borrow,Option<Access>)>,span:Span)->Result<usize> {
+    pub(super) async fn call_address_memory(&mut self,memory:impl IntoIterator<Item=(view::Borrow,Option<Access>)>,span:Span)->Result<usize> {
         let usage=self.view_model.uses.len();let mut written=view::Borrow::default();
         for(borrow,access)in memory{
             if access.is_some_and(|access|access.writes()){written.union(&borrow);}
@@ -1332,10 +1332,10 @@ impl Builder<'_> {
         if written.pending()&&!self.resolved_address_write(&written){
             let snapshots=self.capture_address_values(usage,address::Capture::Write);
             if let view::Requirement::Memory{snapshots:target,..}=&mut self.view_model.uses[usage].requirement{*target=Some(snapshots.into());}
-        }else{let memory=[(written,Some(Access::Write),None)];self.write_address_values(&memory[0].0,&memory)?;}
+        }else{let memory=[(written,Some(Access::Write),None)];unsafe { self.world.call(self.write_address_values(&memory[0].0,&memory)).await }?;}
         Ok(usage)
     }
-    pub(super) fn position_address(&mut self,args:&Expressions,span:Span)->Result<Option<Value>> {
+    pub(super) async fn position_address(&mut self,args:&Expressions,span:Span)->Result<Option<Value>> {
         if self.program.target!=Target::Cpu{return self.fail(span,"B265","address_of只取得本进程CPU位置");}
         if args.len()!=1{return self.fail(span,"B153","address_of需要一个实际位置");}
         let arg=&args.at(0);
@@ -1344,20 +1344,20 @@ impl Builder<'_> {
             && let Some(Binding::Value(value))=self.env.get(&name).cloned() {
             let mut owner=self.materialize_array(value,None);owner.place=owner.place.read_only();self.env.insert(name.clone(),Binding::Owned(owner));
         }
-        let Some(place)=self.place(arg)?else{return Ok(None);};
+        let Some(place)=unsafe { self.world.call(self.place(arg)).await }?else{return Ok(None);};
         if place.ty().owns_resources()||place.ty().contains_views()||place.ty().components.is_empty(){
             return self.fail(span,"B263","address_of需要非空普通值位置，资源通过原拥有者或借用接口交接");
         }
-        let origin=self.position_origin(&place,span)?;
+        let origin=unsafe { self.world.call(self.position_origin(&place,span)).await }?;
         let access=if origin.writable{Access::InOut}else{Access::Read};
-        let address=self.external_reference(&place,access,access.writes(),span)?;
+        let address=unsafe { self.world.call(self.external_reference(&place,access,access.writes(),span)).await }?;
         let dst=self.reg(Scalar::U64);
         let ty=Ty::builtin("address").unwrap();
 
         let mut numeric=origin.clone();
         if let Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage)=place.storage() {
             let ty=self.locals[&storage.end].clone();let whole=Place::Local(ty,(storage.clone()).collect(),storage.clone());
-            numeric=self.position_origin(&whole,span)?;
+            numeric=unsafe { self.world.call(self.position_origin(&whole,span)).await }?;
             let first=address.word;let selected=numeric.layout.parts.iter().enumerate().filter_map(|(i,(_,at))|(*at>=first).then_some(i)).collect::<Vec<_>>();
             numeric.layout=Layout{size:numeric.layout.size-first,align:place.ty().align,parts:selected.iter().map(|&i|{let(scalar,at)=numeric.layout.parts[i];(scalar,at-first)}).collect()};
             numeric.positions=selected.iter().map(|&i|numeric.positions[i].clone()).collect();numeric.initialized=selected.iter().map(|&i|numeric.initialized[i]).collect();
@@ -1370,26 +1370,26 @@ impl Builder<'_> {
         Ok(Some(Value{ty,regs:vec![dst],proof:proof.with_view_borrow(0,borrow),literal:false,uniform:false,constant:None}))
     }
 
-    pub(super) fn external_position(&mut self,explicit:&[GenericArgument],args:&Expressions,span:Span)->Result<Option<Place>> {
-        self.external_position_value(explicit,args.len(),span,args.first().map(|arg|arg.span()).unwrap_or(span),
-            |builder|builder.expr(&args.at(0)))
+    pub(super) async fn external_position(&mut self,explicit:&[GenericArgument],args:&Expressions,span:Span)->Result<Option<Place>> {
+        unsafe { self.world.call(self.external_position_value(explicit,args.len(),span,args.first().map(|arg|arg.span()).unwrap_or(span),
+            async |builder|unsafe { builder.world.call(builder.expr(&args.at(0))).await })).await }
     }
-    pub(super) fn external_position_value(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
-        argument:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>> {
+    pub(super) async fn external_position_value(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
+        argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>> {
         if self.program.target != Target::Cpu {
             return self.fail(span, "B265", "unsafe_position只解释本进程CPU地址");
         }
         let ([GenericArgument::Type(name)], 1) = (explicit, count) else {
             return self.fail(span, "B153", "unsafe_position<T>需要一个明确普通类型和一个address实参");
         };
-        let ty = self.world.ty(name, self.scope.source(), span, self.scope.module(), self.scope.imports())?;
+        let ty = unsafe { self.world.call(self.world.ty(name, self.scope.source(), span, self.scope.module(), self.scope.imports())).await }?;
         if ty.owns_resources() {
             return self.fail(span, "B224", "外部地址位置不能创建Blink拥有资源");
         }
         if ty.contains_views() || ty.components.is_empty() {
             return self.fail(span, "B263", "外部地址位置需要非空普通值布局，不能解释Blink资源引用");
         }
-        let Some(mut value) = argument(self)? else { return Ok(None); };
+        let Some(mut value) = argument(self).await? else { return Ok(None); };
         self.require_same(&Ty::builtin("address").unwrap(), &value.ty, argument_span)?;
         let borrow=borrow_in_path(&self.current_address_borrow(&value.proof.view_borrow(0)),&self.path);
         self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:Layout::of(&ty),written:None,writable:false,initialized:false,span})?;

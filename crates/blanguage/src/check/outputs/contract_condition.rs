@@ -1,4 +1,4 @@
-//! B traverses the original conditions; native queries borrow World and Ty.
+//! B traverses the original conditions; World children finish outside native stepping.
 //! Result nodes, types, bits and member indices keep their original native owners.
 use super::*;
 use std::{ffi::c_void, ptr};
@@ -13,8 +13,6 @@ impl Bytes {
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.data, self.count as usize)) }
     }
 }
-#[repr(C)]
-struct NativeResult { value: Address, ok: u32 }
 #[repr(C)]
 struct TypeResult { ty: Address, literal: u32, ok: u32 }
 #[repr(C)]
@@ -34,6 +32,7 @@ struct BinaryRule { ty: Address, kind: u32, scalar: u32, cast_left: u32, cast_ri
 #[repr(C)]
 struct UnaryRule { operation: u32, ok: u32 }
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct Term { value: Address, original: Address, ty: Address, literal: u32, ok: u32 }
 #[repr(C)]
 struct Host {
@@ -55,28 +54,66 @@ struct Host {
     make_binary: unsafe extern "C" fn(Bytes, Address, Address) -> Address,
     parameter: unsafe extern "C" fn(Address, Bytes) -> u32,
     lookup: unsafe extern "C" fn(Address, Bytes) -> Lookup,
-    evaluate: unsafe extern "C" fn(Address, Address) -> NativeResult,
     variant: unsafe extern "C" fn(Address, Bytes) -> Variant,
     member: unsafe extern "C" fn(Address, Address, Bytes) -> Member,
     drop_indices: unsafe extern "C" fn(Address),
-    path_type: unsafe extern "C" fn(Address, Address) -> NativeResult,
     unary_type: unsafe extern "C" fn(Address, Bytes, Address) -> UnaryRule,
     binary_type: unsafe extern "C" fn(Address, Bytes, Address, u32, Address, u32) -> BinaryRule,
     same_type: unsafe extern "C" fn(Address, Address, Address) -> u32,
     divide: unsafe extern "C" fn(u32, u64, u64, u32) -> u64,
     fail: unsafe extern "C" fn(Address, u32, Bytes),
+    take_bound: unsafe extern "C" fn(Address, u32) -> Address,
+    put_bound: unsafe extern "C" fn(Address, u32, Address),
+    term: unsafe extern "C" fn(Address, u32) -> Term,
+    take_term: unsafe extern "C" fn(Address, u32) -> Term,
+    put_term: unsafe extern "C" fn(Address, u32, Term),
+    term_type: unsafe extern "C" fn(Address, u32) -> Address,
+    typed: unsafe extern "C" fn(Address, u32) -> TypeResult,
+    put_type: unsafe extern "C" fn(Address, u32, TypeResult),
+    clear_type: unsafe extern "C" fn(Address, u32),
 }
 struct Context<'a> { source: &'a Source, span: Span, error: Option<Diagnostic> }
 #[repr(C)]
-struct BindingContext<'a> { common: Context<'a>, world: &'a World, definition: Contract<'a> }
+struct BindingContext<'a> {
+    common: Context<'a>, world: &'a World, definition: Contract<'a>,
+    nodes: [Option<Box<OutputCondition>>; 2],
+}
+// These are the original owned term/type locals. Native descriptors only borrow
+// them; take/put move the same allocation at the actual B consumption point.
+struct OwnedTerm(Term);
+impl OwnedTerm {
+    fn raw(self) -> Term {
+        let value=self.0;
+        std::mem::forget(self);
+        value
+    }
+    fn condition(mut self) -> OutputCondition {
+        let value=unsafe { take(self.0.value) };
+        self.0.value=ptr::null_mut();
+        value
+    }
+}
+impl Drop for OwnedTerm {
+    fn drop(&mut self) {
+        if !self.0.value.is_null() { unsafe { drop_node(self.0.value) }; }
+        if !self.0.ty.is_null() { unsafe { drop_type(self.0.ty) }; }
+    }
+}
+struct OwnedType { ty: Box<Ty>, literal: bool }
+impl OwnedType {
+    fn describe(&self) -> TypeResult {
+        TypeResult { ty: address(&*self.ty), literal: u32::from(self.literal), ok: 1 }
+    }
+}
 #[repr(C)]
-struct PathContext<'a> { common: Context<'a>, path: &'a dyn Fn(&OutputCondition) -> Result<Ty> }
-impl Context<'_> {
-    fn result<T>(&mut self, result: Result<T>) -> NativeResult {
-        match result {
-            Ok(value) => NativeResult { value: own(value), ok: 1 },
-            Err(error) => { self.error = Some(error); NativeResult { value: ptr::null_mut(), ok: 0 } }
-        }
+struct QueryContext<'a> {
+    common: Context<'a>,
+    terms: [Option<OwnedTerm>; 2],
+    types: [Option<OwnedType>; 2],
+}
+impl<'a> QueryContext<'a> {
+    fn new(source: &'a Source, span: Span) -> Self {
+        Self { common: Context { source, span, error: None }, terms: [None,None], types: [None,None] }
     }
 }
 fn own<T>(value: T) -> Address { Box::into_raw(Box::new(value)).cast() }
@@ -86,8 +123,40 @@ unsafe fn context<'a>(value: Address) -> &'a mut Context<'a> { unsafe { &mut *va
 unsafe fn binding_context<'a>(value: Address) -> &'a mut BindingContext<'a> {
     unsafe { &mut *value.cast() }
 }
-unsafe fn path_context<'a>(value: Address) -> &'a mut PathContext<'a> {
+unsafe fn query_context<'a>(value: Address) -> &'a mut QueryContext<'a> {
     unsafe { &mut *value.cast() }
+}
+unsafe extern "C" fn take_bound(ctx: Address, index: u32) -> Address {
+    Box::into_raw(unsafe { binding_context(ctx) }.nodes[index as usize].take().unwrap()).cast()
+}
+unsafe extern "C" fn put_bound(ctx: Address, index: u32, value: Address) {
+    unsafe { binding_context(ctx) }.nodes[index as usize]=Some(unsafe { Box::from_raw(value.cast()) });
+}
+unsafe extern "C" fn term(ctx: Address, index: u32) -> Term {
+    unsafe { query_context(ctx) }.terms[index as usize].as_ref().unwrap().0
+}
+unsafe extern "C" fn take_term(ctx: Address, index: u32) -> Term {
+    unsafe { query_context(ctx) }.terms[index as usize].take().unwrap().raw()
+}
+unsafe extern "C" fn put_term(ctx: Address, index: u32, value: Term) {
+    unsafe { query_context(ctx) }.terms[index as usize]=Some(OwnedTerm(value));
+}
+unsafe extern "C" fn term_type(ctx: Address, index: u32) -> Address {
+    let ctx=unsafe { query_context(ctx) };
+    let term=ctx.terms[index as usize].as_ref().unwrap();
+    if !term.0.ty.is_null() { term.0.ty }
+    else { address(&*ctx.types[index as usize].as_ref().unwrap().ty) }
+}
+unsafe extern "C" fn typed(ctx: Address, index: u32) -> TypeResult {
+    unsafe { query_context(ctx) }.types[index as usize].as_ref().unwrap().describe()
+}
+unsafe extern "C" fn put_type(ctx: Address, index: u32, value: TypeResult) {
+    unsafe { query_context(ctx) }.types[index as usize]=Some(OwnedType {
+        ty: unsafe { Box::from_raw(value.ty.cast()) }, literal: value.literal!=0,
+    });
+}
+unsafe extern "C" fn clear_type(ctx: Address, index: u32) {
+    unsafe { query_context(ctx) }.types[index as usize]=None;
 }
 fn address<T>(value: &T) -> Address { ptr::from_ref(value).cast_mut().cast() }
 const SCALARS: [Scalar; 11] = [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool,
@@ -160,13 +229,6 @@ unsafe extern "C" fn lookup(ctx: Address, name: Bytes) -> Lookup {
         Lookup { key: address(key), found: 1, constant: u32::from(definition.function.kind() == FunctionKind::Constant), is_public: u32::from(definition.public) }
     } else { Lookup { key: ptr::null_mut(), found: 0, constant: 0, is_public: 0 } }
 }
-unsafe extern "C" fn evaluate(ctx: Address, key: Address) -> NativeResult {
-    let ctx = unsafe { binding_context(ctx) };
-    let world = ctx.world;
-    let result = constant::evaluate(world, unsafe { borrowed::<String>(key) }, &[])
-        .map(|(ty, bits, generated_origin)| OutputCondition::Constant(OutputConstant { ty, bits, generated_origin }));
-    ctx.common.result(result)
-}
 unsafe extern "C" fn variant(ty: Address, field: Bytes) -> Variant {
     let ty = unsafe { borrowed::<Ty>(ty) };
     match ty.variants.iter().find(|variant| variant.name == unsafe { field.text() }) {
@@ -185,10 +247,6 @@ unsafe extern "C" fn member(ctx: Address, ty: Address, field: Bytes) -> Member {
     }
 }
 unsafe extern "C" fn drop_indices(value: Address) { drop(unsafe { take::<Vec<usize>>(value) }); }
-unsafe extern "C" fn path_type(ctx: Address, value: Address) -> NativeResult {
-    let ctx = unsafe { path_context(ctx) };
-    let result = (ctx.path)(unsafe { borrowed(value) }); ctx.common.result(result)
-}
 unsafe extern "C" fn unary_type(ctx: Address, op: Bytes, ty: Address) -> UnaryRule {
     let ctx = unsafe { context(ctx) };
     match operators::unary(unsafe { op.text() }, unsafe { borrowed(ty) }, ctx.source, ctx.span) {
@@ -270,31 +328,118 @@ unsafe extern "C" fn fail(ctx: Address, kind: u32, text: Bytes) {
 fn host() -> Host {
     Host { node, constant, broadcast_bit, type_info, copy_node, copy_type, drop_node, drop_type, scalar_type,
         bits, push_bit, drop_bits, make_constant, make_member, make_unary, make_binary,
-        parameter, lookup, evaluate, variant, member, drop_indices, path_type, unary_type, binary_type, same_type, divide, fail }
+        parameter, lookup, variant, member, drop_indices, unary_type, binary_type, same_type, divide, fail,
+        take_bound, put_bound, term, take_term, put_term, term_type, typed, put_type, clear_type }
 }
+#[repr(C)]
+struct BindingCursor { source: Address, request: Address, stage: u32, is_public: u32 }
+#[repr(C)]
+struct QueryCursor { source: Address, request: Address, stage: u32, slot: u32 }
+#[repr(u32)]
+enum BindingNeed { Done, Child, Constant }
+#[repr(u32)]
+enum IdentityNeed { Done, Child, Type }
+#[repr(u32)]
+enum TypeNeed { Done, Child, Path }
 unsafe extern "C" {
-    #[link_name = "bootstrap.contract_condition::bind"]
-    fn source_bind(ctx: Address, value: Address, is_public: u32, host: Host) -> NativeResult;
-    #[link_name = "bootstrap.contract_condition::identity"]
-    fn source_identity(ctx: Address, value: Address, host: Host) -> Term;
-    #[link_name = "bootstrap.contract_condition::condition_type"]
-    fn source_condition_type(ctx: Address, value: Address, host: Host) -> TypeResult;
+    #[link_name="bootstrap.contract_condition::bind_start"]
+    fn bind_start(value: Address, is_public: u32) -> BindingCursor;
+    #[link_name="bootstrap.contract_condition::bind_step"]
+    fn bind_step(state: *mut BindingCursor, ctx: Address, host: Host) -> BindingNeed;
+    #[link_name="bootstrap.contract_condition::identity_start"]
+    fn identity_start(value: Address) -> QueryCursor;
+    #[link_name="bootstrap.contract_condition::identity_step"]
+    fn identity_step(state: *mut QueryCursor, ctx: Address, host: Host) -> IdentityNeed;
+    #[link_name="bootstrap.contract_condition::type_start"]
+    fn type_start(value: Address) -> QueryCursor;
+    #[link_name="bootstrap.contract_condition::type_step"]
+    fn type_step(state: *mut QueryCursor, ctx: Address, host: Host) -> TypeNeed;
 }
-pub(super) fn bind_constants(world: &World, definition: Contract<'_>, value: &OutputCondition, span: Span) -> Result<OutputCondition> {
-    let mut ctx = BindingContext { common: Context { source: definition.source, span, error: None }, world, definition };
-    let result = unsafe { source_bind(ptr::from_mut(&mut ctx).cast(), address(value), u32::from(definition.public), host()) };
-    if result.ok == 0 { Err(ctx.common.error.unwrap()) } else { Ok(unsafe { take(result.value) }) }
-}
-pub(super) fn identity(value: &OutputCondition, path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span) -> Result<OutputCondition> {
-    let mut ctx = PathContext { common: Context { source, span, error: None }, path };
-    let result = unsafe { source_identity(ptr::from_mut(&mut ctx).cast(), address(value), host()) };
-    if result.ok == 0 { Err(ctx.common.error.unwrap()) } else {
-        if !result.ty.is_null() { unsafe { drop_type(result.ty) }; }
-        Ok(unsafe { take(result.value) })
+async fn bind_node(world: &World, definition: Contract<'_>, value: &OutputCondition, span: Span) -> Result<Box<OutputCondition>> {
+    let mut ctx=BindingContext {
+        common: Context { source: definition.source, span, error: None }, world, definition,
+        nodes: [None,None],
+    };
+    let mut cursor=unsafe { bind_start(address(value),u32::from(definition.public)) };
+    loop {
+        let need=unsafe { bind_step(&mut cursor,ptr::from_mut(&mut ctx).cast(),host()) };
+        if let Some(error)=ctx.common.error.take() { return Err(error); }
+        match need {
+            BindingNeed::Done => return Ok(ctx.nodes[0].take().unwrap()),
+            BindingNeed::Child => {
+                let input=unsafe { borrowed(cursor.request) };
+                ctx.nodes[0]=Some(unsafe { world.call(bind_node(world,definition,input,span)).await }?);
+            }
+            BindingNeed::Constant => {
+                let key=unsafe { borrowed::<String>(cursor.request) };
+                let (ty,bits,generated_origin)=unsafe { world.call(constant::evaluate(world,key,&[])).await }?;
+                ctx.nodes[0]=Some(Box::new(OutputCondition::Constant(OutputConstant { ty,bits,generated_origin })));
+            }
+        }
     }
 }
-pub(super) fn condition_type(value: &OutputCondition, path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span) -> Result<(Ty, bool)> {
-    let mut ctx = PathContext { common: Context { source, span, error: None }, path };
-    let result = unsafe { source_condition_type(ptr::from_mut(&mut ctx).cast(), address(value), host()) };
-    if result.ok == 0 { Err(ctx.common.error.unwrap()) } else { Ok((unsafe { take(result.ty) }, result.literal != 0)) }
+pub(super) async fn bind_constants(world: &World, definition: Contract<'_>, value: &OutputCondition, span: Span) -> Result<OutputCondition> {
+    Ok(*unsafe { world.call(bind_node(world,definition,value,span)).await }?)
+}
+async fn identity_term(
+    world: &World, value: &OutputCondition,
+    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Ty>,
+    source: &Source, span: Span,
+) -> Result<OwnedTerm> {
+    let mut ctx=QueryContext::new(source,span);
+    let mut cursor=unsafe { identity_start(address(value)) };
+    loop {
+        let need=unsafe { identity_step(&mut cursor,ptr::from_mut(&mut ctx).cast(),host()) };
+        if let Some(error)=ctx.common.error.take() { return Err(error); }
+        match need {
+            IdentityNeed::Done => return Ok(ctx.terms[0].take().unwrap()),
+            IdentityNeed::Child => {
+                let input=unsafe { borrowed(cursor.request) };
+                ctx.terms[cursor.slot as usize]=Some(unsafe { world.call(identity_term(world,input,path,source,span)).await }?);
+            }
+            IdentityNeed::Type => {
+                let input=unsafe { borrowed(cursor.request) };
+                ctx.types[cursor.slot as usize]=Some(unsafe { world.call(type_value(world,input,path,source,span)).await }?);
+            }
+        }
+    }
+}
+pub(super) async fn identity(
+    world: &World, value: &OutputCondition,
+    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Ty>,
+    source: &Source, span: Span,
+) -> Result<OutputCondition> {
+    Ok(unsafe { world.call(identity_term(world,value,path,source,span)).await }?.condition())
+}
+async fn type_value(
+    world: &World, value: &OutputCondition,
+    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Ty>,
+    source: &Source, span: Span,
+) -> Result<OwnedType> {
+    let mut ctx=QueryContext::new(source,span);
+    let mut cursor=unsafe { type_start(address(value)) };
+    loop {
+        let need=unsafe { type_step(&mut cursor,ptr::from_mut(&mut ctx).cast(),host()) };
+        if let Some(error)=ctx.common.error.take() { return Err(error); }
+        match need {
+            TypeNeed::Done => return Ok(ctx.types[0].take().unwrap()),
+            TypeNeed::Child => {
+                let input=unsafe { borrowed(cursor.request) };
+                ctx.types[cursor.slot as usize]=Some(unsafe { world.call(type_value(world,input,path,source,span)).await }?);
+            }
+            TypeNeed::Path => {
+                let input=unsafe { borrowed(cursor.request) };
+                let ty=unsafe { world.call(path(input)).await }?;
+                ctx.types[cursor.slot as usize]=Some(OwnedType { ty: Box::new(ty),literal:false });
+            }
+        }
+    }
+}
+pub(super) async fn condition_type(
+    world: &World, value: &OutputCondition,
+    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Ty>,
+    source: &Source, span: Span,
+) -> Result<(Ty,bool)> {
+    let value=unsafe { world.call(type_value(world,value,path,source,span)).await }?;
+    Ok((*value.ty,value.literal))
 }

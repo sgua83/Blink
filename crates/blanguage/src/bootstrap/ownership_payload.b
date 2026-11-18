@@ -96,28 +96,40 @@ extern "C" u32 incomplete(address value,Host host) on cpu
     }
     return 0;
 }
-extern "C" u32 loop_compatible(address before,address after,address context,address path,Host host) on cpu
+LoopNeed loop_next(address state,LoopCursor original,Host host) on cpu
+    requires nonzero(host.child) {
+    LoopCursor cursor=original;
+    while(cursor.index<cursor.count){
+        Item a=host.child(cursor.before,cursor.index);Item b=host.child(cursor.after,cursor.index);
+        cursor.index+=1u64;
+        if((a.kind==3&&b.kind==3)||(a.kind==4&&b.kind==4)){
+            unsafe_position<LoopCursor>(state)=cursor;
+            return LoopNeed(a.kind,0,a.node,b.node);
+        }
+        if(a.kind==0&&b.kind!=0){return LoopNeed(0,0,unsafe_address(0u64),unsafe_address(0u64));}
+    }
+    return LoopNeed(0,1,unsafe_address(0u64),unsafe_address(0u64));
+}
+extern "C" LoopNeed loop_start(address state,address before,address after,address context,address path,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
     requires nonzero(host.ownership_loop)
     requires nonzero(host.loop_path)
-    requires nonzero(host.path_possible)
-    requires nonzero(host.drop_path)
-    requires nonzero(host.data_loop) { 
-    if(host.ownership_loop(host.ownership(before),host.ownership(after),context,path)==0){return 0;}
-    address next=host.loop_path(host.ownership(after),context,path);
-    if(host.path_possible(next)==0){host.drop_path(next);return 1;}
-    u64 count=host.inspect(before).count;u64 other=host.inspect(after).count;
-    if(other<count){count=other;}u64 i=0u64;u32 result=1;
-    while(i<count){
-        Item a=host.child(before,i);Item b=host.child(after,i);
-        if(a.kind==3&&b.kind==3){result=host.data_loop(a.node,b.node,context,next);}
-        else if(a.kind==4&&b.kind==4){result=loop_compatible(a.node,b.node,context,next,host);}
-        else if(a.kind==0&&b.kind!=0){result=0;}
-        if(result==0){break;}i+=1u64;
+    requires nonzero(host.path_possible) {
+    if(host.ownership_loop(host.ownership(before),host.ownership(after),context,path)==0){
+        return LoopNeed(0,0,unsafe_address(0u64),unsafe_address(0u64));
     }
-    host.drop_path(next);return result;
+    address next=host.loop_path(host.ownership(after),context,path);
+    if(host.path_possible(next)==0){return LoopNeed(0,1,unsafe_address(0u64),unsafe_address(0u64));}
+    u64 count=host.inspect(before).count;u64 other=host.inspect(after).count;
+    if(other<count){count=other;}
+    return loop_next(state,LoopCursor(before,after,next,count,0u64),host);
+}
+extern "C" LoopNeed loop_step(address state,u32 compatible,Host host) on cpu
+    requires nonzero(host.child) {
+    if(compatible==0){return LoopNeed(0,0,unsafe_address(0u64),unsafe_address(0u64));}
+    return loop_next(state,unsafe_position<LoopCursor>(state),host);
 }
 void clear_value(address value,u32 keep_view,Host host) on cpu
     requires nonzero(host.set_uniform)

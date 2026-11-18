@@ -3649,11 +3649,11 @@ impl Builder<'_> {
             _ => None,
         }
     }
-    pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg], reads: &[(usize,usize)]) -> Result<(Proof, bool, bool)> {
+    pub(super) async fn read_owned_proof(&mut self, place: &Place, regs: &[Reg], reads: &[(usize,usize)]) -> Result<(Proof, bool, bool)> {
         let (snapshots,common)=match place {
             Place::ApplicationElement{..}=>{
                 let snapshots=regs.iter().map(|reg|self.application_read_snapshot(*reg)).collect::<Vec<_>>();
-                let common=self.application_element_proof(place,&snapshots,reads)?;(snapshots,common)
+                let common=unsafe { self.world.call(self.application_element_proof(place,&snapshots,reads)).await }?;(snapshots,common)
             },
             _=>(Vec::new(),None),
         };
@@ -3728,8 +3728,8 @@ impl Builder<'_> {
         }
         Ok((proof, uniform, known))
     }
-    pub(super) fn update_application_contents(&mut self, data: &application::DataReference, changed: &[u32], update: application::ElementUpdate<'_>)->Result<()> {
-        self.update_application_elements(&data.sources,&view::resource_borrow(&data.data),changed,update)?;
+    pub(super) async fn update_application_contents(&mut self, data: &application::DataReference, changed: &[u32], update: application::ElementUpdate<'_>)->Result<()> {
+        unsafe { self.world.call(self.update_application_elements(&data.sources,&view::resource_borrow(&data.data),changed,update)).await }?;
         for binding in self.env.values_mut() {
             let Some((proof, uniform, owner)) = binding.proof_storage() else {
                 continue;
@@ -3749,13 +3749,13 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool)->Result<()> {
-        if let Place::ApplicationElement{sources,resource,words,index_value,index_range,..}=place {self.update_application_elements(sources,resource,words,application::ElementUpdate::Element{proof:&fresh,index:Some((*index_value,*index_range)),when:None})?;}
+    pub(super) async fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool)->Result<()> {
+        if let Place::ApplicationElement{sources,resource,words,index_value,index_range,..}=place {unsafe { self.world.call(self.update_application_elements(sources,resource,words,application::ElementUpdate::Element{proof:&fresh,index:Some((*index_value,*index_range)),when:None})).await }?;}
         if let Place::Indexed{locations,..}=place && let Place::ApplicationElement{sources,resource,..}=place.storage() {
             for(component,position)in locations.iter().enumerate(){
                 let mut selected=BTreeSet::new();owned_borrows::positions(position,&mut selected);
                 let proof=fresh.project(&[component],place.ty().components.len());
-                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,resource,&[word],application::ElementUpdate::Element{proof:&proof,index:None,when:None})?;}
+                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};unsafe { self.world.call(self.update_application_elements(sources,resource,&[word],application::ElementUpdate::Element{proof:&proof,index:None,when:None})).await }?;}
             }
         }
         let positions=if place.ty().contains_borrows(){self.positions(place)}else{Vec::new()};

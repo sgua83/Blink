@@ -3,7 +3,7 @@ use super::*;
 
 impl Builder<'_> {
     #[inline(never)]
-    pub(super) fn variant_constructor_type(&self,name:&str,explicit:Option<&[GenericArgument]>,expected:Option<&Ty>,span:Span)->Result<Option<(Ty,usize)>> {
+    pub(super) async fn variant_constructor_type(&self,name:&str,explicit:Option<&[GenericArgument]>,expected:Option<&Ty>,span:Span)->Result<Option<(Ty,usize)>> {
         let Some((parent,member))=name.rsplit_once("::") else{return Ok(None)};
         let Some(key)=self.world.resolve(parent,self.scope.module(),self.scope.imports(),false).unique() else{return Ok(None)};
         if self.world.record(&key).0.variants().is_empty(){return Ok(None);}
@@ -12,25 +12,25 @@ impl Builder<'_> {
         else if let Some(expected)=expected.filter(|ty|ty.name.split_once('<').map_or(ty.name.as_str(),|(root,_)|root)==key) {
             syntax.arguments=expected.syntax().arguments;
         }
-        let ty=self.expected_storage(&syntax,span)?;
+        let ty=unsafe { self.world.call(self.expected_storage(&syntax,span)).await }?;
         let Some(index)=ty.variants.iter().position(|variant|variant.name==member) else{return self.fail(span,"B269",format!("{}没有变体分支{member}",ty.name));};
         Ok(Some((ty,index)))
     }
     #[inline(never)]
-    pub(super) fn expr_expected(
+    pub(super) async fn expr_expected(
         &mut self,
         e: &Expr,
         expected: Option<&Ty>,
     ) -> Result<Option<Value>> {
         let constructor=match e.kind() {
-            ExprKind::Call(name,_)=>self.variant_constructor_type(name,None,expected,e.span())?,
+            ExprKind::Call(name,_)=>unsafe { self.world.call(self.variant_constructor_type(name,None,expected,e.span())).await }?,
             ExprKind::Specialize(name,types,_)=>{
-                let types=self.scope.bindings().arguments(self.world,&types,(self.scope.source(),self.scope.module(),self.scope.imports()),e.span())?;
-                self.variant_constructor_type(name,Some(&types),expected,e.span())?
+                let types=unsafe { self.world.call(self.scope.bindings().arguments(self.world,&types,(self.scope.source(),self.scope.module(),self.scope.imports()),e.span())).await }?;
+                unsafe { self.world.call(self.variant_constructor_type(name,Some(&types),expected,e.span())).await }?
             },
             _=>None,
         };
-        if constructor.is_some(){let value=self.evaluate_returned(e,expected)?;return self.ordinary_return(value,e.span());}
+        if constructor.is_some(){let value=unsafe { self.world.call(self.evaluate_returned(e,expected)).await }?;return self.ordinary_return(value,e.span());}
         match e.kind() {
             ExprKind::Call(name, args) if matches!(name, "Ok" | "Err") => {
                 let Some(ty) = expected.filter(|ty| ty.result) else {
@@ -40,27 +40,27 @@ impl Builder<'_> {
                         "Ok／Err 需要已声明的 result<T,E> 上下文，或显式给出两个类型实参",
                     );
                 };
-                self.result_constructor(ty.clone(), name == "Ok", &args, e.span())
+                unsafe { self.world.call(self.result_constructor(ty.clone(), name == "Ok", &args, e.span())).await }
             }
-            ExprKind::Select(c, yes, no) => self.selection_expected(&c, &yes, &no, e.span(), expected),
-            _ => self.expr(e),
+            ExprKind::Select(c, yes, no) => unsafe { self.world.call(self.selection_expected(&c, &yes, &no, e.span(), expected)).await },
+            _ => unsafe { self.world.call(self.expr(e)).await },
         }
     }
-    pub(super) fn result_constructor(
+    pub(super) async fn result_constructor(
         &mut self,
         ty: Ty,
         success: bool,
         args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
-        self.value_variant_constructor(ty,usize::from(!success),args,span)
+        unsafe { self.world.call(self.value_variant_constructor(ty,usize::from(!success),args,span)).await }
     }
     #[inline(never)]
-    pub(super) fn value_variant_constructor(&mut self,ty:Ty,index:usize,args:&Expressions,span:Span)->Result<Option<Value>> {
-        self.variant_values(ty,index,args.len(),span,|builder,expected|builder.expr_expected(&args.at(0),Some(expected)))
+    pub(super) async fn value_variant_constructor(&mut self,ty:Ty,index:usize,args:&Expressions,span:Span)->Result<Option<Value>> {
+        unsafe { self.world.call(self.variant_values(ty,index,args.len(),span,async |builder,expected|unsafe { builder.world.call(builder.expr_expected(&args.at(0),Some(expected))).await })).await }
     }
-    pub(super) fn variant_values(&mut self,ty:Ty,index:usize,count:usize,span:Span,
-        argument:impl FnOnce(&mut Self,&Ty)->Result<Option<Value>>)->Result<Option<Value>> {
+    pub(super) async fn variant_values(&mut self,ty:Ty,index:usize,count:usize,span:Span,
+        argument:impl std::ops::AsyncFnOnce(&mut Self,&Ty)->Result<Option<Value>>)->Result<Option<Value>> {
         let payload=(*ty.variants[index].ty).clone();
         let value = if payload.name == "void" {
             if count!=0 {
@@ -71,7 +71,7 @@ impl Builder<'_> {
             if count != 1 {
                 return self.fail(span, "B269", "结果分支需要一个匹配类型的载荷");
             }
-            let Some(value) = argument(self,&payload)? else {
+            let Some(value) = argument(self,&payload).await? else {
                 return Ok(None);
             };
             self.require_same(&payload, &value.ty, span)?;
@@ -263,7 +263,7 @@ impl Builder<'_> {
         let expected=self.constant_with_origin(scalar,Bits::from(value.ty.variants[index].discriminant),origin.clone());
         self.binary("==",tag,expected,span,origin)
     }
-    pub(super) fn check_variant_patterns(
+    pub(super) async fn check_variant_patterns(
         &self, ty: &Ty, arms: &MatchArms, span: Span,
     ) -> Result<Vec<MatchArm>> {
         if !ty.has_variants() { return self.fail(span, "B269", "match需要带载荷变体或result值"); }
@@ -272,7 +272,7 @@ impl Builder<'_> {
             let (owner, name) = arm.variant().rsplit_once("::").map_or((None, arm.variant()), |(owner, name)| (Some(owner), name));
             if let Some(owner) = owner {
                 let mut syntax = ty.syntax(); syntax.name = owner.into(); syntax.canonical = false;
-                let expected = self.expected_storage(&syntax, arm.span())?;
+                let expected = unsafe { self.world.call(self.expected_storage(&syntax, arm.span())).await }?;
                 self.require_same(ty, &expected, arm.span())?;
             }
             let Some(index) = ty.variants.iter().position(|v| v.name == name) else { return self.fail(arm.span(),"B269",format!("{}没有变体分支{name}",ty.name)); };
@@ -284,14 +284,14 @@ impl Builder<'_> {
         if selected.iter().any(Option::is_none) { return self.fail(span,"B269","match必须处理声明的全部变体分支"); }
         Ok(selected.into_iter().map(Option::unwrap).collect())
     }
-    pub(super) fn value_variant_arm(&mut self, value: &Value, index: usize, arm: &MatchArm) -> Result<()> {
+    pub(super) async fn value_variant_arm(&mut self, value: &Value, index: usize, arm: &MatchArm) -> Result<()> {
         let payload = self.variant_payload(value,index);
         if let Some(name) = arm.binding().filter(|name| *name!="_") {
             self.bind_local_value(name,payload.unwrap(),arm.span())?;
-            self.block(&arm.body())?; self.env.remove(name); Ok(())
-        } else { self.block(&arm.body()) }
+            unsafe { self.world.call(self.block(&arm.body())).await }?; self.env.remove(name); Ok(())
+        } else { unsafe { self.world.call(self.block(&arm.body())).await } }
     }
-    pub(super) fn explicit_result(
+    pub(super) async fn explicit_result(
         &mut self,
         name: &str,
         explicit: &[GenericArgument],
@@ -300,13 +300,13 @@ impl Builder<'_> {
     ) -> Result<Option<Value>> {
         let mut ty = TypeName::named("result");
         ty.arguments = explicit.to_vec();
-        let ty = self.world.ty(
+        let ty = unsafe { self.world.call(self.world.ty(
             &ty,
             self.scope.source(),
             span,
             self.scope.module(),
             self.scope.imports(),
-        )?;
-        self.result_constructor(ty, name == "Ok", args, span)
+        )).await }?;
+        unsafe { self.world.call(self.result_constructor(ty, name == "Ok", args, span)).await }
     }
 }

@@ -24,7 +24,7 @@ impl TextureReference {
         }
     }
 }
-pub(super) fn shape(
+pub(super) async fn shape(
     world: &World,
     ty: &TypeName,
     context: (&Source,&str,&[String]),
@@ -34,8 +34,8 @@ pub(super) fn shape(
     let Some(length) = ty.texture_array_shape() else {
         return Ok(None);
     };
-    let count = world
-        .shape(&Some(length), source, span, module, imports)?
+    let count = unsafe { world.call(world
+        .shape(&Some(length), source, span, module, imports)).await }?
         .unwrap();
     if count == 0 {
         return source.fail(span, "B239", "纹理资源数组长度必须为正");
@@ -43,19 +43,19 @@ pub(super) fn shape(
     Ok(Some(count))
 }
 impl Builder<'_> {
-    pub(super) fn texture_parameter(&self, param: &Param, resource: &TextureReference, context:(&Source,&str,&[String]), span: Span) -> Result<()> {
+    pub(super) async fn texture_parameter(&self, param: &Param, resource: &TextureReference, context:(&Source,&str,&[String]), span: Span) -> Result<()> {
         if param.access != Access::Read {
             return self.fail(span, "B239", "纹理只能只读借用");
         }
         if param.ty.texture_dimension() != Some(self.program.textures[resource.source.binding].dimension)
             || param.ty.texture_format().is_some_and(|format|
                 Some(format) != self.program.textures[resource.source.binding].format)
-            || resource.shape(self.program) != shape(self.world,&param.ty,context,param.span)? {
+            || resource.shape(self.program) != unsafe { self.world.call(shape(self.world,&param.ty,context,param.span)).await }? {
             return self.fail(span, "B239", "纹理维度、格式或资源数组形状与借用参数不一致");
         }
         Ok(())
     }
-    pub(super) fn texture_argument(&mut self, expr: &Expr) -> Result<Option<TextureReference>> {
+    pub(super) async fn texture_argument(&mut self, expr: &Expr) -> Result<Option<TextureReference>> {
         if let ExprKind::Name(name) = expr.kind()
             && let Some(Binding::Texture(resource)) = self.env.get(name)
         {
@@ -76,13 +76,13 @@ impl Builder<'_> {
             _ => None,
         };
         if let Some((base, index, checked)) = selection {
-            let Some(mut resource) = self.texture_argument(&base)? else {
+            let Some(mut resource) = unsafe { self.world.call(self.texture_argument(&base)).await }? else {
                 return Ok(None);
             };
             let Some(count) = resource.shape(self.program) else {
                 return self.fail(base.span(), "B239", "纹理下标需要资源数组");
             };
-            let Some(value) = self.expr(&index)? else {
+            let Some(value) = unsafe { self.world.call(self.expr(&index)).await }? else {
                 return Ok(None);
             };
             self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span())?;
@@ -99,7 +99,7 @@ impl Builder<'_> {
         }
         self.fail(expr.span(), "B239", "需要已有的 read texture2d／texture3d 资源名称")
     }
-    pub(super) fn texture_sample(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
+    pub(super) async fn texture_sample(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
         if args.len() != 3 {
             return self.fail(
                 span,
@@ -107,7 +107,7 @@ impl Builder<'_> {
                 "texture_sample(texture, float2／float3 坐标, f32 lod) 需要三个参数",
             );
         }
-        let Some(texture) = self.texture_argument(&args.at(0))? else {
+        let Some(texture) = unsafe { self.world.call(self.texture_argument(&args.at(0))).await }? else {
             return Ok(None);
         };
         if texture.shape(self.program).is_some() {
@@ -118,10 +118,10 @@ impl Builder<'_> {
             );
         }
         let uniform = texture.uniform;
-        let Some(coordinate) = self.expr(&args.at(1))? else {
+        let Some(coordinate) = unsafe { self.world.call(self.expr(&args.at(1))).await }? else {
             return Ok(None);
         };
-        let Some(lod) = self.expr(&args.at(2))? else {
+        let Some(lod) = unsafe { self.world.call(self.expr(&args.at(2))).await }? else {
             return Ok(None);
         };
         let binding = &self.program.textures[texture.source.binding];

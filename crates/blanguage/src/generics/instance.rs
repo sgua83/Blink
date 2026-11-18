@@ -539,8 +539,8 @@ unsafe extern "C" fn cfn_slot(value: *const c_void, index: u64) -> CfnSlot {
         }
     }
 }
-fn family(c: Context<'_>, index: u64, value: &Ty, span: Span) -> Result<bool> {
-    c.world.family_accepts(
+async fn family(c: Context<'_>, index: u64, value: &Ty, span: Span) -> Result<bool> {
+    unsafe { c.world.call(c.world.family_accepts(
         &c.callee.function.types().at(index as usize).family(),
         value,
         &c.callee.source,
@@ -548,7 +548,7 @@ fn family(c: Context<'_>, index: u64, value: &Ty, span: Span) -> Result<bool> {
         &c.callee.module,
         &c.callee.imports,
         &mut BTreeSet::new(),
-    )
+    )).await }
 }
 fn record_base(c: Context<'_>, formal: wire::SignatureNode, value: bool) -> Result<String> {
     let source = c.callee.function.child::<wire::TypeNode>(formal.offset);
@@ -901,7 +901,7 @@ impl<'a, 'b> Specialization<'a, 'b> {
             }
         }
     }
-    pub(super) fn fulfill(mut self, need: SpecializationNeed) -> Result<Self> {
+    pub(super) async fn fulfill(mut self, need: SpecializationNeed) -> Result<Self> {
         let c = self.data.context;
         match need {
             SpecializationNeed::ExplicitType => {
@@ -909,45 +909,40 @@ impl<'a, 'b> Specialization<'a, 'b> {
                 self.data.current = Some(if self.cursor.unit != 0 {
                     Ty::unit()
                 } else {
-                    c.world.ty(input, c.source, c.span, c.module, c.imports)?
+                    unsafe { c.world.call(c.world.ty(input, c.source, c.span, c.module, c.imports)).await }?
                 });
             }
             SpecializationNeed::ExplicitDataset => {
                 let input = unsafe { semantic(self.cursor.semantic) };
-                let count = c
-                    .world
-                    .shape(&input.count, c.source, c.span, c.module, c.imports)?;
+                let count = unsafe { c.world.call(c.world.shape(&input.count, c.source, c.span, c.module, c.imports)).await }?;
                 self.data.current = Some(Ty::owned_dataset(
                     self.data.current.take().unwrap().syntax(),
                     count,
                 ));
             }
             SpecializationNeed::FamilyCurrent => {
-                self.cursor.scalar = u32::from(family(
+                self.cursor.scalar = u32::from(unsafe { c.world.call(family(
                     c,
                     self.cursor.index,
                     self.data.current.as_ref().unwrap(),
                     c.callee.function.span(),
-                )?);
+                )).await }?);
             }
             SpecializationNeed::ExplicitValue => {
                 let input = self.data.explicit.unwrap()
                     [(self.cursor.first_value + self.cursor.index) as usize]
                     .shape()
                     .unwrap();
-                self.cursor.scalar = c
-                    .world
-                    .shape(&Some(input), c.source, c.span, c.module, c.imports)?
-                    .unwrap();
+                self.cursor.scalar = unsafe { c.world.call(c.world.shape(&Some(input), c.source, c.span, c.module, c.imports)).await }?.unwrap();
             }
             SpecializationNeed::FamilyActual => {
                 let m = self.matches.last_mut().unwrap();
-                m.cursor.scalar = u32::from(family(
+                m.cursor.scalar = u32::from(unsafe { c.world.call(family(
                     c,
                     m.cursor.index,
-                    unsafe { ty(m.cursor.actual.value) },
+                    ty(m.cursor.actual.value),
                     c.span,
-                )?);
+                )).await }?);
             }
             SpecializationNeed::ActualType | SpecializationNeed::ChildType => {
                 let m = self.matches.last_mut().unwrap();
@@ -955,8 +950,7 @@ impl<'a, 'b> Specialization<'a, 'b> {
                 let actual = Box::new(if m.cursor.unit != 0 {
                     Ty::unit()
                 } else {
-                    c.world
-                        .ty(input, c.source, c.span, &c.callee.module, &c.callee.imports)?
+                    unsafe { c.world.call(c.world.ty(input, c.source, c.span, &c.callee.module, &c.callee.imports)).await }?
                 });
                 let description = TypeInfo::of(&actual);
                 match need {
@@ -983,7 +977,7 @@ impl<'a, 'b> Specialization<'a, 'b> {
         Ok(self)
     }
 }
-pub(crate) fn specialize(
+pub(crate) async fn specialize(
     world: &World,
     key: &str,
     actuals: &[Actual<'_>],
@@ -994,8 +988,8 @@ pub(crate) fn specialize(
     let mut query = Specialization::new(world, key, actuals, explicit, context, span);
     loop {
         match query.advance()? {
-            SpecializationProgress::Need(pending, need) => query = pending.fulfill(need)?,
-            SpecializationProgress::Instance(instance) => return instance.drive(),
+            SpecializationProgress::Need(pending, need) => query = unsafe { world.call(pending.fulfill(need)).await }?,
+            SpecializationProgress::Instance(instance) => return unsafe { world.call(instance.drive()).await },
         }
     }
 }
@@ -1073,35 +1067,34 @@ impl<'a> Instantiation<'a> {
             }
         })
     }
-    pub(super) fn fulfill(self, need: InstantiationNeed) -> Result<Self> {
+    pub(super) async fn fulfill(self, need: InstantiationNeed) -> Result<Self> {
         let f = &self.data;
         match need {
             InstantiationNeed::CAbi => {
-                crate::check::external::check_declaration(f.world, f.result.as_ref().unwrap())?
+                unsafe { f.world.call(crate::check::external::check_declaration(f.world, f.result.as_ref().unwrap())).await }?
             }
-            InstantiationNeed::Interface => f
-                .world
-                .check_interface_types(f.definition, &f.result.as_ref().unwrap().bindings)?,
+            InstantiationNeed::Interface => unsafe { f.world.call(f.world.check_interface_types(f.definition, &f.result.as_ref().unwrap().bindings)).await }?,
         }
         Ok(self)
     }
-    fn drive(mut self) -> Result<Instance> {
+    async fn drive(mut self) -> Result<Instance> {
+        let world=self.data.world;
         loop {
             match self.advance()? {
                 InstantiationProgress::Complete(instance) => return Ok(instance),
-                InstantiationProgress::Need(pending, need) => self = pending.fulfill(need)?,
+                InstantiationProgress::Need(pending, need) => self = unsafe { world.call(pending.fulfill(need)).await }?,
             }
         }
     }
 }
-pub(crate) fn instantiate(
+pub(crate) async fn instantiate(
     world: &World,
     base: &str,
     definition: &Arc<Definition>,
     arguments: Vec<TypeArgument>,
     values: &[u32],
 ) -> Result<Instance> {
-    Instantiation::new(world, base, definition, arguments, Values::Borrowed(values)).drive()
+    unsafe { world.call(Instantiation::new(world, base, definition, arguments, Values::Borrowed(values)).drive()).await }
 }
 
 pub(crate) fn is_open(

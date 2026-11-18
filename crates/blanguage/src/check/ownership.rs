@@ -71,23 +71,23 @@ impl Place {
     pub(super) fn overlaps(&self,other:&Place)->bool{place::overlaps(self,other)}
 }
 impl Builder<'_> {
-    pub(super) fn mutable_place(&mut self, expr: &Expr, access: Access) -> Result<Option<Place>> {
-        let Some(place) = self.place(expr)? else {
+    pub(super) async fn mutable_place(&mut self, expr: &Expr, access: Access) -> Result<Option<Place>> {
+        let Some(place) = unsafe { self.world.call(self.place(expr)).await }? else {
             return Ok(None);
         };
-        self.mutable_place_value(place,access,expr.span()).map(Some)
+        unsafe { self.world.call(self.mutable_place_value(place,access,expr.span())).await }.map(Some)
     }
-    pub(super) fn mutable_place_value(&mut self,place:Place,access:Access,span:Span)->Result<Place> {
+    pub(super) async fn mutable_place_value(&mut self,place:Place,access:Access,span:Span)->Result<Place> {
         if place.ty().contains_views() && matches!(place.storage(), Place::Element { .. } | Place::ApplicationElement { .. }) {
             return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
         }
         self.require_owned_writable(&place, span)?;
-        let positions = self.writable_storage(&place, span, None)?;
+        let positions = unsafe { self.world.call(self.writable_storage(&place, span, None)).await }?;
         if positions.iter().copied().collect::<BTreeSet<_>>().len() != positions.len() {
             return self.fail(span, "B227", "独占借用位置不能包含重复分量");
         }
         if access == Access::InOut {
-            self.require_initialized(&place, span)?;
+            unsafe { self.world.call(self.require_initialized(&place, span)).await }?;
         }
         Ok(place)
     }
@@ -97,12 +97,12 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn writable_storage(&mut self, place: &Place, span: Span, written: Option<bounds::Proof>) -> Result<Vec<usize>> {
+    pub(super) async fn writable_storage(&mut self, place: &Place, span: Span, written: Option<bounds::Proof>) -> Result<Vec<usize>> {
         if let Place::Indexed { base, words, .. } = place {
-            self.writable_storage(base, span, written.map(|_|bounds::Proof::default()))?;
+            unsafe { self.world.call(self.writable_storage(base, span, written.map(|_|bounds::Proof::default()))).await }?;
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
-        if matches!(place,Place::Reference{..}) {let borrow=self.position_origin(place,span)?.normalize();
+        if matches!(place,Place::Reference{..}) {let borrow=unsafe { self.world.call(self.position_origin(place,span)).await }?.normalize();
             self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),written,writable:true,initialized:false,span})?;
         }
         match place {
@@ -229,10 +229,10 @@ impl Builder<'_> {
         self.check_view_requirement(view::Requirement::Initialized{borrow,read,code,span})?;
         Ok(true)
     }
-    pub(super) fn require_initialized(&mut self, place: &Place, span: Span) -> Result<()> {
+    pub(super) async fn require_initialized(&mut self, place: &Place, span: Span) -> Result<()> {
         if !self.is_initialized(place) {
             if self.defer_initialization(place,"B142",span)?{return Ok(());}
-            if let Some((_,borrow))=self.reference_memory(place,span)? {
+            if let Some((_,borrow))=unsafe { self.world.call(self.reference_memory(place,span)).await }? {
                 return self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),written:None,writable:false,initialized:true,span});
             }
             return self.fail(
@@ -247,10 +247,10 @@ impl Builder<'_> {
         self.initialized.extend(self.positions(place));
     }
     // Ownership establishes the stored handle only for this destructor read.
-    pub(super) fn read_cleanup_storage<T>(&mut self,place:&Place,read:impl FnOnce(&mut Self)->Result<T>)->Result<T> {
+    pub(super) async fn read_cleanup_storage<T>(&mut self,place:&Place,read:impl std::ops::AsyncFnOnce(&mut Self)->Result<T>)->Result<T> {
         let temporary=self.positions(place).into_iter()
             .filter(|position|self.initialized.insert(position.clone())).collect::<Vec<_>>();
-        let result=read(self);
+        let result=read(self).await;
         for position in temporary {
             self.initialized.remove(&position);
         }

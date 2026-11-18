@@ -103,22 +103,22 @@ unsafe extern "C" fn data_count(data:Address)->Count{match unsafe{&*data.cast::<
 unsafe extern "C" fn data_read(data:Address){unsafe{&mut *data.cast::<Data>()}.access=Access::Read;}
 unsafe extern "C" fn data_clear_residency(data:Address){unsafe{&mut *data.cast::<Data>()}.residency=residency::Residency::default();}
 unsafe extern "C" fn data_identity(data:Address,id:Address)->u32{u32::from(unsafe{&*data.cast::<Data>()}.root.proof.known_identity(0)==Some(unsafe{*id.cast::<ValueIdentity>()}))}
-struct Loop<'b,'a>{builder:&'b mut Builder<'a>,span:Span,inputs:&'b BTreeMap<ValueIdentity,bounds::Proof>,status:Result<()>}
+struct Loop<'a>{inputs:&'a BTreeMap<ValueIdentity,bounds::Proof>,path:Option<Box<bounds::Clause>>}
 unsafe extern "C" fn ownership_loop(a:Address,b:Address,context:Address,path:Address)->u32{
-    let context=unsafe{&*context.cast::<Loop<'_,'_>>()};
+    let context=unsafe{&*context.cast::<Loop<'_>>()};
     u32::from(unsafe{&*a.cast::<Ownership>()}.loop_compatible(unsafe{&*b.cast::<Ownership>()},context.inputs,unsafe{&*path.cast::<bounds::Clause>()}))
 }
-unsafe extern "C" fn loop_path(value:Address,_context:Address,path:Address)->Address{
-    Box::into_raw(Box::new(unsafe{&*value.cast::<Ownership>()}.presence().condition().assume(unsafe{&*path.cast::<bounds::Clause>()},true))).cast()
+unsafe extern "C" fn loop_path(value:Address,context:Address,path:Address)->Address{
+    let path=Box::new(unsafe{&*value.cast::<Ownership>()}.presence().condition().assume(unsafe{&*path.cast::<bounds::Clause>()},true));
+    let address=pointer(path.as_ref());
+    unsafe{&mut *context.cast::<Loop<'_>>()}.path=Some(path);
+    address
 }
 unsafe extern "C" fn path_possible(path:Address)->u32{u32::from(unsafe{&*path.cast::<bounds::Clause>()}.possible())}
-unsafe extern "C" fn drop_path(path:Address){drop(unsafe{Box::from_raw(path.cast::<bounds::Clause>())});}
-unsafe extern "C" fn data_loop(a:Address,b:Address,context:Address,path:Address)->u32{
-    let context=unsafe{&mut *context.cast::<Loop<'_,'_>>()};
-    match unsafe{&*a.cast::<Data>()}.loop_compatible(unsafe{&*b.cast::<Data>()},context.builder,context.span,unsafe{&*path.cast::<bounds::Clause>()},context.inputs){
-        Ok(value)=>u32::from(value),Err(error)=>{context.status=Err(error);0},
-    }
-}
+#[repr(C)]
+struct LoopCursor{before:Address,after:Address,path:Address,count:u64,index:u64}
+#[repr(C)]
+struct LoopNeed{kind:u32,value:u32,before:Address,after:Address}
 unsafe extern "C" fn fresh_indices()->Address{Box::into_raw(Box::new(Vec::<usize>::new())).cast()}
 unsafe extern "C" fn push_index(value:Address,index:u64){unsafe{&mut *value.cast::<Vec<usize>>()}.push(index as usize);}
 unsafe extern "C" fn indices_view(value:Address)->Indices{indices(unsafe{&*value.cast::<Vec<usize>>()})}
@@ -169,14 +169,12 @@ struct Host{
     ownership_loop:unsafe extern "C" fn(Address,Address,Address,Address)->u32,
     loop_path:unsafe extern "C" fn(Address,Address,Address)->Address,
     path_possible:unsafe extern "C" fn(Address)->u32,
-    drop_path:unsafe extern "C" fn(Address),
-    data_loop:unsafe extern "C" fn(Address,Address,Address,Address)->u32,
     fresh_indices:unsafe extern "C" fn()->Address,
     push_index:unsafe extern "C" fn(Address,u64),
     indices_view:unsafe extern "C" fn(Address)->Indices,
     drop_indices:unsafe extern "C" fn(Address),
 }
-const HOST:Host=Host{inspect,value,ownership,child,field,field_owned,aggregate_count,component_count,component_word,component_index,index_at,state_available,state_owned,state_moved,state_equal,state_set_owned,state_set_borrowed,state_set_moved,proof_join_stored,proof_join_common,uniform,set_uniform,constant_equal,clear_constant,proof_borrow,proof_clear,proof_assign,length_constant,view_empty,install_source,join_child,move_child,data_root,data_length,data_ownership,data_count,data_read,data_clear_residency,data_identity,ownership_loop,loop_path,path_possible,drop_path,data_loop,fresh_indices,push_index,indices_view,drop_indices};
+const HOST:Host=Host{inspect,value,ownership,child,field,field_owned,aggregate_count,component_count,component_word,component_index,index_at,state_available,state_owned,state_moved,state_equal,state_set_owned,state_set_borrowed,state_set_moved,proof_join_stored,proof_join_common,uniform,set_uniform,constant_equal,clear_constant,proof_borrow,proof_clear,proof_assign,length_constant,view_empty,install_source,join_child,move_child,data_root,data_length,data_ownership,data_count,data_read,data_clear_residency,data_identity,ownership_loop,loop_path,path_possible,fresh_indices,push_index,indices_view,drop_indices};
 const MUT_HOST:Host=Host{value:value_mut,ownership:ownership_mut,child:child_mut,data_root:data_root_mut,data_length:data_length_mut,data_ownership:data_ownership_mut,..HOST};
 
 unsafe extern "C" {
@@ -185,7 +183,8 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::all_available"] fn source_all_available(value:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_payload::borrow"] fn source_borrow(value:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::incomplete"] fn source_incomplete(value:Address,host:Host)->u32;
-    #[link_name="bootstrap.ownership_payload::loop_compatible"] fn source_loop(a:Address,b:Address,context:Address,path:Address,host:Host)->u32;
+    #[link_name="bootstrap.ownership_payload::loop_start"] fn source_loop_start(state:*mut LoopCursor,a:Address,b:Address,context:Address,path:Address,host:Host)->LoopNeed;
+    #[link_name="bootstrap.ownership_payload::loop_step"] fn source_loop_step(state:*mut LoopCursor,compatible:u32,host:Host)->LoopNeed;
     #[link_name="bootstrap.ownership_payload::invalidate"] fn source_invalidate(value:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::invalidate_components"] fn source_components(value:Address,components:Indices,borrowed:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::mark_moved"] fn source_moved(value:Address,host:Host);
@@ -197,10 +196,23 @@ pub(super) fn available(value:&OwnedValuePayload)->bool{unsafe{source_available(
 pub(super) fn all_available(value:&OwnedValuePayload)->bool{unsafe{source_all_available(pointer(value),HOST)!=0}}
 pub(super) fn borrow(value:&mut OwnedValuePayload){unsafe{source_borrow(pointer_mut(value),MUT_HOST)};}
 pub(super) fn incomplete(value:&OwnedValuePayload)->bool{unsafe{source_incomplete(pointer(value),HOST)!=0}}
-pub(super) fn loop_compatible(value:&OwnedValuePayload,other:&OwnedValuePayload,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause,inputs:&BTreeMap<ValueIdentity,bounds::Proof>)->Result<bool>{
-    let mut context=Loop{builder,span,inputs,status:Ok(())};
-    let result=unsafe{source_loop(pointer(value),pointer(other),(&mut context as *mut Loop<'_,'_>).cast(),pointer(path),HOST)};
-    context.status.map(|()|result!=0)
+pub(super) async fn loop_compatible(value:&OwnedValuePayload,other:&OwnedValuePayload,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause,inputs:&BTreeMap<ValueIdentity,bounds::Proof>)->Result<bool>{
+    let world=builder.world;
+    let mut context=Loop{inputs,path:None};
+    let mut cursor=std::mem::MaybeUninit::<LoopCursor>::uninit();
+    let mut need=unsafe{source_loop_start(cursor.as_mut_ptr(),pointer(value),pointer(other),pointer_mut(&mut context),pointer(path),HOST)};
+    while need.kind!=0{
+        let path=unsafe{&*(*cursor.as_ptr()).path.cast::<bounds::Clause>()};
+        let compatible=if need.kind==3{
+            let before=unsafe{&*need.before.cast::<Data>()};let after=unsafe{&*need.after.cast::<Data>()};
+            unsafe{world.call(before.loop_compatible(after,builder,span,path,inputs)).await}?
+        }else{
+            let before=unsafe{&*need.before.cast::<OwnedValuePayload>()};let after=unsafe{&*need.after.cast::<OwnedValuePayload>()};
+            unsafe{world.call(loop_compatible(before,after,builder,span,path,inputs)).await}?
+        };
+        need=unsafe{source_loop_step(cursor.as_mut_ptr(),u32::from(compatible),HOST)};
+    }
+    Ok(need.value!=0)
 }
 pub(super) fn invalidate(value:&mut OwnedValuePayload){unsafe{source_invalidate(pointer_mut(value),MUT_HOST)};}
 pub(super) fn invalidate_components(value:&mut OwnedValuePayload,components:&[usize],borrowed:Option<ValueIdentity>){unsafe{source_components(pointer_mut(value),indices(components),borrowed.as_ref().map_or(std::ptr::null_mut(),pointer),MUT_HOST)};}

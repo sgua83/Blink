@@ -163,7 +163,7 @@ pub(super) struct Unit {
     residency: residency::Inputs,
     view_model: view_contracts::Function,
 }
-fn declaration(
+async fn declaration(
     world: &World,
     instance: &crate::generics::Instance,
     mut functions: Module,
@@ -175,7 +175,7 @@ fn declaration(
         return compiled_declaration(instance, definitions.get(&instance.name).map(Vec::as_slice), functions);
     }
     let target=match instance.definition.function.target(){Target::Compute=>Target::Cpu,target=>target};
-    let checked=checked_function(world,instance,target,Some(application::Context::default()),functions)?;
+    let checked=unsafe { world.call(checked_function(world,instance,target,Some(application::Context::default()),functions)).await }?;
     finish_declaration(world,&LexicalScope::Function(instance.clone()),instance.definition.function.c_abi(),checked)
 }
 
@@ -349,11 +349,11 @@ impl TaskCompletionOutput {
     pub(super) fn has_owned_outputs(&self)->bool {
         self.task.sources.iter().any(|source|matches!(source,view::Source::Task{guards,completions,..} if !guards.is_empty()||!completions.is_empty()))
     }
-    pub(super) fn complete_inputs(&self,builder:&mut Builder<'_>,inputs:&[view::TaskInputCompletion])->Result<()> {
+    pub(super) async fn complete_inputs(&self,builder:&mut Builder<'_>,inputs:&[view::TaskInputCompletion])->Result<()> {
         let (base,_)=self.layout.task_completion_payload();
-        builder.complete_task_input_slots(inputs,&self.layout,&self.slots,base,self.span)
+        unsafe { builder.world.call(builder.complete_task_input_slots(inputs,&self.layout,&self.slots,base,self.span)).await }
     }
-    pub(super) fn complete_if_ready(&self,builder:&mut Builder<'_>)->Result<()> {
+    pub(super) async fn complete_if_ready(&self,builder:&mut Builder<'_>)->Result<()> {
         let status=builder.reg(Scalar::U32);
         builder.emit(InstKind::LoadLocal(status,self.slots[0]));
         let test=|builder:&mut Builder<'_>,op,expected| {
@@ -363,13 +363,13 @@ impl TaskCompletionOutput {
             Value{ty:Ty::scalar(Scalar::Bool),regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None}
         };
         let ready=test(builder,Comparison::NotEqual,Ty::TASK_COMPLETION_PENDING);
-        builder.conditional_blocks(ready,|builder| {
+        unsafe { builder.world.call(builder.conditional_blocks(ready,async |builder| {
             let task=self.selected_task(builder);
             let success=test(builder,Comparison::Equal,Ty::TASK_COMPLETION_SUCCESS);
             let result=self.value(builder);
-            builder.complete_task_owned_places(&task,|_,_|Some(result.clone()),Some(&success),
-                |builder,inputs|self.complete_inputs(builder,inputs),self.span)
-        },|_|Ok(()),self.span)
+            unsafe { builder.world.call(builder.complete_task_owned_places(&task,|_,_|Some(result.clone()),Some(&success),
+                async |builder,inputs|unsafe { builder.world.call(self.complete_inputs(builder,inputs)).await },self.span)).await }
+        },async |_|Ok(()),self.span)).await }
     }
 }
 pub(super) struct TaskCompletionParameter {
@@ -406,7 +406,7 @@ pub(super) fn task_completion_parameters<'a>(
     }
     completions
 }
-pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,inputs:&[Reg],parameters:&[CallParameter],written:Vec<Option<Returned>>)->Result<(Option<Returned>,Vec<Reg>,Vec<Option<Returned>>,Option<Vec<address::Initialization>>)> {
+pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,inputs:&[Reg],parameters:&[CallParameter],written:Vec<Option<Returned>>)->Result<(Option<Returned>,Vec<Reg>,Vec<Option<Returned>>,Option<Vec<address::Initialization>>)> {
     builder.view_model.input_width=inputs.len();
     let mut bindings=inputs.iter().enumerate().map(|(index,reg)|(ValueIdentity::Register(*reg),bounds::Proof::default().with_identity(ValueIdentity::Register(index)))).collect::<BTreeMap<_,_>>();
     if builder.task_return_source.is_some()
@@ -424,7 +424,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
         }
     }
     for(parameter,p)in builder.scope.parameters().enumerate(){
-        let p=p.bound(builder.world)?;
+        let p=unsafe { builder.world.call(p.bound(builder.world)).await }?;
         if p.access!=Access::Value && !p.ty.dataset && !p.ty.tile {
             let id=ValueIdentity::ParameterStorage(parameter);
             bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(id,Vec::new()))));
@@ -505,7 +505,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     for parameter in parameters {
         if let Some(origin)=&parameter.origin
             && let ParameterOrigin::Parameter{index,..}=origin.as_ref()
-            && builder.scope.parameters().nth(*index).unwrap().bound(builder.world)?.ty.dataset {
+            && unsafe { builder.world.call(builder.scope.parameters().nth(*index).unwrap().bound(builder.world)).await }?.ty.dataset {
             let id=ValueIdentity::Register(start);
             resources.insert(id,bounds::Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(ValueIdentity::ResourceParameter(*index,0),Vec::new()))));
         }
@@ -526,15 +526,15 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     }));
     Ok((models.next().unwrap(),(0..inputs.len()).collect(),models.collect(),initialization))
 }
-pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    let mut functions = declaration(world, instance, Module::default())?;
-    lower_module_failures(world,&mut functions,&mut [])?;
+pub(super) async fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
+    let mut functions = unsafe { world.call(declaration(world, instance, Module::default())).await }?;
+    unsafe { world.call(lower_module_failures(world,&mut functions,&mut [])).await }?;
     resolve_residencies(world,&mut functions).map(|_|())
 }
-fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&LexicalScope,
+async fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&LexicalScope,
     parameters:&[Param],contract:outputs::Contract<'_>,functions:Module,span:Span)->Result<Module> {
-    let program=Arc::new(function_program(world,name,parameters.iter().cloned().map(Ok),
-        (lexical.source(),lexical.module(),lexical.imports(),FunctionKind::Value),Target::Cpu,None)?);
+    let program=Arc::new(unsafe { world.call(function_program(world,name,parameters.iter().cloned().map(|parameter|async {Ok(parameter)}),
+        (lexical.source(),lexical.module(),lexical.imports(),FunctionKind::Value),Target::Cpu,None)).await }?);
     let(source_definition,source_context)=lexical.syntax_context(Some(name));
     let mut b=Box::new(Builder::from_checked(world,lexical,&program,0,source_definition,source_context,BTreeSet::new()));
     b.in_function=true;
@@ -547,7 +547,7 @@ fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&LexicalScope,
     let origin=Some(Arc::new(ParameterOrigin::Parameter{
         index:0,name:"value".into(),instance:Arc::from(name),generated:true,site:None}));
     if parameters[0].ty.dataset {
-        let data=b.application_parameter(0,0,Access::Value)?;
+        let data=unsafe { b.world.call(b.application_parameter(0,0,Access::Value)).await }?;
         abi.push(CallParameter::value(Ty::owned_dataset(data.ty.syntax(),data.count)).with_origin(origin));
         inputs.extend(&data.root.regs);inputs.extend(&data.length.regs);
         let data=b.application_bind(data,false);
@@ -559,13 +559,13 @@ fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&LexicalScope,
         let proof=bounds::Proof::default().view_parameters(ty,&[],|index|ValueIdentity::Register(regs[index]));
         let value=Value{ty:ty.clone(),regs,proof,literal:false,uniform:false,constant:None};
         if ty.owns_resources(){
-            let mut value=b.incoming_owned_value(value)?;
+            let mut value=unsafe { b.world.call(b.incoming_owned_value(value)).await }?;
             residency::parameter(&mut value,0);
             b.bind_owned_value("value",value,span)?;
         }else{b.env.insert("value".into(),Binding::Value(value));}
     }
     let mut environment=std::mem::take(&mut b.env);
-    let paths=contracts::element_input_paths(&mut b,contract,&mut environment,None)?;
+    let paths=unsafe { b.world.call(contracts::element_input_paths(&mut b,contract,&mut environment,None)).await }?;
     b.env=environment;
     application::bind_parameter_elements(&mut b,contract,&paths);
     let resources=match b.env.get("value"){
@@ -574,15 +574,15 @@ fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&LexicalScope,
         _=>BTreeMap::new(),
     };
     let mut environment=std::mem::take(&mut b.env);
-    let requirements=contracts::resolve(&mut b,contract,lexical,&environment,&resources)?;
-    contracts::assume(&mut b,contract,&mut environment,&requirements)?;
+    let requirements=unsafe { b.world.call(contracts::resolve(&mut b,contract,lexical,&environment,&resources)).await }?;
+    unsafe { b.world.call(contracts::assume(&mut b,contract,&mut environment,&requirements)).await }?;
     b.env=environment;
     b.materialize_array_bindings();
-    b.release_application_data(None,view::Borrow::default())?;
+    unsafe { b.world.call(b.release_application_data(None,view::Borrow::default())).await }?;
     b.view_model.initialization=address::initialization_effects(&b.initialized,&b.path);
     b.view_model.normal_returns=Some(bounds::Condition::execution(&b.path));
     let contracts=contract.contracts().map(|contract|(contract.kind,contract.predicate)).collect();
-    let checked=finish_checked_function(b,program.clone(),name,span,None,None,abi,inputs,contracts,None,vec![None])?;
+    let checked=unsafe { world.call(finish_checked_function(b,program.clone(),name,span,None,None,abi,inputs,contracts,None,vec![None])).await }?;
     finish_declaration(world,lexical,false,checked)
 }
 struct CallSignature<'a> {
@@ -595,7 +595,7 @@ struct CallSignature<'a> {
     c_abi:bool,
 }
 impl Builder<'_> {
-    pub(super) fn native_declaration(&mut self, instance: &crate::generics::Instance) -> Result<()> {
+    pub(super) async fn native_declaration(&mut self, instance: &crate::generics::Instance) -> Result<()> {
         if let Some(definitions) = &instance.definition.compiled {
             if self.functions.declare(&instance.name) {
                 self.functions = compiled_declaration(instance,
@@ -603,10 +603,10 @@ impl Builder<'_> {
             }
             return Ok(());
         }
-        self.functions = declaration(self.world, instance, std::mem::take(&mut self.functions))?;
+        self.functions = unsafe { self.world.call(declaration(self.world, instance, std::mem::take(&mut self.functions))).await }?;
         Ok(())
     }
-    pub(super) fn native_function(
+    pub(super) async fn native_function(
         &mut self,
         instance: crate::generics::Instance,
         args: Vec<Argument>,
@@ -618,15 +618,18 @@ impl Builder<'_> {
         if instance.definition.function.target() == Target::Gpu {
             return self.fail(span, "B161", "普通 CPU 调用不能改变函数声明的实际目标");
         }
-        self.native_declaration(&instance)?;
+        unsafe { self.world.call(self.native_declaration(&instance)).await }?;
         let d=&instance.definition;
-        let parameters=instance.parameters(self.world).collect::<Result<Vec<_>>>()?;
-        let result=instance.bindings.type_name(self.world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())?;
+        let mut parameters=Vec::new();
+        for parameter in instance.parameters(self.world) {
+            parameters.push(unsafe { self.world.call(parameter).await }?);
+        }
+        let result=unsafe { self.world.call(instance.bindings.type_name(self.world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())).await }?;
         let lexical=LexicalScope::Function(instance.clone());
-        self.native_call(&instance.name,CallSignature{parameters:&parameters,result:&result,contract:(&instance).into(),
-            lexical:&lexical,kind:d.function.kind(),execution:d.execution,c_abi:d.function.c_abi()},args,span,generated_origin,syntax,launch)
+        unsafe { self.world.call(self.native_call(&instance.name,CallSignature{parameters:&parameters,result:&result,contract:(&instance).into(),
+            lexical:&lexical,kind:d.function.kind(),execution:d.execution,c_abi:d.function.c_abi()},args,span,generated_origin,syntax,launch)).await }
     }
-    fn declare_owned_cleanup(&mut self,ty:&Ty,span:Span)
+    async fn declare_owned_cleanup(&mut self,ty:&Ty,span:Span)
         -> Result<(String,Arc<[Param]>,LexicalScope,[FunctionContract;1])> {
         let name = crate::generics::key(&format!("{}::@dataset_element_drop", self.scope.module()), std::iter::once(ty.name.as_str()), &[]);
         let parameters:Arc<[Param]>=Arc::from([Param{name:"value".into(),ty:ty.syntax(),access:Access::Value,span}]);
@@ -639,17 +642,17 @@ impl Builder<'_> {
         };
         let contract=outputs::Contract::native(&lexical,&parameters,&contracts,&name,span);
         if self.functions.declare(&name){
-            self.functions=element_drop_declaration(self.world,&name,ty,&lexical,&parameters,contract,
-                std::mem::take(&mut self.functions),span)?;
+            self.functions=unsafe { self.world.call(element_drop_declaration(self.world,&name,ty,&lexical,&parameters,contract,
+                std::mem::take(&mut self.functions),span)).await }?;
         }
         Ok((name,parameters,lexical,contracts))
     }
-    pub(super) fn task_cleanup(&mut self,ty:&Ty,span:Span) -> Result<String> {
-        self.declare_owned_cleanup(ty,span).map(|(name,_,_,_)|name)
+    pub(super) async fn task_cleanup(&mut self,ty:&Ty,span:Span) -> Result<String> {
+        unsafe { self.world.call(self.declare_owned_cleanup(ty,span)).await }.map(|(name,_,_,_)|name)
     }
-    fn task_callback(
+    async fn task_callback(
         &mut self, name: String, arguments: &[(&str, Ty)], frame: bool, span: Span,
-        emit: impl FnOnce(&mut Builder<'_>, &[Reg]) -> Result<()>,
+        emit: impl std::ops::AsyncFnOnce(&mut Builder<'_>, &[Reg]) -> Result<()>,
     ) -> Result<String> {
         let parameters: Arc<[Param]> = arguments.iter().map(|(name, ty)| Param {
             name: (*name).into(), ty: ty.syntax(), access: Access::Value, span,
@@ -662,8 +665,8 @@ impl Builder<'_> {
                 instance: Some(Arc::from(name.as_str())), inlined_at: Box::default(), domain_path: Arc::from([]),
             }),
         };
-        let program = Arc::new(function_program(self.world, &name, parameters.iter().cloned().map(Ok),
-            (lexical.source(), lexical.module(), lexical.imports(), FunctionKind::Value), Target::Cpu, None)?);
+        let program = Arc::new(unsafe { self.world.call(function_program(self.world, &name, parameters.iter().cloned().map(|parameter|async {Ok(parameter)}),
+            (lexical.source(), lexical.module(), lexical.imports(), FunctionKind::Value), Target::Cpu, None)).await }?);
         let (definition, context) = lexical.syntax_context(Some(&name));
         let mut b = Box::new(Builder::from_checked(self.world, &lexical, &program, 0, definition, context, BTreeSet::new()));
         b.in_function = true;
@@ -680,10 +683,10 @@ impl Builder<'_> {
         let abi = frame_value.iter().map(|frame| CallParameter::value(frame.ty.clone()).with_origin(Some(Arc::new(ParameterOrigin::Frame))))
             .chain(arguments.iter().map(|(_, ty)| CallParameter::value(ty.clone()))).collect();
         b.functions = std::mem::take(&mut self.functions);
-        emit(&mut b, &registers)?;
-        self.functions = finish_declaration(self.world, &lexical, false, finish_checked_function(
+        emit(&mut b, &registers).await?;
+        self.functions = finish_declaration(self.world, &lexical, false, unsafe { self.world.call(finish_checked_function(
             b, program.clone(), &name, span, None, None, abi, inputs, BTreeSet::new(), None, vec![None; parameters.len()],
-        )?)?;
+        )).await }?)?;
         if frame {
             let contract = &mut self.functions.units.get_mut(&name).unwrap().as_mut().unwrap().contract;
             // This function is called directly by the task runtime.
@@ -693,13 +696,13 @@ impl Builder<'_> {
         Ok(name)
     }
 
-    pub(super) fn task_selection(
+    pub(super) async fn task_selection(
         &mut self, packet: &Value, result: &Ty,
         outputs: &[(u32, outputs::TaskGuard)], span: Span,
     ) -> Result<String> {
         let name = format!("{}::@task_selection{}", self.scope.module(), self.functions.units.len());
         let pointer = Ty::vector(Scalar::U32, 2);
-        self.task_callback(name, &[("input", pointer.clone()), ("output", pointer)], false, span, |b, registers| {
+        unsafe { self.world.call(self.task_callback(name, &[("input", pointer.clone()), ("output", pointer)], false, span, async |b, registers| {
             let [a, b0, c, d] = *registers else { unreachable!() };
             let (input, output) = ([a, b0], [c, d]);
             let zero = b.constant(Scalar::U32, 0).regs[0];
@@ -721,7 +724,7 @@ impl Builder<'_> {
                     _ => Some(operand),
                 });
                 let ty = guard.frame_output_type().unwrap();
-                let selected = guard.guards(b, Some(&returned), span)?;
+                let selected = unsafe { self.world.call(guard.guards(b, Some(&returned), span)).await }?;
                 for (index, (at, _)) in ty.task_output_owners().into_iter().enumerate() {
                     let ready = outputs::resource_guard(ty, at, &selected);
                     let value = b.presence_register(&ready, span, None)?;
@@ -731,10 +734,10 @@ impl Builder<'_> {
                 }
             }
             Ok(())
-        })
+        })).await }
     }
 
-    pub(super) fn task_completion_cleanup(
+    pub(super) async fn task_completion_cleanup(
         &mut self, positions: &[(u32, &Ty, Option<u32>)], datasets: &[(u32, &Ty, &Ty, Access, Option<u32>)],
         result: &Ty, span: Span,
     ) -> Result<String> {
@@ -742,7 +745,7 @@ impl Builder<'_> {
         let pointer = Ty::vector(Scalar::U32, 2);
         let inputs = [("output", pointer.clone()), ("input", pointer),
             ("status", Ty::scalar(Scalar::U64)), ("completed", Ty::scalar(Scalar::Bool))];
-        self.task_callback(name, &inputs, true, span, |b, registers| {
+        unsafe { self.world.call(self.task_callback(name, &inputs, true, span, async |b, registers| {
             let [out_low, out_high, in_low, in_high, status, completed] = *registers else { unreachable!() };
             let (output, input) = ([out_low, out_high], [in_low, in_high]);
             let slot = b.local_slots(&Ty::scalar(Scalar::U64)).0[0];
@@ -762,7 +765,7 @@ impl Builder<'_> {
             };
             let outer = std::mem::take(&mut b.code);
             if result.owns_resources() {
-                b.drop_task_completion_value(result, output, 0, span)?;
+                unsafe { b.world.call(b.drop_task_completion_value(result, output, 0, span)).await }?;
             }
             for &(packet, ty, ready) in positions {
                 let address = std::array::from_fn(|i| load(b, input, Scalar::U32, packet + i as u32 * 4));
@@ -770,12 +773,12 @@ impl Builder<'_> {
                     for (index, (offset, owner)) in ty.task_output_owners().into_iter().enumerate().rev() {
                         let condition = ready_at(b, base, index);
                         let outer = std::mem::take(&mut b.code);
-                        b.drop_task_completion_value(owner, address, offset, span)?;
+                        unsafe { b.world.call(b.drop_task_completion_value(owner, address, offset, span)).await }?;
                         let yes = std::mem::replace(&mut b.code, outer);
                         b.emit(InstKind::If { condition, yes, no: Vec::new() });
                     }
                 } else {
-                    b.drop_task_completion_value(ty, address, 0, span)?;
+                    unsafe { b.world.call(b.drop_task_completion_value(ty, address, 0, span)).await }?;
                 }
             }
             let yes = std::mem::replace(&mut b.code, outer);
@@ -799,7 +802,7 @@ impl Builder<'_> {
                         });
                     }
                 }
-                b.drop_task_completion_dataset(element, &descriptor, &guards, span)?;
+                unsafe { b.world.call(b.drop_task_completion_dataset(element, &descriptor, &guards, span)).await }?;
                 if access == Access::Write {
                     let yes = std::mem::replace(&mut b.code, outer);
                     b.emit(InstKind::If { condition: completed, yes, no: Vec::new() });
@@ -811,39 +814,39 @@ impl Builder<'_> {
             b.emit(InstKind::LoadLocal(error, slot));
             b.emit(InstKind::Raise(error));
             Ok(())
-        })
+        })).await }
     }
 
-    fn drop_task_completion_value(&mut self, ty: &Ty, address: [Reg; 2], offset: u32, span: Span) -> Result<()> {
-        let mut model = self.template_returned(Value {
+    async fn drop_task_completion_value(&mut self, ty: &Ty, address: [Reg; 2], offset: u32, span: Span) -> Result<()> {
+        let mut model = unsafe { self.world.call(self.template_returned(Value {
             ty: ty.clone(), regs: (0..ty.components.len()).collect(), proof: bounds::Proof::default(),
             uniform: false, literal: false, constant: None,
-        }, true)?;
+        }, true)).await }?;
         owned_borrows::each_data(&mut model, &mut Vec::new(), &mut |data, _| data.residency = residency::Residency::cpu());
         owned_borrows::set_storage(&mut model, Place::Reference {
             ty: ty.clone(), address: ReferenceAddress::Contiguous(address), scope: None,
             words: ty.components.iter().map(|&(_, word)| offset + word).collect(), access: Access::InOut,
         });
-        self.drop_owned_tree_with(model, &view::Borrow::default(), span, Self::drop_task_owned_dataset)
+        unsafe { self.world.call(self.drop_owned_tree_with(model, &view::Borrow::default(), span, Self::drop_task_owned_dataset)).await }
     }
 
-    pub(super) fn drop_task_completion_element(&mut self, place: &Place, span: Span) -> Result<()> {
+    pub(super) async fn drop_task_completion_element(&mut self, place: &Place, span: Span) -> Result<()> {
         let ty = place.ty();
         let name = crate::generics::key(&format!("{}::@task_element_cleanup", self.scope.module()), [ty.name.as_str()], &[]);
         let pointer = Ty::vector(Scalar::U32, 2);
         if self.functions.declare(&name) {
             let inputs = [("position", pointer.clone()), ("status", Ty::scalar(Scalar::U64))];
-            self.task_callback(name.clone(), &inputs, true, span, |builder, registers| {
+            unsafe { self.world.call(self.task_callback(name.clone(), &inputs, true, span, async |builder, registers| {
                 let [low, high, status] = *registers else { unreachable!() };
                 let slot = builder.local_slots(&Ty::scalar(Scalar::U64)).0[0];
                 builder.emit(InstKind::StoreLocal(slot, status));
                 builder.pending_error = Some(PendingError::Exit(slot));
-                builder.drop_task_completion_value(ty, [low, high], 0, span)?;
+                unsafe { builder.world.call(builder.drop_task_completion_value(ty, [low, high], 0, span)).await }?;
                 let error = builder.reg(Scalar::U64);
                 builder.emit(InstKind::LoadLocal(error, slot));
                 builder.emit(InstKind::Raise(error));
                 Ok(())
-            })?;
+            })).await }?;
         }
         let address = self.call_reference(place, Access::Read, false, span)?;
         let position = self.reg(Scalar::U64);
@@ -871,7 +874,7 @@ impl Builder<'_> {
         Ok(())
     }
 
-    pub(super) fn native_element_drop(&mut self, value: Returned, retained: &view::Borrow, span: Span, origin: Arc<GeneratedOrigin>) -> Result<()> {
+    pub(super) async fn native_element_drop(&mut self, value: Returned, retained: &view::Borrow, span: Span, origin: Arc<GeneratedOrigin>) -> Result<()> {
         let ty = self.returned_storage(&value).ty;
         let resources = match &value {
             Returned::Dataset(data) => vec![data],
@@ -879,16 +882,16 @@ impl Builder<'_> {
             _ => Vec::new(),
         };
         for data in resources { self.application_movable(data, retained, span)?; }
-        let (name,parameters,lexical,contracts)=self.declare_owned_cleanup(&ty,span)?;
+        let (name,parameters,lexical,contracts)=unsafe { self.world.call(self.declare_owned_cleanup(&ty,span)).await }?;
         let contract=outputs::Contract::native(&lexical,&parameters,&contracts,&name,span);
         let result=TypeName::named("void");
-        self.native_call(&name,CallSignature{parameters:&parameters,result:&result,contract,lexical:&lexical,
+        unsafe { self.world.call(self.native_call(&name,CallSignature{parameters:&parameters,result:&result,contract,lexical:&lexical,
             kind:FunctionKind::Value,execution:crate::execution::Requirement::Invocation,c_abi:false},
-            vec![Argument::resource(value)],span,Some(origin),None,None)?;
+            vec![Argument::resource(value)],span,Some(origin),None,None)).await }?;
         Ok(())
     }
-    fn native_dataset_shape(&self,param:&Param,definition:outputs::Contract<'_>,count:Option<u32>,span:Span)->Result<()>{
-        if param.ty.count.is_some()&&self.world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)?!=count{
+    async fn native_dataset_shape(&self,param:&Param,definition:outputs::Contract<'_>,count:Option<u32>,span:Span)->Result<()>{
+        if param.ty.count.is_some()&&unsafe { self.world.call(self.world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)).await }?!=count{
             return self.fail(span,"B167","调用方没有声明函数需要的数据形状");
         }
         Ok(())
@@ -915,7 +918,7 @@ impl Builder<'_> {
         }
         Some(memory)
     }
-    fn native_call(
+    async fn native_call(
         &mut self,
         name: &str,
         signature: CallSignature<'_>,
@@ -974,7 +977,7 @@ impl Builder<'_> {
                 let Argument::Texture(resource) = arg else {
                     return self.fail(span, "B239", "只读纹理参数需要相同维度的纹理资源");
                 };
-                self.texture_parameter(p,&resource,(d.source,d.module,d.imports),span)?;
+                unsafe { self.world.call(self.texture_parameter(p,&resource,(d.source,d.module,d.imports),span)).await }?;
                 let address = self.reg(Scalar::U64);
                 self.emit(InstKind::TextureBindingAddress { dst: address, texture: resource.source });
                 arguments.push(CallArgument::Value {
@@ -985,7 +988,7 @@ impl Builder<'_> {
                 env.insert(p.name.to_owned(), Binding::Texture(resource));
                 continue;
             }
-            let ty = cooperative::parameter_type(self.world,&p,(d.source,d.module,d.imports,signature.kind),Target::Cpu)?;
+            let ty = unsafe { self.world.call(cooperative::parameter_type(self.world,&p,(d.source,d.module,d.imports,signature.kind),Target::Cpu)).await }?;
             let arg=match arg {Argument::Scoped{value,owner}=>{held.push(owner);Argument::resource(value)},other=>other};
             let arg=match arg {
                 Argument::OwnedReference{value,owner,..} if p.access==Access::Read=>{
@@ -1021,9 +1024,9 @@ impl Builder<'_> {
             };
             if let Some(place)=position {
                 if !matches!(&arg,Argument::Reference(_)) {
-                    self.require_place_access(&place,p.access,span)?;
+                    unsafe { self.world.call(self.require_place_access(&place,p.access,span)).await }?;
                 }
-                let borrow=self.position_borrows(&place,span)?;
+                let borrow=unsafe { self.world.call(self.position_borrows(&place,span)).await }?;
                 storage_inputs.insert(ValueIdentity::ParameterStorage(index),bounds::Proof::default().with_view_borrow(0,borrow));
             }
             match arg {
@@ -1042,20 +1045,20 @@ impl Builder<'_> {
                 Argument::OwnedReference{mut value,place,owner} if matches!(p.access,Access::Write|Access::InOut)=>{
                     self.require_same(&ty,&value.value.ty,span)?;
                     if let Some(owner)=owner{held.push(owner);}
-                    for(part,address)in self.native_references(&place,p.access,reference_writes,span,signature.c_abi)?{arguments.push(CallArgument::Reference{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),ty:part,access:p.access,address});actual.extend([None,None]);}
+                    for(part,address)in unsafe { self.world.call(self.native_references(&place,p.access,reference_writes,span,signature.c_abi)).await }?{arguments.push(CallArgument::Reference{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),ty:part,access:p.access,address});actual.extend([None,None]);}
                     if p.access==Access::InOut {
                         for data in value.resources(){
-                            self.require_application_initialized(data,span)?;
+                            unsafe { self.world.call(self.require_application_initialized(data,span)).await }?;
                             if launch.is_some() {
                                 let resource=view::resource_borrow(data);
-                                self.require_view_unborrowed(&resource,span)?;
+                                unsafe { self.world.call(self.require_view_unborrowed(&resource,span)).await }?;
                                 if self.application_position_borrowed(data.root.identity()) {
                                     return self.fail(span,"B227","独占任务交接前须结束dataset元素的位置借用");
                                 }
                                 self.application_cpu(data,span)?;
                             }
                         }
-                        self.load_owned_value(&mut value,span)?;
+                        unsafe { self.world.call(self.load_owned_value(&mut value,span)).await }?;
                         value.value.proof=self.current_address_proof(&value.value.ty,&value.value.proof);
                         memory_borrow.union(&self.address_contents(&value.value.ty,&value.value.proof));
                         let proof=bounds::Proof::capture(&value.value);
@@ -1065,7 +1068,7 @@ impl Builder<'_> {
                     } else if launch.is_some() {
                         retired_outputs.push((place.clone(),Returned::OwnedValue(value.clone())));
                     } else {
-                        self.drop_returned(Returned::OwnedValue(value.clone()),&view::Borrow::default(),span)?;
+                        unsafe { self.world.call(self.drop_returned(Returned::OwnedValue(value.clone()),&view::Borrow::default(),span)).await }?;
                     }
                     env.insert(p.name.to_owned(),Binding::OwnedValue(value));written.push((index,place));
                 }
@@ -1073,7 +1076,7 @@ impl Builder<'_> {
                     let place=owner.place.clone();
                     self.require_same(&ty, place.ty(), span)?;
                     if p.access.reads(){owner.proof=self.current_address_proof(&ty,&owner.proof);memory_borrow.union(&self.address_contents(&ty,&owner.proof));}
-                    for (part, address) in self.native_references(&place, p.access, reference_writes, span, signature.c_abi)? {
+                    for (part, address) in unsafe { self.world.call(self.native_references(&place, p.access, reference_writes, span, signature.c_abi)).await }? {
                         arguments.push(CallArgument::Reference { #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),
                             ty: part,
                             access: p.access,
@@ -1096,7 +1099,7 @@ impl Builder<'_> {
                 }
                 Argument::Atomic(place) if p.access == Access::Atomic => {
                     self.require_same(&ty, place.ty(), span)?;
-                    for (part, address) in self.native_references(&place, Access::Atomic, reference_writes, span, signature.c_abi)? {
+                    for (part, address) in unsafe { self.world.call(self.native_references(&place, Access::Atomic, reference_writes, span, signature.c_abi)).await }? {
                         arguments.push(CallArgument::Reference { #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()), ty: part, access: Access::Atomic, address });
                         actual.extend([None, None]);
                     }
@@ -1110,7 +1113,7 @@ impl Builder<'_> {
                     }
                     let (field,element)=self.dataset_layout(&view);let element=element.clone();
                     self.require_same(&ty,&element,span)?;
-                    self.native_dataset_shape(p,d,self.program.buffers[binding].count,span)?;
+                    unsafe { self.world.call(self.native_dataset_shape(p,d,self.program.buffers[binding].count,span)).await }?;
                     let origin = Arc::new(GeneratedOrigin {
                         reason: GenerationReason::DatasetCallArgument,
                         trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
@@ -1121,7 +1124,7 @@ impl Builder<'_> {
                         self.forget_output_initialization(&place,span)?;
                         written_stage.push((index,place.clone()));
                     }
-                    let borrow=self.position_origin(&place,span)?.normalize();
+                    let borrow=unsafe { self.world.call(self.position_origin(&place,span)).await }?.normalize();
                     memory_borrow.union(&borrow);
                     let pointer=if signature.execution==crate::execution::Requirement::Invocation {
                         let address=self.reg(Scalar::U64);
@@ -1160,12 +1163,12 @@ impl Builder<'_> {
                         return self.fail(span,"B227","dataset借用的访问模式不能转换为被调参数权限");
                     }
                     if p.access!=Access::Write{self.require_application_reference_initialized(&reference,span)?;}
-                    self.native_dataset_shape(p,d,reference.count,span)?;
+                    unsafe { self.world.call(self.native_dataset_shape(p,d,reference.count,span)).await }?;
                     if p.access==Access::Write||p.access.writes()&&outputs::declared(d,index){
-                        self.prepare_data_output(&mut reference.data,span)?;
+                        unsafe { self.world.call(self.prepare_data_output(&mut reference.data,span)).await }?;
                         if launch.is_none() {
                             if p.access == Access::Write && reference.element_layout().1.owns_resources() {
-                                self.retire_application_elements(&reference, span)?;
+                                unsafe { self.world.call(self.retire_application_elements(&reference, span)).await }?;
                             }
                             self.forget_data_output(&reference,span)?;
                         }
@@ -1217,8 +1220,8 @@ impl Builder<'_> {
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
                     residency::argument(&mut locations,index,&mut data,&[]);
                     self.require_same(&ty,&data.ty,span)?;
-                    self.require_application_initialized(&data,span)?;
-                    self.native_dataset_shape(p,d,data.count,span)?;
+                    unsafe { self.world.call(self.require_application_initialized(&data,span)).await }?;
+                    unsafe { self.world.call(self.native_dataset_shape(p,d,data.count,span)).await }?;
                     resource_inputs.insert(ValueIdentity::ResourceParameter(index,0),bounds::Proof::default().with_view_borrow(0,view::resource_borrow(&data)));
                     let mut value=self.returned_storage(&Returned::Dataset(data.clone()));
                     value.proof=value.proof.with_view_borrow(0,application::dataset_origin(&data,0,&data.ty,true).normalize());
@@ -1239,7 +1242,7 @@ impl Builder<'_> {
                             borrowed_arguments.insert(arguments.len(), None);
                         }
                     }else if !value.all_available(){return self.fail(span,"B227","按值参数需要实际拥有全部活动资源");}
-                    for data in value.resources(){self.require_application_initialized(data,span)?;}
+                    for data in value.resources(){unsafe { self.world.call(self.require_application_initialized(data,span)).await }?;}
                     value.resources_mut(&mut |data|data.initialization=None);
                     residency::owned_argument(&mut locations, index, &mut value);
                     for(resource,path)in view::resource_paths(&value.value.ty).into_iter().enumerate(){let borrow=match view::owned_data_at(&value,&path){Some(data)=>self.data_value_borrow(data),None=>view::Borrow::from_sources(BTreeSet::from([view::Source::Inactive]))};resource_inputs.insert(ValueIdentity::ResourceParameter(index,resource),bounds::Proof::default().with_view_borrow(0,borrow));}
@@ -1262,12 +1265,12 @@ impl Builder<'_> {
             }
         }
         let declared=self.functions.units[name].as_ref().map(|unit|unit.contract.element_inputs.clone());
-        let element_paths=contracts::element_input_paths(self,d,&mut env,declared.as_ref())?;
+        let element_paths=unsafe { self.world.call(contracts::element_input_paths(self,d,&mut env,declared.as_ref())).await }?;
         let (element_inputs,element_memory)=application::element_input_bindings(self,d,&env,&element_paths,declared.as_ref());
         memory_borrow.union(&element_memory);
-        let requirements = contracts::resolve(self,d,signature.lexical,&env,&resource_inputs)?;
-        contracts::prove(self, &requirements, span)?;
-        let output_inputs=outputs::inputs(self,d,&env)?;
+        let requirements = unsafe { self.world.call(contracts::resolve(self,d,signature.lexical,&env,&resource_inputs)).await }?;
+        unsafe { self.world.call(contracts::prove(self, &requirements, span)).await }?;
+        let output_inputs=unsafe { self.world.call(outputs::inputs(self,d,&env)).await }?;
         let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
         view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());view_arguments.extend(storage_inputs.clone());view_arguments.extend(element_inputs.clone());
         if !locations.is_empty() {
@@ -1293,7 +1296,7 @@ impl Builder<'_> {
         let result = if result_name.name == "void" || result_name.is_never() {
             None
         } else {
-            Some(owned_values::storage_type(self.world,result_name,(d.source,d.module,d.imports),d.span())?)
+            Some(unsafe { self.world.call(owned_values::storage_type(self.world,result_name,(d.source,d.module,d.imports),d.span())).await }?)
         };
         if let Some(packet)=launch {
             let result=result.unwrap_or_else(Ty::unit);
@@ -1314,7 +1317,7 @@ impl Builder<'_> {
                             if ty.has_variants() { &ty.variants[index].ty } else { ty.aggregate_part(index).1 }
                         });
                         let Some(element) = field.dataset.as_deref() else { continue; };
-                        let element = self.expected_storage(element, span)?;
+                        let element = unsafe { self.world.call(self.expected_storage(element, span)).await }?;
                         let layout = address::Layout::of(&element);
                         let fields = data.projection.iter().copied().chain(path).collect();
                         borrow.union(&address::Origin {
@@ -1383,13 +1386,14 @@ impl Builder<'_> {
             }
             let contract=self.functions.units[name].as_ref().map(|unit|&unit.contract);
             let returned=contract.and_then(|contract|contract.returned.as_ref()).map_or_else(Vec::new,Returned::registers);
-            let mut guards=written.iter().filter(|(_,place)|place.ty().owns_resources())
-                .map(|(parameter,place)|{
-                    let model=contract.and_then(|contract|contract.written.get(*parameter)?.clone());
-                    let target=self.position_origin(place,span)?.normalize();
-                    outputs::TaskGuard::new(self,d,*parameter,place.ty(),target,&output_inputs,&result,span,model,&view_arguments,&returned)
-                        .map(|guard|(*parameter,guard))
-                }).collect::<Result<Vec<_>>>()?;
+            let mut guards=Vec::new();
+            for (parameter,place) in written.iter().filter(|(_,place)|place.ty().owns_resources()) {
+                let model=contract.and_then(|contract|contract.written.get(*parameter)?.clone());
+                let target=unsafe { self.world.call(self.position_origin(place,span)).await }?.normalize();
+                let guard=unsafe { self.world.call(outputs::TaskGuard::new(self,d,*parameter,place.ty(),target,
+                    &output_inputs,&result,span,model,&view_arguments,&returned)).await }?;
+                guards.push((*parameter,guard));
+            }
             for (parameter,data) in written_data {
                 let (offset,ty)=data.element_layout();
                 let mut origin=application::dataset_origin(&data.data,offset,ty,false);
@@ -1403,8 +1407,8 @@ impl Builder<'_> {
                     Returned::Dataset(data) => data.elements.known().cloned(),
                     _ => None,
                 });
-                let guard=outputs::TaskGuard::new(self,d,parameter,ty,origin.normalize(),&output_inputs,
-                    &result,span,model,&view_arguments,&returned)?;
+                let guard=unsafe { self.world.call(outputs::TaskGuard::new(self,d,parameter,ty,origin.normalize(),&output_inputs,
+                    &result,span,model,&view_arguments,&returned)).await }?;
                 guards.push((parameter,guard));
             }
             let task_components=result.task_components();
@@ -1441,11 +1445,11 @@ impl Builder<'_> {
                     }
                 });
             }
-            let memory=self.call_address_memory([(readable,Some(Access::Read))],span)?;
+            let memory=unsafe { self.world.call(self.call_address_memory([(readable,Some(Access::Read))],span)).await }?;
             let call=self.view_model.call(name,memory,view_arguments,None,
                 address::initialization_effects(&self.initialized,&bounds::Clause::default()),
                 self.path.clone(),self.scope.source().clone(),span,true,live_task_places);
-            let started=self.emit_task_start(name,packet,arguments,captured,result,outputs,initialized,guards,conditional_positions,borrowed_arguments,dataset_writes,retired_outputs,memory,call,span)?;
+            let started=unsafe { self.world.call(self.emit_task_start(name,packet,arguments,captured,result,outputs,initialized,guards,conditional_positions,borrowed_arguments,dataset_writes,retired_outputs,memory,call,span)).await }?;
             for owner in preparing { self.env.remove(&owner); }
             return Ok(started);
         }
@@ -1475,7 +1479,7 @@ impl Builder<'_> {
                     Some(self.capture_address_values(memory_use,address::Capture::Write).into())
                 }else{
                     for(source,_,_)in &mut memory{*source=source.restricted(&self.path);}
-                    self.write_address_values(&borrow,&memory)?;None
+                    unsafe { self.world.call(self.write_address_values(&borrow,&memory)).await }?;None
                 };
                 (borrow,snapshots)
             },
@@ -1663,14 +1667,14 @@ impl Builder<'_> {
                 ValueIdentity::TaskCompletion(input,_)=>completion_slots.get(input),_=>None,
             });
             let task=completion.map_or(task,|output|output.selected_task(self));
-            self.complete_task_owned_places(&task,|builder,guard|guard.result_at_call(builder,&returned,&bindings),None,
-                |builder,inputs|match completion {
-                    Some(output)=>output.complete_inputs(builder,inputs),None=>Ok(()),
-                },span)?;
+            unsafe { self.world.call(self.complete_task_owned_places(&task,|builder,guard|guard.result_at_call(builder,&returned,&bindings),None,
+                async |builder,inputs|match completion {
+                    Some(output)=>unsafe { builder.world.call(output.complete_inputs(builder,inputs)).await },None=>Ok(()),
+                },span)).await }?;
         }
         for (&task,output) in &completion_slots {
             if !needed.contains(&task) && output.has_owned_outputs() {
-                output.complete_if_ready(self)?;
+                unsafe { self.world.call(output.complete_if_ready(self)).await }?;
             }
         }
         let output_value=result.as_ref().filter(|_|!written.is_empty()||!written_stage.is_empty()||!written_data.is_empty()).map(|ty|Value{ty:ty.clone(),regs:values.clone(),
@@ -1686,9 +1690,9 @@ impl Builder<'_> {
                 let ty = reference.element_layout().1;
                 let conditional = outputs::declared(d, index);
                 if p.access == Access::Write || conditional {
-                    let guards = outputs::guards(self, d, index, ty, &output_inputs, output_value.as_ref())?;
+                    let guards = unsafe { self.world.call(outputs::guards(self, d, index, ty, &output_inputs, output_value.as_ref())).await }?;
                     if conditional && ty.owns_resources() {
-                        let mut model = self.element_model(ty, &updated.elements, (&updated.residency, &[]), span)?;
+                        let mut model = unsafe { self.world.call(self.element_model(ty, &updated.elements, (&updated.residency, &[]), span)).await }?;
                         outputs::apply_ownership(&mut model, ty, 0, &guards);
                         updated.elements = application::ElementFacts::Known(model);
                     }
@@ -1702,14 +1706,14 @@ impl Builder<'_> {
                     let snapshots=env.values().filter_map(|binding|match binding { Binding::Value(value)=>Some(value),Binding::OwnedValue(value)=>Some(&value.value),_=>None }).collect::<Vec<_>>();
                     self.complete_application_elements(reference,updated.elements.known(),&snapshots,span,origin)?;
                 }
-                self.apply_application_dataset_model(reference,updated.elements)?;
+                unsafe { self.world.call(self.apply_application_dataset_model(reference,updated.elements)).await }?;
                 let offset=reference.element_layout().0;
                 let facts=updated.prefixes.into_iter().map(|(word,fact)|(offset+word,fact)).collect();
-                self.apply_application_prefixes(reference,&facts)?;
+                unsafe { self.world.call(self.apply_application_prefixes(reference,&facts)).await }?;
             }
         }
         for (index, place) in written {
-            let guards=outputs::guards(self,d,index,place.ty(),&output_inputs,output_value.as_ref())?;
+            let guards=unsafe { self.world.call(outputs::guards(self,d,index,place.ty(),&output_inputs,output_value.as_ref())).await }?;
             if outputs::declared(d,index) {self.forget_output_initialization(&place,span)?;}
             let model = writes
                 .get(index)
@@ -1726,24 +1730,24 @@ impl Builder<'_> {
             let mut owned_output=None;
             if place.ty().owns_resources(){
                 let regs=written_registers[&index].clone();
-                let mut result=self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true)?;
+                let mut result=unsafe { self.world.call(self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true)).await }?;
                 if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings,false);residency::returned(&mut result,&locations);}
                 residency::output(&mut result,name,residency::OutputKind::Written(index),&locations,&view_arguments);
                 if !views_closed && let Some(call)=view_call{view_contracts::set_resource_outputs(&mut result,|resource|self.view_model.result(call,view_contracts::Output::WrittenResource(index,resource)));}
                 if outputs::declared(d,index){outputs::apply_ownership(&mut result,place.ty(),0,&guards);}
                 let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();owned_output=Some(Returned::OwnedValue(value));
             }
-            self.assign_owned_proof(&place, proof, false)?;
-            if let Some(value)=owned_output{self.assign_owned_place(&place,value)?;}
+            unsafe { self.world.call(self.assign_owned_proof(&place, proof, false)).await }?;
+            if let Some(value)=owned_output{unsafe { self.world.call(self.assign_owned_place(&place,value)).await }?;}
             self.initialize_output(&place,&guards);
         }
         for (index,place) in written_stage {
-            let guards=outputs::guards(self,d,index,place.ty(),&output_inputs,output_value.as_ref())?;
+            let guards=unsafe { self.world.call(outputs::guards(self,d,index,place.ty(),&output_inputs,output_value.as_ref())).await }?;
             self.initialize_output(&place,&guards);
         }
         if syntax.is_some(){self.view_uses.after(span);}
         let Some(ty) = result else {
-            for name in held { self.finish_scoped_argument(&name, span)?; }
+            for name in held { unsafe { self.world.call(self.finish_scoped_argument(&name, span)).await }?; }
             return Ok(Some(Returned::Unit));
         };
         let value = Value {
@@ -1754,7 +1758,7 @@ impl Builder<'_> {
             uniform: false,
             constant: None,
         };
-        let mut returned = self.template_returned(value, true)?;
+        let mut returned = unsafe { self.world.call(self.template_returned(value, true)).await }?;
         if let Some(model) = &model {
             translate_returned(&mut returned, model, &bindings,false);
             if !task_return_sources.is_empty() && let (Some(value),Some(model))=(returned.view_value_mut(),model.view_value()) {
@@ -1839,7 +1843,7 @@ impl Builder<'_> {
                 let resource=self.data_borrow(&[identity]);
                 self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:borrow.clone(),kind:view::Exclusion::Ownership,span})?;
             }
-            self.finish_scoped_argument(&name, span)?;
+            unsafe { self.world.call(self.finish_scoped_argument(&name, span)).await }?;
         }
         if let Some(value)=returned.view_value() {
             let resources=match &returned{Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
@@ -2362,7 +2366,7 @@ struct FailureContext<'a> {
     range: bool,
 }
 
-fn failure_scope(
+async fn failure_scope(
     world:&World,scope:FailureScope,error:Reg,registers:&mut Vec<Scalar>,
     locals:&mut BTreeMap<usize,Ty>,context:&mut FailureContext<'_>,module:&mut Module,existing:Option<usize>,
 )->Result<Vec<Inst>> {
@@ -2392,10 +2396,10 @@ fn failure_scope(
             let arguments = b.error_position_arguments(&place, error, b.scope.span())?;
             b.emit(application::runtime_call("error_consume", arguments, None, Vec::new(), None, None).kind);
         }
-        b.move_owned_place(&place)?;
+        unsafe { world.call(b.move_owned_place(&place)).await }?;
     }
-    for output in scope.task_outputs {output.complete_if_ready(&mut b)?;}
-    b.release_application_data(None,view::Borrow::default())?;
+    for output in scope.task_outputs {unsafe { world.call(output.complete_if_ready(&mut b)).await }?;}
+    unsafe { world.call(b.release_application_data(None,view::Borrow::default())).await }?;
     // A failed call keeps the caller's original location facts for surviving loans.
     let loans = b.env.values().filter_map(|binding| {
         let Binding::ApplicationData(data) = binding else { return None; };
@@ -2405,7 +2409,7 @@ fn failure_scope(
     }).collect::<Vec<_>>();
     let path = b.residency_path();
     for (parameter, mut loan) in loans {
-        b.normalize_element_facts(&mut loan, b.scope.span())?;
+        unsafe { world.call(b.normalize_element_facts(&mut loan, b.scope.span())).await }?;
         residency::visit(&mut loan, &mut residency::Input::new(parameter), &mut |data, input| {
             if data.ownership.may_own() {
                 let entry = residency::Residency::input(input.model());
@@ -2433,13 +2437,13 @@ fn failure_scope(
     *registers=b.registers;*locals=b.locals;*module=b.functions;
     Ok(b.code)
 }
-fn lower_failure_calls(
+async fn lower_failure_calls(
     world:&World,body:&mut ValueCode,context:Option<FailureContext<'_>>,
     known:&BTreeSet<String>,module:Option<&mut Module>,
 )->Result<(bool,bool)> {
-    failure_lowering::run(world,body,context,known,module)
+    unsafe { world.call(failure_lowering::run(world,body,context,known,module)).await }
 }
-fn lower_range_failures(
+async fn lower_range_failures(
     world: &World, program: &mut Program, scopes: &mut BTreeMap<usize, RangeContext>,
     known: &BTreeSet<String>, module: &mut Module,
 ) -> Result<(bool, bool)> {
@@ -2463,7 +2467,7 @@ fn lower_range_failures(
             task_completions: None,
             range: true,
         };
-        let result = lower_failure_calls(world, &mut body, Some(owner), known, Some(module))?;
+        let result = unsafe { world.call(lower_failure_calls(world, &mut body, Some(owner), known, Some(module))).await }?;
         changed |= result.0;
         scoped |= result.1;
         stage.registers = body.registers;
@@ -2474,7 +2478,7 @@ fn lower_range_failures(
     Ok((changed, scoped))
 }
 
-fn lower_module_failures(
+async fn lower_module_failures(
     world: &World, module: &mut Module,
     programs: &mut [(&mut Program, &mut BTreeMap<usize, RangeContext>)],
 ) -> Result<()> {
@@ -2495,19 +2499,19 @@ fn lower_module_failures(
                     task_completions: Some(&context.task_completions),
                     range: false,
                 });
-                let result=lower_failure_calls(world,&mut function.body,owner,&known,Some(&mut *module))?;
+                let result=unsafe { world.call(lower_failure_calls(world,&mut function.body,owner,&known,Some(&mut *module))).await }?;
                 changed|=result.0;scoped|=result.1;unit.function=Some(function);
             }
             *module.units.get_mut(&name).unwrap()=Some(unit);
         }
         for (program, scopes) in programs.iter_mut() {
-            let result = lower_range_failures(world, program, scopes, &known, module)?;
+            let result = unsafe { world.call(lower_range_failures(world, program, scopes, &known, module)).await }?;
             changed |= result.0;
             scoped |= result.1;
         }
         for index in 0..module.programs.len() {
             let mut pending = module.programs[index].take().unwrap();
-            let result = lower_range_failures(world, &mut pending.program, &mut pending.scopes, &known, module)?;
+            let result = unsafe { world.call(lower_range_failures(world, &mut pending.program, &mut pending.scopes, &known, module)).await }?;
             changed |= result.0;
             scoped |= result.1;
             module.programs[index] = Some(pending);
@@ -2544,7 +2548,7 @@ fn lower_module_failures(
     Ok(())
 }
 
-fn bind_range_body(
+async fn bind_range_body(
     world: &World, body: &mut ValueCode, framed: &BTreeSet<String>, fallible: &BTreeSet<String>,
     offset: Option<u32>, scoped: bool,
 ) -> Result<()> {
@@ -2573,12 +2577,12 @@ fn bind_range_body(
         });
     }
     if !scoped {
-        lower_failure_calls(world, body, None, fallible, None)?;
+        unsafe { world.call(lower_failure_calls(world, body, None, fallible, None)).await }?;
     }
     calls(&mut body.code,&mut |call|call.failure=None);
     Ok(())
 }
-fn bind_range_program(
+async fn bind_range_program(
     world: &World, program: &mut Program, framed: &BTreeSet<String>, fallible: &BTreeSet<String>,
     needs_frame: bool, scopes: &BTreeMap<usize, RangeContext>,
 ) -> Result<()> {
@@ -2592,7 +2596,7 @@ fn bind_range_program(
             registers:std::mem::take(&mut stage.registers),locals:std::mem::take(&mut stage.locals),
             code:std::mem::take(&mut stage.code),inputs:Vec::new(),outputs:Vec::new(),
         };
-        bind_range_body(world, &mut body, framed, fallible, program.native_frame, scopes.contains_key(&index))?;
+        unsafe { world.call(bind_range_body(world, &mut body, framed, fallible, program.native_frame, scopes.contains_key(&index))).await }?;
         stage.registers=body.registers;stage.locals=body.locals;stage.code=body.code;
         let values=match &mut stage.operation{
             Operation::CustomReduce(value)=>Some(value),
@@ -2602,7 +2606,7 @@ fn bind_range_program(
         };
         if let Some(values)=values {
             for body in values.project.iter_mut().chain([&mut values.identity,&mut values.combine]){
-                bind_range_body(world, body, framed, fallible, program.native_frame, false)?;
+                unsafe { world.call(bind_range_body(world, body, framed, fallible, program.native_frame, false)).await }?;
             }
         }
     }
@@ -2626,7 +2630,7 @@ fn resolve_range_views(
     Ok(())
 }
 
-fn finalize(
+async fn finalize(
     world:&World,
     mut module: Module,
     entries: BTreeSet<String>,
@@ -2635,7 +2639,7 @@ fn finalize(
     programs: &mut [(&mut Program, &mut BTreeMap<usize, RangeContext>)],
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
-    lower_module_failures(world,&mut module,programs)?;
+    unsafe { world.call(lower_module_failures(world,&mut module,programs)).await }?;
     let residency_imports=resolve_residencies(world,&mut module)?;
     let mut resources = std::mem::take(&mut module.resources);
     let mut pending_programs = std::mem::take(&mut module.programs)
@@ -2677,7 +2681,7 @@ fn finalize(
             }
         }
         let needs_frame=names.iter().any(|name|frame.contains(name));
-        bind_range_program(world, program, &frame, &fallible, needs_frame, scopes)?;
+        unsafe { world.call(bind_range_program(world, program, &frame, &fallible, needs_frame, scopes)).await }?;
         if let Some(source) = source {
             crate::optimize::optimize(program, &world.worker)
                 .map_err(|error| crate::compiler::diagnostic(source, error))?;
@@ -2713,7 +2717,7 @@ fn finalize(
     }
     if let Some((body,_)) = &mut root {
         prune(body, &unframed);
-        lower_failure_calls(world,body,None,&fallible,None)?;
+        unsafe { world.call(lower_failure_calls(world,body,None,&fallible,None)).await }?;
     }
     let mut result = Finalized {
         functions: Vec::new(),
@@ -2746,15 +2750,15 @@ fn finalize(
     }
     Ok(result)
 }
-pub(super) fn finish(world:&World, module: Module, root: &mut ValueCode, model:&view_contracts::Function) -> Result<Finalized> {
+pub(super) async fn finish(world:&World, module: Module, root: &mut ValueCode, model:&view_contracts::Function) -> Result<Finalized> {
     let roots = dependencies::code(&root.code);
-    finalize(world, module, roots, Some((root,model)), None, &mut [])
+    unsafe { world.call(finalize(world, module, roots, Some((root,model)), None, &mut [])).await }
 }
-pub(super) fn finish_program(
+pub(super) async fn finish_program(
     world: &World, module: Module, mut program: Program,
     mut scopes: BTreeMap<usize, RangeContext>,
 ) -> Result<Program> {
-    let mut finalized = finalize(world, module, BTreeSet::new(), None, None, &mut [(&mut program, &mut scopes)])?;
+    let mut finalized = unsafe { world.call(finalize(world, module, BTreeSet::new(), None, None, &mut [(&mut program, &mut scopes)])).await }?;
     for function in &mut finalized.functions {
         application::lower_sdk_resources(&mut function.body,&finalized.resources);
     }
@@ -2765,7 +2769,7 @@ pub(super) fn finish_program(
     Ok(program)
 }
 
-pub(crate) fn compile_module(
+pub(crate) async fn compile_module(
     world: &World,
     entry: &str,
     requests: &[String],
@@ -2780,11 +2784,11 @@ pub(crate) fn compile_module(
         if d.module != entry {
             continue;
         }
-        for instance in crate::generics::instances(world, key, d)? {
+        for instance in unsafe { world.call(crate::generics::instances(world, key, d)).await }? {
             if d.execution == crate::execution::Requirement::Domain
-                && super::kernel_interface(world, &instance)?
+                && unsafe { world.call(super::kernel_interface(world, &instance)).await }?
             {
-                roots.extend(domain_declaration(world, &instance, &mut functions)?);
+                roots.extend(unsafe { world.call(domain_declaration(world, &instance, &mut functions)).await }?);
             } else if d.function.external().is_none()
                 && d.function.kind() == FunctionKind::Value
                 && d.function.target() != Target::Gpu
@@ -2792,11 +2796,11 @@ pub(crate) fn compile_module(
                 if d.public {
                     roots.insert(instance.name.clone());
                 }
-                functions = declaration(world, &instance, functions)?;
+                functions = unsafe { world.call(declaration(world, &instance, functions)).await }?;
             } else if d.execution == crate::execution::Requirement::Domain {
-                compile_program(world, &instance)?;
+                unsafe { world.call(compile_program(world, &instance)).await }?;
             } else {
-                check_function(world, &instance)?;
+                unsafe { world.call(check_function(world, &instance)).await }?;
             }
         }
     }
@@ -2819,20 +2823,23 @@ pub(crate) fn compile_module(
         let imports = d.imports.iter().chain(imported.into_iter().flat_map(|input| input.modules.keys()))
             .cloned().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
         let bindings=Arc::new(crate::generics::Bindings::default());
-        let arguments=arguments.as_ref().map(|arguments|bindings.arguments(world,arguments,
-            (&source,&d.module,&imports),Span{start:0,end:request.len()})).transpose()?;
-        let instance = super::generics::specialize(
+        let arguments=match arguments.as_ref() {
+            Some(arguments)=>Some(unsafe { world.call(bindings.arguments(world,arguments,
+                (&source,&d.module,&imports),Span{start:0,end:request.len()})).await }?),
+            None=>None,
+        };
+        let instance = unsafe { world.call(super::generics::specialize(
             world,
             &key,
             &[],
             arguments.as_deref(),
             (&source, &d.module, &imports),
             Span { start: 0, end: request.len() },
-        )?;
+        )).await }?;
         if d.execution == crate::execution::Requirement::Domain
-            && super::kernel_interface(world, &instance)?
+            && unsafe { world.call(super::kernel_interface(world, &instance)).await }?
         {
-            roots.extend(domain_declaration(world, &instance, &mut functions)?);
+            roots.extend(unsafe { world.call(domain_declaration(world, &instance, &mut functions)).await }?);
             continue;
         }
         if d.function.external().is_some()
@@ -2846,9 +2853,9 @@ pub(crate) fn compile_module(
             );
         }
         roots.insert(instance.name.clone());
-        functions = declaration(world, &instance, functions)?;
+        functions = unsafe { world.call(declaration(world, &instance, functions)).await }?;
     }
-    let finalized = finalize(world, functions, roots, None, Some(entry), &mut [])?;
+    let finalized = unsafe { world.call(finalize(world, functions, roots, None, Some(entry), &mut [])).await }?;
     let mut functions = finalized.functions;
     let resources = application::module_resources(&mut functions, finalized.resources);
     Ok(crate::module::Module {
@@ -2868,7 +2875,7 @@ pub(crate) fn compile_module(
     })
 }
 
-fn domain_at(
+async fn domain_at(
     world: &World,
     input: DomainInput<'_>,
     functions: &mut Module,
@@ -2881,9 +2888,9 @@ fn domain_at(
             && instance.definition.compiled.is_some() {
             let mut reference = instance.clone();
             reference.name = name.clone();
-            *functions = declaration(world, &reference, std::mem::take(functions))?;
+            *functions = unsafe { world.call(declaration(world, &reference, std::mem::take(functions))).await }?;
         } else {
-            build_domain(world, input, functions, target, element_inputs)?;
+            unsafe { world.call(build_domain(world, input, functions, target, element_inputs)).await }?;
         }
     }
     functions.units[&name]
@@ -2900,13 +2907,13 @@ fn domain_at(
         })
 }
 impl Builder<'_> {
-    pub(super) fn prepare_domain(
+    pub(super) async fn prepare_domain(
         &mut self,
         input: DomainInput<'_>,
         target: Target,
         element_inputs: &[ElementFact],
     ) -> Result<crate::module::domain::Interface> {
-        domain_at(self.world, input, &mut self.functions, target, element_inputs)
+        unsafe { self.world.call(domain_at(self.world, input, &mut self.functions, target, element_inputs)).await }
     }
     pub(super) fn call_domain(
         &mut self,
@@ -2931,11 +2938,11 @@ impl Builder<'_> {
         }), origin));
     }
 }
-pub(crate) fn check_domain(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    domain_declaration(world, instance, &mut Module::default())?;
+pub(crate) async fn check_domain(world: &World, instance: &crate::generics::Instance) -> Result<()> {
+    unsafe { world.call(domain_declaration(world, instance, &mut Module::default())).await }?;
     Ok(())
 }
-fn domain_declaration(
+async fn domain_declaration(
     world: &World,
     instance: &crate::generics::Instance,
     functions: &mut Module,
@@ -2947,14 +2954,14 @@ fn domain_declaration(
     };
     let mut roots = BTreeSet::new();
     for &target in targets {
-        domain_at(world, DomainInput::Declaration(instance), functions, target, &[])?;
+        unsafe { world.call(domain_at(world, DomainInput::Declaration(instance), functions, target, &[])).await }?;
         if instance.definition.public {
             roots.insert(crate::module::domain::symbol(&instance.name, target));
         }
     }
     Ok(roots)
 }
-fn build_domain(
+async fn build_domain(
     world: &World,
     input: DomainInput<'_>,
     functions: &mut Module,
@@ -2962,8 +2969,8 @@ fn build_domain(
     element_inputs: &[ElementFact],
 ) -> Result<()> {
     let d = &input.owner().definition;
-    let bound_parameters=input.parameters(world)?;
-    let expanded = expand_domain(world, input, functions, element_inputs)?;
+    let bound_parameters=unsafe { world.call(input.parameters(world)).await }?;
+    let expanded = unsafe { world.call(expand_domain(world, input, functions, element_inputs)).await }?;
     let mut signature = expanded.program;
     let mut scopes = expanded.scopes;
     if !signature.accelerations.is_empty() || target == Target::Gpu && !signature.textures.is_empty() {
@@ -3001,7 +3008,7 @@ fn build_domain(
                 origin: None, dataset_borrow: None, ty: Ty::scalar(Scalar::U64), values: vec![first],
             });
         } else {
-            let ty = cooperative::parameter_type(world,&param,(&d.source,&d.module,&d.imports,d.function.kind()),target)?;
+            let ty = unsafe { world.call(cooperative::parameter_type(world,&param,(&d.source,&d.module,&d.imports,d.function.kind()),target)).await }?;
             registers.extend(ty.components.iter().map(|(s, _)| *s));
             parameters.push(CallParameter::value(ty.clone()));
             for (i, (scalar, offset)) in ty.components.iter().enumerate() {
@@ -3066,7 +3073,7 @@ fn build_domain(
             &mut registers,
             &mut code,
         )?;
-        domain_at(world, DomainInput::Declaration(&call.instance), functions, target, &[])?;
+        unsafe { world.call(domain_at(world, DomainInput::Declaration(&call.instance), functions, target, &[])).await }?;
         let mut arguments = vec![frame.clone()];
         for root in &call.arguments {
             arguments.push(match root {

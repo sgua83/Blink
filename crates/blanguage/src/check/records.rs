@@ -57,29 +57,29 @@ impl Builder<'_> {
         }
     }
     #[inline(never)]
-    pub(super) fn record_expression(
+    pub(super) async fn record_expression(
         &mut self,
         name: &TypeName,
         args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
-        let ty = self.world.ty(
+        let ty = unsafe { self.world.call(self.world.ty(
             name,
             self.scope.source(),
             span,
             self.scope.module(),
             self.scope.imports(),
-        )?;
-        self.record_values(ty,args.len(),span,|builder,index,expected|
-            builder.expr_expected(&args.at(index),expected))
+        )).await }?;
+        unsafe { self.world.call(self.record_values(ty,args.len(),span,async |builder,index,expected|
+            unsafe { builder.world.call(builder.expr_expected(&args.at(index),expected)).await })).await }
     }
-    pub(super) fn record_values(&mut self,ty:Ty,count:usize,span:Span,
-        mut argument:impl FnMut(&mut Self,usize,Option<&Ty>)->Result<Option<Value>>)->Result<Option<Value>> {
+    pub(super) async fn record_values(&mut self,ty:Ty,count:usize,span:Span,
+        mut argument:impl std::ops::AsyncFnMut(&mut Self,usize,Option<&Ty>)->Result<Option<Value>>)->Result<Option<Value>> {
         let mut values=Vec::new();
         let mut held=Vec::new();
         for index in 0..count {
             let expected=ty.array.as_deref().or_else(||ty.fields.get(index).map(|(_,_,ty)|ty.as_ref()));
-            let Some(value)=argument(self,index,expected)? else{return Ok(None);};
+            let Some(value)=argument(self,index,expected).await? else{return Ok(None);};
             if value.ty.contains_borrows(){held.push(self.hold_binding(Binding::Value(value.clone())));}
             values.push(value);
         }

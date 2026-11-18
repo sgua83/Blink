@@ -2,16 +2,16 @@
 use super::*;
 impl Builder<'_> {
     #[inline(never)]
-    pub(super) fn selection(
+    pub(super) async fn selection(
         &mut self,
         condition: &Expr,
         yes: &Expr,
         no: &Expr,
         span: Span,
     ) -> Result<Option<Value>> {
-        self.selection_expected(condition, yes, no, span, None)
+        unsafe { self.world.call(self.selection_expected(condition, yes, no, span, None)).await }
     }
-    pub(super) fn selection_expected(
+    pub(super) async fn selection_expected(
         &mut self,
         condition: &Expr,
         yes: &Expr,
@@ -19,7 +19,7 @@ impl Builder<'_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Result<Option<Value>> {
-        let result = self.selection_returned(condition, yes, no, span, expected)?;
+        let result = unsafe { self.world.call(self.selection_returned(condition, yes, no, span, expected)).await }?;
         if !self.flow.continues() {
             return Ok(None);
         }
@@ -27,7 +27,7 @@ impl Builder<'_> {
         self.value_result(value, span).map(Some)
     }
     #[inline(never)]
-    pub(super) fn selection_returned(
+    pub(super) async fn selection_returned(
         &mut self,
         condition: &Expr,
         yes: &Expr,
@@ -35,22 +35,22 @@ impl Builder<'_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Result<Option<returns::Returned>> {
-        let Some(c) = self.temporary_scope(condition.span(), |builder| Ok((builder.expr(condition)?, view::Borrow::default())))? else {
+        let Some(c) = unsafe { self.world.call(self.temporary_scope(condition.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(condition)).await }?, view::Borrow::default())))).await }? else {
             return Ok(None);
         };
         self.require_bool(&c, condition.span())?;
         // 条件求值完成后才进入两臂合并，条件递归不保留合并阶段的局部状态。
-        self.selection_after_condition(c,
-            (yes.span(), |builder| builder.evaluate_returned(yes, expected)),
-            (no.span(), |builder| builder.evaluate_returned(no, expected)),
-            |builder, names| expression_assignments(builder, yes, names), span)
+        unsafe { self.world.call(self.selection_after_condition(c,
+            (yes.span(), async |builder| unsafe { builder.world.call(builder.evaluate_returned(yes, expected)).await }),
+            (no.span(), async |builder| unsafe { builder.world.call(builder.evaluate_returned(no, expected)).await }),
+            async |builder, names| unsafe { builder.world.call(expression_assignments(builder, yes, names)).await }, span)).await }
     }
-    pub(super) fn selection_after_condition(
+    pub(super) async fn selection_after_condition(
         &mut self,
         c: Value,
-        yes: (Span, impl FnOnce(&mut Self) -> Result<Option<returns::Returned>>),
-        no: (Span, impl FnOnce(&mut Self) -> Result<Option<returns::Returned>>),
-        modified: impl FnOnce(&Self, &mut BTreeSet<String>) -> Result<()>,
+        yes: (Span, impl std::ops::AsyncFnOnce(&mut Self) -> Result<Option<returns::Returned>>),
+        no: (Span, impl std::ops::AsyncFnOnce(&mut Self) -> Result<Option<returns::Returned>>),
+        modified: impl std::ops::AsyncFnOnce(&Self, &mut BTreeSet<String>) -> Result<()>,
         span: Span,
     ) -> Result<Option<returns::Returned>> {
         self.remember_loop_control(&c);
@@ -67,7 +67,7 @@ impl Builder<'_> {
             self.cross_access.clone(),
         );
         let mut yes_modified = BTreeSet::new();
-        modified(self, &mut yes_modified)?;
+        modified(self, &mut yes_modified).await?;
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
         self.refine_bounds(&partition, true);
@@ -76,7 +76,7 @@ impl Builder<'_> {
             .return_context
             .as_ref()
             .map_or(0, |context| context.exit_count());
-        let (mut a_result,yes_owners)=self.selection_arm(yes.0,&original,yes.1)?;
+        let (mut a_result,yes_owners)=unsafe { self.world.call(self.selection_arm(yes.0,&original,yes.1)).await }?;
         let yes_exit = self
             .return_context
             .as_ref()
@@ -100,7 +100,7 @@ impl Builder<'_> {
         self.path = path;
         self.refine_bounds(&partition, false);
         self.flow = Flow::NEXT;
-        let (b_result,no_owners)=self.selection_arm(no.0,&original,no.1)?;
+        let (b_result,no_owners)=unsafe { self.world.call(self.selection_arm(no.0,&original,no.1)).await }?;
         if self.flow.continues() && b_result.is_none() {
             return self.fail(span, "B228", "选择式需要值");
         }
@@ -267,16 +267,16 @@ impl Builder<'_> {
 }
 
 impl Builder<'_> {
-    fn selection_arm(&mut self,span:Span,original:&BTreeSet<String>,lower:impl FnOnce(&mut Self)->Result<Option<returns::Returned>>)->Result<(Option<returns::Returned>,Vec<Binding>)> {
-        self.temporary_scope(span,|builder|{
-            let value=lower(builder)?;
+    async fn selection_arm(&mut self,span:Span,original:&BTreeSet<String>,lower:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<returns::Returned>>)->Result<(Option<returns::Returned>,Vec<Binding>)> {
+        unsafe { self.world.call(self.temporary_scope(span,async |builder|{
+            let value=lower(builder).await?;
             let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
             let borrow=retained.owners().restricted(&builder.path);
             let mut names=Vec::new();
             for(name,binding)in builder.env.iter().filter(|(name,_)|name.starts_with("\0argument:")&&!original.contains(*name))
                 .filter(|(_,binding)|matches!(binding,Binding::OwnedValue(value)if value.ownership.may_own()&&!matches!(value.place(),Some(Place::Reference{..})))||matches!(binding,Binding::ApplicationData(data)if data.ownership.may_own()))
                 {
-                    let mut references=binding.view_borrow(builder)?.owners();
+                    let mut references=unsafe { builder.world.call(binding.view_borrow(builder)).await }?.owners();
                     for data in binding.application_resources(){references.union(&builder.owned_resource_borrow(data).owners());}
                     references=references.restricted(&builder.path);
                     if borrow.pending()||references.pending()||borrow.sources.entries().any(|(source,when)|references.overlaps_source(source,&when)){names.push(name.clone());}
@@ -284,6 +284,6 @@ impl Builder<'_> {
             names.sort_by_key(|name|name.strip_prefix("\0argument:").unwrap().parse::<usize>().unwrap());
             let owners=names.into_iter().map(|name|builder.env.remove(&name).unwrap()).collect();
             Ok(((value,owners),retained))
-        })
+        })).await }
     }
 }

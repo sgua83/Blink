@@ -25,11 +25,11 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
     }
     Ok(())
 }
-fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Result<Ty> {
+async fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Result<Ty> {
     if ty.dataset || ty.tile || ty.is_acceleration() || ty.is_texture_resource() {
         return d.source.fail(span,"B263","extern C 参数与结果需要普通C签名，不能传递dataset、tile或设备资源");
     }
-    let ty = world.ty(ty, &d.source, span, &d.module, &d.imports)?;
+    let ty = unsafe { world.call(world.ty(ty, &d.source, span, &d.module, &d.imports)).await }?;
     if ty.owns_resources() {
         return d.source.fail(
             span,
@@ -46,23 +46,24 @@ fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Resul
     }
     Ok(ty)
 }
-pub(crate) fn check_declaration(world: &World, instance: &crate::generics::Instance) -> Result<()> {
+pub(crate) async fn check_declaration(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let d=&instance.definition;
     validate_signature(d)?;
-    let parameters=d.function.params().iter().map(|param|{
-        let ty=instance.bindings.type_name(world,&param.ty(),(&d.source,&d.module,&d.imports),param.span())?;
-        value_type(world,d,&ty,param.span())
-    }).collect::<Result<Vec<_>>>()?;
-    let result_name=instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())?;
+    let mut parameters=Vec::new();
+    for param in d.function.params().iter() {
+        let ty=unsafe { world.call(instance.bindings.type_name(world,&param.ty(),(&d.source,&d.module,&d.imports),param.span())).await }?;
+        parameters.push(unsafe { world.call(value_type(world,d,&ty,param.span())).await }?);
+    }
+    let result_name=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())).await }?;
     let result=if result_name.name=="void"||result_name.is_never(){None}
-        else{Some(value_type(world,d,&result_name,d.function.span())?)};
-    outputs::validate_named(world,instance,&parameters,result.as_ref())
+        else{Some(unsafe { world.call(value_type(world,d,&result_name,d.function.span())).await }?)};
+    unsafe { world.call(outputs::validate_named(world,instance,&parameters,result.as_ref())).await }
 }
 
 impl Builder<'_> {
-    pub(super) fn read_argument(&mut self, expr: &Expr, expected:Option<&Ty>) -> Result<Option<cooperative::Argument>> {
+    pub(super) async fn read_argument(&mut self, expr: &Expr, expected:Option<&Ty>) -> Result<Option<cooperative::Argument>> {
         use cooperative::Argument;
-        if let Some(data)=self.application_reference(expr)?{
+        if let Some(data)=unsafe { self.world.call(self.application_reference(expr)).await }?{
             return Ok(Some(Argument::BorrowedData(data)));
         }
         fn root(expr: &Expr) -> Option<String> {
@@ -74,28 +75,28 @@ impl Builder<'_> {
         }
         if (root(expr).is_some_and(|name| self.env.contains_key(&name))
             || self.is_place(expr) && !self.temporary_projection(expr))
-            && !self.read_expression_type(expr)?.is_some_and(|ty|ty.owns_resources()) {
+            && !unsafe { self.world.call(self.read_expression_type(expr)).await }?.is_some_and(|ty|ty.owns_resources()) {
             if let Some(name) = root(expr)
                 && let Some(Binding::Value(value)) = self.env.get(&name).cloned() {
                 let mut owner = self.materialize_array(value,None);
                 owner.place = owner.place.read_only();
                 self.env.insert(name.clone(), Binding::Owned(owner));
             }
-            let Some(place) = self.place(expr)? else {
+            let Some(place) = unsafe { self.world.call(self.place(expr)).await }? else {
                 return Ok(None);
             };
             match place.storage() {
                 Place::Local(..) | Place::Reference { .. } | Place::ApplicationElement { .. } => {
-                    self.require_initialized(&place, expr.span())?
+                    unsafe { self.world.call(self.require_initialized(&place, expr.span())).await }?
                 }
                 Place::Element { binding, .. } if self.view_access[binding].writes() => {
-                    self.require_initialized(&place, expr.span())?
+                    unsafe { self.world.call(self.require_initialized(&place, expr.span())).await }?
                 }
                 _ => {}
             }
             Ok(Some(Argument::Reference(self.borrow_owned(place))))
         } else {
-            let Some((value,owner))=self.read_aggregate(expr,expected)?else{return Ok(None)};
+            let Some((value,owner))=unsafe { self.world.call(self.read_aggregate(expr,expected)).await }?else{return Ok(None)};
             Ok(Some(match (value,owner) {
                 (returns::Returned::OwnedValue(value),None)
                     if value.place.as_ref().is_some_and(|place|matches!(place.storage(),Place::ApplicationElement{..})) =>
@@ -254,53 +255,55 @@ impl Builder<'_> {
             word: words[0],
         })
     }
-    pub(super) fn external_reference(
+    pub(super) async fn external_reference(
         &mut self,
         place: &Place,
         access: Access,
         expose_writes: bool,
         span: Span,
     ) -> Result<CallReference> {
-        if !self.reference_is_contiguous(place, span)? {
+        if !unsafe { self.world.call(self.reference_is_contiguous(place, span)).await }? {
             return self.fail(span,"B264","C ABI 借用需要按参数布局连续、顺序匹配且对齐的真实存储；符号位置需由 requires contiguous 指明这一前提");
         }
         self.call_reference(place, access, expose_writes, span)
     }
     #[inline(never)]
-    pub(super) fn external_call(&mut self, instance: &crate::generics::Instance, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
+    pub(super) async fn external_call(&mut self, instance: &crate::generics::Instance, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
         let d=&instance.definition;
-        let parameters = d.function.params().iter().map(|param| {
-            let ty = value_type(self.world, d, &instance.bindings.type_name(self.world,&param.ty(),
-                (&d.source,&d.module,&d.imports),param.span())?, param.span())?;
-            Ok(if param.access() == Access::Value { CallParameter::value(ty) }
-                else { CallParameter::reference(ty, param.access()) })
-        }).collect::<Result<Vec<_>>>()?;
-        let result_name=instance.bindings.type_name(self.world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())?;
+        let mut parameters=Vec::new();
+        for param in d.function.params().iter() {
+            let name=unsafe { self.world.call(instance.bindings.type_name(self.world,&param.ty(),
+                (&d.source,&d.module,&d.imports),param.span())).await }?;
+            let ty=unsafe { self.world.call(value_type(self.world,d,&name,param.span())).await }?;
+            parameters.push(if param.access()==Access::Value {CallParameter::value(ty)}
+                else {CallParameter::reference(ty,param.access())});
+        }
+        let result_name=unsafe { self.world.call(instance.bindings.type_name(self.world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())).await }?;
         let result = if result_name.name == "void" || result_name.is_never() { None }
-            else { Some(value_type(self.world, d, &result_name, d.function.span())?) };
-        self.c_call(CallTarget::External({let name=d.function.external().unwrap();ExternalName{library:name.library().into(),symbol:name.symbol().into()}}), &parameters, args, result,
-            result_name.is_never(), Some(instance.into()), span, generated_origin)
+            else { Some(unsafe { self.world.call(value_type(self.world, d, &result_name, d.function.span())).await }?) };
+        unsafe { self.world.call(self.c_call(CallTarget::External({let name=d.function.external().unwrap();ExternalName{library:name.library().into(),symbol:name.symbol().into()}}), &parameters, args, result,
+            result_name.is_never(), Some(instance.into()), span, generated_origin)).await }
     }
-    pub(super) fn function_value_call(&mut self, callee_span: Span, args: &Expressions, span: Span,
-        lower: impl FnOnce(&mut Self) -> Result<Option<Value>>) -> Result<Option<returns::Returned>> {
-        self.function_value_arguments(callee_span,span,lower,|builder,parameters|
-            builder.call_arguments(cooperative::CallParameters::CFunction(parameters),args,span))
+    pub(super) async fn function_value_call(&mut self, callee_span: Span, args: &Expressions, span: Span,
+        lower: impl std::ops::AsyncFnOnce(&mut Self) -> Result<Option<Value>>) -> Result<Option<returns::Returned>> {
+        unsafe { self.world.call(self.function_value_arguments(callee_span,span,lower,async |builder,parameters|
+            unsafe { builder.world.call(builder.call_arguments(cooperative::CallParameters::CFunction(parameters),args,span)).await })).await }
     }
-    pub(super) fn function_value_arguments(&mut self,callee_span:Span,span:Span,
-        lower:impl FnOnce(&mut Self)->Result<Option<Value>>,
-        prepare:impl FnOnce(&mut Self,&[Param])->Result<Option<Vec<Argument>>>)->Result<Option<returns::Returned>> {
+    pub(super) async fn function_value_arguments(&mut self,callee_span:Span,span:Span,
+        lower:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>,
+        prepare:impl std::ops::AsyncFnOnce(&mut Self,&[Param])->Result<Option<Vec<Argument>>>)->Result<Option<returns::Returned>> {
         if self.program.target != Target::Cpu {
             return self.fail(span, "B265", "原生C函数地址只能在CPU位置调用");
         }
-        let Some(value) = lower(self)? else { return Ok(None); };
+        let Some(value) = lower(self).await? else { return Ok(None); };
         let Some(function) = value.ty.function.as_deref() else {
             return self.fail(callee_span, "B263", "间接调用目标需要cfn原生C签名值");
         };
         if !value.is_nonzero() {
             return self.fail(callee_span, "B137", "调用cfn需要已证明的非零目标；使用同签名空值比较或requires nonzero");
         }
-        let (parameters, result, never) = self.world.c_function_signature(
-            function, self.scope.source(), span, self.scope.module(), self.scope.imports())?;
+        let (parameters, result, never) = unsafe { self.world.call(self.world.c_function_signature(
+            function, self.scope.source(), span, self.scope.module(), self.scope.imports())).await }?;
         let source_parameters = parameters.iter().enumerate().map(|(index, parameter)| {
             let (ty, access) = match &parameter.kind {
                 CallParameterKind::Value(ty) => (ty, Access::Value),
@@ -308,17 +311,17 @@ impl Builder<'_> {
             };
             Param { name: format!("argument{index}"), ty: ty.syntax(), access, span }
         }).collect::<Vec<_>>();
-        let Some(arguments) = prepare(self,&source_parameters)? else { return Ok(None); };
+        let Some(arguments) = prepare(self,&source_parameters).await? else { return Ok(None); };
         let scope = self.scope.clone();
         let contract = if function.contracts.is_empty() { None } else {
             Some(outputs::Contract::signature(scope.source(), scope.module(),
                 scope.imports(), &source_parameters, &function.contracts, span))
         };
-        self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, contract, span, None)
+        unsafe { self.world.call(self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, contract, span, None)).await }
             .map(|value| value.map(returns::Returned::value))
     }
     #[inline(never)]
-    fn c_call(&mut self, target: CallTarget, parameters: &[CallParameter], args: Vec<Argument>, result: Option<Ty>,
+    async fn c_call(&mut self, target: CallTarget, parameters: &[CallParameter], args: Vec<Argument>, result: Option<Ty>,
         never: bool, definition: Option<outputs::Contract<'_>>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
         if self.program.target != Target::Cpu { return self.fail(span, "B265", "C ABI调用只能在CPU位置执行"); }
         let mut arguments = Vec::new();
@@ -345,9 +348,9 @@ impl Builder<'_> {
                     if access.reads(){memory[0].0.union(&self.address_contents(ty,&owner.proof));}
                     let place = owner.place;
                     self.require_same(ty, place.ty(), span)?;
-                    let origin=self.position_origin(&place,span)?;
+                    let origin=unsafe { self.world.call(self.position_origin(&place,span)).await }?;
                     memory.push((view::Borrow::source(view::Source::Position(Arc::new(origin))),Some(*access)));
-                    let address = self.external_reference(&place, *access, access.writes(), span)?;
+                    let address = unsafe { self.world.call(self.external_reference(&place, *access, access.writes(), span)).await }?;
                     if access.writes() { written.push((index, place)); }
                     CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: ty.clone(), access: *access, address }
                 }
@@ -355,11 +358,11 @@ impl Builder<'_> {
             });
         }
         if let Some(contract) = definition {
-            contracts::prove_c_inputs(self, contract, &output_inputs, span)?;
+            unsafe { self.world.call(contracts::prove_c_inputs(self, contract, &output_inputs, span)).await }?;
         }
         let values = result.iter().flat_map(|ty| ty.components.iter().map(|(scalar, _)| *scalar))
             .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();
-        let memory_use=self.call_address_memory(memory,span)?;
+        let memory_use=unsafe { self.world.call(self.call_address_memory(memory,span)).await }?;
         let kind=InstKind::Call(Call { failure:None, error:None, target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() });
         let first = self.code.len();
         if let Some(origin)=generated_origin { self.code.push(Inst::generated(kind,origin)); }
@@ -375,14 +378,14 @@ impl Builder<'_> {
         });
         for (index, place) in written {
             let guards = if let Some(d) = definition {
-                let guards = outputs::guards(self, d, index, place.ty(), &output_inputs, returned.as_ref())?;
+                let guards = unsafe { self.world.call(outputs::guards(self, d, index, place.ty(), &output_inputs, returned.as_ref())).await }?;
                 if outputs::declared(d, index) { self.forget_output_initialization(&place, span)?; }
                 guards
             } else { vec![owned_presence::Presence::All; place.ty().components.len()] };
-            self.assign_owned_proof(&place, bounds::Proof::default().with_external_borrows(place.ty()), false)?;
+            unsafe { self.world.call(self.assign_owned_proof(&place, bounds::Proof::default().with_external_borrows(place.ty()), false)).await }?;
             self.initialize_output(&place, &guards);
         }
-        for name in held { self.finish_scoped_argument(&name, span)?; }
+        for name in held { unsafe { self.world.call(self.finish_scoped_argument(&name, span)).await }?; }
         Ok(returned)
     }
 
@@ -412,7 +415,7 @@ pub(super) fn reference_words(place: &Place, locals: &BTreeMap<usize, Ty>) -> Op
     })
 }
 impl Builder<'_> {
-    pub(super) fn native_references(
+    pub(super) async fn native_references(
         &mut self,
         place: &Place,
         access: Access,
@@ -421,7 +424,7 @@ impl Builder<'_> {
         c_abi: bool,
     ) -> Result<Vec<(Ty, CallReference)>> {
         let expose_writes = access.writes() && expose_writes;
-        if c_abi { return Ok(vec![(place.ty().clone(), self.external_reference(place, access, expose_writes, span)?)]); }
+        if c_abi { return Ok(vec![(place.ty().clone(), unsafe { self.world.call(self.external_reference(place, access, expose_writes, span)).await }?)]); }
         let parameters = native_function::reference_parameters(place.ty());
         if parameters.is_empty() { return Ok(Vec::new()); }
         if parameters.len() == 1 {
@@ -450,7 +453,7 @@ impl Builder<'_> {
             })
             .collect())
     }
-    pub(super) fn reference_is_contiguous(&self, place: &Place, span: Span) -> Result<bool> {
+    pub(super) async fn reference_is_contiguous(&self, place: &Place, span: Span) -> Result<bool> {
         let ty = place.ty();
         if let Place::Reference {
             address: ReferenceAddress::Components(_),
@@ -462,7 +465,7 @@ impl Builder<'_> {
             if ty.components.len() == 1 {
                 return Ok(true);
             }
-            return contracts::contiguous_assumed(self, *scope, words, ty, span);
+            return unsafe { self.world.call(contracts::contiguous_assumed(self, *scope, words, ty, span)).await };
         }
         let Some(words) = reference_words(place, &self.locals) else {
             return self.fail(span, "B264", "C ABI借用需要CPU普通值的实际位置");

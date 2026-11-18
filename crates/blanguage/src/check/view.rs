@@ -807,7 +807,7 @@ impl Binding {
     pub(super) fn view_proof_mut(&mut self)->Option<&mut bounds::Proof> {
         match self {Self::Value(v) if v.ty.contains_borrows()=>Some(&mut v.proof),Self::Owned(v) | Self::ViewElement { element: v, .. } if v.place.ty().contains_borrows()=>Some(&mut v.proof),Self::OwnedValue(v) if v.value.ty.contains_borrows()=>Some(&mut v.value.proof),_=>None}
     }
-    pub(super) fn view_borrow(&self,builder:&Builder<'_>)->Result<Borrow> {
+    pub(super) async fn view_borrow(&self,builder:&Builder<'_>)->Result<Borrow> {
         if let Self::DataReference(data)=self{return Ok(resource_borrow(&data.data));}
         if let Self::OwnedValue(value)=self && value.ownership==application::Ownership::Borrowed {
             let mut borrow=value.value.proof.typed_view_borrow(&value.value.ty);
@@ -815,7 +815,7 @@ impl Binding {
         }
         if let Self::ViewElement{view,..}=self {return Ok(view.proof.borrowed_view());}
         let mut borrow=self.view_parts().map(|(ty,proof)|proof.typed_view_borrow(ty)).unwrap_or_default();
-        borrow.union(&user_owned::cleanup_borrow(builder,self,&BTreeSet::new())?);Ok(borrow)
+        borrow.union(&unsafe { builder.world.call(user_owned::cleanup_borrow(builder,self,&BTreeSet::new())).await }?);Ok(borrow)
     }
 
 }
@@ -853,15 +853,15 @@ impl Builder<'_> {
         result
     }
     pub(super) fn data_value_borrow(&self,data:&application::Data)->Borrow {resource_borrow(data)}
-    pub(super) fn application_view_borrowed(&self, identity: ValueIdentity) -> Result<bool> {
+    pub(super) async fn application_view_borrowed(&self, identity: ValueIdentity) -> Result<bool> {
         for (name,binding) in &self.env {
-            if self.live_view_borrow(name,binding)?.owners().sources.contains(&Source::Data(identity)) { return Ok(true); }
+            if unsafe { self.world.call(self.live_view_borrow(name,binding)).await }?.owners().sources.contains(&Source::Data(identity)) { return Ok(true); }
         }
         Ok(false)
     }
-    pub(super) fn require_view_unborrowed(&mut self,resource:&Borrow,span:Span)->Result<()> {
+    pub(super) async fn require_view_unborrowed(&mut self,resource:&Borrow,span:Span)->Result<()> {
         let mut borrow=Borrow::default();
-        for (name,binding) in &self.env {borrow.union(&self.live_view_borrow(name,binding)?);}
+        for (name,binding) in &self.env {borrow.union(&unsafe { self.world.call(self.live_view_borrow(name,binding)).await }?);}
         self.check_view_requirement(Requirement::Unborrowed{resource:resource.clone(),borrow,kind:Exclusion::Resource,span})
     }
     pub(super) fn task_places(&self)->Borrow {
@@ -876,11 +876,11 @@ impl Builder<'_> {
         }
         writes
     }
-    pub(super) fn require_place_access(&mut self,place:&Place,access:Access,span:Span)->Result<()> {
+    pub(super) async fn require_place_access(&mut self,place:&Place,access:Access,span:Span)->Result<()> {
         if self.application_entry() && !matches!(place.storage(),Place::AtomicParameter(_)|Place::TileElement{..}) {
             let borrow=self.task_places();
             if !borrow.empty() {
-                let resource=self.position_borrows(place,span)?.map_sources(|source|match source {
+                let resource=unsafe { self.world.call(self.position_borrows(place,span)).await }?.map_sources(|source|match source {
                     Source::Position(origin)=>origin.normalize(),
                     source=>Borrow::source(source),
                 });
@@ -888,7 +888,7 @@ impl Builder<'_> {
             }
         }
         if access.writes() && let Place::ApplicationElement{resource,..}=place.storage() {
-            let borrow=self.view_uses.all(self,&[])?;
+            let borrow=unsafe { self.world.call(self.view_uses.all(self,&[])).await }?;
             self.check_view_requirement(Requirement::Unborrowed{
                 resource:resource.clone(),borrow,kind:Exclusion::View,span,
             })?;
@@ -949,7 +949,7 @@ impl Builder<'_> {
         for(index,param)in self.scope.parameters().enumerate(){if param.access()==Access::Read && let Some(Binding::OwnedValue(value))=self.env.get(param.name()){for resource in 0..resource_paths(&value.value.ty).len(){allowed.insert(ValueIdentity::ResourceParameter(index,resource));}}}
         self.check_view_requirement(Requirement::Return{borrow,allowed,owned,span})
     }
-    pub(super) fn create_application_view(
+    pub(super) async fn create_application_view(
         &mut self,
         explicit: &[GenericArgument],
         args: &Expressions,
@@ -965,14 +965,14 @@ impl Builder<'_> {
         };
         let mut name = element.clone();
         name.view = true;
-        let ty = self.world.ty(
+        let ty = unsafe { self.world.call(self.world.ty(
             &name,
             self.scope.source(),
             span,
             self.scope.module(),
             self.scope.imports(),
-        )?;
-        let mut value = if let Some(data) = self.application_reference(&args.at(0))? {
+        )).await }?;
+        let mut value = if let Some(data) = unsafe { self.world.call(self.application_reference(&args.at(0))).await }? {
         if !data.permits(Access::Read) {
             return self.fail(span, "B214", "原子dataset不能转换为普通只读view");
         }
@@ -1005,13 +1005,20 @@ impl Builder<'_> {
             constant: None,
         }
         } else {
-            let Some(value) = self.expr(&args.at(0))? else { return Ok(None); };
+            let Some(value) = unsafe { self.world.call(self.expr(&args.at(0))).await }? else { return Ok(None); };
             self.require_same(&ty, &value.ty, args.at(0).span())?;
             value
         };
         if args.len() == 3 {
             let held = self.hold_binding(Binding::Value(value.clone()));
-            let evaluated = args.slice(1..).iter().map(|arg| self.expr(&arg)).collect::<Result<Option<Vec<_>>>>();
+            let evaluated=async {
+                let mut limits=Vec::new();
+                for arg in args.slice(1..).iter() {
+                    let Some(value)=unsafe { self.world.call(self.expr(&arg)).await }? else { return Ok(None); };
+                    limits.push(value);
+                }
+                Ok(Some(limits))
+            }.await;
             self.env.remove(&held);
             let Some(mut limits) = evaluated? else { return Ok(None); };
             let end = limits.pop().unwrap(); let start = limits.pop().unwrap();
@@ -1069,34 +1076,34 @@ impl Builder<'_> {
             words,
         }
     }
-    pub(super) fn view_place(&mut self, base: &Expr, index: &Expr) -> Result<Option<Place>> {
+    pub(super) async fn view_place(&mut self, base: &Expr, index: &Expr) -> Result<Option<Place>> {
         let view = if self.is_place(base) {
-            let Some(place) = self.place(base)? else {
+            let Some(place) = unsafe { self.world.call(self.place(base)).await }? else {
                 return Ok(None);
             };
             if place.ty().dataset.is_some() {
-                let data = self.application_place_reference(place, base.span())?;
-                return self.application_index(data, index);
+                let data = unsafe { self.world.call(self.application_place_reference(place, base.span())).await }?;
+                return unsafe { self.world.call(self.application_index(data, index)).await };
             }
             if place.ty().indexed_element().is_some() {
-                return self.array_place(place, index);
+                return unsafe { self.world.call(self.array_place(place, index)).await };
             }
-            self.read_place(&place, base.span(), None)?
+            unsafe { self.world.call(self.read_place(&place, base.span(), None)).await }?
         } else {
-            let returned = self.evaluate_returned(base, None)?;
+            let returned = unsafe { self.world.call(self.evaluate_returned(base, None)).await }?;
             if !self.flow.continues() {
                 return Ok(None);
             }
             match returned {
                 Some(returns::Returned::Dataset(data)) => {
                     self.hold_binding(Binding::ApplicationData(data.clone()));
-                    return self.application_index(application::DataReference::direct(data), index);
+                    return unsafe { self.world.call(self.application_index(application::DataReference::direct(data), index)).await };
                 }
                 Some(returns::Returned::OwnedValue(value)) if value.value.ty.array.is_some() => {
                     let owner = self.owned_value_binding(value, true);
                     let place = owner.place().unwrap();
                     self.hold_binding(Binding::OwnedValue(owner));
-                    return self.array_place(place, index);
+                    return unsafe { self.world.call(self.array_place(place, index)).await };
                 }
                 returned => {
                     let Some(value) = self.returned_expression(returned, base.span())? else {
@@ -1108,20 +1115,20 @@ impl Builder<'_> {
         };
         if view.ty.array.is_some() {
             let place = self.materialize_array(view,None).place;
-            return self.array_place(place, index);
+            return unsafe { self.world.call(self.array_place(place, index)).await };
         }
-        self.view_value_place(view, index)
+        unsafe { self.world.call(self.view_value_place(view, index)).await }
     }
-    pub(super) fn view_value_place(&mut self, view: Value, index: &Expr) -> Result<Option<Place>> {
-        self.view_value_at(view,index.span(),|builder|builder.expr(index))
+    pub(super) async fn view_value_place(&mut self, view: Value, index: &Expr) -> Result<Option<Place>> {
+        unsafe { self.world.call(self.view_value_at(view,index.span(),async |builder|unsafe { builder.world.call(builder.expr(index)).await })).await }
     }
-    pub(super) fn view_value_at(&mut self,view:Value,span:Span,
-        read_index:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>> {
+    pub(super) async fn view_value_at(&mut self,view:Value,span:Span,
+        read_index:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>> {
         if view.ty.view.is_none() {
             return self.fail(span, "B136", "索引需要 dataset、tile 或不可变 view");
         }
         let held = self.hold_binding(Binding::Value(view.clone()));
-        let evaluated = read_index(self);
+        let evaluated = read_index(self).await;
         self.env.remove(&held);
         let Some(value) = evaluated? else {
             return Ok(None);

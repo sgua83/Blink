@@ -28,25 +28,25 @@ impl Builder<'_>{
         let selected=candidates.iter().map(|(_,_,value)|{let when=Presence::selected(&root,&storage(value).unwrap().owned_positions().unwrap()[0]);let mut value=value.clone();self.resolve_owned_model(&mut value,Some(&when));(when,value)}).filter(|(when,_)|self.owned_possible(when)).collect::<Vec<_>>();let mut values=selected.iter().map(|(_,value)|value.clone());let mut model=values.next().unwrap();for other in values{model.join(other,false,None);}model.select_presence(&selected);self.resolve_owned_model(&mut model,None);
 each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(initialization(&root,path,&candidates)));set_storage(&mut model,place.clone());self.resolve_owned_model(&mut model,None);model
     }
-    pub(super) fn mutable_argument(&mut self,expr:&Expr,access:Access)->Result<Option<cooperative::Argument>> {
-        if let Some(data)=self.application_reference(expr)?{
+    pub(super) async fn mutable_argument(&mut self,expr:&Expr,access:Access)->Result<Option<cooperative::Argument>> {
+        if let Some(data)=unsafe { self.world.call(self.application_reference(expr)).await }?{
             return Ok(Some(cooperative::Argument::BorrowedData(data)));
         }
         let(place,owner)=if self.is_place(expr){
-            let Some(place)=self.mutable_place(expr,access)?else{return Ok(None)};
+            let Some(place)=unsafe { self.world.call(self.mutable_place(expr,access)).await }?else{return Ok(None)};
             if place.ty().dataset.is_some(){
-                let data=self.application_place_reference(place,expr.span())?;
+                let data=unsafe { self.world.call(self.application_place_reference(place,expr.span())).await }?;
                 return Ok(Some(cooperative::Argument::BorrowedData(data)));
             }
             if !place.ty().owns_resources(){return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));}
             (place,None)
         }else{
-            let result=self.evaluate_returned(expr,None)?;if !self.flow.continues(){return Ok(None);}
-            return self.mutable_returned_argument(result,access,expr.span());
+            let result=unsafe { self.world.call(self.evaluate_returned(expr,None)).await }?;if !self.flow.continues(){return Ok(None);}
+            return unsafe { self.world.call(self.mutable_returned_argument(result,access,expr.span())).await };
         };
-        self.owned_reference_argument(place,owner,access,expr.span())
+        unsafe { self.world.call(self.owned_reference_argument(place,owner,access,expr.span())).await }
     }
-    pub(super) fn mutable_returned_argument(&mut self,result:Option<Returned>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
+    pub(super) async fn mutable_returned_argument(&mut self,result:Option<Returned>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
             let value=match result{
                 Some(Returned::Dataset(mut data))=>{
                     let owner=self.hold_binding(Binding::ApplicationData(data.clone()));
@@ -59,20 +59,20 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
             let value=self.owned_value_binding(value,true);
             let place=value.place().unwrap();
             let owner=self.hold_binding(Binding::OwnedValue(value));
-        self.owned_reference_argument(place,Some(owner),access,span)
+        unsafe { self.world.call(self.owned_reference_argument(place,Some(owner),access,span)).await }
     }
-    fn owned_reference_argument(&mut self,place:Place,owner:Option<String>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
-        let model=if matches!(place.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&place,access.reads(),span)?}else{self.owned_place_model(&place)};
+    async fn owned_reference_argument(&mut self,place:Place,owner:Option<String>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
+        let model=if matches!(place.storage(),Place::ApplicationElement{..}){unsafe { self.world.call(self.application_owned_argument(&place,access.reads(),span)).await }?}else{self.owned_place_model(&place)};
         let Returned::OwnedValue(mut value)=model else{unreachable!()};
         if value.ownership==Ownership::Borrowed{return self.fail(span,"B227","read聚合不能提升为独占借用");}
         self.prepare_owned_read(&Returned::OwnedValue(value.clone()));
-        if access==Access::InOut{if !value.all_available(){return self.fail(span,"B227","inout聚合需要全部活动拥有资源");}self.load_owned_value(&mut value,span)?;}
+        if access==Access::InOut{if !value.all_available(){return self.fail(span,"B227","inout聚合需要全部活动拥有资源");}unsafe { self.world.call(self.load_owned_value(&mut value,span)).await }?;}
         Ok(Some(cooperative::Argument::OwnedReference{value,place,owner}))
     }
-    pub(super) fn complete_task_owned_places(
+    pub(super) async fn complete_task_owned_places(
         &mut self,sources:&view::Borrow,
         returned:impl Fn(&mut Self,&outputs::TaskGuard)->Option<Value>,success:Option<&Value>,
-        complete_inputs:impl Fn(&mut Self,&[view::TaskInputCompletion])->Result<()>,span:Span,
+        complete_inputs:impl std::ops::AsyncFn(&mut Self,&[view::TaskInputCompletion])->Result<()>,span:Span,
     )->Result<()> {
         fn find(builder:&mut Builder<'_>,value:&owned_values::OwnedValue,target:&[Position])->Option<Place> {
             if let Some(place)=value.place() && builder.positions(&place)==target {return Some(place);}
@@ -96,9 +96,9 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         }).collect::<Vec<_>>();
         for (source_kind,when) in &active {
             let view::Source::Task{guards,completions,..}=source_kind else{continue;};
-            let complete=|builder:&mut Self| {
+            let complete=async |builder:&mut Self| {
                 builder.path=bounds::Clause::both(&builder.path,when);
-                let complete_guards=|builder:&mut Self| {
+                let complete_guards=async |builder:&mut Self| {
                     for guard in guards {
                         let target=address::Initialization{
                             source:address::InitializationSource::Task(guard.target.clone()),
@@ -106,23 +106,23 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
                         }.positions(&builder.path);
                         if !guard.ty.owns_resources() {
                             let returned=returned(builder,guard);
-                            let guards=guard.guards(builder,returned.as_ref(),span)?;
+                            let guards=unsafe { builder.world.call(guard.guards(builder,returned.as_ref(),span)).await }?;
                             builder.initialize_output_positions(target,&guards);
                         } else if let Some(reference) = builder.task_dataset_output_reference(&guard.target, &guard.ty) {
                             let returned = returned(builder, guard);
-                            let guards = guard.guards(builder, returned.as_ref(), span)?;
-                            let mut model = guard.written_value(builder, returned.as_ref())?;
+                            let guards = unsafe { builder.world.call(guard.guards(builder, returned.as_ref(), span)).await }?;
+                            let mut model = unsafe { builder.world.call(guard.written_value(builder, returned.as_ref())).await }?;
                             outputs::apply_ownership(&mut model, &guard.ty, 0, &guards);
-                            builder.apply_application_dataset_model(&reference, application::ElementFacts::Known(Box::new(model)))?;
+                            unsafe { builder.world.call(builder.apply_application_dataset_model(&reference, application::ElementFacts::Known(Box::new(model)))).await }?;
                             builder.initialize_output_positions(target, &guards);
                         } else if let Some(place)=owners.iter().find_map(|owner|find(builder,owner,&target)) {
                             let returned=returned(builder,guard);
-                            let guards=guard.guards(builder,returned.as_ref(),span)?;
-                            let mut model=guard.written_value(builder,returned.as_ref())?;
+                            let guards=unsafe { builder.world.call(guard.guards(builder,returned.as_ref(),span)).await }?;
+                            let mut model=unsafe { builder.world.call(guard.written_value(builder,returned.as_ref())).await }?;
                             outputs::apply_ownership(&mut model,place.ty(),0,&guards);
                             let proof=bounds::Proof::capture(&builder.returned_storage(&model));
-                            builder.assign_owned_proof(&place,proof,false)?;
-                            builder.assign_owned_place(&place,model)?;
+                            unsafe { builder.world.call(builder.assign_owned_proof(&place,proof,false)).await }?;
+                            unsafe { builder.world.call(builder.assign_owned_place(&place,model)).await }?;
                             builder.initialize_output(&place,&guards);
                         }
                     }
@@ -130,19 +130,19 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
                 };
                 if !guards.is_empty() {
                     if let Some(success)=success {
-                        builder.conditional_blocks(success.clone(),complete_guards,|_|Ok(()),span)?;
+                        unsafe { builder.world.call(builder.conditional_blocks(success.clone(),complete_guards,async |_|Ok(()),span)).await }?;
                     } else {
-                        complete_guards(builder)?;
+                        complete_guards(builder).await?;
                     }
                 }
-                complete_inputs(builder,completions)
+                complete_inputs(builder,completions).await
             };
             if closed && active.len()==1 {
-                complete(self)?;
+                complete(self).await?;
                 continue;
             }
             if closed && let Some(condition)=self.task_source_condition(source_kind,&active,span)? {
-                self.conditional_blocks(condition,complete,|_|Ok(()),span)?;
+                unsafe { self.world.call(self.conditional_blocks(condition,complete,async |_|Ok(()),span)).await }?;
             }
         }
         Ok(())
@@ -208,9 +208,9 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
             literal:false,uniform:false,constant:None,
         }))
     }
-    pub(super) fn assign_owned_place(&mut self,place:&Place,value:Returned)->Result<()>{
+    pub(super) async fn assign_owned_place(&mut self,place:&Place,value:Returned)->Result<()>{
         if matches!(place.storage(),Place::ApplicationElement{..}) {
-            return self.assign_application_owned_argument(place, Some(&value));
+            return unsafe { self.world.call(self.assign_application_owned_argument(place, Some(&value))).await };
         }
         for(name,path,old)in self.owned_place_candidates(place){
             let mut value=value.clone();
@@ -224,9 +224,9 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         fn replace(owner:&mut owned_values::OwnedValue,path:&[usize],value:Returned){let target=owner.payloads[path[0]].as_deref_mut().unwrap();if path.len()==1{*target=value;}else{let Returned::OwnedValue(child)=target else{unreachable!()};replace(child,&path[1..],value);}}
         if path.is_empty(){self.env.insert(name,match value{Returned::Dataset(data)=>Binding::ApplicationData(data),Returned::OwnedValue(value)=>Binding::OwnedValue(value),_=>unreachable!()});}else{let Some(Binding::OwnedValue(owner))=self.env.get_mut(&name)else{unreachable!()};replace(owner,path,value);}
     }
-    pub(super) fn move_owned_place(&mut self, place: &Place) -> Result<()> {
+    pub(super) async fn move_owned_place(&mut self, place: &Place) -> Result<()> {
         if matches!(place.storage(), Place::ApplicationElement { .. }) {
-            return self.assign_application_owned_argument(place, None);
+            return unsafe { self.world.call(self.assign_application_owned_argument(place, None)).await };
         }
         for (name, path, mut old) in self.owned_place_candidates(place) {
             let actual = storage(&old).unwrap();
@@ -237,56 +237,56 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         }
         Ok(())
     }
-    pub(super) fn take_owned_place(&mut self,place:Place,span:Span)->Result<Returned>{
-        self.require_place_access(&place,Access::Write,span)?;
+    pub(super) async fn take_owned_place(&mut self,place:Place,span:Span)->Result<Returned>{
+        unsafe { self.world.call(self.require_place_access(&place,Access::Write,span)).await }?;
         let element=matches!(place.storage(),Place::ApplicationElement{..});
         let mut value=if element{
-            self.require_owned_writable(&place,span)?;self.writable_storage(&place,span,None)?;
-            self.application_owned_argument(&place,true,span)?
+            self.require_owned_writable(&place,span)?;unsafe { self.world.call(self.writable_storage(&place,span,None)).await }?;
+            unsafe { self.world.call(self.application_owned_argument(&place,true,span)).await }?
         }else{self.owned_place_model(&place)};
         let resources=match &value{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
         for data in resources{if self.application_position_borrowed(data.root.identity()){return self.fail(span,"B227","dataset的元素仍被游标或位置借用，不能移动拥有值");}}
         match &value{Returned::Dataset(data)=>{self.application_available(data,span)?;if data.ownership!=Ownership::Owned{return self.fail(span,"B227","借用资源不能从拥有位置移动");}},Returned::OwnedValue(value)=>{if !value.all_available(){return self.fail(span,"B227","拥有位置仍有未初始化或已经移动的资源");}},_=>unreachable!()}
-        self.prepare_owned_read(&value);self.require_initialized(&place,span)?;
-        let packed=if element{self.returned_storage(&value)}else{self.read_storage_value(&place,span,None)?};
-        self.move_owned_place(&place)?;
+        self.prepare_owned_read(&value);unsafe { self.world.call(self.require_initialized(&place,span)).await }?;
+        let packed=if element{self.returned_storage(&value)}else{unsafe { self.world.call(self.read_storage_value(&place,span,None)).await }?};
+        unsafe { self.world.call(self.move_owned_place(&place)).await }?;
         fn handoff(value:&mut Returned,old:&Returned){match(value,old){
             (Returned::Dataset(data),Returned::Dataset(old))=>{data.initialization=old.initialization.clone();let identity=ValueIdentity::Register(data.root.regs[0]);let mut borrow=old.root.proof.view_borrow(0);if borrow.empty(){borrow.sources.insert(view::Source::Data(old.root.identity()));}data.root.proof=bounds::Proof::default().with_identity(identity).with_view_borrow(0,borrow);data.length.proof=bounds::Proof::capture(&data.length).with_domains(Domains::from([IndexDomain::ApplicationLength(identity)]));},
             (Returned::OwnedValue(value),Returned::OwnedValue(old))=>for(index,payload)in value.payloads.iter_mut().enumerate(){if let Some(payload)=payload{handoff(payload,old.payloads[index].as_deref().unwrap());}},_=>{}}}
         let old=value.clone();native_function::rebind_model(&mut value,packed.regs);handoff(&mut value,&old);Ok(value)
     }
-    pub(super) fn assign_owned_storage(&mut self,place:Place,reference:Option<application::DataReference>,op:&str,rhs:&Expr,span:Span)->Result<()> {
+    pub(super) async fn assign_owned_storage(&mut self,place:Place,reference:Option<application::DataReference>,op:&str,rhs:&Expr,span:Span)->Result<()> {
         self.require_owned_writable(&place,span)?;
-        self.writable_storage(&place,span,Some(bounds::Proof::default()))?;
+        unsafe { self.world.call(self.writable_storage(&place,span,Some(bounds::Proof::default()))).await }?;
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let held=reference.map(|data|self.hold_binding(Binding::DataReference(data)));
-        let result=self.evaluate_returned(rhs,Some(place.ty()));
+        let result=unsafe { self.world.call(self.evaluate_returned(rhs,Some(place.ty()))).await };
         if let Some(held)=held{self.env.remove(&held);}
         let result=result?;
         if !self.flow.continues(){return Ok(());}
         let value=result.ok_or_else(||Diagnostic{source:self.scope.source().clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
         self.view_uses.after(rhs.span());
         let old=if matches!(place.storage(),Place::ApplicationElement{..}) {
-            self.application_owned_argument(&place,false,span)?
+            unsafe { self.world.call(self.application_owned_argument(&place,false,span)).await }?
         } else {
             self.owned_place_model(&place)
         };
-        self.store_owned_returned(place,old,value,span)
+        unsafe { self.world.call(self.store_owned_returned(place,old,value,span)).await }
     }
-    pub(super) fn store_owned_returned(&mut self,place:Place,old:Returned,mut value:Returned,span:Span)->Result<()> {
-        self.check_returned_type(&mut value,place.ty(),span)?;
+    pub(super) async fn store_owned_returned(&mut self,place:Place,old:Returned,mut value:Returned,span:Span)->Result<()> {
+        unsafe { self.world.call(self.check_returned_type(&mut value,place.ty(),span)).await }?;
         let packed=self.returned_storage(&value);
         let held=self.hold_binding(match &value {
             Returned::Dataset(data)=>Binding::ApplicationData(data.clone()),
             Returned::OwnedValue(owner)=>Binding::OwnedValue(owner.clone()),
             _=>unreachable!(),
         });
-        self.move_owned_place(&place)?;
-        self.drop_returned(old,&view::Borrow::default(),span)?;
-        self.write_storage_value(&place,&packed,span,None)?;
-        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform)?;
+        unsafe { self.world.call(self.move_owned_place(&place)).await }?;
+        unsafe { self.world.call(self.drop_returned(old,&view::Borrow::default(),span)).await }?;
+        unsafe { self.world.call(self.write_storage_value(&place,&packed,span,None)).await }?;
+        unsafe { self.world.call(self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform)).await }?;
         self.initialize(&place);
-        self.assign_owned_place(&place,value)?;
+        unsafe { self.world.call(self.assign_owned_place(&place,value)).await }?;
         self.env.remove(&held);
         Ok(())
     }

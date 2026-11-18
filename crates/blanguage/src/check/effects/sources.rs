@@ -38,26 +38,26 @@ impl<'b, 'w> Scope<'b, 'w> {
     pub fn current(builder: &'b Builder<'w>) -> Self {
         Self { world: builder.world, lexical: &builder.scope, builder: Some(builder), bindings: Vec::new(), writes: None }
     }
-    fn declared_type(&self, syntax: &TypeName, context: (&Source,&str,&[String]), span: Span) -> Result<Ty> {
+    async fn declared_type(&self, syntax: &TypeName, context: (&Source,&str,&[String]), span: Span) -> Result<Ty> {
         let (source,module,imports)=context;
-        let ty = self.world.ty(syntax, source, span, module, imports)?;
+        let ty = unsafe { self.world.call(self.world.ty(syntax, source, span, module, imports)).await }?;
         Ok(if syntax.dataset {
-            Ty::owned_dataset((ty).syntax(), self.world.shape(&syntax.count, source, span, module, imports)?)
+            Ty::owned_dataset((ty).syntax(), unsafe { self.world.call(self.world.shape(&syntax.count, source, span, module, imports)).await }?)
         } else { ty })
     }
-    fn element(&self, ty: ExpressionType, span: Span) -> Result<Option<Ty>> {
+    async fn element(&self, ty: ExpressionType, span: Span) -> Result<Option<Ty>> {
         let ty = match ty {
             ExpressionType::Value(ty) => ty,
             ExpressionType::Tile(element) => return Ok(Some(element)),
             ExpressionType::Texture(_) => return Ok(None),
         };
         if let Some(reference)=ty.dataset {
-            return self.world.ty(&reference,self.lexical.source(),span,self.lexical.module(),self.lexical.imports()).map(Some);
+            return unsafe { self.world.call(self.world.ty(&reference,self.lexical.source(),span,self.lexical.module(),self.lexical.imports())).await }.map(Some);
         }
         Ok(if let Some(inner)=ty.view.or(ty.array){Some(*inner)}
             else{ty.components.first().map(|(scalar,_)|Ty::scalar(*scalar))})
     }
-    fn name(&self, name: &str, span: Span, limit: usize) -> Result<Option<ExpressionType>> {
+    async fn name(&self, name: &str, span: Span, limit: usize) -> Result<Option<ExpressionType>> {
         if self.lexical.bindings().values.contains_key(name) {
             return Ok(Some(ExpressionType::Value(Ty::scalar(Scalar::U32))));
         }
@@ -65,14 +65,14 @@ impl<'b, 'w> Scope<'b, 'w> {
         if let Some(index) = self.bindings[..limit].iter().rposition(|(bound, _)| *bound == name) {
             let value = match &self.bindings[index].1 {
                 Local::Typed(ty) | Local::Initialized(Some(ty), ..) => {
-                    let ty = self.lexical.bindings().type_name(self.world, ty, context, span)?;
-                    Some(self.declared_type(&ty, context, span)?)
+                    let ty = unsafe { self.world.call(self.lexical.bindings().type_name(self.world, ty, context, span)).await }?;
+                    Some(unsafe { self.world.call(self.declared_type(&ty, context, span)).await }?)
                 }
-                Local::Initialized(None, expr, _) => return self.ty(expr, index),
+                Local::Initialized(None, expr, _) => return unsafe { self.world.call(self.ty(expr, index)).await },
                 Local::Range => Some(Ty::scalar(Scalar::U32)),
-                Local::Element(expr) => match self.ty(expr,index)?{Some(ty)=>self.element(ty,span)?,None=>None},
-                Local::NamedElement(name) => match self.name(name,span,index)?{Some(ty)=>self.element(ty,span)?,None=>None},
-                Local::Payload(expr, variant) => self.value_type(expr, index)?.and_then(|ty| {
+                Local::Element(expr) => match unsafe { self.world.call(self.ty(expr,index)).await }?{Some(ty)=>unsafe { self.world.call(self.element(ty,span)).await }?,None=>None},
+                Local::NamedElement(name) => match unsafe { self.world.call(self.name(name,span,index)).await }?{Some(ty)=>unsafe { self.world.call(self.element(ty,span)).await }?,None=>None},
+                Local::Payload(expr, variant) => unsafe { self.world.call(self.value_type(expr, index)).await }?.and_then(|ty| {
                     let name = variant.rsplit("::").next().unwrap();
                     ty.variants.iter().find(|item| item.name == name).map(|item| *item.ty.clone())
                 }),
@@ -93,9 +93,9 @@ impl<'b, 'w> Scope<'b, 'w> {
             return Ok(ty.map(ExpressionType::Value));
         }
         if let Some(param) = self.lexical.parameters().find(|param| param.name() == name) {
-            let mut ty = param.bound(self.world)?.ty;
+            let mut ty = unsafe { self.world.call(param.bound(self.world)).await }?.ty;
             if ty.is_texture_resource() {
-                return texture::shape(self.world, &ty, context, param.span())
+                return unsafe { self.world.call(texture::shape(self.world, &ty, context, param.span())).await }
                     .map(|count| Some(ExpressionType::Texture(count)));
             }
             if ty.is_acceleration() {
@@ -104,10 +104,10 @@ impl<'b, 'w> Scope<'b, 'w> {
             if ty.tile {
                 ty.tile = false;
                 let (source, module, imports) = context;
-                return self.world.ty(&ty, source, param.span(), module, imports)
+                return unsafe { self.world.call(self.world.ty(&ty, source, param.span(), module, imports)).await }
                     .map(|element| Some(ExpressionType::Tile(element)));
             }
-            return self.declared_type(&ty, context, param.span())
+            return unsafe { self.world.call(self.declared_type(&ty, context, param.span())).await }
                 .map(|ty| Some(ExpressionType::Value(ty)));
         }
         if let Some(key) = self.world.resolve(name, self.lexical.module(), self.lexical.imports(), true).unique() {
@@ -116,8 +116,8 @@ impl<'b, 'w> Scope<'b, 'w> {
                 let context = (&definition.source, definition.module.as_str(), definition.imports.as_ref());
                 let span = definition.function.span();
                 let bindings = Arc::new(crate::generics::Bindings::default());
-                let ty = bindings.type_name(self.world, &definition.function.result(), context, span)?;
-                return self.declared_type(&ty, context, span)
+                let ty = unsafe { self.world.call(bindings.type_name(self.world, &definition.function.result(), context, span)).await }?;
+                return unsafe { self.world.call(self.declared_type(&ty, context, span)).await }
                     .map(|ty| Some(ExpressionType::Value(ty)));
             }
         }
@@ -129,56 +129,59 @@ impl<'b, 'w> Scope<'b, 'w> {
             || self.builder.is_some_and(|builder| builder.env.contains_key(name))
             || self.lexical.parameters().any(|param| param.name() == name)
     }
-    pub fn local_value_write(&self,place:&Expr)->Result<Option<bool>> {
+    pub async fn local_value_write(&self,place:&Expr)->Result<Option<bool>> {
         let Some(name)=assigned_root(place)else{return Ok(None);};
         let Some((_,local))=self.bindings.iter().rev().find(|(bound,_)|*bound==name)else{return Ok(None);};
-        let Some(ty)=self.named(&name,place.span())?else{return Ok(Some(false));};
+        let Some(ty)=unsafe { self.world.call(self.named(&name,place.span())).await }?else{return Ok(Some(false));};
         Ok(Some(matches!(local,Local::Typed(_)|Local::Initialized(..)|Local::Range|Local::Payload(..))
-            &&!ty.owns_resources()&&self.builder.unwrap().component_projection(place,&name,&ty,None,None,&|_|Ok(None))?.is_some()))
+            &&!ty.owns_resources()&&unsafe { self.world.call(self.builder.unwrap().component_projection(place,&name,&ty,None,None,&|_|Ok(None))).await }?.is_some()))
     }
-    pub fn named(&self, name: &str, span: Span) -> Result<Option<Ty>> {
+    pub async fn named(&self, name: &str, span: Span) -> Result<Option<Ty>> {
         let limit = self.bindings.len();
         if !self.bound(name, limit) {
             return Ok(None);
         }
-        self.name(name, span, limit).map(|ty| ty.and_then(ExpressionType::value))
+        unsafe { self.world.call(self.name(name, span, limit)).await }.map(|ty| ty.and_then(ExpressionType::value))
     }
-    fn returned(&self, ty: Ty, span: Span) -> Result<Option<Ty>> {
+    async fn returned(&self, ty: Ty, span: Span) -> Result<Option<Ty>> {
         let Some(function) = ty.function else { return Ok(None); };
         if matches!(function.result.name.as_str(), "void" | "never") { return Ok(None); }
-        self.declared_type(&function.result,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span).map(Some)
+        unsafe { self.world.call(self.declared_type(&function.result,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span)).await }.map(Some)
     }
-    fn call(&self, name: &str, explicit: Option<&crate::syntax::List<crate::syntax::wire::ArgumentNode>>, args: &Expressions, span: Span, limit: usize) -> Result<Option<Ty>> {
+    async fn call(&self, name: &str, explicit: Option<&crate::syntax::List<crate::syntax::wire::ArgumentNode>>, args: &Expressions, span: Span, limit: usize) -> Result<Option<Ty>> {
         if explicit.is_none()&&let Some(target)=self.lexical.bindings().type_call(name){
             return match target{
-                crate::generics::TypeCall::Builtin(name)=>self.declared_type(&TypeName::named(name),(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span).map(Some),
-                crate::generics::TypeCall::Construct(ty)=>self.declared_type(ty,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span).map(Some),
+                crate::generics::TypeCall::Builtin(name)=>unsafe { self.world.call(self.declared_type(&TypeName::named(name),(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span)).await }.map(Some),
+                crate::generics::TypeCall::Construct(ty)=>unsafe { self.world.call(self.declared_type(ty,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span)).await }.map(Some),
             };
         }
-        let bound_explicit=explicit.map(|arguments|self.lexical.bindings().arguments(self.world,arguments,
-            (self.lexical.source(),self.lexical.module(),self.lexical.imports()),span)).transpose()?;
+        let bound_explicit=match explicit {
+            Some(arguments)=>Some(unsafe { self.world.call(self.lexical.bindings().arguments(self.world,arguments,
+                (self.lexical.source(),self.lexical.module(),self.lexical.imports()),span)).await }?),
+            None=>None,
+        };
         let explicit=bound_explicit.as_deref();
         if name=="dataset" && let Some(explicit)=explicit {
-            return Builder::dataset_constructor_type(self.world,self.lexical,explicit,args.len(),span).map(|(ty,count)|Some(Ty::owned_dataset((ty).syntax(),count)));
+            return unsafe { self.world.call(Builder::dataset_constructor_type(self.world,self.lexical,explicit,args.len(),span)).await }.map(|(ty,count)|Some(Ty::owned_dataset((ty).syntax(),count)));
         }
         if name == "view" && let Some([GenericArgument::Type(element)]) = explicit {
             let mut syntax = element.clone();
             syntax.view = true;
-            return self.declared_type(&syntax,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span).map(Some);
+            return unsafe { self.world.call(self.declared_type(&syntax,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span)).await }.map(Some);
         }
-        if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? {
+        if explicit.is_none() && self.bound(name, limit) && let Some(ty) = unsafe { self.world.call(self.name(name, span, limit)).await }? {
             return match ty {
-                ExpressionType::Value(ty) => self.returned(ty, span),
+                ExpressionType::Value(ty) => unsafe { self.world.call(self.returned(ty, span)).await },
                 ExpressionType::Tile(_) | ExpressionType::Texture(_) => Ok(None),
             };
         }
         if name == "address_of" && explicit.is_none() { return Ok(Ty::builtin("address")); }
         if name == "c_function" && explicit.is_none() {
-            return callback::signature(self.world, self.lexical, args, span).map(|(_, ty)| Some(ty));
+            return unsafe { self.world.call(callback::signature(self.world, self.lexical, args, span)).await }.map(|(_, ty)| Some(ty));
         }
         if matches!(name, "unsafe_function" | "unsafe_position")
             && let Some([GenericArgument::Type(ty)]) = explicit {
-            return self.declared_type(ty,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span).map(Some);
+            return unsafe { self.world.call(self.declared_type(ty,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span)).await }.map(Some);
         }
         if explicit.is_some() && matches!(name, "size_of" | "align_of")
             && self.world.resolve(name, self.lexical.module(), self.lexical.imports(), false).is_missing()
@@ -187,23 +190,23 @@ impl<'b, 'w> Scope<'b, 'w> {
         }
         if name == "try" && args.len()==1 {
             let value=&args.at(0);
-            return Ok(self.value_type(value, limit)?.and_then(|ty| ty.variants.first().map(|variant| *variant.ty.clone())));
+            return Ok(unsafe { self.world.call(self.value_type(value, limit)).await }?.and_then(|ty| ty.variants.first().map(|variant| *variant.ty.clone())));
         }
         if Ty::builtin(name).is_some() || matches!(name, "array" | "cfn")
             || !self.world.resolve(name, self.lexical.module(), self.lexical.imports(), false).is_missing() {
             let mut syntax = TypeName::named(name);
             syntax.arguments = explicit.unwrap_or_default().to_vec();
-            return self.declared_type(&syntax,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span).map(Some);
+            return unsafe { self.world.call(self.declared_type(&syntax,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),span)).await }.map(Some);
         }
         match self.world.resolve(name, self.lexical.module(), self.lexical.imports(), true) {
             crate::frontend::NameResolution::Unique(key) => {
-                let actuals = self.call_actuals(args, limit)?;
-                let instance = generics::specialize(self.world, &key, &actuals, explicit, (self.lexical.source(), self.lexical.module(), self.lexical.imports()), span)?;
+                let actuals = unsafe { self.world.call(self.call_actuals(args, limit)).await }?;
+                let instance = unsafe { self.world.call(generics::specialize(self.world, &key, &actuals, explicit, (self.lexical.source(), self.lexical.module(), self.lexical.imports()), span)).await }?;
                 let definition=&instance.definition;
                 let context=(&definition.source,definition.module.as_str(),definition.imports.as_ref());
-                let result=instance.bindings.type_name(self.world,&definition.function.result(),context,span)?;
+                let result=unsafe { self.world.call(instance.bindings.type_name(self.world,&definition.function.result(),context,span)).await }?;
                 if result.name=="void"||result.is_never(){return Ok(None);}
-                return self.declared_type(&result,context,span).map(Some);
+                return unsafe { self.world.call(self.declared_type(&result,context,span)).await }.map(Some);
             }
             crate::frontend::NameResolution::Ambiguous => return Ok(None),
             crate::frontend::NameResolution::Missing => {}
@@ -212,46 +215,50 @@ impl<'b, 'w> Scope<'b, 'w> {
             let value=&args.at(0);
             let function=&args.at(1);
             let function=Builder::user_owned_function(self.lexical.source(),function)?;
-            return self.value_type(value,limit)?.map(|ty|Builder::user_owned_type(self.world,self.lexical,&ty,function,span)).transpose();
+            return match unsafe { self.world.call(self.value_type(value,limit)).await }? {
+                Some(ty)=>unsafe { self.world.call(Builder::user_owned_type(self.world,self.lexical,&ty,function,span)).await }.map(Some),
+                None=>Ok(None),
+            };
         }
         if explicit.is_none() && ((name=="resize"&&args.len()==3)||(name=="take_last"&&args.len()==2)) {
             let data=&args.at(0);
-            return Ok(self.value_type(data,limit)?.and_then(|ty|ty.dataset.map(|element|Ty::owned_dataset(*element,None))));
+            return Ok(unsafe { self.world.call(self.value_type(data,limit)).await }?.and_then(|ty|ty.dataset.map(|element|Ty::owned_dataset(*element,None))));
         }
         Ok(None)
     }
-    fn ty(&self, expr: &Expr, limit: usize) -> Result<Option<ExpressionType>> {
+    async fn ty(&self, expr: &Expr, limit: usize) -> Result<Option<ExpressionType>> {
         let value = match expr.kind() {
-            ExprKind::Name(name) => return self.name(name, expr.span(), limit),
+            ExprKind::Name(name) => return unsafe { self.world.call(self.name(name, expr.span(), limit)).await },
             ExprKind::Number(text) => Some(number(self.lexical.source(), expr.span(), text)?.0),
             ExprKind::StaticU32(_) => Some(Ty::scalar(Scalar::U32)),
             ExprKind::Bool(_) => Some(Ty::scalar(Scalar::Bool)),
-            ExprKind::Member(base, name) => match self.ty(&base, limit)? {
+            ExprKind::Member(base, name) => match unsafe { self.world.call(self.ty(&base, limit)).await }? {
                 Some(ExpressionType::Tile(_)) if matches!(name, "length" | "lane") => Some(Ty::scalar(Scalar::U32)),
                 Some(ExpressionType::Texture(Some(_))) if name == "length" => Some(Ty::scalar(Scalar::U32)),
                 Some(ExpressionType::Value(ty)) => ty.field(name).map(|(_, ty)| ty.clone()),
                 _ => None,
             },
-            ExprKind::Index(base, _) => match self.ty(&base,limit)?{Some(ty)=>self.element(ty,expr.span())?,None=>None},
-            ExprKind::Call(name, args) => self.call(name, None, &args, expr.span(), limit)?,
-            ExprKind::Specialize(name, explicit, args) => self.call(name, Some(&explicit), &args, expr.span(), limit)?,
-            ExprKind::Cooperate(name, explicit, args) => self.call(name, explicit.as_ref(), &args, expr.span(), limit)?,
-            ExprKind::Invoke(callee, _) => match self.value_type(&callee, limit)? {
-                Some(ty) => self.returned(ty, expr.span())?, None => None,
+            ExprKind::Index(base, _) => match unsafe { self.world.call(self.ty(&base,limit)).await }?{Some(ty)=>unsafe { self.world.call(self.element(ty,expr.span())).await }?,None=>None},
+            ExprKind::Call(name, args) => unsafe { self.world.call(self.call(name, None, &args, expr.span(), limit)).await }?,
+            ExprKind::Specialize(name, explicit, args) => unsafe { self.world.call(self.call(name, Some(&explicit), &args, expr.span(), limit)).await }?,
+            ExprKind::Cooperate(name, explicit, args) => unsafe { self.world.call(self.call(name, explicit.as_ref(), &args, expr.span(), limit)).await }?,
+            ExprKind::Invoke(callee, _) => match unsafe { self.world.call(self.value_type(&callee, limit)).await }? {
+                Some(ty) => unsafe { self.world.call(self.returned(ty, expr.span())).await }?, None => None,
             },
-            ExprKind::Construct(ty, _) => Some(self.declared_type(&self.lexical.bindings().type_name(self.world,&ty,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),expr.span())?,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),expr.span())?),
-            ExprKind::Target(_, base) | ExprKind::Unary(_, base) => self.value_type(&base, limit)?,
+            ExprKind::Construct(ty, _) => Some(unsafe { self.world.call(self.declared_type(&unsafe { self.world.call(self.lexical.bindings().type_name(self.world,&ty,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),expr.span())).await }?,(self.lexical.source(),self.lexical.module(),self.lexical.imports()),expr.span())).await }?),
+            ExprKind::Target(_, base) | ExprKind::Unary(_, base) => unsafe { self.world.call(self.value_type(&base, limit)).await }?,
             ExprKind::Binary(op, a, b) => if matches!(op, "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||") {
                 Some(Ty::scalar(Scalar::Bool))
-            } else { self.value_type(if matches!(a.kind(), ExprKind::Number(_)) { &b } else { &a }, limit)? },
-            ExprKind::Select(_, yes, _) => self.value_type(&yes, limit)?,
+            } else { unsafe { self.world.call(self.value_type(if matches!(a.kind(), ExprKind::Number(_)) { &b } else { &a }, limit)).await }? },
+            ExprKind::Select(_, yes, _) => unsafe { self.world.call(self.value_type(&yes, limit)).await }?,
             ExprKind::FunctionRef(..) => None,
         };
         Ok(value.map(ExpressionType::Value))
     }
-    pub(super) fn call_actuals(&self, args: &Expressions, limit: usize) -> Result<Vec<generics::Actual<'static>>> {
-        args.iter().map(|arg| {
-            let (ty, count) = match self.ty(&arg, limit)? {
+    pub(super) async fn call_actuals(&self, args: &Expressions, limit: usize) -> Result<Vec<generics::Actual<'static>>> {
+        let mut actuals=Vec::new();
+        for arg in args {
+            let (ty, count) = match unsafe { self.world.call(self.ty(&arg, limit)).await }? {
                 Some(ExpressionType::Value(ty)) => {
                     let count = ty.dataset.as_ref().and(ty.values.first().copied());
                     (Some(ty), count)
@@ -260,13 +267,14 @@ impl<'b, 'w> Scope<'b, 'w> {
                 Some(ExpressionType::Texture(count)) => (None, count),
                 None => (None, None),
             };
-            Ok(generics::Actual { ty: ty.map(std::borrow::Cow::Owned), count })
-        }).collect()
+            actuals.push(generics::Actual { ty: ty.map(std::borrow::Cow::Owned), count });
+        }
+        Ok(actuals)
     }
-    fn value_type(&self, expr: &Expr, limit: usize) -> Result<Option<Ty>> {
-        self.ty(expr, limit).map(|ty| ty.and_then(ExpressionType::value))
+    async fn value_type(&self, expr: &Expr, limit: usize) -> Result<Option<Ty>> {
+        unsafe { self.world.call(self.ty(expr, limit)).await }.map(|ty| ty.and_then(ExpressionType::value))
     }
-    pub fn expression(&self, expr: &Expr) -> Result<Option<Ty>> {
-        self.value_type(expr, self.bindings.len())
+    pub async fn expression(&self, expr: &Expr) -> Result<Option<Ty>> {
+        unsafe { self.world.call(self.value_type(expr, self.bindings.len())).await }
     }
 }

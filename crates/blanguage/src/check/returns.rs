@@ -200,7 +200,7 @@ fn owns_exit(code: &[Inst]) -> bool {
     })
 }
 impl Builder<'_> {
-    pub(super) fn written_model(&mut self,name:&str,span:Span)->Result<Returned> {
+    pub(super) async fn written_model(&mut self,name:&str,span:Span)->Result<Returned> {
         match self.env.get(name).cloned().unwrap() {
             Binding::Owned(owner)=>{
                 if !self.is_initialized(&owner.place)&&!self.defer_initialization(&owner.place,"B229",span)?{return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
@@ -212,8 +212,8 @@ impl Builder<'_> {
                 if !value.all_available(){return self.fail(span,"B229",format!("返回前没有归还独占参数 {name} 的全部活动拥有资源"));}
                 let place=value.place().unwrap();
                 if !value.value.ty.has_variants() && !self.is_initialized(&place)&&!self.defer_initialization(&place,"B229",span)?{return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
-                self.load_owned_value(&mut value,span)?;
-                let mut model=Returned::OwnedValue(value);self.require_returned_initialized(&mut model,span)?;Ok(model)
+                unsafe { self.world.call(self.load_owned_value(&mut value,span)).await }?;
+                let mut model=Returned::OwnedValue(value);unsafe { self.world.call(self.require_returned_initialized(&mut model,span)).await }?;Ok(model)
             }
             _=>unreachable!(),
         }
@@ -280,7 +280,7 @@ impl Builder<'_> {
             ),
         }
     }
-    pub(super) fn return_statement(&mut self, expr: Option<&Expr>, span: Span) -> Result<()> {
+    pub(super) async fn return_statement(&mut self, expr: Option<&Expr>, span: Span) -> Result<()> {
         let Some(context) = &self.return_context else {
             return self.fail(
                 span,
@@ -291,7 +291,7 @@ impl Builder<'_> {
         let expected = context.expected.clone();
         let value = match (expected.as_ref(), expr) {
             (Expected::Value(ty), Some(expr)) => {
-                let result = self.evaluate_returned(expr,Some(ty))?;
+                let result = unsafe { self.world.call(self.evaluate_returned(expr,Some(ty))).await }?;
                 if !self.flow.continues() {
                     return Ok(());
                 }
@@ -301,11 +301,11 @@ impl Builder<'_> {
                     code: "B228",
                     message: "返回需要值或拥有资源".into(),
                 })?;
-                self.check_returned_type(&mut value, ty, expr.span())?;
+                unsafe { self.world.call(self.check_returned_type(&mut value, ty, expr.span())).await }?;
                 Some(value)
             }
             (Expected::Dataset { ty, count }, Some(expr)) => {
-                let returned=self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone().syntax(),*count)))?;
+                let returned=unsafe { self.world.call(self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone().syntax(),*count)))).await }?;
                 if !self.flow.continues(){return Ok(());}
                 let Some(Returned::Dataset(mut data))=returned else{return self.fail(span,"B224","返回需要实际拥有的dataset")};
                 self.application_data_type(&mut data, ty, *count, span)?;
@@ -315,7 +315,7 @@ impl Builder<'_> {
             (Expected::Void, None) => None,
             (Expected::Never, expr) => {
             if let Some(expr) = expr {
-                self.evaluate_returned(expr, None)?;
+                unsafe { self.world.call(self.evaluate_returned(expr, None)).await }?;
                 if !self.flow.continues() {
                     return Ok(());
                 }
@@ -325,7 +325,7 @@ impl Builder<'_> {
             (Expected::Value(_) | Expected::Dataset { .. }, None) => return self.fail(span, "B228", "有返回值函数不能使用 return;"),
             (Expected::Void, Some(_)) => return self.fail(span, "B228", "void 函数不能返回普通值"),
         };
-        self.finish_return(value, span)
+        unsafe { self.world.call(self.finish_return(value, span)).await }
     }
     pub(super) fn result_return_type(&self) -> Option<Ty> {
         match self.return_context.as_ref()?.expected.as_ref() {
@@ -368,8 +368,8 @@ impl Builder<'_> {
         self.check_view_requirement(view::Requirement::Initialized{borrow:read.borrow(),read,code:"B229",span})?;
         Ok(true)
     }
-    pub(super) fn finish_return(&mut self, mut value: Option<Returned>, span: Span) -> Result<()> {
-        if let Some(value)=&mut value {self.require_returned_initialized(value,span)?;}
+    pub(super) async fn finish_return(&mut self, mut value: Option<Returned>, span: Span) -> Result<()> {
+        if let Some(value)=&mut value {unsafe { self.world.call(self.require_returned_initialized(value,span)).await }?;}
         if let Some(Returned::Value(value)) = &mut value {
             value.uniform &= self.control_uniform;
             value.proof = bounds::Proof::returning(value, &self.env, &self.path);
@@ -377,15 +377,15 @@ impl Builder<'_> {
         if let Some(Returned::OwnedValue(value)) = &mut value {
             value.value.proof = bounds::Proof::returning(&value.value, &self.env, &self.path);
         }
-        let borrowed=(||->Result<BTreeMap<String,Returned>> {
+        let borrowed=(async ||->Result<BTreeMap<String,Returned>> {
             let mut borrowed=BTreeMap::new();let instance=self.return_context.as_ref().unwrap().instance.clone();let definition=&instance.definition;
             let inputs=self.return_context.as_ref().unwrap().inputs.clone();
             let returned=value.as_ref().map(|value|self.returned_storage(value));
             for (index,param) in definition.function.params().iter().enumerate() {
                 if param.ty().dataset() && matches!(param.access(),Access::Write|Access::InOut) && let Some(Binding::ApplicationData(data))=self.env.get(param.name()).cloned() {
                     if outputs::declared(&instance,index) {
-                        let guards=outputs::guards(self,&instance,index,&data.ty,&inputs,returned.as_ref())?;
-                        self.check_data_output(&data,&guards,span)?;
+                        let guards=unsafe { self.world.call(outputs::guards(self,&instance,index,&data.ty,&inputs,returned.as_ref())).await }?;
+                        unsafe { self.world.call(self.check_data_output(&data,&guards,span)).await }?;
                     }else if !self.application_initialized(&data)
                         && !self.defer_dataset_output(&data,data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),span)? {
                         return self.fail(span,"B229",format!("返回前没有完整初始化独占 dataset 参数 {}",param.name()));
@@ -394,7 +394,7 @@ impl Builder<'_> {
                 }
                 if param.ty().dataset()&&param.access()==Access::Write&&let Some(Binding::Data(view))=self.env.get(param.name()).cloned() {
                     let place=self.dataset_element(&view,self.global_index,false);
-                    let guards=outputs::guards(self,&instance,index,place.ty(),&inputs,returned.as_ref())?;
+                    let guards=unsafe { self.world.call(outputs::guards(self,&instance,index,place.ty(),&inputs,returned.as_ref())).await }?;
                     let path=self.path.clone();
                     for(position,when)in self.positions(&place).into_iter().zip(guards) {
                         self.path=when.condition().assume(&path,true);
@@ -408,22 +408,22 @@ impl Builder<'_> {
                 if matches!(param.access(),Access::Write|Access::InOut) && !param.ty().dataset() && !param.ty().tile() {
                     let mut model=if outputs::declared(&instance,index) {
                         let ty=self.env[param.name()].stored_place().unwrap().ty().clone();
-                        let guards=outputs::guards(self,&instance,index,&ty,&inputs,returned.as_ref())?;
-                        self.conditional_written_model(&param.name(),&guards,span)?
-                    }else{self.written_model(&param.name(),span)?};
+                        let guards=unsafe { self.world.call(outputs::guards(self,&instance,index,&ty,&inputs,returned.as_ref())).await }?;
+                        unsafe { self.world.call(self.conditional_written_model(&param.name(),&guards,span)).await }?
+                    }else{unsafe { self.world.call(self.written_model(&param.name(),span)).await }?};
                     if let Some(value)=model.view_value_mut(){value.uniform&=self.control_uniform;value.proof.under_path(&value.ty,&self.path);}
                     borrowed.insert(param.name().to_owned(),model);
                 }
             }
             Ok(borrowed)
-        })();
+        })().await;
         let mut owned=view::Borrow::default();let mut retained=view::Borrow::default();
         let outputs=value.iter().chain(borrowed.as_ref().ok().into_iter().flat_map(|written|written.values())).collect::<Vec<_>>();
         for output in &outputs{
             let resources=match *output{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
             for data in resources{owned.union(&self.owned_resource_borrow(data));}
         }
-        for output in &outputs{self.require_element_return_borrows(output,&owned,span)?;}
+        for output in &outputs{unsafe { self.world.call(self.require_element_return_borrows(output,&owned,span)).await }?;}
         for output in outputs{if let Some(value)=output.view_value(){
             let mut proof=value.proof.borrow_state();proof.retain_view_borrows(&value.ty);
             self.require_view_return_proof(&proof,owned.clone(),span)?;
@@ -443,12 +443,12 @@ impl Builder<'_> {
             _=>None,
         };
         let keep=pending.iter().cloned().collect();
-        self.release_application_data(Some(&keep),retained)?;
+        unsafe { self.world.call(self.release_application_data(Some(&keep),retained)).await }?;
         if let Some(pending)=pending {self.env.remove(&pending);}
         let mut initialized=self.initialized.clone();
         if self.scope.execution()==crate::execution::Requirement::Invocation {
             for parameter in self.scope.parameters() {
-                if parameter.bound(self.world)?.ty.dataset&&parameter.access()==Access::Write&&let Some(Binding::ApplicationData(data))=self.env.get(parameter.name()) {
+                if unsafe { self.world.call(parameter.bound(self.world)).await }?.ty.dataset&&parameter.access()==Access::Write&&let Some(Binding::ApplicationData(data))=self.env.get(parameter.name()) {
                     initialized=initialized.iter().map(|position|Self::dataset_output_position(position,data)).collect();
                 }
             }
@@ -524,40 +524,42 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn function_body(&mut self, instance: &crate::generics::Instance, body: &Block) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
-        let state = self.begin_function_body(instance, body)?;
+    pub(super) async fn function_body(&mut self, instance: &crate::generics::Instance, body: &Block) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
+        let world = self.world;
+        let state = unsafe { world.call(self.begin_function_body(instance, body)) .await }?;
         let mut sequence = if self.residency_path().possible() { Flow::NEXT } else { Flow::STOP };
         for statement in body {
             if !sequence.continues() {
                 break;
             }
             self.flow = Flow::NEXT;
-            self.statement(&statement)?;
+            unsafe { world.call(self.statement(&statement)) .await }?;
             self.view_uses.after(statement.span());
             sequence = sequence.then(self.flow);
         }
         self.flow = sequence;
-        self.finish_function_body(body, state)
+        unsafe { world.call(self.finish_function_body(body, state)) .await }
     }
 
     #[inline(never)]
-    fn begin_function_body(&mut self, instance: &crate::generics::Instance, body: &Block) -> Result<Box<BodyState>> {
+    async fn begin_function_body(&mut self, instance: &crate::generics::Instance, body: &Block) -> Result<Box<BodyState>> {
+        let world = self.world;
         let entry = self.registers.len();
         let definition = &instance.definition;
-        let name = instance.bindings.type_name(self.world, &definition.function.result(),
-            (&definition.source, &definition.module, &definition.imports), definition.function.span())?;
+        let name = unsafe { world.call(instance.bindings.type_name(world, &definition.function.result(),
+            (&definition.source, &definition.module, &definition.imports), definition.function.span())) .await }?;
         let expected = if name.name == "void" && !name.dataset && !name.tile && !name.view {
             Expected::Void
         } else if name.is_never() {
             Expected::Never
         } else {
-            let ty = self.world.ty(
+            let ty = unsafe { world.call(world.ty(
                 &name,
                 &definition.source,
                 definition.function.span(),
                 &definition.module,
                 &definition.imports,
-            )?;
+            )) .await }?;
             if ty.owns_resources()
                 && (definition.function.kind() != FunctionKind::Value
                     || self.program.target != Target::Cpu)
@@ -571,13 +573,13 @@ impl Builder<'_> {
             if name.dataset {
                 Expected::Dataset {
                     ty,
-                    count: self.world.shape(
+                    count: unsafe { world.call(world.shape(
                         &name.count,
                         &definition.source,
                         definition.function.span(),
                         &definition.module,
                         &definition.imports,
-                    )?,
+                    )) .await }?,
                 }
             } else {
                 Expected::Value(ty)
@@ -601,7 +603,7 @@ impl Builder<'_> {
             Vec::new()
         };
         let initial = self.application_initialization_state();
-        let inputs=outputs::entry_inputs(self,instance)?;
+        let inputs=unsafe { self.world.call(outputs::entry_inputs(self,instance)).await }?;
         let caller = self.return_context.replace(ReturnContext {
             instance: instance.clone(),
             expected: Arc::new(expected),
@@ -617,7 +619,8 @@ impl Builder<'_> {
     }
 
     #[inline(never)]
-    fn finish_function_body(&mut self, body: &Block, state: Box<BodyState>) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
+    async fn finish_function_body(&mut self, body: &Block, state: Box<BodyState>) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
+        let world = self.world;
         let BodyState { entry, scoped, initial, caller, flow, uniform, code_start } = *state;
         let instance = self.return_context.as_ref().unwrap().instance.clone();
         let definition = &instance.definition;
@@ -637,7 +640,7 @@ impl Builder<'_> {
                     "函数存在未返回普通值的继续路径",
                 );
             }
-            self.return_statement(None, definition.function.span())?;
+            unsafe { world.call(self.return_statement(None, definition.function.span())) .await }?;
         }
         let context = self.return_context.take().unwrap();
         self.return_context = caller;
@@ -745,7 +748,7 @@ impl Builder<'_> {
                         if direct_output { Value{proof:bounds::Proof::default(),..value.clone()} }
                         else { value.clone() }
                     });
-                    let guards=outputs::guards(self,&instance,index,place.ty(),&context.inputs,returned_storage.as_ref())?;
+                    let guards=unsafe { world.call(outputs::guards(self,&instance,index,place.ty(),&context.inputs,returned_storage.as_ref())) .await }?;
                     if declared {
                         if place.ty().owns_resources() {
                             outputs::apply_ownership(&mut model,place.ty(),0,&guards);
@@ -754,7 +757,7 @@ impl Builder<'_> {
                                 let when=guard.condition();
                                 if when.active() {
                                     let part=place.clone().project(Ty::scalar(place.ty().components[component].0),&[component]);
-                                    let source=address::InitializationSource::Position(self.position_origin(&part,definition.function.span())?);
+                                    let source=address::InitializationSource::Position(unsafe { self.world.call(self.position_origin(&part,definition.function.span())).await }?);
                                     initialized.push(address::InitializationEffect::Position(address::Initialization{source,when}));
                                 }
                             }

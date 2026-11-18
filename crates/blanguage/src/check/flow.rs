@@ -229,7 +229,7 @@ impl Builder<'_> {
         let mut context=self.loop_contexts.pop().unwrap();self.close_view_context(&mut context,None,false)
     }
 
-    pub(super) fn application_iteration_elements(&mut self, exit: &mut LoopState, source: Option<&application::DataReference>, index: &Value, limit: &Value)->Result<()> {
+    pub(super) async fn application_iteration_elements(&mut self, exit: &mut LoopState, source: Option<&application::DataReference>, index: &Value, limit: &Value)->Result<()> {
         let context = self.loop_contexts.last().unwrap();
         let resources = if let Some(data) = source { vec![data.clone()] } else {
             context.entry.env.values().flat_map(Binding::application_resources).filter(|data|
@@ -238,7 +238,7 @@ impl Builder<'_> {
             ).map(|data| application::DataReference::direct(data.clone())).collect()
         };
         for data in resources {
-            let model=self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())?;
+            let model=unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())).await }?;
             let initial=self.returned_storage(&model);
             let context = self.loop_contexts.last().unwrap();
             let cursor = if source.is_some() { context.control_source.cursor.as_ref().unwrap() } else { index };
@@ -271,13 +271,13 @@ impl Builder<'_> {
                 })
             }else{partial.clone()};
             let mut breaks=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().exits);
-            if let Some(proof)=partial{for state in &mut breaks{self.publish_iteration_elements(state,&data,proof.clone())?;}}
+            if let Some(proof)=partial{for state in &mut breaks{unsafe { self.world.call(self.publish_iteration_elements(state,&data,proof.clone())).await }?;}}
             self.loop_contexts.last_mut().unwrap().exits=breaks;
-            if let Some(proof)=natural{self.publish_iteration_elements(exit,&data,proof)?;}
+            if let Some(proof)=natural{unsafe { self.world.call(self.publish_iteration_elements(exit,&data,proof)).await }?;}
         }
         Ok(())
     }
-    fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, proof: bounds::Proof)->Result<()> {
+    async fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, proof: bounds::Proof)->Result<()> {
         let ty = data.element_layout().1;
         std::mem::swap(&mut self.env, &mut exit.env);
         std::mem::swap(&mut self.path, &mut exit.path);
@@ -296,7 +296,7 @@ impl Builder<'_> {
         if !components.is_empty() {
             let words = data.words();
             let words = components.iter().map(|component| words[*component]).collect::<Vec<_>>();
-            self.update_application_contents(data, &words, application::ElementUpdate::WholeFacts(&proof.project(&components, ty.components.len())))?;
+            unsafe { self.world.call(self.update_application_contents(data, &words, application::ElementUpdate::WholeFacts(&proof.project(&components, ty.components.len())))).await }?;
         }
         std::mem::swap(&mut self.env, &mut exit.env);
         std::mem::swap(&mut self.path, &mut exit.path);
@@ -385,7 +385,7 @@ impl Builder<'_> {
         for index in projection.path{let Returned::OwnedValue(value)=model else{unreachable!()};model=value.payloads[index].as_deref().unwrap().clone();}
         self.resolve_owned_model(&mut model,None);Some(match model{Returned::Dataset(data)=>!data.ownership.available(),Returned::OwnedValue(value)=>if value.value.ty.has_variants(){value.ownership==Ownership::Moved||matches!(value.ownership,Ownership::Conditional(_))||shape&&value.incomplete()}else{!value.available()},_=>false})
     }
-    pub(super) fn application_initial_loop(&self,body:&Block)->Result<bool>{
+    pub(super) async fn application_initial_loop(&self,body:&Block)->Result<bool>{
         fn exits(body:&Block,nested:bool)->bool{body.iter().any(|statement|match statement.kind(){
             StmtKind::Break=>!nested,StmtKind::Return(_)=>true,
             StmtKind::If(_,yes,no)=>exits(&yes,nested)||exits(&no,nested),
@@ -396,11 +396,11 @@ impl Builder<'_> {
         // 资源出口先消费真实首轮；后续回边仍沿原构造进展及位置关系处理。
         if self.application.is_some()&&self.env.values().any(|binding|!binding.application_resources().is_empty())&&exits(body,false){return Ok(true);}
         fn root(expr:&Expr)->Option<String>{match expr.kind(){ExprKind::Name(name)=>Some(name.into()),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root(&base),_=>None}}
-        Ok(effects::value_writes(self,body)?.iter().any(|expr|match self.initial_target(expr,true){Some(value)=>value,None=>match root(expr).and_then(|name|self.env.get(&name)){Some(Binding::OwnedValue(value))=>value.ownership==application::Ownership::Moved||value.incomplete(),Some(Binding::ApplicationData(data))=>data.ownership==application::Ownership::Moved,_=>false}}))
+        Ok(unsafe { self.world.call(effects::value_writes(self,body)).await }?.iter().any(|expr|match self.initial_target(expr,true){Some(value)=>value,None=>match root(expr).and_then(|name|self.env.get(&name)){Some(Binding::OwnedValue(value))=>value.ownership==application::Ownership::Moved||value.incomplete(),Some(Binding::ApplicationData(data))=>data.ownership==application::Ownership::Moved,_=>false}}))
     }
-    pub(super) fn next_initial_loop(&self,body:&Block)->Result<bool>{
-        if !self.application_initial_loop(body)?{return Ok(false);}
-        if effects::value_writes(self,body)?.iter().any(|expr|self.initial_target(expr,false)==Some(true)){return Ok(true);}
+    pub(super) async fn next_initial_loop(&self,body:&Block)->Result<bool>{
+        if !unsafe { self.world.call(self.application_initial_loop(body)).await }?{return Ok(false);}
+        if unsafe { self.world.call(effects::value_writes(self,body)).await }?.iter().any(|expr|self.initial_target(expr,false)==Some(true)){return Ok(true);}
         #[derive(PartialEq,Eq,PartialOrd,Ord)]enum Known{Owned(Vec<usize>),Payload(Vec<usize>),Boolean(usize,bool)}
         fn collect(model:&returns::Returned,path:&mut Vec<usize>,values:&mut BTreeSet<Known>){match model{returns::Returned::Dataset(data)=>{if data.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}},returns::Returned::OwnedValue(value)=>{if value.value.ty.has_variants()&&value.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}for(index,payload)in value.payloads.iter().enumerate(){if let Some(payload)=payload{path.push(index);if value.value.ty.has_variants(){values.insert(Known::Payload(path.clone()));}collect(payload,path,values);path.pop();}}},_=>{}}}
         let context=self.loop_contexts.last().unwrap();let known=|environment:&BTreeMap<String,Binding>|{let mut all=BTreeSet::new();for name in context.entry.env.keys(){
@@ -433,7 +433,7 @@ impl Builder<'_> {
 
         }
     }
-    pub(super) fn check_application_loop(&mut self, span: Span) -> Result<()> {
+    pub(super) async fn check_application_loop(&mut self, span: Span) -> Result<()> {
         if self.loop_contexts.last().unwrap().initial {
             let state = self.loop_state();
             self.loop_contexts.last_mut().unwrap().continues.push(state);
@@ -456,13 +456,13 @@ impl Builder<'_> {
                     );
                 }
                 if result.ownership == application::Ownership::Owned
-                    && !before.loop_compatible(
+                    && !unsafe { self.world.call(before.loop_compatible(
                         result,
                         self,
                         span,
                         &path,
                         &inputs,
-                    )?
+                    )).await }?
                 {
                     return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
                 }
@@ -478,7 +478,7 @@ impl Builder<'_> {
                     );
                 }
                 if before.ownership != application::Ownership::Moved
-                    && !before.loop_compatible(data,self,span,&path,&inputs)?
+                    && !unsafe { self.world.call(before.loop_compatible(data,self,span,&path,&inputs)).await }?
                 {
                     return self.fail(
                         span,
@@ -492,9 +492,9 @@ impl Builder<'_> {
         self.loop_contexts.last_mut().unwrap().continues.push(state);
         Ok(())
     }
-    pub(super) fn release_application_loop(&mut self) -> Result<()> {
+    pub(super) async fn release_application_loop(&mut self) -> Result<()> {
         let names = self.loop_contexts.last().unwrap().names.clone();
-        self.release_application_data(Some(&names),view::Borrow::default())
+        unsafe { self.world.call(self.release_application_data(Some(&names),view::Borrow::default())).await }
     }
     pub(super) fn remember_loop_control(&mut self,value:&Value){
         if let Some(context)=self.loop_contexts.last_mut(){context.controls.insert(value.regs[0],value.clone());}
@@ -559,14 +559,14 @@ impl Builder<'_> {
         self.initialized = state.initialized;
         self.control_uniform = state.control;
     }
-    pub(super) fn expand_initial_loop<F>(
+    pub(super) async fn expand_initial_loop<F>(
         &mut self,
         code: Vec<Inst>,
         next: bool,
         mut continuation: F,
     ) -> Result<(Vec<Inst>, Flow)>
     where
-        F: FnMut(&mut Self, Option<Value>) -> Result<()>,
+        F: std::ops::AsyncFnMut(&mut Self, Option<Value>) -> Result<()>,
     {
         let context = self.loop_contexts.last_mut().unwrap();
         let breaks = std::mem::take(&mut context.exits);
@@ -578,7 +578,7 @@ impl Builder<'_> {
         };
         let mut exits = Vec::new();
         let mut flow = Flow::NEXT;
-        let mut code = expand_initial_code(
+        let mut code = unsafe { self.world.call(expand_initial_code(
             self,
             code,
             &mut breaks.into_iter(),
@@ -586,15 +586,15 @@ impl Builder<'_> {
             &mut exits,
             &mut flow,
             &mut continuation,
-        )?;
+        )).await }?;
         if let Some(state) = natural {
-            code.extend(compile_initial_continuation(
+            code.extend(unsafe { self.world.call(compile_initial_continuation(
                 self,
                 state,
                 &mut exits,
                 &mut flow,
                 &mut continuation,
-            )?);
+            )).await }?);
         }
         self.loop_contexts.last_mut().unwrap().exits = exits;
         Ok((code, flow))
@@ -698,7 +698,7 @@ fn loop_exit_paths(code:&[Inst],controls:&BTreeMap<Reg,Value>,test:&owned_presen
 }
 
 // Continue is the real next-iteration edge.// Continue is the real next-iteration edge. Compile its continuation directly, without an ownership flag.
-fn compile_initial_continuation<'a, F>(
+async fn compile_initial_continuation<'a, F>(
     builder: &mut Builder<'a>,
     state: LoopState,
     exits: &mut Vec<LoopState>,
@@ -706,12 +706,12 @@ fn compile_initial_continuation<'a, F>(
     continuation: &mut F,
 ) -> Result<Vec<Inst>>
 where
-    F: FnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
+    F: std::ops::AsyncFnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
 {
     let cursor = state.cursor.clone();
     builder.restore_initial_edge(state);
     builder.flow = Flow::NEXT;
-    continuation(builder, cursor)?;
+    continuation(builder, cursor).await?;
     *flow = flow.union(builder.flow);
     let mut code = std::mem::take(&mut builder.code);
     if builder.flow.continues() {
@@ -720,7 +720,7 @@ where
     }
     Ok(code)
 }
-fn expand_initial_code<'a, F>(
+async fn expand_initial_code<'a, F>(
     builder: &mut Builder<'a>,
     code: Vec<Inst>,
     breaks: &mut impl Iterator<Item = LoopState>,
@@ -730,24 +730,24 @@ fn expand_initial_code<'a, F>(
     continuation: &mut F,
 ) -> Result<Vec<Inst>>
 where
-    F: FnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
+    F: std::ops::AsyncFnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
 {
     let mut result = Vec::new();
     for mut instruction in code {
         match &mut (instruction).kind {
             InstKind::Break => exits.push(breaks.next().unwrap()),
             InstKind::Continue => {
-                result.extend(compile_initial_continuation(
+                result.extend(unsafe { builder.world.call(compile_initial_continuation(
                     builder,
                     continues.next().unwrap(),
                     exits,
                     flow,
                     continuation,
-                )?);
+                )).await }?);
                 continue;
             }
             InstKind::If { yes, no, .. } => {
-                *yes = expand_initial_code(
+                *yes = unsafe { builder.world.call(expand_initial_code(
                     builder,
                     std::mem::take(yes),
                     breaks,
@@ -755,8 +755,8 @@ where
                     exits,
                     flow,
                     continuation,
-                )?;
-                *no = expand_initial_code(
+                )).await }?;
+                *no = unsafe { builder.world.call(expand_initial_code(
                     builder,
                     std::mem::take(no),
                     breaks,
@@ -764,10 +764,10 @@ where
                     exits,
                     flow,
                     continuation,
-                )?;
+                )).await }?;
             }
             InstKind::Scope(body) => {
-                *body = expand_initial_code(
+                *body = unsafe { builder.world.call(expand_initial_code(
                     builder,
                     std::mem::take(body),
                     breaks,
@@ -775,7 +775,7 @@ where
                     exits,
                     flow,
                     continuation,
-                )?
+                )).await }?
             }
             _ => {}
         }

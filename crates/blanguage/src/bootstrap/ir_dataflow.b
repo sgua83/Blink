@@ -1122,97 +1122,90 @@ extern "C" void fold_empty_status(Span code,usize slot,FoldHost host) on cpu
  replace_status_reads(code,host);
 }
 
-u32 fill_failure_branch(address block,address output,LowerBranch branch,u32 side,LowerHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare) requires nonzero(host.raise) requires nonzero(host.join) requires nonzero(host.scope) requires nonzero(host.branches) requires nonzero(host.finish_if)
- requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains) {
- if(side!=0){
-  if(branch.kind==4){host.store(block,output,branch.slot,branch.error);}
-  return 0;
- }
- if(branch.kind==1){host.raise(block,output,branch.error);}
- else if(branch.kind==2){return host.scope(block,output,branch.error,Word(branch.existing,branch.slot));}
- else if(branch.kind==3){
-  usize previous=host.reg(block,0);
-  usize joined=host.reg(block,0);
-  usize zero=host.reg(block,0);
-  usize present=host.reg(block,1);
-  host.load(block,output,previous,branch.slot);
-  host.constant(block,output,zero,0u64);
-  host.compare(block,output,present,previous,zero);
-  return host.branches(block,output,Word(1,present),LowerBranch(4,branch.error,branch.slot,0,previous,joined));
- }else if(branch.kind==4){
-  host.join(block,output,branch.joined,branch.previous,branch.error);
-  host.store(block,output,branch.slot,branch.joined);
- }
- return 0;
+LowerNeed lower_done(u32 flags) on cpu {
+ return LowerNeed(0,flags,unsafe_address(0u64),Word(0,0u64),LowerBranch(0,0u64,0u64,0,0u64,0u64));
 }
-
-extern "C" u32 emit_failure_if(address block,address output,address yes,address no,Word test,LowerBranch branch,LowerHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare) requires nonzero(host.raise) requires nonzero(host.join) requires nonzero(host.scope) requires nonzero(host.branches) requires nonzero(host.finish_if)
- requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains) {
- if(fill_failure_branch(block,yes,branch,0,host)!=0){return 1;}
- if(fill_failure_branch(block,no,branch,1,host)!=0){return 1;}
- usize condition=test.value;
- if(test.present==0){
-  usize zero=host.reg(block,0);
-  condition=host.reg(block,1);
-  host.constant(block,output,zero,0u64);
-  host.compare(block,output,condition,test.value,zero);
- }
- host.finish_if(block,output,condition,yes,no);
- return 0;
+LowerNeed lower_give(address state,LowerCursor cursor,LowerNeed need) on cpu {
+ unsafe_position<LowerCursor>(state)=cursor;return need;
 }
-
-extern "C" u32 lower_failure_block(address block,address output,LowerHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare) requires nonzero(host.raise) requires nonzero(host.join) requires nonzero(host.scope) requires nonzero(host.branches) requires nonzero(host.finish_if)
+LowerNeed lower_continue(address state,LowerCursor original,address block,address output,LowerHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare)
  requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains) {
- u32 flags=0;
+ LowerCursor cursor=original;
  while(true){
-  LowerNode node=host.next(block);
-  if(node.present==0){return flags;}
-  if(node.kind==1){
-   if(!effect_body(node.body,host.effects,1)){
-    host.fold(node.first,node.slot);
-    host.cleanup_scope(block,output,node.first);
-    flags|=1;
-    continue;
+  if(cursor.phase==3){cursor.flags|=1;cursor.node=host.next(block);cursor.phase=0;}
+  LowerNode node=cursor.node;
+  if(node.present==0){return lower_done(cursor.flags);}
+  if(cursor.phase==0){
+   if(node.kind==1){
+    if(!effect_body(node.body,host.effects,1)){
+     host.fold(node.first,node.slot);host.cleanup_scope(block,output,node.first);
+     cursor.flags|=1;cursor.node=host.next(block);continue;
+    }
+    host.capture(block,node.source,node.payload,1);
+    usize zero=host.reg(block,0);usize error=host.reg(block,0);usize failed=host.reg(block,1);
+    host.constant(block,output,zero,0u64);host.store(block,output,node.slot,zero);
+    host.cleanup_body(block,output,node.first);host.load(block,output,error,node.slot);
+    host.compare(block,output,failed,error,zero);
+    u32 kind=node.continuation==2 ? 2 : 1;if(kind==2){cursor.flags|=2;}
+    cursor.phase=3;
+    return lower_give(state,cursor,LowerNeed(2,0,unsafe_address(0u64),Word(1,failed),LowerBranch(kind,error,node.slot,1,0u64,0u64)));
    }
-   host.capture(block,node.source,node.payload,1);
-   usize zero=host.reg(block,0);
-   usize error=host.reg(block,0);
-   usize failed=host.reg(block,1);
-   host.constant(block,output,zero,0u64);
-   host.store(block,output,node.slot,zero);
-   host.cleanup_body(block,output,node.first);
-   host.load(block,output,error,node.slot);
-   host.compare(block,output,failed,error,zero);
-   u32 kind=node.continuation==2 ? 2 : 1;
-   if(kind==2){flags|=2;}
-   if(host.branches(block,output,Word(1,failed),LowerBranch(kind,error,node.slot,1,0u64,0u64))!=0){return 4;}
-   flags|=1;
-   continue;
-  }
-  if(node.kind==3||node.kind==4||node.kind==5){
-   u32 nested=host.child(block,node.first);
-   if((nested&4)!=0){return 4;}
-   flags|=nested;
-   if(node.kind!=3){
-    nested=host.child(block,node.second);
-    if((nested&4)!=0){return 4;}
-    flags|=nested;
+   if(node.kind==3||node.kind==4||node.kind==5){
+    cursor.phase=1;
+    return lower_give(state,cursor,LowerNeed(1,0,node.first,Word(0,0u64),LowerBranch(0,0u64,0u64,0,0u64,0u64)));
    }
   }
-  bool lower=node.kind==2 && node.continuation!=0 && (node.error.present!=0
-       ||(address_bits(node.target)!=0u64 && host.effects.contains(host.effects.known,node.target)!=0));
-  if(!lower){host.original(block,output);continue;}
+  if(cursor.phase==1&&node.kind!=3){
+   cursor.phase=2;
+   return lower_give(state,cursor,LowerNeed(1,0,node.second,Word(0,0u64),LowerBranch(0,0u64,0u64,0,0u64,0u64)));
+  }
+  bool lower=node.kind==2&&node.continuation!=0&&(node.error.present!=0
+      ||(address_bits(node.target)!=0u64&&host.effects.contains(host.effects.known,node.target)!=0));
+  if(!lower){host.original(block,output);cursor.node=host.next(block);cursor.phase=0;continue;}
   usize error=node.error.value;
   if(node.error.present==0){error=host.reg(block,0);host.set_error(node.error_slot,error);}
-  host.capture(block,node.source,node.payload,0);
-  host.original(block,output);
-  if(node.continuation==2){flags|=2;}
-  if(host.branches(block,output,Word(0,error),LowerBranch(node.continuation,error,node.slot,0,0u64,0u64))!=0){return 4;}
-  flags|=1;
+  host.capture(block,node.source,node.payload,0);host.original(block,output);
+  if(node.continuation==2){cursor.flags|=2;}
+  cursor.phase=3;
+  return lower_give(state,cursor,LowerNeed(2,0,unsafe_address(0u64),Word(0,error),LowerBranch(node.continuation,error,node.slot,0,0u64,0u64)));
  }
+}
+extern "C" LowerNeed lower_failure_start(address state,address block,address output,LowerHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare)
+ requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains) {
+ return lower_continue(state,LowerCursor(host.next(block),0,0),block,output,host);
+}
+extern "C" LowerNeed lower_failure_child(address state,address block,address output,u32 nested,LowerHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare)
+ requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains) {
+ LowerCursor cursor=unsafe_position<LowerCursor>(state);cursor.flags|=nested;
+ return lower_continue(state,cursor,block,output,host);
+}
+extern "C" LowerNeed lower_failure_branch(address state,address block,address output,LowerHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.reg) requires nonzero(host.capture) requires nonzero(host.set_error) requires nonzero(host.original) requires nonzero(host.cleanup_body) requires nonzero(host.cleanup_scope) requires nonzero(host.fold) requires nonzero(host.constant) requires nonzero(host.load) requires nonzero(host.store) requires nonzero(host.compare)
+ requires nonzero(host.effects.inspect) requires nonzero(host.effects.contains) {
+ return lower_continue(state,unsafe_position<LowerCursor>(state),block,output,host);
+}
+extern "C" FailureBranchNeed failure_branch_prepare(address block,address yes,LowerBranch branch,LowerHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.raise) requires nonzero(host.load) requires nonzero(host.constant) requires nonzero(host.compare) requires nonzero(host.join) requires nonzero(host.store) {
+ if(branch.kind==1){host.raise(block,yes,branch.error);}
+ else if(branch.kind==2){return FailureBranchNeed(1,Word(0,0u64),branch);}
+ else if(branch.kind==3){
+  usize previous=host.reg(block,0);usize joined=host.reg(block,0);
+  usize zero=host.reg(block,0);usize present=host.reg(block,1);
+  host.load(block,yes,previous,branch.slot);host.constant(block,yes,zero,0u64);
+  host.compare(block,yes,present,previous,zero);
+  return FailureBranchNeed(2,Word(1,present),LowerBranch(4,branch.error,branch.slot,0,previous,joined));
+ }else if(branch.kind==4){host.join(block,yes,branch.joined,branch.previous,branch.error);host.store(block,yes,branch.slot,branch.joined);}
+ return FailureBranchNeed(0,Word(0,0u64),branch);
+}
+extern "C" void failure_branch_finish(address block,address output,address yes,address no,Word test,LowerBranch branch,LowerHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.constant) requires nonzero(host.compare) requires nonzero(host.store) requires nonzero(host.finish_if) {
+ if(branch.kind==4){host.store(block,no,branch.slot,branch.error);}
+ usize condition=test.value;
+ if(test.present==0){usize zero=host.reg(block,0);condition=host.reg(block,1);host.constant(block,output,zero,0u64);host.compare(block,output,condition,test.value,zero);}
+ host.finish_if(block,output,condition,yes,no);
 }
 
 extern "C" void collect_dependencies(Span code,DependencyHost host) on cpu

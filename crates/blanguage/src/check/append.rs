@@ -69,7 +69,7 @@ pub(super) fn clear(
 }
 
 impl Builder<'_> {
-    pub(super) fn append(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
+    pub(super) async fn append(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
         if args.len() != 3 {
             return self.fail(
                 span,
@@ -100,7 +100,7 @@ impl Builder<'_> {
                 "append 需要普通独占元素／tile 输入域之外的可写输出及独立 inout 形状 1 资源中的 u32 计数字段；两者不能别名",
             );
         }
-        let Some(value) = self.expr(&args.at(2))? else {
+        let Some(value) = unsafe { self.world.call(self.expr(&args.at(2))).await }? else {
             return Ok(None);
         };
         self.require_same(&self.program.buffers[target].ty, &value.ty, args.at(2).span())?;

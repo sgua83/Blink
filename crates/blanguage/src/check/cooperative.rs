@@ -95,18 +95,18 @@ impl Argument {
         a.iter().any(|h| b.contains(h))
     }
 }
-pub(super) fn parameter_type(world: &World, param: &Param, context: (&Source,&str,&[String],FunctionKind), target: Target) -> Result<Ty> {
+pub(super) async fn parameter_type(world: &World, param: &Param, context: (&Source,&str,&[String],FunctionKind), target: Target) -> Result<Ty> {
     let(source,module,imports,kind)=context;
     let declared=&param.ty;
     let mut name = declared.clone();
     name.tile = false;
-    let ty = world.ty(
+    let ty = unsafe { world.call(world.ty(
         &name,
         source,
         param.span,
         module,
         imports,
-    )?;
+    )).await }?;
     if ty.owns_resources()
         && (declared.tile
             || !matches!(param.access, Access::Value | Access::Read | Access::Write | Access::InOut)
@@ -157,7 +157,7 @@ impl CallParameters<'_>{
         // The cfn producer has already checked its ordinary C ABI layout.
         Self::CFunction(_)=>DeclaredArgumentForm::Ordinary,
     }}
-    pub(super) fn expected(self,world:&World,caller:&LexicalScope,index:usize)->Result<Option<Ty>>{
+    pub(super) async fn expected(self,world:&World,caller:&LexicalScope,index:usize)->Result<Option<Ty>>{
         match self{
             Self::Declaration(definition)=>{
                 if !definition.function.types().is_empty()||!definition.function.values().is_empty(){return Ok(None);}
@@ -165,13 +165,13 @@ impl CallParameters<'_>{
                 // This declaration has no generic formals; its lexical names
                 // resolve in its own module, never through the caller's bindings.
                 let bindings=Arc::new(crate::generics::Bindings::default());
-                let syntax=bindings.type_name(world,&parameter.ty(),
-                    (&definition.source,&definition.module,&definition.imports),parameter.span())?;
-                world.ty(&syntax,&definition.source,parameter.span(),&definition.module,&definition.imports).map(Some)
+                let syntax=unsafe { world.call(bindings.type_name(world,&parameter.ty(),
+                    (&definition.source,&definition.module,&definition.imports),parameter.span())).await }?;
+                unsafe { world.call(world.ty(&syntax,&definition.source,parameter.span(),&definition.module,&definition.imports)).await }.map(Some)
             }
             Self::CFunction(parameters)=>{
                 let parameter=&parameters[index];
-                world.ty(&parameter.ty,caller.source(),parameter.span,caller.module(),caller.imports()).map(Some)
+                unsafe { world.call(world.ty(&parameter.ty,caller.source(),parameter.span,caller.module(),caller.imports())).await }.map(Some)
             }
         }
     }
@@ -190,12 +190,12 @@ impl CallParameters<'_>{
 
 impl<'a> Builder<'a> {
     #[inline(never)]
-    pub(super) fn function_arguments(&mut self, key: &str, args: &Expressions, span: Span) -> Result<Option<Vec<Argument>>> {
+    pub(super) async fn function_arguments(&mut self, key: &str, args: &Expressions, span: Span) -> Result<Option<Vec<Argument>>> {
         let callee = self.world.functions[key].clone();
-        self.call_arguments(CallParameters::Declaration(&callee), args, span)
+        unsafe { self.world.call(self.call_arguments(CallParameters::Declaration(&callee), args, span)).await }
     }
     #[inline(never)]
-    pub(super) fn source_call_argument(&mut self,parameters:CallParameters<'_>,index:usize,arg:&Expr)->Result<Option<Argument>> {
+    pub(super) async fn source_call_argument(&mut self,parameters:CallParameters<'_>,index:usize,arg:&Expr)->Result<Option<Argument>> {
         let access=parameters.access(index);
         let form=parameters.form(index);
         Ok(Some(
@@ -209,13 +209,13 @@ if form==DeclaredArgumentForm::Acceleration {
                     Argument::Acceleration(*index)
                 } else if form==DeclaredArgumentForm::Texture {
                     {
-                        let Some(texture) = self.texture_argument(&arg)? else {
+                        let Some(texture) = unsafe { self.world.call(self.texture_argument(&arg)).await }? else {
                                 return Ok(None);
                         };
                         Argument::Texture(texture)
                     }
                 } else if form==DeclaredArgumentForm::Dataset && access == Access::Value {
-                    let returned = self.evaluate_returned(&arg, None)?;
+                    let returned = unsafe { self.world.call(self.evaluate_returned(&arg, None)).await }?;
                     if !self.flow.continues() {
                         return Ok(None);
                     }
@@ -224,12 +224,12 @@ if form==DeclaredArgumentForm::Acceleration {
                     };
                     Argument::ApplicationData(data)
                 } else if form==DeclaredArgumentForm::Dataset {
-                    if let Some(data) = self.application_reference(&arg)? {
+                    if let Some(data) = unsafe { self.world.call(self.application_reference(&arg)).await }? {
                         Argument::BorrowedData(data)
                     } else if let Some(view) = self.dataset_reference(&arg)? {
                         Argument::Dataset(view)
                     } else {
-                        let argument = self.scoped_argument(&arg)?;
+                        let argument = unsafe { self.world.call(self.scoped_argument(&arg)).await }?;
                         if !self.flow.continues() {
                                 return Ok(None);
                         }
@@ -239,18 +239,18 @@ if form==DeclaredArgumentForm::Acceleration {
                     Argument::Tile(self.tile_view(&arg)?)
                 } else if access == Access::Atomic {
                     {
-                        let Some(place) = self.atomic_place(&arg)? else {
+                        let Some(place) = unsafe { self.world.call(self.atomic_place(&arg)).await }? else {
                                 return Ok(None);
                         };
                         Argument::Atomic(place)
                     }
                 } else if matches!(access, Access::InOut | Access::Write) {
-                    let Some(argument)=self.mutable_argument(&arg,access)?else{return Ok(None);};
+                    let Some(argument)=unsafe { self.world.call(self.mutable_argument(&arg,access)).await }?else{return Ok(None);};
                     argument
                 } else {
-                    let expected=parameters.expected(self.world,&self.scope,index)?;
-                    let argument=if access==Access::Read {self.read_argument(&arg,expected.as_ref())?}
-                        else {self.evaluate_returned(&arg,expected.as_ref())?.filter(|value|!matches!(value,returns::Returned::Unit)).map(Argument::resource)};
+                    let expected=unsafe { self.world.call(parameters.expected(self.world,&self.scope,index)).await }?;
+                    let argument=if access==Access::Read {unsafe { self.world.call(self.read_argument(&arg,expected.as_ref())).await }?}
+                        else {unsafe { self.world.call(self.evaluate_returned(&arg,expected.as_ref())).await }?.filter(|value|!matches!(value,returns::Returned::Unit)).map(Argument::resource)};
                     if !self.flow.continues() {
                         return Ok(None);
                     }
@@ -258,13 +258,13 @@ if form==DeclaredArgumentForm::Acceleration {
                 }
         ))
     }
-    pub(super) fn call_arguments(&mut self,parameters:CallParameters<'_>,args:&Expressions,span:Span)->Result<Option<Vec<Argument>>> {
-        self.call_arguments_from(parameters,args.len(),span,|index|args.at(index).span(),
-            |builder,index|builder.source_call_argument(parameters,index,&args.at(index)))
+    pub(super) async fn call_arguments(&mut self,parameters:CallParameters<'_>,args:&Expressions,span:Span)->Result<Option<Vec<Argument>>> {
+        unsafe { self.world.call(self.call_arguments_from(parameters,args.len(),span,|index|args.at(index).span(),
+            async |builder,index|unsafe { builder.world.call(builder.source_call_argument(parameters,index,&args.at(index))).await })).await }
     }
-    pub(super) fn call_arguments_from(&mut self,parameters:CallParameters<'_>,count:usize,span:Span,
+    pub(super) async fn call_arguments_from(&mut self,parameters:CallParameters<'_>,count:usize,span:Span,
         argument_span:impl Fn(usize)->Span,
-        mut lower:impl FnMut(&mut Self,usize)->Result<Option<Argument>>)->Result<Option<Vec<Argument>>> {
+        mut lower:impl std::ops::AsyncFnMut(&mut Self,usize)->Result<Option<Argument>>)->Result<Option<Vec<Argument>>> {
         if count != parameters.len() {return self.fail(span,"B162","函数参数数量不匹配");}
         let mut arguments=Vec::new();
         let mut held=Vec::new();
@@ -273,16 +273,16 @@ if form==DeclaredArgumentForm::Acceleration {
             let form=parameters.form(parameter_index);
             let arg_span=argument_span(parameter_index);
             self.view_uses.before(arg_span);
-            let argument=lower(self,parameter_index)?;
+            let argument=lower(self,parameter_index).await?;
             if !self.flow.continues() {self.abandon_arguments(&held);return Ok(None);}
             let Some(argument)=argument else {self.abandon_arguments(&held);return Ok(None);};
             arguments.push(argument);
             if form==DeclaredArgumentForm::Dataset && (access==Access::Write || access==Access::InOut && parameters.declares_output(parameter_index))
                 && let Some(Argument::BorrowedData(data))=arguments.last_mut()
             {
-                self.prepare_data_output(&mut data.data,arg_span)?;
+                unsafe { self.world.call(self.prepare_data_output(&mut data.data,arg_span)).await }?;
             }
-            if let Some(name) = self.hold_argument(arguments.last_mut().unwrap(), access)? {
+            if let Some(name) = unsafe { self.world.call(self.hold_argument(arguments.last_mut().unwrap(), access)).await }? {
                 held.push((arguments.len() - 1, name));
             }
         }
@@ -299,7 +299,7 @@ if form==DeclaredArgumentForm::Acceleration {
             }
         }).collect::<Vec<_>>();
         let mut retained=view::Borrow::default();
-        for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(self,name,binding,&transferred)?);}}
+        for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&unsafe { self.world.call(self.view_uses.borrow(self,name,binding,&transferred)).await }?);}}
         for argument in &arguments{if let Argument::Reference(owner)=argument{retained.union(&owner.proof.typed_view_borrow(owner.place.ty()));}}
         for(param,argument)in (0..parameters.len()).zip(&arguments){if parameters.access(param)==Access::Value{
             let resources=match argument{Argument::ApplicationData(data)=>vec![data],Argument::OwnedValue(value)=>value.resources(),_=>Vec::new()};
@@ -333,7 +333,7 @@ if form==DeclaredArgumentForm::Acceleration {
                 }
             }
             if let Argument::Reference(OwnedBinding{place,..}) | Argument::Atomic(place) = argument {
-                self.require_place_access(place,parameters.access(param),span)?;
+                unsafe { self.world.call(self.require_place_access(place,parameters.access(param),span)).await }?;
                 if let Place::ApplicationElement { identity, sources, .. } = place.storage() {
                     self.application_handle_available(*identity, span, &[],&self.path)?;
                     for source in sources {
@@ -385,17 +385,17 @@ if form==DeclaredArgumentForm::Acceleration {
         }
         Ok(())
     }
-    pub(super) fn invoke_instance(
+    pub(super) async fn invoke_instance(
         &mut self,
         instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
         syntax: Option<&Expressions>,
     ) -> Result<Option<Value>> {
-        let result = self.invoke_returned(instance, args, span, None, syntax)?;
+        let result = unsafe { self.world.call(self.invoke_returned(instance, args, span, None, syntax)).await }?;
         self.ordinary_return(result, span)
     }
-    pub(super) fn invoke_returned(
+    pub(super) async fn invoke_returned(
         &mut self,
         instance: crate::generics::Instance,
         args: Vec<Argument>,
@@ -404,8 +404,8 @@ if form==DeclaredArgumentForm::Acceleration {
         syntax: Option<&Expressions>,
     ) -> Result<Option<returns::Returned>> {
         if instance.definition.function.external().is_some() {
-            return self
-                .external_call(&instance, args, span, generated_origin)
+            return unsafe { self.world.call(self
+                .external_call(&instance, args, span, generated_origin)).await }
                 .map(|v| v.map(returns::Returned::value));
         }
         if instance.definition.compiled.is_some()
@@ -414,16 +414,16 @@ if form==DeclaredArgumentForm::Acceleration {
             if self.application.is_none() && self.program.target != Target::Cpu {
                 return self.fail(span, "B161", "已编译普通CPU模块调用需要CPU执行目标");
             }
-            return self.native_function(instance, args, span, generated_origin, syntax, None);
+            return unsafe { self.world.call(self.native_function(instance, args, span, generated_origin, syntax, None)).await };
         }
         if instance.definition.execution == crate::execution::Requirement::Domain {
             if self.application_entry() {
                 if instance.definition.function.target() == Target::Cpu
-                    && !super::kernel_interface(self.world, &instance)?
+                    && !unsafe { self.world.call(super::kernel_interface(self.world, &instance)).await }?
                 {
-                    return self.native_function(instance, args, span, generated_origin, syntax, None);
+                    return unsafe { self.world.call(self.native_function(instance, args, span, generated_origin, syntax, None)).await };
                 }
-                return self.application_execute(DomainInput::Declaration(&instance), args, Target::Cpu, span, &[]);
+                return unsafe { self.world.call(self.application_execute(DomainInput::Declaration(&instance), args, Target::Cpu, span, &[])).await };
             }
             return self.fail(
                 span,
@@ -439,9 +439,9 @@ if form==DeclaredArgumentForm::Acceleration {
                 if instance.definition.function.target() == Target::Cpu && self.program.target == Target::Cpu
                     || self.application_entry() && instance.definition.function.target() != Target::Gpu
                 {
-                    self.native_function(instance, args, span, generated_origin, syntax, None)
+                    unsafe { self.world.call(self.native_function(instance, args, span, generated_origin, syntax, None)).await }
                 } else {
-                    self.inline_instance(instance, args, span, syntax)
+                    unsafe { self.world.call(self.inline_instance(instance, args, span, syntax)).await }
                 }
             }
             FunctionKind::Constant => {
@@ -449,7 +449,7 @@ if form==DeclaredArgumentForm::Acceleration {
             }
         }
     }
-    pub(super) fn cooperate(
+    pub(super) async fn cooperate(
         &mut self,
         name: &str,
         explicit: Option<&crate::syntax::List<crate::syntax::wire::ArgumentNode>>,
@@ -480,16 +480,19 @@ if form==DeclaredArgumentForm::Acceleration {
         if args.len() != callee.function.params().len() {
             return self.fail(span, "B162", "cooperate 参数数量不匹配");
         }
-        let Some(arguments) = self.function_arguments(&key, args, span)? else {
+        let Some(arguments) = unsafe { self.world.call(self.function_arguments(&key, args, span)).await }? else {
             return Ok(None);
         };
-        let explicit=explicit.map(|arguments|self.scope.bindings().arguments(self.world,arguments,
-            (self.scope.source(),self.scope.module(),self.scope.imports()),span)).transpose()?;
-        let instance = self.specialized_arguments(key, &arguments, explicit.as_deref(), span)?;
-        let result = self.inline_instance(instance, arguments, span, Some(args))?;
+        let explicit=match explicit {
+            Some(arguments)=>Some(unsafe { self.world.call(self.scope.bindings().arguments(self.world,arguments,
+                (self.scope.source(),self.scope.module(),self.scope.imports()),span)).await }?),
+            None=>None,
+        };
+        let instance = unsafe { self.world.call(self.specialized_arguments(key, &arguments, explicit.as_deref(), span)).await }?;
+        let result = unsafe { self.world.call(self.inline_instance(instance, arguments, span, Some(args))).await }?;
         self.ordinary_return(result, span)
     }
-    pub(super) fn inline_instance(
+    pub(super) async fn inline_instance(
         &mut self,
         instance: crate::generics::Instance,
         args: Vec<Argument>,
@@ -505,19 +508,19 @@ if form==DeclaredArgumentForm::Acceleration {
             if self.program.target != Target::Gpu
                 && instance.definition.function.kind() == FunctionKind::Value
             {
-                return self.native_function(instance, args, span, None, syntax, None);
+                return unsafe { self.world.call(self.native_function(instance, args, span, None, syntax, None)).await };
             }
             return self.fail(span, "B160", "当前设备函数不允许递归调用");
         }
         let key = instance.name.clone();
         let callee = &instance.definition;
-        let result_name=instance.bindings.type_name(self.world,&callee.function.result(),
-            (&callee.source,&callee.module,&callee.imports),callee.function.span())?;
+        let result_name=unsafe { self.world.call(instance.bindings.type_name(self.world,&callee.function.result(),
+            (&callee.source,&callee.module,&callee.imports),callee.function.span())).await }?;
         let mut env = BTreeMap::new();
         let mut borrowed = Vec::new();
         let mut held = Vec::new();
         for (parameter,(param, arg)) in instance.parameters(self.world).zip(args).enumerate() {
-            let param=param?;
+            let param=unsafe { self.world.call(param).await }?;
             let arg=if let Argument::Scoped{value,owner}=arg {held.push(owner);Argument::resource(value)}else{arg};
             let arg=match arg {Argument::Value(value) if param.access==Access::Read=>Argument::Reference(self.materialize_array(value,None)),other=>other};
             if param.ty.is_acceleration() {
@@ -531,11 +534,11 @@ if form==DeclaredArgumentForm::Acceleration {
                 let Argument::Texture(index) = arg else {
                     return self.fail(span, "B239", "只读纹理参数需要相同维度的纹理资源");
                 };
-                self.texture_parameter(&param, &index,(&callee.source,&callee.module,&callee.imports),span)?;
+                unsafe { self.world.call(self.texture_parameter(&param, &index,(&callee.source,&callee.module,&callee.imports),span)).await }?;
                 env.insert(param.name.to_owned(), Binding::Texture(index));
                 continue;
             }
-            let ty = parameter_type(self.world,&param,(&callee.source,&callee.module,&callee.imports,callee.function.kind()),self.program.target)?;
+            let ty = unsafe { self.world.call(parameter_type(self.world,&param,(&callee.source,&callee.module,&callee.imports,callee.function.kind()),self.program.target)).await }?;
             let binding = match (param.ty.dataset, param.ty.tile, arg) {
                 (true, false, Argument::Dataset(view)) => {
                     let binding = view.binding;
@@ -552,13 +555,13 @@ if form==DeclaredArgumentForm::Acceleration {
                     }
                     view.access=param.access;
                     if param.ty.count.is_some()
-                        && self.world.shape(
+                        && unsafe { self.world.call(self.world.shape(
                             &param.ty.count,
                             &callee.source,
                             param.span,
                             &callee.module,
                             &callee.imports,
-                        )? != self.program.buffers[binding].count
+                        )).await }? != self.program.buffers[binding].count
                     {
                         return self.fail(span, "B167", "调用方没有声明函数需要的数据形状");
                     }
@@ -619,18 +622,18 @@ if form==DeclaredArgumentForm::Acceleration {
             };
             env.insert(param.name.to_owned(), binding);
         }
-        let requirements = contracts::resolve(self,(&instance).into(),&LexicalScope::Function(instance.clone()),&env,&BTreeMap::new())?;
-        contracts::prove(self, &requirements, span)?;
-        contracts::assume(self,(&instance).into(),&mut env,&requirements)?;
+        let requirements = unsafe { self.world.call(contracts::resolve(self,(&instance).into(),&LexicalScope::Function(instance.clone()),&env,&BTreeMap::new())).await }?;
+        unsafe { self.world.call(contracts::prove(self, &requirements, span)).await }?;
+        unsafe { self.world.call(contracts::assume(self,(&instance).into(),&mut env,&requirements)).await }?;
         let old_env = std::mem::replace(&mut self.env, env);
         let old_mutable_names = std::mem::take(&mut self.mutable_names);
         let callee_scope = LexicalScope::Function(instance.clone());
-        assigned_names(
+        unsafe { self.world.call(assigned_names(
             self.world,
             &callee_scope,
             callee.function.body().as_ref().unwrap(),
             &mut self.mutable_names,
-        )?;
+        )).await }?;
         let old_scope = self.scope.clone();
         let old_in_function = self.in_function;
         let old_cooperative = self.cooperative_root;
@@ -658,12 +661,12 @@ if form==DeclaredArgumentForm::Acceleration {
         )) && if result_name.name == "void" || result_name.is_never() {
             true
         } else {
-            let ty = self.expected_storage(&result_name, callee.function.span())?;
+            let ty = unsafe { self.world.call(self.expected_storage(&result_name, callee.function.span())).await }?;
             !ty.contains_borrows() && !ty.owns_resources()
         };
         let caller_initialization = local_initialization.then(|| std::mem::take(&mut self.initialized));
         self.materialize_array_bindings();
-        let output_inputs=outputs::current_inputs(self,&instance)?;
+        let output_inputs=unsafe { self.world.call(outputs::current_inputs(self,&instance)).await }?;
         // With no fact or resource inputs/outputs, private range paths end at this call.
         let local_bounds = self.env.values().all(|binding| matches!(binding,
             Binding::Value(value) if !value.ty.contains_borrows() && !value.ty.owns_resources()
@@ -671,12 +674,12 @@ if form==DeclaredArgumentForm::Acceleration {
         )) && if result_name.name == "void" || result_name.is_never() {
             true
         } else {
-            let ty = self.expected_storage(&result_name, callee.function.span())?;
+            let ty = unsafe { self.world.call(self.expected_storage(&result_name, callee.function.span())).await }?;
             !ty.contains_borrows() && !ty.owns_resources()
                 && bounds::Proof::fact_components(&ty).next().is_none()
         };
         let caller_path = std::mem::take(&mut self.path);
-        let (mut result,_) = self.function_body(&instance, callee.function.body().as_ref().unwrap())?;
+        let (mut result,_) = unsafe { self.world.call(self.function_body(&instance, callee.function.body().as_ref().unwrap())).await }?;
         if let Some(initialized) = caller_initialization {
             self.initialized = initialized;
         }
@@ -693,7 +696,7 @@ if form==DeclaredArgumentForm::Acceleration {
             let returned=result.as_ref().map(|value|self.returned_storage(value));
             let mut updates=Vec::new();
             for(index,_,place)in &borrowed {
-                updates.push((self.borrow_owned(place.clone()),outputs::guards(self,&instance,*index,place.ty(),&output_inputs,returned.as_ref())?));
+                updates.push((self.borrow_owned(place.clone()),unsafe { self.world.call(outputs::guards(self,&instance,*index,place.ty(),&output_inputs,returned.as_ref())).await }?));
             }
             self.env = old_env;
             let fresh_scopes: BTreeSet<_> = borrowed
@@ -716,7 +719,7 @@ if form==DeclaredArgumentForm::Acceleration {
                 self.initialize_output(place,guards);
             }
             for (owner,_) in updates {
-                self.assign_owned_proof(&owner.place, owner.proof, owner.uniform)?;
+                unsafe { self.world.call(self.assign_owned_proof(&owner.place, owner.proof, owner.uniform)).await }?;
             }
         } else {
             self.env = old_env;
@@ -731,7 +734,7 @@ if form==DeclaredArgumentForm::Acceleration {
         self.block_depth = old_block;
         self.loop_depth = old_loop;
         self.iterators = old_iterators;
-        for owner in held { self.finish_scoped_argument(&owner,span)?; }
+        for owner in held { unsafe { self.world.call(self.finish_scoped_argument(&owner,span)).await }?; }
         Ok(result)
     }
 }

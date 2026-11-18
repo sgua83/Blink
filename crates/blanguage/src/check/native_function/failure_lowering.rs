@@ -1,6 +1,5 @@
 //! Physical owners and constructors for B's native failure IR lowering.
 use super::{FailureContext, FailureContinuation, FailureScope, Module, World, Result, fallibility};
-use crate::ast::Diagnostic;
 use crate::check::application;
 use crate::ir::{BinaryOp, CallArgument, CallTarget, Comparison, GeneratedOrigin, Inst, InstKind, Reg, Scalar, SourceSite, Ty, ValueCode};
 use fallibility::{Span, Node as EffectNode};
@@ -34,7 +33,6 @@ struct Branch { kind: u32, error: Reg, slot: usize, existing: u32, previous: Reg
 struct LowerHost {
     effects: EffectRead,
     next: unsafe extern "C-unwind" fn(*mut c_void) -> LowerNode,
-    child: unsafe extern "C-unwind" fn(*mut c_void, *mut Vec<Inst>) -> u32,
     reg: unsafe extern "C-unwind" fn(*mut c_void, u32) -> Reg,
     capture: unsafe extern "C-unwind" fn(*mut c_void, *const Inst, *mut c_void, u32),
     set_error: unsafe extern "C-unwind" fn(*mut Option<Reg>, Reg),
@@ -48,8 +46,6 @@ struct LowerHost {
     compare: unsafe extern "C-unwind" fn(*mut c_void, *mut Vec<Inst>, Reg, Reg, Reg),
     raise: unsafe extern "C-unwind" fn(*mut c_void, *mut Vec<Inst>, Reg),
     join: unsafe extern "C-unwind" fn(*mut c_void, *mut Vec<Inst>, Reg, Reg, Reg),
-    scope: unsafe extern "C-unwind" fn(*mut c_void, *mut Vec<Inst>, Reg, Word) -> u32,
-    branches: unsafe extern "C-unwind" fn(*mut c_void, *mut Vec<Inst>, Word, Branch) -> u32,
     finish_if: unsafe extern "C-unwind" fn(*mut c_void, *mut Vec<Inst>, Reg, *mut Vec<Inst>, *mut Vec<Inst>),
 }
 #[repr(C)]
@@ -67,49 +63,89 @@ struct FoldHost {
     replace: unsafe extern "C-unwind" fn(*mut Inst, Reg, u32),
 }
 unsafe extern "C-unwind" {
-    #[link_name = "bootstrap.ir_dataflow::lower_failure_block"]
-    fn b_block(block: *mut c_void, output: *mut Vec<Inst>, host: LowerHost) -> u32;
-    #[link_name = "bootstrap.ir_dataflow::emit_failure_if"]
-    fn b_if(block: *mut c_void, output: *mut Vec<Inst>, yes: *mut Vec<Inst>, no: *mut Vec<Inst>, test: Word, branch: Branch, host: LowerHost) -> u32;
+    #[link_name = "bootstrap.ir_dataflow::lower_failure_start"]
+    fn b_start(state: *mut LowerCursor, block: *mut c_void, output: *mut Vec<Inst>, host: LowerHost) -> LowerNeed;
+    #[link_name = "bootstrap.ir_dataflow::lower_failure_child"]
+    fn b_child(state: *mut LowerCursor, block: *mut c_void, output: *mut Vec<Inst>, nested: u32, host: LowerHost) -> LowerNeed;
+    #[link_name = "bootstrap.ir_dataflow::lower_failure_branch"]
+    fn b_branch(state: *mut LowerCursor, block: *mut c_void, output: *mut Vec<Inst>, host: LowerHost) -> LowerNeed;
+    #[link_name = "bootstrap.ir_dataflow::failure_branch_prepare"]
+    fn b_prepare(block: *mut c_void, yes: *mut Vec<Inst>, branch: Branch, host: LowerHost) -> FailureBranchNeed;
+    #[link_name = "bootstrap.ir_dataflow::failure_branch_finish"]
+    fn b_finish(block: *mut c_void, output: *mut Vec<Inst>, yes: *mut Vec<Inst>, no: *mut Vec<Inst>, test: Word, branch: Branch, host: LowerHost);
     #[link_name = "bootstrap.ir_dataflow::fold_empty_status"]
     fn b_fold(code: Span, slot: usize, host: FoldHost);
 }
 
-// This is the original pass's resources and owned Result payload. No reference
-// into the shared State is kept across a callback that re-enters the B pass.
+// The original pass borrows the actual IR containers and Module context.
+// Only current Inst storage is fixed for B descriptors across child calls.
 struct State<'w,'b,'c,'k,'m> {
     world: &'w World,
     registers: &'b mut Vec<Scalar>, locals: &'b mut BTreeMap<usize,Ty>,
     context: Option<FailureContext<'c>>, known: &'k BTreeSet<String>,
-    module: Option<&'m mut Module>, error: Option<Diagnostic>,
+    module: Option<&'m mut Module>,
 }
 struct Origin { site: Option<Arc<SourceSite>>, generated: Option<Arc<GeneratedOrigin>> }
-struct Block {
-    state: *mut c_void, input: std::vec::IntoIter<Inst>, output: Vec<Inst>,
+struct Block<'s,'w,'b,'c,'k,'m> {
+    state: &'s mut State<'w,'b,'c,'k,'m>, input: std::vec::IntoIter<Inst>,
     current: Option<Inst>, origin: Option<Origin>, scope: Option<Box<FailureScope>>,
 }
-fn host(state: *mut c_void) -> LowerHost {
-    let known = unsafe { (&*state.cast::<State<'_,'_,'_,'_,'_>>()).known };
+#[repr(C)]
+struct LowerCursor { node: LowerNode, flags: u32, phase: u32 }
+#[repr(C)]
+struct LowerNeed { kind: u32, flags: u32, child: *mut Vec<Inst>, test: Word, branch: Branch }
+#[repr(C)]
+struct FailureBranchNeed { kind: u32, test: Word, branch: Branch }
+fn host(known: &BTreeSet<String>) -> LowerHost {
     LowerHost {
         effects: EffectRead { known: ptr::from_ref(known).cast(), inspect: fallibility::inspect, contains: fallibility::contains },
-        next, child, reg, capture, set_error, original, cleanup_body, cleanup_scope,
-        fold, constant, load, store, compare, raise, join, scope, branches, finish_if,
+        next, reg, capture, set_error, original, cleanup_body, cleanup_scope,
+        fold, constant, load, store, compare, raise, join, finish_if,
     }
 }
-fn block(code: &mut Vec<Inst>, state: *mut c_void) -> u32 {
-    let mut owner = Block { state, input: std::mem::take(code).into_iter(), output: Vec::new(), current: None, origin: None, scope: None };
-    let output = ptr::addr_of_mut!(owner.output);
-    let result = unsafe { b_block(ptr::from_mut(&mut owner).cast(),output,host(state)) };
-    if unsafe { (&*state.cast::<State<'_,'_,'_,'_,'_>>()).error.is_none() } { *code=owner.output; }
-    result
+async fn block(code: &mut Vec<Inst>, state: &mut State<'_,'_,'_,'_,'_>) -> Result<u32> {
+    let world=state.world;
+    let mut owner=Box::new(Block { state, input: std::mem::take(code).into_iter(), current: None, origin: None, scope: None });
+    let context=ptr::from_mut(owner.as_mut()).cast();
+    let mut output=Vec::new();
+    let mut cursor=std::mem::MaybeUninit::<LowerCursor>::uninit();
+    let mut need=unsafe { b_start(cursor.as_mut_ptr(),context,&mut output,host(owner.state.known)) };
+    while need.kind!=0 {
+        need=if need.kind==1 {
+            let nested=unsafe { world.call(block(&mut *need.child,&mut *owner.state)).await }?;
+            unsafe { b_child(cursor.as_mut_ptr(),context,&mut output,nested,host(owner.state.known)) }
+        } else {
+            unsafe { world.call(branches(owner.as_mut(),&mut output,need.test,need.branch)).await }?;
+            unsafe { b_branch(cursor.as_mut_ptr(),context,&mut output,host(owner.state.known)) }
+        };
+    }
+    *code=output;
+    Ok(need.flags)
 }
-pub(super) fn run(world: &World, body: &mut ValueCode, context: Option<FailureContext<'_>>, known: &BTreeSet<String>, module: Option<&mut Module>) -> Result<(bool,bool)> {
-    let mut state = State { world, registers: &mut body.registers, locals: &mut body.locals, context, known, module, error: None };
-    let result=block(&mut body.code,ptr::from_mut(&mut state).cast());
-    match state.error { Some(error) => Err(error), None => Ok((result&1!=0,result&2!=0)) }
+async fn branches(owner: &mut Block<'_,'_,'_,'_,'_,'_>, output: &mut Vec<Inst>, test: Word, branch: Branch) -> Result<()> {
+    let world=owner.state.world;
+    let context=ptr::from_mut(&mut *owner).cast();
+    let mut yes=Vec::new();let mut no=Vec::new();
+    let need=unsafe { b_prepare(context,&mut yes,branch,host(owner.state.known)) };
+    if need.kind==1 {
+        let scope=owner.scope.take().unwrap();
+        let state=&mut *owner.state;
+        yes=unsafe { world.call(super::failure_scope(world,*scope,need.branch.error,state.registers,state.locals,
+            state.context.as_mut().unwrap(),state.module.as_deref_mut().unwrap(),
+            (need.branch.existing!=0).then_some(need.branch.slot))).await }?;
+    } else if need.kind==2 {
+        unsafe { world.call(branches(owner,&mut yes,need.test,need.branch)).await }?;
+    }
+    unsafe { b_finish(context,output,&mut yes,&mut no,test,branch,host(owner.state.known)) };
+    Ok(())
+}
+pub(super) async fn run(world: &World, body: &mut ValueCode, context: Option<FailureContext<'_>>, known: &BTreeSet<String>, module: Option<&mut Module>) -> Result<(bool,bool)> {
+    let mut state=State { world, registers: &mut body.registers, locals: &mut body.locals, context, known, module };
+    let result=unsafe { world.call(block(&mut body.code,&mut state)).await }?;
+    Ok((result&1!=0,result&2!=0))
 }
 unsafe extern "C-unwind" fn next(context: *mut c_void) -> LowerNode {
-    let owner=unsafe { &mut *context.cast::<Block>() };
+    let owner=unsafe { &mut *context.cast::<Block<'_,'_,'_,'_,'_,'_>>() };
     owner.origin=None; owner.scope=None; owner.current=owner.input.next();
     let mut node=LowerNode {
         present: 0, kind: 0, source: ptr::null_mut(), first: ptr::null_mut(), second: ptr::null_mut(),
@@ -141,12 +177,8 @@ unsafe extern "C-unwind" fn next(context: *mut c_void) -> LowerNode {
     }
     node
 }
-unsafe extern "C-unwind" fn child(context: *mut c_void, code: *mut Vec<Inst>) -> u32 {
-    let state=unsafe { (*context.cast::<Block>()).state };
-    block(unsafe { &mut *code },state)
-}
 unsafe extern "C-unwind" fn reg(context: *mut c_void, boolean: u32) -> Reg {
-    let state=unsafe { &mut *(*context.cast::<Block>()).state.cast::<State<'_,'_,'_,'_,'_>>() };
+    let state=unsafe { &mut *(*context.cast::<Block<'_,'_,'_,'_,'_,'_>>()).state };
     let result=state.registers.len();state.registers.push(if boolean!=0 {Scalar::Bool} else {Scalar::U64});result
 }
 unsafe extern "C-unwind" fn capture(context: *mut c_void, source: *const Inst, payload: *mut c_void, cleanup: u32) {
@@ -159,15 +191,15 @@ unsafe extern "C-unwind" fn capture(context: *mut c_void, source: *const Inst, p
             Some(FailureContinuation::Scope(scope)) => Some(scope), _ => None,
         }
     };
-    unsafe { (*context.cast::<Block>()).origin=Some(origin);(*context.cast::<Block>()).scope=scope; }
+    unsafe { (*context.cast::<Block<'_,'_,'_,'_,'_,'_>>()).origin=Some(origin);(*context.cast::<Block<'_,'_,'_,'_,'_,'_>>()).scope=scope; }
 }
 unsafe extern "C-unwind" fn set_error(slot: *mut Option<Reg>, value: Reg) { unsafe { *slot=Some(value); } }
 unsafe extern "C-unwind" fn original(context: *mut c_void, output: *mut Vec<Inst>) {
-    let instruction=unsafe { (*context.cast::<Block>()).current.take().unwrap() };
+    let instruction=unsafe { (*context.cast::<Block<'_,'_,'_,'_,'_,'_>>()).current.take().unwrap() };
     unsafe { (&mut *output).push(instruction); }
 }
 fn generated(context: *mut c_void, kind: InstKind) -> Inst {
-    let origin=unsafe { (&*context.cast::<Block>()).origin.as_ref().unwrap() };
+    let origin=unsafe { (&*context.cast::<Block<'_,'_,'_,'_,'_,'_>>()).origin.as_ref().unwrap() };
     Inst { source_site: origin.site.clone(), generated_origin: origin.generated.clone(), ..Inst::new(kind) }
 }
 unsafe extern "C-unwind" fn cleanup_body(context: *mut c_void, output: *mut Vec<Inst>, body: *mut Vec<Inst>) {
@@ -176,7 +208,7 @@ unsafe extern "C-unwind" fn cleanup_body(context: *mut c_void, output: *mut Vec<
 }
 unsafe extern "C-unwind" fn cleanup_scope(context: *mut c_void, output: *mut Vec<Inst>, body: *mut Vec<Inst>) {
     let code=unsafe { std::mem::take(&mut *body) };
-    let mut instruction=unsafe { (*context.cast::<Block>()).current.take().unwrap() };
+    let mut instruction=unsafe { (*context.cast::<Block<'_,'_,'_,'_,'_,'_>>()).current.take().unwrap() };
     instruction.kind=InstKind::Scope(code);unsafe { (&mut *output).push(instruction); }
 }
 unsafe extern "C-unwind" fn constant(context: *mut c_void, output: *mut Vec<Inst>, dst: Reg, value: u64) {
@@ -199,21 +231,6 @@ unsafe extern "C-unwind" fn join(context: *mut c_void, output: *mut Vec<Inst>, d
     let argument=|value|CallArgument::Value { origin: None, dataset_borrow: None, ty: ty.clone(), values: vec![value] };
     let call=application::runtime_call("error_join",vec![argument(previous),argument(error)],Some(ty),vec![dst],None,None);
     let instruction=generated(context,call.kind);unsafe { (&mut *output).push(instruction); }
-}
-unsafe extern "C-unwind" fn scope(context: *mut c_void, output: *mut Vec<Inst>, value: Reg, existing: Word) -> u32 {
-    let scope=unsafe { (*context.cast::<Block>()).scope.take().unwrap() };
-    let state=unsafe { &mut *(*context.cast::<Block>()).state.cast::<State<'_,'_,'_,'_,'_>>() };
-    match super::failure_scope(state.world,*scope,value,state.registers,state.locals,state.context.as_mut().unwrap(),state.module.as_deref_mut().unwrap(),(existing.present!=0).then_some(existing.value)) {
-        Ok(code) => { unsafe { *output=code; } 0 }
-        Err(error) => { state.error=Some(error); 1 }
-    }
-}
-unsafe extern "C-unwind" fn branches(context: *mut c_void, output: *mut Vec<Inst>, test: Word, branch: Branch) -> u32 {
-    // These are the actual If's two Vec owners. No Block/State reference lives
-    // across re-entry. B fills them and chooses register/emission order.
-    let mut yes=Vec::new();let mut no=Vec::new();
-    let state=unsafe { (*context.cast::<Block>()).state };
-    unsafe { b_if(context,output,&mut yes,&mut no,test,branch,host(state)) }
 }
 unsafe extern "C-unwind" fn finish_if(context: *mut c_void, output: *mut Vec<Inst>, condition: Reg, yes: *mut Vec<Inst>, no: *mut Vec<Inst>) {
     let yes=unsafe { std::mem::take(&mut *yes) };let no=unsafe { std::mem::take(&mut *no) };

@@ -1,12 +1,12 @@
 //! Subgroup 值协作不提供任意地址写入；活动集合由当前 GPU 控制流决定。
 use super::*;
 impl Builder<'_> {
-    pub(super) fn subgroup(
+    pub(super) async fn subgroup(
         &mut self,
         name: &str,
         count: usize,
         span: Span,
-        argument: impl FnMut(&mut Self,usize)->Result<Option<Value>>,
+        argument: impl std::ops::AsyncFnMut(&mut Self,usize)->Result<Option<Value>>,
         argument_span: impl Fn(usize)->Span,
     ) -> Option<Result<Option<Value>>> {
         let op = match name {
@@ -35,14 +35,14 @@ impl Builder<'_> {
             "subgroup_exclusive_bit_xor" => SubgroupOp::ExclusiveBitXor,
             _ => return None,
         };
-        Some(self.subgroup_value(op,count,span,argument,argument_span))
+        Some(unsafe { self.world.call(self.subgroup_value(op,count,span,argument,argument_span)).await })
     }
-    fn subgroup_value(
+    async fn subgroup_value(
         &mut self,
         op: SubgroupOp,
         count: usize,
         span: Span,
-        mut lower: impl FnMut(&mut Self,usize)->Result<Option<Value>>,
+        mut lower: impl std::ops::AsyncFnMut(&mut Self,usize)->Result<Option<Value>>,
         argument_span: impl Fn(usize)->Span,
     ) -> Result<Option<Value>> {
         if self.program.target != Target::Gpu {
@@ -67,7 +67,7 @@ impl Builder<'_> {
             return self.fail(span, "B196", "subgroup 操作参数数量不符");
         }
         let value = if count>0 {
-            let Some(value) = lower(self,0)? else {
+            let Some(value) = lower(self,0).await? else {
                 return Ok(None);
             };
             Some(value)
@@ -75,7 +75,7 @@ impl Builder<'_> {
             None
         };
         let argument = if count>1 {
-            let Some(value) = lower(self,1)? else {
+            let Some(value) = lower(self,1).await? else {
                 return Ok(None);
             };
             Some(value)

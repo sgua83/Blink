@@ -89,7 +89,7 @@ impl DataPayload {
             && self.ty.owns_resources()
     }
 
-    pub(super) fn loop_compatible(&self,other:&Self,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause,inputs:&BTreeMap<ValueIdentity,bounds::Proof>)->Result<bool> {
+    pub(super) async fn loop_compatible(&self,other:&Self,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause,inputs:&BTreeMap<ValueIdentity,bounds::Proof>)->Result<bool> {
         if !self.ownership.loop_compatible(&other.ownership,inputs,path){return Ok(false);}
         let path=other.ownership.presence().condition().assume(path,true);
         if !path.possible(){return Ok(true);}
@@ -98,11 +98,11 @@ impl DataPayload {
         // An unknown counterpart is projected by the same finite model owner.
         if matches!((&self.elements,&other.elements),
             (ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_),ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_))){return Ok(true);}
-        let before=builder.element_model(&self.ty,&self.elements,(&self.residency,&[]),span)?;
-        let after=builder.element_model(&other.ty,&other.elements,(&other.residency,&[]),span)?;
+        let before=unsafe { builder.world.call(builder.element_model(&self.ty,&self.elements,(&self.residency,&[]),span)).await }?;
+        let after=unsafe { builder.world.call(builder.element_model(&other.ty,&other.elements,(&other.residency,&[]),span)).await }?;
         match(before.as_ref(),after.as_ref()){
-            (returns::Returned::OwnedValue(a),returns::Returned::OwnedValue(b))=>a.loop_compatible(b,builder,span,&path,inputs),
-            (returns::Returned::Dataset(a),returns::Returned::Dataset(b))=>a.loop_compatible(b,builder,span,&path,inputs),
+            (returns::Returned::OwnedValue(a),returns::Returned::OwnedValue(b))=>unsafe { builder.world.call(a.loop_compatible(b,builder,span,&path,inputs)).await },
+            (returns::Returned::Dataset(a),returns::Returned::Dataset(b))=>unsafe { builder.world.call(a.loop_compatible(b,builder,span,&path,inputs)).await },
             _=>Ok(true),
         }
     }
@@ -342,7 +342,7 @@ impl ApplicationLoads<'_, '_> {
         self.same(container,parent)||self.frame_descendant(container,parent)
     }
     // Resolve only metadata already produced by the original IR. No model register becomes storage.
-    fn resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(effects::StorageWrite,Ty,DataLayout)>>> {
+    async fn resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(effects::StorageWrite,Ty,DataLayout)>>> {
         let resource=resource.restricted(&self.0.path);
         if view::resource_borrow(input).restricted(&self.0.path)==resource {
             return Ok(Some(vec![(effects::StorageWrite::Frame{root:input.root.regs[0],range:None},input.ty.clone(),input.layout.clone())]));
@@ -351,12 +351,12 @@ impl ApplicationLoads<'_, '_> {
         let mut storage=Vec::new();
         for(source,when)in resource.sources.entries().filter(|(_,when)|when.possible()) {
             let view::Source::Element{parent,fields,index}=source else{return Ok(None);};
-            let Some(parents)=self.resource_storage(input,parent)?else{return Ok(None);};
+            let Some(parents)=unsafe { self.0.world.call(self.resource_storage(input,parent)).await }?else{return Ok(None);};
             for(location,ty,layout)in parents {
                 let(mut word,mut field)=(0,&ty);
                 for at in fields{let(offset,next)=field.aggregate_part(*at);word+=offset;field=next;}
                 let Some(reference)=field.dataset.as_deref()else{return Ok(None);};
-                let element=self.0.world.ty(reference,&self.0.scope.source(),self.0.scope.span(),&self.0.scope.module(),&self.0.scope.imports())?;
+                let element=unsafe { self.0.world.call(self.0.world.ty(reference,&self.0.scope.source(),self.0.scope.span(),&self.0.scope.module(),&self.0.scope.imports())).await }?;
                 let root=match location {
                     effects::StorageWrite::Descendants{root}=>{storage.push((effects::StorageWrite::Descendants{root},element,DataLayout::Declared));continue;},
                     effects::StorageWrite::Frame{root,..}=>root,
@@ -809,24 +809,24 @@ pub(super) fn runtime_call(
         values,
     }))
 }
-pub(crate) fn compile_application(
+pub(crate) async fn compile_application(
     world: &World,
     instance: &crate::generics::Instance,
 ) -> Result<crate::application::Application> {
     let d = &instance.definition;
     validate_signature(d)?;
-    let result_name=instance.bindings.type_name(world,&d.function.result(),
-        (&d.source,&d.module,&d.imports),d.function.span())?;
+    let result_name=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),
+        (&d.source,&d.module,&d.imports),d.function.span())).await }?;
     let result = if result_name.name == "void" || result_name.is_never() {
         None
     } else {
-        Some(world.ty(
+        Some(unsafe { world.call(world.ty(
             &result_name,
             &d.source,
             d.function.span(),
             &d.module,
             &d.imports,
-        )?)
+        )).await }?)
     };
     if d.function.kind() != FunctionKind::Value
         || d.function.external().is_some()
@@ -860,15 +860,15 @@ pub(crate) fn compile_application(
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
-    let mut builder = Builder::new(world, instance, &context, 0, Some(&instance.name))?;
+    let mut builder = unsafe { world.call(Builder::new(world, instance, &context, 0, Some(&instance.name))).await }?;
     let entry_anchor = GenerationAnchor::Definition {
         origin: d.source_origin().map(Arc::new), instance: Arc::from(instance.name.as_str()),
     };
     builder.application = Some(Context::default());
     builder.in_function = true;
-    let result = builder.native_function(instance.clone(), Vec::new(), d.function.span(), Some(Arc::new(GeneratedOrigin {
+    let result = unsafe { builder.world.call(builder.native_function(instance.clone(), Vec::new(), d.function.span(), Some(Arc::new(GeneratedOrigin {
         reason: GenerationReason::ApplicationEntryCall, trigger: Some(entry_anchor.clone()),
-    })), None, None)?;
+    })), None, None)).await }?;
     let result = builder.ordinary_return(result, d.function.span())?.unwrap();
     let app = builder.application.take().unwrap();
     let mut body = ValueCode {
@@ -880,7 +880,7 @@ pub(crate) fn compile_application(
         inputs: Vec::new(),
         outputs: result.regs,
     };
-    let finalized = native_function::finish(world, builder.functions, &mut body, &builder.view_model)?;
+    let finalized = unsafe { world.call(native_function::finish(world, builder.functions, &mut body, &builder.view_model)).await }?;
     let mut functions = finalized.functions;
     let imports = finalized.imports;
     let resources = live_resources(&mut body, &mut functions, app.frame, finalized.resources, &entry_anchor);
@@ -1066,7 +1066,7 @@ fn live_resources(
 impl Builder<'_> {
     // 独立检查 CPU 函数时，参数提供符号身份和真实接口形状；不创建物理存储。
     // Invocation read/write/inout/atomic交接原实际地址及布局，Host借用与拥有值沿原Frame句柄。
-    pub(super) fn application_parameter(
+    pub(super) async fn application_parameter(
         &mut self,
         binding: usize,
         parameter: usize,
@@ -1101,7 +1101,7 @@ impl Builder<'_> {
             None
         };
         let element_ty=self.program.buffers[binding].ty.clone();
-        let mut model = self.unknown_element_model(&element_ty, (&residency::Residency::parameter(parameter), &[]))?;
+        let mut model = unsafe { self.world.call(self.unknown_element_model(&element_ty, (&residency::Residency::parameter(parameter), &[]))).await }?;
         if access == Access::Write {
             model.restrict_owned(&owned_presence::Presence::None);
         }
@@ -1261,9 +1261,9 @@ impl Builder<'_> {
         let length=(data.length.minimum()==data.length.maximum()).then(||data.length.minimum());
         complete(self,scope,word,length,initialized,owned_presence::Presence::All)
     }
-    pub(super) fn require_application_initialized(&mut self, data: &Data, span: Span) -> Result<()> {
+    pub(super) async fn require_application_initialized(&mut self, data: &Data, span: Span) -> Result<()> {
         if data.length.maximum()!=0 && !matches!(data.elements,ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_)) {
-            let mut model=self.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)?;
+            let mut model=unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)).await }?;
             self.resolve_owned_model(&mut model,None);
             let(available,resources)=match model.as_ref(){
                 returns::Returned::OwnedValue(value)=>(value.all_available(),value.resources()),
@@ -1271,7 +1271,7 @@ impl Builder<'_> {
                 _=>(true,Vec::new()),
             };
             if !available{return self.fail(span,"B227","完整dataset交接需要全部活动拥有元素；移出位置须先补回");}
-            for resource in resources{self.require_application_initialized(resource,span)?;}
+            for resource in resources{unsafe { self.world.call(self.require_application_initialized(resource,span)).await }?;}
         }
         if !self.application_initialized(data)
             && !self.defer_position_initialization(data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),"B142",span)? {
@@ -1309,7 +1309,7 @@ impl Builder<'_> {
         };
         Ok(frame)
     }
-    pub(super) fn task_call(
+    pub(super) async fn task_call(
         &mut self, name:&str, args:&Expressions, span:Span,
     ) -> Result<Option<returns::Returned>> {
         use returns::Returned;
@@ -1318,14 +1318,14 @@ impl Builder<'_> {
         }
         if name=="wait_task" {
             if args.len()!=1 { return self.fail(span,"B157","wait_task需要一个实际拥有任务"); }
-            let Some(owner)=self.evaluate_returned(&args.at(0),None)? else {return Ok(None);};
+            let Some(owner)=unsafe { self.world.call(self.evaluate_returned(&args.at(0),None)).await }? else {return Ok(None);};
             let Returned::OwnedValue(owner)=owner else {
                 return self.fail(span,"B224","wait_task需要一个实际拥有任务");
             };
             if owner.value.ty.task_result().is_none() {
                 return self.fail(span,"B224","wait_task需要一个实际拥有任务");
             }
-            return self.wait_task_value(owner.value, span, |_, value| Ok(Some(value)));
+            return unsafe { self.world.call(self.wait_task_value(owner.value, span, async |_, value| Ok(Some(value)))).await };
         }
         if args.len()<2 {
             return self.fail(span,"B157","start_task需要静态普通CPU函数、拥有参数记录和借用位置");
@@ -1348,11 +1348,11 @@ impl Builder<'_> {
             return self.fail(span,"B157","按值参数放入拥有记录，借用位置按声明顺序提供");
         }
         let source=args.at(1);
-        let Some(mut input)=self.evaluate_returned(&source,None)? else {return Ok(None);};
+        let Some(mut input)=unsafe { self.world.call(self.evaluate_returned(&source,None)).await }? else {return Ok(None);};
         let mut datasets=Vec::new();
         residency::visit(&mut input,&mut residency::Input::new(0),&mut |data,_|datasets.push(data.clone()));
         for data in datasets {
-            self.require_application_initialized(&data,span)?;
+            unsafe { self.world.call(self.require_application_initialized(&data,span)).await }?;
             self.application_cpu(&data,span)?;
         }
         let packed=self.returned_storage(&input);
@@ -1374,12 +1374,12 @@ impl Builder<'_> {
             }
         }).collect::<Vec<_>>();
         let mut field=0;
-        let parameters=self.call_arguments_from(
+        let parameters=unsafe { self.world.call(self.call_arguments_from(
             signature,declared.len(),span,
             |index|positions[index].as_ref().map_or(source.span(),Expr::span),
-            |builder,index| {
+            async |builder,index| {
                 if let Some(arg)=&positions[index] {
-                    let argument=builder.source_call_argument(signature,index,arg)?;
+                    let argument=unsafe { builder.world.call(builder.source_call_argument(signature,index,arg)).await }?;
                     let available=match argument.as_ref() {
                         None | Some(cooperative::Argument::Reference(_)
                             | cooperative::Argument::Value(_)
@@ -1409,14 +1409,14 @@ impl Builder<'_> {
                 field+=1;
                 Ok(Some(cooperative::Argument::resource(value)))
             },
-        )?;
+        )).await }?;
         let Some(parameters)=parameters else {return Ok(None);};
         if let Some(held)=held {self.env.remove(&held);}
-        let worker=self.specialized_function(key,&parameters,span)?;
-        self.native_function(worker,parameters,span,None,None,Some(packed))
+        let worker=unsafe { self.world.call(self.specialized_function(key,&parameters,span)).await }?;
+        unsafe { self.world.call(self.native_function(worker,parameters,span,None,None,Some(packed))).await }
     }
 
-    pub(super) fn emit_task_start(&mut self,worker:&str,source:Value,arguments:Vec<CallArgument>,captured:view::Borrow,
+    pub(super) async fn emit_task_start(&mut self,worker:&str,source:Value,arguments:Vec<CallArgument>,captured:view::Borrow,
         result:Ty,mut outputs:Vec<view::Borrow>,initialized:view::Borrow,guards:Vec<(usize, outputs::TaskGuard)>,conditional_positions:Vec<Position>,
         borrowed_arguments:BTreeMap<usize,Option<(Ty,Access)>>,dataset_writes:Vec<(Access, DataReference)>,
         retired_outputs:Vec<(Place,returns::Returned)>,memory:usize,call:usize,span:Span)
@@ -1513,12 +1513,12 @@ impl Builder<'_> {
         let cleanup = if drop_positions.is_empty() && drop_datasets.is_empty() && !result.owns_resources() {
             None
         } else {
-            Some(self.task_completion_cleanup(&drop_positions, &drop_datasets, &result, span)?)
+            Some(unsafe { self.world.call(self.task_completion_cleanup(&drop_positions, &drop_datasets, &result, span)).await }?)
         };
         let selector = if selection.is_empty() {
             None
         } else {
-            Some(self.task_selection(&packed, &result, &selection, span)?)
+            Some(unsafe { self.world.call(self.task_selection(&packed, &result, &selection, span)).await }?)
         };
         let error_ty=Ty::task_start_error(source.ty.clone()).ok_or_else(||Diagnostic{
             source:self.scope.source().clone(),span,code:"B224",message:"任务错误载荷布局过大".into(),
@@ -1581,7 +1581,7 @@ impl Builder<'_> {
         }
         let value=Value{ty:result,regs:values,proof,uniform:false,literal:false,constant:None};
         let accepted=owned_presence::Presence::input(&self.result_condition(&value,span)?);
-        self.owned_when(&accepted,span,None,None,|builder| {
+        unsafe { self.world.call(self.owned_when(&accepted,span,None,None,async |builder| {
             let owner=argument(builder.result_payload(&value,true).unwrap());
             let submit=|builder:&mut Builder<'_>| {
                 for (_, reference) in &dataset_writes {
@@ -1617,22 +1617,22 @@ impl Builder<'_> {
                 return submit(builder);
             }
             let consumed=retired_outputs.iter().map(|(place,_)|place.clone()).collect();
-            builder.cleanup_group(consumed,|builder| {
+            unsafe { builder.world.call(builder.cleanup_group(consumed,async |builder| {
                 for (_,old) in retired_outputs {
-                    builder.drop_returned(old,&view::Borrow::default(),span)?;
+                    unsafe { builder.world.call(builder.drop_returned(old,&view::Borrow::default(),span)).await }?;
                 }
                 for reference in retired_datasets {
-                    builder.retire_application_elements(reference, span)?;
+                    unsafe { builder.world.call(builder.retire_application_elements(reference, span)).await }?;
                 }
                 submit(builder)
-            })
-        })?;
+            })).await }
+        })).await }?;
         if !conditional_positions.is_empty() {
             let positions=conditional_positions.into_iter()
                 .map(|position|Position::selected(accepted.clone(),position,Position::Initialized)).collect::<Vec<_>>();
             self.forget_output_positions(&positions,span)?;
         }
-        self.task_value(value, residency::Residency::cpu()).map(Some)
+        unsafe { self.world.call(self.task_value(value, residency::Residency::cpu())).await }.map(Some)
     }
 
     fn task_argument_packet(&mut self,arguments:Vec<CallArgument>,borrowed_arguments:&BTreeMap<usize,Option<(Ty,Access)>>,span:Span)->Result<Value> {
@@ -1699,7 +1699,7 @@ impl Builder<'_> {
         Ok(layout)
     }
 
-    pub(super) fn complete_task_input_slots(&mut self,completions:&[view::TaskInputCompletion],
+    pub(super) async fn complete_task_input_slots(&mut self,completions:&[view::TaskInputCompletion],
         layout:&Ty,slots:&[usize],base:u32,span:Span)->Result<()> {
         let mut outputs=Vec::<Arc<native_function::TaskCompletionOutput>>::new();
         for input in completions {
@@ -1712,7 +1712,7 @@ impl Builder<'_> {
             let output=Arc::new(native_function::TaskCompletionOutput{
                 result:input.result.clone(),layout:input.layout.clone(),slots:words,task:input.task.clone(),parent,span,
             });
-            output.complete_if_ready(self)?;
+            unsafe { self.world.call(output.complete_if_ready(self)).await }?;
             outputs.push(output);
         }
         Ok(())
@@ -1726,13 +1726,13 @@ impl Builder<'_> {
         }
     }
 
-    pub(super) fn wait_task_value<T>(&mut self, mut owner: Value, span: Span,
-        consume: impl FnOnce(&mut Self, returns::Returned) -> Result<T>,
+    pub(super) async fn wait_task_value<T>(&mut self, mut owner: Value, span: Span,
+        consume: impl std::ops::AsyncFnOnce(&mut Self, returns::Returned) -> Result<T>,
     ) -> Result<T> {
         let result=owner.ty.task_result().unwrap().clone();
         let sources=owner.proof.view_borrow(0);
         let writes=sources.task_projection(view::TaskProjection::Writes).restricted(&self.path);
-        let memory=self.call_address_memory([(writes,Some(Access::Write))],span)?;
+        let memory=unsafe { self.world.call(self.call_address_memory([(writes,Some(Access::Write))],span)).await }?;
         owner.ty=Ty::scalar(Scalar::U64);
         let completion=self.task_completion_destination(owner.regs[0],&result,&sources);
         let identity=completion.and_then(|(_,identity)|identity);
@@ -1768,7 +1768,7 @@ impl Builder<'_> {
         }
         self.emit(call.kind);
         // In a cleanup group an error is saved while sibling destructors continue.
-        let complete=|builder:&mut Self| {
+        let complete=async |builder:&mut Self| {
             let completion=completion.map(|(address,_)| {
                 let zero=builder.constant(Scalar::U32,0).regs[0];
                 let payload=builder.reg(Scalar::U32);
@@ -1821,16 +1821,16 @@ impl Builder<'_> {
                 proof=proof.with_view_borrow(component,borrow);
             }
             let result=Value{ty:result,regs,proof,uniform:false,literal:false,constant:None};
-            builder.complete_task_owned_places(&sources,|_,_|Some(result.clone()),None,
-                |builder,completions|match &local {
-                    Some(output)=>output.complete_inputs(builder,completions),
+            unsafe { builder.world.call(builder.complete_task_owned_places(&sources,|_,_|Some(result.clone()),None,
+                async |builder,completions|match &local {
+                    Some(output)=>unsafe { builder.world.call(output.complete_inputs(builder,completions)).await },
                     None=>Ok(()),
-                },span)?;
-            let result = if result.ty.size == 0 { returns::Returned::Unit } else { builder.task_value(result, residency::Residency::task_transfer())? };
-            consume(builder, result)
+                },span)).await }?;
+            let result = if result.ty.size == 0 { returns::Returned::Unit } else { unsafe { builder.world.call(builder.task_value(result, residency::Residency::task_transfer())).await }? };
+            consume(builder, result).await
         };
         if self.pending_error.is_none() {
-            return complete(self);
+            return complete(self).await;
         }
         let zero=self.constant(Scalar::U64,0).regs[0];
         let condition=self.reg(Scalar::Bool);
@@ -1843,21 +1843,21 @@ impl Builder<'_> {
             uniform:false,literal:false,constant:None,
         };
         let mut outcome=None;
-        self.conditional_blocks(success,|builder| {
-            outcome=Some(complete(builder)?);
+        unsafe { self.world.call(self.conditional_blocks(success,async |builder| {
+            outcome=Some(complete(builder).await?);
             Ok(())
-        },|builder|match &local {
-            Some(output) if output.has_owned_outputs()=>output.complete_if_ready(builder),
+        },async |builder|match &local {
+            Some(output) if output.has_owned_outputs()=>unsafe { builder.world.call(output.complete_if_ready(builder)).await },
             _=>Ok(()),
-        },span)?;
+        },span)).await }?;
         Ok(outcome.unwrap())
     }
 
-    fn task_value(&mut self, mut value: Value, location: residency::Residency) -> Result<returns::Returned> {
+    async fn task_value(&mut self, mut value: Value, location: residency::Residency) -> Result<returns::Returned> {
         use returns::Returned;
         let mut value=if value.ty.owns_resources() {
             value.proof=bounds::Proof::capture(&value);
-            self.template_returned(value,true)?
+            unsafe { self.world.call(self.template_returned(value,true)).await }?
         } else { Returned::value(value) };
         residency::visit(&mut value,&mut residency::Input::new(0),
             &mut |data,_| data.residency=location.clone());
@@ -1920,21 +1920,21 @@ impl Builder<'_> {
         )
     }
 
-    pub(super) fn application_drop(&mut self, data: &Data, retained: &view::Borrow, span: Span) -> Result<()> {
-        self.application_drop_with(data, retained, span, Self::drop_application_elements)
+    pub(super) async fn application_drop(&mut self, data: &Data, retained: &view::Borrow, span: Span) -> Result<()> {
+        unsafe { self.world.call(self.application_drop_with(data, retained, span, Self::drop_application_elements)).await }
     }
 
-    pub(super) fn drop_task_owned_dataset(&mut self, data: &Data, retained: &view::Borrow, span: Span) -> Result<()> {
-        self.application_drop_with(data, retained, span, |builder, data, _, span| {
-            builder.drop_application_elements_with(data, span, |builder, _, place| {
-                builder.drop_task_completion_element(&place, span)
-            })
-        })
+    pub(super) async fn drop_task_owned_dataset(&mut self, data: &Data, retained: &view::Borrow, span: Span) -> Result<()> {
+        unsafe { self.world.call(self.application_drop_with(data, retained, span, async |builder, data, _, span| {
+            unsafe { builder.world.call(builder.drop_application_elements_with(data, span, async |builder, _, place| {
+                unsafe { builder.world.call(builder.drop_task_completion_element(&place, span)).await }
+            })).await }
+        })).await }
     }
 
-    fn application_drop_with(
+    async fn application_drop_with(
         &mut self, data: &Data, retained: &view::Borrow, span: Span,
-        drop_elements: impl FnOnce(&mut Self, &DataReference, &view::Borrow, Span) -> Result<()>,
+        drop_elements: impl std::ops::AsyncFnOnce(&mut Self, &DataReference, &view::Borrow, Span) -> Result<()>,
     ) -> Result<()> {
         // Child resources are consumed by their actual element cleanup below.
         // Releasing this allocation only ends positions in its own storage.
@@ -1945,16 +1945,16 @@ impl Builder<'_> {
         let handle=if data.ty.owns_resources() && data.length.maximum()!=0 {
             let refreshed;
             let data=if let Some(place)=&data.place {
-                refreshed=self.read_cleanup_storage(place,|builder|builder.refresh_application_data(data.clone(),span))?;
+                refreshed=unsafe { self.world.call(self.read_cleanup_storage(place,async |builder|unsafe { builder.world.call(builder.refresh_application_data(data.clone(),span)).await })).await }?;
                 &refreshed
             } else {
                 data
             };
-            drop_elements(self, &DataReference::direct(data.clone()), retained, span)?;
+            drop_elements(self, &DataReference::direct(data.clone()), retained, span).await?;
             data.root.regs[0]
         } else if let Some(place)=&data.place {
             let place=place.clone().project(Ty::scalar(Scalar::U32),&[0]);
-            self.read_cleanup_storage(&place,|builder|builder.read_place(&place,span,None))?.regs[0]
+            unsafe { self.world.call(self.read_cleanup_storage(&place,async |builder|unsafe { builder.world.call(builder.read_place(&place,span,None)).await })).await }?.regs[0]
         } else {
             data.root.regs[0]
         };
@@ -2000,7 +2000,7 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn application_borrowed(&self,identity:ValueIdentity)->Result<bool>{Ok(self.application_view_borrowed(identity)?||self.application_position_borrowed(identity))}
+    pub(super) async fn application_borrowed(&self,identity:ValueIdentity)->Result<bool>{Ok(unsafe { self.world.call(self.application_view_borrowed(identity)).await }?||self.application_position_borrowed(identity))}
     pub(super) fn application_position_borrowed(&self, identity: ValueIdentity) -> bool {
         self.env.iter().filter(|(name,_)|self.view_uses.used(name)).any(|(_,binding)| {
             let place = match binding {
@@ -2035,7 +2035,7 @@ impl Builder<'_> {
         value.proof = bounds::Proof::capture(&value);
         value
     }
-    pub(super) fn application_value(&mut self, name: &str, span: Span) -> Result<Option<Data>> {
+    pub(super) async fn application_value(&mut self, name: &str, span: Span) -> Result<Option<Data>> {
         let Some(Binding::ApplicationData(mut data)) = self.env.get(name).cloned() else {
             return Ok(None);
         };
@@ -2043,16 +2043,16 @@ impl Builder<'_> {
         data.residency=self.resolve_owned_residency(&data.residency,None);
         self.application_available(&data, span)?;
         self.prepare_owned_read(&returns::Returned::Dataset(data.clone()));
-        data = self.refresh_application_data(data,span)?;
+        data = unsafe { self.world.call(self.refresh_application_data(data,span)).await }?;
         if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
             source.root.proof = data.root.proof.clone();
             source.length.proof = data.length.proof.clone();
         }
         Ok(Some(data))
     }
-    pub(super) fn refresh_application_data(&mut self,mut data:Data,span:Span)->Result<Data> {
+    pub(super) async fn refresh_application_data(&mut self,mut data:Data,span:Span)->Result<Data> {
         if let Some(place)=&data.place {
-            let value=self.read_storage_value(place,span, None)?;data.root.regs=vec![value.regs[0]];data.length.regs=vec![value.regs[1]];
+            let value=unsafe { self.world.call(self.read_storage_value(place,span, None)).await }?;data.root.regs=vec![value.regs[0]];data.length.regs=vec![value.regs[1]];
             data.root.proof=bounds::Proof::capture(&data.root);
             data.length.proof=bounds::Proof::capture(&data.length).with_domains(Domains::from([IndexDomain::ApplicationLength(data.root.identity())]));
             data.length.constant=data.length.proof.known_value(&data.length.ty);
@@ -2072,8 +2072,8 @@ impl Builder<'_> {
         }
         data
     }
-    pub(super) fn release_application_data(&mut self,keep:Option<&BTreeSet<String>>,retained:view::Borrow)->Result<()> {
-        self.cleanup_group(Vec::new(),|builder|{
+    pub(super) async fn release_application_data(&mut self,keep:Option<&BTreeSet<String>>,retained:view::Borrow)->Result<()> {
+        unsafe { self.world.call(self.cleanup_group(Vec::new(),async |builder|{
         let mut names=builder.env.iter()
             .filter(|(name,_)|!keep.is_some_and(|names|names.contains(*name)))
             .filter_map(|(name,binding)|match binding {
@@ -2094,14 +2094,14 @@ impl Builder<'_> {
             let mut remaining=retained.clone();
             for future in &names {
                 if future.starts_with('\0'){
-                    remaining.union(&user_owned::cleanup_borrow(builder,&builder.env[future],&BTreeSet::new())?);
+                    remaining.union(&unsafe { builder.world.call(user_owned::cleanup_borrow(builder,&builder.env[future],&BTreeSet::new())).await }?);
                 }
             }
             // Implicit waits can update another destination before its own cleanup.
             if let Binding::ApplicationData(data) = &binding && data.owns_write_elements() {
-                builder.drop_application_elements(&DataReference::direct(data.clone()), &remaining, builder.scope.span())?;
+                unsafe { builder.world.call(builder.drop_application_elements(&DataReference::direct(data.clone()), &remaining, builder.scope.span())).await }?;
             } else {
-                builder.drop_binding(binding,&remaining,builder.scope.span())?;
+                unsafe { builder.world.call(builder.drop_binding(binding,&remaining,builder.scope.span())).await }?;
             }
             if name.starts_with('\0'){
                 builder.env.remove(&name);
@@ -2114,7 +2114,7 @@ impl Builder<'_> {
             }
         }
         Ok(())
-            })
+            })).await }
     }
     pub(super) fn application_data_type(
         &self,
@@ -2132,7 +2132,7 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn application_declare(
+    pub(super) async fn application_declare(
         &mut self,
         annotation: &TypeName,
         name: &str,
@@ -2140,20 +2140,20 @@ impl Builder<'_> {
     ) -> Result<()> {
         self.application_frame(span)?;
         let scope = &self.scope;
-        let ty = self.world.ty(
+        let ty = unsafe { self.world.call(self.world.ty(
             annotation,
             scope.source(),
             span,
             scope.module(),
             scope.imports(),
-        )?;
-        let count = self.world.shape(
+        )).await }?;
+        let count = unsafe { self.world.call(self.world.shape(
             &annotation.count,
             scope.source(),
             span,
             scope.module(),
             scope.imports(),
-        )?;
+        )).await }?;
         let slots = self.local_slots(&Ty::owned_dataset((ty.clone()).syntax(), count)).0;
         let handle = self.reg(Scalar::U32);
         let length = self.reg(Scalar::U32);
@@ -2186,7 +2186,7 @@ impl Builder<'_> {
         );
         Ok(())
     }
-    pub(super) fn application_assign(
+    pub(super) async fn application_assign(
         &mut self,
         name: &str,
         target: Data,
@@ -2204,19 +2204,19 @@ impl Builder<'_> {
         if target.ownership == Ownership::Borrowed {
             return self.fail(span, "B227", "借用的 dataset 不能替换其资源所有者");
         }
-        let Some(mut value) = self.application_resource(rhs, span)? else {
+        let Some(mut value) = unsafe { self.world.call(self.application_resource(rhs, span)).await }? else {
             return Ok(());
         };
         self.application_data_type(&mut value, &target.ty, target.count, span)?;
         self.view_uses.after(span);
         if matches!(&self.env[name], Binding::ApplicationData(data) if data.ownership == Ownership::Owned)
         {
-            let old = self.application_value(name, span)?.unwrap();
-            self.drop_returned(returns::Returned::Dataset(old),&view::Borrow::default(),span)?;
+            let old = unsafe { self.world.call(self.application_value(name, span)).await }?.unwrap();
+            unsafe { self.world.call(self.drop_returned(returns::Returned::Dataset(old),&view::Borrow::default(),span)).await }?;
         }
         let place=target.place.unwrap();let packed=self.returned_storage(&returns::Returned::Dataset(value.clone()));
         let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetAssignSlots,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
-        self.write_storage_value(&place,&packed,span,Some(origin))?;value.place=Some(place);
+        unsafe { self.world.call(self.write_storage_value(&place,&packed,span,Some(origin))).await }?;value.place=Some(place);
         value.count = target.count;
         value.ownership = Ownership::Owned;
         value.access = Access::InOut;
@@ -2227,17 +2227,17 @@ impl Builder<'_> {
         Ok(())
     }
     #[inline(never)]
-    pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
-        match self.evaluate_returned(expr, None)? {
+    pub(super) async fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
+        match unsafe { self.world.call(self.evaluate_returned(expr, None)).await }? {
             Some(returns::Returned::Dataset(data)) => Ok(Some(data)),
             None => Ok(None),
             _ => self.fail(span, "B224", "dataset 资源需要同类型拥有值，不能由普通值或聚合整体替代"),
         }
     }
     #[inline(never)]
-    pub(super) fn move_application_dataset(&mut self, name: &str, span: Span) -> Result<Option<Data>> {
+    pub(super) async fn move_application_dataset(&mut self, name: &str, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
-        let Some(mut data) = self.application_value(name, span)? else {
+        let Some(mut data) = unsafe { self.world.call(self.application_value(name, span)).await }? else {
             return self.fail(span, "B224", "dataset 移动需要应用拥有的实际资源");
         };
         if data.ownership != Ownership::Owned {
@@ -2254,26 +2254,26 @@ impl Builder<'_> {
         Ok(Some(data))
     }
     #[inline(never)]
-    pub(super) fn resize_application_dataset(&mut self, args: &Expressions, span: Span) -> Result<Option<Data>> {
+    pub(super) async fn resize_application_dataset(&mut self, args: &Expressions, span: Span) -> Result<Option<Data>> {
         if args.len() != 3 {
             return self.fail(span, "B266", "resize(data,length,fill) 消费拥有的 CPU dataset，以同型值初始化新增位置");
         }
-        let Some(returned) = self.evaluate_returned(&args.at(0), None)? else { return Ok(None); };
+        let Some(returned) = unsafe { self.world.call(self.evaluate_returned(&args.at(0), None)).await }? else { return Ok(None); };
         let returns::Returned::Dataset(data) = returned else {
             return self.fail(args.at(0).span(), "B224", "resize 需要一份拥有的 dataset");
         };
-        let data = self.refresh_application_data(data, span)?;
+        let data = unsafe { self.world.call(self.refresh_application_data(data, span)).await }?;
         if data.ownership != Ownership::Owned {
             return self.fail(args.at(0).span(), "B227", "dataset 借用不拥有调整存储长度的权利");
         }
-        self.require_application_initialized(&data, span)?;
+        unsafe { self.world.call(self.require_application_initialized(&data, span)).await }?;
         self.application_cpu(&data, span)?;
         let input=self.hold_binding(Binding::ApplicationData(data.clone()));
-        let Some(length) = self.expr(&args.at(1))? else { return Ok(None); };
+        let Some(length) = unsafe { self.world.call(self.expr(&args.at(1))).await }? else { return Ok(None); };
         self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args.at(1).span())?;
-        let Some(mut returned) = self.evaluate_returned(&args.at(2), Some(&data.ty))? else { return Ok(None); };
-        self.check_returned_type(&mut returned, &data.ty, args.at(2).span())?;
-        self.require_returned_initialized(&mut returned, args.at(2).span())?;
+        let Some(mut returned) = unsafe { self.world.call(self.evaluate_returned(&args.at(2), Some(&data.ty))).await }? else { return Ok(None); };
+        unsafe { self.world.call(self.check_returned_type(&mut returned, &data.ty, args.at(2).span())).await }?;
+        unsafe { self.world.call(self.require_returned_initialized(&mut returned, args.at(2).span())).await }?;
         let fill = self.returned_storage(&returned);
         if fill.ty.contains_views() {
             return self.fail(args.at(2).span(), "B224", "resize 填充值不能复制 view 借用图");
@@ -2281,7 +2281,7 @@ impl Builder<'_> {
         let mut retained = fill.proof.typed_view_borrow(&fill.ty);
         for borrow in view_contracts::resource_borrows(&returned) { retained.union(&borrow); }
         self.view_uses.invocation(span);
-        retained.union(&self.view_uses.all(self,&[view_liveness::Transfer::OwnedData(&data)])?);
+        retained.union(&unsafe { self.world.call(self.view_uses.all(self,&[view_liveness::Transfer::OwnedData(&data)])).await }?);
         self.application_movable(&data, &retained, span)?;
         if fill.ty.owns_resources() {
             let exact = data.length.minimum() == data.length.maximum()
@@ -2364,47 +2364,47 @@ impl Builder<'_> {
         }))?;
         Ok(data)
     }
-    pub(super) fn take_last_application_dataset(&mut self,args:&Expressions,span:Span)->Result<Option<Data>> {
+    pub(super) async fn take_last_application_dataset(&mut self,args:&Expressions,span:Span)->Result<Option<Data>> {
         if args.len()!=2{return self.fail(span,"B266","take_last(data,output)消费非空CPU dataset并交出唯一尾值");}
         let source=&args.at(0);
         let output=&args.at(1);
-        let Some(returns::Returned::Dataset(data))=self.evaluate_returned(source,None)? else {
+        let Some(returns::Returned::Dataset(data))=unsafe { self.world.call(self.evaluate_returned(source,None)).await }? else {
             if !self.flow.continues(){return Ok(None);}
             return self.fail(source.span(),"B224","take_last需要一份拥有的dataset");
         };
-        let data=self.refresh_application_data(data,span)?;
+        let data=unsafe { self.world.call(self.refresh_application_data(data,span)).await }?;
         if data.ownership!=Ownership::Owned{return self.fail(source.span(),"B227","dataset借用不能交出尾元素或缩短存储");}
-        self.require_application_initialized(&data,span)?;self.application_cpu(&data,span)?;
+        unsafe { self.world.call(self.require_application_initialized(&data,span)).await }?;self.application_cpu(&data,span)?;
         let one=self.constant(Scalar::U32,1);let last=self.binary("-",data.length.clone(),one,span,None)?;
         if !self.index_in(&last,IndexDomain::ApplicationData(data.root.identity()),data.length.minimum(),None) {
             return self.fail(source.span(),"B137","take_last需要由原长度条件证明输入非空");
         }
         let held=self.hold_binding(Binding::ApplicationData(data.clone()));
-        let destination=self.mutable_place(output,Access::Write)?;
+        let destination=unsafe { self.world.call(self.mutable_place(output,Access::Write)).await }?;
         if !self.flow.continues(){return Ok(None);}
         let Some(destination)=destination else{return self.fail(output.span(),"B227","take_last输出需要同元素类型的可写位置");};
         self.require_same(&data.ty,destination.ty(),output.span())?;
         let place=Self::application_element(&data,&last,(last.minimum(),last.maximum()));
-        let packed=self.read_storage_value(&place,span,None)?;
-        let mut value=if data.ty.owns_resources(){self.materialize_element(&DataReference::direct(data.clone()),Some(packed),&place)?}else{returns::Returned::value(packed)};
-        self.require_returned_initialized(&mut value,span)?;
+        let packed=unsafe { self.world.call(self.read_storage_value(&place,span,None)).await }?;
+        let mut value=if data.ty.owns_resources(){unsafe { self.world.call(self.materialize_element(&DataReference::direct(data.clone()),Some(packed),&place)).await }?}else{returns::Returned::value(packed)};
+        unsafe { self.world.call(self.require_returned_initialized(&mut value,span)).await }?;
         self.env.remove(&held);
-        self.view_uses.invocation(span);let retained=self.view_uses.all(self,&[])?;
+        self.view_uses.invocation(span);let retained=unsafe { self.world.call(self.view_uses.all(self,&[])).await }?;
         self.application_movable(&data,&retained,span)?;
         if data.ty.owns_resources(){
-            let old=if matches!(destination.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&destination, false, span)?}else{self.owned_place_model(&destination)};
+            let old=if matches!(destination.storage(),Place::ApplicationElement{..}){unsafe { self.world.call(self.application_owned_argument(&destination, false, span)).await }?}else{self.owned_place_model(&destination)};
             self.view_uses.after(span);
-            self.store_owned_returned(destination,old,value,span)?;
+            unsafe { self.world.call(self.store_owned_returned(destination,old,value,span)).await }?;
         }
         else {
-            let packed=self.returned_storage(&value);self.write_storage_value(&destination,&packed,span,None)?;
-            self.assign_owned_proof(&destination,bounds::Proof::capture(&packed),packed.uniform)?;self.initialize(&destination);
+            let packed=self.returned_storage(&value);unsafe { self.world.call(self.write_storage_value(&destination,&packed,span,None)).await }?;
+            unsafe { self.world.call(self.assign_owned_proof(&destination,bounds::Proof::capture(&packed),packed.uniform)).await }?;self.initialize(&destination);
         }
         // A shrinking Frame never reads fill; the moved tail has no second owner there.
         let fill=argument(self.constant(Scalar::U64,0));
         self.resize_application_storage(data.root,data.ty,last,data.elements,fill,&[],span).map(Some)
     }
-    pub(super) fn dataset_constructor_type(world:&World,scope:&LexicalScope,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
+    pub(super) async fn dataset_constructor_type(world:&World,scope:&LexicalScope,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
         if !(1..=2).contains(&explicit.len())||!(1..=2).contains(&arguments) {
             return scope.source().fail(span,"B266","dataset<T>(length) 需要元素类型和一个 u32 长度");
         }
@@ -2421,25 +2421,25 @@ impl Builder<'_> {
                 "dataset 的元素是普通值，不是另一份 dataset 或 tile 所有权",
             );
         }
-        let ty = world.ty(element,scope.source(),span,scope.module(),scope.imports())?;
+        let ty = unsafe { world.call(world.ty(element,scope.source(),span,scope.module(),scope.imports())).await }?;
         let count = if let Some(argument) = explicit.get(1) {
             let Some(shape) = argument.shape() else {
                 return scope.source().fail(span, "B266", "dataset<T,N> 的 N 需要静态 u32 形状");
             };
-            world.shape(
+            unsafe { world.call(world.shape(
                 &Some(shape),
                 scope.source(),
                 span,
                 scope.module(),
                 scope.imports(),
-            )?
+            )).await }?
         } else {
             None
         };
         Ok((ty,count))
     }
     #[inline(never)]
-    pub(super) fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
+    pub(super) async fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
         let ExprKind::Specialize(constructor, explicit, args) = expr.kind() else {
             return self.fail(
@@ -2455,10 +2455,10 @@ impl Builder<'_> {
                 "dataset<T>(length) 需要元素类型和一个 u32 长度",
             );
         }
-        let explicit=self.scope.bindings().arguments(self.world,&explicit,
-            (self.scope.source(),self.scope.module(),self.scope.imports()),span)?;
-        let(ty,count)=Self::dataset_constructor_type(self.world,&self.scope,&explicit,args.len(),span)?;
-        let Some(mut length) = self.expr(&args.at(0))? else {
+        let explicit=unsafe { self.world.call(self.scope.bindings().arguments(self.world,&explicit,
+            (self.scope.source(),self.scope.module(),self.scope.imports()),span)).await }?;
+        let(ty,count)=unsafe { self.world.call(Self::dataset_constructor_type(self.world,&self.scope,&explicit,args.len(),span)).await }?;
+        let Some(mut length) = unsafe { self.world.call(self.expr(&args.at(0))).await }? else {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args.at(0).span())?;
@@ -2511,10 +2511,10 @@ impl Builder<'_> {
             layout: DataLayout::Declared,
         });
         if let Some(factory)=args.get(1) {
-            data.elements=match self.initialize_application_elements(&data,&factory,span)?{Some(model)=>ElementFacts::Known(model),None=>ElementFacts::Unknown};
+            data.elements=match unsafe { self.world.call(self.initialize_application_elements(&data,&factory,span)).await }?{Some(model)=>ElementFacts::Known(model),None=>ElementFacts::Unknown};
             data.initialization=None;
         } else {
-            let mut elements=self.unknown_element_model(&data.ty,(&data.residency,&[]))?;
+            let mut elements=unsafe { self.world.call(self.unknown_element_model(&data.ty,(&data.residency,&[]))).await }?;
             let value=elements.view_value_mut().unwrap();
             for component in view_contracts::components(&value.ty) {
                 value.proof=std::mem::take(&mut value.proof).with_view_borrow(component,view::Borrow::source(view::Source::Inactive));
@@ -2524,7 +2524,7 @@ impl Builder<'_> {
         Ok(Some(data))
     }
     // Generate actual element storage with the original resource owner.
-    fn initialize_application_elements(&mut self,data:&Data,factory:&Expr,span:Span)->Result<Option<Box<returns::Returned>>> {
+    async fn initialize_application_elements(&mut self,data:&Data,factory:&Expr,span:Span)->Result<Option<Box<returns::Returned>>> {
         let (name,explicit)=match factory.kind() {
             ExprKind::Name(name)=>(name,None),
             ExprKind::FunctionRef(name,args)=>(name,Some(args)),
@@ -2540,20 +2540,25 @@ impl Builder<'_> {
         for identity in data.length.component_origins(0) { proof.mark_domain(0,IndexDomain::Upper(identity,1)); }
         let index=Value{ty:scalar.clone(),regs:vec![index_reg],proof,uniform:false,literal:false,constant:None};
         let arguments=vec![Argument::Value(index.clone())];
-        let explicit=explicit.as_ref().map(|arguments|self.scope.bindings().arguments(self.world,arguments,
-            (self.scope.source(),self.scope.module(),self.scope.imports()),factory.span())).transpose()?;
-        let instance=self.specialized_arguments(key,&arguments,explicit.as_deref(),factory.span())?;
+        let explicit=match explicit.as_ref() {
+            Some(arguments)=>Some(unsafe { self.world.call(self.scope.bindings().arguments(self.world,arguments,
+                (self.scope.source(),self.scope.module(),self.scope.imports()),factory.span())).await }?),
+            None=>None,
+        };
+        let instance=unsafe { self.world.call(self.specialized_arguments(key,&arguments,explicit.as_deref(),factory.span())).await }?;
         let function=&instance.definition.function;
         if function.kind()!=FunctionKind::Value || function.target()!=Target::Cpu || function.params().len()!=1 || function.params().at(0).access()!=Access::Value {
             return self.fail(factory.span(),"B224","dataset生成函数接收一个按值u32下标并返回一个元素，使用普通on cpu函数");
         }
         if data.length.maximum()==0 {
             let definition=&instance.definition;
-            let input=cooperative::parameter_type(self.world,&instance.parameter(self.world,&function.params().at(0))?,(&definition.source,&definition.module,&definition.imports,definition.function.kind()),self.program.target)?;
+            let parameter=unsafe { self.world.call(instance.parameter(self.world,function.params().at(0))).await }?;
+            let input=unsafe { self.world.call(cooperative::parameter_type(self.world,&parameter,
+                (&definition.source,&definition.module,&definition.imports,definition.function.kind()),self.program.target)).await }?;
             self.require_same(&scalar,&input,factory.span())?;
-            let result_name=instance.bindings.type_name(self.world,&function.result(),
-                (&definition.source,&definition.module,&definition.imports),function.span())?;
-            let output=self.world.ty(&result_name,&definition.source,function.span(),&definition.module,&definition.imports)?;
+            let result_name=unsafe { self.world.call(instance.bindings.type_name(self.world,&function.result(),
+                (&definition.source,&definition.module,&definition.imports),function.span())).await }?;
+            let output=unsafe { self.world.call(self.world.ty(&result_name,&definition.source,function.span(),&definition.module,&definition.imports)).await }?;
             self.require_same(&data.ty,&output,factory.span())?;
             return Ok(None);
         }
@@ -2565,8 +2570,8 @@ impl Builder<'_> {
         // 构造拥有者的可结束范围就是原游标之前的初始化前缀；Frame仍持有完整分配。
         let mut prefix=data.clone();prefix.length=index.clone();prefix.count=None;prefix.initialization=None;
         let owner=self.hold_binding(Binding::ApplicationData(prefix));
-        let Some(mut returned)=self.invoke_returned(instance,arguments,span,Some(origin(GenerationReason::DatasetInitializeCall)),None)? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
-        self.check_returned_type(&mut returned,&data.ty,span)?;self.require_returned_initialized(&mut returned,span)?;
+        let Some(mut returned)=unsafe { self.world.call(self.invoke_returned(instance,arguments,span,Some(origin(GenerationReason::DatasetInitializeCall)),None)).await }? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
+        unsafe { self.world.call(self.check_returned_type(&mut returned,&data.ty,span)).await }?;unsafe { self.world.call(self.require_returned_initialized(&mut returned,span)).await }?;
         let ordinal=index.identity();
         let mut model=returned.clone();
         residency::visit(&mut model,&mut residency::Input::new(0),&mut|resource,input|{
@@ -2607,7 +2612,7 @@ impl Builder<'_> {
         self.env.remove(&owner);
         Ok(Some(elements))
     }
-    pub(super) fn complete_application_writes(&mut self, written: impl Fn(&Self,&Data) -> bool, span: Span) -> Result<()> {
+    pub(super) async fn complete_application_writes(&mut self, written: impl Fn(&Self,&Data) -> bool, span: Span) -> Result<()> {
         let path = self.residency_path();
         let eligible = |data: &Data| {
             data.root.ty == Ty::scalar(Scalar::U32)
@@ -2641,8 +2646,8 @@ impl Builder<'_> {
                 for field in fields {
                     let returns::Returned::OwnedValue(mut owner) = resource else { unreachable!() };
                     resource = if owner.value.ty.has_variants() {
-                        self.load_owned_value(&mut owner, span)?;
-                        self.unpack_variant(&owner, field)?
+                        unsafe { self.world.call(self.load_owned_value(&mut owner, span)).await }?;
+                        unsafe { self.world.call(self.unpack_variant(&owner, field)).await }?
                     } else {
                         self.unpack_record(&owner, field)
                     };
@@ -2652,7 +2657,7 @@ impl Builder<'_> {
                 data.root.regs = projected.root.regs;
                 data.length.regs = projected.length.regs;
             }
-            let data = self.refresh_application_data(data, span)?;
+            let data = unsafe { self.world.call(self.refresh_application_data(data, span)).await }?;
             self.complete_application_elements(&DataReference::direct(data.clone()), data.elements.known(), &[], span, origin.clone())?;
         }
         Ok(())
@@ -2739,20 +2744,20 @@ impl Builder<'_> {
             None, Vec::new(), None, None).kind, origin));
         Ok(())
     }
-    pub(super) fn retire_application_elements(&mut self, data: &DataReference, span: Span) -> Result<()> {
+    pub(super) async fn retire_application_elements(&mut self, data: &DataReference, span: Span) -> Result<()> {
         let ty = data.element_layout().1;
-        let mut ended = self.unknown_element_model(ty, (&data.residency, &data.projection))?;
+        let mut ended = unsafe { self.world.call(self.unknown_element_model(ty, (&data.residency, &data.projection))).await }?;
         ended.restrict_owned(&owned_presence::Presence::None);
-        self.apply_application_dataset_model(data, ElementFacts::Known(ended))?;
-        self.cleanup_group(Vec::new(), |builder| builder.drop_application_elements(data, &view::Borrow::default(), span))
+        unsafe { self.world.call(self.apply_application_dataset_model(data, ElementFacts::Known(ended))).await }?;
+        unsafe { self.world.call(self.cleanup_group(Vec::new(), async |builder| unsafe { builder.world.call(builder.drop_application_elements(data, &view::Borrow::default(), span)).await })).await }
     }
 
-    pub(super) fn drop_task_completion_dataset(
+    pub(super) async fn drop_task_completion_dataset(
         &mut self, ty: &Ty, descriptor: &[Reg], guards: &[owned_presence::Presence], span: Span,
     ) -> Result<()> {
         let root = self.application_root(descriptor[0]);
         let residency = residency::Residency::cpu();
-        let mut model = self.unknown_element_model(ty, (&residency, &[]))?;
+        let mut model = unsafe { self.world.call(self.unknown_element_model(ty, (&residency, &[]))).await }?;
         owned_borrows::each_data(&mut model, &mut Vec::new(), &mut |data, _| data.residency = residency.clone());
         outputs::apply_ownership(&mut model, ty, 0, guards);
         let data = DataReference::direct(Box::new(DataPayload {
@@ -2764,41 +2769,41 @@ impl Builder<'_> {
             },
             elements: ElementFacts::Known(model), prefixes: BTreeMap::new(),
         }));
-        self.drop_application_elements_with(&data, span, |builder, data, place| {
-            let mut element = builder.materialize_element(data, None, &place)?;
+        unsafe { self.world.call(self.drop_application_elements_with(&data, span, async |builder, data, place| {
+            let mut element = unsafe { builder.world.call(builder.materialize_element(data, None, &place)).await }?;
             owned_borrows::set_storage(&mut element, place.clone());
-            builder.drop_owned_tree_with(element, &view::Borrow::default(), span, Self::drop_task_owned_dataset)?;
+            unsafe { builder.world.call(builder.drop_owned_tree_with(element, &view::Borrow::default(), span, Self::drop_task_owned_dataset)).await }?;
             let status = builder.reg(Scalar::U64);
             builder.emit(InstKind::LoadLocal(status, builder.pending_error.unwrap().slot()));
             let arguments = builder.error_position_arguments(&place, status, span)?;
             builder.emit(runtime_call("error_consume", arguments, None, Vec::new(), None, None).kind);
             Ok(())
-        })
+        })).await }
     }
 
-    fn drop_application_elements(
+    async fn drop_application_elements(
         &mut self, data: &DataReference, retained: &view::Borrow, span: Span,
     ) -> Result<()> {
-        self.drop_application_elements_with(data, span, |builder, data, place| {
+        unsafe { self.world.call(self.drop_application_elements_with(data, span, async |builder, data, place| {
             if matches!(&data.elements, ElementFacts::Unknown | ElementFacts::Input(_) | ElementFacts::Cleanup(_)) {
                 let trigger = builder.source_site.clone().map(GenerationAnchor::Syntax);
                 let origin = |reason| Arc::new(GeneratedOrigin { reason, trigger: trigger.clone() });
-                let value = builder.read_cleanup_storage(&place, |builder| builder.read_storage_value(
+                let value = unsafe { builder.world.call(builder.read_cleanup_storage(&place, async |builder| unsafe { builder.world.call(builder.read_storage_value(
                     &place, span, Some(origin(GenerationReason::DatasetDropElementRead)),
-                ))?;
-                let element = builder.materialize_element(data, Some(value), &place)?;
-                builder.native_element_drop(element, retained, span, origin(GenerationReason::DatasetElementDrop))
+                )).await })).await }?;
+                let element = unsafe { builder.world.call(builder.materialize_element(data, Some(value), &place)).await }?;
+                unsafe { builder.world.call(builder.native_element_drop(element, retained, span, origin(GenerationReason::DatasetElementDrop))).await }
             } else {
-                let mut element = builder.materialize_element(data, None, &place)?;
+                let mut element = unsafe { builder.world.call(builder.materialize_element(data, None, &place)).await }?;
                 owned_borrows::set_storage(&mut element, place);
-                builder.drop_owned_tree(element, retained, span)
+                unsafe { builder.world.call(builder.drop_owned_tree(element, retained, span)).await }
             }
-        })
+        })).await }
     }
 
-    fn drop_application_elements_with(
+    async fn drop_application_elements_with(
         &mut self, data: &DataReference, span: Span,
-        drop_element: impl FnOnce(&mut Self, &DataReference, Place) -> Result<()>,
+        drop_element: impl std::ops::AsyncFnOnce(&mut Self, &DataReference, Place) -> Result<()>,
     ) -> Result<()> {
         self.application_cpu(&data.data,span)?;
         let trigger=self.source_site.clone().map(GenerationAnchor::Syntax);
@@ -2816,11 +2821,11 @@ impl Builder<'_> {
         self.code.push(Inst::generated(InstKind::Binary{dst:index,op:ir::BinaryOp::ISub,a:cursor,b:one},index_origin));
         let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,data.length.maximum().saturating_sub(1)),uniform:false,literal:false,constant:None};
         let place = data.element(&value_index, (value_index.minimum(), value_index.maximum()));
-        drop_element(self, data, place)?;
+        drop_element(self, data, place).await?;
         self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
-    pub(super) fn application_resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(effects::StorageWrite,Ty,DataLayout)>>> {ApplicationLoads(self).resource_storage(input,resource)}
+    pub(super) async fn application_resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(effects::StorageWrite,Ty,DataLayout)>>> {unsafe { self.world.call(ApplicationLoads(self).resource_storage(input,resource)).await }}
     pub(super) fn application_element(
         data: &Data,
         index: &Value,
@@ -2850,14 +2855,14 @@ impl Builder<'_> {
             access: data.access,
         }
     }
-    pub(super) fn application_index(
+    pub(super) async fn application_index(
         &mut self,
         data: DataReference,
         index: &Expr,
     ) -> Result<Option<Place>> {
         self.application_cpu(&data, index.span())?;
         let held = self.hold_binding(Binding::DataReference(data.clone()));
-        let value = self.expr(index)?;
+        let value = unsafe { self.world.call(self.expr(index)).await }?;
         self.env.remove(&held);
         let Some(value) = value else {
             return Ok(None);
@@ -3196,7 +3201,7 @@ impl Builder<'_> {
         Ok(())
     }
     #[inline(never)]
-    pub(super) fn target_call(
+    pub(super) async fn target_call(
         &mut self,
         target: Target,
         call: &Expr,
@@ -3221,7 +3226,7 @@ impl Builder<'_> {
             }
         };
         if target == Target::Cpu {
-            return self.evaluate_returned(call, None);
+            return unsafe { self.world.call(self.evaluate_returned(call, None)).await };
         }
         let key = self
             .world
@@ -3244,15 +3249,18 @@ impl Builder<'_> {
                 "当前 GPU target 消费整域函数；普通值调用的跨目标返回通道尚未实现",
             );
         }
-        let Some(arguments) = self.function_arguments(&key, &args, span)? else {
+        let Some(arguments) = unsafe { self.world.call(self.function_arguments(&key, &args, span)).await }? else {
             return Ok(None);
         };
-        let explicit=explicit.as_ref().map(|arguments|self.scope.bindings().arguments(self.world,arguments,
-            (self.scope.source(),self.scope.module(),self.scope.imports()),call.span())).transpose()?;
-        let instance = self.specialized_arguments(key, &arguments, explicit.as_deref(), span)?;
-        self.application_execute(DomainInput::Declaration(&instance), arguments, target, span, &[])
+        let explicit=match explicit.as_ref() {
+            Some(arguments)=>Some(unsafe { self.world.call(self.scope.bindings().arguments(self.world,arguments,
+                (self.scope.source(),self.scope.module(),self.scope.imports()),call.span())).await }?),
+            None=>None,
+        };
+        let instance = unsafe { self.world.call(self.specialized_arguments(key, &arguments, explicit.as_deref(), span)).await }?;
+        unsafe { self.world.call(self.application_execute(DomainInput::Declaration(&instance), arguments, target, span, &[])).await }
     }
-    pub(super) fn application_execute(
+    pub(super) async fn application_execute(
         &mut self,
         input: DomainInput<'_>,
         prepared: Vec<Argument>,
@@ -3262,7 +3270,7 @@ impl Builder<'_> {
     ) -> Result<Option<returns::Returned>> {
         self.application_frame(span)?;
         let callee = &input.owner().definition;
-        let bound_parameters=input.parameters(self.world)?;
+        let bound_parameters=unsafe { self.world.call(input.parameters(self.world)).await }?;
         if input.target() != Target::Compute && input.target() != target {
             return self.fail(span, "B266", "函数声明的目标能力与本次调用位置不一致");
         }
@@ -3305,7 +3313,7 @@ impl Builder<'_> {
                 let Argument::Texture(resource) = value else {
                     return self.fail(span, "B239", "整域纹理参数需要实际只读纹理资源");
                 };
-                self.texture_parameter(parameter, &resource,(&callee.source,&callee.module,&callee.imports),span)?;
+                unsafe { self.world.call(self.texture_parameter(parameter, &resource,(&callee.source,&callee.module,&callee.imports),span)).await }?;
                 let address = self.reg(Scalar::U64);
                 self.emit(InstKind::TextureBindingAddress { dst: address, texture: resource.source });
                 textures.push(CallArgument::Value { origin: None, dataset_borrow: None,
@@ -3320,7 +3328,7 @@ impl Builder<'_> {
         for value in &data {
             self.application_handle_available(value.root.identity(), span, &[],&self.path)?;
         }
-        let interface = self.prepare_domain(input, target, element_inputs)?;
+        let interface = unsafe { self.world.call(self.prepare_domain(input, target, element_inputs)).await }?;
         for &(left, right) in &interface.length_requirements {
             if !self.lengths_equal(&data[left].length, &data[right].length) {
                 return self.fail(span, "B226", "整域调用前未证明same_length数据集长度关系");
@@ -3343,7 +3351,7 @@ impl Builder<'_> {
             let source = &data[binding];
             if source.length.maximum() == 0 { continue; }
             let shallow;
-            let elements=match source.elements.known(){Some(elements)=>elements,None=>{shallow=self.unknown_element_model(&source.ty,(&source.residency,&[]))?;&shallow}};
+            let elements=match source.elements.known(){Some(elements)=>elements,None=>{shallow=unsafe { self.world.call(self.unknown_element_model(&source.ty,(&source.residency,&[]))).await }?;&shallow}};
             let model = self.returned_storage(elements);
             let word = source.element_layout().0 + offset;
             let component = source.data.ty.components.iter().position(|(_, at)| *at == word).unwrap();
@@ -3381,7 +3389,7 @@ impl Builder<'_> {
                 Some(proof) => ElementUpdate::WholeFacts(proof),
                 None => ElementUpdate::Unknown,
             };
-            self.update_application_contents(reference, &words, update)?;
+            unsafe { self.world.call(self.update_application_contents(reference, &words, update)).await }?;
         }
         self.initialize_application_domain(&interface, &data);
         let frame = self.application_frame(span)?;
@@ -3404,15 +3412,15 @@ impl Builder<'_> {
             let count=&data[relation.count.binding];
             let word=count.element_layout().0+relation.count.word;
             let facts=BTreeMap::from([(word,prefix::domain(&data[relation.domain]))]);
-            self.apply_application_prefixes(count,&facts)?;
+            unsafe { self.world.call(self.apply_application_prefixes(count,&facts)).await }?;
         }
         for name in held {
-            self.finish_scoped_argument(&name, span)?;
+            unsafe { self.world.call(self.finish_scoped_argument(&name, span)).await }?;
         }
         Ok(Some(returns::Returned::Unit))
     }
     #[inline(never)]
-    pub(super) fn application_parallel(&mut self, statement: &Stmt, element:&str, domain:&ParallelDomain, body:&Block) -> Result<()> {
+    pub(super) async fn application_parallel(&mut self, statement: &Stmt, element:&str, domain:&ParallelDomain, body:&Block) -> Result<()> {
         if !self.application_entry() {
             return self.fail(
                 statement.span(),
@@ -3429,7 +3437,7 @@ impl Builder<'_> {
                 continue;
             };
             let (ty, access, arg) = if matches!(binding, Binding::ApplicationData(_) | Binding::DataReference(_)) {
-                let data = self.application_named_reference(&name, statement.span())?.unwrap();
+                let data = unsafe { self.world.call(self.application_named_reference(&name, statement.span())).await }?.unwrap();
                 let access = if data.access == Access::Atomic {
                     Access::Atomic
                 } else if data.access == Access::Read {
@@ -3444,7 +3452,7 @@ impl Builder<'_> {
                 ty.count = data.count.map(Shape::Literal);
                 (ty, access, Argument::BorrowedData(data))
             } else {
-                let value = self.name_expr(&name, statement.span())?;
+                let value = unsafe { self.world.call(self.name_expr(&name, statement.span())).await }?;
                 (value.ty.syntax(), Access::Value, Argument::Value(value))
             };
             params.push(Param {
@@ -3516,7 +3524,7 @@ impl Builder<'_> {
         let mut element_inputs = Vec::new();
         for (binding, (access, source)) in captured.iter().enumerate() {
             if !access.reads() || *access == Access::Atomic { continue; }
-            let elements=self.element_model(&source.ty,&source.elements,(&source.residency,&[]),statement.span())?;
+            let elements=unsafe { self.world.call(self.element_model(&source.ty,&source.elements,(&source.residency,&[]),statement.span())).await }?;
             let model = self.returned_storage(&elements);
             let (offset, ty) = source.element_layout();
             let components = ty.components.iter().map(|(scalar, word)|
@@ -3546,11 +3554,11 @@ impl Builder<'_> {
         let owner=self.scope.function().unwrap().clone();
         let parameters=Arc::<[Param]>::from(params);
         let site=self.source_at(statement.span(),SourceSyntax::Statement);
-        self.application_execute(
+        unsafe { self.world.call(self.application_execute(
             DomainInput::Parallel{owner:&owner,name:&name,parameters:&parameters,contracts:&contracts,
                 statement,element,domain,body,site:&site},
             args,Target::Cpu,statement.span(),&element_inputs,
-        )?;
+        )).await }?;
         Ok(())
     }
     pub(super) fn application_cpu(&mut self, data: &Data, span: Span) -> Result<()> {
@@ -3567,7 +3575,7 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn application_transfer(
+    pub(super) async fn application_transfer(
         &mut self,
         name: &str,
         args: &Expressions,
@@ -3577,7 +3585,7 @@ impl Builder<'_> {
         if args.len() != 1 {
             return self.fail(span, "B266", "upload／download 需要一个拥有的 dataset 名称");
         }
-        let Some(data) = self.application_reference(&args.at(0))? else {
+        let Some(data) = unsafe { self.world.call(self.application_reference(&args.at(0))).await }? else {
             return self.fail(span, "B266", "upload／download 需要应用拥有的 dataset");
         };
         if data.ownership != Ownership::Owned {
@@ -3588,7 +3596,7 @@ impl Builder<'_> {
             );
         }
         self.view_uses.invocation(span);
-        let borrow=self.view_uses.all(self,&[])?;self.application_movable(&data,&borrow,span)?;
+        let borrow=unsafe { self.world.call(self.view_uses.all(self,&[])).await }?;self.application_movable(&data,&borrow,span)?;
         let (source, target) = if name == "upload" {
             (Target::Cpu, residency::Residency::gpu())
         } else {
@@ -3628,19 +3636,19 @@ impl Builder<'_> {
         }
         Ok(None)
     }
-    pub(super) fn println(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
-        self.println_value(args.len(),span,args.first().map(|a|a.span()).unwrap_or(span),
-            |builder|builder.expr(&args.at(0)))
+    pub(super) async fn println(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
+        unsafe { self.world.call(self.println_value(args.len(),span,args.first().map(|a|a.span()).unwrap_or(span),
+            async |builder|unsafe { builder.world.call(builder.expr(&args.at(0))).await })).await }
     }
-    pub(super) fn println_value(&mut self,count:usize,span:Span,argument_span:Span,
-        argument:impl FnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
+    pub(super) async fn println_value(&mut self,count:usize,span:Span,argument_span:Span,
+        argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
         if self.program.target != Target::Cpu {
             return self.fail(span, "B260", "println 是 CPU 标准输出操作，要求显式 on cpu");
         }
         if count != 1 {
             return self.fail(span, "B261", "println 需要一个整数、f32、f64 或 bool 标量");
         }
-        let Some(value) = argument(self)? else {
+        let Some(value) = argument(self).await? else {
             return Ok(None);
         };
         if !value.ty.components.first().is_some_and(|(scalar, _)| value.ty == Ty::scalar(*scalar))
@@ -3983,13 +3991,13 @@ pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:output
     }
 }
 impl Builder<'_> {
-    pub(super) fn unknown_element_model(&self,ty:&Ty,location:(&residency::Residency,&[usize]))->Result<Box<returns::Returned>>{
+    pub(super) async fn unknown_element_model(&self,ty:&Ty,location:(&residency::Residency,&[usize]))->Result<Box<returns::Returned>>{
         let mut proof=bounds::Proof::default();
         for(component,(scalar,_))in ty.components.iter().enumerate(){
             proof.append(&Value{ty:Ty::scalar(*scalar),regs:vec![component],proof:bounds::Proof::default().with_identity(ValueIdentity::ElementComponent(component)),uniform:false,literal:false,constant:None});
         }
         for component in view_contracts::components(ty){proof=proof.with_view_borrow(component,view::Borrow::source(view::Source::Unresolved));}
-        let mut model=self.template_returned(Value{ty:ty.clone(),regs:(0..ty.components.len()).collect(),proof,uniform:false,literal:false,constant:None},true)?;
+        let mut model=unsafe { self.world.call(self.template_returned(Value{ty:ty.clone(),regs:(0..ty.components.len()).collect(),proof,uniform:false,literal:false,constant:None},true)).await }?;
         let parent=location.0.scope_indices(1,0);
         let index=ValueIdentity::ElementIndex(0);let selection=BTreeMap::from([(index,bounds::Proof::default().with_identity(index))]);
         let mut input=residency::Input{parameter:0,fields:std::iter::once(residency::Part::Selected(Some(bounds::Operand::Value(index)))).chain(location.1.iter().copied().map(residency::Part::Field)).collect()};
@@ -4103,12 +4111,12 @@ impl Builder<'_> {
     }
     // These names belong to this target's existing element input domain. They
     // describe a stable field of that owner, not an emitted or global read.
-    pub(super) fn application_element_snapshot(&self,source:&effects::DataProjection<'_>,input:&Data,target:&effects::DataProjection<'_>,context:(&effects::LoopWrites,&bounds::Clause))->Result<bounds::Proof> {
+    pub(super) async fn application_element_snapshot(&self,source:&effects::DataProjection<'_>,input:&Data,target:&effects::DataProjection<'_>,context:(&effects::LoopWrites,&bounds::Clause))->Result<bounds::Proof> {
         let(writes,path)=context;let(ty,parts)=&source.value;
         let mut proof=bounds::Proof::default().with_external_borrows(ty);
         let address_changed=writes.external||matches!(input.place.as_ref().map(Place::storage),Some(Place::Local(_,slots,..))if slots.iter().any(|slot|writes.locals.contains(slot)));
         if address_changed{return Ok(proof);}
-        let loads=ApplicationLoads(self);let locations=loads.resource_storage(input,&source.resource)?;
+        let loads=ApplicationLoads(self);let locations=unsafe { self.world.call(loads.resource_storage(input,&source.resource)).await }?;
         let scopes=self.element_resource_scopes(&target.resource,&source.resource,(path,&self.env));
         proof.origins.resize_with(ty.components.len(),Vec::new);
         for(output,choices)in parts.iter().enumerate(){
@@ -4157,8 +4165,8 @@ impl Builder<'_> {
         for owner in owners{for(path,complete,choice)in self.element_resource_scopes(resource,owner,context){paths.entry(path).and_modify(|(old,selection)|{*old|=complete;*selection=selection.clone().logical(choice.clone(),true);}).or_insert((complete,choice));}}
         paths.into_iter().map(|(path,(complete,choice))|(path,complete,choice)).collect()
     }
-    pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {
-        let Some(mut place)=self.application_index(data.clone(),index)?else{return Ok(())};
+    pub(super) async fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {
+        let Some(mut place)=unsafe { self.world.call(self.application_index(data.clone(),index)).await }?else{return Ok(())};
         for part in projection {
             match part.kind() {
                 ExprKind::Member(_,field)=>{
@@ -4167,7 +4175,7 @@ impl Builder<'_> {
                 }
                 ExprKind::Index(_,index)=>{
                     let held=self.hold_binding(Binding::DataReference(data.clone()));
-                    let value=self.expr(&index);
+                    let value=unsafe { self.world.call(self.expr(&index)).await };
                     self.env.remove(&held);
                     let Some(value)=value? else{return Ok(());};
                     place=self.array_index(place,value,index.span())?;
@@ -4175,7 +4183,7 @@ impl Builder<'_> {
                 _=>unreachable!(),
             }
         }
-        self.assign_owned_storage(place,Some(data),op,rhs,span)
+        unsafe { self.world.call(self.assign_owned_storage(place,Some(data),op,rhs,span)).await }
     }
     // These are the original already-evaluated metadata positions, not a second element table.
     fn element_selection(&self,place:Option<&Place>,first:usize,count:usize)->Option<owned_presence::Presence> {
@@ -4190,7 +4198,7 @@ impl Builder<'_> {
         }
         Some(selected)
     }
-    fn assign_application_element_model(&mut self,data:&DataReference,place:&Place,paths:&[Vec<usize>],value:Option<&returns::Returned>)->Result<()> {
+    async fn assign_application_element_model(&mut self,data:&DataReference,place:&Place,paths:&[Vec<usize>],value:Option<&returns::Returned>)->Result<()> {
         let resource=view::resource_borrow(&data.data);let one=self.constant(Scalar::U32,1);
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
@@ -4207,12 +4215,12 @@ impl Builder<'_> {
                     let mut complete_scope=bounds::Condition::constant(complete_scope);
                     let mut target=Some(&mut *target);
                     for fields in scope{target=match target{
-                        Some(target)=>{self.expand_current_element_facts(target)?;complete_scope=complete_scope.clone().logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);model_data_mut(target.elements.known_mut(),&fields)},
+                        Some(target)=>{unsafe { self.world.call(self.expand_current_element_facts(target)).await }?;complete_scope=complete_scope.clone().logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);model_data_mut(target.elements.known_mut(),&fields)},
                         None=>None,
                     };}
-                    let Some(target)=target else{continue;};self.expand_current_element_facts(target)?;
+                    let Some(target)=target else{continue;};unsafe { self.world.call(self.expand_current_element_facts(target)).await }?;
                     if value.is_none() && matches!(target.elements, ElementFacts::Unknown) {
-                        target.elements = ElementFacts::Known(self.unknown_element_model(&target.ty, (&target.residency, &[]))?);
+                        target.elements = ElementFacts::Known(unsafe { self.world.call(self.unknown_element_model(&target.ty, (&target.residency, &[]))).await }?);
                     }
                     for projection in paths {
                         let mut fresh = match value {
@@ -4329,17 +4337,17 @@ impl Builder<'_> {
         })
     }
 
-    pub(super) fn application_owned_argument(&mut self, place: &Place, read: bool, span: Span) -> Result<returns::Returned> {
-        let loaded = if read { Some(self.read_storage_value(place, span, None)?) } else { None };
+    pub(super) async fn application_owned_argument(&mut self, place: &Place, read: bool, span: Span) -> Result<returns::Returned> {
+        let loaded = if read { Some(unsafe { self.world.call(self.read_storage_value(place, span, None)).await }?) } else { None };
         let references=self.application_owned_references(place);let mut values=Vec::new();
-        for(mut data,paths)in references{for path in paths{data.projection=path;values.push(self.materialize_element(&data,loaded.clone(),place)?);}}
+        for(mut data,paths)in references{for path in paths{data.projection=path;values.push(unsafe { self.world.call(self.materialize_element(&data,loaded.clone(),place)).await }?);}}
         let mut models=values.into_iter();
         let mut model=models.next().unwrap();for other in models{model.join(other,false,None);}
         owned_borrows::set_storage(&mut model, place.clone());
         Ok(model)
     }
-    pub(super) fn assign_application_owned_argument(&mut self,place:&Place,value:Option<&returns::Returned>)->Result<()> {
-        for(data,paths)in self.application_owned_references(place){self.assign_application_element_model(&data,place,&paths,value)?;}
+    pub(super) async fn assign_application_owned_argument(&mut self,place:&Place,value:Option<&returns::Returned>)->Result<()> {
+        for(data,paths)in self.application_owned_references(place){unsafe { self.world.call(self.assign_application_element_model(&data,place,&paths,value)).await }?;}
         Ok(())
     }
     fn capture_element_model(&self,data:&Data,projection:&[usize],mut model:returns::Returned)->Box<returns::Returned>{
@@ -4372,8 +4380,8 @@ impl Builder<'_> {
         }
         self.close_stored_resources(&mut model,&original,&bindings);Box::new(model)
     }
-    pub(super) fn materialize_element(&mut self,data:&DataReference,value:Option<Value>,place:&Place)->Result<returns::Returned>{
-        let mut model=*self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())?;let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
+    pub(super) async fn materialize_element(&mut self,data:&DataReference,value:Option<Value>,place:&Place)->Result<returns::Returned>{
+        let mut model=*unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())).await }?;let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
         for field in &data.projection{
             let returns::Returned::OwnedValue(owner)=model else{unreachable!()};
             let(offset,ty)=owner.value.ty.aggregate_part(*field);
@@ -4446,8 +4454,8 @@ impl Builder<'_> {
         bind_model(&mut model,&indices,0);self.resolve_owned_model(&mut model,None);
         Ok(model)
     }
-    pub(super) fn application_cursor_input(&mut self,data:&DataReference,index:&Value)->Result<bounds::Proof> {
-        let model=self.element_model(&data.data.ty,&data.data.elements,(&data.data.residency,&[]),self.scope.span())?;
+    pub(super) async fn application_cursor_input(&mut self,data:&DataReference,index:&Value)->Result<bounds::Proof> {
+        let model=unsafe { self.world.call(self.element_model(&data.data.ty,&data.data.elements,(&data.data.residency,&[]),self.scope.span())).await }?;
         let value=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(&data.data);
         for(component,(scalar,_))in value.ty.components.iter().enumerate(){
             let input=bounds::Proof::default().with_identity(ValueIdentity::Register(self.reg(*scalar)));
@@ -4464,7 +4472,7 @@ impl Builder<'_> {
         }
         Ok(proof)
     }
-    pub(super) fn application_element_proof(&mut self,place:&Place,regs:&[Reg],reads:&[(usize,usize)])->Result<Option<bounds::Proof>>{
+    pub(super) async fn application_element_proof(&mut self,place:&Place,regs:&[Reg],reads:&[(usize,usize)])->Result<Option<bounds::Proof>>{
         let Place::ApplicationElement{sources,resource:borrow,words,..}=place else{return Ok(None)};let mut result=None;
         let mut projections:Vec<Vec<view_contracts::ElementRead>>=Vec::new();let mut pending=false;
         let names=self.env.keys().cloned().collect::<Vec<_>>();
@@ -4476,10 +4484,10 @@ impl Builder<'_> {
                     for(scope,_,_)in self.application_element_scopes(sources,borrow,data,(&self.path,&self.env)){
                         let mut data=&mut *data;let mut parent=self.data_value_borrow(data);
                         for fields in scope{
-                            self.expand_current_element_facts(data)?;parent=view::Borrow::element(parent,fields.clone(),None);
+                            unsafe { self.world.call(self.expand_current_element_facts(data)).await }?;parent=view::Borrow::element(parent,fields.clone(),None);
                             let Some(child)=model_data_mut(data.elements.known_mut(),&fields)else{return Ok(None)};data=child;
                         }
-                        self.expand_current_element_facts(data)?;
+                        unsafe { self.world.call(self.expand_current_element_facts(data)).await }?;
                         let Some(components)=words.iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Option<Vec<_>>>()else{return Ok(None)};
                         let Some(model)=data.elements.known()else{return Ok(None)};
                         let value=self.returned_storage(model);let mut bindings=self.element_owner_bindings(data);
@@ -4526,7 +4534,7 @@ impl Builder<'_> {
         }
         Ok(result)
     }
-    pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],update:ElementUpdate<'_>)->Result<()> {
+    pub(super) async fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],update:ElementUpdate<'_>)->Result<()> {
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         let index=match &update{ElementUpdate::Element{index,..}|ElementUpdate::Bytes{index,..}=>*index,_=>None};
         let when=match &update{ElementUpdate::Element{when,..}=>*when,_=>None};
@@ -4546,11 +4554,11 @@ impl Builder<'_> {
                 let mut complete_scope=bounds::Condition::constant(complete_scope);let mut selected_data=Some(&mut *data);
                 for fields in scope{
                     selected_data=match selected_data{
-                        Some(data)=>{self.expand_current_element_facts(data)?;if let Some(one)=&one{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false);}model_data_mut(data.elements.known_mut(),&fields)},
+                        Some(data)=>{unsafe { self.world.call(self.expand_current_element_facts(data)).await }?;if let Some(one)=&one{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false);}model_data_mut(data.elements.known_mut(),&fields)},
                         None=>None,
                     };
                 }
-                let Some(data)=selected_data else{continue;};self.expand_current_element_facts(data)?;
+                let Some(data)=selected_data else{continue;};unsafe { self.world.call(self.expand_current_element_facts(data)).await }?;
                 let byte_writes=if let ElementUpdate::Bytes{effect,..}=&update {
                     let borrow=Arc::new(resource.clone());let layout=address::Layout::of(&data.ty);
                     data.ty.components.iter().enumerate().filter_map(|(component,(scalar,word))|{
@@ -4626,8 +4634,8 @@ impl Builder<'_> {
                         inner.root=self.value_component(&updated,handle);inner.length=self.value_component(&updated,length);
                         inner.root.proof=std::mem::take(&mut inner.root.proof).with_identity(ValueIdentity::ElementComponent(handle)).with_view_borrow(0,borrow);
                         if components.contains(&handle)||components.contains(&length){
-                            let original=self.element_model(&inner.ty,&inner.elements,(&inner.residency,&[]),self.scope.span())?;
-                            let mut elements=self.unknown_element_model(&inner.ty,(&inner.residency,&[]))?;
+                            let original=unsafe { self.world.call(self.element_model(&inner.ty,&inner.elements,(&inner.residency,&[]),self.scope.span())).await }?;
+                            let mut elements=unsafe { self.world.call(self.unknown_element_model(&inner.ty,(&inner.residency,&[]))).await }?;
                             residency::visit(&mut elements,&mut residency::Input::new(0),&mut|data,input|{
                                 if let Some(source)=residency::model_location(&original,&input.fields){data.residency=source.residency.clone();}
                             });
@@ -4661,7 +4669,7 @@ impl Builder<'_> {
             self.replace_element_model(parent.payloads[*field].as_deref_mut().unwrap(), rest, fresh);
         }
     }
-    pub(super) fn apply_application_prefixes(&mut self,reference:&DataReference,facts:&prefix::Fields)->Result<()> {
+    pub(super) async fn apply_application_prefixes(&mut self,reference:&DataReference,facts:&prefix::Fields)->Result<()> {
         let resource=view::resource_borrow(&reference.data);let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
             let mut binding=self.env[&name].clone();
@@ -4671,7 +4679,7 @@ impl Builder<'_> {
                 for(scope,mut complete,_)in scopes {
                     let mut data=&mut *data;
                     for fields in scope {
-                        self.expand_current_element_facts(data)?;
+                        unsafe { self.world.call(self.expand_current_element_facts(data)).await }?;
                         complete&=data.length.minimum()==1&&data.length.maximum()==1;
                         data=model_data_mut(data.elements.known_mut(),&fields).unwrap();
                     }
@@ -4683,7 +4691,7 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn apply_application_dataset_model(&mut self,reference:&DataReference,model:ElementFacts)->Result<()>{
+    pub(super) async fn apply_application_dataset_model(&mut self,reference:&DataReference,model:ElementFacts)->Result<()>{
         let resource=view::resource_borrow(&reference.data);let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names{
             let mut binding=self.env[&name].clone();
@@ -4697,19 +4705,19 @@ impl Builder<'_> {
                     let selected=qualifier.logical(match selection{Some(selection)=>selection.condition(),None=>bounds::Condition::default()},false);
                     let mut selected_data=Some(&mut *data);
                     for fields in scope{selected_data=match selected_data{
-                        Some(data)=>{self.expand_current_element_facts(data)?;complete&=data.length.minimum()==1&&data.length.maximum()==1;model_data_mut(data.elements.known_mut(),&fields)},
+                        Some(data)=>{unsafe { self.world.call(self.expand_current_element_facts(data)).await }?;complete&=data.length.minimum()==1&&data.length.maximum()==1;model_data_mut(data.elements.known_mut(),&fields)},
                         None=>None,
                     };}
                     let Some(data)=selected_data else{continue;};
                     if reference.projection.is_empty()&&unique&&complete{
                         data.elements=model.clone().map(&mut |model|self.capture_element_model(data,&reference.projection,*model),&mut |when|when);continue;
                     }
-                    let incoming=self.element_model(reference.element_layout().1,&model,(&reference.residency,&reference.projection),self.scope.span())?;let model=incoming.as_ref();
+                    let incoming=unsafe { self.world.call(self.element_model(reference.element_layout().1,&model,(&reference.residency,&reference.projection),self.scope.span())).await }?;let model=incoming.as_ref();
                     let mut fresh=self.capture_element_model(data,&reference.projection,model.clone());
                     if reference.projection.is_empty()&&unique&&complete{data.elements=application::ElementFacts::Known(fresh);continue;}
                     // A real partial write supplies new facts; only its enclosing model is materialized.
                     // Invalidating absent facts above does not manufacture an unknown element tree.
-                    if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())?);}
+                    if data.elements.known().is_none(){data.elements=application::ElementFacts::Known(unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())).await }?);}
                     let stored=data.elements.known_mut().unwrap();
                     if !unique||!complete{
                         let incoming=fresh.clone();let previous=self.projected_element_model(stored,&reference.projection);
@@ -4728,15 +4736,15 @@ impl Builder<'_> {
 // Each stored model is checked in its own existing element scope. Its local
 // identities never become resources in an outer function's retained set.
 impl Builder<'_> {
-    pub(super) fn require_element_return_borrows(&mut self,model:&returns::Returned,owned:&view::Borrow,span:Span)->Result<()> {
-        fn visit(builder:&mut Builder<'_>,model:&returns::Returned,owned:&view::Borrow,parents:&[usize],span:Span)->Result<()> {
+    pub(super) async fn require_element_return_borrows(&mut self,model:&returns::Returned,owned:&view::Borrow,span:Span)->Result<()> {
+        async fn visit(builder:&mut Builder<'_>,model:&returns::Returned,owned:&view::Borrow,parents:&[usize],span:Span)->Result<()> {
             let value=builder.returned_storage(model);
             for path in view::resource_paths(&value.ty) {
-                if let Some(data)=model_data(Some(model),&path){check(builder,data,owned,parents,span)?;}
+                if let Some(data)=model_data(Some(model),&path){unsafe { builder.world.call(check(builder,data,owned,parents,span)).await }?;}
             }
             Ok(())
         }
-        fn check(builder:&mut Builder<'_>,data:&Data,owned:&view::Borrow,parents:&[usize],span:Span)->Result<()> {
+        async fn check(builder:&mut Builder<'_>,data:&Data,owned:&view::Borrow,parents:&[usize],span:Span)->Result<()> {
             if !data.ownership.may_own()||data.length.maximum()==0{return Ok(());}
             let mut shifts=BTreeMap::new();
             for(depth,width)in parents.iter().enumerate(){for component in 0..*width {
@@ -4745,7 +4753,7 @@ impl Builder<'_> {
             }}
             let mut scoped=owned.output_bound(&shifts);
             let Some(elements)=data.elements.known()else{
-                if builder.world.stored_borrows(&data.ty,builder.scope.source(),span,builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),false)? && !matches!(data.elements,ElementFacts::Input(_)){
+                if unsafe { builder.world.call(builder.world.stored_borrows(&data.ty,builder.scope.source(),span,builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),false)).await }? && !matches!(data.elements,ElementFacts::Input(_)){
                     let proof=bounds::Proof::default().with_view_borrow(0,view::Borrow::source(view::Source::Unresolved));
                     builder.require_view_return_proof(&proof,scoped,span)?;
                 }
@@ -4757,9 +4765,9 @@ impl Builder<'_> {
                 builder.require_view_return_proof(&proof,scoped.clone(),span)?;
             }
             let mut nested=vec![elements.registers().len()];nested.extend_from_slice(parents);
-            visit(builder,elements,&scoped,&nested,span)
+            unsafe { builder.world.call(visit(builder,elements,&scoped,&nested,span)).await }
         }
-        visit(self,model,owned,&[],span)
+        unsafe { self.world.call(visit(self,model,owned,&[],span)).await }
     }
 }
 
@@ -4944,9 +4952,9 @@ pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::applicat
 }
 
 impl Builder<'_>{
-    pub(super) fn element_model(&mut self,ty:&Ty,facts:&ElementFacts,location:(&residency::Residency,&[usize]),span:Span)->Result<Box<returns::Returned>> {
+    pub(super) async fn element_model(&mut self,ty:&Ty,facts:&ElementFacts,location:(&residency::Residency,&[usize]),span:Span)->Result<Box<returns::Returned>> {
         Ok(match facts{
-            ElementFacts::Unknown=>self.unknown_element_model(ty,location)?,
+            ElementFacts::Unknown=>unsafe { self.world.call(self.unknown_element_model(ty,location)).await }?,
             ElementFacts::Input(when)=>{
                 let mut paths=BTreeSet::new();residency::inputs(&location.0.under(&self.path),&mut paths);
                 let mut result:Option<Box<returns::Returned>>=None;
@@ -4957,32 +4965,32 @@ impl Builder<'_>{
                         .max_by_key(|(parent,_)|parent.fields.len()).map(|(_,id)|*id)else{continue;};
                     let parameter=input.parameter;
                     let mut next=self.view_model.parameters.keys().filter_map(|id|match id{ValueIdentity::DatasetContent(p,r,component)if (*p,*r)==(parameter,resource)=>Some(component+1),_=>None}).max().unwrap_or(0);
-                    let mut model=self.unknown_element_model(ty,location)?;
+                    let mut model=unsafe { self.world.call(self.unknown_element_model(ty,location)).await }?;
                     bind_element_input(self,&mut model,resource,&mut next,&mut ElementBindings::new(),&input);
                     residency::visit(&mut model,&mut input,&mut|data,input|data.residency=residency::Residency::input(input.model()));
                     if let Some(previous)=&mut result{previous.join(*model,true,None);}else{result=Some(model);}
                 }
-                let mut model=match result{Some(model)=>model,None=>self.unknown_element_model(ty,location)?};
-                contracts::mark_cleanup_model(self,&mut model,when.scope_element_indices(1),span)?;model
+                let mut model=match result{Some(model)=>model,None=>unsafe { self.world.call(self.unknown_element_model(ty,location)).await }?};
+                unsafe { self.world.call(contracts::mark_cleanup_model(self,&mut model,when.scope_element_indices(1),span)).await }?;model
             },
             ElementFacts::Known(model)=>model.clone(),
             ElementFacts::Cleanup(when)=>{
-                let mut model=self.unknown_element_model(ty,location)?;
-                contracts::mark_cleanup_model(self,&mut model,when.scope_element_indices(1),span)?;model
+                let mut model=unsafe { self.world.call(self.unknown_element_model(ty,location)).await }?;
+                unsafe { self.world.call(contracts::mark_cleanup_model(self,&mut model,when.scope_element_indices(1),span)).await }?;model
             },
-            ElementFacts::Common(a,b)=>{let mut model=self.element_model(ty,a,location,span)?;model.join(*self.element_model(ty,b,location,span)?,true,None);model},
-            ElementFacts::Selected(when,a,b)=>{let mut model=self.element_model(ty,a,location,span)?;model.join(*self.element_model(ty,b,location,span)?,true,Some(when));model},
+            ElementFacts::Common(a,b)=>{let mut model=unsafe { self.world.call(self.element_model(ty,a,location,span)).await }?;model.join(*unsafe { self.world.call(self.element_model(ty,b,location,span)).await }?,true,None);model},
+            ElementFacts::Selected(when,a,b)=>{let mut model=unsafe { self.world.call(self.element_model(ty,a,location,span)).await }?;model.join(*unsafe { self.world.call(self.element_model(ty,b,location,span)).await }?,true,Some(when));model},
         })
     }
-    pub(super) fn normalize_element_facts(&mut self,value:&mut returns::Returned,span:Span)->Result<()> {
+    pub(super) async fn normalize_element_facts(&mut self,value:&mut returns::Returned,span:Span)->Result<()> {
         match value{
             returns::Returned::Dataset(data)=>{
                 if matches!(data.elements,ElementFacts::Common(..)|ElementFacts::Selected(..)){
-                    data.elements=ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)?);
+                    data.elements=ElementFacts::Known(unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)).await }?);
                 }
-                if let Some(model)=data.elements.known_mut(){self.normalize_element_facts(model,span)?;}
+                if let Some(model)=data.elements.known_mut(){unsafe { self.world.call(self.normalize_element_facts(model,span)).await }?;}
             },
-            returns::Returned::OwnedValue(owner)=>for child in owner.payloads.iter_mut().flatten(){self.normalize_element_facts(child,span)?;},
+            returns::Returned::OwnedValue(owner)=>for child in owner.payloads.iter_mut().flatten(){unsafe { self.world.call(self.normalize_element_facts(child,span)).await }?;},
             returns::Returned::Value(_)|returns::Returned::Unit=>{},
         }
         Ok(())
@@ -4990,10 +4998,10 @@ impl Builder<'_>{
 }
 
 impl Builder<'_>{
-    pub(super) fn expand_current_element_facts(&mut self,data:&mut Data)->Result<()> {
+    pub(super) async fn expand_current_element_facts(&mut self,data:&mut Data)->Result<()> {
         match data.elements{
             ElementFacts::Input(_)|ElementFacts::Cleanup(_)|ElementFacts::Common(..)|ElementFacts::Selected(..)=>{
-                data.elements=ElementFacts::Known(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())?);
+                data.elements=ElementFacts::Known(unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())).await }?);
             },
             ElementFacts::Unknown|ElementFacts::Known(_)=>{},
         }

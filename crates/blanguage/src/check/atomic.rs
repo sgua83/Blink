@@ -11,8 +11,8 @@ impl Builder<'_> {
             _ => false,
         }
     }
-    pub(super) fn atomic_place(&mut self, target: &Expr) -> Result<Option<Place>> {
-        let Some(place) = self.place(target)? else {
+    pub(super) async fn atomic_place(&mut self, target: &Expr) -> Result<Option<Place>> {
+        let Some(place) = unsafe { self.world.call(self.place(target)).await }? else {
             return Ok(None);
         };
         self.atomic_place_value(place,target.span())
@@ -28,12 +28,12 @@ impl Builder<'_> {
             )
         }
     }
-    fn atomic_location(
+    async fn atomic_location(
         &mut self,
         target: &Expr,
         access: Access,
     ) -> Result<Option<(Place, Option<(IndexedSource, Option<Reg>, u32)>, Scalar)>> {
-        let Some(place) = self.atomic_place(target)? else {
+        let Some(place) = unsafe { self.world.call(self.atomic_place(target)).await }? else {
             return Ok(None);
         };
         let ty = place.ty();
@@ -42,7 +42,7 @@ impl Builder<'_> {
         }
         let scalar = ty.components[0].0;
         let write=access.writes();
-        self.require_place_access(&place,access,target.span())?;
+        unsafe { self.world.call(self.require_place_access(&place,access,target.span())).await }?;
         self.dataset_effect(&place,access,true,target.span())?;
         let (base, offset, word) = match &place {
             Place::Indexed { base, offset, words, .. } => (&**base, Some(*offset), words[0]),
@@ -84,8 +84,8 @@ impl Builder<'_> {
             "原子内存序需要显式 relaxed、acquire、release 或 acq_rel",
         )
     }
-    fn atomic_operand(&mut self, expr: &Expr, scalar: Scalar) -> Result<Option<Value>> {
-        let Some(value) = self.expr(expr)? else {
+    async fn atomic_operand(&mut self, expr: &Expr, scalar: Scalar) -> Result<Option<Value>> {
+        let Some(value) = unsafe { self.world.call(self.expr(expr)).await }? else {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(scalar), &value.ty, expr.span())?;
@@ -108,14 +108,14 @@ impl Builder<'_> {
         }
         self.emit(InstKind::Atomic(atomic));
     }
-    pub(super) fn atomic_store(&mut self, args: &Expressions, span: Span) -> Result<()> {
+    pub(super) async fn atomic_store(&mut self, args: &Expressions, span: Span) -> Result<()> {
         if args.len() != 3 {
             return self.fail(span, "B217", "atomic_store(目标, 值, 内存序) 需要三个参数");
         }
-        let Some((place, location, scalar)) = self.atomic_location(&args.at(0), Access::Write)? else {
+        let Some((place, location, scalar)) = unsafe { self.world.call(self.atomic_location(&args.at(0), Access::Write)).await }? else {
             return Ok(());
         };
-        let Some(value) = self.atomic_operand(&args.at(1), scalar)? else {
+        let Some(value) = unsafe { self.world.call(self.atomic_operand(&args.at(1), scalar)).await }? else {
             return Ok(());
         };
         let order = self.atomic_order(&args.at(2))?;
@@ -139,7 +139,7 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn atomic_value(
+    pub(super) async fn atomic_value(
         &mut self,
         name: &str,
         args: &Expressions,
@@ -159,7 +159,7 @@ impl Builder<'_> {
                 ),
             );
         }
-        let Some((place, location, scalar)) = self.atomic_location(&args.at(0), if name=="atomic_load"{Access::Read}else{Access::InOut})? else {
+        let Some((place, location, scalar)) = unsafe { self.world.call(self.atomic_location(&args.at(0), if name=="atomic_load"{Access::Read}else{Access::InOut})).await }? else {
             return Ok(None);
         };
         let order_at = if name == "atomic_compare_exchange" {
@@ -178,7 +178,7 @@ impl Builder<'_> {
             }
             (AtomicOp::Load, None)
         } else {
-            let Some(value) = self.atomic_operand(&args.at(1), scalar)? else {
+            let Some(value) = unsafe { self.world.call(self.atomic_operand(&args.at(1), scalar)).await }? else {
                 return Ok(None);
             };
             let operand = value.regs[0];
@@ -192,7 +192,7 @@ impl Builder<'_> {
                 "atomic_or" => (AtomicOp::Or(operand), None),
                 "atomic_xor" => (AtomicOp::Xor(operand), None),
                 "atomic_compare_exchange" => {
-                    let Some(desired) = self.atomic_operand(&args.at(2), scalar)? else {
+                    let Some(desired) = unsafe { self.world.call(self.atomic_operand(&args.at(2), scalar)).await }? else {
                         return Ok(None);
                     };
                     let failure = self.atomic_order(&args.at(4))?;

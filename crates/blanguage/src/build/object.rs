@@ -98,7 +98,7 @@ pub(super) fn compile<'a>(
     }
     let object = match kind {
         ObjectKind::Module(instances) => {
-            crate::check::compile_native_module(&world, &module, instances, imported)?.compile_in(worker).map_err(error)?
+            unsafe { world.run(crate::check::compile_native_module(&world, &module, instances, imported)) }?.compile_in(worker).map_err(error)?
         }
         ObjectKind::Application(entry) => {
             crate::compile_world(&world, module, false, Some((crate::EntryKind::Application, entry)))?

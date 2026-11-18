@@ -103,15 +103,15 @@ impl Builder<'_>{
             }
         }
     }
-    pub(super) fn owned_when(&mut self,value:&Presence,span:Span,branch_origin:Option<Arc<GeneratedOrigin>>,condition_origin:Option<Arc<GeneratedOrigin>>,body:impl FnOnce(&mut Self)->Result<()>)->Result<()>{
+    pub(super) async fn owned_when(&mut self,value:&Presence,span:Span,branch_origin:Option<Arc<GeneratedOrigin>>,condition_origin:Option<Arc<GeneratedOrigin>>,body:impl std::ops::AsyncFnOnce(&mut Self)->Result<()>)->Result<()>{
         match self.condition_truth(&value.condition(),None){
             Some(false)=>Ok(()),
-            Some(true)=>body(self),
+            Some(true)=>body(self).await,
             None=>{
                 let condition=self.presence_register(value,span,condition_origin.as_ref())?;let outer=std::mem::take(&mut self.code);let initialized=self.initialized.clone();let path=self.path.clone();
                 let mut unselected=self.env.clone();
                 self.path=value.condition().assume(&path,true);
-                body(self)?;
+                body(self).await?;
                 self.path=path;
                 let selected=self.take_application_initialization_state();
                 self.join_initialization(value,selected,initialized);

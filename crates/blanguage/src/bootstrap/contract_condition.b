@@ -53,11 +53,11 @@ Term constant_term(address original,address ty,address bits,u32 literal,Host hos
     return Term(value,original,ty,literal,1);
 }
 Term scalar_term(address original,u32 scalar,u64 bits,u32 literal,Host host) on cpu
-    requires nonzero(host.copy_type)
-    requires nonzero(host.scalar_type)
     requires nonzero(host.bits)
-    requires nonzero(host.push_bit)
+    requires nonzero(host.copy_type)
     requires nonzero(host.make_constant)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.scalar_type)
 {
     address values=host.bits(1u64);host.push_bit(values,bits);
     return constant_term(original,host.scalar_type(scalar,1u64),values,literal,host);
@@ -73,52 +73,37 @@ Literal number_value(address context,Bytes text,bool negative,Host host) on cpu
     return decoded;
 }
 TypeResult number_type(address context,Bytes text,bool negative,Host host) on cpu
-    requires nonzero(host.scalar_type)
     requires nonzero(host.fail)
+    requires nonzero(host.scalar_type)
 {
     Literal decoded=number_value(context,text,negative,host);if(decoded.error!=LiteralError::None){return failed_type();}
     u32 scalar=literal_scalar(decoded.kind);return TypeResult(host.scalar_type(scalar,1u64),scalar_width(scalar)==32 ? 1 : 0,1);
 }
 Term number_term(address context,address original,Bytes text,bool negative,Host host) on cpu
-    requires nonzero(host.copy_type)
-    requires nonzero(host.scalar_type)
     requires nonzero(host.bits)
-    requires nonzero(host.push_bit)
-    requires nonzero(host.make_constant)
+    requires nonzero(host.copy_type)
     requires nonzero(host.fail)
+    requires nonzero(host.make_constant)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.scalar_type)
 {
     Literal decoded=number_value(context,text,negative,host);if(decoded.error!=LiteralError::None){return failed();}
     u32 scalar=literal_scalar(decoded.kind);
     return scalar_term(original,scalar,decoded.bits,scalar_width(scalar)==32 ? 1 : 0,host);
 }
-TypeResult term_type(address context,Term term,Host host) on cpu
-    requires nonzero(host.node)
-    requires nonzero(host.constant)
-    requires nonzero(host.copy_type)
-    requires nonzero(host.drop_type)
-    requires nonzero(host.scalar_type)
-    requires nonzero(host.path_type)
-    requires nonzero(host.unary_type)
-    requires nonzero(host.binary_type)
-    requires nonzero(host.same_type)
-    requires nonzero(host.fail)
-{
-    if(!empty(term.ty)){return TypeResult(host.copy_type(term.ty),term.literal,1);}
-    return condition_type(context,term.value,host);
-}
 Term cast_term(Term term,u32 scalar,Host host) on cpu
-    requires nonzero(host.node)
+    requires nonzero(host.bits)
     requires nonzero(host.constant)
-    requires nonzero(host.type_info)
     requires nonzero(host.copy_node)
     requires nonzero(host.copy_type)
+    requires nonzero(host.drop_bits)
     requires nonzero(host.drop_node)
     requires nonzero(host.drop_type)
-    requires nonzero(host.scalar_type)
-    requires nonzero(host.bits)
-    requires nonzero(host.push_bit)
-    requires nonzero(host.drop_bits)
     requires nonzero(host.make_constant)
+    requires nonzero(host.node)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.type_info)
 {
     Node source_node=host.node(term.value);if(source_node.kind!=4){return term;}
     Constant value=host.constant(source_node.left);TypeInfo source=host.type_info(value.ty);
@@ -160,134 +145,98 @@ BinaryOperation binary_operation(u32 op) on cpu {
     if(op==16){return BinaryOperation::Xor;}if(op==17){return BinaryOperation::ShiftLeft;}
     if(op==18){return BinaryOperation::ShiftRight;}return BinaryOperation::ShiftRightSigned;
 }
-extern "C" Result bind(address context,address value,u32 is_public,Host host) on cpu
-    requires nonzero(host.node)
-    requires nonzero(host.constant)
-    requires nonzero(host.type_info)
-    requires nonzero(host.copy_node)
-    requires nonzero(host.copy_type)
-    requires nonzero(host.drop_node)
-    requires nonzero(host.drop_type)
-    requires nonzero(host.scalar_type)
+Result bind_member(address context,address base,Bytes field,Host host) on cpu
     requires nonzero(host.bits)
-    requires nonzero(host.push_bit)
+    requires nonzero(host.constant)
+    requires nonzero(host.drop_indices)
+    requires nonzero(host.drop_node)
+    requires nonzero(host.fail)
     requires nonzero(host.make_constant)
     requires nonzero(host.make_member)
-    requires nonzero(host.make_unary)
-    requires nonzero(host.make_binary)
-    requires nonzero(host.parameter)
-    requires nonzero(host.lookup)
-    requires nonzero(host.evaluate)
-    requires nonzero(host.variant)
     requires nonzero(host.member)
-    requires nonzero(host.drop_indices)
-    requires nonzero(host.fail)
+    requires nonzero(host.node)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.type_info)
+    requires nonzero(host.variant)
 {
-    Node node=host.node(value);
-    if(node.kind==0&&!returned_name(node.text)&&host.parameter(context,node.text)==0){
-        Lookup found=host.lookup(context,node.text);
-        if(found.found==0||found.constant==0){host.fail(context,1,node.text);return Result(nil(),0);}
-        if(is_public!=0&&found.is_public==0){host.fail(context,2,node.text);return Result(nil(),0);}
-        return host.evaluate(context,found.key);
-    }
-    if(node.kind==3){
-        Term term=scalar_term(value,1,u64(node.flag),0,host);host.drop_type(term.ty);return Result(term.value,1);
-    }
-    if(node.kind==5){
-        Result base=bind(context,node.left,is_public,host);if(base.ok==0){return base;}
-        Node bound=host.node(base.value);if(bound.kind!=4){return Result(host.make_member(base.value,node.text),1);}
+        Node bound=host.node(base);if(bound.kind!=4){return Result(host.make_member(base,field),1);}
         Constant constant=host.constant(bound.left);TypeInfo info=host.type_info(constant.ty);
         address ty=nil();address bits=nil();
         if(info.is_variant!=0){
-            Variant variant=host.variant(constant.ty,node.text);
-            if(variant.found==0){host.drop_node(base.value);host.fail(context,3,node.text);return Result(nil(),0);}
+            Variant variant=host.variant(constant.ty,field);
+            if(variant.found==0){host.drop_node(base);host.fail(context,3,field);return Result(nil(),0);}
             ty=host.scalar_type(3,1u64);bits=host.bits(1u64);
             host.push_bit(bits,bit_at(constant.bits,0u64)==u64(variant.discriminant) ? 1u64 : 0u64);
         }
-        else if(info.is_array!=0&&length_name(node.text)){
+        else if(info.is_array!=0&&length_name(field)){
             ty=host.scalar_type(1,1u64);bits=host.bits(1u64);host.push_bit(bits,info.length);
         }
         else {
-            Member member=host.member(context,constant.ty,node.text);
-            if(member.ok==0){host.drop_node(base.value);return Result(nil(),0);}
+            Member member=host.member(context,constant.ty,field);
+            if(member.ok==0){host.drop_node(base);return Result(nil(),0);}
             ty=member.ty;bits=host.bits(member.count);
             u64 i=0u64;while(i<member.count){host.push_bit(bits,bit_at(constant.bits,bit_at(member.indices,i)));i+=1u64;}
             host.drop_indices(member.owner);
         }
-        address selected=host.make_constant(ty,bits,bound.left);host.drop_node(base.value);return Result(selected,1);
-    }
-    if(node.kind==6){
-        Result operand=bind(context,node.left,is_public,host);if(operand.ok==0){return operand;}
-        return Result(host.make_unary(node.text,operand.value),1);
-    }
-    if(node.kind==7){
-        Result left=bind(context,node.left,is_public,host);if(left.ok==0){return left;}
-        Result right=bind(context,node.right,is_public,host);
-        if(right.ok==0){host.drop_node(left.value);return right;}
-        return Result(host.make_binary(node.text,left.value,right.value),1);
-    }
-    return Result(host.copy_node(value),1);
+        address selected=host.make_constant(ty,bits,bound.left);host.drop_node(base);return Result(selected,1);
 }
-extern "C" Term identity(address context,address value,Host host) on cpu
-    requires nonzero(host.node)
+Term unary_identity(address context,address value,Node node,Term operand_input,Host host) on cpu
+    requires nonzero(host.bits)
     requires nonzero(host.constant)
-    requires nonzero(host.broadcast_bit)
-    requires nonzero(host.type_info)
-    requires nonzero(host.copy_node)
     requires nonzero(host.copy_type)
     requires nonzero(host.drop_node)
     requires nonzero(host.drop_type)
-    requires nonzero(host.scalar_type)
-    requires nonzero(host.bits)
-    requires nonzero(host.push_bit)
-    requires nonzero(host.drop_bits)
     requires nonzero(host.make_constant)
     requires nonzero(host.make_unary)
-    requires nonzero(host.make_binary)
-    requires nonzero(host.path_type)
+    requires nonzero(host.node)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.type_info)
     requires nonzero(host.unary_type)
-    requires nonzero(host.binary_type)
-    requires nonzero(host.same_type)
-    requires nonzero(host.divide)
-    requires nonzero(host.fail)
 {
-    Node node=host.node(value);
-    if(node.kind==1){return number_term(context,value,node.text,false,host);}
-    if(node.kind==2||node.kind==3){return scalar_term(value,node.kind==2 ? 3 : 1,u64(node.flag),0,host);}
-    if(node.kind==4){return Term(host.copy_node(value),value,host.copy_type(host.constant(node.left).ty),0,1);}
-    if(node.kind==0||node.kind==5){return Term(host.copy_node(value),value,nil(),0,1);}
-    if(node.kind==6){
-        Node original_operand=host.node(node.left);
-        if(text_is(node.text,45,0,1u64)&&original_operand.kind==1){return number_term(context,value,original_operand.text,true,host);}
-        Term operand=identity(context,node.left,host);if(operand.ok==0){return failed();}
+    Term operand=operand_input;
         if(operand.literal!=0){
           Node folded=host.node(operand.value);if(folded.kind==4){
-            TypeResult typed=term_type(context,operand,host);
-            if(typed.ok==0){drop_term(operand,host);return failed();}
-            UnaryRule rule=host.unary_type(context,node.text,typed.ty);
-            if(rule.ok==0){host.drop_type(typed.ty);drop_term(operand,host);return failed();}
-            Constant constant=host.constant(folded.left);TypeInfo info=host.type_info(typed.ty);address bits=host.bits(constant.count);
+            address typed=operand.ty;
+            UnaryRule rule=host.unary_type(context,node.text,typed);
+            if(rule.ok==0){drop_term(operand,host);return failed();}
+            Constant constant=host.constant(folded.left);TypeInfo info=host.type_info(typed);address bits=host.bits(constant.count);
             u64 i=0u64;while(i<constant.count){host.push_bit(bits,unary_bits(rule.operation,info.width,bit_at(constant.bits,i)));i+=1u64;}
-            drop_term(operand,host);return constant_term(value,typed.ty,bits,1,host);
+            operand.ty=nil();drop_term(operand,host);return constant_term(value,typed,bits,1,host);
           }
         }
         if(!empty(operand.ty)){host.drop_type(operand.ty);}
         address ty=nil();if(text_is(node.text,33,0,1u64)){ty=host.scalar_type(3,1u64);}
         return Term(host.make_unary(node.text,operand.value),value,ty,0,1);
-    }
-    Term left=identity(context,node.left,host);if(left.ok==0){return failed();}
-    Term right=identity(context,node.right,host);if(right.ok==0){drop_term(left,host);return failed();}
+}
+Term binary_identity(address context,address value,Node node,Term left_input,Term right_input,address a,address b,Host host) on cpu
+    requires nonzero(host.binary_type)
+    requires nonzero(host.bits)
+    requires nonzero(host.broadcast_bit)
+    requires nonzero(host.constant)
+    requires nonzero(host.copy_node)
+    requires nonzero(host.copy_type)
+    requires nonzero(host.divide)
+    requires nonzero(host.drop_bits)
+    requires nonzero(host.drop_node)
+    requires nonzero(host.drop_type)
+    requires nonzero(host.fail)
+    requires nonzero(host.make_binary)
+    requires nonzero(host.make_constant)
+    requires nonzero(host.node)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.type_info)
+{
+    Term left=left_input;Term right=right_input;
     address ty=nil();u32 literal=0;
-    if(comparison(node.text)||logical(node.text)){ty=host.scalar_type(3,1u64);}
-    if(!logical(node.text)&&(left.literal!=0||right.literal!=0)){
-        TypeResult a=term_type(context,left,host);
-        if(a.ok==0){if(!empty(ty)){host.drop_type(ty);}drop_term(left,host);drop_term(right,host);return failed();}
-        TypeResult b=term_type(context,right,host);
-        if(b.ok==0){host.drop_type(a.ty);if(!empty(ty)){host.drop_type(ty);}drop_term(left,host);drop_term(right,host);return failed();}
-        BinaryRule rule=host.binary_type(context,node.text,a.ty,left.literal,b.ty,right.literal);
-        host.drop_type(a.ty);host.drop_type(b.ty);
-        if(rule.ok==0){if(!empty(ty)){host.drop_type(ty);}drop_term(left,host);drop_term(right,host);return failed();}
-        if(!empty(ty)){host.drop_type(ty);}ty=rule.ty;
+    bool typed=!logical(node.text)&&(left.literal!=0||right.literal!=0);
+    if(!typed&&(comparison(node.text)||logical(node.text))){ty=host.scalar_type(3,1u64);}
+    if(typed){
+        BinaryRule rule=host.binary_type(context,node.text,a,left.literal,b,right.literal);
+        if(rule.ok==0){drop_term(left,host);drop_term(right,host);return failed();}
+        ty=rule.ty;
         if(rule.kind==0){
             literal=left.literal!=0&&right.literal!=0&&rule.scalar!=0&&rule.scalar!=6&&rule.comparison==0 ? 1 : 0;
             if(rule.cast_left!=0){left=cast_term(left,rule.scalar,host);}
@@ -318,41 +267,246 @@ extern "C" Term identity(address context,address value,Host host) on cpu
     if(!empty(left.ty)){host.drop_type(left.ty);}if(!empty(right.ty)){host.drop_type(right.ty);}
     return Term(host.make_binary(node.text,left.value,right.value),value,ty,literal,1);
 }
-extern "C" TypeResult condition_type(address context,address value,Host host) on cpu
-    requires nonzero(host.node)
-    requires nonzero(host.constant)
-    requires nonzero(host.copy_type)
-    requires nonzero(host.drop_type)
-    requires nonzero(host.scalar_type)
-    requires nonzero(host.path_type)
-    requires nonzero(host.unary_type)
+TypeResult binary_condition(address context,Node node,TypeResult a,TypeResult b,Host host) on cpu
     requires nonzero(host.binary_type)
+    requires nonzero(host.drop_type)
     requires nonzero(host.same_type)
-    requires nonzero(host.fail)
+    requires nonzero(host.scalar_type)
 {
-    Node node=host.node(value);
-    if(node.kind==0||node.kind==5){Result result=host.path_type(context,value);return TypeResult(result.value,0,result.ok);}
-    if(node.kind==1){return number_type(context,node.text,false,host);}
-    if(node.kind==2||node.kind==3){return TypeResult(host.scalar_type(node.kind==2 ? 3 : 1,1u64),0,1);}
-    if(node.kind==4){return TypeResult(host.copy_type(host.constant(node.left).ty),0,1);}
-    if(node.kind==6){
-        Node operand=host.node(node.left);
-        if(text_is(node.text,45,0,1u64)&&operand.kind==1){
-            return number_type(context,operand.text,true,host);
-        }
-        TypeResult result=condition_type(context,node.left,host);if(result.ok==0){return result;}
-        UnaryRule rule=host.unary_type(context,node.text,result.ty);
-        if(rule.ok==0){host.drop_type(result.ty);return failed_type();}return result;
-    }
-    TypeResult a=condition_type(context,node.left,host);if(a.ok==0){return a;}
-    TypeResult b=condition_type(context,node.right,host);if(b.ok==0){host.drop_type(a.ty);return b;}
     if(logical(node.text)){
         address boolean=host.scalar_type(3,1u64);u32 ok=host.same_type(context,boolean,a.ty);
-        if(ok!=0){ok=host.same_type(context,boolean,b.ty);}host.drop_type(a.ty);host.drop_type(b.ty);
+        if(ok!=0){ok=host.same_type(context,boolean,b.ty);}
         if(ok==0){host.drop_type(boolean);return failed_type();}return TypeResult(boolean,0,1);
     }
     BinaryRule rule=host.binary_type(context,node.text,a.ty,a.literal,b.ty,b.literal);
-    host.drop_type(a.ty);host.drop_type(b.ty);if(rule.ok==0){return failed_type();}
+    if(rule.ok==0){return failed_type();}
     u32 literal=rule.kind==0&&rule.comparison==0&&a.literal!=0&&b.literal!=0&&rule.scalar!=0&&rule.scalar!=6 ? 1 : 0;
     return TypeResult(rule.ty,literal,1);
+}
+
+extern "C" BindingCursor bind_start(address value,u32 is_public) on cpu {
+    return BindingCursor(value,nil(),0,is_public);
+}
+QueryCursor query_start(address value) on cpu {return QueryCursor(value,nil(),0,0);}
+extern "C" QueryCursor identity_start(address value) on cpu {return query_start(value);}
+extern "C" QueryCursor type_start(address value) on cpu {return query_start(value);}
+BindingNeed give_binding(address state,BindingCursor cursor,BindingNeed need) on cpu {
+    unsafe_position<BindingCursor>(state)=cursor;return need;
+}
+IdentityNeed give_identity(address state,QueryCursor cursor,IdentityNeed need) on cpu {
+    unsafe_position<QueryCursor>(state)=cursor;return need;
+}
+TypeNeed give_type(address state,QueryCursor cursor,TypeNeed need) on cpu {
+    unsafe_position<QueryCursor>(state)=cursor;return need;
+}
+extern "C" BindingNeed bind_step(address state,address context,Host host) on cpu
+    requires nonzero(host.bits)
+    requires nonzero(host.constant)
+    requires nonzero(host.copy_node)
+    requires nonzero(host.copy_type)
+    requires nonzero(host.drop_indices)
+    requires nonzero(host.drop_node)
+    requires nonzero(host.drop_type)
+    requires nonzero(host.fail)
+    requires nonzero(host.lookup)
+    requires nonzero(host.make_binary)
+    requires nonzero(host.make_constant)
+    requires nonzero(host.make_member)
+    requires nonzero(host.make_unary)
+    requires nonzero(host.member)
+    requires nonzero(host.node)
+    requires nonzero(host.parameter)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.put_bound)
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.take_bound)
+    requires nonzero(host.type_info)
+    requires nonzero(host.variant)
+{
+    BindingCursor cursor=unsafe_position<BindingCursor>(state);
+    Node node=host.node(cursor.source);
+    if(cursor.stage==0){
+        if(node.kind==0&&!returned_name(node.text)&&host.parameter(context,node.text)==0){
+            Lookup found=host.lookup(context,node.text);
+            if(found.found==0||found.constant==0){host.fail(context,1,node.text);return give_binding(state,cursor,BindingNeed::Done);}
+            if(cursor.is_public!=0&&found.is_public==0){host.fail(context,2,node.text);return give_binding(state,cursor,BindingNeed::Done);}
+            cursor.request=found.key;cursor.stage=3;
+            return give_binding(state,cursor,BindingNeed::Constant);
+        }
+        if(node.kind==3){
+            Term term=scalar_term(cursor.source,1,u64(node.flag),0,host);
+            host.drop_type(term.ty);host.put_bound(context,0,term.value);
+            return give_binding(state,cursor,BindingNeed::Done);
+        }
+        if(node.kind==5||node.kind==6||node.kind==7){
+            cursor.request=node.left;cursor.stage=1;
+            return give_binding(state,cursor,BindingNeed::Child);
+        }
+        host.put_bound(context,0,host.copy_node(cursor.source));
+        return give_binding(state,cursor,BindingNeed::Done);
+    }
+    if(cursor.stage==1){
+        if(node.kind==5){
+            Result result=bind_member(context,host.take_bound(context,0),node.text,host);
+            if(result.ok!=0){host.put_bound(context,0,result.value);}
+            return give_binding(state,cursor,BindingNeed::Done);
+        }
+        if(node.kind==6){
+            host.put_bound(context,0,host.make_unary(node.text,host.take_bound(context,0)));
+            return give_binding(state,cursor,BindingNeed::Done);
+        }
+        host.put_bound(context,1,host.take_bound(context,0));
+        cursor.request=node.right;cursor.stage=2;
+        return give_binding(state,cursor,BindingNeed::Child);
+    }
+    if(cursor.stage==2){
+        host.put_bound(context,0,host.make_binary(node.text,host.take_bound(context,1),host.take_bound(context,0)));
+    }
+    return give_binding(state,cursor,BindingNeed::Done);
+}
+void put_identity(address context,Term value,Host host) on cpu
+    requires nonzero(host.put_term)
+{
+    if(value.ok!=0){host.put_term(context,0,value);}
+}
+extern "C" IdentityNeed identity_step(address state,address context,Host host) on cpu
+    requires nonzero(host.binary_type)
+    requires nonzero(host.bits)
+    requires nonzero(host.broadcast_bit)
+    requires nonzero(host.constant)
+    requires nonzero(host.copy_node)
+    requires nonzero(host.copy_type)
+    requires nonzero(host.divide)
+    requires nonzero(host.drop_bits)
+    requires nonzero(host.drop_node)
+    requires nonzero(host.drop_type)
+    requires nonzero(host.fail)
+    requires nonzero(host.make_binary)
+    requires nonzero(host.make_constant)
+    requires nonzero(host.make_unary)
+    requires nonzero(host.node)
+    requires nonzero(host.push_bit)
+    requires nonzero(host.put_term)
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.take_term)
+    requires nonzero(host.term)
+    requires nonzero(host.term_type)
+    requires nonzero(host.type_info)
+    requires nonzero(host.unary_type)
+{
+    QueryCursor cursor=unsafe_position<QueryCursor>(state);
+    Node node=host.node(cursor.source);
+    if(cursor.stage==0){
+        if(node.kind==1){put_identity(context,number_term(context,cursor.source,node.text,false,host),host);return give_identity(state,cursor,IdentityNeed::Done);}
+        if(node.kind==2||node.kind==3){
+            put_identity(context,scalar_term(cursor.source,node.kind==2 ? 3 : 1,u64(node.flag),0,host),host);
+            return give_identity(state,cursor,IdentityNeed::Done);
+        }
+        if(node.kind==4){
+            host.put_term(context,0,Term(host.copy_node(cursor.source),cursor.source,host.copy_type(host.constant(node.left).ty),0,1));
+            return give_identity(state,cursor,IdentityNeed::Done);
+        }
+        if(node.kind==0||node.kind==5){
+            host.put_term(context,0,Term(host.copy_node(cursor.source),cursor.source,nil(),0,1));
+            return give_identity(state,cursor,IdentityNeed::Done);
+        }
+        if(node.kind==6){
+            Node operand=host.node(node.left);
+            if(text_is(node.text,45,0,1u64)&&operand.kind==1){
+                put_identity(context,number_term(context,cursor.source,operand.text,true,host),host);
+                return give_identity(state,cursor,IdentityNeed::Done);
+            }
+        }
+        cursor.request=node.left;cursor.slot=0;cursor.stage=node.kind==6 ? 1 : 2;
+        return give_identity(state,cursor,IdentityNeed::Child);
+    }
+    if(cursor.stage==1){
+        put_identity(context,unary_identity(context,cursor.source,node,host.take_term(context,0),host),host);
+        return give_identity(state,cursor,IdentityNeed::Done);
+    }
+    if(cursor.stage==2){
+        cursor.request=node.right;cursor.slot=1;cursor.stage=3;
+        return give_identity(state,cursor,IdentityNeed::Child);
+    }
+    if(cursor.stage==3){
+        Term left=host.term(context,0);Term right=host.term(context,1);
+        if(logical(node.text)||(left.literal==0&&right.literal==0)){
+            put_identity(context,binary_identity(context,cursor.source,node,host.take_term(context,0),host.take_term(context,1),nil(),nil(),host),host);
+            return give_identity(state,cursor,IdentityNeed::Done);
+        }
+        cursor.stage=4;
+        if(empty(left.ty)){
+            cursor.request=left.value;cursor.slot=0;
+            return give_identity(state,cursor,IdentityNeed::Type);
+        }
+    }
+    if(cursor.stage==4){
+        cursor.stage=5;Term right=host.term(context,1);
+        if(empty(right.ty)){
+            cursor.request=right.value;cursor.slot=1;
+            return give_identity(state,cursor,IdentityNeed::Type);
+        }
+    }
+    address a=host.term_type(context,0);address b=host.term_type(context,1);
+    put_identity(context,binary_identity(context,cursor.source,node,host.take_term(context,0),host.take_term(context,1),a,b,host),host);
+    return give_identity(state,cursor,IdentityNeed::Done);
+}
+void put_condition(address context,TypeResult value,Host host) on cpu
+    requires nonzero(host.put_type)
+{
+    if(value.ok!=0){host.put_type(context,0,value);}
+}
+extern "C" TypeNeed type_step(address state,address context,Host host) on cpu
+    requires nonzero(host.binary_type)
+    requires nonzero(host.clear_type)
+    requires nonzero(host.constant)
+    requires nonzero(host.copy_type)
+    requires nonzero(host.drop_type)
+    requires nonzero(host.fail)
+    requires nonzero(host.node)
+    requires nonzero(host.put_type)
+    requires nonzero(host.same_type)
+    requires nonzero(host.scalar_type)
+    requires nonzero(host.typed)
+    requires nonzero(host.unary_type)
+{
+    QueryCursor cursor=unsafe_position<QueryCursor>(state);
+    Node node=host.node(cursor.source);
+    if(cursor.stage==0){
+        if(node.kind==0||node.kind==5){
+            cursor.request=cursor.source;cursor.slot=0;cursor.stage=1;
+            return give_type(state,cursor,TypeNeed::Path);
+        }
+        if(node.kind==1){put_condition(context,number_type(context,node.text,false,host),host);return give_type(state,cursor,TypeNeed::Done);}
+        if(node.kind==2||node.kind==3){
+            host.put_type(context,0,TypeResult(host.scalar_type(node.kind==2 ? 3 : 1,1u64),0,1));
+            return give_type(state,cursor,TypeNeed::Done);
+        }
+        if(node.kind==4){
+            host.put_type(context,0,TypeResult(host.copy_type(host.constant(node.left).ty),0,1));
+            return give_type(state,cursor,TypeNeed::Done);
+        }
+        if(node.kind==6){
+            Node operand=host.node(node.left);
+            if(text_is(node.text,45,0,1u64)&&operand.kind==1){
+                put_condition(context,number_type(context,operand.text,true,host),host);
+                return give_type(state,cursor,TypeNeed::Done);
+            }
+        }
+        cursor.request=node.left;cursor.slot=0;cursor.stage=node.kind==6 ? 2 : 3;
+        return give_type(state,cursor,TypeNeed::Child);
+    }
+    if(cursor.stage==2){
+        UnaryRule rule=host.unary_type(context,node.text,host.typed(context,0).ty);
+        return give_type(state,cursor,TypeNeed::Done);
+    }
+    if(cursor.stage==3){
+        cursor.request=node.right;cursor.slot=1;cursor.stage=4;
+        return give_type(state,cursor,TypeNeed::Child);
+    }
+    if(cursor.stage==4){
+        TypeResult result=binary_condition(context,node,host.typed(context,0),host.typed(context,1),host);
+        if(result.ok!=0){host.put_type(context,0,result);host.clear_type(context,1);}
+    }
+    return give_type(state,cursor,TypeNeed::Done);
 }
