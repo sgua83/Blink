@@ -174,21 +174,14 @@ impl<K: Decode + Ord, V: Decode> Decode for BTreeMap<K, V> {
             .collect()
     }
 }
-impl<T: Encode, const N: usize> Encode for [T; N] {
+impl<const N: usize> Encode for [u8; N] {
     fn encode(&self, w: &mut Writer) {
-        for value in self {
-            value.encode(w);
-        }
+        w.0.extend_from_slice(self);
     }
 }
-impl<T: Decode, const N: usize> Decode for [T; N] {
+impl<const N: usize> Decode for [u8; N] {
     fn decode(r: &mut Reader<'_>) -> Result<Self> {
-        Ok((0..N)
-            .map(|_| T::decode(r))
-            .collect::<Result<Vec<_>>>()?
-            .try_into()
-            .ok()
-            .unwrap())
+        Ok(r.take(N)?.try_into()?)
     }
 }
 macro_rules! tuple{($($ty:ident:$index:tt),*)=>{impl<$($ty:Encode),*> Encode for ($($ty,)*){fn encode(&self,w:&mut Writer){$(self.$index.encode(w);)*}}impl<$($ty:Decode),*> Decode for ($($ty,)*){fn decode(r:&mut Reader<'_>)->Result<Self>{Ok(($($ty::decode(r)?,)*))}}};}
