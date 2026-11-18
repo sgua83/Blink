@@ -564,11 +564,14 @@ impl Proof {
         for (offset,field) in ty.borrow_fields() {
             if field.is_address() {
                 let component=ty.components.iter().position(|(_,at)|*at==offset).unwrap();
-                let borrow=self.view_borrow(component).joined(view::Borrow::source(view::Source::External));
-                self=self.with_view_borrow(component,borrow);
+                self.mark_external_borrow(component);
             }
         }
         self
+    }
+    pub(super) fn mark_external_borrow(&mut self,component:usize) {
+        self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);
+        self.views[component].sources.union_when(view::Source::External,&Clause::default());
     }
     pub(super) fn with_view_borrow(mut self,component:usize,borrow:view::Borrow)->Self {
         self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;self

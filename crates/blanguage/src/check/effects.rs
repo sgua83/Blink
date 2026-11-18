@@ -417,8 +417,7 @@ impl Builder<'_> {
                         if field.is_address() {
                             let component=storage.ty().components.iter().position(|(_,at)|*at==offset).unwrap();
                             if components.contains(&component){
-                                let borrow=proof.view_borrow(component).joined(view::Borrow::source(view::Source::External));
-                                *proof=std::mem::take(proof).with_view_borrow(component,borrow);
+                                proof.mark_external_borrow(component);
                             }
                         }
                     }
