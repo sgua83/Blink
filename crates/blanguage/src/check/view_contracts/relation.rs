@@ -362,7 +362,6 @@ impl Graph {
         self.project(root, Op::Select(indices.to_vec()))
     }
     pub(in crate::check) fn seed_borrows(&self,root:usize)->Vec<&Borrow>{self.reachable(root).iter().map(|&id|&self.nodes[id].seeds).collect()}
-    pub(in crate::check) fn public(&self)->Self{let mut v=self.clone();v.inputs.clear();for n in &mut v.nodes{for e in &mut n.edges{if let Op::Read{epoch,..}=&mut e.op{*epoch=Epoch::Input;}}}v}
     pub(in crate::check) fn at_call(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.at_call(values);for e in &mut n.edges{e.when=e.when.guard_at_call(values);match &mut e.op{Op::Position(p)=>*p=p.bound_at_call(values),Op::Element{index,..}=>*index=Origin::index_at_call(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(values);}}v}
     pub(in crate::check) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.substitute_values(values);for e in &mut n.edges{e.when=e.when.substitute_values(values);match &mut e.op{Op::Position(p)=>*p=p.substitute_values(values),Op::Element{index,..}=>*index=Origin::index_substitute(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.substitute_values(values);}}v}
     pub(in crate::check) fn output_bound(&self,values:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.output_bound(values);for e in &mut n.edges{e.when=bounds::Condition::guard(e.when.assume(&bounds::Clause::default(),true).output_bound(values));if let Op::Position(p)=&mut e.op{*p=p.bind_outputs(values);}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.output_bound(values);}}v}
@@ -371,27 +370,40 @@ impl Graph {
         &self, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
         parameters: &BTreeMap<ValueIdentity, bounds::Proof>,
     ) -> Self {
-        let mut public = self.public();
         let input_parameters = residency::input_parameters(&function.parameters, function.input_width);
-        for node in &mut public.nodes {
-            node.seeds = canonical_relation(node.seeds.clone(), function, None, exposed, parameters, false);
-            for edge in &mut node.edges {
-                edge.when = edge.when.guard_at_call(&input_parameters);
-                if let Op::Position(origin) = &mut edge.op {
-                    let borrow = Borrow::source(Origin::Position(Arc::new(origin.clone())));
-                    let value = canonical_relation(borrow, function, None, exposed, parameters, false);
-                    if let Some(Origin::Position(position)) = value.sources.iter().next() {
-                        *origin = position.as_ref().clone();
+        let nodes = self.nodes.iter().map(|node| {
+            let seeds = canonical_relation(node.seeds.clone(), function, None, exposed, parameters, false);
+            let edges = node.edges.iter().map(|edge| {
+                let when = edge.when.guard_at_call(&input_parameters);
+                let op = match &edge.op {
+                    Op::Read { word, frame, .. } => Op::Read {
+                        word: *word,
+                        epoch: Epoch::Input,
+                        frame: *frame,
+                    },
+                    Op::Position(origin) => {
+                        let borrow = Borrow::source(Origin::Position(Arc::new(origin.clone())));
+                        let value = canonical_relation(borrow, function, None, exposed, parameters, false);
+                        match value.sources.iter().next() {
+                            Some(Origin::Position(position)) => Op::Position(position.as_ref().clone()),
+                            _ => edge.op.clone(),
+                        }
                     }
-                }
-            }
-        }
-        for frame in &mut public.frames {
-            for write in &mut frame.writes {
-                write.when = write.when.at_call(&input_parameters);
-            }
-        }
-        public
+                    other => other.clone(),
+                };
+                Edge { from: edge.from, op, when }
+            }).collect();
+            Node { seeds, edges }
+        }).collect();
+        let frames = self.frames.iter().map(|frame| Frame {
+            parent: frame.parent,
+            writes: frame.writes.iter().map(|write| Write {
+                target: write.target,
+                fields: write.fields.clone(),
+                when: write.when.at_call(&input_parameters),
+            }).collect(),
+        }).collect();
+        Self { nodes, variables: self.variables.clone(), frames, inputs: BTreeMap::new() }
     }
     fn extension(&self,other:&Graph)->bool{other.nodes.get(..self.nodes.len())==Some(self.nodes.as_slice())&&other.frames==self.frames&&other.variables==self.variables&&other.inputs==self.inputs}
     fn references(&self,source:&Origin)->bool{
