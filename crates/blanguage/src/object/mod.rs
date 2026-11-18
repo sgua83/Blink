@@ -21,9 +21,9 @@ pub(crate) struct Import {
     pub dll: String,
     pub name: String,
 }
-pub(crate) struct Section {
+pub(crate) struct Section<Bytes = Vec<u8>> {
     pub name: String,
-    pub bytes: Vec<u8>,
+    pub bytes: Bytes,
     pub flags: u32,
     pub relocations: Vec<Relocation>,
     pub associated: Vec<usize>,
@@ -77,10 +77,10 @@ pub(crate) enum Kind {
         binding: String,
     },
 }
-pub struct Object {
+pub struct Object<Bytes = Vec<u8>> {
     pub(crate) name: String,
     pub(crate) kind: Kind,
-    pub(crate) sections: Vec<Section>,
+    pub(crate) sections: Vec<Section<Bytes>>,
     pub(crate) symbols: Vec<Symbol>,
     pub(crate) imports: std::collections::BTreeMap<String, Vec<u8>>,
     pub(crate) archive: Option<Archive>,

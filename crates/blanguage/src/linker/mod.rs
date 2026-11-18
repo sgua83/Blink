@@ -1,7 +1,7 @@
 //! 独立链接阶段只读取 COFF 目标文件及其已编译静态库，不调用 B／Rust 编译器。
 mod combine;
 mod selection;
-use selection::select;
+use selection::entry;
 pub(crate) use selection::RootView;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod msvc;
@@ -63,12 +63,12 @@ pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(Inputs { sources: vec![Source::Owned(object)], libraries: Vec::new() }, path)
 }
 fn prepare(inputs: Inputs<'_>) -> Result<(Vec<Object>, Vec<crate::object::Archive>)> {
-    let mut objects = select(inputs, Roots::Entry)?;
+    let mut objects = entry(inputs)?;
     let archives = objects.iter_mut().filter_map(|object| object.archive.take()).collect();
     Ok((objects, archives))
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
-    let mut objects = select(read_inputs(inputs)?, Roots::Entry)?;
+    let mut objects = entry(read_inputs(inputs)?)?;
     let runtime = objects.iter().any(crate::object::stack::uses_runtime);
     let reserve = match objects[0].kind { Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes)), _ => None };
     let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects,None)? };

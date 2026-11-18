@@ -134,25 +134,33 @@ impl<'a> Context<'a> {
             Err(error)=>{self.error=Some(error);Reply{view:self.view(),object:0,error:1}},
         }
     }
-    fn section(&self,section:&mut object::Section,row:SectionView) {
+    fn section<Bytes>(&self,section:&mut object::Section<Bytes>,row:SectionView) {
         section.associated=self.associated[row.associated_start as usize..(row.associated_start+row.associated_count) as usize].iter().map(|&i|i as usize).collect();
         for(relocation,view)in section.relocations.iter_mut().zip(&self.relocations[row.relocation_start as usize..(row.relocation_start+row.relocation_count) as usize]){
             if let Target::Section(index,_)=&mut relocation.target{*index=view.section as usize;}
             if view.rewrite!=0{relocation.target=Target::Symbol(text(&self.locals[view.rewrite as usize-1].slot).to_owned());}
         }
     }
-    fn materialize(&self,source:Source<'_>,row:ObjectView)->Object {
+    fn materialize<Payload>(
+        &self, source: Source<'a>, row: ObjectView,
+        owned: &impl Fn(Vec<u8>) -> Payload,
+        borrowed: &impl Fn(&'a [u8]) -> Payload,
+    ) -> Object<Payload> {
         let sections=&self.sections[row.section_start as usize..(row.section_start+row.section_count) as usize];
         let symbols=&self.symbols[row.symbol_start as usize..(row.symbol_start+row.symbol_count) as usize];
         let mut object=match source {
-            Source::Owned(mut object)=>{
-                object.sections=object.sections.into_iter().zip(sections).filter_map(|(mut section,&row)|{
-                    if row.live==0{return None;}self.section(&mut section,row);Some(section)
+            Source::Owned(object) => {
+                let Object { name, kind, sections: input, symbols: mut selected, imports, archive, mut stack } = object;
+                let sections = input.into_iter().zip(sections).filter_map(|(mut section, &row)| {
+                    if row.live == 0 { return None; }
+                    self.section(&mut section, row);
+                    let object::Section { name, bytes, flags, relocations, associated, layout } = section;
+                    Some(object::Section { name, bytes: owned(bytes), flags, relocations, associated, layout })
                 }).collect();
-                let mut index=0;object.symbols.retain_mut(|symbol|{let row=symbols[index];index+=1;symbol.section=row.section as usize;row.keep!=0});
+                let mut index=0;selected.retain_mut(|symbol|{let row=symbols[index];index+=1;symbol.section=row.section as usize;row.keep!=0});
                 if let Some(frames) = &self.frames {
                     let mut index = row.frame_start as usize;
-                    object.stack.retain_mut(|frame| {
+                    stack.retain_mut(|frame| {
                         let view = frames[index];
                         index += 1;
                         if let Some((_, start)) = frame.coff {
@@ -161,15 +169,15 @@ impl<'a> Context<'a> {
                         view.keep != 0
                     });
                 } else {
-                    object.stack = Vec::new();
+                    stack = Vec::new();
                 }
-                object
+                Object { name, kind, sections, symbols: selected, imports, archive, stack }
             }
             Source::Borrowed(object)=>Object{
                 name:object.name.clone(),kind:object.kind.clone(),
                 sections:object.sections.iter().zip(sections).filter_map(|(section,&row)|{
                     if row.live==0{return None;}
-                    let mut section=object::Section{name:section.name.clone(),bytes:section.bytes.clone(),flags:section.flags,associated:Vec::new(),layout:None,
+                    let mut section=object::Section{name:section.name.clone(),bytes:borrowed(&section.bytes),flags:section.flags,associated:Vec::new(),layout:None,
                         relocations:section.relocations.iter().map(|relocation|object::Relocation{offset:relocation.offset,kind:relocation.kind,target:match &relocation.target{
                             Target::Section(index,value)=>Target::Section(*index,*value),Target::Symbol(name)=>Target::Symbol(name.clone()),Target::Import(import)=>Target::Import(import.clone()),
                         }}).collect()};
@@ -208,7 +216,14 @@ unsafe extern "C" fn binding(context:*mut c_void,request:ResourceRequest)->Reply
     let result=resources::resources(&archives,request.types as u32,request.programs as u32,runtime.iter().map(text),locals.iter().map(|row|(text(&row.slot),text(&row.name))),Some(crate::resource::ABI));
     context.reply(result)
 }
-pub(super) fn select(inputs: Inputs<'_>, roots: Roots<'_>)->Result<Vec<Object>> {
+pub(super) fn entry(inputs: Inputs<'_>) -> Result<Vec<Object>> {
+    select(inputs, Roots::Entry, std::convert::identity, <[u8]>::to_vec)
+}
+pub(super) fn select<'a, Payload>(
+    inputs: Inputs<'a>, roots: Roots<'_>,
+    owned: impl Fn(Vec<u8>) -> Payload,
+    borrowed: impl Fn(&'a [u8]) -> Payload,
+) -> Result<Vec<Object<Payload>>> {
     let(native_mode,types,programs,roots)=match roots{
         Roots::Entry=>(0,0,0,&[][..]),
         Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots),
@@ -231,6 +246,6 @@ pub(super) fn select(inputs: Inputs<'_>, roots: Roots<'_>)->Result<Vec<Object>> 
     }
     if native_mode==0{context.sources.swap(0,result.entry as usize);context.objects.swap(0,result.entry as usize);}
     let sources=std::mem::take(&mut context.sources);let mut output=Vec::new();
-    for(source,row)in sources.into_iter().zip(&context.objects){if row.selected!=0{output.push(context.materialize(source,*row));}}
+    for(source,row)in sources.into_iter().zip(&context.objects){if row.selected!=0{output.push(context.materialize(source,*row,&owned,&borrowed));}}
     Ok(output)
 }

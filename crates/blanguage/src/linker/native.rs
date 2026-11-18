@@ -1,14 +1,14 @@
 //! 原始CPU映像只消费原链接器已选择的COFF，不产生函数代码。
-use super::{Inputs, Result, RootView, Roots, Source, combine, select};
+use super::{Inputs, Result, RootView, Roots, Source, combine, selection::select};
 use crate::{native::{ModuleCode, ModuleSection, ModuleRelocation, ModuleTarget}, object::{Input, Target}};
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], roots: &[RootView<'_>], local: &[&str], types: u32, programs: u32) -> Result<Option<ModuleCode>> {
     let mut linked = Inputs::default();
     for input in inputs {
         linked.push(input);
     }
     linked.sources.extend(borrowed.iter().copied().map(Source::Borrowed));
-    let objects = select(linked, Roots::Symbols(roots, types, programs))?;
+    let objects = select(linked, Roots::Symbols(roots, types, programs), Cow::Owned, Cow::Borrowed)?;
     if objects.is_empty() { return Ok(None); }
     let mut symbols = BTreeMap::new();
     let object = combine::objects(objects, Some((local, &mut symbols)))?;

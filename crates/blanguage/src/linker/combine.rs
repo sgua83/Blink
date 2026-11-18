@@ -34,8 +34,8 @@ unsafe extern "C" {
     fn combine_encode(input:CombineInput,outputs:*const *mut u8);
 }
 
-pub(super) fn objects(
-    objects: Vec<Object>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
+pub(super) fn objects<Payload: AsRef<[u8]>>(
+    objects: Vec<Object<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
 ) -> Result<Object> {
     let name=objects[0].name.clone();
     let mut inputs=Vec::with_capacity(objects.len());
@@ -55,7 +55,7 @@ pub(super) fn objects(
                     target_kind,section:target_section,value,name,name_length:length});
             }
             rows.push(CombineSection{name:section.name.as_ptr(),name_length:section.name.len() as u64,
-                bytes:section.bytes.as_ptr(),byte_length:section.bytes.len() as u64,flags:u64::from(section.flags),object:object_index as u64,
+                bytes:section.bytes.as_ref().as_ptr(),byte_length:section.bytes.as_ref().len() as u64,flags:u64::from(section.flags),object:object_index as u64,
                 owner:0,group:0,begin:0,size:0,padding:0});
         }
         for symbol in &object.symbols {
