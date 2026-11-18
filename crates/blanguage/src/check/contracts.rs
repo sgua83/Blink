@@ -468,6 +468,7 @@ async fn resource(
     let ty = match env.get(root) {
         Some(Binding::AtomicBorrow(place)) => Some(place.ty()),
         Some(Binding::Owned(owner)) => Some(owner.place.ty()),
+        Some(Binding::OwnedValue(owner)) => Some(&owner.value.ty),
         _ => None,
     };
     if let Some(ty) = ty {
