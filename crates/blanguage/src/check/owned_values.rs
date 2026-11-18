@@ -458,7 +458,7 @@ impl Builder<'_> {
         Ok(())
     }
     #[inline(never)]
-    async fn make_owned_result(
+    pub(super) async fn make_owned_result(
         &mut self,
         ty: Ty,
         success: bool,
@@ -468,7 +468,7 @@ impl Builder<'_> {
         unsafe { self.world.call(self.make_owned_variant(ty,usize::from(!success),args,span)).await }
     }
     #[inline(never)]
-    async fn make_owned_variant(&mut self,ty:Ty,index:usize,args:&Expressions,span:Span)->Result<Option<OwnedValue>> {
+    pub(super) async fn make_owned_variant(&mut self,ty:Ty,index:usize,args:&Expressions,span:Span)->Result<Option<OwnedValue>> {
         if self.program.target != Target::Cpu || self.application.is_none() {
             return self.fail(span,"B224","拥有变体属于普通CPU应用资源组织");
         }
@@ -541,33 +541,9 @@ impl Builder<'_> {
     async fn evaluate_returned_syntax(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
         self.view_uses.before(expr.span());
         self.require_returned_projection(expr)?;
-        if let ExprKind::Call(name,args)=expr.kind(){
-            if matches!(name,"start_task"|"wait_task") {
-                return unsafe { self.world.call(self.task_call(name,&args,expr.span())).await };
-            }
-            let bindings=self.scope.bindings().clone();
-            if let Some(target)=bindings.type_call(name){
-                return match target{
-                    crate::generics::TypeCall::Builtin(name)=>unsafe { self.world.call(self.builtin_returned(name,&args,expr.span())).await },
-                    crate::generics::TypeCall::Construct(ty)=>unsafe { self.world.call(self.construct_record_returned(ty,&args,expr.span())).await },
-                };
-            }
-        }
-        match expr.kind() {
-            ExprKind::Invoke(callee, args) => return unsafe { self.world.call(self.function_value_call(
-                callee.span(), &args, expr.span(), async |builder| unsafe { builder.world.call(builder.expr(&callee)).await })).await },
-            ExprKind::Call(name, args) if self.env.contains_key(name) => {
-                return unsafe { self.world.call(self.function_value_call(expr.span(), &args, expr.span(), async |builder| {
-                    let mut value = unsafe { builder.world.call(builder.name_expr(name, expr.span())).await }?;
-                    builder.bound_value(&mut value);
-                    Ok(Some(value))
-                })).await };
-            }
-            _ => {}
-        }
-        if let Some(value) = unsafe { self.world.call(self.variant_call(expr, expected)).await }? {
-            return Ok(value);
-        }
+        unsafe{self.world.call(source_call::returned(self,expr,expected)).await}
+    }
+    pub(super) async fn evaluate_returned_other(&mut self,expr:&Expr,expected:Option<&Ty>)->Result<Option<Returned>>{
         match expr.kind() {
             ExprKind::Target(target, call) => return unsafe { self.world.call(self.target_call(target, &call, expr.span())).await },
             ExprKind::Member(base, name) => return unsafe { self.world.call(self.member_returned(expr, &base, name)).await },
@@ -588,117 +564,41 @@ impl Builder<'_> {
                     .take_owned_value(name, expr.span())).await }
                     .map(|v| Some(Returned::OwnedValue(v)));
             }
-            ExprKind::Specialize(name, _, _) if name == "dataset" => {
-                return unsafe { self.world.call(self
-                    .create_application_dataset(expr, expr.span())).await }
-                    .map(|v| v.map(Returned::Dataset));
-            }
-            ExprKind::Call(name, args)
-                if matches!(name, "Ok" | "Err")
-                    && expected.is_some_and(Ty::owns_resources) =>
-            {
-                return unsafe { self.world.call(self
-                    .expected_owned_result(expected.unwrap(), name == "Ok", &args, expr.span())).await };
-            }
-            ExprKind::Specialize(name, explicit, args) if matches!(name, "Ok" | "Err") => {
-                let explicit=unsafe { self.world.call(self.scope.bindings().arguments(self.world,&explicit,(self.scope.source(),self.scope.module(),self.scope.imports()),expr.span())).await }?;
-                if let Some(value) = unsafe { self.world.call(self.owned_result_call(name, &explicit, &args, expr.span())).await }? {
-                    return Ok(value);
-                }
-            }
-            ExprKind::Call(name, args) if name == "try" => {
-                return unsafe { self.world.call(self.propagate_returned(&args, expr.span())).await };
-            }
-            ExprKind::Select(c, a, b) => {
-                return unsafe { self.world.call(self.selection_returned(&c, &a, &b, expr.span(), expected)).await };
-            }
-            ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => {
-                if let Some(value) = unsafe { self.world.call(self.owned_record_call(name, &args, expr)).await }? {
-                    return Ok(value);
-                }
-                match self.world.resolve(
-                    name,
-                    self.scope.module(),
-                    self.scope.imports(),
-                    true,
-                ) {
-                    crate::frontend::NameResolution::Unique(key) => {
-                        let explicit = if let ExprKind::Specialize(_, args, _) = expr.kind() {
-                            Some(args)
-                        } else {
-                            None
-                        };
-                        let Some(arguments) = unsafe { self.world.call(self.function_arguments(&key, &args, expr.span())).await }? else {
-                            return Ok(None);
-                        };
-                        let instance =
-                            unsafe { self.world.call(self.specialized_arguments(key, &arguments,
-                                match explicit.as_ref() {
-                                    Some(arguments)=>Some(unsafe { self.world.call(self.scope.bindings().arguments(self.world,arguments,
-                                        (self.scope.source(),self.scope.module(),self.scope.imports()),expr.span())).await }?),
-                                    None=>None,
-                                }.as_deref(),
-                                expr.span())).await }?;
-                        return unsafe { self.world.call(self.invoke_returned(instance, arguments, expr.span(), None, Some(&args))).await };
-                    }
-                    crate::frontend::NameResolution::Ambiguous => {
-                        return self.fail(expr.span(), "B158", format!("函数名称 {name} 有多个可见声明，须使用模块限定名"));
-                    }
-                    crate::frontend::NameResolution::Missing => {}
-                }
-            }
-            _ => {}
+            ExprKind::Select(c,a,b)=>return unsafe{self.world.call(self.selection_returned(&c,&a,&b,expr.span(),expected)).await},
+            _=>{}
         }
-        if let ExprKind::Call(name, args) = expr.kind() {
-            if matches!(name, "Ok" | "Err") {
-                return unsafe { self.world.call(self.typed_value_returned(expr, expected)).await };
-            }
-            return unsafe { self.world.call(self.builtin_returned(name, &args, expr.span())).await };
-        }
-        unsafe { self.world.call(self.typed_value_returned(expr, expected)).await }
+        unsafe{self.world.call(self.typed_value_returned(expr,expected)).await}
     }
     #[inline(never)]
     async fn typed_value_returned(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
         unsafe { self.world.call(self.expr_expected(expr,expected)).await }.map(|value|value.map(Returned::value))
     }
     #[inline(never)]
-    async fn builtin_returned(&mut self, name: &str, args: &Expressions, span: Span) -> Result<Option<Returned>> {
-        match name {
-            "resize" => unsafe { self.world.call(self.resize_application_dataset(args,span)).await }.map(|value|value.map(Returned::Dataset)),
-            "take_last" => unsafe { self.world.call(self.take_last_application_dataset(args,span)).await }.map(|value|value.map(Returned::Dataset)),
-            "own" => unsafe { self.world.call(self.make_user_owned(args,span)).await },
-            "into_inner" => unsafe { self.world.call(self.into_user_inner(args,span)).await },
-            _ => unsafe { self.world.call(self.builtin_call(name,args,span)).await }.map(|value|value.map(Returned::value)),
-        }
-    }
-    #[inline(never)]
-    async fn expected_owned_result(&mut self, expected: &Ty, success: bool, args: &Expressions, span: Span) -> Result<Option<Returned>> {
+    pub(super) async fn expected_owned_result(&mut self, expected: &Ty, success: bool, args: &Expressions, span: Span) -> Result<Option<Returned>> {
         unsafe { self.world.call(self.make_owned_result(expected.clone(),success,args,span)).await }.map(|value|value.map(Returned::OwnedValue))
     }
     #[inline(never)]
-    fn require_returned_projection(&self, expr: &Expr) -> Result<()> {
+    pub(super) fn require_returned_projection(&self, expr: &Expr) -> Result<()> {
         if self.inside_user_owner(expr) && self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()) {
             return self.fail(expr.span(),"B224","拥有包装的资源载荷须用into_inner移出，不能部分移动其字段");
         }
         Ok(())
     }
-    #[inline(never)]
-    async fn variant_call(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Option<Returned>>> {
-        let constructor = match expr.kind() {
-            ExprKind::Call(name,args) => unsafe { self.world.call(self.variant_constructor_type(name,None,expected,expr.span())).await }?.map(|(ty,index)|(ty,index,args)),
-            ExprKind::Specialize(name,types,args) => {
-                let types=unsafe { self.world.call(self.scope.bindings().arguments(self.world,&types,(self.scope.source(),self.scope.module(),self.scope.imports()),expr.span())).await }?;
-                unsafe { self.world.call(self.variant_constructor_type(name,Some(&types),expected,expr.span())).await }?.map(|(ty,index)|(ty,index,args))
-            },
-            _ => None,
-        };
-        let Some((ty,index,args)) = constructor else { return Ok(None); };
-        let value = if ty.owns_resources() {
-            unsafe { self.world.call(self.make_owned_variant(ty,index,&args,expr.span())).await }.map(|value|value.map(Returned::OwnedValue))
-        } else {
-            unsafe { self.world.call(self.value_variant_constructor(ty,index,&args,expr.span())).await }.map(|value|value.map(Returned::value))
-        };
-        value.map(Some)
+    pub(super) async fn prepared_variant_returned(&mut self,expr:&Expr,ty:Ty,index:usize,args:&Expressions,owned:bool)->Result<Option<Returned>>{
+        let world=self.world;
+        let mut returned=unsafe{world.call(self.at_source(expr.span(),SourceSyntax::Expression,async |builder|{
+            builder.view_uses.before(expr.span());
+            builder.require_returned_projection(expr)?;
+            if owned{
+                unsafe{world.call(builder.make_owned_variant(ty,index,args,expr.span())).await}.map(|value|value.map(Returned::OwnedValue))
+            }else{unsafe{world.call(builder.value_variant_constructor(ty,index,args,expr.span())).await}.map(|value|value.map(Returned::value))}
+        })).await}?;
+        match &mut returned{
+            Some(Returned::Value(value))=>self.bound_value(value),
+            Some(Returned::OwnedValue(value))=>self.bound_value(&mut value.value),
+            _=>{}
+        }
+        Ok(returned)
     }
     #[inline(never)]
     async fn indexed_returned(&mut self, expr: &Expr, base: &Expr, index: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
@@ -712,32 +612,12 @@ impl Builder<'_> {
         unsafe { self.world.call(self.expr_expected(expr,expected)).await }.map(|value|value.map(Returned::value))
     }
     #[inline(never)]
-    async fn construct_record_returned(&mut self,name:&TypeName,args:&Expressions,span:Span)->Result<Option<Returned>> {
+    pub(super) async fn construct_record_returned(&mut self,name:&TypeName,args:&Expressions,span:Span)->Result<Option<Returned>> {
         let ty=unsafe { self.world.call(self.expected_storage(name,span)).await }?;
         if ty.task_result().is_some(){return self.fail(span,"B224","任务只能从start_task取得");}
         if ty.owns_resources(){return unsafe { self.world.call(self.make_owned_record(ty,args,span)).await };}
         unsafe { self.world.call(self.record_values(ty,args.len(),span,async |builder,index,expected|
             unsafe { builder.world.call(builder.expr_expected(&args.at(index),expected)).await })).await }.map(|value|value.map(Returned::value))
-    }
-    #[inline(never)]
-    async fn owned_result_call(&mut self, name: &str, explicit: &[GenericArgument], args: &Expressions, span: Span) -> Result<Option<Option<Returned>>> {
-        let mut syntax = TypeName::named("result");
-        syntax.arguments = explicit.to_vec();
-        let ty = unsafe { self.world.call(self.expected_storage(&syntax,span)).await }?;
-        if ty.owns_resources() {
-            return unsafe { self.world.call(self.make_owned_result(ty,name=="Ok",args,span)).await }.map(|value|Some(value.map(Returned::OwnedValue)));
-        }
-        Ok(None)
-    }
-    #[inline(never)]
-    async fn owned_record_call(&mut self, name: &str, args: &Expressions, expr: &Expr) -> Result<Option<Option<Returned>>> {
-        if matches!(name,"array"|"owned") || !self.world.resolve(name,self.scope.module(),self.scope.imports(),false).is_missing() {
-            let mut syntax = TypeName::named(name);
-            if let ExprKind::Specialize(_,explicit,_) = expr.kind() { syntax.arguments = unsafe { self.world.call(self.scope.bindings().arguments(self.world,&explicit,(self.scope.source(),self.scope.module(),self.scope.imports()),expr.span())).await }?; }
-            let ty = unsafe { self.world.call(self.expected_storage(&syntax,expr.span())).await }?;
-            if ty.owns_resources() { return unsafe { self.world.call(self.make_owned_record(ty,args,expr.span())).await }.map(Some); }
-        }
-        Ok(None)
     }
     #[inline(never)]
     pub(super) async fn propagate_returned(

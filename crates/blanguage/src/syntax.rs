@@ -84,7 +84,7 @@ impl<T:Copy> Node<T> {
         wire::SignatureNode { storage: self.owner.view(), offset: self.offset }
     }
     pub(crate) fn child<U>(&self,offset:u64)->Node<U> {Node{owner:self.owner.clone(),offset,marker:PhantomData}}
-    fn list<U>(&self,value:wire::Slice)->List<U> {List{owner:self.owner.clone(),value,marker:PhantomData}}
+    pub(crate) fn list<U>(&self,value:wire::Slice)->List<U> {List{owner:self.owner.clone(),value,marker:PhantomData}}
 }
 pub(crate) struct List<T> {owner:Arc<Owner>,value:wire::Slice,marker:PhantomData<T>}
 impl<T> Clone for List<T> {fn clone(&self)->Self {Self{owner:self.owner.clone(),value:self.value,marker:PhantomData}}}

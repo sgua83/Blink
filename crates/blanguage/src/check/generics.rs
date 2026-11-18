@@ -60,54 +60,7 @@ impl Builder<'_> {
             .collect();
         unsafe { self.world.call(specialize(self.world, &key, &types, explicit, (self.scope.source(), self.scope.module(), self.scope.imports()), span)).await }
     }
-    pub(super) async fn specialized_call(
-        &mut self,
-        name: &str,
-        explicit: &[GenericArgument],
-        args: &Expressions,
-        span: Span,
-    ) -> Result<Option<Value>> {
-        if matches!(name, "Ok" | "Err") {
-            return unsafe { self.world.call(self.explicit_result(name, explicit, args, span)).await };
-        }
-        if matches!(name, "array" | "owned")
-            || !self
-                .world
-                .resolve(
-                    name,
-                    self.scope.module(),
-                    self.scope.imports(),
-                    false,
-                )
-                .is_missing()
-        {
-            let mut ty = TypeName::named(name);
-            ty.arguments = explicit.to_vec();
-            return unsafe { self.world.call(self.record_expression(&ty, args, span)).await };
-        }
-        let key = self.world.resolve(
-            name, self.scope.module(), self.scope.imports(), true,
-        ).unique();
-        if key.is_none() && matches!(name, "size_of" | "align_of") {
-            let ([GenericArgument::Type(syntax)], 0) = (explicit, args.len()) else {
-                return self.fail(span, "B153", format!("{name}<T>()需要一个明确类型且不接收值实参"));
-            };
-            let ty = unsafe { self.world.call(self.expected_storage(syntax, span)).await }?;
-            let bytes = if name == "size_of" { ty.size } else { ty.align };
-            return Ok(Some(self.constant(Scalar::U64, Bits::from(bytes))));
-        }
-        let key = key.ok_or_else(|| Diagnostic {
-                source: self.scope.source().clone(),
-                span,
-                code: "B158",
-                message: format!("未知或未导出的泛型函数 {name}"),
-            })?;
-        let Some(arguments) = unsafe { self.world.call(self.function_arguments(&key, args, span)).await }? else {
-            return Ok(None);
-        };
-        let instance = unsafe { self.world.call(self.specialized_arguments(key, &arguments, Some(explicit), span)).await }?;
-        unsafe { self.world.call(self.invoke_instance(instance, arguments, span, Some(args))).await }
-    }
+
 }
 /// 类型与静态 u32 值共用原名义实例；显式调用可给全部实参或只给 const 后缀。
 pub(crate) use crate::generics::specialize;

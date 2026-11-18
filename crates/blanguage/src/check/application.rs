@@ -2439,25 +2439,9 @@ impl Builder<'_> {
         Ok((ty,count))
     }
     #[inline(never)]
-    pub(super) async fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
+    pub(super) async fn create_application_dataset(&mut self, expr:&Expr, explicit:&[GenericArgument],args:&Expressions,span:Span)->Result<Option<Data>> {
         self.application_frame(span)?;
-        let ExprKind::Specialize(constructor, explicit, args) = expr.kind() else {
-            return self.fail(
-                span,
-                "B266",
-                "动态 dataset 使用 dataset<T>(length) 创建独占存储",
-            );
-        };
-        if constructor != "dataset" {
-            return self.fail(
-                span,
-                "B266",
-                "dataset<T>(length) 需要元素类型和一个 u32 长度",
-            );
-        }
-        let explicit=unsafe { self.world.call(self.scope.bindings().arguments(self.world,&explicit,
-            (self.scope.source(),self.scope.module(),self.scope.imports()),span)).await }?;
-        let(ty,count)=unsafe { self.world.call(Self::dataset_constructor_type(self.world,&self.scope,&explicit,args.len(),span)).await }?;
+        let(ty,count)=unsafe { self.world.call(Self::dataset_constructor_type(self.world,&self.scope,explicit,args.len(),span)).await }?;
         let Some(mut length) = unsafe { self.world.call(self.expr(&args.at(0))).await }? else {
             return Ok(None);
         };

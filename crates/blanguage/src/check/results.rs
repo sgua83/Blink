@@ -4,14 +4,22 @@ use super::*;
 impl Builder<'_> {
     #[inline(never)]
     pub(super) async fn variant_constructor_type(&self,name:&str,explicit:Option<&[GenericArgument]>,expected:Option<&Ty>,span:Span)->Result<Option<(Ty,usize)>> {
+        unsafe{self.world.call(self.variant_constructor_type_with(name,expected,span,|parent|{
+            explicit.map(|arguments|{let mut syntax=TypeName::named(parent);syntax.arguments=arguments.to_vec();syntax})
+        })).await}
+    }
+    pub(super) async fn variant_constructor_type_with(&self,name:&str,expected:Option<&Ty>,span:Span,
+        explicit:impl FnOnce(&str)->Option<TypeName>)->Result<Option<(Ty,usize)>> {
         let Some((parent,member))=name.rsplit_once("::") else{return Ok(None)};
         let Some(key)=self.world.resolve(parent,self.scope.module(),self.scope.imports(),false).unique() else{return Ok(None)};
         if self.world.record(&key).0.variants().is_empty(){return Ok(None);}
-        let mut syntax=TypeName::named(parent);
-        if let Some(arguments)=explicit {syntax.arguments=arguments.to_vec();}
-        else if let Some(expected)=expected.filter(|ty|ty.name.split_once('<').map_or(ty.name.as_str(),|(root,_)|root)==key) {
-            syntax.arguments=expected.syntax().arguments;
-        }
+        let syntax=explicit(parent).unwrap_or_else(||{
+            let mut syntax=TypeName::named(parent);
+            if let Some(expected)=expected.filter(|ty|ty.name.split_once('<').map_or(ty.name.as_str(),|(root,_)|root)==key){
+                syntax.arguments=expected.syntax().arguments;
+            }
+            syntax
+        });
         let ty=unsafe { self.world.call(self.expected_storage(&syntax,span)).await }?;
         let Some(index)=ty.variants.iter().position(|variant|variant.name==member) else{return self.fail(span,"B269",format!("{}没有变体分支{member}",ty.name));};
         Ok(Some((ty,index)))
@@ -22,30 +30,9 @@ impl Builder<'_> {
         e: &Expr,
         expected: Option<&Ty>,
     ) -> Result<Option<Value>> {
-        let constructor=match e.kind() {
-            ExprKind::Call(name,_)=>unsafe { self.world.call(self.variant_constructor_type(name,None,expected,e.span())).await }?,
-            ExprKind::Specialize(name,types,_)=>{
-                let types=unsafe { self.world.call(self.scope.bindings().arguments(self.world,&types,(self.scope.source(),self.scope.module(),self.scope.imports()),e.span())).await }?;
-                unsafe { self.world.call(self.variant_constructor_type(name,Some(&types),expected,e.span())).await }?
-            },
-            _=>None,
-        };
-        if constructor.is_some(){let value=unsafe { self.world.call(self.evaluate_returned(e,expected)).await }?;return self.ordinary_return(value,e.span());}
-        match e.kind() {
-            ExprKind::Call(name, args) if matches!(name, "Ok" | "Err") => {
-                let Some(ty) = expected.filter(|ty| ty.result) else {
-                    return self.fail(
-                        e.span(),
-                        "B269",
-                        "Ok／Err 需要已声明的 result<T,E> 上下文，或显式给出两个类型实参",
-                    );
-                };
-                unsafe { self.world.call(self.result_constructor(ty.clone(), name == "Ok", &args, e.span())).await }
-            }
-            ExprKind::Select(c, yes, no) => unsafe { self.world.call(self.selection_expected(&c, &yes, &no, e.span(), expected)).await },
-            _ => unsafe { self.world.call(self.expr(e)).await },
-        }
+        unsafe{self.world.call(source_call::expected(self,e,expected)).await}
     }
+
     pub(super) async fn result_constructor(
         &mut self,
         ty: Ty,
@@ -290,23 +277,5 @@ impl Builder<'_> {
             self.bind_local_value(name,payload.unwrap(),arm.span())?;
             unsafe { self.world.call(self.block(&arm.body())).await }?; self.env.remove(name); Ok(())
         } else { unsafe { self.world.call(self.block(&arm.body())).await } }
-    }
-    pub(super) async fn explicit_result(
-        &mut self,
-        name: &str,
-        explicit: &[GenericArgument],
-        args: &Expressions,
-        span: Span,
-    ) -> Result<Option<Value>> {
-        let mut ty = TypeName::named("result");
-        ty.arguments = explicit.to_vec();
-        let ty = unsafe { self.world.call(self.world.ty(
-            &ty,
-            self.scope.source(),
-            span,
-            self.scope.module(),
-            self.scope.imports(),
-        )).await }?;
-        unsafe { self.world.call(self.result_constructor(ty, name == "Ok", args, span)).await }
     }
 }

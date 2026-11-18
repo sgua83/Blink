@@ -13,6 +13,7 @@ pub(crate) use bounds::Proof;
 mod compact;
 mod callback;
 mod constant;
+mod source_call;
 pub(crate) use constant::evaluate as evaluate_constant;
 pub(crate) use constant::variant_discriminant;
 mod application;
@@ -2994,8 +2995,8 @@ impl<'a> Builder<'a> {
                 self.fail(e.span(), "B208", "cooperate 调用只能作为协作根块的局部声明")
             }
             ExprKind::StaticU32(bits) => self.constant_expression(Scalar::U32, Bits::from(bits)),
-            ExprKind::Specialize(name, explicit, args) =>
-                unsafe { world.call(self.specialized_expression(e, name, &explicit, &args)) .await },
+            ExprKind::Specialize(..) =>
+                unsafe { world.call(source_call::specialized(self,e)).await },
             ExprKind::Number(n) => self.number_expression(n, e.span()),
             ExprKind::Bool(b) => self.constant_expression(Scalar::Bool, Bits::from(b)),
             ExprKind::Name(name) => unsafe { world.call(self.name_expr(name, e.span())) .await }.map(Some),
@@ -3033,29 +3034,6 @@ impl<'a> Builder<'a> {
         }
         let value = self.ordinary_return(result, span)?;
         self.value_result(value, span).map(Some)
-    }
-    #[inline(never)]
-    async fn specialized_expression(&mut self, e: &Expr, name: &str, explicit: &crate::syntax::List<crate::syntax::wire::ArgumentNode>, args: &Expressions) -> Result<Option<Value>> {
-        let bound_explicit=unsafe { self.world.call(self.scope.bindings().arguments(self.world,explicit,
-            (self.scope.source(),self.scope.module(),self.scope.imports()),e.span())).await }?;
-        let explicit=bound_explicit.as_slice();
-        if name == "unsafe_function" {
-            return unsafe { self.world.call(self.function_from_address(explicit,args.len(),e.span(),args.first().map(|arg|arg.span()).unwrap_or(e.span()),
-                async |builder|unsafe { builder.world.call(builder.expr(&args.at(0))).await })).await };
-        }
-        if name == "unsafe_position" {
-            let Some(place) = unsafe { self.world.call(self.external_position(explicit, args, e.span())).await }? else { return Ok(None); };
-            return unsafe { self.world.call(self.read_place(&place, e.span(), None)).await }.map(Some);
-        }
-        if name == "view" { return unsafe { self.world.call(self.create_application_view(explicit, args, e.span())).await }; }
-        if unsafe { self.world.call(self.variant_constructor_type(name,Some(explicit),None,e.span())).await }?.is_some() {
-            let value=unsafe { self.world.call(self.evaluate_returned(e,None)).await }?;return self.ordinary_return(value,e.span());
-        }
-        let value = unsafe { self.world.call(self.specialized_call(name, explicit, args, e.span())).await }?;
-        if !self.flow.continues() {
-            return Ok(None);
-        }
-        self.value_result(value, e.span()).map(Some)
     }
     async fn function_from_address(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
         argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
@@ -3469,7 +3447,7 @@ impl<'a> Builder<'a> {
             constant: None,
         })
     }
-    async fn builtin_call(&mut self, name: &str, args: &Expressions, span: Span) -> Result<Option<Value>> {
+    async fn builtin_call(&mut self, name: &str, args: &Expressions, span: Span, record:Option<Option<Ty>>) -> Result<Option<Value>> {
         if name == "c_function" { return unsafe { self.world.call(self.c_function_value(args, span)).await }.map(Some); }
         if matches!(name, "Ok" | "Err") {
             return self.fail(
@@ -3580,17 +3558,13 @@ impl<'a> Builder<'a> {
         ) {
             return unsafe { self.world.call(self.atomic_value(name, args, span)).await };
         }
-        if !self
-            .world
-            .resolve(
-                name,
-                self.scope.module(),
-                self.scope.imports(),
-                false,
-            )
-            .is_missing()
-        {
-            return unsafe { self.world.call(self.record_expression(&TypeName::named(name), args, span)).await };
+        match record{
+            Some(Some(ty))=>return unsafe{self.world.call(self.record_values(ty,args.len(),span,
+                async |builder,index,expected|unsafe{builder.world.call(builder.expr_expected(&args.at(index),expected)).await})).await},
+            Some(None)=>{},
+            None=>if !self.world.resolve(name,self.scope.module(),self.scope.imports(),false).is_missing(){
+                return unsafe{self.world.call(self.record_expression(&TypeName::named(name),args,span)).await};
+            },
         }
         if name == "address_of" { return unsafe { self.world.call(self.position_address(args, span)).await }; }
         unsafe { self.world.call(self.builtin_values(name,span,async |builder| {
