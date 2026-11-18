@@ -563,7 +563,7 @@ pub(super) async fn resolve(
                 format!("contiguous({path})"),
             ),
             ContractPredicate::Cleanup { value, condition } => {
-                let inputs=unsafe { builder.world.call(outputs::inputs(builder,definition,env)).await }?;
+                let inputs=unsafe { builder.world.call(outputs::condition_inputs(builder,definition,env,condition)).await }?;
                 let when=unsafe { builder.world.call(outputs::expression(builder,definition,condition,&inputs,None,contract.span,Some(&Ty::scalar(Scalar::Bool)))).await }?;
                 let(model,active)=unsafe { builder.world.call(cleanup_selection(builder,definition,env,value,contract.span)).await }?;
                 let required=unsafe { builder.world.call(cleanup_condition(builder,model,active,contract.span)).await }?;

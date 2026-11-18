@@ -242,10 +242,10 @@ pub(super) fn declared<'a>(definition: impl Into<Contract<'a>>, parameter: usize
         ContractPredicate::Initialized { value, .. } if value.split('.').next() == Some(name.as_str())))
 }
 
-fn input_names(definition:Contract<'_>) -> BTreeSet<String> {
+fn output_input_names(definition:Contract<'_>) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for contract in definition.contracts() {
-        if let ContractPredicate::Initialized { condition, .. }|ContractPredicate::Cleanup { condition, .. } = &contract.predicate {
+        if let ContractPredicate::Initialized { condition, .. } = &contract.predicate {
             add_input_names(condition, &mut names);
         }
     }
@@ -291,8 +291,19 @@ pub(super) async fn inputs<'a>(
     env: &BTreeMap<String, Binding>,
 ) -> Result<BTreeMap<String, Value>> {
     let definition=definition.into();
-    unsafe { builder.world.call(collect_inputs(builder,definition,env,&input_names(definition))).await }
+    unsafe { builder.world.call(collect_inputs(builder,definition,env,&output_input_names(definition))).await }
 }
+pub(super) async fn condition_inputs(
+    builder: &mut Builder<'_>,
+    definition: Contract<'_>,
+    env: &BTreeMap<String, Binding>,
+    condition: &OutputCondition,
+) -> Result<BTreeMap<String, Value>> {
+    let mut names = BTreeSet::new();
+    add_input_names(condition, &mut names);
+    unsafe { builder.world.call(collect_inputs(builder, definition, env, &names)).await }
+}
+
 async fn capture_current_inputs(
     builder: &mut Builder<'_>,
     definition: Contract<'_>,
@@ -309,13 +320,13 @@ pub(super) async fn current_inputs<'a>(
     definition: impl Into<Contract<'a>>,
 ) -> Result<BTreeMap<String, Value>> {
     let definition = definition.into();
-    unsafe { builder.world.call(capture_current_inputs(builder, definition, &input_names(definition))).await }
+    unsafe { builder.world.call(capture_current_inputs(builder, definition, &output_input_names(definition))).await }
 }
 pub(super) async fn entry_inputs(
     builder: &mut Builder<'_>,
     instance: &crate::generics::Instance,
 ) -> Result<BTreeMap<String, Value>> {
-    let names = input_names(instance.into());
+    let names = output_input_names(instance.into());
     // A mutable owned aggregate must retain the actual ABI input identities
     // before a field's first load or replacement. The original Proof owns them.
     for parameter in &instance.definition.function.params() {
@@ -598,11 +609,15 @@ impl TaskGuard {
         model:Option<Returned>, arguments:&BTreeMap<ValueIdentity,bounds::Proof>, returned:&[Reg],
     )->Result<Self> {
         let mut clauses=Vec::new();
+        let mut names = BTreeSet::new();
         for (components,condition,span) in output_clauses(definition,parameter,ty)? {
             let condition=unsafe { builder.world.call(bind_constants(builder.world,definition.condition_scope(),&condition,span)).await }?;
+            add_input_names(&condition, &mut names);
             clauses.push((components,condition));
         }
-        let inputs=inputs.iter().map(|(name,value)| {
+        let inputs=inputs.iter()
+            .filter(|(name,_)| names.contains(name.split_once('.').map_or(name.as_str(), |(root,_)| root)))
+            .map(|(name,value)| {
             let words=value.regs.iter().enumerate().map(|(at,&reg)| Some(match &value.constant {
                 Some(bits)=>bounds::Operand::Constant(value.ty.components[at].0,bits[at]),
                 None=>bounds::Operand::Value(ValueIdentity::Register(reg)),
