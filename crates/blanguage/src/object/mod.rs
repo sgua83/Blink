@@ -13,7 +13,7 @@ pub(crate) use archive::{compile as compile_archive, inputs as native_inputs};
 #[cfg(feature = "installed")]
 pub(crate) use archive::sdk_root;
 pub(crate) use emit::{application as application_code, module as module_code};
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,8 +64,8 @@ pub(crate) struct Archive {
 #[derive(Clone)]
 pub(crate) enum Kind {
     Module {
-        interface: String,
-        requirements: std::collections::BTreeMap<String, crate::execution::Requirement>,
+        interface: Arc<str>,
+        requirements: Arc<std::collections::BTreeMap<String, crate::execution::Requirement>>,
         stack_bytes: u32,
     },
     Application {

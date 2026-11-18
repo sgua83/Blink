@@ -9,9 +9,9 @@ use crate::{
 };
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 pub(crate) struct Imported {
-    pub header: String,
+    pub header: Arc<str>,
     pub definitions: Arc<BTreeMap<String, Vec<u8>>>,
-    pub requirements: BTreeMap<String, crate::execution::Requirement>,
+    pub requirements: Arc<BTreeMap<String, crate::execution::Requirement>>,
 }
 #[derive(Default)]
 pub(crate) struct Imports {
@@ -52,8 +52,8 @@ impl Imports {
 pub struct Module {
     pub(crate) compiler: crate::Compiler,
     pub(crate) name: String,
-    pub(crate) header: String,
-    pub(crate) requirements: BTreeMap<String, crate::execution::Requirement>,
+    pub(crate) header: Arc<str>,
+    pub(crate) requirements: Arc<BTreeMap<String, crate::execution::Requirement>>,
     pub(crate) functions: Vec<FunctionBody>,
     pub(crate) imports: BTreeMap<String, Vec<u8>>,
     pub(crate) exports: BTreeMap<String, Vec<u8>>,

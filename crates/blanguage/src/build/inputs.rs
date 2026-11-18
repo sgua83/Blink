@@ -109,12 +109,12 @@ impl Capture {
     }
 
     fn capture_interface(
-        &mut self, name: &str, text: &str,
+        &mut self, name: &str, text: &Arc<str>,
     ) -> ast::Result<Arc<syntax::Module>> {
         let interfaces = self.interfaces.entry(name.into()).or_default();
         if let Some(module) = interfaces.get(text) { return Ok(module.clone()); }
         let module = Arc::new(parser::parse(Source {
-            path: format!("<{name}>.h").into(), text: text.into(),
+            path: format!("<{name}>.h").into(), text: text.clone(),
         })?);
         interfaces.insert(module.source.text.clone(), module.clone());
         Ok(module)

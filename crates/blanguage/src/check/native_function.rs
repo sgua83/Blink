@@ -2861,13 +2861,13 @@ pub(crate) async fn compile_module(
     Ok(crate::module::Module {
         compiler: world.worker.compiler().clone(),
         name: entry.into(),
-        header: world.interfaces[entry].source.text.to_string(),
-        requirements: world
+        header: world.interfaces[entry].source.text.clone(),
+        requirements: Arc::new(world
             .functions
             .iter()
             .filter(|(_, d)| d.module == entry && d.public)
             .map(|(name, d)| (name.clone(), d.execution))
-            .collect(),
+            .collect()),
         functions,
         imports: finalized.imports,
         exports: finalized.exports,

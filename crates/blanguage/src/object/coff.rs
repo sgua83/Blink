@@ -1,6 +1,6 @@
 //! COFF 节、符号与 AMD64 重定位；Blink 元数据不替代标准重定位表。
 use super::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
@@ -873,7 +873,7 @@ fn read_metadata(
     let name = read_text(header.name)?;
     let kind = match header.kind {
         ReadObjectKind::Module => {
-            let interface = read_text(header.interface)?;
+            let interface: Arc<str> = std::str::from_utf8(unsafe { header.interface.borrowed() })?.into();
             let mut cursor = MetadataReadCursor::new(unsafe { prefix.requirements.borrowed() });
             let requirements = (0..header.requirements).map(|_| {
                 let value = unsafe { metadata_read_requirement(&mut cursor) };
@@ -885,7 +885,7 @@ fn read_metadata(
                 };
                 Ok((read_text(value.name)?, requirement))
             }).collect::<Result<_>>()?;
-            Kind::Module { interface, requirements, stack_bytes: header.stack as u32 }
+            Kind::Module { interface, requirements: Arc::new(requirements), stack_bytes: header.stack as u32 }
         }
         ReadObjectKind::Application => Kind::Application { stack_bytes: header.stack as u32 },
         ReadObjectKind::Library => Kind::Library {
@@ -953,7 +953,7 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
     let mut parts = ObjectParts::default();
     let mut raw = reader.section_rows(&mut parts).collect::<Result<Vec<_>>>()?;
     let (name, kind, mut bindings, stack, archive) = match native {
-        Some(name) => (name.to_owned(), Kind::Module { interface: String::new(), requirements: BTreeMap::new(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),
+        Some(name) => (name.to_owned(), Kind::Module { interface: "".into(), requirements: Arc::default(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),
         None => {
             let archive = (!parts.runtime.bytes.is_null()).then(|| {
                 let start = parts.runtime.bytes.addr() - b.as_ptr().addr();

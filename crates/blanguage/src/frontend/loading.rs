@@ -225,7 +225,7 @@ pub(crate) fn load(path: &Path, root: &Path, world: &mut Declarations,
     let (interface, implementation, captured_imports, compiled) = match selected {
         Provider::Loaded(name) => return Ok((*name).to_owned()),
         Provider::Compiled { name, module } => (Arc::new(parser::parse(Source {
-            path: PathBuf::from(format!("<{name}>.h")), text: module.header.clone().into(),
+            path: PathBuf::from(format!("<{name}>.h")), text: module.header.clone(),
         })?), None, None, Some(*module)),
         Provider::CapturedCompiled { name, module, inputs } =>
             (inputs.interface(name, &module.header)?, None, None, Some(*module)),

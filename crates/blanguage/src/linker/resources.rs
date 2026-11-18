@@ -109,5 +109,5 @@ pub(super) fn resources<'a>(archives:&[&Archive],types:u32,programs:u32,runtime:
         }
         sections.push(Section{associated:Vec::new(),layout:None,name:".text".into(),bytes:code,flags:u32::try_from(plan.text_flags)?,relocations});
     }
-    Ok(Some(Object{stack:Vec::new(),name:"@blink.resources@".into(),kind:Kind::Module{interface:String::new(),requirements:std::collections::BTreeMap::new(),stack_bytes:0},sections,symbols,imports,archive:None}))
+    Ok(Some(Object{stack:Vec::new(),name:"@blink.resources@".into(),kind:Kind::Module{interface:"".into(),requirements:Default::default(),stack_bytes:0},sections,symbols,imports,archive:None}))
 }
