@@ -804,7 +804,7 @@ impl BorrowEvaluation<'_>{
 
     fn stored_at_exit(&mut self,memory:usize)->Vec<(Arc<address::Origin>,u32,Borrow)>{
         let function=self.function;
-        let exposed=exposed_resources(function,function.resource_names.keys().map(|output|(output,self.evaluate(&function.outputs[output]))));
+        let exposed=exposed_resources(function, |output| self.evaluate(&function.outputs[output]));
         self.stored_candidates().into_iter().filter_map(|(origin,word)|{
             let target=stored_target(&origin,function,&exposed);
             if !target.active(){return None;}
@@ -1224,18 +1224,25 @@ fn output_initialization_read(borrows:&Borrow,initialized:&[address::Initializat
 fn normalized_condition(when:bounds::Condition)->bounds::Condition {
     bounds::Condition::paths(when.assume(&bounds::Clause::default(),true).canonical(),when.assume(&bounds::Clause::default(),false).canonical())
 }
-fn exposed_resources<'a>(function:&Function,physical:impl Iterator<Item=(&'a Output,Borrow)>)->BTreeMap<Origin,Borrow> {
+fn exposed_resources<S: std::borrow::Borrow<Borrow>>(
+    function: &Function,
+    mut physical: impl FnMut(&Output) -> S,
+) -> BTreeMap<Origin, Borrow> {
     fn local(source:&Origin,function:&Function)->bool{match source{
         Origin::Data(id)=>matches!(id,ValueIdentity::Register(_))&&!function.parameters.get(id).is_some_and(|id|function.input(*id)),
         Origin::Element{parent,index:Some(_),..}|Origin::Projection{parent,..}=>parent.calls.is_empty()&&parent.inputs.is_empty()&&parent.active()&&parent.sources.iter().all(|source|local(source,function)),
         _=>false,
     }}
     let mut exposed:BTreeMap<Origin,Borrow>=BTreeMap::new();
-    for(output,physical)in physical {
-        if let Some(name)=function.resource_names.get(output){
-            for(source,when)in physical.sources.entries(){
-                let named=match source{Origin::Data(id)=>!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)),source=>local(source,function)};
-                if named{exposed.entry(source.clone()).or_default().union(&name.restricted(&when));}
+    for (output, name) in &function.resource_names {
+        let physical = physical(output);
+        for (source, when) in physical.borrow().sources.entries() {
+            let named = match source {
+                Origin::Data(id) => !matches!(id, ValueIdentity::ElementComponent(_) | ValueIdentity::ElementParent(..)),
+                source => local(source, function),
+            };
+            if named {
+                exposed.entry(source.clone()).or_default().union(&name.restricted(&when));
             }
         }
     }
@@ -1264,7 +1271,7 @@ impl InitializationExitPaths {
 }
 
 fn initializations(function:&Function,state:&State,known:&States,exit_paths:Option<&InitializationExitPaths>)->Vec<address::Initialization> {
-    let exposed=exposed_resources(function,function.resource_names.keys().map(|output|(output,evaluate(&function.outputs[output],function,state,known,true))));
+    let exposed=exposed_resources(function, |output| evaluate(&function.outputs[output],function,state,known,true));
     // Reading a fixed input before this function's first write already requires those bytes on entry.
     // Re-exporting the same bytes as newly initialized adds no fact for any legitimate caller.
     let mut required=Vec::new();
@@ -1585,7 +1592,7 @@ fn converge(
                 (output.clone(),value)
             }).collect::<Outputs>();
             // 每个真实资源输出命名自己的交付存储；view保留所有可能的实际输出所有者。
-            let exposed=exposed_resources(function,physical.iter().map(|(output,value)|(output,value.clone())));
+            let exposed=exposed_resources(function, |output| &physical[output]);
             let outputs = physical.into_iter().map(|(output, definition)| {
                 let mut value=canonical(definition,function,function.resource_names.get(&output),&exposed);
                 if unknown.contains(&(name.clone(),output.clone())){value.sources.insert(Origin::Unresolved);}
