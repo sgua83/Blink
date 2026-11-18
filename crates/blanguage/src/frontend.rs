@@ -356,7 +356,6 @@ pub(crate) fn compile_world(
         for (base, definition) in &world.functions {
             if definition.compiled.is_some() || definition.function.kind() == FunctionKind::Constant
                 || definition.function.external().is_some() { continue; }
-            generics::validate_declaration(definition)?;
             if selected.as_ref().is_some_and(|(key, _, _, _)| key == base) {
                 continue;
             }
@@ -526,7 +525,7 @@ pub(crate) fn read_world(
         }
     }
     execution::infer(&mut world, build_declarations.as_ref());
-    for definition in world.functions.values().filter(|definition| definition.compiled.is_some()) {
+    for definition in world.functions.values() {
         generics::validate_declaration(definition)?;
     }
     let mut world = World::new(Arc::new(world), worker.clone());
@@ -535,7 +534,6 @@ pub(crate) fn read_world(
     }
     for (key, definition) in &world.functions {
         if definition.function.kind() == FunctionKind::Constant {
-            generics::validate_declaration(definition)?;
             unsafe { world.run(check::evaluate_constant(&world, key, &[])) }?;
         }
     }
@@ -547,7 +545,6 @@ pub(crate) fn read_world(
     }
     unsafe { world.run(validate_types(&world)) }?;
     for (key,definition) in world.functions.iter().filter(|(_,definition)|definition.function.c_abi()) {
-        check::external::validate_signature(definition)?;
         if definition.function.types().is_empty()&&definition.function.values().is_empty(){
             let instance=unsafe { world.run(generics::instantiate(&world,key,definition,Vec::new(),&[])) }?;
             unsafe { world.run(check::external::check_declaration(&world,&instance)) }?;

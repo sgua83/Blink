@@ -2780,7 +2780,6 @@ pub(crate) async fn compile_module(
     for (key, d) in &world.functions {
         if d.compiled.is_some() || d.function.kind() == FunctionKind::Constant
             || d.function.external().is_some() { continue; }
-        crate::generics::validate_declaration(d)?;
         if d.module != entry {
             continue;
         }

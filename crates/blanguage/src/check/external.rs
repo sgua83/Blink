@@ -48,7 +48,6 @@ async fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) ->
 }
 pub(crate) async fn check_declaration(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let d=&instance.definition;
-    validate_signature(d)?;
     let mut parameters=Vec::new();
     for param in d.function.params().iter() {
         let ty=unsafe { world.call(instance.bindings.type_name(world,&param.ty(),(&d.source,&d.module,&d.imports),param.span())).await }?;

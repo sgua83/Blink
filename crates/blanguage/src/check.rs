@@ -1574,8 +1574,9 @@ fn declares_dataset(ty:&crate::syntax::Type)->bool{
 }
 
 pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
-    if d.function.external().is_some() {
-        return external::validate_signature(d);
+    if d.function.c_abi() {
+        external::validate_signature(d)?;
+        if d.function.external().is_some() { return Ok(()); }
     }
     if d.execution == crate::execution::Requirement::Domain {
         return Ok(());

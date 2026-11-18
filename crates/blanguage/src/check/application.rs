@@ -814,7 +814,6 @@ pub(crate) async fn compile_application(
     instance: &crate::generics::Instance,
 ) -> Result<crate::application::Application> {
     let d = &instance.definition;
-    validate_signature(d)?;
     let result_name=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),
         (&d.source,&d.module,&d.imports),d.function.span())).await }?;
     let result = if result_name.name == "void" || result_name.is_never() {
