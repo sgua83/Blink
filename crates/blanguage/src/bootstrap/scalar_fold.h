@@ -103,3 +103,36 @@ extern "C" bool integer_wide_unsigned_less(IntegerWide a,IntegerWide b) on cpu;
 extern "C" IntegerWideChecked integer_wide_checked_add(IntegerWide a,IntegerWide b) on cpu;
 extern "C" IntegerWideChecked integer_wide_checked_multiply(IntegerWide a,IntegerWide b) on cpu;
 extern "C" IntegerWideDivision integer_wide_unsigned_divide(IntegerWide numerator,IntegerWide denominator) on cpu;
+
+// Scalar set values borrow original native storage through synchronous reads.
+struct RangeSetNext { BitRange value; u32 present; };
+struct RangeSetOutput {
+    cfn<BitRange,address,u64> get;
+    cfn<void,address,u64,BitRange> set;
+    cfn<void,address,BitRange> push;
+};
+struct RangeSetCastInfo {
+    u32 source_width; u32 source_signed; u32 target_width;
+    u32 source_integer; u32 same; u32 nonzero;
+    u64 source_mask; u64 source_bias; u64 target_bias;
+};
+extern "C" u64 range_set_normalize(address output,u64 count,RangeSetOutput host) on cpu
+    requires nonzero(host.get) requires nonzero(host.set);
+extern "C" void range_set_sorted(address input,cfn<RangeSetNext,address> pull,address output,cfn<void,address,BitRange> push) on cpu
+    requires nonzero(pull) requires nonzero(push);
+extern "C" void range_set_full(address output,cfn<void,address,BitRange> push) on cpu requires nonzero(push);
+extern "C" void range_set_interval(address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu requires nonzero(push);
+extern "C" BitRange range_set_hull(address input,u64 count,cfn<BitRange,address,u32,u64> get) on cpu requires nonzero(get);
+extern "C" bool range_set_contains(address input,u64 count,cfn<BitRange,address,u32,u64> get,u64 value) on cpu requires nonzero(get);
+extern "C" void range_set_union(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push) on cpu
+    requires nonzero(get) requires nonzero(push);
+extern "C" void range_set_restrict(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu
+    requires nonzero(get) requires nonzero(push);
+extern "C" void range_set_without(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 value) on cpu
+    requires nonzero(get) requires nonzero(push);
+extern "C" u64 range_set_cast(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,RangeSetCastInfo query) on cpu
+    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push);
+extern "C" u64 range_set_counts(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,u32 width,u64 bias) on cpu
+    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push);
+extern "C" u64 range_set_apply(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,address operation,cfn<u64,address,BitRange,BitRange,address> invoke,address output,RangeSetOutput host,u32 combine) on cpu
+    requires nonzero(get) requires nonzero(invoke) requires nonzero(host.get) requires nonzero(host.set);

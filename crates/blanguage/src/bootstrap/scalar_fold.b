@@ -720,3 +720,154 @@ extern "C" IntegerWideDivision integer_wide_unsigned_divide(IntegerWide numerato
   }
  }return IntegerWideDivision(quotient,remainder);
 }
+
+bool range_set_less(BitRange a,BitRange b) on cpu {
+    return a.lower<b.lower||(a.lower==b.lower&&a.upper<b.upper);
+}
+bool range_set_joined(BitRange a,BitRange b) on cpu {
+    return b.lower<=a.upper||(a.upper!=18446744073709551615u64&&b.lower==a.upper+1u64);
+}
+RangeSetNext range_set_accept(RangeSetNext pending,BitRange value,address output,cfn<void,address,BitRange> push) on cpu
+    requires nonzero(push) {
+    if(pending.present==0){return RangeSetNext(value,1);}
+    if(range_set_joined(pending.value,value)){
+        u64 upper=value.upper>pending.value.upper?value.upper:pending.value.upper;
+        return RangeSetNext(BitRange(pending.value.lower,upper),1);
+    }
+    push(output,pending.value);return RangeSetNext(value,1);
+}
+void range_set_sift(address output,u64 root,u64 count,RangeSetOutput host) on cpu
+    requires nonzero(host.get) requires nonzero(host.set) {
+    u64 current=root;
+    while(current<count/2u64){
+        u64 child=current+current+1u64;
+        if(child+1u64<count&&range_set_less(host.get(output,child),host.get(output,child+1u64))){child+=1u64;}
+        BitRange a=host.get(output,current);BitRange b=host.get(output,child);
+        if(!range_set_less(a,b)){return;}
+        host.set(output,current,b);host.set(output,child,a);current=child;
+    }
+}
+extern "C" u64 range_set_normalize(address output,u64 count,RangeSetOutput host) on cpu
+    requires nonzero(host.get) requires nonzero(host.set) {
+    u64 used=0u64;
+    u64 range_index_0=0u64;while(range_index_0<count){
+        BitRange value=host.get(output,range_index_0);
+        if(value.lower<=value.upper){host.set(output,used,value);used+=1u64;}
+    range_index_0+=1u64;}
+    u64 root=used/2u64;
+    while(root!=0u64){root-=1u64;range_set_sift(output,root,used,host);}
+    u64 end=used;
+    while(end>1u64){
+        end-=1u64;BitRange a=host.get(output,0u64);BitRange b=host.get(output,end);
+        host.set(output,0u64,b);host.set(output,end,a);range_set_sift(output,0u64,end,host);
+    }
+    if(used==0u64){return 0u64;}
+    BitRange pending=host.get(output,0u64);u64 result=0u64;
+    u64 range_index_1=1u64;while(range_index_1<used){
+        BitRange value=host.get(output,range_index_1);
+        if(range_set_joined(pending,value)){
+            if(value.upper>pending.upper){pending.upper=value.upper;}
+        }else{host.set(output,result,pending);result+=1u64;pending=value;}
+    range_index_1+=1u64;}
+    host.set(output,result,pending);return result+1u64;
+}
+extern "C" void range_set_sorted(address input,cfn<RangeSetNext,address> pull,address output,cfn<void,address,BitRange> push) on cpu
+    requires nonzero(pull) requires nonzero(push) {
+    RangeSetNext pending=RangeSetNext(BitRange(0u64,0u64),0);
+    while(true){
+        RangeSetNext value=pull(input);if(value.present==0){break;}
+        pending=range_set_accept(pending,value.value,output,push);
+    }
+    if(pending.present!=0){push(output,pending.value);}
+}
+extern "C" void range_set_full(address output,cfn<void,address,BitRange> push) on cpu requires nonzero(push) {
+    push(output,BitRange(0u64,18446744073709551615u64));
+}
+extern "C" void range_set_interval(address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu requires nonzero(push) {
+    if(lower<=upper){push(output,BitRange(lower,upper));}
+}
+extern "C" BitRange range_set_hull(address input,u64 count,cfn<BitRange,address,u32,u64> get) on cpu requires nonzero(get) {
+    if(count==0u64){return BitRange(1u64,0u64);}
+    return BitRange(get(input,0,0u64).lower,get(input,0,count-1u64).upper);
+}
+extern "C" bool range_set_contains(address input,u64 count,cfn<BitRange,address,u32,u64> get,u64 value) on cpu requires nonzero(get) {
+    u64 range_index_2=0u64;while(range_index_2<count){BitRange range=get(input,0,range_index_2);if(range.lower<=value&&value<=range.upper){return true;}range_index_2+=1u64;}
+    return false;
+}
+extern "C" void range_set_union(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push) on cpu
+    requires nonzero(get) requires nonzero(push) {
+    u64 i=0u64;u64 j=0u64;RangeSetNext pending=RangeSetNext(BitRange(0u64,0u64),0);
+    while(i<left||j<right){
+        BitRange value=BitRange(0u64,0u64);
+        if(j==right){value=get(input,0,i);i+=1u64;}
+        else if(i==left){value=get(input,1,j);j+=1u64;}
+        else{
+            BitRange a=get(input,0,i);BitRange b=get(input,1,j);
+            if(!range_set_less(b,a)){value=a;i+=1u64;}else{value=b;j+=1u64;}
+        }
+        pending=range_set_accept(pending,value,output,push);
+    }
+    if(pending.present!=0){push(output,pending.value);}
+}
+extern "C" void range_set_restrict(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu
+    requires nonzero(get) requires nonzero(push) {
+    RangeSetNext pending=RangeSetNext(BitRange(0u64,0u64),0);
+    u64 range_index_3=0u64;while(range_index_3<count){
+        BitRange range=get(input,0,range_index_3);
+        range.lower=range.lower>lower?range.lower:lower;range.upper=range.upper<upper?range.upper:upper;
+        if(range.lower<=range.upper){pending=range_set_accept(pending,range,output,push);}
+    range_index_3+=1u64;}
+    if(pending.present!=0){push(output,pending.value);}
+}
+extern "C" void range_set_without(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 value) on cpu
+    requires nonzero(get) requires nonzero(push) {
+    u64 range_index_4=0u64;while(range_index_4<count){
+        BitRange range=get(input,0,range_index_4);
+        if(value<range.lower||value>range.upper){push(output,range);}
+        else{
+            if(range.lower<value){push(output,BitRange(range.lower,value-1u64));}
+            if(value<range.upper){push(output,BitRange(value+1u64,range.upper));}
+        }
+    range_index_4+=1u64;}
+}
+u64 range_set_parts(address output,RangeSetOutput host,IntegerRangePieces pieces) on cpu requires nonzero(host.push) {
+    u64 count=0u64;
+    if(pieces.count!=0){host.push(output,pieces.first);count+=1u64;}
+    if(pieces.count>1){host.push(output,pieces.second);count+=1u64;}
+    return count;
+}
+u64 range_set_cast_piece(address output,RangeSetOutput host,RangeSetCastInfo query,BitRange range) on cpu requires nonzero(host.push) {
+    if(query.same!=0){host.push(output,range);return 1u64;}
+    return range_set_parts(output,host,integer_range_cast(query.source_width,query.source_signed,query.target_width,query.target_bias,range));
+}
+extern "C" u64 range_set_cast(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,RangeSetCastInfo query) on cpu
+    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
+    u64 result=0u64;
+    u64 range_index_5=0u64;while(range_index_5<count){
+        BitRange range=get(input,0,range_index_5);range.upper=range.upper<query.source_mask?range.upper:query.source_mask;
+        if(range.lower<=range.upper){
+            if(query.source_integer!=0&&query.nonzero!=0&&range.lower<=query.source_bias&&query.source_bias<=range.upper){
+                if(range.lower<query.source_bias){result+=range_set_cast_piece(output,host,query,BitRange(range.lower,query.source_bias-1u64));}
+                if(query.source_bias<range.upper){result+=range_set_cast_piece(output,host,query,BitRange(query.source_bias+1u64,range.upper));}
+            }else{result+=range_set_cast_piece(output,host,query,range);}
+        }
+    range_index_5+=1u64;}
+    if(query.same!=0){return result;}
+    return range_set_normalize(output,result,host);
+}
+extern "C" u64 range_set_counts(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,u32 width,u64 bias) on cpu
+    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
+    u64 result=0u64;
+    u64 range_index_6=0u64;while(range_index_6<count){result+=range_set_parts(output,host,integer_range_counts(width,bias,get(input,0,range_index_6)));range_index_6+=1u64;}
+    return range_set_normalize(output,result,host);
+}
+extern "C" u64 range_set_apply(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,address operation,cfn<u64,address,BitRange,BitRange,address> invoke,address output,RangeSetOutput host,u32 combine) on cpu
+    requires nonzero(get) requires nonzero(invoke) requires nonzero(host.get) requires nonzero(host.set) {
+    u64 count=0u64;
+    u64 range_index_7=0u64;while(range_index_7<left){
+        BitRange a=get(input,0,range_index_7);
+        if(combine==0){count=invoke(operation,a,BitRange(0u64,0u64),output);}
+        else{u64 range_index_8=0u64;while(range_index_8<right){count=invoke(operation,a,get(input,1,range_index_8),output);range_index_8+=1u64;}}
+    range_index_7+=1u64;}
+    return range_set_normalize(output,count,host);
+}

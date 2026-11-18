@@ -1,4 +1,4 @@
-//! B owns mathematical integer interval values; the original Proof owns sets.
+//! B owns integer interval values and complete set rules; native retains the actual containers.
 use super::{Bits, Scalar, ScalarRanges};
 
 #[derive(Clone, Copy)]
@@ -63,18 +63,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::integer_range"]
     fn evaluate(operation: Operation, width: u32, signed: u32, left: Range, right: Range)
     -> Pieces;
-    #[link_name = "bootstrap.scalar_fold::integer_range_cast"]
-    fn convert(
-        source_width: u32,
-        source_signed: u32,
-        target_width: u32,
-        target_bias: Bits,
-        value: Range,
-    ) -> Pieces;
     #[link_name = "bootstrap.scalar_fold::integer_range_unary"]
     fn evaluate_unary(operation: Unary, width: u32, signed: u32, value: Range) -> Pieces;
-    #[link_name = "bootstrap.scalar_fold::integer_range_counts"]
-    fn normalize_counts(width: u32, bias: Bits, value: Range) -> Pieces;
     #[link_name = "bootstrap.scalar_fold::integer_range_project"]
     fn project_values(width: u32, bias: Bits, lower: Wide, upper: Wide) -> Pieces;
 }
@@ -106,17 +96,6 @@ pub(super) fn arithmetic(
         )
     })
 }
-pub(super) fn cast(source: Scalar, target: Scalar, value: (Bits, Bits)) -> ScalarRanges {
-    decoded(unsafe {
-        convert(
-            source.bit_width(),
-            u32::from(source.is_signed()),
-            target.bit_width(),
-            target.order_bias(),
-            value.into(),
-        )
-    })
-}
 pub(super) fn unary(operation: Unary, scalar: Scalar, value: (Bits, Bits)) -> ScalarRanges {
     decoded(unsafe {
         evaluate_unary(
@@ -126,9 +105,6 @@ pub(super) fn unary(operation: Unary, scalar: Scalar, value: (Bits, Bits)) -> Sc
             value.into(),
         )
     })
-}
-pub(super) fn shift_counts(scalar: Scalar, value: (Bits, Bits)) -> ScalarRanges {
-    decoded(unsafe { normalize_counts(scalar.bit_width(), scalar.order_bias(), value.into()) })
 }
 pub(super) fn project((lower, upper): (i128, i128), bias: Bits, width: u32) -> ScalarRanges {
     decoded(unsafe { project_values(width, bias, lower.into(), upper.into()) })

@@ -17,6 +17,7 @@ mod index_conditions;
 mod numeric_bounds;
 mod execution_conditions;
 mod proof_facts;
+mod range_sets;
 use super::*;
 mod floating;
 mod bitwise;
@@ -360,102 +361,23 @@ pub(super) fn numeric_intervals(scalar: Scalar, intervals: impl IntoIterator<Ite
 }
 
 #[derive(Clone)]
-pub(super) struct ScalarRanges(pub(super) Vec<(Bits, Bits)>);
+pub(super) struct ScalarRanges(pub(super) Vec<(Bits,Bits)>);
 impl Default for ScalarRanges {
-    fn default() -> Self {
-        Self(vec![(0, Bits::MAX)])
-    }
+    fn default()->Self {range_sets::full()}
 }
 impl ScalarRanges {
-    fn cast(&self,source:Scalar,target:Scalar,nonzero:bool)->Self {
-        let range=self.restrict(0,source.bit_mask());
-        let range=if source.is_integer()&&nonzero{range.without(source.order_bias())}else{range};
-        if source==target{return range;}
-        range.map(|range|integer::cast(source,target,range))
-    }
-    fn from_intervals(intervals: impl IntoIterator<Item = (Bits, Bits)>) -> Self {
-        let mut intervals: Vec<_> = intervals.into_iter().filter(|(a, b)| a <= b).collect();
-        intervals.sort_unstable();
-        Self::from_sorted_intervals(intervals)
-    }
-    // The original producer supplies valid intervals in endpoint order.
-    fn from_sorted_intervals(intervals: impl IntoIterator<Item = (Bits, Bits)>) -> Self {
-        let mut merged: Vec<(Bits, Bits)> = Vec::new();
-        for (lower, upper) in intervals {
-            if let Some(last) = merged.last_mut()
-                && u128::from(lower) <= u128::from(last.1) + 1
-            {
-                last.1 = last.1.max(upper);
-            } else {
-                merged.push((lower, upper));
-            }
-        }
-        Self(merged)
-    }
-    fn interval(lower: Bits, upper: Bits) -> Self {
-        Self(if lower <= upper { vec![(lower, upper)] } else { Vec::new() })
-    }
-    fn hull(&self) -> (Bits, Bits) {
-        match (self.0.first(), self.0.last()) {
-            (Some(first), Some(last)) => (first.0, last.1),
-            _ => (1, 0),
-        }
-    }
-    fn contains(&self, value: Bits) -> bool {
-        self.0
-            .iter()
-            .any(|&(lower, upper)| lower <= value && value <= upper)
-    }
-    fn union(&self, other: &Self) -> Self {
-        let mut left = self.0.iter().copied().peekable();
-        let mut right = other.0.iter().copied().peekable();
-        Self::from_sorted_intervals(std::iter::from_fn(|| match (left.peek(), right.peek()) {
-            (Some(a), Some(b)) if a <= b => left.next(),
-            (_, Some(_)) => right.next(),
-            _ => left.next(),
-        }))
-    }
-    fn restrict(&self, lower: Bits, upper: Bits) -> Self {
-        Self::from_sorted_intervals(self.0.iter().filter_map(|&(a, b)| {
-            let (lower, upper) = (a.max(lower), b.min(upper));
-            (lower <= upper).then_some((lower, upper))
-        }))
-    }
-    fn without(&self, value: Bits) -> Self {
-        let mut intervals = Vec::new();
-        for &(lower, upper) in &self.0 {
-            if value < lower || value > upper {
-                intervals.push((lower, upper));
-            } else {
-                if lower < value {
-                    intervals.push((lower, value - 1));
-                }
-                if value < upper {
-                    intervals.push((value + 1, upper));
-                }
-            }
-        }
-        Self(intervals)
-    }
-    fn map(&self, mut operation: impl FnMut((Bits, Bits)) -> Self) -> Self {
-        Self::from_intervals(self.0.iter().flat_map(|&interval| operation(interval).0))
-    }
-    fn shift_counts(&self, scalar: Scalar) -> Self {
-        self.map(|range| integer::shift_counts(scalar,range))
-    }
-    fn combine(
-        &self,
-        other: &Self,
-        mut operation: impl FnMut((Bits, Bits), (Bits, Bits)) -> Self,
-    ) -> Self {
-        let mut intervals = Vec::new();
-        for &left in &self.0 {
-            for &right in &other.0 {
-                intervals.extend(operation(left, right).0);
-            }
-        }
-        Self::from_intervals(intervals)
-    }
+    fn cast(&self,source:Scalar,target:Scalar,nonzero:bool)->Self {range_sets::cast(&self.0,source,target,nonzero)}
+    fn from_intervals(values:impl IntoIterator<Item=(Bits,Bits)>)->Self {range_sets::from_intervals(values)}
+    fn from_sorted_intervals(values:impl IntoIterator<Item=(Bits,Bits)>)->Self {range_sets::from_sorted_intervals(values)}
+    fn interval(lower:Bits,upper:Bits)->Self {range_sets::interval(lower,upper)}
+    fn hull(&self)->(Bits,Bits) {range_sets::hull(&self.0)}
+    fn contains(&self,value:Bits)->bool {range_sets::contains(&self.0,value)}
+    fn union(&self,other:&Self)->Self {range_sets::union(&self.0,&other.0)}
+    fn restrict(&self,lower:Bits,upper:Bits)->Self {range_sets::restrict(&self.0,lower,upper)}
+    fn without(&self,value:Bits)->Self {range_sets::without(&self.0,value)}
+    fn map(&self,operation:impl FnMut((Bits,Bits))->Self)->Self {range_sets::map(&self.0,operation)}
+    fn shift_counts(&self,scalar:Scalar)->Self {range_sets::shift_counts(&self.0,scalar)}
+    fn combine(&self,other:&Self,operation:impl FnMut((Bits,Bits),(Bits,Bits))->Self)->Self {range_sets::combine(&self.0,&other.0,operation)}
 }
 #[derive(Clone,Copy,PartialEq,Eq)]
 struct KnownBits { scalar:Scalar, mask:Bits, value:Bits }
