@@ -1,4 +1,4 @@
-/// 同一静态模块工厂的C布局；声明也直接用于无编译器依赖的生成单元。
+/// 原生静态模块工厂与运行库共用的 C 布局。
 #[repr(C)]
 pub struct ModuleImage {
     pub data: *const u8,

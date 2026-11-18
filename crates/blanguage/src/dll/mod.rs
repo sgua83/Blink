@@ -154,7 +154,7 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
     Ok(())
 }
 
-fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, String, Vec<(String, crate::native::NativeCode)>, Option<crate::object::ResourceBinding>)> {
+fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, String, Vec<(String, crate::native::NativeCode)>, Option<crate::application::factory::ResourceFactory>)> {
     if !p.accelerations().is_empty()
         || !p.textures().is_empty()
         || p.buffers().iter().any(|b| !plain(&b.ty))
@@ -232,7 +232,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     let c_run = cp.join(", ");
     let r_run = rp.join(", ");
     let comma = if cp.is_empty() { "" } else { ", " };
-    let (constructor, functions, factory, resources) = source::constructor(p, prefix, worker)?;
+    let (constructor, functions, resources) = source::constructor(p, prefix, worker)?;
     let replacements = [
         ("@PREFIX@", prefix.to_owned()),
         ("@COMMA@", comma.to_owned()),
@@ -243,7 +243,6 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
         ("@SAFE_ARGS@", safe_args.join(", ")),
         ("@TYPES@", types),
         ("@CREATE@", constructor),
-        ("@RESOURCES@", factory),
         ("@VALUES@", values),
         ("@BUFFERS@", buffers.join(", ")),
     ];
@@ -277,17 +276,15 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
     imports.extend(program.resources.iter().flat_map(|resources| &resources.programs)
         .flat_map(|(_, program)| program.imports.clone()));
     let (sections, positions, stack) = crate::object::module_code(functions, &imports, &prefix)?;
-    let symbols = positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
-        name, section, value, contract: Vec::new(), function: true,
-    }).collect();
     let mut exports: Vec<String> = ["create", "run", "destroy"]
         .into_iter()
         .map(|n| format!("{prefix}_{n}"))
         .collect();
-    if let Some(resource) = &resources { exports.push(format!("{}_resources", resource.prefix)); }
-    let mut archive = crate::object::compile_archive(&source, exports, &["blanguage", "blcompute"], worker)?;
-    archive.resources = resources;
-    Ok(crate::object::Object {
+    if let Some(resource) = &resources {
+        exports.push(format!("{}_resources", resource.binding.prefix));
+    }
+    let archive = crate::object::compile_archive(&source, exports, &["blanguage", "blcompute"], worker)?;
+    let mut object = crate::object::Object {
         name: program.name().into(),
         kind: crate::object::Kind::Library {
             prefix,
@@ -295,10 +292,17 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
             binding,
         },
         sections, stack,
-        symbols,
+        symbols: Vec::new(),
         imports,
         archive: Some(archive),
-    })
+    };
+    if let Some(factory) = resources {
+        factory.emit(&mut object, &positions);
+    }
+    object.symbols.extend(positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
+        name, section, value, contract: Vec::new(), function: true,
+    }));
+    Ok(object)
 }
 /// SDK 现有构建 API 组合正式编译与链接；C/C++ 和 Rust 的 DLL ABI 保持。
 pub fn build(program: &ExecutableProgram, output: &Path) -> Result<()> {

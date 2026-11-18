@@ -9,6 +9,7 @@ use crate::{
 use std::path::Path;
 mod tasks;
 pub(crate) use tasks::bind_tasks;
+pub(crate) mod factory;
 pub struct Application {
     pub(crate) compiler: crate::Compiler,
     pub(crate) name: String,
@@ -54,7 +55,7 @@ impl Application {
         let mut functions = crate::parallel::try_map(worker, ordinary.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let (archive, resource_code, resource_imports) = compile_resources(&self.name, resources.as_deref(), true, worker, has_tasks)?;
+        let (compiled_resources, resource_code, resource_imports) = compile_resources(&self.name, resources.as_deref(), true, worker, has_tasks)?;
         let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
         functions.extend(resource_code);
         let mut imports = self.imports.clone();
@@ -68,7 +69,8 @@ impl Application {
             section: positions[&name].0, value: positions[&name].1,
             name, contract: Vec::new(), function: true,
         }).collect();
-        Ok(Object {
+        let (archive, factory) = compiled_resources.unzip();
+        let mut object = Object {
             name: self.name.clone(),
             kind: Kind::Application { stack_bytes },
             sections,
@@ -76,7 +78,11 @@ impl Application {
             symbols,
             imports,
             archive,
-        })
+        };
+        if let Some(factory) = factory {
+            factory.emit(&mut object, &positions);
+        }
+        Ok(object)
     }
     pub fn write_object(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         self.compile()?.write(path)
@@ -102,13 +108,13 @@ pub(crate) fn compile_resources(
     root: bool,
     worker: &crate::compiler::Worker,
     has_tasks: bool,
-) -> Result<(Option<object::Archive>, Vec<(String, native::NativeCode)>, std::collections::BTreeMap<String, Vec<u8>>), Box<dyn std::error::Error>> {
+) -> Result<(Option<(object::Archive, factory::ResourceFactory)>, Vec<(String, native::NativeCode)>, std::collections::BTreeMap<String, Vec<u8>>), Box<dyn std::error::Error>> {
     Ok(if let Some(resources) = resources {
         let prefix = resource_prefix(name);
         let (image, code, imports) = crate::resource::compile(resources, worker)?;
         let code: Vec<_> = code.into_iter().enumerate()
             .map(|(index, code)| (format!("__blink_range_{prefix}_{index}"), code)).collect();
-        let mut source = crate::dll::application_source(resources, &prefix, root, &image, &code)?;
+        let mut source = crate::dll::application_source(resources, &prefix, root)?;
         if has_tasks {
             source.push_str(&include_str!("task.rs.in")
                 .replace("TYPE_BASE", &format!("{prefix}_type_base"))
@@ -155,15 +161,19 @@ pub(crate) fn compile_resources(
         } else {
             &[]
         };
-        let mut archive = object::compile_archive(&source, exports, dependencies, worker)?;
-        archive.resources = Some(object::ResourceBinding {
-            prefix,
-            types: u32::try_from(resources.types.len())?,
-            programs: u32::try_from(resources.programs.len())?,
-            abi: crate::resource::ABI.to_vec(),
-            code: code.iter().map(|(name, _)| name.clone()).collect(),
-        });
-        (Some(archive), code, imports)
+        let archive = object::compile_archive(&source, exports, dependencies, worker)?;
+        let factory = factory::ResourceFactory {
+            binding: object::ResourceBinding {
+                prefix,
+                types: u32::try_from(resources.types.len())?,
+                programs: u32::try_from(resources.programs.len())?,
+                abi: crate::resource::ABI.to_vec(),
+                code: code.iter().map(|(name, _)| name.clone()).collect(),
+            },
+            image,
+            ranges_symbol: None,
+        };
+        (Some((archive, factory)), code, imports)
     } else {
         (None, Vec::new(), std::collections::BTreeMap::new())
     })

@@ -1,5 +1,4 @@
 use std::ffi::c_void;
-@FACTORY@
 #[repr(C)]
 pub struct UniformValue { pub kind: u32, pub bits: u64 }
 #[repr(C)]

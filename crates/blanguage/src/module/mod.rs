@@ -80,7 +80,7 @@ impl Module {
             worker, functions.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)),
         ).map_err(|error| std::io::Error::other(error.to_string()))?;
-        let (archive, resource_code, resource_imports) =
+        let (compiled_resources, resource_code, resource_imports) =
             crate::application::compile_resources(&self.name, resources.as_deref(), false, worker, has_tasks)?;
         let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
         code.extend(resource_code);
@@ -111,7 +111,8 @@ impl Module {
                 name, contract: Vec::new(), function: true,
             }))
             .collect();
-        Ok(Object {
+        let (archive, factory) = compiled_resources.unzip();
+        let mut object = Object {
             name: self.name.clone(),
             kind: Kind::Module {
                 interface: self.header.clone(),
@@ -123,7 +124,11 @@ impl Module {
             symbols,
             imports,
             archive,
-        })
+        };
+        if let Some(factory) = factory {
+            factory.emit(&mut object, &positions);
+        }
+        Ok(object)
     }
 }
 /// 编译一个普通原生模块；dependencies 是实际已编译模块，instances 选择开放泛型的具体导出。

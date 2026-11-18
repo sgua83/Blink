@@ -469,6 +469,25 @@ extern "C" ApplicationEntry application_entry(address output) on cpu {
                             u32(main_field - start), u32(exit - start + call.field));
 }
 
+extern "C" ModuleFactoryCode module_factory_code(u64 bytes, u64 codes, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation data = MoveLocation(0u64, MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    MoveLocation size = MoveLocation(8u64, MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    MoveLocation code = MoveLocation(16u64, MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+    MoveLocation count = MoveLocation(24u64, MOVE_MEMORY, u8(1), NO_INDEX, u8(0));
+
+    SymbolEncoding image = symbol_target(false, output);
+    u64 cursor = store_bits(start + image.length, data, u8(0), 8);
+    cursor = store_bits(move_immediate(cursor, u8(0), bytes, true), size, u8(0), 8);
+    u64 ranges = cursor;
+    SymbolEncoding table = symbol_target(false, unsafe_address(ranges));
+    cursor = store_bits(ranges + table.length, code, u8(0), 8);
+    cursor = store_bits(move_immediate(cursor, u8(0), codes, true), count, u8(0), 8);
+    cursor = store_bits(cursor, move_gpr(u8(0)), u8(1), 8);
+    put_byte(cursor, u8(0xc3));
+    return ModuleFactoryCode(cursor + 1u64 - start, image.field, ranges + table.field - start);
+}
+
 extern "C" u64 call_slot(u32 offset, address output) on cpu {
     u64 start = address_bits(output);
     MoveLocation target = MoveLocation(u64(offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));

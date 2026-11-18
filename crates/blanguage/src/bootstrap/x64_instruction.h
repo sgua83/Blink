@@ -103,6 +103,16 @@ struct ApplicationEntry {
 // The caller owns seventeen output bytes. Offsets are relative to the entry.
 extern "C" ApplicationEntry application_entry(address output) on cpu;
 
+struct ModuleFactoryCode {
+    u64 length;
+    u64 image_field;
+    u64 ranges_field;
+};
+
+// The x64 C aggregate return uses the caller's output in RCX. The emitter
+// writes at most 64 bytes and reports the two section-address relocations.
+extern "C" ModuleFactoryCode module_factory_code(u64 bytes, u64 codes, address output) on cpu;
+
 // Call through an existing outgoing stack slot. The caller owns seven bytes.
 extern "C" u64 call_slot(u32 offset, address output) on cpu;
 
