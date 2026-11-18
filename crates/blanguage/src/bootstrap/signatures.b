@@ -321,11 +321,38 @@ bool shape_is_name(StorageView store, ShapeRef shape, NameBytes name) on cpu {
     }
 }
 
+bool parameter_name_is<const N:u32 in {4,5,7,9,12}>(NameBytes name, read array<u8,N> word) on cpu {
+    return compare_name(name, NameBytes(address_of(word[0]), u64(N))) == i32(0);
+}
+
+bool plain_declared_type(TypeNode ty) on cpu {
+    return ty.dataset == 0 && ty.view == 0 && ty.tile == 0;
+}
+
+bool texture_name(NameBytes name) on cpu {
+    return parameter_name_is(name, "texture2d") || parameter_name_is(name, "texture3d");
+}
+
+Optional<u64> texture_array_argument(StorageView store, TypeNode outer, NameBytes name) on cpu {
+    if (!plain_declared_type(outer) || outer.arguments.count != 2u64
+        || !parameter_name_is(name, "array")) { return Optional<u64>(0, 0u64); }
+    match (read_node<ArgumentNode>(store, child_at(store, outer.arguments, 0u64))) {
+        ArgumentNode::Type(child) {
+            TypeNode element = read_node<TypeNode>(store, child.offset);
+            if (plain_declared_type(element) && texture_name(text_bytes(store, element.name))) {
+                return Optional<u64>(1, child_at(store, outer.arguments, 1u64));
+            }
+        }
+        ArgumentNode::Value(unused) {}
+    }
+    return Optional<u64>(0, 0u64);
+}
+
 bool value_argument_is_name(StorageView store, u64 offset, NameBytes name) on cpu {
     match (read_node<ArgumentNode>(store, offset)) {
         ArgumentNode::Type(child) {
             TypeNode type = read_node<TypeNode>(store, child.offset);
-            return type.arguments.count == 0u64 && type.dataset == 0 && type.view == 0 && type.tile == 0
+            return type.arguments.count == 0u64 && plain_declared_type(type)
                 && compare_name(text_bytes(store, type.name), name) == i32(0);
         }
         ArgumentNode::Value(shape) { return shape_is_name(store, shape, name); }
@@ -338,26 +365,8 @@ bool resource_names_shape(SignatureNode type, NameBytes name) on cpu {
     if (outer.dataset != 0) {
         return outer.count.present != 0 && shape_is_name(store, outer.count.value, name);
     }
-    if (outer.view != 0 || outer.tile != 0 || outer.arguments.count != 2u64) { return false; }
-    array<u8,5> array_name = "array";
-    if (compare_name(text_bytes(store, outer.name), NameBytes(address_of(array_name[0]), 5u64)) != i32(0)) {
-        return false;
-    }
-    match (read_node<ArgumentNode>(store, child_at(store, outer.arguments, 0u64))) {
-        ArgumentNode::Type(child) {
-            TypeNode element = read_node<TypeNode>(store, child.offset);
-            if (element.dataset != 0 || element.view != 0 || element.tile != 0) { return false; }
-            NameBytes element_name = text_bytes(store, element.name);
-            array<u8,9> texture_2d = "texture2d";
-            array<u8,9> texture_3d = "texture3d";
-            if (compare_name(element_name, NameBytes(address_of(texture_2d[0]), 9u64)) != i32(0)
-                && compare_name(element_name, NameBytes(address_of(texture_3d[0]), 9u64)) != i32(0)) {
-                return false;
-            }
-            return value_argument_is_name(store, child_at(store, outer.arguments, 1u64), name);
-        }
-        ArgumentNode::Value(shape) { return false; }
-    }
+    Optional<u64> argument = texture_array_argument(store, outer, text_bytes(store, outer.name));
+    return argument.present != 0 && value_argument_is_name(store, argument.value, name);
 }
 
 bool merge_const(u32 value, inout Optional<u32> inferred) on cpu {
@@ -387,10 +396,6 @@ extern "C" Optional<u32> infer_const_arguments(SignatureNode type, address name,
         index += 1u64;
     }
     return Optional<u32>(0, 0);
-}
-
-bool parameter_name_is<const N:u32 in {4,5,7,9,12}>(NameBytes name, read array<u8,N> word) on cpu {
-    return compare_name(name, NameBytes(address_of(word[0]), u64(N))) == i32(0);
 }
 
 bool reserved_parameter_name(NameBytes name, bool type_parameter) on cpu {
@@ -447,4 +452,156 @@ extern "C" ParameterError function_parameter_error(SignatureNode declaration) on
 extern "C" ParameterError record_parameter_error(SignatureNode declaration) on cpu {
     RecordNode record = read_node<RecordNode>(declaration.storage, declaration.offset);
     return parameter_error(declaration.storage, record.name, record.types, record.values, Slice(0u64, 0u64));
+}
+
+// Tags stored by the source owner in FunctionNode, ContractNode and ParamNode.
+const u32 FUNCTION_VALUE = 0;
+const u32 FUNCTION_COOPERATIVE = 1;
+const u32 TARGET_CPU = 1;
+const u32 TARGET_GPU = 2;
+const u32 CONTRACT_REQUIRES = 0;
+const u32 CONTRACT_ENSURES = 1;
+const u32 ACCESS_VALUE = 0;
+const u32 ACCESS_READ = 1;
+const u32 ACCESS_WRITE = 2;
+const u32 ACCESS_INOUT = 3;
+const u32 ACCESS_ATOMIC = 4;
+
+bool c_contract_allowed(StorageView store, ContractNode contract, bool imported) on cpu {
+    match (read_node<PredicateNode>(store, contract.predicate.offset)) {
+        PredicateNode::Nonzero(unused) { return contract.kind == CONTRACT_REQUIRES; }
+        PredicateNode::Initialized(unused) { return contract.kind == CONTRACT_ENSURES; }
+        PredicateNode::Memory(unused) { return imported && contract.kind == CONTRACT_ENSURES; }
+        PredicateNode::Prefix(unused) { return false; }
+        PredicateNode::Nonempty(unused) { return false; }
+        PredicateNode::Index(unused) { return false; }
+        PredicateNode::Contiguous(unused) { return false; }
+        PredicateNode::SameLength(unused) { return false; }
+        PredicateNode::Cleanup(unused) { return false; }
+        PredicateNode::Range(unused) { return false; }
+    }
+}
+
+bool c_signature_allowed(StorageView store, FunctionNode function, bool imported) on cpu {
+    if (function.kind != FUNCTION_VALUE || function.target != TARGET_CPU
+        || (imported && (function.body.present != 0 || function.types.count != 0u64
+            || function.values.count != 0u64))) { return false; }
+    u64 index = 0u64;
+    while (index < function.contracts.count) {
+        ContractNode contract = read_node<ContractNode>(store, child_at(store, function.contracts, index));
+        if (!c_contract_allowed(store, contract, imported)) { return false; }
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < function.params.count) {
+        ParamNode parameter = read_node<ParamNode>(store, child_at(store, function.params, index));
+        TypeNode ty = read_node<TypeNode>(store, parameter.ty.offset);
+        if (ty.dataset != 0 || ty.tile != 0 || parameter.access == ACCESS_ATOMIC) { return false; }
+        index += 1u64;
+    }
+    TypeNode result = read_node<TypeNode>(store, function.result.offset);
+    return result.dataset == 0 && result.tile == 0;
+}
+
+bool declares_dataset(StorageView store, TypeNode ty) on cpu {
+    if (ty.dataset != 0) { return true; }
+    u64 index = 0u64;
+    while (index < ty.arguments.count) {
+        match (read_node<ArgumentNode>(store, child_at(store, ty.arguments, index))) {
+            ArgumentNode::Type(child) {
+                if (declares_dataset(store, read_node<TypeNode>(store, child.offset))) { return true; }
+            }
+            ArgumentNode::Value(unused) {}
+        }
+        index += 1u64;
+    }
+    return false;
+}
+
+bool declared_texture(StorageView store, TypeNode ty, NameBytes name) on cpu {
+    if (texture_name(name)) { return true; }
+    Optional<u64> argument = texture_array_argument(store, ty, name);
+    if (argument.present == 0) { return false; }
+    match (read_node<ArgumentNode>(store, argument.value)) {
+        ArgumentNode::Value(unused) { return true; }
+        ArgumentNode::Type(child) {
+            TypeNode shape = read_node<TypeNode>(store, child.offset);
+            return shape.arguments.count == 0u64 && plain_declared_type(shape);
+        }
+    }
+}
+
+DeclaredArgumentForm declared_form(StorageView store, TypeNode ty) on cpu {
+    if (ty.dataset != 0) { return DeclaredArgumentForm::Dataset; }
+    if (ty.tile != 0) { return DeclaredArgumentForm::Tile; }
+    if (ty.view != 0) { return DeclaredArgumentForm::Ordinary; }
+    NameBytes name = text_bytes(store, ty.name);
+    if (ty.arguments.count == 0u64 && parameter_name_is(name, "acceleration")) {
+        return DeclaredArgumentForm::Acceleration;
+    }
+    return declared_texture(store, ty, name) ? DeclaredArgumentForm::Texture : DeclaredArgumentForm::Ordinary;
+}
+
+extern "C" DeclaredArgumentForm declared_argument_form(SignatureNode type) on cpu {
+    return declared_form(type.storage, read_node<TypeNode>(type.storage, type.offset));
+}
+
+bool has_tile_parameter(StorageView store, Slice parameters) on cpu {
+    u64 index = 0u64;
+    while (index < parameters.count) {
+        ParamNode parameter = read_node<ParamNode>(store, child_at(store, parameters, index));
+        if (read_node<TypeNode>(store, parameter.ty.offset).tile != 0) { return true; }
+        index += 1u64;
+    }
+    return false;
+}
+
+extern "C" SignatureError signature_error(SignatureNode declaration, u32 domain) on cpu {
+    StorageView store = declaration.storage;
+    FunctionNode function = read_node<FunctionNode>(store, declaration.offset);
+    SignatureError valid = SignatureError(SignatureErrorKind::Valid, function.span);
+    if (function.c_abi != 0) {
+        bool imported = function.external.present != 0;
+        if (!c_signature_allowed(store, function, imported)) {
+            return SignatureError(SignatureErrorKind::CAbi, function.span);
+        }
+        if (imported) { return valid; }
+    }
+    if (domain != 0) { return valid; }
+
+    bool value = function.kind == FUNCTION_VALUE;
+    bool cpu = function.target == TARGET_CPU;
+    bool cooperative = function.kind == FUNCTION_COOPERATIVE;
+    if (!(value && cpu) && declares_dataset(store, read_node<TypeNode>(store, function.result.offset))) {
+        return SignatureError(SignatureErrorKind::OwnedResult, function.span);
+    }
+    if (cooperative && !has_tile_parameter(store, function.params)) {
+        return SignatureError(SignatureErrorKind::MissingTile, function.span);
+    }
+    u64 index = 0u64;
+    while (index < function.params.count) {
+        ParamNode parameter = read_node<ParamNode>(store, child_at(store, function.params, index));
+        TypeNode ty = read_node<TypeNode>(store, parameter.ty.offset);
+        u32 access = parameter.access;
+        if (!(value && cpu) && ty.dataset == 0 && declares_dataset(store, ty)) {
+            return SignatureError(SignatureErrorKind::OwnedParameter, parameter.span);
+        }
+        DeclaredArgumentForm form = declared_form(store, ty);
+        if (form == DeclaredArgumentForm::Acceleration && (access != ACCESS_READ || function.target != TARGET_GPU)) {
+            return SignatureError(SignatureErrorKind::Acceleration, parameter.span);
+        }
+        if (ty.dataset != 0 && access != ACCESS_READ && access != ACCESS_ATOMIC
+            && !(value && (access == ACCESS_WRITE || access == ACCESS_INOUT
+                || (cpu && access == ACCESS_VALUE)))) {
+            return SignatureError(SignatureErrorKind::DatasetAccess, parameter.span);
+        }
+        if (form == DeclaredArgumentForm::Texture && access != ACCESS_READ) {
+            return SignatureError(SignatureErrorKind::TextureAccess, parameter.span);
+        }
+        if (ty.tile != 0 && (!cooperative || (access != ACCESS_VALUE && access != ACCESS_ATOMIC))) {
+            return SignatureError(SignatureErrorKind::TileAccess, parameter.span);
+        }
+        index += 1u64;
+    }
+    return valid;
 }

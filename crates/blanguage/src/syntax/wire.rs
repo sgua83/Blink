@@ -246,6 +246,37 @@ pub struct StorageCreate{pub storage:*mut c_void, pub error:StorageError,}
 #[repr(C)]
 #[derive(Clone,Copy)]
 pub struct StorageView{pub nodes:*mut c_void, pub node_bytes:u64, pub text:*mut c_void, pub text_bytes:u64, pub source:*mut c_void, pub source_bytes:u64,}
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub(crate) enum DeclaredArgumentForm {
+    Ordinary = 0,
+    Dataset = 1,
+    Tile = 2,
+    Acceleration = 3,
+    Texture = 4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+pub enum SignatureErrorKind {
+    Valid = 0,
+    CAbi = 1,
+    OwnedResult = 2,
+    MissingTile = 3,
+    OwnedParameter = 4,
+    Acceleration = 5,
+    DatasetAccess = 6,
+    TextureAccess = 7,
+    TileAccess = 8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SignatureError {
+    pub kind: SignatureErrorKind,
+    pub span: Span,
+}
+
 // Discriminants are returned by the B declaration checker.
 #[allow(dead_code)]
 #[repr(u32)]
@@ -311,6 +342,12 @@ pub struct CfnParameter {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.signatures::declared_argument_form"]
+    pub(crate) fn declared_argument_form(node: SignatureNode) -> DeclaredArgumentForm;
+
+    #[link_name = "bootstrap.signatures::signature_error"]
+    pub fn signature_error(declaration: SignatureNode, domain: u32) -> SignatureError;
+
     #[link_name = "bootstrap.signatures::function_parameter_error"]
     pub fn function_parameter_error(declaration: SignatureNode) -> ParameterError;
 

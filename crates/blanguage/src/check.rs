@@ -1573,106 +1573,32 @@ fn collective_value_field(
     })?;
     Ok((binding, word, access, ty.clone()))
 }
-// A source declaration describes the call form before inference. This is not
-// an instantiated type classification; actual parameter types belong to Instance.
-#[derive(Clone,Copy,PartialEq,Eq)]
-#[repr(u32)]
-enum DeclaredArgumentForm { Ordinary, Dataset, Tile, Acceleration, Texture }
-fn declared_argument_form(ty:&crate::syntax::Type)->DeclaredArgumentForm{
-    if ty.dataset(){return DeclaredArgumentForm::Dataset;}
-    if ty.tile(){return DeclaredArgumentForm::Tile;}
-    if ty.view(){return DeclaredArgumentForm::Ordinary;}
-    if ty.name()=="acceleration"&&ty.arguments().is_empty(){return DeclaredArgumentForm::Acceleration;}
-    if matches!(ty.name(),"texture2d"|"texture3d"){return DeclaredArgumentForm::Texture;}
-    if ty.name()=="array"&&ty.arguments().len()==2
-        &&let crate::syntax::ArgumentKind::Type(element)=ty.arguments().at(0).kind()
-        &&matches!(element.name(),"texture2d"|"texture3d")&&!element.dataset()&&!element.view()&&!element.tile(){
-        let shape=match ty.arguments().at(1).kind(){
-            crate::syntax::ArgumentKind::Value(_)=>true,
-            crate::syntax::ArgumentKind::Type(value)=>value.arguments().is_empty()&&!value.dataset()&&!value.view()&&!value.tile(),
-        };
-        if shape{return DeclaredArgumentForm::Texture;}
-    }
-    DeclaredArgumentForm::Ordinary
-}
-fn declares_dataset(ty:&crate::syntax::Type)->bool{
-    ty.dataset()||ty.arguments().iter().any(|argument|
-        matches!(argument.kind(),crate::syntax::ArgumentKind::Type(ty)if declares_dataset(&ty)))
+use crate::syntax::wire::DeclaredArgumentForm;
+
+fn declared_argument_form(ty: &crate::syntax::Type) -> DeclaredArgumentForm {
+    unsafe { crate::syntax::wire::declared_argument_form(ty.signature_node()) }
 }
 
 pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
-    if d.function.c_abi() {
-        external::validate_signature(d)?;
-        if d.function.external().is_some() { return Ok(()); }
-    }
-    if d.execution == crate::execution::Requirement::Domain {
-        return Ok(());
-    }
-    if (d.function.result().dataset() || declares_dataset(&d.function.result()))
-        && !(d.function.kind() == FunctionKind::Value && d.function.target() == Target::Cpu)
-    {
-        return d.source.fail(
-            d.function.span(),
-            "B224",
-            "拥有的 dataset 返回属于普通 CPU 应用函数，借用与并行实例不转移资源所有权",
-        );
-    }
-    if d.function.kind() == FunctionKind::Cooperative && !d.function.params().iter().any(|p| p.ty().tile())
-    {
-        return d.source.fail(
-            d.function.span(),
-            "B207",
-            "cooperative 接口需要至少一个 tile<T> 借用来声明块范围",
-        );
-    }
-    for p in &d.function.params() {
-        if declares_dataset(&p.ty())
-            && !p.ty().dataset()
-            && !(d.function.kind() == FunctionKind::Value
-                && d.function.target() == Target::Cpu)
-        {
-            return d
-                .source
-                .fail(p.span(), "B224", "拥有聚合参数只支持普通CPU函数");
-        }
-        if declared_argument_form(&p.ty())==DeclaredArgumentForm::Acceleration {
-            if p.access() != Access::Read || d.function.target() != Target::Gpu {
-                return d
-                    .source
-                    .fail(p.span(), "B182", "acceleration 必须是 GPU 函数的 read 资源");
-            }
-            continue;
-        }
-        if p.ty().dataset()
-            && !matches!(p.access(), Access::Read | Access::Atomic)
-            && !(d.function.kind() == FunctionKind::Value
-                && (matches!(p.access(), Access::Write | Access::InOut)
-                    || d.function.target() == Target::Cpu && p.access() == Access::Value))
-        {
-            return d.source.fail(
-                p.span(),
-                "B120",
-                "普通函数dataset参数支持read／write／inout／atomic；仅CPU应用函数可按值取得所有权",
-            );
-        }
-        if declared_argument_form(&p.ty())==DeclaredArgumentForm::Texture && p.access() != Access::Read {
-            return d
-                .source
-                .fail(p.span(), "B239", "texture2d／texture3d 必须是 read 借用参数");
-        }
-        if p.ty().tile()
-            && (d.function.kind() != FunctionKind::Cooperative
-                || !matches!(p.access(), Access::Value | Access::Atomic))
-        {
-            return d.source.fail(
-                p.span(),
-                "B207",
-                "tile<T> 只能是 cooperative 的只读或 atomic 借用参数",
-            );
-        }
-    }
-    Ok(())
+    use crate::syntax::wire::{SignatureErrorKind as Kind, signature_error};
+
+    let domain = u32::from(d.execution == crate::execution::Requirement::Domain);
+    let error = unsafe { signature_error(d.function.signature_node(), domain) };
+    let (code, message) = match error.kind {
+        Kind::Valid => return Ok(()),
+        Kind::CAbi => ("B263", "extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输入可声明 requires nonzero，输出可声明 ensures initialized，不透明内存效果可声明 ensures memory"),
+        Kind::OwnedResult => ("B224", "拥有的 dataset 返回属于普通 CPU 应用函数，借用与并行实例不转移资源所有权"),
+        Kind::MissingTile => ("B207", "cooperative 接口需要至少一个 tile<T> 借用来声明块范围"),
+        Kind::OwnedParameter => ("B224", "拥有聚合参数只支持普通CPU函数"),
+        Kind::Acceleration => ("B182", "acceleration 必须是 GPU 函数的 read 资源"),
+        Kind::DatasetAccess => ("B120", "普通函数dataset参数支持read／write／inout／atomic；仅CPU应用函数可按值取得所有权"),
+        Kind::TextureAccess => ("B239", "texture2d／texture3d 必须是 read 借用参数"),
+        Kind::TileAccess => ("B207", "tile<T> 只能是 cooperative 的只读或 atomic 借用参数"),
+    };
+    let span = Span { start: error.span.start as usize, end: error.span.end as usize };
+    d.source.fail(span, code, message)
 }
+
 pub(crate) async fn check_function(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let name = &instance.name;
     let d = &instance.definition;

@@ -1,30 +1,7 @@
 //! 外部调用的 ABI 声明是信任边界；实参借用统一判定别名，ABI 只投影实际位置。
 use super::*;
 use cooperative::Argument;
-pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
-    let f = &d.function;
-    if f.kind() != FunctionKind::Value
-        || f.target() != Target::Cpu
-        || (f.external().is_some() && f.body().is_some())
-        || (f.external().is_some() && (!f.types().is_empty() || !f.values().is_empty()))
-        || f.contracts().iter().any(|contract| !match contract.predicate().kind() {
-            crate::syntax::PredicateKind::Initialized { .. } => contract.kind() == ContractKind::Ensures,
-            crate::syntax::PredicateKind::Nonzero(_) => contract.kind() == ContractKind::Requires,
-            crate::syntax::PredicateKind::Memory(_) => contract.kind() == ContractKind::Ensures && f.external().is_some(),
-            _ => false,
-        })
-        || f.params().iter().any(|p| {
-            p.ty().dataset()
-                || p.ty().tile()
-                || p.access() == Access::Atomic
-        })
-        || f.result().dataset()
-        || f.result().tile()
-    {
-        return d.source.fail(f.span(),"B263","extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输入可声明 requires nonzero，输出可声明 ensures initialized，不透明内存效果可声明 ensures memory");
-    }
-    Ok(())
-}
+
 async fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Result<Ty> {
     if ty.dataset || ty.tile || ty.is_acceleration() || ty.is_texture_resource() {
         return d.source.fail(span,"B263","extern C 参数与结果需要普通C签名，不能传递dataset、tile或设备资源");

@@ -36,3 +36,21 @@ extern "C" Optional<u32> infer_const_arguments(SignatureNode type, address name,
 enum ParameterError:u32 { Valid=0; TypeName=1; EmptyConstDomain=2; ConstName=3; };
 extern "C" ParameterError function_parameter_error(SignatureNode declaration) on cpu;
 extern "C" ParameterError record_parameter_error(SignatureNode declaration) on cpu;
+
+enum DeclaredArgumentForm:u32 { Ordinary=0; Dataset=1; Tile=2; Acceleration=3; Texture=4; };
+extern "C" DeclaredArgumentForm declared_argument_form(SignatureNode type) on cpu;
+
+enum SignatureErrorKind:u32 {
+    Valid=0;
+    CAbi=1;
+    OwnedResult=2;
+    MissingTile=3;
+    OwnedParameter=4;
+    Acceleration=5;
+    DatasetAccess=6;
+    TextureAccess=7;
+    TileAccess=8;
+};
+struct SignatureError {SignatureErrorKind kind;Span span;};
+
+extern "C" SignatureError signature_error(SignatureNode declaration, u32 domain) on cpu;
