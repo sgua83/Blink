@@ -362,10 +362,10 @@ impl Borrow{
         }
         self.clone().restricted_by(path)
     }
-    pub fn selected(choice:&bounds::Condition,a:&Self,b:&Self)->Self{
-        // 完整借用相同，选支不改变来源；不生产随后无人需要的路径组合。
-        if a==b{return a.clone();}
-        a.restricted(&choice.assume(&bounds::Clause::default(),true)).joined(b.restricted(&choice.assume(&bounds::Clause::default(),false)))
+    pub fn selected(self,choice:&bounds::Condition,b:&Self)->Self{
+        // Equal complete borrows need no conditional path construction.
+        if &self==b{return self;}
+        self.restricted_by(&choice.assume(&bounds::Clause::default(),true)).joined(b.restricted(&choice.assume(&bounds::Clause::default(),false)))
     }
     fn initialization_guards(&self, lookup:impl Fn(ValueIdentity)->Option<bounds::Proof>)->Self {
         let mut result=self.clone();
@@ -1025,7 +1025,7 @@ impl Builder<'_> {
             for limit in [&start, &end] { self.require_same(&Ty::scalar(Scalar::U32), &limit.ty, span)?; }
             let length = Self::view_length(&value);
             for (a, b) in [(&start, &end), (&end, &length)] {
-                if !(a.proof.below_length(&a.component_origins(0), &bounds::Proof::capture(b), 0, false) || bounds::Condition::comparison(Comparison::LessEqual, a, b).truth_in(&self.path) == Some(true)) {
+                if !(bounds::Proof::below_length((&a.component_origins(0), &a.proof.domains(0)), (&b.component_origins(0), &b.proof.domains(0)), false) || bounds::Condition::comparison(Comparison::LessEqual, a, b).truth_in(&self.path) == Some(true)) {
                     return self.fail(span, "B137", "view区间需要证明start<=end<=原长度");
                 }
             }

@@ -115,7 +115,7 @@ pub(super) fn cast_domains(value: &Value, component: usize) -> Domains {
     let cast = FloatingBound { source: value.component_identity(component), lower, upper,
         terms: [0;3], scalar, form: FloatingForm::Cast };
     let mut domains = Domains::from([IndexDomain::Floating(cast)]);
-    for domain in value.proof.domains(component) {
+    for domain in value.proof.domains(component).iter().copied() {
         let (source,distance) = match domain {
             IndexDomain::Computed(IntegerExpression::Binary(IntegerOperation::Remainder,from,_,Operand::Value(divisor))) if from == scalar => (divisor,1),
             IndexDomain::Upper(limit,distance) => (limit,distance),
@@ -134,7 +134,7 @@ pub(super) fn arithmetic_domains(builder: &Builder<'_>, op: &str, a: &Value, b: 
     let Some((bl,bh)) = finite(b,bi) else { return Domains::new(); };
     let mut domains = Domains::new();
     for (value,at,other_min,other_max) in [(a,ai,bl,bh),(b,bi,al,ah)] {
-        for domain in value.proof.domains(at) {
+        for domain in value.proof.domains(at).iter().copied() {
             let IndexDomain::Floating(bound) = domain else { continue; };
             let bound = if bound.form == FloatingForm::Cast && op == "+" {
                 bound.upper([1.0 + conversion_error(bound.upper), 0.0, 0.0])
@@ -150,12 +150,12 @@ pub(super) fn arithmetic_domains(builder: &Builder<'_>, op: &str, a: &Value, b: 
         }
     }
     if op == "/" && al >= 0.0 && bl > 0.0 {
-        for domain in b.proof.domains(bi) {
+        for domain in b.proof.domains(bi).iter().copied() {
             let IndexDomain::Floating(divisor) = domain else { continue; };
             if divisor.form != FloatingForm::Cast || divisor.lower == 0 { continue; }
             let factor = divide_up(1.0 + 3.0*2.0f64.powi(-23),1.0-conversion_error(divisor.upper));
             domains.insert(IndexDomain::Floating(divisor.upper([0.0,3.0*2.0f64.powi(-149),multiply_up(ah,factor)])));
-            for numerator in a.proof.domains(ai) {
+            for numerator in a.proof.domains(ai).iter().copied() {
                 let IndexDomain::Floating(numerator) = numerator else { continue; };
                 if numerator.form != FloatingForm::Upper { continue; }
                 let [x,y,z] = numerator.coefficients();
@@ -168,12 +168,12 @@ pub(super) fn arithmetic_domains(builder: &Builder<'_>, op: &str, a: &Value, b: 
     }
     if op == "*" && al >= 0.0 && bl >= 0.0 {
         for (left,li,right,ri) in [(a,ai,b,bi),(b,bi,a,ai)] {
-            for left in left.proof.domains(li) {
+            for left in left.proof.domains(li).iter().copied() {
                 let IndexDomain::Floating(left) = left else { continue; };
                 if left.form != FloatingForm::Upper { continue; }
                 let [a,b,c] = left.coefficients();
                 if c != 0.0 { continue; }
-                for right in right.proof.domains(ri) {
+                for right in right.proof.domains(ri).iter().copied() {
                     let IndexDomain::Floating(right) = right else { continue; };
                     if right.form != FloatingForm::Upper { continue; }
                     let [x,y,z] = right.coefficients();

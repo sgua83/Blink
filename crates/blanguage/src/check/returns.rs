@@ -100,9 +100,9 @@ impl Returned {
             if data.ownership != other.ownership {
                 data.ownership = application::Ownership::Moved;
             }
-            data.root.proof = if stored { let mut proof=data.root.proof.clone(); proof.join_condition(&other.root.proof,data.root.regs.len(),None); proof } else { bounds::Proof::common(&data.root, &other.root,None,None) };
+            if stored { data.root.proof.join_condition(&other.root.proof,data.root.regs.len(),None); } else { data.root.proof = bounds::Proof::common(&data.root, &other.root,None,None); }
             if let Some((choice,a,b))=borrows {
-                data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,view::Borrow::selected(choice,&a,&b));
+                data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,a.selected(choice,&b));
             }
             data.elements=if data.length.maximum()==0{other.elements.clone()}
                 else if other.length.maximum()==0{std::mem::take(&mut data.elements)}

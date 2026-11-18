@@ -341,9 +341,11 @@ impl Identity {
     }
     pub(super) fn selected(choice:Option<&bounds::Condition>,a:Option<&Self>,b:Option<&Self>)->Option<Self> {
         if a==b{return a.cloned();}
-        let borrow=|value:Option<&Self>|match value {Some(Self::Storage(borrow))=>borrow.clone(),_=>view::Borrow::source(view::Source::External)};
         if !matches!(a,Some(Self::Storage(_)))&&!matches!(b,Some(Self::Storage(_))){return None;}
-        Some(Self::Storage(match choice{Some(choice)=>view::Borrow::selected(choice,&borrow(a),&borrow(b)),None=>borrow(a).joined(borrow(b))}))
+        let mut a=match a {Some(Self::Storage(borrow))=>borrow.clone(),_=>view::Borrow::source(view::Source::External)};
+        let external;
+        let b=match b {Some(Self::Storage(borrow))=>borrow,_=>{external=view::Borrow::source(view::Source::External);&external}};
+        Some(Self::Storage(match choice{Some(choice)=>a.selected(choice,b),None=>{a.union(b);a}}))
     }
 }
 

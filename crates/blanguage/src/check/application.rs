@@ -2288,7 +2288,7 @@ impl Builder<'_> {
                 && length.minimum() == length.maximum()
                 && data.length.maximum().checked_add(1) == Some(length.minimum());
             let sources = data.length.component_origins(0);
-            let offset = length.proof.domains(0).into_iter().any(|domain|
+            let offset = length.proof.domains(0).iter().copied().any(|domain|
                 matches!(domain, IndexDomain::Offset(base, 1) if sources.contains(&base)));
             if !exact && !offset {
                 return self.fail(args.at(1).span(), "B224", "拥有填充值只能移动到已证明不回绕且恰好新增的一项，不能广播复制或截短拥有元素");
@@ -2682,14 +2682,13 @@ impl Builder<'_> {
         for (component, &(scalar, offset)) in ty.components.iter().enumerate() {
             let mut limits = BTreeSet::new();
             if scalar == Scalar::U32 {
-                let proof = model.proof.project(&[component], model.regs.len());
-                let domains = proof.domains(0);
+                let domains = model.proof.domains(component);
                 let origins = model.component_origins(component);
                 for length in &candidates {
                     let sources = length.component_origins(0).into_iter().filter(|id| !matches!(id,
                         ValueIdentity::ElementComponent(_) | ValueIdentity::ElementParent(..)
                             | ValueIdentity::ElementIndex(_) | ValueIdentity::DatasetContent(..))).collect::<Vec<_>>();
-                    let strict = proof.below_length(&origins, &length.proof, 0, true)
+                    let strict = Proof::below_length((&origins, &domains), (length.proof.origins.first().map(Vec::as_slice).unwrap_or_default(), &length.proof.domains(0)), true)
                         || domains.contains(&IndexDomain::ApplicationData(data.root.identity()))
                             && length.regs == data.length.regs;
                     let same = sources.iter().any(|source| origins.contains(source));

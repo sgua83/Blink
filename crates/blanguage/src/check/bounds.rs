@@ -446,8 +446,8 @@ impl Proof {
             for domain in domains {
                 if matches!(domain,IndexDomain::KnownBits(..)){facts.mark_domain(component,*domain);}
                 if let IndexDomain::Data(binding) = domain {
-                    let bound = target(*binding);
-                    facts.domains[component].extend(bound.domains(0));
+                    let mut bound = target(*binding);
+                    if let Some(domains) = bound.domains.first_mut() { facts.domains[component].append(domains); }
                     facts.ranges[component] = facts.range_set(component).combine(&bound.range_set(0),
                         |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
                 }
@@ -478,7 +478,7 @@ impl Proof {
                 facts.push(ElementFact::Range(ElementRange { binding, offset, scalar, intervals, known_bits }));
             }
             if scalar == Scalar::U32 {
-                facts.extend(self.domains(component).into_iter().filter_map(|domain| match domain {
+                facts.extend(self.domains(component).iter().copied().filter_map(|domain| match domain {
                     IndexDomain::Data(target) => Some(ElementFact::Index { binding, offset, target }),
                     _ => None,
                 }));
@@ -505,7 +505,7 @@ impl Proof {
             self.nonzero[component]=fresh.nonzero.get(source)==Some(&true);
             self.origins[component] = fresh.origins.get(source).cloned().unwrap_or_default();
             self.ranges[component] = fresh.range_set(source).into_owned();
-            self.domains[component] = fresh.domains(source);
+            self.domains[component] = fresh.domains(source).into_owned();
             self.conditions[component] = fresh.conditions.get(source).cloned().flatten();
         }
     }
@@ -516,7 +516,7 @@ impl Proof {
         self.conditions.resize_with(width,||None);
         for component in 0..width {
             self.nonzero[component] |= other.nonzero.get(component) == Some(&true);
-            for domain in other.domains(component){self.mark_domain(component,domain);}
+            for domain in other.domains(component).iter().copied() {self.mark_domain(component,domain);}
             self.ranges[component] = self.range_set(component).combine(&other.range_set(component),
                 |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
             if let Some(incoming)=other.component_condition(component){
@@ -537,21 +537,22 @@ impl Proof {
         self.nonzero.resize(self.nonzero.len().max(1), false);
         self.nonzero[0] |= other.nonzero.first() == Some(&true);
         self.domains.resize_with(self.domains.len().max(1), Domains::new);
-        self.domains[0].extend(other.domains(0));
+        self.domains[0].extend(other.domains(0).iter().copied());
     }
     pub(super) fn borrow_state(&self)->Self {Self{views:self.views.clone(),..Self::default()}}
     pub(super) fn numeric_facts(&self)->Self {
         Self{origins:self.origins.clone(),conditions:self.conditions.clone(),ranges:self.ranges.clone(),nonzero:self.nonzero.clone(),domains:self.domains.clone(),..Self::default()}
     }
-    pub(super) fn typed_view_borrow(&self,ty:&Ty)->view::Borrow {view_contracts::components(ty).into_iter().fold(view::Borrow::default(),|mut all,component|{all.union(&self.view_borrow(component));all})}
+    pub(super) fn typed_view_borrow(&self,ty:&Ty)->view::Borrow {view_contracts::components(ty).into_iter().filter_map(|component|self.views.get(component)).fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
     pub(super) fn select_view_borrows(&mut self,values:&[(Condition,Self)]){
         let width=values.iter().map(|(_,proof)|proof.views.len()).max().unwrap_or(0);
-        self.views=(0..width).map(|component|{let mut value=view::Borrow::default();for(when,proof)in values{value.union(&proof.view_borrow(component).restricted(&when.assume(&Clause::default(),true)));}value}).collect();
+        self.views=(0..width).map(|component|{let mut value=view::Borrow::default();for(when,proof)in values{if let Some(borrow)=proof.views.get(component).filter(|borrow|!borrow.empty()){value.union(&borrow.restricted(&when.assume(&Clause::default(),true)));}}value}).collect();
     }
     pub(super) fn join_view_borrows(&mut self,a:&Self,b:&Self,choice:&Condition){
         self.views=(0..a.views.len().max(b.views.len())).map(|component|{
-            let a=a.view_borrow(component);let b=b.view_borrow(component);
-            view::Borrow::selected(choice,&a,&b)
+            let empty=view::Borrow::default();
+            let a=a.views.get(component).unwrap_or(&empty);let b=b.views.get(component).unwrap_or(&empty);
+            a.clone().selected(choice,b)
         }).collect();
     }
     pub(super) fn retain_view_borrows(&mut self,ty:&Ty) {let selected=view_contracts::components(ty);for(component,borrow)in self.views.iter_mut().enumerate(){if !selected.contains(&component){*borrow=view::Borrow::default();}}}
@@ -824,7 +825,7 @@ impl Proof {
                 let Some((left,right))=Self::call_identity(a,bindings).zip(Self::call_identity(b,bindings)) else{return None;};
                 let mut facts=Facts::from([Fact::equal(left,right)]);
                 for(source,target)in [(a,right),(b,left)] {
-                    facts.extend(Proof::bound_input(bindings, &source).unwrap().domains(0).into_iter().map(|domain|Fact::Index(target,domain)));
+                    facts.extend(Proof::bound_input(bindings, &source).unwrap().domains(0).iter().copied().map(|domain|Fact::Index(target,domain)));
                 }
                 let mut clause=Clause::facts(facts);
                 for source in [a,b] {
@@ -861,7 +862,7 @@ impl Proof {
                     let nonzero=if to.is_integer(){!range.contains(to.order_bias())||Self::call_common_bits(input,from,low,extended,to).is_some_and(|bits|bits.value!=0)}else{input.nonzero.first()==Some(&true)};
                     if nonzero{facts.insert(Fact::NonZero(target));}
                     if to.is_integer()||to.is_float(){let(minimum,maximum)=range.hull();if minimum!=0{facts.insert(Fact::Minimum(target,to,minimum));}if maximum!=to.bit_mask(){facts.insert(Fact::Maximum(target,to,maximum));}}
-                    facts.extend(input.domains(0).into_iter().filter_map(|domain|cast_domain(domain,from,low).and_then(|domain|cast_domain(domain,low,extended)).and_then(|domain|cast_domain(domain,extended,to))).map(|domain|Fact::Index(target,domain)));
+                    facts.extend(input.domains(0).iter().copied().filter_map(|domain|cast_domain(domain,from,low).and_then(|domain|cast_domain(domain,low,extended)).and_then(|domain|cast_domain(domain,extended,to))).map(|domain|Fact::Index(target,domain)));
                     facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source,from,low,extended,to))));
                 }
                 return projected(facts);
@@ -883,7 +884,7 @@ impl Proof {
                 let Some(mapped)=predicate.at_call(bindings)else{return None};
                 let mut facts=Facts::from([Fact::Predicate(mapped,truth)]);
                 for operand in [predicate.a,predicate.b]{
-                    if let Operand::Value(source)=operand && let Some(target)=Proof::bound_input(bindings, &source).unwrap().known_identity(0){facts.extend(Proof::bound_input(bindings, &source).unwrap().domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(target,domain)));}
+                    if let Operand::Value(source)=operand && let Some(target)=Proof::bound_input(bindings, &source).unwrap().known_identity(0){facts.extend(Proof::bound_input(bindings, &source).unwrap().domains(0).iter().copied().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(target,domain)));}
                 }
                 return Some(Clause::facts(facts));
             },
@@ -1087,7 +1088,7 @@ impl Proof {
             self.ranges[component] = self.ranges[component].restrict(Bits::from(initial.unsigned_minimum(0)), Bits::from(u32::MAX));
             if initial.unsigned_minimum(0) != 0 { self.mark_nonzero(component); }
             if let Some(id)=initial.known_identity(0){self.mark_domain(component,IndexDomain::Lower(id,0));}
-            for domain in initial.domains(0) {
+            for domain in initial.domains(0).iter().copied() {
                 if let IndexDomain::Lower(base, distance) | IndexDomain::Offset(base, distance) = domain {
                     self.mark_domain(component, IndexDomain::Lower(base, distance));
                 }
@@ -1119,16 +1120,35 @@ impl Proof {
         proof
     }
     pub(super) fn forget_value(&mut self, components: &[usize], width: usize) {
-        let fresh=Self { views:components.iter().map(|i|self.view_borrow(*i)).collect(),..Self::default() };
-        self.assign(components,width,fresh);
+        if components.iter().copied().eq(0..width) {
+            let mut views = std::mem::take(&mut self.views);
+            views.resize_with(width, view::Borrow::default);
+            *self = Self { views, ..Self::default() };
+        } else {
+            self.views.resize_with(width, view::Borrow::default);
+            self.origins.resize_with(width, Vec::new);
+            self.conditions.resize_with(width, || None);
+            self.nonzero.resize(width, false);
+            self.ranges.resize_with(width, ScalarRanges::default);
+            self.domains.resize_with(width, Domains::new);
+            if !self.addresses.is_empty() { self.addresses.resize_with(width, || None); }
+            for &component in components {
+                self.origins[component].clear();
+                self.conditions[component] = None;
+                self.nonzero[component] = false;
+                self.ranges[component] = ScalarRanges::default();
+                self.domains[component].clear();
+                if !self.addresses.is_empty() { self.addresses[component] = None; }
+            }
+        }
     }
     pub(super) fn assign_view_borrows(&mut self,positions:&[Position],owner:&[Position],fresh:&Self){
         self.views.resize_with(owner.len(),view::Borrow::default);
         for(component,position)in positions.iter().enumerate(){
-            let sources=fresh.view_borrow(component);
+            let empty=view::Borrow::default();let sources=fresh.views.get(component).unwrap_or(&empty);
             for(index,leaf)in owner.iter().enumerate(){
                 let selected=owned_presence::Presence::selected(position,leaf);
-                if selected!=owned_presence::Presence::None{self.views[index]=view::Borrow::selected(&selected.condition(),&sources,&self.views[index]);}
+                if selected!=owned_presence::Presence::None{self.views[index]=sources.clone().selected(&selected.condition(),&self.views[index]);}
             }
         }
     }
@@ -1205,12 +1225,18 @@ impl Proof {
 
     pub(super) fn join_fields(&mut self, other: &Self, width: usize, branch: Option<&Condition>) {
         if !self.addresses.is_empty()||!other.addresses.is_empty(){self.addresses=(0..width).map(|i|address::Identity::selected(branch,self.addresses.get(i).and_then(Option::as_ref),other.addresses.get(i).and_then(Option::as_ref))).collect();}
-        self.views=(0..width).map(|i|if let Some(choice)=branch{view::Borrow::selected(choice,&self.view_borrow(i),&other.view_borrow(i))}else{self.view_borrow(i).joined(other.view_borrow(i))}).collect();
+        self.views.resize_with(width,view::Borrow::default);
+        for(i,value)in self.views.iter_mut().enumerate(){
+            let empty=view::Borrow::default();let other=other.views.get(i).unwrap_or(&empty);
+            if let Some(choice)=branch{*value=std::mem::take(value).selected(choice,other);}else{value.union(other);}
+        }
         self.domains = (0..width).map(|i| {
             let a=self.domains(i);let b=other.domains(i);
             let mut common=a.intersection(&b).copied().collect::<Domains>();
+            let mut previous_limit=None;
             for domain in a.union(&b) {
                 let IndexDomain::Upper(limit,_) = domain else {continue;};
+                if previous_limit==Some(*limit){continue;}previous_limit=Some(*limit);
                 let distances=[(&a,self.origins.get(i)),(&b,other.origins.get(i))].map(|(domains,origins)| {
                     domains.iter().filter_map(|domain|match domain {
                         IndexDomain::Upper(other,distance) if other==limit=>Some(*distance),
@@ -1225,15 +1251,11 @@ impl Proof {
             }
             common
         }).collect();
-        self.origins = (0..width)
-            .map(|i| {
-                let a = self.origins.get(i).cloned().unwrap_or_default();
-                let b = other.origins.get(i).cloned().unwrap_or_default();
-                a.into_iter()
-                    .filter(|identity| b.contains(identity))
-                    .collect()
-            })
-            .collect();
+        self.origins.resize_with(width,Vec::new);
+        for(i,origins)in self.origins.iter_mut().enumerate(){
+            let other=other.origins.get(i).map(Vec::as_slice).unwrap_or_default();
+            origins.retain(|identity|other.contains(identity));
+        }
         self.nonzero = (0..width)
             .map(|i| self.nonzero.get(i) == Some(&true) && other.nonzero.get(i) == Some(&true) || self.domains(i).iter().any(|domain|matches!(domain,IndexDomain::KnownBits(_,_,value)if *value!=0)))
             .collect();
@@ -1261,7 +1283,7 @@ impl Proof {
                 .map(|&i| self.nonzero.get(i) == Some(&true))
                 .collect(),
             ranges: components.iter().map(|&i| self.range_set(i).into_owned()).collect(),
-            domains: components.iter().map(|&i| self.domains(i)).collect(),
+            domains: components.iter().map(|&i| self.domains(i).into_owned()).collect(),
         }
     }
     pub(super) fn condition(condition: Condition) -> Self {
@@ -1295,20 +1317,20 @@ impl Proof {
     }
     pub(super) fn with_domains(mut self, mut domains: Domains) -> Self {
         // 存储版本更换资源域，数值仍是实际同一份长度快照。
-        domains.extend(self.domains(0).into_iter().filter(numeric_domain));
+        domains.extend(self.domains.first_mut().map(std::mem::take).unwrap_or_default().into_iter().filter(numeric_domain));
         self.domains = vec![domains];
         self
     }
-    pub(super) fn below_length(&self, identities: &[ValueIdentity], length: &Self, component: usize, strict: bool) -> bool {
-        let bounds = self.domains(0);
-        let origins = length.origins.get(component).map(Vec::as_slice).unwrap_or_default();
+    pub(super) fn below_length(index: (&[ValueIdentity], &Domains), length: (&[ValueIdentity], &Domains), strict: bool) -> bool {
+        let (identities, bounds) = index;
+        let (origins, domains) = length;
         if bounds.iter().any(|bound|match *bound{
             IndexDomain::Data(binding)=>origins.contains(&ValueIdentity::DataLength(binding)),
             IndexDomain::Tile=>origins.contains(&ValueIdentity::TileLength),
             IndexDomain::View(value)=>origins.contains(&value[2]),
             _=>false,
         }){return true;}
-        if length.domains(component).iter().any(|domain| {
+        if domains.iter().any(|domain| {
             let IndexDomain::Offset(base, amount) = *domain else { return false; };
             amount >= u32::from(strict) && identities.contains(&base) || bounds.iter().any(|bound| match *bound {
                 IndexDomain::Offset(source, offset) => source == base && if strict { offset < amount } else { offset <= amount },
@@ -1318,7 +1340,7 @@ impl Proof {
         }) { return true; }
         bounds.iter().any(|bound| match *bound {
             IndexDomain::Upper(limit, distance) => distance >= u32::from(strict) && origins.contains(&limit),
-            IndexDomain::Shifted(base, limit, distance) if distance >= u32::from(strict) => length.domains(component).iter().any(|sum| {
+            IndexDomain::Shifted(base, limit, distance) if distance >= u32::from(strict) => domains.iter().any(|sum| {
                 matches!(*sum, IndexDomain::Sum(left, right) if (left == base && right == limit) || (left == limit && right == base))
             }),
             _ => false,
@@ -1329,7 +1351,7 @@ impl Proof {
         self.origins[component]=vec![identity];self
     }
     pub(super) fn with_identity(mut self, identity: ValueIdentity) -> Self {
-        let mut origins = self.origins.first().cloned().unwrap_or_default();
+        let mut origins = self.origins.first_mut().map(std::mem::take).unwrap_or_default();
         origins.retain(|origin| *origin != identity);
         origins.insert(0, identity);
         self.origins = vec![origins];
@@ -1343,8 +1365,8 @@ impl Proof {
             ..Self::default()
         }
     }
-    pub(super) fn domains(&self, component: usize) -> Domains {
-        self.domains.get(component).cloned().unwrap_or_default()
+    pub(super) fn domains(&self, component: usize) -> Cow<'_, Domains> {
+        self.domains.get(component).map_or_else(|| Cow::Owned(Domains::new()), Cow::Borrowed)
     }
     pub(super) fn component_condition(&self, component: usize) -> Option<&Condition> {
         self.conditions.get(component)?.as_deref()
@@ -1381,9 +1403,8 @@ impl Proof {
                 ScalarRanges::interval(target.order_bias(), target.order_bias() + 1)
             } else { floating::cast(value, i, target) };
             proof.nonzero[i] = integers && !proof.ranges[i].contains(target.order_bias());
-            let domains=proof.domains(i).into_iter().filter_map(|domain|cast_domain(domain,source,target))
+            let domains=proof.domains.get_mut(i).map(std::mem::take).unwrap_or_default().into_iter().filter_map(|domain|cast_domain(domain,source,target))
                 .chain(proof.origins[i].iter().copied().filter(|_|integers&&!same_value).filter_map(|id|cast_domain(IndexDomain::CommonRange(id,source,source,source,source),source,target))).collect::<Domains>();
-            if let Some(current)=proof.domains.get_mut(i){current.clear();}
             for domain in domains{proof.mark_domain(i,domain);}
             if target == Scalar::F32 {
                 for domain in floating::cast_domains(value, i) { proof.mark_domain(i, domain); }
@@ -1515,7 +1536,7 @@ impl Proof {
         self.ranges
             .extend((0..value.regs.len()).map(|i| value.component_ranges(i)));
         self.domains
-            .extend((0..value.regs.len()).map(|i| value.proof.domains(i)));
+            .extend((0..value.regs.len()).map(|i| value.proof.domains(i).into_owned()));
     }
     pub fn splat(&mut self, width: usize) {
         if !self.addresses.is_empty(){self.addresses=vec![self.addresses[0].clone();width];}
@@ -1833,7 +1854,7 @@ impl Value {
                 .collect(),
             ranges: indices.iter().map(|i| self.component_ranges(*i)).collect(),
             nonzero: indices.iter().map(|i| self.component_nonzero(*i)).collect(),
-            domains: indices.iter().map(|i| self.proof.domains(*i)).collect(),
+            domains: indices.iter().map(|i| self.proof.domains(*i).into_owned()).collect(),
         }
     }
 }
@@ -2648,10 +2669,10 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
                     if !signed && op == "-" {
                         let left_origins = a.component_origins(ai);
                         let right_origins = b.component_origins(bi);
-                        if let Some(minimum) = a.proof.domains(ai).into_iter().filter_map(|domain| match domain {
+                        if let Some(minimum) = a.proof.domains(ai).iter().copied().filter_map(|domain| match domain {
                             IndexDomain::Lower(base, distance) | IndexDomain::Offset(base, distance) if right_origins.contains(&base) => Some(distance),
                             _ => None,
-                        }).chain(b.proof.domains(bi).into_iter().filter_map(|domain| match domain {
+                        }).chain(b.proof.domains(bi).iter().copied().filter_map(|domain| match domain {
                             IndexDomain::Upper(limit, distance) if left_origins.contains(&limit) => Some(distance),
                             _ => None,
                         })).max().filter(|&distance| distance != 0) { return range.restrict(Bits::from(minimum), scalar.bit_mask()); }
@@ -2704,7 +2725,7 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
                     .combine(&proof.range_set(component), |(al, ah), (bl, bh)| {
                         ScalarRanges::interval(al.max(bl), ah.min(bh))
                     });
-                exact.domains[0].extend(proof.domains(component));
+                exact.domains[0].extend(proof.domains(component).iter().copied());
                 proof.assign(&[component], count, exact);
             }
         }
@@ -3138,7 +3159,7 @@ impl Builder<'_> {
                 (IndexDomain::Data(target), IndexDomain::Data(other)) if self.program.same_length(target, *other))
         })
             || value.component_ranges(0).0.iter().all(|&(_, upper)| upper < Bits::from(limit))
-            || lengths.iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, *component, true))
+            || lengths.iter().any(|(proof, component)| Proof::below_length((&value.component_origins(0), &value.proof.domains(0)), (proof.origins.get(*component).map(Vec::as_slice).unwrap_or_default(), &proof.domains(*component)), true))
     }
     pub(super) fn index_in(&self, value: &Value, domain: IndexDomain, minimum: u32, selected_length: Option<&Proof>) -> bool {
         let mut lengths = self.resource_length_proofs(domain);
@@ -3742,7 +3763,7 @@ pub(super) fn proof_scope(path: &Clause, env: &BTreeMap<String, Binding>) -> imp
         if let Some(RequiredFacts { facts, roots }) = &scope {
             proof.extend_equalities(roots);
             for component in 0..ty.components.len() {
-                for domain in proof.domains(component) {
+                for domain in proof.domains(component).into_owned() {
                     if let IndexDomain::CommonRange(id, from, low, extended, to) = domain
                         && [from, low, extended, to].into_iter().all(Scalar::is_integer)
                         && let Some(bits) = KnownBits::facts(from, id, [&environment, facts])

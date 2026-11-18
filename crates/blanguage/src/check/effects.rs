@@ -1944,7 +1944,7 @@ impl Builder<'_> {
                 unsafe { self.world.call(self.retain_loop_element(element,*component,&empty,header,(&entry_path,initial),&|_|input.clone())).await }?;
             }
             let Some(guard)=guard else{continue;};
-            if let Some(identity)=input.known_identity(0){let mut domains=input.domains(0);domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);}
+            if let Some(identity)=input.known_identity(0){let mut domains=input.domains(0).into_owned();domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);}
             let mut scope=Scope::current(self);scope.writes=Some(&self.loop_contexts.last().unwrap().writes);
             let mut continues=None;let next=unsafe { self.world.call(self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,&writes,!bounds::seeks(body),&mut scope,&bounds::Clause::default(),None,&mut None)).await }?;
             retained.push((name,target,input,guard,join_numeric_paths(next,continues)));

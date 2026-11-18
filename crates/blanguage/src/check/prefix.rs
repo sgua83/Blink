@@ -266,7 +266,7 @@ impl Facts {
             let component = program.buffers[binding].ty.components.iter().position(|(_, word)| *word == offset).unwrap();
             let proven = self.elements.get(&binding).is_some_and(|proof| match requirement {
                 ElementFact::Range(range) => proof.holds_range(component, range.scalar, &range.intervals,range.known_bits),
-                ElementFact::Index { target, .. } => proof.domains(component).into_iter().any(|domain| matches!(domain, IndexDomain::Data(other) if program.same_length(other, *target)))
+                ElementFact::Index { target, .. } => proof.domains(component).iter().copied().any(|domain| matches!(domain, IndexDomain::Data(other) if program.same_length(other, *target)))
                     || proof.element_ranges(binding, &program.buffers[binding].ty).iter().any(|range| range.offset == offset
                         && range.intervals.iter().all(|&(_, upper)| upper < u64::from(program.buffers[*target].count.unwrap_or(0)))),
             });
@@ -411,7 +411,7 @@ pub(super) fn join_fields(a:&Fields,b:&Fields,choice:Option<&bounds::Condition>)
     a.keys().chain(b.keys()).copied().collect::<BTreeSet<_>>().into_iter().filter_map(|word| {
         let empty=view::Borrow::default();
         let a=a.get(&word).unwrap_or(&empty);let b=b.get(&word).unwrap_or(&empty);
-        let known=match choice {Some(choice)=>view::Borrow::selected(choice,a,b),None=>common(a,b)};
+        let known=match choice {Some(choice)=>a.clone().selected(choice,b),None=>common(a,b)};
         (!known.empty()).then_some((word,known))
     }).collect()
 }
