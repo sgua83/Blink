@@ -283,6 +283,7 @@ extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost hos
  u32 other=1-side;host.begin(context,side);
  while(true){
   FactView fact=host.next(context);if(fact.present==0){return 0;}
+  if(host.contains(context,other,fact)!=0){continue;}
   FactView key=fact;
   if(fact.kind==FactKind::Boolean||fact.kind==FactKind::Predicate){
    key.flag=1-fact.flag;if(host.contains(context,other,key)!=0){return 1;}

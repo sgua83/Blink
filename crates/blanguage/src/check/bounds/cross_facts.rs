@@ -10,7 +10,7 @@ type Slot = *mut c_void;
 
 struct Context<'a> {
     sets: [&'a Facts; 2],
-    iterator: Option<btree_set::Difference<'a, Fact>>,
+    iterator: btree_set::Iter<'a, Fact>,
 }
 
 unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
@@ -21,13 +21,12 @@ unsafe extern "C" fn count(slot: Slot, side: u32) -> usize {
 }
 unsafe extern "C" fn begin(slot: Slot, side: u32) {
     let context = unsafe { context(slot) };
-    context.iterator = Some(context.sets[side as usize].difference(context.sets[1-side as usize]));
+    context.iterator = context.sets[side as usize].iter();
 }
 unsafe extern "C" fn next(slot: Slot) -> Fields {
     unsafe { context(slot) }
         .iterator
-        .as_mut()
-        .and_then(Iterator::next)
+        .next()
         .map(Fields::from)
         .unwrap_or_default()
 }
@@ -83,7 +82,7 @@ unsafe extern "C" {
 pub(super) fn conflict(a: &Facts, b: &Facts) -> bool {
     let mut context = Context {
         sets: [a, b],
-        iterator: None,
+        iterator: btree_set::Iter::default(),
     };
     let numeric = [Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64];
     let scalars = Scalars {
