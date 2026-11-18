@@ -95,12 +95,12 @@ impl FloatingBound {
         let bound = Self { lower: self.lower.max(lower), upper: self.upper.min(upper), ..self };
         (bound.lower <= bound.upper).then_some(bound)
     }
-    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity,Proof>) -> Option<Self> {
-        let input = bindings.get(&self.source)?;
+    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity,impl std::borrow::Borrow<Proof>>) -> Option<Self> {
+        let input = Proof::bound_input(bindings, &self.source)?;
         Some(Self { source: input.known_identity(0)?, ..self.restricted(input)? })
     }
-    pub(super) fn range_at_call(self, bindings: &BTreeMap<ValueIdentity,Proof>) -> Option<ScalarRanges> {
-        let bound = self.restricted(bindings.get(&self.source)?)?;
+    pub(super) fn range_at_call(self, bindings: &BTreeMap<ValueIdentity,impl std::borrow::Borrow<Proof>>) -> Option<ScalarRanges> {
+        let bound = self.restricted(Proof::bound_input(bindings, &self.source)?)?;
         (bound.form == FloatingForm::Upper).then(|| upper_range(bound.maximum()))
     }
 }

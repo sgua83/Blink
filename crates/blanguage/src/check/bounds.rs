@@ -113,10 +113,10 @@ impl ScalarPredicate {
     fn mentions(self, identity: ValueIdentity) -> bool {
         [self.a, self.b].contains(&Operand::Value(identity))
     }
-    fn at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Self> {
+    fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
         let operand = |operand| Some(match operand {
             Operand::Value(id) => {
-                let proof = bindings.get(&id)?;
+                let proof = Proof::bound_input(bindings, &id)?;
                 // Capture already preserves a constant's exact storage bits.
                 // This is identity substitution, never floating range inference.
                 let bits = proof.range_set(0);
@@ -144,11 +144,11 @@ impl IntegerExpression {
             Self::Binary(op, scalar, a, b) => Self::Binary(op, scalar, a.map(&identity)?, b.map(&identity)?),
         })
     }
-    fn at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Self> {
+    fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
         let Self::Binary(op, scalar, a, b) = self;
         let operand = |value| Some(match value {
             Operand::Value(id) => {
-                let proof = bindings.get(&id)?;
+                let proof = Proof::bound_input(bindings, &id)?;
                 match proof.range_set(0).restrict(0, scalar.bit_mask()).0.as_slice() {
                     [(a, b)] if a == b => Operand::Constant(scalar, *a ^ scalar.order_bias()),
                     _ => Operand::Value(proof.known_identity(0)?),
@@ -175,10 +175,10 @@ impl IntegerExpression {
         };
         constant::binary(operation, scalar, a, b).map(|bits| (scalar, bits))
     }
-    fn ranges_at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<ScalarRanges> {
+    fn ranges_at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<ScalarRanges> {
         let Self::Binary(op, scalar, a, b) = self;
         let range = |operand| Some(match operand {
-            Operand::Value(id) => bindings.get(&id)?.range_set(0).restrict(0, scalar.bit_mask()),
+            Operand::Value(id) => Proof::bound_input(bindings, &id)?.range_set(0).restrict(0, scalar.bit_mask()),
             Operand::Constant(_, bits) => ScalarRanges::interval(bits ^ scalar.order_bias(), bits ^ scalar.order_bias()),
         });
         let left = range(a)?;
@@ -766,23 +766,26 @@ impl Proof {
         for address in self.addresses.iter().flatten(){if let address::Identity::Value(values)=address{for id in values{identity(*id);}}}
         ids.into_inner()
     }
+    fn bound_input<'a>(
+        bindings: &'a BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        id: &ValueIdentity,
+    ) -> Option<&'a Proof> {
+        bindings.get(id).map(std::borrow::Borrow::borrow)
+    }
     fn value_bindings<'a>(
         identities: impl IntoIterator<Item = ValueIdentity>,
         mut values: impl FnMut(ValueIdentity) -> Option<&'a Proof>,
         unchanged: impl Fn(ValueIdentity) -> Proof,
-    ) -> BTreeMap<ValueIdentity, Proof> {
+    ) -> BTreeMap<ValueIdentity, Cow<'a, Proof>> {
         identities.into_iter().map(|id| {
-            let proof = values(id).cloned().unwrap_or_else(|| unchanged(id));
+            let proof = match values(id) { Some(proof) => Cow::Borrowed(proof), None => Cow::Owned(unchanged(id)) };
             (id, proof)
         }).collect()
     }
 
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
         let bindings = Self::value_bindings(self.scalar_identities(), |id| values.get(&id), |id| {
-            Proof::default().with_identity(id).with_view_borrow(
-                0,
-                view::Borrow::source(view::Source::Parameter(id, Vec::new())),
-            )
+            Proof::default().with_identity(id)
         });
         let views = self.views.iter().map(|borrow| borrow.substitute_values(values)).collect();
         let mut proof = self.project_call(&bindings, views, vec![None; self.addresses.len()]);
@@ -795,13 +798,13 @@ impl Proof {
     }
     fn call_identity(
         id: ValueIdentity,
-        bindings: &BTreeMap<ValueIdentity, Proof>,
+        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
     ) -> Option<ValueIdentity> {
-        bindings.get(&id)?.known_identity(0)
+        Proof::bound_input(bindings, &id)?.known_identity(0)
     }
     fn call_domain(
         value: IndexDomain,
-        bindings: &BTreeMap<ValueIdentity, Proof>,
+        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
     ) -> Option<IndexDomain> {
         Some(match value {
             IndexDomain::Fixed(n) => IndexDomain::Fixed(n),
@@ -838,12 +841,12 @@ impl Proof {
         let bits=input.known_bits(0,from)?.cast(low).cast(extended).cast(to);
         (bits.mask!=0).then_some(bits)
     }
-    fn call_fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Clause> {
+    fn call_fact(value: Fact, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Clause> {
         let projected = |facts: Facts| (!facts.is_empty()).then(|| Clause::facts(facts));
         let translated = match value {
             Fact::Boolean(id, _) | Fact::Zero(id) | Fact::NonZero(id) => {
                 let truth=match value {Fact::Boolean(_,truth)=>truth,Fact::NonZero(_)=>true,_=>false};
-                let Some(input) = bindings.get(&id) else {
+                let Some(input) = Proof::bound_input(bindings, &id) else {
                     return None;
                 };
                 if !truth && input.nonzero.first()==Some(&true) {
@@ -866,7 +869,7 @@ impl Proof {
                 else {
                     return None;
                 };
-                let (lower, upper) = (&bindings[&lower], &bindings[&upper]);
+                let (lower, upper) = (Proof::bound_input(bindings, &lower).unwrap(), Proof::bound_input(bindings, &upper).unwrap());
                 let same = lower.origins[0]
                     .iter()
                     .any(|id| upper.origins[0].contains(id));
@@ -898,18 +901,18 @@ impl Proof {
                 let Some((left,right))=Self::call_identity(a,bindings).zip(Self::call_identity(b,bindings)) else{return None;};
                 let mut facts=Facts::from([Fact::equal(left,right)]);
                 for(source,target)in [(a,right),(b,left)] {
-                    facts.extend(bindings[&source].domains(0).into_iter().map(|domain|Fact::Index(target,domain)));
+                    facts.extend(Proof::bound_input(bindings, &source).unwrap().domains(0).into_iter().map(|domain|Fact::Index(target,domain)));
                 }
                 let mut clause=Clause::facts(facts);
                 for source in [a,b] {
-                    if let Some(condition)=bindings[&source].component_condition(0){
+                    if let Some(condition)=Proof::bound_input(bindings, &source).unwrap().component_condition(0){
                         clause=Clause::both(&clause,&Clause::either(&condition.cases[0],&condition.cases[1]));
                     }
                 }
                 return Some(clause);
             },
             Fact::NotEqual(a, b) => {
-                if let Some((left, right)) = bindings.get(&a).zip(bindings.get(&b)) {
+                if let Some((left, right)) = Proof::bound_input(bindings, &a).zip(Proof::bound_input(bindings, &b)) {
                     let same = left.known_identity(0).zip(right.known_identity(0))
                         .is_some_and(|(a, b)| a == b);
                     let conditions = left.component_condition(0).and_then(Condition::boolean_constant)
@@ -929,7 +932,7 @@ impl Proof {
             },
             Fact::Index(id, IndexDomain::CommonRange(source,from,low,extended,to)) => {
                 let mut facts=Facts::new();
-                if let Some(target)=Self::call_identity(id,bindings) && let Some(input)=bindings.get(&source){
+                if let Some(target)=Self::call_identity(id,bindings) && let Some(input)=Proof::bound_input(bindings, &source){
                     let range=input.range_set(0).cast(from,low,input.nonzero.first()==Some(&true)).cast(low,extended,false).cast(extended,to,false);
                     if to==Scalar::Bool && let Some(truth)=input.component_condition(0).and_then(Condition::boolean_constant){facts.insert(Fact::Boolean(target,truth));}
                     let nonzero=if to.is_integer(){!range.contains(to.order_bias())||Self::call_common_bits(input,from,low,extended,to).is_some_and(|bits|bits.value!=0)}else{input.nonzero.first()==Some(&true)};
@@ -945,11 +948,11 @@ impl Proof {
                 .map(|(id, d)| Fact::Index(id, d)),
 
             Fact::Minimum(id, scalar, n)=>{
-                if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.0>=n{return None;}if range.1<n{return Some(Clause::impossible());}}
+                if let Some(value)=Proof::bound_input(bindings, &id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.0>=n{return None;}if range.1<n{return Some(Clause::impossible());}}
                 Self::call_identity(id,bindings).map(|id|Fact::Minimum(id, scalar, n))
             },
             Fact::Maximum(id, scalar, n)=>{
-                if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.1<=n{return None;}if range.0>n{return Some(Clause::impossible());}}
+                if let Some(value)=Proof::bound_input(bindings, &id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.1<=n{return None;}if range.0>n{return Some(Clause::impossible());}}
                 Self::call_identity(id,bindings).map(|id|Fact::Maximum(id, scalar, n))
             },
             Fact::Outside(id,d)=>Self::call_identity(id,bindings).zip(Self::call_domain(d,bindings)).map(|(id,d)|Fact::Outside(id,d)),
@@ -957,7 +960,7 @@ impl Proof {
                 let Some(mapped)=predicate.at_call(bindings)else{return None};
                 let mut facts=Facts::from([Fact::Predicate(mapped,truth)]);
                 for operand in [predicate.a,predicate.b]{
-                    if let Operand::Value(source)=operand && let Some(target)=bindings[&source].known_identity(0){facts.extend(bindings[&source].domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(target,domain)));}
+                    if let Operand::Value(source)=operand && let Some(target)=Proof::bound_input(bindings, &source).unwrap().known_identity(0){facts.extend(Proof::bound_input(bindings, &source).unwrap().domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(target,domain)));}
                 }
                 return Some(Clause::facts(facts));
             },
@@ -974,61 +977,46 @@ impl Proof {
 
     fn project_call(
         &self,
-        bindings: &BTreeMap<ValueIdentity, Proof>,
+        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
         views: Vec<view::Borrow>,
         addresses: Vec<Option<address::Identity>>,
     ) -> Self {
-        let mut translated = Self { views, addresses, ..self.numeric_facts() };
+        let mut translated = Self {
+            views, addresses,
+            origins: Vec::with_capacity(self.origins.len()),
+            domains: Vec::with_capacity(self.origins.len().max(self.domains.len())),
+            conditions: Vec::new(),
+            ranges: self.ranges.clone(),
+            nonzero: self.nonzero.clone(),
+        };
         for (i, origins) in self.origins.iter().enumerate() {
-            let values = origins
-                .iter()
-                .filter_map(|id| bindings.get(id))
-                .collect::<Vec<_>>();
-            translated.origins[i] = values
-                .iter()
-                .flat_map(|proof| proof.origins.first().into_iter().flatten().copied())
-                .collect();
-            translated
-                .ranges
-                .resize_with(translated.ranges.len().max(i + 1), ScalarRanges::default);
-            translated
-                .nonzero
-                .resize(translated.nonzero.len().max(i + 1), false);
-            translated
-                .domains
-                .resize_with(translated.domains.len().max(i + 1), Domains::new);
-            translated.domains[i] = self
-                .domains(i)
-                .into_iter()
-                .filter_map(|d| Self::call_domain(d, bindings))
-                .collect();
-            for value in values {
+            translated.origins.push(Vec::new());
+            translated.ranges.resize_with(translated.ranges.len().max(i + 1), ScalarRanges::default);
+            translated.nonzero.resize(translated.nonzero.len().max(i + 1), false);
+            translated.domains.push(self.domains.get(i).into_iter().flatten().copied()
+                .filter_map(|domain| Self::call_domain(domain, bindings)).collect());
+            for value in origins.iter().filter_map(|id| Proof::bound_input(bindings, id)) {
+                translated.origins[i].extend(value.origins.first().into_iter().flatten().copied());
                 if let Some(address)=value.addresses.first().cloned().flatten(){translated.addresses.resize_with(translated.addresses.len().max(i+1),||None);translated.addresses[i]=Some(address);}
-                let incoming = value.range_set(0);
+                let incoming = value.ranges.first().map_or(&[(0, Bits::MAX)][..], |range| range.0.as_slice());
                 translated.ranges[i] = ScalarRanges::from_sorted_intervals(
                     translated.ranges[i].0.iter().flat_map(|(a, b)| {
-                        incoming
-                            .0
-                            .iter()
-                            .map(move |(c, d)| ((*a).max(*c), (*b).min(*d)))
+                        incoming.iter().map(move |(c, d)| ((*a).max(*c), (*b).min(*d)))
                     }).filter(|(lower, upper)| lower <= upper),
                 );
                 translated.nonzero[i] |= value.nonzero.first() == Some(&true);
-                translated.domains[i].extend(value.domains(0));
+                translated.domains[i].extend(value.domains.first().into_iter().flatten().copied());
             }
         }
-        // Domains may exist without a captured origin (for example a proven index).
-        for i in self.origins.len()..translated.domains.len() {
-            translated.domains[i] = self
-                .domains(i)
-                .into_iter()
-                .filter_map(|d| Self::call_domain(d, bindings))
-                .collect();
+        // A proven domain can exist without a captured origin.
+        for domains in self.domains.iter().skip(self.origins.len()) {
+            translated.domains.push(domains.iter().copied()
+                .filter_map(|domain| Self::call_domain(domain, bindings)).collect());
         }
         for (component, domains) in self.domains.iter().enumerate() {
             for domain in domains {
                 if let IndexDomain::CommonRange(source,from,low,extended,to) = domain {
-                    if let Some(incoming) = bindings.get(source) {
+                    if let Some(incoming) = Proof::bound_input(bindings, source) {
                         let range=incoming.range_set(0).cast(*from,*low,incoming.nonzero.first()==Some(&true)).cast(*low,*extended,false).cast(*extended,*to,false);
                         if let Some(bits)=Self::call_common_bits(incoming,*from,*low,*extended,*to){translated.mark_domain(component,bits.domain());}
                         translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
@@ -1037,7 +1025,7 @@ impl Proof {
                         translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
                         translated.nonzero[component] |= if to.is_integer(){!range.contains(to.order_bias())}else{incoming.nonzero.first()==Some(&true)};
                         translated.domains.resize_with(translated.domains.len().max(component + 1), Domains::new);
-                        translated.domains[component].extend(incoming.domains(0).into_iter().filter_map(|domain|cast_domain(domain,*from,*low).and_then(|domain|cast_domain(domain,*low,*extended)).and_then(|domain|cast_domain(domain,*extended,*to))));
+                        translated.domains[component].extend(incoming.domains.first().into_iter().flatten().copied().filter_map(|domain|cast_domain(domain,*from,*low).and_then(|domain|cast_domain(domain,*low,*extended)).and_then(|domain|cast_domain(domain,*extended,*to))));
                         translated.domains[component].extend(incoming.origins.first().into_iter().flatten()
                             .filter(|id|!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_)))
                             .map(|id|IndexDomain::CommonRange(*id,*from,*low,*extended,*to)));
@@ -1059,20 +1047,18 @@ impl Proof {
                 }
             }
         }
-        let roots: Vec<_> = self
-            .conditions
-            .iter()
-            .flatten()
-            .flat_map(|condition| condition.cases.iter().cloned())
-            .collect();
-        if !roots.is_empty() {
-            let projected=Clause::at_calls(&roots, &Clause::ordered(&roots), bindings, |_| false);
-            for(slot,value)in translated.conditions.iter_mut().flatten().flat_map(|condition|condition.cases.iter_mut()).zip(projected){*slot=value;}
-        }
+        let roots: Vec<_> = self.conditions.iter().flatten()
+            .flat_map(|condition| condition.cases.iter()).collect();
+        let mut projected = if roots.is_empty() { Vec::new() } else {
+            Clause::at_calls(&roots, &Clause::ordered(roots.iter().copied()), bindings, |_| false)
+        }.into_iter();
+        translated.conditions = self.conditions.iter().map(|condition| condition.as_ref().map(|_| {
+            Box::new(Condition { cases: [projected.next().unwrap(), projected.next().unwrap()] })
+        })).collect();
         // 输出仍是入口快照时，继续交接调用者已经持有的分量条件。
         // 实参图属于调用者命名空间，不能再次按被调函数的身份替换。
         for (i, origins) in self.origins.iter().enumerate() {
-            for incoming in origins.iter().filter_map(|id| bindings.get(id)) {
+            for incoming in origins.iter().filter_map(|id| Proof::bound_input(bindings, id)) {
                 if let Some(condition) = incoming.component_condition(0) {
                     translated
                         .conditions
@@ -2016,9 +2002,9 @@ impl Drop for Clause {
 }
 impl Clause {
     fn at_calls(
-        roots: &[Self],
+        roots: &[&Self],
         ordered: &[&Self],
-        bindings: &BTreeMap<ValueIdentity, Proof>,
+        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
         numeric_context: impl FnOnce(&[&Self]) -> bool,
     ) -> Vec<Self> {
         let mut clauses = BTreeMap::new();
@@ -2045,7 +2031,7 @@ impl Clause {
         if private_numeric || numeric_context(ordered) {
             let mut roots=roots.to_vec();
             // Consume the original numeric condition before private snapshots leave scope.
-            roots.sort_by_key(Clause::key);
+            roots.sort_by_key(|root| root.key());
             roots.dedup_by_key(|root| root.key());
             for root in &roots {
                 let numeric = match root.required() {
@@ -2061,7 +2047,7 @@ impl Clause {
         }
         roots.iter().map(|root|clauses[&root.key()].clone()).collect()
     }
-    fn private_numeric(fact: &Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> bool {
+    fn private_numeric(fact: &Fact, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> bool {
         match fact {
             Fact::Below(a, b, _, _) => Proof::call_identity(*a, bindings)
                 .zip(Proof::call_identity(*b, bindings)).is_none(),
@@ -2071,7 +2057,7 @@ impl Clause {
         }
     }
 
-    fn has_private_numeric(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> bool {
+    fn has_private_numeric(&self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> bool {
         Self::ordered([self]).into_iter().any(|clause| {
             matches!(&**clause.0, ClauseNode::Facts(facts)
                 if facts.iter().any(|fact| Self::private_numeric(fact, bindings)))
@@ -2082,8 +2068,8 @@ impl Clause {
         self.project_guard_in(&Self::ordered([self]), bindings)
     }
 
-    fn project_guard_in(&self, ordered: &[&Self], bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        Self::at_calls(std::slice::from_ref(self), ordered, bindings, |ordered| {
+    fn project_guard_in(&self, ordered: &[&Self], bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Self {
+        Self::at_calls(&[self], ordered, bindings, |ordered| {
             // A reversed Below uses the same identities. Only a negated computed
             // exclusion can introduce a numeric trigger absent from the original path.
             ordered.iter().any(|clause| {
@@ -2095,7 +2081,7 @@ impl Clause {
         }).pop().unwrap()
     }
 
-    fn call_facts(facts: impl IntoIterator<Item = Fact>, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
+    fn call_facts(facts: impl IntoIterator<Item = Fact>, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Self {
         let mut facts = facts.into_iter().filter_map(|fact| Proof::call_fact(fact, bindings));
         let mut projected = Facts::new();
         for clause in facts.by_ref() {
@@ -2103,8 +2089,12 @@ impl Clause {
                 ClauseNode::Impossible => return clause,
                 ClauseNode::Facts(value) => projected.extend(value.iter().copied()),
                 _ => {
-                    let initial = Self::both(&Self::facts(projected), &clause);
-                    return facts.fold(initial, |all, clause| Self::both(&all, &clause));
+                    let mut result = Self::both(&Self::facts(projected), &clause);
+                    while !matches!(&**result.0, ClauseNode::Impossible) {
+                        let Some(clause) = facts.next() else { break; };
+                        result = Self::both(&result, &clause);
+                    }
+                    return result;
                 }
             }
         }
@@ -2499,7 +2489,7 @@ impl Condition {
     fn identities(&self,identity:&impl Fn(ValueIdentity)->ValueIdentity) {
         Clause::visit_identities(&Clause::ordered(&self.cases), identity);
     }
-    pub(super) fn value_bindings<'a>(&self, values: impl FnMut(ValueIdentity) -> Option<&'a Proof>) -> BTreeMap<ValueIdentity, Proof> {
+    pub(super) fn value_bindings<'a>(&self, values: impl FnMut(ValueIdentity) -> Option<&'a Proof>) -> BTreeMap<ValueIdentity, Cow<'a, Proof>> {
         let identities = std::cell::RefCell::new(BTreeSet::new());
         self.identities(&|id| {
             identities.borrow_mut().insert(id);
@@ -2524,7 +2514,7 @@ impl Condition {
     pub(super) fn projected_case(&self, truth: bool, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
         let index = usize::from(truth);
         Clause::at_calls(
-            std::slice::from_ref(&self.cases[index]),
+            &[&self.cases[index]],
             &Clause::ordered([&self.cases[index]]),
             bindings,
             |_| self.cases[1 - index].has_private_numeric(bindings),
@@ -2553,9 +2543,9 @@ impl Condition {
     pub(super) fn paths(yes:Clause,no:Clause)->Self{Self{cases:[no,yes]}}
     pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&**case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
-    pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self{
-        let cases=Clause::at_calls(&self.cases, &Clause::ordered(&self.cases), bindings, |_| false);
-        Self{cases:std::array::from_fn(|i|cases[i].clone())}
+    pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,impl std::borrow::Borrow<Proof>>)->Self{
+        let mut cases=Clause::at_calls(&self.cases.each_ref(), &Clause::ordered(&self.cases), bindings, |_| false).into_iter();
+        Self{cases:[cases.next().unwrap(),cases.next().unwrap()]}
     }
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
         let cases=Clause::output_bounds(&self.cases,bindings);
