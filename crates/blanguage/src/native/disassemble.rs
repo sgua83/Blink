@@ -1,6 +1,6 @@
 //! A read-only view of an explicitly selected x64 instruction byte range.
 use iced_x86::{ConstantOffsets, Decoder, DecoderOptions, Instruction, InstructionInfoFactory, OpKind, Register, RflagsBits};
-use std::{fmt::{self, Display, Write}, error::Error};
+use std::{fmt::{self, Display}, error::Error};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodeError {
@@ -21,9 +21,9 @@ pub(super) fn text(value: &str) -> String {
 fn name(value: &impl fmt::Debug) -> String { text(&format!("{value:?}")) }
 pub(super) fn bits(value: u64) -> String { text(&format!("0x{value:016x}")) }
 pub(super) fn bytes(value: &[u8]) -> String {
-    let mut out = String::from("\"");
-    for value in value { write!(&mut out, "{value:02x}").unwrap(); }
-    out.push('"'); out
+    let mut out = String::new();
+    crate::json::bytes(&mut out, value);
+    out
 }
 pub(super) fn array(values: impl IntoIterator<Item = String>) -> String {
     format!("[{}]", values.into_iter().collect::<Vec<_>>().join(","))

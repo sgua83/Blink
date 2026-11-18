@@ -1,7 +1,6 @@
 //! Borrowed physical COFF facts, using the existing B structural reader.
 use super::*;
 use crate::build::hash;
-use std::fmt::Write;
 
 #[derive(Clone, Copy, Debug)]
 pub enum CodeSelection<'a> {
@@ -53,9 +52,9 @@ fn text(value: &str) -> String {
     let mut out = String::new(); crate::json::string(&mut out, value); out
 }
 fn hex(value: &[u8]) -> String {
-    let mut out = String::from("\"");
-    for byte in value { write!(&mut out, "{byte:02x}").unwrap(); }
-    out.push('"'); out
+    let mut out = String::new();
+    crate::json::bytes(&mut out, value);
+    out
 }
 fn array(values: impl IntoIterator<Item = String>) -> String {
     format!("[{}]", values.into_iter().collect::<Vec<_>>().join(","))
