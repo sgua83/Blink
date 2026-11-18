@@ -86,8 +86,6 @@ unsafe extern "C" {
 "#);
     if root {
         functions.push_str(r#"
-extern crate blcompute as _;
-
 unsafe extern "C" {
     static __blink_module_count: usize;
     static __blink_module_factories: u8;

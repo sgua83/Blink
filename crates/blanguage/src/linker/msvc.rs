@@ -214,7 +214,7 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
 }
 fn link_process(
     linker: &Path, output: &Path, inputs: &[PathBuf], search_paths: &[PathBuf],
-    archives: &[Archive], stack_reserve: u64, import_library: bool,
+    archives: &[Archive], sdk: Option<&Path>, stack_reserve: u64, import_library: bool,
 ) -> Result<(ExitStatus, FileBytes, FileBytes)> {
     let executable = host_path(linker)?;
     let mut text = Vec::new();
@@ -231,7 +231,13 @@ fn link_process(
         .collect::<io::Result<_>>()?;
     let libraries: Vec<_> = archives.iter().flat_map(|archive| &archive.libraries)
         .collect::<std::collections::BTreeSet<_>>().into_iter()
-        .map(|name| append_wide(&mut text, OsStr::new(name))).collect::<io::Result<_>>()?;
+        .map(|name| {
+            if let Some(sdk) = sdk.filter(|_| name.starts_with(crate::object::SDK_RUNTIME)) {
+                append_wide(&mut text, sdk.join(name).as_os_str())
+            } else {
+                append_wide(&mut text, OsStr::new(name))
+            }
+        }).collect::<io::Result<_>>()?;
     let exports: Vec<_> = archives.iter().flat_map(|archive| &archive.exports)
         .collect::<std::collections::BTreeSet<_>>().into_iter()
         .map(|name| append_wide(&mut text, OsStr::new(name))).collect::<io::Result<_>>()?;
@@ -262,6 +268,15 @@ fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io:
 pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {
     let binding = super::resources::resources(&archives.iter().collect::<Vec<_>>(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
     let (linker, libraries) = tools()?;
+    let sdk = if archives.iter().flat_map(|archive| &archive.libraries)
+        .any(|name| name.starts_with(crate::object::SDK_RUNTIME))
+    {
+        let root = crate::object::installed_sdk_root()?;
+        let lease = crate::object::hold_sdk(&root)?;
+        Some((root, lease))
+    } else {
+        None
+    };
     let id = format!(
         "{}-{}",
         std::process::id(),
@@ -303,7 +318,8 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
             _ => 0,
         };
         let (status, stdout, stderr) = link_process(
-            &linker, path, &temporary, &libraries, archives, stack_reserve, import_library)?;
+            &linker, path, &temporary, &libraries, archives,
+            sdk.as_ref().map(|(root, _)| root.as_path()), stack_reserve, import_library)?;
         if status.success() {
             return Ok(());
         }

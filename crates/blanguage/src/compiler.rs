@@ -190,11 +190,7 @@ impl Compiler {
     fn hold_sdk_input(&self) -> io::Result<()> {
         let mut input = self.resources.sdk_input.lock().unwrap();
         if input.is_none() {
-            let mut options = std::fs::OpenOptions::new();
-            options.read(true);
-            #[cfg(windows)]
-            { use std::os::windows::fs::OpenOptionsExt; options.share_mode(1); }
-            *input = Some(options.open(crate::object::sdk_root()?.join("VERSION"))?);
+            *input = Some(crate::object::hold_sdk(&crate::object::sdk_root()?)?);
         }
         Ok(())
     }

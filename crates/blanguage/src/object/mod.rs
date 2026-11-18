@@ -10,6 +10,8 @@ pub(crate) mod stack;
 pub(crate) use coff::Reader as ObjectReader;
 mod emit;
 pub(crate) use archive::{compile as compile_archive, inputs as native_inputs};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub(crate) use archive::{SDK_RUNTIME, hold_sdk, installed_sdk_root};
 #[cfg(feature = "installed")]
 pub(crate) use archive::sdk_root;
 pub(crate) use emit::{application as application_code, module as module_code};

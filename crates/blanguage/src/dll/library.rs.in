@@ -2,8 +2,6 @@
 use core::ffi::{c_char, c_void};
 
 // The source-SDK static archive currently supplies the shared native runtime.
-extern crate blcompute as _;
-
 @TYPES@
 @IMAGE_ABI@
 @BUFFER_ABI@

@@ -2,10 +2,28 @@
 use super::{Archive, Result};
 use std::{ffi::OsString, path::{Path, PathBuf}, sync::atomic::{AtomicU64, Ordering}};
 
+pub(crate) fn installed_sdk_root() -> std::io::Result<PathBuf> {
+    let program_files = std::env::var_os("ProgramFiles").ok_or_else(||
+        std::io::Error::new(std::io::ErrorKind::NotFound, "缺少Windows ProgramFiles安装根"))?;
+    Ok(PathBuf::from(program_files).join("Blink"))
+}
+
+pub(crate) fn hold_sdk(root: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(1);
+    }
+    options.open(root.join("VERSION"))
+}
+
+pub(crate) const SDK_RUNTIME: &str = "crates/blcompute/native/";
+
 pub(crate) fn sdk_root() -> std::io::Result<PathBuf> {
     #[cfg(feature = "installed")]
-    { Ok(PathBuf::from(std::env::var_os("ProgramFiles").ok_or_else(||
-        std::io::Error::new(std::io::ErrorKind::NotFound, "缺少Windows ProgramFiles安装根"))?).join("Blink")) }
+    { installed_sdk_root() }
     #[cfg(not(feature = "installed"))]
     { Ok(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().into()) }
 }
@@ -40,18 +58,17 @@ pub(crate) fn compile(
     std::fs::create_dir(&build)?;
     let result = (|| {
         std::fs::create_dir(build.join("src"))?;
-        let wrapper = dependencies.is_empty().then(|| build.join("resource.obj"));
+        let wrapper = (dependencies.is_empty() || cfg!(feature = "installed"))
+            .then(|| build.join("resource.obj"));
         let crate_type = if wrapper.is_some() { "rlib" } else { "staticlib" };
         let mut manifest = format!(
             "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[{crate_type:?}]\n[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
         );
         manifest.push_str("[dependencies]\n");
-        for name in dependencies {
+        for name in dependencies.iter().filter(|_| wrapper.is_none()) {
             let package = sdk.join("crates").join(name);
             let path = package.to_str().ok_or("SDK依赖路径不能编码为UTF-8 TOML")?;
             manifest.push_str(&format!("{name}={{path={path:?},default-features=false"));
-            #[cfg(feature = "installed")]
-            if *name == "blanguage" { manifest.push_str(",features=[\"installed\"]"); }
             manifest.push_str("}\n");
         }
         std::fs::write(build.join("Cargo.toml"), manifest)?;
@@ -62,6 +79,9 @@ pub(crate) fn compile(
                 file.write_all(b"#![no_std]\n")?;
             }
             file.write_all(source.as_bytes())?;
+            if wrapper.is_none() {
+                file.write_all(b"\nextern crate blcompute as _;\n")?;
+            }
         }
         let target = sdk_target.join("dll");
         let mut arguments: Vec<OsString> = [
@@ -97,9 +117,15 @@ pub(crate) fn compile(
                 })?;
                 let member = super::static_library::Member::new("resource.obj".into(), bytes);
                 let bytes = super::static_library::encode(&[member], &symbols)?;
+                let libraries = if cfg!(feature = "installed") && !dependencies.is_empty() {
+                    std::fs::read_to_string(sdk.join(SDK_RUNTIME).join("native-static-libs.txt"))?
+                        .split_whitespace().map(str::to_owned).collect()
+                } else {
+                    Vec::new()
+                };
                 return Ok(Archive {
                     bytes: super::ObjectBytes::generated(bytes),
-                    libraries: Vec::new(),
+                    libraries,
                     exports,
                     resources: None,
                 });
@@ -211,7 +237,11 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
     let rustup = std::env::var_os("RUSTUP_HOME").map(std::path::PathBuf::from)
         .or_else(|| home.map(|home| home.join(".rustup")));
     if let Some(rustup) = rustup { optional(&mut digest, &sdk.join(rustup).join("settings.toml"))?; }
-    if runtime {
+    if runtime && cfg!(feature = "installed") {
+        let link_inputs = sdk.join(SDK_RUNTIME).join("native-static-libs.txt");
+        digest.field(b"installed-native-library");
+        digest.field(&FileBytes::read_path(&link_inputs)?);
+    } else if runtime {
         let mut files = vec![sdk.join("Cargo.toml")];
         let compiler_sources = sdk.join("crates/blanguage/src/bootstrap");
         optional(&mut digest, &sdk.join("crates/blanguage/build-sdk.rs"))?;
