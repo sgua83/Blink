@@ -142,13 +142,13 @@ impl Scalar {
         ((bits << shift) as i64) >> shift
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Variant {
     pub name: String,
     pub discriminant: u32,
     pub ty: Box<Ty>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CFunctionType {
     pub result: crate::ast::TypeName,
     pub parameters: Vec<(crate::ast::Access, crate::ast::TypeName)>,
@@ -197,7 +197,7 @@ unsafe extern "C" {
     fn tagged_variant_layout(payload_size: u32, payload_alignment: u32) -> VariantLayout;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Ty {
     pub name: String,
     pub arguments: Vec<Ty>,
