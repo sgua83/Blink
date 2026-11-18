@@ -535,9 +535,9 @@ impl Borrow{
             source=>Self::source(source),
         })
     }
-    pub fn aliases(&self)->Vec<MemoryAlias> {
-        self.sources.entries().flat_map(|(source,when)|match source {
-            Source::Position(origin)=>origin.aliases_when(|_|true,||when.possible()), _=>Vec::new(),
+    pub(super) fn aliases(&self, needed: &impl Fn(&MemoryAlias) -> bool) -> Vec<MemoryAlias> {
+        self.sources.0.iter().flat_map(|(source,when)|match source {
+            Source::Position(origin)=>origin.aliases_when(needed,||when.possible()), _=>Vec::new(),
         }).collect::<BTreeSet<_>>().into_iter().collect()
     }
     pub fn at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {

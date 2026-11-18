@@ -192,10 +192,10 @@ impl Origin {
         matches!(&self.root, Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} if borrow.pending())
     }
     pub fn aliases(&self) -> Vec<MemoryAlias> {
-        self.aliases_when(|_| true, || true)
+        self.aliases_when(&|_| true, || true)
     }
     pub(super) fn aliases_when(
-        &self, needed: impl Fn(&MemoryAlias) -> bool, possible: impl FnOnce() -> bool,
+        &self, needed: &impl Fn(&MemoryAlias) -> bool, possible: impl FnOnce() -> bool,
     ) -> Vec<MemoryAlias> {
         match &self.root {
             Root::Local { base, len } => {
@@ -207,8 +207,7 @@ impl Origin {
                 if needed(&alias) && possible() { vec![alias] } else { Vec::new() }
             },
             Root::Derived(borrow)|Root::Dataset{borrow,..}|Root::External(Identity::Storage(borrow)) => {
-                let mut aliases = borrow.aliases();
-                aliases.retain(needed);
+                let aliases = borrow.aliases(needed);
                 if aliases.is_empty() || possible() { aliases } else { Vec::new() }
             },
             _ => Vec::new(),
@@ -446,7 +445,10 @@ impl MemoryEffect {
         match position{
             Position::Initialized=>0,
             Position::Local(_)=>known(),
-            Position::Element(binding,_)=>if origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Data(actual)if actual==binding)){all}else{0},
+            Position::Element(binding, _) => {
+                let aliases = origin.aliases_when(&|alias| matches!(alias, MemoryAlias::Data(actual) if actual == binding), || true);
+                if aliases.is_empty() { 0 } else { all }
+            },
             Position::Borrowed(borrow,_,_) if matches!(&origin.root,
                 Root::Resource{borrow:source,..}|Root::Dataset{borrow:source,..}if same_loop_resource(source,borrow))
                 ||!borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>known(),
@@ -546,7 +548,7 @@ impl MemoryAccesses {
     }
     pub(super) fn record(&mut self, effect: &MemoryEffect) {
         for (origin, _, access, _) in &effect.known {
-            let aliases = origin.aliases_when(|alias| !self.contains(*alias, *access), || true);
+            let aliases = origin.aliases_when(&|alias| !self.contains(*alias, *access), || true);
             self.known.extend(aliases.into_iter().map(|alias| MemoryAccess { alias, access: *access }));
         }
         self.external = merged_external_access(self.external, effect.external);
@@ -573,7 +575,7 @@ impl MemoryAccesses {
             }
             if let Some(origin) = origin {
                 let access = if origin.writable { access } else { Access::Read };
-                let aliases = origin.aliases_when(|alias| !self.contains(*alias, access), || when.is_some());
+                let aliases = origin.aliases_when(&|alias| !self.contains(*alias, access), || when.is_some());
                 self.known.extend(aliases.into_iter()
                     .map(|alias| MemoryAccess { alias, access }));
             }
@@ -958,7 +960,7 @@ impl ReferenceAddress {
     pub(super) fn source_at(&self,word:u32,index:Reg)->(IndexedSource,u32) {
         let (address,word)=self.component(word);
         let source=match self {
-            Self::Borrowed{borrow,..}=>IndexedSource::Pointer{address,index,stride:0,aliases:borrow.aliases()},
+            Self::Borrowed{borrow,..}=>IndexedSource::Pointer{address,index,stride:0,aliases:borrow.aliases(&|_|true)},
             Self::External{..}=>IndexedSource::Pointer{address,index,stride:0,aliases:Vec::new()},
             _=>IndexedSource::View{address,index,stride:ElementStride::Constant(0)},
         };
