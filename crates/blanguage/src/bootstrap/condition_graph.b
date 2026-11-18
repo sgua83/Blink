@@ -1656,3 +1656,53 @@ extern "C" void execution_condition(address root,address context,ExecutionHost h
   }
  }
 }
+
+extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost host) on cpu
+ requires nonzero(host.origin) requires nonzero(host.range) requires nonzero(host.rewind) requires nonzero(host.next)
+ requires nonzero(host.boolean_cases) requires nonzero(host.emit) requires nonzero(host.compare) {
+ if(input.scalar.kind==2||(input.scalar.kind==3&&input.numeric_only!=0)){return;}
+ usize extra=input.mode==2||(input.mode==1&&input.origins==0u64) ? 1u64 : 0u64;
+ if(input.origins+extra==0u64){return;}
+ u64 lower=1u64;u64 upper=0u64;u32 have=0;u32 contains_zero=0;u32 nonzero=input.nonzero;u32 impossible=0;
+ if(input.scalar.kind==3){impossible=host.boolean_cases(context);
+ }else{
+  usize index=0u64;
+  while(index<input.ranges){IndexBounds interval=host.range(context,index);index+=1u64;
+   u64 lo=interval.lower;u64 hi=min(interval.upper,input.scalar.mask);if(lo>hi){continue;}
+   if(input.mode==1&&input.constant!=0){u64 value=input.bits^input.scalar.bias;lo=max(lo,value);hi=min(hi,value);if(lo>hi){continue;}}
+   if(input.mode==1&&input.nonzero!=0){
+    if(lo==input.scalar.bias){if(lo==hi){continue;}lo+=1u64;}
+    if(hi==input.scalar.bias){hi-=1u64;}
+   }
+   if(have==0){lower=lo;have=1;}upper=hi;
+   if(lo<=input.scalar.bias&&input.scalar.bias<=hi){contains_zero=1;}
+  }
+  if(input.mode==1){nonzero=nonzero!=0||contains_zero==0||(input.constant!=0&&input.bits!=0u64) ? 1 : 0;}
+ }
+ address previous=address();usize at=0u64;
+ while(at<input.origins+extra){
+  address identity=extra!=0u64&&at==0u64 ? input.primary : host.origin(context,at-extra);at+=1u64;
+  if(input.mode==2&&at>1u64&&host.compare(identity,input.primary)==i32(0)){continue;}
+  if(input.numeric_only==0&&address_bits(previous)!=0u64){
+   FactView fact=internal_key(FactKind::Equal,previous,address(),0u64);fact.second=identity;host.emit(context,fact_equal(fact,host.compare(previous,identity)));
+  }previous=identity;
+  if(input.scalar.kind==3){
+   u32 truth=0;while(truth<2){if((impossible&(1<<(1-truth)))!=0){FactView fact=internal_key(FactKind::Boolean,identity,address(),0u64);fact.flag=truth;host.emit(context,fact);}truth+=1;}
+   continue;
+  }
+  if(nonzero!=0){host.emit(context,internal_key(FactKind::NonZero,identity,address(),0u64));}
+  if(lower==input.scalar.bias&&upper==input.scalar.bias){host.emit(context,internal_key(FactKind::Zero,identity,address(),0u64));}
+  if(lower!=0u64){host.emit(context,internal_key(FactKind::Minimum,identity,input.scalar_ref,lower));}
+  if(upper!=input.scalar.mask){host.emit(context,internal_key(FactKind::Maximum,identity,input.scalar_ref,upper));}
+  if(input.scalar.kind==0){host.rewind(context);
+   while(true){ProofFactDomain domain=host.next(context);IndexFields fields=domain.fields;if(fields.present==0){break;}
+    if(upper==0u64&&fields.kind==9&&fields.distance==0u64){continue;}
+    if(input.numeric_only!=0&&domain.known_bits==0){continue;}
+    FactView fact=internal_key(FactKind::Index,identity,address(),0u64);fact.payload=fields.original;host.emit(context,fact);
+    if(input.numeric_only==0&&(fields.kind==12||fields.kind==13||fields.kind==9)){
+     FactView below=internal_key(FactKind::Below,fields.kind==9 ? identity : fields.first,input.scalar_ref,0u64);below.second=fields.kind==9 ? fields.first : identity;below.flag=fields.distance!=0u64 ? 1 : 0;host.emit(context,below);
+    }
+   }
+  }
+ }
+}

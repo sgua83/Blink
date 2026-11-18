@@ -16,6 +16,7 @@ mod value_conditions;
 mod index_conditions;
 mod numeric_bounds;
 mod execution_conditions;
+mod proof_facts;
 use super::*;
 mod floating;
 mod bitwise;
@@ -685,7 +686,8 @@ impl Proof {
         let mut outputs=self.output_bound(bindings);
         outputs.origins.resize_with(registers.len(),Vec::new);
         for(origins,reg)in outputs.origins.iter_mut().zip(registers){let id=ValueIdentity::Register(*reg);if !origins.contains(&id){origins.push(id);}}
-        let values=registers.iter().enumerate().flat_map(|(component,reg)|outputs.project(&[component],registers.len()).facts(&Ty::scalar(types[*reg]))).collect();
+        let mut values=Facts::new();
+        for (component,reg) in registers.iter().enumerate(){proof_facts::append_component(&mut values,&outputs,component,types[*reg]);}
         let mut aliases=Clause::both(&Clause::facts(values),&Clause::facts(
             self.origins
                 .iter()
@@ -1525,63 +1527,7 @@ impl Proof {
             (*scalar == Scalar::Bool || scalar.is_integer()).then_some(component)
         })
     }
-    fn facts(&self, ty: &Ty) -> Facts {
-        let mut facts = Facts::new();
-        for component in Self::fact_components(ty) {
-            let scalar = &ty.components[component].0;
-            let Some(origins) = self.origins.get(component) else {
-                continue;
-            };
-            for pair in origins.windows(2) {
-                facts.insert(Fact::equal(pair[0], pair[1]));
-            }
-            for &identity in origins {
-                // 环境快照只交付已有事实；完整条件在实际分支消费处求解。
-                // 不为每个布尔值及其别名重新求解已经持有的整张条件图。
-                if *scalar == Scalar::Bool
-                    && let Some(condition) = self.component_condition(component)
-                {
-                    for truth in [false, true] {
-                        if matches!(&**condition.cases[usize::from(!truth)].0, ClauseNode::Impossible) {
-                            facts.insert(Fact::Boolean(identity, truth));
-                        }
-                    }
-                }
-                if scalar.is_integer()
-                    && self.nonzero.get(component) == Some(&true)
-                {
-                    facts.insert(Fact::NonZero(identity));
-                }
-                if scalar.is_integer() {
-                    let (minimum, maximum) = self.range_set(component).restrict(0, scalar.bit_mask()).hull();
-                    let zero=scalar.order_bias();
-                    if minimum==zero && maximum==zero{facts.insert(Fact::Zero(identity));}
-                    if minimum != 0 {
-                        facts.insert(Fact::Minimum(identity, *scalar, minimum));
-                    }
-                    if maximum != scalar.bit_mask() {
-                        facts.insert(Fact::Maximum(identity, *scalar, maximum));
-                    }
-                    if !scalar.is_signed() {
-                        for domain in self.domains(component) {
-                            if maximum == 0 && matches!(domain, IndexDomain::Upper(_, 0)) { continue; }
-                            facts.insert(Fact::Index(identity, domain));
-                            match domain {
-                                IndexDomain::Lower(base, amount) | IndexDomain::Offset(base, amount) => {
-                                    facts.insert(Fact::Below(base, identity, amount != 0, *scalar));
-                                }
-                                IndexDomain::Upper(limit, distance) => {
-                                    facts.insert(Fact::Below(identity, limit, distance != 0, *scalar));
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        facts
-    }
+    fn facts(&self,ty:&Ty)->Facts {proof_facts::collect(self,ty)}
     pub(super) fn returning(
         value: &Value,
         environment: &BTreeMap<String, Binding>,
@@ -1720,27 +1666,20 @@ impl Proof {
         }
     }
 }
-fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
-    environment
-        .values()
-        .flat_map(|binding| match binding {
-            Binding::ApplicationData(data) => data.length.proof.facts(&data.length.ty),
-            Binding::Value(value) if Proof::fact_components(&value.ty).next().is_some() => Proof::capture(value).facts(&value.ty),
-            Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => owner.proof.facts(owner.place.ty()),
-            Binding::OwnedValue(owner) => owner.value.proof.facts(&owner.value.ty),
-            Binding::Data(view) => view
-                .length
-                .clone()
-                .with_identity(ValueIdentity::DataLength(view.binding))
-                .facts(&Ty::scalar(Scalar::U32)),
-            Binding::Tile(view) => view
-                .length
-                .clone()
-                .with_identity(ValueIdentity::TileLength)
-                .facts(&Ty::scalar(Scalar::U32)),
-            _ => Facts::new(),
-        })
-        .collect()
+fn environment_facts(environment:&BTreeMap<String,Binding>)->Facts {
+    let mut facts=Facts::new();
+    for binding in environment.values(){
+        match binding {
+            Binding::ApplicationData(data)=>proof_facts::append_proof(&mut facts,&data.length.proof,&data.length.ty),
+            Binding::Value(value)=>proof_facts::append_value(&mut facts,value,false),
+            Binding::Owned(owner)|Binding::ViewElement{element:owner,..}=>proof_facts::append_proof(&mut facts,&owner.proof,owner.place.ty()),
+            Binding::OwnedValue(owner)=>proof_facts::append_proof(&mut facts,&owner.value.proof,&owner.value.ty),
+            Binding::Data(view)=>proof_facts::append_identity(&mut facts,&view.length,Scalar::U32,ValueIdentity::DataLength(view.binding)),
+            Binding::Tile(view)=>proof_facts::append_identity(&mut facts,&view.length,Scalar::U32,ValueIdentity::TileLength),
+            _=>{},
+        }
+    }
+    facts
 }
 impl Fact {
     fn map(self,identity:&impl Fn(ValueIdentity)->ValueIdentity)->Self {
@@ -2136,7 +2075,9 @@ impl Clause {
         Self::facts(projected)
     }
     pub(super) fn values<'a>(values:impl IntoIterator<Item=(Scalar,ValueIdentity,&'a Proof)>)->Self {
-        Self::facts(values.into_iter().flat_map(|(scalar,id,proof)|proof.clone().with_identity(id).facts(&Ty::scalar(scalar))).collect())
+        let mut facts=Facts::new();
+        for (scalar,id,proof) in values{proof_facts::append_identity(&mut facts,proof,scalar,id);}
+        Self::facts(facts)
     }
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
         // A synthesized complement uses only identities already in this path.
@@ -2988,8 +2929,7 @@ impl Builder<'_> {
             result.proof.mark_domain(component, domain);
             Fact::Index(result.component_identity(component), domain)
         }).collect();
-        facts.extend(Proof::capture(result).facts(&result.ty).into_iter().filter(|fact|
-            matches!(fact, Fact::Minimum(..) | Fact::Maximum(..) | Fact::Zero(_) | Fact::NonZero(_) | Fact::Index(_,IndexDomain::KnownBits(..)))));
+        proof_facts::append_value(&mut facts,result,true);
         self.path = Clause::observed(&self.path,facts);
     }
     fn integer_below(&self, left: ValueIdentity, right: ValueIdentity, scalar: Scalar) -> bool {
@@ -3025,7 +2965,7 @@ impl Builder<'_> {
             .below_in(left, right, scalar, source, range, &order) == Some(true))
     }
     pub(super) fn observe_bounds(&mut self, value: &Value) {
-        self.path = Clause::observed(&self.path,Proof::capture(value).facts(&value.ty));
+        self.path = Clause::observed(&self.path,proof_facts::value(value));
     }
     fn selected_proof(
         path: &Clause,
@@ -3288,7 +3228,8 @@ impl Builder<'_> {
         let id=value.identity();
         let mut outside=Clause::facts([Fact::Outside(id,domain),Fact::Minimum(id,Scalar::U32,Bits::from(limit))].into());
         for(proof,component)in lengths {
-            known=Clause::both(&known,&Clause::facts(proof.project(&[component],proof.width()).facts(&Ty::scalar(Scalar::U32))));
+            let mut facts=Facts::new();proof_facts::append_component(&mut facts,proof,component,Scalar::U32);
+            known=Clause::both(&known,&Clause::facts(facts));
             for target in proof.origins.get(component).into_iter().flatten(){
                 outside=Clause::both(&outside,&Clause::facts([Fact::Below(*target,id,false,Scalar::U32)].into()));
             }

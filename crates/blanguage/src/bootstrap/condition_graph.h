@@ -786,3 +786,20 @@ struct ExecutionHost {
 extern "C" void execution_condition(address root,address context,ExecutionHost host) on cpu
  requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop)
  requires nonzero(host.has_result) requires nonzero(host.impossible) requires nonzero(host.guard) requires nonzero(host.compose);
+
+struct ProofFactsInput {
+ InternalScalar scalar;address scalar_ref;address primary;usize origins;usize ranges;
+ u32 mode;u32 nonzero;u32 constant;u64 bits;u32 numeric_only;
+};
+struct ProofFactDomain {IndexFields fields;u32 known_bits;};
+struct ProofFactsHost {
+ cfn<address,address,usize> ensures memory(read) origin;
+ cfn<IndexBounds,address,usize> ensures memory(read) range;
+ cfn<void,address> rewind;cfn<ProofFactDomain,address> next;
+ cfn<u32,address> boolean_cases;
+ cfn<void,address,FactView> emit;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost host) on cpu
+ requires nonzero(host.origin) requires nonzero(host.range) requires nonzero(host.rewind) requires nonzero(host.next)
+ requires nonzero(host.boolean_cases) requires nonzero(host.emit) requires nonzero(host.compare);
