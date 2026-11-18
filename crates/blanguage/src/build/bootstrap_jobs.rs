@@ -7,6 +7,8 @@ use std::{
     sync::mpsc,
     thread,
 };
+#[path = "../worker_protocol.rs"]
+mod worker_protocol;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -21,10 +23,21 @@ pub struct Job {
 }
 
 impl Job {
-    fn start(&self, seed: &Path, workers: usize) -> io::Result<Child> {
+    fn start(
+        &self,
+        seed: &Path,
+        workers: usize,
+        shared: Option<&jobserver::Client>,
+    ) -> io::Result<Child> {
         let mut process = if self.compiler {
             let mut command = Command::new(seed.join("bin/bc.exe"));
             command.arg("--jobs").arg(workers.to_string());
+            if let Some(cargo) = shared {
+                cargo.configure(&mut command);
+                command.env(worker_protocol::BOOTSTRAP_JOBSERVER, "1");
+            } else {
+                command.env_remove(worker_protocol::BOOTSTRAP_JOBSERVER);
+            }
             command
         } else {
             Command::new(seed.join("bin/blink.exe"))
@@ -33,16 +46,36 @@ impl Job {
     }
 }
 
+fn shared_workers(seed: &Path) -> io::Result<bool> {
+    let help = Command::new(seed.join("bin/bc.exe"))
+        .arg("--help")
+        .output()?;
+    if !help.status.success() {
+        return Err(io::Error::other(format!(
+            "Blink种子{}读取工作许可能力失败：{}",
+            seed.display(),
+            help.status
+        )));
+    }
+    Ok(String::from_utf8_lossy(&help.stdout)
+        .lines()
+        .any(|line| line == worker_protocol::BOOTSTRAP_JOBSERVER_HELP))
+}
+
 struct Running {
     child: Child,
     implicit: bool,
+    shared: bool,
     _permits: Vec<jobserver::Acquired>,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
         if !matches!(self.child.try_wait(), Ok(Some(_))) {
-            let _ = self.child.kill();
+            // A cooperating child can own permits from Cargo. Let it return them.
+            if !self.shared {
+                let _ = self.child.kill();
+            }
             let _ = self.child.wait();
         }
     }
@@ -54,6 +87,7 @@ enum Event {
 }
 
 pub fn run(seed: &Path, jobs: &[Job], cargo: jobserver::Client, limit: usize) -> io::Result<()> {
+    let shared = (jobs.iter().any(|job| job.compiler) && shared_workers(seed)?).then_some(&cargo);
     thread::scope(|scope| {
         let (send, receive) = mpsc::channel();
         let permit_send = send.clone();
@@ -83,7 +117,7 @@ pub fn run(seed: &Path, jobs: &[Job], cargo: jobserver::Client, limit: usize) ->
                     return Err(io::Error::other("B引导构建依赖不能继续"));
                 }
             } else {
-                let wanted = if ready.iter().any(|(_, job)| job.compiler) {
+                let wanted = if shared.is_none() && ready.iter().any(|(_, job)| job.compiler) {
                     limit
                 } else {
                     ready.len()
@@ -101,7 +135,11 @@ pub fn run(seed: &Path, jobs: &[Job], cargo: jobserver::Client, limit: usize) ->
                     .iter()
                     .filter(|(_, job)| job.compiler)
                     .count();
-                let mut surplus = budget - launches;
+                let mut surplus = if shared.is_some() {
+                    0
+                } else {
+                    budget - launches
+                };
                 let mut remaining_compilers = compilers;
                 for &(index, job) in &ready[..launches] {
                     let mut workers = 1;
@@ -116,8 +154,9 @@ pub fn run(seed: &Path, jobs: &[Job], cargo: jobserver::Client, limit: usize) ->
                     let owned =
                         permits.split_off(permits.len() - (workers - usize::from(implicit)));
                     let process = Running {
-                        child: job.start(seed, workers)?,
+                        child: job.start(seed, workers, shared)?,
                         implicit,
+                        shared: job.compiler && shared.is_some(),
                         _permits: owned,
                     };
                     let handle = process.child.as_handle().try_clone_to_owned()?;

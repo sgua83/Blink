@@ -124,7 +124,9 @@ impl CompileError {
 
 impl CompileCommandLine {
     fn compiler(&self, cpus: &[u32]) -> std::io::Result<blanguage::Compiler> {
-        let compiler = if self.cpu_count != 0 {
+        let compiler = if std::env::var_os(worker_protocol::BOOTSTRAP_JOBSERVER).as_deref() == Some(std::ffi::OsStr::new("1")) {
+            blanguage::Compiler::bootstrap_worker()?
+        } else if self.cpu_count != 0 {
             let processors = cpus[..self.cpu_count].iter().map(|&cpu| blanguage::Processor {
                 group: (cpu >> 8) as u16,
                 number: cpu as u8,
@@ -142,6 +144,7 @@ impl CompileCommandLine {
         })
     }
 }
+mod worker_protocol;
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -176,6 +179,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!(
             "Blink compiler\nbc --version\nbc inputs <compiled.obj|entry.blbi>\nbc image <entry.blbi> -o <deployment.blri>\nbc code <entry.blbi> [--observations <ranges.blcr>]\nbc code --image <deployment.blri> [--observations <ranges.blcr>]\nbc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol]\nbc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]\nbc spirv <module.spv>\nbc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]\nbc layout <module.h|module.b> <type> [-I module-root] [--field path]\nGlobal compile options before command: [--jobs N | --cpus group:number,...] [--max-parameter-bytes N]\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>] [--stack-report report.txt [--stack-budget bytes]]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
         );
+            println!("{}", worker_protocol::BOOTSTRAP_JOBSERVER_HELP);
             return Ok(());
         }
         CompileCommand::Inputs => {

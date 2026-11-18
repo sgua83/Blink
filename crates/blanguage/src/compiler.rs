@@ -100,18 +100,24 @@ struct Resources {
     processors: Option<Vec<Processor>>,
     available: Mutex<Vec<usize>>,
     released: Condvar,
+    #[cfg(feature = "compiler")]
+    bootstrap_jobserver: Option<jobserver::Client>,
     #[cfg(all(feature = "installed", feature = "compiler"))]
     sdk_input: Mutex<Option<std::fs::File>>,
 }
 struct Permit {
     compiler: Compiler,
-    slot: usize,
+    slot: Option<usize>,
+    #[cfg(feature = "compiler")]
+    _shared: Option<jobserver::Acquired>,
 }
 impl Drop for Permit {
     fn drop(&mut self) {
-        let resources = &self.compiler.resources;
-        resources.available.lock().unwrap().push(self.slot);
-        resources.released.notify_one();
+        if let Some(slot) = self.slot {
+            let resources = &self.compiler.resources;
+            resources.available.lock().unwrap().push(slot);
+            resources.released.notify_one();
+        }
     }
 }
 /// 一份正在执行的工作。共享引用不产生新的执行许可。
@@ -146,6 +152,8 @@ impl Compiler {
             workers, processors,
             available: Mutex::new((0..workers).rev().collect()),
             released: Condvar::new(),
+            #[cfg(feature = "compiler")]
+            bootstrap_jobserver: None,
             #[cfg(all(feature = "installed", feature = "compiler"))]
             sdk_input: Mutex::new(None),
         }),
@@ -154,6 +162,24 @@ impl Compiler {
         }
     }
     pub fn workers(&self) -> usize { self.resources.workers }
+    #[cfg(feature = "compiler")]
+    #[doc(hidden)]
+    pub fn bootstrap_worker() -> io::Result<Self> {
+        // The launcher retains the one permit for this process's initial work.
+        let jobserver = unsafe { jobserver::Client::from_env() }
+            .ok_or_else(|| io::Error::other("B引导编译缺少继承的Cargo工作许可"))?;
+        let mut compiler = Self::with_workers(NonZeroUsize::MIN);
+        Arc::get_mut(&mut compiler.resources).unwrap().bootstrap_jobserver = Some(jobserver);
+        Ok(compiler)
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn bootstrap_jobserver(&self) -> Option<&jobserver::Client> {
+        self.resources.bootstrap_jobserver.as_ref()
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn shared_worker(&self, permit: jobserver::Acquired) -> Worker {
+        Worker { permit: Arc::new(Permit { compiler: self.clone(), slot: None, _shared: Some(permit) }) }
+    }
     /// 本次新生成参数布局的字节上限；不会查询或改变执行设备。
     pub fn with_max_parameter_bytes(mut self, bytes: u32) -> Self {
         self.max_parameter_bytes = bytes;
@@ -173,7 +199,11 @@ impl Compiler {
         Ok(())
     }
     fn worker(&self, slot: usize) -> Worker {
-        Worker { permit: Arc::new(Permit { compiler: self.clone(), slot }) }
+        Worker { permit: Arc::new(Permit {
+            compiler: self.clone(), slot: Some(slot),
+            #[cfg(feature = "compiler")]
+            _shared: None,
+        }) }
     }
     pub(crate) fn try_worker(&self) -> Option<Worker> {
         self.resources.available.lock().unwrap().pop().map(|slot| self.worker(slot))
@@ -223,7 +253,8 @@ pub(crate) fn diagnostic(path: &std::path::Path, error: io::Error) -> crate::ast
 impl Worker {
     pub(crate) fn compiler(&self) -> &Compiler { &self.permit.compiler }
     fn processor(&self) -> Option<Processor> {
-        self.compiler().resources.processors.as_ref().map(|processors| processors[self.permit.slot])
+        let slot = self.permit.slot?;
+        self.compiler().resources.processors.as_ref().map(|processors| processors[slot])
     }
     pub(crate) fn bind(&self) -> io::Result<()> {
         if let Some(processor) = self.processor() {
