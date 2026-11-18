@@ -21,7 +21,7 @@ impl Builder<'_> {
         if owner.value.ty.cleanup.is_some(){
             owner.ownership=self.resolve_ownership(&owner.ownership,None);
             if !owner.ownership.available(){return self.fail(span,"B227","用户拥有值已经移动或尚未初始化，不能访问其载荷");}
-            self.prepare_owned_read(&Returned::OwnedValue(owner.clone()));
+            self.prepare_owned_value(&owner);
         }
         Ok(())
     }

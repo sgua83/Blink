@@ -256,12 +256,12 @@ impl Builder<'_> {
             && owner.place.ty().owns_resources() && owner.place.ty().dataset.is_none() {
             let Returned::OwnedValue(mut value)=unsafe { self.world.call(self.application_owned_argument(&owner.place,true,expr.span())).await }? else{return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体")};
             if !value.available(){return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源");}
-            self.prepare_owned_read(&Returned::OwnedValue(value.clone()));value.borrow();
+            self.prepare_owned_value(&value);value.borrow();
             return Ok(Some((Returned::OwnedValue(value),None)));
         }
         if self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()){
             let Some(place)=unsafe { self.world.call(self.place(expr)).await }?else{return Ok(None)};let model=self.owned_place_model(&place);let Returned::OwnedValue(mut value)=model else{return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体")};
-            if !value.available(){return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源");}self.prepare_owned_read(&Returned::OwnedValue(value.clone()));if !value.value.ty.has_variants(){unsafe { self.world.call(self.require_initialized(&place,expr.span())).await }?;}unsafe { self.world.call(self.load_owned_value(&mut value,expr.span())).await }?;value.borrow();return Ok(Some((Returned::OwnedValue(value),None)));
+            if !value.available(){return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源");}self.prepare_owned_value(&value);if !value.value.ty.has_variants(){unsafe { self.world.call(self.require_initialized(&place,expr.span())).await }?;}unsafe { self.world.call(self.load_owned_value(&mut value,expr.span())).await }?;value.borrow();return Ok(Some((Returned::OwnedValue(value),None)));
         }
         if let Some(projection)=self.owned_projection(expr) {
             let Returned::OwnedValue(mut value)=unsafe { self.world.call(self.projected_owned(&projection,expr.span())).await }? else{return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体")};
@@ -379,7 +379,7 @@ impl Builder<'_> {
         if !result.all_available() {
             return self.fail(span, "B227", "拥有值存在未初始化或已移动的资源字段");
         }
-        self.prepare_owned_read(&Returned::OwnedValue(result.clone()));
+        self.prepare_owned_value(&result);
         if let Some(place)=result.place() {
             unsafe { self.world.call(self.require_place_access(&place,Access::Write,span)).await }?;
             if !result.value.ty.has_variants() {
@@ -387,7 +387,7 @@ impl Builder<'_> {
             }
         }
         unsafe { self.world.call(self.load_owned_value(&mut result,span)).await }?;
-        self.forget_owned_metadata(&Returned::OwnedValue(result.clone()));
+        self.forget_owned_value(&result);
         if let Some(Binding::OwnedValue(source)) = self.env.get_mut(name) {
             source.mark_moved();
         }

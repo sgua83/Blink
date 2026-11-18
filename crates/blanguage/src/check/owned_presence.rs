@@ -5,6 +5,7 @@ use returns::Returned;
 #[derive(Clone)]
 pub(super) enum Presence {All,None,Input(Value),Selected(Comparison,ownership::ApplicationIndex,ownership::ApplicationIndex),Not(Box<Presence>),Both(Box<Presence>,Box<Presence>),Either(Box<Presence>,Box<Presence>)}
 mod host;
+pub(super) mod path;
 
 impl PartialEq for Presence { fn eq(&self, other: &Self) -> bool { host::compare(self, other).is_eq() } }
 impl Eq for Presence {}
@@ -54,24 +55,17 @@ impl Returned{
     }
 }
 impl Builder<'_>{
-    pub(super) fn resolve_owned_initialization(&self,value:&Position,assuming:Option<&Presence>)->Position{match value{
-        Position::Conditional(when,a,b)=>match self.condition_truth(&when.condition(),assuming.map(Presence::condition).as_ref()){Some(true)=>self.resolve_owned_initialization(a,assuming),Some(false)=>self.resolve_owned_initialization(b,assuming),None=>{let yes=assuming.cloned().unwrap_or(Presence::All).and(when.as_ref().clone());let no=assuming.cloned().unwrap_or(Presence::All).and(when.as_ref().clone().not());Position::selected(when.as_ref().clone(),self.resolve_owned_initialization(a,Some(&yes)),self.resolve_owned_initialization(b,Some(&no))) }},
-        Position::Both(a,b)=>Position::both(self.resolve_owned_initialization(a,assuming),self.resolve_owned_initialization(b,assuming)),
-        Position::Indexed(choices,index)=>{
-            for(i,choice)in choices.iter().enumerate(){let selected=Presence::indices(Comparison::Equal,*index,ownership::ApplicationIndex::Constant(i as u32));if self.condition_truth(&selected.condition(),assuming.map(Presence::condition).as_ref())==Some(true){return self.resolve_owned_initialization(choice,assuming);}}
-            let choices=choices.iter().enumerate().map(|(i,choice)|{let selected=Presence::indices(Comparison::Equal,*index,ownership::ApplicationIndex::Constant(i as u32));match self.condition_truth(&selected.condition(),assuming.map(Presence::condition).as_ref()){Some(false)=>Position::Initialized,_=>{let when=assuming.cloned().unwrap_or(Presence::All).and(selected);self.resolve_owned_initialization(choice,Some(&when))}}}).collect::<Vec<_>>();if choices.iter().all(|choice|choice==&choices[0]){choices[0].clone()}else{Position::Indexed(choices.into(),*index)}
-        },
-        position=>position.clone(),
-    }}
-    pub(super) fn resolve_owned_residency(&self,value:&residency::Residency,assuming:Option<&Presence>)->residency::Residency{value.resolve_selected(assuming,&|when,assuming|self.condition_truth(when,assuming.map(Presence::condition).as_ref()))}
-    pub(super) fn owned_possible(&self,value:&Presence)->bool{self.condition_truth(&value.condition(),None)!=Some(false)}
-    pub(super) fn resolve_ownership(&self,value:&Ownership,assuming:Option<&Presence>)->Ownership{match value{Ownership::Conditional(when)=>match self.condition_truth(&when.condition(),assuming.map(Presence::condition).as_ref()){Some(true)=>Ownership::Owned,Some(false)=>Ownership::Moved,None=>value.clone()},_=>value.clone()}}
-    pub(super) fn resolve_owned_model(&self,value:&mut Returned,assuming:Option<&Presence>){match value{Returned::Dataset(data)=>{data.ownership=self.resolve_ownership(&data.ownership,assuming);data.residency=self.resolve_owned_residency(&data.residency,assuming);data.initialization=data.initialization.as_ref().map(|scope|self.resolve_owned_initialization(scope,assuming));},Returned::OwnedValue(value)=>{value.ownership=self.resolve_ownership(&value.ownership,assuming);for payload in value.payloads.iter_mut().flatten(){self.resolve_owned_model(payload,assuming);}},_=>{}}}
-    pub(super) fn prepare_owned_read(&mut self,value:&Returned){match value{Returned::Dataset(data)if data.ownership.available()=>{if let Some(place)=&data.place{self.initialize(place);}},Returned::OwnedValue(value)=>{if value.value.ty.has_owned_presence(){if value.ownership.available(){if let Some(place)=value.place(){self.initialize(&place);}}}else{for i in 0..value.value.ty.aggregate_len(){if value.value.ty.aggregate_part(i).1.owns_resources(){let child=self.unpack_record(value,i);self.prepare_owned_read(&child);}}}},_=>{}}}
-    pub(super) fn forget_owned_metadata(&mut self,value:&Returned){
-        fn intersects(position:&Position,changed:&BTreeSet<Position>)->bool{changed.contains(position)||matches!(position,Position::Indexed(choices,_)if choices.iter().any(|choice|intersects(choice,changed)))}
-        match value{Returned::Dataset(data)=>{if let Some(place)=&data.place{let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}},Returned::OwnedValue(value)=>{if value.value.ty.has_owned_presence(){if let Some(place)=value.place(){let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}}else{for i in 0..value.value.ty.aggregate_len(){if value.value.ty.aggregate_part(i).1.owns_resources(){let child=self.unpack_record(value,i);self.forget_owned_metadata(&child);}}}},_=>{}}
-    }
+    pub(super) fn resolve_owned_initialization(&self,value:&Position,assuming:Option<&Presence>)->Position{path::initialization(self,value,assuming)}
+    pub(super) fn resolve_owned_residency(&self,value:&residency::Residency,assuming:Option<&Presence>)->residency::Residency{path::resolve_residency(self,value,assuming)}
+    pub(super) fn owned_possible(&self,value:&Presence)->bool{path::possible(self,value)}
+    pub(super) fn resolve_ownership(&self,value:&Ownership,assuming:Option<&Presence>)->Ownership{path::ownership(self,value,assuming)}
+    pub(super) fn resolve_owned_model(&self,value:&mut Returned,assuming:Option<&Presence>){path::resolve_model(self,value,assuming)}
+    pub(super) fn prepare_owned_read(&mut self,value:&Returned){path::prepare(self,value)}
+    pub(super) fn prepare_owned_value(&mut self,value:&owned_values::OwnedValuePayload){path::prepare_value(self,value)}
+    pub(super) fn prepare_owned_data(&mut self,value:&application::Data){path::prepare_data(self,value)}
+    pub(super) fn prepare_selected_owned_read(&mut self,value:&owned_values::OwnedValuePayload){path::prepare_selected_value(self,value)}
+    pub(super) fn forget_owned_metadata(&mut self,value:&Returned){path::forget(self,value)}
+    pub(super) fn forget_owned_value(&mut self,value:&owned_values::OwnedValuePayload){path::forget_value(self,value)}
     pub(super) fn presence_register(&mut self,value:&Presence,span:Span,origin:Option<&Arc<GeneratedOrigin>>)->Result<Reg>{
         match value{
             Presence::All=>Ok(self.constant_with_origin(Scalar::Bool,1,origin.cloned()).regs[0]),

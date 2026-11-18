@@ -2041,7 +2041,7 @@ impl Builder<'_> {
         data.ownership=self.resolve_ownership(&data.ownership,None);
         data.residency=self.resolve_owned_residency(&data.residency,None);
         self.application_available(&data, span)?;
-        self.prepare_owned_read(&returns::Returned::Dataset(data.clone()));
+        self.prepare_owned_data(&data);
         data = unsafe { self.world.call(self.refresh_application_data(data,span)).await }?;
         if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
             source.root.proof = data.root.proof.clone();

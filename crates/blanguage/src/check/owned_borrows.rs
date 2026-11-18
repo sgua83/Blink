@@ -65,7 +65,7 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         let model=if matches!(place.storage(),Place::ApplicationElement{..}){unsafe { self.world.call(self.application_owned_argument(&place,access.reads(),span)).await }?}else{self.owned_place_model(&place)};
         let Returned::OwnedValue(mut value)=model else{unreachable!()};
         if value.ownership==Ownership::Borrowed{return self.fail(span,"B227","read聚合不能提升为独占借用");}
-        self.prepare_owned_read(&Returned::OwnedValue(value.clone()));
+        self.prepare_owned_value(&value);
         if access==Access::InOut{if !value.all_available(){return self.fail(span,"B227","inout聚合需要全部活动拥有资源");}unsafe { self.world.call(self.load_owned_value(&mut value,span)).await }?;}
         Ok(Some(cooperative::Argument::OwnedReference{value,place,owner}))
     }

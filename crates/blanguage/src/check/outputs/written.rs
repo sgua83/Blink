@@ -76,7 +76,7 @@ impl Builder<'_>{
     ConditionalNeed::Snapshot=>{initialized=Some(self.initialized.clone());facts.snapshot=1;}
     ConditionalNeed::Prepare=>{
      let Binding::OwnedValue(value)=binding.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};
-     let mut value=Returned::OwnedValue(value.clone());self.resolve_owned_model(&mut value,None);self.prepare_owned_read(&value);
+     self.prepare_selected_owned_read(value);
     }
     ConditionalNeed::Selected=>{let place=place.as_ref().unwrap();selected=Some(place.clone().project(Ty::scalar(place.ty().components[cursor.index as usize].0),&[cursor.index as usize]));}
     ConditionalNeed::Initialized=>facts.initialized=u32::from(self.is_initialized(selected.as_ref().unwrap())),

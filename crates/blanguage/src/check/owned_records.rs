@@ -247,7 +247,7 @@ impl Builder<'_> {
                 }
             }
             Returned::Dataset(data) => {
-                let mut data=data;data.residency=self.resolve_owned_residency(&data.residency,None);self.application_available(&data,span)?;self.prepare_owned_read(&Returned::Dataset(data.clone()));
+                let mut data=data;data.residency=self.resolve_owned_residency(&data.residency,None);self.application_available(&data,span)?;self.prepare_owned_data(&data);
                 Ok(Returned::Dataset(unsafe { self.world.call(self.refresh_application_data(data,span)).await }?))
             }
             other => Ok(other),
