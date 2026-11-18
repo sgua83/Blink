@@ -1465,3 +1465,83 @@ extern "C" void arithmetic_index_domains(address context,u32 operation,Arithmeti
   }side+=1;
  }
 }
+
+extern "C" void comparison_constraint(address context,u32 strict,InternalScalar info,IndexBounds left,IndexBounds right,ComparisonConstraintHost host) on cpu
+ requires nonzero(host.emit) requires nonzero(host.next) requires nonzero(host.domain) {
+ host.emit(context,ComparisonConstraintOutput::Below,u64(strict));
+ if(right.upper>=u64(strict)){u64 upper=right.upper-u64(strict);if(upper!=info.mask){host.emit(context,ComparisonConstraintOutput::Maximum,upper);}}
+ if(info.kind!=1){host.emit(context,ComparisonConstraintOutput::Upper,u64(strict));}
+ if(info.kind==0&&info.width==32){index_domains_below(context,strict,IndexBelowHost(host.next,host.domain));}
+ u64 lower=left.lower+u64(strict);
+ if(lower>=left.lower&&lower!=0u64&&lower<=info.mask){host.emit(context,ComparisonConstraintOutput::Minimum,lower);}
+}
+void comparison_domains(address state,u32 truth,u32 source,u32 target,u32 common_only,ComparisonCaseHost host) on cpu
+ requires nonzero(host.select) requires nonzero(host.next) requires nonzero(host.domain) {
+ host.select(state,source);
+ while(true){ComparisonDomain domain=host.next(state);if(domain.present==0){return;}
+  if(common_only==0||domain.common!=0){host.domain(state,truth,target,domain.original);}
+ }
+}
+u32 comparison_complement(u32 operation) on cpu {
+ if(operation==10){return 11;}if(operation==11){return 10;}
+ if(operation==12){return 15;}if(operation==13){return 14;}
+ return operation==14 ? 13 : 12;
+}
+u32 comparison_possible(u32 operation,IndexBounds left,IndexBounds right,u32 same) on cpu {
+ if(same!=0){return max(left.lower,right.lower)<=min(left.upper,right.upper)&&(operation==10||operation==14||operation==15) ? 1 : 0;}
+ if(operation==12){return left.lower<right.upper ? 1 : 0;}
+ if(operation==13){return left.upper>right.lower ? 1 : 0;}
+ if(operation==14){return left.lower<=right.upper ? 1 : 0;}
+ if(operation==15){return left.upper>=right.lower ? 1 : 0;}
+ if(operation==10){return max(left.lower,right.lower)<=min(left.upper,right.upper) ? 1 : 0;}
+ return left.lower!=right.upper||left.upper!=right.lower ? 1 : 0;
+}
+extern "C" void comparison_integer_case(address state,address input,u32 operation,u32 truth,ComparisonIntegerInfo info,ComparisonIntegerHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.select) requires nonzero(host.cases.next) requires nonzero(host.cases.domain) requires nonzero(host.cases.finish) requires nonzero(host.range) requires nonzero(host.constrain) {
+ u32 op=truth!=0 ? operation : comparison_complement(operation);u32 possible=0;u64 a=0u64;
+ while(a<info.left_count&&possible==0){IndexBounds left=host.range(input,0,a);u64 b=0u64;
+  while(b<info.right_count&&possible==0){possible=comparison_possible(op,left,host.range(input,1,b),info.same);b+=1u64;}a+=1u64;
+ }
+ if(possible!=0){
+  if(op>=12){host.constrain(state,input,truth,op==13||op==15 ? 1 : 0,op==12||op==13 ? 1 : 0);}
+  else if(op==10){
+   host.cases.emit(state,truth,ComparisonOutput::Equal,0,0u64);
+   comparison_domains(state,truth,1,0,0,host.cases);comparison_domains(state,truth,0,1,0,host.cases);
+   u32 side=0;while(side<2){IndexBounds other=side==0 ? info.right : info.left;u32 nonzero=side==0 ? info.right_nonzero : info.left_nonzero;
+    if(other.lower!=0u64){host.cases.emit(state,truth,ComparisonOutput::Minimum,side,other.lower);}
+    if(other.upper!=info.scalar.mask){host.cases.emit(state,truth,ComparisonOutput::Maximum,side,other.upper);}
+    if(nonzero!=0){host.cases.emit(state,truth,ComparisonOutput::NonZero,side,0u64);}side+=1;
+   }
+  }else{
+   host.cases.emit(state,truth,ComparisonOutput::NotEqual,0,0u64);u32 side=0;
+   while(side<2){IndexBounds other=side==0 ? info.right : info.left;
+    if(other.lower==info.scalar.bias&&other.upper==info.scalar.bias){host.cases.emit(state,truth,info.scalar.kind==1 ? ComparisonOutput::NonZero : ComparisonOutput::Minimum,side,1u64);}side+=1;
+   }
+  }
+ }
+ host.cases.finish(state,truth,possible);
+}
+extern "C" u32 comparison_integer(address state,address input,u32 operation,ComparisonIntegerInfo info,ComparisonIntegerHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.select) requires nonzero(host.cases.next) requires nonzero(host.cases.domain) requires nonzero(host.cases.finish) requires nonzero(host.range) requires nonzero(host.constrain) requires nonzero(host.ordered) requires nonzero(host.refine) {
+ u32 op=operation==11 ? 10 : operation;
+ comparison_integer_case(state,input,op,0,info,host);comparison_integer_case(state,input,op,1,info,host);
+ if(op==10&&!(info.left.lower==info.scalar.bias&&info.left.upper==info.scalar.bias)&&!(info.right.lower==info.scalar.bias&&info.right.upper==info.scalar.bias)){
+  host.ordered(state,input,0,12,info);host.ordered(state,input,1,13,info);host.refine(state);
+ }
+ return operation==11 ? 1 : 0;
+}
+extern "C" u32 comparison_float(address state,u32 operation,IndexBounds finite,ComparisonFloatHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.select) requires nonzero(host.cases.next) requires nonzero(host.cases.domain) requires nonzero(host.cases.finish) requires nonzero(host.predicate) {
+ BinaryOperation op=BinaryOperation(operation==11 ? 10 : operation);u32 truth=0;
+ while(truth<2){host.predicate(state,truth,op);u32 side=0;
+  while(side<2){comparison_domains(state,truth,side,side,1,host.cases);
+   if(truth!=0){host.cases.emit(state,truth,ComparisonOutput::Minimum,side,finite.lower);host.cases.emit(state,truth,ComparisonOutput::Maximum,side,finite.upper);}side+=1;
+  }host.cases.finish(state,truth,1);truth+=1;
+ }return operation==11 ? 1 : 0;
+}
+extern "C" u32 comparison_boolean(address state,u32 operation,ComparisonBooleanHost host) on cpu
+ requires nonzero(host.pair) requires nonzero(host.finish) {
+ host.pair(state,0,0,1);host.pair(state,1,1,0);host.finish(state,0);
+ host.pair(state,0,0,0);host.pair(state,1,1,1);host.finish(state,1);
+ return operation==11 ? 1 : 0;
+}

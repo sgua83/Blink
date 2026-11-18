@@ -12,7 +12,7 @@ unsafe fn frame<'a, T>(slot: Slot) -> &'a mut T {
 }
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-struct Fields {
+pub(super) struct Fields {
     present: u32,
     kind: u32,
     original: Borrowed,
@@ -21,7 +21,7 @@ struct Fields {
     second: Borrowed,
     distance: u64,
 }
-fn fields(value: &IndexDomain) -> Fields {
+pub(super) fn fields(value: &IndexDomain) -> Fields {
     let mut out = Fields {
         present: 1,
         original: borrow(value),
@@ -90,7 +90,7 @@ fn fields(value: &IndexDomain) -> Fields {
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
-enum Output {
+pub(super) enum Output {
     Original = 0,
     Data,
     Tile,
@@ -102,7 +102,7 @@ enum Output {
     Offset,
     Room,
 }
-unsafe fn materialize(kind: Output, v: Fields) -> IndexDomain {
+pub(super) unsafe fn materialize(kind: Output, v: Fields) -> IndexDomain {
     unsafe {
         match kind {
             Output::Original => *v.original.cast::<IndexDomain>(),

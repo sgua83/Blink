@@ -684,3 +684,42 @@ extern "C" void index_domains_below(address context,u32 strict,IndexBelowHost ho
  requires nonzero(host.next) requires nonzero(host.emit);
 extern "C" void arithmetic_index_domains(address context,u32 operation,ArithmeticIndexHost host) on cpu
  requires nonzero(host.select) requires nonzero(host.next) requires nonzero(host.emit) requires nonzero(host.same) requires nonzero(host.bounds) requires nonzero(host.constant) requires nonzero(host.nonzero) requires nonzero(host.shift_zero) requires nonzero(host.identity) requires nonzero(host.room) requires nonzero(host.scratch) requires nonzero(host.contains);
+
+enum ComparisonOutput:u32 {Minimum=0;Maximum=1;NonZero=2;Equal=3;NotEqual=4;};
+struct ComparisonDomain {u32 present;u32 common;address original;};
+struct ComparisonCaseHost {
+ cfn<void,address,u32,ComparisonOutput,u32,u64> emit;
+ cfn<void,address,u32> select;
+ cfn<ComparisonDomain,address> next;
+ cfn<void,address,u32,u32,address> domain;
+ cfn<void,address,u32,u32> finish;
+};
+enum ComparisonConstraintOutput:u32 {Below=0;Upper=1;Minimum=2;Maximum=3;};
+struct ComparisonConstraintHost {
+ cfn<void,address,ComparisonConstraintOutput,u64> emit;
+ cfn<IndexFields,address> next;
+ cfn<void,address,IndexOutput,IndexFields> domain;
+};
+struct ComparisonIntegerInfo {
+ InternalScalar scalar;u64 left_count;u64 right_count;IndexBounds left;IndexBounds right;
+ u32 same;u32 left_nonzero;u32 right_nonzero;
+};
+struct ComparisonIntegerHost {
+ ComparisonCaseHost cases;
+ cfn<IndexBounds,address,u32,u64> ensures memory(read) range;
+ cfn<void,address,address,u32,u32,u32> constrain;
+ cfn<void,address,address,u32,u32,ComparisonIntegerInfo> ordered;
+ cfn<void,address> refine;
+};
+struct ComparisonFloatHost {ComparisonCaseHost cases;cfn<void,address,u32,BinaryOperation> predicate;};
+struct ComparisonBooleanHost {cfn<void,address,u32,u32,u32> pair;cfn<void,address,u32> finish;};
+extern "C" void comparison_constraint(address context,u32 strict,InternalScalar info,IndexBounds left,IndexBounds right,ComparisonConstraintHost host) on cpu
+ requires nonzero(host.emit) requires nonzero(host.next) requires nonzero(host.domain);
+extern "C" void comparison_integer_case(address state,address input,u32 operation,u32 truth,ComparisonIntegerInfo info,ComparisonIntegerHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.select) requires nonzero(host.cases.next) requires nonzero(host.cases.domain) requires nonzero(host.cases.finish) requires nonzero(host.range) requires nonzero(host.constrain);
+extern "C" u32 comparison_integer(address state,address input,u32 operation,ComparisonIntegerInfo info,ComparisonIntegerHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.select) requires nonzero(host.cases.next) requires nonzero(host.cases.domain) requires nonzero(host.cases.finish) requires nonzero(host.range) requires nonzero(host.constrain) requires nonzero(host.ordered) requires nonzero(host.refine);
+extern "C" u32 comparison_float(address state,u32 operation,IndexBounds finite,ComparisonFloatHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.select) requires nonzero(host.cases.next) requires nonzero(host.cases.domain) requires nonzero(host.cases.finish) requires nonzero(host.predicate);
+extern "C" u32 comparison_boolean(address state,u32 operation,ComparisonBooleanHost host) on cpu
+ requires nonzero(host.pair) requires nonzero(host.finish);
