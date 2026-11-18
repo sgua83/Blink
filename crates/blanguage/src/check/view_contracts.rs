@@ -792,15 +792,29 @@ impl BorrowEvaluation<'_>{
             if let Some(call)=function.calls.iter().find(|call|call.memory==memory){
                 for access in &known[&call.function].interface.access{
                     let Access::Stored{borrows,word,when,..}=access else{continue;};
-                    let path=bounds::Clause::both(&usage.path, &when.projected_case(true, &call.arguments));
-                    let target=self.evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments)).restricted(&path);
-                    for(source,when)in target.sources.entries(){if when.possible()&&let Origin::Position(origin)=source{result.insert((origin.clone(),*word));}}
+                    let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
+                    let path = std::cell::LazyCell::new(|| {
+                        bounds::Clause::both(&usage.path, &when.projected_case(true, &call.arguments))
+                    });
+                    for (source, when) in target.sources.entries() {
+                        if let Origin::Position(origin) = source
+                            && bounds::Clause::both(&when, &path).possible()
+                        {
+                            result.insert((origin.clone(), *word));
+                        }
+                    }
                 }
-            }else if written.is_some(){
-                let target=self.evaluate(borrow).restricted(&usage.path);
-                for(source,when)in target.sources.entries(){if when.possible()&&let Origin::Position(origin)=source{
-                    for &(word,_) in address_fields.iter(){result.insert((origin.clone(),word));}
-                }}
+            } else if written.is_some() {
+                let target = self.evaluate(borrow);
+                for (source, when) in target.sources.entries() {
+                    if let Origin::Position(origin) = source
+                        && bounds::Clause::both(&when, &usage.path).possible()
+                    {
+                        for &(word, _) in address_fields.iter() {
+                            result.insert((origin.clone(), word));
+                        }
+                    }
+                }
             }
         }
         result.retain(|(origin, _)| stored_target(origin, function, &exposed, &parameters).active());
