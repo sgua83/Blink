@@ -10,6 +10,8 @@ mod dependencies;
 mod frame_effects;
 mod failure_lowering;
 mod model;
+mod canonical;
+pub(super) use canonical::{canonical,element_inputs};
 pub(super) use model::{rebind_model,translate_returned,translate_in_place};
 
 // Only source vectors admit a different component placement with the same type.
@@ -366,125 +368,6 @@ pub(super) fn task_completion_parameters<'a>(
         offset+=width;
     }
     completions
-}
-pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,inputs:&[Reg],parameters:&[CallParameter],written:Vec<Option<Returned>>)->Result<(Option<Returned>,Vec<Reg>,Vec<Option<Returned>>,Option<Vec<address::Initialization>>)> {
-    builder.view_model.input_width=inputs.len();
-    let mut bindings=inputs.iter().enumerate().map(|(index,reg)|(ValueIdentity::Register(*reg),bounds::Proof::default().with_identity(ValueIdentity::Register(index)))).collect::<BTreeMap<_,_>>();
-    if builder.task_return_source.is_some()
-        && let Some(value)=returned.as_ref().and_then(Returned::view_value) {
-        for component in value.ty.task_components() {
-            let id=ValueIdentity::TaskReturnSource(component);
-            bindings.insert(id,bounds::Proof::default().with_identity(id));
-        }
-    }
-    for (result,address) in builder.task_completions.values().flatten() {
-        let input=inputs.iter().position(|reg|*reg==address[0]).unwrap();
-        for component in 0..result.components.len()+result.task_components().len() {
-            bindings.insert(ValueIdentity::TaskCompletion(address[0],component),
-                bounds::Proof::default().with_identity(ValueIdentity::TaskCompletion(input,component)));
-        }
-    }
-    for(parameter,p)in builder.scope.parameters().enumerate(){
-        let p=unsafe { builder.world.call(p.bound(builder.world)).await }?;
-        if p.access!=Access::Value && !p.ty.dataset && !p.ty.tile {
-            let id=ValueIdentity::ParameterStorage(parameter);
-            bindings.insert(id,{let mut component_proof=bounds::Proof::default().with_identity(id);component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Parameter(id,Vec::new())));component_proof});
-        }
-        if matches!(p.access,Access::Read|Access::InOut) && let Some(place)=builder.env.get(p.name.as_str()).and_then(Binding::stored_place){
-            for component in 0..place.ty().components.len(){let id=ValueIdentity::ParameterContent(parameter,component);bindings.insert(id,bounds::Proof::default().with_identity(id));}
-        }
-        let resources=match builder.env.get(p.name.as_str()){
-            Some(Binding::ApplicationData(_))if p.access==Access::Value=>1,
-            Some(Binding::OwnedValue(value))=>view::resource_paths(&value.value.ty).len(),
-            _=>0,
-        };
-        for resource in 0..resources{let id=ValueIdentity::ResourceParameter(parameter,resource);bindings.insert(id,{let mut component_proof=bounds::Proof::default().with_identity(id);component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(id)));component_proof});}
-    }
-    if let Some(value)=returned.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
-    for(index,model)in written.iter().enumerate(){if let Some(value)=model.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,|component|view_contracts::Output::Written(index,component));}}
-    application::canonical_element_inputs(builder,&mut bindings);
-    let sources=returned.iter().chain(written.iter().flatten()).flat_map(application::element_parameter_sources).collect::<BTreeSet<_>>();
-    for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){proof.set_view_borrow(0,view::Borrow::source(view::Source::Parameter(target,Vec::new())));}}
-    if let Some(value)=&returned{builder.view_model.capture_resources(value,view_contracts::Output::ReturnedResource);}
-    for(parameter,value)in written.iter().enumerate(){if let Some(value)=value{builder.view_model.capture_resources(value,|resource|view_contracts::Output::WrittenResource(parameter,resource));}}
-    for(memory,usage)in builder.view_model.uses.iter().enumerate(){
-        let count=match &usage.requirement{view::Requirement::Memory{snapshots:Some(snapshots),..}=>snapshots.len(),view::Requirement::Dataset{values:Some(_),..}=>1,_=>0};
-        for component in 0..count{
-            let id=ValueIdentity::MemoryValue(memory,component);bindings.insert(id,bounds::Proof::default().with_identity(id));
-        }
-    }
-    let mut next=inputs.len();
-    let models=std::iter::once(returned).chain(written).enumerate().map(|(model_index,model)|model.map(|model|{
-        let proof=bounds::Proof::capture(&builder.returned_storage(&model));let regs=model.registers();
-        let mut value=model.clone();rebind_model(&mut value,(next..next+regs.len()).collect());
-        for(component,(source,target))in regs.into_iter().zip(value.registers()).enumerate(){
-            let bound=bounds::Proof::default().with_identity(ValueIdentity::Register(target));
-            bindings.entry(ValueIdentity::Register(source)).or_insert_with(||bound.clone());
-            if let Some(id)=proof.known_identity(component){bindings.entry(id).or_insert(bound);}
-        }
-        // 拥有叶的存储身份与其输出分量共同命名；不把私有位置身份丢成未知。
-        let paths=view_contracts::resource_output_paths(&model);
-        for resource in &paths{
-            let(root,scope)=resource;
-            let output=if model_index==0{view_contracts::Output::ReturnedResource(resource.clone())}else{view_contracts::Output::WrittenResource(model_index-1,resource.clone())};
-            if let(Some(source),Some(target))=(view_contracts::root_resource(&model,*root),view_contracts::root_resource(&value,*root)){
-                let name=if source.ownership==application::Ownership::Borrowed{
-                    let identity=source.root.identity();
-                    let bound=bindings[&identity].clone();
-                    bindings.insert(ValueIdentity::Register(source.root.regs[0]),bound);
-                    view::Borrow::source(view::Source::Data(identity)).at_call(&bindings)
-                }else{view::Borrow::source(view::Source::Data(ValueIdentity::Register(target.root.regs[0])))};
-                let name=scope.iter().enumerate().fold(name,|parent,(at,fields)|view::Borrow::element(parent,fields.clone(),Some(bounds::Operand::Value(ValueIdentity::ElementIndex(scope.len()-1-at)))));
-                builder.view_model.resource_names.insert(output.clone(),name);
-            }
-            if !scope.is_empty(){if let Some(source)=view_contracts::resource_output(&model,resource){
-                let name=builder.view_model.resource_names[&output].clone();
-                for origin in &source.root.proof.view_borrow(0).sources{if let view::Source::Data(id@ValueIdentity::Register(_))=origin{bindings.entry(*id).or_insert_with(||{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,name.clone());component_proof});}}
-            }}
-            if scope.is_empty(){if let(Some(source),Some(target))=(view_contracts::resource_output(&model,resource),view_contracts::resource_output(&value,resource)){
-                let bound=bounds::Proof::default().with_identity(ValueIdentity::Register(target.root.regs[0]));
-                bindings.entry(source.root.identity()).or_insert_with(||bound.clone());bindings.entry(ValueIdentity::Register(source.root.regs[0])).or_insert(bound);
-            }}
-        }
-        next+=value.registers().len();value
-    })).collect::<Vec<_>>();
-    let names=bindings.iter().filter_map(|(source,proof)|proof.known_identity(0).map(|target|(*source,target))).collect::<BTreeMap<_,_>>();
-    let initialization=builder.view_model.initialization.iter().map(|effect|match effect {
-        address::InitializationEffect::Position(fact)=>if fact.source.pending(){None}else{Some(fact.clone())},
-        address::InitializationEffect::Call{..}|address::InitializationEffect::Iteration{..}=>None,
-    }).collect::<Option<Vec<_>>>().map(|facts|{
-        let facts=address::merge_initializations(facts).into_iter().filter(|fact|!fact.source.borrow().has_local());
-        address::merge_initializations(facts.into_iter().map(|mut fact|{
-            fact.when=builder.view_model.initialization_when(&fact);
-            fact.output_bound(&names)
-        }))
-    });
-    builder.view_model.parameters=names;
-    // Count事实按原ABI输入槽命名，实际地址和存储效果继续沿原合同交接。
-    let mut resources=BTreeMap::new();let mut start=0;
-    for parameter in parameters {
-        if let Some(origin)=&parameter.origin
-            && let ParameterOrigin::Parameter{index,..}=origin.as_ref()
-            && unsafe { builder.world.call(builder.scope.parameters().nth(*index).unwrap().bound(builder.world)).await }?.ty.dataset {
-            let id=ValueIdentity::Register(start);
-            resources.insert(id,{let mut component_proof=bounds::Proof::default().with_identity(id);component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Parameter(ValueIdentity::ResourceParameter(*index,0),Vec::new())));component_proof});
-        }
-        start+=match &parameter.kind{CallParameterKind::Value(ty)=>ty.components.len(),CallParameterKind::Reference{..}=>2};
-    }
-    fn prefix_inputs(value:&mut Returned,resources:&BTreeMap<ValueIdentity,bounds::Proof>) {
-        match value {
-            Returned::Dataset(data)=>{
-                for fact in data.prefixes.values_mut(){*fact=fact.substitute_values(resources);}
-                data.elements=std::mem::take(&mut data.elements).map(&mut|mut model|{prefix_inputs(&mut model,resources);model},&mut|condition|condition);
-            },
-            Returned::OwnedValue(value)=>for value in value.payloads.iter_mut().flatten(){prefix_inputs(value,resources);},
-            _=>{},
-        }
-    }
-    let mut models=models.into_iter().map(|model|model.map(|mut value|{
-        translate_in_place(&mut value,&bindings,false);prefix_inputs(&mut value,&resources);value
-    }));
-    Ok((models.next().unwrap(),(0..inputs.len()).collect(),models.collect(),initialization))
 }
 pub(super) async fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let mut functions = unsafe { world.call(declaration(world, instance, Module::default())).await }?;

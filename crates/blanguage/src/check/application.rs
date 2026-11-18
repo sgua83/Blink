@@ -3774,13 +3774,6 @@ pub(super) fn element_scope_bindings(bindings:&ElementBindings,width:usize,paren
     }
     out
 }
-pub(super) fn canonical_element_inputs(builder:&Builder<'_>,bindings:&mut ElementBindings) {
-    for(&source,&target)in &builder.view_model.parameters{
-        if matches!(source,ValueIdentity::DatasetContent(..)){
-            bindings.insert(source,{let mut component_proof=bounds::Proof::default().with_identity(target);component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Parameter(target,Vec::new())));component_proof});
-        }
-    }
-}
 pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:outputs::Contract<'_>,env:&BTreeMap<String,Binding>,paths:&BTreeSet<residency::Input>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>)->(ElementBindings,view::Borrow) {
     fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,parameter:usize,resource:usize,next:&mut usize,out:&mut ElementBindings,memory:&mut view::Borrow,reads:bool,input:&residency::Input,paths:&BTreeSet<residency::Input>,declared:Option<&BTreeMap<residency::Input,(usize,usize)>>){
         let identity=match declared{Some(declared)=>declared.get(input).copied(),None=>Some((resource,*next))};
@@ -3953,7 +3946,7 @@ impl Builder<'_> {
                 }
             }
         }
-        canonical_element_inputs(self,&mut out);
+        native_function::element_inputs(self,&mut out);
         out
     }
     pub(super) fn bind_element_resource_borrows(&self,data:&Data,parent:&view::Borrow,bindings:&mut ElementBindings) {
@@ -4684,20 +4677,6 @@ impl Builder<'_> {
         }}
     }
 }
-pub(super) fn element_parameter_sources(model:&returns::Returned)->BTreeSet<ValueIdentity>{
-    fn visit(model:&returns::Returned,out:&mut BTreeSet<ValueIdentity>){
-        if let Some(value)=model.view_value(){for source in value.proof.typed_view_borrow(&value.ty).owners().sources{
-            if let view::Source::Parameter(id,_)=source{out.insert(id);}
-        }}
-        match model{
-            returns::Returned::Dataset(data)=>if let Some(elements)=data.elements.known(){visit(elements,out);},
-            returns::Returned::OwnedValue(value)=>for payload in value.payloads.iter().flatten(){visit(payload,out);},
-            returns::Returned::Value(_)|returns::Returned::Unit=>{},
-        }
-    }
-    let mut out=BTreeSet::new();visit(model,&mut out);out
-}
-
 
 // 已闭合源码包直接消费本目录的类型／program编号；实际C ABI数组只借用到本次同步调用结束。
 pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::application::Resources){
