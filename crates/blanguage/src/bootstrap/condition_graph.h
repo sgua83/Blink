@@ -169,7 +169,7 @@ struct CommonHost {
  cfn<CommonBits,address,u32,address,address> ensures memory(read) known_bits;
  cfn<u32,address,address,address,u64,u64> ensures memory(read) contains_known;
  cfn<void,address,address,address,u64,u64> emit_known;
- cfn<FactView,address,u32> side_next;
+ cfn<FactView,address,u32> bound_next;
  cfn<u32,address,FactView,FactView> ensures memory(read) range;
  cfn<i32,address,address> ensures memory(read) compare;
  cfn<i32,address,address> ensures memory(read) scalar_compare;
@@ -179,7 +179,7 @@ extern "C" void common_facts(address context,CommonHost host) on cpu
  requires nonzero(host.intersection) requires nonzero(host.root_next) requires nonzero(host.representative)
  requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.known_next)
  requires nonzero(host.known_bits) requires nonzero(host.contains_known)
- requires nonzero(host.emit_known) requires nonzero(host.side_next) requires nonzero(host.range)
+ requires nonzero(host.emit_known) requires nonzero(host.bound_next) requires nonzero(host.range)
  requires nonzero(host.compare) requires nonzero(host.scalar_compare) requires nonzero(host.scalar);
 
 // The original synchronous task-return query owns all sets and node results.

@@ -179,9 +179,9 @@ unsafe extern "C" fn emit_known(
         .common
         .insert(unsafe { known_key(identity, scalar, mask, value) });
 }
-unsafe extern "C" fn side_next(slot: Slot, side: u32) -> fact_fields::Fields {
+unsafe extern "C" fn bound_next(slot: Slot, side: u32) -> fact_fields::Fields {
     unsafe { context(slot) }.cursors[side as usize]
-        .next()
+        .find(|fact| matches!(fact, Fact::Minimum(..) | Fact::Maximum(..)))
         .map(fact_fields::Fields::from)
         .unwrap_or_default()
 }
@@ -210,7 +210,7 @@ struct Host {
     known_bits: unsafe extern "C" fn(Slot, u32, Borrowed, Borrowed) -> Bits,
     contains_known: unsafe extern "C" fn(Slot, Borrowed, Borrowed, u64, u64) -> u32,
     emit_known: unsafe extern "C" fn(Slot, Borrowed, Borrowed, u64, u64),
-    side_next: unsafe extern "C" fn(Slot, u32) -> fact_fields::Fields,
+    bound_next: unsafe extern "C" fn(Slot, u32) -> fact_fields::Fields,
     range: unsafe extern "C" fn(Slot, fact_fields::Fields, fact_fields::Fields) -> u32,
     compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
     scalar_compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
@@ -269,7 +269,7 @@ pub(super) fn either<'a>(
                         known_bits,
                         contains_known,
                         emit_known,
-                        side_next,
+                        bound_next,
                         range,
                         compare: fact_fields::compare,
                         scalar_compare: fact_fields::compare_scalars,

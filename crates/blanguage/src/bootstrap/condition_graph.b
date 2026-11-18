@@ -479,19 +479,16 @@ i32 common_limit_order(FactView left,FactView right,
  return order!=i32(0) ? order : scalar_compare(left.scalar,right.scalar);
 }
 CommonLimit common_limit_next(address context,u32 side,FactView carry,
- cfn<FactView,address,u32> side_next,
+ cfn<FactView,address,u32> bound_next,
  cfn<i32,address,address> ensures memory(read) compare,
  cfn<i32,address,address> ensures memory(read) scalar_compare) on cpu
- requires nonzero(side_next) requires nonzero(compare) requires nonzero(scalar_compare) {
+ requires nonzero(bound_next) requires nonzero(compare) requires nonzero(scalar_compare) {
+ if(carry.present==0){return CommonLimit(carry,carry);}
  FactView value=carry;
- while(value.present!=0&&value.kind!=FactKind::Minimum&&value.kind!=FactKind::Maximum){value=side_next(context,side);}
- if(value.present==0){return CommonLimit(value,value);}
- FactView next=side_next(context,side);
- while(next.present!=0){
-  if(next.kind!=FactKind::Minimum&&next.kind!=FactKind::Maximum){next=side_next(context,side);continue;}
-  if(common_limit_order(value,next,compare,scalar_compare)!=i32(0)){break;}
+ FactView next=bound_next(context,side);
+ while(next.present!=0&&common_limit_order(value,next,compare,scalar_compare)==i32(0)){
   value.value=value.kind==FactKind::Minimum ? max(value.value,next.value) : min(value.value,next.value);
-  next=side_next(context,side);
+  next=bound_next(context,side);
  }
  return CommonLimit(value,next);
 }
@@ -499,7 +496,7 @@ extern "C" void common_facts(address context,CommonHost host) on cpu
  requires nonzero(host.intersection) requires nonzero(host.root_next) requires nonzero(host.representative)
  requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.known_next)
  requires nonzero(host.known_bits) requires nonzero(host.contains_known)
- requires nonzero(host.emit_known) requires nonzero(host.side_next) requires nonzero(host.range)
+ requires nonzero(host.emit_known) requires nonzero(host.bound_next) requires nonzero(host.range)
  requires nonzero(host.compare) requires nonzero(host.scalar_compare) requires nonzero(host.scalar) {
  host.intersection(context);
  while(true){
@@ -529,20 +526,20 @@ extern "C" void common_facts(address context,CommonHost host) on cpu
   BitPattern bits=known_common(scalar.mask,BitPattern(left.mask,left.value),scalar.mask,scalar.bias,BitPattern(right.mask,right.value));
   if(bits.mask!=0u64&&host.contains_known(context,known.identity,known.scalar,bits.mask,bits.value)==0){host.emit_known(context,known.identity,known.scalar,bits.mask,bits.value);}
  }
- CommonLimit left=common_limit_next(context,0,host.side_next(context,0),host.side_next,host.compare,host.scalar_compare);
+ CommonLimit left=common_limit_next(context,0,host.bound_next(context,0),host.bound_next,host.compare,host.scalar_compare);
  if(left.value.present==0){return;}
- CommonLimit right=common_limit_next(context,1,host.side_next(context,1),host.side_next,host.compare,host.scalar_compare);
+ CommonLimit right=common_limit_next(context,1,host.bound_next(context,1),host.bound_next,host.compare,host.scalar_compare);
  while(left.value.present!=0&&right.value.present!=0){
   i32 order=common_limit_order(left.value,right.value,host.compare,host.scalar_compare);
-  if(order<i32(0)){left=common_limit_next(context,0,left.next,host.side_next,host.compare,host.scalar_compare);
-  }else if(order>i32(0)){right=common_limit_next(context,1,right.next,host.side_next,host.compare,host.scalar_compare);
+  if(order<i32(0)){left=common_limit_next(context,0,left.next,host.bound_next,host.compare,host.scalar_compare);
+  }else if(order>i32(0)){right=common_limit_next(context,1,right.next,host.bound_next,host.compare,host.scalar_compare);
   }else{
    FactView fact=left.value;FactView lower=fact;FactView upper=fact;
    if(fact.kind==FactKind::Maximum){fact.value=max(fact.value,right.value.value);lower.value=0u64;upper.value=fact.value;
    }else{fact.value=min(fact.value,right.value.value);lower.value=fact.value;upper.value=fact.mask;}
    if(host.range(context,lower,upper)==0){host.emit(context,fact);}
    if(left.next.present==0||right.next.present==0){return;}
-   left=common_limit_next(context,0,left.next,host.side_next,host.compare,host.scalar_compare);right=common_limit_next(context,1,right.next,host.side_next,host.compare,host.scalar_compare);
+   left=common_limit_next(context,0,left.next,host.bound_next,host.compare,host.scalar_compare);right=common_limit_next(context,1,right.next,host.bound_next,host.compare,host.scalar_compare);
   }
  }
 }
