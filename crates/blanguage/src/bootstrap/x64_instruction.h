@@ -130,6 +130,30 @@ extern "C" FrameCreateCode frame_create_code(address output) on cpu;
 extern "C" ResourceTailCode resource_allocate_code(u32 index, address output) on cpu;
 extern "C" ResourceTailCode task_start_code(address output) on cpu;
 
+struct ProgramUniformArgument {
+    u32 tag;
+    ScalarEncoding scalar;
+};
+struct ProgramCallLayout {
+    u32 frame;
+    u32 datasets;
+    u32 values;
+    u32 textures;
+    u64 capacity;
+};
+struct ProgramCallCode {
+    u64 length;
+    u32 function_end;
+    u32 prolog;
+    u64 base_field;
+    u64 call_field;
+};
+
+// This layout bounds the Win64 stack displacements and code capacity.
+extern "C" ProgramCallLayout program_call_layout(u32 datasets, u32 values, u32 textures) on cpu;
+extern "C" ProgramCallCode program_call_code(ProgramCallLayout layout, u32 program_index,
+    u32 datasets, address arguments, u32 values, u32 textures, address output) on cpu;
+
 // Call through an existing outgoing stack slot. The caller owns seven bytes.
 extern "C" u64 call_slot(u32 offset, address output) on cpu;
 

@@ -14,7 +14,7 @@ pub(crate) use archive::{compile as compile_archive, inputs as native_inputs};
 pub(crate) use archive::{SDK_RUNTIME, hold_sdk, installed_sdk_root};
 #[cfg(feature = "installed")]
 pub(crate) use archive::sdk_root;
-pub(crate) use emit::{application as application_code, module as module_code};
+pub(crate) use emit::{application as application_code, function_sections, module as module_code};
 use std::{path::Path, sync::Arc};
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 

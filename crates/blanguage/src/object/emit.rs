@@ -66,8 +66,18 @@ fn ucrt(name: &'static str) -> Import {
     }
 }
 fn function(sections: &mut Vec<Section>, frames: &mut Vec<Frame>, name: String, local: u32, calls: Vec<Call>, bytes: Vec<u8>, unwind: Option<(u32, Vec<u8>)>, layout: Option<Layout>) -> usize {
-    let text = sections.len();
+    let text = function_sections(sections, bytes, unwind, layout);
     frames.push(Frame { name, coff: Some((text, 0)), local, calls });
+    text
+}
+
+pub(crate) fn function_sections(
+    sections: &mut Vec<Section>,
+    bytes: Vec<u8>,
+    unwind: Option<(u32, Vec<u8>)>,
+    layout: Option<Layout>,
+) -> usize {
+    let text = sections.len();
     sections.push(Section {
         name: ".text".into(), bytes, flags: 0x60501020,
         relocations: Vec::new(), associated: Vec::new(), layout,

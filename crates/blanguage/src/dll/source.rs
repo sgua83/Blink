@@ -1,5 +1,5 @@
 //! 算法包装交接同次编译的执行布局及已链接CPU入口；GPU交接原完整映像。
-use crate::{ExecutableProgram, application::factory::ResourceFactory, ast::Target, ir::Scalar};
+use crate::{ExecutableProgram, application::factory::ResourceFactory, ast::Target};
 
 fn code_declarations(names: &[String]) -> String {
     names.iter().enumerate().map(|(index, name)|
@@ -74,70 +74,16 @@ pub(crate) fn application_source(
     resources: &crate::application::Resources,
     prefix: &str,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    if resources.programs.is_empty() && resources.completions.is_empty() {
+    if resources.completions.is_empty() {
         return Ok(None);
     }
     use std::fmt::Write;
     let mut functions = String::new();
     functions.push_str(r#"
 unsafe extern "C" {
-    fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue,textures:*const *const c_void)->*mut c_void;
     fn blink_complete_field(frame:*mut c_void,data:u32,offset:u32,intervals:*const ElementInterval,interval_count:usize,limits:*const u32,limit_count:usize,known_mask:u64,known_value:u64);
 }
 "#);
-    if !resources.programs.is_empty() {
-        writeln!(
-            functions,
-            "unsafe extern \"C\" {{ static {prefix}_program_base:u32; }}"
-        )?;
-    }
-    for (index, (_, program)) in resources.programs.iter().enumerate() {
-        let mut params = vec!["frame:*mut c_void".to_owned()];
-        let handles = (0..program.buffers.len())
-            .map(|i| {
-                let name = format!("data_{i}");
-                params.push(format!("{name}:u32"));
-                params.push(format!("offset_{i}:u32"));
-                format!("DatasetBinding{{handle:{name},offset:offset_{i}}}")
-            })
-            .collect::<Vec<_>>();
-        let mut words = Vec::new();
-        for uniform in &program.uniforms {
-            for (scalar, _) in &uniform.ty.components {
-                let name = format!("value_{}", words.len());
-                let ty = if *scalar == Scalar::Bool { "u32" } else { scalar.name() };
-                params.push(format!("{name}:{ty}"));
-                let bits = match scalar {
-                    Scalar::F32 => format!("u64::from({name}.to_bits())"), Scalar::F64 => format!("{name}.to_bits()"),
-                    Scalar::I32 => format!("u64::from({name} as u32)"),
-                    Scalar::Bool => format!("u64::from({name} != 0)"),
-                    Scalar::U32 => format!("u64::from({name})"),
-                    Scalar::U64 => name,
-                    Scalar::I64 => format!("{name} as u64"),
-                    Scalar::U8 | Scalar::U16 => format!("u64::from({name})"),
-                    Scalar::I8 => format!("u64::from({name} as u8)"),
-                    Scalar::I16 => format!("u64::from({name} as u16)"),
-                };
-                words.push(format!(
-                    "UniformValue{{kind:{},bits:{bits}}}",
-                    crate::resource::scalar_tag(*scalar)
-                ));
-            }
-        }
-        let textures = (0..program.textures.len()).map(|i| {
-            let name = format!("texture_{i}");
-            params.push(format!("{name}:*const c_void"));
-            name
-        }).collect::<Vec<_>>();
-        writeln!(
-            functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({})->*mut c_void {{ let data=[{}];let words=[{}];let textures=[{}];unsafe {{ blink_run(frame,{prefix}_program_base.wrapping_add({index}),data.as_ptr(),words.as_ptr(),textures.as_ptr()) }} }}",
-            params.join(","),
-            handles.join(","),
-            words.join(","),
-            textures.join(",")
-        )?;
-    }
     for (index, fields) in resources.completions.iter().enumerate() {
         let counts = fields.iter().flat_map(|field| &field.limits).map(|(parameter, _)| parameter + 1).max().unwrap_or(0);
         let params = (0..counts).map(|i| format!(",count_{i}:u32")).collect::<String>();

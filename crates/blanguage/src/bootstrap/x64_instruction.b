@@ -533,10 +533,107 @@ extern "C" ResourceTailCode task_start_code(address output) on cpu {
     return ResourceTailCode(target + 4u64, base_end - start - 4u64, target);
 }
 
+// These records are the existing blink_run C layout, not program-owned data.
+struct ProgramDatasetBinding { u32 handle; u32 offset; };
+struct ProgramUniformWord { u32 tag; u64 bits; };
+
+extern "C" ProgramCallLayout program_call_layout(u32 datasets, u32 values, u32 textures) on cpu {
+    // Four home slots and the fifth blink_run argument.
+    u64 data_start = 40u64;
+    u64 values_start = data_start + u64(datasets) * size_of<ProgramDatasetBinding>();
+    u64 textures_start = values_start + u64(values) * size_of<ProgramUniformWord>();
+    u64 end = textures_start + u64(textures) * 8u64;
+    u64 frame = ((end + 7u64) / 16u64) * 16u64 + 8u64;
+    u64 arguments = u64(datasets) * 2u64 + u64(values) + u64(textures);
+    // Win64 memory displacements and PE relative code addresses are signed 32-bit.
+    u64 capacity = 160u64 + u64(datasets) * 32u64 + u64(values) * 48u64 + u64(textures) * 16u64;
+    if (frame + arguments * 8u64 + 8u64 > 2147483647u64 || capacity > 2147483647u64) {
+        return ProgramCallLayout(0, 0, 0, 0, 0u64);
+    }
+    return ProgramCallLayout(u32(frame), u32(data_start), u32(values_start), u32(textures_start), capacity);
+}
+
+MoveLocation program_stack(u64 offset) on cpu {
+    return MoveLocation(offset, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+}
+
+MoveLocation program_argument(u64 slot, u32 frame, bool float_register) on cpu {
+    if (slot >= 4u64) { return program_stack(u64(frame) + 8u64 + slot * 8u64); }
+    if (float_register) { return MoveLocation(0u64, MOVE_XMM, u8(slot), NO_INDEX, u8(0)); }
+    return move_gpr(argument_gpr(u8(slot)));
+}
+
+u64 program_argument_address(u64 at, u8 register, u32 offset) on cpu {
+    return encode_operand_instruction(at, u16(0x8d), u8(0), true, register, program_stack(u64(offset)));
+}
+
+extern "C" ProgramCallCode program_call_code(ProgramCallLayout layout, u32 program_index,
+    u32 datasets, address arguments, u32 values, u32 textures, address output) on cpu {
+    u64 start = address_bits(output);
+    FrameEncoding prolog = allocate_frame(layout.frame, output);
+    u64 cursor = start + prolog.length;
+
+    // RCX already holds the Frame. Consume the other incoming registers before replacing them.
+    u64 slot = 1u64;
+    for (index in 0..datasets) {
+        u64 field = u64(layout.datasets) + u64(index) * size_of<ProgramDatasetBinding>();
+        cursor = copy_bits(cursor, program_stack(field), program_argument(slot, layout.frame, false), 4);
+        cursor = copy_bits(cursor, program_stack(field + 4u64), program_argument(slot + 1u64, layout.frame, false), 4);
+        slot += 2u64;
+    }
+    for (index in 0..values) {
+        ProgramUniformArgument argument = unsafe_position<ProgramUniformArgument>(
+            unsafe_address(address_bits(arguments) + u64(index) * size_of<ProgramUniformArgument>()));
+        u64 field = u64(layout.values) + u64(index) * size_of<ProgramUniformWord>();
+        MoveLocation source = program_argument(slot, layout.frame, argument.scalar.kind == ScalarKind::Float);
+        MoveLocation accumulator = move_gpr(u8(0));
+        u32 width = argument.scalar.width / 8;
+        if (argument.scalar.kind == ScalarKind::Boolean) {
+            cursor += read_scalar_move(accumulator, source, 4, false, true, unsafe_address(cursor));
+        } else if (width < 4) {
+            cursor = load_extended(cursor, u8(0), source, width, false);
+        } else {
+            cursor = copy_bits(cursor, accumulator, source, width);
+        }
+        cursor = store_immediate(cursor, program_stack(field), u64(argument.tag), 4);
+        cursor = store_bits(cursor, program_stack(field + 8u64), u8(0), 8);
+        slot += 1u64;
+    }
+    for (index in 0..textures) {
+        u64 field = u64(layout.textures) + u64(index) * 8u64;
+        cursor = copy_bits(cursor, program_stack(field), program_argument(slot, layout.frame, false), 8);
+        slot += 1u64;
+    }
+
+    MoveLocation base = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+    cursor = load_bits(cursor, u8(2), base, false);
+    u64 base_field = cursor - start - 4u64;
+    if (program_index != 0) { cursor = integer_immediate(cursor, u8(0), u8(2), u64(program_index), false); }
+    cursor = program_argument_address(cursor, u8(8), layout.datasets);
+    cursor = program_argument_address(cursor, u8(9), layout.values);
+    cursor = program_argument_address(cursor, u8(0), layout.textures);
+    cursor = store_bits(cursor, program_stack(32u64), u8(0), 8);
+    put_byte(cursor, u8(0xe8));
+    u64 call_field = cursor + 1u64 - start;
+    write_word(cursor + 1u64, 0);
+    cursor += 5u64;
+    cursor += release_frame(layout.frame, unsafe_address(cursor));
+    put_byte(cursor, u8(0xc3));
+    u64 end = cursor + 1u64 - start;
+    u64 length = end;
+    if (prolog.probe_field != 0u64) { length = append_stack_probe(output, end, prolog.probe_field); }
+    return ProgramCallCode(length, u32(end), u32(prolog.length), base_field, call_field);
+}
+
 extern "C" u64 call_slot(u32 offset, address output) on cpu {
     u64 start = address_bits(output);
     MoveLocation target = MoveLocation(u64(offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
     return call_operand(start, target) - start;
+}
+
+// Positions zero through three are RCX, RDX, R8, and R9.
+u8 argument_gpr(u8 slot) on cpu {
+    return slot + (slot < u8(2) ? u8(1) : u8(6));
 }
 
 extern "C" u64 argument_register(u8 slot, u32 float_size, bool to_home, address output) on cpu {
@@ -548,8 +645,7 @@ extern "C" u64 argument_register(u8 slot, u32 float_size, bool to_home, address 
         u16 opcode = to_home ? u16(0x110f) : u16(0x100f);
         return encode_operand_instruction(start, opcode, prefix, false, slot, home) - start;
     }
-    // Positions zero through three are RCX, RDX, R8, and R9.
-    u8 register = slot + (slot < u8(2) ? u8(1) : u8(6));
+    u8 register = argument_gpr(slot);
     if (to_home) {
         return store_bits(start, home, register, 8) - start;
     }

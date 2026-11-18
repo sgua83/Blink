@@ -116,7 +116,7 @@ pub(crate) fn compile_resources(
             .map(|(index, code)| (format!("__blink_range_{prefix}_{index}"), code)).collect();
         let source = crate::dll::application_source(resources, &prefix)?;
         let types = u32::try_from(resources.types.len())?;
-        let native = factory::wrappers(&prefix, types, root, has_tasks)?;
+        let native = factory::wrappers(&prefix, resources, types, root, has_tasks)?;
         let mut exports = if root {
             [
                 "blink_destroy",

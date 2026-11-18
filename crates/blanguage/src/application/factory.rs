@@ -90,6 +90,30 @@ struct ResourceTailCode {
     target_field: u64,
 }
 
+#[repr(C)]
+struct ProgramUniformArgument {
+    tag: u32,
+    scalar: crate::builtin_types::ScalarEncoding,
+}
+
+#[repr(C)]
+struct ProgramCallLayout {
+    frame: u32,
+    datasets: u32,
+    values: u32,
+    textures: u32,
+    capacity: u64,
+}
+
+#[repr(C)]
+struct ProgramCallCode {
+    length: u64,
+    function_end: u32,
+    prolog: u32,
+    base_field: u64,
+    call_field: u64,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::frame_create_code"]
     fn frame_create_code(output: *mut u8) -> FrameCreateCode;
@@ -97,49 +121,87 @@ unsafe extern "C" {
     fn resource_allocate_code(index: u32, output: *mut u8) -> ResourceTailCode;
     #[link_name = "bootstrap.x64_instruction::task_start_code"]
     fn task_start_code(output: *mut u8) -> ResourceTailCode;
+    #[link_name = "bootstrap.x64_instruction::program_call_layout"]
+    fn program_call_layout(datasets: u32, values: u32, textures: u32) -> ProgramCallLayout;
+    #[link_name = "bootstrap.x64_instruction::program_call_code"]
+    fn program_call_code(
+        layout: ProgramCallLayout,
+        program: u32,
+        datasets: u32,
+        arguments: *const ProgramUniformArgument,
+        values: u32,
+        textures: u32,
+        output: *mut u8,
+    ) -> ProgramCallCode;
 }
 
 pub(super) fn wrappers(
     prefix: &str,
+    resources: &super::Resources,
     types: u32,
     root: bool,
     tasks: bool,
 ) -> crate::object::Result<Option<Vec<u8>>> {
     let mut sections = Vec::new();
     let mut symbols = Vec::new();
-    let mut emit = |name: String, bytes: &[u8], fields: &[(u64, &str)]| {
+    let mut emit = |name: String, code, fields: &[(u64, &str)], unwind| {
+        let section = crate::object::function_sections(&mut sections, code, unwind, None);
         symbols.push(Symbol {
-            name, section: sections.len(), value: 0, contract: Vec::new(), function: true,
+            name, section, value: 0, contract: Vec::new(), function: true,
         });
-        sections.push(Section {
-            name: ".text".into(), bytes: bytes.to_vec(), flags: 0x60501020,
-            relocations: fields.iter().map(|&(offset, target)| Relocation {
-                offset: offset as usize, kind: 4, target: Target::Symbol(target.into()),
-            }).collect(),
-            associated: Vec::new(), layout: None,
-        });
+        sections[section].relocations.extend(fields.iter().map(|&(offset, target)| Relocation {
+            offset: offset as usize, kind: 4, target: Target::Symbol(target.into()),
+        }));
     };
     let mut code = [0u8; 32];
     if root {
         let row = unsafe { frame_create_code(code.as_mut_ptr()) };
-        emit("blink_create".into(), &code[..row.length as usize], &[
+        emit("blink_create".into(), code[..row.length as usize].to_vec(), &[
             (row.factory_field, "__blink_module_factories"),
             (row.count_field, "__blink_module_count"),
             (row.target_field, "blink_create_frame"),
-        ]);
+        ], None);
     }
     let base = format!("{prefix}_type_base");
     for index in 0..types {
         let row = unsafe { resource_allocate_code(index, code.as_mut_ptr()) };
-        emit(format!("{prefix}_allocate_{index}"), &code[..row.length as usize], &[
+        emit(format!("{prefix}_allocate_{index}"), code[..row.length as usize].to_vec(), &[
             (row.base_field, &base), (row.target_field, "blink_allocate"),
-        ]);
+        ], None);
     }
     if tasks {
         let row = unsafe { task_start_code(code.as_mut_ptr()) };
-        emit(format!("{prefix}_task_start"), &code[..row.length as usize], &[
+        emit(format!("{prefix}_task_start"), code[..row.length as usize].to_vec(), &[
             (row.base_field, &base), (row.target_field, "blink_task_start"),
-        ]);
+        ], None);
+    }
+    let base = format!("{prefix}_program_base");
+    for (index, (_, program)) in resources.programs.iter().enumerate() {
+        let arguments: Vec<_> = program.uniforms.iter().flat_map(|uniform| &uniform.ty.components)
+            .map(|&(scalar, _)| ProgramUniformArgument {
+                tag: crate::resource::scalar_tag(scalar),
+                scalar: scalar.into(),
+            }).collect();
+        let datasets = u32::try_from(program.buffers.len())?;
+        let values = u32::try_from(arguments.len())?;
+        let textures = u32::try_from(program.textures.len())?;
+        let layout = unsafe { program_call_layout(datasets, values, textures) };
+        if layout.capacity == 0 {
+            return Err("应用程序包装超出 Windows x64 栈位移或代码范围".into());
+        }
+        let frame = layout.frame;
+        let mut code = Vec::with_capacity(layout.capacity as usize);
+        let row = unsafe {
+            let row = program_call_code(layout, u32::try_from(index)?, datasets, arguments.as_ptr(),
+                values, textures, code.as_mut_ptr());
+            code.set_len(row.length as usize);
+            row
+        };
+        let prolog = row.prolog as u8;
+        let unwind = crate::native::unwind_info(prolog, &[crate::native::UnwindOperation::allocate(prolog, frame)]);
+        emit(format!("{prefix}_run_{index}"), code, &[
+            (row.base_field, &base), (row.call_field, "blink_run"),
+        ], Some((row.function_end, unwind)));
     }
     if symbols.is_empty() {
         Ok(None)
