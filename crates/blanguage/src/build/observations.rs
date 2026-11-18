@@ -28,16 +28,18 @@ fn image_codes_mut<P>(image: &mut resource::Image<P>) -> impl Iterator<Item = &m
     cpu.into_iter().flat_map(crate::native::ProgramImage::code_mut)
 }
 fn capture<'a>(codes: impl Iterator<Item = &'a NativeCode>) -> Result<Vec<u8>> {
-    let codes = codes.collect::<Vec<_>>();
-    if codes.is_empty() { return Err("no CPU code images for CPU range observation material".into()); }
     let mut writer = Writer(MAGIC.to_vec());
-    codes.len().encode(&mut writer);
+    0u64.encode(&mut writer);
+    let mut count = 0u64;
     for code in codes {
         let tails = code.tail_regions.as_ref().ok_or("CPU observation ranges were not retained")?;
         ranges(code, tails)?;
         hash::digest(&code.bytes()).encode(&mut writer);
         tails.encode(&mut writer); code.tail_references.encode(&mut writer); code.sources.encode(&mut writer);
+        count += 1;
     }
+    if count == 0 { return Err("no CPU code images for CPU range observation material".into()); }
+    writer.0[MAGIC.len()..MAGIC.len() + size_of::<u64>()].copy_from_slice(&count.to_le_bytes());
     Ok(writer.0)
 }
 
