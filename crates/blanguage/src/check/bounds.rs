@@ -838,20 +838,25 @@ impl Proof {
         let bits=input.known_bits(0,from)?.cast(low).cast(extended).cast(to);
         (bits.mask!=0).then_some(bits)
     }
-    fn call_fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
+    fn call_fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Clause> {
+        let projected = |facts: Facts| (!facts.is_empty()).then(|| Clause::facts(facts));
         let translated = match value {
             Fact::Boolean(id, _) | Fact::Zero(id) | Fact::NonZero(id) => {
                 let truth=match value {Fact::Boolean(_,truth)=>truth,Fact::NonZero(_)=>true,_=>false};
                 let Some(input) = bindings.get(&id) else {
-                    return Clause::facts(Facts::new());
+                    return None;
                 };
                 if !truth && input.nonzero.first()==Some(&true) {
-                    return Clause::impossible();
+                    return Some(Clause::impossible());
                 }
-                let condition = input.component_condition(0).cloned().unwrap_or_default();
-                let mut clause = condition.cases[usize::from(truth)].clone();
+                let mut clause = input.component_condition(0).and_then(|condition| {
+                    let case = &condition.cases[usize::from(truth)];
+                    (!matches!(&**case.0, ClauseNode::Facts(facts) if facts.is_empty()))
+                        .then(|| case.clone())
+                });
                 if let Some(id) = input.known_identity(0) {
-                    clause = Clause::both(&clause,&Clause::facts([value.at(id)].into()));
+                    let fact = Clause::facts([value.at(id)].into());
+                    clause = Some(match clause { Some(clause) => Clause::both(&clause,&fact), None => fact });
                 }
                 return clause;
             }
@@ -859,7 +864,7 @@ impl Proof {
                 let Some((lower_id, upper_id)) =
                     Self::call_identity(lower, bindings).zip(Self::call_identity(upper, bindings))
                 else {
-                    return Clause::facts(Facts::new());
+                    return None;
                 };
                 let (lower, upper) = (&bindings[&lower], &bindings[&upper]);
                 let same = lower.origins[0]
@@ -877,7 +882,7 @@ impl Proof {
                     })
                 });
                 if !possible {
-                    return Clause::impossible();
+                    return Some(Clause::impossible());
                 }
                 let mut facts = Facts::new();
                 constrain_proofs(
@@ -887,10 +892,10 @@ impl Proof {
                     strict,
                     scalar,
                 );
-                return Clause::facts(facts);
+                return projected(facts);
             }
             Fact::Equal(a, b) => {
-                let Some((left,right))=Self::call_identity(a,bindings).zip(Self::call_identity(b,bindings)) else{return Clause::default();};
+                let Some((left,right))=Self::call_identity(a,bindings).zip(Self::call_identity(b,bindings)) else{return None;};
                 let mut facts=Facts::from([Fact::equal(left,right)]);
                 for(source,target)in [(a,right),(b,left)] {
                     facts.extend(bindings[&source].domains(0).into_iter().map(|domain|Fact::Index(target,domain)));
@@ -901,7 +906,7 @@ impl Proof {
                         clause=Clause::both(&clause,&Clause::either(&condition.cases[0],&condition.cases[1]));
                     }
                 }
-                return clause;
+                return Some(clause);
             },
             Fact::NotEqual(a, b) => {
                 if let Some((left, right)) = bindings.get(&a).zip(bindings.get(&b)) {
@@ -913,10 +918,10 @@ impl Proof {
                     let (bl, bh) = right.range(0);
                     if same || conditions == Some((false,false))
                         || (al == ah && bl == bh && al == bl) {
-                        return Clause::impossible();
+                        return Some(Clause::impossible());
                     }
                     if conditions.is_some_and(|(a,b)| a != b) || ah < bl || bh < al {
-                        return Clause::default();
+                        return None;
                     }
                 }
                 Self::call_identity(a, bindings).zip(Self::call_identity(b, bindings))
@@ -933,31 +938,31 @@ impl Proof {
                     facts.extend(input.domains(0).into_iter().filter_map(|domain|cast_domain(domain,from,low).and_then(|domain|cast_domain(domain,low,extended)).and_then(|domain|cast_domain(domain,extended,to))).map(|domain|Fact::Index(target,domain)));
                     facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source,from,low,extended,to))));
                 }
-                return Clause::facts(facts);
+                return projected(facts);
             },
             Fact::Index(id, d) => Self::call_identity(id, bindings)
                 .zip(Self::call_domain(d, bindings))
                 .map(|(id, d)| Fact::Index(id, d)),
 
             Fact::Minimum(id, scalar, n)=>{
-                if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.0>=n{return Clause::default();}if range.1<n{return Clause::impossible();}}
+                if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.0>=n{return None;}if range.1<n{return Some(Clause::impossible());}}
                 Self::call_identity(id,bindings).map(|id|Fact::Minimum(id, scalar, n))
             },
             Fact::Maximum(id, scalar, n)=>{
-                if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.1<=n{return Clause::default();}if range.0>n{return Clause::impossible();}}
+                if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.1<=n{return None;}if range.0>n{return Some(Clause::impossible());}}
                 Self::call_identity(id,bindings).map(|id|Fact::Maximum(id, scalar, n))
             },
             Fact::Outside(id,d)=>Self::call_identity(id,bindings).zip(Self::call_domain(d,bindings)).map(|(id,d)|Fact::Outside(id,d)),
             Fact::Predicate(predicate,truth)=>{
-                let Some(mapped)=predicate.at_call(bindings)else{return Clause::default()};
+                let Some(mapped)=predicate.at_call(bindings)else{return None};
                 let mut facts=Facts::from([Fact::Predicate(mapped,truth)]);
                 for operand in [predicate.a,predicate.b]{
                     if let Operand::Value(source)=operand && let Some(target)=bindings[&source].known_identity(0){facts.extend(bindings[&source].domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(target,domain)));}
                 }
-                return Clause::facts(facts);
+                return Some(Clause::facts(facts));
             },
         };
-        Clause::facts(translated.into_iter().collect())
+        translated.map(|fact| Clause::facts([fact].into()))
     }
     pub(super) fn at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
         let views = self.views.iter().map(|borrow| borrow.at_call(bindings)).collect();
@@ -2091,7 +2096,7 @@ impl Clause {
     }
 
     fn call_facts(facts: impl IntoIterator<Item = Fact>, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        let mut facts = facts.into_iter().map(|fact| Proof::call_fact(fact, bindings));
+        let mut facts = facts.into_iter().filter_map(|fact| Proof::call_fact(fact, bindings));
         let mut projected = Facts::new();
         for clause in facts.by_ref() {
             match &**clause.0 {
