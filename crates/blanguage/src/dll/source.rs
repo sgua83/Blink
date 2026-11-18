@@ -76,39 +76,31 @@ unsafe extern "C" {
     fn blink_allocate(output:*mut u32,frame:*mut c_void,ty:u32,count:u32)->*mut c_void;
     fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue,textures:*const *const c_void)->*mut c_void;
     fn blink_complete_field(frame:*mut c_void,data:u32,offset:u32,intervals:*const ElementInterval,interval_count:usize,limits:*const u32,limit_count:usize,known_mask:u64,known_value:u64);
-    fn blink_error_message(error:*const c_void,bytes:*mut usize)->*const u8;
-    fn blink_error_destroy(error:*mut c_void);
-    fn blink_destroy(frame:*mut c_void);
 }
 "#);
     if root {
         functions.push_str(r#"
-use blcompute::application::Frame;
-unsafe extern "C" { static __blink_module_count: usize; static __blink_module_factories: blanguage::resource::ModuleFactory; }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_application_error(_context: *mut c_void, data: *const u8, bytes: usize) {
-    let message = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, bytes)) };
-    eprintln!("{message}");
+extern crate blcompute as _;
+
+unsafe extern "C" {
+    static __blink_module_count: usize;
+    static __blink_module_factories: u8;
+    fn blink_create_frame(
+        factories: *const c_void, count: usize,
+        on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize),
+        context: *mut c_void,
+    ) -> *mut c_void;
 }
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_application_failed(frame: *mut c_void, error: *mut c_void) -> ! {
-    let mut bytes = 0;
-    let message = unsafe { blink_error_message(error, &mut bytes) };
-    unsafe { blink_application_error(std::ptr::null_mut(), message, bytes) };
-    unsafe { blink_error_destroy(error) };
-    unsafe { blink_destroy(frame) };
-    std::process::exit(1)
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize), context: *mut c_void) -> *mut c_void {
-    let factories = unsafe { std::slice::from_raw_parts(std::ptr::addr_of!(__blink_module_factories), __blink_module_count) };
-    match unsafe { Frame::from_linked_modules(factories) } {
-        Ok(frame) => Box::into_raw(Box::new(frame)).cast(),
-        Err(error) => {
-            let message = error.to_string();
-            unsafe { on_error(context, message.as_ptr(), message.len()) };
-            std::ptr::null_mut()
-        }
+pub unsafe extern "C" fn blink_create(
+    on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize), context: *mut c_void,
+) -> *mut c_void {
+    unsafe {
+        blink_create_frame(
+            core::ptr::addr_of!(__blink_module_factories).cast(), __blink_module_count,
+            on_error, context,
+        )
     }
 }
 "#);

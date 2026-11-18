@@ -186,6 +186,49 @@ mod native {
         unsafe { (&mut *frame).complete_field(handle, offset, intervals, limits, (known_mask,known_value)) };
     }
     /// # Safety
+    /// The factory table belongs to the linked application and stays live through its Frame.
+    /// The error callback borrows its message only until it returns.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_create_frame(
+        factories: *const blanguage::resource::ModuleFactory,
+        count: usize,
+        on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize),
+        context: *mut c_void,
+    ) -> *mut Frame {
+        let factories = unsafe { std::slice::from_raw_parts(factories, count) };
+        match unsafe { Frame::from_linked_modules(factories) } {
+            Ok(frame) => Box::into_raw(Box::new(frame)),
+            Err(error) => {
+                let message = error.to_string();
+                unsafe { on_error(context, message.as_ptr(), message.len()) };
+                std::ptr::null_mut()
+            }
+        }
+    }
+
+    /// # Safety
+    /// The caller holds the UTF-8 message for the duration of this call.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_application_error(_context: *mut c_void, data: *const u8, bytes: usize) {
+        let message = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, bytes)) };
+        eprintln!("{message}");
+    }
+
+    /// # Safety
+    /// The root application hands over its owned error and Frame after their last consumer.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_application_failed(frame: *mut Frame, error: *mut c_void) -> ! {
+        let mut bytes = 0;
+        let message = unsafe { blink_error_message(error, &mut bytes) };
+        unsafe {
+            blink_application_error(std::ptr::null_mut(), message, bytes);
+            blink_error_destroy(error);
+            blink_destroy(frame);
+        }
+        std::process::exit(1)
+    }
+
+    /// # Safety
     /// frame是本ABI创建且仍由调用者独占持有的实际Frame。
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_destroy(frame: *mut Frame) {
