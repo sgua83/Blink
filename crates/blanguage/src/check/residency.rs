@@ -635,7 +635,7 @@ pub(super) fn select_elements(target:&mut Returned,incoming:&Returned,previous:&
 pub(super) fn parameter(value: &mut owned_values::OwnedValue, parameter: usize) {
     for (resource,path) in view::resource_paths(&value.value.ty).into_iter().enumerate() {
         if let Some(data)=view::owned_data_at_mut(value,&path) {
-            data.root.proof.set_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::ResourceParameter(parameter,resource))]));
+            data.root.proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(ValueIdentity::ResourceParameter(parameter,resource))));
             data.residency=Residency::input(Input{parameter,fields:path.into_iter().map(Part::Field).collect()});
         }
     }

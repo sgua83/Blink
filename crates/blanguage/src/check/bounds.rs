@@ -559,7 +559,6 @@ impl Proof {
     pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.views.get(component).cloned().unwrap_or_default()}
     pub(super) fn borrowed_view(&self)->view::Borrow {self.views.iter().fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
     pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources.entries().filter_map(|(source,when)|when.possible().then_some(source.clone())).collect()}
-    pub(super) fn set_view_sources(&mut self,component:usize,sources:BTreeSet<view::Source>) {self.set_view_borrow(component,view::Borrow::from_sources(sources));}
     pub(super) fn with_external_borrows(mut self,ty:&Ty)->Self {
         for (offset,field) in ty.borrow_fields() {
             if field.is_address() {
@@ -578,7 +577,7 @@ impl Proof {
     }
     pub(super) fn view_parameters(mut self, ty: &Ty, indices:&[Option<Operand>], identity: impl Fn(usize) -> ValueIdentity) -> Self {
         for at in view_contracts::components(ty) {
-            self.set_view_sources(at, BTreeSet::from([view::Source::Parameter(identity(at),indices.to_vec())]));
+            self.set_view_borrow(at,view::Borrow::source(view::Source::Parameter(identity(at),indices.to_vec())));
         }
         self
     }

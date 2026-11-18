@@ -1078,7 +1078,7 @@ impl Builder<'_> {
             else { Self::borrowed_dataset_parameter_type(access, self.scope.execution()).components[0].0 };
         let reg = self.reg(scalar);
         let mut handle = self.application_root(reg);
-        if access==Access::Value{handle.proof.set_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::ResourceParameter(parameter,0))]));}
+        if access==Access::Value{handle.proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(ValueIdentity::ResourceParameter(parameter,0))));}
         let length_reg = self.reg(Scalar::U32);
         let count = self.program.buffers[binding].count;
         let mut length = Value {
@@ -3862,7 +3862,7 @@ pub(super) fn element_scope_bindings(bindings:&ElementBindings,width:usize,paren
 pub(super) fn canonical_element_inputs(builder:&Builder<'_>,bindings:&mut ElementBindings) {
     for(&source,&target)in &builder.view_model.parameters{
         if matches!(source,ValueIdentity::DatasetContent(..)){
-            bindings.insert(source,{let mut component_proof=bounds::Proof::default().with_identity(target);component_proof.set_view_sources(0,BTreeSet::from([view::Source::Parameter(target,Vec::new())]));component_proof});
+            bindings.insert(source,{let mut component_proof=bounds::Proof::default().with_identity(target);component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Parameter(target,Vec::new())));component_proof});
         }
     }
 }

@@ -437,13 +437,13 @@ pub(super) async fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>
             Some(Binding::OwnedValue(value))=>view::resource_paths(&value.value.ty).len(),
             _=>0,
         };
-        for resource in 0..resources{let id=ValueIdentity::ResourceParameter(parameter,resource);bindings.insert(id,{let mut component_proof=bounds::Proof::default().with_identity(id);component_proof.set_view_sources(0,BTreeSet::from([view::Source::Data(id)]));component_proof});}
+        for resource in 0..resources{let id=ValueIdentity::ResourceParameter(parameter,resource);bindings.insert(id,{let mut component_proof=bounds::Proof::default().with_identity(id);component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(id)));component_proof});}
     }
     if let Some(value)=returned.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
     for(index,model)in written.iter().enumerate(){if let Some(value)=model.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,|component|view_contracts::Output::Written(index,component));}}
     application::canonical_element_inputs(builder,&mut bindings);
     let sources=returned.iter().chain(written.iter().flatten()).flat_map(application::element_parameter_sources).collect::<BTreeSet<_>>();
-    for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){proof.set_view_sources(0,BTreeSet::from([view::Source::Parameter(target,Vec::new())]));}}
+    for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){proof.set_view_borrow(0,view::Borrow::source(view::Source::Parameter(target,Vec::new())));}}
     if let Some(value)=&returned{builder.view_model.capture_resources(value,view_contracts::Output::ReturnedResource);}
     for(parameter,value)in written.iter().enumerate(){if let Some(value)=value{builder.view_model.capture_resources(value,|resource|view_contracts::Output::WrittenResource(parameter,resource));}}
     for(memory,usage)in builder.view_model.uses.iter().enumerate(){

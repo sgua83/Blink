@@ -82,7 +82,7 @@ unsafe extern "C" fn length_constant(value:Address,count:u32){unsafe{&mut *value
 unsafe extern "C" fn view_empty(value:Address)->u32{u32::from(unsafe{&*value.cast::<Value>()}.proof.view_borrow(0).empty())}
 unsafe extern "C" fn install_source(value:Address){
     let v=unsafe{&mut *value.cast::<Value>()};let identity=v.identity();
-    v.proof.set_view_sources(0,BTreeSet::from([view::Source::Data(identity)]));
+    v.proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(identity)));
 }
 unsafe extern "C" fn join_child(a:Address,b:Address,at:u64,stored:u32,when:Address){
     let a=unsafe{&mut *a.cast::<OwnedValuePayload>()};let b=unsafe{&mut *b.cast::<OwnedValuePayload>()};
