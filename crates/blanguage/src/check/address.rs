@@ -1026,7 +1026,7 @@ impl Builder<'_> {
         for (source, when) in borrow.sources.entries().filter(|(_, when)| when.possible()) {
             match source {
                 view::Source::Position(origin) => {
-                    if view::Borrow::source_unresolved(source, || Some(when.clone())) {
+                    if view::Borrow::source_unresolved(source, &|| Some(&when)) {
                         return None;
                     }
                     visit(origin, when)?;
