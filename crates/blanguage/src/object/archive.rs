@@ -159,10 +159,15 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
         }
         Ok(())
     }
-    fn sources(path: &Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+    fn sources(path: &Path, compiler_sources: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
         for entry in fs::read_dir(path)? {
             let path = entry?.path();
-            if path.is_dir() { sources(&path, files)?; } else { files.push(path); }
+            if path == compiler_sources { continue; }
+            if path.is_dir() {
+                sources(&path, compiler_sources, files)?;
+            } else {
+                files.push(path);
+            }
         }
         Ok(())
     }
@@ -208,13 +213,14 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
     if let Some(rustup) = rustup { optional(&mut digest, &sdk.join(rustup).join("settings.toml"))?; }
     if runtime {
         let mut files = vec![sdk.join("Cargo.toml")];
+        let compiler_sources = sdk.join("crates/blanguage/src/bootstrap");
         optional(&mut digest, &sdk.join("crates/blanguage/build-sdk.rs"))?;
         optional(&mut digest, &sdk.join("crates/blanguage/native/blink_value_format.lib"))?;
         for name in ["blanguage", "blcompute"] {
             let package = sdk.join("crates").join(name);
             files.push(package.join("Cargo.toml"));
             optional(&mut digest, &package.join("build.rs"))?;
-            sources(&package.join("src"), &mut files)?;
+            sources(&package.join("src"), &compiler_sources, &mut files)?;
         }
         files.sort();
         for path in files {
