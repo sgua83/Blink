@@ -5,6 +5,7 @@ use returns::Returned;
 mod fallibility;
 mod owned_cleanup;
 mod task_completion;
+mod task_callbacks;
 mod dependencies;
 mod frame_effects;
 mod failure_lowering;
@@ -577,93 +578,6 @@ impl Builder<'_> {
         unsafe { self.world.call(self.native_call(&instance.name,CallSignature{parameters:&parameters,result:&result,contract:(&instance).into(),
             lexical:&lexical,kind:d.function.kind(),execution:d.execution,c_abi:d.function.c_abi()},args,span,generated_origin,syntax,launch)).await }
     }
-    async fn task_callback(
-        &mut self, name: String, arguments: &[(&str, Ty)], frame: bool, span: Span,
-        emit: impl std::ops::AsyncFnOnce(&mut Builder<'_>, &[Reg]) -> Result<()>,
-    ) -> Result<String> {
-        let parameters: Arc<[Param]> = arguments.iter().map(|(name, ty)| Param {
-            name: (*name).into(), ty: ty.syntax(), access: Access::Value, span,
-        }).collect::<Vec<_>>().into();
-        let lexical = LexicalScope::Values {
-            source: self.scope.source().clone(), module: self.scope.module().into(),
-            imports: self.scope.imports().to_vec(), bindings: self.scope.bindings().clone(),
-            span, parameters: parameters.clone(), source_definition: None,
-            source_context: Arc::new(SourceContext {
-                instance: Some(Arc::from(name.as_str())), inlined_at: Box::default(), domain_path: Arc::from([]),
-            }),
-        };
-        let program = Arc::new(unsafe { self.world.call(function_program(self.world, &name, parameters.iter().cloned().map(|parameter|async {Ok(parameter)}),
-            (lexical.source(), lexical.module(), lexical.imports(), FunctionKind::Value), Target::Cpu, None)).await }?);
-        let (definition, context) = lexical.syntax_context(Some(&name));
-        let mut b = Box::new(Builder::from_checked(self.world, &lexical, &program, 0, definition, context, BTreeSet::new()));
-        b.in_function = true;
-        let frame_value = if frame {
-            b.application = Some(application::Context::default());
-            Some(b.application_frame(span)?)
-        } else {
-            None
-        };
-        let registers = arguments.iter().flat_map(|(_, ty)| &ty.components)
-            .map(|&(scalar, _)| b.reg(scalar)).collect::<Vec<_>>();
-        let inputs = frame_value.iter().flat_map(|frame| frame.regs.iter().copied())
-            .chain(registers.iter().copied()).collect();
-        let abi = frame_value.iter().map(|frame| CallParameter::value(frame.ty.clone()).with_origin(Some(Arc::new(ParameterOrigin::Frame))))
-            .chain(arguments.iter().map(|(_, ty)| CallParameter::value(ty.clone()))).collect();
-        b.functions = std::mem::take(&mut self.functions);
-        emit(&mut b, &registers).await?;
-        self.functions = finish_declaration(self.world, &lexical, false, unsafe { self.world.call(finish_checked_function(
-            b, program.clone(), &name, span, None, None, abi, inputs, BTreeSet::new(), None, vec![None; parameters.len()],
-        )).await }?)?;
-        if frame {
-            let contract = &mut self.functions.units.get_mut(&name).unwrap().as_mut().unwrap().contract;
-            // This function is called directly by the task runtime.
-            contract.frame = true;
-            contract.fallible = true;
-        }
-        Ok(name)
-    }
-
-    pub(super) async fn task_selection(
-        &mut self, packet: &Value, result: &Ty,
-        outputs: &[(u32, outputs::TaskGuard)], span: Span,
-    ) -> Result<String> {
-        let name = format!("{}::@task_selection{}", self.scope.module(), self.functions.units.len());
-        let pointer = Ty::vector(Scalar::U32, 2);
-        unsafe { self.world.call(self.task_callback(name, &[("input", pointer.clone()), ("output", pointer)], false, span, async |b, registers| {
-            let [a, b0, c, d] = *registers else { unreachable!() };
-            let (input, output) = ([a, b0], [c, d]);
-            let zero = b.constant(Scalar::U32, 0).regs[0];
-            let buffer = |address| IndexedSource::Pointer { address, index: zero, stride: 1, aliases: Vec::new() };
-            let mut load = |address, scalar, word| {
-                let dst = b.reg(scalar);
-                b.emit(InstKind::LoadIndexed { dst, source: buffer(address), offset: zero, word });
-                dst
-            };
-            let snapshot = packet.ty.components.iter().zip(&packet.regs).map(|(&(scalar, offset), &reg)|
-                (reg, load(input, scalar, offset))).collect::<BTreeMap<_,_>>();
-            let regs = result.components.iter().map(|&(scalar, offset)| load(output, scalar, offset)).collect();
-            let returned = Value { ty: result.clone(), regs, proof: bounds::Proof::default(), uniform: false, literal: false, constant: None };
-            for (base, guard) in outputs {
-                let mut guard = guard.clone();
-                guard.map_inputs(|operand| match operand {
-                    bounds::Operand::Value(ValueIdentity::Register(reg)) => snapshot.get(&reg).map(|reg|
-                        bounds::Operand::Value(ValueIdentity::Register(*reg))),
-                    _ => Some(operand),
-                });
-                let ty = guard.frame_output_type().unwrap();
-                let selected = unsafe { self.world.call(guard.guards(b, Some(&returned), span)).await }?;
-                for (index, (at, _)) in ty.task_output_owners().into_iter().enumerate() {
-                    let ready = outputs::resource_guard(ty, at, &selected);
-                    let value = b.presence_register(&ready, span, None)?;
-                    b.emit(InstKind::StoreIndexed {
-                        source: buffer(output), offset: zero, word: *base + index as u32 * Scalar::Bool.size(), value,
-                    });
-                }
-            }
-            Ok(())
-        })).await }
-    }
-
     async fn drop_task_completion_value(&mut self, ty: &Ty, address: [Reg; 2], offset: u32, span: Span) -> Result<()> {
         let mut model = unsafe { self.world.call(self.template_returned(Value {
             ty: ty.clone(), regs: (0..ty.components.len()).collect(), proof: bounds::Proof::default(),

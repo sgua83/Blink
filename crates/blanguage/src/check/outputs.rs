@@ -468,7 +468,7 @@ pub(super) async fn guards<'a>(
 ) -> Result<Vec<Presence>> {
     let definition = definition.into();
     let clauses=output_clauses(definition,parameter,ty)?;
-    unsafe { builder.world.call(evaluate_guards(builder,definition,ty,&clauses,inputs,returned)).await }
+    unsafe { builder.world.call(evaluate_guards(builder,definition,ty,clauses.iter().map(|(parts,condition,span)|(parts.as_slice(),condition,*span)),inputs,returned)).await }
 }
 
 type GuardClause = (Vec<usize>, OutputCondition, Span);
@@ -499,9 +499,9 @@ fn output_clauses(
     Ok(clauses)
 }
 
-async fn evaluate_guards(
+async fn evaluate_guards<'a>(
     builder:&mut Builder<'_>, definition:Contract<'_>, ty:&Ty,
-    clauses:&[GuardClause], inputs:&BTreeMap<String,Value>, returned:Option<&Value>,
+    clauses:impl IntoIterator<Item=(&'a [usize],&'a OutputCondition,Span)>, inputs:&BTreeMap<String,Value>, returned:Option<&Value>,
 )->Result<Vec<Presence>> {
     let mut guards = vec![None::<Presence>; ty.components.len()];
     for (components,condition,span) in clauses {
@@ -511,7 +511,7 @@ async fn evaluate_guards(
             condition,
             inputs,
             returned,
-            *span,
+            span,
             Some(&Ty::scalar(Scalar::Bool)),
         )).await }?);
         for &component in components {
@@ -650,6 +650,7 @@ impl TaskGuard {
 
     pub(super) async fn guards(
         &self, builder:&mut Builder<'_>, returned:Option<&Value>, span:Span,
+        map:impl Fn(bounds::Operand)->Option<bounds::Operand>,
     )->Result<Vec<Presence>> {
         let source=builder.scope.source().clone();
         let definition=Contract::signature(&source,"",&[],&[],&[],span);
@@ -657,7 +658,7 @@ impl TaskGuard {
         for (name,(ty,words)) in &self.inputs {
             let mut regs=Vec::with_capacity(words.len());
             for word in words {
-                match *word {
+                match word.and_then(&map) {
                     Some(bounds::Operand::Constant(scalar,bits))=>regs.push(builder.constant(scalar,bits).regs[0]),
                     Some(bounds::Operand::Value(ValueIdentity::Register(reg)))=>regs.push(reg),
                     _=>return builder.fail(span,"B224","任务条件输出所引用的实际输入快照未交接"),
@@ -666,8 +667,8 @@ impl TaskGuard {
             inputs.insert(name.clone(),Value{ty:ty.clone(),regs,proof:bounds::Proof::default(),
                 uniform:false,literal:false,constant:None});
         }
-        let clauses=self.clauses.iter().map(|(parts,condition)|(parts.clone(),condition.clone(),span)).collect::<Vec<_>>();
-        unsafe { builder.world.call(evaluate_guards(builder,definition,&self.ty,&clauses,&inputs,returned)).await }
+        let clauses=self.clauses.iter().map(|(parts,condition)|(parts.as_slice(),condition,span));
+        unsafe { builder.world.call(evaluate_guards(builder,definition,&self.ty,clauses,&inputs,returned)).await }
     }
 }
 

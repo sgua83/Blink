@@ -106,18 +106,18 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
                         }.positions(&builder.path);
                         if !guard.ty.owns_resources() {
                             let returned=returned(builder,guard);
-                            let guards=unsafe { builder.world.call(guard.guards(builder,returned.as_ref(),span)).await }?;
+                            let guards=unsafe { builder.world.call(guard.guards(builder,returned.as_ref(),span,Some)).await }?;
                             builder.initialize_output_positions(target,&guards);
                         } else if let Some(reference) = builder.task_dataset_output_reference(&guard.target, &guard.ty) {
                             let returned = returned(builder, guard);
-                            let guards = unsafe { builder.world.call(guard.guards(builder, returned.as_ref(), span)).await }?;
+                            let guards = unsafe { builder.world.call(guard.guards(builder, returned.as_ref(), span, Some)).await }?;
                             let mut model = unsafe { builder.world.call(guard.written_value(builder, returned.as_ref())).await }?;
                             outputs::apply_ownership(&mut model, &guard.ty, 0, &guards);
                             unsafe { builder.world.call(builder.apply_application_dataset_model(&reference, application::ElementFacts::Known(Box::new(model)))).await }?;
                             builder.initialize_output_positions(target, &guards);
                         } else if let Some(place)=owners.iter().find_map(|owner|find(builder,owner,&target)) {
                             let returned=returned(builder,guard);
-                            let guards=unsafe { builder.world.call(guard.guards(builder,returned.as_ref(),span)).await }?;
+                            let guards=unsafe { builder.world.call(guard.guards(builder,returned.as_ref(),span,Some)).await }?;
                             let mut model=unsafe { builder.world.call(guard.written_value(builder,returned.as_ref())).await }?;
                             outputs::apply_ownership(&mut model,place.ty(),0,&guards);
                             let proof=bounds::Proof::capture(&builder.returned_storage(&model));

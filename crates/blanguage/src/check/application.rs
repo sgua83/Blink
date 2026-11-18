@@ -1439,7 +1439,7 @@ impl Builder<'_> {
             let ArgumentOrigin::Parameter { index, .. } = origin.as_ref() else { return None; };
             let guard = guarded.get(index).copied();
             let guard = if layout.is_none() || *access == Access::Write { guard } else { None };
-            Some((field, ty.clone(), guard.cloned(), layout, *access))
+            Some((field, ty.clone(), guard, layout, *access))
         }).collect::<Vec<_>>();
         let formal_frame=usize::from(!matches!(arguments.first(),
             Some(CallArgument::Value{ty,..}) if ty.name=="__blink_frame"))*2;
@@ -1467,7 +1467,7 @@ impl Builder<'_> {
                     .and_then(|count| count.checked_mul(Scalar::Bool.size())).ok_or_else(&overflow)?;
                 tail = base.checked_add(width).ok_or_else(&overflow)?;
                 name.push_str(&format!(":{base}"));
-                selection.push((base, guard.clone()));
+                selection.push((base, *guard));
                 Some(base)
             } else {
                 None
