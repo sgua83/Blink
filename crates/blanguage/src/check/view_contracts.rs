@@ -478,7 +478,7 @@ struct State<'a> {
     entries: Option<BTreeMap<ValueIdentity, Borrow>>,
     interface: Interface,
 }
-type StorageObserver<'a> = dyn Fn(&str, crate::compiler::BorrowSolveStorage) + 'a;
+type StorageObserver<'a> = dyn Fn(&str, crate::compiler::BorrowSolveStorage) + Sync + 'a;
 
 struct States<'a> {
     functions: BTreeMap<String, State<'a>>,
@@ -1698,10 +1698,11 @@ pub(super) struct SolvedFunction {
 }
 
 pub(super) fn solve_views(
+    worker: &crate::compiler::Worker,
     functions: &BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
     owns_input: impl Fn(&str, ValueIdentity) -> bool, observe: Option<&StorageObserver<'_>>,
 ) -> Result<Vec<(String, SolvedFunction)>> {
-    let Solved { mut states, memory, mut values } = solve(functions, closed, owns_input, observe)?;
+    let Solved { mut states, memory, mut values } = solve(worker, functions, closed, owns_input, observe)?;
     Ok(memory.into_iter().map(|(name, memory)| {
         let mut interface = states.remove(&name).unwrap().interface;
         let mut values = values.remove(&name);
@@ -1723,9 +1724,10 @@ pub(super) fn solve_views(
 }
 
 pub(super) fn solve_range_memory(
+    worker: &crate::compiler::Worker,
     functions: &BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
 ) -> Result<BTreeMap<String, MemoryEffects>> {
-    Ok(solve(functions, closed, |_, _| false, None)?.memory)
+    Ok(solve(worker, functions, closed, |_, _| false, None)?.memory)
 }
 
 struct Solved<'a> {
@@ -1862,6 +1864,7 @@ fn memory_use_effect(
 }
 
 fn solve<'a>(
+    worker: &crate::compiler::Worker,
     functions: &'a BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
     owns_input: impl Fn(&str, ValueIdentity) -> bool, observe: Option<&'a StorageObserver<'a>>,
 ) -> Result<Solved<'a>> {
@@ -1881,17 +1884,38 @@ fn solve<'a>(
     if !unknown.is_empty(){converge(functions, &mut known, &loop_inputs, &unknown);}
     converge_initializations(functions,&mut known);
     converge_access(functions,&mut known,&owns_input);
-    let mut memory=BTreeMap::new();let mut scalar_values=BTreeMap::new();
-    for(name,function)in functions {
-        let state = &known[name];
-        let mut evaluation = BorrowEvaluation {
-            function, state, known: &known, expand_loops: true, deferred_reads: false,
-            loop_bindings: Vec::new(), values: BTreeMap::new(),
-        };
-        let mut values = MemoryEffects::new();
-        let mut resolved=BTreeMap::new();
-        let has_feedback = function.loops.values().any(|definition| definition.value.is_some());
-        loop {
+    let results = crate::parallel::try_map(worker, functions.iter().collect(), |_| (),
+        |_, (name, function)| finish_function(name, function, &known),
+    ).map_err(|error| match error {
+        crate::parallel::Error::Work(error) => error,
+        crate::parallel::Error::Resource(error) => {
+            let path = functions.values().find_map(|function| function.uses.first()
+                .map(|usage| usage.source.path.as_path()))
+                .unwrap_or_else(|| std::path::Path::new("<borrow-solver>"));
+            crate::compiler::diagnostic(path, error)
+        }
+    })?;
+    let mut memory = BTreeMap::new();
+    let mut scalar_values = BTreeMap::new();
+    for (name, (effects, values)) in functions.keys().zip(results) {
+        memory.insert(name.clone(), effects);
+        if let Some(values) = values { scalar_values.insert(name.clone(), values); }
+    }
+    Ok(Solved { states: known.functions, memory, values: scalar_values })
+}
+
+fn finish_function(
+    name: &str, function: &Function, known: &States<'_>,
+) -> Result<(MemoryEffects, Option<ScalarValues>)> {
+    let state = &known[name];
+    let mut evaluation = BorrowEvaluation {
+        function, state, known, expand_loops: true, deferred_reads: false,
+        loop_bindings: Vec::new(), values: BTreeMap::new(),
+    };
+    let mut effects = MemoryEffects::new();
+    let mut resolved = BTreeMap::new();
+    let has_feedback = function.loops.values().any(|definition| definition.value.is_some());
+    loop {
         // Each value identity is written once in the original use/backedge order.
         let mut values_changed = false;
         for (memory, call, usages) in memory_events(function) {
@@ -1912,8 +1936,8 @@ fn solve<'a>(
             let mut consumer = match (has_feedback, snapshots.is_some()) {
                 (true, false) => continue,
                 (true, true) => MemoryConsumers::Snapshot,
-                (false, true) => MemoryConsumers::SnapshotAndIr(values.entry(*target).or_default()),
-                (false, false) => MemoryConsumers::Ir(values.entry(*target).or_default()),
+                (false, true) => MemoryConsumers::SnapshotAndIr(effects.entry(*target).or_default()),
+                (false, false) => MemoryConsumers::Ir(effects.entry(*target).or_default()),
             };
             let effect = if let Some(call) = call {
                 call_memory_effect(&mut evaluation, call, &resolved, &mut consumer)
@@ -1959,99 +1983,94 @@ fn solve<'a>(
             resolved.insert(id, proof);
         }
         if !has_feedback||!values_changed{break;}
-        }
-        if has_feedback {
-            // Every snapshot identity is stable and written only by its own event.
-            // Both calls and direct uses hand IR aliases to their one final receiver.
-            for (_, call, usages) in memory_events(function) {
-                let Requirement::Memory { target, .. } = &usages[0].requirement else { continue; };
-                let mut consumer = MemoryConsumers::Ir(values.entry(*target).or_default());
-                if let Some(call) = call {
-                    call_memory_effect(&mut evaluation, call, &resolved, &mut consumer);
-                } else {
-                    memory_use_effect(&mut evaluation, usages, &resolved, &mut consumer);
-                }
-            }
-        }
-        memory.insert(name.clone(),values);
-        if function.pending_values(){scalar_values.insert(name.clone(),resolved);}
     }
-    for(name,function)in functions{
-        let state=&known[name];
-        let context=function.value_context(scalar_values.get(name));
-        for usage in &function.uses{
-            let path=bounds::Clause::both(&usage.path,&context);
-            if let Requirement::Nonzero{value,path,span}=&usage.requirement {
-                let values=&scalar_values[name];
-                let mut value=(**value).clone();
-                let path=bounds::Clause::both(path,&context);
-                value.proof=bounds::scoped_proof(&value.ty,value.proof.substitute_values(values),&path,&BTreeMap::new());
-                value.constant=value.constant.or_else(||value.proof.known_value(&value.ty));
-                Requirement::Nonzero{value:Box::new(value),path,span:*span}.check(&usage.source, None)?;
-                continue;
-            }
-            if let Requirement::Initialized{read,code,span,..}=&usage.requirement {
-                let read=resolved_read(read,&path,function,state,&known);
-                Requirement::Initialized{borrow:read.borrow(),read,code,span:*span}.check(&usage.source, None)?;
-                continue;
-            }
-            if let Requirement::Unborrowed { resource, borrow, .. } = &usage.requirement {
-                let resource = evaluate(resource, function, state, &known, false);
-                let borrow = evaluate(borrow, function, state, &known, false);
-                if disjoint(&resource, &borrow, &function.independent, &usage.active_loops) {
-                    continue;
-                }
-            }
-            usage.requirement.mapped(|borrow|evaluate(borrow,function,state,&known,true)).under_path(&path).check(&usage.source, None)?;
-        }
-        let mut evaluation = BorrowEvaluation {
-            function, state, known: &known, expand_loops: true, deferred_reads: false,
-            loop_bindings: Vec::new(), values: BTreeMap::new(),
-        };
-        for call in &function.calls{
-            let path=bounds::Clause::both(&call.path,&context);
-            let live_task_places=evaluation.evaluate(&call.live_task_places);
-            let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, &known).positions(&path));
-            for requirement in &known[&call.function].interface.access{
-                if live_task_places.empty() && matches!(requirement,Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}) {
-                    continue;
-                }
-                let value=access_at_call(requirement,call,&path,&mut evaluation,&|| &*initialized);
-                let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..}|Access::Stored{when,..})=&value;
-                let has_live_task_places = !live_task_places.empty();
-                // An ordinary address call only needs reachability when it has a diagnostic.
-                let path = when.clone();
-                let diagnostic_path = match &value {
-                    Access::Position { .. } if !has_live_task_places => Some(&path),
-                    _ if !when.possible() => continue,
-                    _ => None,
-                };
-                if has_live_task_places && let Some((accessed,_,mode))=value.accessed() {
-                    Requirement::Unborrowed{
-                        resource:accessed.restricted(&path),borrow:live_task_places.restricted(&path),
-                        kind:view::Exclusion::Position(mode),span:call.span,
-                    }.check(&call.source, None)?;
-                }
-                let requirement=match value {
-                    Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,written:None,writable:position.writable,initialized:position.initialized,span:call.span},
-                    Access::Resource{resources,borrows,kind,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),kind,span:call.span},
-                    Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}=>continue,
-                    Access::Initialized{borrows,initialized,..}=>{
-                        let read=output_initialization_read(&borrows,&initialized,&path);
-                        Requirement::Initialized{borrow:borrows,read,code:"B229",span:call.span}
-                    },
-                };
-                requirement.check(&call.source, diagnostic_path)?;
-            }
-            for output in &call.outputs{
-                let borrow=known[&call.function].interface.outputs.get(output);
-                if matches!(output,Output::Returned(_)|Output::Written(..))&&borrow.is_none_or(|borrow|borrow.empty()||borrow.sources.contains(&Origin::Unresolved)){
-                    return call.source.fail(call.span,"B271","view返回或输出没有可闭合的实际借用来源");
-                }
+    if has_feedback {
+        // Every snapshot identity is stable and written only by its own event.
+        // Both calls and direct uses hand IR aliases to their one final receiver.
+        for (_, call, usages) in memory_events(function) {
+            let Requirement::Memory { target, .. } = &usages[0].requirement else { continue; };
+            let mut consumer = MemoryConsumers::Ir(effects.entry(*target).or_default());
+            if let Some(call) = call {
+                call_memory_effect(&mut evaluation, call, &resolved, &mut consumer);
+            } else {
+                memory_use_effect(&mut evaluation, usages, &resolved, &mut consumer);
             }
         }
     }
-    Ok(Solved { states: known.functions, memory, values: scalar_values })
+    let resolved = function.pending_values().then_some(resolved);
+    let context = function.value_context(resolved.as_ref());
+    for usage in &function.uses{
+        let path=bounds::Clause::both(&usage.path,&context);
+        if let Requirement::Nonzero{value,path,span}=&usage.requirement {
+            let values = resolved.as_ref().unwrap();
+            let mut value=(**value).clone();
+            let path=bounds::Clause::both(path,&context);
+            value.proof=bounds::scoped_proof(&value.ty,value.proof.substitute_values(values),&path,&BTreeMap::new());
+            value.constant=value.constant.or_else(||value.proof.known_value(&value.ty));
+            Requirement::Nonzero{value:Box::new(value),path,span:*span}.check(&usage.source, None)?;
+            continue;
+        }
+        if let Requirement::Initialized{read,code,span,..}=&usage.requirement {
+            let read=resolved_read(read,&path,function,state,known);
+            Requirement::Initialized{borrow:read.borrow(),read,code,span:*span}.check(&usage.source, None)?;
+            continue;
+        }
+        if let Requirement::Unborrowed { resource, borrow, .. } = &usage.requirement {
+            let resource = evaluate(resource, function, state, known, false);
+            let borrow = evaluate(borrow, function, state, known, false);
+            if disjoint(&resource, &borrow, &function.independent, &usage.active_loops) {
+                continue;
+            }
+        }
+        usage.requirement.mapped(|borrow|evaluate(borrow,function,state,known,true)).under_path(&path).check(&usage.source, None)?;
+    }
+    let mut evaluation = BorrowEvaluation {
+        function, state, known, expand_loops: true, deferred_reads: false,
+        loop_bindings: Vec::new(), values: BTreeMap::new(),
+    };
+    for call in &function.calls{
+        let path=bounds::Clause::both(&call.path,&context);
+        let live_task_places=evaluation.evaluate(&call.live_task_places);
+        let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&path));
+        for requirement in &known[&call.function].interface.access{
+            if live_task_places.empty() && matches!(requirement,Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}) {
+                continue;
+            }
+            let value=access_at_call(requirement,call,&path,&mut evaluation,&|| &*initialized);
+            let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..}|Access::Stored{when,..})=&value;
+            let has_live_task_places = !live_task_places.empty();
+            // An ordinary address call only needs reachability when it has a diagnostic.
+            let path = when.clone();
+            let diagnostic_path = match &value {
+                Access::Position { .. } if !has_live_task_places => Some(&path),
+                _ if !when.possible() => continue,
+                _ => None,
+            };
+            if has_live_task_places && let Some((accessed,_,mode))=value.accessed() {
+                Requirement::Unborrowed{
+                    resource:accessed.restricted(&path),borrow:live_task_places.restricted(&path),
+                    kind:view::Exclusion::Position(mode),span:call.span,
+                }.check(&call.source, None)?;
+            }
+            let requirement=match value {
+                Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,written:None,writable:position.writable,initialized:position.initialized,span:call.span},
+                Access::Resource{resources,borrows,kind,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),kind,span:call.span},
+                Access::Memory{..}|Access::Dataset{..}|Access::Stored{..}=>continue,
+                Access::Initialized{borrows,initialized,..}=>{
+                    let read=output_initialization_read(&borrows,&initialized,&path);
+                    Requirement::Initialized{borrow:borrows,read,code:"B229",span:call.span}
+                },
+            };
+            requirement.check(&call.source, diagnostic_path)?;
+        }
+        for output in &call.outputs{
+            let borrow=known[&call.function].interface.outputs.get(output);
+            if matches!(output,Output::Returned(_)|Output::Written(..))&&borrow.is_none_or(|borrow|borrow.empty()||borrow.sources.contains(&Origin::Unresolved)){
+                return call.source.fail(call.span,"B271","view返回或输出没有可闭合的实际借用来源");
+            }
+        }
+    }
+    Ok((effects, resolved))
 }
 
 impl Builder<'_> {

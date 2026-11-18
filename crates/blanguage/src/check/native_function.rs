@@ -1600,14 +1600,14 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             phase: BorrowSolvePhase::Storage { function, storage },
             functions: &participating,
         });
-        let result = view_contracts::solve_views(&functions, closed, owns_input, Some(&storage));
+        let result = view_contracts::solve_views(&world.worker, &functions, closed, owns_input, Some(&storage));
         observe(BorrowSolveEvent {
             phase: BorrowSolvePhase::Finished { succeeded: result.is_ok() },
             functions: &participating,
         });
         result
     } else {
-        view_contracts::solve_views(&functions, closed, owns_input, None)
+        view_contracts::solve_views(&world.worker, &functions, closed, owns_input, None)
     }?;
     for (name, view_contracts::SolvedFunction { interface, memory, values }) in outputs {
         let aliases=returned_input_aliases(module,&name);
@@ -2016,11 +2016,11 @@ async fn lower_module_failures(
         *module.units.get_mut(&name).unwrap()=Some(unit);
     }
     for (program, scopes) in programs.iter_mut() {
-        resolve_range_views(module, program, scopes)?;
+        resolve_range_views(&world.worker, module, program, scopes)?;
     }
     for index in 0..module.programs.len() {
         let mut pending = module.programs[index].take().unwrap();
-        resolve_range_views(module, &mut pending.program, &pending.scopes)?;
+        resolve_range_views(&world.worker, module, &mut pending.program, &pending.scopes)?;
         module.programs[index] = Some(pending);
     }
     Ok(())
@@ -2091,6 +2091,7 @@ async fn bind_range_program(
     Ok(())
 }
 fn resolve_range_views(
+    worker: &crate::compiler::Worker,
     module: &Module, program: &mut Program, scopes: &BTreeMap<usize, RangeContext>,
 ) -> Result<()> {
     if scopes.is_empty() { return Ok(()); }
@@ -2101,7 +2102,7 @@ fn resolve_range_views(
         .collect::<BTreeMap<_, _>>();
     let functions = names.iter().map(|(name, index)| (name.clone(), &scopes[index].view_model))
         .collect::<BTreeMap<_, _>>();
-    for (name, memory) in view_contracts::solve_range_memory(&functions, closed)? {
+    for (name, memory) in view_contracts::solve_range_memory(worker, &functions, closed)? {
         let stage = &mut program.stages[names[&name]];
         address::apply_memory(&mut stage.code, &memory, &stage.locals);
     }
