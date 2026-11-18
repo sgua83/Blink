@@ -1,5 +1,5 @@
 //! 模块资源 ABI：标量值与实际字节布局；不传递 Rust 容器表示。
-use crate::codec::{self, Decode, Encode, Reader, Writer, record, variants};
+use crate::codec::{self, Decode, Encode, Reader, Writer};
 use crate::{TemplateProgram, ir::*, native, spirv};
 #[cfg(feature = "compiler")]
 use crate::ast::Target;
@@ -9,13 +9,9 @@ pub const ABI: &[u8; 8] = b"BLRI\x34\0\0\0";
 pub const RUNTIME_LIBRARY: &str = "@blink.application@";
 // 非根资源静态包装声明的原C ABI，模块专属索引符号仍由原链接器绑定。
 pub(crate) const MODULE_RUNTIME_SYMBOLS: &[&str] = &["blink_allocate", "blink_run", "blink_complete_field", "blink_task_start", "blink_task_wait"];
-#[cfg(feature = "compiler")]
 mod device_requirements;
-#[cfg(feature = "compiler")]
 mod program_layout;
-#[cfg(feature = "compiler")]
 mod execution_plan;
-#[cfg(feature = "compiler")]
 mod image_codec;
 mod module_image;
 pub use module_image::{ModuleImage, ModuleFactory};
@@ -82,15 +78,6 @@ pub struct Module<C = native::NativeCode> {
     pub types: Vec<Ty>,
     pub images: Vec<Image<TemplateProgram, C>>,
 }
-#[cfg(not(feature = "compiler"))]
-record!(Module { types, images });
-#[cfg(not(feature = "compiler"))]
-record!(Module<usize> { types, images });
-#[cfg(not(feature = "compiler"))]
-variants!(Image { 0=>Cpu(image), 1=>Gpu(image) });
-#[cfg(not(feature = "compiler"))]
-variants!(Image<TemplateProgram, usize> { 2=>Cpu(image), 1=>Gpu(image) });
-
 #[cfg(feature = "compiler")]
 pub(crate) fn compile_image( resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<Module> {
     let jobs = |cpu| resources.programs.iter().enumerate()
@@ -197,250 +184,7 @@ macro_rules! image_output {
 }
 image_output!(native);
 image_output!(spirv);
-#[cfg(not(feature = "compiler"))]
-macro_rules! native_image_codec {
-    ($code:ty)=>{
-        impl<P> Encode for native::ProgramImage<P,$code>{
-            fn encode(&self,writer:&mut Writer){
-                self.program().encode(writer);self.stages().encode(writer);
-                self.functions().encode(writer);self.resources.encode(writer);self.module_code.encode(writer);
-            }
-        }
-        impl<P> Decode for native::ProgramImage<P,$code>{
-            fn decode(reader:&mut Reader<'_>)->codec::Result<Self>{
-                let program=ExecutionPlan::decode(reader)?;
-                let stages=Vec::<native::StageCode<$code>>::decode(reader)?;
-                let functions=Vec::<(String,$code)>::decode(reader)?;
-                let resources=Option::<Module<$code>>::decode(reader)?;
-                let module_code=Option::<native::ModuleCode>::decode(reader)?;
-                let mut image=unsafe{Self::from_compiler_output(program,stages,functions,resources)};
-                image.module_code=module_code;Ok(image)
-            }
-        }
-    };
-}
-#[cfg(not(feature = "compiler"))]
-record!(native::ModuleCode { sections, symbols });
-#[cfg(not(feature = "compiler"))]
-record!(native::ModuleSection { name, bytes, flags, relocations });
-#[cfg(not(feature = "compiler"))]
-record!(native::ModuleRelocation { offset, kind, target });
-#[cfg(not(feature = "compiler"))]
-variants!(native::ModuleTarget { 0=>Section{section,value}, 1=>Import(name) });
-#[cfg(not(feature = "compiler"))]
-native_image_codec!(native::NativeCode);
-#[cfg(not(feature = "compiler"))]
-native_image_codec!(usize);
-#[cfg(not(feature = "compiler"))]
-impl<P> Encode for spirv::ProgramImage<P> {
-    fn encode(&self, writer: &mut Writer) {
-        self.program().encode(writer);
-        self.stages().encode(writer);
-    }
-}
-#[cfg(not(feature = "compiler"))]
-impl<P> Decode for spirv::ProgramImage<P> {
-    fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
-        let program = ExecutionPlan::decode(reader)?;
-        let stages = Vec::<spirv::StageCode>::decode(reader)?;
-        Ok(unsafe { Self::from_compiler_output(program, stages) })
-    }
-}
-#[cfg(not(feature = "compiler"))]
-record!(crate::ast::ExternalName { library, symbol });
-#[cfg(not(feature="compiler"))]
-variants!(crate::ast::TextureDimension { 2=>D2, 3=>D3 });
-#[cfg(not(feature="compiler"))]
-variants!(crate::ast::TextureFormat { 0=>Rgba32Float, 1=>Rgba8Unorm, 2=>Rgba8Srgb, 3=>R8Unorm, 4=>Rg16Unorm, 5=>Rgb10A2Unorm, 6=>R11G11B10Float });
-#[cfg(not(feature="compiler"))]
-record!(TextureBinding { name, count, dimension, format });
-#[cfg(not(feature = "compiler"))]
-record!(Reduction {
-    source,
-    source_word,
-    target,
-    target_word
-});
-#[cfg(not(feature = "compiler"))]
-record!(ReductionSpec {
-    fields,
-    ty,
-    operator
-});
-#[cfg(not(feature = "compiler"))]
-record!(SegmentedReduction {
-    values,
-    head_word,
-    count
-});
-#[cfg(not(feature = "compiler"))]
-record!(Scan {
-    values,
-    ty,
-    operator,
-    head_word
-});
-#[cfg(not(feature = "compiler"))]
-record!(Compaction {
-    source,
-    flags,
-    flag_word,
-    target,
-    count,
-    count_word
-});
-#[cfg(not(feature = "compiler"))]
-variants!(SortOrder {0=>Ascending,1=>Descending});
-#[cfg(not(feature = "compiler"))]
-record!(Sorting {
-    source,
-    keys,
-    target
-});
-#[cfg(not(feature = "compiler"))]
-variants!(Operation<ReductionLayout> {0=>Map,1=>Reduce(r),2=>CustomReduce(r),3=>CustomScan(s),4=>CustomSegmentedReduce(r),5=>SegmentedReduce(r),6=>ScanExclusive(s),7=>Compact(c),8=>StableSort(s)});
-#[cfg(not(feature="compiler"))]
-record!(PrefixCount { binding, word });
-#[cfg(not(feature="compiler"))]
-record!(PrefixRelation { domain, domain_region, count });
-#[cfg(not(feature = "compiler"))]
-record!(Selection { binding, word });
-#[cfg(not(feature = "compiler"))]
-variants!(CollectiveOperator {0=>Sum,1=>Min,2=>Max,3=>BitAnd,4=>BitOr,5=>BitXor});
-#[cfg(not(feature = "compiler"))]
-record!(ReductionLayout { fields, ty });
-#[cfg(not(feature = "compiler"))]
-record!(CustomScan<ReductionLayout> { values, head_word });
-#[cfg(not(feature = "compiler"))]
-record!(CustomSegmentedReduction<ReductionLayout> { values, head_word, count });
-#[cfg(not(feature = "compiler"))]
-record!(SubgroupCapabilities {
-    basic,
-    vote,
-    arithmetic,
-    ballot,
-    shuffle,
-    shuffle_relative,
-    extended_types
-});
-#[cfg(not(feature = "compiler"))]
-record!(DeviceRequirements {
-    ray_query, float64, integer8, integer16, atomic64, shared_atomic64,
-    float32_preserve, float64_preserve,
-    sorting,
-    maximal_reconvergence,
-    texture_indexing,
-    position_fetch,
-    subgroup
-});
-#[cfg(not(feature="compiler"))]
-record!(ElementRange { binding, offset, scalar, intervals, known_bits });
-#[cfg(not(feature="compiler"))]
-variants!(ElementFact { 0 => Range(range), 1 => Index { binding, offset, target } });
-#[cfg(not(feature = "compiler"))]
-record!(ProgramLayout {
-    write_regions,
-    name,
-    target,
-    buffers,
-    accelerations,
-    textures,
-    uniforms,
-    uniform_bytes,
-    prefix_requirements,
-    prefix_guarantees,
-    element_requirements,
-    element_guarantees,
-    length_requirements,
-    requirements
-});
-#[cfg(not(feature = "compiler"))]
-record!(ExecutionStage {
-    domain,
-    prefix,
-    selection,
-    operation,
-    reads,
-    writes,
-    write_regions,
-    prefix_guarantees,
-    element_guarantees,
-    inputs,
-    tile_scope,
-    width,
-    shared_bytes
-});
-#[cfg(not(feature = "compiler"))]
-record!(ExecutionPlan {
-    interface,
-    stages,
-    indirect_buffer,
-    auxiliary_buffers,
-    native_frame
-});
-#[cfg(not(feature = "compiler"))]
-variants!(native::NativeSymbol {0=>Print(scalar),1=>External(name),2=>Function(name)});
-#[cfg(not(feature = "compiler"))]
-record!(native::Relocation { offset, target });
 // Observation ranges belong to the compiler result, not the deployed execution ABI.
-#[cfg(not(feature = "compiler"))]
-impl Encode for native::NativeCode {
-    fn encode(&self, writer: &mut Writer) {
-        self.bytes.encode(writer);
-        self.relocations.encode(writer);
-        self.stack_bytes.encode(writer);
-        self.calls.encode(writer);
-        self.function_end.encode(writer);
-        self.unwind.encode(writer);
-    }
-}
-#[cfg(not(feature = "compiler"))]
-impl Decode for native::NativeCode {
-    fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
-        Ok(Self {
-            bytes: Vec::decode(reader)?,
-            relocations: Vec::decode(reader)?,
-            stack_bytes: u32::decode(reader)?,
-            calls: Vec::decode(reader)?,
-            function_end: usize::decode(reader)?,
-            unwind: Vec::decode(reader)?,
-            #[cfg(feature = "compiler")]
-            tail_regions: None,
-            #[cfg(feature = "compiler")]
-            tail_references: None,
-            #[cfg(feature = "compiler")]
-            sources: native::CodeSources::Unavailable,
-        })
-    }
-}
-#[cfg(not(feature = "compiler"))]
-variants!(native::RangeResult {0=>None,1=>Values(n)});
-#[cfg(not(feature = "compiler"))]
-variants!(@<C> native::ContinuationCode<C> {0=>ReductionTail(code),1=>ScanAdd(code),2=>CompactScatter(code),3=>SegmentedFinish(code),4=>Scan{prefix,apply,source,target}});
-#[cfg(not(feature = "compiler"))]
-record!(@<C> native::SortCode<C> {
-    source,
-    target,
-    initialize,
-    histogram,
-    scatter,
-    gather
-});
-#[cfg(not(feature = "compiler"))]
-variants!(@<C> native::StageCode<C> {0=>Element{main,continuation,result},1=>Sort(code)});
-#[cfg(not(feature = "compiler"))]
-record!(spirv::ShaderCode { words, ranks });
-#[cfg(not(feature = "compiler"))]
-record!(spirv::StageCode {
-    main,
-    tail,
-    scan_add,
-    finish,
-    dispatch,
-    selector,
-    sort
-});
-
 /// 同一原生执行映像或资源目录的已链接代码索引；由原静态链接持有代码。
 #[cfg(feature="compiler")]
 pub(crate) fn linked_output<T: Encode>(image:&T)->Vec<u8>{
@@ -458,10 +202,8 @@ impl<P> native::ProgramImage<P,*const u8>{
 }
 
 // Physical construction for the original public contract wire.
-#[cfg(feature = "compiler")]
 crate::codec::contracts::codec!(crate::ast::TextureDimension);
 
-#[cfg(feature = "compiler")]
 const _: () = {
     use crate::codec::ReadStatus;
     use crate::codec::contracts::{self, Native, Read as ReadCallback, Slot};
@@ -483,7 +225,7 @@ const _: () = {
         ReadStatus::Success
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::contract_read_texture_dimension"]
+        #[link_name = "codec.value_format::contract_read_texture_dimension"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -500,7 +242,7 @@ const _: () = {
             match self {
                 Self::D2 => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_texture_dimension_d2"]
+                        #[link_name = "codec.value_format::contract_write_texture_dimension_d2"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -510,7 +252,7 @@ const _: () = {
                 }
                 Self::D3 => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_texture_dimension_d3"]
+                        #[link_name = "codec.value_format::contract_write_texture_dimension_d3"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -538,10 +280,8 @@ const _: () = {
     }
 };
 
-#[cfg(feature = "compiler")]
 crate::codec::contracts::codec!(crate::ast::TextureFormat);
 
-#[cfg(feature = "compiler")]
 const _: () = {
     use crate::codec::ReadStatus;
     use crate::codec::contracts::{self, Native, Read as ReadCallback, Slot};
@@ -602,7 +342,7 @@ const _: () = {
         ReadStatus::Success
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::contract_read_texture_format"]
+        #[link_name = "codec.value_format::contract_read_texture_format"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -619,7 +359,7 @@ const _: () = {
             match self {
                 Self::Rgba32Float => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rgba32float"]
+                        #[link_name = "codec.value_format::contract_write_texture_format_rgba32float"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -629,7 +369,7 @@ const _: () = {
                 }
                 Self::Rgba8Unorm => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rgba8unorm"]
+                        #[link_name = "codec.value_format::contract_write_texture_format_rgba8unorm"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -639,7 +379,7 @@ const _: () = {
                 }
                 Self::Rgba8Srgb => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rgba8srgb"]
+                        #[link_name = "codec.value_format::contract_write_texture_format_rgba8srgb"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -649,7 +389,7 @@ const _: () = {
                 }
                 Self::R8Unorm => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_r8unorm"]
+                        #[link_name = "codec.value_format::contract_write_texture_format_r8unorm"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -659,7 +399,7 @@ const _: () = {
                 }
                 Self::Rg16Unorm => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rg16unorm"]
+                        #[link_name = "codec.value_format::contract_write_texture_format_rg16unorm"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -669,7 +409,7 @@ const _: () = {
                 }
                 Self::Rgb10A2Unorm => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_rgb10a2unorm"]
+                        #[link_name = "codec.value_format::contract_write_texture_format_rgb10a2unorm"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -679,7 +419,7 @@ const _: () = {
                 }
                 Self::R11G11B10Float => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_texture_format_r11g11b10float"]
+                        #[link_name = "codec.value_format::contract_write_texture_format_r11g11b10float"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -712,10 +452,8 @@ const _: () = {
     }
 };
 
-#[cfg(feature = "compiler")]
 crate::codec::contracts::codec!(TextureBinding);
 
-#[cfg(feature = "compiler")]
 const _: () = {
     use crate::codec::ReadStatus;
     use crate::codec::contracts::{
@@ -743,9 +481,9 @@ const _: () = {
         format: ReadCallback,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::contract_write_texture_binding"]
+        #[link_name = "codec.value_format::contract_write_texture_binding"]
         fn write(output: Slot, fields: Fields, host: Writer);
-        #[link_name = "bootstrap.contract_codec::contract_read_texture_binding"]
+        #[link_name = "codec.value_format::contract_read_texture_binding"]
         fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
     }
     impl Native for TextureBinding {
@@ -802,10 +540,8 @@ const _: () = {
     }
 };
 
-#[cfg(feature = "compiler")]
 crate::codec::contracts::codec!(PrefixCount);
 
-#[cfg(feature = "compiler")]
 const _: () = {
     use crate::codec::ReadStatus;
     use crate::codec::contracts::{
@@ -827,9 +563,9 @@ const _: () = {
         word: ReadCallback,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::contract_write_prefix_count"]
+        #[link_name = "codec.value_format::contract_write_prefix_count"]
         fn write(output: Slot, fields: Fields, host: Writer);
-        #[link_name = "bootstrap.contract_codec::contract_read_prefix_count"]
+        #[link_name = "codec.value_format::contract_read_prefix_count"]
         fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
     }
     impl Native for PrefixCount {
@@ -876,10 +612,8 @@ const _: () = {
     }
 };
 
-#[cfg(feature = "compiler")]
 crate::codec::contracts::codec!(PrefixRelation);
 
-#[cfg(feature = "compiler")]
 const _: () = {
     use crate::codec::ReadStatus;
     use crate::codec::contracts::{
@@ -904,9 +638,9 @@ const _: () = {
         count: ReadCallback,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::contract_write_prefix_relation"]
+        #[link_name = "codec.value_format::contract_write_prefix_relation"]
         fn write(output: Slot, fields: Fields, host: Writer);
-        #[link_name = "bootstrap.contract_codec::contract_read_prefix_relation"]
+        #[link_name = "codec.value_format::contract_read_prefix_relation"]
         fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
     }
     impl Native for PrefixRelation {
@@ -958,10 +692,8 @@ const _: () = {
     }
 };
 
-#[cfg(feature = "compiler")]
 crate::codec::contracts::codec!(ElementRange);
 
-#[cfg(feature = "compiler")]
 const _: () = {
     use crate::codec::ReadStatus;
     use crate::codec::contracts::{
@@ -992,9 +724,9 @@ const _: () = {
         known_bits: ReadCallback,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::contract_write_element_range"]
+        #[link_name = "codec.value_format::contract_write_element_range"]
         fn write(output: Slot, fields: Fields, host: Writer);
-        #[link_name = "bootstrap.contract_codec::contract_read_element_range"]
+        #[link_name = "codec.value_format::contract_read_element_range"]
         fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
     }
     impl Native for ElementRange {
@@ -1056,10 +788,8 @@ const _: () = {
     }
 };
 
-#[cfg(feature = "compiler")]
 crate::codec::contracts::codec!(ElementFact);
 
-#[cfg(feature = "compiler")]
 const _: () = {
     use crate::codec::ReadStatus;
     use crate::codec::contracts::{
@@ -1081,7 +811,7 @@ const _: () = {
             range: ReadCallback,
         }
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_read_element_fact_range"]
+            #[link_name = "codec.value_format::contract_read_element_fact_range"]
             fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
         }
         let status = unsafe {
@@ -1120,7 +850,7 @@ const _: () = {
             target: ReadCallback,
         }
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_read_element_fact_index"]
+            #[link_name = "codec.value_format::contract_read_element_fact_index"]
             fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
         }
         let status = unsafe {
@@ -1151,7 +881,7 @@ const _: () = {
         ReadStatus::Success
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::contract_read_element_fact"]
+        #[link_name = "codec.value_format::contract_read_element_fact"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -1180,7 +910,7 @@ const _: () = {
                         range: WriteCallback,
                     }
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_element_fact_range"]
+                        #[link_name = "codec.value_format::contract_write_element_fact_range"]
                         fn write(
                             output: Slot,
                             fields: Fields,
@@ -1219,7 +949,7 @@ const _: () = {
                         target: WriteCallback,
                     }
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_element_fact_index"]
+                        #[link_name = "codec.value_format::contract_write_element_fact_index"]
                         fn write(
                             output: Slot,
                             fields: Fields,

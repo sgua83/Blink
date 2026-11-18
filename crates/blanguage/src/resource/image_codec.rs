@@ -41,38 +41,42 @@ macro_rules! write_variant {
         }
     }};
 }
-projected_record!(@ [],crate::ast::ExternalName,"bootstrap.contract_codec::resource_write_external_name","bootstrap.contract_codec::resource_read_external_name",{
+projected_record!(@ [],crate::ast::ExternalName,"codec.value_format::resource_write_external_name","codec.value_format::resource_read_external_name",{
 library:String,
 symbol:String,
 },{});
-projected_record!(@ [],native::ModuleCode,"bootstrap.contract_codec::resource_write_module_code","bootstrap.contract_codec::resource_read_module_code",{
+projected_record!(@ [],native::ModuleCode,"codec.value_format::resource_write_module_code","codec.value_format::resource_read_module_code",{
 sections:Vec<native::ModuleSection>,
 symbols:BTreeMap<String,(usize,u32)>,
 },{});
-projected_record!(@ [],native::ModuleSection,"bootstrap.contract_codec::resource_write_module_section","bootstrap.contract_codec::resource_read_module_section",{
+projected_record!(@ [],native::ModuleSection,"codec.value_format::resource_write_module_section","codec.value_format::resource_read_module_section",{
 name:String,
 bytes:Vec<u8>,
 flags:u32,
 relocations:Vec<native::ModuleRelocation>,
 },{});
-projected_record!(@ [],native::ModuleRelocation,"bootstrap.contract_codec::resource_write_module_relocation","bootstrap.contract_codec::resource_read_module_relocation",{
+projected_record!(@ [],native::ModuleRelocation,"codec.value_format::resource_write_module_relocation","codec.value_format::resource_read_module_relocation",{
 offset:usize,
 kind:u16,
 target:native::ModuleTarget,
 },{});
-projected_record!(@ [],native::Relocation,"bootstrap.contract_codec::resource_write_native_relocation","bootstrap.contract_codec::resource_read_native_relocation",{
+projected_record!(@ [],native::Relocation,"codec.value_format::resource_write_native_relocation","codec.value_format::resource_read_native_relocation",{
 offset:usize,
 target:native::NativeSymbol,
 },{});
-projected_record!(@ [],native::NativeCode,"bootstrap.contract_codec::resource_write_native_code","bootstrap.contract_codec::resource_read_native_code",{
+projected_record!(@ [],native::NativeCode,"codec.value_format::resource_write_native_code","codec.value_format::resource_read_native_code",{
 bytes:Vec<u8>,
 relocations:Vec<native::Relocation>,
 stack_bytes:u32,
 calls:Vec<Option<usize>>,
 function_end:usize,
 unwind:Vec<u8>,
-},{tail_regions: None,tail_references: None,sources: native::CodeSources::Unavailable,});
-projected_record!(@ [C],native::SortCode<C>,"bootstrap.contract_codec::resource_write_sort_code","bootstrap.contract_codec::resource_read_sort_code",{
+},{
+#[cfg(feature = "compiler")] tail_regions: None,
+#[cfg(feature = "compiler")] tail_references: None,
+#[cfg(feature = "compiler")] sources: native::CodeSources::Unavailable,
+});
+projected_record!(@ [C],native::SortCode<C>,"codec.value_format::resource_write_sort_code","codec.value_format::resource_read_sort_code",{
 source:usize,
 target:usize,
 initialize:Vec<C>,
@@ -80,11 +84,11 @@ histogram:C,
 scatter:C,
 gather:C,
 },{});
-projected_record!(@ [],spirv::ShaderCode,"bootstrap.contract_codec::resource_write_shader_code","bootstrap.contract_codec::resource_read_shader_code",{
+projected_record!(@ [],spirv::ShaderCode,"codec.value_format::resource_write_shader_code","codec.value_format::resource_read_shader_code",{
 words:Vec<u32>,
 ranks:bool,
 },{});
-projected_record!(@ [],spirv::StageCode,"bootstrap.contract_codec::resource_write_gpu_stage_code","bootstrap.contract_codec::resource_read_gpu_stage_code",{
+projected_record!(@ [],spirv::StageCode,"codec.value_format::resource_write_gpu_stage_code","codec.value_format::resource_read_gpu_stage_code",{
 main:Vec<u32>,
 tail:Option<Vec<u32>>,
 scan_add:Option<Vec<u32>>,
@@ -93,11 +97,11 @@ dispatch:Option<Vec<u32>>,
 selector:Option<Vec<u32>>,
 sort:Option<Vec<spirv::ShaderCode>>,
 },{});
-projected_record!(@ [],Module<native::NativeCode>,"bootstrap.contract_codec::resource_write_module","bootstrap.contract_codec::resource_read_module",{
+projected_record!(@ [],Module<native::NativeCode>,"codec.value_format::resource_write_module","codec.value_format::resource_read_module",{
 types:Vec<Ty>,
 images:Vec<Image<TemplateProgram,native::NativeCode>>,
 },{});
-projected_record!(@ [],Module<usize>,"bootstrap.contract_codec::resource_write_module","bootstrap.contract_codec::resource_read_module",{
+projected_record!(@ [],Module<usize>,"codec.value_format::resource_write_module","codec.value_format::resource_read_module",{
 types:Vec<Ty>,
 images:Vec<Image<TemplateProgram,usize>>,
 },{});
@@ -110,7 +114,7 @@ const _: () = {
         gpu: Read,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::resource_read_image"]
+        #[link_name = "codec.value_format::resource_read_image"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -145,13 +149,13 @@ const _: () = {
                     value,
                     output,
                     native::ProgramImage<TemplateProgram>,
-                    "bootstrap.contract_codec::resource_write_image_cpu"
+                    "codec.value_format::resource_write_image_cpu"
                 ),
                 Self::Gpu(value) => write_variant!(
                     value,
                     output,
                     spirv::ProgramImage<TemplateProgram>,
-                    "bootstrap.contract_codec::resource_write_image_gpu"
+                    "codec.value_format::resource_write_image_gpu"
                 ),
             }
         }
@@ -188,7 +192,7 @@ const _: () = {
         gpu: Read,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::resource_read_linked_image"]
+        #[link_name = "codec.value_format::resource_read_linked_image"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -221,13 +225,13 @@ const _: () = {
         unsafe fn write(&self, output: Slot) {
             match self {
                 Self::Cpu(value) => {
-                    write_variant!(value,output,native::ProgramImage<TemplateProgram,usize>,"bootstrap.contract_codec::resource_write_linked_image_cpu")
+                    write_variant!(value,output,native::ProgramImage<TemplateProgram,usize>,"codec.value_format::resource_write_linked_image_cpu")
                 }
                 Self::Gpu(value) => write_variant!(
                     value,
                     output,
                     spirv::ProgramImage<TemplateProgram>,
-                    "bootstrap.contract_codec::resource_write_image_gpu"
+                    "codec.value_format::resource_write_image_gpu"
                 ),
             }
         }
@@ -264,7 +268,7 @@ const _: () = {
         import: Read,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::resource_read_module_target"]
+        #[link_name = "codec.value_format::resource_read_module_target"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -285,7 +289,7 @@ const _: () = {
             value: Read,
         }
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::resource_read_module_target_section_fields"]
+            #[link_name = "codec.value_format::resource_read_module_target_section_fields"]
             fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
         }
         let mut section = <usize as Native>::empty();
@@ -340,7 +344,7 @@ const _: () = {
                         value: Write,
                     }
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_module_target_section"]
+                        #[link_name = "codec.value_format::resource_write_module_target_section"]
                         fn write(
                             output: Slot,
                             fields: Fields,
@@ -367,7 +371,7 @@ const _: () = {
                     value,
                     output,
                     crate::ast::ExternalName,
-                    "bootstrap.contract_codec::resource_write_module_target_import"
+                    "codec.value_format::resource_write_module_target_import"
                 ),
             }
         }
@@ -408,7 +412,7 @@ const _: () = {
         function: Read,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::resource_read_native_symbol"]
+        #[link_name = "codec.value_format::resource_read_native_symbol"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -442,19 +446,19 @@ const _: () = {
                     value,
                     output,
                     Scalar,
-                    "bootstrap.contract_codec::resource_write_native_symbol_print"
+                    "codec.value_format::resource_write_native_symbol_print"
                 ),
                 Self::External(value) => write_variant!(
                     value,
                     output,
                     crate::ast::ExternalName,
-                    "bootstrap.contract_codec::resource_write_native_symbol_external"
+                    "codec.value_format::resource_write_native_symbol_external"
                 ),
                 Self::Function(value) => write_variant!(
                     value,
                     output,
                     String,
-                    "bootstrap.contract_codec::resource_write_native_symbol_function"
+                    "codec.value_format::resource_write_native_symbol_function"
                 ),
             }
         }
@@ -495,7 +499,7 @@ const _: () = {
         values: Read,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::resource_read_range_result"]
+        #[link_name = "codec.value_format::resource_read_range_result"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -522,7 +526,7 @@ const _: () = {
             match self {
                 Self::None => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_range_result_none"]
+                        #[link_name = "codec.value_format::resource_write_range_result_none"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -536,7 +540,7 @@ const _: () = {
                     value,
                     output,
                     usize,
-                    "bootstrap.contract_codec::resource_write_range_result_values"
+                    "codec.value_format::resource_write_range_result_values"
                 ),
             }
         }
@@ -579,7 +583,7 @@ const _: () = {
         scan: Read,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::resource_read_continuation_code"]
+        #[link_name = "codec.value_format::resource_read_continuation_code"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -636,7 +640,7 @@ const _: () = {
             target: Read,
         }
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::resource_read_continuation_code_scan_fields"]
+            #[link_name = "codec.value_format::resource_read_continuation_code_scan_fields"]
             fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
         }
         let mut prefix = <C as Native>::empty();
@@ -682,25 +686,25 @@ const _: () = {
                     value,
                     output,
                     C,
-                    "bootstrap.contract_codec::resource_write_continuation_code_reduction_tail"
+                    "codec.value_format::resource_write_continuation_code_reduction_tail"
                 ),
                 Self::ScanAdd(value) => write_variant!(
                     value,
                     output,
                     C,
-                    "bootstrap.contract_codec::resource_write_continuation_code_scan_add"
+                    "codec.value_format::resource_write_continuation_code_scan_add"
                 ),
                 Self::CompactScatter(value) => write_variant!(
                     value,
                     output,
                     C,
-                    "bootstrap.contract_codec::resource_write_continuation_code_compact_scatter"
+                    "codec.value_format::resource_write_continuation_code_compact_scatter"
                 ),
                 Self::SegmentedFinish(value) => write_variant!(
                     value,
                     output,
                     C,
-                    "bootstrap.contract_codec::resource_write_continuation_code_segmented_finish"
+                    "codec.value_format::resource_write_continuation_code_segmented_finish"
                 ),
                 Self::Scan {
                     prefix,
@@ -723,7 +727,7 @@ const _: () = {
                         target: Write,
                     }
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_continuation_code_scan"]
+                        #[link_name = "codec.value_format::resource_write_continuation_code_scan"]
                         fn write(
                             output: Slot,
                             fields: Fields,
@@ -791,7 +795,7 @@ const _: () = {
         sort: Read,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::resource_read_cpu_stage_code"]
+        #[link_name = "codec.value_format::resource_read_cpu_stage_code"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -814,7 +818,7 @@ const _: () = {
             result: Read,
         }
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::resource_read_cpu_stage_code_element_fields"]
+            #[link_name = "codec.value_format::resource_read_cpu_stage_code_element_fields"]
             fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
         }
         let mut main = <C as Native>::empty();
@@ -883,7 +887,7 @@ const _: () = {
                         result: Write,
                     }
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_cpu_stage_code_element"]
+                        #[link_name = "codec.value_format::resource_write_cpu_stage_code_element"]
                         fn write(
                             output: Slot,
                             fields: Fields,
@@ -914,7 +918,7 @@ const _: () = {
                     value,
                     output,
                     native::SortCode<C>,
-                    "bootstrap.contract_codec::resource_write_cpu_stage_code_sort"
+                    "codec.value_format::resource_write_cpu_stage_code_sort"
                 ),
             }
         }
@@ -973,9 +977,9 @@ macro_rules! native_image {
                 module_code: Read,
             }
             unsafe extern "C" {
-                #[link_name = "bootstrap.contract_codec::resource_write_native_image"]
+                #[link_name = "codec.value_format::resource_write_native_image"]
                 fn write(output: Slot, fields: Fields, host: Writer);
-                #[link_name = "bootstrap.contract_codec::resource_read_native_image"]
+                #[link_name = "codec.value_format::resource_read_native_image"]
                 fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
             }
             impl<P> Native for native::ProgramImage<P, $code> {
@@ -1079,9 +1083,9 @@ const _: () = {
         stages: Read,
     }
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::resource_write_gpu_image"]
+        #[link_name = "codec.value_format::resource_write_gpu_image"]
         fn write(output: Slot, fields: Fields, host: Writer);
-        #[link_name = "bootstrap.contract_codec::resource_read_gpu_image"]
+        #[link_name = "codec.value_format::resource_read_gpu_image"]
         fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
     }
     impl<P> Native for spirv::ProgramImage<P> {

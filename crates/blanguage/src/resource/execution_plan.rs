@@ -36,33 +36,33 @@ macro_rules! projected_enum {
     };
 }
 
-projected_record!(Reduction,"bootstrap.contract_codec::resource_write_reduction","bootstrap.contract_codec::resource_read_reduction", {
+projected_record!(Reduction,"codec.value_format::resource_write_reduction","codec.value_format::resource_read_reduction", {
     source: usize,
     source_word: u32,
     target: usize,
     target_word: u32,
 });
 
-projected_record!(ReductionSpec,"bootstrap.contract_codec::resource_write_reduction_spec","bootstrap.contract_codec::resource_read_reduction_spec", {
+projected_record!(ReductionSpec,"codec.value_format::resource_write_reduction_spec","codec.value_format::resource_read_reduction_spec", {
     fields: Reduction,
     ty: Ty,
     operator: CollectiveOperator,
 });
 
-projected_record!(SegmentedReduction,"bootstrap.contract_codec::resource_write_segmented_reduction","bootstrap.contract_codec::resource_read_segmented_reduction", {
+projected_record!(SegmentedReduction,"codec.value_format::resource_write_segmented_reduction","codec.value_format::resource_read_segmented_reduction", {
     values: ReductionSpec,
     head_word: u32,
     count: PrefixCount,
 });
 
-projected_record!(Scan,"bootstrap.contract_codec::resource_write_scan","bootstrap.contract_codec::resource_read_scan", {
+projected_record!(Scan,"codec.value_format::resource_write_scan","codec.value_format::resource_read_scan", {
     values: Reduction,
     ty: Ty,
     operator: CollectiveOperator,
     head_word: Option<u32>,
 });
 
-projected_record!(Compaction,"bootstrap.contract_codec::resource_write_compaction","bootstrap.contract_codec::resource_read_compaction", {
+projected_record!(Compaction,"codec.value_format::resource_write_compaction","codec.value_format::resource_read_compaction", {
     source: usize,
     flags: usize,
     flag_word: u32,
@@ -71,34 +71,34 @@ projected_record!(Compaction,"bootstrap.contract_codec::resource_write_compactio
     count_word: u32,
 });
 
-projected_record!(Sorting,"bootstrap.contract_codec::resource_write_sorting","bootstrap.contract_codec::resource_read_sorting", {
+projected_record!(Sorting,"codec.value_format::resource_write_sorting","codec.value_format::resource_read_sorting", {
     source: usize,
     keys: Vec<(u32, Scalar, SortOrder)>,
     target: usize,
 });
 
-projected_record!(ReductionLayout,"bootstrap.contract_codec::resource_write_reduction_layout","bootstrap.contract_codec::resource_read_reduction_layout", {
+projected_record!(ReductionLayout,"codec.value_format::resource_write_reduction_layout","codec.value_format::resource_read_reduction_layout", {
     fields: Reduction,
     ty: Ty,
 });
 
-projected_record!(CustomScan<ReductionLayout>,"bootstrap.contract_codec::resource_write_custom_scan","bootstrap.contract_codec::resource_read_custom_scan", {
+projected_record!(CustomScan<ReductionLayout>,"codec.value_format::resource_write_custom_scan","codec.value_format::resource_read_custom_scan", {
     values: ReductionLayout,
     head_word: Option<u32>,
 });
 
-projected_record!(CustomSegmentedReduction<ReductionLayout>,"bootstrap.contract_codec::resource_write_custom_segmented_reduction","bootstrap.contract_codec::resource_read_custom_segmented_reduction", {
+projected_record!(CustomSegmentedReduction<ReductionLayout>,"codec.value_format::resource_write_custom_segmented_reduction","codec.value_format::resource_read_custom_segmented_reduction", {
     values: ReductionLayout,
     head_word: u32,
     count: PrefixCount,
 });
 
-projected_record!(Selection,"bootstrap.contract_codec::resource_write_selection","bootstrap.contract_codec::resource_read_selection", {
+projected_record!(Selection,"codec.value_format::resource_write_selection","codec.value_format::resource_read_selection", {
     binding: usize,
     word: u32,
 });
 
-projected_record!(ExecutionStage,"bootstrap.contract_codec::resource_write_execution_stage","bootstrap.contract_codec::resource_read_execution_stage", {
+projected_record!(ExecutionStage,"codec.value_format::resource_write_execution_stage","codec.value_format::resource_read_execution_stage", {
     domain: usize,
     prefix: Option<PrefixCount>,
     selection: Option<Selection>,
@@ -114,7 +114,7 @@ projected_record!(ExecutionStage,"bootstrap.contract_codec::resource_write_execu
     shared_bytes: u64,
 });
 
-projected_record!(ExecutionPlan,"bootstrap.contract_codec::resource_write_execution_plan","bootstrap.contract_codec::resource_read_execution_plan", {
+projected_record!(ExecutionPlan,"codec.value_format::resource_write_execution_plan","codec.value_format::resource_read_execution_plan", {
     interface: ProgramLayout,
     stages: Vec<ExecutionStage>,
     indirect_buffer: usize,
@@ -122,18 +122,18 @@ projected_record!(ExecutionPlan,"bootstrap.contract_codec::resource_write_execut
     native_frame: Option<u32>,
 });
 
-projected_enum!(SortOrder,Ascending,"bootstrap.contract_codec::resource_read_sort_order",{
-    Ascending=>(ascending,"bootstrap.contract_codec::resource_write_sort_order_ascending"),
-    Descending=>(descending,"bootstrap.contract_codec::resource_write_sort_order_descending"),
+projected_enum!(SortOrder,Ascending,"codec.value_format::resource_read_sort_order",{
+    Ascending=>(ascending,"codec.value_format::resource_write_sort_order_ascending"),
+    Descending=>(descending,"codec.value_format::resource_write_sort_order_descending"),
 });
 
-projected_enum!(CollectiveOperator,Sum,"bootstrap.contract_codec::resource_read_collective_operator",{
-    Sum=>(sum,"bootstrap.contract_codec::resource_write_collective_operator_sum"),
-    Min=>(min,"bootstrap.contract_codec::resource_write_collective_operator_min"),
-    Max=>(max,"bootstrap.contract_codec::resource_write_collective_operator_max"),
-    BitAnd=>(bit_and,"bootstrap.contract_codec::resource_write_collective_operator_bit_and"),
-    BitOr=>(bit_or,"bootstrap.contract_codec::resource_write_collective_operator_bit_or"),
-    BitXor=>(bit_xor,"bootstrap.contract_codec::resource_write_collective_operator_bit_xor"),
+projected_enum!(CollectiveOperator,Sum,"codec.value_format::resource_read_collective_operator",{
+    Sum=>(sum,"codec.value_format::resource_write_collective_operator_sum"),
+    Min=>(min,"codec.value_format::resource_write_collective_operator_min"),
+    Max=>(max,"codec.value_format::resource_write_collective_operator_max"),
+    BitAnd=>(bit_and,"codec.value_format::resource_write_collective_operator_bit_and"),
+    BitOr=>(bit_or,"codec.value_format::resource_write_collective_operator_bit_or"),
+    BitXor=>(bit_xor,"codec.value_format::resource_write_collective_operator_bit_xor"),
 });
 
 contracts::codec!(Operation<ReductionLayout>);
@@ -184,7 +184,7 @@ const _: () = {
     construct!(compact, Compact, Compaction);
     construct!(stable_sort, StableSort, Sorting);
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::resource_read_operation"]
+        #[link_name = "codec.value_format::resource_read_operation"]
         fn read(
             input: contracts::Bytes,
             position: *mut usize,
@@ -201,7 +201,7 @@ const _: () = {
             match self {
                 Self::Map => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_operation_map"]
+                        #[link_name = "codec.value_format::resource_write_operation_map"]
                         fn write(
                             output: Slot,
                             append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -213,7 +213,7 @@ const _: () = {
                 }
                 Self::Reduce(value) => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_operation_reduce"]
+                        #[link_name = "codec.value_format::resource_write_operation_reduce"]
                         fn write(
                             source: contracts::Address,
                             output: Slot,
@@ -232,7 +232,7 @@ const _: () = {
                 }
                 Self::CustomReduce(value) => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_operation_custom_reduce"]
+                        #[link_name = "codec.value_format::resource_write_operation_custom_reduce"]
                         fn write(
                             source: contracts::Address,
                             output: Slot,
@@ -251,7 +251,7 @@ const _: () = {
                 }
                 Self::CustomScan(value) => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_operation_custom_scan"]
+                        #[link_name = "codec.value_format::resource_write_operation_custom_scan"]
                         fn write(
                             source: contracts::Address,
                             output: Slot,
@@ -270,7 +270,7 @@ const _: () = {
                 }
                 Self::CustomSegmentedReduce(value) => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_operation_custom_segmented_reduce"]
+                        #[link_name = "codec.value_format::resource_write_operation_custom_segmented_reduce"]
                         fn write(
                             source: contracts::Address,
                             output: Slot,
@@ -289,7 +289,7 @@ const _: () = {
                 }
                 Self::SegmentedReduce(value) => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_operation_segmented_reduce"]
+                        #[link_name = "codec.value_format::resource_write_operation_segmented_reduce"]
                         fn write(
                             source: contracts::Address,
                             output: Slot,
@@ -308,7 +308,7 @@ const _: () = {
                 }
                 Self::ScanExclusive(value) => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_operation_scan_exclusive"]
+                        #[link_name = "codec.value_format::resource_write_operation_scan_exclusive"]
                         fn write(
                             source: contracts::Address,
                             output: Slot,
@@ -327,7 +327,7 @@ const _: () = {
                 }
                 Self::Compact(value) => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_operation_compact"]
+                        #[link_name = "codec.value_format::resource_write_operation_compact"]
                         fn write(
                             source: contracts::Address,
                             output: Slot,
@@ -346,7 +346,7 @@ const _: () = {
                 }
                 Self::StableSort(value) => {
                     unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::resource_write_operation_stable_sort"]
+                        #[link_name = "codec.value_format::resource_write_operation_stable_sort"]
                         fn write(
                             source: contracts::Address,
                             output: Slot,

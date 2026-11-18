@@ -40,10 +40,10 @@ impl From<SubgroupFields> for SubgroupCapabilities {
     }
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.contract_codec::contract_write_subgroup_capabilities"]
+    #[link_name = "codec.value_format::contract_write_subgroup_capabilities"]
     fn write_subgroup_capabilities(value: SubgroupFields, output: Slot,
         append: unsafe extern "C" fn(Slot, *const u8, usize));
-    #[link_name = "bootstrap.contract_codec::contract_read_subgroup_capabilities"]
+    #[link_name = "codec.value_format::contract_read_subgroup_capabilities"]
     fn read_subgroup_capabilities(input: contracts::Bytes, position: *mut usize, output: *mut SubgroupFields) -> ReadStatus;
 }
 impl Native for SubgroupCapabilities {
@@ -117,10 +117,10 @@ impl From<DeviceFields> for DeviceRequirements {
     }
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.contract_codec::contract_write_device_requirements"]
+    #[link_name = "codec.value_format::contract_write_device_requirements"]
     fn write_device_requirements(value: DeviceFields, output: Slot,
         append: unsafe extern "C" fn(Slot, *const u8, usize));
-    #[link_name = "bootstrap.contract_codec::contract_read_device_requirements"]
+    #[link_name = "codec.value_format::contract_read_device_requirements"]
     fn read_device_requirements(input: contracts::Bytes, position: *mut usize, output: *mut DeviceFields) -> ReadStatus;
 }
 impl Native for DeviceRequirements {

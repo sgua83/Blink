@@ -309,54 +309,54 @@ struct ReadHost {
 }
 
 unsafe extern "C" {
-#[link_name="bootstrap.contract_codec::contract_read_ast_condition"]fn read_condition(input:Bytes,position:*mut usize,output:Slot,host:ReadHost)->ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_type"]
+#[link_name="codec.value_format::contract_read_ast_condition"]fn read_condition(input:Bytes,position:*mut usize,output:Slot,host:ReadHost)->ReadStatus;
+    #[link_name = "codec.value_format::read_type"]
     fn read_type(input: Bytes, position: *mut usize, output: Slot, host: ReadHost) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_type_name"]
+    #[link_name = "codec.value_format::read_type_name"]
     fn read_type_name(
         input: Bytes,
         position: *mut usize,
         output: Slot,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_function"]
+    #[link_name = "codec.value_format::read_function"]
     fn read_function(
         input: Bytes,
         position: *mut usize,
         output: Slot,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_shape"]
+    #[link_name = "codec.value_format::read_shape"]
     fn read_shape(input: Bytes, position: *mut usize, output: Slot, host: ReadHost) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_expression"]
+    #[link_name = "codec.value_format::read_expression"]
     fn read_expression(
         input: Bytes,
         position: *mut usize,
         output: Slot,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_predicate"]
+    #[link_name = "codec.value_format::read_predicate"]
     fn read_predicate(
         input: Bytes,
         position: *mut usize,
         output: Slot,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_arguments"]
+    #[link_name = "codec.value_format::read_arguments"]
     fn read_arguments(
         input: Bytes,
         position: *mut usize,
         output: Slot,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_predicates"]
+    #[link_name = "codec.value_format::read_predicates"]
     fn read_predicates(
         input: Bytes,
         position: *mut usize,
         output: Slot,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_named_type"]
+    #[link_name = "codec.value_format::read_named_type"]
     fn read_named_type(
         input: Bytes,
         position: *mut usize,
@@ -365,7 +365,7 @@ unsafe extern "C" {
         ty: Slot,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_parameter"]
+    #[link_name = "codec.value_format::read_parameter"]
     fn read_parameter(
         input: Bytes,
         position: *mut usize,
@@ -373,7 +373,7 @@ unsafe extern "C" {
         ty: Slot,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_interval"]
+    #[link_name = "codec.value_format::read_interval"]
     fn read_interval(
         input: Bytes,
         position: *mut usize,
@@ -381,7 +381,7 @@ unsafe extern "C" {
         upper: Slot,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_expression_payload"]
+    #[link_name = "codec.value_format::read_expression_payload"]
     fn read_expression_payload(
         kind: ExpressionTag,
         fields: ExpressionFields,
@@ -389,7 +389,7 @@ unsafe extern "C" {
         position: *mut usize,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_condition_payload"]
+    #[link_name = "codec.value_format::read_condition_payload"]
     fn read_condition_payload(
         kind: ConditionTag,
         fields: ConditionFields,
@@ -397,7 +397,7 @@ unsafe extern "C" {
         position: *mut usize,
         host: ReadHost,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::read_predicate_payload"]
+    #[link_name = "codec.value_format::read_predicate_payload"]
     fn read_predicate_payload(
         kind: PredicateTag,
         fields: PredicateFields,

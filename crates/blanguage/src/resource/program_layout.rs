@@ -62,9 +62,9 @@ struct Reader {
     requirements: Read,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.contract_codec::resource_write_program_layout"]
+    #[link_name = "codec.value_format::resource_write_program_layout"]
     fn write(output: Slot, fields: Fields, host: Writer);
-    #[link_name = "bootstrap.contract_codec::resource_read_program_layout"]
+    #[link_name = "codec.value_format::resource_read_program_layout"]
     fn read(context: Slot, fields: Fields, host: Reader) -> ReadStatus;
 }
 impl Native for ProgramLayout {

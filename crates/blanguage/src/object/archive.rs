@@ -147,6 +147,7 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
                 | "RUSTC_WORKSPACE_WRAPPER" | "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN"
                 | "CARGO_HOME" | "CARGO_INCREMENTAL" | "CARGO_ENCODED_RUSTFLAGS"
                 | "LIB" | "LIBPATH" | "INCLUDE" | "SYSTEMROOT")
+                || (runtime && matches!(name.as_str(), "BLINK_BOOTSTRAP_SDK" | "PROGRAMFILES"))
                 || name.starts_with("CARGO_PROFILE_") || name.starts_with("CARGO_TARGET_")
                 || name.starts_with("CARGO_BUILD_"))
     }).collect::<std::collections::BTreeMap<_, _>>();
@@ -176,6 +177,7 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
     if runtime {
         let mut files = vec![sdk.join("Cargo.toml")];
         optional(&mut digest, &sdk.join("crates/blanguage/build-sdk.rs"))?;
+        optional(&mut digest, &sdk.join("crates/blanguage/native/blink_value_format.lib"))?;
         for name in ["blanguage", "blcompute"] {
             let package = sdk.join("crates").join(name);
             files.push(package.join("Cargo.toml"));

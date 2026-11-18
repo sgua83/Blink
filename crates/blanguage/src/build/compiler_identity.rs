@@ -12,7 +12,7 @@ fn sources(path: &Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Result<
     Ok(())
 }
 
-pub fn emit(bootstrap: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn emit(libraries: &[&[u8]]) -> Result<(), Box<dyn std::error::Error>> {
     let mut files = Vec::new();
     sources(Path::new("src"), &mut files)?;
     files.extend([
@@ -23,7 +23,7 @@ pub fn emit(bootstrap: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     ]);
     files.sort();
     let mut identity = Digest::new();
-    identity.field(bootstrap);
+    for library in libraries { identity.field(library); }
     for path in files {
         println!("cargo:rerun-if-changed={}", path.display());
         identity.field(path.to_str().ok_or("编译器源码路径不是UTF-8")?.as_bytes());

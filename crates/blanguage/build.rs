@@ -2,7 +2,7 @@
 mod compiler_identity;
 use std::{env, fs, process::Command};
 
-fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt, path::PathBuf};
     println!("cargo:rerun-if-env-changed=BLINK_BOOTSTRAP_SDK");
     let seed = match env::var_os("BLINK_BOOTSTRAP_SDK") {
@@ -15,6 +15,25 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={}", seed.join(name).display());
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("缺少OUT_DIR")?);
+    let value_object = out.join("blink_value_format.obj");
+    for extension in ["b", "h"] {
+        println!("cargo:rerun-if-changed=src/codec/value_format.{extension}");
+    }
+    let compiled = Command::new(seed.join("bin/bc.exe"))
+        .args(["-c", "src/codec/value_format.b", "-I", "src", "--module", "-o"])
+        .arg(&value_object).status()?;
+    if !compiled.success() {
+        return Err(format!("Blink种子{}编译共享格式模块失败", seed.display()).into());
+    }
+    let value_archive = out.join("blink_value_format.lib");
+    let archived = Command::new(seed.join("bin/blink.exe"))
+        .arg("--host-archive").arg(&value_object).arg("-o").arg(&value_archive).status()?;
+    if !archived.success() {
+        return Err(format!("Blink种子{}归档共享格式模块失败", seed.display()).into());
+    }
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=static=blink_value_format");
+    if env::var_os("CARGO_FEATURE_COMPILER").is_none() { return Ok(()); }
     let mut shared = Vec::new();
     for (name, source) in [("unicode_scalar", "../../library/blink/unicode_scalar"),
         ("path_core", "../../library/blink/windows/path_core"),
@@ -45,6 +64,7 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut compiler = Command::new(seed.join("bin/bc.exe"));
         compiler.arg("-c").arg(format!("src/bootstrap/{name}.b"))
             .args(["-I", "src", "--module", "-o"]).arg(object);
+        if *name == "contract_codec" { compiler.arg("--import").arg(&value_object); }
         if *name == "host_sdk" {
             compiler.args(["-I", "../../library"]).arg("--import").arg(&shared[1])
                 .arg("--import").arg(out.join("blink_compiler_ast_storage.obj"));
@@ -68,15 +88,11 @@ fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     if !archived.success() {
         return Err(format!("Blink种子{}归档B引导模块失败", seed.display()).into());
     }
-    println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=blink_compiler_bootstrap");
-    Ok(fs::read(archive)?)
+    compiler_identity::emit(&[&fs::read(value_archive)?, &fs::read(archive)?])
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if env::var_os("CARGO_FEATURE_COMPILER").is_none() {
-        println!("cargo:rerun-if-changed=build.rs");
-        return Ok(());
-    }
-    compiler_identity::emit(&bootstrap_modules()?)
+    println!("cargo:rerun-if-changed=build.rs");
+    native_modules()
 }

@@ -103,7 +103,7 @@ pub(crate) struct PairReader {
     pub(crate) second: Read,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.contract_codec::contract_write_sequence"]
+    #[link_name = "codec.value_format::contract_write_sequence"]
     fn write_sequence(
         count: usize,
         iterator: Slot,
@@ -112,7 +112,7 @@ unsafe extern "C" {
         element: Write,
         append: unsafe extern "C" fn(Slot, *const u8, usize),
     );
-    #[link_name = "bootstrap.contract_codec::contract_read_sequence"]
+    #[link_name = "codec.value_format::contract_read_sequence"]
     fn read_sequence(
         input: Bytes,
         position: *mut usize,
@@ -120,14 +120,14 @@ unsafe extern "C" {
         output: Slot,
         push: Read,
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::contract_write_option"]
+    #[link_name = "codec.value_format::contract_write_option"]
     fn write_option(
         value: Address,
         output: Slot,
         element: Write,
         append: unsafe extern "C" fn(Slot, *const u8, usize),
     );
-    #[link_name = "bootstrap.contract_codec::contract_read_option"]
+    #[link_name = "codec.value_format::contract_read_option"]
     fn read_option(
         input: Bytes,
         position: *mut usize,
@@ -136,9 +136,9 @@ unsafe extern "C" {
         some: Read,
         none: unsafe extern "C" fn(Slot),
     ) -> ReadStatus;
-    #[link_name = "bootstrap.contract_codec::contract_write_pair"]
+    #[link_name = "codec.value_format::contract_write_pair"]
     fn write_pair(output: Slot, fields: PairFields, host: PairWriter);
-    #[link_name = "bootstrap.contract_codec::contract_read_pair"]
+    #[link_name = "codec.value_format::contract_read_pair"]
     fn read_pair(context: Slot, fields: PairFields, host: PairReader) -> ReadStatus;
 }
 unsafe extern "C" fn next<'a, T: 'a>(iterator: Slot) -> Address {
@@ -385,14 +385,14 @@ impl Native for u8 {
     }
     unsafe fn write(&self, output: Slot) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_u8"]
+            #[link_name = "codec.value_format::contract_write_u8"]
             fn write(value: u8, output: Slot, append: unsafe extern "C" fn(Slot, *const u8, usize));
         }
         unsafe { write(*self, output, append) }
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_read_u8"]
+            #[link_name = "codec.value_format::contract_read_u8"]
             fn read(input: Bytes, position: *mut usize, output: *mut u8) -> ReadStatus;
         }
         let (bytes, position) = unsafe { input(context) };
@@ -405,7 +405,7 @@ impl Native for u16 {
     }
     unsafe fn write(&self, output: Slot) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_u16"]
+            #[link_name = "codec.value_format::contract_write_u16"]
             fn write(
                 value: u16,
                 output: Slot,
@@ -416,7 +416,7 @@ impl Native for u16 {
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_read_u16"]
+            #[link_name = "codec.value_format::contract_read_u16"]
             fn read(input: Bytes, position: *mut usize, output: *mut u16) -> ReadStatus;
         }
         let (bytes, position) = unsafe { input(context) };
@@ -429,7 +429,7 @@ impl Native for u32 {
     }
     unsafe fn write(&self, output: Slot) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_u32"]
+            #[link_name = "codec.value_format::contract_write_u32"]
             fn write(
                 value: u32,
                 output: Slot,
@@ -440,7 +440,7 @@ impl Native for u32 {
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_read_u32"]
+            #[link_name = "codec.value_format::contract_read_u32"]
             fn read(input: Bytes, position: *mut usize, output: *mut u32) -> ReadStatus;
         }
         let (bytes, position) = unsafe { input(context) };
@@ -453,7 +453,7 @@ impl Native for u64 {
     }
     unsafe fn write(&self, output: Slot) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_u64"]
+            #[link_name = "codec.value_format::contract_write_u64"]
             fn write(
                 value: u64,
                 output: Slot,
@@ -464,7 +464,7 @@ impl Native for u64 {
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_read_u64"]
+            #[link_name = "codec.value_format::contract_read_u64"]
             fn read(input: Bytes, position: *mut usize, output: *mut u64) -> ReadStatus;
         }
         let (bytes, position) = unsafe { input(context) };
@@ -477,7 +477,7 @@ impl Native for usize {
     }
     unsafe fn write(&self, output: Slot) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_usize"]
+            #[link_name = "codec.value_format::contract_write_usize"]
             fn write(
                 value: usize,
                 output: Slot,
@@ -488,7 +488,7 @@ impl Native for usize {
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_read_usize"]
+            #[link_name = "codec.value_format::contract_read_usize"]
             fn read(input: Bytes, position: *mut usize, output: *mut usize) -> ReadStatus;
         }
         let (bytes, position) = unsafe { input(context) };
@@ -501,7 +501,7 @@ impl Native for bool {
     }
     unsafe fn write(&self, output: Slot) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_bool"]
+            #[link_name = "codec.value_format::contract_write_bool"]
             fn write(
                 value: u32,
                 output: Slot,
@@ -512,7 +512,7 @@ impl Native for bool {
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_read_bool"]
+            #[link_name = "codec.value_format::contract_read_bool"]
             fn read(input: Bytes, position: *mut usize, output: *mut u32) -> ReadStatus;
         }
         let (bytes, position) = unsafe { input(context) };
@@ -530,7 +530,7 @@ impl Native for String {
     }
     unsafe fn write(&self, output: Slot) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_text"]
+            #[link_name = "codec.value_format::contract_write_text"]
             fn write(
                 value: Bytes,
                 output: Slot,
@@ -550,7 +550,7 @@ impl Native for String {
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_read_text"]
+            #[link_name = "codec.value_format::contract_read_text"]
             fn read(
                 input: Bytes,
                 position: *mut usize,
@@ -616,7 +616,7 @@ pub(crate) unsafe fn write_trimmed<T: Native>(
     is_empty: unsafe extern "C" fn(Address) -> u32,
 ) {
     unsafe extern "C" {
-        #[link_name = "bootstrap.contract_codec::contract_write_trimmed"]
+        #[link_name = "codec.value_format::contract_write_trimmed"]
         fn write(
             values: NativeSpan,
             output: Slot,
@@ -647,9 +647,9 @@ struct TripleWriter { first: Write, second: Write, third: Write }
 #[repr(C)]
 struct TripleReader { first: Read, second: Read, third: Read }
 unsafe extern "C" {
-    #[link_name = "bootstrap.contract_codec::contract_write_triple"]
+    #[link_name = "codec.value_format::contract_write_triple"]
     fn write_triple(output: Slot, fields: TripleFields, host: TripleWriter);
-    #[link_name = "bootstrap.contract_codec::contract_read_triple"]
+    #[link_name = "codec.value_format::contract_read_triple"]
     fn read_triple(context: Slot, fields: TripleFields, host: TripleReader) -> ReadStatus;
 }
 impl<A: Native, B: Native, C: Native> Native for (A, B, C) {
@@ -683,7 +683,7 @@ macro_rules! native_codecs {
     };
 }
 macro_rules! projected_record {
-    (@ $generic:tt,$ty:ty,$write:literal,$read:literal,{$($field:ident:$kind:ty),+$(,)?},{$($extra:ident:$value:expr),*$(,)?}) => {
+    (@ $generic:tt,$ty:ty,$write:literal,$read:literal,{$($field:ident:$kind:ty),+$(,)?},{$($(#[$attribute:meta])* $extra:ident:$value:expr),*$(,)?}) => {
         const _: () = {
             #[repr(C)] struct Fields { $($field: $crate::codec::contracts::Slot,)+ }
             #[repr(C)] struct Writer { $($field: $crate::codec::contracts::Write,)+ }
@@ -693,7 +693,7 @@ macro_rules! projected_record {
                 #[link_name = $read] fn read(context: $crate::codec::contracts::Slot, fields: Fields, host: Reader) -> $crate::codec::ReadStatus;
             }
             $crate::codec::contracts::native_impl!($generic,$ty,{
-                fn empty() -> Self { Self { $($field: <$kind as $crate::codec::contracts::Native>::empty(),)+ $($extra:$value,)* } }
+                fn empty() -> Self { Self { $($field: <$kind as $crate::codec::contracts::Native>::empty(),)+ $($(#[$attribute])* $extra:$value,)* } }
                 unsafe fn write(&self, output: $crate::codec::contracts::Slot) {
                     unsafe { write(output,
                         Fields { $($field: $crate::codec::contracts::address(&self.$field).cast_mut(),)+ },

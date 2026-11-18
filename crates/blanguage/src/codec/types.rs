@@ -68,7 +68,7 @@ struct Host {
     constant:unsafe extern "C" fn(Address)->Constant,
 }
 unsafe extern "C" {
-    #[link_name="bootstrap.contract_codec::write_type"]
+    #[link_name="codec.value_format::write_type"]
     fn write_type(value:Address,output:*mut c_void,host:Host);
 }
 pub(super) fn encode(value:&ir::Ty,output:&mut Writer) {
@@ -200,7 +200,7 @@ impl crate::codec::contracts::Native for ir::Ty {
     }
     unsafe fn write(&self, output: *mut c_void) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_ast_type"]
+            #[link_name = "codec.value_format::contract_write_ast_type"]
             fn write(source: Address, output: *mut c_void, host: Host);
         }
         unsafe { write(address(self), output, HOST) }
@@ -216,7 +216,7 @@ impl crate::codec::contracts::Native for ast::ContractPredicate {
     }
     unsafe fn write(&self, output: *mut c_void) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_ast_predicate"]
+            #[link_name = "codec.value_format::contract_write_ast_predicate"]
             fn write(source: Address, output: *mut c_void, host: Host);
         }
         unsafe { write(address(self), output, HOST) }
@@ -232,7 +232,7 @@ impl crate::codec::contracts::Native for ast::OutputCondition {
     }
     unsafe fn write(&self, output: *mut c_void) {
         unsafe extern "C" {
-            #[link_name = "bootstrap.contract_codec::contract_write_ast_condition"]
+            #[link_name = "codec.value_format::contract_write_ast_condition"]
             fn write(source: Address, output: *mut c_void, host: Host);
         }
         unsafe { write(address(self), output, HOST) }
