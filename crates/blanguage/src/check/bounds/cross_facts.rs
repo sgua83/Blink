@@ -76,10 +76,10 @@ struct Host {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::cross_conflict"]
-    fn evaluate(slot: Slot, scalars: Scalars, host: Host) -> u32;
+    fn evaluate(slot: Slot, scalars: Scalars, host: Host, may_share: u32) -> u32;
 }
 
-pub(super) fn conflict(a: &Facts, b: &Facts) -> bool {
+pub(super) fn conflict(a: &Facts, b: &Facts, may_share: bool) -> bool {
     let mut context = Context {
         sets: [a, b],
         iterator: btree_set::Iter::default(),
@@ -102,6 +102,7 @@ pub(super) fn conflict(a: &Facts, b: &Facts) -> bool {
                 range,
                 compare,
             },
+            u32::from(may_share),
         ) != 0
     }
 }

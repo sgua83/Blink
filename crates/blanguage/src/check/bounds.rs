@@ -2353,10 +2353,12 @@ fn contradictory_with_roots(facts: &Facts, roots: &BTreeMap<ValueIdentity, Value
 
 // 环境已由本轮固定点检查；这里只处理新增事实内部及其与环境的关系。
 fn additions_conflict(environment: &Facts, additions: &Facts) -> bool {
-    contradictory(additions) || cross_conflict(environment, additions)
+    contradictory(additions) || cross_conflict(environment, additions, true)
 }
 // 两侧已各自完成内部检查；共有事实不会与另一侧冲突。
-fn cross_conflict(a: &Facts, b: &Facts) -> bool { cross_facts::conflict(a,b) }
+fn cross_conflict(a: &Facts, b: &Facts, may_share: bool) -> bool {
+    cross_facts::conflict(a, b, may_share)
+}
 
 
 fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<QueryFacts<'a>> {
@@ -2366,7 +2368,7 @@ fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<Que
     if b.is_subset(&a) {
         return Some(a);
     }
-    if cross_conflict(&a, &b) {
+    if cross_conflict(&a, &b, true) {
         return None;
     }
     if a.len() < b.len() { std::mem::swap(&mut a, &mut b); }

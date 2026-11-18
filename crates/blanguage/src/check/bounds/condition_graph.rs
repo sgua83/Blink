@@ -581,7 +581,7 @@ unsafe extern "C" fn required_leaf(slot: Slot, id: usize) {
                     .collect(),
             ))
         };
-        let value = if super::cross_conflict(evaluation.environment, &required) {
+        let value = if super::cross_conflict(evaluation.environment, &required, false) {
             None
         } else {
             Some(required)

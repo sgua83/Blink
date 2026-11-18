@@ -103,7 +103,7 @@ struct CrossHost {
  cfn<u32,address,u32,FactView,FactView,u32,u32> ensures memory(read) range;
  cfn<i32,address,address> ensures memory(read) compare;
 };
-extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost host) on cpu
+extern "C" u32 cross_conflict(address context,CrossScalars scalars,CrossHost host,u32 may_share) on cpu
  requires nonzero(host.count) requires nonzero(host.begin) requires nonzero(host.next)
  requires nonzero(host.contains) requires nonzero(host.range) requires nonzero(host.compare);
 
