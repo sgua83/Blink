@@ -414,6 +414,10 @@ impl Borrow{
         Self{sources:self.sources.output_bound(bindings),inputs:self.inputs.output_bound(bindings),
             calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings)}
     }
+    pub(in crate::check) fn retain_sources(&mut self, keep: impl Fn(&Source) -> bool) {
+        self.sources.0.retain(|source, _| keep(source));
+    }
+
     pub fn map_sources(&self, map: impl Fn(Source) -> Self) -> Self {
         let result = Self {
             inputs: self.inputs.clone(), calls: self.calls.clone(),
@@ -492,7 +496,19 @@ impl Borrow{
         &self,
         reachable_path: &dyn Fn() -> Option<&'a bounds::Clause>,
     ) -> bool {
-        self.any_source_in(reachable_path, |source, reachable| match source {
+        self.any_source_in(reachable_path, Self::source_has_local_in)
+    }
+
+    pub(in crate::check) fn source_has_local(source: &Source) -> bool {
+        let root = std::cell::LazyCell::new(bounds::Clause::default);
+        Self::source_has_local_in(source, &|| Some(&*root))
+    }
+
+    fn source_has_local_in<'a>(
+        source: &Source,
+        reachable: &dyn Fn() -> Option<&'a bounds::Clause>,
+    ) -> bool {
+        match source {
             Source::Relation(graph, root) => reachable().is_some() && graph.has_local(*root),
             Source::Position(origin) => match &origin.root {
                 address::Root::Derived(parent) | address::Root::Dataset { borrow: parent, .. } =>
@@ -506,7 +522,7 @@ impl Borrow{
                     || initialized.has_local_in(reachable)
                     || outputs.iter().any(|output| output.has_local_in(reachable)),
             _ => false,
-        })
+        }
     }
     pub fn view_resources(&self)->Self {
         self.map_sources(|source|match source {

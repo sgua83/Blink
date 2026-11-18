@@ -529,7 +529,9 @@ impl Graph {
             _=>false,
         }
     }
-    fn private(&self,source:&Origin)->bool{!self.references(source)&&Borrow::source(source.clone()).has_local()}
+    fn private(&self, source: &Origin) -> bool {
+        !self.references(source) && Borrow::source_has_local(source)
+    }
     fn residual(&self, query: &Query<'_>) -> Self {
         let mut residual=self.clone();
         for &id in query.values.keys() {
@@ -538,11 +540,13 @@ impl Graph {
             }
         }
         for(id,node)in residual.nodes.iter_mut().enumerate(){
-            node.seeds=node.seeds.map_sources(|s|if self.private(&s){Borrow::default()}else{Borrow::source(s)});
+            node.seeds.retain_sources(|source| !self.private(source));
             if self.variables.contains(&id)||self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Read{..})) {
                 if !query.variables.contains_key(&id)&&!query.values.contains_key(&id){continue;}
                 for(source,when)in query.node(id).sources.entries(){
-                    if !self.private(source)&&!self.references(source){node.seeds.sources.union_when(source.clone(),&when);}
+                    if !self.references(source) && !Borrow::source_has_local(source) {
+                        node.seeds.sources.union_when(source.clone(), &when);
+                    }
                 }
             }
         }
