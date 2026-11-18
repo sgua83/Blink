@@ -97,3 +97,7 @@ struct MemberHost {
 };
 extern "C" MemberSelection source_member(address value, Text name, MemberHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.entry) requires nonzero(host.swizzle_width);
+
+struct VariantMember { u32 present; u32 discriminant; };
+extern "C" VariantMember declared_variant(address value, Text name, usize count,
+    cfn<PathEntry,address,Child,usize> ensures memory(read) entry) on cpu requires nonzero(entry);

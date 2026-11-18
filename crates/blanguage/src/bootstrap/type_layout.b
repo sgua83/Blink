@@ -275,3 +275,9 @@ extern "C" MemberSelection source_member(address value, Text name, MemberHost ho
     selected.count=u32(name.length);
     return selected;
 }
+
+extern "C" VariantMember declared_variant(address value, Text name, usize count,
+    cfn<PathEntry,address,Child,usize> ensures memory(read) entry) on cpu requires nonzero(entry) {
+    PathEntry selected=named_entry(value,name,Child::Variant,count,entry);
+    return VariantMember(u32(address_bits(selected.part.value)!=0u64),selected.discriminant);
+}

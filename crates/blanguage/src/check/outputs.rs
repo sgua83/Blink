@@ -303,6 +303,7 @@ pub(super) async fn expression(
         inputs: &BTreeMap<String, Value>,
         returned: Option<&Value>,
         span: Span,
+        terminal: bool,
     ) -> Result<Value> {
         match value {
             OutputCondition::Name(name) => {
@@ -348,7 +349,18 @@ pub(super) async fn expression(
             OutputCondition::Member(base, field) => {
                 if field=="length"&&let OutputCondition::Name(name)=base.as_ref()
                     &&let Some(value)=inputs.get(&format!("{name}.length")) {return Ok(value.clone());}
-                let value = unsafe { builder.world.call(path(builder, definition, base, inputs, returned, span)).await }?;
+                let value = unsafe {
+                    builder.world.call(path(builder, definition, base, inputs, returned, span, false)).await
+                }?;
+                if terminal && value.ty.has_variants() {
+                    let Some(discriminant) = value.ty.declared_variant(field) else {
+                        return builder.fail(span, "B225", "输出条件使用声明的返回变体名称");
+                    };
+                    let tag = builder.value_component(&value, 0);
+                    let scalar = tag.ty.components[0].0;
+                    let expected = builder.constant(scalar, Bits::from(discriminant));
+                    return builder.binary("==", tag, expected, span, None);
+                }
                 if value.ty.dataset.is_some() && field == "length" {
                     return Ok(builder.value_component(&value, 1));
                 }
@@ -366,27 +378,9 @@ pub(super) async fn expression(
         inputs: &BTreeMap<String, Value>, returned: Option<&Value>, span: Span,
     ) -> Result<Option<Value>> {
         let mut value = match condition {
-            OutputCondition::Name(_) => Some(unsafe { builder.world.call(path(builder, definition, condition, inputs, returned, span)).await }?),
-            OutputCondition::Member(base, field) => {
-                if field == "length" && let OutputCondition::Name(name) = base.as_ref()
-                    && let Some(value) = inputs.get(&format!("{name}.length")) {
-                    Some(value.clone())
-                } else {
-                    let value = unsafe { builder.world.call(path(builder, definition, base, inputs, returned, span)).await }?;
-                    if value.ty.has_variants() {
-                        let Some(variant) = value.ty.variants.iter().find(|variant| variant.name == *field) else {
-                            return builder.fail(span, "B225", "输出条件使用声明的返回变体名称");
-                        };
-                        let discriminant = variant.discriminant;
-                        let tag = builder.value_component(&value, 0);
-                        let scalar = tag.ty.components[0].0;
-                        let expected = builder.constant(scalar, Bits::from(discriminant));
-                        Some(builder.binary("==", tag, expected, span, None)?)
-                    } else {
-                        Some(unsafe { builder.world.call(path(builder, definition, condition, inputs, returned, span)).await }?)
-                    }
-                }
-            }
+            OutputCondition::Name(_) | OutputCondition::Member(..) => Some(unsafe {
+                builder.world.call(path(builder, definition, condition, inputs, returned, span, true)).await
+            }?),
             OutputCondition::Number(number) => builder.number_expression(number, span)?,
             OutputCondition::StaticU32(value) => Some(builder.constant(Scalar::U32, Bits::from(*value))),
             OutputCondition::Constant(value) => Some(builder.evaluated_constant(
@@ -794,7 +788,7 @@ fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, 
                 return Ok(Ty::scalar(Scalar::U32));
             }
             if ty.has_variants() {
-                return if ty.variants.iter().any(|variant| variant.name == *field) {
+                return if ty.declared_variant(field).is_some() {
                     Ok(Ty::scalar(Scalar::Bool))
                 } else { source.fail(span, "B225", "输出条件使用声明的返回变体名称") };
             }

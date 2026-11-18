@@ -210,3 +210,23 @@ pub(crate) fn source_member<'a>(value: &'a Ty, name: &str) -> SourceMember<'a> {
         MemberKind::ComponentBounds => SourceMember::ComponentBounds,
     }
 }
+
+#[repr(C)]
+struct VariantMember {
+    present: u32,
+    discriminant: u32,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.type_layout::declared_variant"]
+    fn b_declared_variant(value: *const Ty, name: Text, count: usize,
+        entry: unsafe extern "C" fn(*const Ty, Child, usize) -> PathEntry) -> VariantMember;
+}
+impl Ty {
+    pub(crate) fn declared_variant(&self, name: &str) -> Option<u32> {
+        let selected = unsafe {
+            b_declared_variant(self, Text { bytes: name.as_ptr(), length: name.len() },
+                self.variants.len(), entry)
+        };
+        (selected.present != 0).then_some(selected.discriminant)
+    }
+}
