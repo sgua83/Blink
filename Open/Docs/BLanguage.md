@@ -4487,7 +4487,7 @@ let joined = joined.rebind(&[2, 0, 1], vec![])?;
 let pending = combine.submit(joined, &[])?;
 ```
 
-关系只认原编译器已交付的来源与计数字段。同一冻结 Count 的别名可在 join 后直接满足接口，也可在 rebind 中保留任一个别名；独立且数值相同的 Count、裸数据向量和已被修改的 Count 不能据此取得关系。冻结数据不能绑定 write／inout／atomic；未冻结的唯一存储仍不能重复取出。DomainStorage 由存储实现提供只读身份与绑定；通用绑定辅助函数可扩展，CPU 借用入口接受 Dataset，拥有型入口接受 CpuDataset，GPU 入口接受 GpuDataset，其他存储实现不能代替目标物理存储。不另加封闭类型列表；原 C ABI 与 B 类型／语法不变；CPU 共享绑定见下段。
+关系只认原编译器已交付的来源与计数字段。同一冻结 Count 的别名可在 join 后直接满足接口，也可在 rebind 中保留任一个别名。单次重排按真实冻结来源汇总目的位置，关系两端使用原来源的共享位置；独立且数值相同的 Count、裸数据向量和已被修改的 Count 不能据此取得关系。冻结数据不能绑定 write／inout／atomic；未冻结的唯一存储仍不能重复取出。DomainStorage 由存储实现提供只读身份与绑定；通用绑定辅助函数可扩展，CPU 借用入口接受 Dataset，拥有型入口接受 CpuDataset，GPU 入口接受 GpuDataset，其他存储实现不能代替目标物理存储。不另加封闭类型列表；原 C ABI 与 B 类型／语法不变；CPU 共享绑定见下段。
 
 CPU 的拥有型 `CpuProgram::run_owned`／`CpuTemplate::run` 返回 `cpu::OwnedRunResult`：成功为 `Ok(DomainBindings<CpuDataset>)`，失败为 `Err((error, Bindings<DomainBindings<CpuDataset>>))`。错误携带原 `Box<dyn Error + Send + Sync>` 和输入经既有 `Into` 转换后实际持有的同一组数据、域关系及全部纹理；移动这些所有者，不复制载荷，不承诺转换前不同 Rust 容器的头部地址。前置拒绝保留原内容与有效域；已取得写访问后的失败交回实际部分写入及原 Count 失效结果，只有全部阶段完成才产生新保证。调用者可继续持有失败输入，或显式结束它并传播原错误；没有自动重放。成功后纹理的本次同步消费结束，返回的数据继续持有其实际所有权。`CpuDataset::Owned(Dataset)` 持有独占数据，`CpuDataset::Read(ReadDataset)` 持有原 Arc 冻结存储；`Dataset`、`ReadDataset` 可直接转为相应绑定，普通 Dataset 向量仍可作为输入。返回绑定以同一 read 接口暴露 words／布局；`CpuDataset::words_mut()` 只允许独占存储并返回 Result，冻结存储不转成可写切片。旧 `CpuProgram::run(&mut [Dataset],...)` 和 C ABI 保持，复用同一阶段执行主体。
 

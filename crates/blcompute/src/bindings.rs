@@ -192,36 +192,43 @@ impl<D> DomainBindings<D> {
         D: DomainStorage,
     {
         let total = self.datasets.len() + additional.len();
-        let mut positions = vec![Vec::new(); total];
         let mut remaining = vec![0; total];
-        for (new, &old) in order.iter().enumerate() {
-            let slot = positions
+        for &old in order {
+            let count = remaining
                 .get_mut(old)
                 .ok_or_else(|| error("域绑定重排索引越界"))?;
-            slot.push(new);
-            remaining[old] += 1;
+            *count += 1;
         }
         self.datasets.extend(additional);
+        let mut positions = vec![Vec::new(); total];
         let mut shared: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for (new, &old) in order.iter().enumerate() {
             if let Some(identity) = self.datasets[old].read_identity() {
                 shared.entry(identity).or_default().push(new);
+            } else {
+                positions[old].push(new);
             }
         }
-        for (old, data) in self.datasets.iter().enumerate() {
-            if let Some(identity) = data.read_identity() {
-                positions[old] = shared.get(&identity).cloned().unwrap_or_default();
+        let new_positions = |old: usize| -> &[usize] {
+            match self.datasets[old].read_identity() {
+                Some(identity) => shared.get(&identity).map_or(&[], Vec::as_slice),
+                None => &positions[old],
             }
-        }
+        };
         let mut domains = Vec::new();
         for relation in &self.domains {
             match relation {
-                DomainRelation::Prefix { domain, offset, bytes, count } => for &domain in &positions[*domain] {
-                    for &binding in &positions[count.binding] { domains.push(DomainRelation::Prefix {
-                        domain, offset: *offset, bytes: *bytes, count: PrefixCount { binding, word: count.word },
-                    }); }
+                DomainRelation::Prefix { domain, offset, bytes, count } => {
+                    let counts = new_positions(count.binding);
+                    for &domain in new_positions(*domain) {
+                        for &binding in counts {
+                            domains.push(DomainRelation::Prefix {
+                                domain, offset: *offset, bytes: *bytes, count: PrefixCount { binding, word: count.word },
+                            });
+                        }
+                    }
                 },
-                DomainRelation::Element(range) => for &binding in &positions[range.binding] {
+                DomainRelation::Element(range) => for &binding in new_positions(range.binding) {
                     domains.push(DomainRelation::Element(ElementRange { binding, ..range.clone() }));
                 },
             }
