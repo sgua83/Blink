@@ -192,14 +192,23 @@ impl Origin {
         matches!(&self.root, Root::Resource{borrow,..} | Root::Derived(borrow) | Root::Dataset{borrow,..} if borrow.pending())
     }
     pub fn aliases(&self) -> Vec<MemoryAlias> {
-        self.aliases_when(|| true)
+        self.aliases_when(|_| true, || true)
     }
-    pub(super) fn aliases_when(&self, possible: impl FnOnce() -> bool) -> Vec<MemoryAlias> {
+    pub(super) fn aliases_when(
+        &self, needed: impl Fn(&MemoryAlias) -> bool, possible: impl FnOnce() -> bool,
+    ) -> Vec<MemoryAlias> {
         match &self.root {
-            Root::Local { base, len } => if possible() { vec![MemoryAlias::Local { base: *base, len: *len }] } else { Vec::new() },
-            Root::Buffer(binding) => if possible() { vec![MemoryAlias::Data(*binding)] } else { Vec::new() },
+            Root::Local { base, len } => {
+                let alias = MemoryAlias::Local { base: *base, len: *len };
+                if needed(&alias) && possible() { vec![alias] } else { Vec::new() }
+            },
+            Root::Buffer(binding) => {
+                let alias = MemoryAlias::Data(*binding);
+                if needed(&alias) && possible() { vec![alias] } else { Vec::new() }
+            },
             Root::Derived(borrow)|Root::Dataset{borrow,..}|Root::External(Identity::Storage(borrow)) => {
-                let aliases = borrow.aliases();
+                let mut aliases = borrow.aliases();
+                aliases.retain(needed);
                 if aliases.is_empty() || possible() { aliases } else { Vec::new() }
             },
             _ => Vec::new(),
@@ -415,9 +424,6 @@ impl MemoryEffect {
         self.known.extend(other.known);
         self.external = merged_external_access(self.external, other.external);
     }
-    pub(super) fn include_external(&mut self, access: &MemoryAccesses) {
-        self.external = merged_external_access(self.external, access.external);
-    }
     fn same_element(origin:&Origin,when:&bounds::Clause,position:&Position,index:Option<bounds::Operand>)->Option<bool> {
         let (Some(index),Position::Borrowed(borrow,layout,_))=(index,position)else{return None;};
         let(Root::Resource{borrow:source,index:Some(written)}|Root::Dataset{borrow:source,index:Some(written)})=&origin.root else{return None;};
@@ -530,43 +536,46 @@ pub(super) struct MemoryAccesses {
     external: Option<Access>,
 }
 impl MemoryAccesses {
+    fn contains(&self, alias: MemoryAlias, access: Access) -> bool {
+        self.known.iter().any(|known| known.alias == alias && known.access == access)
+    }
+    fn needs_external(&self, access: Access) -> bool {
+        merged_external_access(self.external, Some(access)) != self.external
+    }
     pub(super) fn record(&mut self, effect: &MemoryEffect) {
-        self.known.extend(effect.known.iter().flat_map(|(origin, _, access, _)| {
-            origin.aliases().into_iter().map(move |alias| MemoryAccess { alias, access: *access })
-        }));
+        for (origin, _, access, _) in &effect.known {
+            let aliases = origin.aliases_when(|alias| !self.contains(*alias, *access), || true);
+            self.known.extend(aliases.into_iter().map(|alias| MemoryAccess { alias, access: *access }));
+        }
         self.external = merged_external_access(self.external, effect.external);
     }
-    pub(super) fn union(&mut self, other: Self) {
-        self.known.extend(other.known);
-        self.external = merged_external_access(self.external, other.external);
-    }
-    pub(super) fn from_sources<'a>(
+    pub(super) fn extend_sources<'a>(
+        &mut self,
         sources: impl Iterator<Item = (&'a view::Source, bounds::Clause)>,
         path: impl FnOnce() -> bounds::Clause,
         access: Access,
-    ) -> Self {
-        let mut result = Self::default();
+    ) {
         let path = std::cell::LazyCell::new(path);
         for (source, when) in sources {
             let origin = match source {
                 view::Source::Position(origin) => Some(origin),
-                view::Source::External if result.external.is_none() => None,
+                view::Source::External if self.needs_external(access) => None,
                 _ => continue,
             };
             let when = std::cell::LazyCell::new(|| {
                 let when = bounds::Clause::both(&when, &path);
                 when.possible().then_some(when)
             });
-            if result.external.is_none() && source_has_external_memory(source, || when.as_ref()) {
-                result.external = Some(access);
+            if self.needs_external(access) && source_has_external_memory(source, || when.as_ref()) {
+                self.external = merged_external_access(self.external, Some(access));
             }
             if let Some(origin) = origin {
                 let access = if origin.writable { access } else { Access::Read };
-                result.known.extend(origin.aliases_when(|| when.is_some()).into_iter()
+                let aliases = origin.aliases_when(|alias| !self.contains(*alias, access), || when.is_some());
+                self.known.extend(aliases.into_iter()
                     .map(|alias| MemoryAccess { alias, access }));
             }
         }
-        result
     }
 
     fn local_effects(&self, locals: &BTreeMap<usize, Ty>) -> Vec<MemoryAccess> {
