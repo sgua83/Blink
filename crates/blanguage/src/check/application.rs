@@ -940,7 +940,9 @@ fn declarations(
         for (old, item) in items.into_iter().enumerate() {
             let name = format!("blink_{prefix}_{old}");
             if names.contains(&name) {
-                renames.insert(name, format!("blink_{prefix}_{}", live.len()));
+                if old != live.len() {
+                    renames.insert(name, format!("blink_{prefix}_{}", live.len()));
+                }
                 live.push(item);
             }
         }
@@ -950,12 +952,14 @@ fn declarations(
     let types = retain(resources.types, "allocate", &names, &mut renames);
     let programs = retain(resources.programs, "run", &names, &mut renames);
     let completions = retain(resources.completions, "complete", &names, &mut renames);
-    for code in codes.iter_mut() {
-        runtime_calls(code, &mut |call| {
-            if let Some(name) = renames.get(&call.symbol) {
-                call.symbol = name.clone();
-            }
-        });
+    if !renames.is_empty() {
+        for code in codes.iter_mut() {
+            runtime_calls(code, &mut |call| {
+                if let Some(name) = renames.get(&call.symbol) {
+                    call.symbol = name.clone();
+                }
+            });
+        }
     }
     crate::application::Resources { types, programs, completions, task_starts: names.contains("blink_task_start") }
 }
@@ -963,18 +967,16 @@ pub(super) fn module_resources(
     functions: &mut [FunctionBody],
     resources: crate::application::Resources,
 ) -> Option<crate::application::Resources> {
-    let mut used = false;
-    for function in &mut *functions {
-        runtime_calls(&mut function.body.code, &mut |_| used = true);
-    }
-    if !used {
-        return None;
-    }
     let mut codes = functions
         .iter_mut()
         .map(|function| &mut function.body.code)
         .collect::<Vec<_>>();
-    Some(declarations(&mut codes, resources))
+    let resources = declarations(&mut codes, resources);
+    (!resources.types.is_empty()
+        || !resources.programs.is_empty()
+        || !resources.completions.is_empty()
+        || resources.task_starts)
+        .then_some(resources)
 }
 fn live_resources(
     body: &mut ValueCode,

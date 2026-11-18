@@ -16,7 +16,11 @@ pub(crate) enum Call {
 }
 
 pub(crate) fn uses_runtime(object: &Object) -> bool {
-    object.archive.as_ref().and_then(|archive| archive.resources.as_ref()).is_some() || matches!(object.kind, Kind::Library { .. })
+    object.archive.as_ref().and_then(|archive| archive.resources.as_ref()).is_some()
+        || matches!(object.kind, Kind::Library { .. })
+        || object.sections.iter().flat_map(|section| &section.relocations).any(|relocation| {
+            matches!(&relocation.target, Target::Import(import) if import.dll == crate::resource::RUNTIME_LIBRARY)
+        })
 }
 
 pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64>, runtime: bool) -> String {
