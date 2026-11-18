@@ -197,7 +197,8 @@ impl<'a> Facts<'a> {
             let bytes = unsafe { row.bytes.borrowed() };
             let layout = material.and_then(|material| material.layout(index));
             let regions = if let Some(layout) = layout {
-                layout.regions(index, bytes.len(), spans)?.into_iter().map(|(kind, start, end)| {
+                let (_, ranges) = layout.regions(index, bytes.len(), spans)?;
+                ranges.map(|(kind, start, end)| {
                     let instructions = if matches!(kind, "literal" | "alignment") { "null".into() }
                     else {
                         crate::native::instructions_json(&bytes[start..end], start as u64).map_err(|error| {
@@ -294,7 +295,8 @@ pub fn source_facts(bytes: &[u8], selection: CodeSelection<'_>, range: std::ops:
         let row = facts.sections[index].row;
         let layout = material.as_ref().and_then(|material| material.layout(index));
         let regions = layout.map(|layout| -> Result<String> {
-            Ok(array(layout.regions(index, row.bytes.length, &spans)?.into_iter()
+            let (_, regions) = layout.regions(index, row.bytes.length, &spans)?;
+            Ok(array(regions
                 .filter(|(_, start, end)| (*start).max(range.start) < (*end).min(range.end))
                 .map(|(kind, start, end)| object(&[("kind", text(kind)),
                     ("start_byte", start.to_string()), ("end_byte", end.to_string()),

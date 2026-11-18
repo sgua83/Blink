@@ -46,24 +46,31 @@ fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
     digest.finish()
 }
 impl<S> Layout<S> {
-    pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span]) -> Result<Vec<(&'static str, usize, usize)>> {
-        match self {
-            Self::Startup | Self::Print(_) | Self::ImportThunk => Ok(vec![("generated_code", 0, length)]),
+    pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span])
+        -> Result<(usize, impl Iterator<Item = (&'static str, usize, usize)> + '_)>
+    {
+        let (kind, end, tails) = match self {
+            Self::Startup | Self::Print(_) | Self::ImportThunk => ("generated_code", length, &[][..]),
             Self::Function { tails, .. } => {
                 let mut main = spans.iter().filter(|s| s.section == index && s.start == 0);
                 let end = main.next().ok_or("COFF generated function material has no matching original .pdata range")?.end;
                 if main.any(|s| s.end != end) { return Err("COFF original main range is ambiguous".into()); }
-                let mut regions = vec![("runtime_function", 0, end)];
                 let mut start = end;
                 for tail in tails {
                     if tail.end < start || tail.end > length { return Err("COFF generated tail is outside or out of order in its section".into()); }
-                    let kind = match tail.kind { RegionKind::StackProbe => "stack_probe", RegionKind::Alignment => "alignment", RegionKind::Literal => "literal" };
-                    regions.push((kind, start, tail.end)); start = tail.end;
+                    start = tail.end;
                 }
                 if start != length { return Err("COFF generated ranges do not cover the complete section".into()); }
-                Ok(regions)
+                ("runtime_function", end, tails.as_slice())
             }
-        }
+        };
+        let regions = std::iter::once((kind, 0, end)).chain(tails.iter().scan(end, |start, tail| {
+            let kind = match tail.kind { RegionKind::StackProbe => "stack_probe", RegionKind::Alignment => "alignment", RegionKind::Literal => "literal" };
+            let region = (kind, *start, tail.end);
+            *start = tail.end;
+            Some(region)
+        }));
+        Ok((end, regions))
     }
     pub(super) fn references(&self) -> Option<&[TailReference]> {
         match self {
@@ -106,9 +113,9 @@ impl Material {
             if saved.section != index + 1 || saved.identity != identity(facts, index, spans) {
                 return Err("COFF observation material does not match the original code section and relocations".into());
             }
-            let regions = saved.layout.regions(index, section.row.bytes.length, spans)?;
+            let (end, _) = saved.layout.regions(index, section.row.bytes.length, spans)?;
             if let Layout::Function { sources, references, .. } = &saved.layout {
-                sources.validate(regions[0].2)?;
+                sources.validate(end)?;
                 if let Some(references) = references {
                     crate::native::material::references(unsafe { section.row.bytes.borrowed() }, references)?;
                 }
@@ -132,7 +139,7 @@ pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {
     layouts.clone().count().encode(&mut writer);
     for (index, section) in layouts {
         let layout = section.layout.as_ref().unwrap();
-        layout.regions(index, section.bytes.len(), &spans)?;
+        let _ = layout.regions(index, section.bytes.len(), &spans)?;
         (index + 1).encode(&mut writer);
         identity(&facts, index, &spans).encode(&mut writer);
         layout.encode(&mut writer);
